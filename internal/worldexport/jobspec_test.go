@@ -8,8 +8,11 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 const secretToken = "5ecret5ecret5ecret5ecret5ecret5ecret5ecret5ecret5ecret5ecret5ecr"
@@ -234,5 +237,36 @@ func TestStartCreatesTheJob(t *testing.T) {
 		if args := job.Spec.Template.Spec.Containers[0].Args; !slices.Equal(args[len(args)-len(tc.tail):], tc.tail) {
 			t.Errorf("%s: args = %v, want them to end %v", tc.r.Mode, args, tc.tail)
 		}
+	}
+}
+
+// A Job felis-api gave up on goes with its Pods, and one already gone is no
+// error: the sweep that stops it may run after the Job's own TTL took it.
+func TestStopDeletesTheJobAndItsPods(t *testing.T) {
+	cs := fake.NewSimpleClientset()
+	var policy metav1.DeletionPropagation
+	cs.PrependReactor("delete", "jobs", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		if o := a.(k8stesting.DeleteActionImpl).GetDeleteOptions().PropagationPolicy; o != nil {
+			policy = *o
+		}
+		return false, nil, nil
+	})
+	e := New(cs, Config{Image: "felis:1", BackupPVC: "felis-backups"})
+	name, err := e.Start(context.Background(), Request{Server: "survival", Mode: ModeWorld, ID: "0011223344556677",
+		TargetURL: "http://api:8081/x", Token: secretToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Stop(context.Background(), name); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if _, err := cs.BatchV1().Jobs("minecraft").Get(context.Background(), name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("the Job is still there: %v", err)
+	}
+	if policy != metav1.DeletePropagationBackground {
+		t.Errorf("propagation = %q, want Background so its Pods go too", policy)
+	}
+	if err := e.Stop(context.Background(), name); err != nil {
+		t.Errorf("stopping a Job already gone: %v", err)
 	}
 }

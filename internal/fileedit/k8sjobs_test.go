@@ -45,10 +45,17 @@ func TestOpState(t *testing.T) {
 	ok := ResultPrefix + `{"files":3,"bytes":40}` + "\n"
 	conflict := ResultPrefix + `{"code":"exists","conflicts":["a.txt"],"conflict_count":1}` + "\n"
 	complete := cond(batchv1.JobComplete, corev1.ConditionTrue, "")
+	backoff := cond(batchv1.JobFailed, corev1.ConditionTrue, "BackoffLimitExceeded")
+	killed := func(container, reason string) *corev1.Pod {
+		return &corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{{
+			Name: container, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 137, Reason: reason}},
+		}}}}
+	}
 
 	cases := []struct {
 		name       string
 		conds      []batchv1.JobCondition
+		pod        *corev1.Pod
 		log        string
 		state      string
 		reason     string
@@ -90,10 +97,22 @@ func TestOpState(t *testing.T) {
 		{name: "complete with a result that does not parse",
 			conds: []batchv1.JobCondition{complete}, log: ResultPrefix + "{\n",
 			state: OpFailed, reason: "ResultUnavailable", finished: true},
+		{name: "killed for memory without a result",
+			conds: []batchv1.JobCondition{backoff}, pod: killed(containerName, "OOMKilled"), log: progress,
+			state: OpFailed, reason: "OOMKilled", done: 40, finished: true},
+		{name: "killed for memory after printing a clean result",
+			conds: []batchv1.JobCondition{backoff}, pod: killed(containerName, "OOMKilled"), log: ok,
+			state: OpSucceeded, files: 3, finished: true, wantResult: true},
+		{name: "killed another way",
+			conds: []batchv1.JobCondition{backoff}, pod: killed(containerName, "Error"),
+			state: OpFailed, reason: "BackoffLimitExceeded", finished: true},
+		{name: "another container killed for memory",
+			conds: []batchv1.JobCondition{backoff}, pod: killed("sidecar", "OOMKilled"),
+			state: OpFailed, reason: "BackoffLimitExceeded", finished: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			st := opState(asyncJob(tc.conds...), tc.log)
+			st := opState(asyncJob(tc.conds...), tc.pod, tc.log)
 			if st.ID != "0a" || st.Op != OpUnzip || st.Path != "maps/world.zip" || !st.Started.Equal(opCreated) {
 				t.Fatalf("identity = %q %q %q %v", st.ID, st.Op, st.Path, st.Started)
 			}
@@ -183,6 +202,28 @@ func TestK8sRunnerOps(t *testing.T) {
 	}
 	if logs != maxOps-1 {
 		t.Fatalf("read %d logs, want %d: one per listed op whose Pod has started", logs, maxOps-1)
+	}
+}
+
+// TestK8sRunnerOpsReadsAMemoryKill checks Ops hands each Job's Pod to opState: a
+// Pod the kernel killed for memory is what names an op's reason OOMKilled.
+func TestK8sRunnerOpsReadsAMemoryKill(t *testing.T) {
+	p := testParams(OpUnzip)
+	p.Server, p.OpID, p.Path, p.Async = "survival", "oom", "maps/tiles.zip", true
+	j, err := FilesJob(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.Status.Conditions = []batchv1.JobCondition{cond(batchv1.JobFailed, corev1.ConditionTrue, "BackoffLimitExceeded")}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: j.Name + "-x", Namespace: "minecraft", Labels: j.Spec.Template.Labels},
+		Status: corev1.PodStatus{Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{{
+			Name: containerName, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 137, Reason: "OOMKilled"}},
+		}}},
+	}
+	ops, err := NewK8sRunner(fake.NewSimpleClientset(j, pod)).Ops(context.Background(), "minecraft", "survival")
+	if err != nil || len(ops) != 1 || ops[0].State != OpFailed || ops[0].Reason != "OOMKilled" {
+		t.Fatalf("Ops = %+v, %v; want the one op failed for OOMKilled", ops, err)
 	}
 }
 

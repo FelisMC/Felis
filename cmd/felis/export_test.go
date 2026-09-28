@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -53,6 +54,25 @@ func receiveExport(t *testing.T, reply func(w http.ResponseWriter)) *exportRecei
 }
 
 func noContent(w http.ResponseWriter) { w.WriteHeader(http.StatusNoContent) }
+
+// sentWhole fails unless the upload rcv got ended with the Content-Digest
+// trailer of its own bytes, and declared length as its size (-1: none).
+func sentWhole(t *testing.T, rcv *exportReceiver, length int64) {
+	t.Helper()
+	sum := sha256.Sum256(rcv.body)
+	want := "sha-256=:" + base64.StdEncoding.EncodeToString(sum[:]) + ":"
+	wantLength := ""
+	if length >= 0 {
+		wantLength = strconv.FormatInt(length, 10)
+	}
+	r := rcv.req
+	if rcv.readErr != nil || r.Trailer.Get(worldexport.DigestTrailer) != want || r.Header.Get(worldexport.LengthHeader) != wantLength ||
+		r.ContentLength != -1 || strings.Join(r.TransferEncoding, ",") != "chunked" {
+		t.Fatalf("upload read %v, trailer %v, %s %q, length %d, encoding %v; want trailer %q and %s %q, chunked",
+			rcv.readErr, r.Trailer, worldexport.LengthHeader, r.Header.Get(worldexport.LengthHeader), r.ContentLength, r.TransferEncoding,
+			want, worldexport.LengthHeader, wantLength)
+	}
+}
 
 func tarEntries(t *testing.T, archive []byte) map[string]string {
 	t.Helper()
@@ -141,6 +161,7 @@ func TestCmdExportWorld(t *testing.T) {
 	if got := tarEntries(t, rcv.body); !reflect.DeepEqual(got, want) {
 		t.Fatalf("archive holds %v\nwant %v", got, want)
 	}
+	sentWhole(t, rcv, -1)
 	want2 := "felis export: left out 1 entries a tar cannot hold (symbolic links, devices, sockets)\n" +
 		"felis export: left out 2 files that hold platform secrets\n" +
 		"felis export: server=survival mode=world downloaded\n"
@@ -297,6 +318,7 @@ func TestCmdExportBackup(t *testing.T) {
 			if got := tarEntries(t, rcv.body); !reflect.DeepEqual(got, want) {
 				t.Fatalf("archive holds %d entries, want exactly the redacted properties, level.dat and the region file", len(got))
 			}
+			sentWhole(t, rcv, -1)
 			if want := "felis export: left out 1 files that hold platform secrets\nfelis export: server=survival mode=backup downloaded\n"; stdout.String() != want {
 				t.Errorf("stdout = %q, want %q", stdout.String(), want)
 			}
@@ -417,9 +439,10 @@ func TestCmdExportFiles(t *testing.T) {
 			if code != 0 || stdout != "felis export: server=survival mode=files downloaded\n" {
 				t.Fatalf("exit %d, stdout %q, stderr %q", code, stdout, stderr)
 			}
-			if string(rcv.body) != want || rcv.req.ContentLength != int64(len(want)) || rcv.req.Header.Get("Content-Type") != "application/octet-stream" {
-				t.Fatalf("body %q, length %d, type %q; want %q", rcv.body, rcv.req.ContentLength, rcv.req.Header.Get("Content-Type"), want)
+			if string(rcv.body) != want || rcv.req.Header.Get("Content-Type") != "application/octet-stream" {
+				t.Fatalf("body %q, type %q; want %q", rcv.body, rcv.req.Header.Get("Content-Type"), want)
 			}
+			sentWhole(t, rcv, int64(len(want)))
 		})
 	}
 

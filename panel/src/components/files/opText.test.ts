@@ -22,6 +22,10 @@ describe("opErrorText", () => {
     expect(opErrorText("unzip", e("volume_full", { need: 3 * 1024 * 1024, avail: 1024 }))).toBe(
       "Not enough room on the world volume: 3.0 MiB needed, 1.0 KiB free. Nothing was changed.",
     );
+    // A full volume: the Job leaves the zero out.
+    expect(opErrorText("upload", e("volume_full", { need: 2048 }))).toBe(
+      "Not enough room on the world volume: 2.0 KiB needed, 0 B free. Nothing was changed.",
+    );
     expect(opErrorText("upload", e("volume_full"))).toBe(humanizeError({ status: 0, code: "volume_full", message: "raw words" }));
   });
 
@@ -47,6 +51,17 @@ describe("opErrorText", () => {
     );
     expect(opErrorText("upload", e("job_failed", { message: "job failed: BackoffLimitExceeded" }))).toBe(
       "The background task ended without saying why. Refresh the list to check, then try again.",
+    );
+  });
+
+  it("tells an extraction killed for memory to split the archive", () => {
+    // The message felis-api words a memory kill with.
+    const oom = "the file operation ran out of memory (OOMKilled); an archive of this many files has to be split into smaller ones";
+    expect(opErrorText("unzip", e("job_failed", { message: oom }))).toBe(
+      "The archive holds more files than the extraction task has memory to list, so the system stopped it. The files on the server were not changed. Split it into several smaller zips and extract each one.",
+    );
+    expect(opErrorText("upload", e("job_failed", { message: oom }))).toBe(
+      "The background task ran out of memory and the system stopped it. The files on the server were not changed. Try again.",
     );
   });
 

@@ -43,6 +43,17 @@ const (
 // process listing on the node would show it.
 const TokenEnv = "FELIS_EXPORT_TOKEN"
 
+// The Job's PUT goes chunked, so that it can end with a trailer: DigestTrailer
+// carries the SHA-256 of every byte it sent (sha-256=:<base64>:, RFC 9530),
+// which felis-api checks before the last of them reaches the browser.
+// LengthHeader declares the length up front when the Job knows it (one file),
+// which chunked encoding cannot carry, so the browser still gets a
+// Content-Length.
+const (
+	DigestTrailer = "Content-Digest"
+	LengthHeader  = "X-Felis-Export-Length"
+)
+
 // JobParams are the rendered inputs to an export Job. ExportJob is a pure
 // function of them, so the Job shape is unit-tested without a cluster.
 type JobParams struct {

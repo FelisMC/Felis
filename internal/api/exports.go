@@ -44,6 +44,12 @@ import (
 //     archive passes through felis-api's memory once and never touches a disk
 //     it owns, and the Job moves at the browser's pace.
 //
+// Nothing on the way is trusted to deliver the bytes intact. The Job hashes
+// what it sends and ends its chunked PUT with the SHA-256 as a trailer;
+// felis-api hashes what it receives and holds the last buffer back from the
+// browser until the two agree (relayExport), so a download whose bytes changed
+// between the Job and here fails in the browser rather than lands complete.
+//
 // A backup is checked by the Job against the sha256 recorded when it was
 // written (cmd/felis export): on a mismatch the Job aborts its upload short of
 // the archive's end, the download aborts with it, and the browser reports a
@@ -54,9 +60,10 @@ import (
 
 // Exporter starts the Job that archives a world or a backup and hands it to the
 // internal upload route (internal/worldexport). Optional: when nil the export
-// routes answer 503.
+// routes answer 503. Stop deletes a Job felis-api has given up on.
 type Exporter interface {
 	Start(ctx context.Context, r worldexport.Request) (job string, err error)
+	Stop(ctx context.Context, job string) error
 }
 
 // Limits on exports. Each one keeps a Job, a connection and a 64 KiB copy
@@ -176,8 +183,10 @@ type exportEntry struct {
 
 // exportUpload is the Job's PUT, parked until a browser claims it.
 type exportUpload struct {
-	body    io.Reader
-	size    int64 // -1 when the Job streams it chunked
+	body io.Reader
+	size int64 // what the Job declared (worldexport.LengthHeader); -1 when it did not
+	// digest reads the Job's trailer, which is there once body has ended.
+	digest  func() []string
 	claimed chan struct{}
 	done    chan error // how the download ended; buffered
 }
@@ -191,6 +200,9 @@ type exportRegistry struct {
 	byTicket map[string]*exportEntry
 	byID     map[string]*exportEntry
 	starts   map[exportStarts][]time.Time // oldest first
+	// stop deletes the Job of an export the sweep expired while it was
+	// pending, and is run apart from the lock.
+	stop func(job string)
 }
 
 func (a *API) exportTickets() *exportRegistry {
@@ -199,17 +211,41 @@ func (a *API) exportTickets() *exportRegistry {
 			byTicket: map[string]*exportEntry{},
 			byID:     map[string]*exportEntry{},
 			starts:   map[exportStarts][]time.Time{},
+			stop:     a.stopExportJob,
 		}
 	})
 	return a.exports
 }
 
+// ExpireExports runs the export sweep on its own, for felis-api's loop: the
+// routes sweep as they are called, and an owner who closed the tab calls none.
+func (a *API) ExpireExports() {
+	g := a.exportTickets()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.sweepLocked(a.now())
+}
+
+// stopExportJob deletes one export Job. A delete that fails leaves the Job to
+// its own deadline.
+func (a *API) stopExportJob(job string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := a.Exporter.Stop(ctx, job); err != nil {
+		log.Printf("api: stop export job %s, which never connected: %v", job, err)
+	}
+}
+
 // sweepLocked expires what has waited too long and forgets what ended long ago.
+// A Job still pending at its TTL never connected: its Pod is stuck unscheduled
+// or pulling, and until its deadline it would keep the server from starting,
+// so it is deleted.
 func (g *exportRegistry) sweepLocked(now time.Time) {
 	for t, e := range g.byTicket {
 		switch {
 		case e.state == exportPending && now.Sub(e.at) >= exportPendingTTL:
 			e.state, e.at = exportSpent, now
+			go g.stop(e.job)
 		case !e.active() && now.Sub(e.at) >= exportKeepSpent:
 			delete(g.byTicket, t)
 			delete(g.byID, e.id)
@@ -661,7 +697,7 @@ func (a *API) handleExportDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 
-	err = copyExport(w, e.upload.body)
+	n, sum, err := relayExport(w, e.upload)
 	e.upload.done <- err
 	if err != nil {
 		log.Printf("api: export %s of %s ended early: %v", e.id, e.server, err)
@@ -669,17 +705,64 @@ func (a *API) handleExportDownload(w http.ResponseWriter, r *http.Request) {
 		// read as failed in the browser, never as a complete file.
 		panic(http.ErrAbortHandler)
 	}
+	log.Printf("api: export %s of %s sent %d bytes, sha256 %s", e.id, e.server, n, sum)
 }
 
-// copyExport copies body into w through a fixed 32 KiB buffer, restarting w's
-// write deadline on every write.
-func copyExport(w http.ResponseWriter, body io.Reader) error {
+var (
+	errExportDigest = errors.New("the bytes the export Job sent do not match the SHA-256 it sent with them")
+	errExportLength = errors.New("the export Job sent a different number of bytes than it declared")
+)
+
+// relayExport copies the Job's upload into the download through fixed 32 KiB
+// buffers, restarting w's write deadline on every write, and checks it on the
+// way: the bytes must hash to the SHA-256 the Job's trailer carries once it has
+// sent them all (worldexport.DigestTrailer), and number what it declared, when
+// it did. The latest buffer read is held back until both hold, so bytes changed
+// between the Job and here, or a Job that sent no digest, end the download
+// short of its end, and the browser reports it failed rather than keep a
+// complete-looking corrupt file. It returns the bytes sent and their SHA-256.
+func relayExport(w http.ResponseWriter, up *exportUpload) (int64, string, error) {
 	out := &stallWriter{w: w, rc: http.NewResponseController(w)}
-	if _, err := io.CopyBuffer(out, body, make([]byte, exportCopyBuffer)); err != nil {
-		return err
+	h := sha256.New()
+	var n int64
+	next, spare := make([]byte, exportCopyBuffer), make([]byte, exportCopyBuffer)
+	var held []byte
+	for {
+		k, err := up.body.Read(next)
+		if k > 0 {
+			if len(held) > 0 {
+				if _, werr := out.Write(held); werr != nil {
+					return n, "", werr
+				}
+			}
+			h.Write(next[:k])
+			n += int64(k)
+			held = next[:k]
+			next, spare = spare, next
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return n, "", err
+		}
+	}
+	want, err := parseContentDigest(up.digest())
+	switch {
+	case up.size >= 0 && n != up.size:
+		return n, "", fmt.Errorf("%w: %d of %d", errExportLength, n, up.size)
+	case err != nil:
+		return n, "", fmt.Errorf("%w: %v", errExportDigest, err)
+	case subtle.ConstantTimeCompare(h.Sum(nil), want) != 1:
+		return n, "", errExportDigest
+	}
+	if len(held) > 0 {
+		if _, err := out.Write(held); err != nil {
+			return n, "", err
+		}
 	}
 	_ = out.rc.SetWriteDeadline(time.Time{}) // the connection may serve another request
-	return nil
+	return n, hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // stallWriter restarts the connection's write deadline before every write, so
@@ -708,9 +791,19 @@ func (a *API) handleInternalExportUpload(w http.ResponseWriter, r *http.Request)
 		writeError(w, r, errNoExport())
 		return
 	}
+	size := int64(-1)
+	if v := r.Header.Get(worldexport.LengthHeader); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			writeError(w, r, newError(http.StatusBadRequest, "bad_request", "%s must be a byte count", worldexport.LengthHeader))
+			return
+		}
+		size = n
+	}
 	rc := takeBodyDeadline(w, r)
 	up := &exportUpload{
-		body: &stallBody{r: r.Body, rc: rc}, size: r.ContentLength,
+		body: &stallBody{r: r.Body, rc: rc}, size: size,
+		digest:  func() []string { return r.Trailer.Values(worldexport.DigestTrailer) },
 		claimed: make(chan struct{}), done: make(chan error, 1),
 	}
 	reg := a.exportTickets()

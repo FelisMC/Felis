@@ -14,7 +14,7 @@ func TestContextUploadPartForwardsOffsetBodyAndPrincipal(t *testing.T) {
 	fs := &fakeSubmissions{progress: submit.UploadProgress{Received: 8, PartMaxBytes: 33554432, MaxContextBytes: 1073741824}}
 	api := appSubAPI(fs)
 	w := do(api.ExternalHandler(), "PUT", "/api/v1/me/submissions/sub-9/context/upload?offset=4", "abcd",
-		ctHeader("application/octet-stream"))
+		map[string]string{"Content-Type": "application/octet-stream", "Content-Digest": contentDigestOf("abcd")})
 	if w.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200 (%s)", w.Code, w.Body.String())
 	}
@@ -72,7 +72,8 @@ func TestContextUploadErrors(t *testing.T) {
 			503, "uploads_store_unavailable", "send the request again", "5"},
 	} {
 		fs := &fakeSubmissions{chunkErr: tc.err}
-		w := do(appSubAPI(fs).ExternalHandler(), "PUT", "/api/v1/me/submissions/sub-9/context/upload?offset=12", "abcd", nil)
+		w := do(appSubAPI(fs).ExternalHandler(), "PUT", "/api/v1/me/submissions/sub-9/context/upload?offset=12", "abcd",
+			map[string]string{"Content-Digest": contentDigestOf("abcd")})
 		if w.Code != tc.code || decodeErr(t, w) != tc.want {
 			t.Errorf("%s: %d %s, want %d %s", tc.name, w.Code, w.Body.String(), tc.code, tc.want)
 		}
@@ -122,7 +123,8 @@ func TestContextUploadCompleteHoldsTheCooldownAndAudits(t *testing.T) {
 		t.Fatalf("second completion in the window: %d %s, want 429 submission_cooldown", w.Code, w.Body.String())
 	}
 	// A part never waits on the cooldown.
-	if w := do(eh, "PUT", "/api/v1/me/submissions/sub-9/context/upload?offset=0", "\x1f\x8b", nil); w.Code != http.StatusOK {
+	if w := do(eh, "PUT", "/api/v1/me/submissions/sub-9/context/upload?offset=0", "\x1f\x8b",
+		map[string]string{"Content-Digest": contentDigestOf("\x1f\x8b")}); w.Code != http.StatusOK {
 		t.Fatalf("part inside the cooldown: code = %d, want 200 (%s)", w.Code, w.Body.String())
 	}
 }
@@ -138,6 +140,45 @@ func TestContextUploadWithoutServiceIs503(t *testing.T) {
 	} {
 		if w := do(eh, rq[0], rq[1], "", nil); w.Code != http.StatusServiceUnavailable {
 			t.Errorf("%s %s = %d, want 503", rq[0], rq[1], w.Code)
+		}
+	}
+}
+
+// A context upload, whole or in parts, carries the SHA-256 of its body: one
+// without it is refused before the lane sees it, and bytes that do not hash to
+// it are refused as changed on the way (the lane keeps none of them), so the
+// client sends them again.
+func TestContextUploadsCheckTheBodyDigest(t *testing.T) {
+	body := "\x1f\x8b\x08\x00 the modpack bytes"
+	for _, rq := range []struct{ name, method, target string }{
+		{"a part", "PUT", "/api/v1/me/submissions/sub-9/context/upload?offset=0"},
+		{"a whole context", "POST", "/api/v1/me/submissions/sub-9/context"},
+	} {
+		for _, tc := range []struct {
+			name    string
+			sent    string
+			headers map[string]string
+			code    int
+			want    string
+		}{
+			{"without a digest", body, nil, http.StatusBadRequest, "digest_required"},
+			{"changed on the way", body[:len(body)-1] + "X", map[string]string{"Content-Digest": contentDigestOf(body)}, http.StatusBadRequest, "digest_mismatch"},
+			{"as sent", body, map[string]string{"Content-Digest": contentDigestOf(body)}, http.StatusOK, ""},
+		} {
+			t.Run(rq.name+" "+tc.name, func(t *testing.T) {
+				fs := &fakeSubmissions{}
+				w := do(appSubAPI(fs).ExternalHandler(), rq.method, rq.target, tc.sent, tc.headers)
+				if w.Code != tc.code {
+					t.Fatalf("code = %d (%s), want %d", w.Code, w.Body.String(), tc.code)
+				}
+				if tc.want != "" && decodeErr(t, w) != tc.want {
+					t.Fatalf("error = %s, want %s", w.Body.String(), tc.want)
+				}
+				reached := fs.chunkID != "" || fs.uploadedID != ""
+				if reached != (tc.headers != nil) {
+					t.Fatalf("the body reached the lane: %v, want %v", reached, tc.headers != nil)
+				}
+			})
 		}
 	}
 }

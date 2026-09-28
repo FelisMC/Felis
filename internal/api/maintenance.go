@@ -38,7 +38,7 @@ func maintenanceLabel(kind string) string {
 	case maintenance.KindFileWrite:
 		return "a file write"
 	case maintenance.KindExport:
-		return "a world export"
+		return "a world export or file download"
 	case maintenance.KindReap:
 		return "the idle-world reaper"
 	}

@@ -221,8 +221,8 @@ type Listing struct {
 	Entries []Entry
 	// Truncated reports that the directory holds more than MaxEntries.
 	Truncated bool
-	// Free is the bytes free on the server's volume, 0 when the Job could not
-	// tell.
+	// Free is the bytes free on the server's volume, negative when the Job could
+	// not tell.
 	Free int64
 }
 
@@ -394,7 +394,8 @@ type OpState struct {
 	Done, Total int64
 	// Result is what the Job printed once it finished. It is nil while the Job
 	// runs, and for a Job that ended without printing one (killed at its
-	// deadline, out of memory, its bytes unfetchable), whose Reason says why.
+	// deadline, out of memory, its bytes unfetchable), whose Reason says why
+	// (ReasonOOMKilled for memory).
 	Result *Result
 	Reason string
 }

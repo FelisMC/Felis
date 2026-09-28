@@ -40,8 +40,16 @@ const (
 
 // MaxConflicts bounds Result.Conflicts, keeping the result line bounded when an
 // archive would replace a whole world; ConflictCount still says how many there
-// are.
-const MaxConflicts = 200
+// are. maxConflictBytes bounds the names listed as well: felis-api reads an
+// unzip's result from the last opLogLines lines of its Pod's log, and the
+// container runtime splits a line longer than 16 KiB into several, so 200 long
+// paths would push the result marker out of that tail and the op would read as
+// ended without a result. A file that exists has a path under PATH_MAX (4 KiB),
+// so the first conflict always fits.
+const (
+	MaxConflicts     = 200
+	maxConflictBytes = 8 << 10
+)
 
 // unzipEntryOverhead is what the space check adds per entry for the inode and
 // directory block it takes beyond its bytes.
@@ -113,10 +121,12 @@ func unzip(r *os.Root, rootPath, name string, overwrite bool, progress func(done
 			list = append(list, path.Join(dest, n))
 		}
 		sort.Strings(list)
-		count := len(list)
-		if count > MaxConflicts {
-			list = list[:MaxConflicts]
+		count, n, size := len(list), 0, 0
+		for n < count && n < MaxConflicts && size+len(list[n]) <= maxConflictBytes {
+			size += len(list[n])
+			n++
 		}
+		list = list[:n]
 		return Result{Code: CodeExists, Conflicts: list, ConflictCount: count, Error: fmt.Sprintf(
 			"%d files in the archive already exist on the server; extract again with overwrite to replace them", count)}
 	}
@@ -180,7 +190,6 @@ type zipFile struct {
 // makes. Nothing about the server is consulted yet.
 func planUnzip(entries []*zip.File) (unzipPlan, Result) {
 	p := unzipPlan{isDir: map[string]bool{}}
-	byName := map[string]bool{}
 	for _, f := range entries {
 		raw := entryName(f)
 		name, ok := cleanEntry(raw)
@@ -210,14 +219,10 @@ func planUnzip(entries []*zip.File) (unzipPlan, Result) {
 		case name == ".":
 			return p, Result{Code: CodeArchiveUnsafe, Entry: raw, Error: fmt.Sprintf(
 				"%s names the destination folder itself", raw)}
-		case byName[name]:
-			return p, Result{Code: CodeArchiveInvalid, Entry: raw, Error: fmt.Sprintf(
-				"%s appears in the archive twice", raw)}
 		case f.UncompressedSize64 > uint64(math.MaxInt64-p.bytes):
 			return p, Result{Code: CodeArchiveInvalid, Entry: raw, Error: fmt.Sprintf(
 				"%s declares an impossible size", raw)}
 		}
-		byName[name] = true
 		p.bytes += int64(f.UncompressedSize64)
 		// Anything the archive marks executable (a start.sh) stays executable;
 		// every other permission is the server's usual.
@@ -226,6 +231,15 @@ func planUnzip(entries []*zip.File) (unzipPlan, Result) {
 			perm = 0o755
 		}
 		p.files = append(p.files, zipFile{f: f, name: name, mode: perm})
+	}
+	// Sorted, a name the archive holds twice sits next to itself; a set of names
+	// would cost as much again as the entries for an archive of many small files.
+	sort.Slice(p.files, func(i, j int) bool { return p.files[i].name < p.files[j].name })
+	for i := 1; i < len(p.files); i++ {
+		if p.files[i].name == p.files[i-1].name {
+			return p, Result{Code: CodeArchiveInvalid, Entry: p.files[i].name, Error: fmt.Sprintf(
+				"%s appears in the archive twice", p.files[i].name)}
+		}
 	}
 	for _, zf := range p.files {
 		// cleanEntry already refused a rooted name; stopping at "/" as well keeps
@@ -248,7 +262,6 @@ func planUnzip(entries []*zip.File) (unzipPlan, Result) {
 	}
 	// A folder's name is a prefix of everything in it, and a prefix sorts first.
 	sort.Strings(p.dirs)
-	sort.Slice(p.files, func(i, j int) bool { return p.files[i].name < p.files[j].name })
 	return p, Result{}
 }
 
@@ -410,12 +423,19 @@ func extractOne(r *os.Root, at string, zf zipFile, count func(int)) Result {
 // whole; one it has is descended into. A file it has is first moved aside into
 // old, so undoing the journal puts it back.
 func placeAll(r *os.Root, dest, staged, old string, p unzipPlan, present, replaced map[string]bool) Result {
+	// Only the destination and the folders the server has are descended into;
+	// everything else moves with the folder it is in, so its name is not kept.
 	kids := map[string][]string{}
+	add := func(name string) {
+		if parent := path.Dir(name); parent == "." || present[parent] {
+			kids[parent] = append(kids[parent], name)
+		}
+	}
 	for _, d := range p.dirs {
-		kids[path.Dir(d)] = append(kids[path.Dir(d)], d)
+		add(d)
 	}
 	for _, zf := range p.files {
-		kids[path.Dir(zf.name)] = append(kids[path.Dir(zf.name)], zf.name)
+		add(zf.name)
 	}
 
 	type move struct{ from, to string }

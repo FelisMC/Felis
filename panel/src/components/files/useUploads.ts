@@ -3,7 +3,7 @@ import i18next from "i18next";
 import { api, humanizeError } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
 import type { FileOpError, ServerFileEntry } from "@/lib/types";
-import { joinPath } from "./names";
+import { joinPath, nameTooLong } from "./names";
 import { opErrorText } from "./opText";
 import { discardSession, forgetSession, sendInParts, watchOp } from "./sessionUpload";
 
@@ -187,6 +187,10 @@ export function useUploads(server: string, { onLanded, onOp, hold = false, free 
         retryable: false,
         landing: null,
       };
+      // The server would refuse it only after the bytes were sent.
+      if (nameTooLong(file.name)) {
+        return { ...base, state: "failed", error: t("upload_name_too_long") };
+      }
       const there = entries?.find((e) => e.name === file.name);
       if (there?.is_dir) {
         return { ...base, state: "failed", error: t("upload_folder_there") };

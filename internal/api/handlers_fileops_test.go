@@ -56,10 +56,19 @@ func sessionAnswer(t *testing.T, w *httptest.ResponseRecorder) fileSessionView {
 }
 
 // doPart sends one part with the Content-Length given, whatever the body's own
-// length: -1 sends none, and one past the body is a part cut short.
+// length: -1 sends none, and one past the body is a part cut short. Its
+// Content-Digest is that of the body.
 func doPart(h http.Handler, target, body string, length int64) *httptest.ResponseRecorder {
+	return doPartDigest(h, target, body, length, contentDigestOf(body))
+}
+
+// doPartDigest is doPart with the Content-Digest given; empty sends none.
+func doPartDigest(h http.Handler, target, body string, length int64, digest string) *httptest.ResponseRecorder {
 	r := httptest.NewRequest("PUT", target, strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/octet-stream")
+	if digest != "" {
+		r.Header.Set("Content-Digest", digest)
+	}
 	r.ContentLength = length
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
@@ -108,7 +117,10 @@ func TestFileUploadSession(t *testing.T) {
 		h := api.ExternalHandler()
 
 		s := beginSession(t, api, 10)
-		if len(s.ID) != 32 || s.Path != sessionPath || s.Size != 10 || s.Received != 0 || s.PartMaxBytes != fileedit.PartBytes {
+		// A new session lists its parts as [], which decodes non-nil; null would
+		// leave a client resuming with nothing to walk.
+		if len(s.ID) != 32 || s.Path != sessionPath || s.Size != 10 || s.Received != 0 || s.PartMaxBytes != fileedit.PartBytes ||
+			s.Parts == nil || len(s.Parts) != 0 {
 			t.Fatalf("begin = %+v", s)
 		}
 
@@ -129,8 +141,10 @@ func TestFileUploadSession(t *testing.T) {
 			t.Fatalf("early commit: code = %d calls = %d acquired %v (%s)", w.Code, files.calls, cl.acquired, w.Body.String())
 		}
 
-		if w := status(api, s.ID); w.Code != http.StatusOK || sessionAnswer(t, w) != (fileSessionView{
-			ID: s.ID, Path: sessionPath, Size: 10, Received: 5, PartMaxBytes: fileedit.PartBytes}) {
+		hello := sha256.Sum256([]byte("hello"))
+		if w := status(api, s.ID); w.Code != http.StatusOK || !reflect.DeepEqual(sessionAnswer(t, w), fileSessionView{
+			ID: s.ID, Path: sessionPath, Size: 10, Received: 5, PartMaxBytes: fileedit.PartBytes,
+			Parts: []filePartView{{Size: 5, SHA256: hex.EncodeToString(hello[:])}}}) {
 			t.Fatalf("status: code = %d (%s)", w.Code, w.Body.String())
 		}
 		if w := doPart(h, partAt(s.ID, 5), "world", 5); w.Code != http.StatusOK || sessionAnswer(t, w).Received != 10 {
@@ -172,11 +186,31 @@ func TestFileUploadSession(t *testing.T) {
 		if again := fetchStaged(api, src); again.Code != http.StatusNotFound {
 			t.Fatalf("second fetch: code = %d", again.Code)
 		}
-		// Served whole, so the session is gone and its file with it.
-		if w := status(api, s.ID); w.Code != http.StatusNotFound || decodeErr(t, w) != "upload_not_found" {
+		// Served whole, the session stays until the Job says the file landed: a
+		// Job that fails after its fetch leaves the upload to be committed again.
+		if w := status(api, s.ID); w.Code != http.StatusOK || sessionAnswer(t, w).Received != 10 {
 			t.Fatalf("status after the fetch: code = %d (%s)", w.Code, w.Body.String())
 		}
+		landed := func(token string) *httptest.ResponseRecorder {
+			return do(api.InternalHandler(), "DELETE", strings.TrimPrefix(src.URL, api.InternalBaseURL), "",
+				map[string]string{"Authorization": "Bearer " + token})
+		}
+		if w := landed(strings.Repeat("0", len(src.Token))); w.Code != http.StatusNotFound || decodeErr(t, w) != "not_found" {
+			t.Fatalf("landed with the wrong token: code = %d (%s)", w.Code, w.Body.String())
+		}
+		if w := status(api, s.ID); w.Code != http.StatusOK {
+			t.Fatalf("a wrong token let go of the session: code = %d (%s)", w.Code, w.Body.String())
+		}
+		if w := landed(src.Token); w.Code != http.StatusNoContent {
+			t.Fatalf("landed: code = %d (%s)", w.Code, w.Body.String())
+		}
+		if w := status(api, s.ID); w.Code != http.StatusNotFound || decodeErr(t, w) != "upload_not_found" {
+			t.Fatalf("status after it landed: code = %d (%s)", w.Code, w.Body.String())
+		}
 		stageEmpty(t, api)
+		if w := landed(src.Token); w.Code != http.StatusNotFound {
+			t.Fatalf("landed twice: code = %d (%s)", w.Code, w.Body.String())
+		}
 	})
 
 	t.Run("a Job that never fetched is committed again with a fresh token", func(t *testing.T) {
@@ -260,6 +294,32 @@ func TestFileUploadSession(t *testing.T) {
 		}
 	})
 
+	t.Run("a part changed on the way is refused and taken back", func(t *testing.T) {
+		api, _, _, _ := mkFiles(t)
+		api.External = staticExternal{p: fileOwner}
+		h := api.ExternalHandler()
+		s := beginSession(t, api, 10)
+		doPart(h, partAt(s.ID, 0), "hello", 5)
+		for _, c := range []struct {
+			name, digest, errCode string
+		}{
+			{"another part's digest", contentDigestOf("wor1d"), "digest_mismatch"},
+			{"no digest", "", "digest_required"},
+			{"a malformed digest", "sha-256=:bm90IGEgc3VtCg==:", "bad_digest"},
+		} {
+			w := doPartDigest(h, partAt(s.ID, 5), "world", 5, c.digest)
+			if w.Code != http.StatusBadRequest || decodeErr(t, w) != c.errCode {
+				t.Fatalf("%s: code = %d (%s), want 400 %s", c.name, w.Code, w.Body.String(), c.errCode)
+			}
+			if got := sessionAnswer(t, status(api, s.ID)); got.Received != 5 || len(got.Parts) != 1 {
+				t.Fatalf("%s: session after the refused part = %+v", c.name, got)
+			}
+		}
+		if w := doPart(h, partAt(s.ID, 5), "world", 5); w.Code != http.StatusOK || sessionAnswer(t, w).Received != 10 {
+			t.Fatalf("the part sent again: code = %d (%s)", w.Code, w.Body.String())
+		}
+	})
+
 	t.Run("a part cut short leaves the session where it was", func(t *testing.T) {
 		api, _, _, _ := mkFiles(t)
 		api.External = staticExternal{p: fileOwner}
@@ -283,6 +343,7 @@ func TestFileUploadSession(t *testing.T) {
 		go func() {
 			r := httptest.NewRequest("PUT", partAt(s.ID, 0), pr)
 			r.Header.Set("Content-Type", "application/octet-stream")
+			r.Header.Set("Content-Digest", contentDigestOf("abc"))
 			r.ContentLength = 3
 			w := httptest.NewRecorder()
 			h.ServeHTTP(w, r)
@@ -432,6 +493,8 @@ func TestFileUploadSession(t *testing.T) {
 			{"a path leaving the world", sessionsRoute + "?path=../a.jar", `{"size":3}`, nil, http.StatusBadRequest, "bad_path"},
 			{"an absolute path", sessionsRoute + "?path=/etc/a.jar", `{"size":3}`, nil, http.StatusBadRequest, "bad_path"},
 			{"the world folder itself", sessionsRoute + "?path=plugins/..", `{"size":3}`, nil, http.StatusBadRequest, "bad_path"},
+			{"a name longer than a folder entry holds", sessionsRoute + "?path=plugins/" + strings.Repeat("n", fileedit.NameMax-3) + ".jar", `{"size":3}`,
+				nil, http.StatusBadRequest, "bad_path"},
 			{"a staging disk at its floor", sessionsRoute + "?path=a.jar", `{"size":3}`,
 				func(a *API) { a.FileStage.MinFree = 1 }, http.StatusInsufficientStorage, "upload_staging_full"},
 			{"no stage", sessionsRoute + "?path=a.jar", `{"size":3}`,
@@ -456,6 +519,19 @@ func TestFileUploadSession(t *testing.T) {
 					stageEmpty(t, api)
 				}
 			})
+		}
+	})
+
+	t.Run("a name as long as a folder entry holds is taken", func(t *testing.T) {
+		api, _, _, _ := mkFiles(t)
+		api.External = staticExternal{p: fileOwner}
+		long := strings.Repeat("n", fileedit.NameMax-4) + ".jar"
+		w := do(api.ExternalHandler(), "POST", sessionsRoute+"?path=plugins/"+long, `{"size":3}`, jsonHeader)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("code = %d (%s), want 201", w.Code, w.Body.String())
+		}
+		if s := sessionAnswer(t, w); s.Path != "plugins/"+long {
+			t.Fatalf("path = %q", s.Path)
 		}
 	})
 
@@ -686,7 +762,9 @@ func TestFileOps(t *testing.T) {
 		deadline.Reason = "DeadlineExceeded"
 		killed := base("i", fileedit.OpUpload, fileedit.OpFailed)
 		killed.Reason = "BackoffLimitExceeded"
-		files.ops = []fileedit.OpState{running, unzipped, uploaded, exists, full, changed, unsafe, deadline, killed}
+		oom := base("j", fileedit.OpUnzip, fileedit.OpFailed)
+		oom.Reason = "OOMKilled"
+		files.ops = []fileedit.OpState{running, unzipped, uploaded, exists, full, changed, unsafe, deadline, killed, oom}
 
 		w := list(api)
 		if w.Code != http.StatusOK || files.gotServer != "survival" {
@@ -725,6 +803,8 @@ func TestFileOps(t *testing.T) {
 				"the file operation ran out of time (DeadlineExceeded); run it again", nil)),
 			op("i", "upload", "failed", failure("job_failed",
 				"the file operation stopped before it could report how it went (BackoffLimitExceeded); run it again", nil)),
+			op("j", "unzip", "failed", failure("job_failed",
+				"the file operation ran out of memory (OOMKilled); an archive of this many files has to be split into smaller ones", nil)),
 		}}
 		if got := fileAnswer(t, w); !reflect.DeepEqual(got, want) {
 			gotJSON, _ := json.MarshalIndent(got, "", " ")

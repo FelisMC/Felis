@@ -31,6 +31,14 @@ import (
 type fakeExporter struct {
 	reqs []worldexport.Request
 	err  error
+	// stopped receives each Job Stop is asked to delete; the sweep asks from
+	// a goroutine of its own.
+	stopped chan string
+}
+
+func (f *fakeExporter) Stop(_ context.Context, job string) error {
+	f.stopped <- job
+	return nil
 }
 
 func (f *fakeExporter) Start(_ context.Context, r worldexport.Request) (string, error) {
@@ -92,7 +100,7 @@ func exportFixture() (*API, *fakeRepo, *fakeCluster, *fakeExporter) {
 	for _, name := range []string{"survival", "gamma"} {
 		cl.byName[name] = &ServerInfo{Name: name, Phase: "Stopped", DesiredState: string(v1alpha1.DesiredStopped)}
 	}
-	ex := &fakeExporter{}
+	ex := &fakeExporter{stopped: make(chan string, 64)}
 	a := newTestAPI(repo, cl)
 	a.External = exportUsers
 	a.Exporter, a.InternalBaseURL = ex, exportBase
@@ -140,11 +148,15 @@ func waitExportReady(t *testing.T, h http.Handler, ticket, user string) {
 }
 
 // uploadExport serves the Job's PUT on the internal face in the background.
-func uploadExport(h http.Handler, id, token string, body io.Reader) <-chan *httptest.ResponseRecorder {
+// digest, when set, is the trailer the Job sends once its body has ended.
+func uploadExport(h http.Handler, id, token string, body io.Reader, digest string) <-chan *httptest.ResponseRecorder {
 	out := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		r := httptest.NewRequest("PUT", "/api/v1/internal/exports/"+id, body)
 		r.Header.Set("Authorization", "Bearer "+token)
+		if digest != "" {
+			r.Trailer = http.Header{worldexport.DigestTrailer: {digest}}
+		}
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)
 		out <- w
@@ -167,6 +179,18 @@ func awaitUpload(t *testing.T, up <-chan *httptest.ResponseRecorder) *httptest.R
 // claimed the export by mistake would block on the parked body, and an upload
 // let in by mistake would wait for a browser, so either fails the test after a
 // bound instead of hanging it.
+// awaitStop returns the next Job the sweep asked to delete.
+func awaitStop(t *testing.T, ex *fakeExporter) string {
+	t.Helper()
+	select {
+	case job := <-ex.stopped:
+		return job
+	case <-time.After(5 * time.Second):
+		t.Fatal("no Job was stopped")
+		return ""
+	}
+}
+
 func doSoon(t *testing.T, h http.Handler, method, path, body string, headers map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 	out := make(chan *httptest.ResponseRecorder, 1)
@@ -341,7 +365,7 @@ func TestExportWorldGate(t *testing.T) {
 		w := do(a.ExternalHandler(), "POST", worldPath, "", as("admin1"))
 		var raw map[string]map[string]string
 		_ = json.Unmarshal(w.Body.Bytes(), &raw)
-		if want := "a world export is running on this server's world; retry once it finishes"; w.Code != http.StatusConflict ||
+		if want := "a world export or file download is running on this server's world; retry once it finishes"; w.Code != http.StatusConflict ||
 			raw["error"]["code"] != "maintenance_in_progress" || raw["error"]["message"] != want {
 			t.Fatalf("busy = %d %s, want 409 %q", w.Code, w.Body.String(), want)
 		}
@@ -459,9 +483,17 @@ func TestExportRendezvous(t *testing.T) {
 		t.Fatalf("PUT to another id = %d", w.Code)
 	}
 
+	// A length that is no byte count is refused before the token is spent.
+	for _, bad := range []string{"-1", "12abc", "0x10"} {
+		if w := doSoon(t, in, "PUT", "/api/v1/internal/exports/"+job.ID, "x", map[string]string{
+			"Authorization": "Bearer " + job.Token, worldexport.LengthHeader: bad}); w.Code != http.StatusBadRequest || decodeErr(t, w) != "bad_request" {
+			t.Fatalf("PUT declaring %q bytes = %d %s", bad, w.Code, w.Body.String())
+		}
+	}
+
 	archive := randomBytes(3*exportCopyBuffer + 4321)
 	pr, pw := io.Pipe()
-	up := uploadExport(in, job.ID, job.Token, pr)
+	up := uploadExport(in, job.ID, job.Token, pr, contentDigestOf(string(archive)))
 	waitExportReady(t, ext, v.Ticket, "owner1")
 	if w := doSoon(t, in, "PUT", "/api/v1/internal/exports/"+job.ID, "x", map[string]string{"Authorization": "Bearer " + job.Token}); w.Code != http.StatusNotFound {
 		t.Fatalf("a second PUT with the spent token = %d, want 404", w.Code)
@@ -541,8 +573,44 @@ func TestExportExpiry(t *testing.T) {
 			t.Fatalf("past the pending TTL: %d %+v", code, s)
 		}
 		job := ex.reqs[0]
+		if got := awaitStop(t, ex); got != worldexport.JobName(job.Server, job.ID) {
+			t.Fatalf("stopped %q, want the export's own Job", got)
+		}
 		if w := doSoon(t, a.InternalHandler(), "PUT", "/api/v1/internal/exports/"+job.ID, "x", map[string]string{"Authorization": "Bearer " + job.Token}); w.Code != http.StatusNotFound {
 			t.Fatalf("a late Job's PUT = %d, want 404", w.Code)
+		}
+	})
+
+	// The owner closed the tab, so no route sweeps; felis-api's loop does.
+	t.Run("the loop stops a Job left pending, and only that one", func(t *testing.T) {
+		a, _, _, ex := exportFixture()
+		var clock atomic.Int64
+		clock.Store(1_700_000_000)
+		a.Now = func() time.Time { return time.Unix(clock.Load(), 0) }
+		ext := a.ExternalHandler()
+		beginExport(t, ext, worldPath, "owner1")
+		stuck := ex.reqs[0]
+		v := beginExport(t, ext, "/api/v1/servers/creative/backups/bk2/export", "admin1")
+		moving := ex.reqs[1]
+		uploadExport(a.InternalHandler(), moving.ID, moving.Token, strings.NewReader("archive"), contentDigestOf("archive"))
+		waitExportReady(t, ext, v.Ticket, "admin1")
+
+		clock.Add(int64(exportPendingTTL/time.Second) - 1)
+		a.ExpireExports()
+		select {
+		case job := <-ex.stopped:
+			t.Fatalf("stopped %s inside the pending TTL", job)
+		case <-time.After(50 * time.Millisecond):
+		}
+		clock.Add(1)
+		a.ExpireExports()
+		if got := awaitStop(t, ex); got != worldexport.JobName(stuck.Server, stuck.ID) {
+			t.Fatalf("stopped %q, want the Job that never connected", got)
+		}
+		select {
+		case job := <-ex.stopped:
+			t.Fatalf("also stopped %s, whose upload was waiting for its browser", job)
+		case <-time.After(50 * time.Millisecond):
 		}
 	})
 
@@ -553,7 +621,7 @@ func TestExportExpiry(t *testing.T) {
 		ext := a.ExternalHandler()
 		v := beginExport(t, ext, backupPath, "owner1")
 		job := ex.reqs[0]
-		w := awaitUpload(t, uploadExport(a.InternalHandler(), job.ID, job.Token, strings.NewReader("archive")))
+		w := awaitUpload(t, uploadExport(a.InternalHandler(), job.ID, job.Token, strings.NewReader("archive"), contentDigestOf("archive")))
 		if w.Code != http.StatusGone || decodeErr(t, w) != "export_expired" {
 			t.Fatalf("unclaimed upload = %d %s, want 410 export_expired", w.Code, w.Body.String())
 		}
@@ -639,12 +707,20 @@ func exportServers(t *testing.T, a *API) (ext, in *httptest.Server) {
 	return ext, in
 }
 
-func realUpload(t *testing.T, in *httptest.Server, job worldexport.Request, body io.Reader, size int64) <-chan *http.Response {
+// realUpload sends the Job's PUT as cmd/felis export does: chunked, with the
+// size when it is known (not -1) and, when set, digest as the trailer.
+func realUpload(t *testing.T, in *httptest.Server, job worldexport.Request, body io.Reader, size int64, digest string) <-chan *http.Response {
 	req, err := http.NewRequest("PUT", in.URL+"/api/v1/internal/exports/"+job.ID, body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.ContentLength = size
+	req.ContentLength = -1
+	if size >= 0 {
+		req.Header.Set(worldexport.LengthHeader, strconv.FormatInt(size, 10))
+	}
+	if digest != "" {
+		req.Trailer = http.Header{worldexport.DigestTrailer: {digest}}
+	}
 	req.Header.Set("Authorization", "Bearer "+job.Token)
 	out := make(chan *http.Response, 1)
 	go func() {
@@ -696,7 +772,7 @@ func TestExportStreamsWhatTheJobSends(t *testing.T) {
 		a, _, _, ex := exportFixture()
 		ext, in := exportServers(t, a)
 		v := beginExport(t, a.ExternalHandler(), backupPath, "owner1")
-		up := realUpload(t, in, ex.reqs[0], bytes.NewReader(archive), int64(len(archive)))
+		up := realUpload(t, in, ex.reqs[0], bytes.NewReader(archive), int64(len(archive)), contentDigestOf(string(archive)))
 		waitExportReady(t, a.ExternalHandler(), v.Ticket, "owner1")
 		resp, got, err := realDownload(ext, v.Ticket)
 		if resp == nil {
@@ -723,7 +799,7 @@ func TestExportStreamsWhatTheJobSends(t *testing.T) {
 			_, _ = pw.Write(archive[:len(archive)-100])
 			pw.CloseWithError(errors.New("the backup archive does not match the sha256 recorded when it was written"))
 		}()
-		up := realUpload(t, in, ex.reqs[0], pr, -1)
+		up := realUpload(t, in, ex.reqs[0], pr, -1, contentDigestOf(string(archive)))
 		waitExportReady(t, a.ExternalHandler(), v.Ticket, "owner1")
 		resp, got, err := realDownload(ext, v.Ticket)
 		if resp == nil {
@@ -737,11 +813,46 @@ func TestExportStreamsWhatTheJobSends(t *testing.T) {
 		}
 	})
 
+	// The Job's trailer is the SHA-256 of what it sent. Bytes that arrive
+	// otherwise, or without it, or not as many as it declared, never reach the
+	// browser to their end, and the Job hears the download failed.
+	t.Run("bytes changed on the way never reach the browser whole", func(t *testing.T) {
+		flipped := bytes.Clone(archive)
+		flipped[len(flipped)/2] ^= 1
+		for _, c := range []struct {
+			name, digest string
+			size         int64
+		}{
+			{"another archive's digest", contentDigestOf(string(flipped)), int64(len(archive))},
+			{"no digest", "", -1},
+			{"a digest that is no SHA-256", "sha-256=:AAAA:", -1},
+			{"one byte more declared than sent", contentDigestOf(string(archive)), int64(len(archive)) + 1},
+		} {
+			t.Run(c.name, func(t *testing.T) {
+				a, _, _, ex := exportFixture()
+				ext, in := exportServers(t, a)
+				v := beginExport(t, a.ExternalHandler(), backupPath, "owner1")
+				up := realUpload(t, in, ex.reqs[0], bytes.NewReader(archive), c.size, c.digest)
+				waitExportReady(t, a.ExternalHandler(), v.Ticket, "owner1")
+				resp, got, err := realDownload(ext, v.Ticket)
+				if resp == nil {
+					t.Fatalf("download: %v", err)
+				}
+				if err == nil || len(got) >= len(archive) || !bytes.Equal(got, archive[:len(got)]) {
+					t.Fatalf("read %d of %d bytes, err %v; want an error short of the end", len(got), len(archive), err)
+				}
+				if upResp := awaitResponse(t, up); upResp.StatusCode != http.StatusGone {
+					t.Fatalf("the upload answered %d, want 410", upResp.StatusCode)
+				}
+			})
+		}
+	})
+
 	t.Run("a browser that leaves early is what the Job hears", func(t *testing.T) {
 		a, _, _, ex := exportFixture()
 		ext, _ := exportServers(t, a)
 		v := beginExport(t, a.ExternalHandler(), worldPath, "owner1")
-		up := uploadExport(a.InternalHandler(), ex.reqs[0].ID, ex.reqs[0].Token, io.LimitReader(zeros{}, 1<<30))
+		up := uploadExport(a.InternalHandler(), ex.reqs[0].ID, ex.reqs[0].Token, io.LimitReader(zeros{}, 1<<30), "")
 		waitExportReady(t, a.ExternalHandler(), v.Ticket, "owner1")
 		req, _ := http.NewRequest("GET", ext.URL+"/api/v1/exports/"+v.Ticket+"/download", nil)
 		req.Header.Set("X-Test-User", "owner1")
@@ -957,7 +1068,7 @@ func TestFileDownloadServed(t *testing.T) {
 			// Past what the server would buffer and measure itself when the
 			// handler sets no length.
 			body := randomBytes(64 << 10)
-			up := realUpload(t, in, ex.reqs[0], bytes.NewReader(body), tc.size)
+			up := realUpload(t, in, ex.reqs[0], bytes.NewReader(body), tc.size, contentDigestOf(string(body)))
 			waitExportReady(t, a.ExternalHandler(), v.Ticket, "owner1")
 			resp, got, err := realDownload(ext, v.Ticket)
 			if resp == nil || err != nil || !bytes.Equal(got, body) {
@@ -1015,7 +1126,7 @@ func TestExportUploadPace(t *testing.T) {
 			_, _ = pw.Write(archive[1000:])
 			pw.Close()
 		}()
-		up := realUpload(t, in, ex.reqs[0], pr, -1)
+		up := realUpload(t, in, ex.reqs[0], pr, -1, contentDigestOf(string(archive)))
 		waitExportReady(t, a.ExternalHandler(), v.Ticket, "owner1")
 		time.Sleep(3 * bodyGrace)
 		_, got, err := realDownload(ext, v.Ticket)
@@ -1034,7 +1145,7 @@ func TestExportUploadPace(t *testing.T) {
 		pr, pw := io.Pipe()
 		defer pw.Close()
 		go func() { _, _ = pw.Write(make([]byte, 1000)) }() // then nothing, ever
-		up := realUpload(t, in, ex.reqs[0], pr, -1)
+		up := realUpload(t, in, ex.reqs[0], pr, -1, "")
 		waitExportReady(t, a.ExternalHandler(), v.Ticket, "owner1")
 		done := make(chan error, 1)
 		go func() { _, _, err := realDownload(ext, v.Ticket); done <- err }()
@@ -1054,7 +1165,7 @@ func TestExportUploadPace(t *testing.T) {
 		a, _, _, ex := exportFixture()
 		ext, in := exportServers(t, a)
 		v := beginExport(t, a.ExternalHandler(), worldPath, "owner1")
-		realUpload(t, in, ex.reqs[0], io.LimitReader(zeros{}, 1<<30), -1)
+		realUpload(t, in, ex.reqs[0], io.LimitReader(zeros{}, 1<<30), -1, "")
 		waitExportReady(t, a.ExternalHandler(), v.Ticket, "owner1")
 		req, _ := http.NewRequest("GET", ext.URL+"/api/v1/exports/"+v.Ticket+"/download", nil)
 		req.Header.Set("X-Test-User", "owner1")

@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { createHash } from "node:crypto";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { FileOp, FileUploadSession } from "@/lib/types";
 import { MAX_ATTEMPTS } from "@/lib/contextUpload";
@@ -29,14 +30,26 @@ vi.mock("@/lib/api", async (importOriginal) => {
 const KEY = "felis-file-upload:lobby:world.zip";
 const PART = 4;
 const NOW = 1_000_000_000;
+const BODY = "0123456789";
 
 // A 10-byte file sent in parts of 4: offsets 0, 4 and 8.
-function file(body = "0123456789", modified = 111) {
+function file(body = BODY, modified = 111) {
   return new File([body], "world.zip", { lastModified: modified });
 }
 
+// The parts a server holding the first `received` bytes of body lists, as
+// they went up: PART bytes each, the last one short, hashed by Node.
+function partsOf(received: number, body = BODY) {
+  const parts: FileUploadSession["parts"] = [];
+  for (let at = 0; at < received; at += PART) {
+    const end = Math.min(at + PART, received);
+    parts.push({ size: end - at, sha256: createHash("sha256").update(body.slice(at, end)).digest("hex") });
+  }
+  return parts;
+}
+
 function session(received: number, over: Partial<FileUploadSession> = {}): FileUploadSession {
-  return { id: "s1", path: "world.zip", size: 10, received, part_max_bytes: PART, ...over };
+  return { id: "s1", path: "world.zip", size: 10, received, part_max_bytes: PART, parts: partsOf(received), ...over };
 }
 
 function op(over: Partial<FileOp> = {}): FileOp {
@@ -132,6 +145,75 @@ describe("sendInParts", () => {
     expect(mocks.beginServerFileUpload).not.toHaveBeenCalled();
     expect(offsets()).toEqual([8]);
     expect(mocks.commitServerFileUpload.mock.calls).toEqual([["lobby", "s7", false]]);
+  });
+
+  it("hashes the parts a remembered session holds against the file before carrying on", async () => {
+    localStorage.setItem(KEY, JSON.stringify({ server: "lobby", path: "world.zip", id: "s7", size: 10, modified: 111, touched: 0 }));
+    mocks.getServerFileUpload.mockResolvedValue(session(8, { id: "s7" }));
+    const seen: number[] = [];
+
+    await sendInParts("lobby", "world.zip", file(), opts({ onProgress: (n) => seen.push(n) }));
+
+    // 4 and 8 as each held part checks out, 8 where the session stands, 10 sent.
+    expect(seen).toEqual([4, 8, 8, 10]);
+    expect(mocks.deleteServerFileUpload).not.toHaveBeenCalled();
+    expect(offsets()).toEqual([8]);
+  });
+
+  it.each([
+    ["a part of another file of the same name, size and time", partsOf(8, "abcd4567")],
+    ["a later part of another file", partsOf(8, "0123x567")],
+    ["fewer parts than the bytes it says it holds", partsOf(4)],
+  ])("gives back a remembered session holding %s, and starts the file over", async (_label, parts) => {
+    localStorage.setItem(KEY, JSON.stringify({ server: "lobby", path: "world.zip", id: "s7", size: 10, modified: 111, touched: 0 }));
+    mocks.getServerFileUpload.mockResolvedValue(session(8, { id: "s7", parts }));
+    mocks.deleteServerFileUpload.mockResolvedValue(null);
+
+    await sendInParts("lobby", "world.zip", file(), opts());
+
+    expect(mocks.deleteServerFileUpload.mock.calls).toEqual([["lobby", "s7"]]);
+    expect(mocks.beginServerFileUpload.mock.calls).toEqual([["lobby", "world.zip", 10]]);
+    expect(offsets()).toEqual([0, 4, 8]);
+    expect(mocks.commitServerFileUpload.mock.calls).toEqual([["lobby", "s1", false]]);
+    expect(stored().id).toBe("s1");
+  });
+
+  it("stops while hashing what a remembered session holds, and keeps it for later", async () => {
+    localStorage.setItem(KEY, JSON.stringify({ server: "lobby", path: "world.zip", id: "s7", size: 10, modified: 111, touched: 0 }));
+    const ctrl = new AbortController();
+    mocks.getServerFileUpload.mockImplementation(async () => {
+      ctrl.abort();
+      return session(8, { id: "s7" });
+    });
+
+    await expect(sendInParts("lobby", "world.zip", file(), opts({ signal: ctrl.signal }))).rejects.toMatchObject({
+      name: "AbortError",
+    });
+
+    expect(offsets()).toEqual([]);
+    expect(mocks.deleteServerFileUpload).not.toHaveBeenCalled();
+    expect(stored().id).toBe("s7");
+  });
+
+  it("sends a part changed on the way again, hashing none of the parts already known", async () => {
+    let first = true;
+    mocks.putServerFileUploadPart.mockImplementation(async (_n: string, id: string, offset: number, part: Blob) => {
+      if (offset === 4 && first) {
+        first = false;
+        throw { status: 400, code: "digest_mismatch", message: "" };
+      }
+      return session(offset + part.size, { id });
+    });
+    mocks.getServerFileUpload.mockResolvedValue(session(4));
+    const seen: number[] = [];
+
+    await sendInParts("lobby", "world.zip", file(), opts({ onProgress: (n) => seen.push(n) }));
+
+    expect(offsets()).toEqual([0, 4, 4, 8]);
+    expect(sleep.mock.calls.map((c) => c[0])).toEqual([1000]);
+    // No 4 from hashing the first part again: this run sent it.
+    expect(seen).toEqual([0, 4, 4, 8, 10]);
+    expect(mocks.commitServerFileUpload.mock.calls).toEqual([["lobby", "s1", false]]);
   });
 
   it("commits at once when the server already holds the whole file", async () => {

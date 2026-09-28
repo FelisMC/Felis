@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -31,7 +32,7 @@ func diskStage(t *testing.T, free, total uint64, minFree float64) *Stage {
 }
 
 func appendString(s *Stage, user, server, id string, offset int64, part string) (Session, error) {
-	return s.Append(user, server, id, offset, strings.NewReader(part), int64(len(part)))
+	return s.Append(user, server, id, offset, strings.NewReader(part), int64(len(part)), sumOf(part))
 }
 
 func readStaged(t *testing.T, s *Stage, id, token string) string {
@@ -51,8 +52,9 @@ func readStaged(t *testing.T, s *Stage, id, token string) string {
 	return string(b)
 }
 
-// TestSessionArrivesInParts: parts land in order, Seal hands the Job a token for
-// exactly those bytes, and Served deletes them.
+// TestSessionArrivesInParts: parts land in order and are listed with their
+// digests, Seal hands the Job a token for exactly those bytes, and they stay
+// until that Job reports them landed.
 func TestSessionArrivesInParts(t *testing.T) {
 	s := roomyStage(t)
 	const whole = "PK\x03\x04 first part, second part"
@@ -60,18 +62,23 @@ func TestSessionArrivesInParts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
-	if !hexID.MatchString(sess.ID) || sess != (Session{ID: sess.ID, Path: "plugins/big.jar", Size: int64(len(whole))}) {
+	if !hexID.MatchString(sess.ID) || !reflect.DeepEqual(sess, Session{ID: sess.ID, Path: "plugins/big.jar", Size: int64(len(whole))}) {
 		t.Fatalf("Begin = %+v", sess)
 	}
 	got, err := appendString(s, "u1", "survival", sess.ID, 0, whole[:16])
 	if err != nil || got.Received != 16 || got.Size != int64(len(whole)) {
 		t.Fatalf("first part: %+v, %v", got, err)
 	}
-	if at, err := s.Status("u1", "survival", sess.ID); err != nil || at.Received != 16 || at.Path != "plugins/big.jar" {
+	first := Part{Size: 16, SHA256: digest([]byte(whole[:16]))}
+	if at, err := s.Status("u1", "survival", sess.ID); err != nil || at.Received != 16 || at.Path != "plugins/big.jar" ||
+		!reflect.DeepEqual(at.Parts, []Part{first}) {
 		t.Fatalf("Status = %+v, %v", at, err)
 	}
 	if got, err = appendString(s, "u1", "survival", sess.ID, 16, whole[16:]); err != nil || got.Received != int64(len(whole)) {
 		t.Fatalf("second part: %+v, %v", got, err)
+	}
+	if want := []Part{first, {Size: int64(len(whole) - 16), SHA256: digest([]byte(whole[16:]))}}; !reflect.DeepEqual(got.Parts, want) {
+		t.Fatalf("parts = %+v, want %+v", got.Parts, want)
 	}
 
 	st, err := s.Seal("u1", "survival", sess.ID)
@@ -88,12 +95,28 @@ func TestSessionArrivesInParts(t *testing.T) {
 		t.Fatalf("second Open with the same token: err = %v, want ErrNotStaged", err)
 	}
 
-	s.Served(st.ID)
+	// Served whole, and still here: the Job has yet to check the bytes and put
+	// them in place, and a Job that fails at either is started again on them.
+	if at, err := s.Status("u1", "survival", sess.ID); err != nil || at.Received != int64(len(whole)) {
+		t.Fatalf("Status once served: %+v, %v", at, err)
+	}
+	if err := s.Landed(st.ID, strings.Repeat("0", 64)); !errors.Is(err, ErrNotStaged) {
+		t.Fatalf("Landed with a wrong token: err = %v, want ErrNotStaged", err)
+	}
+	if names := stagedNames(t, s); len(names) != 1 {
+		t.Fatalf("after a wrong token: %v", names)
+	}
+	if err := s.Landed(st.ID, st.Token); err != nil {
+		t.Fatalf("Landed: %v", err)
+	}
 	if names := stagedNames(t, s); len(names) != 0 {
-		t.Fatalf("after Served: %v", names)
+		t.Fatalf("after Landed: %v", names)
 	}
 	if _, err := s.Status("u1", "survival", sess.ID); !errors.Is(err, ErrNotStaged) {
-		t.Fatalf("Status after Served: err = %v, want ErrNotStaged", err)
+		t.Fatalf("Status after Landed: err = %v, want ErrNotStaged", err)
+	}
+	if err := s.Landed(st.ID, st.Token); !errors.Is(err, ErrNotStaged) {
+		t.Fatalf("Landed twice: err = %v, want ErrNotStaged", err)
 	}
 }
 
@@ -149,7 +172,7 @@ func TestSessionRefusesAPartThatDoesNotFit(t *testing.T) {
 	if _, err := appendString(s, "u1", "survival", sess.ID, 3, "defg"); !errors.Is(err, ErrPartTooLarge) {
 		t.Fatalf("past the declared size: err = %v, want ErrPartTooLarge", err)
 	}
-	if _, err := s.Append("u1", "survival", sess.ID, 3, strings.NewReader(""), -1); !errors.Is(err, ErrPartTooLarge) {
+	if _, err := s.Append("u1", "survival", sess.ID, 3, strings.NewReader(""), -1, sumOf("")); !errors.Is(err, ErrPartTooLarge) {
 		t.Fatalf("negative length: err = %v, want ErrPartTooLarge", err)
 	}
 	if at, err := appendString(s, "u1", "survival", sess.ID, 3, "def"); err != nil || at.Received != 6 {
@@ -160,21 +183,24 @@ func TestSessionRefusesAPartThatDoesNotFit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Append("u1", "survival", big.ID, 0, strings.NewReader(""), PartBytes+1); !errors.Is(err, ErrPartTooLarge) {
+	if _, err := s.Append("u1", "survival", big.ID, 0, strings.NewReader(""), PartBytes+1, sumOf("")); !errors.Is(err, ErrPartTooLarge) {
 		t.Fatalf("a part over PartBytes: err = %v, want ErrPartTooLarge", err)
 	}
 }
 
-// A part that breaks or runs long leaves the session as it was: the file is cut
-// back and the digest forgets it, so the resent part makes the right file.
+// A part that breaks, runs long or does not match its digest leaves the session
+// as it was: the file is cut back and the digest forgets it, so the resent part
+// makes the right file.
 func TestSessionRollsBackAFailedPart(t *testing.T) {
 	for name, tc := range map[string]struct {
-		body  io.Reader
-		short bool
+		body io.Reader
+		want error // nil: any other failure
 	}{
-		"breaks":    {io.MultiReader(strings.NewReader("XY"), errReader{io.ErrUnexpectedEOF}), true},
-		"ends":      {strings.NewReader("XY"), true},
-		"runs long": {strings.NewReader("XYZWV"), false},
+		"breaks":    {io.MultiReader(strings.NewReader("XY"), errReader{io.ErrUnexpectedEOF}), ErrShortUpload},
+		"ends":      {strings.NewReader("XY"), ErrShortUpload},
+		"runs long": {strings.NewReader("XYZWV"), nil},
+		// Four bytes, as declared, that are not the four the digest was made of.
+		"changed on the way": {strings.NewReader("dXfg"), ErrDigestMismatch},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := roomyStage(t)
@@ -185,9 +211,13 @@ func TestSessionRollsBackAFailedPart(t *testing.T) {
 			if _, err := appendString(s, "u1", "survival", sess.ID, 0, "abc"); err != nil {
 				t.Fatal(err)
 			}
-			at, err := s.Append("u1", "survival", sess.ID, 3, tc.body, 4)
-			if err == nil || errors.Is(err, ErrShortUpload) != tc.short || at.Received != 3 {
-				t.Fatalf("%+v, err = %v; want a failure at 3 (short = %v)", at, err, tc.short)
+			at, err := s.Append("u1", "survival", sess.ID, 3, tc.body, 4, sumOf("defg"))
+			kind := tc.want
+			if kind == nil {
+				kind = ErrShortUpload // must not be it
+			}
+			if err == nil || errors.Is(err, kind) != (tc.want != nil) || at.Received != 3 || len(at.Parts) != 1 {
+				t.Fatalf("%+v, err = %v; want a failure at 3 (%v)", at, err, tc.want)
 			}
 			info, err := os.Stat(filepath.Join(s.Dir, stagedNames(t, s)[0]))
 			if err != nil || info.Size() != 3 {
@@ -220,7 +250,7 @@ func TestSessionIsBusyWhileAPartArrives(t *testing.T) {
 	pr, pw := io.Pipe()
 	done := make(chan error, 1)
 	go func() {
-		_, err := s.Append("u1", "survival", sess.ID, 0, pr, 4)
+		_, err := s.Append("u1", "survival", sess.ID, 0, pr, 4, sumOf("abcd"))
 		done <- err
 	}()
 	// The write returns once Append is copying, which is after it marked busy.
@@ -309,16 +339,61 @@ func TestSessionSealArmsOneFetch(t *testing.T) {
 	}
 }
 
-// Served deletes only sessions: an upload staged by Put belongs to the release
-// func Put returned.
-func TestServedLeavesPutAlone(t *testing.T) {
+// Only the token the latest Seal minted reports a session landed: a Job an
+// earlier commit started changes nothing, and neither does anyone before the
+// first Seal.
+func TestLandedTakesTheLatestToken(t *testing.T) {
 	s := roomyStage(t)
-	st, release, err := s.Put(strings.NewReader("abc"), 3)
+	sess, err := s.Begin("u1", "survival", "a.zip", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appendString(s, "u1", "survival", sess.ID, 0, "abcd"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Landed(sess.ID, ""); !errors.Is(err, ErrNotStaged) {
+		t.Fatalf("Landed before any Seal: err = %v, want ErrNotStaged", err)
+	}
+	first, err := s.Seal("u1", "survival", sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readStaged(t, s, sess.ID, first.Token)
+	second, err := s.Seal("u1", "survival", sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Landed(sess.ID, first.Token); !errors.Is(err, ErrNotStaged) {
+		t.Fatalf("the replaced token: err = %v, want ErrNotStaged", err)
+	}
+	if _, err := s.Status("u1", "survival", sess.ID); err != nil {
+		t.Fatalf("after the replaced token: %v", err)
+	}
+	// Not yet fetched with it, and it still says so: the Job holds the token
+	// whatever became of its fetch.
+	if err := s.Landed(sess.ID, second.Token); err != nil {
+		t.Fatalf("the latest token: %v", err)
+	}
+	if names := stagedNames(t, s); len(names) != 0 {
+		t.Fatalf("after Landed: %v", names)
+	}
+}
+
+// An upload staged by Put answers Landed to its own token and is left to the
+// release func Put returned.
+func TestLandedLeavesPutAlone(t *testing.T) {
+	s := roomyStage(t)
+	st, release, err := s.Put(strings.NewReader("abc"), 3, sumOf("abc"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer release()
-	s.Served(st.ID)
+	if err := s.Landed(st.ID, strings.Repeat("0", 64)); !errors.Is(err, ErrNotStaged) {
+		t.Fatalf("a wrong token: err = %v, want ErrNotStaged", err)
+	}
+	if err := s.Landed(st.ID, st.Token); err != nil {
+		t.Fatalf("Landed: %v", err)
+	}
 	if body := readStaged(t, s, st.ID, st.Token); body != "abc" {
 		t.Fatalf("served %q", body)
 	}

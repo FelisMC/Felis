@@ -57,6 +57,7 @@ func cmdFiles(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "felis files: --op is required")
 		return 2
 	}
+	limitHeapToCgroup()
 	req := fileedit.Request{
 		Op: *op, Path: *path, To: *to, Expect: *expect, CreateOnly: *createOnly, Overwrite: *overwrite,
 	}
@@ -86,6 +87,13 @@ func cmdFiles(args []string, stdout, stderr io.Writer) int {
 		req.Upload = &fileedit.Upload{
 			Size: *size, SHA256: *sum,
 			Open: func() (io.ReadCloser, error) { return fetchUpload(ctx, *sourceURL, token) },
+			Landed: func() {
+				if err := reportLanded(ctx, *sourceURL, token); err != nil {
+					// The file is in place; felis-api drops its copy when it
+					// has sat idle long enough, and the panel cancels it too.
+					fmt.Fprintf(stderr, "felis files: tell felis-api the upload landed: %v\n", err)
+				}
+			},
 		}
 	}
 	// An upload or an unzip (the only ops that report progress) can run long
@@ -112,7 +120,7 @@ func cmdFiles(args []string, stdout, stderr io.Writer) int {
 // fetchUpload opens the staged upload on felis-api's internal face. There is no
 // retry: the token opens the upload once (fileedit.Stage), so a second attempt
 // could only be refused, and the caller retries the failed Job whole (a file
-// sent in parts stays staged until it has been served whole once, so that retry
+// sent in parts stays staged until its Job reports it landed, so that retry
 // does not send it again). Redirects are refused because the request carries the
 // token and the internal face never redirects; the header timeout catches a
 // wedged endpoint, and the Job's activeDeadlineSeconds bounds the body.
@@ -135,4 +143,30 @@ func fetchUpload(ctx context.Context, url, token string) (io.ReadCloser, error) 
 		return nil, fmt.Errorf("GET returned %s", resp.Status)
 	}
 	return resp.Body, nil
+}
+
+// reportLanded tells felis-api the upload's file is in place (DELETE on the URL
+// it was fetched from, with the same token), so it deletes the copy it staged.
+// One try: the file has landed whatever the answer, and a copy nobody deletes
+// is dropped once it has sat idle for fileedit.SessionIdle.
+func reportLanded(ctx context.Context, url, token string) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	client := &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("DELETE returned %s", resp.Status)
+	}
+	return nil
 }

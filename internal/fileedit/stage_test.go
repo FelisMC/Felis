@@ -1,6 +1,7 @@
 package fileedit
 
 import (
+	"crypto/sha256"
 	"errors"
 	"io"
 	"os"
@@ -39,6 +40,12 @@ func stagedNames(t *testing.T, s *Stage) []string {
 	return names
 }
 
+// sumOf is the SHA-256 a client sends with s.
+func sumOf(s string) []byte {
+	sum := sha256.Sum256([]byte(s))
+	return sum[:]
+}
+
 var hexID = regexp.MustCompile(`^[0-9a-f]{32}$`)
 var hexToken = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
@@ -47,7 +54,7 @@ var hexToken = regexp.MustCompile(`^[0-9a-f]{64}$`)
 func TestStageOpensOnce(t *testing.T) {
 	s := roomyStage(t)
 	const body = "PK\x03\x04 staged"
-	st, release, err := s.Put(strings.NewReader(body), int64(len(body)))
+	st, release, err := s.Put(strings.NewReader(body), int64(len(body)), sumOf(body))
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -55,7 +62,7 @@ func TestStageOpensOnce(t *testing.T) {
 		st.Size != int64(len(body)) || st.SHA256 != digest([]byte(body)) {
 		t.Fatalf("staged = %+v", st)
 	}
-	other, releaseOther, err := s.Put(strings.NewReader(body), int64(len(body)))
+	other, releaseOther, err := s.Put(strings.NewReader(body), int64(len(body)), sumOf(body))
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -104,7 +111,7 @@ func TestStageOpensOnce(t *testing.T) {
 // is readable by anyone but felis-api's own uid.
 func TestStageIsPrivate(t *testing.T) {
 	s := roomyStage(t)
-	_, release, err := s.Put(strings.NewReader("x"), 1)
+	_, release, err := s.Put(strings.NewReader("x"), 1, sumOf("x"))
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -120,13 +127,14 @@ func TestStageIsPrivate(t *testing.T) {
 	}
 }
 
-// eofReader serves body and records whether it was read to its end.
+// eofReader serves r and records whether it was read at all, and to its end.
 type eofReader struct {
-	r      io.Reader
-	hitEOF bool
+	r            io.Reader
+	read, hitEOF bool
 }
 
 func (e *eofReader) Read(p []byte) (int, error) {
+	e.read = true
 	n, err := e.r.Read(p)
 	if err == io.EOF {
 		e.hitEOF = true
@@ -140,13 +148,44 @@ func (e *eofReader) Read(p []byte) (int, error) {
 func TestStagePutReadsToTheEnd(t *testing.T) {
 	s := roomyStage(t)
 	body := &eofReader{r: strings.NewReader("abc")}
-	_, release, err := s.Put(body, 3)
+	_, release, err := s.Put(body, 3, sumOf("abc"))
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	defer release()
 	if !body.hitEOF {
 		t.Fatal("Put stopped at the declared size without reading the end of the body")
+	}
+}
+
+// Bytes that do not hash to the digest they came with were changed on the way:
+// nothing is staged and their room is given back. Without a digest the body is
+// not read at all.
+func TestStageChecksTheDigest(t *testing.T) {
+	stubStatfs(t, 1000, 1200) // floor 600 at MinFree 0.5: room for 400
+	s := &Stage{Dir: t.TempDir(), MinFree: 0.5}
+	body := strings.Repeat("x", 400)
+	_, _, err := s.Put(strings.NewReader(body), 400, sumOf(strings.Repeat("y", 400)))
+	if !errors.Is(err, ErrDigestMismatch) {
+		t.Fatalf("a wrong digest: err = %v, want ErrDigestMismatch", err)
+	}
+	if names := stagedNames(t, s); len(names) != 0 {
+		t.Fatalf("left behind: %v", names)
+	}
+	st, release, err := s.Put(strings.NewReader(body), 400, sumOf(body))
+	if err != nil {
+		t.Fatalf("the same bytes with their digest, in the room the refused ones held: %v", err)
+	}
+	defer release()
+	if st.SHA256 != digest([]byte(body)) {
+		t.Fatalf("staged %+v", st)
+	}
+
+	for name, want := range map[string][]byte{"none": nil, "too short": sumOf("x")[:31]} {
+		unread := &eofReader{r: strings.NewReader("abc")}
+		if _, _, err := roomyStage(t).Put(unread, 3, want); !errors.Is(err, ErrNoDigest) || unread.read {
+			t.Errorf("%s: err = %v, body read = %v; want ErrNoDigest before any read", name, err, unread.read)
+		}
 	}
 }
 
@@ -164,7 +203,7 @@ func TestStageRefusesABodyOfTheWrongLength(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := roomyStage(t)
-			_, release, err := s.Put(tc.body, tc.size)
+			_, release, err := s.Put(tc.body, tc.size, sumOf(""))
 			if err == nil {
 				release()
 				t.Fatal("Put accepted it")
@@ -177,7 +216,7 @@ func TestStageRefusesABodyOfTheWrongLength(t *testing.T) {
 			}
 		})
 	}
-	if _, _, err := roomyStage(t).Put(strings.NewReader(""), -1); err == nil {
+	if _, _, err := roomyStage(t).Put(strings.NewReader(""), -1, sumOf("")); err == nil {
 		t.Fatal("a negative size was accepted")
 	}
 }
@@ -186,7 +225,7 @@ func TestStageRefusesABodyOfTheWrongLength(t *testing.T) {
 // MinFree of the disk free, counting uploads still arriving.
 func TestStageKeepsItsFloor(t *testing.T) {
 	put := func(s *Stage, size int64) error {
-		_, release, err := s.Put(strings.NewReader(strings.Repeat("x", int(size))), size)
+		_, release, err := s.Put(strings.NewReader(strings.Repeat("x", int(size))), size, sumOf(strings.Repeat("x", int(size))))
 		if err == nil {
 			release()
 		}
@@ -231,7 +270,7 @@ func TestStageKeepsItsFloor(t *testing.T) {
 		pr, pw := io.Pipe()
 		done := make(chan error, 1)
 		go func() {
-			_, release, err := s.Put(pr, 300)
+			_, release, err := s.Put(pr, 300, sumOf(strings.Repeat("x", 300)))
 			if err == nil {
 				release()
 			}
@@ -271,7 +310,7 @@ func TestStageSweep(t *testing.T) {
 	if names := stagedNames(t, s); len(names) != 0 {
 		t.Fatalf("after Sweep: %v", names)
 	}
-	if _, release, err := s.Put(strings.NewReader("x"), 1); err != nil {
+	if _, release, err := s.Put(strings.NewReader("x"), 1, sumOf("x")); err != nil {
 		t.Fatalf("Put after Sweep: %v", err)
 	} else {
 		release()

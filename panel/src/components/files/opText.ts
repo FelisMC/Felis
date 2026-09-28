@@ -14,9 +14,11 @@ export function opErrorText(op: FileOp["op"], e: FileOpError): string {
       return op === "upload"
         ? t("op_upload_exists")
         : t("op_unzip_conflicts", { count: e.conflict_count ?? e.conflicts?.length ?? 0 });
+    // A volume with nothing left leaves avail out of the error, the way the Job
+    // omits a zero.
     case "volume_full":
-      return e.need !== undefined && e.avail !== undefined
-        ? t("op_volume_full", { need: formatBytes(e.need), avail: formatBytes(e.avail) })
+      return e.need !== undefined
+        ? t("op_volume_full", { need: formatBytes(e.need), avail: formatBytes(e.avail ?? 0) })
         : humanizeError({ status: 0, code: e.code, message: e.message });
     case "archive_invalid":
       return entry ? t("archive_invalid_entry", { entry }) : t("archive_invalid");
@@ -24,9 +26,10 @@ export function opErrorText(op: FileOp["op"], e: FileOpError): string {
     case "archive_symlink":
     case "type_conflict":
       return t(e.code, { entry });
-    // The Job's own condition reason rides in the message; a deadline is the
-    // one worth its own words.
+    // The Job's reason rides in the message; a deadline and a memory kill are
+    // the ones worth their own words.
     case "job_failed":
+      if (e.message.includes("OOMKilled")) return op === "unzip" ? t("job_out_of_memory_unzip") : t("job_out_of_memory");
       return e.message.includes("DeadlineExceeded") ? t("job_timed_out") : t("job_failed");
     default:
       return humanizeError({ status: 0, code: e.code, message: e.message });

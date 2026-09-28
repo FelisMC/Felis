@@ -179,6 +179,9 @@ func TestLatestJobsExplainsFailures(t *testing.T) {
 			}}},
 		}
 	}
+	// Killed for memory mid-walk: the last line it printed says nothing of that.
+	oom := pod("c-1", "backup-survival-c", 4, 137, "archiving survival\n")
+	oom.Status.ContainerStatuses[0].State.Terminated.Reason = "OOMKilled"
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
 		failedJob("backup-survival-a", 1),
 		failedJob("backup-survival-b", 2),
@@ -186,6 +189,7 @@ func TestLatestJobsExplainsFailures(t *testing.T) {
 		pod("a-2", "backup-survival-a", 3, 1,
 			"archiving survival\nfelis backup: backup: not enough free disk for the archive: the world is 2.0 GiB\n"),
 		pod("b-1", "backup-survival-b", 2, 0, "done"),
+		failedJob("backup-survival-c", 4), oom,
 	).Build()
 
 	jobs, err := NewK8sJobStatus(c, "minecraft").LatestJobs(context.Background(), "survival")
@@ -201,5 +205,8 @@ func TestLatestJobsExplainsFailures(t *testing.T) {
 	}
 	if want := "Job has reached the specified backoff limit"; got["backup-survival-b"] != want {
 		t.Errorf("b: message = %q, want the condition text", got["backup-survival-b"])
+	}
+	if want := "the job ran out of memory and the system stopped it (OOMKilled)"; got["backup-survival-c"] != want {
+		t.Errorf("c: message = %q, want %q", got["backup-survival-c"], want)
 	}
 }

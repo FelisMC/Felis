@@ -73,8 +73,13 @@ func (f *fakeSubmissions) UploadStatus(_ context.Context, id, submittedBy string
 
 func (f *fakeSubmissions) UploadPart(_ context.Context, id, submittedBy string, offset int64, r io.Reader) (submit.UploadProgress, error) {
 	f.chunkID, f.chunkBy, f.partOffset = id, submittedBy, offset
-	b, _ := io.ReadAll(r)
+	b, err := io.ReadAll(r)
 	f.partBody = string(b)
+	if err != nil {
+		// A read that fails (a body changed on the way) keeps nothing, as in
+		// PartStore.
+		return submit.UploadProgress{}, err
+	}
 	return f.progress, f.chunkErr
 }
 
@@ -101,7 +106,10 @@ func (f *fakeSubmissions) UploadContext(_ context.Context, id, submittedBy strin
 	if f.uploadErr != nil {
 		return nil, f.uploadErr
 	}
-	n, _ := io.Copy(io.Discard, r)
+	n, err := io.Copy(io.Discard, r)
+	if err != nil {
+		return nil, err
+	}
 	f.uploadedN = n
 	return &submit.Submission{ID: id, SubmittedBy: submittedBy, Status: submit.StatusPendingReview}, nil
 }
@@ -235,7 +243,7 @@ func TestUploadSubmissionContextStreamsBody(t *testing.T) {
 	// A tiny gzip-magic-prefixed body stands in for a real context.tar.gz.
 	body := "\x1f\x8b\x08\x00 the modpack bytes"
 	w := do(api.ExternalHandler(), "POST", "/api/v1/me/submissions/sub-9/context", body,
-		map[string]string{"Content-Type": "application/gzip"})
+		map[string]string{"Content-Type": "application/gzip", "Content-Digest": contentDigestOf(body)})
 	if w.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200 (%s)", w.Code, w.Body.String())
 	}
@@ -255,7 +263,7 @@ func TestUploadSubmissionContextStreamsBody(t *testing.T) {
 func TestUploadSubmissionContextNotOwnedIs404(t *testing.T) {
 	fs := &fakeSubmissions{uploadErr: submit.ErrNotFound}
 	api := appSubAPI(fs)
-	w := do(api.ExternalHandler(), "POST", "/api/v1/me/submissions/sub-x/context", "\x1f\x8bdata", nil)
+	w := do(api.ExternalHandler(), "POST", "/api/v1/me/submissions/sub-x/context", "\x1f\x8bdata", map[string]string{"Content-Digest": contentDigestOf("\x1f\x8bdata")})
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("code = %d, want 404 (%s)", w.Code, w.Body.String())
 	}
@@ -265,7 +273,7 @@ func TestUploadSubmissionContextNotOwnedIs404(t *testing.T) {
 func TestUploadSubmissionContextAlreadyReviewedIs409(t *testing.T) {
 	fs := &fakeSubmissions{uploadErr: submit.ErrAlreadyReviewed}
 	api := appSubAPI(fs)
-	w := do(api.ExternalHandler(), "POST", "/api/v1/me/submissions/sub-9/context", "\x1f\x8bdata", nil)
+	w := do(api.ExternalHandler(), "POST", "/api/v1/me/submissions/sub-9/context", "\x1f\x8bdata", map[string]string{"Content-Digest": contentDigestOf("\x1f\x8bdata")})
 	if w.Code != http.StatusConflict {
 		t.Fatalf("code = %d, want 409 (%s)", w.Code, w.Body.String())
 	}
@@ -275,7 +283,7 @@ func TestUploadSubmissionContextAlreadyReviewedIs409(t *testing.T) {
 func TestUploadSubmissionContextBadFormatIs400(t *testing.T) {
 	fs := &fakeSubmissions{uploadErr: fmt.Errorf("%w: build context must be a gzip-compressed tarball (.tar.gz)", submit.ErrInvalid)}
 	api := appSubAPI(fs)
-	w := do(api.ExternalHandler(), "POST", "/api/v1/me/submissions/sub-9/context", "not gzip", nil)
+	w := do(api.ExternalHandler(), "POST", "/api/v1/me/submissions/sub-9/context", "not gzip", map[string]string{"Content-Digest": contentDigestOf("not gzip")})
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("code = %d, want 400 (%s)", w.Code, w.Body.String())
 	}
@@ -289,7 +297,7 @@ func TestUploadSubmissionContextBadFormatIs400(t *testing.T) {
 func TestUploadSubmissionContextNoTransportIs503(t *testing.T) {
 	fs := &fakeSubmissions{uploadErr: submit.ErrUploadsUnavailable}
 	api := appSubAPI(fs)
-	w := do(api.ExternalHandler(), "POST", "/api/v1/me/submissions/sub-9/context", "\x1f\x8bdata", nil)
+	w := do(api.ExternalHandler(), "POST", "/api/v1/me/submissions/sub-9/context", "\x1f\x8bdata", map[string]string{"Content-Digest": contentDigestOf("\x1f\x8bdata")})
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("code = %d, want 503 (%s)", w.Code, w.Body.String())
 	}
@@ -303,7 +311,7 @@ func TestUploadSubmissionContextNoTransportIs503(t *testing.T) {
 func TestUploadSubmissionContextWithoutServiceIs503(t *testing.T) {
 	app := appSubAPI(nil)
 	app.Submissions = nil
-	w := do(app.ExternalHandler(), "POST", "/api/v1/me/submissions/sub-9/context", "\x1f\x8bdata", nil)
+	w := do(app.ExternalHandler(), "POST", "/api/v1/me/submissions/sub-9/context", "\x1f\x8bdata", map[string]string{"Content-Digest": contentDigestOf("\x1f\x8bdata")})
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("code = %d, want 503 (%s)", w.Code, w.Body.String())
 	}
@@ -871,7 +879,7 @@ func TestSubmissionQuotaIs403(t *testing.T) {
 	})
 	t.Run("upload", func(t *testing.T) {
 		fs := &fakeSubmissions{uploadErr: fmt.Errorf("%w: exceeds your remaining storage allowance", submit.ErrQuotaExceeded)}
-		w := do(appSubAPI(fs).ExternalHandler(), "POST", "/api/v1/me/submissions/sub-9/context", "\x1f\x8bdata", nil)
+		w := do(appSubAPI(fs).ExternalHandler(), "POST", "/api/v1/me/submissions/sub-9/context", "\x1f\x8bdata", map[string]string{"Content-Digest": contentDigestOf("\x1f\x8bdata")})
 		if w.Code != http.StatusForbidden {
 			t.Fatalf("code = %d, want 403 (%s)", w.Code, w.Body.String())
 		}
@@ -939,11 +947,12 @@ func TestUploadSubmissionContextRateLimited(t *testing.T) {
 	api.SubmitUploadCooldown = time.Minute
 	eh := api.ExternalHandler()
 	body := "\x1f\x8b\x08\x00 the modpack bytes"
+	sent := map[string]string{"Content-Digest": contentDigestOf(body)}
 
-	if w := do(eh, "POST", "/api/v1/me/submissions/sub-9/context", body, nil); w.Code != http.StatusOK {
+	if w := do(eh, "POST", "/api/v1/me/submissions/sub-9/context", body, sent); w.Code != http.StatusOK {
 		t.Fatalf("first upload: code = %d, want 200 (%s)", w.Code, w.Body.String())
 	}
-	w := do(eh, "POST", "/api/v1/me/submissions/sub-9/context", body, nil)
+	w := do(eh, "POST", "/api/v1/me/submissions/sub-9/context", body, sent)
 	if w.Code != http.StatusTooManyRequests || decodeErr(t, w) != "submission_cooldown" {
 		t.Fatalf("immediate second upload: code = %d body %s, want 429 submission_cooldown", w.Code, w.Body.String())
 	}
@@ -955,11 +964,11 @@ func TestUploadSubmissionContextRateLimited(t *testing.T) {
 	api2.Now = func() time.Time { return clock }
 	api2.SubmitUploadCooldown = time.Minute
 	eh2 := api2.ExternalHandler()
-	if w := do(eh2, "POST", "/api/v1/me/submissions/sub-9/context", body, nil); w.Code != http.StatusServiceUnavailable {
+	if w := do(eh2, "POST", "/api/v1/me/submissions/sub-9/context", body, sent); w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("failed upload: code = %d, want 503", w.Code)
 	}
 	fs2.uploadErr = nil
-	if w := do(eh2, "POST", "/api/v1/me/submissions/sub-9/context", body, nil); w.Code != http.StatusOK {
+	if w := do(eh2, "POST", "/api/v1/me/submissions/sub-9/context", body, sent); w.Code != http.StatusOK {
 		t.Fatalf("retry at the same instant after failure: code = %d, want 200 (%s)", w.Code, w.Body.String())
 	}
 }

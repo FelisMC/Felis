@@ -397,16 +397,18 @@ func TestRename(t *testing.T) {
 	})
 }
 
-// fakeSource is an upload's bytes as the Job would fetch them.
+// fakeSource is an upload's bytes as the Job would fetch them. landed counts
+// the reports that they are in place.
 type fakeSource struct {
 	body    string
 	opened  int
+	landed  int
 	err     error // returned by Open
 	readErr error // returned by the body once it runs out
 }
 
 func (s *fakeSource) upload(size int64, sum string) *Upload {
-	return &Upload{Size: size, SHA256: sum, Open: func() (io.ReadCloser, error) {
+	return &Upload{Size: size, SHA256: sum, Landed: func() { s.landed++ }, Open: func() (io.ReadCloser, error) {
 		s.opened++
 		if s.err != nil {
 			return nil, s.err
@@ -434,9 +436,17 @@ func TestUpload(t *testing.T) {
 	t.Run("lands the bytes as a new file", func(t *testing.T) {
 		root, _ := worldRoot(t)
 		src := &fakeSource{body: jar}
-		res, err := send(t, root, "config/Geyser.jar", whole(src), false)
-		if err != nil || res.Code != "" {
-			t.Fatalf("result = %+v, %v", res, err)
+		u := whole(src)
+		// Reported once the file is in place, never before.
+		var there string
+		u.Landed = func() {
+			src.landed++
+			b, _ := os.ReadFile(filepath.Join(root, "config", "Geyser.jar"))
+			there = string(b)
+		}
+		res, err := send(t, root, "config/Geyser.jar", u, false)
+		if err != nil || res.Code != "" || src.landed != 1 || there != jar {
+			t.Fatalf("result = %+v, %v; landed %d with %q in place", res, err, src.landed, there)
 		}
 		if got := mustRead(t, filepath.Join(root, "config", "Geyser.jar")); got != jar {
 			t.Fatalf("content = %q", got)
@@ -454,8 +464,8 @@ func TestUpload(t *testing.T) {
 		for _, name := range []string{"server.properties", "dangling.jar"} {
 			src := &fakeSource{body: jar}
 			res, err := send(t, root, name, whole(src), false)
-			if err != nil || res.Code != CodeExists || src.opened != 0 {
-				t.Fatalf("%s: result = %+v, %v, opened %d; want exists and no fetch", name, res, err, src.opened)
+			if err != nil || res.Code != CodeExists || src.opened != 0 || src.landed != 0 {
+				t.Fatalf("%s: result = %+v, %v, opened %d, landed %d; want exists and no fetch", name, res, err, src.opened, src.landed)
 			}
 		}
 		if got := mustRead(t, filepath.Join(root, "server.properties")); got != "motd=hello\n" {
@@ -541,10 +551,11 @@ func TestUpload(t *testing.T) {
 		} {
 			t.Run(name, func(t *testing.T) {
 				root, _ := worldRoot(t)
-				res, err := send(t, root, "server.properties", u(&fakeSource{body: jar}), true)
+				src := &fakeSource{body: jar}
+				res, err := send(t, root, "server.properties", u(src), true)
 				var te *transferError
-				if !errors.As(err, &te) || res.Code != "" {
-					t.Fatalf("result = %+v, err = %v; want a transfer error", res, err)
+				if !errors.As(err, &te) || res.Code != "" || src.landed != 0 {
+					t.Fatalf("result = %+v, err = %v, landed %d; want a transfer error and no report", res, err, src.landed)
 				}
 				if got := mustRead(t, filepath.Join(root, "server.properties")); got != "motd=hello\n" {
 					t.Fatalf("server.properties became %q", got)
@@ -559,9 +570,11 @@ func TestUpload(t *testing.T) {
 		prev := syncWritten
 		syncWritten = func(*os.File) error { return syscall.ENOSPC }
 		defer func() { syncWritten = prev }()
-		res, err := send(t, root, "server.properties", whole(&fakeSource{body: jar}), true)
-		if err != nil || res.Code != CodeNoSpace {
-			t.Fatalf("result = %+v, %v; want no_space", res, err)
+		src := &fakeSource{body: jar}
+		res, err := send(t, root, "server.properties", whole(src), true)
+		// The bytes were fetched but never landed, so felis-api keeps them.
+		if err != nil || res.Code != CodeNoSpace || src.opened != 1 || src.landed != 0 {
+			t.Fatalf("result = %+v, %v, opened %d, landed %d; want no_space after a fetch and no report", res, err, src.opened, src.landed)
 		}
 		if got := mustRead(t, filepath.Join(root, "server.properties")); got != "motd=hello\n" {
 			t.Fatalf("server.properties became %q", got)

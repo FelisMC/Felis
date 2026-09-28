@@ -79,7 +79,21 @@ var (
 	// ErrNotStaged is an Open with an unknown id, a wrong token, or a spent one.
 	// They are one error on purpose: the internal face answers all three the same.
 	ErrNotStaged = errors.New("fileedit: no such staged upload")
+	// ErrNoDigest is bytes sent without the SHA-256 the client computed over
+	// them, so what arrived cannot be told apart from what was sent.
+	ErrNoDigest = errors.New("fileedit: the upload carries no SHA-256 digest")
+	// ErrDigestMismatch is bytes that do not hash to the digest they were sent
+	// with: they were changed on the way.
+	ErrDigestMismatch = errors.New("fileedit: the bytes that arrived do not match the digest they were sent with")
 )
+
+// checkDigest compares the digest of what arrived with the one it was sent with.
+func checkDigest(got, want []byte) error {
+	if subtle.ConstantTimeCompare(got, want) != 1 {
+		return fmt.Errorf("%w: they hash to %x, sent as %x", ErrDigestMismatch, got, want)
+	}
+	return nil
+}
 
 // statfs reports a filesystem's available and total bytes. A var so a test can
 // stage against a disk of a chosen size.
@@ -104,9 +118,16 @@ func (s *Stage) Sweep() error {
 // it by, plus the func that deletes it. body must end right after size bytes (an
 // HTTP body with that Content-Length does): Put reads to its end, which is also
 // what tells the server the body is done.
-func (s *Stage) Put(body io.Reader, size int64) (Staged, func(), error) {
+//
+// want is the SHA-256 the client computed over the bytes it sent (the request's
+// Content-Digest). Bytes that hash to anything else were changed on the way and
+// are refused with ErrDigestMismatch; nothing is staged without one.
+func (s *Stage) Put(body io.Reader, size int64, want []byte) (Staged, func(), error) {
 	if size < 0 {
 		return Staged{}, nil, fmt.Errorf("fileedit: an upload of %d bytes", size)
+	}
+	if len(want) != sha256.Size {
+		return Staged{}, nil, ErrNoDigest
 	}
 	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
 		return Staged{}, nil, fmt.Errorf("fileedit: create the upload stage: %w", err)
@@ -125,7 +146,11 @@ func (s *Stage) Put(body io.Reader, size int64) (Staged, func(), error) {
 	// One byte past size, so the read that finds the end happens here.
 	n, copyErr := io.Copy(io.MultiWriter(f, h), io.LimitReader(src, size+1))
 	closeErr := f.Close()
-	if err := stageFailure(src.err, copyErr, closeErr, n, size); err != nil {
+	err = stageFailure(src.err, copyErr, closeErr, n, size)
+	if err == nil {
+		err = checkDigest(h.Sum(nil), want)
+	}
+	if err != nil {
 		os.Remove(f.Name())
 		return Staged{}, nil, err
 	}

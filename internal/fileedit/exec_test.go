@@ -198,10 +198,15 @@ func TestExecuteHappyPath(t *testing.T) {
 			t.Fatalf("avail = %d, want it clamped to %d", res.Avail, int64(math.MaxInt64))
 		}
 
+		statfs = func(string) (uint64, uint64, error) { return 0, 99999, nil }
+		if res, _ := run(root, OpList, "config", nil, ""); res.Avail != 0 {
+			t.Fatalf("avail = %d on a full volume, want 0", res.Avail)
+		}
+
 		statfs = func(string) (uint64, uint64, error) { return 1, 1, errors.New("no statfs") }
 		res, err = run(root, OpList, "config", nil, "")
-		if err != nil || res.Code != "" || len(res.Entries) != 1 || res.Avail != 0 {
-			t.Fatalf("a volume that cannot be measured still lists, with no room reported: %v %+v", err, res)
+		if err != nil || res.Code != "" || len(res.Entries) != 1 || res.Avail != -1 {
+			t.Fatalf("a volume that cannot be measured still lists, with its room -1 (unknown): %v %+v", err, res)
 		}
 	})
 
@@ -239,7 +244,7 @@ func TestExecuteHappyPath(t *testing.T) {
 		if res, err := run(root, OpWrite, "ops.json", []byte("[]"), ""); err != nil || res.Code != "" {
 			t.Fatalf("creating a new file should succeed: %v / %+v", err, res)
 		}
-		if len(owned) != 1 || !strings.HasPrefix(owned[0], ".ops.json.felis-edit-") {
+		if len(owned) != 1 || !strings.HasPrefix(owned[0], ".felis-edit-") {
 			t.Errorf("files handed to the game uid = %v, want the one temporary sibling of ops.json", owned)
 		}
 		res, err := run(root, OpWrite, "nope/deep.txt", []byte("x"), "")
@@ -535,6 +540,18 @@ func TestWriteIsAtomic(t *testing.T) {
 			t.Fatalf("mode = %v, want 0600 kept", info.Mode().Perm())
 		}
 		assertNoTemporaries(t, root)
+	})
+
+	t.Run("a name as long as a folder allows is written", func(t *testing.T) {
+		long := strings.Repeat("n", NameMax-4) + ".yml"
+		res, err := Execute(root, Request{Op: OpWrite, Path: "config/" + long, Content: []byte("a: 1\n"), CreateOnly: true})
+		if err != nil || res.Code != "" {
+			t.Fatalf("write a %d-byte name: %v / %+v", len(long), err, res)
+		}
+		if b, _ := os.ReadFile(filepath.Join(root, "config", long)); string(b) != "a: 1\n" {
+			t.Fatalf("content = %q", b)
+		}
+		assertNoTemporaries(t, filepath.Join(root, "config"))
 	})
 
 	t.Run("a link inside the root is written through, not replaced", func(t *testing.T) {

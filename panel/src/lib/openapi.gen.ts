@@ -148,12 +148,16 @@ export interface paths {
         };
         /**
          * Stream one staged file upload to the Job landing it (one-time bearer token).
-         * @description PUT /api/v1/servers/{name}/files/upload stages the body on felis-api's disk and creates a Job to land it in the world volume; the Job fetches the bytes here. The Job holds no service token, so the route is public on the internal face and the bearer token minted with the upload is the whole check. The token opens its upload once. An unknown id, a wrong or missing token and a spent token are all the same 404, so the route says nothing about which uploads exist. An upload session committed through POST …/files/uploads/{id}/commit is fetched here the same way, under the session id; it stays staged until it has been sent whole once, so a Job that failed before then can be committed again.
+         * @description PUT /api/v1/servers/{name}/files/upload stages the body on felis-api's disk and creates a Job to land it in the world volume; the Job fetches the bytes here. The Job holds no service token, so the route is public on the internal face and the bearer token minted with the upload is the whole check. The token opens its upload once. An unknown id, a wrong or missing token and a spent token are all the same 404, so the route says nothing about which uploads exist. An upload session committed through POST …/files/uploads/{id}/commit is fetched here the same way, under the session id; it stays staged until its Job reports the file landed (DELETE), so a Job that failed at any point can be committed again.
          */
         get: operations["internalFileUpload"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * The Job reports a staged upload landed (the same one-time bearer token).
+         * @description Sent once the file is in place. An upload session is then dropped from felis-api's disk; a single-request upload goes when its request ends in any case. Only the token of the session's latest commit is taken. As for the fetch, every refusal is the same 404.
+         */
+        delete: operations["internalFileUploadLanded"];
         options?: never;
         head?: never;
         patch?: never;
@@ -169,7 +173,7 @@ export interface paths {
         get?: never;
         /**
          * Hand one export's archive over for download (one-time bearer token).
-         * @description The export Job PUTs the tar.gz here, chunked for a world and with its Content-Length for a backup. The Job holds no service token, so the route is public on the internal face and the bearer token minted with the export is the whole check; an unknown id, a wrong or missing token and a token already used are all the same 404. The request then waits, body unread, up to 90 seconds for the owner's browser to open the download, and is read at the browser's pace: the 16 KiB/s minimum body rate does not apply, and the body fails only after 2 minutes without a byte. It answers once the download has ended.
+         * @description The export Job PUTs the archive or file here, always chunked, with its size as X-Felis-Export-Length when it knows it and, once the body has ended, the SHA-256 of all it sent as the Content-Digest trailer (sha-256=:<base64>:). felis-api holds the last bytes back from the browser until the bytes it received number and hash as the Job said, so a body changed on the way, or one without the trailer, ends the download short and the browser reports it failed. The Job holds no service token, so the route is public on the internal face and the bearer token minted with the export is the whole check; an unknown id, a wrong or missing token and a token already used are all the same 404. The request then waits, body unread, up to 90 seconds for the owner's browser to open the download, and is read at the browser's pace: the 16 KiB/s minimum body rate does not apply, and the body fails only after 2 minutes without a byte. It answers once the download has ended.
          */
         put: operations["internalExportUpload"];
         post?: never;
@@ -1343,7 +1347,7 @@ export interface paths {
         };
         /**
          * Download a ready export (once, by the user who started it).
-         * @description The first request spends the ticket, whatever becomes of it. The archive streams as the Job sends it, with Content-Length when it is known; a download that cannot finish (the Job died, or a backup did not match its recorded sha256) is cut off, so the browser reports it failed. HEAD is refused, since it would spend the ticket on no body.
+         * @description The first request spends the ticket, whatever becomes of it. The archive streams as the Job sends it, with Content-Length when it is known; a download that cannot finish (the Job died, a backup did not match its recorded sha256, or the bytes did not hash to the SHA-256 the Job sent with them) is cut off before its last bytes, so the browser reports it failed. HEAD is refused, since it would spend the ticket on no body.
          */
         get: operations["exportDownload"];
         put?: never;
@@ -1492,7 +1496,7 @@ export interface paths {
         get?: never;
         /**
          * Upload a file into a server's world volume (owner-or-admin; server must be stopped).
-         * @description Lands the raw request body as the file at path, up to 64 MiB — a plugin jar, a datapack, a world region; a bigger file goes up as an upload session (POST …/files/uploads). Content-Length is required (411 length_required). An existing file is 409 file_exists unless overwrite=true; a folder at the path is 400 bad_path either way. The body is staged on felis-api's disk first and then fetched by the file Job with a one-time token, so the world lock is taken only after the body has arrived and a slow upload holds off no backup. The file lands atomically: a synced temporary sibling is checked against the staged size and SHA-256, then renamed into place, so a failed upload leaves the old file whole. Same stopped-gate and os.Root containment as a write. Audited as file.upload.
+         * @description Lands the raw request body as the file at path, up to 64 MiB — a plugin jar, a datapack, a world region; a bigger file goes up as an upload session (POST …/files/uploads). Content-Length is required (411 length_required). An existing file is 409 file_exists unless overwrite=true; a folder at the path is 400 bad_path either way. The body is staged on felis-api's disk first and then fetched by the file Job with a one-time token, so the world lock is taken only after the body has arrived and a slow upload holds off no backup. The file lands atomically: a synced temporary sibling is checked against the staged size and SHA-256, then renamed into place, so a failed upload leaves the old file whole. The body carries its SHA-256 as Content-Digest; felis-api checks it as the body arrives, and the Job checks the same digest again as it fetches the staged copy, so every hop between the browser and the world volume is verified. Same stopped-gate and os.Root containment as a write. Audited as file.upload.
          */
         put: operations["uploadServerFile"];
         post?: never;
@@ -1536,7 +1540,7 @@ export interface paths {
         get: operations["getServerFileUpload"];
         /**
          * Send one part of an upload session (owner-or-admin, the account that began it).
-         * @description The raw body is appended at offset, which must be where the session ends. Content-Length is required, and the part is taken whole or not at all: one cut short leaves the session where it was. Parts go one at a time (409 upload_busy while one arrives). Needs no stopped server, so starting the server midway costs only the commit's refusal until it is stopped again.
+         * @description The raw body is appended at offset, which must be where the session ends. Content-Length and the part's own Content-Digest are required, and the part is taken whole or not at all: one cut short, or one whose bytes do not hash to its digest, leaves the session where it was. Parts go one at a time (409 upload_busy while one arrives). Needs no stopped server, so starting the server midway costs only the commit's refusal until it is stopped again.
          */
         put: operations["putServerFileUploadPart"];
         post?: never;
@@ -2362,7 +2366,7 @@ export interface paths {
         put?: never;
         /**
          * Upload the modpack build context for your own pending submission (user side; user-directed lane over §16).
-         * @description The request body IS the raw gzip build context (context.tar.gz) — not JSON, not multipart — streamed to the platform-derived, id-namespaced location Kaniko reads via --context. The submitter is taken from the principal; a submission the caller does not own is reported as 404, so this endpoint cannot upload to or probe another user's submission. Only a pending_review submission accepts a context (409 otherwise), and one withdrawn or deleted while its context streams in answers 404 with the bytes discarded; a wrong-format or oversize body is rejected with 400 (the per-upload cap is [registry] context_max_bytes, 1 GiB by default; GET /api/v1/me/submissions/limits reports it so a client can check a file before sending it). This request carries the whole context, so behind the Cloudflare edge, whose proxy refuses bodies over 100 MB with its own HTML 413 before they reach the API, a larger context goes through the chunked upload at /api/v1/me/submissions/{id}/context/upload instead. An upload that would push the caller past their per-user stored-context budget is refused with 403 before the excess is persisted. Returns 503 when the deployment's context store has no implemented upload transport.
+         * @description The request body IS the raw gzip build context (context.tar.gz) — not JSON, not multipart — streamed to the platform-derived, id-namespaced location Kaniko reads via --context. The submitter is taken from the principal; a submission the caller does not own is reported as 404, so this endpoint cannot upload to or probe another user's submission. Only a pending_review submission accepts a context (409 otherwise), and one withdrawn or deleted while its context streams in answers 404 with the bytes discarded; a wrong-format or oversize body is rejected with 400 (the per-upload cap is [registry] context_max_bytes, 1 GiB by default; GET /api/v1/me/submissions/limits reports it so a client can check a file before sending it). This request carries the whole context, so behind the Cloudflare edge, whose proxy refuses bodies over 100 MB with its own HTML 413 before they reach the API, a larger context goes through the chunked upload at /api/v1/me/submissions/{id}/context/upload instead. An upload that would push the caller past their per-user stored-context budget is refused with 403 before the excess is persisted. The body's SHA-256 is required as Content-Digest; bytes that do not hash to it were changed on the way, and none of them replace the context stored before. Returns 503 when the deployment's context store has no implemented upload transport.
          */
         post: operations["uploadSubmissionContext"];
         delete?: never;
@@ -2385,7 +2389,7 @@ export interface paths {
         get: operations["getContextUpload"];
         /**
          * Append one part of your chunked context upload.
-         * @description The body is the part's raw bytes, at most part_max_bytes (32 MiB). offset is where they start: 0 starts the upload over, and anything else must equal the staged length, or the answer is 409 upload_offset_mismatch and the client reads GET for where to resume. The first part must open with the gzip magic (400). The staged total meets the same context cap (400) and storage budget (403) as a single upload. A part that breaks off is cut back off, so the staged bytes are always a prefix of the file. One request per upload at a time (409 upload_busy). Staged bytes untouched for 24 hours are deleted. The budget check reads blob sizes remembered for up to a minute; when a size has to be read and the uploads store does not answer, the answer is 503 uploads_store_unavailable with Retry-After, and the same part can be sent again.
+         * @description The body is the part's raw bytes, at most part_max_bytes (32 MiB). offset is where they start: 0 starts the upload over, and anything else must equal the staged length, or the answer is 409 upload_offset_mismatch and the client reads GET for where to resume. The first part must open with the gzip magic (400). The staged total meets the same context cap (400) and storage budget (403) as a single upload. A part that breaks off is cut back off, and so is one whose bytes do not hash to its Content-Digest, so the staged bytes are always a prefix of the file. One request per upload at a time (409 upload_busy). Staged bytes untouched for 24 hours are deleted. The budget check reads blob sizes remembered for up to a minute; when a size has to be read and the uploads store does not answer, the answer is 503 uploads_store_unavailable with Retry-After, and the same part can be sent again.
          */
         put: operations["putContextUploadPart"];
         post?: never;
@@ -3054,6 +3058,12 @@ export interface components {
              * @description The most one part may carry.
              */
             part_max_bytes: number;
+            /** @description The parts taken so far, in order, each with the SHA-256 it arrived with. A client resuming from a file it still holds hashes the same ranges and starts over when one differs. */
+            parts: {
+                /** Format: int64 */
+                size: number;
+                sha256: string;
+            }[];
         };
         StartFileOp: {
             /** @description Replace files already there. */
@@ -3817,12 +3827,32 @@ export interface operations {
             404: components["responses"]["NotFound"];
         };
     };
+    internalFileUploadLanded: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Bearer followed by the token the Job fetched the upload with. */
+                Authorization: string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: components["responses"]["NoContent"];
+            404: components["responses"]["NotFound"];
+        };
+    };
     internalExportUpload: {
         parameters: {
             query?: never;
             header: {
                 /** @description Bearer followed by the token minted with the export. */
                 Authorization: string;
+                /** @description The body's length in bytes, when the Job knows it; the download then carries it as Content-Length. */
+                "X-Felis-Export-Length"?: number;
             };
             path: {
                 id: string;
@@ -3836,6 +3866,15 @@ export interface operations {
         };
         responses: {
             204: components["responses"]["NoContent"];
+            /** @description X-Felis-Export-Length is not a byte count (bad_request); the token is not spent. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             404: components["responses"]["NotFound"];
             /** @description The backup did not match the sha256 recorded when it was written, and the download was aborted (backup_corrupt). */
             409: {
@@ -3846,7 +3885,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Nobody opened the download within 90 seconds, or the browser left before the archive ended (export_expired). */
+            /** @description Nobody opened the download within 90 seconds, the browser left before the archive ended, or what arrived did not number or hash as the Job declared, so the download was cut off (export_expired). */
             410: {
                 headers: {
                     [name: string]: unknown;
@@ -6800,7 +6839,7 @@ export interface operations {
                          * Format: int64
                          * @description Bytes free on the world volume
                          */
-                        free_bytes: number;
+                        free_bytes: number | null;
                         entries: {
                             name: string;
                             /** Format: int64 */
@@ -7325,7 +7364,10 @@ export interface operations {
                 /** @description true replaces an existing file, keeping its mode. Anything else refuses to. */
                 overwrite?: "true" | "false";
             };
-            header?: never;
+            header: {
+                /** @description The SHA-256 of the body as RFC 9530 sends it, sha-256=:<base64>:. Other algorithms listed beside it are ignored. Bytes that do not hash to it were changed on the way and are refused whole. */
+                "Content-Digest": string;
+            };
             path: {
                 name: string;
             };
@@ -7357,7 +7399,7 @@ export interface operations {
                     };
                 };
             };
-            /** @description Missing path, invalid server name, a folder or the world root at the path, a path that escapes the world root, or a body that ended before Content-Length bytes arrived (upload_incomplete). */
+            /** @description Missing path, invalid server name, a folder or the world root at the path, a path that escapes the world root, a body that ended before Content-Length bytes arrived (upload_incomplete), no Content-Digest (digest_required), a malformed one (bad_digest), or bytes that do not hash to it (digest_mismatch; nothing is staged, so send it again). */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -7558,7 +7600,10 @@ export interface operations {
                 /** @description The byte position the part starts at, the session's received. */
                 offset: number;
             };
-            header?: never;
+            header: {
+                /** @description The SHA-256 of the body as RFC 9530 sends it, sha-256=:<base64>:. Other algorithms listed beside it are ignored. Bytes that do not hash to it were changed on the way and are refused whole. */
+                "Content-Digest": string;
+            };
             path: {
                 name: string;
                 id: string;
@@ -7580,7 +7625,7 @@ export interface operations {
                     "application/json": components["schemas"]["FileUploadSession"];
                 };
             };
-            /** @description A missing or malformed offset (bad_request), a body that ended before its Content-Length (upload_incomplete), or a malformed server name (bad_name). */
+            /** @description A missing or malformed offset (bad_request), a body that ended before its Content-Length (upload_incomplete), no Content-Digest (digest_required), a malformed one (bad_digest), bytes that do not hash to it (digest_mismatch; the part was not taken, so send it again), or a malformed server name (bad_name). */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -9728,7 +9773,10 @@ export interface operations {
     uploadSubmissionContext: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description The SHA-256 of the body as RFC 9530 sends it, sha-256=:<base64>:. Other algorithms listed beside it are ignored. */
+                "Content-Digest": string;
+            };
             path: {
                 id: string;
             };
@@ -9749,7 +9797,15 @@ export interface operations {
                     "application/json": components["schemas"]["Submission"];
                 };
             };
-            400: components["responses"]["BadRequest"];
+            /** @description A body that is not a gzip tarball or is over the context cap (bad_request), no Content-Digest (digest_required), a malformed one (bad_digest), or bytes that do not hash to it (digest_mismatch; nothing was stored, so send it again). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             401: components["responses"]["Unauthorized"];
             /** @description The upload would exceed the caller's per-user stored-context budget (submission_quota_exceeded), which counts their pending and rejected uploads; approved ones leave it. */
             403: {
@@ -9801,7 +9857,10 @@ export interface operations {
             query: {
                 offset: number;
             };
-            header?: never;
+            header: {
+                /** @description The SHA-256 of the part as RFC 9530 sends it, sha-256=:<base64>:. Other algorithms listed beside it are ignored. */
+                "Content-Digest": string;
+            };
             path: {
                 id: string;
             };
@@ -9822,7 +9881,15 @@ export interface operations {
                     "application/json": components["schemas"]["ContextUploadProgress"];
                 };
             };
-            400: components["responses"]["BadRequest"];
+            /** @description A missing or malformed offset, a first part without the gzip magic or a total over the context cap (bad_request), no Content-Digest (digest_required), a malformed one (bad_digest), or bytes that do not hash to it (digest_mismatch; the part was cut back off, so read where the upload stands and send it again). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             401: components["responses"]["Unauthorized"];
             /** @description The staged total would exceed the caller's per-user stored-context budget (submission_quota_exceeded). */
             403: {

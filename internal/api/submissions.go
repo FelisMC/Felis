@@ -166,11 +166,19 @@ func (a *API) handleCreateSubmission(w http.ResponseWriter, r *http.Request) {
 // caller does not own is reported as 404, so this endpoint cannot upload to — or
 // probe the existence of — another user's submission.
 //
+// The body carries its SHA-256 as Content-Digest (contentDigest); bytes that hash
+// to anything else were changed on the way, and none of them are kept
+// (submit.VerifyDigest).
+//
 // Uploading does not change the submission row (there is no "uploaded" column):
 // the blob store is the presence source of truth, which admin approval consults.
 func (a *API) handleUploadSubmissionContext(w http.ResponseWriter, r *http.Request) {
 	if a.Submissions == nil {
 		writeError(w, r, errSubmissionsUnavailable)
+		return
+	}
+	want, ok := contentDigest(w, r)
+	if !ok {
 		return
 	}
 	p := principalFromContext(r.Context())
@@ -188,7 +196,7 @@ func (a *API) handleUploadSubmissionContext(w http.ResponseWriter, r *http.Reque
 	}
 	defer release()
 	id := r.PathValue("id")
-	sub, err := a.Submissions.UploadContext(r.Context(), id, p.UserID, r.Body)
+	sub, err := a.Submissions.UploadContext(r.Context(), id, p.UserID, submit.VerifyDigest(r.Body, want))
 	if err != nil {
 		writeSubmitError(w, r, err)
 		return
@@ -240,7 +248,8 @@ func (a *API) handleContextUploadStatus(w http.ResponseWriter, r *http.Request) 
 // else must equal the staged length (409 upload_offset_mismatch otherwise). A
 // part is small enough for any edge, so no cooldown applies here: the staged
 // total is bounded by the context cap and the storage budget, and completion
-// holds the cooldown.
+// holds the cooldown. Each part carries its own Content-Digest, and one that
+// does not hash to it is cut back off, as a part that breaks off is.
 func (a *API) handleContextUploadPart(w http.ResponseWriter, r *http.Request) {
 	if a.Submissions == nil {
 		writeError(w, r, errSubmissionsUnavailable)
@@ -252,8 +261,12 @@ func (a *API) handleContextUploadPart(w http.ResponseWriter, r *http.Request) {
 			"offset must be the byte position the part starts at"))
 		return
 	}
+	want, ok := contentDigest(w, r)
+	if !ok {
+		return
+	}
 	p := principalFromContext(r.Context())
-	prog, err := a.Submissions.UploadPart(r.Context(), r.PathValue("id"), p.UserID, offset, r.Body)
+	prog, err := a.Submissions.UploadPart(r.Context(), r.PathValue("id"), p.UserID, offset, submit.VerifyDigest(r.Body, want))
 	if err != nil {
 		writeSubmitError(w, r, err)
 		return
@@ -557,6 +570,8 @@ func writeSubmitError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, submit.ErrUploadBusy):
 		writeError(w, r, newError(http.StatusConflict, "upload_busy",
 			"another request is still writing this upload; read where it stands and continue from there"))
+	case errors.Is(err, submit.ErrDigestMismatch):
+		writeError(w, r, errDigestMismatch())
 	case errors.As(err, &mismatch):
 		writeError(w, r, newError(http.StatusConflict, "upload_offset_mismatch",
 			"the upload holds %d bytes; send the part that starts there", mismatch.Received))

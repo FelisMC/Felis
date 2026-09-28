@@ -25,6 +25,12 @@ export function isManaged(path: string): boolean {
 /** The longest name a Linux filesystem takes, in bytes (NAME_MAX). */
 const NAME_MAX = 255;
 
+/** nameTooLong says whether a name is past NAME_MAX. A Mac or Windows disk
+ *  counts in characters, so a file picked there can be. */
+export function nameTooLong(name: string): boolean {
+  return new TextEncoder().encode(name).length > NAME_MAX;
+}
+
 export type NameProblem = "name_required" | "name_slash" | "name_dots" | "name_too_long" | "name_taken";
 
 /** nameProblem says why name cannot be used for a new entry in a folder listing
@@ -40,7 +46,7 @@ export function nameProblem(
   if (name === "") return "name_required";
   if (name.includes("/")) return "name_slash";
   if (name === "." || name === "..") return "name_dots";
-  if (new TextEncoder().encode(name).length > NAME_MAX) return "name_too_long";
+  if (nameTooLong(name)) return "name_too_long";
   if (name !== current && entries?.some((e) => e.name === name)) return "name_taken";
   return null;
 }

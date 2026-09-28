@@ -286,3 +286,28 @@ func TestExpireFileSessions(t *testing.T) {
 		t.Fatalf("said %q", got)
 	}
 }
+
+type sweepCount struct{ n atomic.Int32 }
+
+func (s *sweepCount) ExpireExports() { s.n.Add(1) }
+
+// TestExpireExports: the loop sweeps on each tick, and returns once felis-api
+// shuts down.
+func TestExpireExports(t *testing.T) {
+	var s sweepCount
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { expireExports(ctx, &s, time.Millisecond); close(done) }()
+	for deadline := time.Now().Add(5 * time.Second); s.n.Load() < 3; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("swept %d times in 5s at a 1ms tick", s.n.Load())
+		}
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the loop outlived its context")
+	}
+}

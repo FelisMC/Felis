@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"felis.lolicon.best/internal/fileedit"
 	"felis.lolicon.best/internal/maintenance"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -107,13 +108,22 @@ func (k *K8sJobStatus) explainFailures(ctx context.Context, serverName string, j
 	}
 }
 
+// outOfMemoryLine is a failed Job's message when the kernel killed it for
+// memory. The reason in brackets is what the panel knows it by.
+const outOfMemoryLine = "the job ran out of memory and the system stopped it (OOMKilled)"
+
 // lastTerminationLine returns the last non-empty line of the pod's terminated
-// container message, capped for display.
+// container message, capped for display. A container the kernel killed for
+// going over its memory limit printed nothing about it, so that is said instead
+// of whatever line it happened to print last.
 func lastTerminationLine(pod *corev1.Pod) string {
 	for _, cs := range pod.Status.ContainerStatuses {
 		t := cs.State.Terminated
 		if t == nil || t.ExitCode == 0 {
 			continue
+		}
+		if t.Reason == fileedit.ReasonOOMKilled {
+			return outOfMemoryLine
 		}
 		lines := strings.Split(strings.TrimSpace(t.Message), "\n")
 		line := strings.TrimSpace(lines[len(lines)-1])

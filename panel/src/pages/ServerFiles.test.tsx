@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { createHash } from "node:crypto";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -10,7 +11,7 @@ import { ONE_REQUEST_BYTES } from "@/components/files/useUploads";
 import { OP_POLL_MS } from "@/components/files/sessionUpload";
 import { EXPORT_POLL_MS } from "@/lib/download";
 import { STATUS_POLL_FAST_MS } from "@/lib/hooks";
-import type { FileOp } from "@/lib/types";
+import type { FileOp, ServerJob } from "@/lib/types";
 
 const mocks = vi.hoisted(() => ({
   writeServerFile: vi.fn(),
@@ -33,6 +34,7 @@ const mocks = vi.hoisted(() => ({
   putServerFileUploadPart: vi.fn(),
   deleteServerFileUpload: vi.fn(),
   commitServerFileUpload: vi.fn(),
+  serverJobs: vi.fn(),
 }));
 
 vi.mock("@/lib/api", async (importOriginal) => {
@@ -61,6 +63,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
       putServerFileUploadPart: mocks.putServerFileUploadPart,
       deleteServerFileUpload: mocks.deleteServerFileUpload,
       commitServerFileUpload: mocks.commitServerFileUpload,
+      serverJobs: mocks.serverJobs,
     },
   };
 });
@@ -86,6 +89,8 @@ async function openEditor() {
 }
 
 let opsNow: FileOp[] = [];
+// The server's backup, restore and export Jobs, as each read finds them.
+let jobsNow: ServerJob[] = [];
 const fileOp = (over: Partial<FileOp> = {}): FileOp => ({
   id: "op1",
   op: "unzip",
@@ -136,6 +141,9 @@ beforeEach(() => {
   opsNow = [];
   mocks.listServerFileOps.mockReset();
   mocks.listServerFileOps.mockImplementation(async () => ({ ops: opsNow }));
+  jobsNow = [];
+  mocks.serverJobs.mockReset();
+  mocks.serverJobs.mockImplementation(async () => jobsNow);
   localStorage.clear();
   mocks.stop.mockReset();
   mocks.status.mockReset();
@@ -679,7 +687,7 @@ describe("ServerFiles uploads", () => {
     Object.defineProperty(f, "size", { value: size });
     return f;
   };
-  const withFree = (free: number) =>
+  const withFree = (free: number | null) =>
     mocks.listServerFiles.mockImplementation((_name: string, path: string) =>
       Promise.resolve({
         path,
@@ -698,6 +706,18 @@ describe("ServerFiles uploads", () => {
     expect(await within(queue()).findByText(t("files:upload_folder_there"))).toBeTruthy();
     expect(within(queue()).queryByRole("button", { name: t("files:upload_retry") })).toBeNull();
     expect(mocks.uploadServerFile).not.toHaveBeenCalled();
+  });
+
+  it("refuses a name past 255 bytes without sending it, and sends one at 255", async () => {
+    renderFiles();
+    await screen.findByText("world");
+
+    // A Mac counts 86 characters, the server 258 bytes; 85 of them are 255.
+    pick(file("界".repeat(86)), file("界".repeat(85)));
+
+    expect(await within(queue()).findByText(t("files:upload_name_too_long"))).toBeTruthy();
+    expect(within(queue()).queryByRole("button", { name: t("files:upload_retry") })).toBeNull();
+    await waitFor(() => expect(sentAs()).toEqual([["界".repeat(85), false]]));
   });
 
   it("refuses what the volume has no room for, counting the files ahead in the batch, and retries once there is room", async () => {
@@ -720,13 +740,24 @@ describe("ServerFiles uploads", () => {
   });
 
   it("sends when the listing could not tell how much room there is", async () => {
-    withFree(0);
+    withFree(null);
     renderFiles();
     await screen.findByText("world");
 
     pick(sized("a.jar", 60));
 
     await waitFor(() => expect(sentAs()).toEqual([["a.jar", false]]));
+  });
+
+  it("refuses everything but an empty file on a full volume", async () => {
+    withFree(0);
+    renderFiles();
+    await screen.findByText("world");
+
+    pick(sized("a.jar", 1), sized("empty.txt", 0));
+
+    expect(await within(queue()).findByText(i18next.t("files:upload_no_room", { free: "0 B", size: "1 B" }))).toBeTruthy();
+    await waitFor(() => expect(sentAs()).toEqual([["empty.txt", false]]));
   });
 
   it("keeps a retry refused while the latest listing has no room for the file", async () => {
@@ -759,7 +790,24 @@ describe("ServerFiles uploads", () => {
     const PART = 32 * 1024 * 1024;
     const SIZE = ONE_REQUEST_BYTES + 1;
     const KEY = "felis-file-upload:lobby:world.zip";
-    const at = (received: number) => ({ id: "s1", path: "world.zip", size: SIZE, received, part_max_bytes: PART });
+    // sized() keeps the five bytes file() made, and a slice past them is empty:
+    // those are the bytes a resume hashes the held parts against.
+    const held = (received: number) => {
+      const out: { size: number; sha256: string }[] = [];
+      for (let start = 0; start < received; start += PART) {
+        const end = Math.min(start + PART, received);
+        out.push({ size: end - start, sha256: createHash("sha256").update("bytes".slice(start, end)).digest("hex") });
+      }
+      return out;
+    };
+    const at = (received: number) => ({
+      id: "s1",
+      path: "world.zip",
+      size: SIZE,
+      received,
+      part_max_bytes: PART,
+      parts: held(received),
+    });
     let parts: { offset: number; signal?: AbortSignal }[];
 
     beforeEach(() => {
@@ -1425,6 +1473,15 @@ describe("ServerFiles archives and downloads", () => {
       () => i18next.t("files:download_failed_because", { reason: "tar: world: Cannot open" }),
     ],
     ["failed without one", () => mocks.exportStatus.mockResolvedValue({ state: "failed" }), () => t("files:download_failed")],
+    [
+      "killed for memory",
+      () =>
+        mocks.exportStatus.mockResolvedValue({
+          state: "failed",
+          message: "the job ran out of memory and the system stopped it (OOMKilled)",
+        }),
+      () => t("files:download_out_of_memory"),
+    ],
   ])("says why a download could not be prepared when %s", async (_label, arrange, words) => {
     const clicked = watchLinks();
     mocks.downloadServerFile.mockResolvedValue({ ticket: "t1", state: "pending", filename: "world.zip" });
@@ -1442,5 +1499,120 @@ describe("ServerFiles archives and downloads", () => {
     expect(clicked).toEqual([]);
     expect(mocks.exportDownloadURL).not.toHaveBeenCalled();
     expect(button("download_folder_item", "world").disabled).toBe(false);
+  });
+});
+
+describe("ServerFiles with the world held elsewhere", () => {
+  const job = (over: Partial<ServerJob>): ServerJob => ({ name: "j1", kind: "backup", state: "running", ...over });
+  const poll = () => act(() => vi.advanceTimersByTimeAsync(OP_POLL_MS));
+  // The notice sits in a status region; other messages can be status regions too.
+  const notice = (key: string) => screen.queryByText(t(key));
+  const shown = async (key: string) => (await screen.findByText(t(key))).closest('[role="status"]') !== null;
+
+  it("holds every change while a backup runs, says so, and lets go once it ends", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    jobsNow = [job({ kind: "backup" })];
+    mocks.uploadServerFile.mockResolvedValue({ path: "a.jar", status: "uploaded", sha256: "a", size: 5 });
+    renderFiles();
+    await screen.findByText("server.properties");
+
+    expect(await shown("files:wait_for_backup")).toBe(true);
+    for (const b of [button("new_file"), button("new_folder"), button("delete_item", "world")]) {
+      expect(b.disabled).toBe(true);
+      expect(b.title).toBe(t("files:wait_for_backup"));
+    }
+    fireEvent.change(screen.getByTestId("upload-input"), { target: { files: [new File(["bytes"], "a.jar")] } });
+    await poll();
+    expect(mocks.uploadServerFile).not.toHaveBeenCalled();
+    const lists = mocks.listServerFiles.mock.calls.length;
+
+    jobsNow = [job({ kind: "backup", state: "succeeded" })];
+    await poll();
+
+    await waitFor(() => expect(notice("files:wait_for_backup")).toBeNull());
+    expect(button("new_folder").disabled).toBe(false);
+    await waitFor(() => expect(mocks.uploadServerFile.mock.calls.map((c) => c[1])).toEqual(["a.jar"]));
+    // A backup changed nothing, so only the upload's own landing rereads.
+    expect(mocks.listServerFiles.mock.calls.length).toBe(lists + 1);
+  });
+
+  it("rereads the folder once a restore ends", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    jobsNow = [job({ kind: "restore" })];
+    renderFiles();
+    await screen.findByText("server.properties");
+    expect(await shown("files:wait_for_restore")).toBe(true);
+    const lists = mocks.listServerFiles.mock.calls.length;
+
+    jobsNow = [job({ kind: "restore", state: "succeeded" })];
+    await poll();
+
+    await waitFor(() => expect(mocks.listServerFiles.mock.calls.length).toBe(lists + 1));
+    expect(notice("files:wait_for_restore")).toBeNull();
+  });
+
+  it.each([
+    ["a safety snapshot whose restore has yet to start", job({ kind: "backup", state: "succeeded", then_restore: "pending" }), "files:wait_for_restore"],
+    ["a world export", job({ kind: "export_world" }), "files:wait_for_world_export"],
+    ["a file download", job({ kind: "export_files" }), "files:wait_for_file_download"],
+  ])("names %s as what holds it", async (_what, holder, text) => {
+    jobsNow = [job({ name: "old", kind: "restore", state: "failed" }), holder];
+    renderFiles();
+    await screen.findByText("server.properties");
+
+    expect(await shown(text)).toBe(true);
+    expect(button("new_file").title).toBe(t(text));
+  });
+
+  it("is not held by a backup being downloaded, which reads only the backup store", async () => {
+    jobsNow = [job({ kind: "export_backup" })];
+    renderFiles();
+    await screen.findByText("server.properties");
+    await waitFor(() => expect(mocks.serverJobs).toHaveBeenCalled());
+
+    for (const key of ["wait_for_backup", "wait_for_restore", "wait_for_world_export", "wait_for_file_download"]) expect(notice(`files:${key}`)).toBeNull();
+    expect(button("new_file").disabled).toBe(false);
+  });
+
+  it.each([
+    ["an extraction", "unzip_item", mocks.unzipServerFile, humanizeError],
+    ["a download", "download_item", mocks.downloadServerFile, (e: unknown) => i18next.t("files:download_failed_because", { reason: humanizeError(e) })],
+  ] as const)("looks again when %s is refused because the world is held", async (_what, key, call, said) => {
+    mocks.listServerFiles.mockImplementation((_name: string, path: string) =>
+      Promise.resolve({ path, truncated: false, entries: [{ name: "pack.zip", size: 8, is_dir: false, mod_time: "2026-09-01T00:00:00Z" }] }),
+    );
+    const held = { status: 409, code: "maintenance_in_progress", message: "a world export or file download is running" };
+    call.mockRejectedValueOnce(held);
+    renderFiles();
+    await screen.findByText("pack.zip");
+    await waitFor(() => expect(mocks.serverJobs).toHaveBeenCalledTimes(1));
+    jobsNow = [job({ kind: "export_world" })];
+
+    fireEvent.click(button(key, "pack.zip"));
+
+    expect(await shown("files:wait_for_world_export")).toBe(true);
+    expect(screen.getByText(said(held))).toBeTruthy();
+    expect(button(key, "pack.zip").disabled).toBe(true);
+  });
+
+  it("holds changes while its own download streams to the browser", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    mocks.downloadServerFile.mockResolvedValue({ ticket: "t1", state: "pending", filename: "server.properties" });
+    mocks.exportStatus.mockResolvedValue({ state: "ready" });
+    mocks.exportDownloadURL.mockResolvedValue("/api/v1/exports/t1/download");
+    renderFiles();
+    await screen.findByText("server.properties");
+    await waitFor(() => expect(mocks.serverJobs).toHaveBeenCalledTimes(1));
+    jobsNow = [job({ kind: "export_files" })];
+
+    fireEvent.click(button("download_item", "server.properties"));
+    await waitFor(() => expect(mocks.downloadServerFile).toHaveBeenCalledTimes(1));
+    expect(notice("files:wait_for_file_download")).toBeNull();
+    await act(() => vi.advanceTimersByTimeAsync(EXPORT_POLL_MS));
+    expect(mocks.exportDownloadURL).toHaveBeenCalledTimes(1);
+
+    expect(await shown("files:wait_for_file_download")).toBe(true);
+    expect(button("new_file").disabled).toBe(true);
   });
 });

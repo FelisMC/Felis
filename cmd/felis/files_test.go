@@ -3,6 +3,7 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"cmp"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -35,19 +36,43 @@ func filesResult(t *testing.T, stdout string) fileedit.Result {
 	return res
 }
 
-// stagedUpload serves body to a request carrying Bearer token, and 404 to any
-// other, the way felis-api's internal face does.
-func stagedUpload(t *testing.T, token string, body []byte) *httptest.Server {
+// stagedSource is felis-api's internal face for one staged upload. It serves
+// body to a GET carrying Bearer token and 404 to any other, and answers the
+// DELETE that reports the file landed with landedCode (204 when unset),
+// redirecting to landedTo when that is a redirect. reports counts those
+// DELETEs, each with the token and at the path the bytes came from.
+type stagedSource struct {
+	*httptest.Server
+	reports, strays atomic.Int32
+	landedCode      int
+	landedTo        string
+}
+
+func stagedUpload(t *testing.T, token string, body []byte) *stagedSource {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer "+token {
+	s := &stagedSource{}
+	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+token || r.URL.Path != "/u" {
+			s.strays.Add(1)
 			http.Error(w, "no such upload", http.StatusNotFound)
 			return
 		}
-		w.Write(body)
+		switch r.Method {
+		case http.MethodGet:
+			w.Write(body)
+		case http.MethodDelete:
+			s.reports.Add(1)
+			if s.landedTo != "" {
+				w.Header().Set("Location", s.landedTo)
+			}
+			w.WriteHeader(cmp.Or(s.landedCode, http.StatusNoContent))
+		default:
+			s.strays.Add(1)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
 	}))
-	t.Cleanup(srv.Close)
-	return srv
+	t.Cleanup(s.Close)
+	return s
 }
 
 func uploadArgs(root, sourceURL string, body []byte) []string {
@@ -89,7 +114,57 @@ func TestCmdFilesUpload(t *testing.T) {
 		if err != nil || !bytes.Equal(got, body) {
 			t.Fatalf("landed %q, %v", got, err)
 		}
+		if n, strays := srv.reports.Load(), srv.strays.Load(); n != 1 || strays != 0 || stderr.Len() != 0 {
+			t.Fatalf("reported landed %d times, %d stray requests, stderr %q; want once", n, strays, stderr.String())
+		}
 	})
+
+	t.Run("a file already there is a result, and nothing is reported landed", func(t *testing.T) {
+		root := uploadRoot(t)
+		if err := os.WriteFile(filepath.Join(root, "plugins", "a.jar"), []byte("old!"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		srv := stagedUpload(t, "tok", body)
+		t.Setenv(fileedit.UploadTokenEnv, "tok")
+		var stdout, stderr bytes.Buffer
+		if code := cmdFiles(uploadArgs(root, srv.URL+"/u", body), &stdout, &stderr); code != 0 {
+			t.Fatalf("exit %d, stderr %q", code, stderr.String())
+		}
+		if res := filesResult(t, stdout.String()); res.Code != fileedit.CodeExists || srv.reports.Load() != 0 {
+			t.Fatalf("result = %+v, reported landed %d times", res, srv.reports.Load())
+		}
+	})
+
+	// The file is in place whatever felis-api answers, so the Job still succeeds
+	// and says why the staged copy may linger. A redirect is not followed, since
+	// the request carries the token.
+	for name, tc := range map[string]struct {
+		code   int
+		stderr string
+	}{
+		"refused":    {http.StatusNotFound, "felis files: tell felis-api the upload landed: DELETE returned 404 Not Found\n"},
+		"redirected": {http.StatusFound, "felis files: tell felis-api the upload landed: DELETE returned 302 Found\n"},
+	} {
+		t.Run("a landed report "+name+" still lands the file", func(t *testing.T) {
+			var elsewhere atomic.Int32
+			away := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { elsewhere.Add(1) }))
+			defer away.Close()
+			root := uploadRoot(t)
+			srv := stagedUpload(t, "tok", body)
+			srv.landedCode, srv.landedTo = tc.code, away.URL+"/u"
+			t.Setenv(fileedit.UploadTokenEnv, "tok")
+			var stdout, stderr bytes.Buffer
+			if code := cmdFiles(uploadArgs(root, srv.URL+"/u", body), &stdout, &stderr); code != 0 {
+				t.Fatalf("exit %d, stderr %q", code, stderr.String())
+			}
+			if res := filesResult(t, stdout.String()); res.Code != "" || stderr.String() != tc.stderr || elsewhere.Load() != 0 {
+				t.Fatalf("result = %+v, stderr %q, redirect followed %d times", res, stderr.String(), elsewhere.Load())
+			}
+			if got, err := os.ReadFile(filepath.Join(root, "plugins", "a.jar")); err != nil || !bytes.Equal(got, body) {
+				t.Fatalf("landed %q, %v", got, err)
+			}
+		})
+	}
 
 	// A refused fetch is the Job failing, never a Result: the API answers it with a
 	// 500 the caller retries whole.
@@ -103,6 +178,9 @@ func TestCmdFilesUpload(t *testing.T) {
 		}
 		if !strings.Contains(stderr.String(), "404") {
 			t.Fatalf("stderr %q does not name the status", stderr.String())
+		}
+		if srv.reports.Load() != 0 {
+			t.Fatal("a refused fetch was reported landed")
 		}
 		if _, err := os.Lstat(filepath.Join(root, "plugins", "a.jar")); !os.IsNotExist(err) {
 			t.Fatalf("a refused fetch left a file: %v", err)

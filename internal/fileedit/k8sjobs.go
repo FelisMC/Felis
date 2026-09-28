@@ -246,10 +246,11 @@ func (k *K8sRunner) Ops(ctx context.Context, namespace, server string) ([]OpStat
 	out := make([]OpState, 0, len(items))
 	for i := range items {
 		log := ""
-		if pod := podOf[items[i].Labels[LabelOpID]]; pod != nil && pod.Status.Phase != corev1.PodPending {
+		pod := podOf[items[i].Labels[LabelOpID]]
+		if pod != nil && pod.Status.Phase != corev1.PodPending {
 			log, _ = k.logTail(ctx, namespace, pod.Name)
 		}
-		out = append(out, opState(&items[i], log))
+		out = append(out, opState(&items[i], pod, log))
 	}
 	return out, nil
 }
@@ -272,9 +273,11 @@ func (k *K8sRunner) logTail(ctx context.Context, namespace, pod string) (string,
 // OpState. The printed result decides the outcome whatever the Job's condition
 // says: a Job killed at its deadline just after printing did finish its work.
 // A Job that ended without one failed, and the condition's reason says how
-// (DeadlineExceeded, BackoffLimitExceeded); a Job that completed but whose log
-// could not be read has an outcome no one can tell, ResultUnavailable.
-func opState(job *batchv1.Job, log string) OpState {
+// (DeadlineExceeded, BackoffLimitExceeded), unless its Pod says the kernel
+// killed it for memory (ReasonOOMKilled), which the condition does not tell; a
+// Job that completed but whose log could not be read has an outcome no one can
+// tell, ResultUnavailable.
+func opState(job *batchv1.Job, pod *corev1.Pod, log string) OpState {
 	st := OpState{
 		ID: job.Labels[LabelOpID], Op: job.Labels[LabelMode], Path: job.Annotations[AnnotationPath],
 		State: OpRunning, Started: job.CreationTimestamp.Time,
@@ -312,9 +315,30 @@ func opState(job *batchv1.Job, log string) OpState {
 		st.State = OpFailed
 	default:
 		st.State, st.Reason = OpFailed, reason
-		if st.Reason == "" {
+		if killedForMemory(pod) {
+			st.Reason = ReasonOOMKilled
+		} else if st.Reason == "" {
 			st.Reason = "Failed"
 		}
 	}
 	return st
+}
+
+// ReasonOOMKilled is an op's Reason when the kernel killed its Job for going over
+// the Job's memory limit: an archive of more entries than the Job can hold the
+// list of.
+const ReasonOOMKilled = "OOMKilled"
+
+// killedForMemory reports whether pod's container was killed for going over its
+// memory limit.
+func killedForMemory(pod *corev1.Pod) bool {
+	if pod == nil {
+		return false
+	}
+	for _, cs := range pod.Status.ContainerStatuses {
+		if t := cs.State.Terminated; cs.Name == containerName && t != nil && t.Reason == ReasonOOMKilled {
+			return true
+		}
+	}
+	return false
 }

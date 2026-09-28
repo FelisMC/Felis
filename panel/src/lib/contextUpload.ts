@@ -29,8 +29,9 @@ export const MAX_COMPLETE_WAITS = 40;
 
 // A transient answer is one the next attempt can outlast: no response at all, a
 // tunnel or ingress page in place of the API's (upstream_unavailable), an uploads
-// store that did not answer the budget check (uploads_store_unavailable), or a
-// 409 that means "ask where the upload stands and send again".
+// store that did not answer the budget check (uploads_store_unavailable), a part
+// that arrived changed and was not kept (digest_mismatch), or a 409 that means
+// "ask where the upload stands and send again".
 export function isTransient(e: unknown): boolean {
   const err = e as Partial<ApiError> | null;
   if (!err || typeof err.code !== "string") return false;
@@ -39,6 +40,7 @@ export function isTransient(e: unknown): boolean {
     err.code === "upstream_unavailable" ||
     err.code === "uploads_store_unavailable" ||
     err.code === "upload_busy" ||
+    err.code === "digest_mismatch" ||
     err.code === "upload_offset_mismatch"
   );
 }

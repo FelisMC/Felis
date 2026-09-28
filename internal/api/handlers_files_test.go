@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -125,12 +126,12 @@ func (f *fakeFileEditor) Ops(_ context.Context, server string) ([]fileedit.OpSta
 	return f.ops, f.err
 }
 
-// fileRouteHeader is the Content-Type a file route's body goes with: raw bytes
-// for an upload, JSON for any other body.
+// fileRouteHeader is the headers a file route's body goes with: raw bytes and
+// their Content-Digest for an upload, JSON for any other body.
 func fileRouteHeader(name, body string) map[string]string {
 	switch {
 	case name == "upload":
-		return ctHeader("application/octet-stream")
+		return map[string]string{"Content-Type": "application/octet-stream", "Content-Digest": contentDigestOf(body)}
 	case body != "":
 		return jsonHeader
 	}
@@ -394,6 +395,21 @@ func TestFileEditorHandlers(t *testing.T) {
 		}
 		if resp.Path != "config" || len(resp.Entries) != 2 || !resp.Truncated || resp.FreeBytes != 5<<30 {
 			t.Fatalf("unexpected response %+v", resp)
+		}
+	})
+
+	t.Run("a full volume lists 0 free and one the Job could not measure null", func(t *testing.T) {
+		for _, c := range []struct {
+			free int64
+			want string
+		}{{0, `"free_bytes":0`}, {-1, `"free_bytes":null`}} {
+			api, _, _, files := mkFiles(t)
+			files.free = c.free
+			api.External = staticExternal{p: owner}
+			w := do(api.ExternalHandler(), "GET", "/api/v1/servers/survival/files?path=config", "", nil)
+			if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), c.want) {
+				t.Fatalf("free %d: code = %d body %s, want %s", c.free, w.Code, w.Body.String(), c.want)
+			}
 		}
 	})
 
@@ -744,11 +760,19 @@ func TestFileManagerHandlers(t *testing.T) {
 	})
 }
 
+// contentDigestOf is the Content-Digest a client sends with body.
+func contentDigestOf(body string) string {
+	sum := sha256.Sum256([]byte(body))
+	return "sha-256=:" + base64.StdEncoding.EncodeToString(sum[:]) + ":"
+}
+
 // doUpload sends an upload whose Content-Length is declared, not measured, the
-// way a client that streams or lies would send it.
+// way a client that streams or lies would send it. Its Content-Digest is that
+// of the body.
 func doUpload(h http.Handler, body string, length int64) *httptest.ResponseRecorder {
 	r := httptest.NewRequest("PUT", "/api/v1/servers/survival/files/upload?path=plugins/x.jar", strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/octet-stream")
+	r.Header.Set("Content-Digest", contentDigestOf(body))
 	r.ContentLength = length
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
@@ -777,7 +801,7 @@ func TestFileUpload(t *testing.T) {
 	digest := sha256.Sum256([]byte(body))
 	sum := hex.EncodeToString(digest[:])
 	const route = "/api/v1/servers/survival/files/upload?path=plugins/x.jar"
-	octet := ctHeader("application/octet-stream")
+	octet := map[string]string{"Content-Type": "application/octet-stream", "Content-Digest": contentDigestOf(body)}
 
 	t.Run("the Job fetches the body once, with its token alone", func(t *testing.T) {
 		api, repo, _, files := mkFiles(t)
@@ -785,7 +809,7 @@ func TestFileUpload(t *testing.T) {
 		// Every other internal route wants a service token; the Job has none.
 		api.Internal = CallerTokens{CallerVelocity: "s3cr3t"}
 		prefix := api.InternalBaseURL + "/api/v1/internal/file-uploads/"
-		var bare, wrong, unschemed, fetched, again *httptest.ResponseRecorder
+		var bare, wrong, unschemed, fetched, again, landedWrong, landed *httptest.ResponseRecorder
 		files.onUpload = func(src fileedit.UploadSource) {
 			id, ok := strings.CutPrefix(src.URL, prefix)
 			if !ok || len(id) != 32 {
@@ -799,6 +823,10 @@ func TestFileUpload(t *testing.T) {
 			unschemed = do(h, "GET", at, "", map[string]string{"Authorization": src.Token})
 			fetched = do(h, "GET", at, "", map[string]string{"Authorization": "Bearer " + src.Token})
 			again = do(h, "GET", at, "", map[string]string{"Authorization": "Bearer " + src.Token})
+			// The Job reports it landed. A single upload goes when its request
+			// ends, so the report takes nothing away early.
+			landedWrong = do(h, "DELETE", at, "", map[string]string{"Authorization": "Bearer " + strings.Repeat("0", len(src.Token))})
+			landed = do(h, "DELETE", at, "", map[string]string{"Authorization": "Bearer " + src.Token})
 		}
 
 		w := do(api.ExternalHandler(), "PUT", route, body, octet)
@@ -810,6 +838,7 @@ func TestFileUpload(t *testing.T) {
 		}
 		for name, r := range map[string]*httptest.ResponseRecorder{
 			"no token": bare, "wrong token": wrong, "the token without Bearer": unschemed, "second fetch": again,
+			"a landed report with the wrong token": landedWrong,
 		} {
 			if r.Code != http.StatusNotFound || decodeErr(t, r) != "not_found" {
 				t.Errorf("%s: code = %d (%s), want 404 not_found", name, r.Code, r.Body.String())
@@ -818,6 +847,9 @@ func TestFileUpload(t *testing.T) {
 		if fetched.Code != http.StatusOK || fetched.Body.String() != body ||
 			fetched.Header().Get("Content-Length") != strconv.Itoa(len(body)) {
 			t.Fatalf("fetch: code = %d, %q, Content-Length %q", fetched.Code, fetched.Body.String(), fetched.Header().Get("Content-Length"))
+		}
+		if landed.Code != http.StatusNoContent {
+			t.Fatalf("landed: code = %d (%s)", landed.Code, landed.Body.String())
 		}
 		if files.gotPath != "plugins/x.jar" || files.gotSource.Size != int64(len(body)) ||
 			files.gotSource.SHA256 != sum || files.gotOverwrite {
@@ -868,6 +900,51 @@ func TestFileUpload(t *testing.T) {
 		stageEmpty(t, api)
 	})
 
+	t.Run("the body comes with its SHA-256, checked before anything is asked of the world", func(t *testing.T) {
+		other := sha256.Sum256([]byte("PK\x03\x04 another jar"))
+		for _, c := range []struct {
+			name    string
+			digest  []string
+			code    int
+			errCode string
+		}{
+			{"none", nil, http.StatusBadRequest, "digest_required"},
+			{"only another algorithm", []string{"sha-512=:" + base64.StdEncoding.EncodeToString(make([]byte, 64)) + ":"}, http.StatusBadRequest, "digest_required"},
+			{"hex in place of base64", []string{"sha-256=:" + sum + ":"}, http.StatusBadRequest, "bad_digest"},
+			{"a bare base64 value", []string{strings.Trim(strings.TrimPrefix(contentDigestOf(body), "sha-256="), ":")}, http.StatusBadRequest, "digest_required"},
+			{"no closing colon", []string{strings.TrimSuffix(contentDigestOf(body), ":")}, http.StatusBadRequest, "bad_digest"},
+			{"base64 without colons", []string{"sha-256=" + strings.Trim(strings.TrimPrefix(contentDigestOf(body), "sha-256="), ":")}, http.StatusBadRequest, "bad_digest"},
+			{"31 bytes", []string{"sha-256=:" + base64.StdEncoding.EncodeToString(digest[:31]) + ":"}, http.StatusBadRequest, "bad_digest"},
+			{"another body's", []string{"sha-256=:" + base64.StdEncoding.EncodeToString(other[:]) + ":"}, http.StatusBadRequest, "digest_mismatch"},
+			{"the right one, then a wrong one", []string{contentDigestOf(body), "sha-256=:" + base64.StdEncoding.EncodeToString(other[:]) + ":"}, http.StatusBadRequest, "digest_mismatch"},
+			{"among others, upper case, with a parameter", []string{"sha-512=:" + base64.StdEncoding.EncodeToString(make([]byte, 64)) + ":, SHA-256=" + strings.TrimPrefix(contentDigestOf(body), "sha-256=") + ";p=1"}, http.StatusOK, ""},
+		} {
+			t.Run(c.name, func(t *testing.T) {
+				api, repo, cl, files := mkFiles(t)
+				api.External = staticExternal{p: owner}
+				r := httptest.NewRequest("PUT", route, strings.NewReader(body))
+				r.Header.Set("Content-Type", "application/octet-stream")
+				for _, v := range c.digest {
+					r.Header.Add("Content-Digest", v)
+				}
+				w := httptest.NewRecorder()
+				api.ExternalHandler().ServeHTTP(w, r)
+				recordContract(r, body, w)
+				if c.code == http.StatusOK {
+					if w.Code != http.StatusOK || files.calls != 1 || files.gotSource.SHA256 != sum {
+						t.Fatalf("code = %d calls = %d source %+v (%s)", w.Code, files.calls, files.gotSource, w.Body.String())
+					}
+					return
+				}
+				if w.Code != c.code || decodeErr(t, w) != c.errCode || files.calls != 0 || len(cl.acquired) != 0 || len(repo.audits) != 0 {
+					t.Fatalf("code = %d calls = %d acquired %v audits %d (%s), want %d %s",
+						w.Code, files.calls, cl.acquired, len(repo.audits), w.Body.String(), c.code, c.errCode)
+				}
+				stageEmpty(t, api)
+			})
+		}
+	})
+
 	t.Run("no Content-Length -> 411", func(t *testing.T) {
 		api, _, _, files := mkFiles(t)
 		api.External = staticExternal{p: owner}
@@ -885,6 +962,28 @@ func TestFileUpload(t *testing.T) {
 			t.Fatalf("code = %d calls = %d (%s)", w.Code, files.calls, w.Body.String())
 		}
 		stageEmpty(t, api)
+	})
+
+	t.Run("a name longer than a folder entry holds -> 400 before a byte is staged", func(t *testing.T) {
+		for _, c := range []struct {
+			name    string
+			code    int
+			errCode string
+		}{
+			{strings.Repeat("n", fileedit.NameMax-3) + ".jar", http.StatusBadRequest, "bad_path"},
+			{strings.Repeat("n", fileedit.NameMax-4) + ".jar", http.StatusOK, ""},
+		} {
+			api, _, _, files := mkFiles(t)
+			api.External = staticExternal{p: owner}
+			w := do(api.ExternalHandler(), "PUT", "/api/v1/servers/survival/files/upload?path=plugins/"+c.name, body, octet)
+			if w.Code != c.code || (c.errCode != "" && decodeErr(t, w) != c.errCode) {
+				t.Fatalf("%d-byte name: code = %d (%s), want %d", len(c.name), w.Code, w.Body.String(), c.code)
+			}
+			if wantCalls := map[bool]int{true: 1, false: 0}[c.code == http.StatusOK]; files.calls != wantCalls {
+				t.Fatalf("%d-byte name: executor calls = %d, want %d", len(c.name), files.calls, wantCalls)
+			}
+			stageEmpty(t, api)
+		}
 	})
 
 	// Staged, and so short: the body is a few bytes of a declared 64 MiB.
@@ -935,10 +1034,12 @@ func TestFileUpload(t *testing.T) {
 	t.Run("the internal route without a stage -> 404", func(t *testing.T) {
 		api, _, _, _ := mkFiles(t)
 		api.FileStage = nil
-		w := do(api.InternalHandler(), "GET", "/api/v1/internal/file-uploads/00112233445566778899aabbccddeeff", "",
-			map[string]string{"Authorization": "Bearer t"})
-		if w.Code != http.StatusNotFound || decodeErr(t, w) != "not_found" {
-			t.Fatalf("code = %d (%s)", w.Code, w.Body.String())
+		for _, method := range []string{"GET", "DELETE"} {
+			w := do(api.InternalHandler(), method, "/api/v1/internal/file-uploads/00112233445566778899aabbccddeeff", "",
+				map[string]string{"Authorization": "Bearer t"})
+			if w.Code != http.StatusNotFound || decodeErr(t, w) != "not_found" {
+				t.Fatalf("%s: code = %d (%s)", method, w.Code, w.Body.String())
+			}
 		}
 	})
 }

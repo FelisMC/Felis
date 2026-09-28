@@ -31,6 +31,7 @@ import { FileOps } from "@/components/files/FileOps";
 import { UploadQueue } from "@/components/files/UploadQueue";
 import { useFileOps } from "@/components/files/useFileOps";
 import { useUploads } from "@/components/files/useUploads";
+import { holderText, useWorldJobs } from "@/components/files/useWorldJobs";
 import {
   SECRET_CONFIG_PATH,
   isManaged,
@@ -133,7 +134,7 @@ export function ServerFiles() {
   const [listErr, setListErr] = useState<unknown>(null);
   const [listLoading, setListLoading] = useState(false);
   // Bytes free on the world volume by the latest listing; null while unknown
-  // (the Job reports 0 when it could not tell).
+  // (the listing says null when the Job could not tell; 0 is a full volume).
   const [free, setFree] = useState<number | null>(null);
   const [msg, setMsg] = useState<{ kind: "success" | "error"; text: string } | null>(null);
 
@@ -151,7 +152,7 @@ export function ServerFiles() {
         if (ticket !== loadSeq.current) return;
         setEntries(sortEntries(r.entries ?? []));
         setTruncated(r.truncated === true);
-        setFree(r.free_bytes > 0 ? r.free_bytes : null);
+        setFree(r.free_bytes ?? null);
         setDir(p);
       } catch (e) {
         if (ticket !== loadSeq.current) return;
@@ -308,6 +309,10 @@ export function ServerFiles() {
     }
   }
   const fileOps = useFileOps(name, owned && stopped, opEnded);
+  // Backups, restores, world exports and downloads hold the world as well,
+  // whichever tab or person started them. A restore replaces the files listed.
+  const worldJobs = useWorldJobs(name, owned && stopped, () => void load(dir));
+  const held = worldJobs.holder;
 
   // A download holds the world while felis-api gets it ready, and a change
   // sent meanwhile could only be refused.
@@ -329,20 +334,22 @@ export function ServerFiles() {
       landedSince.current = true;
     },
     onOp: fileOps.ignore,
-    hold: fileOps.running || downloading !== null || unzipping !== null,
+    hold: fileOps.running || downloading !== null || unzipping !== null || held !== null,
     free,
   });
   // Each change is a Job holding the world lock, so while anything else holds
   // it a change could only be refused.
-  const changing = uploads.busy || fileOps.running || downloading !== null || unzipping !== null;
-  // Names what holds the lock now: queued uploads wait on an op or a download
-  // too, so those come first.
+  const changing = uploads.busy || fileOps.running || downloading !== null || unzipping !== null || held !== null;
+  // Names what holds the lock now: queued uploads wait on the rest too, so
+  // those come first.
   const waitTitle =
     fileOps.running || unzipping !== null
       ? t("wait_for_op")
       : downloading !== null
         ? t("wait_for_download")
-        : t("wait_for_uploads");
+        : held !== null
+          ? t(holderText(held))
+          : t("wait_for_uploads");
   useEffect(() => {
     if (uploads.busy || !landedSince.current) return;
     landedSince.current = false;
@@ -456,6 +463,12 @@ export function ServerFiles() {
     if (op.state !== "running") opEnded(op);
   }
 
+  // A refusal because the world is held means something this page has not seen
+  // holds it: reading the Jobs again names it and holds the buttons.
+  function heldElsewhere(e: unknown) {
+    if ((e as { code?: string }).code === "maintenance_in_progress") worldJobs.refresh();
+  }
+
   async function startUnzip(entry: ServerFileEntry) {
     const p = joinPath(dir, entry.name);
     setMsg(null);
@@ -463,6 +476,7 @@ export function ServerFiles() {
     try {
       await unzip(p, false);
     } catch (e) {
+      heldElsewhere(e);
       setMsg({ kind: "error", text: humanizeError(e) });
     } finally {
       setUnzipping(null);
@@ -488,13 +502,23 @@ export function ServerFiles() {
       const s = await awaitExport(tk.ticket, () => alive.current);
       if (s === null) return;
       if (s.state === "failed") {
+        // A folder of more files than the zipping Job has memory to list gets it
+        // killed, and felis-api names that OOMKilled; a single file streams through
+        // in constant memory.
+        const oom = s.message?.includes("OOMKilled");
         setMsg({
           kind: "error",
-          text: s.message ? t("download_failed_because", { reason: s.message }) : t("download_failed"),
+          text: oom
+            ? t("download_out_of_memory")
+            : s.message
+              ? t("download_failed_because", { reason: s.message })
+              : t("download_failed"),
         });
         return;
       }
       saveDownload(await api.exportDownloadURL(tk.ticket), tk.filename);
+      // Its Job holds the world until the browser has all of it.
+      worldJobs.refresh();
       const note =
         p === "server.properties"
           ? "download_started_props"
@@ -504,6 +528,7 @@ export function ServerFiles() {
       setMsg({ kind: "success", text: t(note, { filename: tk.filename }) });
     } catch (e) {
       if (!alive.current) return;
+      heldElsewhere(e);
       setMsg({
         kind: "error",
         text:
@@ -733,6 +758,15 @@ export function ServerFiles() {
                     </Button>
                   </div>
                 </div>
+
+                {held !== null && (
+                  <section role="status" className="border-b border-border bg-muted/20 px-4 py-2.5">
+                    <p className="flex items-start gap-2.5 text-sm">
+                      <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-primary" />
+                      <span>{t(holderText(held))}</span>
+                    </p>
+                  </section>
+                )}
 
                 <FileOps
                   ops={fileOps.ops}

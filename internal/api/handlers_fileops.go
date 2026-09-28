@@ -29,17 +29,50 @@ import (
 // the world volume while it runs, as any file write does, and the server cannot
 // start until it ends.
 
-// fileSessionView is where an upload session stands.
+// fileSessionView is where an upload session stands. Parts are the parts it
+// took, in order, each with the SHA-256 it arrived with: a client resuming from
+// a file on disk checks the file still holds those bytes before it sends the
+// rest.
 type fileSessionView struct {
-	ID           string `json:"id"`
-	Path         string `json:"path"`
-	Size         int64  `json:"size"`
-	Received     int64  `json:"received"`
-	PartMaxBytes int64  `json:"part_max_bytes"`
+	ID           string         `json:"id"`
+	Path         string         `json:"path"`
+	Size         int64          `json:"size"`
+	Received     int64          `json:"received"`
+	PartMaxBytes int64          `json:"part_max_bytes"`
+	Parts        []filePartView `json:"parts"`
+}
+
+// filePartView is one part a session took.
+type filePartView struct {
+	Size   int64  `json:"size"`
+	SHA256 string `json:"sha256"`
 }
 
 func sessionView(s fileedit.Session) fileSessionView {
-	return fileSessionView{ID: s.ID, Path: s.Path, Size: s.Size, Received: s.Received, PartMaxBytes: fileedit.PartBytes}
+	parts := make([]filePartView, 0, len(s.Parts))
+	for _, p := range s.Parts {
+		parts = append(parts, filePartView{Size: p.Size, SHA256: p.SHA256})
+	}
+	return fileSessionView{
+		ID: s.ID, Path: s.Path, Size: s.Size, Received: s.Received,
+		PartMaxBytes: fileedit.PartBytes, Parts: parts,
+	}
+}
+
+// namesFit reports whether every name in path fits one folder entry.
+func namesFit(path string) bool {
+	for _, name := range strings.Split(path, "/") {
+		if len(name) > fileedit.NameMax {
+			return false
+		}
+	}
+	return true
+}
+
+// errNameTooLong refuses a path namesFit rejects, before any byte is taken:
+// the Job would only find out once it tried to create the file.
+func errNameTooLong() *apiError {
+	return newError(http.StatusBadRequest, "bad_path", "a name in the path is longer than %d bytes", fileedit.NameMax)
 }
 
 // beginFileUploadRequest is the POST …/files/uploads body.
@@ -71,6 +104,10 @@ func (a *API) handleBeginFileUpload(w http.ResponseWriter, r *http.Request) {
 	if !filepath.IsLocal(path) || filepath.Clean(path) == "." {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_path",
 			"the path must name a file inside the world folder"))
+		return
+	}
+	if !namesFit(path) {
+		writeError(w, r, errNameTooLong())
 		return
 	}
 	var body beginFileUploadRequest
@@ -111,9 +148,11 @@ func (a *API) handleFileUploadStatus(w http.ResponseWriter, r *http.Request) {
 // /api/v1/servers/{name}/files/uploads/{id}?offset=… — append the raw body to
 // the caller's session. offset must be where the session ends (409
 // upload_offset_mismatch otherwise; the status says where), and Content-Length
-// is required, as for the one-request upload: the part is taken whole or not at
-// all, and a part that breaks midway leaves the session where it was. A part
-// over fileedit.PartBytes is refused before a byte of it is read (Append).
+// and Content-Digest are required, as for the one-request upload: the part is
+// taken whole or not at all, and a part that breaks midway, or whose bytes do
+// not hash to its digest (400 digest_mismatch), leaves the session where it
+// was. A part over fileedit.PartBytes is refused before a byte of it is read
+// (Append).
 func (a *API) handleFileUploadPart(w http.ResponseWriter, r *http.Request) {
 	name, user, ok := a.authorizeFileSession(w, r)
 	if !ok {
@@ -130,7 +169,11 @@ func (a *API) handleFileUploadPart(w http.ResponseWriter, r *http.Request) {
 			"a part needs a Content-Length"))
 		return
 	}
-	s, err := a.FileStage.Append(user, name, r.PathValue("id"), offset, r.Body, r.ContentLength)
+	want, ok := contentDigest(w, r)
+	if !ok {
+		return
+	}
+	s, err := a.FileStage.Append(user, name, r.PathValue("id"), offset, r.Body, r.ContentLength, want)
 	if err != nil {
 		writeFileSessionError(w, r, err)
 		return
@@ -166,8 +209,9 @@ type startFileOpRequest struct {
 // The world lock is taken BEFORE the session is sealed: a commit made while an
 // earlier commit's Job is still fetching the file is refused by that Job's hold
 // on the volume, so it never mints the fresh token that would lock the running
-// Job out. The session outlives a Job that fails before fetching every byte, so
-// such a commit is simply made again; one that fetched them all is gone.
+// Job out. The session outlives a Job that fails for any reason, so such a
+// commit is simply made again; the Job whose file landed deletes it
+// (handleInternalFileUploadLanded).
 func (a *API) handleCommitFileUpload(w http.ResponseWriter, r *http.Request) {
 	name, ok := a.authorizeFileOp(w, r)
 	if !ok {
@@ -335,15 +379,18 @@ func opView(op fileedit.OpState) fileOpView {
 }
 
 // opError maps a failed op onto the API's codes. A Job that printed no result
-// carries only its condition's reason (DeadlineExceeded, BackoffLimitExceeded):
+// carries only its reason (DeadlineExceeded, BackoffLimitExceeded, OOMKilled):
 // the log it left is the world's content and the runtime's, and none of it is
 // the caller's to read.
 func opError(op fileedit.OpState) *fileOpError {
 	res := op.Result
 	if res == nil {
 		msg := "the file operation stopped before it could report how it went (%s); run it again"
-		if op.Reason == "DeadlineExceeded" {
+		switch op.Reason {
+		case "DeadlineExceeded":
 			msg = "the file operation ran out of time (%s); run it again"
+		case fileedit.ReasonOOMKilled:
+			msg = "the file operation ran out of memory (%s); an archive of this many files has to be split into smaller ones"
 		}
 		return &fileOpError{Code: "job_failed", Message: fmt.Sprintf(msg, op.Reason)}
 	}
@@ -434,6 +481,8 @@ func writeFileSessionError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, fileedit.ErrPartTooLarge):
 		writeError(w, r, newError(http.StatusRequestEntityTooLarge, "part_too_large",
 			"the part is larger than part_max_bytes, or runs past the size the upload began with"))
+	case errors.Is(err, fileedit.ErrDigestMismatch):
+		writeError(w, r, errDigestMismatch())
 	case errors.Is(err, fileedit.ErrShortUpload):
 		writeError(w, r, newError(http.StatusBadRequest, "upload_incomplete",
 			"the part ended before its Content-Length; read where the upload stands and send it again"))

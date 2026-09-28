@@ -1,4 +1,5 @@
 import { api, clientError } from "@/lib/api";
+import { sha256Of } from "@/lib/digest";
 import { MAX_ATTEMPTS, isTransient, retryDelay, wait } from "@/lib/contextUpload";
 import type { FileOp, FileUploadSession } from "@/lib/types";
 
@@ -11,8 +12,14 @@ import type { FileOp, FileUploadSession } from "@/lib/types";
 // The session is also remembered in this browser, under the server and path it
 // lands at, with the file's size and modification time. Choosing the same file
 // again after a reload, a closed tab or a lost connection carries on from the
-// bytes already sent. A remembered session no page has touched for a while is
-// what a refusal for too many sessions gives back first.
+// bytes already sent, once those have been hashed again against the file: the
+// session lists each part it holds with its SHA-256, and a session holding
+// anything else (another file of the same name, size and time) is given back
+// and the file starts over. A remembered session no page has touched for a
+// while is what a refusal for too many sessions gives back first.
+//
+// Every part goes with its SHA-256, and one the server hashes differently
+// (digest_mismatch: changed on the way) is sent again.
 
 type Sleep = (ms: number, signal?: AbortSignal) => Promise<void>;
 
@@ -153,12 +160,23 @@ export async function sendInParts(server: string, path: string, file: File, opts
   let offset: number | null = null;
   let partMax = 0;
   let failures = 0;
+  // known is how many bytes at the head of the session this run has seen to be
+  // the file's own: parts it sent, or held parts it hashed again. A session
+  // begun during the run holds only parts the run sent, so a new one needs no
+  // reset.
+  let known = 0;
   for (;;) {
     try {
       if (offset === null) {
         const at = await standing(server, path, file, id, now);
         id = at.id;
         opts.onSession?.(id);
+        if (!(await holdsTheFile(file, at, known, onProgress, signal))) {
+          await discardSession(server, path, at.id, sleep);
+          id = null;
+          continue;
+        }
+        known = at.received;
         partMax = at.part_max_bytes;
         offset = at.received;
         onProgress?.(offset);
@@ -171,12 +189,14 @@ export async function sendInParts(server: string, path: string, file: File, opts
         onProgress: (sent) => onProgress?.(start + sent),
       });
       offset = at.received;
+      known = at.received;
       failures = 0;
       remember({ server, path, id: id!, size, modified: file.lastModified, touched: now() });
       onProgress?.(offset);
     } catch (e) {
       // The session went away under the upload (felis-api restarted, or it sat
-      // idle too long): the next pass begins a new one.
+      // idle too long): the next pass begins a new one. A part changed on the
+      // way was not kept, so the next pass sends it again (isTransient).
       if (code(e) === "upload_not_found") {
         id = null;
       } else if (!isTransient(e)) {
@@ -220,11 +240,34 @@ async function standing(
   return at;
 }
 
+// holdsTheFile hashes the parts session at holds past the first known bytes
+// against the same ranges of file, and answers whether all of them match.
+// onProgress walks up through the parts as they check out.
+async function holdsTheFile(
+  file: File,
+  at: FileUploadSession,
+  known: number,
+  onProgress?: (sent: number) => void,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  let start = 0;
+  for (const part of at.parts) {
+    const end = start + part.size;
+    if (end > known) {
+      if (signal?.aborted) throw new DOMException("The upload was cancelled", "AbortError");
+      if ((await sha256Of(file.slice(start, end))).hex !== part.sha256) return false;
+      onProgress?.(end);
+    }
+    start = end;
+  }
+  return start === at.received;
+}
+
 // commit lands the session. A commit whose answer was lost may still have
 // started the Job, so asking again is read in that light: the world held
 // (maintenance_in_progress) by an upload of this path running now, or the
-// session gone because that Job already fetched it, means the first commit
-// went through, and its op is the answer.
+// session gone because that Job reported the file landed, means the first
+// commit went through, and its op is the answer.
 async function commit(
   server: string,
   path: string,

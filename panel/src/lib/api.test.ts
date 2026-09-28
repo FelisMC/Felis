@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Pin the GET /me wire shape. is_admin crosses an untyped fetch().json() boundary
@@ -658,20 +659,6 @@ describe("image whitelist and builds wire shapes", () => {
       expect(JSON.parse((opts as RequestInit).body as string)).toEqual({ display_name: "new submission" });
     });
 
-    it("uploadSubmissionContext POSTs Blob to /me/submissions/{id}/context", async () => {
-      const sub = { id: "sub-3", display_name: "new submission", status: "pending_review" };
-      const fetchSpy = fakeFetch(sub);
-      vi.stubGlobal("fetch", fetchSpy);
-      const blob = new Blob(["test"], { type: "application/x-gzip" });
-      const res = await api.uploadSubmissionContext("sub-3", blob);
-      expect(res).toEqual(sub);
-      const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
-      expect(String(url)).toBe("/me/submissions/sub-3/context");
-      expect((opts as RequestInit).method).toBe("POST");
-      expect((opts as RequestInit).body).toBe(blob);
-      expect((opts as RequestInit).headers).toEqual({ "Content-Type": "application/x-gzip" });
-    });
-
     // The lane's two throttled outcomes (a spent allowance, a closed cooldown)
     // must surface as their own copy, not the generic forbidden/error text.
     it("maps the submission quota/cooldown codes to stable human copy", async () => {
@@ -1214,6 +1201,10 @@ async function sentXHR(): Promise<FakeXHR> {
   return FakeXHR.last as FakeXHR;
 }
 
+// What felis-api's parseContentDigest takes: the body's SHA-256, base64, in
+// RFC 9530's sha-256=:…: form. Hashed here by Node, apart from the panel's own.
+const contentDigest = (body: string) => `sha-256=:${createHash("sha256").update(body).digest("base64")}:`;
+
 describe("chunked context upload", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -1243,7 +1234,7 @@ describe("chunked context upload", () => {
     expect((opts as RequestInit).method).toBe("POST");
   });
 
-  it("putContextPart PUTs the part at its offset with the session cookie and reports progress", async () => {
+  it("putContextPart PUTs the part at its offset with the session cookie, its SHA-256 and reports progress", async () => {
     const part = new Blob(["abcd"]);
     const seen: number[] = [];
     const done = api.putContextPart("sub-3", 8, part, { onProgress: (n) => seen.push(n) });
@@ -1251,7 +1242,7 @@ describe("chunked context upload", () => {
     expect(xhr.method).toBe("PUT");
     expect(xhr.url).toBe("/me/submissions/sub-3/context/upload?offset=8");
     expect(xhr.withCredentials).toBe(true);
-    expect(xhr.headers).toEqual({ "Content-Type": "application/octet-stream" });
+    expect(xhr.headers).toEqual({ "Content-Type": "application/octet-stream", "Content-Digest": contentDigest("abcd") });
     expect(xhr.body).toBe(part);
     xhr.upload.onprogress?.({ loaded: 3 });
     xhr.respond(200, JSON.stringify(progress));
@@ -1348,6 +1339,28 @@ describe("server file manager wire shapes", () => {
     return [String(url), opts as RequestInit];
   }
 
+  it("a file the browser can no longer read is refused before anything is sent", async () => {
+    const changed = Object.assign(new Blob(["jar bytes"]), {
+      arrayBuffer: () => Promise.reject(new DOMException("the file changed on disk", "NotReadableError")),
+    });
+    await expect(api.uploadServerFile("survival", "plugins/a.jar", changed, false)).rejects.toEqual({
+      status: 0,
+      code: "file_unreadable",
+      message: "the file changed on disk",
+    });
+    await expect(api.putServerFileUploadPart("survival", "s1", 0, changed)).rejects.toMatchObject({
+      code: "file_unreadable",
+    });
+    expect(FakeXHR.last).toBeUndefined();
+    expect(humanizeError({ code: "file_unreadable" })).toMatch(/changed, moved or deleted/);
+  });
+
+  it("the upload refusals over a checksum read as what to do next", () => {
+    expect(humanizeError({ code: "digest_mismatch" })).toMatch(/changed on its way/);
+    expect(humanizeError({ code: "digest_required" })).toMatch(/without a checksum/);
+    expect(humanizeError({ code: "bad_digest" })).toMatch(/checksum was malformed/);
+  });
+
   it("createServerFile PUTs the content with create_only, so nothing already there is replaced", async () => {
     const fetchSpy = fakeFetch({ path: "plugins/new.yml", status: "written", sha256: "c".repeat(64) });
     vi.stubGlobal("fetch", fetchSpy);
@@ -1406,7 +1419,7 @@ describe("server file manager wire shapes", () => {
     expect(xhr.method).toBe("PUT");
     expect(xhr.url).toBe("/servers/survival/files/upload?path=plugins%2FChunky%201.4.jar");
     expect(xhr.withCredentials).toBe(true);
-    expect(xhr.headers).toEqual({ "Content-Type": "application/octet-stream" });
+    expect(xhr.headers).toEqual({ "Content-Type": "application/octet-stream", "Content-Digest": contentDigest("jar bytes") });
     expect(xhr.body).toBe(file);
     xhr.upload.onprogress?.({ loaded: 4 });
     xhr.respond(200, JSON.stringify({ path: "plugins/Chunky 1.4.jar", status: "uploaded", sha256: "d".repeat(64), size: 9 }));
@@ -1485,6 +1498,7 @@ describe("server file manager wire shapes", () => {
     expect(xhr.method).toBe("PUT");
     expect(xhr.url).toBe("/servers/survival/files/uploads/s1?offset=33554432");
     expect(xhr.withCredentials).toBe(true);
+    expect(xhr.headers).toEqual({ "Content-Type": "application/octet-stream", "Content-Digest": contentDigest("part bytes") });
     expect(xhr.body).toBe(part);
     xhr.upload.onprogress?.({ loaded: 3 });
     xhr.respond(200, JSON.stringify({ ...session, received: 33_554_442 }));
@@ -1757,7 +1771,7 @@ describe("world export wire shapes", () => {
 
   it("words the export refusals itself", () => {
     expect(humanizeError({ status: 429, code: "export_busy", message: "raw" })).toBe(
-      "Too many downloads are being prepared right now (one at a time per person, six an hour) — try again in a few minutes.",
+      "Too many exports are being prepared: one at a time per person, two at a time across the platform, and six an hour per person. Try again in a few minutes.",
     );
     expect(humanizeError({ status: 410, code: "export_expired", message: "raw" })).toBe(
       "This download has expired or was already used — start the export again.",

@@ -420,13 +420,15 @@ export interface ServerFileEntry {
 
 /** FileUploadSession is where an upload sent in parts stands
  *  (internal/api/handlers_fileops.go fileSessionView): the next part starts at
- *  `received` and carries at most `part_max_bytes`. */
+ *  `received` and carries at most `part_max_bytes`. `parts` are the parts taken
+ *  so far, in order, each with the SHA-256 (hex) it arrived with. */
 export interface FileUploadSession {
   id: string;
   path: string;
   size: number;
   received: number;
   part_max_bytes: number;
+  parts: { size: number; sha256: string }[];
 }
 
 /** FileOp is one background upload landing or extraction

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"felis.lolicon.best/internal/naming"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
@@ -129,4 +130,16 @@ func (e *Exporter) Start(ctx context.Context, r Request) (string, error) {
 		return "", fmt.Errorf("worldexport: create export job: %w", err)
 	}
 	return job.Name, nil
+}
+
+// Stop deletes an export Job felis-api has given up on, so a Pod that never got
+// going stops holding the world. Its Pods go with it; one already gone is not
+// an error.
+func (e *Exporter) Stop(ctx context.Context, job string) error {
+	bg := metav1.DeletePropagationBackground
+	err := e.cs.BatchV1().Jobs(e.cfg.Namespace).Delete(ctx, job, metav1.DeleteOptions{PropagationPolicy: &bg})
+	if err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("worldexport: delete export job: %w", err)
+	}
+	return nil
 }

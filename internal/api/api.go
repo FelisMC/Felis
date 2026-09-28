@@ -464,10 +464,12 @@ func (a *API) internalAPIRoutes() []apiRoute {
 		// Principal); the shared enqueueBackup tail enforces the RWO stopped-gate.
 		{Method: "POST", Pattern: "/api/v1/internal/servers/{name}/backup", Callers: ops, h: a.handleInternalBackup},
 
-		// A file upload's staged bytes, fetched once by the Job landing them. Public
+		// A file upload's staged bytes, fetched once by the Job landing them, which
+		// then reports them landed so a file sent in parts is deleted. Public
 		// because that Job holds no service token; the one-time bearer token minted
 		// with the upload is the check (handlers_files.go).
 		{Method: "GET", Pattern: "/api/v1/internal/file-uploads/{id}", Public: true, h: a.handleInternalFileUpload},
+		{Method: "DELETE", Pattern: "/api/v1/internal/file-uploads/{id}", Public: true, h: a.handleInternalFileUploadLanded},
 
 		// An export Job's archive, held open until the owner's browser downloads
 		// it. Public for the same reason as file uploads: the Job holds no service

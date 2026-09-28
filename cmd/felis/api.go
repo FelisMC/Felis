@@ -494,6 +494,9 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	if fileStage != nil {
 		go expireFileSessions(ctx, fileStage, fileSessionSweep, stderr)
 	}
+	if exporter != nil {
+		go expireExports(ctx, a, exportSweep)
+	}
 	go retention.Loop(ctx, drv.DB(), retention.Policy{Audit: auditRetention}, retentionInterval, slog.Default())
 
 	servers := []*http.Server{internalSrv, externalSrv}
@@ -820,6 +823,27 @@ func expireFileSessions(ctx context.Context, s *fileedit.Stage, every time.Durat
 			if n := s.Expire(); n > 0 {
 				fmt.Fprintf(stderr, "felis api: dropped %d upload session(s) left idle for %s\n", n, fileedit.SessionIdle)
 			}
+		}
+	}
+}
+
+// exportSweep is how often expireExports runs: an export whose Job never
+// connected is stopped within a minute of going stale.
+const exportSweep = time.Minute
+
+// expireExports runs the export sweep (api.API.ExpireExports) on a ticker. The
+// export routes sweep as they are called, and an owner who closed the tab calls
+// none; a Job whose Pod never got going would then keep the server from
+// starting until the Job's deadline.
+func expireExports(ctx context.Context, a interface{ ExpireExports() }, every time.Duration) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			a.ExpireExports()
 		}
 	}
 }

@@ -188,15 +188,16 @@ type Result struct {
 	SHA256 string `json:"sha256,omitempty"`
 
 	// Conflicts lists, relative to the root and sorted, the existing files an
-	// unzip would replace: the first MaxConflicts of them. ConflictCount is how
-	// many there are in all.
+	// unzip would replace: the first of them, up to MaxConflicts and 8 KiB of
+	// names (see maxConflictBytes). ConflictCount is how many there are in all.
 	Conflicts     []string `json:"conflicts,omitempty"`
 	ConflictCount int      `json:"conflict_count,omitempty"`
 	// Entry names what an unzip refused: the archive entry, or the path on the
 	// server it collides with.
 	Entry string `json:"entry,omitempty"`
 	// Need and Avail are, on a no_space an upload or unzip saw coming, the bytes
-	// it needs and the bytes the volume has free. A listing sets Avail too.
+	// it needs and the bytes the volume has free. A listing sets Avail too, to
+	// -1 when it could not read it.
 	Need  int64 `json:"need,omitempty"`
 	Avail int64 `json:"avail,omitempty"`
 	// Files and Bytes are what a successful unzip extracted.
@@ -239,6 +240,10 @@ type Upload struct {
 	// Open starts the transfer. It runs only once the target has passed every
 	// check, so a refused upload never pulls the bytes.
 	Open func() (io.ReadCloser, error)
+	// Landed, when set, runs once the bytes are in place, so felis-api can let
+	// go of the copy it staged (Stage.Landed). Until then felis-api keeps it,
+	// and a failed landing is started again without the bytes being sent again.
+	Landed func()
 }
 
 // Execute performs one operation inside root and returns the Result to print.
@@ -346,7 +351,9 @@ func list(r *os.Root, rootPath, path string) Result {
 		}
 		entries = append(entries, e)
 	}
-	res := Result{Entries: entries, Truncated: truncated}
+	// A full volume is Avail 0, which the JSON leaves out; -1 is a volume whose
+	// free space could not be read, so the two stay apart.
+	res := Result{Entries: entries, Truncated: truncated, Avail: -1}
 	if avail, _, err := statfs(rootPath); err == nil {
 		res.Avail = int64(min(avail, math.MaxInt64))
 	}
@@ -557,6 +564,10 @@ type transferError struct{ err error }
 func (e *transferError) Error() string { return "fetch upload: " + e.err.Error() }
 func (e *transferError) Unwrap() error { return e.err }
 
+// NameMax is the longest name a folder entry can have on the volumes a world
+// lives on (NAME_MAX).
+const NameMax = 255
+
 // land atomically puts the bytes fill writes at target, the path landingTarget
 // returned for name. Write and upload both land through it; unzip lands a whole
 // tree at once and has its own path (unzip.go).
@@ -567,8 +578,9 @@ func (e *transferError) Unwrap() error { return e.err }
 // server.properties an in-place truncate would, which is a server that no longer
 // boots. The sibling gets mode and is handed to the game uid before the rename, so
 // the file the server finds is never root's. On failure it is removed; only a kill
-// between create and rename leaves one behind, named ".<file>.felis-edit-<hex>" so
-// no loader mistakes it for a plugin jar or a config.
+// between create and rename leaves one behind, named ".felis-edit-<hex>" so no
+// loader mistakes it for a plugin jar or a config. The name is its own rather than
+// the target's with a suffix, so a target named up to NameMax bytes can be written.
 //
 // A *transferError from fill comes back as the error; every other failure is a
 // Result.
@@ -577,7 +589,7 @@ func land(r *os.Root, name, target string, mode fs.FileMode, fill func(io.Writer
 	if _, err := rand.Read(suffix[:]); err != nil {
 		return Result{Code: CodeBadPath, Error: fmt.Sprintf("generate a temporary name: %v", err)}, nil
 	}
-	tmp := path.Join(path.Dir(target), "."+path.Base(target)+".felis-edit-"+hex.EncodeToString(suffix[:]))
+	tmp := path.Join(path.Dir(target), ".felis-edit-"+hex.EncodeToString(suffix[:]))
 	f, err := r.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
 		return writeFailure(err, name), nil
@@ -652,7 +664,7 @@ func upload(r *os.Root, rootPath, name string, u Upload, overwrite bool, progres
 		return Result{Code: CodeNoSpace, Need: u.Size, Avail: int64(min(avail, math.MaxInt64)), Error: fmt.Sprintf(
 			"%s is %d bytes and the server's volume has %d free; nothing was changed", name, u.Size, avail)}, nil
 	}
-	return land(r, name, target, mode, func(w io.Writer) error {
+	res, err := land(r, name, target, mode, func(w io.Writer) error {
 		body, err := u.Open()
 		if err != nil {
 			return &transferError{err}
@@ -677,6 +689,10 @@ func upload(r *os.Root, rootPath, name string, u Upload, overwrite bool, progres
 		}
 		return nil
 	})
+	if err == nil && res.Code == "" && u.Landed != nil {
+		u.Landed()
+	}
+	return res, err
 }
 
 // sourceReader tags the source's read errors as transfer errors, so land can tell

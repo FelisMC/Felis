@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"io"
 	"net/http"
@@ -109,9 +111,14 @@ func (a *API) handleListFiles(w http.ResponseWriter, r *http.Request) {
 		ls.Entries = []fileedit.Entry{} // an empty directory is [], never null
 	}
 	// free_bytes lets the panel refuse an upload the volume cannot take before
-	// sending any of it; the Job that lands it checks again.
+	// sending any of it; the Job that lands it checks again. It is null when the
+	// Job could not read it, so a full volume (0) is never mistaken for that.
+	var free any = ls.Free
+	if ls.Free < 0 {
+		free = nil
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"path": path, "entries": ls.Entries, "truncated": ls.Truncated, "free_bytes": ls.Free,
+		"path": path, "entries": ls.Entries, "truncated": ls.Truncated, "free_bytes": free,
 	})
 }
 
@@ -196,8 +203,10 @@ func (a *API) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// A write holds the world volume for its Job's lifetime (internal/maintenance);
-	// reads and listings do not, since a read-only mount cannot hurt a server
-	// starting beside it.
+	// reads and listings do not. A read-only mount cannot hurt a server starting
+	// beside it, and a read that overlaps a restore or another change can at worst
+	// show a file mid-change: the sha256 it returned then no longer matches, so a
+	// save built on it is refused with file_changed.
 	release, ok := a.acquireWorld(w, r, name, maintenance.KindFileWrite, "stop the server before editing its files")
 	if !ok {
 		return
@@ -335,7 +344,10 @@ func (a *API) handleRenameFile(w http.ResponseWriter, r *http.Request) {
 //
 // Content-Length is required (411 length_required): the stage reserves room for
 // the declared size before a byte is written, and a size promised up front is
-// what lets a short body be told from a whole one.
+// what lets a short body be told from a whole one. So is Content-Digest, the
+// SHA-256 the client computed over the body (contentDigest): bytes that arrive
+// hashing to anything else are refused with 400 digest_mismatch, and the client
+// sends them again.
 func (a *API) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 	name, ok := a.authorizeFileOp(w, r)
 	if !ok {
@@ -343,6 +355,10 @@ func (a *API) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 	}
 	path, ok := requirePath(w, r)
 	if !ok {
+		return
+	}
+	if !namesFit(path) {
+		writeError(w, r, errNameTooLong())
 		return
 	}
 	if a.FileStage == nil || a.InternalBaseURL == "" {
@@ -361,10 +377,17 @@ func (a *API) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 			r.ContentLength, fileedit.MaxUploadBytes))
 		return
 	}
+	want, ok := contentDigest(w, r)
+	if !ok {
+		return
+	}
 	overwrite := r.URL.Query().Get("overwrite") == "true"
 
-	staged, drop, err := a.FileStage.Put(r.Body, r.ContentLength)
+	staged, drop, err := a.FileStage.Put(r.Body, r.ContentLength, want)
 	switch {
+	case errors.Is(err, fileedit.ErrDigestMismatch):
+		writeError(w, r, errDigestMismatch())
+		return
 	case errors.Is(err, fileedit.ErrStageFull):
 		writeError(w, r, newError(http.StatusInsufficientStorage, "upload_staging_full",
 			"felis has no room to take this upload right now; try again later or ask an admin"))
@@ -429,11 +452,83 @@ func (a *API) handleInternalFileUpload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 	w.WriteHeader(http.StatusOK)
-	// A session sent whole is on the Job's side now; one cut short stays, so
-	// committing it again does not mean sending it again.
-	if n, err := io.Copy(w, f); err == nil && n == size {
-		a.FileStage.Served(r.PathValue("id"))
+	_, _ = io.Copy(w, f)
+}
+
+// handleInternalFileUploadLanded serves DELETE
+// /api/v1/internal/file-uploads/{id} — the Job that fetched a file sent in
+// parts reports it landed, with the token it fetched it by, and the staged copy
+// is deleted. Until then the copy stays: a Job that failed after its fetch (the
+// digest did not match, the volume filled, a file was in the way) is started
+// again by committing again, without the file being sent again. Public on the
+// internal face like the fetch, with the same token as the check; a token that
+// does not open the upload, or an unknown id, is 404.
+func (a *API) handleInternalFileUploadLanded(w http.ResponseWriter, r *http.Request) {
+	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if a.FileStage == nil || !ok || a.FileStage.Landed(r.PathValue("id"), token) != nil {
+		writeError(w, r, newError(http.StatusNotFound, "not_found", "no such upload"))
+		return
 	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// contentDigest reads the SHA-256 a client computed over the body it sends, from
+// its Content-Digest header (parseContentDigest). An upload without one is
+// refused (400 digest_required): felis-api could not otherwise tell bytes
+// changed on the way from the bytes that were sent. It writes the refusal itself
+// and reports false.
+func contentDigest(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	sum, err := parseContentDigest(r.Header.Values("Content-Digest"))
+	switch {
+	case errors.Is(err, errNoContentDigest):
+		writeError(w, r, newError(http.StatusBadRequest, "digest_required",
+			"send the SHA-256 of the body as Content-Digest: sha-256=:<base64>:"))
+		return nil, false
+	case err != nil:
+		writeError(w, r, newError(http.StatusBadRequest, "bad_digest",
+			"Content-Digest must carry sha-256=:<base64 of the 32-byte SHA-256>:"))
+		return nil, false
+	}
+	return sum, true
+}
+
+var (
+	errNoContentDigest  = errors.New("no sha-256 Content-Digest")
+	errBadContentDigest = errors.New("a malformed sha-256 Content-Digest")
+)
+
+// parseContentDigest finds the SHA-256 in the values of a Content-Digest field
+// (RFC 9530): sha-256=:<base64>:, among any other algorithms it lists, which
+// are ignored. errNoContentDigest when there is none, errBadContentDigest when
+// it is not 32 bytes of base64 between colons.
+func parseContentDigest(values []string) ([]byte, error) {
+	var found []byte
+	for _, v := range values {
+		for _, member := range strings.Split(v, ",") {
+			key, value, _ := strings.Cut(member, "=")
+			if !strings.EqualFold(strings.TrimSpace(key), "sha-256") {
+				continue
+			}
+			value, _, _ = strings.Cut(value, ";") // parameters
+			value = strings.TrimSpace(value)
+			inner, pre := strings.CutPrefix(value, ":")
+			inner, post := strings.CutSuffix(inner, ":")
+			sum, err := base64.StdEncoding.DecodeString(inner)
+			if !pre || !post || err != nil || len(sum) != sha256.Size {
+				return nil, errBadContentDigest
+			}
+			found = sum
+		}
+	}
+	if found == nil {
+		return nil, errNoContentDigest
+	}
+	return found, nil
+}
+
+func errDigestMismatch() error {
+	return newError(http.StatusBadRequest, "digest_mismatch",
+		"the bytes that arrived do not match their Content-Digest, so they were changed on the way; send them again")
 }
 
 // auditFile records a file change. The target is "<server>:<path>", as file.write

@@ -45,6 +45,7 @@ import type {
   UpdateReport,
 } from "./types";
 import { loadConfig } from "./config";
+import { sha256Of } from "./digest";
 import i18next from "i18next";
 
 // Typed client for the felis-api external face (spec §7). Credentials are sent so
@@ -231,28 +232,19 @@ function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   });
 }
 
-function requestRaw<T>(
-  method: string,
-  path: string,
-  body: Blob,
-  headers?: Record<string, string>,
-): Promise<T> {
-  return send<T>(path, { method, headers, body });
-}
-
 // sendWithProgress sends body by XMLHttpRequest, the one browser API that
 // reports how much of a request body has gone out (fetch has no upload
 // progress), and settles the way send does: the parsed 2xx body, or the same
 // ApiError fetchOK would throw. onProgress gets the bytes of body sent so far;
-// signal aborts the request with an AbortError.
+// signal aborts the request with an AbortError; headers go along with it.
 async function sendWithProgress<T>(
   method: string,
   path: string,
   body: Blob,
-  opts: { onProgress?: (sent: number) => void; signal?: AbortSignal } = {},
+  opts: { onProgress?: (sent: number) => void; signal?: AbortSignal; headers?: Record<string, string> } = {},
 ): Promise<T> {
   const { apiBase } = await loadConfig();
-  const { onProgress, signal } = opts;
+  const { onProgress, signal, headers } = opts;
   return new Promise<T>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     const onAbort = () => xhr.abort();
@@ -260,6 +252,7 @@ async function sendWithProgress<T>(
     xhr.open(method, `${apiBase}${path}`);
     xhr.withCredentials = true;
     xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    for (const [k, v] of Object.entries(headers ?? {})) xhr.setRequestHeader(k, v);
     if (onProgress) xhr.upload.onprogress = (e) => onProgress(e.loaded);
     xhr.onabort = () => {
       settle();
@@ -295,6 +288,19 @@ async function sendWithProgress<T>(
     signal?.addEventListener("abort", onAbort);
     xhr.send(body);
   });
+}
+
+// sendDigested sends body as sendWithProgress does, with its SHA-256 in
+// Content-Digest: felis-api hashes what arrives and keeps none of it on a
+// mismatch (400 digest_mismatch), so bytes changed on the way never land.
+async function sendDigested<T>(
+  method: string,
+  path: string,
+  body: Blob,
+  opts: { onProgress?: (sent: number) => void; signal?: AbortSignal } = {},
+): Promise<T> {
+  const { header } = await sha256Of(body);
+  return sendWithProgress<T>(method, path, body, { ...opts, headers: { "Content-Digest": header } });
 }
 
 // rejectingSync turns a synchronous throw inside an api method (urlPath refusing
@@ -754,7 +760,7 @@ export const api = rejectingSync({
   // much room the world volume has (free_bytes), so an upload too big for it is
   // refused before it is sent.
   listServerFiles: (name: string, path: string) =>
-    request<{ path: string; entries: ServerFileEntry[]; truncated: boolean; free_bytes: number }>(
+    request<{ path: string; entries: ServerFileEntry[]; truncated: boolean; free_bytes: number | null }>(
       "GET",
       urlPath`/servers/${name}/files` + `?path=${encodeURIComponent(path)}`,
     ),
@@ -815,8 +821,9 @@ export const api = rejectingSync({
     ),
 
   // uploadServerFile sends a file's raw bytes (the browser sets Content-Length
-  // from the Blob) with progress. Without overwrite an existing file is 409
-  // file_exists; with it the file is replaced whole or not at all.
+  // from the Blob) and their SHA-256, with progress. Without overwrite an
+  // existing file is 409 file_exists; with it the file is replaced whole or not
+  // at all.
   uploadServerFile: (
     name: string,
     path: string,
@@ -824,7 +831,7 @@ export const api = rejectingSync({
     overwrite: boolean,
     opts?: { onProgress?: (sent: number) => void; signal?: AbortSignal },
   ) =>
-    sendWithProgress<{ path: string; status: string; sha256: string; size: number }>(
+    sendDigested<{ path: string; status: string; sha256: string; size: number }>(
       "PUT",
       urlPath`/servers/${name}/files/upload` +
         `?path=${encodeURIComponent(path)}` +
@@ -835,10 +842,12 @@ export const api = rejectingSync({
 
   // A file too big for one request goes up in parts (components/files/
   // sessionUpload.ts drives it): begin a session for its path and size, which
-  // reserves room for all of it; put each part at its byte offset; then commit,
-  // which answers at once with the op landing it (watch listServerFileOps). A
-  // session answers only the account and server it was begun for, stays until
-  // its file has been fetched whole once, and is dropped after 6 hours idle.
+  // reserves room for all of it; put each part at its byte offset, with its
+  // SHA-256; then commit, which answers at once with the op landing it (watch
+  // listServerFileOps). A session answers only the account and server it was
+  // begun for, and lists the parts it holds with their SHA-256. It stays until
+  // the Job landing its file reports it landed, so a landing that fails can be
+  // committed again, and is dropped after 6 hours idle.
   beginServerFileUpload: (name: string, path: string, size: number) =>
     request<FileUploadSession>(
       "POST",
@@ -856,7 +865,7 @@ export const api = rejectingSync({
     part: Blob,
     opts?: { onProgress?: (sent: number) => void; signal?: AbortSignal },
   ) =>
-    sendWithProgress<FileUploadSession>(
+    sendDigested<FileUploadSession>(
       "PUT",
       urlPath`/servers/${name}/files/uploads/${id}` + `?offset=${offset}`,
       part,
@@ -1039,13 +1048,10 @@ export const api = rejectingSync({
   createSubmission: (displayName: string) =>
     request<Submission>("POST", "/me/submissions", { display_name: displayName }),
 
-  uploadSubmissionContext: (id: string, file: Blob) =>
-    requestRaw<Submission>("POST", urlPath`/me/submissions/${id}/context`, file, {
-      "Content-Type": "application/x-gzip",
-    }),
-
   // A chunked context upload (lib/contextUpload.ts drives it): ask where the
-  // staged upload stands, send each part at its byte offset, then store it.
+  // staged upload stands, send each part at its byte offset, then store it. Each
+  // part carries its SHA-256, and one changed on the way is refused
+  // (digest_mismatch) and sent again.
   getContextUpload: (id: string) =>
     request<ContextUploadProgress>("GET", urlPath`/me/submissions/${id}/context/upload`),
 
@@ -1055,7 +1061,7 @@ export const api = rejectingSync({
     part: Blob,
     opts?: { onProgress?: (sent: number) => void; signal?: AbortSignal },
   ) =>
-    sendWithProgress<ContextUploadProgress>(
+    sendDigested<ContextUploadProgress>(
       "PUT",
       urlPath`/me/submissions/${id}/context/upload` + `?offset=${offset}`,
       part,
@@ -1371,6 +1377,17 @@ export function humanizeError(e: unknown): string {
       return t("upload_incomplete");
     case "length_required":
       return t("length_required");
+    // Every upload body carries its SHA-256 (sendDigested): bytes that hash
+    // differently on arrival are refused, and a file the browser can no longer
+    // read (changed on disk since it was picked) is never sent.
+    case "digest_mismatch":
+      return t("digest_mismatch");
+    case "digest_required":
+      return t("digest_required");
+    case "bad_digest":
+      return t("bad_digest");
+    case "file_unreadable":
+      return t("file_unreadable");
     // An upload sent in parts: the session is gone (cancelled, landed, idle for
     // 6 hours, or felis-api restarted), or the account holds four already.
     case "upload_not_found":

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -67,6 +69,7 @@ func cmdExport(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "felis export: --target-url and %s are required\n", worldexport.TokenEnv)
 		return 2
 	}
+	limitHeapToCgroup()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -222,19 +225,30 @@ func (d *digestReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// streamExport runs write straight into the body of the PUT. An error from
-// write aborts the chunked body, and felis-api then cuts the browser's download
-// off rather than end it; that error is the one reported, since the PUT's own
-// error only wraps it. When the PUT ends first, write is stopped.
+// streamExport runs write straight into the body of the PUT, hashing it as it
+// goes. Once write has finished, the SHA-256 of all it wrote rides the
+// request's trailer (worldexport.DigestTrailer), and felis-api holds back the
+// last bytes from the browser until what it received hashes the same. An error
+// from write aborts the chunked body before the trailer, and felis-api then
+// cuts the browser's download off rather than end it; that error is the one
+// reported, since the PUT's own error only wraps it. When the PUT ends first,
+// write is stopped.
 func streamExport(ctx context.Context, target, token, contentType string, size int64, write func(io.Writer) error) error {
 	pr, pw := io.Pipe()
+	trailer := http.Header{worldexport.DigestTrailer: nil}
 	werr := make(chan error, 1)
 	go func() {
-		err := write(pw)
+		sum := sha256.New()
+		err := write(io.MultiWriter(pw, sum))
+		if err == nil {
+			// Set before the body ends: the transport reads the trailer once it
+			// has read the body to its end.
+			trailer.Set(worldexport.DigestTrailer, "sha-256=:"+base64.StdEncoding.EncodeToString(sum.Sum(nil))+":")
+		}
 		pw.CloseWithError(err)
 		werr <- err
 	}()
-	err := putExport(ctx, target, token, contentType, pr, size)
+	err := putExport(ctx, target, token, contentType, pr, size, trailer)
 	pr.CloseWithError(io.ErrClosedPipe)
 	if w := <-werr; w != nil && !errors.Is(w, io.ErrClosedPipe) {
 		return w
@@ -248,12 +262,20 @@ func streamExport(ctx context.Context, target, token, contentType string, size i
 // redirects. felis-api answers only after the whole download, which the Job's
 // activeDeadlineSeconds bounds, so the header timeout is a backstop for a
 // wedged endpoint and not the real limit.
-func putExport(ctx context.Context, target, token, contentType string, body io.Reader, size int64) error {
+//
+// The body always goes chunked, which is what lets it end with a trailer; a
+// size the Job knows (-1 when it does not) goes as worldexport.LengthHeader in
+// place of Content-Length.
+func putExport(ctx context.Context, target, token, contentType string, body io.Reader, size int64, trailer http.Header) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, target, body)
 	if err != nil {
 		return err
 	}
-	req.ContentLength = size
+	req.ContentLength = -1
+	req.Trailer = trailer
+	if size >= 0 {
+		req.Header.Set(worldexport.LengthHeader, strconv.FormatInt(size, 10))
+	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", contentType)
 	client := &http.Client{

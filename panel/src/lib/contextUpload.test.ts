@@ -144,6 +144,21 @@ describe("uploadContext", () => {
     expect(calls.completeContextUpload).toHaveBeenCalledTimes(1);
   });
 
+  it("sends a part again when it arrived changed, from where the server stands", async () => {
+    calls.getContextUpload.mockResolvedValueOnce(at(0)).mockResolvedValueOnce(at(4));
+    acceptParts();
+    calls.putContextPart.mockImplementationOnce(async (_id, offset: number, part: Blob) => at(offset + part.size));
+    calls.putContextPart.mockRejectedValueOnce({ status: 400, code: "digest_mismatch", message: "" });
+    await uploadContext("sub-1", FILE, { sleep });
+    expect(await sentParts()).toEqual([
+      [0, "0123"],
+      [4, "4567"],
+      [4, "4567"],
+      [8, "89"],
+    ]);
+    expect(calls.completeContextUpload).toHaveBeenCalledTimes(1);
+  });
+
   it("gives up at once on a refusal the next attempt cannot outlast", async () => {
     calls.getContextUpload.mockResolvedValue(at(0));
     const refused = { status: 400, code: "bad_request", message: "context must be a gzip-compressed tarball" };

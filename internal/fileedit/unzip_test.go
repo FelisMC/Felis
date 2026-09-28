@@ -3,6 +3,7 @@ package fileedit
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -366,6 +367,28 @@ func TestUnzip(t *testing.T) {
 			res.Conflicts[0] != "f000.txt" || res.Conflicts[MaxConflicts-1] != "f199.txt" {
 			t.Fatalf("code %q, count %d, %d listed (%v … %v)", res.Code, res.ConflictCount, len(res.Conflicts),
 				res.Conflicts[:1], res.Conflicts[len(res.Conflicts)-1:])
+		}
+	})
+
+	// The result comes back through the tail of the Pod's log, where a line past
+	// 16 KiB is split and its head can fall out of the tail.
+	t.Run("the list stops at 8 KiB of names too, keeping the result line whole", func(t *testing.T) {
+		root, _ := worldRoot(t)
+		var entries []zent
+		for i := range 40 {
+			name := fmt.Sprintf("%02d", i) + strings.Repeat("n", 248) // 250 bytes
+			if err := os.WriteFile(filepath.Join(root, name), []byte("old"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			entries = append(entries, file(name, "new"))
+		}
+		writeZip(t, filepath.Join(root, "long.zip"), entries...)
+		res := unzipAt(t, root, "long.zip", false)
+		line, _ := json.Marshal(res)
+		// 32 names are 8000 bytes; a 33rd would pass 8192.
+		if res.Code != CodeExists || res.ConflictCount != 40 || len(res.Conflicts) != 32 ||
+			!strings.HasPrefix(res.Conflicts[31], "31n") || len(line) >= 16<<10 {
+			t.Fatalf("code %q, count %d, %d listed, result line %d bytes", res.Code, res.ConflictCount, len(res.Conflicts), len(line))
 		}
 	})
 

@@ -746,13 +746,25 @@ components:
     FileUploadSession:
       type: object
       description: Where an upload session stands (internal/api/handlers_fileops.go fileSessionView).
-      required: [id, path, size, received, part_max_bytes]
+      required: [id, path, size, received, part_max_bytes, parts]
       properties:
         id: { type: string, description: 32 hex characters. }
         path: { type: string, description: Where the file lands, relative to the world root. }
         size: { type: integer, format: int64, description: The file's length. }
         received: { type: integer, format: int64, description: Bytes here so far; the next part starts here. }
         part_max_bytes: { type: integer, format: int64, description: The most one part may carry. }
+        parts:
+          type: array
+          description: >-
+            The parts taken so far, in order, each with the SHA-256 it arrived
+            with. A client resuming from a file it still holds hashes the same
+            ranges and starts over when one differs.
+          items:
+            type: object
+            required: [size, sha256]
+            properties:
+              size: { type: integer, format: int64 }
+              sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
 
     StartFileOp:
       type: object
@@ -795,7 +807,7 @@ components:
           description: On file_exists from an extraction, the first 200 files it would replace, sorted.
         conflict_count: { type: integer, description: How many files it would replace in all. }
         need: { type: integer, format: int64, description: On volume_full, the bytes needed. }
-        avail: { type: integer, format: int64, description: On volume_full, the bytes free. }
+        avail: { type: integer, format: int64, description: On volume_full, the bytes free; left out when none are. }
 
     ExportStatus:
       type: object
@@ -1362,8 +1374,8 @@ paths:
         spent token are all the same 404, so the route says nothing about which
         uploads exist. An upload session committed through POST
         …/files/uploads/{id}/commit is fetched here the same way, under the
-        session id; it stays staged until it has been sent whole once, so a Job
-        that failed before then can be committed again.
+        session id; it stays staged until its Job reports the file landed
+        (DELETE), so a Job that failed at any point can be committed again.
       x-felis-face: [internal]
       x-felis-tier: public
       security: []
@@ -1382,6 +1394,30 @@ paths:
               schema: { type: string, format: binary }
         '404':
           $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [files]
+      operationId: internalFileUploadLanded
+      summary: The Job reports a staged upload landed (the same one-time bearer token).
+      description: >-
+        Sent once the file is in place. An upload session is then dropped from
+        felis-api's disk; a single-request upload goes when its request ends in
+        any case. Only the token of the session's latest commit is taken. As for
+        the fetch, every refusal is the same 404.
+      x-felis-face: [internal]
+      x-felis-tier: public
+      security: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - name: Authorization
+          in: header
+          required: true
+          description: Bearer followed by the token the Job fetched the upload with.
+          schema: { type: string }
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
   /api/v1/internal/exports/{id}:
     put:
@@ -1389,8 +1425,13 @@ paths:
       operationId: internalExportUpload
       summary: Hand one export's archive over for download (one-time bearer token).
       description: >-
-        The export Job PUTs the tar.gz here, chunked for a world and with its
-        Content-Length for a backup. The Job holds no service token, so the route
+        The export Job PUTs the archive or file here, always chunked, with its
+        size as X-Felis-Export-Length when it knows it and, once the body has
+        ended, the SHA-256 of all it sent as the Content-Digest trailer
+        (sha-256=:<base64>:). felis-api holds the last bytes back from the
+        browser until the bytes it received number and hash as the Job said, so
+        a body changed on the way, or one without the trailer, ends the
+        download short and the browser reports it failed. The Job holds no service token, so the route
         is public on the internal face and the bearer token minted with the
         export is the whole check; an unknown id, a wrong or missing token and a
         token already used are all the same 404. The request then waits, body
@@ -1408,6 +1449,11 @@ paths:
           required: true
           description: Bearer followed by the token minted with the export.
           schema: { type: string }
+        - name: X-Felis-Export-Length
+          in: header
+          required: false
+          description: The body's length in bytes, when the Job knows it; the download then carries it as Content-Length.
+          schema: { type: integer, format: int64, minimum: 0 }
       requestBody:
         required: true
         content:
@@ -1416,6 +1462,11 @@ paths:
       responses:
         '204':
           $ref: '#/components/responses/NoContent'
+        '400':
+          description: X-Felis-Export-Length is not a byte count (bad_request); the token is not spent.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -1424,7 +1475,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '410':
-          description: Nobody opened the download within 90 seconds, or the browser left before the archive ended (export_expired).
+          description: Nobody opened the download within 90 seconds, the browser left before the archive ended, or what arrived did not number or hash as the Job declared, so the download was cut off (export_expired).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -4347,8 +4398,10 @@ paths:
       description: >-
         The first request spends the ticket, whatever becomes of it. The archive
         streams as the Job sends it, with Content-Length when it is known; a
-        download that cannot finish (the Job died, or a backup did not match its
-        recorded sha256) is cut off, so the browser reports it failed. HEAD is
+        download that cannot finish (the Job died, a backup did not match its
+        recorded sha256, or the bytes did not hash to the SHA-256 the Job sent
+        with them) is cut off before its last bytes, so the browser reports it
+        failed. HEAD is
         refused, since it would spend the ticket on no body.
       x-felis-face: [external]
       x-felis-tier: app
@@ -4496,7 +4549,7 @@ paths:
                 properties:
                   path: { type: string }
                   truncated: { type: boolean, description: The listing hit the entry cap and is incomplete. }
-                  free_bytes: { type: integer, format: int64, description: Bytes free on the world volume, for a client to check an upload fits before sending it. }
+                  free_bytes: { type: integer, format: int64, nullable: true, description: Bytes free on the world volume, for a client to check an upload fits before sending it; 0 is a full volume, and null a volume whose free space the Job could not read. }
                   entries:
                     type: array
                     items:
@@ -4971,8 +5024,11 @@ paths:
         token, so the world lock is taken only after the body has arrived and a slow
         upload holds off no backup. The file lands atomically: a synced temporary
         sibling is checked against the staged size and SHA-256, then renamed into
-        place, so a failed upload leaves the old file whole. Same stopped-gate and
-        os.Root containment as a write. Audited as file.upload.
+        place, so a failed upload leaves the old file whole. The body carries its
+        SHA-256 as Content-Digest; felis-api checks it as the body arrives, and
+        the Job checks the same digest again as it fetches the staged copy, so
+        every hop between the browser and the world volume is verified. Same
+        stopped-gate and os.Root containment as a write. Audited as file.upload.
       x-felis-face: [external]
       x-felis-tier: app
       security: [{ sessionCookie: [] }]
@@ -4988,6 +5044,14 @@ paths:
           required: false
           description: true replaces an existing file, keeping its mode. Anything else refuses to.
           schema: { type: string, enum: ["true", "false"] }
+        - name: Content-Digest
+          in: header
+          required: true
+          description: >-
+            The SHA-256 of the body as RFC 9530 sends it, sha-256=:<base64>:.
+            Other algorithms listed beside it are ignored. Bytes that do not hash
+            to it were changed on the way and are refused whole.
+          schema: { type: string, example: 'sha-256=:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=:' }
       requestBody:
         required: true
         content:
@@ -5009,8 +5073,10 @@ paths:
         '400':
           description: >-
             Missing path, invalid server name, a folder or the world root at the path,
-            a path that escapes the world root, or a body that ended before
-            Content-Length bytes arrived (upload_incomplete).
+            a path that escapes the world root, a body that ended before
+            Content-Length bytes arrived (upload_incomplete), no Content-Digest
+            (digest_required), a malformed one (bad_digest), or bytes that do not
+            hash to it (digest_mismatch; nothing is staged, so send it again).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -5170,8 +5236,9 @@ paths:
       summary: Send one part of an upload session (owner-or-admin, the account that began it).
       description: >-
         The raw body is appended at offset, which must be where the session
-        ends. Content-Length is required, and the part is taken whole or not at
-        all: one cut short leaves the session where it was. Parts go one at a
+        ends. Content-Length and the part's own Content-Digest are required, and
+        the part is taken whole or not at all: one cut short, or one whose bytes
+        do not hash to its digest, leaves the session where it was. Parts go one at a
         time (409 upload_busy while one arrives). Needs no stopped server, so
         starting the server midway costs only the commit's refusal until it is
         stopped again.
@@ -5186,6 +5253,14 @@ paths:
           required: true
           description: The byte position the part starts at, the session's received.
           schema: { type: integer, format: int64, minimum: 0 }
+        - name: Content-Digest
+          in: header
+          required: true
+          description: >-
+            The SHA-256 of the body as RFC 9530 sends it, sha-256=:<base64>:.
+            Other algorithms listed beside it are ignored. Bytes that do not hash
+            to it were changed on the way and are refused whole.
+          schema: { type: string, example: 'sha-256=:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=:' }
       requestBody:
         required: true
         content:
@@ -5198,7 +5273,12 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/FileUploadSession' }
         '400':
-          description: A missing or malformed offset (bad_request), a body that ended before its Content-Length (upload_incomplete), or a malformed server name (bad_name).
+          description: >-
+            A missing or malformed offset (bad_request), a body that ended before
+            its Content-Length (upload_incomplete), no Content-Digest
+            (digest_required), a malformed one (bad_digest), bytes that do not hash
+            to it (digest_mismatch; the part was not taken, so send it again), or a
+            malformed server name (bad_name).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -7287,13 +7367,22 @@ paths:
         the API, a larger context goes through the chunked upload at
         /api/v1/me/submissions/{id}/context/upload instead. An upload that would push the
         caller past their per-user stored-context budget is refused with 403
-        before the excess is persisted. Returns 503 when the deployment's context
-        store has no implemented upload transport.
+        before the excess is persisted. The body's SHA-256 is required as
+        Content-Digest; bytes that do not hash to it were changed on the way,
+        and none of them replace the context stored before. Returns 503 when
+        the deployment's context store has no implemented upload transport.
       x-felis-face: [external]
       x-felis-tier: app
       security: [{ sessionCookie: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
+        - name: Content-Digest
+          in: header
+          required: true
+          description: >-
+            The SHA-256 of the body as RFC 9530 sends it, sha-256=:<base64>:.
+            Other algorithms listed beside it are ignored.
+          schema: { type: string, example: 'sha-256=:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=:' }
       requestBody:
         required: true
         content:
@@ -7306,7 +7395,14 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Submission' }
         '400':
-          $ref: '#/components/responses/BadRequest'
+          description: >-
+            A body that is not a gzip tarball or is over the context cap
+            (bad_request), no Content-Digest (digest_required), a malformed one
+            (bad_digest), or bytes that do not hash to it (digest_mismatch;
+            nothing was stored, so send it again).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -7367,8 +7463,9 @@ paths:
         upload_offset_mismatch and the client reads GET for where to resume. The
         first part must open with the gzip magic (400). The staged total meets
         the same context cap (400) and storage budget (403) as a single upload.
-        A part that breaks off is cut back off, so the staged bytes are always a
-        prefix of the file. One request per upload at a time (409 upload_busy).
+        A part that breaks off is cut back off, and so is one whose bytes do not
+        hash to its Content-Digest, so the staged bytes are always a prefix of
+        the file. One request per upload at a time (409 upload_busy).
         Staged bytes untouched for 24 hours are deleted. The budget check reads
         blob sizes remembered for up to a minute; when a size has to be read and
         the uploads store does not answer, the answer is 503
@@ -7380,6 +7477,13 @@ paths:
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
         - { name: offset, in: query, required: true, schema: { type: integer, format: int64, minimum: 0 } }
+        - name: Content-Digest
+          in: header
+          required: true
+          description: >-
+            The SHA-256 of the part as RFC 9530 sends it, sha-256=:<base64>:.
+            Other algorithms listed beside it are ignored.
+          schema: { type: string, example: 'sha-256=:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=:' }
       requestBody:
         required: true
         content:
@@ -7392,7 +7496,15 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ContextUploadProgress' }
         '400':
-          $ref: '#/components/responses/BadRequest'
+          description: >-
+            A missing or malformed offset, a first part without the gzip magic
+            or a total over the context cap (bad_request), no Content-Digest
+            (digest_required), a malformed one (bad_digest), or bytes that do
+            not hash to it (digest_mismatch; the part was cut back off, so read
+            where the upload stands and send it again).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
