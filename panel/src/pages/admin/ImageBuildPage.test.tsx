@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import i18next from "i18next";
@@ -98,6 +98,21 @@ describe("ImageBuildPage list", () => {
     renderPage();
     await userEvent.click(await screen.findByRole("button", { name: t("common:pagination_next") }));
     await vi.waitFor(() => expect(calls.listBuilds).toHaveBeenLastCalledWith({ query: undefined, limit: 10, offset: 10 }));
+  });
+
+  // The clock moves only when the test moves it, so the page is turned before
+  // the search box's pause has run out however fast the machine is.
+  it("keeps a page turned to right after the list loads", async () => {
+    vi.useFakeTimers();
+    calls.listBuilds.mockResolvedValue(page([MINE], 25));
+    renderPage();
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(screen.getByText(MINE.image_ref)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: t("common:pagination_next") }));
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(calls.listBuilds).toHaveBeenLastCalledWith({ query: undefined, limit: 10, offset: 10 });
+    await act(() => vi.advanceTimersByTimeAsync(1_000));
+    expect(calls.listBuilds).toHaveBeenLastCalledWith({ query: undefined, limit: 10, offset: 10 });
   });
 
   it("searches on the server, sending a status typed as the badge shows it by its code, from page one", async () => {

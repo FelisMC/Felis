@@ -158,13 +158,17 @@ export function ImageBuildPage() {
   const [search, setSearch] = useState("");
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
+  // A search already asked (the first render's included) starts no timer, so
+  // a page turned just after the list loads is not sent back to page one.
   useEffect(() => {
+    const next = serverQuery(search, t);
+    if (next === query) return;
     const timer = setTimeout(() => {
-      setQuery(serverQuery(search, t));
+      setQuery(next);
       setPage(1);
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [search, t]);
+  }, [search, t, query]);
 
   const listBuilds = useCallback(
     () => api.listBuilds({ query: query || undefined, limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE }),

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import i18next from "i18next";
@@ -76,6 +76,26 @@ describe("MySubmissionsPage", () => {
     );
     expect(screen.getByRole("button", { name: "All Statuses (14)" })).toBeTruthy();
     await vi.waitFor(() => expect(screen.queryByText(/^Page \d+ of/)).toBeNull());
+  });
+
+  // The clock moves only when the test moves it, so the page is turned before
+  // the search box's pause has run out however fast the machine is.
+  it("keeps a page turned to right after the list loads", async () => {
+    vi.useFakeTimers();
+    render(
+      <MemoryRouter>
+        <MySubmissionsPage />
+      </MemoryRouter>,
+    );
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(screen.getByText("Page 1 of 2")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(calls.listMySubmissions).toHaveBeenLastCalledWith({ limit: 10, offset: 10 });
+    await act(() => vi.advanceTimersByTimeAsync(1_000));
+    expect(calls.listMySubmissions).toHaveBeenLastCalledWith({ limit: 10, offset: 10 });
+    expect(screen.getByText("Page 2 of 2")).toBeTruthy();
   });
 
   it("refuses a file over the server's per-upload cap before sending it", async () => {

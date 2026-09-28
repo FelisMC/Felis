@@ -113,13 +113,17 @@ export function MySubmissionsPage() {
   const [statusFilter, setStatusFilter] = useState<"all" | SubmissionStatus>("all");
   const [page, setPage] = useState(1);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  // A search already asked (the first render's included) starts no timer, so
+  // a page turned just after the list loads is not sent back to page one.
   useEffect(() => {
+    const next = search.trim();
+    if (next === query) return;
     const timer = setTimeout(() => {
-      setQuery(search.trim());
+      setQuery(next);
       setPage(1);
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [search]);
+  }, [search, query]);
 
   const listMine = useCallback(
     () =>

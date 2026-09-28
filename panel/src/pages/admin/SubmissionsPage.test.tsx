@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import i18next from "i18next";
@@ -38,6 +38,7 @@ beforeEach(() => {
   calls.listSubmissions.mockResolvedValue(PAGE);
 });
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   return i18next.changeLanguage("en-US");
 });
@@ -82,6 +83,21 @@ describe("SubmissionsPage", () => {
     await vi.waitFor(() =>
       expect(calls.listSubmissions).toHaveBeenLastCalledWith({ status: "approved", query: "sky", limit: 10, offset: 0 }),
     );
+  });
+
+  // The clock moves only when the test moves it, so the page is turned before
+  // the search box's pause has run out however fast the machine is.
+  it("keeps a page turned to right after the queue loads", async () => {
+    vi.useFakeTimers();
+    renderPage();
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(screen.getByText("Page 1 of 3")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(calls.listSubmissions).toHaveBeenLastCalledWith({ limit: 10, offset: 10 });
+    await act(() => vi.advanceTimersByTimeAsync(1_000));
+    expect(calls.listSubmissions).toHaveBeenLastCalledWith({ limit: 10, offset: 10 });
+    expect(screen.getByText("Page 2 of 3")).toBeTruthy();
   });
 
   it("steps back to the last page that still has rows when its own page comes back empty", async () => {
