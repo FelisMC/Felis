@@ -1775,7 +1775,10 @@ expect "a write that fails halfway leaves the old file whole" \
 out="$(run_atomic "sync() { return 1; }; write_file_atomic '$wadir/old.env' 0600 < '$wadir/in.replace'")"
 expect "content that did not reach the disk does not replace the old file" "DIE: could not write $wadir/old.env" "$out"
 expect "the old file survives a failed sync" "DB_PASSWORD=old-and-whole" "$(cat "$wadir/old.env")"
-left="$(cd "$wadir" && ls -a | grep '^old\.env\.' || true)"
+left=""
+for p in "$wadir"/old.env.*; do
+  if [ -e "$p" ]; then left="$left${left:+ }${p##*/}"; fi
+done
 if [ -z "$left" ]; then
   echo "PASS a failed write leaves no temp file beside the old one"
 else
