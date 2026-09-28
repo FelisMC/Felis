@@ -17,11 +17,15 @@ name: ci
 #
 # release.yml calls this workflow (workflow_call) before it builds anything, so a tag passes
 # exactly these gates and there is one list of them.
+#
+# workflow_dispatch reruns the suite on a commit whose push produced no run, such as one
+# pushed while Actions was unavailable.
 on:
   push:
     branches: [main]
   pull_request:
   workflow_call:
+  workflow_dispatch:
 
 permissions:
   contents: read
