@@ -1111,15 +1111,6 @@ func (zeros) Read(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func mustRead(t *testing.T, r io.Reader) []byte {
-	t.Helper()
-	b, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return b
-}
-
 // TestExportUploadPace: the Job's upload waits for the browser longer than the
 // body-deadline grace, and then moves at the browser's pace, without being cut
 // off; a body that stops moving for exportStall is.

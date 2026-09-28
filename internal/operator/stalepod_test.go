@@ -93,7 +93,7 @@ func TestSpecChangeReplacesAPodThatGaveUp(t *testing.T) {
 	// The admin corrects the image; the StatefulSet takes the new template but,
 	// the pod never having been ready, leaves the pod as it is.
 	editImage(t, c, "registry.internal/felis/paper:fixed")
-	s = at(time.Hour + time.Second)
+	at(time.Hour + time.Second)
 	if !podPresent(t, c) {
 		t.Fatal("the pod was deleted before the StatefulSet had observed the new template")
 	}
