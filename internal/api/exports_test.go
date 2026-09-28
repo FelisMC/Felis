@@ -592,7 +592,7 @@ func TestExportExpiry(t *testing.T) {
 		stuck := ex.reqs[0]
 		v := beginExport(t, ext, "/api/v1/servers/creative/backups/bk2/export", "admin1")
 		moving := ex.reqs[1]
-		uploadExport(a.InternalHandler(), moving.ID, moving.Token, strings.NewReader("archive"), contentDigestOf("archive"))
+		up := uploadExport(a.InternalHandler(), moving.ID, moving.Token, strings.NewReader("archive"), contentDigestOf("archive"))
 		waitExportReady(t, ext, v.Ticket, "admin1")
 
 		clock.Add(int64(exportPendingTTL/time.Second) - 1)
@@ -611,6 +611,14 @@ func TestExportExpiry(t *testing.T) {
 		case job := <-ex.stopped:
 			t.Fatalf("also stopped %s, whose upload was waiting for its browser", job)
 		case <-time.After(50 * time.Millisecond):
+		}
+		// Its browser takes it, so the upload's handler has returned before the
+		// next subtest changes the claim TTL that handler reads.
+		if w := do(ext, "GET", "/api/v1/exports/"+v.Ticket+"/download", "", as("admin1")); w.Code != http.StatusOK || w.Body.String() != "archive" {
+			t.Fatalf("download of the waiting export = %d %q", w.Code, w.Body.String())
+		}
+		if w := awaitUpload(t, up); w.Code != http.StatusNoContent {
+			t.Fatalf("upload answered %d %s, want 204", w.Code, w.Body.String())
 		}
 	})
 
