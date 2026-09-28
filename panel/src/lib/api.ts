@@ -12,6 +12,8 @@ import type {
   CreateUserRequest,
   ExportStatus,
   ExportTicket,
+  FileOp,
+  FileUploadSession,
   FleetServer,
   Identity,
   KickResult,
@@ -748,9 +750,11 @@ export const api = rejectingSync({
   // volume is RWO), so callers gate on phase === "Stopped". The path travels as a
   // query parameter — a file path contains "/" and never round-trips through a
   // path segment. Content is []byte on the wire, which Go's encoding/json renders
-  // as base64, so it is binary-safe in both directions.
+  // as base64, so it is binary-safe in both directions. A listing also says how
+  // much room the world volume has (free_bytes), so an upload too big for it is
+  // refused before it is sent.
   listServerFiles: (name: string, path: string) =>
-    request<{ path: string; entries: ServerFileEntry[]; truncated: boolean }>(
+    request<{ path: string; entries: ServerFileEntry[]; truncated: boolean; free_bytes: number }>(
       "GET",
       urlPath`/servers/${name}/files` + `?path=${encodeURIComponent(path)}`,
     ),
@@ -827,6 +831,66 @@ export const api = rejectingSync({
         (overwrite ? "&overwrite=true" : ""),
       file,
       opts,
+    ),
+
+  // A file too big for one request goes up in parts (components/files/
+  // sessionUpload.ts drives it): begin a session for its path and size, which
+  // reserves room for all of it; put each part at its byte offset; then commit,
+  // which answers at once with the op landing it (watch listServerFileOps). A
+  // session answers only the account and server it was begun for, stays until
+  // its file has been fetched whole once, and is dropped after 6 hours idle.
+  beginServerFileUpload: (name: string, path: string, size: number) =>
+    request<FileUploadSession>(
+      "POST",
+      urlPath`/servers/${name}/files/uploads` + `?path=${encodeURIComponent(path)}`,
+      { size },
+    ),
+
+  getServerFileUpload: (name: string, id: string) =>
+    request<FileUploadSession>("GET", urlPath`/servers/${name}/files/uploads/${id}`),
+
+  putServerFileUploadPart: (
+    name: string,
+    id: string,
+    offset: number,
+    part: Blob,
+    opts?: { onProgress?: (sent: number) => void; signal?: AbortSignal },
+  ) =>
+    sendWithProgress<FileUploadSession>(
+      "PUT",
+      urlPath`/servers/${name}/files/uploads/${id}` + `?offset=${offset}`,
+      part,
+      opts,
+    ),
+
+  deleteServerFileUpload: (name: string, id: string) =>
+    request<null>("DELETE", urlPath`/servers/${name}/files/uploads/${id}`),
+
+  commitServerFileUpload: (name: string, id: string, overwrite: boolean) =>
+    request<{ op: FileOp }>("POST", urlPath`/servers/${name}/files/uploads/${id}/commit`, { overwrite }),
+
+  // unzipServerFile extracts a .zip into the folder holding it, in the
+  // background. Without overwrite an archive that would replace files fails
+  // file_exists and lists them, to be confirmed and run again with overwrite.
+  unzipServerFile: (name: string, path: string, overwrite: boolean) =>
+    request<{ op: FileOp }>(
+      "POST",
+      urlPath`/servers/${name}/files/unzip` + `?path=${encodeURIComponent(path)}`,
+      { overwrite },
+    ),
+
+  // listServerFileOps is the server's running op, if any, and those that ended
+  // within the last 30 minutes, newest first.
+  listServerFileOps: (name: string) =>
+    request<{ ops: FileOp[] }>("GET", urlPath`/servers/${name}/files/ops`),
+
+  // downloadServerFile starts an export of one file, or of a folder as a zip,
+  // and answers its ticket (exportStatus, then exportDownloadURL). The world is
+  // held until the download ends.
+  downloadServerFile: (name: string, path: string, dir: boolean) =>
+    request<ExportTicket>(
+      "POST",
+      urlPath`/servers/${name}/files/download` + `?path=${encodeURIComponent(path)}&dir=${dir}`,
     ),
 
   // Account linking (spec §10). Both are POST: start reports status from the
@@ -1307,6 +1371,15 @@ export function humanizeError(e: unknown): string {
       return t("upload_incomplete");
     case "length_required":
       return t("length_required");
+    // An upload sent in parts: the session is gone (cancelled, landed, idle for
+    // 6 hours, or felis-api restarted), or the account holds four already.
+    case "upload_not_found":
+      return t("upload_not_found");
+    case "too_many_uploads":
+      return t("too_many_uploads");
+    // Client-side: the op being watched dropped out of the ops list.
+    case "op_lost":
+      return t("op_lost");
     case "jobs_unavailable":
       return t("jobs_unavailable");
     // Builds, uploads and review: terminal-state conflicts and unwired subsystems.

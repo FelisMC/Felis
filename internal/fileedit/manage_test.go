@@ -491,17 +491,39 @@ func TestUpload(t *testing.T) {
 		}
 	})
 
-	t.Run("over the cap is too_large and never fetched; at the cap is fetched", func(t *testing.T) {
+	t.Run("more than the volume has free is no_space and never fetched; exactly the free room is fetched", func(t *testing.T) {
 		root, _ := worldRoot(t)
+		stubStatfs(t, uint64(len(jar)), 1<<30)
 		src := &fakeSource{body: jar}
-		res, err := send(t, root, "big.jar", src.upload(MaxUploadBytes+1, ""), false)
-		if err != nil || res.Code != CodeTooLarge || src.opened != 0 {
-			t.Fatalf("result = %+v, %v, opened %d", res, err, src.opened)
+		res, err := send(t, root, "big.jar", src.upload(int64(len(jar))+1, ""), false)
+		if err != nil || res.Code != CodeNoSpace || res.Need != int64(len(jar))+1 || res.Avail != int64(len(jar)) || src.opened != 0 {
+			t.Fatalf("result = %+v, %v, opened %d; want no_space with need %d, avail %d", res, err, src.opened, len(jar)+1, len(jar))
 		}
-		// At the cap the size passes and the transfer starts; this source then
-		// comes up short, which is a broken transfer rather than a refusal.
-		if _, err := send(t, root, "big.jar", src.upload(MaxUploadBytes, ""), false); err == nil || src.opened != 1 {
-			t.Fatalf("at the cap: err = %v, opened %d; want a fetch", err, src.opened)
+		assertAbsent(t, filepath.Join(root, "big.jar"))
+		if res, err := send(t, root, "big.jar", whole(src), false); err != nil || res.Code != "" || src.opened != 1 {
+			t.Fatalf("at the free room: result = %+v, %v, opened %d; want it landed", res, err, src.opened)
+		}
+	})
+
+	// The editor used to stop at MaxUploadBytes; a file sent in parts is bounded
+	// by the volume alone.
+	t.Run("past the single-request limit is fetched", func(t *testing.T) {
+		root, _ := worldRoot(t)
+		stubStatfs(t, 1<<40, 1<<41)
+		src := &fakeSource{body: jar}
+		// This source then comes up short, which is a broken transfer, not a refusal.
+		if _, err := send(t, root, "big.jar", src.upload(MaxUploadBytes+1, ""), false); err == nil || src.opened != 1 {
+			t.Fatalf("err = %v, opened %d; want a fetch", err, src.opened)
+		}
+	})
+
+	t.Run("progress hears every byte", func(t *testing.T) {
+		root, _ := worldRoot(t)
+		var last, calls, total int64
+		res := exec(t, root, Request{Op: OpUpload, Path: "x.jar", Upload: whole(&fakeSource{body: jar}),
+			Progress: func(done, all int64) { calls++; last, total = done, all }})
+		if res.Code != "" || calls == 0 || last != int64(len(jar)) || total != int64(len(jar)) {
+			t.Fatalf("result = %+v; progress calls %d, last %d of %d; want the whole %d", res, calls, last, total, len(jar))
 		}
 	})
 

@@ -229,11 +229,11 @@ export interface BackupView {
 /** ServerJob is one row of GET /api/v1/servers/{name}/jobs — the observable
  *  outcome of an async backup/restore/export Job. The API only enqueues Jobs, so
  *  this projection is how a 202 that later failed becomes visible in the panel.
- *  An export_world Job holds the world until its download ends; an
- *  export_backup Job only reads the backup store. */
+ *  An export_world or export_files Job holds the world until its download
+ *  ends; an export_backup Job only reads the backup store. */
 export interface ServerJob {
   name: string;
-  kind: string; // "backup" | "restore" | "export_world" | "export_backup"
+  kind: string; // "backup" | "restore" | "export_world" | "export_backup" | "export_files"
   state: string; // "running" | "succeeded" | "failed"
   message?: string;
   started_at?: string;
@@ -416,6 +416,48 @@ export interface ServerFileEntry {
   size: number;
   is_dir: boolean;
   mod_time: string;
+}
+
+/** FileUploadSession is where an upload sent in parts stands
+ *  (internal/api/handlers_fileops.go fileSessionView): the next part starts at
+ *  `received` and carries at most `part_max_bytes`. */
+export interface FileUploadSession {
+  id: string;
+  path: string;
+  size: number;
+  received: number;
+  part_max_bytes: number;
+}
+
+/** FileOp is one background upload landing or extraction
+ *  (handlers_fileops.go fileOpView). `done` and `total` are bytes, both 0 until
+ *  the Job first reports; `files` and `bytes` are what an extraction wrote. */
+export interface FileOp {
+  id: string;
+  op: "upload" | "unzip";
+  path: string;
+  state: "running" | "succeeded" | "failed";
+  started_at: string;
+  finished_at?: string;
+  done: number;
+  total: number;
+  files?: number;
+  bytes?: number;
+  error?: FileOpError;
+}
+
+/** FileOpError is why an op failed (handlers_fileops.go fileOpError). On
+ *  file_exists from an extraction, `conflicts` lists the first 200 files it
+ *  would replace and `conflict_count` all of them; on volume_full, `need` and
+ *  `avail` are bytes. */
+export interface FileOpError {
+  code: string;
+  message: string;
+  entry?: string;
+  conflicts?: string[];
+  conflict_count?: number;
+  need?: number;
+  avail?: number;
 }
 
 /** Build mirrors an image_builds row (spec §6, §16). */

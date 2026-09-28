@@ -43,6 +43,7 @@
   "job_scheduled": "定时备份",
   "job_export_world": "世界导出",
   "job_export_backup": "备份下载",
+  "job_export_files": "文件下载",
   "job_running": "进行中",
   "job_succeeded": "成功",
   "job_failed": "失败",

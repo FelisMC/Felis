@@ -4,6 +4,8 @@ import {
   AlertTriangle,
   ArrowUp,
   ChevronRight,
+  Download,
+  FileArchive,
   FilePlus,
   FileText,
   Folder,
@@ -25,8 +27,10 @@ import { MessageLine } from "@/components/MessageLine";
 import { InlineConfirm } from "@/components/InlineConfirm";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { NameDialog } from "@/components/files/NameDialog";
+import { FileOps } from "@/components/files/FileOps";
 import { UploadQueue } from "@/components/files/UploadQueue";
-import { MAX_UPLOAD_BYTES, useUploads } from "@/components/files/useUploads";
+import { useFileOps } from "@/components/files/useFileOps";
+import { useUploads } from "@/components/files/useUploads";
 import {
   SECRET_CONFIG_PATH,
   isManaged,
@@ -51,8 +55,9 @@ import { api, humanizeError } from "@/lib/api";
 import { STATUS_POLL_FAST_MS, useAsync, usePolling, useUnsavedGuard } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
 import { canManage, ownershipPending } from "@/lib/ownership";
+import { awaitExport, saveDownload } from "@/lib/download";
 import { formatBytes, formatRelative } from "@/lib/format";
-import type { ServerFileEntry } from "@/lib/types";
+import type { FileOp, ServerFileEntry } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /** The write ceiling, mirrored from fileedit.MaxWriteBytes (server truth). Reads
@@ -91,6 +96,12 @@ function decodeText(bytes: Uint8Array): string | null {
   }
 }
 
+/** isZip says whether a file is one the page offers to extract: only .zip is,
+ *  since extraction reads the zip format alone. */
+function isZip(name: string): boolean {
+  return name.toLowerCase().endsWith(".zip");
+}
+
 /** The name questions the page asks, each tied to the folder it was asked in. */
 type Naming =
   | { kind: "file" | "folder"; dir: string }
@@ -121,6 +132,9 @@ export function ServerFiles() {
   const [truncated, setTruncated] = useState(false);
   const [listErr, setListErr] = useState<unknown>(null);
   const [listLoading, setListLoading] = useState(false);
+  // Bytes free on the world volume by the latest listing; null while unknown
+  // (the Job reports 0 when it could not tell).
+  const [free, setFree] = useState<number | null>(null);
   const [msg, setMsg] = useState<{ kind: "success" | "error"; text: string } | null>(null);
 
   // Every load takes a ticket and only the newest one lands. The rows and the
@@ -137,6 +151,7 @@ export function ServerFiles() {
         if (ticket !== loadSeq.current) return;
         setEntries(sortEntries(r.entries ?? []));
         setTruncated(r.truncated === true);
+        setFree(r.free_bytes > 0 ? r.free_bytes : null);
         setDir(p);
       } catch (e) {
         if (ticket !== loadSeq.current) return;
@@ -275,12 +290,59 @@ export function ServerFiles() {
     }
   }
 
+  // A background op (an extraction, or a file landing from parts) holds the
+  // world until it ends, and goes on with the page closed. One that succeeded
+  // changed the folder, so the listing is reread; an extraction started here
+  // that stopped at files it would replace asks about them at once.
+  const startedHere = useRef(new Set<string>());
+  const [conflicts, setConflicts] = useState<FileOp | null>(null);
+  const [conflictsOpen, setConflictsOpen] = useState(false);
+  function showConflicts(op: FileOp) {
+    setConflicts(op);
+    setConflictsOpen(true);
+  }
+  function opEnded(op: FileOp) {
+    if (op.state === "succeeded") void load(dir);
+    else if (op.op === "unzip" && op.error?.code === "file_exists" && startedHere.current.has(op.id)) {
+      showConflicts(op);
+    }
+  }
+  const fileOps = useFileOps(name, owned && stopped, opEnded);
+
+  // A download holds the world while felis-api gets it ready, and a change
+  // sent meanwhile could only be refused.
+  const [downloading, setDownloading] = useState<string | null>(null);
+  const [unzipping, setUnzipping] = useState<string | null>(null);
+  const alive = useRef(true);
+  useEffect(
+    () => () => {
+      alive.current = false;
+    },
+    [],
+  );
+
   // Uploads run one at a time. The listing is reread once the queue has drained
   // rather than after each file: every listing is a Job of its own.
   const landedSince = useRef(false);
-  const uploads = useUploads(name, () => {
-    landedSince.current = true;
+  const uploads = useUploads(name, {
+    onLanded: () => {
+      landedSince.current = true;
+    },
+    onOp: fileOps.ignore,
+    hold: fileOps.running || downloading !== null || unzipping !== null,
+    free,
   });
+  // Each change is a Job holding the world lock, so while anything else holds
+  // it a change could only be refused.
+  const changing = uploads.busy || fileOps.running || downloading !== null || unzipping !== null;
+  // Names what holds the lock now: queued uploads wait on an op or a download
+  // too, so those come first.
+  const waitTitle =
+    fileOps.running || unzipping !== null
+      ? t("wait_for_op")
+      : downloading !== null
+        ? t("wait_for_download")
+        : t("wait_for_uploads");
   useEffect(() => {
     if (uploads.busy || !landedSince.current) return;
     landedSince.current = false;
@@ -382,6 +444,76 @@ export function ServerFiles() {
     await api.deleteServerFile(name, p);
     setMsg({ kind: "success", text: t("deleted", { path: p }) });
     void load(dir);
+  }
+
+  // unzip starts extracting the archive at p into its own folder. Without
+  // overwrite the op stops before touching anything when a file would be
+  // replaced, and names those files.
+  async function unzip(p: string, overwrite: boolean) {
+    const { op } = await api.unzipServerFile(name, p, overwrite);
+    startedHere.current.add(op.id);
+    fileOps.started(op);
+    if (op.state !== "running") opEnded(op);
+  }
+
+  async function startUnzip(entry: ServerFileEntry) {
+    const p = joinPath(dir, entry.name);
+    setMsg(null);
+    setUnzipping(p);
+    try {
+      await unzip(p, false);
+    } catch (e) {
+      setMsg({ kind: "error", text: humanizeError(e) });
+    } finally {
+      setUnzipping(null);
+    }
+  }
+
+  async function overwriteConflicts() {
+    if (!conflicts) return;
+    await unzip(conflicts.path, true);
+    fileOps.dismiss(conflicts.id);
+  }
+
+  // download has felis-api get the file, or the folder as a .zip, ready and
+  // hands it to the browser, as a backup download does. The two secrets never
+  // leave: server.properties comes with rcon.password redacted, and the
+  // folder holding paper-global.yml comes without it.
+  async function download(entry: ServerFileEntry) {
+    const p = joinPath(dir, entry.name);
+    setMsg(null);
+    setDownloading(p);
+    try {
+      const tk = await api.downloadServerFile(name, p, entry.is_dir);
+      const s = await awaitExport(tk.ticket, () => alive.current);
+      if (s === null) return;
+      if (s.state === "failed") {
+        setMsg({
+          kind: "error",
+          text: s.message ? t("download_failed_because", { reason: s.message }) : t("download_failed"),
+        });
+        return;
+      }
+      saveDownload(await api.exportDownloadURL(tk.ticket), tk.filename);
+      const note =
+        p === "server.properties"
+          ? "download_started_props"
+          : p === parentOf(SECRET_CONFIG_PATH)
+            ? "download_started_config"
+            : "download_started";
+      setMsg({ kind: "success", text: t(note, { filename: tk.filename }) });
+    } catch (e) {
+      if (!alive.current) return;
+      setMsg({
+        kind: "error",
+        text:
+          (e as { code?: string }).code === "export_busy"
+            ? t("download_busy")
+            : t("download_failed_because", { reason: humanizeError(e) }),
+      });
+    } finally {
+      if (alive.current) setDownloading(null);
+    }
   }
 
   const back = <BackLink to={`/servers/${name}`} label={t("back_to_console")} />;
@@ -543,15 +675,13 @@ export function ServerFiles() {
                     })}
                   </nav>
                   <div className="ml-auto flex items-center gap-1">
-                    {/* Each change is a Job holding the world lock, so while an
-                        upload holds it a change could only be refused. */}
                     <Button
                       size="sm"
                       variant="ghost"
                       onClick={() => ask({ kind: "file", dir })}
-                      disabled={uploads.busy}
+                      disabled={changing}
                       aria-label={t("new_file")}
-                      title={uploads.busy ? t("wait_for_uploads") : t("new_file")}
+                      title={changing ? waitTitle : t("new_file")}
                     >
                       <FilePlus className="h-4 w-4" />
                       <span className="hidden md:inline">{t("new_file")}</span>
@@ -560,9 +690,9 @@ export function ServerFiles() {
                       size="sm"
                       variant="ghost"
                       onClick={() => ask({ kind: "folder", dir })}
-                      disabled={uploads.busy}
+                      disabled={changing}
                       aria-label={t("new_folder")}
-                      title={uploads.busy ? t("wait_for_uploads") : t("new_folder")}
+                      title={changing ? waitTitle : t("new_folder")}
                     >
                       <FolderPlus className="h-4 w-4" />
                       <span className="hidden md:inline">{t("new_folder")}</span>
@@ -572,7 +702,7 @@ export function ServerFiles() {
                       variant="outline"
                       onClick={() => fileInput.current?.click()}
                       aria-label={t("upload")}
-                      title={t("upload_hint", { limit: formatBytes(MAX_UPLOAD_BYTES) })}
+                      title={t("upload_hint")}
                     >
                       <Upload className="h-4 w-4" />
                       <span className="hidden sm:inline">{t("upload")}</span>
@@ -591,7 +721,10 @@ export function ServerFiles() {
                     <Button
                       size="sm"
                       variant="ghost"
-                      onClick={() => void load(dir)}
+                      onClick={() => {
+                        void load(dir);
+                        fileOps.refresh();
+                      }}
                       disabled={listLoading}
                       aria-label={t("refresh")}
                       title={t("refresh")}
@@ -600,6 +733,13 @@ export function ServerFiles() {
                     </Button>
                   </div>
                 </div>
+
+                <FileOps
+                  ops={fileOps.ops}
+                  error={fileOps.error}
+                  onDismiss={fileOps.dismiss}
+                  onConflicts={showConflicts}
+                />
 
                 <UploadQueue
                   items={uploads.items}
@@ -672,18 +812,58 @@ export function ServerFiles() {
                                 {/* The actions stop at their own buttons: a click
                                     here must not also open the row. */}
                                 <div className="flex items-center justify-end gap-0.5" onClick={(ev) => ev.stopPropagation()}>
+                                  {!e.is_dir && isZip(e.name) && (
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
+                                      onClick={() => void startUnzip(e)}
+                                      disabled={changing}
+                                      aria-label={t("unzip_item", { name: e.name })}
+                                      title={changing ? waitTitle : t("unzip_item", { name: e.name })}
+                                    >
+                                      {unzipping === p ? (
+                                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                      ) : (
+                                        <FileArchive className="h-3.5 w-3.5" />
+                                      )}
+                                    </Button>
+                                  )}
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
+                                    onClick={() => void download(e)}
+                                    disabled={p === SECRET_CONFIG_PATH || changing}
+                                    aria-label={t(e.is_dir ? "download_folder_item" : "download_item", { name: e.name })}
+                                    title={
+                                      p === SECRET_CONFIG_PATH
+                                        ? t("secret_config_no_download")
+                                        : downloading === p
+                                          ? t("download_preparing", { name: e.name })
+                                          : changing
+                                            ? waitTitle
+                                            : t(e.is_dir ? "download_folder_item" : "download_item", { name: e.name })
+                                    }
+                                  >
+                                    {downloading === p ? (
+                                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                    ) : (
+                                      <Download className="h-3.5 w-3.5" />
+                                    )}
+                                  </Button>
                                   <Button
                                     size="sm"
                                     variant="ghost"
                                     className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
                                     onClick={() => ask({ kind: "rename", dir, entry: e })}
-                                    disabled={managed || uploads.busy}
+                                    disabled={managed || changing}
                                     aria-label={t("rename_item", { name: e.name })}
                                     title={
                                       managed
                                         ? t("managed_no_rename")
-                                        : uploads.busy
-                                          ? t("wait_for_uploads")
+                                        : changing
+                                          ? waitTitle
                                           : t("rename_item", { name: e.name })
                                     }
                                   >
@@ -698,9 +878,9 @@ export function ServerFiles() {
                                       setDeleting(e);
                                       setDeleteOpen(true);
                                     }}
-                                    disabled={uploads.busy}
+                                    disabled={changing}
                                     aria-label={t("delete_item", { name: e.name })}
-                                    title={uploads.busy ? t("wait_for_uploads") : t("delete_item", { name: e.name })}
+                                    title={changing ? waitTitle : t("delete_item", { name: e.name })}
                                   >
                                     <Trash2 className="h-3.5 w-3.5" />
                                   </Button>
@@ -865,6 +1045,45 @@ export function ServerFiles() {
         confirmLabel={t("delete")}
         onConfirm={deleteEntry}
       />
+
+      <ConfirmDialog
+        open={conflictsOpen}
+        onOpenChange={setConflictsOpen}
+        title={t("unzip_conflicts_title", {
+          name: conflicts?.path.split("/").pop() ?? "",
+          count: conflictCount(conflicts),
+        })}
+        description={t("unzip_conflicts_body")}
+        confirmLabel={t("unzip_overwrite")}
+        onConfirm={overwriteConflicts}
+      >
+        <ConflictList op={conflicts} />
+      </ConfirmDialog>
     </>
+  );
+}
+
+function conflictCount(op: FileOp | null): number {
+  return op?.error?.conflict_count ?? op?.error?.conflicts?.length ?? 0;
+}
+
+// ConflictList names the files an extraction would replace. The op carries the
+// first ones and the full count; the rest are counted.
+function ConflictList({ op }: { op: FileOp | null }) {
+  const { t } = useTranslation("files");
+  const listed = op?.error?.conflicts ?? [];
+  const more = conflictCount(op) - listed.length;
+  if (listed.length === 0) return null;
+  return (
+    <div className="grid gap-1.5">
+      <ul className="max-h-48 overflow-y-auto rounded-md border border-border bg-muted/30 px-3 py-2 font-mono text-xs">
+        {listed.map((path) => (
+          <li key={path} className="truncate py-0.5" title={path}>
+            {path}
+          </li>
+        ))}
+      </ul>
+      {more > 0 && <p className="text-xs text-muted-foreground">{t("unzip_conflicts_more", { count: more })}</p>}
+    </div>
   );
 }

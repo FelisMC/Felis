@@ -23,6 +23,8 @@ interface Props {
   /** Runs the action. The dialog closes when it resolves; a rejection is shown in
    *  the dialog, which stays open so the action can be retried or dismissed. */
   onConfirm: () => Promise<void>;
+  /** Shown under the description, for what a sentence cannot hold (a list). */
+  children?: ReactNode;
 }
 
 // ConfirmDialog asks before an action that cannot be taken back, in the panel's
@@ -38,6 +40,7 @@ export function ConfirmDialog({
   cancelLabel,
   confirmVariant = "destructive",
   onConfirm,
+  children,
 }: Props) {
   const { t } = useTranslation("common");
   const [busy, setBusy] = useState(false);
@@ -69,6 +72,7 @@ export function ConfirmDialog({
           <DialogTitle>{title}</DialogTitle>
           {description && <DialogDescription>{description}</DialogDescription>}
         </DialogHeader>
+        {children}
         {error && <MessageLine kind="error" message={error} compact />}
         <ConfirmFooter
           onCancel={() => setOpen(false)}

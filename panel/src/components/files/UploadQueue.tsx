@@ -79,10 +79,16 @@ function UploadRow({
 }) {
   const { t } = useTranslation("files");
   const { file, state } = item;
-  const percent = file.size > 0 ? Math.min(100, Math.floor((item.sent * 100) / file.size)) : 100;
-  // The body is all sent and the Job is landing it: seconds more, with no bytes
-  // left to count.
+  // The body is all sent and the Job is landing it. A file sent in one request
+  // lands in seconds, with no bytes left to count; one sent in parts is fetched
+  // by its Job afresh, which reports how far it has got.
   const landing = state === "uploading" && item.sent >= file.size;
+  const written = landing && item.landing !== null && item.landing.total > 0 ? item.landing : null;
+  const percent = written
+    ? Math.min(100, Math.floor((written.done * 100) / written.total))
+    : file.size > 0
+      ? Math.min(100, Math.floor((item.sent * 100) / file.size))
+      : 100;
 
   const icon = {
     queued: <Clock className="h-4 w-4 text-muted-foreground" />,
@@ -94,6 +100,7 @@ function UploadRow({
 
   let status: string;
   if (state === "queued") status = t("upload_queued");
+  else if (written) status = t("upload_landing_progress", { percent });
   else if (landing) status = t("upload_landing");
   else if (state === "uploading") status = t("upload_sending", { sent: formatBytes(item.sent), total: formatBytes(file.size), percent });
   else if (state === "done") status = t("upload_done");
@@ -140,7 +147,7 @@ function UploadRow({
               <div
                 className={cn(
                   "h-full rounded-full bg-primary transition-[width] duration-300 ease-out",
-                  landing && "animate-pulse",
+                  landing && !written && "animate-pulse",
                 )}
                 style={{ width: `${percent}%` }}
               />

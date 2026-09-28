@@ -148,7 +148,7 @@ export interface paths {
         };
         /**
          * Stream one staged file upload to the Job landing it (one-time bearer token).
-         * @description PUT /api/v1/servers/{name}/files/upload stages the body on felis-api's disk and creates a Job to land it in the world volume; the Job fetches the bytes here. The Job holds no service token, so the route is public on the internal face and the bearer token minted with the upload is the whole check. The token opens its upload once. An unknown id, a wrong or missing token and a spent token are all the same 404, so the route says nothing about which uploads exist.
+         * @description PUT /api/v1/servers/{name}/files/upload stages the body on felis-api's disk and creates a Job to land it in the world volume; the Job fetches the bytes here. The Job holds no service token, so the route is public on the internal face and the bearer token minted with the upload is the whole check. The token opens its upload once. An unknown id, a wrong or missing token and a spent token are all the same 404, so the route says nothing about which uploads exist. An upload session committed through POST …/files/uploads/{id}/commit is fetched here the same way, under the session id; it stays staged until it has been sent whole once, so a Job that failed before then can be committed again.
          */
         get: operations["internalFileUpload"];
         put?: never;
@@ -1285,7 +1285,7 @@ export interface paths {
         put?: never;
         /**
          * Start downloading one backup (owner-or-admin plus a former-owner match).
-         * @description Starts a Job that reads the archive from the backup store and hands it to felis-api, which streams it to the browser (poll GET /exports/{ticket}, then open its download). The archive is checked against the sha256 recorded when it was written as it streams; a mismatch aborts the download. A user gets 404 for a backup outside their scope, as their list never shows it. One export per user at a time, 2 across the install, 6 per user per hour.
+         * @description Starts a Job that reads the archive from the backup store and hands it to felis-api, which streams it to the browser (poll GET /exports/{ticket}, then open its download). The Job checks the archive against the sha256 recorded when it was written as it streams; a mismatch cuts the download off short of its end. On the way out config/paper-global.yml (the cluster's forwarding secret) is left out and server.properties has its rcon.password redacted, so the download carries no Content-Length. A user gets 404 for a backup outside their scope, as their list never shows it. One export per user at a time, 2 across the install, 6 per user per hour.
          */
         post: operations["exportBackup"];
         delete?: never;
@@ -1305,7 +1305,7 @@ export interface paths {
         put?: never;
         /**
          * Start downloading a stopped server's world as it is now (owner-or-admin).
-         * @description Starts a Job that archives the server's data volume, read-only, and hands it to felis-api, which streams it to the browser (poll GET /exports/{ticket}, then open its download). The server must be fully stopped, and it cannot start until the download has ended or the Job's 2 hour deadline passes. Same limits as a backup export.
+         * @description Starts a Job that archives the server's data volume, read-only, and hands it to felis-api, which streams it to the browser (poll GET /exports/{ticket}, then open its download). The server must be fully stopped, and it cannot start until the download has ended or the Job's 2 hour deadline passes. The same two files are guarded as in a backup export, matched by the file itself, so a link to either under another name is guarded too. Same limits as a backup export.
          */
         post: operations["exportWorld"];
         delete?: never;
@@ -1462,6 +1462,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/servers/{name}/files/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start downloading one file or folder of a stopped server's world (owner-or-admin).
+         * @description An export (poll GET /exports/{ticket}, then open its download): a Job reads the file, or zips the folder, from the world volume read-only and hands it to felis-api, which streams it to the browser. A file saves under its own name with its length; a folder as NAME.zip, streamed without one, with symbolic links, devices and sockets left out. config/paper-global.yml, the cluster's forwarding secret, is refused as a file and left out of a folder, and server.properties goes out with its rcon.password redacted; both are matched by the file itself, so a link to either under another name is guarded too. The server cannot start until the download has ended. Two file downloads per user at a time, 4 across the install, 30 per user per hour, counted apart from world and backup exports. Audited as file.download.
+         */
+        post: operations["downloadServerFile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/servers/{name}/files/upload": {
         parameters: {
             query?: never;
@@ -1472,9 +1492,114 @@ export interface paths {
         get?: never;
         /**
          * Upload a file into a server's world volume (owner-or-admin; server must be stopped).
-         * @description Lands the raw request body as the file at path, up to 64 MiB — a plugin jar, a datapack, a world region. Content-Length is required (411 length_required). An existing file is 409 file_exists unless overwrite=true; a folder at the path is 400 bad_path either way. The body is staged on felis-api's disk first and then fetched by the file Job with a one-time token, so the world lock is taken only after the body has arrived and a slow upload holds off no backup. The file lands atomically: a synced temporary sibling is checked against the staged size and SHA-256, then renamed into place, so a failed upload leaves the old file whole. Same stopped-gate and os.Root containment as a write. Audited as file.upload.
+         * @description Lands the raw request body as the file at path, up to 64 MiB — a plugin jar, a datapack, a world region; a bigger file goes up as an upload session (POST …/files/uploads). Content-Length is required (411 length_required). An existing file is 409 file_exists unless overwrite=true; a folder at the path is 400 bad_path either way. The body is staged on felis-api's disk first and then fetched by the file Job with a one-time token, so the world lock is taken only after the body has arrived and a slow upload holds off no backup. The file lands atomically: a synced temporary sibling is checked against the staged size and SHA-256, then renamed into place, so a failed upload leaves the old file whole. Same stopped-gate and os.Root containment as a write. Audited as file.upload.
          */
         put: operations["uploadServerFile"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/servers/{name}/files/uploads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Begin an upload session for a file too big for one request (owner-or-admin; server must be stopped).
+         * @description A file of any size goes up in parts: this begins a session for path and the file's size, PUT …/uploads/{id}?offset= sends each part (at most part_max_bytes, 32 MiB, so each fits the edge's body limit), and POST …/uploads/{id}/commit lands it. There is no size ceiling but felis-api's staging disk, and room for the whole file is reserved here, so an upload that begins is one the disk can finish (507 upload_staging_full otherwise). A session belongs to the account and server it was begun for, answers no one else, and is dropped after 6 hours untouched. Four sessions per account at a time. Sessions do not survive a felis-api restart.
+         */
+        post: operations["beginServerFileUpload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/servers/{name}/files/uploads/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Where an upload session stands (owner-or-admin, the account that began it).
+         * @description received is where the next part starts: after a lost answer or a 409 upload_offset_mismatch, read it here and continue from there. Needs no stopped server.
+         */
+        get: operations["getServerFileUpload"];
+        /**
+         * Send one part of an upload session (owner-or-admin, the account that began it).
+         * @description The raw body is appended at offset, which must be where the session ends. Content-Length is required, and the part is taken whole or not at all: one cut short leaves the session where it was. Parts go one at a time (409 upload_busy while one arrives). Needs no stopped server, so starting the server midway costs only the commit's refusal until it is stopped again.
+         */
+        put: operations["putServerFileUploadPart"];
+        post?: never;
+        /** Cancel an upload session and free its room (owner-or-admin, the account that began it). */
+        delete: operations["deleteServerFileUpload"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/servers/{name}/files/uploads/{id}/commit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Land a finished upload session in the world volume (owner-or-admin; server must be stopped).
+         * @description Starts the Job that fetches the session's bytes from felis-api and lands them at its path, checked against their size and SHA-256 and renamed into place, so a failed landing leaves the old file whole. It answers at once with the op; GET …/files/ops reports how it ends (file_exists when a file is at the path and overwrite is not true). The Job holds the world volume while it runs, so the server cannot start meanwhile. A Job that fails before it has every byte leaves the session to commit again; once the bytes have gone to the Job the session is gone. Audited as file.upload.
+         */
+        post: operations["commitServerFileUpload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/servers/{name}/files/unzip": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Extract a .zip into the folder holding it (owner-or-admin; server must be stopped).
+         * @description Starts a Job that extracts the archive into a temporary folder beside it and moves the result into place, and answers at once with the op; GET …/files/ops reports how it ends. Nothing changes unless every entry is safe: an entry leaving the folder, an absolute path, or a link ends archive_unsafe or archive_symlink; an entry whose size differs from what the archive declares ends archive_invalid; a file where the archive has a folder, or the reverse, ends type_conflict. Without overwrite an archive that would replace any file ends file_exists with the files it would replace, for the caller to confirm and run again with overwrite. Names stored in GBK, as Windows zips in a Chinese locale have them, are read as such. The Job holds the world volume while it runs. Audited as file.unzip.
+         */
+        post: operations["unzipServerFile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/servers/{name}/files/ops": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A server's background uploads and extractions (owner-or-admin).
+         * @description Newest first: the one running, if any, and those that ended within the last 30 minutes, at most 10. Needs no stopped server.
+         */
+        get: operations["listServerFileOps"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -2907,6 +3032,88 @@ export interface components {
             state: "pending";
             /** @description What the download saves as. */
             filename: string;
+        };
+        /** @description Where an upload session stands (internal/api/handlers_fileops.go fileSessionView). */
+        FileUploadSession: {
+            /** @description 32 hex characters. */
+            id: string;
+            /** @description Where the file lands */
+            path: string;
+            /**
+             * Format: int64
+             * @description The file's length.
+             */
+            size: number;
+            /**
+             * Format: int64
+             * @description Bytes here so far; the next part starts here.
+             */
+            received: number;
+            /**
+             * Format: int64
+             * @description The most one part may carry.
+             */
+            part_max_bytes: number;
+        };
+        StartFileOp: {
+            /** @description Replace files already there. */
+            overwrite?: boolean;
+        };
+        /** @description One background upload or extraction (internal/api/handlers_fileops.go fileOpView). */
+        FileOp: {
+            id: string;
+            /** @enum {string} */
+            op: "upload" | "unzip";
+            /** @description The file landed */
+            path: string;
+            /** @enum {string} */
+            state: "running" | "succeeded" | "failed";
+            /** Format: date-time */
+            started_at: string;
+            /**
+             * Format: date-time
+             * @description Omitted while it runs.
+             */
+            finished_at?: string;
+            /**
+             * Format: int64
+             * @description Bytes landed or extracted so far; 0 before the first report.
+             */
+            done: number;
+            /**
+             * Format: int64
+             * @description Bytes in all; 0 before the first report.
+             */
+            total: number;
+            /** @description Files an extraction wrote. Omitted otherwise. */
+            files?: number;
+            /**
+             * Format: int64
+             * @description Bytes an extraction wrote. Omitted otherwise.
+             */
+            bytes?: number;
+            error?: components["schemas"]["FileOpError"];
+        };
+        /** @description Why an op failed (internal/api/handlers_fileops.go fileOpError). code is what the synchronous file routes answer for the same refusal (file_exists, volume_full, file_changed, not_found, bad_path), an extraction's own (archive_invalid, archive_unsafe, archive_symlink, type_conflict), or job_failed for a Job that ended without saying why. */
+        FileOpError: {
+            code: string;
+            message: string;
+            /** @description The archive entry refused */
+            entry?: string;
+            /** @description On file_exists from an extraction, the first 200 files it would replace, sorted. */
+            conflicts?: string[];
+            /** @description How many files it would replace in all. */
+            conflict_count?: number;
+            /**
+             * Format: int64
+             * @description On volume_full
+             */
+            need?: number;
+            /**
+             * Format: int64
+             * @description On volume_full
+             */
+            avail?: number;
         };
         /** @description Where an export stands (internal/api/exports.go exportStatusView). */
         ExportStatus: {
@@ -6460,7 +6667,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The tar.gz, as an attachment. */
+            /** @description The export as an attachment: a world or a backup as a tar.gz, a downloaded folder as a zip, a downloaded file as its bytes. */
             200: {
                 headers: {
                     "Content-Disposition"?: string;
@@ -6468,6 +6675,8 @@ export interface operations {
                 };
                 content: {
                     "application/gzip": string;
+                    "application/zip": string;
+                    "application/octet-stream": string;
                 };
             };
             401: components["responses"]["Unauthorized"];
@@ -6523,7 +6732,7 @@ export interface operations {
                         jobs: {
                             name: string;
                             /** @enum {string} */
-                            kind: "backup" | "restore" | "export_world" | "export_backup";
+                            kind: "backup" | "restore" | "export_world" | "export_backup" | "export_files";
                             /** @enum {string} */
                             state: "running" | "succeeded" | "failed";
                             message?: string;
@@ -6587,6 +6796,11 @@ export interface operations {
                         path: string;
                         /** @description The listing hit the entry cap and is incomplete. */
                         truncated: boolean;
+                        /**
+                         * Format: int64
+                         * @description Bytes free on the world volume
+                         */
+                        free_bytes: number;
                         entries: {
                             name: string;
                             /** Format: int64 */
@@ -7036,6 +7250,73 @@ export interface operations {
             };
         };
     };
+    downloadServerFile: {
+        parameters: {
+            query: {
+                /** @description File or folder to download, relative to the world root. The root itself is refused. */
+                path: string;
+                /** @description true when path is a folder, which is sent as a zip. The Job refuses a path that is not what dir says. */
+                dir?: "true" | "false";
+            };
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Download started. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportTicket"];
+                };
+            };
+            /** @description Missing path (bad_request), the world root (bad_path), or a malformed server name (bad_name). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Unknown server. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Server is not stopped (not_stopped), has no world volume yet (no_world_volume), or a restore, backup, file change or another export already holds its world volume (maintenance_in_progress). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description A file download limit is reached (export_busy); Retry-After gives the seconds to wait. */
+            429: {
+                headers: {
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
     uploadServerFile: {
         parameters: {
             query: {
@@ -7114,7 +7395,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description The file is over 64 MiB (too_large). */
+            /** @description The file is over 64 MiB, the most one request carries (too_large); send it as an upload session instead. */
             413: {
                 headers: {
                     [name: string]: unknown;
@@ -7142,6 +7423,436 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+        };
+    };
+    beginServerFileUpload: {
+        parameters: {
+            query: {
+                /** @description File to create, relative to the world root. It must stay inside it (400 bad_path); its folder is checked when the file lands. */
+                path: string;
+            };
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /**
+                     * Format: int64
+                     * @description The file's length in bytes.
+                     */
+                    size: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Session begun. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileUploadSession"];
+                };
+            };
+            /** @description Missing path or size, or a negative size (bad_request), a path leaving the world folder or naming the folder itself (bad_path), or a malformed server name (bad_name). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Unknown server. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Server is not stopped (not_stopped) or has no world volume yet (no_world_volume). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The account already has 4 uploads in progress (too_many_uploads). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+            /** @description felis-api's staging disk has no room for a file this size right now (upload_staging_full). */
+            507: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getServerFileUpload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The session. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileUploadSession"];
+                };
+            };
+            /** @description Malformed server name (bad_name). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Unknown server, or no such session for this account on this server (upload_not_found). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    putServerFileUploadPart: {
+        parameters: {
+            query: {
+                /** @description The byte position the part starts at, the session's received. */
+                offset: number;
+            };
+            header?: never;
+            path: {
+                name: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": string;
+            };
+        };
+        responses: {
+            /** @description Part taken. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileUploadSession"];
+                };
+            };
+            /** @description A missing or malformed offset (bad_request), a body that ended before its Content-Length (upload_incomplete), or a malformed server name (bad_name). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Unknown server, or no such session for this account on this server (upload_not_found). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description offset is not where the session ends (upload_offset_mismatch), or another part is still arriving (upload_busy). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The request has no Content-Length (length_required). */
+            411: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The part is over part_max_bytes, or runs past the size the session began with (part_too_large). */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+            /** @description felis-api's staging disk ran out of room (upload_staging_full). */
+            507: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    deleteServerFileUpload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cancelled. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Malformed server name (bad_name). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Unknown server, or no such session for this account on this server (upload_not_found). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description A part is still arriving (upload_busy). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    commitServerFileUpload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartFileOp"];
+            };
+        };
+        responses: {
+            /** @description Landing started. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        op: components["schemas"]["FileOp"];
+                    };
+                };
+            };
+            /** @description Malformed body, or a malformed server name (bad_name). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Unknown server, or no such session for this account on this server (upload_not_found). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not every byte has arrived (upload_incomplete; the world lock is not asked for), a part is still arriving (upload_busy), the server is not stopped (not_stopped) or has no world volume yet (no_world_volume), or a restore, backup, file change or export already holds its world volume, this session's earlier commit included (maintenance_in_progress). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    unzipServerFile: {
+        parameters: {
+            query: {
+                /** @description The .zip to extract, relative to the world root. */
+                path: string;
+            };
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartFileOp"];
+            };
+        };
+        responses: {
+            /** @description Extraction started. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        op: components["schemas"]["FileOp"];
+                    };
+                };
+            };
+            /** @description Missing path or malformed body (bad_request), a path not ending in .zip (bad_path), or a malformed server name (bad_name). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Unknown server. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Server is not stopped (not_stopped), has no world volume yet (no_world_volume), or a restore, backup, file change or export already holds its world volume (maintenance_in_progress). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    listServerFileOps: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The ops. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ops: components["schemas"]["FileOp"][];
+                    };
+                };
+            };
+            /** @description Malformed server name (bad_name). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Unknown server. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     listServerSchedules: {

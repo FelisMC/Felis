@@ -48,7 +48,8 @@ export function retryDelay(n: number): number {
   return Math.min(1000 * 2 ** (n - 1), 15000);
 }
 
-function wait(ms: number, signal?: AbortSignal): Promise<void> {
+/** wait pauses ms, or rejects with an AbortError as soon as signal aborts. */
+export function wait(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(new DOMException("The upload was cancelled", "AbortError"));

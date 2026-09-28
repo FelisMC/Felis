@@ -4,13 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -19,6 +18,7 @@ import (
 	"time"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
+	"felis.lolicon.best/internal/fileedit"
 	"felis.lolicon.best/internal/maintenance"
 	"felis.lolicon.best/internal/worldexport"
 	batchv1 "k8s.io/api/batch/v1"
@@ -189,6 +189,7 @@ func randomBytes(n int) []byte {
 func TestExportBackupGate(t *testing.T) {
 	t.Run("former owner starts a backup export", func(t *testing.T) {
 		a, repo, cl, ex := exportFixture()
+		repo.backups[0].sha256 = strings.Repeat("cd", 32)
 		v := beginExport(t, a.ExternalHandler(), backupPath, "owner1")
 		if !hex64.MatchString(v.Ticket) || v.State != "pending" || v.Filename != "survival-backup-bk1.tar.gz" {
 			t.Fatalf("ticket = %+v", v)
@@ -198,6 +199,7 @@ func TestExportBackupGate(t *testing.T) {
 		}
 		r := ex.reqs[0]
 		if r.Server != "survival" || r.Mode != worldexport.ModeBackup || r.BackupRef != "/backups/survival-bk1.tar.gz" ||
+			r.BackupSHA256 != strings.Repeat("cd", 32) || r.Path != "" || r.Dir ||
 			!hex16.MatchString(r.ID) || !hex64.MatchString(r.Token) || r.Token == v.Ticket ||
 			r.TargetURL != exportBase+"/api/v1/internal/exports/"+r.ID {
 			t.Fatalf("export request = %+v", r)
@@ -271,7 +273,8 @@ func TestExportWorldGate(t *testing.T) {
 		if v.Filename != "survival-world-"+exportStamp+".tar.gz" || v.State != "pending" {
 			t.Fatalf("ticket = %+v", v)
 		}
-		if len(ex.reqs) != 1 || ex.reqs[0].Mode != worldexport.ModeWorld || ex.reqs[0].BackupRef != "" || ex.reqs[0].Server != "survival" {
+		if len(ex.reqs) != 1 || ex.reqs[0].Mode != worldexport.ModeWorld || ex.reqs[0].BackupRef != "" || ex.reqs[0].BackupSHA256 != "" ||
+			ex.reqs[0].Path != "" || ex.reqs[0].Server != "survival" {
 			t.Fatalf("export requests = %+v", ex.reqs)
 		}
 		if strings.Join(cl.acquired, ",") != "survival:"+maintenance.KindExport || strings.Join(cl.released, ",") != "survival" {
@@ -363,7 +366,7 @@ func TestExportWorldGate(t *testing.T) {
 		}
 		ex.err = nil
 		beginExport(t, h, worldPath, "owner1")
-		if n := len(a.exportTickets().starts["owner1"]); n != 1 {
+		if n := len(a.exportTickets().starts[exportStarts{userID: "owner1"}]); n != 1 {
 			t.Fatalf("hourly starts = %d, want only the export that got a Job", n)
 		}
 	})
@@ -681,82 +684,299 @@ func awaitResponse(t *testing.T, ch <-chan *http.Response) *http.Response {
 	}
 }
 
-// TestExportBackupDigest: a backup streams with its length and is checked
-// against the sha256 recorded when it was written. A match downloads whole; a
-// mismatch withholds the tail and aborts, so the browser never holds a
-// complete-looking corrupt file, and the Job hears backup_corrupt.
-func TestExportBackupDigest(t *testing.T) {
+// TestExportStreamsWhatTheJobSends: the archive reaches the browser byte for
+// byte, with the length the Job declared when it declared one. The Job checks a
+// backup against its recorded digest itself and, on a mismatch, cuts its upload
+// short of the end; the download then aborts too, so the browser never holds a
+// complete-looking file.
+func TestExportStreamsWhatTheJobSends(t *testing.T) {
 	archive := randomBytes(3*exportCopyBuffer + 4321)
-	sum := sha256.Sum256(archive)
+
+	t.Run("whole, with its length", func(t *testing.T) {
+		a, _, _, ex := exportFixture()
+		ext, in := exportServers(t, a)
+		v := beginExport(t, a.ExternalHandler(), backupPath, "owner1")
+		up := realUpload(t, in, ex.reqs[0], bytes.NewReader(archive), int64(len(archive)))
+		waitExportReady(t, a.ExternalHandler(), v.Ticket, "owner1")
+		resp, got, err := realDownload(ext, v.Ticket)
+		if resp == nil {
+			t.Fatalf("download: %v", err)
+		}
+		if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Length") != strconv.Itoa(len(archive)) ||
+			err != nil || !bytes.Equal(got, archive) {
+			t.Fatalf("download = %d, Content-Length %q, read %d of %d bytes, err %v",
+				resp.StatusCode, resp.Header.Get("Content-Length"), len(got), len(archive), err)
+		}
+		if upResp := awaitResponse(t, up); upResp.StatusCode != http.StatusNoContent {
+			t.Fatalf("upload answered %d, want 204", upResp.StatusCode)
+		}
+	})
+
+	t.Run("an upload the Job cuts short aborts the download", func(t *testing.T) {
+		a, _, _, ex := exportFixture()
+		ext, in := exportServers(t, a)
+		v := beginExport(t, a.ExternalHandler(), backupPath, "owner1")
+		// As the Job's digest check fails: all but the end, then a read error,
+		// which aborts the chunked PUT.
+		pr, pw := io.Pipe()
+		go func() {
+			_, _ = pw.Write(archive[:len(archive)-100])
+			pw.CloseWithError(errors.New("the backup archive does not match the sha256 recorded when it was written"))
+		}()
+		up := realUpload(t, in, ex.reqs[0], pr, -1)
+		waitExportReady(t, a.ExternalHandler(), v.Ticket, "owner1")
+		resp, got, err := realDownload(ext, v.Ticket)
+		if resp == nil {
+			t.Fatalf("download: %v", err)
+		}
+		if err == nil || len(got) > len(archive)-100 || !bytes.Equal(got, archive[:len(got)]) {
+			t.Fatalf("read %d of %d bytes, err %v; want an error short of the end", len(got), len(archive), err)
+		}
+		if upResp := awaitResponse(t, up); upResp.StatusCode != -1 {
+			t.Fatalf("the aborted upload answered %d", upResp.StatusCode)
+		}
+	})
+
+	t.Run("a browser that leaves early is what the Job hears", func(t *testing.T) {
+		a, _, _, ex := exportFixture()
+		ext, _ := exportServers(t, a)
+		v := beginExport(t, a.ExternalHandler(), worldPath, "owner1")
+		up := uploadExport(a.InternalHandler(), ex.reqs[0].ID, ex.reqs[0].Token, io.LimitReader(zeros{}, 1<<30))
+		waitExportReady(t, a.ExternalHandler(), v.Ticket, "owner1")
+		req, _ := http.NewRequest("GET", ext.URL+"/api/v1/exports/"+v.Ticket+"/download", nil)
+		req.Header.Set("X-Test-User", "owner1")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.ReadFull(resp.Body, make([]byte, 1000)); err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if w := awaitUpload(t, up); w.Code != http.StatusGone || decodeErr(t, w) != "export_expired" {
+			t.Fatalf("upload answered %d %s, want 410 export_expired", w.Code, w.Body.String())
+		}
+	})
+}
+
+const fileDownloadPath = "/api/v1/servers/survival/files/download?path="
+
+// fileDownloadFixture is exportFixture with the file manager wired, which the
+// file routes' gate requires.
+func fileDownloadFixture() (*API, *fakeRepo, *fakeCluster, *fakeExporter) {
+	a, repo, cl, ex := exportFixture()
+	a.Files = &fakeFileEditor{}
+	return a, repo, cl, ex
+}
+
+func TestFileDownloadGate(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		digest string
+		name, query, filename, contentType, payload string
+		want                                        worldexport.Request
 	}{
-		{"recorded digest matches", hex.EncodeToString(sum[:])},
-		{"no digest recorded", ""},
-		{"digest mismatch", strings.Repeat("ab", 32)},
+		{"a file", "plugins/Essentials/config.yml", "config.yml", fileedit.DownloadFileType, `{"dir":false}`,
+			worldexport.Request{Server: "survival", Mode: worldexport.ModeFiles, Path: "plugins/Essentials/config.yml"}},
+		{"a folder, as a zip named after it", "plugins/Essentials/&dir=true", "Essentials.zip", fileedit.DownloadZipType, `{"dir":true}`,
+			worldexport.Request{Server: "survival", Mode: worldexport.ModeFiles, Path: "plugins/Essentials/", Dir: true}},
+		{"dir other than true is a file", "a.yml&dir=false", "a.yml", fileedit.DownloadFileType, `{"dir":false}`,
+			worldexport.Request{Server: "survival", Mode: worldexport.ModeFiles, Path: "a.yml"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			a, repo, _, ex := exportFixture()
-			repo.backups[0].sha256 = tc.digest
-			ext, in := exportServers(t, a)
-			v := beginExport(t, a.ExternalHandler(), backupPath, "owner1")
-			up := realUpload(t, in, ex.reqs[0], bytes.NewReader(archive), int64(len(archive)))
-			waitExportReady(t, a.ExternalHandler(), v.Ticket, "owner1")
-			resp, got, err := realDownload(ext, v.Ticket)
-			if resp == nil {
-				t.Fatalf("download: %v", err)
+			a, repo, cl, ex := fileDownloadFixture()
+			v := beginExport(t, a.ExternalHandler(), fileDownloadPath+tc.query, "owner1")
+			if !hex64.MatchString(v.Ticket) || v.State != "pending" || v.Filename != tc.filename {
+				t.Fatalf("ticket = %+v", v)
 			}
-			if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Length") != strconv.Itoa(len(archive)) {
-				t.Fatalf("download = %d, Content-Length %q", resp.StatusCode, resp.Header.Get("Content-Length"))
+			if len(ex.reqs) != 1 {
+				t.Fatalf("exporter started %d Jobs, want 1", len(ex.reqs))
 			}
-			upResp := awaitResponse(t, up)
-			if tc.digest == strings.Repeat("ab", 32) {
-				if err == nil || len(got) >= len(archive) || !bytes.Equal(got, archive[:len(got)]) {
-					t.Fatalf("mismatch: read %d of %d bytes, err %v; want an error short of the end", len(got), len(archive), err)
-				}
-				if upResp.StatusCode != http.StatusConflict || errCode(mustRead(t, upResp.Body)) != "backup_corrupt" {
-					t.Fatalf("upload answered %d, want 409 backup_corrupt", upResp.StatusCode)
-				}
-				return
+			r := ex.reqs[0]
+			if !hex16.MatchString(r.ID) || !hex64.MatchString(r.Token) || r.TargetURL != exportBase+"/api/v1/internal/exports/"+r.ID {
+				t.Fatalf("export request = %+v", r)
 			}
-			if err != nil || !bytes.Equal(got, archive) {
-				t.Fatalf("read %d of %d bytes, err %v", len(got), len(archive), err)
+			r.ID, r.Token, r.TargetURL = "", "", ""
+			if r != tc.want {
+				t.Fatalf("export request = %+v, want %+v", r, tc.want)
 			}
-			if upResp.StatusCode != http.StatusNoContent {
-				t.Fatalf("upload answered %d, want 204", upResp.StatusCode)
+			if e := a.exportTickets().byTicket[v.Ticket]; e.contentType != tc.contentType || !e.files {
+				t.Fatalf("export served as %q, file download %v", e.contentType, e.files)
+			}
+			if strings.Join(cl.acquired, ",") != "survival:"+maintenance.KindExport || strings.Join(cl.released, ",") != "survival" {
+				t.Fatalf("lock acquired %v, released %v", cl.acquired, cl.released)
+			}
+			if len(repo.audits) != 1 || repo.audits[0].Action != "file.download" || repo.audits[0].ActorUserID != "owner1" ||
+				repo.audits[0].ServerName != "survival:"+tc.want.Path || string(repo.audits[0].Payload) != tc.payload {
+				t.Fatalf("audit = %+v", repo.audits)
 			}
 		})
 	}
 
-	// The tail is withheld from the response writer itself, not only from
-	// whatever the connection had yet to send: with every write captured, a
-	// mismatch still ends short of the archive.
-	t.Run("the tail waits for the digest", func(t *testing.T) {
-		a, repo, _, ex := exportFixture()
-		repo.backups[0].sha256 = strings.Repeat("ab", 32)
-		ext := a.ExternalHandler()
-		v := beginExport(t, ext, backupPath, "owner1")
-		up := uploadExport(a.InternalHandler(), ex.reqs[0].ID, ex.reqs[0].Token, bytes.NewReader(archive))
-		waitExportReady(t, ext, v.Ticket, "owner1")
-		w := httptest.NewRecorder()
-		func() {
-			defer func() {
-				if p := recover(); p != http.ErrAbortHandler {
-					t.Errorf("the download ended with %v, want the abort", p)
-				}
-			}()
-			r := httptest.NewRequest("GET", "/api/v1/exports/"+v.Ticket+"/download", nil)
-			r.Header.Set("X-Test-User", "owner1")
-			ext.ServeHTTP(w, r)
-		}()
-		if got := w.Body.Bytes(); len(got) != 3*exportCopyBuffer || !bytes.Equal(got, archive[:len(got)]) {
-			t.Fatalf("wrote %d of %d bytes, want all but the last read (%d)", len(got), len(archive), 3*exportCopyBuffer)
-		}
-		if w := awaitUpload(t, up); w.Code != http.StatusConflict || decodeErr(t, w) != "backup_corrupt" {
-			t.Fatalf("upload answered %d %s, want 409 backup_corrupt", w.Code, w.Body.String())
+	t.Run("admin", func(t *testing.T) {
+		a, _, _, ex := fileDownloadFixture()
+		beginExport(t, a.ExternalHandler(), fileDownloadPath+"server.properties", "admin1")
+		if len(ex.reqs) != 1 {
+			t.Fatalf("exporter started %d Jobs, want 1", len(ex.reqs))
 		}
 	})
+
+	busy := func(_ *API, c *fakeCluster) {
+		c.maintErr["survival"] = &MaintenanceBusyError{Kind: maintenance.KindFileWrite}
+	}
+	for _, tc := range []struct {
+		name, user, query string
+		edit              func(*API, *fakeCluster)
+		code              int
+		errCode           string
+	}{
+		{name: "stranger", user: "stranger", query: "a.yml", code: http.StatusForbidden, errCode: "forbidden"},
+		{name: "principal without an account", user: "nouser", query: "a.yml", code: http.StatusForbidden, errCode: "forbidden"},
+		{name: "running", user: "owner1", query: "a.yml", edit: func(_ *API, c *fakeCluster) { c.byName["survival"].Ready = true },
+			code: http.StatusConflict, errCode: "not_stopped"},
+		{name: "no world volume", user: "owner1", query: "a.yml", edit: func(_ *API, c *fakeCluster) { c.noWorld["survival"] = true },
+			code: http.StatusConflict, errCode: "no_world_volume"},
+		{name: "no file editor", user: "owner1", query: "a.yml", edit: func(a *API, _ *fakeCluster) { a.Files = nil },
+			code: http.StatusServiceUnavailable, errCode: "files_unavailable"},
+		{name: "no path", user: "owner1", query: "", code: http.StatusBadRequest, errCode: "bad_request"},
+		{name: "the root", user: "owner1", query: ".&dir=true", code: http.StatusBadRequest, errCode: "bad_path"},
+		{name: "the root, slashed", user: "owner1", query: "/&dir=true", code: http.StatusBadRequest, errCode: "bad_path"},
+		{name: "the root, dotted", user: "owner1", query: "./", code: http.StatusBadRequest, errCode: "bad_path"},
+		{name: "the root, walked back", user: "owner1", query: "plugins/..", code: http.StatusBadRequest, errCode: "bad_path"},
+		{name: "no exporter", user: "owner1", query: "a.yml", edit: func(a *API, _ *fakeCluster) { a.Exporter = nil },
+			code: http.StatusServiceUnavailable, errCode: "export_unavailable"},
+		{name: "no internal URL", user: "owner1", query: "a.yml", edit: func(a *API, _ *fakeCluster) { a.InternalBaseURL = "" },
+			code: http.StatusServiceUnavailable, errCode: "export_unavailable"},
+		{name: "world busy", user: "owner1", query: "a.yml", edit: busy, code: http.StatusConflict, errCode: "maintenance_in_progress"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, repo, cl, ex := fileDownloadFixture()
+			if tc.edit != nil {
+				tc.edit(a, cl)
+			}
+			w := do(a.ExternalHandler(), "POST", fileDownloadPath+tc.query, "", as(tc.user))
+			if w.Code != tc.code {
+				t.Fatalf("code = %d, want %d (%s)", w.Code, tc.code, w.Body.String())
+			}
+			if got := decodeErr(t, w); got != tc.errCode {
+				t.Errorf("error code = %q, want %q", got, tc.errCode)
+			}
+			// Nothing is left behind: no Job, no audit, no ticket, no start
+			// counted against the hour.
+			reg := a.exportTickets()
+			if len(ex.reqs) != 0 || len(repo.audits) != 0 || len(cl.released) != 0 || len(reg.byTicket) != 0 || len(reg.starts) != 0 {
+				t.Errorf("a refused download started %d Jobs, wrote %d audits, released %v, left %d tickets and %v",
+					len(ex.reqs), len(repo.audits), cl.released, len(reg.byTicket), reg.starts)
+			}
+		})
+	}
+
+	t.Run("a failed Job is refunded and releases the lock", func(t *testing.T) {
+		a, _, cl, ex := fileDownloadFixture()
+		ex.err = errors.New("jobs is forbidden")
+		if w := do(a.ExternalHandler(), "POST", fileDownloadPath+"a.yml", "", as("owner1")); w.Code != http.StatusInternalServerError {
+			t.Fatalf("failed Job: code = %d, want 500 (%s)", w.Code, w.Body.String())
+		}
+		if reg := a.exportTickets(); len(reg.byTicket) != 0 || len(reg.starts) != 0 || strings.Join(cl.released, ",") != "survival" {
+			t.Fatalf("after a failed Job: %d tickets, starts %v, released %v", len(reg.byTicket), reg.starts, cl.released)
+		}
+	})
+}
+
+func TestFileDownloadLimits(t *testing.T) {
+	busy := func(t *testing.T, w *httptest.ResponseRecorder, message, retry string) {
+		t.Helper()
+		var raw map[string]map[string]string
+		_ = json.Unmarshal(w.Body.Bytes(), &raw)
+		if w.Code != http.StatusTooManyRequests || raw["error"]["code"] != "export_busy" || raw["error"]["message"] != message ||
+			w.Header().Get("Retry-After") != retry {
+			t.Fatalf("refusal = %d %s Retry-After %q; want 429 %q Retry-After %s", w.Code, w.Body.String(), w.Header().Get("Retry-After"), message, retry)
+		}
+	}
+
+	t.Run("two per user, counted apart from exports", func(t *testing.T) {
+		a, _, _, ex := fileDownloadFixture()
+		h := a.ExternalHandler()
+		beginExport(t, h, fileDownloadPath+"a.yml", "owner1")
+		beginExport(t, h, fileDownloadPath+"b.yml", "owner1")
+		beginExport(t, h, worldPath, "owner1") // file downloads do not hold an export off
+		busy(t, do(h, "POST", fileDownloadPath+"c.yml", "", as("owner1")),
+			"you already have 2 file downloads in progress; let one finish first", "90")
+		if len(ex.reqs) != 3 {
+			t.Fatalf("exporter started %d Jobs, want 3", len(ex.reqs))
+		}
+	})
+
+	t.Run("four across the install", func(t *testing.T) {
+		a, _, _, ex := fileDownloadFixture()
+		h := a.ExternalHandler()
+		for _, u := range []string{"owner1", "owner1", "owner3", "owner3"} {
+			server := map[string]string{"owner1": "survival", "owner3": "gamma"}[u]
+			beginExport(t, h, "/api/v1/servers/"+server+"/files/download?path=a.yml", u)
+		}
+		busy(t, do(h, "POST", fileDownloadPath+"a.yml", "", as("admin1")),
+			"4 file downloads are already in progress; retry in a minute", "60")
+		if len(ex.reqs) != 4 {
+			t.Fatalf("exporter started %d Jobs, want 4", len(ex.reqs))
+		}
+	})
+
+	t.Run("thirty per user per hour", func(t *testing.T) {
+		defer func(old time.Duration) { exportPendingTTL = old }(exportPendingTTL)
+		exportPendingTTL = time.Minute
+		a, _, _, _ := fileDownloadFixture()
+		var clock atomic.Int64
+		a.Now = func() time.Time { return time.Unix(clock.Load(), 0) }
+		h := a.ExternalHandler()
+		for i := range fileExportPerHour {
+			clock.Store(1_700_000_000 + int64(i)*100) // each start outlives the last one's pending TTL
+			beginExport(t, h, fileDownloadPath+"a.yml", "owner1")
+		}
+		clock.Store(1_700_000_000 + 2950)
+		busy(t, do(h, "POST", fileDownloadPath+"a.yml", "", as("owner1")),
+			"you have started 30 file downloads in the last hour; retry later", "650")
+		beginExport(t, h, worldPath, "owner1") // exports keep their own hour
+		clock.Store(1_700_000_000 + 3600)
+		beginExport(t, h, fileDownloadPath+"a.yml", "owner1")
+	})
+}
+
+// TestFileDownloadServed: a file goes out as its raw bytes under its own name,
+// with its length; a folder as a zip, streamed without one.
+func TestFileDownloadServed(t *testing.T) {
+	for _, tc := range []struct {
+		name, query, contentType, disposition string
+		size                                  int64
+	}{
+		{"a file", url.QueryEscape("plugins/配置 file.yml"), fileedit.DownloadFileType,
+			"attachment; filename*=utf-8''%E9%85%8D%E7%BD%AE%20file.yml", 64 << 10},
+		{"a folder", "plugins&dir=true", fileedit.DownloadZipType, "attachment; filename=plugins.zip", -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _, _, ex := fileDownloadFixture()
+			ext, in := exportServers(t, a)
+			v := beginExport(t, a.ExternalHandler(), fileDownloadPath+tc.query, "owner1")
+			// Past what the server would buffer and measure itself when the
+			// handler sets no length.
+			body := randomBytes(64 << 10)
+			up := realUpload(t, in, ex.reqs[0], bytes.NewReader(body), tc.size)
+			waitExportReady(t, a.ExternalHandler(), v.Ticket, "owner1")
+			resp, got, err := realDownload(ext, v.Ticket)
+			if resp == nil || err != nil || !bytes.Equal(got, body) {
+				t.Fatalf("download: read %d bytes, %v", len(got), err)
+			}
+			wantLength := ""
+			if tc.size >= 0 {
+				wantLength = strconv.FormatInt(tc.size, 10)
+			}
+			h := resp.Header
+			if h.Get("Content-Type") != tc.contentType || h.Get("Content-Disposition") != tc.disposition ||
+				h.Get("Content-Length") != wantLength || h.Get("X-Content-Type-Options") != "nosniff" {
+				t.Fatalf("download headers = %v", h)
+			}
+			if upResp := awaitResponse(t, up); upResp.StatusCode != http.StatusNoContent {
+				t.Fatalf("upload answered %d, want 204", upResp.StatusCode)
+			}
+		})
+	}
 }
 
 // zeros reads as an endless run of zero bytes.
@@ -873,7 +1093,7 @@ func TestK8sExportJobs(t *testing.T) {
 	job := func(id, mode string) *batchv1.Job {
 		j, err := worldexport.ExportJob(worldexport.JobParams{
 			Server: "survival", ID: id, Mode: mode,
-			WorldPVC: "world-survival-0", BackupPVC: "felis-backups", BackupRef: "/backups/a.tar.gz",
+			WorldPVC: "world-survival-0", BackupPVC: "felis-backups", BackupRef: "/backups/a.tar.gz", Path: "plugins",
 			TargetURL: exportBase + "/x", Token: "t", Namespace: "minecraft", Image: "felis:1",
 		})
 		if err != nil {
@@ -882,9 +1102,10 @@ func TestK8sExportJobs(t *testing.T) {
 		return j
 	}
 	world, backupJob := job("1111111111111111", worldexport.ModeWorld), job("2222222222222222", worldexport.ModeBackup)
+	files := job("3333333333333333", worldexport.ModeFiles)
 	restoring := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Namespace: "minecraft", Name: "restore-survival-cc",
 		Labels: map[string]string{jobServerLabel: "survival", jobManagedByLabel: jobManagedByRestore}}}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(world, backupJob, restoring).
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(world, backupJob, files, restoring).
 		WithStatusSubresource(&batchv1.Job{}).Build()
 	k := NewK8sJobStatus(c, "minecraft")
 	ctx := context.Background()
@@ -900,7 +1121,8 @@ func TestK8sExportJobs(t *testing.T) {
 	for _, j := range jobs {
 		kinds[j.Name] = j.Kind + "/" + j.State
 	}
-	want := map[string]string{world.Name: "export_world/running", backupJob.Name: "export_backup/running", restoring.Name: "restore/running"}
+	want := map[string]string{world.Name: "export_world/running", backupJob.Name: "export_backup/running",
+		files.Name: "export_files/running", restoring.Name: "restore/running"}
 	if len(kinds) != len(want) {
 		t.Fatalf("jobs = %v, want %v", kinds, want)
 	}
@@ -910,10 +1132,13 @@ func TestK8sExportJobs(t *testing.T) {
 		}
 	}
 
-	// The kinds agree with maintenance.JobKind: a world export holds the world,
-	// a backup export does not.
+	// The kinds agree with maintenance.JobKind: a world export and a file
+	// download hold the world, a backup export does not.
 	if kind, holds := maintenance.JobKind(world); kind != maintenance.KindExport || !holds {
 		t.Errorf("JobKind(world export) = %q, %v", kind, holds)
+	}
+	if kind, holds := maintenance.JobKind(files); kind != maintenance.KindExport || !holds {
+		t.Errorf("JobKind(file download) = %q, %v", kind, holds)
 	}
 	if _, holds := maintenance.JobKind(backupJob); holds {
 		t.Error("a backup export holds the world")

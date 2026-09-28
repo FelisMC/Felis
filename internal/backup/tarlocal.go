@@ -79,7 +79,7 @@ func (t *TarLocal) Archive(ctx context.Context, server, pvc string) (Archived, e
 		return Archived{}, fmt.Errorf("backup: create archive: %w", err)
 	}
 	h := sha256.New()
-	st, err := writeTarGz(ctx, io.MultiWriter(f, h), srcDir)
+	st, err := writeTarGz(ctx, io.MultiWriter(f, h), srcDir, nil)
 	if err == nil {
 		if err = f.Sync(); err != nil {
 			err = fmt.Errorf("backup: sync archive: %w", err)
@@ -349,17 +349,20 @@ func (t *TarLocal) Delete(_ context.Context, ref ArchiveRef) error {
 	return nil
 }
 
-// tarStats is what writeTarGz put in the archive and what it left out.
+// tarStats is what writeTarGz put in the archive and what it left out: skipped
+// are entries a tar cannot hold, withheld the files the filter kept back.
 type tarStats struct {
-	entries int
-	skipped []string
+	entries  int
+	skipped  []string
+	withheld []string
 }
 
 // writeTarGz archives srcDir (not the root entry itself) as gzip+tar. Each entry
 // keeps its permission bits, without setuid, setgid and sticky, and its
 // modification time. Entries other than regular files and directories are left
-// out and listed in the stats.
-func writeTarGz(ctx context.Context, w io.Writer, srcDir string) (tarStats, error) {
+// out and listed in the stats. A non-nil filter sees every regular file (see
+// Filter); a backup passes nil and keeps everything.
+func writeTarGz(ctx context.Context, w io.Writer, srcDir string, filter Filter) (tarStats, error) {
 	var st tarStats
 	gz := gzip.NewWriter(w)
 	tw := tar.NewWriter(gz)
@@ -392,6 +395,34 @@ func writeTarGz(ctx context.Context, w io.Writer, srcDir string) (tarStats, erro
 			st.entries++
 			return nil
 		case info.Mode().IsRegular():
+			var rewrite func([]byte) []byte
+			if filter != nil {
+				var withhold bool
+				if withhold, rewrite = filter(name, info); withhold {
+					st.withheld = append(st.withheld, name)
+					return nil
+				}
+			}
+			if rewrite != nil {
+				content, ok, err := readRewritable(path)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					st.withheld = append(st.withheld, name)
+					return nil
+				}
+				content = rewrite(content)
+				hdr := &tar.Header{Name: name, Mode: mode, ModTime: info.ModTime(), Size: int64(len(content)), Typeflag: tar.TypeReg}
+				if err := tw.WriteHeader(hdr); err != nil {
+					return err
+				}
+				if _, err := tw.Write(content); err != nil {
+					return err
+				}
+				st.entries++
+				return nil
+			}
 			hdr := &tar.Header{Name: name, Mode: mode, ModTime: info.ModTime(), Size: info.Size(), Typeflag: tar.TypeReg}
 			if err := tw.WriteHeader(hdr); err != nil {
 				return err
@@ -424,14 +455,6 @@ func writeTarGz(ctx context.Context, w io.Writer, srcDir string) (tarStats, erro
 		return st, fmt.Errorf("backup: close gzip: %w", err)
 	}
 	return st, nil
-}
-
-// WriteTarGz archives srcDir into w laid out exactly as Archive lays out a
-// backup, so an exported world restores like any other archive, and returns the
-// entries it left out. The world export Job streams it straight into its upload.
-func WriteTarGz(ctx context.Context, w io.Writer, srcDir string) ([]string, error) {
-	st, err := writeTarGz(ctx, w, srcDir)
-	return st.skipped, err
 }
 
 // dirMeta is a directory's recorded permission bits and modification time,

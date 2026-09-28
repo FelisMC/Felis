@@ -39,7 +39,7 @@ import (
 func cmdFiles(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("files", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	op := fs.String("op", "", "operation: list, read, write, mkdir, delete, rename or upload")
+	op := fs.String("op", "", "operation: list, read, write, mkdir, delete, rename, upload or unzip")
 	path := fs.String("path", "", "path to operate on, relative to the world root (empty = the root itself)")
 	worldsRoot := fs.String("worlds-root", "/data", "mount path of the world PVC; every path resolves under it")
 	expect := fs.String("expect-sha256", "", "write only: refuse unless the file's current SHA-256 (hex) is this")
@@ -48,7 +48,7 @@ func cmdFiles(args []string, stdout, stderr io.Writer) int {
 	sourceURL := fs.String("source-url", "", "upload only: felis-api URL to fetch the bytes from")
 	size := fs.Int64("size", -1, "upload only: the byte count the fetched file must have")
 	sum := fs.String("sha256", "", "upload only: the SHA-256 (hex) the fetched file must have")
-	overwrite := fs.Bool("overwrite", false, "upload only: replace a file already at the path")
+	overwrite := fs.Bool("overwrite", false, "upload and unzip: replace files already there")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -88,6 +88,10 @@ func cmdFiles(args []string, stdout, stderr io.Writer) int {
 			Open: func() (io.ReadCloser, error) { return fetchUpload(ctx, *sourceURL, token) },
 		}
 	}
+	// An upload or an unzip (the only ops that report progress) can run long
+	// enough that felis-api does not wait on its Job, and the panel shows how far
+	// it has got from the latest of these lines (fileedit.K8sRunner.Ops).
+	req.Progress = fileedit.ThrottledProgress(stdout, time.Second, time.Now)
 
 	res, err := fileedit.Execute(*worldsRoot, req)
 	if err != nil {
@@ -107,8 +111,9 @@ func cmdFiles(args []string, stdout, stderr io.Writer) int {
 
 // fetchUpload opens the staged upload on felis-api's internal face. There is no
 // retry: the token opens the upload once (fileedit.Stage), so a second attempt
-// could only be refused, and felis-api answers the failed Job with a 500 the
-// caller can retry whole. Redirects are refused because the request carries the
+// could only be refused, and the caller retries the failed Job whole (a file
+// sent in parts stays staged until it has been served whole once, so that retry
+// does not send it again). Redirects are refused because the request carries the
 // token and the internal face never redirects; the header timeout catches a
 // wedged endpoint, and the Job's activeDeadlineSeconds bounds the body.
 func fetchUpload(ctx context.Context, url, token string) (io.ReadCloser, error) {

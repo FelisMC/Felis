@@ -12,6 +12,7 @@ import (
 	"os"
 	"sync"
 	"syscall"
+	"time"
 )
 
 // Stage holds uploads between the request that brought them and the Job that
@@ -25,7 +26,9 @@ import (
 // Job carries in its environment. Only a digest of the token is kept, compared in
 // constant time, and the first successful Open spends it: the Job never retries,
 // so a second Open could only be someone else. The release func Put returns
-// deletes the file once the Job has answered, whatever it answered.
+// deletes the file once the Job has answered, whatever it answered. A file too
+// big for one request arrives in parts instead (session.go) and is fetched the
+// same way.
 //
 // Nothing here outlives the process: the index is in memory, so Sweep empties
 // Dir at startup of whatever a previous process left behind.
@@ -38,8 +41,12 @@ type Stage struct {
 	// the submission store shares.
 	MinFree float64
 
+	// Now is the clock sessions are aged by (time.Now when nil).
+	Now func() time.Time
+
 	mu       sync.Mutex
 	items    map[string]*stagedFile
+	sessions map[string]*session
 	reserved int64
 }
 
@@ -172,21 +179,25 @@ func stageFailure(readErr, copyErr, closeErr error, n, size int64) error {
 
 // newHandle mints the id and token for a staged upload whose bytes h hashed.
 func newHandle(h hash.Hash, size int64) (Staged, [sha256.Size]byte, error) {
-	var id [16]byte
-	var token [32]byte
-	if _, err := rand.Read(id[:]); err != nil {
+	id, err := randomHex(16)
+	if err != nil {
 		return Staged{}, [sha256.Size]byte{}, fmt.Errorf("fileedit: generate an upload id: %w", err)
 	}
-	if _, err := rand.Read(token[:]); err != nil {
+	token, err := randomHex(32)
+	if err != nil {
 		return Staged{}, [sha256.Size]byte{}, fmt.Errorf("fileedit: generate an upload token: %w", err)
 	}
-	st := Staged{
-		ID:     hex.EncodeToString(id[:]),
-		Token:  hex.EncodeToString(token[:]),
-		SHA256: hex.EncodeToString(h.Sum(nil)),
-		Size:   size,
-	}
+	st := Staged{ID: id, Token: token, SHA256: hex.EncodeToString(h.Sum(nil)), Size: size}
 	return st, sha256.Sum256([]byte(st.Token)), nil
+}
+
+// randomHex is n random bytes in hex.
+func randomHex(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // reserve admits an upload of size bytes if the disk keeps MinFree free after it
@@ -219,23 +230,30 @@ func (s *Stage) unreserve(size int64) {
 	s.mu.Unlock()
 }
 
-// Open spends a staged upload's token and returns its file and size. Any
-// mismatch is ErrNotStaged.
+// Open spends a staged upload's token, or a sealed session's (Seal), and returns
+// its file and size. Any mismatch is ErrNotStaged.
 func (s *Stage) Open(id, token string) (*os.File, int64, error) {
 	sum := sha256.Sum256([]byte(token))
 	s.mu.Lock()
-	it, ok := s.items[id]
-	if !ok || it.used || subtle.ConstantTimeCompare(sum[:], it.tokenHash[:]) != 1 {
-		s.mu.Unlock()
-		return nil, 0, ErrNotStaged
+	name, size, found, err := s.openSession(id, sum)
+	if !found {
+		it, ok := s.items[id]
+		if !ok || it.used || subtle.ConstantTimeCompare(sum[:], it.tokenHash[:]) != 1 {
+			err = ErrNotStaged
+		} else {
+			it.used = true
+			name, size = it.path, it.size
+		}
 	}
-	it.used = true
 	s.mu.Unlock()
-	f, err := os.Open(it.path)
+	if err != nil {
+		return nil, 0, err
+	}
+	f, err := os.Open(name)
 	if err != nil {
 		return nil, 0, fmt.Errorf("fileedit: open the staged upload: %w", err)
 	}
-	return f, it.size, nil
+	return f, size, nil
 }
 
 // bodyReader remembers the body's own read error, so Put can tell a client that

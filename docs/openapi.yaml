@@ -743,6 +743,60 @@ components:
         state: { type: string, const: pending }
         filename: { type: string, description: What the download saves as. }
 
+    FileUploadSession:
+      type: object
+      description: Where an upload session stands (internal/api/handlers_fileops.go fileSessionView).
+      required: [id, path, size, received, part_max_bytes]
+      properties:
+        id: { type: string, description: 32 hex characters. }
+        path: { type: string, description: Where the file lands, relative to the world root. }
+        size: { type: integer, format: int64, description: The file's length. }
+        received: { type: integer, format: int64, description: Bytes here so far; the next part starts here. }
+        part_max_bytes: { type: integer, format: int64, description: The most one part may carry. }
+
+    StartFileOp:
+      type: object
+      properties:
+        overwrite: { type: boolean, description: Replace files already there. }
+
+    FileOp:
+      type: object
+      description: One background upload or extraction (internal/api/handlers_fileops.go fileOpView).
+      required: [id, op, path, state, started_at, done, total]
+      properties:
+        id: { type: string }
+        op: { type: string, enum: [upload, unzip] }
+        path: { type: string, description: The file landed, or the archive extracted. }
+        state: { type: string, enum: [running, succeeded, failed] }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time, description: Omitted while it runs. }
+        done: { type: integer, format: int64, description: Bytes landed or extracted so far; 0 before the first report. }
+        total: { type: integer, format: int64, description: Bytes in all; 0 before the first report. }
+        files: { type: integer, description: Files an extraction wrote. Omitted otherwise. }
+        bytes: { type: integer, format: int64, description: Bytes an extraction wrote. Omitted otherwise. }
+        error: { $ref: '#/components/schemas/FileOpError' }
+
+    FileOpError:
+      type: object
+      description: >-
+        Why an op failed (internal/api/handlers_fileops.go fileOpError). code is
+        what the synchronous file routes answer for the same refusal
+        (file_exists, volume_full, file_changed, not_found, bad_path), an
+        extraction's own (archive_invalid, archive_unsafe, archive_symlink,
+        type_conflict), or job_failed for a Job that ended without saying why.
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message: { type: string }
+        entry: { type: string, description: The archive entry refused, or the path it collides with. }
+        conflicts:
+          type: array
+          items: { type: string }
+          description: On file_exists from an extraction, the first 200 files it would replace, sorted.
+        conflict_count: { type: integer, description: How many files it would replace in all. }
+        need: { type: integer, format: int64, description: On volume_full, the bytes needed. }
+        avail: { type: integer, format: int64, description: On volume_full, the bytes free. }
+
     ExportStatus:
       type: object
       description: Where an export stands (internal/api/exports.go exportStatusView).
@@ -1306,7 +1360,10 @@ paths:
         face and the bearer token minted with the upload is the whole check. The
         token opens its upload once. An unknown id, a wrong or missing token and a
         spent token are all the same 404, so the route says nothing about which
-        uploads exist.
+        uploads exist. An upload session committed through POST
+        …/files/uploads/{id}/commit is fetched here the same way, under the
+        session id; it stays staged until it has been sent whole once, so a Job
+        that failed before then can be committed again.
       x-felis-face: [internal]
       x-felis-tier: public
       security: []
@@ -4149,11 +4206,14 @@ paths:
       description: >-
         Starts a Job that reads the archive from the backup store and hands it to
         felis-api, which streams it to the browser (poll GET /exports/{ticket},
-        then open its download). The archive is checked against the sha256
-        recorded when it was written as it streams; a mismatch aborts the
-        download. A user gets 404 for a backup outside their scope, as their
-        list never shows it. One export per user at a time, 2 across the
-        install, 6 per user per hour.
+        then open its download). The Job checks the archive against the sha256
+        recorded when it was written as it streams; a mismatch cuts the
+        download off short of its end. On the way out config/paper-global.yml
+        (the cluster's forwarding secret) is left out and server.properties has
+        its rcon.password redacted, so the download carries no Content-Length.
+        A user gets 404 for a backup outside their scope, as their list never
+        shows it. One export per user at a time, 2 across the install, 6 per
+        user per hour.
       x-felis-face: [external]
       x-felis-tier: app
       security: [{ sessionCookie: [] }]
@@ -4206,7 +4266,9 @@ paths:
         it to felis-api, which streams it to the browser (poll GET
         /exports/{ticket}, then open its download). The server must be fully
         stopped, and it cannot start until the download has ended or the Job's
-        2 hour deadline passes. Same limits as a backup export.
+        2 hour deadline passes. The same two files are guarded as in a backup
+        export, matched by the file itself, so a link to either under another
+        name is guarded too. Same limits as a backup export.
       x-felis-face: [external]
       x-felis-tier: app
       security: [{ sessionCookie: [] }]
@@ -4295,12 +4357,18 @@ paths:
         - { name: ticket, in: path, required: true, schema: { type: string } }
       responses:
         '200':
-          description: The tar.gz, as an attachment.
+          description: >-
+            The export as an attachment: a world or a backup as a tar.gz, a
+            downloaded folder as a zip, a downloaded file as its bytes.
           headers:
             Content-Disposition:
               schema: { type: string }
           content:
             application/gzip:
+              schema: { type: string, format: binary }
+            application/zip:
+              schema: { type: string, format: binary }
+            application/octet-stream:
               schema: { type: string, format: binary }
         '401':
           $ref: '#/components/responses/Unauthorized'
@@ -4355,7 +4423,7 @@ paths:
                       required: [name, kind, state]
                       properties:
                         name: { type: string }
-                        kind: { type: string, enum: [backup, restore, export_world, export_backup] }
+                        kind: { type: string, enum: [backup, restore, export_world, export_backup, export_files] }
                         state: { type: string, enum: [running, succeeded, failed] }
                         message: { type: string }
                         started_at: { type: string, format: date-time }
@@ -4424,10 +4492,11 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [path, entries, truncated]
+                required: [path, entries, truncated, free_bytes]
                 properties:
                   path: { type: string }
                   truncated: { type: boolean, description: The listing hit the entry cap and is incomplete. }
+                  free_bytes: { type: integer, format: int64, description: Bytes free on the world volume, for a client to check an upload fits before sending it. }
                   entries:
                     type: array
                     items:
@@ -4818,6 +4887,75 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
 
+  /api/v1/servers/{name}/files/download:
+    post:
+      tags: [files]
+      operationId: downloadServerFile
+      summary: Start downloading one file or folder of a stopped server's world (owner-or-admin).
+      description: >-
+        An export (poll GET /exports/{ticket}, then open its download): a Job
+        reads the file, or zips the folder, from the world volume read-only and
+        hands it to felis-api, which streams it to the browser. A file saves
+        under its own name with its length; a folder as NAME.zip, streamed
+        without one, with symbolic links, devices and sockets left out.
+        config/paper-global.yml, the cluster's forwarding secret, is refused as
+        a file and left out of a folder, and server.properties goes out with
+        its rcon.password redacted; both are matched by the file itself, so a
+        link to either under another name is guarded too. The server cannot
+        start until the download has ended. Two file downloads per user at a
+        time, 4 across the install, 30 per user per hour, counted apart from
+        world and backup exports. Audited as file.download.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - name: path
+          in: query
+          required: true
+          description: File or folder to download, relative to the world root. The root itself is refused.
+          schema: { type: string }
+        - name: dir
+          in: query
+          required: false
+          description: true when path is a folder, which is sent as a zip. The Job refuses a path that is not what dir says.
+          schema: { type: string, enum: ["true", "false"] }
+      responses:
+        '202':
+          description: Download started.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExportTicket' }
+        '400':
+          description: Missing path (bad_request), the world root (bad_path), or a malformed server name (bad_name).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Unknown server.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Server is not stopped (not_stopped), has no world volume yet (no_world_volume), or a restore, backup, file change or another export already holds its world volume (maintenance_in_progress).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: A file download limit is reached (export_busy); Retry-After gives the seconds to wait.
+          headers:
+            Retry-After:
+              schema: { type: integer }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   /api/v1/servers/{name}/files/upload:
     put:
       tags: [files]
@@ -4825,7 +4963,8 @@ paths:
       summary: Upload a file into a server's world volume (owner-or-admin; server must be stopped).
       description: >-
         Lands the raw request body as the file at path, up to 64 MiB — a plugin jar,
-        a datapack, a world region. Content-Length is required (411
+        a datapack, a world region; a bigger file goes up as an upload session
+        (POST …/files/uploads). Content-Length is required (411
         length_required). An existing file is 409 file_exists unless overwrite=true;
         a folder at the path is 400 bad_path either way. The body is staged on
         felis-api's disk first and then fetched by the file Job with a one-time
@@ -4895,7 +5034,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '413':
-          description: The file is over 64 MiB (too_large).
+          description: The file is over 64 MiB, the most one request carries (too_large); send it as an upload session instead.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -4914,6 +5053,390 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/servers/{name}/files/uploads:
+    post:
+      tags: [files]
+      operationId: beginServerFileUpload
+      summary: Begin an upload session for a file too big for one request (owner-or-admin; server must be stopped).
+      description: >-
+        A file of any size goes up in parts: this begins a session for path and
+        the file's size, PUT …/uploads/{id}?offset= sends each part (at most
+        part_max_bytes, 32 MiB, so each fits the edge's body limit), and POST
+        …/uploads/{id}/commit lands it. There is no size ceiling but felis-api's
+        staging disk, and room for the whole file is reserved here, so an upload
+        that begins is one the disk can finish (507 upload_staging_full
+        otherwise). A session belongs to the account and server it was begun
+        for, answers no one else, and is dropped after 6 hours untouched. Four
+        sessions per account at a time. Sessions do not survive a felis-api
+        restart.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - name: path
+          in: query
+          required: true
+          description: File to create, relative to the world root. It must stay inside it (400 bad_path); its folder is checked when the file lands.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [size]
+              properties:
+                size: { type: integer, format: int64, minimum: 0, description: The file's length in bytes. }
+      responses:
+        '201':
+          description: Session begun.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FileUploadSession' }
+        '400':
+          description: Missing path or size, or a negative size (bad_request), a path leaving the world folder or naming the folder itself (bad_path), or a malformed server name (bad_name).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Unknown server.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Server is not stopped (not_stopped) or has no world volume yet (no_world_volume).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: The account already has 4 uploads in progress (too_many_uploads).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '507':
+          description: felis-api's staging disk has no room for a file this size right now (upload_staging_full).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/servers/{name}/files/uploads/{id}:
+    get:
+      tags: [files]
+      operationId: getServerFileUpload
+      summary: Where an upload session stands (owner-or-admin, the account that began it).
+      description: >-
+        received is where the next part starts: after a lost answer or a 409
+        upload_offset_mismatch, read it here and continue from there. Needs no
+        stopped server.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The session.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FileUploadSession' }
+        '400':
+          description: Malformed server name (bad_name).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Unknown server, or no such session for this account on this server (upload_not_found).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    put:
+      tags: [files]
+      operationId: putServerFileUploadPart
+      summary: Send one part of an upload session (owner-or-admin, the account that began it).
+      description: >-
+        The raw body is appended at offset, which must be where the session
+        ends. Content-Length is required, and the part is taken whole or not at
+        all: one cut short leaves the session where it was. Parts go one at a
+        time (409 upload_busy while one arrives). Needs no stopped server, so
+        starting the server midway costs only the commit's refusal until it is
+        stopped again.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - name: offset
+          in: query
+          required: true
+          description: The byte position the part starts at, the session's received.
+          schema: { type: integer, format: int64, minimum: 0 }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        '200':
+          description: Part taken.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FileUploadSession' }
+        '400':
+          description: A missing or malformed offset (bad_request), a body that ended before its Content-Length (upload_incomplete), or a malformed server name (bad_name).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Unknown server, or no such session for this account on this server (upload_not_found).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: offset is not where the session ends (upload_offset_mismatch), or another part is still arriving (upload_busy).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '411':
+          description: The request has no Content-Length (length_required).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '413':
+          description: The part is over part_max_bytes, or runs past the size the session began with (part_too_large).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '507':
+          description: felis-api's staging disk ran out of room (upload_staging_full).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [files]
+      operationId: deleteServerFileUpload
+      summary: Cancel an upload session and free its room (owner-or-admin, the account that began it).
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '204':
+          description: Cancelled.
+        '400':
+          description: Malformed server name (bad_name).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Unknown server, or no such session for this account on this server (upload_not_found).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: A part is still arriving (upload_busy).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/servers/{name}/files/uploads/{id}/commit:
+    post:
+      tags: [files]
+      operationId: commitServerFileUpload
+      summary: Land a finished upload session in the world volume (owner-or-admin; server must be stopped).
+      description: >-
+        Starts the Job that fetches the session's bytes from felis-api and lands
+        them at its path, checked against their size and SHA-256 and renamed into
+        place, so a failed landing leaves the old file whole. It answers at once
+        with the op; GET …/files/ops reports how it ends (file_exists when a file
+        is at the path and overwrite is not true). The Job holds the world volume
+        while it runs, so the server cannot start meanwhile. A Job that fails
+        before it has every byte leaves the session to commit again; once the
+        bytes have gone to the Job the session is gone. Audited as file.upload.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StartFileOp' }
+      responses:
+        '202':
+          description: Landing started.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [op]
+                properties:
+                  op: { $ref: '#/components/schemas/FileOp' }
+        '400':
+          description: Malformed body, or a malformed server name (bad_name).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Unknown server, or no such session for this account on this server (upload_not_found).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: >-
+            Not every byte has arrived (upload_incomplete; the world lock is not
+            asked for), a part is still arriving (upload_busy), the server is not stopped (not_stopped) or has
+            no world volume yet (no_world_volume), or a restore, backup, file
+            change or export already holds its world volume, this session's
+            earlier commit included (maintenance_in_progress).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/servers/{name}/files/unzip:
+    post:
+      tags: [files]
+      operationId: unzipServerFile
+      summary: Extract a .zip into the folder holding it (owner-or-admin; server must be stopped).
+      description: >-
+        Starts a Job that extracts the archive into a temporary folder beside it
+        and moves the result into place, and answers at once with the op; GET
+        …/files/ops reports how it ends. Nothing changes unless every entry is
+        safe: an entry leaving the folder, an absolute path, or a link ends
+        archive_unsafe or archive_symlink; an entry whose size differs from what
+        the archive declares ends archive_invalid; a file where the archive has
+        a folder, or the reverse, ends type_conflict. Without overwrite an
+        archive that would replace any file ends file_exists with the files it
+        would replace, for the caller to confirm and run again with overwrite.
+        Names stored in GBK, as Windows zips in a Chinese locale have them, are
+        read as such. The Job holds the world volume while it runs. Audited as
+        file.unzip.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - name: path
+          in: query
+          required: true
+          description: The .zip to extract, relative to the world root.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StartFileOp' }
+      responses:
+        '202':
+          description: Extraction started.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [op]
+                properties:
+                  op: { $ref: '#/components/schemas/FileOp' }
+        '400':
+          description: Missing path or malformed body (bad_request), a path not ending in .zip (bad_path), or a malformed server name (bad_name).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Unknown server.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Server is not stopped (not_stopped), has no world volume yet (no_world_volume), or a restore, backup, file change or export already holds its world volume (maintenance_in_progress).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/servers/{name}/files/ops:
+    get:
+      tags: [files]
+      operationId: listServerFileOps
+      summary: A server's background uploads and extractions (owner-or-admin).
+      description: >-
+        Newest first: the one running, if any, and those that ended within the
+        last 30 minutes, at most 10. Needs no stopped server.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The ops.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ops]
+                properties:
+                  ops:
+                    type: array
+                    items: { $ref: '#/components/schemas/FileOp' }
+        '400':
+          description: Malformed server name (bad_name).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Unknown server.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
 
   # --------------------------------------------------- scheduled tasks (app) ---
   /api/v1/servers/{name}/schedules:

@@ -6,8 +6,11 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import i18next from "i18next";
 import { ServerFiles } from "./ServerFiles";
 import { humanizeError } from "@/lib/api";
-import { MAX_UPLOAD_BYTES } from "@/components/files/useUploads";
+import { ONE_REQUEST_BYTES } from "@/components/files/useUploads";
+import { OP_POLL_MS } from "@/components/files/sessionUpload";
+import { EXPORT_POLL_MS } from "@/lib/download";
 import { STATUS_POLL_FAST_MS } from "@/lib/hooks";
+import type { FileOp } from "@/lib/types";
 
 const mocks = vi.hoisted(() => ({
   writeServerFile: vi.fn(),
@@ -20,6 +23,16 @@ const mocks = vi.hoisted(() => ({
   mkdirServerFolder: vi.fn(),
   renameServerFile: vi.fn(),
   uploadServerFile: vi.fn(),
+  listServerFileOps: vi.fn(),
+  unzipServerFile: vi.fn(),
+  downloadServerFile: vi.fn(),
+  exportStatus: vi.fn(),
+  exportDownloadURL: vi.fn(),
+  beginServerFileUpload: vi.fn(),
+  getServerFileUpload: vi.fn(),
+  putServerFileUploadPart: vi.fn(),
+  deleteServerFileUpload: vi.fn(),
+  commitServerFileUpload: vi.fn(),
 }));
 
 vi.mock("@/lib/api", async (importOriginal) => {
@@ -38,6 +51,16 @@ vi.mock("@/lib/api", async (importOriginal) => {
       mkdirServerFolder: mocks.mkdirServerFolder,
       renameServerFile: mocks.renameServerFile,
       uploadServerFile: mocks.uploadServerFile,
+      listServerFileOps: mocks.listServerFileOps,
+      unzipServerFile: mocks.unzipServerFile,
+      downloadServerFile: mocks.downloadServerFile,
+      exportStatus: mocks.exportStatus,
+      exportDownloadURL: mocks.exportDownloadURL,
+      beginServerFileUpload: mocks.beginServerFileUpload,
+      getServerFileUpload: mocks.getServerFileUpload,
+      putServerFileUploadPart: mocks.putServerFileUploadPart,
+      deleteServerFileUpload: mocks.deleteServerFileUpload,
+      commitServerFileUpload: mocks.commitServerFileUpload,
     },
   };
 });
@@ -62,6 +85,18 @@ async function openEditor() {
   return { dialog, editor: within(dialog).getByRole("textbox") as HTMLTextAreaElement };
 }
 
+let opsNow: FileOp[] = [];
+const fileOp = (over: Partial<FileOp> = {}): FileOp => ({
+  id: "op1",
+  op: "unzip",
+  path: "pack.zip",
+  state: "running",
+  started_at: "2026-09-28T00:00:00Z",
+  done: 0,
+  total: 0,
+  ...over,
+});
+
 const stopped = { name: "lobby", subdomain: "lobby", phase: "Stopped", desiredState: "Stopped", ready: false };
 
 beforeEach(() => {
@@ -84,6 +119,24 @@ beforeEach(() => {
   for (const m of [mocks.createServerFile, mocks.deleteServerFile, mocks.mkdirServerFolder, mocks.renameServerFile, mocks.uploadServerFile]) {
     m.mockReset();
   }
+  for (const m of [
+    mocks.unzipServerFile,
+    mocks.downloadServerFile,
+    mocks.exportStatus,
+    mocks.exportDownloadURL,
+    mocks.beginServerFileUpload,
+    mocks.getServerFileUpload,
+    mocks.putServerFileUploadPart,
+    mocks.deleteServerFileUpload,
+    mocks.commitServerFileUpload,
+  ]) {
+    m.mockReset();
+  }
+  // The server's background ops, as each read finds them.
+  opsNow = [];
+  mocks.listServerFileOps.mockReset();
+  mocks.listServerFileOps.mockImplementation(async () => ({ ops: opsNow }));
+  localStorage.clear();
   mocks.stop.mockReset();
   mocks.status.mockReset();
   mocks.status.mockResolvedValue(stopped);
@@ -621,20 +674,298 @@ describe("ServerFiles uploads", () => {
     expect(mocks.uploadServerFile).not.toHaveBeenCalled();
   });
 
-  it("refuses a name a folder holds, and a file over the limit, without sending or offering a retry", async () => {
+  const sized = (name: string, size: number) => {
+    const f = file(name);
+    Object.defineProperty(f, "size", { value: size });
+    return f;
+  };
+  const withFree = (free: number) =>
+    mocks.listServerFiles.mockImplementation((_name: string, path: string) =>
+      Promise.resolve({
+        path,
+        truncated: false,
+        free_bytes: free,
+        entries: [{ name: "world", size: 0, is_dir: true, mod_time: "2026-09-01T00:00:00Z" }],
+      }),
+    );
+
+  it("refuses a name a folder holds without sending or offering a retry", async () => {
     renderFiles();
     await screen.findByText("world");
-    const big = file("world-backup.zip");
-    Object.defineProperty(big, "size", { value: MAX_UPLOAD_BYTES + 1 });
-    const exact = file("exact.zip");
-    Object.defineProperty(exact, "size", { value: MAX_UPLOAD_BYTES });
 
-    pick(file("world"), big, exact);
+    pick(file("world"));
 
     expect(await within(queue()).findByText(t("files:upload_folder_there"))).toBeTruthy();
-    expect(within(queue()).getByText(i18next.t("files:upload_too_large", { limit: "64 MiB" }))).toBeTruthy();
     expect(within(queue()).queryByRole("button", { name: t("files:upload_retry") })).toBeNull();
-    await waitFor(() => expect(sentAs()).toEqual([["exact.zip", false]]));
+    expect(mocks.uploadServerFile).not.toHaveBeenCalled();
+  });
+
+  it("refuses what the volume has no room for, counting the files ahead in the batch, and retries once there is room", async () => {
+    withFree(100);
+    renderFiles();
+    await screen.findByText("world");
+
+    pick(sized("a.jar", 60), sized("b.jar", 50), sized("c.jar", 40));
+
+    expect(await within(queue()).findByText(i18next.t("files:upload_no_room", { free: "40 B", size: "50 B" }))).toBeTruthy();
+    await waitFor(() => expect(sentAs()).toEqual([["a.jar", false]]));
+    await act(async () => pending[0].resolve());
+    await waitFor(() => expect(sentAs()).toEqual([["a.jar", false], ["c.jar", false]]));
+    await act(async () => pending[1].resolve());
+    await waitFor(() => expect(within(queue()).getAllByText(t("files:upload_done"))).toHaveLength(2));
+
+    // The listing after they landed still says 100 B free.
+    await userEvent.click(within(queue()).getByRole("button", { name: t("files:upload_retry") }));
+    await waitFor(() => expect(sentAs()).toEqual([["a.jar", false], ["c.jar", false], ["b.jar", false]]));
+  });
+
+  it("sends when the listing could not tell how much room there is", async () => {
+    withFree(0);
+    renderFiles();
+    await screen.findByText("world");
+
+    pick(sized("a.jar", 60));
+
+    await waitFor(() => expect(sentAs()).toEqual([["a.jar", false]]));
+  });
+
+  it("keeps a retry refused while the latest listing has no room for the file", async () => {
+    withFree(10);
+    renderFiles();
+    await screen.findByText("world");
+    pick(sized("a.jar", 60));
+    await within(queue()).findByText(i18next.t("files:upload_no_room", { free: "10 B", size: "60 B" }));
+
+    withFree(20);
+    await userEvent.click(screen.getByRole("button", { name: t("files:refresh") }));
+    await waitFor(() => expect(mocks.listServerFiles).toHaveBeenCalledTimes(2));
+    await userEvent.click(within(queue()).getByRole("button", { name: t("files:upload_retry") }));
+
+    expect(await within(queue()).findByText(i18next.t("files:upload_no_room", { free: "20 B", size: "60 B" }))).toBeTruthy();
+    expect(mocks.uploadServerFile).not.toHaveBeenCalled();
+  });
+
+  it("sends a file of exactly one request's worth in one request", async () => {
+    renderFiles();
+    await screen.findByText("world");
+
+    pick(sized("edge.zip", ONE_REQUEST_BYTES));
+
+    await waitFor(() => expect(sentAs()).toEqual([["edge.zip", false]]));
+    expect(mocks.beginServerFileUpload).not.toHaveBeenCalled();
+  });
+
+  describe("a file over one request's worth", () => {
+    const PART = 32 * 1024 * 1024;
+    const SIZE = ONE_REQUEST_BYTES + 1;
+    const KEY = "felis-file-upload:lobby:world.zip";
+    const at = (received: number) => ({ id: "s1", path: "world.zip", size: SIZE, received, part_max_bytes: PART });
+    let parts: { offset: number; signal?: AbortSignal }[];
+
+    beforeEach(() => {
+      parts = [];
+      mocks.beginServerFileUpload.mockResolvedValue(at(0));
+      mocks.putServerFileUploadPart.mockImplementation(
+        async (_n: string, _id: string, offset: number, _part: Blob, opts?: { signal?: AbortSignal }) => {
+          parts.push({ offset, signal: opts?.signal });
+          return at(Math.min(offset + PART, SIZE));
+        },
+      );
+      mocks.commitServerFileUpload.mockResolvedValue({ op: fileOp({ id: "land1", op: "upload", path: "world.zip" }) });
+      mocks.deleteServerFileUpload.mockResolvedValue(null);
+    });
+
+    it("goes up in parts, shows the Job writing it, and rereads once it lands", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      renderFiles();
+      await screen.findByText("world");
+      const lists = mocks.listServerFiles.mock.calls.length;
+
+      pick(sized("world.zip", SIZE));
+
+      await waitFor(() => expect(mocks.commitServerFileUpload.mock.calls).toEqual([["lobby", "s1", false]]));
+      expect(parts.map((p) => p.offset)).toEqual([0, PART, 2 * PART]);
+      expect(mocks.uploadServerFile).not.toHaveBeenCalled();
+      expect(await within(queue()).findByText(t("files:upload_landing"))).toBeTruthy();
+
+      opsNow = [fileOp({ id: "land1", op: "upload", path: "world.zip", done: SIZE / 4, total: SIZE })];
+      await act(() => vi.advanceTimersByTimeAsync(OP_POLL_MS));
+      expect(within(queue()).getByText(i18next.t("files:upload_landing_progress", { percent: 25 }))).toBeTruthy();
+      expect(within(queue()).getByRole("progressbar").getAttribute("aria-valuenow")).toBe("25");
+      // Its own row follows it; the list of background operations leaves it out.
+      fireEvent.click(screen.getByRole("button", { name: t("files:refresh") }));
+      await waitFor(() => expect(mocks.listServerFileOps.mock.calls.length).toBeGreaterThanOrEqual(2));
+      expect(screen.queryByRole("region", { name: t("files:ops_label") })).toBeNull();
+      const before = mocks.listServerFiles.mock.calls.length;
+
+      opsNow = [fileOp({ id: "land1", op: "upload", path: "world.zip", state: "succeeded", done: SIZE, total: SIZE })];
+      await act(() => vi.advanceTimersByTimeAsync(OP_POLL_MS));
+
+      expect(await within(queue()).findByText(t("files:upload_done"))).toBeTruthy();
+      await waitFor(() => expect(mocks.listServerFiles.mock.calls.length).toBe(before + 1));
+      expect(before).toBe(lists + 1); // the refresh
+      expect(localStorage.getItem(KEY)).toBeNull();
+    });
+
+    it("says why the Job landing it failed, and offers a retry", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      renderFiles();
+      await screen.findByText("world");
+      pick(sized("world.zip", SIZE));
+      await waitFor(() => expect(mocks.commitServerFileUpload).toHaveBeenCalled());
+
+      opsNow = [
+        fileOp({
+          id: "land1",
+          op: "upload",
+          path: "world.zip",
+          state: "failed",
+          error: { code: "volume_full", message: "", need: 2048, avail: 1024 },
+        }),
+      ];
+      await act(() => vi.advanceTimersByTimeAsync(OP_POLL_MS));
+
+      expect(
+        await within(queue()).findByText(i18next.t("files:op_volume_full", { need: "2.0 KiB", avail: "1.0 KiB" })),
+      ).toBeTruthy();
+      expect(within(queue()).getByRole("button", { name: t("files:upload_retry") })).toBeTruthy();
+    });
+
+    it("asks to replace when the Job found a file there, and lands the bytes already sent", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      renderFiles();
+      await screen.findByText("world");
+      pick(sized("world.zip", SIZE));
+      await waitFor(() => expect(mocks.commitServerFileUpload).toHaveBeenCalledTimes(1));
+      opsNow = [
+        fileOp({ id: "land1", op: "upload", path: "world.zip", state: "failed", error: { code: "file_exists", message: "" } }),
+      ];
+      await act(() => vi.advanceTimersByTimeAsync(OP_POLL_MS));
+      mocks.getServerFileUpload.mockResolvedValue(at(SIZE));
+      mocks.commitServerFileUpload.mockResolvedValue({
+        op: fileOp({ id: "land2", op: "upload", path: "world.zip", state: "succeeded" }),
+      });
+
+      fireEvent.click(await within(queue()).findByRole("button", { name: t("files:upload_replace") }));
+
+      await waitFor(() => expect(mocks.commitServerFileUpload).toHaveBeenLastCalledWith("lobby", "s1", true));
+      expect(parts).toHaveLength(3);
+      expect(mocks.beginServerFileUpload).toHaveBeenCalledTimes(1);
+      expect(await within(queue()).findByText(t("files:upload_done"))).toBeTruthy();
+    });
+
+    it.each([
+      ["dismissed", { code: "volume_full", message: "" }, "upload_dismiss", { name: "world.zip" }],
+      ["skipped", { code: "file_exists", message: "" }, "upload_skip", {}],
+    ])("gives the session back when a refused one is %s", async (_label, error, key, opts) => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      renderFiles();
+      await screen.findByText("world");
+      pick(sized("world.zip", SIZE));
+      await waitFor(() => expect(mocks.commitServerFileUpload).toHaveBeenCalledTimes(1));
+      opsNow = [fileOp({ id: "land1", op: "upload", path: "world.zip", state: "failed", error })];
+      await act(() => vi.advanceTimersByTimeAsync(OP_POLL_MS));
+
+      fireEvent.click(await within(queue()).findByRole("button", { name: i18next.t(`files:${key}`, opts) }));
+
+      await waitFor(() => expect(mocks.deleteServerFileUpload.mock.calls).toEqual([["lobby", "s1"]]));
+      expect(localStorage.getItem(KEY)).toBeNull();
+      expect(screen.queryByRole("region", { name: t("files:uploads_label") })).toBeNull();
+    });
+
+    it("gives the session back when skipped with the rest", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      renderFiles();
+      await screen.findByText("world");
+      pick(sized("world.zip", SIZE));
+      await waitFor(() => expect(mocks.commitServerFileUpload).toHaveBeenCalledTimes(1));
+      opsNow = [
+        fileOp({ id: "land1", op: "upload", path: "world.zip", state: "failed", error: { code: "file_exists", message: "" } }),
+      ];
+      await act(() => vi.advanceTimersByTimeAsync(OP_POLL_MS));
+      await within(queue()).findByRole("button", { name: t("files:upload_replace") });
+      pick(file("server.properties"));
+
+      fireEvent.click(await within(queue()).findByRole("button", { name: t("files:upload_skip_all") }));
+
+      await waitFor(() => expect(mocks.deleteServerFileUpload.mock.calls).toEqual([["lobby", "s1"]]));
+      expect(screen.queryByRole("region", { name: t("files:uploads_label") })).toBeNull();
+    });
+
+    it("gives the session back when cancelled", async () => {
+      mocks.putServerFileUploadPart.mockImplementation(
+        (_n: string, _id: string, offset: number, _part: Blob, opts?: { signal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            parts.push({ offset, signal: opts?.signal });
+            opts?.signal?.addEventListener("abort", () => reject(new DOMException("cancelled", "AbortError")));
+          }),
+      );
+      renderFiles();
+      await screen.findByText("world");
+      pick(sized("world.zip", SIZE));
+      await waitFor(() => expect(parts).toHaveLength(1));
+      expect(localStorage.getItem(KEY)).not.toBeNull();
+
+      await userEvent.click(within(queue()).getByRole("button", { name: i18next.t("files:upload_cancel", { name: "world.zip" }) }));
+
+      await waitFor(() => expect(mocks.deleteServerFileUpload.mock.calls).toEqual([["lobby", "s1"]]));
+      expect(localStorage.getItem(KEY)).toBeNull();
+    });
+
+    it("keeps the session for a resume when the page goes away", async () => {
+      mocks.putServerFileUploadPart.mockImplementation(
+        (_n: string, _id: string, offset: number, _part: Blob, opts?: { signal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            parts.push({ offset, signal: opts?.signal });
+            opts?.signal?.addEventListener("abort", () => reject(new DOMException("cancelled", "AbortError")));
+          }),
+      );
+      const { unmount } = renderFiles();
+      await screen.findByText("world");
+      pick(sized("world.zip", SIZE));
+      await waitFor(() => expect(parts).toHaveLength(1));
+
+      unmount();
+      await act(async () => {});
+
+      expect(parts[0].signal?.aborted).toBe(true);
+      expect(mocks.deleteServerFileUpload).not.toHaveBeenCalled();
+      expect(JSON.parse(localStorage.getItem(KEY) ?? "null")).toMatchObject({ id: "s1", size: SIZE });
+    });
+  });
+
+  it("holds the queue and every change while a background op runs, then carries on", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    opsNow = [fileOp()];
+    renderFiles();
+    const ops = await screen.findByRole("region", { name: t("files:ops_label") });
+    expect(within(ops).getByText(i18next.t("files:op_unzip", { path: "pack.zip" }))).toBeTruthy();
+    expect(within(ops).getByText(t("files:op_preparing"))).toBeTruthy();
+    const lists = mocks.listServerFiles.mock.calls.length;
+
+    pick(file("a.jar"));
+    expect(await within(queue()).findByText(t("files:upload_queued"))).toBeTruthy();
+    for (const b of [button("new_file"), button("new_folder"), button("rename_item", "world"), button("delete_item", "world")]) {
+      expect(b.disabled).toBe(true);
+      expect(b.title).toBe(t("files:wait_for_op"));
+    }
+
+    opsNow = [fileOp({ done: 512, total: 2048 })];
+    await act(() => vi.advanceTimersByTimeAsync(OP_POLL_MS));
+    expect(within(ops).getByText(i18next.t("files:op_progress", { done: "512 B", total: "2.0 KiB", percent: 25 }))).toBeTruthy();
+    expect(within(ops).getByRole("progressbar").getAttribute("aria-valuenow")).toBe("25");
+    expect(mocks.uploadServerFile).not.toHaveBeenCalled();
+
+    opsNow = [fileOp({ state: "succeeded", files: 3, bytes: 2048, done: 2048, total: 2048 })];
+    await act(() => vi.advanceTimersByTimeAsync(OP_POLL_MS));
+
+    await waitFor(() => expect(sentAs()).toEqual([["a.jar", false]]));
+    expect(within(ops).getByText(i18next.t("files:op_unzip_done", { count: 3, bytes: "2.0 KiB" }))).toBeTruthy();
+    // What it extracted is in the folder now.
+    await waitFor(() => expect(mocks.listServerFiles.mock.calls.length).toBe(lists + 1));
+
+    fireEvent.click(within(ops).getByRole("button", { name: i18next.t("files:op_dismiss", { path: "pack.zip" }) }));
+    expect(screen.queryByRole("region", { name: t("files:ops_label") })).toBeNull();
   });
 
   it("asks about a file that appeared since the listing", async () => {
@@ -806,5 +1137,310 @@ describe("ServerFiles uploads", () => {
     expect(onList.dropEffect).toBe("copy");
     // Dragging text is the browser's own business.
     expect(fireEvent.dragOver(document.body, { dataTransfer: { types: ["text/plain"], dropEffect: "move" } })).toBe(true);
+  });
+});
+
+describe("ServerFiles archives and downloads", () => {
+  const entry = (name: string, is_dir = false) => ({ name, size: 8, is_dir, mod_time: "2026-09-01T00:00:00Z" });
+  beforeEach(() => {
+    mocks.listServerFiles.mockImplementation((_name: string, path: string) =>
+      Promise.resolve({
+        path,
+        truncated: false,
+        entries:
+          path === "config"
+            ? [entry("paper-global.yml"), entry("bukkit.yml")]
+            : [entry("server.properties"), entry("Pack.ZIP"), entry("old.zip", true), entry("config", true), entry("world", true)],
+      }),
+    );
+  });
+
+  const conflicted = (over: Partial<FileOp> = {}) =>
+    fileOp({
+      id: "u1",
+      path: "Pack.ZIP",
+      state: "failed",
+      error: { code: "file_exists", message: "", conflicts: ["world/level.dat", "ops.json"], conflict_count: 3 },
+      ...over,
+    });
+  const opsBanner = () => screen.getByRole("region", { name: t("files:ops_label") });
+  const poll = () => act(() => vi.advanceTimersByTimeAsync(OP_POLL_MS));
+
+  it("extracts an archive, lists what it would replace, and replaces them once confirmed", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    renderFiles();
+    await screen.findByText("Pack.ZIP");
+    expect(screen.queryByRole("button", { name: i18next.t("files:unzip_item", { name: "server.properties" }) })).toBeNull();
+    expect(screen.queryByRole("button", { name: i18next.t("files:unzip_item", { name: "old.zip" }) })).toBeNull();
+    const first = fileOp({ id: "u1", path: "Pack.ZIP" });
+    mocks.unzipServerFile.mockResolvedValueOnce({ op: first });
+    opsNow = [first];
+
+    fireEvent.click(button("unzip_item", "Pack.ZIP"));
+
+    const banner = await screen.findByRole("region", { name: t("files:ops_label") });
+    expect(within(banner).getByText(i18next.t("files:op_unzip", { path: "Pack.ZIP" }))).toBeTruthy();
+    expect(mocks.unzipServerFile.mock.calls).toEqual([["lobby", "Pack.ZIP", false]]);
+    expect(button("unzip_item", "Pack.ZIP").disabled).toBe(true);
+    expect(button("unzip_item", "Pack.ZIP").title).toBe(t("files:wait_for_op"));
+
+    opsNow = [conflicted()];
+    await poll();
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(i18next.t("files:unzip_conflicts_title", { name: "Pack.ZIP", count: 3 }))).toBeTruthy();
+    expect(within(dialog).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["world/level.dat", "ops.json"]);
+    expect(within(dialog).getByText(i18next.t("files:unzip_conflicts_more", { count: 1 }))).toBeTruthy();
+    const lists = mocks.listServerFiles.mock.calls.length;
+
+    const second = fileOp({ id: "u2", path: "Pack.ZIP" });
+    mocks.unzipServerFile.mockResolvedValueOnce({ op: second });
+    opsNow = [second, conflicted()];
+    fireEvent.click(within(dialog).getByRole("button", { name: t("files:unzip_overwrite") }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(mocks.unzipServerFile.mock.calls).toEqual([
+      ["lobby", "Pack.ZIP", false],
+      ["lobby", "Pack.ZIP", true],
+    ]);
+    // The refused try is dismissed: the one replacing takes its place.
+    expect(within(opsBanner()).getAllByRole("listitem")).toHaveLength(1);
+    expect(within(opsBanner()).getByText(t("files:op_preparing"))).toBeTruthy();
+
+    opsNow = [fileOp({ id: "u2", path: "Pack.ZIP", state: "succeeded", files: 5, bytes: 1024 }), conflicted()];
+    await poll();
+
+    expect(within(opsBanner()).getByText(i18next.t("files:op_unzip_done", { count: 5, bytes: "1.0 KiB" }))).toBeTruthy();
+    await waitFor(() => expect(mocks.listServerFiles.mock.calls.length).toBe(lists + 1));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("holds every change while an extraction starts, and asks at once when it ended before a read", async () => {
+    let answer!: (v: { op: FileOp }) => void;
+    mocks.unzipServerFile.mockReturnValueOnce(new Promise((res) => (answer = res)));
+    renderFiles();
+    await screen.findByText("Pack.ZIP");
+
+    fireEvent.click(button("unzip_item", "Pack.ZIP"));
+
+    for (const b of [button("new_file"), button("download_item", "server.properties"), button("delete_item", "world")]) {
+      expect(b.disabled).toBe(true);
+      expect(b.title).toBe(t("files:wait_for_op"));
+    }
+    mocks.uploadServerFile.mockResolvedValue({ path: "a.jar", status: "uploaded", sha256: "a", size: 5 });
+    fireEvent.change(screen.getByTestId("upload-input"), { target: { files: [new File(["bytes"], "a.jar")] } });
+    await act(async () => {});
+    expect(mocks.uploadServerFile).not.toHaveBeenCalled();
+
+    await act(async () => answer({ op: conflicted() }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(i18next.t("files:unzip_conflicts_title", { name: "Pack.ZIP", count: 3 }))).toBeTruthy();
+    await waitFor(() => expect(mocks.uploadServerFile.mock.calls.map((c) => c[1])).toEqual(["a.jar"]));
+  });
+
+  it("asks nothing about an extraction started here that failed for another reason", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const started = fileOp({ id: "u1", path: "Pack.ZIP" });
+    mocks.unzipServerFile.mockResolvedValueOnce({ op: started });
+    renderFiles();
+    await screen.findByText("Pack.ZIP");
+    opsNow = [started];
+    fireEvent.click(button("unzip_item", "Pack.ZIP"));
+    await screen.findByRole("region", { name: t("files:ops_label") });
+    expect(mocks.unzipServerFile.mock.calls).toEqual([["lobby", "Pack.ZIP", false]]);
+
+    opsNow = [conflicted({ error: { code: "archive_invalid", message: "zip: not a valid zip file" } })];
+    await poll();
+
+    expect(within(opsBanner()).getByText(t("files:archive_invalid"))).toBeTruthy();
+    expect(within(opsBanner()).queryByRole("button", { name: t("files:op_conflicts") })).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("asks nothing at once about an extraction started elsewhere, and offers its conflicts", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    opsNow = [fileOp({ id: "u9", path: "maps/Pack.ZIP" })];
+    renderFiles();
+    await within(await screen.findByRole("region", { name: t("files:ops_label") })).findByText(t("files:op_preparing"));
+
+    opsNow = [conflicted({ id: "u9", path: "maps/Pack.ZIP", error: { code: "file_exists", message: "", conflicts: ["a.txt"] } })];
+    await poll();
+
+    expect(within(opsBanner()).getByText(i18next.t("files:op_unzip_conflicts", { count: 1 }))).toBeTruthy();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(within(opsBanner()).getByRole("button", { name: t("files:op_conflicts") }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(i18next.t("files:unzip_conflicts_title", { name: "Pack.ZIP", count: 1 }))).toBeTruthy();
+    expect(within(dialog).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["a.txt"]);
+    expect(within(dialog).queryByText(i18next.t("files:unzip_conflicts_more", { count: 0 }))).toBeNull();
+    mocks.unzipServerFile.mockResolvedValueOnce({ op: fileOp({ id: "u10", path: "maps/Pack.ZIP" }) });
+
+    fireEvent.click(within(dialog).getByRole("button", { name: t("files:unzip_overwrite") }));
+
+    await waitFor(() => expect(mocks.unzipServerFile.mock.calls).toEqual([["lobby", "maps/Pack.ZIP", true]]));
+  });
+
+  it("says why an extraction could not start, and lets it be tried again", async () => {
+    const held = { status: 409, code: "maintenance_in_progress", message: "a backup holds the world" };
+    mocks.unzipServerFile.mockRejectedValueOnce(held);
+    renderFiles();
+    await screen.findByText("Pack.ZIP");
+
+    fireEvent.click(button("unzip_item", "Pack.ZIP"));
+
+    expect(await screen.findByText(humanizeError(held))).toBeTruthy();
+    expect(button("unzip_item", "Pack.ZIP").disabled).toBe(false);
+    expect(screen.queryByRole("region", { name: t("files:ops_label") })).toBeNull();
+  });
+
+  it("says when the background ops cannot be read, until a refresh gets through", async () => {
+    const broke = { status: 500, code: "internal", message: "" };
+    mocks.listServerFileOps.mockRejectedValueOnce(broke);
+    renderFiles();
+
+    const ops = await screen.findByRole("region", { name: t("files:ops_label") });
+    expect(within(ops).getByText(i18next.t("files:ops_refresh_failed", { reason: humanizeError(broke) }))).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: t("files:refresh") }));
+
+    await waitFor(() => expect(screen.queryByRole("region", { name: t("files:ops_label") })).toBeNull());
+  });
+
+  function watchLinks() {
+    const clicked: { href: string | null; download: string; hidden: boolean; connected: boolean }[] = [];
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      clicked.push({ href: this.getAttribute("href"), download: this.download, hidden: this.hidden, connected: this.isConnected });
+    });
+    return clicked;
+  }
+  // readyAfter answers "pending" for the first n reads of the ticket, then "ready".
+  function readyAfter(n: number) {
+    let reads = 0;
+    mocks.exportStatus.mockImplementation(async () => ({ state: reads++ < n ? "pending" : "ready" }));
+  }
+  const exportPoll = () => act(() => vi.advanceTimersByTimeAsync(EXPORT_POLL_MS));
+
+  it("hands a file to the browser once it is ready, holding every change while it is prepared", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const clicked = watchLinks();
+    mocks.downloadServerFile.mockResolvedValue({ ticket: "t1", state: "pending", filename: "server.properties" });
+    mocks.exportDownloadURL.mockResolvedValue("/api/v1/exports/t1/download");
+    mocks.uploadServerFile.mockResolvedValue({ path: "a.jar", status: "uploaded", sha256: "a", size: 5 });
+    readyAfter(1);
+    renderFiles();
+    await screen.findByText("Pack.ZIP");
+
+    fireEvent.click(button("download_item", "server.properties"));
+
+    await waitFor(() => expect(mocks.downloadServerFile.mock.calls).toEqual([["lobby", "server.properties", false]]));
+    expect(button("download_item", "server.properties").title).toBe(
+      i18next.t("files:download_preparing", { name: "server.properties" }),
+    );
+    for (const b of [button("new_file"), button("download_folder_item", "world"), button("delete_item", "world")]) {
+      expect(b.disabled).toBe(true);
+      expect(b.title).toBe(t("files:wait_for_download"));
+    }
+    fireEvent.change(screen.getByTestId("upload-input"), { target: { files: [new File(["bytes"], "a.jar")] } });
+    await exportPoll();
+    expect(mocks.exportStatus.mock.calls).toEqual([["t1"]]);
+    expect(clicked).toEqual([]);
+    expect(mocks.uploadServerFile).not.toHaveBeenCalled();
+
+    await exportPoll();
+
+    expect(clicked).toEqual([{ href: "/api/v1/exports/t1/download", download: "server.properties", hidden: true, connected: true }]);
+    expect(await screen.findByText(i18next.t("files:download_started_props", { filename: "server.properties" }))).toBeTruthy();
+    expect(button("new_file").disabled).toBe(false);
+    await waitFor(() => expect(mocks.uploadServerFile.mock.calls.map((c) => c[1])).toEqual(["a.jar"]));
+  });
+
+  it("abandons a download the page left before it was ready", async () => {
+    const clicked = watchLinks();
+    mocks.downloadServerFile.mockResolvedValue({ ticket: "t1", state: "pending", filename: "world.zip" });
+    readyAfter(0);
+    const { unmount } = renderFiles();
+    await screen.findByText("Pack.ZIP");
+    vi.useFakeTimers();
+    await act(async () => {
+      fireEvent.click(button("download_folder_item", "world"));
+    });
+
+    unmount();
+    await exportPoll();
+
+    expect(mocks.exportStatus).not.toHaveBeenCalled();
+    expect(clicked).toEqual([]);
+  });
+
+  it.each([
+    ["config", "download_started_config"],
+    ["world", "download_started"],
+  ])("downloads the folder %s as a zip, and says what it leaves out", async (folder, note) => {
+    watchLinks();
+    mocks.downloadServerFile.mockResolvedValue({ ticket: "t1", state: "pending", filename: `lobby-${folder}.zip` });
+    mocks.exportDownloadURL.mockResolvedValue("/api/v1/exports/t1/download");
+    readyAfter(0);
+    renderFiles();
+    await screen.findByText("Pack.ZIP");
+    vi.useFakeTimers();
+
+    await act(async () => {
+      fireEvent.click(button("download_folder_item", folder));
+    });
+    await exportPoll();
+
+    expect(mocks.downloadServerFile.mock.calls).toEqual([["lobby", folder, true]]);
+    expect(screen.getByText(i18next.t(`files:${note}`, { filename: `lobby-${folder}.zip` }))).toBeTruthy();
+  });
+
+  it("offers no download of the proxy secret, and one of the files beside it", async () => {
+    renderFiles();
+    fireEvent.click(await screen.findByRole("button", { name: i18next.t("files:open_folder", { name: "config" }) }));
+    await screen.findByText("bukkit.yml");
+
+    expect(button("download_item", "paper-global.yml").disabled).toBe(true);
+    expect(button("download_item", "paper-global.yml").title).toBe(t("files:secret_config_no_download"));
+    expect(button("download_item", "bukkit.yml").disabled).toBe(false);
+  });
+
+  it.each([
+    [
+      "refused as too many",
+      () => mocks.downloadServerFile.mockRejectedValue({ status: 429, code: "export_busy", message: "one at a time" }),
+      () => t("files:download_busy"),
+    ],
+    [
+      "refused otherwise",
+      () => mocks.downloadServerFile.mockRejectedValue({ status: 409, code: "maintenance_in_progress", message: "a backup holds the world" }),
+      () =>
+        i18next.t("files:download_failed_because", {
+          reason: humanizeError({ status: 409, code: "maintenance_in_progress", message: "a backup holds the world" }),
+        }),
+    ],
+    [
+      "failed with a reason",
+      () => mocks.exportStatus.mockResolvedValue({ state: "failed", message: "tar: world: Cannot open" }),
+      () => i18next.t("files:download_failed_because", { reason: "tar: world: Cannot open" }),
+    ],
+    ["failed without one", () => mocks.exportStatus.mockResolvedValue({ state: "failed" }), () => t("files:download_failed")],
+  ])("says why a download could not be prepared when %s", async (_label, arrange, words) => {
+    const clicked = watchLinks();
+    mocks.downloadServerFile.mockResolvedValue({ ticket: "t1", state: "pending", filename: "world.zip" });
+    arrange();
+    renderFiles();
+    await screen.findByText("Pack.ZIP");
+    vi.useFakeTimers();
+
+    await act(async () => {
+      fireEvent.click(button("download_folder_item", "world"));
+    });
+    await exportPoll();
+
+    expect(screen.getByText(words())).toBeTruthy();
+    expect(clicked).toEqual([]);
+    expect(mocks.exportDownloadURL).not.toHaveBeenCalled();
+    expect(button("download_folder_item", "world").disabled).toBe(false);
   });
 });

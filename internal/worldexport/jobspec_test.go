@@ -18,7 +18,8 @@ func params(mode string) JobParams {
 	return JobParams{
 		Server: "survival", ID: "0011223344556677", Mode: mode,
 		WorldPVC: "world-survival-0", BackupPVC: "felis-backups",
-		BackupRef: "/backups/survival-1.tar.gz",
+		BackupRef: "/backups/survival-1.tar.gz", BackupSHA256: strings.Repeat("ab", 32),
+		Path: "plugins/Essentials", Dir: true,
 		TargetURL: "http://felis-api-internal.felis.svc.cluster.local:8081/api/v1/internal/exports/0011223344556677",
 		Token:     secretToken,
 		Namespace: "minecraft", ServiceAccount: "felis-restore", Image: "felis:1",
@@ -37,7 +38,8 @@ func TestExportJobIsolation(t *testing.T) {
 		args                           []string
 	}{
 		{ModeWorld, worldVolume, "world-survival-0", "/world", []string{"--worlds-root", "/world"}},
-		{ModeBackup, backupVolume, "felis-backups", "/backups", []string{"--ref", "/backups/survival-1.tar.gz", "--backup-root", "/backups"}},
+		{ModeBackup, backupVolume, "felis-backups", "/backups", []string{"--ref", "/backups/survival-1.tar.gz", "--backup-root", "/backups", "--sha256", strings.Repeat("ab", 32)}},
+		{ModeFiles, worldVolume, "world-survival-0", "/world", []string{"--worlds-root", "/world", "--path", "plugins/Essentials", "--dir"}},
 	} {
 		job, err := ExportJob(params(tc.mode))
 		if err != nil {
@@ -132,6 +134,40 @@ func TestExportJobRefusesIncompleteParams(t *testing.T) {
 	if _, err := ExportJob(p); err == nil {
 		t.Error("a backup export without a ref was accepted")
 	}
+	p = params(ModeFiles)
+	p.Path = ""
+	if _, err := ExportJob(p); err == nil {
+		t.Error("a files export without a path was accepted")
+	}
+	p = params(ModeFiles)
+	p.WorldPVC = ""
+	if _, err := ExportJob(p); err == nil {
+		t.Error("a files export without a world claim was accepted")
+	}
+}
+
+// TestExportJobOptionalArgs: a backup with no recorded digest carries no
+// --sha256, and a file download carries its path and no --dir.
+func TestExportJobOptionalArgs(t *testing.T) {
+	p := params(ModeBackup)
+	p.BackupSHA256 = ""
+	job, err := ExportJob(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"--ref", "/backups/survival-1.tar.gz", "--backup-root", "/backups"}
+	if args := job.Spec.Template.Spec.Containers[0].Args; !slices.Equal(args[len(args)-len(want):], want) || slices.Contains(args, "--sha256") {
+		t.Errorf("backup args = %v", args)
+	}
+	p = params(ModeFiles)
+	p.Dir = false
+	if job, err = ExportJob(p); err != nil {
+		t.Fatal(err)
+	}
+	want = []string{"--worlds-root", "/world", "--path", "plugins/Essentials"}
+	if args := job.Spec.Template.Spec.Containers[0].Args; !slices.Equal(args[len(args)-len(want):], want) || slices.Contains(args, "--dir") {
+		t.Errorf("file args = %v", args)
+	}
 }
 
 // TestExportJobDefaults: a caller that leaves the deadline and the TTL unset
@@ -174,5 +210,29 @@ func TestStartCreatesTheJob(t *testing.T) {
 	if _, err := e.Start(context.Background(), Request{Server: "survival", Mode: ModeWorld, ID: "0011223344556677",
 		TargetURL: "http://api:8081/x", Token: secretToken}); err == nil {
 		t.Error("a second Job of the same name was reported as created")
+	}
+
+	// Each mode's own fields reach the Pod's arguments.
+	for _, tc := range []struct {
+		r    Request
+		tail []string
+	}{
+		{Request{Server: "survival", Mode: ModeBackup, ID: "1111111111111111", BackupRef: "/backups/a.tar.gz", BackupSHA256: strings.Repeat("cd", 32)},
+			[]string{"--ref", "/backups/a.tar.gz", "--backup-root", "/backups", "--sha256", strings.Repeat("cd", 32)}},
+		{Request{Server: "survival", Mode: ModeFiles, ID: "2222222222222222", Path: "plugins/Essentials", Dir: true},
+			[]string{"--worlds-root", "/world", "--path", "plugins/Essentials", "--dir"}},
+	} {
+		tc.r.TargetURL, tc.r.Token = "http://api:8081/x", secretToken
+		name, err := e.Start(context.Background(), tc.r)
+		if err != nil {
+			t.Fatalf("%s: Start: %v", tc.r.Mode, err)
+		}
+		job, err := cs.BatchV1().Jobs("minecraft").Get(context.Background(), name, metav1.GetOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if args := job.Spec.Template.Spec.Containers[0].Args; !slices.Equal(args[len(args)-len(tc.tail):], tc.tail) {
+			t.Errorf("%s: args = %v, want them to end %v", tc.r.Mode, args, tc.tail)
+		}
 	}
 }

@@ -1440,6 +1440,107 @@ describe("server file manager wire shapes", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(FakeXHR.last).toBeUndefined();
   });
+
+  const session = { id: "s1", path: "worlds/big world.zip", size: 100_000_000, received: 0, part_max_bytes: 33_554_432 };
+  const op = {
+    id: "op1",
+    op: "upload",
+    path: "worlds/big world.zip",
+    state: "running",
+    started_at: "2026-09-28T00:00:00Z",
+    done: 0,
+    total: 0,
+  };
+
+  it("beginServerFileUpload POSTs the size, with the path in the query", async () => {
+    const fetchSpy = fakeFetch(session);
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await api.beginServerFileUpload("survival", "worlds/big world.zip", 100_000_000)).toEqual(session);
+    const [url, opts] = sent(fetchSpy);
+    expect(url).toBe("/servers/survival/files/uploads?path=worlds%2Fbig%20world.zip");
+    expect(opts.method).toBe("POST");
+    expect(opts.body).toBe(JSON.stringify({ size: 100_000_000 }));
+  });
+
+  it("getServerFileUpload and deleteServerFileUpload name the session in the path", async () => {
+    const fetchSpy = fakeFetch(session);
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await api.getServerFileUpload("survival", "s1")).toEqual(session);
+    await api.deleteServerFileUpload("survival", "s1");
+    const calls = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls.map(([u, o]) => [
+      String(u),
+      (o as RequestInit).method,
+    ]);
+    expect(calls).toEqual([
+      ["/servers/survival/files/uploads/s1", "GET"],
+      ["/servers/survival/files/uploads/s1", "DELETE"],
+    ]);
+  });
+
+  it("putServerFileUploadPart PUTs the part's raw bytes at its offset and reports progress", async () => {
+    const part = new Blob(["part bytes"]);
+    const seen: number[] = [];
+    const done = api.putServerFileUploadPart("survival", "s1", 33_554_432, part, { onProgress: (n) => seen.push(n) });
+    const xhr = await sentXHR();
+    expect(xhr.method).toBe("PUT");
+    expect(xhr.url).toBe("/servers/survival/files/uploads/s1?offset=33554432");
+    expect(xhr.withCredentials).toBe(true);
+    expect(xhr.body).toBe(part);
+    xhr.upload.onprogress?.({ loaded: 3 });
+    xhr.respond(200, JSON.stringify({ ...session, received: 33_554_442 }));
+    expect(await done).toEqual({ ...session, received: 33_554_442 });
+    expect(seen).toEqual([3]);
+  });
+
+  it("commitServerFileUpload POSTs overwrite and answers the op landing the file", async () => {
+    const fetchSpy = fakeFetch({ op });
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await api.commitServerFileUpload("survival", "s1", true)).toEqual({ op });
+    const [url, opts] = sent(fetchSpy);
+    expect(url).toBe("/servers/survival/files/uploads/s1/commit");
+    expect(opts.method).toBe("POST");
+    expect(opts.body).toBe(JSON.stringify({ overwrite: true }));
+  });
+
+  it("unzipServerFile POSTs overwrite with the archive in the query", async () => {
+    const unzip = { ...op, op: "unzip", path: "maps/Spawn 2.zip" };
+    const fetchSpy = fakeFetch({ op: unzip });
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await api.unzipServerFile("survival", "maps/Spawn 2.zip", false)).toEqual({ op: unzip });
+    const [url, opts] = sent(fetchSpy);
+    expect(url).toBe("/servers/survival/files/unzip?path=maps%2FSpawn%202.zip");
+    expect(opts.method).toBe("POST");
+    expect(opts.body).toBe(JSON.stringify({ overwrite: false }));
+  });
+
+  it("listServerFileOps GETs the server's ops", async () => {
+    const fetchSpy = fakeFetch({ ops: [op] });
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await api.listServerFileOps("survival")).toEqual({ ops: [op] });
+    const [url, opts] = sent(fetchSpy);
+    expect(url).toBe("/servers/survival/files/ops");
+    expect(opts.method).toBe("GET");
+  });
+
+  it.each([
+    [false, "server.properties", "/servers/survival/files/download?path=server.properties&dir=false"],
+    [true, "world/data", "/servers/survival/files/download?path=world%2Fdata&dir=true"],
+  ])("downloadServerFile POSTs the path and whether it is a folder (dir=%s)", async (dir, path, want) => {
+    const ticket = { ticket: "t1", state: "pending", filename: "x" };
+    const fetchSpy = fakeFetch(ticket);
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await api.downloadServerFile("survival", path, dir)).toEqual(ticket);
+    const [url, opts] = sent(fetchSpy);
+    expect(url).toBe(want);
+    expect(opts.method).toBe("POST");
+    expect(opts.body).toBeUndefined();
+  });
+
+  it("words the upload session codes in the panel's own copy", () => {
+    expect(humanizeError({ status: 404, code: "upload_not_found", message: "raw" })).toMatch(/^This upload is gone/);
+    expect(humanizeError({ status: 429, code: "too_many_uploads", message: "raw" })).toMatch(/4 large uploads in progress/);
+    expect(humanizeError({ status: 0, code: "op_lost", message: "" })).toMatch(/progress can no longer be read/);
+  });
 });
 
 describe("scheduled task wire shapes", () => {

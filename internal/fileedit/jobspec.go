@@ -25,6 +25,11 @@ const (
 	LabelServer    = "felis.lolicon.best/server"
 	LabelOpID      = "felis.lolicon.best/files-op"
 	LabelMode      = "felis.lolicon.best/files-mode"
+	// LabelAsync marks the Job of an upload or unzip felis-api started and does
+	// not wait on (Editor.StartUpload, Editor.StartUnzip); Ops finds them by it.
+	// AnnotationPath names the file such a Job works on, for Ops to show.
+	LabelAsync     = "felis.lolicon.best/files-async"
+	AnnotationPath = "felis.lolicon.best/files-path"
 
 	managedByValue = "felis-files"
 	componentValue = "world-files"
@@ -59,7 +64,11 @@ type JobParams struct {
 	UploadSize   int64
 	UploadSHA256 string
 	Overwrite    bool
-	WorldPVC     string
+	// Async marks a Job felis-api does not wait on: it carries LabelAsync and
+	// AnnotationPath, which Ops reads it back by. Only an upload or an unzip
+	// runs so.
+	Async    bool
+	WorldPVC string
 
 	Namespace      string
 	ServiceAccount string
@@ -92,13 +101,17 @@ type JobParams struct {
 func FilesJobName(server, opID string) string { return "files-" + server + "-" + opID }
 
 func filesLabels(p JobParams) map[string]string {
-	return map[string]string{
+	l := map[string]string{
 		LabelManagedBy: managedByValue,
 		LabelComponent: componentValue,
 		LabelServer:    p.Server,
 		LabelOpID:      p.OpID,
 		LabelMode:      p.Op,
 	}
+	if p.Async {
+		l[LabelAsync] = "true"
+	}
+	return l
 }
 
 // FilesJob renders the file-editor Job. Its isolation is the strictest of the three
@@ -152,6 +165,9 @@ func FilesJob(p JobParams) (*batchv1.Job, error) {
 	if p.Op == OpUpload && (p.SourceURL == "" || p.UploadToken == "") {
 		return nil, fmt.Errorf("fileedit: an upload needs a source URL and a token")
 	}
+	if p.Async && p.Op != OpUpload && p.Op != OpUnzip {
+		return nil, fmt.Errorf("fileedit: only an upload or an unzip runs in the background, not %s", p.Op)
+	}
 	limits, err := resourceLimits(p.CPULimit, p.MemLimit)
 	if err != nil {
 		return nil, err
@@ -195,6 +211,10 @@ func FilesJob(p JobParams) (*batchv1.Job, error) {
 		if p.Overwrite {
 			args = append(args, "--overwrite")
 		}
+	case OpUnzip:
+		if p.Overwrite {
+			args = append(args, "--overwrite")
+		}
 	}
 	container := corev1.Container{
 		Name:    containerName,
@@ -235,9 +255,10 @@ func FilesJob(p JobParams) (*batchv1.Job, error) {
 
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      FilesJobName(p.Server, p.OpID),
-			Namespace: p.Namespace,
-			Labels:    filesLabels(p),
+			Name:        FilesJobName(p.Server, p.OpID),
+			Namespace:   p.Namespace,
+			Labels:      filesLabels(p),
+			Annotations: filesAnnotations(p),
 		},
 		Spec: batchv1.JobSpec{
 			// One shot: a file operation that failed must surface its failure, not be
@@ -297,12 +318,12 @@ func int64Ptr(i int64) *int64 { return &i }
 
 // filesCapabilities is what the root executor keeps after dropping ALL (see
 // Config.RunAsUser). DAC_OVERRIDE opens a mode-0600 file (level.dat) the game wrote
-// as its own uid, which a fixed non-root uid could not. A write, mkdir or upload
-// also keeps CHOWN so what it creates can be handed to naming.GameUID (exec.go
-// ownWritten). List, read, delete and rename create nothing and get no more than
-// they need.
+// as its own uid, which a fixed non-root uid could not. A write, mkdir, upload or
+// unzip also keeps CHOWN so what it creates can be handed to naming.GameUID
+// (exec.go ownWritten). List, read, delete and rename create nothing and get no
+// more than they need.
 func filesCapabilities(op string) []corev1.Capability {
-	if op == OpWrite || op == OpMkdir || op == OpUpload {
+	if op == OpWrite || op == OpMkdir || op == OpUpload || op == OpUnzip {
 		return []corev1.Capability{"CHOWN", "DAC_OVERRIDE"}
 	}
 	return []corev1.Capability{"DAC_OVERRIDE"}
@@ -322,4 +343,13 @@ func filesPodSecurityContext(p JobParams) *corev1.PodSecurityContext {
 		sc.FSGroup = int64Ptr(p.FSGroup)
 	}
 	return sc
+}
+
+// filesAnnotations names the file an async Job works on. A path does not fit a
+// label (63 characters, no slashes), so it rides an annotation.
+func filesAnnotations(p JobParams) map[string]string {
+	if !p.Async {
+		return nil
+	}
+	return map[string]string{AnnotationPath: p.Path}
 }

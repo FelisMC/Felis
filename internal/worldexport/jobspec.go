@@ -17,8 +17,8 @@ const (
 	LabelManagedBy = "app.kubernetes.io/managed-by"
 	LabelComponent = "app.kubernetes.io/component"
 	LabelServer    = "felis.lolicon.best/server"
-	// LabelMode is what the Job archives (ModeWorld or ModeBackup). A world
-	// export holds the world volume; a backup export does not.
+	// LabelMode is what the Job sends (ModeWorld, ModeBackup or ModeFiles). A
+	// world or files export holds the world volume; a backup export does not.
 	LabelMode = "felis.lolicon.best/export-mode"
 
 	managedByValue = "felis-export"
@@ -30,10 +30,12 @@ const (
 	felisBinaryPath = "/usr/local/bin/felis"
 )
 
-// The two things an export can archive.
+// What an export sends: the whole world as a tar.gz, one stored backup as a
+// tar.gz, or one file or folder of the world (a folder as a zip).
 const (
 	ModeWorld  = "world"
 	ModeBackup = "backup"
+	ModeFiles  = "files"
 )
 
 // TokenEnv carries the one-time upload token into the Pod. It is the only
@@ -49,10 +51,19 @@ type JobParams struct {
 	// upload path, so two exports of one server never collide.
 	ID   string
 	Mode string
-	// WorldPVC is mounted for ModeWorld, BackupPVC and BackupRef for ModeBackup.
+	// WorldPVC is mounted for ModeWorld and ModeFiles, BackupPVC and BackupRef
+	// for ModeBackup.
 	WorldPVC  string
 	BackupPVC string
 	BackupRef string
+	// BackupSHA256 is what the stored archive must hash to. The Job checks it
+	// itself, because what it sends is the archive re-written without its
+	// secrets and no longer hashes to anything felis-api knows.
+	BackupSHA256 string
+	// Path is the file or folder a ModeFiles export sends, and Dir whether the
+	// caller saw a folder there.
+	Path string
+	Dir  bool
 	// TargetURL is where the Pod PUTs the archive (felis-api's internal face),
 	// and Token the one-time bearer token that opens it.
 	TargetURL string
@@ -118,11 +129,20 @@ func ExportJob(p JobParams) (*batchv1.Job, error) {
 		mount  corev1.VolumeMount
 	)
 	switch p.Mode {
-	case ModeWorld:
+	case ModeWorld, ModeFiles:
 		if p.WorldPVC == "" {
 			return nil, fmt.Errorf("worldexport: world PVC name is required")
 		}
 		args = append(args, "--worlds-root", p.WorldsRoot)
+		if p.Mode == ModeFiles {
+			if p.Path == "" {
+				return nil, fmt.Errorf("worldexport: a files export needs a path")
+			}
+			args = append(args, "--path", p.Path)
+			if p.Dir {
+				args = append(args, "--dir")
+			}
+		}
 		volume = readOnlyClaim(worldVolume, p.WorldPVC)
 		mount = corev1.VolumeMount{Name: worldVolume, MountPath: p.WorldsRoot, ReadOnly: true}
 	case ModeBackup:
@@ -130,6 +150,9 @@ func ExportJob(p JobParams) (*batchv1.Job, error) {
 			return nil, fmt.Errorf("worldexport: backup PVC name and archive ref are required")
 		}
 		args = append(args, "--ref", p.BackupRef, "--backup-root", p.BackupRoot)
+		if p.BackupSHA256 != "" {
+			args = append(args, "--sha256", p.BackupSHA256)
+		}
 		volume = readOnlyClaim(backupVolume, p.BackupPVC)
 		mount = corev1.VolumeMount{Name: backupVolume, MountPath: p.BackupRoot, ReadOnly: true}
 	default:

@@ -73,7 +73,7 @@ func exportJob(t *testing.T, server, mode string) batchv1.Job {
 		Server: server, ID: "0011223344556677", Mode: mode, WorldPVC: "world-" + server + "-0",
 		BackupPVC: "felis-backups", BackupRef: "/backups/a.tar.gz", TargetURL: "http://api/x", Token: "t",
 		Namespace: "minecraft", ServiceAccount: "felis-restore", Image: "felis:1",
-		BackupRoot: "/backups", WorldsRoot: "/world",
+		BackupRoot: "/backups", WorldsRoot: "/world", Path: "plugins",
 	})
 	if err != nil {
 		t.Fatalf("ExportJob: %v", err)
@@ -106,6 +106,7 @@ func TestJobKindMatchesTheExecutors(t *testing.T) {
 		{"file list", filesJob(t, "survival", fileedit.OpList), "", false},
 		{"world export", exportJob(t, "survival", worldexport.ModeWorld), KindExport, true},
 		{"backup export", exportJob(t, "survival", worldexport.ModeBackup), "", false},
+		{"files export", exportJob(t, "survival", worldexport.ModeFiles), KindExport, true},
 	} {
 		kind, ok := JobKind(&tc.job)
 		if kind != tc.kind || ok != tc.ok {

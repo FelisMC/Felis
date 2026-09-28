@@ -1,11 +1,12 @@
 // Package worldexport is the executor behind the world export routes (POST
-// /servers/{name}/world/export and POST /servers/{name}/backups/{id}/export): a
+// /servers/{name}/world/export and POST /servers/{name}/backups/{id}/export)
+// and the file manager's download (POST /servers/{name}/files/download): a
 // one-shot Job in the minecraft namespace that reads a stopped server's world,
-// or one of its stored archives, and PUTs the tar.gz to felis-api's internal
-// face, which streams it on to the owner's browser as it arrives
-// (internal/api/exports.go). Nothing is staged on the way: felis-api never
-// mounts a world or the backup store, and the archive never lands on a disk it
-// owns.
+// one of its stored archives, or one file or folder of the world, and PUTs it
+// to felis-api's internal face, which streams it on to the owner's browser as
+// it arrives (internal/api/exports.go). Nothing is staged on the way: felis-api
+// never mounts a world or the backup store, and what is sent never lands on a
+// disk it owns.
 //
 // Trust model as in internal/restore: the Pod runs under the weak felis-restore
 // SA with no API token, mounts one volume read-only, and holds no database URL
@@ -26,9 +27,14 @@ import (
 // Request is one export as felis-api admitted it.
 type Request struct {
 	Server string
-	Mode   string // ModeWorld or ModeBackup
-	// BackupRef is the archive a ModeBackup export reads.
-	BackupRef string
+	Mode   string // ModeWorld, ModeBackup or ModeFiles
+	// BackupRef is the archive a ModeBackup export reads, and BackupSHA256 what
+	// it must hash to.
+	BackupRef    string
+	BackupSHA256 string
+	// Path and Dir are the file or folder a ModeFiles export sends.
+	Path string
+	Dir  bool
 	// ID names the export (JobName) and TargetURL/Token are where and how the
 	// Pod hands the archive over.
 	ID        string
@@ -108,6 +114,7 @@ func (e *Exporter) Start(ctx context.Context, r Request) (string, error) {
 	job, err := ExportJob(JobParams{
 		Server: r.Server, ID: r.ID, Mode: r.Mode,
 		WorldPVC: naming.WorldPVCName(r.Server), BackupPVC: c.BackupPVC, BackupRef: r.BackupRef,
+		BackupSHA256: r.BackupSHA256, Path: r.Path, Dir: r.Dir,
 		TargetURL: r.TargetURL, Token: r.Token,
 		Namespace: c.Namespace, ServiceAccount: c.ServiceAccount, Image: c.Image,
 		BackupRoot: c.BackupRoot, WorldsRoot: c.WorldsRoot, Deadline: c.Deadline,

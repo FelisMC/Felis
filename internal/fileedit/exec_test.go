@@ -2,7 +2,11 @@ package fileedit
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -173,6 +177,31 @@ func TestExecuteHappyPath(t *testing.T) {
 		}
 		if res.Code != "" || len(res.Entries) != 1 || res.Entries[0].Name != "paper.yml" {
 			t.Fatalf("unexpected listing: %+v (code %q)", res.Entries, res.Code)
+		}
+	})
+
+	t.Run("a listing reports the room left on the volume", func(t *testing.T) {
+		prev := statfs
+		t.Cleanup(func() { statfs = prev })
+		var asked string
+		statfs = func(dir string) (uint64, uint64, error) { asked = dir; return 12345, 99999, nil }
+		res, err := run(root, OpList, "config", nil, "")
+		if err != nil || res.Code != "" {
+			t.Fatalf("Execute: %v %+v", err, res)
+		}
+		if res.Avail != 12345 || asked != root {
+			t.Fatalf("avail = %d measured at %q, want 12345 at %q", res.Avail, asked, root)
+		}
+
+		statfs = func(string) (uint64, uint64, error) { return math.MaxUint64, math.MaxUint64, nil }
+		if res, _ := run(root, OpList, "config", nil, ""); res.Avail != math.MaxInt64 {
+			t.Fatalf("avail = %d, want it clamped to %d", res.Avail, int64(math.MaxInt64))
+		}
+
+		statfs = func(string) (uint64, uint64, error) { return 1, 1, errors.New("no statfs") }
+		res, err = run(root, OpList, "config", nil, "")
+		if err != nil || res.Code != "" || len(res.Entries) != 1 || res.Avail != 0 {
+			t.Fatalf("a volume that cannot be measured still lists, with no room reported: %v %+v", err, res)
 		}
 	})
 
@@ -396,6 +425,11 @@ func TestReadRedactsRconPassword(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
+	// The hash is the file on disk, the one a save's expect_sha256 is checked
+	// against, not the redacted copy the editor shows.
+	if sum := sha256.Sum256([]byte(props)); res.SHA256 != hex.EncodeToString(sum[:]) {
+		t.Fatalf("sha256 = %s, want the hash of the file as stored", res.SHA256)
+	}
 	got := string(res.Content)
 	if strings.Contains(got, "hunter2") {
 		t.Fatalf("read returned the RCON password (spec §286):\n%s", got)
@@ -417,6 +451,51 @@ func TestReadRedactsRconPassword(t *testing.T) {
 	}
 	if !strings.Contains(string(nested.Content), "notmine") {
 		t.Fatalf("a nested server.properties was redacted; only the world root's is the real one:\n%s", nested.Content)
+	}
+}
+
+// TestReadGuardsLinksToGuardedFiles: a plugin runs as the game uid and can leave
+// a link to either guarded file anywhere in the world. Read under the link's
+// name, the forwarding secret is still refused and the RCON password still
+// redacted, whether the link is symbolic, a hard link, or a linked folder.
+func TestReadGuardsLinksToGuardedFiles(t *testing.T) {
+	root, _ := worldRoot(t)
+	const secret = "secret: aVeryRealForwardingKey"
+	if err := os.WriteFile(filepath.Join(root, "config", "paper-global.yml"), []byte(secret), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "server.properties"), []byte("motd=hi\nrcon.password=hunter2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	symlink(t, "config/paper-global.yml", filepath.Join(root, "sym.yml"))
+	symlink(t, "config", filepath.Join(root, "cfg-link"))
+	symlink(t, "server.properties", filepath.Join(root, "sym.properties"))
+	for _, l := range [][2]string{
+		{"config/paper-global.yml", "hard.yml"},
+		{"server.properties", "hard.properties"},
+	} {
+		if err := os.Link(filepath.Join(root, l[0]), filepath.Join(root, l[1])); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, name := range []string{"sym.yml", "cfg-link/paper-global.yml", "hard.yml"} {
+		res, err := run(root, OpRead, name, nil, "")
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if res.Code != CodeBadPath || strings.Contains(string(res.Content), "aVeryReal") {
+			t.Errorf("%s: result = %+v, want bad_path and no secret", name, res)
+		}
+	}
+	for _, name := range []string{"sym.properties", "hard.properties"} {
+		res, err := run(root, OpRead, name, nil, "")
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if want := "motd=hi\nrcon.password=" + redactedValue + "\n"; res.Code != "" || string(res.Content) != want {
+			t.Errorf("%s: result = %+v, want content %q", name, res, want)
+		}
 	}
 }
 

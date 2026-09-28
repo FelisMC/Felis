@@ -12,7 +12,6 @@ import (
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/fileedit"
 	"felis.lolicon.best/internal/maintenance"
-	"felis.lolicon.best/internal/naming"
 )
 
 // FileEditor is the server-file-editor surface the API depends on: list a
@@ -39,18 +38,23 @@ import (
 // 507 / 409.
 //
 // Read and Write return the file's SHA-256 (hex); Upload lands exactly the bytes
-// src describes or fails. Write's expect is the
+// src describes or fails. StartUpload and StartUnzip are the two that can run
+// longer than a request: they start their Job and return, and Ops reports it
+// (handlers_fileops.go). List also reports the room left on the volume. Write's expect is the
 // hash a client read the file at; when set, a file that changed since is refused
 // with ErrConflict instead of being overwritten. createOnly and a false overwrite
 // refuse an existing path with ErrExists.
 type FileEditor interface {
-	List(ctx context.Context, server, path string) (entries []fileedit.Entry, truncated bool, err error)
+	List(ctx context.Context, server, path string) (fileedit.Listing, error)
 	Read(ctx context.Context, server, path string) (content []byte, sha256 string, err error)
 	Write(ctx context.Context, server, path string, content []byte, expect string, createOnly bool) (sha256 string, err error)
 	Mkdir(ctx context.Context, server, path string) error
 	Delete(ctx context.Context, server, path string) error
 	Rename(ctx context.Context, server, path, to string) error
 	Upload(ctx context.Context, server, path string, src fileedit.UploadSource, overwrite bool) error
+	StartUpload(ctx context.Context, server, path string, src fileedit.UploadSource, overwrite bool) (fileedit.OpState, error)
+	StartUnzip(ctx context.Context, server, path string, overwrite bool) (fileedit.OpState, error)
+	Ops(ctx context.Context, server string) ([]fileedit.OpState, error)
 }
 
 // writeFileRequest is the PUT /servers/{name}/file body. Content is []byte, so
@@ -96,16 +100,18 @@ func (a *API) handleListFiles(w http.ResponseWriter, r *http.Request) {
 	}
 	path := r.URL.Query().Get("path")
 
-	entries, truncated, err := a.Files.List(r.Context(), name, path)
+	ls, err := a.Files.List(r.Context(), name, path)
 	if err != nil {
 		writeFileEditError(w, r, err)
 		return
 	}
-	if entries == nil {
-		entries = []fileedit.Entry{} // an empty directory is [], never null
+	if ls.Entries == nil {
+		ls.Entries = []fileedit.Entry{} // an empty directory is [], never null
 	}
+	// free_bytes lets the panel refuse an upload the volume cannot take before
+	// sending any of it; the Job that lands it checks again.
 	writeJSON(w, http.StatusOK, map[string]any{
-		"path": path, "entries": entries, "truncated": truncated,
+		"path": path, "entries": ls.Entries, "truncated": ls.Truncated, "free_bytes": ls.Free,
 	})
 }
 
@@ -351,7 +357,8 @@ func (a *API) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.ContentLength > fileedit.MaxUploadBytes {
 		writeError(w, r, newError(http.StatusRequestEntityTooLarge, "too_large",
-			"the file is %d bytes; uploads are at most %d", r.ContentLength, fileedit.MaxUploadBytes))
+			"the file is %d bytes; one request carries at most %d, so send it as an upload session (POST files/uploads)",
+			r.ContentLength, fileedit.MaxUploadBytes))
 		return
 	}
 	overwrite := r.URL.Query().Get("overwrite") == "true"
@@ -397,7 +404,8 @@ func (a *API) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleInternalFileUpload serves GET /api/v1/internal/file-uploads/{id} — the
-// staged bytes of one upload, to the one Job created to land them. It is Public on
+// staged bytes of one upload, to the one Job created to land them. A file sent
+// in parts (handlers_fileops.go) is served the same way. It is Public on
 // the internal face: the Job holds no service token (it holds no credential at
 // all), so the bearer token minted with the upload is the whole check, and it
 // opens that upload once. An unknown id, a wrong token and a spent one are the
@@ -421,7 +429,11 @@ func (a *API) handleInternalFileUpload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 	w.WriteHeader(http.StatusOK)
-	_, _ = io.Copy(w, f)
+	// A session sent whole is on the Job's side now; one cut short stays, so
+	// committing it again does not mean sending it again.
+	if n, err := io.Copy(w, f); err == nil && n == size {
+		a.FileStage.Served(r.PathValue("id"))
+	}
 }
 
 // auditFile records a file change. The target is "<server>:<path>", as file.write
@@ -463,20 +475,8 @@ var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // It returns the validated server name and false if it has already written a
 // response.
 func (a *API) authorizeFileOp(w http.ResponseWriter, r *http.Request) (string, bool) {
-	name := r.PathValue("name")
-	if err := naming.ValidateServerName(name); err != nil {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
-		return "", false
-	}
-
-	p := principalFromContext(r.Context())
-	rec, err := a.Repo.ServerByName(r.Context(), name)
-	if err != nil {
-		a.writeLookupError(w, r, err)
-		return "", false
-	}
-	if !a.isOwnerOrAdmin(p, rec) {
-		writeError(w, r, errForbidden)
+	name, ok := a.authorizeServerFiles(w, r) // ① ② ③
+	if !ok {
 		return "", false
 	}
 

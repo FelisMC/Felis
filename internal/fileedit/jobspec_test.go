@@ -128,7 +128,7 @@ func TestFilesJobIsolation(t *testing.T) {
 			chown bool
 		}{
 			{OpList, false}, {OpRead, false}, {OpDelete, false}, {OpRename, false},
-			{OpWrite, true}, {OpMkdir, true}, {OpUpload, true},
+			{OpWrite, true}, {OpMkdir, true}, {OpUpload, true}, {OpUnzip, true},
 		} {
 			j, err := FilesJob(opParams(tc.op))
 			if err != nil {
@@ -216,6 +216,7 @@ func TestFilesJobWorldMountIsReadOnlyForReads(t *testing.T) {
 		{OpDelete, false},
 		{OpRename, false},
 		{OpUpload, false},
+		{OpUnzip, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.op, func(t *testing.T) {
@@ -435,6 +436,9 @@ func TestFilesJobRejectsBadParams(t *testing.T) {
 			p.Op, p.Content = OpWrite, make([]byte, MaxWriteBytes+1)
 		}},
 		{"bad cpu limit", func(p *JobParams) { p.CPULimit = "half" }},
+		{"a read in the background", func(p *JobParams) { p.Async = true }},
+		{"a write in the background", func(p *JobParams) { p.Op, p.Async = OpWrite, true }},
+		{"a delete in the background", func(p *JobParams) { p.Op, p.Async = OpDelete, true }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -442,6 +446,39 @@ func TestFilesJobRejectsBadParams(t *testing.T) {
 			tc.mutate(&p)
 			if _, err := FilesJob(p); err == nil {
 				t.Fatal("expected an error")
+			}
+		})
+	}
+}
+
+// TestFilesJobAsync checks a background Job is marked so Ops finds it, on the
+// Job and on its Pod, and carries the path Ops shows; a Job felis-api waits on
+// carries neither, so Ops never reports it.
+func TestFilesJobAsync(t *testing.T) {
+	for _, op := range []string{OpUpload, OpUnzip} {
+		t.Run(op, func(t *testing.T) {
+			p := opParams(op)
+			p.Path, p.Async = "maps/world.zip", true
+			j, err := FilesJob(p)
+			if err != nil {
+				t.Fatalf("FilesJob: %v", err)
+			}
+			if j.Labels[LabelAsync] != "true" || j.Spec.Template.Labels[LabelAsync] != "true" {
+				t.Fatalf("job labels %v, pod labels %v, want %s=true on both", j.Labels, j.Spec.Template.Labels, LabelAsync)
+			}
+			if len(j.Annotations) != 1 || j.Annotations[AnnotationPath] != "maps/world.zip" {
+				t.Fatalf("annotations = %v, want only %s", j.Annotations, AnnotationPath)
+			}
+
+			p.Async = false
+			j, err = FilesJob(p)
+			if err != nil {
+				t.Fatalf("FilesJob: %v", err)
+			}
+			_, onJob := j.Labels[LabelAsync]
+			_, onPod := j.Spec.Template.Labels[LabelAsync]
+			if onJob || onPod || j.Annotations != nil {
+				t.Fatalf("a Job waited on is labelled %v / %v and annotated %v", j.Labels, j.Spec.Template.Labels, j.Annotations)
 			}
 		})
 	}

@@ -582,8 +582,8 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/world/export", h: a.handleExportWorld},
 		{Method: "GET", Pattern: "/api/v1/exports/{ticket}", h: a.handleExportStatus},
 		{Method: "GET", Pattern: "/api/v1/exports/{ticket}/download", h: a.handleExportDownload},
-		// Server file manager: list, read, write, make a folder, delete, rename and
-		// upload in a STOPPED server's world volume (handlers_files.go). App-tier,
+		// Server file manager: list, read, write, make a folder, delete, rename,
+		// upload, unzip and download in a STOPPED server's world volume (handlers_files.go). App-tier,
 		// exactly like the backup pair above and for the same reason — every route
 		// gates on owner-or-admin inside the handler, so an owner repairs their own
 		// broken server without an admin's Zero-Trust path. The path travels as ?path=
@@ -605,6 +605,19 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/files/mkdir", h: a.handleMkdir},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/files/rename", h: a.handleRenameFile},
 		{Method: "PUT", Pattern: "/api/v1/servers/{name}/files/upload", h: a.handleUploadFile},
+		// A file too big for one request goes up in parts as an upload session, and
+		// lands, like an unzip, as a Job the request does not wait on; files/ops
+		// reports how those went (handlers_fileops.go).
+		{Method: "POST", Pattern: "/api/v1/servers/{name}/files/uploads", h: a.handleBeginFileUpload},
+		{Method: "GET", Pattern: "/api/v1/servers/{name}/files/uploads/{id}", h: a.handleFileUploadStatus},
+		{Method: "PUT", Pattern: "/api/v1/servers/{name}/files/uploads/{id}", h: a.handleFileUploadPart},
+		{Method: "DELETE", Pattern: "/api/v1/servers/{name}/files/uploads/{id}", h: a.handleDropFileUpload},
+		{Method: "POST", Pattern: "/api/v1/servers/{name}/files/uploads/{id}/commit", h: a.handleCommitFileUpload},
+		{Method: "POST", Pattern: "/api/v1/servers/{name}/files/unzip", h: a.handleUnzipFile},
+		{Method: "GET", Pattern: "/api/v1/servers/{name}/files/ops", h: a.handleListFileOps},
+		// A file or folder download is an export (exports.go): it answers 202
+		// with a ticket the export routes above serve.
+		{Method: "POST", Pattern: "/api/v1/servers/{name}/files/download", h: a.handleDownloadFile},
 		// Scheduled tasks (handlers_schedules.go): a console command, restart, stop,
 		// start or backup at set times, which felis-api's runner fires. App-tier and
 		// owner-or-admin inside the handler, like the console and power routes they

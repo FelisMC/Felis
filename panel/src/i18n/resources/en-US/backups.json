@@ -43,6 +43,7 @@
   "job_scheduled": "Scheduled backup",
   "job_export_world": "World export",
   "job_export_backup": "Backup download",
+  "job_export_files": "File download",
   "job_running": "Running",
   "job_succeeded": "Succeeded",
   "job_failed": "Failed",

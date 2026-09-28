@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path"
 	"strings"
@@ -20,11 +21,12 @@ import (
 )
 
 // The operations the editor supports: list a directory, read a file, write a
-// file, make a directory, delete, rename, and upload. The set is closed; there is
-// no chmod, chown, link or copy. Every op resolves every path through os.Root (see
-// Execute), and each mutating op carries its own containment note below.
+// file, make a directory, delete, rename, upload, and extract a .zip. The set is
+// closed; there is no chmod, chown, link or copy. Every op resolves every path
+// through os.Root (see Execute), and each mutating op carries its own
+// containment note below.
 //
-// A write or upload DOES land arbitrary bytes at any path inside the mount, and
+// A write, upload or unzip DOES land arbitrary bytes at any path inside the mount, and
 // that is a real capability rather than an oversight: the root is the server's
 // whole working directory (see Config.WorldsRoot), so an owner can upload
 // plugins/<x>.jar and Paper will load it on the next boot. It is the same power a
@@ -33,8 +35,8 @@ import (
 // image curation. Images are admin-only (POST /images, POST /images/build) and
 // modpack submissions need an admin verdict, so this is the one owner-tier route
 // that lands executable code in a backend pod. That trade was made deliberately;
-// if it is ever revisited, the guard belongs in land() below, which is the single
-// choke point both byte-landing ops route through.
+// if it is ever revisited, the guard belongs in land() below, the choke point
+// write and upload route through, and in unzip's extractOne (unzip.go).
 const (
 	OpList   = "list"
 	OpRead   = "read"
@@ -43,6 +45,7 @@ const (
 	OpDelete = "delete"
 	OpRename = "rename"
 	OpUpload = "upload"
+	OpUnzip  = "unzip"
 )
 
 // mutates reports whether op changes the world, and so whether its Job gets the
@@ -54,7 +57,7 @@ func mutates(op string) bool { return op != OpList && op != OpRead }
 // validOp reports whether op is one the Job knows.
 func validOp(op string) bool {
 	switch op {
-	case OpList, OpRead, OpWrite, OpMkdir, OpDelete, OpRename, OpUpload:
+	case OpList, OpRead, OpWrite, OpMkdir, OpDelete, OpRename, OpUpload, OpUnzip:
 		return true
 	}
 	return false
@@ -133,12 +136,12 @@ const UploadTokenEnv = "FELIS_UPLOAD_TOKEN"
 //   - MaxEntries bounds a listing. A world's region/ directory legitimately holds
 //     thousands of .mca files, so this truncates rather than errors (Truncated
 //     says so), keeping the log line bounded while still being useful.
-//   - MaxUploadBytes bounds an upload. Its bytes travel neither through the Job
-//     spec nor the pod log — felis-api stages them and the Job fetches them — so
-//     the bound is the request body instead: the Cloudflare edge refuses bodies
-//     over 100 MB on the Free and Pro plans, and 64 MiB covers the largest plugin
-//     jars (a Geyser build is about 20 MiB) with room to spare. A whole world is
-//     a different operation (a restore), not an upload.
+//   - MaxUploadBytes bounds an upload sent as ONE request body: the Cloudflare
+//     edge refuses bodies over 100 MB on the Free and Pro plans, and 64 MiB
+//     covers the largest plugin jars (a Geyser build is about 20 MiB) with room
+//     to spare. It is felis-api's bound on that route only. A bigger file arrives
+//     in parts and is bounded by nothing but the room on the server's volume,
+//     which the Job checks before it fetches a byte (upload).
 const (
 	MaxWriteBytes  = 256 << 10 // 256 KiB
 	MaxReadBytes   = 1 << 20   // 1 MiB
@@ -183,6 +186,22 @@ type Result struct {
 	// conflict, the file as it is now. A client hands it back as the expected
 	// hash of its next write (see write).
 	SHA256 string `json:"sha256,omitempty"`
+
+	// Conflicts lists, relative to the root and sorted, the existing files an
+	// unzip would replace: the first MaxConflicts of them. ConflictCount is how
+	// many there are in all.
+	Conflicts     []string `json:"conflicts,omitempty"`
+	ConflictCount int      `json:"conflict_count,omitempty"`
+	// Entry names what an unzip refused: the archive entry, or the path on the
+	// server it collides with.
+	Entry string `json:"entry,omitempty"`
+	// Need and Avail are, on a no_space an upload or unzip saw coming, the bytes
+	// it needs and the bytes the volume has free. A listing sets Avail too.
+	Need  int64 `json:"need,omitempty"`
+	Avail int64 `json:"avail,omitempty"`
+	// Files and Bytes are what a successful unzip extracted.
+	Files int   `json:"files,omitempty"`
+	Bytes int64 `json:"bytes,omitempty"`
 }
 
 // Request is one file operation. Op decides which of the other fields it reads.
@@ -200,10 +219,15 @@ type Request struct {
 	// panel's "new file", which must never truncate a file it did not know was
 	// there.
 	CreateOnly bool
-	// Upload is where an upload's bytes come from; Overwrite lets it replace a
-	// file already at the path.
+	// Upload is where an upload's bytes come from. Overwrite lets an upload
+	// replace a file already at the path, and an unzip replace the files it
+	// collides with.
 	Upload    *Upload
 	Overwrite bool
+	// Progress, when set, hears how far an upload or unzip has got: bytes landed
+	// so far out of the total. It is called from the copy loop, often; the caller
+	// throttles.
+	Progress func(done, total int64)
 }
 
 // Upload describes the bytes an upload lands. Size and SHA256 are what felis-api
@@ -262,7 +286,7 @@ func Execute(root string, req Request) (Result, error) {
 
 	switch req.Op {
 	case OpList:
-		return list(r, path), nil
+		return list(r, root, path), nil
 	case OpRead:
 		return read(r, path), nil
 	case OpWrite:
@@ -277,7 +301,9 @@ func Execute(root string, req Request) (Result, error) {
 		if req.Upload == nil {
 			return Result{}, errors.New("an upload needs a source")
 		}
-		return upload(r, path, *req.Upload, req.Overwrite)
+		return upload(r, root, path, *req.Upload, req.Overwrite, req.Progress)
+	case OpUnzip:
+		return unzip(r, root, path, req.Overwrite, req.Progress), nil
 	default:
 		return Result{}, fmt.Errorf("unknown op %q", req.Op)
 	}
@@ -285,8 +311,10 @@ func Execute(root string, req Request) (Result, error) {
 
 // list reads one directory. It does not recurse: a browser asks for one level at
 // a time, and recursion would make both the result size and the traversal cost
-// unbounded in a world directory.
-func list(r *os.Root, path string) Result {
+// unbounded in a world directory. It also reports the room left on the volume
+// (Avail), so the panel can refuse an upload the volume cannot take before
+// sending a byte of it.
+func list(r *os.Root, rootPath, path string) Result {
 	f, err := r.Open(path)
 	if err != nil {
 		return failure(err, path)
@@ -318,7 +346,11 @@ func list(r *os.Root, path string) Result {
 		}
 		entries = append(entries, e)
 	}
-	return Result{Entries: entries, Truncated: truncated}
+	res := Result{Entries: entries, Truncated: truncated}
+	if avail, _, err := statfs(rootPath); err == nil {
+		res.Avail = int64(min(avail, math.MaxInt64))
+	}
+	return res
 }
 
 // secretConfigPath is the one file in a world mount holding PLATFORM secret
@@ -370,6 +402,13 @@ func read(r *os.Root, name string) Result {
 	if info.IsDir() {
 		return Result{Code: CodeBadPath, Error: fmt.Sprintf("%s is a directory, not a file", name)}
 	}
+	// The name check above answers the plain path with a clear reason; this one
+	// catches the same file reached through a link (see Guard).
+	withhold, redact := NewGuard(r).Rule(info)
+	if withhold {
+		return Result{Code: CodeBadPath, Error: fmt.Sprintf(
+			"%s is the file holding the proxy forwarding secret, which is shared cluster-wide, and is not readable through the editor", name)}
+	}
 	if info.Size() > MaxReadBytes {
 		return Result{Code: CodeTooLarge, Error: fmt.Sprintf(
 			"%s is %d bytes; the editor reads at most %d", name, info.Size(), MaxReadBytes)}
@@ -382,7 +421,11 @@ func read(r *os.Root, name string) Result {
 	if err != nil {
 		return failure(err, name)
 	}
-	return Result{Content: redactSecretProps(name, b), SHA256: digest(b)}
+	content := b
+	if redact {
+		content = RedactProps(b)
+	}
+	return Result{Content: content, SHA256: digest(b)}
 }
 
 // propsPath is the server's main config file, and rconPasswordKey the one line in
@@ -515,8 +558,8 @@ func (e *transferError) Error() string { return "fetch upload: " + e.err.Error()
 func (e *transferError) Unwrap() error { return e.err }
 
 // land atomically puts the bytes fill writes at target, the path landingTarget
-// returned for name. It is the single choke point both byte-landing ops (write and
-// upload) route through.
+// returned for name. Write and upload both land through it; unzip lands a whole
+// tree at once and has its own path (unzip.go).
 //
 // The bytes go to a temporary sibling that is synced and then renamed over the
 // target, so a full disk, a Job killed at its deadline or a crashed node leaves
@@ -596,14 +639,18 @@ func syncDir(r *os.Root, dir string) {
 // The fetched bytes must match both the size and the SHA-256 felis-api received;
 // either mismatch is a broken transfer, and the target is left as it was. A
 // success has landed exactly what felis-api staged, whose digest it already holds.
-func upload(r *os.Root, name string, u Upload, overwrite bool) (Result, error) {
-	if u.Size > MaxUploadBytes {
-		return Result{Code: CodeTooLarge, Error: fmt.Sprintf(
-			"the upload is %d bytes; the editor uploads at most %d", u.Size, MaxUploadBytes)}, nil
-	}
+//
+// There is no size ceiling here. The volume is the bound, and it is checked up
+// front: the new bytes land beside the file they replace until the rename, so
+// they need their whole size free whatever is already at the path.
+func upload(r *os.Root, rootPath, name string, u Upload, overwrite bool, progress func(done, total int64)) (Result, error) {
 	target, mode, res := landingTarget(r, name, overwrite)
 	if res.Code != "" {
 		return res, nil
+	}
+	if avail, _, err := statfs(rootPath); err == nil && uint64(u.Size) > avail {
+		return Result{Code: CodeNoSpace, Need: u.Size, Avail: int64(min(avail, math.MaxInt64)), Error: fmt.Sprintf(
+			"%s is %d bytes and the server's volume has %d free; nothing was changed", name, u.Size, avail)}, nil
 	}
 	return land(r, name, target, mode, func(w io.Writer) error {
 		body, err := u.Open()
@@ -612,8 +659,13 @@ func upload(r *os.Root, name string, u Upload, overwrite bool) (Result, error) {
 		}
 		defer body.Close()
 		h := sha256.New()
+		var done int64
+		out := io.MultiWriter(w, h)
+		if progress != nil {
+			out = countingWriter{out, func(n int) { done += int64(n); progress(done, u.Size) }}
+		}
 		// One byte past Size so a source that sends more than it promised is seen.
-		n, err := io.Copy(io.MultiWriter(w, h), sourceReader{io.LimitReader(body, u.Size+1)})
+		n, err := io.Copy(out, sourceReader{io.LimitReader(body, u.Size+1)})
 		if err != nil {
 			return err
 		}

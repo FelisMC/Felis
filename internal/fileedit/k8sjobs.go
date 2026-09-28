@@ -3,12 +3,15 @@ package fileedit
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -184,4 +187,134 @@ func tail(log string) string {
 		return log
 	}
 	return "..." + log[len(log)-n:]
+}
+
+// Start creates the Job for p and returns without waiting on it. Ops reads it
+// back.
+func (k *K8sRunner) Start(ctx context.Context, p JobParams) error {
+	job, err := FilesJob(p)
+	if err != nil {
+		return err
+	}
+	if _, err := k.cs.BatchV1().Jobs(p.Namespace).Create(ctx, job, metav1.CreateOptions{}); err != nil {
+		return fmt.Errorf("fileedit: create file job: %w", err)
+	}
+	return nil
+}
+
+// maxOps bounds what Ops reports, and so how many Pod logs one call reads. Only
+// one background op runs per server at a time (it holds the world volume), so
+// this many are the one running and the latest that finished within AsyncTTL.
+const maxOps = 10
+
+// opLogLines is how much of an op's log Ops reads: the result line is the last
+// thing the Job prints to stdout, the progress lines come before it, and a
+// failed run ends with one line on stderr.
+const opLogLines = 20
+
+// Ops lists the server's background Jobs, newest first, with how far each has
+// got and how it ended, read from the tail of its Pod's log. A Pod whose log
+// cannot be read yet (still pulling its image) or any more (its node went away)
+// reports no progress rather than failing the listing.
+func (k *K8sRunner) Ops(ctx context.Context, namespace, server string) ([]OpState, error) {
+	sel := metav1.ListOptions{LabelSelector: LabelManagedBy + "=" + managedByValue + "," +
+		LabelServer + "=" + server + "," + LabelAsync + "=true"}
+	jobs, err := k.cs.BatchV1().Jobs(namespace).List(ctx, sel)
+	if err != nil {
+		return nil, fmt.Errorf("fileedit: list file jobs: %w", err)
+	}
+	pods, err := k.cs.CoreV1().Pods(namespace).List(ctx, sel)
+	if err != nil {
+		return nil, fmt.Errorf("fileedit: list file job pods: %w", err)
+	}
+	// backoffLimit is 0, so a Job has one Pod; the newest wins all the same.
+	podOf := map[string]*corev1.Pod{}
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		id := pod.Labels[LabelOpID]
+		if cur := podOf[id]; cur == nil || pod.CreationTimestamp.After(cur.CreationTimestamp.Time) {
+			podOf[id] = pod
+		}
+	}
+	items := jobs.Items
+	sort.SliceStable(items, func(i, j int) bool {
+		return items[i].CreationTimestamp.After(items[j].CreationTimestamp.Time)
+	})
+	if len(items) > maxOps {
+		items = items[:maxOps]
+	}
+	out := make([]OpState, 0, len(items))
+	for i := range items {
+		log := ""
+		if pod := podOf[items[i].Labels[LabelOpID]]; pod != nil && pod.Status.Phase != corev1.PodPending {
+			log, _ = k.logTail(ctx, namespace, pod.Name)
+		}
+		out = append(out, opState(&items[i], log))
+	}
+	return out, nil
+}
+
+// logTail reads the last opLogLines lines of a Pod's log.
+func (k *K8sRunner) logTail(ctx context.Context, namespace, pod string) (string, error) {
+	lines := int64(opLogLines)
+	stream, err := k.cs.CoreV1().Pods(namespace).GetLogs(pod, &corev1.PodLogOptions{
+		Container: containerName, TailLines: &lines,
+	}).Stream(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer stream.Close()
+	b, err := io.ReadAll(io.LimitReader(stream, maxLogBytes))
+	return string(b), err
+}
+
+// opState reads one background Job, and the tail of its Pod's log, as an
+// OpState. The printed result decides the outcome whatever the Job's condition
+// says: a Job killed at its deadline just after printing did finish its work.
+// A Job that ended without one failed, and the condition's reason says how
+// (DeadlineExceeded, BackoffLimitExceeded); a Job that completed but whose log
+// could not be read has an outcome no one can tell, ResultUnavailable.
+func opState(job *batchv1.Job, log string) OpState {
+	st := OpState{
+		ID: job.Labels[LabelOpID], Op: job.Labels[LabelMode], Path: job.Annotations[AnnotationPath],
+		State: OpRunning, Started: job.CreationTimestamp.Time,
+	}
+	if p, ok := lastProgress(log); ok {
+		st.Done, st.Total = p.Done, p.Total
+	}
+	ended, reason := false, ""
+	for _, c := range job.Status.Conditions {
+		if c.Status != corev1.ConditionTrue {
+			continue
+		}
+		switch c.Type {
+		case batchv1.JobComplete, batchv1.JobSuccessCriteriaMet:
+			ended, reason = true, "ResultUnavailable"
+			st.Finished = c.LastTransitionTime.Time
+		case batchv1.JobFailed, batchv1.JobFailureTarget:
+			ended, reason = true, c.Reason
+			st.Finished = c.LastTransitionTime.Time
+		}
+	}
+	if !ended {
+		return st
+	}
+	if payload, ok := extractResult(log); ok {
+		var res Result
+		if json.Unmarshal(payload, &res) == nil {
+			st.Result = &res
+		}
+	}
+	switch {
+	case st.Result != nil && st.Result.Code == "":
+		st.State = OpSucceeded
+	case st.Result != nil:
+		st.State = OpFailed
+	default:
+		st.State, st.Reason = OpFailed, reason
+		if st.Reason == "" {
+			st.Reason = "Failed"
+		}
+	}
+	return st
 }

@@ -108,6 +108,27 @@ describe("ServerBackups", () => {
     expect(ops.map((el) => el.textContent)).toEqual(["Scheduled backup", "Backup"]);
   });
 
+  it("names each kind of recent operation, with a download icon on the downloads", async () => {
+    calls.serverJobs.mockResolvedValue([
+      { name: "restore-survival-aa", kind: "restore", state: "succeeded" },
+      { name: "backup-survival-bb", kind: "backup", state: "succeeded", then_restore: "done" },
+      { name: "export-survival-cc", kind: "export_world", state: "succeeded" },
+      { name: "export-survival-dd", kind: "export_backup", state: "failed" },
+      { name: "files-survival-ee", kind: "export_files", state: "succeeded" },
+    ]);
+    renderPage();
+    await screen.findByText("File download", { selector: "li span" });
+
+    const rows = screen.getAllByRole("listitem").filter((li) => li.querySelector("span.text-sm"));
+    expect(rows.map((li) => [li.querySelector("span.text-sm")?.textContent, li.querySelector("svg")?.classList.contains("lucide-download")])).toEqual([
+      ["Restore", false],
+      ["Pre-restore snapshot", false],
+      ["World export", true],
+      ["Backup download", true],
+      ["File download", true],
+    ]);
+  });
+
   it("names the archive the reaper leaves when a server is given up or deleted", async () => {
     calls.listBackups.mockResolvedValue({ backups: [{ ...backup("bk-rel", 4), reason: "released" }], total: 1 });
     renderPage();

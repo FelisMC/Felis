@@ -79,13 +79,12 @@ var (
 	ErrExists = errors.New("fileedit: the target already exists")
 )
 
-// Runner is the cluster-side half of one file operation: render and create the
-// Job, wait for its Pod to reach a terminal phase, and return the marked JSON
-// payload the Pod printed. It is one method rather than a create/poll/read trio
-// because felis-api cannot poll a Job at all (no jobs:get — see FilesJobName), so
-// there is no intermediate state a caller could usefully observe; the operation is
-// synchronous from the API's point of view whether or not the seam pretends
-// otherwise.
+// Runner is the cluster-side half of a file operation. Run renders and creates
+// the Job, waits for its Pod to reach a terminal phase, and returns the marked
+// JSON payload the Pod printed: from the API's point of view an operation is one
+// call. An upload too big for one request and an unzip can outlast any request,
+// so those two are started instead (Start) and read back later (Ops), from the
+// Jobs felis-api lists and the progress lines their Pods print.
 //
 // It is an interface so the Editor's orchestration and error mapping are tested
 // against a fake; the client-go implementation (K8sRunner) is integration-only.
@@ -93,6 +92,11 @@ type Runner interface {
 	// Run creates the Job for p and returns the raw JSON payload from the
 	// ResultPrefix line of its Pod's log.
 	Run(ctx context.Context, p JobParams) ([]byte, error)
+	// Start creates the Job for p and returns once it exists.
+	Start(ctx context.Context, p JobParams) error
+	// Ops reports the background operations (JobParams.Async) of one server
+	// whose Jobs the cluster still holds, newest first.
+	Ops(ctx context.Context, namespace, server string) ([]OpState, error)
 }
 
 // Config parameterises the file editor. Image has no default on purpose: it is
@@ -139,6 +143,15 @@ type Config struct {
 	// it must stay comfortably longer than the moment felis-api needs to read the
 	// Pod's log, because the TTL takes the Pod (and its log) with the Job.
 	TTLAfterFinished time.Duration
+
+	// AsyncDeadline, AsyncTTL and AsyncCPULimit stand in for Deadline,
+	// TTLAfterFinished and CPULimit on an upload or unzip felis-api starts and
+	// does not wait on. Such a Job moves a whole archive or a file of gigabytes,
+	// so it gets hours; it stays after finishing long enough for the panel to
+	// show how it ended; and it gets a whole core, since inflating is CPU-bound.
+	AsyncDeadline time.Duration
+	AsyncTTL      time.Duration
+	AsyncCPULimit string
 }
 
 // defaults applied when a Config field is left zero. They are sized for what a
@@ -153,6 +166,9 @@ const (
 	defaultCPULimit       = "500m"
 	defaultMemLimit       = "256Mi"
 	defaultTTL            = 2 * time.Minute
+	defaultAsyncDeadline  = 2 * time.Hour
+	defaultAsyncTTL       = 30 * time.Minute
+	defaultAsyncCPULimit  = "1"
 )
 
 // withDefaults returns a copy of c with zero fields filled, so a partially
@@ -182,6 +198,15 @@ func (c Config) withDefaults() Config {
 	if c.TTLAfterFinished <= 0 {
 		c.TTLAfterFinished = defaultTTL
 	}
+	if c.AsyncDeadline <= 0 {
+		c.AsyncDeadline = defaultAsyncDeadline
+	}
+	if c.AsyncTTL <= 0 {
+		c.AsyncTTL = defaultAsyncTTL
+	}
+	if c.AsyncCPULimit == "" {
+		c.AsyncCPULimit = defaultAsyncCPULimit
+	}
 	return c
 }
 
@@ -191,19 +216,29 @@ type Editor struct {
 	Config Config
 }
 
+// Listing is one directory as List returns it.
+type Listing struct {
+	Entries []Entry
+	// Truncated reports that the directory holds more than MaxEntries.
+	Truncated bool
+	// Free is the bytes free on the server's volume, 0 when the Job could not
+	// tell.
+	Free int64
+}
+
 // List returns one directory's entries, resolved under the server's world root.
 // An empty path lists the world root itself.
-func (e *Editor) List(ctx context.Context, server, path string) ([]Entry, bool, error) {
+func (e *Editor) List(ctx context.Context, server, path string) (Listing, error) {
 	res, err := e.run(ctx, server, JobParams{Op: OpList, Path: path})
 	if err != nil {
-		return nil, false, err
+		return Listing{}, err
 	}
 	// A genuinely empty directory unmarshals Entries as nil; normalise it so the
 	// handler serialises [] rather than null.
 	if res.Entries == nil {
 		res.Entries = []Entry{}
 	}
-	return res.Entries, res.Truncated, nil
+	return Listing{Entries: res.Entries, Truncated: res.Truncated, Free: res.Avail}, nil
 }
 
 // Read returns a file's bytes, resolved under the server's world root, and the
@@ -289,7 +324,7 @@ func (e *Editor) run(ctx context.Context, server string, p JobParams) (Result, e
 	}
 
 	cfg := e.Config.withDefaults()
-	opID, err := newOpID()
+	p, err := cfg.params(server, p)
 	if err != nil {
 		return Result{}, err
 	}
@@ -301,20 +336,6 @@ func (e *Editor) run(ctx context.Context, server string, p JobParams) (Result, e
 	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
 
-	p.Server = server
-	p.OpID = opID
-	p.WorldPVC = naming.WorldPVCName(server)
-	p.Namespace = cfg.Namespace
-	p.ServiceAccount = cfg.ServiceAccount
-	p.Image = cfg.Image
-	p.WorldsRoot = cfg.WorldsRoot
-	p.Deadline = cfg.Deadline
-	p.CPULimit = cfg.CPULimit
-	p.MemLimit = cfg.MemLimit
-	p.RunAsUser = cfg.RunAsUser
-	p.RunAsGroup = cfg.RunAsGroup
-	p.FSGroup = cfg.FSGroup
-	p.TTLAfterFinished = cfg.TTLAfterFinished
 	payload, err := e.Runner.Run(ctx, p)
 	if err != nil {
 		return Result{}, err
@@ -325,6 +346,94 @@ func (e *Editor) run(ctx context.Context, server string, p JobParams) (Result, e
 		return Result{}, fmt.Errorf("fileedit: malformed result from the file Job: %w", err)
 	}
 	return res, resultError(res)
+}
+
+// params fills in what every Job of server takes from the Config, and a fresh op
+// id; p carries the op and its own fields.
+func (c Config) params(server string, p JobParams) (JobParams, error) {
+	opID, err := newOpID()
+	if err != nil {
+		return JobParams{}, err
+	}
+	p.Server = server
+	p.OpID = opID
+	p.WorldPVC = naming.WorldPVCName(server)
+	p.Namespace = c.Namespace
+	p.ServiceAccount = c.ServiceAccount
+	p.Image = c.Image
+	p.WorldsRoot = c.WorldsRoot
+	p.Deadline = c.Deadline
+	p.CPULimit = c.CPULimit
+	p.MemLimit = c.MemLimit
+	p.RunAsUser = c.RunAsUser
+	p.RunAsGroup = c.RunAsGroup
+	p.FSGroup = c.FSGroup
+	p.TTLAfterFinished = c.TTLAfterFinished
+	return p, nil
+}
+
+// The states of an OpState.
+const (
+	OpRunning   = "running"
+	OpSucceeded = "succeeded"
+	OpFailed    = "failed"
+)
+
+// OpState is where one background file operation stands.
+type OpState struct {
+	ID    string
+	Op    string
+	Path  string
+	State string
+	// Started is when the Job was created; Finished when it ended, zero while it
+	// runs.
+	Started  time.Time
+	Finished time.Time
+	// Done and Total are the bytes of the latest progress line, zero before the
+	// first.
+	Done, Total int64
+	// Result is what the Job printed once it finished. It is nil while the Job
+	// runs, and for a Job that ended without printing one (killed at its
+	// deadline, out of memory, its bytes unfetchable), whose Reason says why.
+	Result *Result
+	Reason string
+}
+
+// StartUpload starts landing the staged bytes src describes at path and returns
+// without waiting, for a file too big to land inside one request (Upload). The
+// Job checks what Upload's does; Ops reports how it ends.
+func (e *Editor) StartUpload(ctx context.Context, server, path string, src UploadSource, overwrite bool) (OpState, error) {
+	return e.start(ctx, server, JobParams{
+		Op: OpUpload, Path: path, Overwrite: overwrite,
+		SourceURL: src.URL, UploadToken: src.Token, UploadSize: src.Size, UploadSHA256: src.SHA256,
+	})
+}
+
+// StartUnzip starts extracting the .zip at path into the folder holding it and
+// returns without waiting. Without overwrite an archive that would replace a
+// file changes nothing and ends with CodeExists and the list (Result.Conflicts).
+func (e *Editor) StartUnzip(ctx context.Context, server, path string, overwrite bool) (OpState, error) {
+	return e.start(ctx, server, JobParams{Op: OpUnzip, Path: path, Overwrite: overwrite})
+}
+
+// Ops reports the server's background operations the cluster still holds: the
+// one running, if any, and those finished within AsyncTTL.
+func (e *Editor) Ops(ctx context.Context, server string) ([]OpState, error) {
+	return e.Runner.Ops(ctx, e.Config.withDefaults().Namespace, server)
+}
+
+func (e *Editor) start(ctx context.Context, server string, p JobParams) (OpState, error) {
+	cfg := e.Config.withDefaults()
+	p, err := cfg.params(server, p)
+	if err != nil {
+		return OpState{}, err
+	}
+	p.Async = true
+	p.Deadline, p.TTLAfterFinished, p.CPULimit = cfg.AsyncDeadline, cfg.AsyncTTL, cfg.AsyncCPULimit
+	if err := e.Runner.Start(ctx, p); err != nil {
+		return OpState{}, err
+	}
+	return OpState{ID: p.OpID, Op: p.Op, Path: p.Path, State: OpRunning, Started: time.Now()}, nil
 }
 
 // resultError translates a Result's code into the sentinel the API maps. An

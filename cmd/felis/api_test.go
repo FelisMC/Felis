@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"felis.lolicon.best/internal/api"
 	"felis.lolicon.best/internal/build"
 	"felis.lolicon.best/internal/config"
+	"felis.lolicon.best/internal/fileedit"
 )
 
 // The passkey relying party follows the panel host the SPA is served on: an install
@@ -233,5 +236,53 @@ func TestInUseImageRefsCoversEverySource(t *testing.T) {
 	store.err = errors.New("db down")
 	if _, err := inUseImageRefs(context.Background(), store, servers, nil); err == nil {
 		t.Fatal("a failing whitelist read produced a reference list")
+	}
+}
+
+// TestExpireFileSessions runs the loop against a stage whose clock the test
+// holds: the session idle past fileedit.SessionIdle goes, the one touched since
+// stays, and the drop is said once.
+func TestExpireFileSessions(t *testing.T) {
+	var mu sync.Mutex
+	now := time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC)
+	advance := func(d time.Duration) { mu.Lock(); now = now.Add(d); mu.Unlock() }
+	st := &fileedit.Stage{Dir: t.TempDir(), MinFree: 1e-9, Now: func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return now
+	}}
+	idle, err := st.Begin("u1", "survival", "a.jar", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	advance(fileedit.SessionIdle - time.Minute)
+	fresh, err := st.Begin("u1", "survival", "b.jar", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	advance(2 * time.Minute)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var out bytes.Buffer
+	done := make(chan struct{})
+	go func() { expireFileSessions(ctx, st, time.Millisecond, &out); close(done) }()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		if _, err := st.Status("u1", "survival", idle.ID); errors.Is(err, fileedit.ErrNotStaged) {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatal("the idle session was never dropped")
+		}
+	}
+	// A few more ticks with nothing idle, which must stay quiet.
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	<-done
+	if _, err := st.Status("u1", "survival", fresh.ID); err != nil {
+		t.Fatalf("the session touched since went too: %v", err)
+	}
+	if got := out.String(); got != "felis api: dropped 1 upload session(s) left idle for 6h0m0s\n" {
+		t.Fatalf("said %q", got)
 	}
 }

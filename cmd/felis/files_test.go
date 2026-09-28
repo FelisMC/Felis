@@ -1,11 +1,13 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,10 +19,12 @@ import (
 	"felis.lolicon.best/internal/fileedit"
 )
 
-// filesResult is the Result a `felis files` run printed on its marked line.
+// filesResult is the Result a `felis files` run printed on its marked line,
+// the last it prints.
 func filesResult(t *testing.T, stdout string) fileedit.Result {
 	t.Helper()
-	line, ok := strings.CutPrefix(strings.TrimSpace(stdout), fileedit.ResultPrefix)
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	line, ok := strings.CutPrefix(lines[len(lines)-1], fileedit.ResultPrefix)
 	if !ok {
 		t.Fatalf("stdout has no result line: %q", stdout)
 	}
@@ -74,6 +78,9 @@ func TestCmdFilesUpload(t *testing.T) {
 		var stdout, stderr bytes.Buffer
 		if code := cmdFiles(uploadArgs(root, srv.URL+"/u", body), &stdout, &stderr); code != 0 {
 			t.Fatalf("exit %d, stderr %q", code, stderr.String())
+		}
+		if !strings.HasPrefix(stdout.String(), fileedit.ProgressPrefix+`{"done":4,"total":4}`+"\n") {
+			t.Fatalf("stdout %q does not start with the progress to the last byte", stdout.String())
 		}
 		if res := filesResult(t, stdout.String()); res.Code != "" {
 			t.Fatalf("result = %+v", res)
@@ -199,5 +206,45 @@ func TestCmdFilesCallerFaultIsAResult(t *testing.T) {
 	stdout.Reset()
 	if code := cmdFiles([]string{"--worlds-root", root}, &stdout, &stderr); code != 2 {
 		t.Fatalf("no --op: exit %d, want 2", code)
+	}
+}
+
+// TestCmdFilesUnzip checks an unzip extracts next to the archive and reports its
+// progress before its result, the same way an upload does.
+func TestCmdFilesUnzip(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "maps"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var zb bytes.Buffer
+	zw := zip.NewWriter(&zb)
+	for name, body := range map[string]string{"world/level.dat": "level", "world/region/r.0.0.mca": "region!"} {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.WriteString(w, body)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "maps", "a.zip"), zb.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := cmdFiles([]string{"--op", "unzip", "--path", "maps/a.zip", "--worlds-root", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, stderr.String())
+	}
+	if res := filesResult(t, stdout.String()); res.Code != "" || res.Files != 2 || res.Bytes != 12 {
+		t.Fatalf("result = %+v", res)
+	}
+	if !strings.HasPrefix(stdout.String(), fileedit.ProgressPrefix) ||
+		!strings.Contains(stdout.String(), fileedit.ProgressPrefix+`{"done":12,"total":12}`+"\n") {
+		t.Fatalf("stdout %q does not report the progress to the last byte", stdout.String())
+	}
+	got, err := os.ReadFile(filepath.Join(root, "maps", "world", "region", "r.0.0.mca"))
+	if err != nil || string(got) != "region!" {
+		t.Fatalf("extracted %q, %v", got, err)
 	}
 }

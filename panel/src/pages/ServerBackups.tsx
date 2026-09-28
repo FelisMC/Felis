@@ -35,6 +35,7 @@ import { Loading, ErrorState, EmptyState, NotYours, RefreshError } from "@/compo
 import { PageHeader } from "@/components/PageHeader";
 import { Pagination } from "@/components/Pagination";
 import { api, humanizeError } from "@/lib/api";
+import { awaitExport, saveDownload } from "@/lib/download";
 import { useAsync, usePolling, STATUS_POLL_FAST_MS, STATUS_POLL_SLOW_MS } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
 import { canManage, ownershipPending } from "@/lib/ownership";
@@ -229,21 +230,6 @@ function DownloadBackupButton({
       </Button>
     </span>
   );
-}
-
-/** saveDownload hands a ready export to the browser the way a link would: a
- *  hidden <a download> it clicks once. felis-api answers with an attachment, so
- *  the browser's own download manager streams the archive to disk; reading it
- *  into a Blob first would hold a whole world in the tab's memory. */
-function saveDownload(url: string, filename: string) {
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.rel = "noopener";
-  a.hidden = true;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
 }
 
 /** DeleteBackupButton deletes one backup behind a confirm that says what goes: the
@@ -470,9 +456,6 @@ const POLL_MS = 2500;
 // them in game and holds the stop 30 s, then the pre-stop save and the pod's own
 // shutdown save follow.
 const MAX_POLLS = 48;
-// How often an export being prepared rereads its ticket: the Job needs a few
-// seconds to start, and a ready ticket waits 90 s for the browser.
-const EXPORT_POLL_MS = 2000;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function RestoreControls({
@@ -746,11 +729,9 @@ export function ServerBackups() {
   }, []);
 
   // A download is prepared before it starts: the POST answers a one-time ticket,
-  // an export Job hands the archive to felis-api, and this reads the ticket
-  // until felis-api holds it. Only then does the browser fetch it, as a link, so
-  // any size of world streams straight to disk. A ready ticket waits 90 s for
-  // that fetch, so it follows at once. A pending ticket ends on its own (410
-  // export_expired after 10 min), which bounds the wait.
+  // an export Job hands the archive to felis-api, and awaitExport reads the
+  // ticket until felis-api holds it. Only then does the browser fetch it, as a
+  // link, so any size of world streams straight to disk.
   async function runExport(target: ExportTarget) {
     if (exportRun.current) return;
     exportRun.current = true;
@@ -760,18 +741,14 @@ export function ServerBackups() {
       const tk =
         target.kind === "world" ? await api.startWorldExport(name) : await api.startBackupExport(name, target.id);
       jobsQ.reload(); // a world export now holds the world
-      for (;;) {
-        await sleep(EXPORT_POLL_MS);
-        if (!alive.current) return;
-        const s = await api.exportStatus(tk.ticket);
-        if (s.state === "ready") break;
-        if (s.state === "failed") {
-          setBackupMsg({
-            kind: "error",
-            text: s.message ? t("export_failed_because", { reason: s.message }) : t("export_failed"),
-          });
-          return;
-        }
+      const s = await awaitExport(tk.ticket, () => alive.current);
+      if (s === null) return;
+      if (s.state === "failed") {
+        setBackupMsg({
+          kind: "error",
+          text: s.message ? t("export_failed_because", { reason: s.message }) : t("export_failed"),
+        });
+        return;
       }
       saveDownload(await api.exportDownloadURL(tk.ticket), tk.filename);
       setBackupMsg({
@@ -1000,7 +977,7 @@ export function ServerBackups() {
                           <div className="flex min-w-0 items-center gap-2">
                             {j.kind === "restore" ? (
                               <RotateCcw className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
-                            ) : j.kind === "export_world" || j.kind === "export_backup" ? (
+                            ) : j.kind === "export_world" || j.kind === "export_backup" || j.kind === "export_files" ? (
                               <Download className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
                             ) : (
                               <Archive className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
@@ -1018,6 +995,8 @@ export function ServerBackups() {
                                 ? t("job_export_world")
                                 : j.kind === "export_backup"
                                 ? t("job_export_backup")
+                                : j.kind === "export_files"
+                                ? t("job_export_files")
                                 : j.kind}
                             </span>
                             {at && (

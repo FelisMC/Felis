@@ -3164,9 +3164,9 @@ for 10 seconds (the Free plan's limits).
 The panel's Files page is for the server's owner or an admin, and only while
 the server is fully stopped. Each call runs a one-shot `felis files` Job in the
 `minecraft` namespace, labelled `app.kubernetes.io/managed-by=felis-files` and
-`felis.lolicon.best/files-mode=<list|read|write|mkdir|delete|rename|upload>`.
+`felis.lolicon.best/files-mode=<list|read|write|mkdir|delete|rename|upload|unzip>`.
 A listing or a read holds nothing. Every change (a save, a new file or folder,
-a rename, a delete, an upload) holds the world for its Job (§3b), so a wake or a
+a rename, a delete, an upload, an unzip) holds the world for its Job (§3b), so a wake or a
 second change in the meantime gets `409 maintenance_in_progress`. The panel
 sends uploads one at a time and greys its other changes until they finish.
 
@@ -3178,13 +3178,19 @@ sends uploads one at a time and greys its other changes until they finish.
 | `409` | `file_changed` | The file changed after the editor read it | The editor offers to load the latest or overwrite it |
 | `400` | `bad_path` | The path leaves the world volume (`..`, an absolute path, a link pointing out), or it would move `server.properties`, `config` or `config/paper-global.yml`, or read `config/paper-global.yml` | Those three keep their names: the read path withholds their secrets by name, and `paper-global.yml` holds the proxy forwarding secret every server shares |
 | `404` | `not_found` | The path, or a new folder's parent, is gone | Refresh the listing |
-| `413` | `too_large` | A read over 1 MiB, a save over 256 KiB, or an upload over 64 MiB | Upload a large file whole instead of editing it |
+| `413` | `too_large` | A read over 1 MiB, a save over 256 KiB, or a one-request upload over 64 MiB | Upload a large file whole instead of editing it; the panel sends a file over 64 MiB in parts on its own |
 | `411` | `length_required` | An upload without `Content-Length` (a chunked body) | Upload from the panel, or with `curl -T`, which sends the length |
 | `400` | `upload_incomplete` | The body ended before its declared length | Retry; nothing was changed |
 | `507` | `upload_staging_full` | Staging this upload would leave felis-api's staging filesystem under 10% free | Free space on the uploads volume |
 | `507` | `volume_full` | The world volume ran out of space; the old file is left as it was | Delete files the server no longer needs, or grow its volume |
 | `504` | `files_timeout` | felis-api stopped waiting after 90 s | See below: the Job may still finish |
 | `503` | `files_unavailable` | felis-api runs without the file Job runner, or (for an upload) without a staging directory or its internal address | Check felis-api's startup log |
+| `404` | `upload_not_found` | A large upload's session is gone: cancelled, already landed, idle for 6 hours, or felis-api restarted | Upload the file again |
+| `409` | `upload_offset_mismatch` | A part did not start where the session ends (a lost answer, a second tab) | The panel reads where it stands and continues; nothing to do |
+| `409` | `upload_busy` | Another part of the same upload is still arriving | Same |
+| `413` | `part_too_large` | A part over 32 MiB, or past the size the upload began with | A client bug; upload from the panel |
+| `409` | `upload_incomplete` | The commit came before every part had arrived | Same |
+| `429` | `too_many_uploads` | The account already has 4 large uploads in progress | Finish or cancel one |
 
 **An upload travels in two legs.** The browser sends the body to felis-api,
 which stages it under `/var/lib/felis/uploads/.file-staging` on the uploads
@@ -3208,9 +3214,58 @@ change waits on it with `maintenance_in_progress`; refresh the listing once it
 is gone to see whether the change landed. A Job is kept for two minutes after
 it ends, with its log.
 
+**A file over 64 MiB goes up in parts.** The panel begins an upload session
+(`POST …/files/uploads`), which reserves room for the whole file on the staging
+filesystem at once, so an upload that starts can finish (`507
+upload_staging_full` otherwise). It then sends 32 MiB parts, each under the
+Cloudflare edge's 100 MB body limit, retrying a part that fails and resuming
+from where the session ends; there is no size cap beyond the room. Starting the
+server midway costs only the commit, which needs it stopped again. The commit
+starts the Job and answers at once (`202`); the Job fetches the file the same
+way as above and runs up to 2 hours. A session belongs to the account and server
+it was begun for, and one untouched for 6 hours is dropped (felis-api logs
+`dropped N upload session(s) left idle`). A Job that fails before it has every
+byte leaves the session, so committing again does not mean sending it again.
+Folders cannot be uploaded: the panel asks for a `.zip` instead, because loose
+files cut off midway would leave half a world.
+
+**Unzip** (`POST …/files/unzip`, `.zip` only) extracts into a hidden
+`.felis-unzip-*` folder beside the archive and moves the result into place only
+once every entry has been written and checked, so a failure changes nothing and
+the working folder is removed. It checks, before writing a byte, that no entry
+leaves the folder or is a link (`archive_unsafe`, `archive_symlink`), that the
+archive does not put a file where the server has a folder or the reverse
+(`type_conflict`), and that the volume has room (`volume_full`); an entry whose
+size differs from what the archive declares ends `archive_invalid`. Names stored
+in GBK, as Windows zips in a Chinese locale have them, are read as such. Without
+replace, an archive that would overwrite files ends `file_exists` with the list,
+which the panel shows for confirmation before running it again with replace.
+
+Large uploads and unzips run in the background: they keep going when the page is
+closed, and `GET …/files/ops` lists the one running and those that ended in the
+last 30 minutes, with bytes done and, on failure, the code above or `job_failed`
+with the Job's condition (`DeadlineExceeded` after 2 hours). Their Jobs carry
+`felis.lolicon.best/files-async=true`. A Job that fails without a result keeps
+its log for 30 minutes:
+
+```sh
+kubectl -n minecraft get jobs -l felis.lolicon.best/server=<name>,felis.lolicon.best/files-async=true
+```
+
+**Downloading a file or folder** (`POST …/files/download`) is an export (§10,
+"Downloading a backup or the world"): a `felis-export` Job with
+`felis.lolicon.best/export-mode=files` reads the file, or zips the folder, from
+the world read-only and felis-api streams it to the browser. It needs the server
+stopped and holds the world until the download ends. `config/paper-global.yml`
+is refused as a file and left out of a folder, and `server.properties` goes out
+with `rcon.password` redacted, matched by the file itself so a link to either is
+guarded too; world and backup exports filter the same two files. Two per user at
+a time, four across the install, 30 per user per hour (`429 export_busy`).
+
 Every change is audited as `file.write`, `file.mkdir`, `file.delete`,
-`file.rename` (with `to`) or `file.upload` (with `size_bytes`, `sha256` and
-`overwrite`), with `server_name` set to `<server>:<path>`:
+`file.rename` (with `to`), `file.upload` (with `size_bytes`, `sha256` and
+`overwrite`, in one request or in parts), `file.unzip` (with `overwrite`) or
+`file.download`, with `server_name` set to `<server>:<path>`:
 
 ```sh
 sudo k3s kubectl -n felis exec deploy/felis-postgres -c postgres -- psql -U postgres felis -c "
@@ -3218,8 +3273,8 @@ sudo k3s kubectl -n felis exec deploy/felis-postgres -c postgres -- psql -U post
   FROM audit_logs WHERE action LIKE 'file.%' ORDER BY created_at DESC LIMIT 20;"
 ```
 
-[GO-TESTED: `internal/fileedit`, `handlers_files_test.go`, `cmd/felis/files_test.go`,
-`internal/maintenance`.] [VM-TESTED: a pod labelled as a files Job in `minecraft`
+[GO-TESTED: `internal/fileedit`, `handlers_files_test.go`, `handlers_fileops_test.go`,
+`cmd/felis/files_test.go`, `TestExpireFileSessions`, `internal/maintenance`.] [VM-TESTED: a pod labelled as a files Job in `minecraft`
 reaches `felis-api-internal:8081`; a 256 KiB save's content, split across six
 variables, lands byte for byte through the real binary, where one 140 KB variable
 fails with `argument list too long`. An upload through the API, both legs end to
@@ -3331,5 +3386,5 @@ PG-TESTED: `TestScheduleStoreRunCAS`, `TestDueSchedules`, `TestSchedulesFollowTh
 | `FelisAuditWriteFailing` | §17 |
 | `felis breakGlass` sends no code / shows `Root override`; `otp_skipped` in the audit | §17 |
 | How long sessions, codes and audit rows are kept; export audit rows | §17 |
-| Files page: a change or upload refused (`file_exists`, `bad_path`, `too_large`, `upload_staging_full`, `volume_full`, `files_timeout`) | §18 |
+| Files page: a change, upload or unzip refused (`file_exists`, `bad_path`, `too_large`, `upload_staging_full`, `upload_not_found`, `volume_full`, `archive_unsafe`, `job_failed`, `files_timeout`) | §18 |
 | A scheduled task shows `skipped`, `missed` or `failed`; a task switched itself off after an owner change | §19 |

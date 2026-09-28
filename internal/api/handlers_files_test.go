@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/fileedit"
@@ -42,14 +43,19 @@ type fakeFileEditor struct {
 
 	entries   []fileedit.Entry
 	truncated bool
+	free      int64
 	content   []byte
 	sum       string
+
+	// op is what StartUpload and StartUnzip answer (started), ops what Ops does.
+	op  fileedit.OpState
+	ops []fileedit.OpState
 }
 
-func (f *fakeFileEditor) List(_ context.Context, server, path string) ([]fileedit.Entry, bool, error) {
+func (f *fakeFileEditor) List(_ context.Context, server, path string) (fileedit.Listing, error) {
 	f.calls++
 	f.gotServer, f.gotPath = server, path
-	return f.entries, f.truncated, f.err
+	return fileedit.Listing{Entries: f.entries, Truncated: f.truncated, Free: f.free}, f.err
 }
 
 func (f *fakeFileEditor) Read(_ context.Context, server, path string) ([]byte, string, error) {
@@ -90,6 +96,33 @@ func (f *fakeFileEditor) Upload(_ context.Context, server, path string, src file
 		f.onUpload(src)
 	}
 	return f.err
+}
+
+func (f *fakeFileEditor) StartUpload(_ context.Context, server, path string, src fileedit.UploadSource, overwrite bool) (fileedit.OpState, error) {
+	f.calls++
+	f.gotOp, f.gotServer, f.gotPath, f.gotSource, f.gotOverwrite = fileedit.OpUpload, server, path, src, overwrite
+	return f.started(fileedit.OpUpload, path), f.err
+}
+
+func (f *fakeFileEditor) StartUnzip(_ context.Context, server, path string, overwrite bool) (fileedit.OpState, error) {
+	f.calls++
+	f.gotOp, f.gotServer, f.gotPath, f.gotOverwrite = fileedit.OpUnzip, server, path, overwrite
+	return f.started(fileedit.OpUnzip, path), f.err
+}
+
+// started is the op StartUpload and StartUnzip answer: f.op when a test set
+// one, else a running op as the real Editor answers it.
+func (f *fakeFileEditor) started(op, path string) fileedit.OpState {
+	if f.op.ID != "" {
+		return f.op
+	}
+	return fileedit.OpState{ID: "op" + strconv.Itoa(f.calls), Op: op, Path: path, State: fileedit.OpRunning, Started: time.Now()}
+}
+
+func (f *fakeFileEditor) Ops(_ context.Context, server string) ([]fileedit.OpState, error) {
+	f.calls++
+	f.gotServer = server
+	return f.ops, f.err
 }
 
 // fileRouteHeader is the Content-Type a file route's body goes with: raw bytes
@@ -340,6 +373,7 @@ func TestFileEditorHandlers(t *testing.T) {
 		api, _, _, files := mkFiles(t)
 		files.entries = []fileedit.Entry{{Name: "paper.yml", Size: 12}, {Name: "sub", IsDir: true}}
 		files.truncated = true
+		files.free = 5 << 30
 		api.External = staticExternal{p: owner}
 
 		w := do(api.ExternalHandler(), "GET", "/api/v1/servers/survival/files?path=config", "", nil)
@@ -350,6 +384,7 @@ func TestFileEditorHandlers(t *testing.T) {
 			Path      string           `json:"path"`
 			Entries   []fileedit.Entry `json:"entries"`
 			Truncated bool             `json:"truncated"`
+			FreeBytes int64            `json:"free_bytes"`
 		}
 		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 			t.Fatalf("body not JSON: %v (%s)", err, w.Body.String())
@@ -357,7 +392,7 @@ func TestFileEditorHandlers(t *testing.T) {
 		if files.gotPath != "config" {
 			t.Fatalf("executor saw path %q, want the query value verbatim", files.gotPath)
 		}
-		if resp.Path != "config" || len(resp.Entries) != 2 || !resp.Truncated {
+		if resp.Path != "config" || len(resp.Entries) != 2 || !resp.Truncated || resp.FreeBytes != 5<<30 {
 			t.Fatalf("unexpected response %+v", resp)
 		}
 	})

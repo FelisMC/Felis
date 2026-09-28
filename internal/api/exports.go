@@ -8,30 +8,33 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"hash"
 	"io"
 	"log"
 	"mime"
 	"net/http"
+	pathpkg "path"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
+	"felis.lolicon.best/internal/fileedit"
 	"felis.lolicon.best/internal/maintenance"
 	"felis.lolicon.best/internal/naming"
 	"felis.lolicon.best/internal/worldexport"
 )
 
-// World export. The owner downloads a tar.gz of their world, either as it is
-// now (the server stopped) or as one of its backups, straight into the browser:
+// World export and file download. The owner downloads a tar.gz of their world,
+// either as it is now (the server stopped) or as one of its backups, or one file
+// or folder of a stopped world (a folder as a zip), straight into the browser:
 //
-//  1. POST /servers/{name}/world/export or /servers/{name}/backups/{id}/export
-//     checks the caller and the server, admits the export against the limits
-//     below and starts a one-shot felis-export Job (internal/worldexport) that
-//     reads the world or the archive read-only. It answers 202 with a ticket:
-//     256 random bits, good for the caller who started it and nobody else.
+//  1. POST /servers/{name}/world/export, /servers/{name}/backups/{id}/export or
+//     /servers/{name}/files/download checks the caller and the server, admits
+//     the export against the limits below and starts a one-shot felis-export
+//     Job (internal/worldexport) that reads the world or the archive read-only.
+//     It answers 202 with a ticket: 256 random bits, good for the caller who
+//     started it and nobody else.
 //  2. The Job PUTs the archive to the internal face (PUT
 //     /api/v1/internal/exports/{id} with the one-time token it was started
 //     with), and that request waits, body unread, for the browser.
@@ -41,10 +44,10 @@ import (
 //     archive passes through felis-api's memory once and never touches a disk
 //     it owns, and the Job moves at the browser's pace.
 //
-// A backup is checked against the sha256 recorded when it was written as it
-// streams, and the last read is held back until the digest is known: a mismatch
-// aborts the response, so the browser reports a failed download and never keeps
-// a complete-looking corrupt file, and the Job is told backup_corrupt.
+// A backup is checked by the Job against the sha256 recorded when it was
+// written (cmd/felis export): on a mismatch the Job aborts its upload short of
+// the archive's end, the download aborts with it, and the browser reports a
+// failed download and never keeps a complete-looking corrupt file.
 //
 // Tickets live in felis-api's memory. A restart forgets them, and a Job that
 // then PUTs finds nothing and fails, which the jobs list shows.
@@ -57,14 +60,56 @@ type Exporter interface {
 }
 
 // Limits on exports. Each one keeps a Job, a connection and a 64 KiB copy
-// buffer alive for as long as a download takes, and a world export also keeps
-// its server from starting.
+// buffer alive for as long as a download takes, and a world export or a file
+// download also keeps its server from starting.
 const (
 	exportMaxActive  = 2 // admitted and not yet over, install-wide
 	exportMaxPerUser = 1
 	exportPerHour    = 6 // started by one user in any hour
 	exportCopyBuffer = 32 << 10
+
+	// File downloads count apart from the world and backup exports, with
+	// their own limits: one is a file or a folder, usually small and over in
+	// seconds, and an owner fetching a few configs one after another must
+	// neither wait on an export nor hold one off.
+	fileExportMaxActive  = 4
+	fileExportMaxPerUser = 2
+	fileExportPerHour    = 30
 )
+
+// exportClass is one set of export limits and how a refusal names them.
+type exportClass struct {
+	maxActive, perUser, perHour    int
+	busyUser, busyActive, busyHour string // each formats its limit
+}
+
+var (
+	worldExports = exportClass{
+		maxActive: exportMaxActive, perUser: exportMaxPerUser, perHour: exportPerHour,
+		busyUser:   "you already have %d export in progress; download it or let it expire first",
+		busyActive: "%d exports are already in progress; retry in a few minutes",
+		busyHour:   "you have started %d exports in the last hour; retry later",
+	}
+	fileExports = exportClass{
+		maxActive: fileExportMaxActive, perUser: fileExportMaxPerUser, perHour: fileExportPerHour,
+		busyUser:   "you already have %d file downloads in progress; let one finish first",
+		busyActive: "%d file downloads are already in progress; retry in a minute",
+		busyHour:   "you have started %d file downloads in the last hour; retry later",
+	}
+)
+
+func (e *exportEntry) class() exportClass {
+	if e.files {
+		return fileExports
+	}
+	return worldExports
+}
+
+// exportStarts keys a user's recent starts within one class.
+type exportStarts struct {
+	userID string
+	files  bool
+}
 
 // Timings. Vars only so a test can shrink them.
 var (
@@ -102,8 +147,6 @@ type exportStatusView struct {
 	Message string `json:"message,omitempty"`
 }
 
-var errExportDigest = errors.New("the archive does not match the sha256 recorded when it was written")
-
 func errExportExpired() error {
 	return newError(http.StatusGone, "export_expired", "this export has expired or was already downloaded; start a new one")
 }
@@ -119,13 +162,16 @@ type exportEntry struct {
 	userID    string
 	server    string
 	mode      string
-	sha256    string // what a backup must hash to; empty for a world
+	files     bool // a file download, counted in fileExports
 	filename  string
-	job       string
-	state     string
-	message   string
-	at        time.Time // when it entered its state
-	upload    *exportUpload
+	// contentType is what the download is served as: a gzip archive, a zip,
+	// or a single file's raw bytes.
+	contentType string
+	job         string
+	state       string
+	message     string
+	at          time.Time // when it entered its state
+	upload      *exportUpload
 }
 
 // exportUpload is the Job's PUT, parked until a browser claims it.
@@ -144,7 +190,7 @@ type exportRegistry struct {
 	mu       sync.Mutex
 	byTicket map[string]*exportEntry
 	byID     map[string]*exportEntry
-	starts   map[string][]time.Time // per user, oldest first
+	starts   map[exportStarts][]time.Time // oldest first
 }
 
 func (a *API) exportTickets() *exportRegistry {
@@ -152,7 +198,7 @@ func (a *API) exportTickets() *exportRegistry {
 		a.exports = &exportRegistry{
 			byTicket: map[string]*exportEntry{},
 			byID:     map[string]*exportEntry{},
-			starts:   map[string][]time.Time{},
+			starts:   map[exportStarts][]time.Time{},
 		}
 	})
 	return a.exports
@@ -187,38 +233,37 @@ func randomHex(n int) string {
 	return hex.EncodeToString(b)
 }
 
-// admit reserves the export e describes (its user, server, mode, filename and
-// digest) and returns its upload token, or refuses it with export_busy.
+// admit reserves the export e describes (its user, server, mode, class,
+// filename and content type) and returns its upload token, or refuses it with
+// export_busy. Only exports of e's class count against it.
 func (g *exportRegistry) admit(e *exportEntry, now time.Time) (string, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.sweepLocked(now)
 	active, mine := 0, 0
 	for _, o := range g.byTicket {
-		if o.active() {
+		if o.active() && o.files == e.files {
 			active++
 			if o.userID == e.userID {
 				mine++
 			}
 		}
 	}
-	switch starts := g.starts[e.userID]; {
-	case mine >= exportMaxPerUser:
-		return "", newError(http.StatusTooManyRequests, "export_busy",
-			"you already have an export in progress; download it or let it expire first").retryAfter(exportClaimTTL)
-	case active >= exportMaxActive:
-		return "", newError(http.StatusTooManyRequests, "export_busy",
-			"%d exports are already in progress; retry in a few minutes", exportMaxActive).retryAfter(time.Minute)
-	case len(starts) >= exportPerHour:
-		return "", newError(http.StatusTooManyRequests, "export_busy",
-			"you have started %d exports in the last hour; retry later", exportPerHour).retryAfter(starts[0].Add(time.Hour).Sub(now))
+	c, key := e.class(), exportStarts{e.userID, e.files}
+	switch starts := g.starts[key]; {
+	case mine >= c.perUser:
+		return "", newError(http.StatusTooManyRequests, "export_busy", c.busyUser, c.perUser).retryAfter(exportClaimTTL)
+	case active >= c.maxActive:
+		return "", newError(http.StatusTooManyRequests, "export_busy", c.busyActive, c.maxActive).retryAfter(time.Minute)
+	case len(starts) >= c.perHour:
+		return "", newError(http.StatusTooManyRequests, "export_busy", c.busyHour, c.perHour).retryAfter(starts[0].Add(time.Hour).Sub(now))
 	}
 	token := randomHex(32)
 	e.ticket, e.id, e.tokenHash = randomHex(32), randomHex(8), sha256.Sum256([]byte(token))
 	e.state, e.at = exportPending, now
 	g.byTicket[e.ticket] = e
 	g.byID[e.id] = e
-	g.starts[e.userID] = append(g.starts[e.userID], now)
+	g.starts[key] = append(g.starts[key], now)
 	return token, nil
 }
 
@@ -228,10 +273,15 @@ func (g *exportRegistry) drop(e *exportEntry) {
 	defer g.mu.Unlock()
 	delete(g.byTicket, e.ticket)
 	delete(g.byID, e.id)
-	ts := g.starts[e.userID]
+	key := exportStarts{e.userID, e.files}
+	ts := g.starts[key]
 	for i := len(ts) - 1; i >= 0; i-- {
 		if ts[i].Equal(e.at) {
-			g.starts[e.userID] = append(ts[:i:i], ts[i+1:]...)
+			if rest := append(ts[:i:i], ts[i+1:]...); len(rest) > 0 {
+				g.starts[key] = rest
+			} else {
+				delete(g.starts, key)
+			}
 			break
 		}
 	}
@@ -377,13 +427,13 @@ func (a *API) handleExportBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	e := &exportEntry{userID: p.UserID, server: name, mode: worldexport.ModeBackup,
-		filename: fmt.Sprintf("%s-backup-%s.tar.gz", name, backup.ID), sha256: backup.SHA256}
+		filename: fmt.Sprintf("%s-backup-%s.tar.gz", name, backup.ID), contentType: archiveContentType}
 	token, err := a.exportTickets().admit(e, a.now())
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
-	if !a.startExport(w, r, e, token, backup.BackupRef) {
+	if !a.startExport(w, r, e, token, worldexport.Request{BackupRef: backup.BackupRef, BackupSHA256: backup.SHA256}) {
 		return
 	}
 	a.auditEntry(r, AuditEntry{Actor: auditActor(p), ActorUserID: p.UserID, Action: "backup.export", ServerName: rec.Name,
@@ -425,7 +475,8 @@ func (a *API) handleExportWorld(w http.ResponseWriter, r *http.Request) {
 	}
 	reg := a.exportTickets()
 	e := &exportEntry{userID: p.UserID, server: name, mode: worldexport.ModeWorld,
-		filename: fmt.Sprintf("%s-world-%s.tar.gz", name, a.now().UTC().Format("20060102-150405"))}
+		filename:    fmt.Sprintf("%s-world-%s.tar.gz", name, a.now().UTC().Format("20060102-150405")),
+		contentType: archiveContentType}
 	token, err := reg.admit(e, a.now())
 	if err != nil {
 		writeError(w, r, err)
@@ -437,15 +488,79 @@ func (a *API) handleExportWorld(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
-	if !a.startExport(w, r, e, token, "") {
+	if !a.startExport(w, r, e, token, worldexport.Request{}) {
 		return
 	}
 	a.auditEntry(r, AuditEntry{Actor: auditActor(p), ActorUserID: p.UserID, Action: "world.export", ServerName: rec.Name})
 	writeJSON(w, http.StatusAccepted, exportTicketView{Ticket: e.ticket, State: exportPending, Filename: e.filename})
 }
 
+// archiveContentType is how a world or a backup export is served.
+const archiveContentType = "application/gzip"
+
+// handleDownloadFile starts the download of one file or folder of a stopped
+// server's world (POST /api/v1/servers/{name}/files/download?path=…&dir=true
+// for a folder). The gate is the file manager's (authorizeFileOp), plus an
+// account to bind the ticket to. The download is an export: a felis-export Job
+// in files mode reads the file, or zips the folder, from the world volume and
+// hands it over through a ticket like any other, under the world-volume lock
+// (as KindExport) so the server cannot start mid-zip.
+//
+// The path is passed to the Job as it came, as every file route does (see
+// handleListFiles): the Job's os.Root is the containment, and the guards run
+// there. Only the world root is refused here, since a whole world is what the
+// world export is for.
+func (a *API) handleDownloadFile(w http.ResponseWriter, r *http.Request) {
+	name, ok := a.authorizeFileOp(w, r)
+	if !ok {
+		return
+	}
+	p := principalFromContext(r.Context())
+	if p.UserID == "" {
+		writeError(w, r, errForbidden)
+		return
+	}
+	path, ok := requirePath(w, r)
+	if !ok {
+		return
+	}
+	dir := r.URL.Query().Get("dir") == "true"
+	base := pathpkg.Base(pathpkg.Clean("/" + path))
+	if base == "/" {
+		writeError(w, r, newError(http.StatusBadRequest, "bad_path",
+			"the whole world is not a file download; export the world from the backups page instead"))
+		return
+	}
+	if a.Exporter == nil || a.InternalBaseURL == "" {
+		writeError(w, r, errExportUnavailable())
+		return
+	}
+	e := &exportEntry{userID: p.UserID, server: name, mode: worldexport.ModeFiles, files: true,
+		filename: base, contentType: fileedit.DownloadFileType}
+	if dir {
+		e.filename, e.contentType = base+".zip", fileedit.DownloadZipType
+	}
+	reg := a.exportTickets()
+	token, err := reg.admit(e, a.now())
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	release, ok := a.acquireWorld(w, r, name, maintenance.KindExport, "stop the server before editing its files")
+	if !ok {
+		reg.drop(e)
+		return
+	}
+	defer release()
+	if !a.startExport(w, r, e, token, worldexport.Request{Path: path, Dir: dir}) {
+		return
+	}
+	a.auditFile(r, "file.download", name, path, map[string]any{"dir": dir})
+	writeJSON(w, http.StatusAccepted, exportTicketView{Ticket: e.ticket, State: exportPending, Filename: e.filename})
+}
+
 func errExportUnavailable() error {
-	return newError(http.StatusServiceUnavailable, "export_unavailable", "world export is not configured")
+	return newError(http.StatusServiceUnavailable, "export_unavailable", "world export and downloads are not configured")
 }
 
 // exportGate is the front half both export routes share: a valid name, a known
@@ -471,12 +586,12 @@ func (a *API) exportGate(w http.ResponseWriter, r *http.Request) (string, *Serve
 }
 
 // startExport creates the admitted export's Job, or forgets the export and
-// writes the error.
-func (a *API) startExport(w http.ResponseWriter, r *http.Request, e *exportEntry, token, backupRef string) bool {
-	job, err := a.Exporter.Start(r.Context(), worldexport.Request{
-		Server: e.server, Mode: e.mode, BackupRef: backupRef, ID: e.id, Token: token,
-		TargetURL: a.InternalBaseURL + "/api/v1/internal/exports/" + e.id,
-	})
+// writes the error. what carries the mode's own fields (the backup and its
+// digest, or the path); the rest comes from e.
+func (a *API) startExport(w http.ResponseWriter, r *http.Request, e *exportEntry, token string, what worldexport.Request) bool {
+	what.Server, what.Mode, what.ID, what.Token = e.server, e.mode, e.id, token
+	what.TargetURL = a.InternalBaseURL + "/api/v1/internal/exports/" + e.id
+	job, err := a.Exporter.Start(r.Context(), what)
 	if err != nil {
 		a.exportTickets().drop(e)
 		writeError(w, r, err)
@@ -533,7 +648,7 @@ func (a *API) handleExportDownload(w http.ResponseWriter, r *http.Request) {
 	defer reg.finish(e.ticket, a.now())
 
 	h := w.Header()
-	h.Set("Content-Type", "application/gzip")
+	h.Set("Content-Type", e.contentType)
 	if cd := mime.FormatMediaType("attachment", map[string]string{"filename": e.filename}); cd != "" {
 		h.Set("Content-Disposition", cd)
 	} else {
@@ -546,7 +661,7 @@ func (a *API) handleExportDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 
-	err = copyExport(w, e.upload.body, e.sha256)
+	err = copyExport(w, e.upload.body)
 	e.upload.done <- err
 	if err != nil {
 		log.Printf("api: export %s of %s ended early: %v", e.id, e.server, err)
@@ -557,53 +672,27 @@ func (a *API) handleExportDownload(w http.ResponseWriter, r *http.Request) {
 }
 
 // copyExport copies body into w through a fixed 32 KiB buffer, restarting w's
-// write deadline on every write. With want set, the last read is held back
-// until the whole body hashes to it.
-func copyExport(w http.ResponseWriter, body io.Reader, want string) error {
-	out := &heldWriter{w: w, rc: http.NewResponseController(w)}
-	var sum hash.Hash
-	if want != "" {
-		sum = sha256.New()
-		body = io.TeeReader(body, sum)
-	}
+// write deadline on every write.
+func copyExport(w http.ResponseWriter, body io.Reader) error {
+	out := &stallWriter{w: w, rc: http.NewResponseController(w)}
 	if _, err := io.CopyBuffer(out, body, make([]byte, exportCopyBuffer)); err != nil {
-		return err
-	}
-	if sum != nil && !strings.EqualFold(hex.EncodeToString(sum.Sum(nil)), want) {
-		return errExportDigest
-	}
-	if err := out.flush(); err != nil {
 		return err
 	}
 	_ = out.rc.SetWriteDeadline(time.Time{}) // the connection may serve another request
 	return nil
 }
 
-// heldWriter passes each write on one behind, keeping the latest back until
-// flush, so the end of an archive reaches the browser only once it is checked.
-// It has no ReadFrom, so io.CopyBuffer uses the buffer it is given.
-type heldWriter struct {
-	w    io.Writer
-	rc   *http.ResponseController
-	held []byte
+// stallWriter restarts the connection's write deadline before every write, so
+// a write fails only once the browser has taken nothing for exportStall. It
+// has no ReadFrom, so io.CopyBuffer uses the buffer it is given.
+type stallWriter struct {
+	w  io.Writer
+	rc *http.ResponseController
 }
 
-func (h *heldWriter) Write(p []byte) (int, error) {
-	if err := h.flush(); err != nil {
-		return 0, err
-	}
-	h.held = append(h.held[:0], p...)
-	return len(p), nil
-}
-
-func (h *heldWriter) flush() error {
-	if len(h.held) == 0 {
-		return nil
-	}
-	_ = h.rc.SetWriteDeadline(time.Now().Add(exportStall))
-	_, err := h.w.Write(h.held)
-	h.held = h.held[:0]
-	return err
+func (s *stallWriter) Write(p []byte) (int, error) {
+	_ = s.rc.SetWriteDeadline(time.Now().Add(exportStall))
+	return s.w.Write(p)
 }
 
 // handleInternalExportUpload takes an export Job's archive (PUT
@@ -611,9 +700,8 @@ func (h *heldWriter) flush() error {
 // export is the check, as for file uploads: an unknown id, a wrong token and a
 // token already used all read the same 404. The request then waits for the
 // browser, up to exportClaimTTL, and answers once the download has ended: 204
-// when it got the whole archive, 409 backup_corrupt when the archive did not
-// match its recorded digest, 410 export_expired when nobody came for it or the
-// browser left early.
+// when it got the whole archive, 410 export_expired when nobody came for it,
+// the browser left early or the Job itself cut the upload short.
 func (a *API) handleInternalExportUpload(w http.ResponseWriter, r *http.Request) {
 	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok {
@@ -644,14 +732,11 @@ func (a *API) handleInternalExportUpload(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
-	switch err := <-up.done; {
-	case err == nil:
-		w.WriteHeader(http.StatusNoContent)
-	case errors.Is(err, errExportDigest):
-		writeError(w, r, newError(http.StatusConflict, "backup_corrupt", "%v", err))
-	default:
+	if err := <-up.done; err != nil {
 		writeError(w, r, newError(http.StatusGone, "export_expired", "the download ended before the archive did: %v", err))
+		return
 	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // stallBody restarts the connection's read deadline on every read, so reading

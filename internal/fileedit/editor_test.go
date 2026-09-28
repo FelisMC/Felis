@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 )
 
 // fakeRunner stands in for the cluster: it records the JobParams the Editor
@@ -14,6 +15,21 @@ type fakeRunner struct {
 	got     []JobParams
 	payload []byte
 	err     error
+
+	started  []JobParams
+	startErr error
+	ops      []OpState
+	opsArgs  [][2]string
+}
+
+func (f *fakeRunner) Start(_ context.Context, p JobParams) error {
+	f.started = append(f.started, p)
+	return f.startErr
+}
+
+func (f *fakeRunner) Ops(_ context.Context, namespace, server string) ([]OpState, error) {
+	f.opsArgs = append(f.opsArgs, [2]string{namespace, server})
+	return f.ops, f.err
 }
 
 func (f *fakeRunner) Run(_ context.Context, p JobParams) ([]byte, error) {
@@ -37,15 +53,15 @@ func mustPayload(t *testing.T, res Result) []byte {
 // the editor pointed at the same volume the operator created and the reaper deletes.
 func TestEditorRendersParams(t *testing.T) {
 	t.Run("list", func(t *testing.T) {
-		r := &fakeRunner{payload: mustPayload(t, Result{Entries: []Entry{{Name: "a"}}})}
+		r := &fakeRunner{payload: mustPayload(t, Result{Entries: []Entry{{Name: "a"}}, Avail: 7 << 30})}
 		e := &Editor{Runner: r, Config: Config{Image: "img"}}
 
-		entries, truncated, err := e.List(context.Background(), "survival", "config")
+		ls, err := e.List(context.Background(), "survival", "config")
 		if err != nil {
 			t.Fatalf("List: %v", err)
 		}
-		if len(entries) != 1 || truncated {
-			t.Fatalf("entries=%+v truncated=%v", entries, truncated)
+		if len(ls.Entries) != 1 || ls.Truncated || ls.Free != 7<<30 {
+			t.Fatalf("listing = %+v", ls)
 		}
 		p := r.got[0]
 		if p.Op != OpList || p.Path != "config" || p.Server != "survival" {
@@ -242,11 +258,11 @@ func TestEditorNormalisesEmptyResults(t *testing.T) {
 	r := &fakeRunner{payload: mustPayload(t, Result{})}
 	e := &Editor{Runner: r, Config: Config{Image: "img"}}
 
-	entries, _, err := e.List(context.Background(), "survival", "empty")
+	ls, err := e.List(context.Background(), "survival", "empty")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if entries == nil {
+	if ls.Entries == nil {
 		t.Fatal("an empty directory must list as [], not nil")
 	}
 
@@ -294,6 +310,88 @@ func TestExtractResult(t *testing.T) {
 	t.Run("reports absence rather than guessing", func(t *testing.T) {
 		if _, ok := extractResult("no marker here\njust noise\n"); ok {
 			t.Fatal("a log with no marked line must report not-found")
+		}
+	})
+}
+
+// TestEditorStartsBackgroundOps checks an upload or unzip too long to wait on is
+// started, not run: its Job carries the async label and the longer deadline,
+// the longer TTL Ops reads it back within, and the larger CPU share, and what
+// comes back names the Job Ops will report on.
+func TestEditorStartsBackgroundOps(t *testing.T) {
+	src := UploadSource{URL: "http://api/big", Token: "tok", Size: 5 << 30, SHA256: "sum"}
+
+	t.Run("upload", func(t *testing.T) {
+		r := &fakeRunner{}
+		e := &Editor{Runner: r, Config: Config{Image: "img", Namespace: "mc"}}
+		before := time.Now()
+		st, err := e.StartUpload(context.Background(), "survival", "maps/world.zip", src, true)
+		if err != nil {
+			t.Fatalf("StartUpload: %v", err)
+		}
+		if r.calls != 0 || len(r.started) != 1 {
+			t.Fatalf("ran %d, started %d; want the one Job started and none waited on", r.calls, len(r.started))
+		}
+		p := r.started[0]
+		if !p.Async || p.Op != OpUpload || p.Path != "maps/world.zip" || !p.Overwrite ||
+			p.SourceURL != src.URL || p.UploadToken != "tok" || p.UploadSize != 5<<30 || p.UploadSHA256 != "sum" {
+			t.Fatalf("params = %+v", p)
+		}
+		if p.Deadline != 2*time.Hour || p.TTLAfterFinished != 30*time.Minute || p.CPULimit != "1" || p.MemLimit != "256Mi" {
+			t.Fatalf("deadline %v ttl %v cpu %q mem %q, want 2h 30m 1 256Mi",
+				p.Deadline, p.TTLAfterFinished, p.CPULimit, p.MemLimit)
+		}
+		if p.Namespace != "mc" || p.Server != "survival" || p.WorldPVC != "world-survival-0" || p.Image != "img" || p.OpID == "" {
+			t.Fatalf("params = %+v", p)
+		}
+		if st.ID != p.OpID || st.Op != OpUpload || st.Path != "maps/world.zip" || st.State != OpRunning || st.Started.Before(before) {
+			t.Fatalf("state = %+v, want the started Job %s running", st, p.OpID)
+		}
+
+		if _, err := e.StartUpload(context.Background(), "survival", "maps/world.zip", src, false); err != nil || r.started[1].Overwrite {
+			t.Fatalf("an upload that must not replace a file started with %+v (%v)", r.started[1], err)
+		}
+	})
+
+	t.Run("unzip, with its own limits", func(t *testing.T) {
+		r := &fakeRunner{}
+		e := &Editor{Runner: r, Config: Config{Image: "img", AsyncDeadline: time.Hour, AsyncTTL: time.Minute, AsyncCPULimit: "2"}}
+		st, err := e.StartUnzip(context.Background(), "survival", "maps/world.zip", false)
+		if err != nil {
+			t.Fatalf("StartUnzip: %v", err)
+		}
+		p := r.started[0]
+		if !p.Async || p.Op != OpUnzip || p.Path != "maps/world.zip" || p.Overwrite || p.SourceURL != "" {
+			t.Fatalf("params = %+v", p)
+		}
+		if p.Deadline != time.Hour || p.TTLAfterFinished != time.Minute || p.CPULimit != "2" {
+			t.Fatalf("deadline %v ttl %v cpu %q, want the configured 1h 1m 2", p.Deadline, p.TTLAfterFinished, p.CPULimit)
+		}
+		if st.ID != p.OpID || st.Op != OpUnzip {
+			t.Fatalf("state = %+v", st)
+		}
+	})
+
+	t.Run("a Job that could not be created", func(t *testing.T) {
+		boom := errors.New("forbidden")
+		r := &fakeRunner{startErr: boom}
+		e := &Editor{Runner: r, Config: Config{Image: "img"}}
+		st, err := e.StartUnzip(context.Background(), "survival", "a.zip", false)
+		if !errors.Is(err, boom) || st != (OpState{}) {
+			t.Fatalf("state %+v err %v, want nothing started and %v", st, err, boom)
+		}
+	})
+
+	t.Run("ops", func(t *testing.T) {
+		want := []OpState{{ID: "0a", State: OpRunning}}
+		r := &fakeRunner{ops: want}
+		e := &Editor{Runner: r, Config: Config{Image: "img"}}
+		got, err := e.Ops(context.Background(), "survival")
+		if err != nil || len(got) != 1 || got[0] != want[0] {
+			t.Fatalf("Ops = %+v %v", got, err)
+		}
+		if r.opsArgs[0] != [2]string{"minecraft", "survival"} {
+			t.Fatalf("asked %v, want the default namespace and the server", r.opsArgs[0])
 		}
 	})
 }

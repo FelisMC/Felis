@@ -491,6 +491,9 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		go pruner.Loop(ctx, registryPruneInterval)
 	}
 	go reapRejectedContexts(ctx, submissions, stderr)
+	if fileStage != nil {
+		go expireFileSessions(ctx, fileStage, fileSessionSweep, stderr)
+	}
 	go retention.Loop(ctx, drv.DB(), retention.Policy{Audit: auditRetention}, retentionInterval, slog.Default())
 
 	servers := []*http.Server{internalSrv, externalSrv}
@@ -792,6 +795,30 @@ func scheduleBackups(ctx context.Context, s *api.BackupScheduler, stderr io.Writ
 		case <-t.C:
 			if err := s.Tick(ctx); err != nil {
 				fmt.Fprintf(stderr, "felis api: scheduled backups: %v\n", err)
+			}
+		}
+	}
+}
+
+// fileSessionSweep is how often expireFileSessions looks for idle upload
+// sessions: small beside fileedit.SessionIdle, so an abandoned one gives its
+// room back within minutes of going stale.
+const fileSessionSweep = 10 * time.Minute
+
+// expireFileSessions drops the file manager's upload sessions left untouched
+// for fileedit.SessionIdle. Each reserved room on the staging disk for its whole
+// file when it began, so one abandoned would otherwise hold that room until
+// felis-api restarts.
+func expireFileSessions(ctx context.Context, s *fileedit.Stage, every time.Duration, stderr io.Writer) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if n := s.Expire(); n > 0 {
+				fmt.Fprintf(stderr, "felis api: dropped %d upload session(s) left idle for %s\n", n, fileedit.SessionIdle)
 			}
 		}
 	}

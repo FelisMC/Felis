@@ -230,11 +230,15 @@ func jobOutcome(j *batchv1.Job) (AsyncJob, bool) {
 	case jobManagedByRestore:
 		kind = "restore"
 	case jobManagedByExport:
-		// As maintenance.JobKind reads it: only a Job that says it reads a
-		// backup is not a world export.
-		kind = "export_world"
-		if j.Labels[maintenance.LabelExportMode] == maintenance.ExportModeBackup {
+		// As maintenance.JobKind reads it: a Job that names no mode this build
+		// knows reads as a world export, the kind that holds the world.
+		switch j.Labels[maintenance.LabelExportMode] {
+		case maintenance.ExportModeBackup:
 			kind = "export_backup"
+		case maintenance.ExportModeFiles:
+			kind = "export_files"
+		default:
+			kind = "export_world"
 		}
 	default:
 		return AsyncJob{}, false

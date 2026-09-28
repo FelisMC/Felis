@@ -62,8 +62,9 @@ const (
 	// rename, upload) a files Job performs. Every one but list and read holds the
 	// volume.
 	LabelFilesMode = "felis.lolicon.best/files-mode"
-	// LabelExportMode is what an export Job archives: ExportModeWorld (the live
-	// world, which holds the volume) or ExportModeBackup (a stored archive).
+	// LabelExportMode is what an export Job sends: ExportModeWorld (the live
+	// world) or ExportModeFiles (one file or folder of it), which hold the
+	// volume, or ExportModeBackup (a stored archive), which does not.
 	LabelExportMode = "felis.lolicon.best/export-mode"
 
 	// LabelThenRestore marks a backup Job that is the safety snapshot in front of
@@ -110,6 +111,7 @@ const (
 const (
 	ExportModeWorld  = "world"
 	ExportModeBackup = "backup"
+	ExportModeFiles  = "files"
 )
 
 // JobKind names the holder a Job represents, or reports false for a Job that
