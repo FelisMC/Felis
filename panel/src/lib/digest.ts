@@ -22,3 +22,13 @@ export async function sha256Of(blob: Blob): Promise<{ hex: string; header: strin
   }
   return { hex, header: `sha-256=:${btoa(bin)}:` };
 }
+
+// base64Sha256 answers the hex SHA-256 of the bytes b64 encodes: the file
+// editor's content_sha256, which a save sends with its content and a read is
+// checked against. A string that is not base64 throws.
+export async function base64Sha256(b64: string): Promise<string> {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return (await sha256Of(new Blob([bytes]))).hex;
+}

@@ -180,7 +180,7 @@ func TestFileEditorStoppedGate(t *testing.T) {
 	}{
 		{"list", "GET", "/api/v1/servers/survival/files?path=config", ""},
 		{"read", "GET", "/api/v1/servers/survival/file?path=server.properties", ""},
-		{"write", "PUT", "/api/v1/servers/survival/file?path=server.properties", `{"content":"aGk="}`},
+		{"write", "PUT", "/api/v1/servers/survival/file?path=server.properties", `{"content":"aGk=","content_sha256":"` + hiSum + `"}`},
 		{"mkdir", "POST", "/api/v1/servers/survival/files/mkdir?path=plugins", ""},
 		{"delete", "DELETE", "/api/v1/servers/survival/file?path=old.jar", ""},
 		{"rename", "POST", "/api/v1/servers/survival/files/rename?path=a.txt", `{"to":"b.txt"}`},
@@ -237,7 +237,7 @@ func TestFileEditorWorldVolumeGate(t *testing.T) {
 	}{
 		{"list", "GET", "/api/v1/servers/survival/files?path=config", ""},
 		{"read", "GET", "/api/v1/servers/survival/file?path=server.properties", ""},
-		{"write", "PUT", "/api/v1/servers/survival/file?path=server.properties", `{"content":"aGk="}`},
+		{"write", "PUT", "/api/v1/servers/survival/file?path=server.properties", `{"content":"aGk=","content_sha256":"` + hiSum + `"}`},
 		{"mkdir", "POST", "/api/v1/servers/survival/files/mkdir?path=plugins", ""},
 		{"delete", "DELETE", "/api/v1/servers/survival/file?path=old.jar", ""},
 		{"rename", "POST", "/api/v1/servers/survival/files/rename?path=a.txt", `{"to":"b.txt"}`},
@@ -278,7 +278,7 @@ func TestFileEditorAuthorization(t *testing.T) {
 	}{
 		{"list", "GET", "/api/v1/servers/survival/files", ""},
 		{"read", "GET", "/api/v1/servers/survival/file?path=server.properties", ""},
-		{"write", "PUT", "/api/v1/servers/survival/file?path=server.properties", `{"content":"aGk="}`},
+		{"write", "PUT", "/api/v1/servers/survival/file?path=server.properties", `{"content":"aGk=","content_sha256":"` + hiSum + `"}`},
 		{"mkdir", "POST", "/api/v1/servers/survival/files/mkdir?path=plugins", ""},
 		{"delete", "DELETE", "/api/v1/servers/survival/file?path=old.jar", ""},
 		{"rename", "POST", "/api/v1/servers/survival/files/rename?path=a.txt", `{"to":"b.txt"}`},
@@ -436,14 +436,17 @@ func TestFileEditorHandlers(t *testing.T) {
 			t.Fatalf("code = %d (%s)", w.Code, w.Body.String())
 		}
 		var resp struct {
-			Path    string `json:"path"`
-			Content []byte `json:"content"`
-			SHA256  string `json:"sha256"`
+			Path       string `json:"path"`
+			Content    []byte `json:"content"`
+			SHA256     string `json:"sha256"`
+			Content256 string `json:"content_sha256"`
 		}
 		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 			t.Fatalf("body not JSON: %v", err)
 		}
-		if resp.Path != "server.properties" || string(resp.Content) != "motd=hello\n" || resp.SHA256 != testSum {
+		// content_sha256 is of the bytes sent, so the panel can check what arrived.
+		if resp.Path != "server.properties" || string(resp.Content) != "motd=hello\n" || resp.SHA256 != testSum ||
+			resp.Content256 != hexSum([]byte("motd=hello\n")) {
 			t.Fatalf("unexpected response %+v (%q)", resp, resp.Content)
 		}
 	})
@@ -465,7 +468,7 @@ func TestFileEditorHandlers(t *testing.T) {
 		api.External = staticExternal{p: owner}
 
 		w := do(api.ExternalHandler(), "PUT", "/api/v1/servers/survival/file?path=server.properties",
-			`{"content":"bW90ZD1jaGFuZ2VkCg=="}`, jsonHeader)
+			`{"content":"bW90ZD1jaGFuZ2VkCg==","content_sha256":"`+hexSum([]byte("motd=changed\n"))+`"}`, jsonHeader)
 		if w.Code != http.StatusOK {
 			t.Fatalf("code = %d (%s)", w.Code, w.Body.String())
 		}
@@ -483,7 +486,7 @@ func TestFileEditorHandlers(t *testing.T) {
 		files.sum = strings.Repeat("b", 64)
 		api.External = staticExternal{p: owner}
 		w := do(api.ExternalHandler(), "PUT", "/api/v1/servers/survival/file?path=server.properties",
-			`{"content":"aGk=","expect_sha256":"`+testSum+`"}`, jsonHeader)
+			`{"content":"aGk=","content_sha256":"`+hiSum+`","expect_sha256":"`+testSum+`"}`, jsonHeader)
 		if w.Code != http.StatusOK {
 			t.Fatalf("code = %d (%s)", w.Code, w.Body.String())
 		}
@@ -516,7 +519,7 @@ func TestFileEditorHandlers(t *testing.T) {
 		files.err = fmt.Errorf("%w: server.properties has changed", fileedit.ErrConflict)
 		api.External = staticExternal{p: owner}
 		w := do(api.ExternalHandler(), "PUT", "/api/v1/servers/survival/file?path=server.properties",
-			`{"content":"aGk=","expect_sha256":"`+testSum+`"}`, jsonHeader)
+			`{"content":"aGk=","content_sha256":"`+hiSum+`","expect_sha256":"`+testSum+`"}`, jsonHeader)
 		if w.Code != http.StatusConflict || decodeErr(t, w) != "file_changed" {
 			t.Fatalf("code = %d body %s, want 409 file_changed", w.Code, w.Body.String())
 		}
@@ -577,7 +580,7 @@ func TestFileEditorHandlers(t *testing.T) {
 		api, _, _, files := mkFiles(t)
 		api.External = staticExternal{p: owner}
 		w := do(api.ExternalHandler(), "PUT", "/api/v1/servers/survival/file?path=server.properties",
-			`{"content":""}`, jsonHeader)
+			`{"content":"","content_sha256":"`+hexSum(nil)+`"}`, jsonHeader)
 		if w.Code != http.StatusOK {
 			t.Fatalf("code = %d, want 200 (%s)", w.Code, w.Body.String())
 		}
@@ -590,7 +593,8 @@ func TestFileEditorHandlers(t *testing.T) {
 	t.Run("a write at exactly the limit is allowed", func(t *testing.T) {
 		api, _, _, files := mkFiles(t)
 		api.External = staticExternal{p: owner}
-		body, err := json.Marshal(writeFileRequest{Content: bytesPtr(make([]byte, fileedit.MaxWriteBytes))})
+		content := make([]byte, fileedit.MaxWriteBytes)
+		body, err := json.Marshal(writeFileRequest{Content: &content, ContentSHA256: hexSum(content)})
 		if err != nil {
 			t.Fatalf("marshal: %v", err)
 		}
@@ -738,12 +742,12 @@ func TestFileManagerHandlers(t *testing.T) {
 		api, _, _, files := mkFiles(t)
 		api.External = staticExternal{p: owner}
 		w := do(api.ExternalHandler(), "PUT", "/api/v1/servers/survival/file?path=plugins/new.yml",
-			`{"content":"","create_only":true}`, jsonHeader)
+			`{"content":"","content_sha256":"`+hexSum(nil)+`","create_only":true}`, jsonHeader)
 		if w.Code != http.StatusOK || !files.gotCreateOnly || files.gotExpect != "" {
 			t.Fatalf("code = %d, createOnly = %v, expect = %q (%s)", w.Code, files.gotCreateOnly, files.gotExpect, w.Body.String())
 		}
 		w = do(api.ExternalHandler(), "PUT", "/api/v1/servers/survival/file?path=server.properties",
-			`{"content":"aGk="}`, jsonHeader)
+			`{"content":"aGk=","content_sha256":"`+hiSum+`"}`, jsonHeader)
 		if w.Code != http.StatusOK || files.gotCreateOnly {
 			t.Fatalf("a plain save: code = %d, createOnly = %v", w.Code, files.gotCreateOnly)
 		}
@@ -764,6 +768,58 @@ func TestFileManagerHandlers(t *testing.T) {
 func contentDigestOf(body string) string {
 	sum := sha256.Sum256([]byte(body))
 	return "sha-256=:" + base64.StdEncoding.EncodeToString(sum[:]) + ":"
+}
+
+// hexSum is the content_sha256 a client sends with a write of b; hiSum is that
+// of "hi" (aGk=).
+func hexSum(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+var hiSum = hexSum([]byte("hi"))
+
+// A write carries the SHA-256 of its content: one without it, with a malformed
+// one, or whose content hashes otherwise is refused before a Job starts, and a
+// Job that found the bytes it received changed answers the same way. None of
+// them is audited.
+func TestWriteFileChecksTheContentDigest(t *testing.T) {
+	owner := &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{"without a digest", `{"content":"aGk="}`, "digest_required"},
+		{"a malformed digest", `{"content":"aGk=","content_sha256":"` + strings.ToUpper(hiSum) + `"}`, "bad_digest"},
+		{"changed on the way", `{"content":"aGo=","content_sha256":"` + hiSum + `"}`, "digest_mismatch"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			api, repo, _, files := mkFiles(t)
+			api.External = staticExternal{p: owner}
+			w := do(api.ExternalHandler(), "PUT", "/api/v1/servers/survival/file?path=server.properties", tc.body, jsonHeader)
+			if w.Code != http.StatusBadRequest || decodeErr(t, w) != tc.want {
+				t.Fatalf("code = %d body %s, want 400 %s", w.Code, w.Body.String(), tc.want)
+			}
+			if files.calls != 0 || len(repo.audits) != 0 {
+				t.Fatalf("calls = %d audits = %+v, want no Job and no audit", files.calls, repo.audits)
+			}
+		})
+	}
+
+	t.Run("changed on the way to the Job", func(t *testing.T) {
+		api, repo, _, files := mkFiles(t)
+		files.err = fmt.Errorf("%w: the content hashes to 00 and was sent as 01", fileedit.ErrDigestMismatch)
+		api.External = staticExternal{p: owner}
+		w := do(api.ExternalHandler(), "PUT", "/api/v1/servers/survival/file?path=server.properties",
+			`{"content":"aGk=","content_sha256":"`+hiSum+`"}`, jsonHeader)
+		if w.Code != http.StatusBadRequest || decodeErr(t, w) != "digest_mismatch" {
+			t.Fatalf("code = %d body %s, want 400 digest_mismatch", w.Code, w.Body.String())
+		}
+		if files.calls != 1 || len(repo.audits) != 0 {
+			t.Fatalf("calls = %d audits = %+v, want the one Job and no audit", files.calls, repo.audits)
+		}
+	})
 }
 
 // doUpload sends an upload whose Content-Length is declared, not measured, the
@@ -1063,6 +1119,7 @@ func TestFileEditorErrorMapping(t *testing.T) {
 		{"changed since read", fmt.Errorf("%w: nope", fileedit.ErrConflict), http.StatusConflict, "file_changed"},
 		{"volume full", fmt.Errorf("%w: nope", fileedit.ErrNoSpace), http.StatusInsufficientStorage, "volume_full"},
 		{"already there", fmt.Errorf("%w: nope", fileedit.ErrExists), http.StatusConflict, "file_exists"},
+		{"changed on the way from the Job", fmt.Errorf("%w: nope", fileedit.ErrReadDamaged), http.StatusBadGateway, "read_damaged"},
 		{"timeout", fmt.Errorf("waiting: %w", context.DeadlineExceeded), http.StatusGatewayTimeout, "files_timeout"},
 	}
 

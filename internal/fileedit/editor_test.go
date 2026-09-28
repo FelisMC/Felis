@@ -2,6 +2,7 @@ package fileedit
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -79,7 +80,7 @@ func TestEditorRendersParams(t *testing.T) {
 	})
 
 	t.Run("read", func(t *testing.T) {
-		r := &fakeRunner{payload: mustPayload(t, Result{Content: []byte("motd=hi\n"), SHA256: "abc"})}
+		r := &fakeRunner{payload: mustPayload(t, Result{Content: []byte("motd=hi\n"), SHA256: "abc", ContentSHA256: hex.EncodeToString(sumOf("motd=hi\n"))})}
 		e := &Editor{Runner: r, Config: Config{Image: "img"}}
 
 		got, sum, err := e.Read(context.Background(), "survival", "server.properties")
@@ -162,7 +163,7 @@ func TestEditorRendersParams(t *testing.T) {
 // every time. If it ever cached one, two operations would collide on a name
 // felis-api has no permission to delete.
 func TestEditorMintsAFreshOpID(t *testing.T) {
-	r := &fakeRunner{payload: mustPayload(t, Result{})}
+	r := &fakeRunner{payload: mustPayload(t, Result{ContentSHA256: hex.EncodeToString(sumOf(""))})}
 	e := &Editor{Runner: r, Config: Config{Image: "img"}}
 
 	for range 3 {
@@ -198,6 +199,7 @@ func TestEditorMapsResultCodes(t *testing.T) {
 		{"changed since read", CodeConflict, ErrConflict},
 		{"volume full", CodeNoSpace, ErrNoSpace},
 		{"already there", CodeExists, ErrExists},
+		{"changed on the way", CodeDigestMismatch, ErrDigestMismatch},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -251,11 +253,33 @@ func TestEditorRefusesOversizedWriteBeforeTheCluster(t *testing.T) {
 	}
 }
 
+// A read whose bytes do not hash to the digest the Job sent with them changed
+// on the way, and none of them is handed on: an editor saving a damaged read
+// would write the damage back.
+func TestEditorReadRefusesBytesChangedOnTheWay(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		sent string
+	}{
+		{"hashed otherwise", hex.EncodeToString(sumOf("motd=hi\n"))},
+		{"with no digest", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &fakeRunner{payload: mustPayload(t, Result{Content: []byte("motd=ho\n"), SHA256: "abc", ContentSHA256: tc.sent})}
+			e := &Editor{Runner: r, Config: Config{Image: "img"}}
+			got, sum, err := e.Read(context.Background(), "survival", "server.properties")
+			if !errors.Is(err, ErrReadDamaged) || got != nil || sum != "" {
+				t.Fatalf("Read = %q, %q, %v; want nothing and ErrReadDamaged", got, sum, err)
+			}
+		})
+	}
+}
+
 // TestEditorNormalisesEmptyResults pins that "nothing there" is a success, not a
 // nil surprise: an empty directory lists as [] and a zero-length file reads as
 // empty bytes, so no caller has to distinguish nil from empty.
 func TestEditorNormalisesEmptyResults(t *testing.T) {
-	r := &fakeRunner{payload: mustPayload(t, Result{})}
+	r := &fakeRunner{payload: mustPayload(t, Result{ContentSHA256: hex.EncodeToString(sumOf(""))})}
 	e := &Editor{Runner: r, Config: Config{Image: "img"}}
 
 	ls, err := e.List(context.Background(), "survival", "empty")

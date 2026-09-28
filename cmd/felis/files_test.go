@@ -238,10 +238,11 @@ func TestCmdFilesUpload(t *testing.T) {
 
 func TestCmdFilesWrite(t *testing.T) {
 	root := t.TempDir()
-	args := []string{"--op", "write", "--path", "ops.json", "--worlds-root", root}
+	content := []byte("[]\r\n")
+	sum := sha256.Sum256(content)
+	args := []string{"--op", "write", "--path", "ops.json", "--worlds-root", root, "--sha256", hex.EncodeToString(sum[:])}
 
 	t.Run("reassembles the content parts", func(t *testing.T) {
-		content := []byte("[]\r\n")
 		t.Setenv(fileedit.ContentPartsEnv, "1")
 		t.Setenv(fileedit.ContentEnv+"_0", base64.StdEncoding.EncodeToString(content))
 		var stdout, stderr bytes.Buffer
@@ -261,11 +262,40 @@ func TestCmdFilesWrite(t *testing.T) {
 		t.Setenv(fileedit.ContentPartsEnv, "2")
 		t.Setenv(fileedit.ContentEnv+"_0", base64.StdEncoding.EncodeToString([]byte("x")))
 		var stdout, stderr bytes.Buffer
-		if code := cmdFiles([]string{"--op", "write", "--path", "new.txt", "--worlds-root", root}, &stdout, &stderr); code != 2 {
+		if code := cmdFiles([]string{"--op", "write", "--path", "new.txt", "--worlds-root", root, "--sha256", hex.EncodeToString(sum[:])}, &stdout, &stderr); code != 2 {
 			t.Fatalf("exit %d, want 2", code)
 		}
 		if _, err := os.Lstat(filepath.Join(root, "new.txt")); !os.IsNotExist(err) {
 			t.Fatalf("an incomplete spec wrote a file: %v", err)
+		}
+	})
+
+	// Without the content's SHA-256 the Job could not tell bytes changed on the
+	// way from the bytes felis-api sent.
+	t.Run("a write without its SHA-256 exits 2 and writes nothing", func(t *testing.T) {
+		t.Setenv(fileedit.ContentPartsEnv, "1")
+		t.Setenv(fileedit.ContentEnv+"_0", base64.StdEncoding.EncodeToString(content))
+		var stdout, stderr bytes.Buffer
+		if code := cmdFiles([]string{"--op", "write", "--path", "new.txt", "--worlds-root", root}, &stdout, &stderr); code != 2 {
+			t.Fatalf("exit %d, want 2", code)
+		}
+		if _, err := os.Lstat(filepath.Join(root, "new.txt")); !os.IsNotExist(err) {
+			t.Fatalf("a write without its SHA-256 wrote a file: %v", err)
+		}
+	})
+
+	t.Run("content that changed on the way is a result and writes nothing", func(t *testing.T) {
+		t.Setenv(fileedit.ContentPartsEnv, "1")
+		t.Setenv(fileedit.ContentEnv+"_0", base64.StdEncoding.EncodeToString([]byte("[]\n")))
+		var stdout, stderr bytes.Buffer
+		if code := cmdFiles([]string{"--op", "write", "--path", "new.txt", "--worlds-root", root, "--sha256", hex.EncodeToString(sum[:])}, &stdout, &stderr); code != 0 {
+			t.Fatalf("exit %d, stderr %q", code, stderr.String())
+		}
+		if res := filesResult(t, stdout.String()); res.Code != fileedit.CodeDigestMismatch {
+			t.Fatalf("result = %+v, want %s", res, fileedit.CodeDigestMismatch)
+		}
+		if _, err := os.Lstat(filepath.Join(root, "new.txt")); !os.IsNotExist(err) {
+			t.Fatalf("changed content wrote a file: %v", err)
 		}
 	})
 }

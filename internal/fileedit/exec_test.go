@@ -435,6 +435,11 @@ func TestReadRedactsRconPassword(t *testing.T) {
 	if sum := sha256.Sum256([]byte(props)); res.SHA256 != hex.EncodeToString(sum[:]) {
 		t.Fatalf("sha256 = %s, want the hash of the file as stored", res.SHA256)
 	}
+	// The content digest is of the copy handed out, so the bytes that arrive
+	// can be checked against it.
+	if sum := sha256.Sum256(res.Content); res.ContentSHA256 != hex.EncodeToString(sum[:]) || res.ContentSHA256 == res.SHA256 {
+		t.Fatalf("content_sha256 = %s, want the hash of the redacted copy (%x), apart from sha256 %s", res.ContentSHA256, sum, res.SHA256)
+	}
 	got := string(res.Content)
 	if strings.Contains(got, "hunter2") {
 		t.Fatalf("read returned the RCON password (spec §286):\n%s", got)
@@ -630,6 +635,34 @@ func TestWriteDetectsConcurrentChange(t *testing.T) {
 	}
 	if _, err := os.Stat(props); err == nil {
 		t.Fatal("a conditional write re-created a deleted file")
+	}
+}
+
+// TestWriteChecksTheContentDigest: a write lands only bytes that hash to the
+// SHA-256 felis-api sent with them; bytes changed on the way touch nothing.
+func TestWriteChecksTheContentDigest(t *testing.T) {
+	root, _ := worldRoot(t)
+	props := filepath.Join(root, "server.properties")
+	if err := os.WriteFile(props, []byte("motd=hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sent := sha256.Sum256([]byte("motd=mine\n"))
+	req := Request{Op: OpWrite, Path: "server.properties", Content: []byte("motd=mint\n"), ContentSHA256: hex.EncodeToString(sent[:])}
+	res, err := Execute(root, req)
+	if err != nil || res.Code != CodeDigestMismatch {
+		t.Fatalf("changed write = %+v, %v; want %s", res, err, CodeDigestMismatch)
+	}
+	if b, _ := os.ReadFile(props); string(b) != "motd=hello\n" {
+		t.Fatalf("a changed write replaced the file with %q", b)
+	}
+	assertNoTemporaries(t, root)
+
+	req.Content = []byte("motd=mine\n")
+	if res, err := Execute(root, req); err != nil || res.Code != "" {
+		t.Fatalf("write as sent = %+v, %v", res, err)
+	}
+	if b, _ := os.ReadFile(props); string(b) != "motd=mine\n" {
+		t.Fatalf("on disk %q, want the bytes as sent", b)
 	}
 }
 

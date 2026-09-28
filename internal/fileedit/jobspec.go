@@ -195,6 +195,9 @@ func FilesJob(p JobParams) (*batchv1.Job, error) {
 	// secret, so it rides argv; only the content itself needs the env channel.
 	switch p.Op {
 	case OpWrite:
+		// The content's own SHA-256 goes beside it, so the Job writes only the
+		// bytes felis-api handed over (Request.ContentSHA256).
+		args = append(args, "--sha256", digest(p.Content))
 		if p.Expect != "" {
 			args = append(args, "--expect-sha256", p.Expect)
 		}

@@ -45,7 +45,7 @@ import type {
   UpdateReport,
 } from "./types";
 import { loadConfig } from "./config";
-import { sha256Of } from "./digest";
+import { base64Sha256, sha256Of } from "./digest";
 import i18next from "i18next";
 
 // Typed client for the felis-api external face (spec §7). Credentials are sent so
@@ -768,31 +768,49 @@ export const api = rejectingSync({
   // readServerFile returns one file's bytes (base64) and the sha256 of the file
   // as stored. A file over the read ceiling is a 413, never a silent truncation,
   // because a later save of a truncated body would destroy the rest of the file.
-  readServerFile: (name: string, path: string) =>
-    request<{ path: string; content: string; sha256: string }>(
+  // The content must hash to content_sha256, the digest of the bytes as sent: a
+  // read damaged on the way is refused (read_damaged) rather than opened, since
+  // saving it would write the damage back.
+  readServerFile: async (name: string, path: string) => {
+    const r = await request<{ path: string; content: string; sha256: string; content_sha256: string }>(
       "GET",
       urlPath`/servers/${name}/file` + `?path=${encodeURIComponent(path)}`,
-    ),
+    );
+    let got = "";
+    try {
+      got = await base64Sha256(r.content);
+    } catch {
+      /* not base64 at all: damaged too */
+    }
+    if (got !== r.content_sha256) throw clientError("read_damaged");
+    return r;
+  },
 
   // writeServerFile atomically replaces a file's contents (creating it if
   // absent). Sending an explicit "" is a deliberate truncate; the wire field is
   // required, but that is enforced by the caller (this method always sends one).
   // With expectSha256 (the hash the read returned) a file someone changed since
   // is refused with 409 file_changed; without it the write is unconditional.
-  writeServerFile: (name: string, path: string, content: string, expectSha256?: string) =>
+  // The content goes with its SHA-256 (content_sha256), so content changed on
+  // the way is refused (digest_mismatch) and nothing is written.
+  writeServerFile: async (name: string, path: string, content: string, expectSha256?: string) =>
     request<{ path: string; status: string; sha256: string }>(
       "PUT",
       urlPath`/servers/${name}/file` + `?path=${encodeURIComponent(path)}`,
-      expectSha256 ? { content, expect_sha256: expectSha256 } : { content },
+      {
+        content,
+        content_sha256: await base64Sha256(content),
+        ...(expectSha256 ? { expect_sha256: expectSha256 } : {}),
+      },
     ),
 
   // createServerFile makes a new file with content, and only if nothing is at the
   // path yet: something that appeared meanwhile is 409 file_exists, never replaced.
-  createServerFile: (name: string, path: string, content: string) =>
+  createServerFile: async (name: string, path: string, content: string) =>
     request<{ path: string; status: string; sha256: string }>(
       "PUT",
       urlPath`/servers/${name}/file` + `?path=${encodeURIComponent(path)}`,
-      { content, create_only: true },
+      { content, content_sha256: await base64Sha256(content), create_only: true },
     ),
 
   // deleteServerFile deletes a file, a link (never what it names) or a folder with
@@ -1388,6 +1406,9 @@ export function humanizeError(e: unknown): string {
       return t("bad_digest");
     case "file_unreadable":
       return t("file_unreadable");
+    // A file opened in the editor whose bytes arrived damaged (readServerFile).
+    case "read_damaged":
+      return t("read_damaged");
     // An upload sent in parts: the session is gone (cancelled, landed, idle for
     // 6 hours, or felis-api restarted), or the account holds four already.
     case "upload_not_found":

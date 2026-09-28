@@ -4615,7 +4615,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [path, content, sha256]
+                required: [path, content, sha256, content_sha256]
                 properties:
                   path: { type: string }
                   content: { type: string, format: byte, description: Base64-encoded file bytes. }
@@ -4625,6 +4625,13 @@ paths:
                     description: >-
                       SHA-256 of the file as stored (before the rcon.password redaction in
                       server.properties). Send it back as expect_sha256 on the next write.
+                  content_sha256:
+                    type: string
+                    pattern: '^[0-9a-f]{64}$'
+                    description: >-
+                      SHA-256 of the decoded content as sent (after any redaction). A
+                      client that gets content hashing otherwise got it damaged on the
+                      way, and reads it again.
         '400':
           description: Missing path, invalid server name, or a path that escapes the world root.
           content:
@@ -4646,6 +4653,13 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '413':
           description: The file is larger than the editor reads.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '502':
+          description: >-
+            The file's bytes do not hash to the digest the file Job sent with them
+            (read_damaged): they changed on the way to felis-api. Read it again.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -4671,7 +4685,10 @@ paths:
         root is refused. The replacement is atomic (a synced temporary sibling renamed
         over the file, keeping its mode), so a failed write leaves the old file whole.
         With expect_sha256 the write lands only if the file still has that hash;
-        otherwise 409 file_changed. Audited as file.write.
+        otherwise 409 file_changed. content_sha256 is the SHA-256 of the content:
+        content that hashes otherwise changed on the way and is refused (400
+        digest_mismatch) before a Job starts, and the Job checks the bytes it received
+        the same way before writing. Audited as file.write.
       x-felis-face: [external]
       x-felis-tier: app
       security: [{ sessionCookie: [] }]
@@ -4688,9 +4705,16 @@ paths:
           application/json:
             schema:
               type: object
-              required: [content]
+              required: [content, content_sha256]
               properties:
                 content: { type: string, format: byte, description: Base64-encoded file bytes. }
+                content_sha256:
+                  type: string
+                  pattern: '^[0-9a-f]{64}$'
+                  description: >-
+                    The SHA-256 (lowercase hex) of the decoded content. Absent is 400
+                    digest_required, malformed 400 bad_digest, and content that does not
+                    hash to it 400 digest_mismatch; nothing is written.
                 expect_sha256:
                   type: string
                   pattern: '^[0-9a-f]{64}$'
@@ -4717,7 +4741,7 @@ paths:
                   status: { type: string, const: written }
                   sha256: { type: string, pattern: '^[0-9a-f]{64}$', description: SHA-256 of the bytes written. }
         '400':
-          description: Missing path, malformed body, invalid server name, or a path that escapes the world root.
+          description: Missing path, malformed body, invalid server name, or a path that escapes the world root (bad_request, bad_path), or content that came without its SHA-256 (digest_required), with a malformed one (bad_digest), or changed on the way (digest_mismatch).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

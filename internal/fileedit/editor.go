@@ -77,6 +77,9 @@ var (
 	// ErrExists is a create, mkdir, rename or upload whose target is already
 	// there.
 	ErrExists = errors.New("fileedit: the target already exists")
+	// ErrReadDamaged is a read whose bytes do not hash to the digest the Job
+	// sent with them: they changed on the way to felis-api.
+	ErrReadDamaged = errors.New("fileedit: the file's bytes changed on their way from the file Job")
 )
 
 // Runner is the cluster-side half of a file operation. Run renders and creates
@@ -243,10 +246,16 @@ func (e *Editor) List(ctx context.Context, server, path string) (Listing, error)
 
 // Read returns a file's bytes, resolved under the server's world root, and the
 // SHA-256 of the file as it is on disk — the value to hand back as Write's expect.
+// Bytes that do not hash to the digest the Job computed over what it sent
+// (Result.ContentSHA256) are ErrReadDamaged: an editor that saves back a
+// damaged read would write the damage.
 func (e *Editor) Read(ctx context.Context, server, path string) ([]byte, string, error) {
 	res, err := e.run(ctx, server, JobParams{Op: OpRead, Path: path})
 	if err != nil {
 		return nil, "", err
+	}
+	if got := digest(res.Content); got != res.ContentSHA256 {
+		return nil, "", fmt.Errorf("%w: they hash to %s, sent as %q", ErrReadDamaged, got, res.ContentSHA256)
 	}
 	// A zero-length file unmarshals Content as nil, which is a legitimate result,
 	// not an error — normalise so the caller never has to distinguish nil from empty.
@@ -457,6 +466,8 @@ func resultError(res Result) error {
 		return fmt.Errorf("%w: %s", ErrNoSpace, res.Error)
 	case CodeExists:
 		return fmt.Errorf("%w: %s", ErrExists, res.Error)
+	case CodeDigestMismatch:
+		return fmt.Errorf("%w: %s", ErrDigestMismatch, res.Error)
 	default:
 		return fmt.Errorf("fileedit: file operation failed (%s): %s", res.Code, res.Error)
 	}

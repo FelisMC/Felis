@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net/http"
@@ -78,10 +79,16 @@ type FileEditor interface {
 // nothing is at the path yet (409 file_exists otherwise), so it can never
 // truncate a file the caller did not know was there. The two cannot be combined —
 // one says the file exists, the other that it must not.
+//
+// ContentSHA256 is required: the SHA-256 (hex) of the decoded content, which
+// the caller computes over the bytes it means to write. Content that hashes
+// otherwise changed on the way and is refused (400 digest_mismatch) before a Job
+// starts; the Job checks the bytes it received the same way before it writes.
 type writeFileRequest struct {
-	Content      *[]byte `json:"content"`
-	ExpectSHA256 string  `json:"expect_sha256,omitempty"`
-	CreateOnly   bool    `json:"create_only,omitempty"`
+	Content       *[]byte `json:"content"`
+	ContentSHA256 string  `json:"content_sha256"`
+	ExpectSHA256  string  `json:"expect_sha256,omitempty"`
+	CreateOnly    bool    `json:"create_only,omitempty"`
 }
 
 // handleListFiles serves GET /api/v1/servers/{name}/files?path=… — one directory's
@@ -145,7 +152,12 @@ func (a *API) handleReadFile(w http.ResponseWriter, r *http.Request) {
 	if content == nil {
 		content = []byte{} // an empty file is "", never null
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"path": path, "content": content, "sha256": sum})
+	// content_sha256 is of the bytes as sent (sha256 is of the file on disk,
+	// before any redaction), so the panel can tell a damaged read from the file.
+	got := sha256.Sum256(content)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"path": path, "content": content, "sha256": sum, "content_sha256": hex.EncodeToString(got[:]),
+	})
 }
 
 // handleWriteFile serves PUT /api/v1/servers/{name}/file?path=… — replace a file's
@@ -199,6 +211,20 @@ func (a *API) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 	if body.CreateOnly && body.ExpectSHA256 != "" {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
 			"create_only and expect_sha256 cannot be combined"))
+		return
+	}
+	switch sum := sha256.Sum256(*body.Content); {
+	case body.ContentSHA256 == "":
+		writeError(w, r, newError(http.StatusBadRequest, "digest_required",
+			"send the SHA-256 of the content as content_sha256"))
+		return
+	case !sha256Hex.MatchString(body.ContentSHA256):
+		writeError(w, r, newError(http.StatusBadRequest, "bad_digest",
+			"content_sha256 must be the 64-digit lowercase hex SHA-256 of the content"))
+		return
+	case hex.EncodeToString(sum[:]) != body.ContentSHA256:
+		writeError(w, r, newError(http.StatusBadRequest, "digest_mismatch",
+			"the content that arrived does not hash to content_sha256, so it was changed on the way; send it again"))
 		return
 	}
 
@@ -633,6 +659,12 @@ func writeFileEditError(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, r, newError(http.StatusInsufficientStorage, "volume_full", "%s", err.Error()))
 	case errors.Is(err, fileedit.ErrExists):
 		writeError(w, r, newError(http.StatusConflict, "file_exists", "%s", err.Error()))
+	case errors.Is(err, fileedit.ErrDigestMismatch):
+		// A write's content reached its Job changed; nothing was written.
+		writeError(w, r, newError(http.StatusBadRequest, "digest_mismatch", "%s", err.Error()))
+	case errors.Is(err, fileedit.ErrReadDamaged):
+		writeError(w, r, newError(http.StatusBadGateway, "read_damaged",
+			"the file's bytes changed on their way from the file Job; read it again"))
 	case errors.Is(err, context.DeadlineExceeded):
 		writeError(w, r, newError(http.StatusGatewayTimeout, "files_timeout",
 			"the file operation did not finish in time; retry shortly"))

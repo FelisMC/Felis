@@ -1412,7 +1412,7 @@ export interface paths {
         get: operations["readServerFile"];
         /**
          * Write a file in a server's world volume (owner-or-admin; server must be stopped).
-         * @description Replaces a file's contents, creating the file if absent but never creating its parent directories. Content is base64 so arbitrary bytes (CRLF endings, a BOM) survive intact. Writes are capped at 256 KiB — the Job spec carries the content, and etcd bounds the object — so a larger body is 413. Same stopped-gate and os.Root containment as the read; a write through a symlink leaving the world root is refused. The replacement is atomic (a synced temporary sibling renamed over the file, keeping its mode), so a failed write leaves the old file whole. With expect_sha256 the write lands only if the file still has that hash; otherwise 409 file_changed. Audited as file.write.
+         * @description Replaces a file's contents, creating the file if absent but never creating its parent directories. Content is base64 so arbitrary bytes (CRLF endings, a BOM) survive intact. Writes are capped at 256 KiB — the Job spec carries the content, and etcd bounds the object — so a larger body is 413. Same stopped-gate and os.Root containment as the read; a write through a symlink leaving the world root is refused. The replacement is atomic (a synced temporary sibling renamed over the file, keeping its mode), so a failed write leaves the old file whole. With expect_sha256 the write lands only if the file still has that hash; otherwise 409 file_changed. content_sha256 is the SHA-256 of the content: content that hashes otherwise changed on the way and is refused (400 digest_mismatch) before a Job starts, and the Job checks the bytes it received the same way before writing. Audited as file.write.
          */
         put: operations["writeServerFile"];
         post?: never;
@@ -6921,6 +6921,8 @@ export interface operations {
                         content: string;
                         /** @description SHA-256 of the file as stored (before the rcon.password redaction in server.properties). Send it back as expect_sha256 on the next write. */
                         sha256: string;
+                        /** @description SHA-256 of the decoded content as sent (after any redaction). A client that gets content hashing otherwise got it damaged on the way, and reads it again. */
+                        content_sha256: string;
                     };
                 };
             };
@@ -6962,6 +6964,15 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            /** @description The file's bytes do not hash to the digest the file Job sent with them (read_damaged): they changed on the way to felis-api. Read it again. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             503: components["responses"]["ServiceUnavailable"];
             /** @description The file Job did not finish in time; retry. */
             504: {
@@ -6995,6 +7006,8 @@ export interface operations {
                      * @description Base64-encoded file bytes.
                      */
                     content: string;
+                    /** @description The SHA-256 (lowercase hex) of the decoded content. Absent is 400 digest_required, malformed 400 bad_digest, and content that does not hash to it 400 digest_mismatch; nothing is written. */
+                    content_sha256: string;
                     /** @description The sha256 a read returned. When present, the write is refused with 409 file_changed if the file has changed (or been deleted) since. Omit it to write unconditionally. */
                     expect_sha256?: string;
                     /** @description true writes only if nothing is at the path yet (409 file_exists otherwise), for making a new file without replacing one that appeared meanwhile. Cannot be combined with expect_sha256. */
@@ -7018,7 +7031,7 @@ export interface operations {
                     };
                 };
             };
-            /** @description Missing path, malformed body, invalid server name, or a path that escapes the world root. */
+            /** @description Missing path, malformed body, invalid server name, or a path that escapes the world root (bad_request, bad_path), or content that came without its SHA-256 (digest_required), with a malformed one (bad_digest), or changed on the way (digest_mismatch). */
             400: {
                 headers: {
                     [name: string]: unknown;

@@ -107,7 +107,7 @@ func maintenanceOps(t *testing.T) (*API, *fakeCluster, []maintenanceOp) {
 		{"backup", maintenance.KindBackup, "POST", "/api/v1/servers/survival/backup", "",
 			func() int { return backuper.calls }},
 		{"file write", maintenance.KindFileWrite, "PUT", "/api/v1/servers/survival/file?path=server.properties",
-			`{"content":"aGk="}`, func() int { return files.calls }},
+			`{"content":"aGk=","content_sha256":"` + hiSum + `"}`, func() int { return files.calls }},
 		{"file mkdir", maintenance.KindFileWrite, "POST", "/api/v1/servers/survival/files/mkdir?path=plugins",
 			"", func() int { return files.calls }},
 		{"file delete", maintenance.KindFileWrite, "DELETE", "/api/v1/servers/survival/file?path=old.jar",

@@ -84,6 +84,10 @@ const (
 	// there. None of them replaces anything unless told to (an upload's
 	// Overwrite), so a name collision is reported rather than resolved.
 	CodeExists = "exists"
+	// CodeDigestMismatch is a write whose bytes do not hash to the SHA-256
+	// felis-api computed over them (Request.ContentSHA256): they changed on the
+	// way to the Job, and nothing was written.
+	CodeDigestMismatch = "digest_mismatch"
 )
 
 // ResultPrefix marks the single stdout line carrying the JSON Result. The Job's
@@ -186,6 +190,10 @@ type Result struct {
 	// conflict, the file as it is now. A client hands it back as the expected
 	// hash of its next write (see write).
 	SHA256 string `json:"sha256,omitempty"`
+	// ContentSHA256 is, after a read, the hex digest of Content as handed out
+	// (after any redaction), so felis-api can tell the bytes it got from the
+	// bytes this Job sent (Editor.Read).
+	ContentSHA256 string `json:"content_sha256,omitempty"`
 
 	// Conflicts lists, relative to the root and sorted, the existing files an
 	// unzip would replace: the first of them, up to MaxConflicts and 8 KiB of
@@ -213,9 +221,11 @@ type Request struct {
 	To string
 	// Content and Expect are a write's bytes and precondition: when Expect is
 	// non-empty, the write lands only if the file's current SHA-256 (hex) equals
-	// it.
-	Content []byte
-	Expect  string
+	// it. ContentSHA256, when set, is the SHA-256 (hex) felis-api computed over
+	// Content; bytes that hash otherwise are not written (CodeDigestMismatch).
+	Content       []byte
+	Expect        string
+	ContentSHA256 string
 	// CreateOnly makes a write refuse a path that already exists. It is the
 	// panel's "new file", which must never truncate a file it did not know was
 	// there.
@@ -295,7 +305,7 @@ func Execute(root string, req Request) (Result, error) {
 	case OpRead:
 		return read(r, path), nil
 	case OpWrite:
-		return write(r, path, req.Content, req.Expect, req.CreateOnly), nil
+		return write(r, path, req.Content, req.ContentSHA256, req.Expect, req.CreateOnly), nil
 	case OpMkdir:
 		return mkdir(r, path), nil
 	case OpDelete:
@@ -432,7 +442,7 @@ func read(r *os.Root, name string) Result {
 	if redact {
 		content = RedactProps(b)
 	}
-	return Result{Content: content, SHA256: digest(b)}
+	return Result{Content: content, SHA256: digest(b), ContentSHA256: digest(content)}
 }
 
 // propsPath is the server's main config file, and rconPasswordKey the one line in
@@ -492,7 +502,17 @@ func redactSecretProps(name string, content []byte) []byte {
 // being overwritten, which is how two people editing the same file find out.
 // The world lock (internal/maintenance) already serialises writes, so the check
 // and the rename cannot interleave with another write.
-func write(r *os.Root, name string, content []byte, expect string, createOnly bool) Result {
+//
+// sum, when set, is the SHA-256 felis-api computed over content before handing
+// it to the Job: content that hashes otherwise changed on the way, and is
+// refused with CodeDigestMismatch before anything is touched.
+func write(r *os.Root, name string, content []byte, sum, expect string, createOnly bool) Result {
+	if sum != "" {
+		if got := digest(content); got != sum {
+			return Result{Code: CodeDigestMismatch, Error: fmt.Sprintf(
+				"the content hashes to %s and was sent as %s; nothing was written", got, sum)}
+		}
+	}
 	if len(content) > MaxWriteBytes {
 		// Defence in depth: felis-api already refuses an oversized write with a 413
 		// before rendering the Job. Re-checking here keeps the ceiling true even if

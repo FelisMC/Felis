@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+
+// hexOf is the SHA-256 (hex) of the bytes a file editor call carries.
+const hexOf = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Pin the GET /me wire shape. is_admin crosses an untyped fetch().json() boundary
@@ -853,13 +856,27 @@ describe("image whitelist and builds wire shapes", () => {
     });
 
     it("readServerFile GETs /servers/{name}/file and passes base64 through", async () => {
-      const fetchSpy = fakeFetch({ path: "world/level.dat", content: "AAEC" });
+      const content_sha256 = hexOf(new Uint8Array([0, 1, 2]));
+      const fetchSpy = fakeFetch({ path: "world/level.dat", content: "AAEC", sha256: "a".repeat(64), content_sha256 });
       vi.stubGlobal("fetch", fetchSpy);
       const res = await api.readServerFile("survival", "world/level.dat");
-      expect(res.content).toBe("AAEC");
+      expect(res).toEqual({ path: "world/level.dat", content: "AAEC", sha256: "a".repeat(64), content_sha256 });
       const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
       expect(String(url)).toBe("/servers/survival/file?path=world%2Flevel.dat");
       expect((opts as RequestInit).method).toBe("GET");
+    });
+
+    // An editor that opened a damaged read would save the damage back.
+    it.each([
+      ["hash otherwise", "AAED"],
+      ["are not base64 at all", "AA=E"],
+    ])("readServerFile refuses content whose bytes %s", async (_, content) => {
+      vi.stubGlobal(
+        "fetch",
+        fakeFetch({ path: "world/level.dat", content, sha256: "a".repeat(64), content_sha256: hexOf(new Uint8Array([0, 1, 2])) }),
+      );
+      await expect(api.readServerFile("survival", "world/level.dat")).rejects.toMatchObject({ code: "read_damaged" });
+      expect(humanizeError({ code: "read_damaged" })).toMatch(/arrived damaged/);
     });
 
     it("writeServerFile PUTs {content} — an explicit \"\" is a deliberate truncate, not an omitted field", async () => {
@@ -870,7 +887,7 @@ describe("image whitelist and builds wire shapes", () => {
       const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
       expect(String(url)).toBe("/servers/survival/file?path=a.txt");
       expect((opts as RequestInit).method).toBe("PUT");
-      expect((opts as RequestInit).body).toBe(JSON.stringify({ content: "" }));
+      expect((opts as RequestInit).body).toBe(JSON.stringify({ content: "", content_sha256: hexOf("") }));
     });
 
     it("writeServerFile sends the hash the read returned as expect_sha256", async () => {
@@ -880,7 +897,7 @@ describe("image whitelist and builds wire shapes", () => {
       expect(res.sha256).toBe("b".repeat(64));
       const [, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
       expect((opts as RequestInit).body).toBe(
-        JSON.stringify({ content: "aGk=", expect_sha256: "a".repeat(64) }),
+        JSON.stringify({ content: "aGk=", content_sha256: hexOf("hi"), expect_sha256: "a".repeat(64) }),
       );
     });
   });
@@ -1372,7 +1389,7 @@ describe("server file manager wire shapes", () => {
     const [url, opts] = sent(fetchSpy);
     expect(url).toBe("/servers/survival/file?path=plugins%2Fnew.yml");
     expect(opts.method).toBe("PUT");
-    expect(opts.body).toBe(JSON.stringify({ content: "", create_only: true }));
+    expect(opts.body).toBe(JSON.stringify({ content: "", content_sha256: hexOf(""), create_only: true }));
   });
 
   it("deleteServerFile DELETEs /servers/{name}/file with no body", async () => {

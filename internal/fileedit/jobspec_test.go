@@ -2,7 +2,9 @@ package fileedit
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"slices"
 	"strconv"
 	"strings"
@@ -274,6 +276,12 @@ func TestFilesJobContentEnv(t *testing.T) {
 		if strings.Contains(strings.Join(job.Spec.Template.Spec.Containers[0].Args, " "), "motd=hello") {
 			t.Fatal("content must not appear in the container arguments")
 		}
+		// Its SHA-256 does, so the Job writes only the bytes felis-api handed over.
+		sum := sha256.Sum256(p.Content)
+		args := job.Spec.Template.Spec.Containers[0].Args
+		if i := slices.Index(args, "--sha256"); i < 0 || i+1 >= len(args) || args[i+1] != hex.EncodeToString(sum[:]) {
+			t.Fatalf("args %q, want --sha256 %x", args, sum)
+		}
 	})
 
 	// execve refuses one environment string over 128 KiB and the container never
@@ -353,7 +361,8 @@ func TestFilesJobOpArgs(t *testing.T) {
 
 	create := testParams(OpWrite)
 	create.CreateOnly = true
-	if got := args(create); !slices.Equal(got, []string{"--create-only"}) {
+	// The content (none here) goes with its SHA-256.
+	if got := args(create); !slices.Equal(got, []string{"--sha256", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "--create-only"}) {
 		t.Errorf("create-only write args = %v", got)
 	}
 	readCreate := testParams(OpRead)

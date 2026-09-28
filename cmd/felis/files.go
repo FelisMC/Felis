@@ -47,7 +47,7 @@ func cmdFiles(args []string, stdout, stderr io.Writer) int {
 	to := fs.String("to", "", "rename only: the destination path")
 	sourceURL := fs.String("source-url", "", "upload only: felis-api URL to fetch the bytes from")
 	size := fs.Int64("size", -1, "upload only: the byte count the fetched file must have")
-	sum := fs.String("sha256", "", "upload only: the SHA-256 (hex) the fetched file must have")
+	sum := fs.String("sha256", "", "write and upload: the SHA-256 (hex) the content or the fetched file must have")
 	overwrite := fs.Bool("overwrite", false, "upload and unzip: replace files already there")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -70,12 +70,18 @@ func cmdFiles(args []string, stdout, stderr io.Writer) int {
 	// channel that must be a valid string.
 	switch *op {
 	case fileedit.OpWrite:
+		// The content's SHA-256 comes with it, so bytes that changed on the way
+		// to this Job are refused rather than written (Request.ContentSHA256).
+		if *sum == "" {
+			fmt.Fprintln(stderr, "felis files: a write needs --sha256")
+			return 2
+		}
 		content, err := fileedit.ContentFromEnv(os.LookupEnv)
 		if err != nil {
 			fmt.Fprintf(stderr, "felis files: %v\n", err)
 			return 2
 		}
-		req.Content = content
+		req.Content, req.ContentSHA256 = content, *sum
 	case fileedit.OpUpload:
 		token := os.Getenv(fileedit.UploadTokenEnv)
 		if *sourceURL == "" || token == "" {
