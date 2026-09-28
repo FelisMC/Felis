@@ -551,7 +551,10 @@ func TestPreMigrateBackupExportsServers(t *testing.T) {
 func TestServerExportStopsWaitingWithTheContext(t *testing.T) {
 	dir := newPodRig(t)
 	writeTestFile(t, filepath.Join(dir, "servers_fail"), "99", 0o600)
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	// Long enough for the first try to run to its refusal: starting the fake
+	// k3s on a busy machine can take a few hundred ms. Still far below the
+	// 10s retry wait, so waiting it out would fail the check below.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	start := time.Now()
 	_, err := exportMinecraftServers(ctx)
