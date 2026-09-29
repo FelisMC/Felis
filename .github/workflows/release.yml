@@ -72,23 +72,23 @@ jobs:
         run: deploy/build-release-artifacts.sh "${GITHUB_REF_NAME}" dist
 
       # A CycloneDX SBOM per binary: the Go modules (and versions) linked into it, read
-      # from the build info the linker embeds.
+      # from the build info the linker embeds. Written after SHA256SUMS, so beside it in the
+      # release but outside it: that lists what bootstrap installs. Straight into dist/,
+      # because the action does not create a missing output directory.
       - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
           file: dist/felis-linux-amd64
           format: cyclonedx-json
-          output-file: sbom/felis-linux-amd64.cdx.json
+          output-file: dist/felis-linux-amd64.cdx.json
           upload-artifact: false
           upload-release-assets: false
       - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
           file: dist/felis-linux-arm64
           format: cyclonedx-json
-          output-file: sbom/felis-linux-arm64.cdx.json
+          output-file: dist/felis-linux-arm64.cdx.json
           upload-artifact: false
           upload-release-assets: false
-      # Outside SHA256SUMS, which lists what bootstrap installs; beside it in the release.
-      - run: mv sbom/*.cdx.json dist/
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
