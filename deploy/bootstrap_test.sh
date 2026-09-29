@@ -1250,6 +1250,7 @@ run_k3s() { # installed-version pinned-version [FELIS_UPGRADE_DEPS]
     ok() { printf "OK: %s\n" "$*"; }
     configure_k3s_firewall() { :; }
     write_k3s_config() { :; }
+    write_k3s_service_dropin() { :; }
     strip_k3s_kubeconfig_mode_flag() { :; }
     run_k3s_installer() { printf "INSTALLER: %s\n" "$FELIS_K3S_VERSION"; }
     stage_k3s_airgap_images() { echo STAGE; }
@@ -2895,11 +2896,11 @@ run_velocity_service() { # is-active(0|1) [heap]
 }
 out="$(run_velocity_service 1)"
 expect "a proxy with no recorded start is restarted" "SYSTEMCTL restart felis-velocity" "$out"
-expect "the default heap starts at 64M and may grow to 1G" "java -Xms64M -Xmx1G " "$(cat "$vdir/unit")"
+expect "the default 1G ceiling runs the serial collector and C1 from a 16M start" \
+  "java -Xms16M -Xmx1G -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -Dmojang" "$(cat "$vdir/unit")"
 case "$(cat "$vdir/unit")" in
-  *AlwaysPreTouch*) echo "FAIL the proxy pre-touches its heap, holding all of -Xms from the start"; fails=$((fails + 1)) ;;
-  *"-XX:G1PeriodicGCInterval="*) echo "PASS the proxy neither pre-touches its heap nor keeps growth it no longer uses" ;;
-  *) echo "FAIL the proxy has no periodic collection to hand back an idle heap"; fails=$((fails + 1)) ;;
+  *AlwaysPreTouch*|*UseG1GC*) echo "FAIL a 1G proxy pre-touches its heap or runs G1: $(grep ExecStart "$vdir/unit")"; fails=$((fails + 1)) ;;
+  *) echo "PASS a 1G proxy neither pre-touches its heap nor runs G1" ;;
 esac
 [ -s "$vdir/fp" ] && echo "PASS the restart records what the proxy runs" \
   || { echo "FAIL no fingerprint was recorded after the restart"; fails=$((fails + 1)); }
@@ -2915,9 +2916,19 @@ expect "a stopped proxy is started whatever the fingerprint" "SYSTEMCTL restart 
 printf 'JAVA_VERSION="25.0.1"\n' > "$vdir/jre/release"
 expect "a patched JRE restarts the proxy" "SYSTEMCTL restart felis-velocity" "$(run_velocity_service 1)"
 expect "a new heap size restarts the proxy" "SYSTEMCTL restart felis-velocity" "$(run_velocity_service 1 3G)"
-expect "the unit carries the new ceiling" "java -Xms64M -Xmx3G " "$(cat "$vdir/unit")"
+expect "a ceiling above 1G runs G1, whose periodic collection hands idle growth back" \
+  "java -Xms64M -Xmx3G -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:G1PeriodicGCInterval=60000 -Dmojang" "$(cat "$vdir/unit")"
+case "$(cat "$vdir/unit")" in
+  *AlwaysPreTouch*|*UseSerialGC*|*TieredStopAtLevel*) echo "FAIL a 3G proxy carries a small proxy's flags or pre-touches: $(grep ExecStart "$vdir/unit")"; fails=$((fails + 1)) ;;
+  *) echo "PASS a 3G proxy keeps G1 and both compilers" ;;
+esac
+run_velocity_service 1 1024M >/dev/null
+expect "1024M is still a small proxy" "java -Xms16M -Xmx1024M -XX:+UseSerialGC " "$(cat "$vdir/unit")"
+run_velocity_service 1 1025M >/dev/null
+expect "a megabyte past 1G is a large one" "java -Xms64M -Xmx1025M -XX:+UseG1GC " "$(cat "$vdir/unit")"
 run_velocity_service 1 384M >/dev/null
-expect "a small ceiling keeps the same small start" "java -Xms64M -Xmx384M " "$(cat "$vdir/unit")"
+expect "a small ceiling runs the small proxy's flags" \
+  "java -Xms16M -Xmx384M -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -Dmojang" "$(cat "$vdir/unit")"
 # `felis rotate-token velocity` rewrites service-token, which the plugin re-reads by itself:
 # that line alone changing leaves the proxy running, and any other change restarts it.
 props="$vdir/v/plugins/felis-link/felis-link.properties"
@@ -3015,10 +3026,7 @@ expect "a heap in megabytes is kept" "768" "$(heap 768m)"
 for bad in 1 1K 0G 01G G -1G 1.5G 9999999G; do
   expect "the heap spelling '$bad' is refused" "0" "$(heap "$bad")"
 done
-case "$(awk '/^install_velocity_service\(\) \{/,/^}/' "$BS")" in
-  *'-Xms${xms} -Xmx${xmx} '*) echo "PASS the proxy unit takes its heap from FELIS_VELOCITY_XMX" ;;
-  *) echo "FAIL the proxy unit's heap is not FELIS_VELOCITY_XMX"; fails=$((fails + 1)) ;;
-esac
+# The unit written for each ceiling is checked with the rerun tests above.
 
 # --- reproducible image ids ---------------------------------------------------------------
 # restart_existing_system_servers compares image ids across runs; a default BuildKit
@@ -3230,6 +3238,63 @@ out="$(run_k3s_config "$kdir/broken.crt" "$kdir/k3s" renamed-host)"
 expect "a certificate openssl cannot parse is a warning, not a failed install" "WARN: could not read this node's k3s name" "$out"
 expect "and the drop-in is still written" 'write-kubeconfig-mode: "0600"' "$(cat "$dropin")"
 
+# k3s's Go collector runs at GOGC=50 through a systemd drop-in, written beside itself and
+# loaded (with a k3s restart) only when it changed.
+svblock="$(awk '/^write_k3s_service_dropin\(\) \{/,/^}/' "$BS")"
+[ -n "$svblock" ] || { echo "FAIL: no write_k3s_service_dropin found in $BS"; exit 1; }
+svdropin="$kdir/k3s.service.d/50-felis.conf"
+run_k3s_service_dropin() {
+  DROPIN="$svdropin" bash -c '
+    set -Eeuo pipefail
+    ok() { echo "OK: $*"; }; log() { echo "LOG: $*"; }
+    remember_temp() { :; }
+    restore_label() { echo "RELABEL: $*"; }
+    systemctl() { echo "SYSTEMCTL: $*"; }
+    mktemp() { local p; p="$(command mktemp "$@")"; echo "MKTEMP: $(dirname "$p")" >&2; echo "$p"; }
+    K3S_SERVICE_DROPIN="$DROPIN"
+    '"$svblock"'
+    K3S_RESTART_NEEDED=0
+    write_k3s_service_dropin
+    echo "RESTART=$K3S_RESTART_NEEDED"' 2>&1
+}
+out="$(run_k3s_service_dropin)"
+if [ "$(cat "$svdropin")" = '# Written by the Felis installer (deploy/bootstrap.sh); a rerun rewrites it.
+[Service]
+Environment=GOGC=50' ]; then
+  echo "PASS k3s runs its Go collector at GOGC=50"
+else
+  echo "FAIL the k3s service drop-in is:"; cat "$svdropin"; fails=$((fails + 1))
+fi
+expect "a new service drop-in is loaded" "SYSTEMCTL: daemon-reload" "$out"
+expect "a new service drop-in asks for a k3s restart" "RESTART=1" "$out"
+if [ "$(printf '%s\n' "$out" | sed -n 's/^MKTEMP: //p' | sort -u)" = "$kdir/k3s.service.d" ]; then
+  echo "PASS the service drop-in is made beside itself, never under /tmp"
+else
+  echo "FAIL temporary files for the service drop-in were made in: $(printf '%s\n' "$out" | sed -n 's/^MKTEMP: //p')"; fails=$((fails + 1))
+fi
+if [ "$(stat -c %a "$svdropin" 2>/dev/null || stat -f %Lp "$svdropin")" = 644 ]; then
+  echo "PASS the service drop-in is readable like the unit it extends"
+else
+  echo "FAIL the service drop-in must be 0644"; fails=$((fails + 1))
+fi
+out="$(run_k3s_service_dropin)"
+expect "an unchanged service drop-in restarts nothing" "RESTART=0" "$out"
+expect "an unchanged service drop-in says so" "OK: k3s service environment already current" "$out"
+case "$out" in
+  *daemon-reload*) echo "FAIL an unchanged service drop-in must not reload systemd"; fails=$((fails + 1)) ;;
+  *) echo "PASS an unchanged service drop-in reloads nothing" ;;
+esac
+expect "an unchanged service drop-in is still relabelled" "RELABEL: $svdropin" "$out"
+if [ "$(ls "$kdir/k3s.service.d")" = "50-felis.conf" ]; then
+  echo "PASS no temporary file is left beside the service drop-in"
+else
+  echo "FAIL k3s.service.d holds: $(ls "$kdir/k3s.service.d")"; fails=$((fails + 1))
+fi
+printf '[Service]\nEnvironment=GOGC=100\n' > "$svdropin"
+out="$(run_k3s_service_dropin)"
+expect "an edited service drop-in is put back" "Environment=GOGC=50" "$(cat "$svdropin")"
+expect "and k3s is restarted onto it" "RESTART=1" "$out"
+
 sblock="$(awk '/^strip_k3s_kubeconfig_mode_flag\(\) \{/,/^}/' "$BS")"
 [ -n "$sblock" ] || { echo "FAIL: no strip_k3s_kubeconfig_mode_flag found in $BS"; exit 1; }
 # ExecStart as k3s's installer writes it (copied off an install made with the old flag).
@@ -3290,17 +3355,19 @@ iblock="$(awk '/^install_k3s\(\) \{/,/^}/' "$BS")"
 iblock="$iblock
 $(awk '/^version_newer\(\) \{/,/^}/' "$BS")
 $(awk '/^k3s_upgrade_allowed\(\) \{/,/^}/' "$BS")"
-run_install_k3s() { # $1: installed version ("" = none), $2: drop-in changed (0|1), $3: FELIS_UPGRADE_DEPS
-  INSTALLED="$1" CHANGED="$2" UPGRADE="${3:-0}" KDIR="$kdir" bash -c '
+run_install_k3s() { # $1: installed version ("" = none), $2: config drop-in changed (0|1), $3: FELIS_UPGRADE_DEPS, $4: service drop-in changed (0|1)
+  INSTALLED="$1" CHANGED="$2" UPGRADE="${3:-0}" SVC_CHANGED="${4:-0}" KDIR="$kdir" bash -c '
     set -Eeuo pipefail
     ok() { echo "OK: $*"; }; log() { echo "LOG: $*"; }; warn() { echo "WARN: $*"; }
     die() { echo "DIE: $*"; exit 1; }
     FELIS_K3S_VERSION=v1.36.4+k3s1 FELIS_UPGRADE_DEPS="$UPGRADE" K3S_BIN_DIR="$KDIR" K3S_BIN="$KDIR/k3s-under-test"
     K3S_CONFIG_DROPIN=/etc/rancher/k3s/config.yaml.d/50-felis.yaml K3S_KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+    K3S_SERVICE_DROPIN=/etc/systemd/system/k3s.service.d/50-felis.conf
     rm -f "$K3S_BIN"
     if [ -n "$INSTALLED" ]; then printf "#!/bin/sh\necho \"k3s version %s (abc)\"\n" "$INSTALLED" > "$K3S_BIN"; chmod +x "$K3S_BIN"; fi
     configure_k3s_firewall() { :; }
     write_k3s_config() { [ "$CHANGED" = 0 ] || K3S_RESTART_NEEDED=1; }
+    write_k3s_service_dropin() { echo "SERVICE-DROPIN"; [ "$SVC_CHANGED" = 0 ] || K3S_RESTART_NEEDED=1; }
     strip_k3s_kubeconfig_mode_flag() { :; }
     run_k3s_installer() { echo "INSTALLER"; printf "#!/bin/sh\n" > "$K3S_BIN"; command chmod +x "$K3S_BIN"; }
     stage_k3s_airgap_images() { echo "STAGE"; }
@@ -3316,9 +3383,12 @@ expect "the admin kubeconfig is made root-only once the node is up" "READY
 CHMOD: 0600 /etc/rancher/k3s/k3s.yaml" "$out"
 out="$(run_install_k3s v1.36.4+k3s1 0)"
 case "$out" in *"restart k3s"*) echo "FAIL unchanged k3s settings must not restart k3s"; fails=$((fails + 1)) ;; *) echo "PASS unchanged k3s settings restart nothing" ;; esac
+expect "a new service environment alone restarts a running k3s" "SYSTEMCTL: restart k3s" "$(run_install_k3s v1.36.4+k3s1 0 0 1)"
 out="$(run_install_k3s "" 1)"
 expect "a fresh host runs the k3s installer and waits for the node" "INSTALLER
 SYSTEMCTL: enable --now k3s" "$out"
+expect "a fresh k3s has its service environment before its first start" "SERVICE-DROPIN INSTALLER " \
+  "$(printf '%s\n' "$out" | grep -E '^(SERVICE-DROPIN|INSTALLER)$' | tr '\n' ' ')"
 expect "a fresh host stages k3s's images before k3s first starts" "STAGE
 INSTALLER" "$out"
 expect "a fresh host's kubeconfig is made root-only too" "CHMOD: 0600 /etc/rancher/k3s/k3s.yaml" "$out"

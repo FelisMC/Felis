@@ -216,21 +216,30 @@ to 0 for about 8 minutes on the reference VM.
 ### What the platform itself uses
 
 Measured on the verification host (4 vCPU, 5.5 GB RAM, 6 GB swap, CentOS Stream 9
-aarch64) with the control plane, the login and lobby system servers and one idle Paper
-server running **[VM-VERIFIED]**:
+aarch64) on an idle network, as each process's proportional set size (PSS: a page shared
+by several processes is split among them; `/proc/<pid>/smaps_rollup`) **[VM-VERIFIED]**:
 
-| Process | Resident memory |
+| Process | Memory (PSS) |
 |---|---|
-| k3s (server, kubelet, containerd) | ~1.1 GB |
-| Velocity (`-Xms64M -Xmx1G`, idle; it grows with players) | ~0.25 GB |
-| lobby (Paper, pod limit 1 GiB) | ~0.7–0.85 GB |
-| login (Limbo, pod limit 512 MiB) | ~0.16 GB |
-| felis-api, felis-operator, registry gate | ~50 MB each |
-| PostgreSQL (the felis-postgres pod) | ~30 MB plus page cache |
-| **Total in use** | **~2.9 GB** |
+| k3s (API server, controllers, scheduler, kubelet) | ~370 MiB |
+| k3s's containerd and the pods' shims | ~170 MiB |
+| CoreDNS and the local-path volume provisioner | ~105 MiB |
+| Velocity (`-Xms16M -Xmx1G`, idle; it grows with players) | ~175 MiB |
+| felis-api, felis-operator, registry gate | ~85 MiB together |
+| Image registry | ~25 MiB |
+| PostgreSQL (the felis-postgres pod) | ~40 MiB plus page cache |
+| **Infrastructure total** | **~1 GB** |
 
-Every game server adds the memory its owner gave it: the pod's limit equals its request,
-and the JVM heap is derived from it (§1a). Quotas cap it per user (panel → 管理 → 配额).
+The installer runs k3s, and the containerd it starts, with Go's collector at half its
+default heap growth (`GOGC=50`, in `/etc/systemd/system/k3s.service.d/50-felis.conf`): an
+idle k3s holds about 150 MiB live and would otherwise let its heap reach twice that before
+collecting. It saves about 70 MiB for about 2% of one core. An install from before this
+picks it up on its next installer run, which restarts k3s; the pods keep running.
+
+The login (Limbo, pod limit 512 MiB, ~0.16 GB) and lobby (Paper, pod limit 1 GiB,
+~0.7–0.85 GB) system servers come on top, and every game server adds the memory its owner
+gave it: the pod's limit equals its request, and the JVM heap is derived from it (§1a).
+Quotas cap it per user (panel → 管理 → 配额).
 
 A release install builds nothing (§1). When the installer builds on the host its peak is
 the image builds (Docker plus a Gradle container). Afterwards it stops Docker, and Docker's
@@ -249,15 +258,19 @@ adds a 2 GiB `/swapfile`.
 
 The player-count rows are planning figures, not measurements: a Minecraft server's cost
 depends mostly on what its players do (view distance, redstone, mods). Size RAM as the
-platform's ~3 GB plus the sum of the servers you expect to run at once, then add a
-quarter for the page cache and PostgreSQL. Velocity itself needs little per player; raise
-its heap when `journalctl -u felis-velocity` shows long GC pauses or `OutOfMemoryError`.
+infrastructure's ~1 GB and the login and lobby servers' ~1 GB, plus the sum of the servers
+you expect to run at once, then add a quarter for the page cache and PostgreSQL. Velocity
+itself needs little per player; raise its heap when `journalctl -u felis-velocity` shows
+long GC pauses or `OutOfMemoryError`.
 
 `FELIS_VELOCITY_XMX` (default `1G`, at least `256M`, written `<n>M` or `<n>G`) is read on
-every installer run. The heap starts at 64M and grows toward the maximum as players arrive;
-a periodic collection hands the growth back once they have left. Changing it rewrites the
-unit, and the rerun restarts the proxy, which disconnects everyone online; do it in a quiet
-hour **[VM-VERIFIED]**:
+every installer run. Up to 1G the heap starts at 16M and the proxy runs the serial collector
+and only the C1 compiler: its plugins hold about 50M live, so a collection takes
+milliseconds, and compression and encryption run in Velocity's native library. Above 1G it
+runs G1 from a 64M start, since a serial full collection over a large heap would stall
+every player at once, and a periodic collection hands the growth back once players have
+left. Changing it rewrites the unit, and the rerun restarts the proxy, which disconnects
+everyone online; do it in a quiet hour **[VM-VERIFIED]**:
 
 ```
 curl -fsSL <raw-url>/deploy/bootstrap.sh | sudo FELIS_VELOCITY_XMX=2G bash

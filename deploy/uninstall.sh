@@ -321,6 +321,16 @@ stop_database_pod() {
     || warn "${PG_DEPLOYMENT} did not stop within 2 minutes; its cluster recovers from its WAL on the next start"
 }
 
+# remove_k3s_service_dropin deletes the environment the installer gives the k3s service
+# (bootstrap.sh, write_k3s_service_dropin). k3s-uninstall.sh removes the unit and its .env
+# file and leaves the unit's drop-in directory.
+remove_k3s_service_dropin() {
+  [ -f "${UNIT_DIR}/k3s.service.d/50-felis.conf" ] || return 0
+  rm -f "${UNIT_DIR}/k3s.service.d/50-felis.conf"
+  rmdir "${UNIT_DIR}/k3s.service.d" 2>/dev/null || true
+  ok "k3s service environment removed"
+}
+
 remove_k3s() {
   local stamp
   [ "$PURGE" = 1 ] || stop_database_pod
@@ -336,6 +346,7 @@ remove_k3s() {
   if [ -x "${K3S_BIN_DIR}/k3s-uninstall.sh" ]; then
     log "running k3s-uninstall.sh"
     "${K3S_BIN_DIR}/k3s-uninstall.sh" >/dev/null 2>&1 || warn "k3s-uninstall.sh reported an error; check /var/lib/rancher and /etc/rancher"
+    remove_k3s_service_dropin
     ok "k3s removed"
   else
     warn "k3s is at ${K3S_BIN_DIR}/k3s but ${K3S_BIN_DIR}/k3s-uninstall.sh is missing; remove k3s by hand"
@@ -522,6 +533,8 @@ main() {
   case "$K3S_MODE" in
     remove) remove_k3s ;;
     keep) remove_from_cluster ;;
+    # k3s was removed some other way; what it left of the installer's goes too.
+    absent) remove_k3s_service_dropin ;;
   esac
   remove_nft_tables
   remove_firewalld_rules "$game" "$nano"

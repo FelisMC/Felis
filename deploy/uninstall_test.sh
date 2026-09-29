@@ -35,6 +35,8 @@ fresh_host() {
   for u in felis-db-backup.timer felis-db-backup.service felis-velocity.service felis-postgres-firewall.service; do
     printf '[Unit]\n' > "$root/h/units/$u"
   done
+  mkdir -p "$root/h/units/k3s.service.d"
+  printf '[Service]\nEnvironment=GOGC=50\n' > "$root/h/units/k3s.service.d/50-felis.conf"
   printf '[Service]\nExecStart=/usr/local/bin/cloudflared --config %s tunnel run\n' "$root/h/etc/cloudflared.yml" \
     > "$root/h/units/cloudflared-felis.service"
   printf 'tunnel: abc\ncredentials-file: %s\n' "$root/h/cf/abc.json" > "$root/h/etc/cloudflared.yml"
@@ -155,6 +157,9 @@ refute "keep-data leaves the database alone" "DROP DATABASE" "$calls"
   || { echo "FAIL /opt/felis or the host binary is still there"; fails=$((fails + 1)); }
 [ -z "$(ls "$root/h/units")" ] && echo "PASS every Felis unit file is removed" \
   || { echo "FAIL units left: $(ls "$root/h/units")"; fails=$((fails + 1)); }
+[ ! -e "$root/h/units/k3s.service.d" ] \
+  && echo "PASS the k3s service environment k3s's uninstaller leaves is removed with its directory" \
+  || { echo "FAIL the k3s service drop-in is still there: $(ls -R "$root/h/units")"; fails=$((fails + 1)); }
 expect "the timers are disabled" "SYSTEMCTL disable --now felis-db-backup.timer" "$calls"
 expect "the velocity user is removed" "USERDEL felis-velocity" "$calls"
 expect "the run ends pointing at the reinstall steps" "Reinstall on top of kept data" "$out"
@@ -190,6 +195,9 @@ expect "Felis's volumes are retained before their claims go" 'KUBE patch pv pvc-
 refute "a volume of another namespace is not touched" "patch pv pvc-9" "$calls"
 expect "Felis's namespaces are deleted" "KUBE delete namespace felis minecraft felis-build" "$calls"
 expect "the CRD is deleted" "KUBE delete crd minecraftservers.felis.lolicon.best" "$calls"
+[ -f "$root/h/units/k3s.service.d/50-felis.conf" ] \
+  && echo "PASS a k3s that stays keeps its service environment, like its config" \
+  || { echo "FAIL the kept k3s lost its service drop-in"; fails=$((fails + 1)); }
 
 out="$(fresh_host; run_uninstall down --yes)"
 expect "a k3s that does not answer stops the run" "k3s does not answer" "$out"
@@ -197,6 +205,18 @@ fresh_host
 run_uninstall down --yes --keep-k3s >/dev/null
 calls="$(cat "$root/calls")"
 refute "--keep-k3s never runs k3s's uninstaller" "RUN k3s-uninstall.sh" "$calls"
+
+# --- k3s already gone ----------------------------------------------------------------------
+fresh_host
+rm -f "$root/h/bin/k3s"
+printf '[Service]\nLimitNOFILE=4096\n' > "$root/h/units/k3s.service.d/90-admin.conf"
+run_uninstall down --yes >/dev/null
+[ ! -e "$root/h/units/k3s.service.d/50-felis.conf" ] \
+  && echo "PASS a k3s removed some other way does not leave the installer's service environment" \
+  || { echo "FAIL the k3s service drop-in outlived k3s"; fails=$((fails + 1)); }
+[ -f "$root/h/units/k3s.service.d/90-admin.conf" ] \
+  && echo "PASS a drop-in someone else wrote beside it stays, with the directory" \
+  || { echo "FAIL the uninstall removed a k3s drop-in it did not write"; fails=$((fails + 1)); }
 
 # --- purge -------------------------------------------------------------------------------
 fresh_host

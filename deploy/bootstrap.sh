@@ -502,6 +502,9 @@ K3S_REGISTRIES_FILE="/etc/rancher/k3s/registries.yaml"
 # client certificate are variables for the same reason as the file above.
 K3S_CONFIG_DROPIN="/etc/rancher/k3s/config.yaml.d/50-felis.yaml"
 K3S_UNIT_FILE="/etc/systemd/system/k3s.service"
+# The installer's environment for the k3s service (write_k3s_service_dropin); k3s's own
+# installer rewrites the unit and its .env file, never this.
+K3S_SERVICE_DROPIN="/etc/systemd/system/k3s.service.d/50-felis.conf"
 K3S_KUBECONFIG="/etc/rancher/k3s/k3s.yaml"
 K3S_KUBELET_CERT="/var/lib/rancher/k3s/agent/client-kubelet.crt"
 # Where k3s imports image tarballs from as it starts (stage_k3s_airgap_images).
@@ -1937,9 +1940,10 @@ configure_k3s_firewall() {
 
 install_k3s() {
   configure_k3s_firewall
-  # Before the installer runs: a fresh k3s reads the drop-in on its first start.
+  # Before the installer runs: a fresh k3s reads both drop-ins on its first start.
   K3S_RESTART_NEEDED=0
   write_k3s_config
+  write_k3s_service_dropin
 
   local installer_ran=0
   if [ -x "$K3S_BIN" ]; then
@@ -1969,7 +1973,7 @@ install_k3s() {
   # The installer restarts k3s itself; otherwise a changed drop-in or unit takes a
   # restart to load. Pods keep running across it (k3s leaves the containers be).
   if [ "$K3S_RESTART_NEEDED" = 1 ] && [ "$installer_ran" = 0 ]; then
-    log "restarting k3s to load its new settings (${K3S_CONFIG_DROPIN})"
+    log "restarting k3s to load its new settings (${K3S_CONFIG_DROPIN}, ${K3S_SERVICE_DROPIN})"
     systemctl restart k3s
   fi
   export KUBECONFIG="$K3S_KUBECONFIG"
@@ -2037,6 +2041,37 @@ write_k3s_config() {
   mv "$tmp" "$file"
   K3S_RESTART_NEEDED=1
   log "wrote ${file}${name:+ (node name pinned to ${name})}"
+}
+
+# write_k3s_service_dropin runs k3s, and the containerd it starts with its own environment,
+# with the Go collector at half the default heap growth (GOGC=50). An idle k3s holds about
+# 150 MiB live and by default lets its heap reach twice that before collecting; at 50 it
+# collects at one and a half times. Measured on the verification host: k3s 430 -> 370 MiB and
+# its containerd 114 -> 104 MiB, for about 2% of one core more while idle. It sets
+# K3S_RESTART_NEEDED when the file changed, since k3s reads its environment only as it starts.
+write_k3s_service_dropin() {
+  local file="$K3S_SERVICE_DROPIN" tmp
+  mkdir -p "$(dirname "$file")"
+  # Beside its destination, like write_k3s_config's; systemd reads only *.conf from the
+  # directory, so the temp name is never loaded.
+  tmp="$(mktemp "${file}.XXXXXX")"
+  remember_temp "$tmp"
+  {
+    echo "# Written by the Felis installer (deploy/bootstrap.sh); a rerun rewrites it."
+    echo "[Service]"
+    echo "Environment=GOGC=50"
+  } > "$tmp"
+  if [ -f "$file" ] && cmp -s "$tmp" "$file"; then
+    rm -f "$tmp"
+    restore_label "$file"
+    ok "k3s service environment already current"
+    return 0
+  fi
+  chmod 0644 "$tmp"
+  mv "$tmp" "$file"
+  systemctl daemon-reload
+  K3S_RESTART_NEEDED=1
+  log "wrote ${file} (GOGC=50)"
 }
 
 # A command-line flag outranks every config file, and k3s's installer writes
@@ -3865,12 +3900,21 @@ install_velocity_service() {
   # sees it -- unquoted, that spelling would hand java a stray "legacy112" argument and the unit
   # would not start. Quoting keeps the whole property one argv item.
   local legacy_forwarding_servers="${FELIS_LEGACY_FORWARDING_SERVERS}"
-  # The heap starts small and is not pre-touched. The proxy with its Via plugins holds about 50M
-  # live; a pre-touched 512M start kept ~0.7 GB resident on an idle network, ~0.25 GB without
-  # (measured on the verification host). The heap grows toward -Xmx as players arrive, and the
-  # periodic collection hands the growth back once they have left. FELIS_VELOCITY_XMX is at
-  # least 256M, so the start never exceeds the ceiling.
-  local xmx="$FELIS_VELOCITY_XMX" xms="64M"
+  # The heap starts small and is not pre-touched: the proxy with its Via plugins holds about 50M
+  # live, and a pre-touched 512M start kept ~0.7 GB resident on an idle network. Up to a 1G
+  # ceiling (the default, sized for about 100 players) it runs the serial collector and only the
+  # C1 compiler, 173 MiB idle against 267 MiB under G1 (both measured on the verification host);
+  # with that little live, a young collection takes milliseconds, and the proxy's compression
+  # and encryption run in Velocity's native library whichever compiler is on. A larger ceiling
+  # is for a network where a serial full collection over a big heap would stall every player at
+  # once, so it keeps G1, whose periodic collection hands the growth back once players have left.
+  # FELIS_VELOCITY_XMX is at least 256M, so the start never exceeds the ceiling.
+  local xmx="$FELIS_VELOCITY_XMX" jvm
+  if [ "$(heap_megabytes "$xmx")" -le 1024 ]; then
+    jvm="-Xms16M -Xmx${xmx} -XX:+UseSerialGC -XX:TieredStopAtLevel=1"
+  else
+    jvm="-Xms64M -Xmx${xmx} -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:G1PeriodicGCInterval=60000"
+  fi
   cat > "$VELOCITY_SERVICE" <<EOF
 [Unit]
 Description=Felis Velocity proxy (Mojang authentication + modern forwarding)
@@ -3882,7 +3926,7 @@ Type=simple
 User=${VELOCITY_USER}
 Group=${VELOCITY_USER}
 WorkingDirectory=${VELOCITY_DIR}
-ExecStart=${JRE_DIR}/bin/java -Xms${xms} -Xmx${xmx} -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:G1PeriodicGCInterval=60000 -Dmojang.sessionserver=http://${api_ip}:8081/session/minecraft/hasJoined "-Dfelis.legacy-forwarding.servers=${legacy_forwarding_servers}" -jar ${VELOCITY_DIR}/velocity.jar
+ExecStart=${JRE_DIR}/bin/java ${jvm} -Dmojang.sessionserver=http://${api_ip}:8081/session/minecraft/hasJoined "-Dfelis.legacy-forwarding.servers=${legacy_forwarding_servers}" -jar ${VELOCITY_DIR}/velocity.jar
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=yes
