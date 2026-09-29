@@ -222,20 +222,21 @@ server running **[VM-VERIFIED]**:
 | Process | Resident memory |
 |---|---|
 | k3s (server, kubelet, containerd) | ~1.1 GB |
-| Velocity (`-Xms512M -Xmx1G`, heap pre-touched) | ~0.73 GB |
+| Velocity (`-Xms64M -Xmx1G`, idle; it grows with players) | ~0.25 GB |
 | lobby (Paper, pod limit 1 GiB) | ~0.7–0.85 GB |
 | login (Limbo, pod limit 512 MiB) | ~0.16 GB |
 | felis-api, felis-operator, registry gate | ~50 MB each |
 | PostgreSQL (the felis-postgres pod) | ~30 MB plus page cache |
-| **Total in use** | **~3.4 GB** |
+| **Total in use** | **~2.9 GB** |
 
 Every game server adds the memory its owner gave it: the pod's limit equals its request,
 and the JVM heap is derived from it (§1a). Quotas cap it per user (panel → 管理 → 配额).
 
 A release install builds nothing (§1). When the installer builds on the host its peak is
-the image builds (Docker plus a Gradle container); it stops Docker afterwards so that memory
-goes back to the servers. On a host under 2 GB of RAM without swap it adds a 2 GiB
-`/swapfile`.
+the image builds (Docker plus a Gradle container). Afterwards it stops Docker, and Docker's
+containerd when nothing else uses it, so that memory goes back to the servers; a Docker the
+installer put there does not start at boot. On a host under 2 GB of RAM without swap it
+adds a 2 GiB `/swapfile`.
 
 ### Recommendations
 
@@ -248,14 +249,15 @@ goes back to the servers. On a host under 2 GB of RAM without swap it adds a 2 G
 
 The player-count rows are planning figures, not measurements: a Minecraft server's cost
 depends mostly on what its players do (view distance, redstone, mods). Size RAM as the
-platform's ~3.5 GB plus the sum of the servers you expect to run at once, then add a
+platform's ~3 GB plus the sum of the servers you expect to run at once, then add a
 quarter for the page cache and PostgreSQL. Velocity itself needs little per player; raise
 its heap when `journalctl -u felis-velocity` shows long GC pauses or `OutOfMemoryError`.
 
 `FELIS_VELOCITY_XMX` (default `1G`, at least `256M`, written `<n>M` or `<n>G`) is read on
-every installer run. The initial heap stays at 512M, or equals the maximum when that is
-lower. Changing it rewrites the unit, and the rerun restarts the proxy, which disconnects
-everyone online; do it in a quiet hour **[VM-VERIFIED]**:
+every installer run. The heap starts at 64M and grows toward the maximum as players arrive;
+a periodic collection hands the growth back once they have left. Changing it rewrites the
+unit, and the rerun restarts the proxy, which disconnects everyone online; do it in a quiet
+hour **[VM-VERIFIED]**:
 
 ```
 curl -fsSL <raw-url>/deploy/bootstrap.sh | sudo FELIS_VELOCITY_XMX=2G bash

@@ -951,6 +951,79 @@ case "$out" in
   *) echo "PASS a restart of Docker is not checked again" ;;
 esac
 
+# --- Docker holds no memory between builds -------------------------------------------------
+# Docker serves the installer's builds and nothing at runtime. The one it installed does not
+# start at boot, and once a step is done the daemon stops, and its containerd with it unless
+# something besides Docker keeps a namespace there.
+
+sdblock="$(awk '/^stop_docker\(\) \{/,/^}/' "$BS")"
+[ -n "$sdblock" ] || { echo "FAIL: no stop_docker found in $BS"; exit 1; }
+run_sd() { # DOCKER_INSTALLED namespaces-listed|FAIL
+  DOCKER_INSTALLED="$1" NS="$2" bash -c '
+    set -Eeuo pipefail
+    systemctl() { echo "SYSTEMCTL $*"; }
+    # Only the host containerd answers; k3s runs its own on another socket.
+    ctr() {
+      [ "$*" = "--address /run/containerd/containerd.sock namespaces ls -q" ] || { echo "CTR $*"; return 1; }
+      [ "$NS" != FAIL ] || return 1
+      printf "%b" "$NS"
+    }
+    '"$sdblock"'
+    stop_docker'
+}
+expect "a containerd serving Docker alone stops with it" "SYSTEMCTL stop docker docker.socket
+SYSTEMCTL stop containerd" "$(run_sd 1 'moby\nmoby_history\n')"
+out="$(run_sd 1 'default\nmoby\n')"
+case "$out" in
+  *"stop containerd"*) echo "FAIL a containerd something else uses was stopped"; fails=$((fails + 1)) ;;
+  *"SYSTEMCTL stop docker docker.socket"*) echo "PASS a containerd with another tenant keeps running" ;;
+  *) echo "FAIL Docker was not stopped: $out"; fails=$((fails + 1)) ;;
+esac
+out="$(run_sd 1 FAIL)"
+case "$out" in
+  *"stop containerd"*) echo "FAIL a containerd that could not be asked was stopped"; fails=$((fails + 1)) ;;
+  *"SYSTEMCTL stop docker docker.socket"*) echo "PASS a containerd that cannot be asked is left alone" ;;
+  *) echo "FAIL Docker was not stopped: $out"; fails=$((fails + 1)) ;;
+esac
+out="$(run_sd "" 'moby\n')"
+[ -z "$out" ] && echo "PASS a Docker this run never started is left alone" \
+  || { echo "FAIL a Docker this run never started was touched: $out"; fails=$((fails + 1)); }
+
+idblock="$(awk '/^install_docker\(\) \{/,/^}/' "$BS")"
+[ -n "$idblock" ] || { echo "FAIL: no install_docker found in $BS"; exit 1; }
+run_id() { # docker-on-PATH(0|1) containerd-on-PATH(0|1)
+  fb="$(mktemp -d)"
+  for tool in docker containerd; do
+    { [ "$tool" = docker ] && [ "$1" = 1 ]; } || { [ "$tool" = containerd ] && [ "$2" = 1 ]; } || continue
+    printf '#!/bin/sh\n' > "$fb/$tool"
+    chmod +x "$fb/$tool"
+  done
+  FB="$fb" bash -c '
+    set -Eeuo pipefail
+    PATH="$FB"
+    ok() { printf "OK: %s\n" "$*"; }; die() { printf "DIE: %s\n" "$*"; exit 1; }
+    systemctl() { echo "SYSTEMCTL $*"; }
+    install_docker_apt() { echo "INSTALL apt"; }
+    PKG=apt
+    '"$idblock"'
+    install_docker'
+  rm -rf "$fb"
+}
+out="$(run_id 0 0)"
+expect "a Docker the installer brings is started without a place at boot" "INSTALL apt
+SYSTEMCTL disable docker.service docker.socket
+SYSTEMCTL disable containerd.service
+SYSTEMCTL start docker" "$out"
+case "$out" in *enable*) echo "FAIL the installed Docker was enabled at boot"; fails=$((fails + 1)) ;; *) echo "PASS the installed Docker is not enabled at boot" ;; esac
+out="$(run_id 0 1)"
+expect "a Docker installed beside an existing containerd leaves that containerd's boot alone" "INSTALL apt
+SYSTEMCTL disable docker.service docker.socket
+SYSTEMCTL start docker" "$out"
+out="$(run_id 1 1)"
+expect "a Docker already on the host is only started" "OK: docker already installed
+SYSTEMCTL start docker" "$out"
+case "$out" in *disable*|*enable*) echo "FAIL the host's own Docker had its boot changed"; fails=$((fails + 1)) ;; *) echo "PASS the host's own Docker keeps its boot setting" ;; esac
+
 # --- a release binary is hashed against SHA256SUMS before anything runs it ---------------
 # download_release_binary executes the asset as root to read its version stamp, so the
 # checksum has to come first, and every failure has to fall back to the source build.
@@ -1502,6 +1575,7 @@ run_batch() { # PREBUILT_ROLES [ARTIFACT_MODE [ARTIFACT_CACHE]]
     DOCKER_INSTALLED=""
     systemctl() { printf "SYSTEMCTL %s\n" "$*"; }
     ensure_docker() { printf "ENSURE\n"; DOCKER_INSTALLED=1; }
+    ctr() { return 1; }
     push_image_to_registry() { printf "PUSH %s\n" "$1"; }
     push_version_tag() { printf "VERSION %s\n" "$1"; }
     push_release_image() { printf "RELEASE %s\n" "$1"; }
@@ -2821,7 +2895,12 @@ run_velocity_service() { # is-active(0|1) [heap]
 }
 out="$(run_velocity_service 1)"
 expect "a proxy with no recorded start is restarted" "SYSTEMCTL restart felis-velocity" "$out"
-expect "the default heap is 512M..1G" "java -Xms512M -Xmx1G " "$(cat "$vdir/unit")"
+expect "the default heap starts at 64M and may grow to 1G" "java -Xms64M -Xmx1G " "$(cat "$vdir/unit")"
+case "$(cat "$vdir/unit")" in
+  *AlwaysPreTouch*) echo "FAIL the proxy pre-touches its heap, holding all of -Xms from the start"; fails=$((fails + 1)) ;;
+  *"-XX:G1PeriodicGCInterval="*) echo "PASS the proxy neither pre-touches its heap nor keeps growth it no longer uses" ;;
+  *) echo "FAIL the proxy has no periodic collection to hand back an idle heap"; fails=$((fails + 1)) ;;
+esac
 [ -s "$vdir/fp" ] && echo "PASS the restart records what the proxy runs" \
   || { echo "FAIL no fingerprint was recorded after the restart"; fails=$((fails + 1)); }
 out="$(run_velocity_service 1)"
@@ -2836,9 +2915,9 @@ expect "a stopped proxy is started whatever the fingerprint" "SYSTEMCTL restart 
 printf 'JAVA_VERSION="25.0.1"\n' > "$vdir/jre/release"
 expect "a patched JRE restarts the proxy" "SYSTEMCTL restart felis-velocity" "$(run_velocity_service 1)"
 expect "a new heap size restarts the proxy" "SYSTEMCTL restart felis-velocity" "$(run_velocity_service 1 3G)"
-expect "the unit carries the new ceiling" "java -Xms512M -Xmx3G " "$(cat "$vdir/unit")"
+expect "the unit carries the new ceiling" "java -Xms64M -Xmx3G " "$(cat "$vdir/unit")"
 run_velocity_service 1 384M >/dev/null
-expect "a ceiling below 512M is also the initial heap" "java -Xms384M -Xmx384M " "$(cat "$vdir/unit")"
+expect "a small ceiling keeps the same small start" "java -Xms64M -Xmx384M " "$(cat "$vdir/unit")"
 # `felis rotate-token velocity` rewrites service-token, which the plugin re-reads by itself:
 # that line alone changing leaves the proxy running, and any other change restarts it.
 props="$vdir/v/plugins/felis-link/felis-link.properties"
@@ -4447,6 +4526,7 @@ run_game_stack() { # PREBUILT_ROLES-after-import FELIS_GAME_STACK [ARTIFACT_MODE
     game_stack_source() { :; }
     resolve_game_jars() { :; }
     import_release_images() { echo "IMPORT $*"; PREBUILT_ROLES="$AFTER"; }
+    ctr() { return 1; }
     ensure_docker() { echo ENSURE; DOCKER_INSTALLED=1; }
     build_game_image() { echo "BUILD $1"; }
     install_velocity_plugin() { echo PLUGIN; }

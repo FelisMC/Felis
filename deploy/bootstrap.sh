@@ -1828,6 +1828,8 @@ install_docker() {
   if command -v docker >/dev/null 2>&1; then
     ok "docker already installed"
   else
+    local had_containerd=""
+    command -v containerd >/dev/null 2>&1 && had_containerd=1
     case "$PKG" in
       apt) install_docker_apt ;;
       dnf|yum) install_docker_rpm ;;
@@ -1835,8 +1837,13 @@ install_docker() {
       pacman) install_docker_pacman ;;
       *) die "Docker installation is not supported with package manager: ${PKG}" ;;
     esac
+    # Docker serves this installer's builds and nothing at runtime, so the one it installed
+    # does not come up at boot to hold ~200 MiB until the next run; a run that builds starts
+    # it (ensure_docker). Some packages enable it, and its containerd, as they install.
+    systemctl disable docker.service docker.socket 2>/dev/null || true
+    [ -n "$had_containerd" ] || systemctl disable containerd.service 2>/dev/null || true
   fi
-  systemctl enable --now docker
+  systemctl start docker
   ok "docker running"
 }
 
@@ -1873,11 +1880,19 @@ unplanned_build_room() {
   die "${problem}; nothing has been built. Rerun the installer once the release's assets download, free space on ${mount}, or set FELIS_PREFLIGHT=warn to build anyway"
 }
 
-# stop_docker hands back the ~150 MiB the docker daemon holds once a step is done with it; the
-# next step that builds starts it again. A Docker this run never started is left alone.
+# stop_docker hands back what Docker holds once a step is done with it, ~150 MiB for the daemon
+# and ~45 MiB for its containerd; the next step that builds starts both again. A Docker this run
+# never started is left alone, and so is a containerd holding any namespace besides Docker's own
+# (moby, moby_history): something else on the host runs on it. k3s's containerd listens on a
+# socket of its own and is never the one asked here.
 stop_docker() {
   [ -n "$DOCKER_INSTALLED" ] || return 0
   systemctl stop docker docker.socket 2>/dev/null || true
+  local ns
+  ns="$(ctr --address /run/containerd/containerd.sock namespaces ls -q 2>/dev/null)" || return 0
+  if ! printf '%s\n' "$ns" | grep -qvE '^(moby.*)?$'; then
+    systemctl stop containerd 2>/dev/null || true
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -2929,8 +2944,7 @@ build_image() {
   remove_k3s_image "$FELIS_IMAGE"
   docker save "$FELIS_IMAGE" | k3s_cmd ctr images import -
 
-  # Reclaim the ~150 MiB the docker daemon holds; reruns restart it on demand.
-  systemctl stop docker docker.socket 2>/dev/null || true
+  stop_docker
   ok "image built, binary on host, image imported"
 }
 
@@ -3851,10 +3865,12 @@ install_velocity_service() {
   # sees it -- unquoted, that spelling would hand java a stray "legacy112" argument and the unit
   # would not start. Quoting keeps the whole property one argv item.
   local legacy_forwarding_servers="${FELIS_LEGACY_FORWARDING_SERVERS}"
-  # -Xms stays at 512M so a small proxy does not reserve its whole ceiling up front, unless
-  # the ceiling itself is lower (the JVM refuses an initial heap above the maximum).
-  local xmx="$FELIS_VELOCITY_XMX" xms="512M"
-  [ "$(heap_megabytes "$xmx")" -ge 512 ] || xms="$xmx"
+  # The heap starts small and is not pre-touched. The proxy with its Via plugins holds about 50M
+  # live; a pre-touched 512M start kept ~0.7 GB resident on an idle network, ~0.25 GB without
+  # (measured on the verification host). The heap grows toward -Xmx as players arrive, and the
+  # periodic collection hands the growth back once they have left. FELIS_VELOCITY_XMX is at
+  # least 256M, so the start never exceeds the ceiling.
+  local xmx="$FELIS_VELOCITY_XMX" xms="64M"
   cat > "$VELOCITY_SERVICE" <<EOF
 [Unit]
 Description=Felis Velocity proxy (Mojang authentication + modern forwarding)
@@ -3866,7 +3882,7 @@ Type=simple
 User=${VELOCITY_USER}
 Group=${VELOCITY_USER}
 WorkingDirectory=${VELOCITY_DIR}
-ExecStart=${JRE_DIR}/bin/java -Xms${xms} -Xmx${xmx} -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:+AlwaysPreTouch -Dmojang.sessionserver=http://${api_ip}:8081/session/minecraft/hasJoined "-Dfelis.legacy-forwarding.servers=${legacy_forwarding_servers}" -jar ${VELOCITY_DIR}/velocity.jar
+ExecStart=${JRE_DIR}/bin/java -Xms${xms} -Xmx${xmx} -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:G1PeriodicGCInterval=60000 -Dmojang.sessionserver=http://${api_ip}:8081/session/minecraft/hasJoined "-Dfelis.legacy-forwarding.servers=${legacy_forwarding_servers}" -jar ${VELOCITY_DIR}/velocity.jar
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=yes
