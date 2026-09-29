@@ -138,12 +138,12 @@ func TestGuardHonorsAcknowledgement(t *testing.T) {
 	}
 	var acked bool
 	for _, c := range w.Result().Cookies() {
-		if c.Name == webViewAckCookie && c.Value == "1" {
+		if c.Name == webViewAckCookie && c.Value == "1" && c.Secure {
 			acked = true
 		}
 	}
 	if !acked {
-		t.Fatalf("ua_ack did not set the ack cookie")
+		t.Fatalf("ua_ack did not set a Secure ack cookie")
 	}
 
 	// A subsequent navigation carrying the ack cookie is not interrupted.

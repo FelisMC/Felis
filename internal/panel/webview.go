@@ -75,6 +75,7 @@ func guardInAppWebView(w http.ResponseWriter, r *http.Request) bool {
 			Value:    "1",
 			Path:     "/",
 			HttpOnly: true,
+			Secure:   true,
 			SameSite: http.SameSiteLaxMode,
 			MaxAge:   3600,
 		})
