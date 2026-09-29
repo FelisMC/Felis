@@ -8280,7 +8280,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
-            /** @description Not an owner (forbidden); a change to the caller's own role (self_protected); or a role change on the owner account (owner_protected), which only the host's break-glass console (sudo felis breakGlass) may make. */
+            /** @description Not an owner (forbidden); a change to the caller's own role (self_protected); a role change on the owner account (owner_protected), which only the host's break-glass console (sudo felis breakGlass) may make; or a change to the caller's own email without a reauth in the last 5 minutes (reauth_required). */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8541,7 +8541,15 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
+            /** @description Not an owner (forbidden); or unbinding the caller's own passkeys without a reauth in the last 5 minutes (reauth_required). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     linkAccount: {

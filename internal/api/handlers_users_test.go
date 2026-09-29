@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -81,6 +83,77 @@ func TestOwnerAccountProtectedFromPanelMutations(t *testing.T) {
 			t.Fatalf("promote user: code = %d body %s, want 200", w.Code, w.Body.String())
 		}
 	})
+}
+
+// The caller's own email and passkeys are ways into the caller's account, so
+// changing them through /users/{id} takes the same recent reauth as through
+// /account. Without it a stolen owner session could strip both here, and with no
+// factor left to guard, /account/passkey/register/begin would let it plant its own.
+func TestOwnSignInFactorsNeedReauthUnderUsers(t *testing.T) {
+	owner := &Principal{UserID: "usr-root", Role: "owner", Email: "root@example.net",
+		ViaAdminAccess: true, ViaSession: true, EmailVerified: true}
+	repo := newFakeRepo()
+	repo.seedUser(UserView{ID: "usr-root", Username: "root", Email: "root@example.net", Role: "owner", EmailVerified: true})
+	repo.seedUser(UserView{ID: "u2", Username: "alice", Email: "alice@example.net", Role: "user"})
+	repo.passkeyCreds["pk-root"] = PasskeyCredential{ID: "pk-root", UserID: "usr-root", CredentialID: "c-root", UserVerified: true, CreatedAt: frozenNow}
+	api := newTestAPI(repo, newFakeCluster())
+	api.Mailer = &captureMailer{}
+	api.External = staticExternal{p: owner}
+	eh := api.ExternalHandler()
+	send := func(method, path, body string) *httptest.ResponseRecorder {
+		if body == "" {
+			return do(eh, method, path, "", nil)
+		}
+		return do(eh, method, path, body, jsonHeader)
+	}
+
+	own := []struct {
+		name, method, path, body string
+		untouched                func() bool
+	}{
+		{"own email", "PATCH", "/api/v1/users/usr-root", `{"email":"thief@example.net"}`, func() bool {
+			d, err := repo.UserDetail(context.Background(), "usr-root")
+			return err == nil && d.Email == "root@example.net"
+		}},
+		{"own passkeys", "DELETE", "/api/v1/users/usr-root/passkeys", "", func() bool {
+			_, ok := repo.passkeyCreds["pk-root"]
+			return ok
+		}},
+	}
+	for _, tc := range own {
+		t.Run(tc.name+" refused without a recent reauth", func(t *testing.T) {
+			w := send(tc.method, tc.path, tc.body)
+			if w.Code != http.StatusForbidden || decodeErr(t, w) != "reauth_required" {
+				t.Fatalf("code = %d body %s, want 403 reauth_required", w.Code, w.Body.String())
+			}
+			if !tc.untouched() {
+				t.Fatal("the change went through despite the refusal")
+			}
+		})
+	}
+	// Another account's factors are the owner's to manage, and a username is no way in.
+	for _, tc := range []struct{ name, method, path, body string }{
+		{"another user's email", "PATCH", "/api/v1/users/u2", `{"email":"alice@new.example"}`},
+		{"another user's passkeys", "DELETE", "/api/v1/users/u2/passkeys", ""},
+		{"own username", "PATCH", "/api/v1/users/usr-root", `{"username":"root2"}`},
+	} {
+		t.Run("control: "+tc.name+" needs no reauth", func(t *testing.T) {
+			if w := send(tc.method, tc.path, tc.body); w.Code != http.StatusOK {
+				t.Fatalf("code = %d body %s, want 200", w.Code, w.Body.String())
+			}
+		})
+	}
+	owner.ReauthAt = api.now()
+	for _, tc := range own {
+		t.Run(tc.name+" allowed after a reauth", func(t *testing.T) {
+			if w := send(tc.method, tc.path, tc.body); w.Code != http.StatusOK {
+				t.Fatalf("code = %d body %s, want 200", w.Code, w.Body.String())
+			}
+			if tc.untouched() {
+				t.Fatal("the change did not go through")
+			}
+		})
+	}
 }
 
 // The user-scoped admin sub-resources (quotas, account links) must answer 404

@@ -175,6 +175,11 @@ func (a *API) handlePatchUser(w http.ResponseWriter, r *http.Request) {
 			"role must be 'admin' or 'user', got %q", *body.Role))
 		return
 	}
+	// A new address unverifies the old one, and with it the email factor that
+	// guards adding a passkey: your own takes the same reauth as /account/email.
+	if body.Email != nil && id == p.UserID && !a.requireReauth(w, r, p) {
+		return
+	}
 
 	u, err := a.Repo.UpdateUser(r.Context(), id, UpdateUserInput(body), p.Email)
 	if err != nil {
@@ -429,6 +434,11 @@ func (a *API) handleUnbindUserPasskeys(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
 		writeError(w, r, errBadRequest)
+		return
+	}
+	// Your own passkeys are a factor that guards adding one: severing them takes
+	// the same reauth as removing one under /account/passkey.
+	if p := principalFromContext(r.Context()); id == p.UserID && !a.requireReauth(w, r, p) {
 		return
 	}
 

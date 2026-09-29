@@ -3438,16 +3438,18 @@ atomic_install_file() {
   mv -fT "$staged" "$target"
 }
 
-# install_if_changed is atomic_install_file that leaves a target with the same bytes in
-# place, fixing only its mode and owner, so the target's mtime keeps meaning "the content
-# changed". felis domain check reads a proxy started before felis-link.properties' mtime
-# as one still on the old names, and a re-run that rewrote the same bytes made every
-# install look behind (and `felis domain set` restart the proxy for nothing).
+# install_if_changed is atomic_install_file that leaves the target alone when it already
+# has the same bytes, owner and mode, so its mtime keeps meaning "the content changed".
+# felis domain check reads a proxy started before felis-link.properties' mtime as one
+# still on the old names, and a re-run that rewrote the same bytes made every install look
+# behind (and `felis domain set` restart the proxy for nothing).
+# It never fixes a target in place: the proxy's account owns these directories and can
+# swap the file for a symlink after the checks, and a chown or chmod by path would follow
+# it to, say, k3s.yaml. Owner and group compare by name, as the callers pass them.
 install_if_changed() {
   local source="$1" target="$2" mode="$3" owner="$4" group="$5"
-  if [ -f "$target" ] && [ ! -L "$target" ] && cmp -s "$source" "$target"; then
-    chown "${owner}:${group}" "$target"
-    chmod "$mode" "$target"
+  if [ -f "$target" ] && [ ! -L "$target" ] && cmp -s "$source" "$target" \
+    && [ "$(stat -c '%U:%G %a' "$target")" = "${owner}:${group} ${mode#0}" ]; then
     return 0
   fi
   atomic_install_file "$@"

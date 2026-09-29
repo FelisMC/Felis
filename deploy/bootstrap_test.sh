@@ -2064,7 +2064,8 @@ else
 fi
 
 # A re-run that writes the same felis-link.properties leaves the file alone: felis domain
-# check reads a proxy started before the file's mtime as still on the old names.
+# check reads a proxy started before the file's mtime as still on the old names. stat answers
+# as for the file the first install left, root:v 0640, which the test's user cannot make.
 run_link() { # velocity-dir [root-domain]
   VD="$1" RD="${2:-r.example.com}" TMPDIR="$1" FNFILE="$fnfile" bash -c '
     set -Eeuo pipefail
@@ -2073,6 +2074,7 @@ run_link() { # velocity-dir [root-domain]
     prepare_velocity_layout() { :; }
     atomic_install_file() { echo "REPLACED $(basename "$2")"; cp "$1" "$2"; }
     chown() { echo "CHOWN $*"; }; chmod() { echo "CHMOD $*"; }
+    stat() { echo "root:v 640"; }
     . "$FNFILE"
     STATE_DIR="$VD" FELIS_ROOT_DOMAIN="$RD" FORWARDING_SECRET=f SERVICE_TOKEN=t LOGIN_SERVER=login \
     LOBBY_SERVER=lobby FELIS_GAME_PORT=25565 VELOCITY_DIR="$VD" VELOCITY_USER=v NODE_IP=10.0.0.5
@@ -2089,8 +2091,10 @@ case "$out" in
   *"REPLACED felis-link.properties"*) echo "FAIL: a re-run with the same names replaced felis-link.properties"; fails=$((fails + 1)) ;;
   *) echo "PASS a re-run with the same names leaves felis-link.properties in place" ;;
 esac
-expect "the re-run still fixes the owner" "CHOWN root:v $lprops" "$out"
-expect "the re-run still fixes the mode" "CHMOD 0640 $lprops" "$out"
+case "$out" in
+  *CHOWN*|*CHMOD*) echo "FAIL: the re-run changed felis-link.properties by path:"; printf '%s\n' "$out"; fails=$((fails + 1)) ;;
+  *) echo "PASS the re-run changes nothing by path" ;;
+esac
 expect "the kept file keeps its mtime" "$before" "$(ls -l --time-style=+%s "$lprops" 2>/dev/null || stat -f '%m' "$lprops")"
 expect "a re-run on other names replaces felis-link.properties" "REPLACED felis-link.properties" "$(run_link "$ldir2" other.example.net)"
 expect "the replaced file has the new root domain" "root-domain=other.example.net" "$(grep '^root-domain=' "$lprops")"
@@ -4492,6 +4496,39 @@ BUILD" "$out"
 expect "from FELIS_ARTIFACT_DIR it stops the install" "DIE: FELIS_ARTIFACT_DIR: the release's felis-velocity.jar cannot be used" "$(run_plugin dir 0)"
 expect "a source build builds the plugin" "ENSURE
 BUILD" "$(run_plugin "" 0)"
+
+# --- install_if_changed never fixes a target in place -----------------------------------------
+# The proxy's account owns the directories these files land in and can swap one for a symlink
+# after the checks, so a chown or chmod by path would land on whatever the link names. The cmp
+# stub makes that swap right after the content check; chown and chmod report every call.
+iicblock="$(bsfn install_if_changed)"
+[ -n "$iicblock" ] || { echo "FAIL: no install_if_changed in $BS"; exit 1; }
+mkdir "$adir/iic"
+printf 'plugin\n' > "$adir/iic/src"
+printf 'not the plugin\n' > "$adir/iic/decoy"
+chmod 600 "$adir/iic/decoy"
+mine="$(stat -c '%U:%G' "$adir/iic/src")"
+run_iic() { # target's mode, the owner:group asked for, then "edited" or "swapped"
+  rm -f "$adir/iic/dst"
+  if [ "${3-}" = edited ]; then printf 'an older plugin\n' > "$adir/iic/dst"; else cp "$adir/iic/src" "$adir/iic/dst"; fi
+  chmod "$1" "$adir/iic/dst"
+  D="$adir/iic" OG="$2" HOW="${3-}" bash -c '
+    atomic_install_file() { echo "ATOMIC $2"; }
+    chown() { echo "CHOWN $*"; command chown "$@"; }
+    chmod() { echo "CHMOD $*"; command chmod "$@"; }
+    cmp() { command cmp "$@" || return; [ "$HOW" != swapped ] || ln -sfn "$D/decoy" "$3"; }
+    '"$iicblock"'
+    install_if_changed "$D/src" "$D/dst" 0644 "${OG%%:*}" "${OG#*:}"' 2>&1
+}
+iic_is() { # label want got
+  [ "$3" = "$2" ] && echo "PASS $1" || { printf 'FAIL %s: got\n%s\nwant\n%s\n' "$1" "$3" "$2"; fails=$((fails + 1)); }
+}
+iic_is "the same bytes, owner and mode are left alone" "" "$(run_iic 644 "$mine")"
+iic_is "the same bytes with the wrong mode are reinstalled" "ATOMIC $adir/iic/dst" "$(run_iic 600 "$mine")"
+iic_is "the same bytes with the wrong owner are reinstalled" "ATOMIC $adir/iic/dst" "$(run_iic 644 "felis-nobody:${mine#*:}")"
+iic_is "new bytes are installed" "ATOMIC $adir/iic/dst" "$(run_iic 644 "$mine" edited)"
+iic_is "a target swapped for a symlink after the checks is reinstalled" "ATOMIC $adir/iic/dst" "$(run_iic 644 "$mine" swapped)"
+iic_is "and the file the link named keeps its mode" 600 "$(stat -c %a "$adir/iic/decoy")"
 
 # --- k3s's own images from its GitHub release ----------------------------------------------------
 kablock="$(bsfn stage_k3s_airgap_images)"
