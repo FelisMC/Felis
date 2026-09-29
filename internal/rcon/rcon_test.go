@@ -169,6 +169,27 @@ func TestDialAndExecute(t *testing.T) {
 	}
 }
 
+// A command goes out in one packet of at most 4096 bytes; a longer one is
+// refused before anything is sent.
+func TestExecuteRefusesAnOversizeCommand(t *testing.T) {
+	longest := strings.Repeat("a", 4096-10) // 10: id, type, two terminators
+	f := startFakeRCON(t, "s3cret", map[string]string{longest: "ok"})
+	defer f.stop()
+
+	c, err := rcon.Dial(f.addr(), "s3cret", 2*time.Second)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer c.Close()
+
+	if got, err := c.Execute(longest); err != nil || got != "ok" {
+		t.Fatalf("Execute(%d bytes) = %q, %v; want ok", len(longest), got, err)
+	}
+	if _, err := c.Execute(longest + "a"); err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("Execute(%d bytes) err = %v, want the too-large refusal", len(longest)+1, err)
+	}
+}
+
 func TestDialAuthFailure(t *testing.T) {
 	f := startFakeRCON(t, "correct-horse", nil)
 	defer f.stop()

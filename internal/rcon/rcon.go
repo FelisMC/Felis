@@ -211,11 +211,13 @@ func (c *Conn) nextID() int32 {
 // writePacket encodes one RCON packet: little-endian length, id, type, the
 // null-terminated body, and a trailing null byte.
 func writePacket(w io.Writer, id, typ int32, body string) error {
+	// Bounded on the body, before the int32 conversion: one past 2 GiB would
+	// wrap the length negative and slip under a check made after it.
+	if len(body) > maxPacketLen-minPacketLen {
+		return fmt.Errorf("rcon: outgoing packet too large: %d bytes", len(body)+minPacketLen)
+	}
 	bodyBytes := []byte(body)
 	length := int32(4 + 4 + len(bodyBytes) + 2)
-	if length > maxPacketLen {
-		return fmt.Errorf("rcon: outgoing packet too large: %d bytes", length)
-	}
 	buf := make([]byte, 0, 4+length)
 	buf = appendInt32(buf, length)
 	buf = appendInt32(buf, id)
