@@ -129,7 +129,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/archives" && r.Method == http.MethodDelete {
 		if len(s.Key) < 32 || !hmac.Equal([]byte(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")), []byte(s.Key)) {
-			http.Error(w, "unauthorized", 401)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		var q struct {
@@ -152,7 +152,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/inspect" && r.Method == http.MethodPost {
 		if len(s.Key) < 32 || !hmac.Equal([]byte(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")), []byte(s.Key)) {
-			http.Error(w, "unauthorized", 401)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		var q struct {
@@ -165,7 +165,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		local := &backup.TarLocal{BackupRoot: s.Root}
 		sum, err := local.Verify(r.Context(), backup.ArchiveRef(q.Ref), "")
 		if err != nil {
-			http.Error(w, "archive is absent or corrupt", 422)
+			http.Error(w, "archive is absent or corrupt", http.StatusUnprocessableEntity)
 			return
 		}
 		st, err := os.Stat(q.Ref)
@@ -347,7 +347,7 @@ func (s *Server) upload(r *http.Request, t Ticket) error {
 func (s *Server) download(w http.ResponseWriter, r *http.Request, t Ticket) {
 	root, err := os.OpenRoot(s.Root)
 	if err != nil {
-		http.Error(w, "archive unavailable", 503)
+		http.Error(w, "archive unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	defer root.Close()
@@ -359,7 +359,7 @@ func (s *Server) download(w http.ResponseWriter, r *http.Request, t Ticket) {
 	defer f.Close()
 	st, err := f.Stat()
 	if err != nil || !st.Mode().IsRegular() || st.Size() > t.Limit {
-		http.Error(w, "archive exceeds transfer bounds", 413)
+		http.Error(w, "archive exceeds transfer bounds", http.StatusRequestEntityTooLarge)
 		return
 	}
 	w.Header().Set("Content-Type", "application/gzip")

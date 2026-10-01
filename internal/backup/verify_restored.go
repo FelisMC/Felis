@@ -41,7 +41,7 @@ func VerifyRestored(ctx context.Context, ref, world string) error {
 		if err != nil {
 			return err
 		}
-		if h.Typeflag != tar.TypeReg && h.Typeflag != tar.TypeRegA {
+		if h.Typeflag != tar.TypeReg {
 			continue
 		}
 		dst, err := root.Open(h.Name)

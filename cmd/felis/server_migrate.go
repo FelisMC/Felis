@@ -76,19 +76,19 @@ func cmdServerMigrate(args []string, stdout, stderr io.Writer) int {
 	var op distributed.Operation
 	switch args[0] {
 	case "start":
-		host, err := config.Load(*cfgPath)
-		if err != nil {
-			fmt.Fprintln(stderr, err)
+		host, cfgErr := config.Load(*cfgPath)
+		if cfgErr != nil {
+			fmt.Fprintln(stderr, cfgErr)
 			return 1
 		}
-		drv, err := openPodStore(ctx, host.Database.URL, "migration", stderr)
-		if err != nil {
-			fmt.Fprintln(stderr, err)
+		drv, dbErr := openPodStore(ctx, host.Database.URL, "migration", stderr)
+		if dbErr != nil {
+			fmt.Fprintln(stderr, dbErr)
 			return 1
 		}
 		defer drv.Close()
 		var owner sql.NullString
-		if err = drv.DB().QueryRowContext(ctx, "SELECT owner_id FROM servers WHERE name=$1 AND deleted_at IS NULL AND retire_requested_at IS NULL", *name).Scan(&owner); err != nil {
+		if err := drv.DB().QueryRowContext(ctx, "SELECT owner_id FROM servers WHERE name=$1 AND deleted_at IS NULL AND retire_requested_at IS NULL", *name).Scan(&owner); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}

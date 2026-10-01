@@ -275,7 +275,7 @@ func approveNode(ctx context.Context, cl client.Client, cs kubernetes.Interface,
 	for _, endpoint := range endpoints {
 		c, err := net.DialTimeout("tcp", endpoint, 5*time.Second)
 		if err != nil {
-			return fmt.Errorf("Velocity host cannot dial backend Service %s: %w", endpoint, err)
+			return fmt.Errorf("velocity host cannot dial backend Service %s: %w", endpoint, err)
 		}
 		c.Close()
 	}
@@ -321,7 +321,7 @@ func approveNode(ctx context.Context, cl client.Client, cs kubernetes.Interface,
 		return err
 	}
 	if len(game.Spec.Ingress) == 0 {
-		return fmt.Errorf("Velocity ingress policy is not configured")
+		return fmt.Errorf("velocity ingress policy is not configured")
 	}
 	prevGame := game.DeepCopy()
 	for _, cidr := range observed {
