@@ -52,6 +52,7 @@ import (
 	"time"
 
 	"felis.lolicon.best/internal/naming"
+	"felis.lolicon.best/internal/placement"
 )
 
 // Errors the Editor returns, which internal/api maps onto HTTP status codes
@@ -106,6 +107,7 @@ type Runner interface {
 // deployment-specific, and when it is empty cmd/felis leaves the API's FileEditor
 // nil so the endpoints report 503 rather than creating a Job that cannot run.
 type Config struct {
+	ResolveWorld placement.Resolver
 	// Namespace is where the world PVCs live and the Job runs (the minecraft
 	// namespace), co-located with the world it edits.
 	Namespace string
@@ -338,6 +340,14 @@ func (e *Editor) run(ctx context.Context, server string, p JobParams) (Result, e
 		return Result{}, err
 	}
 
+	if cfg.ResolveWorld != nil {
+		world, err := cfg.ResolveWorld(ctx, server)
+		if err != nil {
+			return Result{}, err
+		}
+		p.WorldPVC, p.NodeName = world.Claim, world.Node
+	}
+
 	// Bound the wait here rather than trusting the caller's context: this is an HTTP
 	// handler's goroutine and the Pod it waits on may never become ready (an
 	// unschedulable node, an unpullable image). The Job's own activeDeadlineSeconds
@@ -437,6 +447,13 @@ func (e *Editor) start(ctx context.Context, server string, p JobParams) (OpState
 	p, err := cfg.params(server, p)
 	if err != nil {
 		return OpState{}, err
+	}
+	if cfg.ResolveWorld != nil {
+		world, err := cfg.ResolveWorld(ctx, server)
+		if err != nil {
+			return OpState{}, err
+		}
+		p.WorldPVC, p.NodeName = world.Claim, world.Node
 	}
 	p.Async = true
 	p.Deadline, p.TTLAfterFinished, p.CPULimit = cfg.AsyncDeadline, cfg.AsyncTTL, cfg.AsyncCPULimit

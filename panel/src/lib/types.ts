@@ -59,6 +59,7 @@ export interface MyServerView {
  *  A caller who does not own the server gets the public subset, so everything
  *  past the counts may be absent. */
 export interface ServerStatus {
+  nodeName?: string;
   name: string;
   subdomain: string;
   phase: Phase;
@@ -340,6 +341,7 @@ export interface WhitelistImage {
 
 /** CreateServerRequest is the §15 structured form — the ONLY create path. */
 export interface CreateServerRequest {
+  nodeName?: string;
   name: string;
   subdomain: string;
   displayName?: string;
@@ -715,4 +717,26 @@ export interface SessionView {
   revoked_at?: string;
   /** On the holder's own list only: the session this request came in on. */
   current?: boolean;
+}
+
+export interface ExecutionNode {
+  name: string;
+  role: string;
+  ready: boolean;
+  approved: boolean;
+  addresses: string[];
+  architecture: string;
+}
+export interface WorldMigration {
+  id: string;
+  server: string;
+  state: string;
+  stage: string;
+  sourceNode: string;
+  targetNode: string;
+  sourcePVC: string;
+  targetPVC: string;
+  error?: string;
+  switched: boolean;
+  attempt: number;
 }

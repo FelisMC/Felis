@@ -34,6 +34,7 @@ import { PhaseBadge, PHASE_KEY, PHASE_COLOR, shownPhase, startFailure } from "@/
 import { PowerButton } from "@/components/PowerButton";
 import { Loading, ErrorState, EmptyState, RefreshError } from "@/components/States";
 import { Pagination } from "@/components/Pagination";
+import { DistributedNodes, MigrationDialog } from "@/components/DistributedNodes";
 import { CreateServerDialog } from "@/components/CreateServerDialog";
 import { StatCard } from "@/components/StatCard";
 import { CopyAddress } from "@/components/CopyAddress";
@@ -106,6 +107,7 @@ function compareBy(key: SortKey): (a: UnifiedServer, b: UnifiedServer) => number
 }
 
 interface UnifiedServer {
+  nodeName?: string;
   name: string;
   subdomain: string;
   /** The owner-chosen label; the list leads with it and keeps the name beside. */
@@ -163,6 +165,7 @@ export function ServersPage() {
     if (isAdmin) {
       return (data as FleetServer[]).map((s) => ({
         name: s.name,
+        nodeName: s.nodeName,
         displayName: s.displayName,
         subdomain: s.subdomain,
         phase: s.phase,
@@ -275,6 +278,8 @@ export function ServersPage() {
         }
         className="mb-6"
       />
+
+      {isAdmin && cfg?.distributed && <DistributedNodes />}
 
       {showInitialLoading ? (
         <Loading />
@@ -508,6 +513,7 @@ function ServerActions({
   className?: string;
 }) {
   const { t: ts } = useTranslation("servers");
+  const cfg = useConfig();
   const [busy, setBusy] = useState<null | "claim">(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -543,6 +549,7 @@ function ServerActions({
   return (
     <div className={cn("flex flex-col items-end gap-1", className)}>
       <div className="flex flex-wrap items-start justify-end gap-2 xl:flex-nowrap">
+        {isAdmin && cfg?.distributed && <MigrationDialog name={server.name} nodeName={server.nodeName} stopped={server.phase === "Stopped" && !server.ready && server.desiredState === "Stopped" && !server.retiring} onChanged={onChanged} />}
         {claimable && (
           <>
             <Button
@@ -655,6 +662,10 @@ function PlayersLabel({ server }: { server: UnifiedServer }) {
 }
 
 function EndpointLabel({ server }: { server: UnifiedServer }) {
+  return <div className="space-y-1">{server.nodeName && <code className="text-xs">{server.nodeName}</code>}<EndpointAddress server={server} /></div>;
+}
+
+function EndpointAddress({ server }: { server: UnifiedServer }) {
   const { t } = useTranslation("ops");
   const endpoint = server.ready && server.endpointAddress ? server.endpointAddress : null;
   if (!endpoint) {

@@ -202,6 +202,9 @@ func (k *K8sJobStatus) PendingRestoreChains(ctx context.Context) ([]RestoreChain
 				snapshot = ChainSnapshotFailed
 			}
 		}
+		if j.Labels["felis.lolicon.best/archive-pending"] == "true" && snapshot == ChainSnapshotSucceeded {
+			snapshot = ChainSnapshotRunning
+		}
 		out = append(out, RestoreChain{
 			Job:       j.Name,
 			Server:    j.Labels[jobServerLabel],

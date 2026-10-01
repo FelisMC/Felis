@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"time"
 
+	"felis.lolicon.best/internal/placement"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -43,7 +44,8 @@ const (
 // operation + Config by the Editor. jobspec is a pure function of them so the
 // security-critical Job shape is unit-tested without a cluster.
 type JobParams struct {
-	Server string
+	NodeName string
+	Server   string
 	// OpID is the per-invocation identifier that both names the Job and labels its
 	// Pod. See Editor.run for why every invocation gets a fresh one.
 	OpID    string
@@ -273,6 +275,7 @@ func FilesJob(p JobParams) (*batchv1.Job, error) {
 				ObjectMeta: metav1.ObjectMeta{Labels: filesLabels(p)},
 				Spec: corev1.PodSpec{
 					RestartPolicy:                corev1.RestartPolicyNever,
+					NodeSelector:                 jobNodeSelector(p.NodeName),
 					ServiceAccountName:           p.ServiceAccount,
 					AutomountServiceAccountToken: boolPtr(false),
 					SecurityContext:              filesPodSecurityContext(p),
@@ -355,4 +358,11 @@ func filesAnnotations(p JobParams) map[string]string {
 		return nil
 	}
 	return map[string]string{AnnotationPath: p.Path}
+}
+
+func jobNodeSelector(name string) map[string]string {
+	if name == "" {
+		return nil
+	}
+	return map[string]string{placement.LabelIdentity: name}
 }

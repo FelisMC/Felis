@@ -281,6 +281,8 @@ spec:
               storage:
                 description: Storage configures the world PVC.
                 properties:
+                  claimName:
+                    type: string
                   size:
                     description: Size is the requested PVC capacity (e.g. "10Gi").
                     type: string
@@ -289,6 +291,8 @@ spec:
                       uses the default.
                     type: string
                 type: object
+              nodeName:
+                type: string
               subdomain:
                 description: |-
                   Subdomain is the per-server label under the deployment zone. It is the
@@ -301,6 +305,8 @@ spec:
           status:
             description: MinecraftServerStatus is the observed state (spec §4 status.*).
             properties:
+              nodeName:
+                type: string
               autoRestarts:
                 description: |-
                   AutoRestarts counts how often the operator recreated the pod of a start

@@ -11,7 +11,7 @@ Evidence tags follow troubleshooting.md: **[VM-VERIFIED]** was run on a real hos
 
 ## 1. Supported hosts
 
-`deploy/bootstrap.sh` provisions a single node. It needs systemd, root, and one of the
+`deploy/bootstrap.sh` defaults to a single node. For the opt-in A controller / worker deployment, see [distributed.md](distributed.md). It needs systemd, root, and one of the
 package managers below; everything else (k3s, the JRE, cloudflared, and Docker when an image
 has to be built on the host; see "Where the binary and the images come from" below) it
 installs.

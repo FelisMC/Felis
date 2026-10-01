@@ -37,6 +37,7 @@ func cmdEgressGate(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("egress-gate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	probe := fs.String("probe", "", "host:port the pod's NetworkPolicy denies (default: the Kubernetes API Service from KUBERNETES_SERVICE_HOST/PORT)")
+	positive := fs.String("positive-probe", "", "allowed host:port that must remain reachable during denial checks")
 	wait := fs.Duration("wait", 2*time.Minute, "how long the probe may keep answering before the gate gives up")
 	failOpen := fs.Bool("fail-open", false, "when --wait runs out, warn and let the pod go on instead of refusing it")
 	if err := fs.Parse(args); err != nil {
@@ -53,6 +54,18 @@ func cmdEgressGate(args []string, stdout, stderr io.Writer) int {
 
 	start := time.Now()
 	for {
+		if *positive != "" {
+			allowed, err := net.DialTimeout("tcp", *positive, egressDialTimeout)
+			if err != nil {
+				if time.Since(start) >= *wait {
+					fmt.Fprintln(stderr, "felis egress-gate: positive probe unavailable; refusing to start", err)
+					return 1
+				}
+				time.Sleep(egressPollInterval)
+				continue
+			}
+			allowed.Close()
+		}
 		conn, err := net.DialTimeout("tcp", *probe, egressDialTimeout)
 		if err != nil {
 			fmt.Fprintf(stdout, "felis egress-gate: %s is unreachable after %s (%v); the egress lock is in effect\n",

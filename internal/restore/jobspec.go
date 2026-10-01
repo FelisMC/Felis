@@ -1,7 +1,9 @@
 package restore
 
 import (
+	"felis.lolicon.best/internal/archivetransfer"
 	"fmt"
+	"strconv"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -34,22 +36,24 @@ const (
 // archive ref + Config by the Restorer. jobspec is a pure function of them so
 // the security-critical Job shape is unit-tested without a cluster.
 type JobParams struct {
-	Server         string
-	WorldPVC       string
-	BackupPVC      string
-	BackupRef      string
-	ArchiveStore   string
-	Namespace      string
-	ServiceAccount string
-	Image          string
-	BackupRoot     string
-	WorldsRoot     string
-	Deadline       time.Duration
-	CPULimit       string
-	MemLimit       string
-	RunAsUser      int64
-	RunAsGroup     int64
-	FSGroup        int64
+	SourceURL, Token, SHA256 string
+	MaxBytes                 int64
+	Server                   string
+	WorldPVC                 string
+	BackupPVC                string
+	BackupRef                string
+	ArchiveStore             string
+	Namespace                string
+	ServiceAccount           string
+	Image                    string
+	BackupRoot               string
+	WorldsRoot               string
+	Deadline                 time.Duration
+	CPULimit                 string
+	MemLimit                 string
+	RunAsUser                int64
+	RunAsGroup               int64
+	FSGroup                  int64
 
 	TTLAfterFinished time.Duration
 }
@@ -92,7 +96,7 @@ func RestoreJob(p JobParams) (*batchv1.Job, error) {
 	if p.Image == "" {
 		return nil, fmt.Errorf("restore: image is empty")
 	}
-	if p.WorldPVC == "" || p.BackupPVC == "" {
+	if p.WorldPVC == "" || (p.BackupPVC == "" && p.SourceURL == "") {
 		return nil, fmt.Errorf("restore: world and backup PVC names are required")
 	}
 	limits, err := resourceLimits(p.CPULimit, p.MemLimit)
@@ -191,6 +195,16 @@ func RestoreJob(p JobParams) (*batchv1.Job, error) {
 				},
 			},
 		},
+	}
+	if p.SourceURL != "" {
+		if p.Token == "" || p.SHA256 == "" || p.MaxBytes <= 0 {
+			return nil, fmt.Errorf("restore: remote archive credentials and bounds required")
+		}
+		c := &job.Spec.Template.Spec.Containers[0]
+		c.Args = append(c.Args, "--source-url", p.SourceURL, "--sha256", p.SHA256, "--max-bytes", strconv.FormatInt(p.MaxBytes, 10))
+		c.Env = []corev1.EnvVar{{Name: archivetransfer.TokenEnv, Value: p.Token}}
+		c.VolumeMounts[1] = corev1.VolumeMount{Name: "tmp", MountPath: "/tmp"}
+		job.Spec.Template.Spec.Volumes[1] = corev1.Volume{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}
 	}
 	return job, nil
 }

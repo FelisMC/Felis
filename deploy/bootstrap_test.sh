@@ -1334,7 +1334,7 @@ expect "a failed fetch into an existing checkout names the token" "set FELIS_GIT
 
 mblock="$(awk '/^  log "rendering \+ applying the control-plane bundle"/,/kube apply -f -/' "$BS")"
 [ -n "$mblock" ] || { echo "FAIL: no manifest_args block found in $BS"; exit 1; }
-[ "$(printf '%s\n' "$mblock" | wc -l)" -lt 60 ] \
+[ "$(printf '%s\n' "$mblock" | wc -l)" -lt 100 ] \
   || { echo "FAIL: the extracted block is not the manifest_args block -- did it move?"; exit 1; }
 
 run_bundle_flags() { # backup-pvc worlds-host-path
@@ -4909,6 +4909,36 @@ case "$out" in
   *) expect "one bucket key alone is reported as missing keys" "WARN: uploads go to an S3 bucket" "$out" ;;
 esac
 rm -rf "$credir" "$credcalls"
+
+# Worker admission reuses the installer but must never enter host control-plane setup.
+expect "distributed admission preserves existing API-server arguments" \
+  "echo 'kube-apiserver-arg+:'" "$(bsfn write_k3s_config)"
+worker="$(bsfn main_worker)"
+before "worker identity is checked before the agent config is written" \
+  'refusing to rename it' 'cat > "$K3S_CONFIG_DROPIN"' "$worker"
+expect "worker rejects server tokens and verifies the CA-pinned bootstrap shape" \
+  'K10[0-9a-f]{64}::[a-z0-9]{6}\.[a-z0-9]{16}' "$worker"
+expect "worker cannot replace a controller" 'refusing to turn a controller into a worker' "$worker"
+expect "worker is quarantined" 'felis.lolicon.best/unapproved=true:NoSchedule' "$worker"
+expect "worker mirror preserves logical references and points at the cluster service" \
+  'http://${WORKER_REGISTRY_IP}:5000' "$worker"
+expect "worker disables registry endpoint fallback" 'disable-default-registry-endpoint: true' "$worker"
+for forbidden in deploy_bundle install_cloudflared install_velocity run_migrations load_or_make_secrets; do
+  case "$worker" in
+    *"$forbidden"*) echo "FAIL worker invokes $forbidden"; fails=$((fails + 1));;
+    *) echo "PASS worker does not invoke $forbidden";;
+  esac
+done
+badtoken="$(mktemp)"
+printf 'server-token-not-bootstrap' > "$badtoken"
+out="$(WORKER_TOKEN_FILE="$badtoken" bash -c '
+  die() { printf "DIE: %s\n" "$*"; exit 1; }
+  WORKER_NAME=b WORKER_SERVER=https://192.0.2.1:6443 WORKER_REGISTRY_IP=10.43.0.10 WORKER_PEERS=192.0.2.1/32
+  '"$worker"'
+  main_worker
+')"
+expect "worker refuses a copied server token before changing the machine" 'worker accepts only CA-pinned bootstrap tokens' "$out"
+rm -f "$badtoken"
 
 # ---------------------------------------------------------------------------------------
 if [ "$fails" -eq 0 ]; then

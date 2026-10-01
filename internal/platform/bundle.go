@@ -72,6 +72,11 @@ func Objects(p Params) []Object {
 		objs = append(objs, rb)
 	}
 
+	if p.Distributed {
+		objs = append(objs, DistributedRBAC(p)...)
+		objs = append(objs, ArchiveNetworkPolicies(p)...)
+	}
+
 	// Weak Job SAs. They come from the build/restore packages (single source of
 	// truth for AutomountServiceAccountToken=false), which set ObjectMeta but not
 	// TypeMeta — stamp it so the YAML header is present. The restore Job runs in

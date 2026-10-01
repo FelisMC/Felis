@@ -20,6 +20,7 @@ import (
 	"felis.lolicon.best/internal/backupjob"
 	"felis.lolicon.best/internal/build"
 	"felis.lolicon.best/internal/config"
+	"felis.lolicon.best/internal/distributed"
 	"felis.lolicon.best/internal/fileedit"
 	"felis.lolicon.best/internal/imagepin"
 	"felis.lolicon.best/internal/mail"
@@ -27,6 +28,7 @@ import (
 	"felis.lolicon.best/internal/naming"
 	"felis.lolicon.best/internal/panel"
 	"felis.lolicon.best/internal/passkey"
+	"felis.lolicon.best/internal/placement"
 	"felis.lolicon.best/internal/platform"
 	"felis.lolicon.best/internal/reaper"
 	"felis.lolicon.best/internal/registryprune"
@@ -273,9 +275,23 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	// store at load, so by this point cfg.Archive.Store is guaranteed tarLocal.)
 	var restorer api.Restorer
 	felisImage, backupPVC := os.Getenv("FELIS_IMAGE"), os.Getenv("FELIS_BACKUP_PVC")
+	worldResolver := placement.Resolve(cl, cfg.K8s.Namespace)
+	distribution, err := distributionManager(cl, cfg, felisImage)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if distribution != nil {
+		worldResolver = distribution.Resolve
+	}
 	if felisImage != "" && backupPVC != "" {
 		rcfg := restoreConfig(cfg, felisImage, backupPVC)
-		restorer = &restore.Restorer{Jobs: restore.NewK8sJobs(cl), Config: rcfg}
+		rcfg.ResolveWorld = worldResolver
+		var jobs restore.Jobs = restore.NewK8sJobs(cl)
+		if distribution != nil {
+			jobs = distribution
+		}
+		restorer = &restore.Restorer{Jobs: jobs, Config: rcfg}
 	} else {
 		fmt.Fprintln(stderr, "felis api: restore executor disabled (needs FELIS_IMAGE and FELIS_BACKUP_PVC) — restore endpoint returns 503")
 	}
@@ -288,7 +304,13 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	// endpoint honestly returns 503.
 	var backuper api.Backuper
 	if felisImage != "" && backupPVC != "" {
-		backuper = &backupjob.Backuper{Jobs: backupjob.NewK8sJobs(cl), Config: backupConfig(cfg, felisImage, backupPVC)}
+		bcfg := backupConfig(cfg, felisImage, backupPVC)
+		bcfg.ResolveWorld = worldResolver
+		var jobs backupjob.Jobs = backupjob.NewK8sJobs(cl)
+		if distribution != nil {
+			jobs = distribution
+		}
+		backuper = &backupjob.Backuper{Jobs: jobs, Config: bcfg}
 	} else {
 		fmt.Fprintln(stderr, "felis api: backup executor disabled (needs FELIS_IMAGE and FELIS_BACKUP_PVC) — backup endpoint returns 503")
 	}
@@ -299,7 +321,9 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	// is wired under the restore gate; otherwise the export routes return 503.
 	var exporter api.Exporter
 	if felisImage != "" && backupPVC != "" {
-		exporter = worldexport.New(clientset, exportConfig(cfg, felisImage, backupPVC))
+		ecfg := exportConfig(cfg, felisImage, backupPVC)
+		ecfg.ResolveWorld = worldResolver
+		exporter = worldexport.New(clientset, ecfg)
 	} else {
 		fmt.Fprintln(stderr, "felis api: world export disabled (needs FELIS_IMAGE and FELIS_BACKUP_PVC) — export endpoints return 503")
 	}
@@ -319,9 +343,11 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	var files api.FileEditor
 	var fileStage *fileedit.Stage
 	if felisImage != "" {
+		fcfg := fileEditConfig(cfg, felisImage)
+		fcfg.ResolveWorld = worldResolver
 		files = &fileedit.Editor{
 			Runner: fileedit.NewK8sRunner(clientset),
-			Config: fileEditConfig(cfg, felisImage),
+			Config: fcfg,
 		}
 		fileStage = &fileedit.Stage{Dir: fileStagingDir()}
 		if err := fileStage.Sweep(); err != nil {
@@ -355,7 +381,21 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "felis api: MinecraftServer cache: %v\n", err)
 		return 1
 	}
-	cluster := api.NewK8sCluster(cl, cfg.K8s.Namespace).WithServerCache(serverCache, serversSynced)
+	cluster := api.NewK8sCluster(cl, cfg.K8s.Namespace).WithServerCache(serverCache, serversSynced).WithDistributed(distribution != nil, os.Getenv("FELIS_CONTROLLER_NODE"))
+	if distribution != nil {
+		distribution.Record = func(ctx context.Context, b distributed.Backup) error {
+			keep, retention, ok := backupPolicy(b.Reason, rcfg)
+			if !ok {
+				return fmt.Errorf("unknown backup reason %s", b.Reason)
+			}
+			st := reaper.NewPGStore(drv.DB())
+			if err := st.InsertBackup(ctx, reaper.BackupRecord{ID: "bk-" + b.ID, ServerName: b.Server, FormerOwner: b.Owner, BackupRef: b.Receipt.Ref, SizeBytes: b.Receipt.Size, SHA256: b.Receipt.SHA256, Reason: b.Reason, ExpiresAt: time.Now().Add(retention)}); err != nil {
+				return err
+			}
+			pruneBackups(ctx, st, distribution.Archive, b.Server, b.Owner, b.Reason, keep, b.Protect, stdout, stderr)
+			return nil
+		}
+	}
 	jobStatus := api.NewK8sJobStatus(cl, cfg.K8s.Namespace)
 	a := &api.API{
 		Repo:    repo,
@@ -455,7 +495,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	externalHandler := panel.Handler(a.ExternalHandler(), cfg.Server.RootDomain,
 		defaultPanelHostname(cfg.Server.RootDomain, cfg.Auth.PanelHostname),
 		defaultAdminHostname(cfg.Server.RootDomain, cfg.Auth.AdminHostname),
-		cfg.Velocity.GamePort, resolvedVersion())
+		cfg.Velocity.GamePort, resolvedVersion(), distribution != nil)
 	internalSrv := newAPIServer(*internalAddr, a.InternalHandler())
 	externalSrv := newAPIServer(cfg.Server.Listen, externalHandler)
 
@@ -499,6 +539,10 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	}
 	go retention.Loop(ctx, drv.DB(), retention.Policy{Audit: auditRetention}, retentionInterval, slog.Default())
 
+	if distribution != nil {
+		a.Distribution = distribution
+		go reconcileDistribution(ctx, distribution, stderr)
+	}
 	servers := []*http.Server{internalSrv, externalSrv}
 	if httpsSrv != nil {
 		servers = append(servers, httpsSrv)

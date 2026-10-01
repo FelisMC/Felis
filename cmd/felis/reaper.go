@@ -16,6 +16,7 @@ import (
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/backup"
 	"felis.lolicon.best/internal/config"
+	"felis.lolicon.best/internal/distributed"
 	"felis.lolicon.best/internal/platform"
 	"felis.lolicon.best/internal/reaper"
 	corev1 "k8s.io/api/core/v1"
@@ -78,6 +79,19 @@ func cmdReaper(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	if os.Getenv("FELIS_DISTRIBUTED") == "true" && !*retentionOnly {
+		m, err := distributionManager(cl, cfg, os.Getenv("FELIS_IMAGE"))
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		local, ok := archiver.(*backup.TarLocal)
+		if !ok {
+			fmt.Fprintln(stderr, "remote reaper requires tarLocal")
+			return 1
+		}
+		archiver = &distributed.RemoteArchiver{TarLocal: local, Manager: m}
+	}
 	drv, err := openPodStore(ctx, cfg.Database.URL, "reaper", stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis reaper: open database: %v\n", err)
@@ -94,7 +108,7 @@ func cmdReaper(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "felis reaper: retention only — no worlds root is configured, so idle worlds are neither archived nor released")
 		return reportReaperRun(r.RunRetention(ctx), stdout, stderr)
 	}
-	r.Cluster = reaper.NewK8sCluster(cl, cfg.K8s.Namespace)
+	r.Cluster = reaper.NewK8sCluster(cl, cfg.K8s.Namespace).WithDistributed(os.Getenv("FELIS_DISTRIBUTED") == "true")
 
 	// Pre-reap warnings go out by email when [smtp] is configured (the same
 	// relay and password_ref convention felis-api uses); without it the channel

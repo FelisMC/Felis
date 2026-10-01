@@ -41,12 +41,25 @@ type K8sCluster struct {
 	now       func() time.Time
 	// beat is how often a held lock is rewritten; maintenance.Grace/4 unless a
 	// test shortens it.
-	beat time.Duration
+	beat        time.Duration
+	distributed bool
 }
 
 // NewK8sCluster builds a Cluster over c, scoped to namespace.
 func NewK8sCluster(c client.Client, namespace string) *K8sCluster {
 	return &K8sCluster{c: c, namespace: namespace}
+}
+
+func (k *K8sCluster) WithDistributed(enabled bool) *K8sCluster { k.distributed = enabled; return k }
+func (k *K8sCluster) RetainedWorlds(ctx context.Context, name string) (bool, error) {
+	if !k.distributed {
+		return false, nil
+	}
+	var pvcs corev1.PersistentVolumeClaimList
+	if err := k.c.List(ctx, &pvcs, client.InNamespace(k.namespace), client.MatchingLabels{maintenance.LabelServer: name}); err != nil {
+		return false, err
+	}
+	return len(pvcs.Items) > 0, nil
 }
 
 func (k *K8sCluster) clock() time.Time {
@@ -61,7 +74,7 @@ func (k *K8sCluster) Inspect(ctx context.Context, name string) (ServerCRD, error
 	if err := k.get(ctx, name, &ms); err != nil {
 		return ServerCRD{}, err
 	}
-	return ServerCRD{Exempt: ms.Spec.ReaperExempt, PVC: WorldPVCName(name), UID: string(ms.UID)}, nil
+	return ServerCRD{Exempt: ms.Spec.ReaperExempt, PVC: ms.WorldPVC(), UID: string(ms.UID)}, nil
 }
 
 // HoldWorld implements Cluster. The lock is the same Annotation felis-api

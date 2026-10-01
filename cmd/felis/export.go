@@ -60,6 +60,7 @@ func cmdExport(args []string, stdout, stderr io.Writer) int {
 	sum := fs.String("sha256", "", "backup only: the sha256 recorded when the archive was written; a mismatch fails the export before its end is sent")
 	worldsRoot := fs.String("worlds-root", "/world", "world and files: mount path of the world PVC")
 	path := fs.String("path", "", "files only: the file or folder to send, relative to the world root")
+	rawArchive := fs.Bool("archive-raw", false, "internal archive transfer: preserve the complete world")
 	dir := fs.Bool("dir", false, "files only: the path is a folder, sent as a zip")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -82,7 +83,11 @@ func cmdExport(args []string, stdout, stderr io.Writer) int {
 		}
 		err = exportBackup(ctx, *target, token, *ref, *backupRoot, *sum, stdout)
 	case worldexport.ModeWorld:
-		err = exportWorld(ctx, *target, token, *worldsRoot, stdout)
+		if *rawArchive {
+			err = streamExport(ctx, *target, token, archiveType, -1, func(w io.Writer) error { _, _, err := backup.WriteTarGz(ctx, w, *worldsRoot, nil); return err })
+		} else {
+			err = exportWorld(ctx, *target, token, *worldsRoot, stdout)
+		}
 	case worldexport.ModeFiles:
 		if *path == "" {
 			fmt.Fprintln(stderr, "felis export: --path is required for files")

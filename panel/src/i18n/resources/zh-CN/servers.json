@@ -250,5 +250,22 @@
   "retiring_cancel_admin_only": "删除由管理员提出，只有管理员可以撤销。",
   "retiring_badge_release": "等待回收",
   "retiring_badge_delete": "等待删除",
-  "retiring_badge_hint": "已放弃或正在删除，下一次每日回收时处理；在此之前不能启动。"
+  "retiring_badge_hint": "已放弃或正在删除，下一次每日回收时处理；在此之前不能启动。",
+  "nodes": "执行节点",
+  "node": "执行位置",
+  "node_choose": "选择已批准的节点",
+  "node_none": "没有在线且已批准的执行节点",
+  "node_online": "在线",
+  "node_offline": "失联",
+  "node_approved": "已批准",
+  "node_pending": "待批准",
+  "migration": "停服迁移",
+  "migration_hint": "迁移完成后仍保持停服。源卷保留，请检查后手动启动。",
+  "migration_stop": "请先停服并等待游戏进程退出。",
+  "migration_start": "开始迁移",
+  "migration_state_backing_up": "正在归档源卷",
+  "migration_state_restoring": "正在恢复并校验目标卷",
+  "migration_state_switching": "正在切换活动卷",
+  "migration_state_succeeded": "迁移完成，等待手动启动",
+  "migration_state_failed": "迁移失败，服务器保持停服"
 }

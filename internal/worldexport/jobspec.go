@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"felis.lolicon.best/internal/placement"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -57,7 +58,8 @@ const (
 // JobParams are the rendered inputs to an export Job. ExportJob is a pure
 // function of them, so the Job shape is unit-tested without a cluster.
 type JobParams struct {
-	Server string
+	NodeName string
+	Server   string
 	// ID names this export: it is the tail of the Job name and of the internal
 	// upload path, so two exports of one server never collide.
 	ID   string
@@ -227,6 +229,7 @@ func ExportJob(p JobParams) (*batchv1.Job, error) {
 				ObjectMeta: metav1.ObjectMeta{Labels: exportLabels(p)},
 				Spec: corev1.PodSpec{
 					RestartPolicy:                corev1.RestartPolicyNever,
+					NodeSelector:                 jobNodeSelector(p.NodeName),
 					ServiceAccountName:           p.ServiceAccount,
 					AutomountServiceAccountToken: boolPtr(false),
 					SecurityContext:              sc,
@@ -269,3 +272,10 @@ func resourceLimits(cpu, mem string) (corev1.ResourceList, error) {
 func boolPtr(b bool) *bool    { return &b }
 func int32Ptr(i int32) *int32 { return &i }
 func int64Ptr(i int64) *int64 { return &i }
+
+func jobNodeSelector(name string) map[string]string {
+	if name == "" {
+		return nil
+	}
+	return map[string]string{placement.LabelIdentity: name}
+}

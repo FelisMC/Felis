@@ -251,5 +251,22 @@
   "retiring_cancel_admin_only": "An administrator asked for the deletion, so only an administrator can cancel it.",
   "retiring_badge_release": "Given up",
   "retiring_badge_delete": "Deleting",
-  "retiring_badge_hint": "Given up or being deleted; handled at the next daily reclaim run, and it can't be started until then."
+  "retiring_badge_hint": "Given up or being deleted; handled at the next daily reclaim run, and it can't be started until then.",
+  "nodes": "Execution nodes",
+  "node": "Execution node",
+  "node_choose": "Choose an approved node",
+  "node_none": "No online approved worker nodes",
+  "node_online": "Online",
+  "node_offline": "Offline",
+  "node_approved": "Approved",
+  "node_pending": "Pending approval",
+  "migration": "Migrate world",
+  "migration_hint": "The server stays stopped after migration. The source volume is retained; check the world before starting it.",
+  "migration_stop": "Stop the server and wait for the game process to exit first.",
+  "migration_start": "Start migration",
+  "migration_state_backing_up": "Archiving source world",
+  "migration_state_restoring": "Restoring and verifying target world",
+  "migration_state_switching": "Switching active volume",
+  "migration_state_succeeded": "Migration complete; start manually after inspection",
+  "migration_state_failed": "Migration failed; server remains stopped"
 }

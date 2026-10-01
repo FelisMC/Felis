@@ -18,6 +18,7 @@ import (
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/maintenance"
 	"felis.lolicon.best/internal/metrics"
+	"felis.lolicon.best/internal/placement"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -116,6 +117,9 @@ func podTemplateStamp(tmpl *corev1.PodTemplateSpec, felisImage string) (string, 
 
 // Reconciler reconciles a MinecraftServer with its managed children.
 type Reconciler struct {
+	Nodes          client.Reader
+	EgressProbe    string
+	ControllerNode string
 	client.Client
 	Scheme *runtime.Scheme
 	// Prober gates readiness on RCON reachability.
@@ -312,6 +316,46 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 		return ctrl.Result{RequeueAfter: requeueMaintenance}, nil
 	}
 
+	if r.Nodes != nil {
+		node := server.Spec.NodeName
+		var pod corev1.Pod
+		if err := r.podReader().Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: server.Name + "-0"}, &pod); err == nil {
+			server.Status.NodeName = pod.Spec.NodeName
+			if node == "" {
+				node = pod.Spec.NodeName
+			}
+		} else if !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
+		if node == "" {
+			node = r.ControllerNode
+		}
+		if node != "" {
+			var n corev1.Node
+			err := r.Nodes.Get(ctx, types.NamespacedName{Name: node}, &n)
+			if err != nil && !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, err
+			}
+			if err != nil || !placement.Admitted(&n, r.ControllerNode) {
+				var svc corev1.Service
+				if err := r.Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: server.Name}, &svc); err == nil {
+					if svc.Spec.Selector == nil {
+						svc.Spec.Selector = map[string]string{}
+					}
+					svc.Spec.Selector["felis.lolicon.best/node-online"] = "true"
+					if err := r.Update(ctx, &svc); err != nil {
+						return ctrl.Result{}, err
+					}
+				} else if !apierrors.IsNotFound(err) {
+					return ctrl.Result{}, err
+				}
+				server.Status.Ready = false
+				server.Status.Endpoint = v1alpha1.EndpointStatus{Mode: v1alpha1.EndpointFallback}
+				r.setCondition(server, v1alpha1.ConditionReady, metav1.ConditionFalse, "NodeUnavailable", "execution node is offline; automatic relocation is disabled")
+				return ctrl.Result{RequeueAfter: 10 * time.Second}, r.patchStatus(ctx, server)
+			}
+		}
+	}
 	endpointAddress, err := r.ensureServices(ctx, server)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -330,7 +374,11 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 		return ctrl.Result{RequeueAfter: requeueSecret}, nil
 	}
 
-	desired, err := buildStatefulSet(server, 1, r.FelisImage)
+	placed := server.DeepCopy()
+	if placed.Spec.NodeName == "" {
+		placed.Spec.NodeName = r.ControllerNode
+	}
+	desired, err := buildStatefulSet(placed, 1, r.FelisImage, r.EgressProbe)
 	if err != nil {
 		// A malformed spec (e.g. bad storage quantity) is terminal until edited.
 		r.markFailed(server, "InvalidSpec", err.Error())

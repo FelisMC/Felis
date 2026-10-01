@@ -7,9 +7,12 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
+	"felis.lolicon.best/internal/maintenance"
 	"felis.lolicon.best/internal/naming"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -18,6 +21,37 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
+
+func TestPersistentMigrationBlocksWakeAndWorldOperations(t *testing.T) {
+	scheme := runtime.NewScheme()
+	v1alpha1.AddToScheme(scheme)
+	corev1.AddToScheme(scheme)
+	batchv1.AddToScheme(scheme)
+	s := &v1alpha1.MinecraftServer{ObjectMeta: metav1.ObjectMeta{Name: "survival", Namespace: "minecraft", Annotations: map[string]string{maintenance.Annotation: maintenance.LockValue(maintenance.KindMigration, time.Now().Add(-24*time.Hour))}}, Spec: v1alpha1.MinecraftServerSpec{DesiredState: v1alpha1.DesiredStopped}, Status: v1alpha1.MinecraftServerStatus{Phase: v1alpha1.PhaseStopped}}
+	s.Spec.Storage.ClaimName = "world-survival-migrated"
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(s, &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: s.WorldPVC(), Namespace: s.Namespace}}).Build()
+	k := NewK8sCluster(c, s.Namespace)
+	ctx := context.Background()
+	if exists, err := k.WorldVolumeExists(ctx, s.Name); err != nil || !exists {
+		t.Fatal("active volume ignored", err)
+	}
+	if err := k.SetDesiredState(ctx, s.Name, v1alpha1.DesiredRunning); !errors.Is(err, ErrMaintenanceInProgress) {
+		t.Fatal("migration admitted wake", err)
+	}
+	for _, kind := range []string{maintenance.KindBackup, maintenance.KindFileWrite, maintenance.KindReap} {
+		if err := k.AcquireMaintenance(ctx, s.Name, kind); !errors.Is(err, ErrMaintenanceInProgress) {
+			t.Fatal("migration admitted", kind, err)
+		}
+	}
+	if err := k.ReleaseMaintenance(ctx, s.Name); err != nil {
+		t.Fatal(err)
+	}
+	var current v1alpha1.MinecraftServer
+	c.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: s.Name}, &current)
+	if current.Annotations[maintenance.Annotation] == "" {
+		t.Fatal("normal release cleared persistent migration lock")
+	}
+}
 
 // K8sCluster is documented as integration-tested against a live cluster rather
 // than covered by the hermetic suite, and for most of it that is the right call —

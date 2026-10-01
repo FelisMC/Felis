@@ -4,6 +4,75 @@
  */
 
 export interface paths {
+    "/api/v1/nodes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List execution nodes (administrator). */
+        get: operations["executionNodes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/servers/{name}/migrations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read durable migration progress. */
+        get: operations["latestWorldMigrationStatus"];
+        put?: never;
+        /** Migrate an already stopped world; persistent lock survives controller restart. */
+        post: operations["startWorldMigration"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/servers/{name}/migrations/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read durable migration progress. */
+        get: operations["worldMigrationStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/servers/{name}/migrations/{id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry a failed migration, retaining the source and stopped state. */
+        post: operations["retryWorldMigration"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -2810,8 +2879,42 @@ export interface components {
          * @enum {string}
          */
         Phase: "Unknown" | "Stopped" | "Starting" | "Running" | "Stopping" | "Failed";
+        ExecutionNode: {
+            name: string;
+            role: string;
+            ready: boolean;
+            approved: boolean;
+            addresses: string[];
+            architecture: string;
+        };
+        WorldMigration: {
+            id: string;
+            server: string;
+            /** @enum {string} */
+            state: "backing_up" | "restoring" | "switching" | "succeeded" | "failed";
+            stage: string;
+            sourceNode: string;
+            targetNode: string;
+            sourcePVC: string;
+            targetPVC: string;
+            backup: {
+                ref: string;
+                /** Format: int64 */
+                size: number;
+                sha256: string;
+            };
+            /** Format: date-time */
+            started: string;
+            /** Format: date-time */
+            updated: string;
+            switched: boolean;
+            attempt: number;
+            error?: string;
+        };
         /** @description Status projection of one server (internal/api/cluster.go ServerInfo). */
         ServerInfo: {
+            /** @description Execution node; legacy servers report the observed node. */
+            nodeName?: string;
             name: string;
             subdomain: string;
             phase: components["schemas"]["Phase"];
@@ -3561,6 +3664,154 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    executionNodes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Accepted operation or current state. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        nodes: components["schemas"]["ExecutionNode"][];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    latestWorldMigrationStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Accepted operation or current state. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorldMigration"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    startWorldMigration: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    targetNode: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Accepted operation or current state. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorldMigration"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    worldMigrationStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Accepted operation or current state. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorldMigration"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    retryWorldMigration: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Accepted operation or current state. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorldMigration"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
     healthz: {
         parameters: {
             query?: never;
@@ -3721,6 +3972,8 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    /** @description Required approved worker in distributed mode; administrator only. */
+                    nodeName?: string;
                     name: string;
                     subdomain: string;
                     /** @description Trimmed; at most 64 characters, all visible ones or spaces (400 bad_display_name otherwise). */

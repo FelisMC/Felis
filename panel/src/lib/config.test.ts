@@ -33,6 +33,7 @@ describe("loadConfig", () => {
     const cfg = await loadConfig();
     expect(cfg).toEqual({
       apiBase: "/api/v1",
+      distributed: false,
       rootDomain: "mc.example",
       panelHostname: undefined,
       adminHostname: "op.console.mc.example",

@@ -274,6 +274,13 @@ FELIS_OFFSITE_DB_KEEP="${FELIS_OFFSITE_DB_KEEP:-}"
 # the key that pings the check; off removes it, and a re-run without it keeps it.
 FELIS_WATCHDOG_HEARTBEAT_URL="${FELIS_WATCHDOG_HEARTBEAT_URL:-}"
 INSTALL_MODE="${FELIS_INSTALL_MODE:-}"
+DISTRIBUTED="${FELIS_DISTRIBUTED:-0}"
+WORKER_NAME="${FELIS_NODE_NAME:-}"
+WORKER_SERVER="${FELIS_SERVER_URL:-}"
+WORKER_TOKEN_FILE="${FELIS_BOOTSTRAP_TOKEN_FILE:-}"
+WORKER_REGISTRY_IP="${FELIS_REGISTRY_CLUSTER_IP:-}"
+NODE_EXTERNAL_IP="${FELIS_NODE_EXTERNAL_IP:-}"
+WORKER_PEERS="${FELIS_PEER_CIDRS:-}"
 # strict stops the install on any preflight problem (preflight below); warn reports them
 # and goes on, for a host the checks misjudge.
 FELIS_PREFLIGHT="${FELIS_PREFLIGHT:-strict}"
@@ -2024,6 +2031,19 @@ write_k3s_config() {
   {
     echo "# Written by the Felis installer (deploy/bootstrap.sh); a rerun rewrites it."
     echo 'write-kubeconfig-mode: "0600"'
+    if [ "${DISTRIBUTED:-0}" = 1 ]; then
+      [ -n "$NODE_EXTERNAL_IP" ] || NODE_EXTERNAL_IP="$NODE_IP"
+      printf 'node-external-ip: "%s"\n' "$NODE_EXTERNAL_IP"
+      echo 'flannel-backend: "wireguard-native"'
+      echo 'flannel-external-ip: true'
+      echo 'agent-token-file: "/etc/rancher/k3s/felis-agent-token"'
+      # Append to existing API-server hardening arguments in earlier config files.
+      echo 'kube-apiserver-arg+:'
+      echo '  - "enable-admission-plugins=NodeRestriction"'
+      if [ ! -s /etc/rancher/k3s/felis-agent-token ]; then
+        (umask 077; openssl rand -hex 32 > /etc/rancher/k3s/felis-agent-token)
+      fi
+    fi
     if [ -n "$name" ]; then
       printf 'node-name: "%s"\n' "$name"
     fi
@@ -5259,6 +5279,24 @@ deploy_bundle() {
 
   revoke_worlds_root_grant
 
+  if [ "${DISTRIBUTED:-0}" = 1 ]; then
+    local controller archive_key_file="${STATE_DIR}/archive-transfer.key"
+    controller="$(k3s_node_name)"
+    [ -n "$controller" ] || die "distributed deployment needs a stable controller node name"
+    kube label node "$controller" "felis.node-restriction.kubernetes.io/role=controller" "felis.node-restriction.kubernetes.io/identity=$controller" --overwrite
+    local system_deployment
+    for system_deployment in coredns local-path-provisioner; do
+      if kube -n kube-system get deployment "$system_deployment" >/dev/null 2>&1; then
+        kube -n kube-system patch deployment "$system_deployment" --type merge \
+          -p "{\"spec\":{\"template\":{\"spec\":{\"nodeSelector\":{\"felis.node-restriction.kubernetes.io/identity\":\"$controller\"}}}}}"
+      fi
+    done
+    if [ ! -s "$archive_key_file" ]; then (umask 077; openssl rand -hex 32 > "$archive_key_file"); fi
+    local archive_key
+    archive_key="$(cat "$archive_key_file")"
+    apply_literal_secret "$CONTROL_NS" felis-archive-key key "$archive_key"
+    apply_literal_secret "$MINECRAFT_NS" felis-archive-key key "$archive_key"
+  fi
   log "rendering + applying the control-plane bundle"
   local -a manifest_args=(
     --felis-image "$FELIS_IMAGE"
@@ -5266,6 +5304,13 @@ deploy_bundle() {
     --panel-node-port "$FELIS_PANEL_NODEPORT"
     --velocity-cidr "${NODE_IP}/32"
   )
+  if [ "${DISTRIBUTED:-0}" = 1 ]; then
+    manifest_args+=(--distributed --controller-node "$controller" --egress-probe "felis-api.${CONTROL_NS}.svc:443")
+    # Every node address, including global addresses, must be excluded from game egress.
+    while read -r cidr; do
+      [ -z "$cidr" ] || manifest_args+=(--server-egress-deny-cidr "$cidr")
+    done < <(kube get nodes -o jsonpath='{range .items[*]}{range .status.addresses[*]}{.address}{"\n"}{end}{end}' | awk '/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {print $0"/32"}')
+  fi
   local cidr
   while read -r cidr; do
     [ -n "$cidr" ] && manifest_args+=(--server-egress-deny-cidr "$cidr")
@@ -5660,6 +5705,7 @@ summary() {
 #     prompt (or FELIS_INSTALL_MODE=nano).
 # ---------------------------------------------------------------------------
 prompt_install_mode() {
+  if [ "$INSTALL_MODE" = worker ]; then log "install mode: worker";return; fi
   # felis setup carries on to the Owner and edge setup, which needs the control plane, so
   # a nano install under it could only end in a setup error.
   if bootstrap_from_tui; then
@@ -5669,9 +5715,9 @@ prompt_install_mode() {
     return 0
   fi
   case "$INSTALL_MODE" in
-    full|nano) log "install mode: ${INSTALL_MODE} (from FELIS_INSTALL_MODE)"; return 0 ;;
+    full|nano|worker) log "install mode: ${INSTALL_MODE} (from FELIS_INSTALL_MODE)"; return 0 ;;
     "") ;;
-    *) die "FELIS_INSTALL_MODE must be 'full' or 'nano', got: ${INSTALL_MODE}" ;;
+    *) die "FELIS_INSTALL_MODE must be 'full', 'nano' or 'worker', got: ${INSTALL_MODE}" ;;
   esac
 
   # A felis-nano unit with no full install beside it makes this re-run a nano update;
@@ -5997,6 +6043,80 @@ ensure_k3s_on_path() {
   esac
 }
 
+# Worker is a daemon-only branch. It neither generates Felis service credentials nor applies a controller bundle.
+main_worker() {
+  [ -n "$WORKER_NAME" ] && [[ "$WORKER_NAME" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || die "FELIS_NODE_NAME is required and must be a DNS node name"
+  [[ "$WORKER_SERVER" =~ ^https://([a-zA-Z0-9.:-]+|\[[0-9a-fA-F:]+\]):6443$ ]] || die "FELIS_SERVER_URL must be an HTTPS k3s endpoint on port 6443"
+  [[ "$WORKER_REGISTRY_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "FELIS_REGISTRY_CLUSTER_IP is required"
+  [ -n "$WORKER_PEERS" ] || die "FELIS_PEER_CIDRS must list exact cluster peer addresses"
+  [ -s "$WORKER_TOKEN_FILE" ] || die "FELIS_BOOTSTRAP_TOKEN_FILE must name a secure limited bootstrap token file"
+  local token saved mode
+  [ -f "$WORKER_TOKEN_FILE" ] && [ ! -L "$WORKER_TOKEN_FILE" ] || die "bootstrap token must be a regular file"
+  mode="$(stat -c %a "$WORKER_TOKEN_FILE")"
+  (( (8#$mode & 077) == 0 )) || die "bootstrap token must not be readable by group or others (use chmod 600)"
+  token="$(cat "$WORKER_TOKEN_FILE")"
+  [[ "$token" =~ ^K10[0-9a-f]{64}::[a-z0-9]{6}\.[a-z0-9]{16}$ ]] || die "worker accepts only CA-pinned bootstrap tokens, never server or static agent tokens"
+  [ ! -e /var/lib/rancher/k3s/server ] || die "this host has a k3s server; refusing to turn a controller into a worker"
+  if [ -d /var/lib/rancher/k3s/agent ]; then
+    saved="$(k3s_node_name)"
+    [ -n "$saved" ] && [ "$saved" = "$WORKER_NAME" ] || die "cannot change or guess an installed worker identity"
+  fi
+  if [ -f "$K3S_CONFIG_DROPIN" ]; then
+    saved="$(awk -F'"' '/^node-name:/ {print $2;exit}' "$K3S_CONFIG_DROPIN")"
+    [ -z "$saved" ] || [ "$saved" = "$WORKER_NAME" ] || die "existing node identity is $saved; refusing to rename it"
+    saved="$(awk -F'"' '/^server:/ {print $2;exit}' "$K3S_CONFIG_DROPIN")"
+    [ -z "$saved" ] || [ "$saved" = "$WORKER_SERVER" ] || die "existing worker belongs to another controller"
+  fi
+  detect_node_ip
+  [ -n "$NODE_EXTERNAL_IP" ] || NODE_EXTERNAL_IP="$NODE_IP"
+  PREFLIGHT_PROBLEMS=()
+  preflight_platform; preflight_memory; preflight_disk; preflight_networks; preflight_outbound
+  local unit
+  for unit in rke2-server rke2-agent k0scontroller k0sworker snap.microk8s.daemon-kubelite kubelet k3s; do
+    if systemctl is-active --quiet "$unit.service"; then preflight_fail "conflicting Kubernetes service: $unit"; fi
+  done
+  [ "${#PREFLIGHT_PROBLEMS[@]}" = 0 ] || die "worker preflight failed: ${PREFLIGHT_PROBLEMS[*]}"
+  install_base
+  ensure_time_sync
+  ensure_persistent_journal
+  # Reuse the release binary path for the local admission checks, without importing game/platform images.
+  bootstrap_from_tui || [ -n "$FELIS_ARTIFACT_DIR" ] || [ -n "${FELIS_SKIP_FETCH:-}" ] || resolve_install_ref
+  acquire_felis_binary
+  if [ ! -x "$HOST_BIN" ]; then install_go_toolchain; build_nano_binary; fi
+  mkdir -p /etc/rancher/k3s/config.yaml.d
+  (umask 077; printf '%s\n' "$token" > /etc/rancher/k3s/felis-bootstrap-token)
+  unset token
+  cat > "$K3S_CONFIG_DROPIN" <<EOF_WORKER
+server: "$WORKER_SERVER"
+node-name: "$WORKER_NAME"
+node-external-ip: "$NODE_EXTERNAL_IP"
+token-file: "/etc/rancher/k3s/felis-bootstrap-token"
+disable-default-registry-endpoint: true
+node-taint:
+  - "felis.lolicon.best/unapproved=true:NoSchedule"
+EOF_WORKER
+  chmod 0600 "$K3S_CONFIG_DROPIN"
+  cat > "$K3S_REGISTRIES_FILE" <<EOF_MIRROR
+mirrors:
+  "$REGISTRY_URL":
+    endpoint:
+      - "http://${WORKER_REGISTRY_IP}:5000"
+EOF_MIRROR
+  chmod 0600 "$K3S_REGISTRIES_FILE"
+  HOST_BIN_IN_USE=1
+  "$HOST_BIN" node firewall --peers "$WORKER_PEERS" --controller-ip "${WORKER_SERVER#https://}" --pod-cidr "$POD_CIDR" --node-port "$FELIS_PANEL_NODEPORT"
+  if [ ! -x "$K3S_BIN" ]; then
+    stage_k3s_airgap_images
+    curl -sfL --retry 5 --retry-delay 2 "https://raw.githubusercontent.com/k3s-io/k3s/${FELIS_K3S_VERSION}/install.sh" | \
+      INSTALL_K3S_VERSION="$FELIS_K3S_VERSION" INSTALL_K3S_BIN_DIR="$K3S_BIN_DIR" INSTALL_K3S_EXEC=agent sh -
+  else
+    [ "$("$K3S_BIN" --version | awk 'NR==1 {print $3}')" = "$FELIS_K3S_VERSION" ] || die "worker k3s version differs from pinned controller version; upgrade in a maintenance window"
+    systemctl enable --now k3s-agent
+    systemctl restart k3s-agent
+  fi
+  ok "worker $WORKER_NAME joined under quarantine; run felis node approve on A"
+}
+
 main() {
   ensure_k3s_on_path
   resolve_nano_listen
@@ -6007,6 +6127,7 @@ main() {
     main_nano
     return
   fi
+  if [ "$INSTALL_MODE" = worker ]; then main_worker; return; fi
   detect_node_ip
   # Before the first change to the host: a problem found here costs a rerun, one found
   # halfway through costs an install to unwind.
@@ -6033,11 +6154,16 @@ main() {
   ensure_panel_tls_cert
   # No install_docker here: Docker comes in only for an image this run has to build
   # (ensure_docker), and an install from a release's assets builds none.
+  if [ -z "${FELIS_DISTRIBUTED+x}" ] && [ -f "$K3S_CONFIG_DROPIN" ] && grep -q 'flannel-backend: "wireguard-native"' "$K3S_CONFIG_DROPIN"; then DISTRIBUTED=1; fi
   install_k3s
   # The registry mirror must exist before the bundle's pods start pulling (and
   # before any re-run's rollouts).
   configure_registry_mirror
   acquire_felis_binary
+  if [ "${DISTRIBUTED:-0}" = 1 ]; then
+    [ -n "$WORKER_PEERS" ] || WORKER_PEERS="${NODE_EXTERNAL_IP:-$NODE_IP}/32"
+    "$HOST_BIN" node firewall --controller --controller-ip "${NODE_EXTERNAL_IP:-$NODE_IP}" --peers "$WORKER_PEERS" --pod-cidr "$POD_CIDR" --node-port "$FELIS_PANEL_NODEPORT" --control-namespace "$CONTROL_NS" --namespace "$MINECRAFT_NS"
+  fi
   select_release_artifacts
   resolve_felis_image
   # The registry's and the database's own images must be in containerd before their

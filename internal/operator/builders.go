@@ -8,6 +8,7 @@ import (
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/naming"
+	"felis.lolicon.best/internal/placement"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -217,7 +218,7 @@ func healthHandler(server *v1alpha1.MinecraftServer) corev1.ProbeHandler {
 // graceful shutdown is terminationGracePeriodSeconds, the time the server gets to
 // save on SIGTERM; the reconciler flushes the world over RCON before it scales to
 // zero (saveBeforeStop).
-func buildStatefulSet(server *v1alpha1.MinecraftServer, replicas int32, felisImage string) (*appsv1.StatefulSet, error) {
+func buildStatefulSet(server *v1alpha1.MinecraftServer, replicas int32, felisImage string, gateProbe ...string) (*appsv1.StatefulSet, error) {
 	storageSize := server.Spec.Storage.Size
 	if storageSize == "" {
 		storageSize = defaultStorageSize
@@ -278,7 +279,14 @@ func buildStatefulSet(server *v1alpha1.MinecraftServer, replicas int32, felisIma
 		if server.Labels[v1alpha1.LabelSystemRole] == "" {
 			initContainers = append(initContainers, forwardingInitContainer(felisImage))
 		}
-		initContainers = append(initContainers, egressGateInitContainer(felisImage))
+		gate := egressGateInitContainer(felisImage)
+		if server.Spec.NodeName != "" || (len(gateProbe) > 0 && gateProbe[0] != "") {
+			gate.Command = append(gate.Command[:len(gate.Command)-1], "--positive-probe", "kube-dns.kube-system.svc:53")
+			if len(gateProbe) > 0 && gateProbe[0] != "" {
+				gate.Command = append(gate.Command, "--probe", gateProbe[0])
+			}
+		}
+		initContainers = append(initContainers, gate)
 	}
 
 	grace := graceSeconds(server)
@@ -333,6 +341,13 @@ func buildStatefulSet(server *v1alpha1.MinecraftServer, replicas int32, felisIma
 				WhenScaled:  appsv1.RetainPersistentVolumeClaimRetentionPolicyType,
 			},
 		},
+	}
+	if server.Spec.Storage.ClaimName != "" {
+		sts.Spec.VolumeClaimTemplates = nil
+		sts.Spec.Template.Spec.Volumes = append(sts.Spec.Template.Spec.Volumes, corev1.Volume{Name: dataVolumeName, VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: server.WorldPVC()}}})
+	}
+	if server.Spec.NodeName != "" {
+		sts.Spec.Template.Spec.NodeSelector = map[string]string{placement.LabelIdentity: server.Spec.NodeName}
 	}
 	return sts, nil
 }

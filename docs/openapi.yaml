@@ -468,11 +468,47 @@ components:
       description: MinecraftServer lifecycle phase (internal/apis/felis/v1alpha1).
       enum: [Unknown, Stopped, Starting, Running, Stopping, Failed]
 
+    ExecutionNode:
+      type: object
+      required: [name, role, ready, approved, addresses, architecture]
+      properties:
+        name: { type: string }
+        role: { type: string }
+        ready: { type: boolean }
+        approved: { type: boolean }
+        addresses: { type: array, items: { type: string } }
+        architecture: { type: string }
+    WorldMigration:
+      type: object
+      required: [id, server, state, stage, sourceNode, targetNode, sourcePVC, targetPVC, backup, started, updated, switched, attempt]
+      properties:
+        id: { type: string }
+        server: { type: string }
+        state: { type: string, enum: [backing_up, restoring, switching, succeeded, failed] }
+        stage: { type: string }
+        sourceNode: { type: string }
+        targetNode: { type: string }
+        sourcePVC: { type: string }
+        targetPVC: { type: string }
+        backup:
+          type: object
+          required: [ref, size, sha256]
+          properties:
+            ref: { type: string }
+            size: { type: integer, format: int64 }
+            sha256: { type: string }
+        started: { type: string, format: date-time }
+        updated: { type: string, format: date-time }
+        switched: { type: boolean }
+        attempt: { type: integer }
+        error: { type: string }
+
     ServerInfo:
       type: object
       description: Status projection of one server (internal/api/cluster.go ServerInfo).
       required: [name, subdomain, phase, ready, playersOnline, playersMax, idleStopSeconds]
       properties:
+        nodeName: { type: string, description: Execution node; legacy servers report the observed node. }
         name: { type: string }
         subdomain: { type: string }
         phase: { $ref: '#/components/schemas/Phase' }
@@ -1106,6 +1142,168 @@ components:
             on. Absent otherwise.
 
 paths:
+  /api/v1/nodes:
+    get:
+      operationId: executionNodes
+      tags: [admin-servers]
+      summary: List execution nodes (administrator).
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: Accepted operation or current state.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [nodes]
+                properties:
+                  nodes: { type: array, items: { $ref: '#/components/schemas/ExecutionNode' } }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/servers/{name}/migrations:
+    get:
+      operationId: latestWorldMigrationStatus
+      tags: [admin-servers]
+      summary: Read durable migration progress.
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Accepted operation or current state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorldMigration'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+    post:
+      operationId: startWorldMigration
+      tags: [admin-servers]
+      summary: Migrate an already stopped world; persistent lock survives controller restart.
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [targetNode]
+              properties:
+                targetNode: { type: string }
+      responses:
+        '202':
+          description: Accepted operation or current state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorldMigration'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/servers/{name}/migrations/{id}:
+    get:
+      operationId: worldMigrationStatus
+      tags: [admin-servers]
+      summary: Read durable migration progress.
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Accepted operation or current state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorldMigration'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/servers/{name}/migrations/{id}/retry:
+    post:
+      operationId: retryWorldMigration
+      tags: [admin-servers]
+      summary: Retry a failed migration, retaining the source and stopped state.
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '202':
+          description: Accepted operation or current state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorldMigration'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   # ----------------------------------------------------------------- health ---
   /healthz:
     get:
@@ -1272,6 +1470,7 @@ paths:
               type: object
               required: [name, subdomain]
               properties:
+                nodeName: { type: string, description: Required approved worker in distributed mode; administrator only. }
                 name: { type: string }
                 subdomain: { type: string }
                 displayName:

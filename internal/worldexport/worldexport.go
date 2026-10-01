@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"felis.lolicon.best/internal/naming"
+	"felis.lolicon.best/internal/placement"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -47,6 +48,7 @@ type Request struct {
 // cmd/felis leaves the API's Exporter nil when either is missing, and the
 // routes answer 503.
 type Config struct {
+	ResolveWorld   placement.Resolver
 	Namespace      string
 	ServiceAccount string
 	Image          string
@@ -112,9 +114,19 @@ func New(cs kubernetes.Interface, cfg Config) *Exporter {
 // Start creates the export Job for r and returns its name.
 func (e *Exporter) Start(ctx context.Context, r Request) (string, error) {
 	c := e.cfg
+	claim := naming.WorldPVCName(r.Server)
+	node := ""
+	if c.ResolveWorld != nil && r.Mode != ModeBackup {
+		world, err := c.ResolveWorld(ctx, r.Server)
+		if err != nil {
+			return "", err
+		}
+		claim, node = world.Claim, world.Node
+	}
 	job, err := ExportJob(JobParams{
 		Server: r.Server, ID: r.ID, Mode: r.Mode,
-		WorldPVC: naming.WorldPVCName(r.Server), BackupPVC: c.BackupPVC, BackupRef: r.BackupRef,
+		NodeName: node,
+		WorldPVC: claim, BackupPVC: c.BackupPVC, BackupRef: r.BackupRef,
 		BackupSHA256: r.BackupSHA256, Path: r.Path, Dir: r.Dir,
 		TargetURL: r.TargetURL, Token: r.Token,
 		Namespace: c.Namespace, ServiceAccount: c.ServiceAccount, Image: c.Image,

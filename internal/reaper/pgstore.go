@@ -76,7 +76,7 @@ func (s *PGStore) FreshBackup(ctx context.Context, server string, since time.Tim
 func (s *PGStore) InsertBackup(ctx context.Context, rec BackupRecord) error {
 	const q = `INSERT INTO world_backups
 		(id, server_name, former_owner, backup_ref, size_bytes, reason, status, created_at, expires_at, sha256, skipped_entries)
-		VALUES ($1, $2, NULLIF($3, ''), $4, $5, $6, 'present', now(), $7, NULLIF($8, ''), $9)`
+		VALUES ($1, $2, NULLIF($3, ''), $4, $5, $6, 'present', now(), $7, NULLIF($8, ''), $9) ON CONFLICT (id) DO NOTHING`
 	_, err := s.db.ExecContext(ctx, q,
 		rec.ID, rec.ServerName, rec.FormerOwner, rec.BackupRef, rec.SizeBytes, rec.Reason, rec.ExpiresAt,
 		rec.SHA256, rec.SkippedEntries)

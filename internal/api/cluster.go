@@ -13,6 +13,7 @@ import (
 // patch (spec §7 PATCH /servers/{name}) — never the business-layer fields, which
 // live in Postgres (spec §22).
 type ServerInfo struct {
+	NodeName        string `json:"nodeName,omitempty"`
 	Name            string `json:"name"`
 	Subdomain       string `json:"subdomain"`
 	Phase           string `json:"phase"`
@@ -64,6 +65,7 @@ type ServerInfo struct {
 // no free-form YAML path — every field is a typed, validated value. A created
 // server starts DesiredState=Stopped and unowned (claimed later, spec §9.3).
 type CreateServerInput struct {
+	NodeName        string
 	Name            string
 	Subdomain       string
 	DisplayName     string

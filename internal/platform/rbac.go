@@ -19,7 +19,7 @@ var groupFelis = v1alpha1.GroupName // "felis.lolicon.best"
 
 // RBAC is the control-plane authorization bundle: one SA per identity and the
 // namespaced Roles + RoleBindings that grant each exactly the verbs its code path
-// exercises. There is deliberately no ClusterRole or ClusterRoleBinding anywhere.
+// exercises. DistributedRBAC adds read-only node/PV grants when distributed mode is enabled.
 type RBAC struct {
 	ServiceAccounts []*corev1.ServiceAccount
 	Roles           []*rbacv1.Role
@@ -100,7 +100,7 @@ func ControlPlaneRBAC(p Params) RBAC {
 // than its logs).
 func APIMinecraftRole(p Params) *rbacv1.Role {
 	p = p.withDefaults()
-	return role(p.MinecraftNamespace, "felis-api", ComponentAPI, []rbacv1.PolicyRule{
+	rules := []rbacv1.PolicyRule{
 		rule([]string{groupFelis}, []string{"minecraftservers"}, []string{"get", "list", "watch", "create", "patch"}),
 		rule([]string{groupCore}, []string{"secrets"}, []string{"get"}),
 		// get-only: WorldVolumeExists does a single direct Get of the world PVC;
@@ -116,7 +116,11 @@ func APIMinecraftRole(p Params) *rbacv1.Role {
 		// the verbs stay tight — list on pods, get on pods/log, and nothing else.
 		rule([]string{groupCore}, []string{"pods"}, []string{"list"}),
 		rule([]string{groupCore}, []string{"pods/log"}, []string{"get"}),
-	})
+	}
+	if p.Distributed {
+		rules = append(rules, rule([]string{groupCore}, []string{"persistentvolumeclaims"}, []string{"create", "list"}), rule([]string{groupApps}, []string{"statefulsets"}, []string{"get", "delete"}))
+	}
+	return role(p.MinecraftNamespace, "felis-api", ComponentAPI, rules)
 }
 
 // APIBuildRole grants felis-api the build-Job lifecycle in the build namespace
@@ -218,12 +222,16 @@ func OperatorRole(p Params) *rbacv1.Role {
 // request and never deletes a CR itself.
 func ReaperRole(p Params) *rbacv1.Role {
 	p = p.withDefaults()
-	return role(p.MinecraftNamespace, "felis-reaper", ComponentReaper, []rbacv1.PolicyRule{
+	rules := []rbacv1.PolicyRule{
 		rule([]string{groupFelis}, []string{"minecraftservers"}, []string{"get", "patch", "delete"}),
 		rule([]string{groupCore}, []string{"persistentvolumeclaims"}, []string{"get", "delete"}),
 		rule([]string{groupCore}, []string{"pods"}, []string{"list"}),
 		rule([]string{groupBatch}, []string{"jobs"}, []string{"list"}),
-	})
+	}
+	if p.Distributed {
+		rules = append(rules, rule([]string{groupBatch}, []string{"jobs"}, []string{"create", "get"}), rule([]string{groupCore}, []string{"persistentvolumeclaims"}, []string{"list"}))
+	}
+	return role(p.MinecraftNamespace, "felis-reaper", ComponentReaper, rules)
 }
 
 // controlPlaneServiceAccount renders a control-plane SA. Unlike the weak

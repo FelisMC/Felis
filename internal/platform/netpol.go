@@ -266,6 +266,9 @@ func RegistryIngressPolicy(p Params) *networkingv1.NetworkPolicy {
 			Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &port}},
 		}},
 	)
+	for _, cidr := range p.RegistryNodeCIDRs {
+		np.Spec.Ingress[0].From = append(np.Spec.Ingress[0].From, networkingv1.NetworkPolicyPeer{IPBlock: &networkingv1.IPBlock{CIDR: cidr}})
+	}
 	return np
 }
 

@@ -28,6 +28,10 @@ Commands:
   scan-gate         Apply the scan policy to a build's Trivy report and hand felis-api the report and SBOM (internal Job entrypoint)
   push-image        Push a scanned image tarball to the registry (internal Job entrypoint)
   mirror-build-tools Copy kaniko, trivy and Trivy's DBs into the registry (run by felis-build-tools.timer)
+  server-migrate    Move a stopped world between approved nodes (start|status|retry; requires root)
+  node              Join and approve trusted daemon nodes (list|token|join|approve|firewall; requires root)
+  node-probe        Verify reachability and observed sources (internal admission probe)
+  archive-serve     Serve scoped one-use archive transfers on the controller (internal entrypoint)
   registry-gate     Authorize registry writes in front of registry:2 (internal sidecar entrypoint)
   manifests         Render the control-plane RBAC + NetworkPolicy install bundle as YAML
   apply             Create a MinecraftServer CRD (direct K8s write; use -f server.json)
@@ -74,6 +78,10 @@ var commands = map[string]func(args []string, stdout, stderr io.Writer) int{
 	"push-image":         cmdPushImage,
 	"mirror-build-tools": cmdMirrorBuildTools,
 	"registry-gate":      cmdRegistryGate,
+	"archive-serve":      cmdArchiveServe,
+	"node":               cmdNode,
+	"server-migrate":     cmdServerMigrate,
+	"node-probe":         cmdNodeProbe,
 	"manifests":          cmdManifests,
 	"apply":              cmdApply,
 	"setup":              cmdSetup,

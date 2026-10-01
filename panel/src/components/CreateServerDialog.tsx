@@ -56,6 +56,9 @@ export function CreateServerDialog({ cfg, onCreated }: Props) {
   // or retired since the page loaded shows up or drops out without a reload.
   const images = useAsync(() => (open ? api.listImages() : Promise.resolve(null)), [open]);
 
+  const nodes = useAsync(() => (open && cfg.distributed ? api.nodes() : Promise.resolve(null)), [open, cfg.distributed]);
+  const workers = (nodes.data ?? []).filter((n) => n.role === "worker" && n.ready && n.approved);
+
   const [form, setForm] = useState<CreateServerRequest>({
     name: "",
     subdomain: "",
@@ -89,6 +92,7 @@ export function CreateServerDialog({ cfg, onCreated }: Props) {
     nameIssue === null &&
     subdomainIssue === null &&
     !!image &&
+    (!cfg.distributed || workers.some((n) => n.name === form.nodeName)) &&
     !!form.memory &&
     !!form.storage &&
     !submitting;
@@ -215,6 +219,18 @@ export function CreateServerDialog({ cfg, onCreated }: Props) {
               </div>
             )}
           </div>
+
+          {cfg.distributed && (
+            <div className="grid gap-2">
+              <Label htmlFor="cs-node">{t("node")}</Label>
+              <Select value={form.nodeName ?? ""} onValueChange={(v) => set("nodeName", v)}>
+                <SelectTrigger id="cs-node"><SelectValue placeholder={t("node_choose")} /></SelectTrigger>
+                <SelectContent>{workers.map((n) => <SelectItem key={n.name} value={n.name}>{n.name}</SelectItem>)}</SelectContent>
+              </Select>
+              {!!nodes.error && <InlineError message={humanizeError(nodes.error)} />}
+              {!nodes.loading && !nodes.error && workers.length === 0 && <p className="text-xs text-muted-foreground">{t("node_none")}</p>}
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-4">
             <div className="grid gap-2">

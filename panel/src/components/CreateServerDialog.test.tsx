@@ -6,7 +6,7 @@ import { CreateServerDialog } from "./CreateServerDialog";
 import { humanizeError } from "@/lib/api";
 import type { CreateServerRequest, WhitelistImage } from "@/lib/types";
 
-const calls = vi.hoisted(() => ({ listImages: vi.fn(), createServer: vi.fn() }));
+const calls = vi.hoisted(() => ({ listImages: vi.fn(), createServer: vi.fn(), nodes: vi.fn() }));
 vi.mock("@/lib/api", async (importActual) => {
   const actual = await importActual<typeof import("@/lib/api")>();
   return { ...actual, api: { ...actual.api, ...calls } };
@@ -256,5 +256,27 @@ describe("CreateServerDialog on reopening", () => {
     expect(calls.listImages).toHaveBeenCalledTimes(2);
     await pick(user, "Image", PAPER);
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
+
+describe("distributed placement", () => {
+  it("requires an online approved worker and sends its name", async () => {
+    calls.nodes.mockResolvedValue([
+      {name:"b",role:"worker",ready:true,approved:true},
+      {name:"c",role:"worker",ready:false,approved:true},
+      {name:"a",role:"controller",ready:true,approved:true},
+    ]);
+    const user = userEvent.setup();
+    render(<CreateServerDialog cfg={{...cfg,distributed:true}} onCreated={onCreated} />);
+    await user.click(screen.getByRole("button",{name:"New server"}));
+    await fillValid(user);
+    expect(create().disabled).toBe(true);
+    await user.click(screen.getByRole("combobox",{name:"Execution node"}));
+    expect(screen.queryByRole("option",{name:"c"})).toBeNull();
+    expect(screen.queryByRole("option",{name:"a"})).toBeNull();
+    await user.click(await screen.findByRole("option",{name:"b"}));
+    await user.click(create());
+    expect(sent().nodeName).toBe("b");
   });
 });

@@ -734,6 +734,17 @@ func (r *Reaper) retire(ctx context.Context, now time.Time, c Candidate, crd Ser
 // MinecraftServer the reaper cannot hold it still to archive it: an operator
 // takes it from there, and the run reports the server until then.
 func (r *Reaper) forgetServer(ctx context.Context, now time.Time, c Candidate, sum *Summary) error {
+	if cluster, ok := r.Cluster.(interface {
+		RetainedWorlds(context.Context, string) (bool, error)
+	}); ok {
+		retained, err := cluster.RetainedWorlds(ctx, c.Name)
+		if err != nil {
+			return err
+		}
+		if retained {
+			return fmt.Errorf("retained world volumes require explicit administrator cleanup")
+		}
+	}
 	pvc := WorldPVCName(c.Name)
 	exists, err := r.Cluster.WorldExists(ctx, pvc)
 	if err != nil {

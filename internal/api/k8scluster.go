@@ -3,11 +3,13 @@ package api
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/maintenance"
 	"felis.lolicon.best/internal/naming"
+	"felis.lolicon.best/internal/placement"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -32,8 +34,10 @@ import (
 // the direct client c, so a write never works from a copy the watch has not caught
 // up with yet.
 type K8sCluster struct {
-	c         client.Client
-	namespace string
+	distributed bool
+	controller  string
+	c           client.Client
+	namespace   string
 	// servers serves the fleet-wide reads; nil means c.
 	servers client.Reader
 	// synced reports whether servers has its first full list; nil means no cache.
@@ -101,15 +105,28 @@ func (k *K8sCluster) GetServer(ctx context.Context, name string) (*ServerInfo, e
 // and restore Jobs mount), so existence here is exactly existence at Job mount
 // time. NotFound is (false, nil): the caller refuses with a specific 409.
 func (k *K8sCluster) WorldVolumeExists(ctx context.Context, name string) (bool, error) {
-	var pvc corev1.PersistentVolumeClaim
-	err := k.c.Get(ctx, types.NamespacedName{Namespace: k.namespace, Name: naming.WorldPVCName(name)}, &pvc)
-	if apierrors.IsNotFound(err) {
-		return false, nil
-	}
-	if err != nil {
+	var ms v1alpha1.MinecraftServer
+	err := k.getServer(ctx, name, &ms)
+	claim := naming.WorldPVCName(name)
+	if err == nil {
+		claim = ms.WorldPVC()
+	} else if !errors.Is(err, ErrNotFound) {
 		return false, err
 	}
-	return true, nil
+	var pvc corev1.PersistentVolumeClaim
+	if err := k.c.Get(ctx, types.NamespacedName{Namespace: k.namespace, Name: claim}, &pvc); err == nil {
+		return true, nil
+	} else if !apierrors.IsNotFound(err) {
+		return false, err
+	}
+	if ms.Name == "" {
+		var retained corev1.PersistentVolumeClaimList
+		if err := k.c.List(ctx, &retained, client.InNamespace(k.namespace), client.MatchingLabels{v1alpha1.LabelServer: name}); err != nil {
+			return false, err
+		}
+		return len(retained.Items) > 0, nil
+	}
+	return false, nil
 }
 
 // PodImages lists the image of every container and init container of every pod
@@ -183,6 +200,7 @@ func (k *K8sCluster) CreateServer(ctx context.Context, in CreateServerInput) err
 			Namespace: k.namespace,
 		},
 		Spec: v1alpha1.MinecraftServerSpec{
+			NodeName:        in.NodeName,
 			Subdomain:       in.Subdomain,
 			DisplayName:     in.DisplayName,
 			Image:           in.Image,
@@ -262,6 +280,22 @@ func (k *K8sCluster) startWith(ctx context.Context, name string, retryFailed boo
 		if err := k.getServer(ctx, name, &ms); err != nil {
 			return err
 		}
+		node := ms.Spec.NodeName
+		if node == "" {
+			node = ms.Status.NodeName
+		}
+		if node == "" {
+			node = k.controller
+		}
+		if k.distributed && node != "" {
+			var n corev1.Node
+			if err := k.c.Get(ctx, types.NamespacedName{Name: node}, &n); err != nil {
+				return err
+			}
+			if !placement.Admitted(&n, k.controller) || n.Spec.Unschedulable {
+				return newError(503, "node_unavailable", "execution node is offline")
+			}
+		}
 		kind, held, err := k.maintenanceHolder(ctx, &ms)
 		if err != nil {
 			return err
@@ -334,6 +368,9 @@ func (k *K8sCluster) ReleaseMaintenance(ctx context.Context, name string) error 
 			return nil
 		}
 		return err
+	}
+	if value := ms.Annotations[maintenance.Annotation]; strings.HasPrefix(value, maintenance.KindMigration+"@") {
+		return nil
 	}
 	if _, ok := ms.Annotations[maintenance.Annotation]; !ok {
 		return nil
@@ -445,8 +482,13 @@ func serverInfo(ms *v1alpha1.MinecraftServer) *ServerInfo {
 		memStr = limit.String()
 	}
 
+	node := ms.Spec.NodeName
+	if node == "" {
+		node = ms.Status.NodeName
+	}
 	return &ServerInfo{
 		Name:            ms.Name,
+		NodeName:        node,
 		Subdomain:       ms.Spec.Subdomain,
 		Phase:           string(ms.Status.Phase),
 		Ready:           ms.Status.Ready,
@@ -482,4 +524,12 @@ func idleStopSeconds(ms *v1alpha1.MinecraftServer) int32 {
 		return 0
 	}
 	return ms.Spec.Idle.EmptySecondsBeforeStop
+}
+
+func (k *K8sCluster) WithDistributed(enabled bool, controller ...string) *K8sCluster {
+	k.distributed = enabled
+	if len(controller) > 0 {
+		k.controller = controller[0]
+	}
+	return k
 }

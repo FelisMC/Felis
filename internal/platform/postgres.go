@@ -206,6 +206,7 @@ func postgresDeployment(p Params) *appsv1.Deployment {
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
+					NodeSelector:                 controllerSelector(p),
 					AutomountServiceAccountToken: boolPtr(false),
 					EnableServiceLinks:           boolPtr(false),
 					PriorityClassName:            controlPlanePriorityName,

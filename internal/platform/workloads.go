@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"felis.lolicon.best/internal/naming"
+	"felis.lolicon.best/internal/placement"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -273,10 +274,15 @@ func Workloads(p Params) []Object {
 		objs = append(objs, backupPVC(p))
 	}
 	switch {
+	case p.Distributed && retentionEnabled(p):
+		objs = append(objs, reaperCronJob(p))
 	case reaperEnabled(p):
 		objs = append(objs, worldsRootPV(p), worldsRootPVC(p), reaperCronJob(p))
 	case retentionEnabled(p):
 		objs = append(objs, reaperCronJob(p))
+	}
+	if p.Distributed {
+		objs = append(objs, ArchiveDeployment(p), ArchiveService(p))
 	}
 	return objs
 }
@@ -315,7 +321,7 @@ const controlPlanePriorityName = "system-cluster-critical"
 // together so a partial configuration fails loudly rather than silently dropping
 // retention here.
 func reaperEnabled(p Params) bool {
-	return p.WorldsHostPath != "" && retentionEnabled(p)
+	return (p.WorldsHostPath != "" || p.Distributed) && retentionEnabled(p)
 }
 
 // retentionEnabled reports whether the archive store can be looked after: the
@@ -716,6 +722,11 @@ func reaperCronJob(p Params) *batchv1.CronJob {
 		})
 	}
 
+	if p.Distributed {
+		container.Args = []string{"--config", configFilePath}
+		container.Env = append(container.Env, distributedEnv(p)...)
+		container.Env = append(container.Env, corev1.EnvVar{Name: "FELIS_IMAGE", Value: p.FelisImage})
+	}
 	return &batchv1.CronJob{
 		TypeMeta: metav1.TypeMeta{APIVersion: "batch/v1", Kind: "CronJob"},
 		// The CronJob lives in the MINECRAFT namespace: a Pod can only mount PVCs
@@ -844,10 +855,12 @@ func reaperPodSpec(p Params, container corev1.Container, volumes []corev1.Volume
 		Containers:        []corev1.Container{container},
 		Volumes:           volumes,
 	}
-	if p.ReaperNode != "" {
+	if p.ControllerNode != "" {
+		spec.NodeSelector = controllerSelector(p)
+	} else if p.ReaperNode != "" {
 		spec.NodeSelector = map[string]string{"kubernetes.io/hostname": p.ReaperNode}
 	}
-	if p.WorldsHostPath != "" {
+	if p.WorldsHostPath != "" || p.Distributed {
 		spec.ServiceAccountName = SAReaper
 	} else {
 		spec.ServiceAccountName = "default"
@@ -868,6 +881,13 @@ func reaperPodSpec(p Params, container corev1.Container, volumes []corev1.Volume
 // Recreate guarantees the old pod is gone before the new one starts.
 func controlPlaneDeployment(p Params, sa string, container corev1.Container, volumes []corev1.Volume) *appsv1.Deployment {
 	labels := controlPlanePodLabels(container.Name)
+	if p.Distributed {
+		if sa == SAOperator {
+			container.Env = append(container.Env, corev1.EnvVar{Name: "FELIS_DISTRIBUTED", Value: "true"}, corev1.EnvVar{Name: "FELIS_CONTROLLER_NODE", Value: p.ControllerNode}, corev1.EnvVar{Name: "FELIS_EGRESS_PROBE", Value: p.EgressProbe})
+		} else {
+			container.Env = append(container.Env, distributedEnv(p)...)
+		}
+	}
 	return &appsv1.Deployment{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
 		ObjectMeta: metav1.ObjectMeta{Name: sa, Namespace: p.ControlNamespace, Labels: labels},
@@ -878,6 +898,7 @@ func controlPlaneDeployment(p Params, sa string, container corev1.Container, vol
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
+					NodeSelector:       controllerSelector(p),
 					ServiceAccountName: sa,
 					PriorityClassName:  controlPlanePriorityName,
 					SecurityContext:    hardenedPodSecurityContext(),
@@ -1003,6 +1024,7 @@ func registryDeployment(p Params) *appsv1.Deployment {
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
+					NodeSelector:                 controllerSelector(p),
 					AutomountServiceAccountToken: boolPtr(false),
 					PriorityClassName:            controlPlanePriorityName,
 					SecurityContext:              hardenedPodSecurityContext(),
@@ -1373,3 +1395,10 @@ func hardenedContainerSecurityContext() *corev1.SecurityContext {
 func boolPtr(b bool) *bool    { return &b }
 func int32Ptr(i int32) *int32 { return &i }
 func int64Ptr(i int64) *int64 { return &i }
+
+func controllerSelector(p Params) map[string]string {
+	if p.ControllerNode == "" {
+		return nil
+	}
+	return map[string]string{placement.LabelIdentity: p.ControllerNode, placement.LabelRole: placement.RoleController}
+}

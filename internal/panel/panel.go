@@ -20,6 +20,7 @@ import (
 var static embed.FS
 
 type runtimeConfig struct {
+	Distributed   bool   `json:"distributed,omitempty"`
 	APIBase       string `json:"apiBase"`
 	RootDomain    string `json:"rootDomain"`
 	PanelHostname string `json:"panelHostname,omitempty"`
@@ -112,13 +113,14 @@ func parseBuildVersion(raw string) buildInfo {
 // right surface (player console vs SysAdmin console) without a rebuild. gamePort
 // is the public Minecraft port ([velocity] game_port), which the SPA appends to
 // the server addresses players copy; 0 or 25565 leaves them bare.
-func Handler(api http.Handler, rootDomain, panelHost, adminHost string, gamePort int, version string) http.Handler {
+func Handler(api http.Handler, rootDomain, panelHost, adminHost string, gamePort int, version string, distributed ...bool) http.Handler {
 	files, err := fs.Sub(static, "static")
 	if err != nil {
 		panic(err)
 	}
 	return &handler{
 		api:           api,
+		distributed:   len(distributed) > 0 && distributed[0],
 		rootDomain:    rootDomain,
 		panelHostname: panelHost,
 		adminHostname: adminHost,
@@ -143,6 +145,7 @@ func publicGamePort(p int) int {
 }
 
 type handler struct {
+	distributed   bool
 	api           http.Handler
 	rootDomain    string
 	panelHostname string
@@ -223,6 +226,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		_ = json.NewEncoder(w).Encode(runtimeConfig{
 			APIBase:       "/api/v1",
+			Distributed:   h.distributed,
 			RootDomain:    h.rootDomain,
 			PanelHostname: h.panelHostname,
 			AdminHostname: h.adminHostname,

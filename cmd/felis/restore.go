@@ -1,14 +1,18 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
+	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
+	"felis.lolicon.best/internal/archivetransfer"
 	"felis.lolicon.best/internal/backup"
-	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 // cmdRestore is the in-Pod entrypoint the restore Job runs. internal/restore
@@ -26,6 +30,9 @@ import (
 func cmdRestore(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("restore", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	source := fs.String("source-url", "", "one-use archive download URL")
+	sum := fs.String("sha256", "", "required digest for remote archive")
+	limit := fs.Int64("max-bytes", archivetransfer.DefaultLimit, "maximum download size")
 	server := fs.String("server", "", "server name being restored (for logging)")
 	ref := fs.String("ref", "", "absolute path to the archive on the backup mount")
 	store := fs.String("archive-store", "tarLocal", "archive backend (only tarLocal is implemented)")
@@ -35,6 +42,22 @@ func cmdRestore(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	if *source != "" {
+		dir, err := os.MkdirTemp("/tmp", "felis-restore-")
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		defer os.RemoveAll(dir)
+		*backupRoot = dir
+		*ref = filepath.Join(dir, "world.tar.gz")
+		if err := archivetransfer.Fetch(ctx, *source, os.Getenv(archivetransfer.TokenEnv), *ref, *sum, *limit); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+	}
 	if *ref == "" {
 		fmt.Fprintln(stderr, "felis restore: --ref is required")
 		return 2
@@ -62,10 +85,15 @@ func cmdRestore(args []string, stdout, stderr io.Writer) int {
 		},
 	}
 
-	ctx := ctrl.SetupSignalHandler()
 	if err := archiver.Restore(ctx, backup.ArchiveRef(*ref), *server); err != nil {
 		fmt.Fprintf(stderr, "felis restore: %v\n", err)
 		return 1
+	}
+	if *source != "" {
+		if err := backup.VerifyRestored(ctx, *ref, *worldsRoot); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
 	}
 	fmt.Fprintf(stdout, "felis restore: server=%s restored from %s into %s\n", *server, *ref, *worldsRoot)
 	return 0

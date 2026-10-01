@@ -114,7 +114,10 @@ func cmdOperator(args []string, _, stderr io.Writer) int {
 		// The operator's own image, for the forwarding-config initContainer it
 		// injects into user servers. The Deployment passes it as FELIS_IMAGE (see
 		// platform.OperatorDeployment); absent, that injection is simply skipped.
-		FelisImage: os.Getenv("FELIS_IMAGE"),
+		FelisImage:     os.Getenv("FELIS_IMAGE"),
+		Nodes:          nil,
+		EgressProbe:    os.Getenv("FELIS_EGRESS_PROBE"),
+		ControllerNode: os.Getenv("FELIS_CONTROLLER_NODE"),
 		// Uncached: the maintenance-lock check lists Jobs only when a server is
 		// about to start, which does not justify a namespace-wide Job informer.
 		Jobs: mgr.GetAPIReader(),
@@ -126,6 +129,9 @@ func cmdOperator(args []string, _, stderr io.Writer) int {
 		Pods:     mgr.GetAPIReader(),
 		Recorder: mgr.GetEventRecorderFor("felis-operator"),
 		Watch:    watch,
+	}
+	if os.Getenv("FELIS_DISTRIBUTED") == "true" {
+		r.Nodes = mgr.GetAPIReader()
 	}
 	if err := r.SetupWithManager(mgr); err != nil {
 		fmt.Fprintf(stderr, "felis operator: setup controller: %v\n", err)

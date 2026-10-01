@@ -90,6 +90,7 @@ const (
 
 // Kinds of holder.
 const (
+	KindMigration = "migration"
 	KindRestore   = "restore"
 	KindBackup    = "backup"
 	KindFileWrite = "file-write"
@@ -191,6 +192,9 @@ func Holder(server string, annotations map[string]string, jobs []batchv1.Job, no
 		if j.Labels[LabelServer] != server {
 			continue
 		}
+		if j.Labels["felis.lolicon.best/archive-pending"] == "true" {
+			return KindBackup, true
+		}
 		if RestorePending(j) {
 			return KindRestore, true
 		}
@@ -202,7 +206,7 @@ func Holder(server string, annotations map[string]string, jobs []batchv1.Job, no
 		}
 	}
 	if v, ok := annotations[Annotation]; ok {
-		if kind, at, ok := parseLock(v); ok && now.Sub(at) < Grace && at.Sub(now) < Grace {
+		if kind, at, ok := parseLock(v); ok && (kind == KindMigration || (now.Sub(at) < Grace && at.Sub(now) < Grace)) {
 			return kind, true
 		}
 	}

@@ -6,8 +6,38 @@ import (
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/naming"
+	"felis.lolicon.best/internal/placement"
 	corev1 "k8s.io/api/core/v1"
 )
+
+func TestMigratedWorldPlacementAndFailClosedGate(t *testing.T) {
+	s := &v1alpha1.MinecraftServer{}
+	s.Spec.NodeName = "c"
+	s.Spec.Storage.ClaimName = "world-alice-migrated"
+	sts, err := buildStatefulSet(s, 1, "felis:test", "felis-api.felis.svc:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sts.Spec.VolumeClaimTemplates) != 0 || sts.Spec.Template.Spec.NodeSelector[placement.LabelIdentity] != "c" {
+		t.Fatal("migration rebuilt or moved the wrong world")
+	}
+	found := false
+	for _, v := range sts.Spec.Template.Spec.Volumes {
+		if v.PersistentVolumeClaim != nil && v.PersistentVolumeClaim.ClaimName == s.Spec.Storage.ClaimName {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("active PVC not mounted")
+	}
+	for _, c := range sts.Spec.Template.Spec.InitContainers {
+		if c.Name == "egress-gate" {
+			if slices.Contains(c.Command, "--fail-open") || !slices.Contains(c.Command, "--positive-probe") {
+				t.Fatal("distributed gate can fail open")
+			}
+		}
+	}
+}
 
 // findEnv returns the env var with the given name, or nil.
 func findEnv(env []corev1.EnvVar, name string) *corev1.EnvVar {

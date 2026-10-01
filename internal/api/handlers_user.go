@@ -406,6 +406,7 @@ type fleetServerView struct {
 // value and decodeJSON rejects unknown fields, so a caller can never smuggle
 // free-form YAML or raw CRD fields through this endpoint.
 type createServerRequest struct {
+	NodeName        string           `json:"nodeName,omitempty"`
 	Name            string           `json:"name"`
 	Subdomain       string           `json:"subdomain"`
 	DisplayName     string           `json:"displayName,omitempty"`
@@ -445,6 +446,15 @@ func (a *API) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if a.Distribution != nil {
+		if err := a.Distribution.ValidateNode(r.Context(), body.NodeName); err != nil {
+			writeError(w, r, newError(400, "bad_node", "select an approved worker: %v", err))
+			return
+		}
+	} else if body.NodeName != "" {
+		writeError(w, r, newError(400, "bad_node", "node selection requires distributed deployment"))
+		return
+	}
 	// Server name and subdomain both obey the §22 portability rule and the
 	// reservation list.
 	if err := naming.ValidateServerName(body.Name); err != nil {
@@ -572,6 +582,7 @@ func (a *API) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	in := CreateServerInput{
+		NodeName:        body.NodeName,
 		Name:            body.Name,
 		Subdomain:       body.Subdomain,
 		DisplayName:     displayName,

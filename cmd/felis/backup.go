@@ -168,7 +168,9 @@ func backupPolicy(reason string, rcfg reaper.Config) (keep int, retention time.D
 // previous owner's. protect is never removed: it is the backup a chained restore
 // is about to extract. The new backup is already recorded; a removal that fails
 // is reported and retried after the next backup.
-func pruneBackups(ctx context.Context, st *reaper.PGStore, archiver backup.WorldArchiver, server, owner, reason string, keep int, protect string, stdout, stderr io.Writer) {
+func pruneBackups(ctx context.Context, st *reaper.PGStore, archiver interface {
+	Delete(context.Context, backup.ArchiveRef) error
+}, server, owner, reason string, keep int, protect string, stdout, stderr io.Writer) {
 	excess, err := st.ExcessBackups(ctx, server, owner, reason, keep, protect)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis backup: list older backups of %s: %v\n", server, err)

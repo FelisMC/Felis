@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"felis.lolicon.best/internal/naming"
+	"felis.lolicon.best/internal/placement"
 )
 
 // ErrAlreadyExists is returned by a Jobs implementation when a backup Job for a
@@ -57,6 +58,7 @@ type Jobs interface {
 // the caller leaves the API's Backuper nil so the endpoint reports 503 rather than
 // enqueuing a Job that cannot run.
 type Config struct {
+	ResolveWorld placement.Resolver
 	// Namespace is where the world PVCs live and the backup Job runs (the minecraft
 	// namespace), co-located with the world it snapshots.
 	Namespace string
@@ -178,7 +180,15 @@ type Backuper struct {
 // land on different nodes the RWO attach fails one cleanly. Add single-flight-on-
 // running only if a real double-tap storm ever shows up.
 func (b *Backuper) Backup(ctx context.Context, serverName, formerOwner string) error {
-	if err := b.Jobs.CreateBackupJob(ctx, b.jobParams(serverName, formerOwner)); err != nil {
+	p := b.jobParams(serverName, formerOwner)
+	if b.Config.ResolveWorld != nil {
+		w, err := b.Config.ResolveWorld(ctx, serverName)
+		if err != nil {
+			return err
+		}
+		p.WorldPVC = w.Claim
+	}
+	if err := b.Jobs.CreateBackupJob(ctx, p); err != nil {
 		if errors.Is(err, ErrAlreadyExists) {
 			return nil // suffix collision — treat as enqueued
 		}
@@ -195,6 +205,13 @@ func (b *Backuper) Backup(ctx context.Context, serverName, formerOwner string) e
 // the world volume as a restore until then (internal/maintenance).
 func (b *Backuper) BackupThenRestore(ctx context.Context, serverName, formerOwner, backupID, backupRef string) error {
 	p := b.jobParams(serverName, formerOwner)
+	if b.Config.ResolveWorld != nil {
+		w, err := b.Config.ResolveWorld(ctx, serverName)
+		if err != nil {
+			return err
+		}
+		p.WorldPVC = w.Claim
+	}
 	p.RestoreRef, p.RestoreBackupID = backupRef, backupID
 	if err := b.Jobs.CreateBackupJob(ctx, p); err != nil {
 		if errors.Is(err, ErrAlreadyExists) {
@@ -210,6 +227,13 @@ func (b *Backuper) BackupThenRestore(ctx context.Context, serverName, formerOwne
 // [archive] scheduled_keep, so the owner's own backups keep their count.
 func (b *Backuper) BackupScheduled(ctx context.Context, serverName, formerOwner string) error {
 	p := b.jobParams(serverName, formerOwner)
+	if b.Config.ResolveWorld != nil {
+		w, err := b.Config.ResolveWorld(ctx, serverName)
+		if err != nil {
+			return err
+		}
+		p.WorldPVC = w.Claim
+	}
 	p.Scheduled = true
 	if err := b.Jobs.CreateBackupJob(ctx, p); err != nil {
 		if errors.Is(err, ErrAlreadyExists) {

@@ -15,6 +15,20 @@ func shrinkEgressGate(t *testing.T) {
 	t.Cleanup(func() { egressDialTimeout, egressPollInterval = dial, poll })
 }
 
+func TestEgressGateRequiresPositiveReachability(t *testing.T) {
+	shrinkEgressGate(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := ln.Addr().String()
+	ln.Close()
+	var out, errb bytes.Buffer
+	if code := cmdEgressGate([]string{"--positive-probe", closed, "--probe", closed, "--wait", "20ms"}, &out, &errb); code != 1 {
+		t.Fatal("unavailable probes allowed startup", code)
+	}
+}
+
 // The gate holds while the probe answers and lets the pod go on once the policy
 // lands, which the test plays by closing the listener.
 func TestEgressGateWaitsForTheLock(t *testing.T) {

@@ -1,5 +1,7 @@
 import type {
   AccessResult,
+  ExecutionNode,
+  WorldMigration,
   AllowlistEntry,
   ApiError,
   AutostartPolicy,
@@ -593,6 +595,13 @@ export const api = rejectingSync({
     link.click();
     URL.revokeObjectURL(url);
   },
+
+  nodes: () => request<{ nodes: ExecutionNode[] }>("GET", "/nodes").then((r) => r.nodes),
+  migration: (name: string) => request<WorldMigration>("GET", `/servers/${encodeURIComponent(name)}/migrations`),
+  migrateServer: (name: string, targetNode: string) =>
+    request<WorldMigration>("POST", `/servers/${encodeURIComponent(name)}/migrations`, { targetNode }),
+  retryMigration: (name: string, id: string) =>
+    request<WorldMigration>("POST", `/servers/${encodeURIComponent(name)}/migrations/${encodeURIComponent(id)}/retry`),
 
   createServer: (req: CreateServerRequest) =>
     request<{ name: string; subdomain: string; desiredState: string }>(

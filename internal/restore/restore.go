@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"felis.lolicon.best/internal/naming"
+	"felis.lolicon.best/internal/placement"
 )
 
 // ErrAlreadyExists is returned by a Jobs implementation when a restore Job for a
@@ -75,6 +76,7 @@ type Jobs interface {
 // either is empty the caller leaves the API's Restorer nil so the endpoint
 // reports 503 rather than enqueuing a Job that cannot run.
 type Config struct {
+	ResolveWorld placement.Resolver
 	// Namespace is where the world PVCs live and the restore Job runs (the
 	// minecraft namespace). The Job is intentionally co-located with the world it
 	// restores; it never runs in the felis control-plane namespace.
@@ -199,7 +201,15 @@ type Restorer struct {
 // keeps the handler's 202 honest in both directions — not a 500 for a genuine
 // duplicate, and not a false "restoring" for a retry after a failure.
 func (r *Restorer) Restore(ctx context.Context, serverName, backupRef string) error {
-	if err := r.Jobs.CreateRestoreJob(ctx, r.jobParams(serverName, backupRef)); err != nil {
+	p := r.jobParams(serverName, backupRef)
+	if r.Config.ResolveWorld != nil {
+		w, err := r.Config.ResolveWorld(ctx, serverName)
+		if err != nil {
+			return err
+		}
+		p.WorldPVC = w.Claim
+	}
+	if err := r.Jobs.CreateRestoreJob(ctx, p); err != nil {
 		if errors.Is(err, ErrAlreadyExists) {
 			return nil // already enqueued — idempotent
 		}

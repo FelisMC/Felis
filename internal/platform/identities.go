@@ -2,6 +2,7 @@ package platform
 
 import (
 	"fmt"
+	"net"
 
 	"k8s.io/apimachinery/pkg/api/resource"
 )
@@ -89,6 +90,10 @@ const (
 // Params parameterises the install bundle. Namespaces and the registry location
 // have safe defaults; VelocityCIDRs has none — see the field comment.
 type Params struct {
+	Distributed       bool
+	ControllerNode    string
+	EgressProbe       string
+	RegistryNodeCIDRs []string
 	// ControlNamespace is where felis-api/operator run; their SAs live here and the
 	// RoleBindings' subjects reference them here, even though the Roles they bind to
 	// live in the minecraft (and build) namespaces. The reaper alone runs — CronJob
@@ -212,6 +217,25 @@ type Params struct {
 
 // Validate reports a Params the renderer cannot turn into objects.
 func (p Params) Validate() error {
+	if p.Distributed && (p.ControllerNode == "" || p.EgressProbe == "" || p.BackupPVC == "" || p.ArchiveLocalPath == "") {
+		return fmt.Errorf("distributed mode requires controller node, egress probe, backup PVC and archive path")
+	}
+	if p.Distributed && len(p.ServerEgressAllowCIDRs) > 0 {
+		return fmt.Errorf("distributed mode does not permit private game egress exceptions")
+	}
+
+	if p.Distributed {
+		for _, cidr := range append(append([]string{}, p.VelocityCIDRs...), p.RegistryNodeCIDRs...) {
+			_, network, err := net.ParseCIDR(cidr)
+			if err != nil {
+				return fmt.Errorf("invalid node source %q", cidr)
+			}
+			ones, bits := network.Mask.Size()
+			if ones != bits {
+				return fmt.Errorf("distributed node sources must be exact /32 or /128 addresses: %q", cidr)
+			}
+		}
+	}
 	for _, q := range []struct{ name, v string }{
 		{"registry storage", p.RegistryStorage},
 		{"uploads storage", p.UploadsStorage},

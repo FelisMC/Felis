@@ -29,10 +29,11 @@ import (
 
 // API holds the dependencies shared by every handler.
 type API struct {
-	Repo     Repo
-	Cluster  Cluster
-	Internal InternalAuth
-	External ExternalAuth
+	Distribution Distribution
+	Repo         Repo
+	Cluster      Cluster
+	Internal     InternalAuth
+	External     ExternalAuth
 
 	// Builder is the image build subsystem (spec §16). It is optional: when nil
 	// the /images routes report 503 rather than 404, so the admin boundary is
@@ -721,6 +722,11 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		// Zero-Trust path, unlike the app-tier /me/servers. A path distinct from the
 		// internal velocity GET /api/v1/servers on purpose: the parity test forbids one
 		// {method, path} from carrying both the service and admin tiers.
+		{Method: "GET", Pattern: "/api/v1/nodes", Admin: true, h: a.handleNodes},
+		{Method: "GET", Pattern: "/api/v1/servers/{name}/migrations", Admin: true, h: a.handleMigrationStatus},
+		{Method: "POST", Pattern: "/api/v1/servers/{name}/migrations", Admin: true, h: a.handleMigration},
+		{Method: "GET", Pattern: "/api/v1/servers/{name}/migrations/{id}", Admin: true, h: a.handleMigrationStatus},
+		{Method: "POST", Pattern: "/api/v1/servers/{name}/migrations/{id}/retry", Admin: true, h: a.handleMigrationRetry},
 		{Method: "GET", Pattern: "/api/v1/fleet", Admin: true, h: a.handleFleet},
 		// Image build + whitelist (spec §16, §15). Every route is admin-tier: a build
 		// is build-time RCE against the cluster, so submission requires the admin

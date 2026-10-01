@@ -526,7 +526,7 @@ func TestCmdExportWiring(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.K8s.Namespace, cfg.Archive.LocalPath = "games", "/srv/felis-backups"
 	want := worldexport.Config{Namespace: "games", Image: "felis:1", BackupPVC: "felis-backups", BackupRoot: "/srv/felis-backups"}
-	if got := exportConfig(cfg, "felis:1", "felis-backups"); got != want {
+	if got := exportConfig(cfg, "felis:1", "felis-backups"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("exportConfig = %+v, want %+v", got, want)
 	}
 }

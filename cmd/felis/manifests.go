@@ -43,6 +43,11 @@ func (m *multiFlag) Set(v string) error {
 func cmdManifests(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("manifests", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	distributed := fs.Bool("distributed", false, "enable approved workers and archive transport")
+	controller := fs.String("controller-node", "", "protected controller identity for A")
+	probe := fs.String("egress-probe", "", "reachable controller host:port denied to game Pods")
+	var registryNodes multiFlag
+	fs.Var(&registryNodes, "registry-node-cidr", "exact node pull source for the registry (repeatable)")
 	controlNS := fs.String("control-namespace", platform.DefaultControlNamespace, "namespace the control plane (api/operator/reaper) runs in")
 	minecraftNS := fs.String("minecraft-namespace", platform.DefaultMinecraftNamespace, "namespace MinecraftServer workloads run in")
 	buildNS := fs.String("build-namespace", platform.DefaultBuildNamespace, "namespace image-build Jobs run in")
@@ -75,6 +80,7 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 	case "":
 	case "postgres":
 		return renderManifests(stdout, stderr, platform.PostgresObjects(platform.Params{
+			ControllerNode:     *controller,
 			ControlNamespace:   *controlNS,
 			MinecraftNamespace: *minecraftNS,
 			PostgresImage:      *postgresImage,
@@ -115,7 +121,7 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 	// The node pin exists only for the reaper's hostPath: naming a node without the
 	// worlds root would be silently dropped (no CronJob renders), so fail loud like
 	// the storage-trio check below.
-	if *reaperNode != "" && *worldsHostPath == "" {
+	if *reaperNode != "" && *worldsHostPath == "" && !*distributed {
 		fmt.Fprintln(stderr, "felis manifests: --reaper-node requires --worlds-host-path "+
 			"(it pins the reaper CronJob, which renders only with the retention storage trio)")
 		return 2
@@ -156,7 +162,7 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 			"writes under /var/lib/rancher/k3s/storage). Any other provisioner needs its volumes exposed as "+
 			"<path>/<pvc>, or each candidate's archive fails and the world is preserved;\n"+
 			"  - %s.\n", *worldsHostPath, *worldsHostPath, *worldsHostPath, pin)
-	} else {
+	} else if !*distributed {
 		switch {
 		case *archiveLocalPath != "" && *backupPVC == "":
 			fmt.Fprintln(stderr, "felis manifests: --archive-local-path names where the backup PVC is mounted, "+
@@ -176,6 +182,7 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 	}
 
 	params := platform.Params{
+		Distributed: *distributed, ControllerNode: *controller, EgressProbe: *probe, RegistryNodeCIDRs: registryNodes,
 		ControlNamespace:   *controlNS,
 		MinecraftNamespace: *minecraftNS,
 		BuildNamespace:     *buildNS,

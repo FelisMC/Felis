@@ -1,6 +1,7 @@
 package v1alpha1
 
 import (
+	"felis.lolicon.best/internal/naming"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -159,6 +160,9 @@ type MinecraftServerSpec struct {
 	// ReaperExempt opts this server out of the world reaper entirely (spec §18).
 	ReaperExempt bool `json:"reaperExempt,omitempty"`
 
+	// NodeName is an administrator-approved execution node; empty preserves legacy placement.
+	NodeName string `json:"nodeName,omitempty"`
+
 	// DesiredState toggles the server up or down (default Stopped).
 	// +kubebuilder:validation:Enum=Running;Stopped
 	DesiredState DesiredState `json:"desiredState,omitempty"`
@@ -245,6 +249,8 @@ type SecretKeyRef struct {
 
 // StorageSpec configures the world PVC (spec §4 spec.storage).
 type StorageSpec struct {
+	// ClaimName is managed internally by stopped-world migration, never by a public spec patch.
+	ClaimName string `json:"claimName,omitempty"`
 	// Size is the requested PVC capacity (e.g. "10Gi").
 	Size string `json:"size,omitempty"`
 	// StorageClassName selects the StorageClass; empty uses the default.
@@ -317,6 +323,7 @@ type IdleSpec struct {
 
 // MinecraftServerStatus is the observed state (spec §4 status.*).
 type MinecraftServerStatus struct {
+	NodeName string `json:"nodeName,omitempty"`
 	// Phase is the coarse lifecycle phase.
 	Phase Phase `json:"phase,omitempty"`
 	// Ready is true only after a successful RCON probe (loader-agnostic; a
@@ -376,4 +383,12 @@ type EndpointStatus struct {
 type PlayersStatus struct {
 	Online int32 `json:"online"`
 	Max    int32 `json:"max"`
+}
+
+// WorldPVC resolves the active world, including servers created before migration support.
+func (s *MinecraftServer) WorldPVC() string {
+	if s.Spec.Storage.ClaimName != "" {
+		return s.Spec.Storage.ClaimName
+	}
+	return naming.WorldPVCName(s.Name)
 }
