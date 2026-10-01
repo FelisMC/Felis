@@ -6082,7 +6082,7 @@ main_worker() {
   # Reuse the release binary path for the local admission checks, without importing game/platform images.
   bootstrap_from_tui || [ -n "$FELIS_ARTIFACT_DIR" ] || [ -n "${FELIS_SKIP_FETCH:-}" ] || resolve_install_ref
   acquire_felis_binary
-  if [ ! -x "$HOST_BIN" ]; then install_go_toolchain; build_nano_binary; fi
+  if [ -z "$HAVE_PREBUILT_BINARY" ]; then install_go_toolchain; build_nano_binary; fi
   mkdir -p /etc/rancher/k3s/config.yaml.d
   (umask 077; printf '%s\n' "$token" > /etc/rancher/k3s/felis-bootstrap-token)
   unset token
@@ -6160,10 +6160,6 @@ main() {
   # before any re-run's rollouts).
   configure_registry_mirror
   acquire_felis_binary
-  if [ "${DISTRIBUTED:-0}" = 1 ]; then
-    [ -n "$WORKER_PEERS" ] || WORKER_PEERS="${NODE_EXTERNAL_IP:-$NODE_IP}/32"
-    "$HOST_BIN" node firewall --controller --controller-ip "${NODE_EXTERNAL_IP:-$NODE_IP}" --peers "$WORKER_PEERS" --pod-cidr "$POD_CIDR" --node-port "$FELIS_PANEL_NODEPORT" --control-namespace "$CONTROL_NS" --namespace "$MINECRAFT_NS"
-  fi
   select_release_artifacts
   resolve_felis_image
   # The registry's and the database's own images must be in containerd before their
@@ -6171,6 +6167,12 @@ main() {
   import_release_images felis registry postgres
   import_platform_images
   build_image
+  # Source builds install the new HOST_BIN here; an earlier call may execute the
+  # old release's binary, which has no distributed node commands.
+  if [ "${DISTRIBUTED:-0}" = 1 ]; then
+    [ -n "$WORKER_PEERS" ] || WORKER_PEERS="${NODE_EXTERNAL_IP:-$NODE_IP}/32"
+    "$HOST_BIN" node firewall --controller --controller-ip "${NODE_EXTERNAL_IP:-$NODE_IP}" --peers "$WORKER_PEERS" --pod-cidr "$POD_CIDR" --node-port "$FELIS_PANEL_NODEPORT" --control-namespace "$CONTROL_NS" --namespace "$MINECRAFT_NS"
+  fi
   # After build_image imported the felis image: the registry pod's gate runs it.
   pin_platform_images
   # Before build_game_stack: the builds user servers run must be read off the

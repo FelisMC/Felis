@@ -97,14 +97,13 @@ The installer also makes the system journal persistent (capped at
 `FELIS_JOURNAL_MAX_USE`, default 1G; `FELIS_MANAGE_JOURNAL=0` skips it) and writes the
 admin kubeconfig `/etc/rancher/k3s/k3s.yaml` root-only: run `sudo k3s kubectl`.
 
-One node is the whole supported shape. A world volume is a ReadWriteOnce claim on the
-node's local-path storage, so a game server's pod is pinned to the node that first
-scheduled it and cannot move when that node fails; the operator and felis-api each run
-as a single replica without leader election, so an upgrade or a node restart pauses
-wakes and stops until their pod is back. Joining k3s agents to the cluster is untested
-and gains no failover. A multi-node shape would need, at least, storage that can follow a
-pod to another node and leader election in felis-operator (controller-runtime's
-`LeaderElection`) so a second replica can stand by.
+Single-node deployment remains the default. The opt-in [distributed mode](distributed.md)
+keeps the sole API and operator on A and runs games on approved k3s agents. A world is
+a ReadWriteOnce claim on its node's local-path storage; moving it requires an explicit
+stopped migration through A's archive service. There is no automatic failover or
+standby controller. An A restart pauses control operations until its workloads return;
+a lost worker leaves its worlds on that node. Cross-node networking still requires the
+three-machine acceptance described in the distributed runbook.
 
 ### Where the binary and the images come from
 

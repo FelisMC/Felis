@@ -25,6 +25,14 @@ done
 
 用包含此功能的 Felis 安装器在 A 重跑安装：`FELIS_DISTRIBUTED=1`、`FELIS_NODE_EXTERNAL_IP=<A 固定公网 IP>`、`FELIS_PEER_CIDRS="$PEERS"`，保留现有安装参数。该步骤会启用 `wireguard-native`、`flannel-external-ip`、NodeRestriction 和独立 agent token，并安装归档服务、最小 RBAC 和宿主机隔离规则。WireGuard 更换需要停服维护窗口。已有 worker 的对等地址列表也必须提前更新。
 
+仅推送 main 不会自动发布 release。还未使用包含这些变更的发布资产时，在新版源码目录中以 root 执行下面的命令，显式从 main 构建；其他原安装参数继续保留。只更新安装脚本、仍使用默认 release 通道，可能下载到不支持分布式命令的旧二进制。
+
+```bash
+FELIS_REF=main FELIS_DISTRIBUTED=1 \
+  FELIS_NODE_EXTERNAL_IP=<A固定公网IP> \
+  FELIS_PEER_CIDRS="$PEERS" bash deploy/bootstrap.sh
+```
+
 直接生成部署清单时，增加：
 
 ```bash

@@ -4911,9 +4911,15 @@ esac
 rm -rf "$credir" "$credcalls"
 
 # Worker admission reuses the installer but must never enter host control-plane setup.
+before "distributed host firewall runs the newly built binary" \
+  '  build_image' '"$HOST_BIN" node firewall --controller' "$(bsfn main)"
+before "distributed host firewall is installed before platform deployment" \
+  '"$HOST_BIN" node firewall --controller' '  deploy_postgres' "$(bsfn main)"
 expect "distributed admission preserves existing API-server arguments" \
   "echo 'kube-apiserver-arg+:'" "$(bsfn write_k3s_config)"
 worker="$(bsfn main_worker)"
+expect "source worker install builds the requested binary even when an older binary exists" \
+  'if [ -z "$HAVE_PREBUILT_BINARY" ]; then install_go_toolchain; build_nano_binary; fi' "$worker"
 before "worker identity is checked before the agent config is written" \
   'refusing to rename it' 'cat > "$K3S_CONFIG_DROPIN"' "$worker"
 expect "worker rejects server tokens and verifies the CA-pinned bootstrap shape" \
