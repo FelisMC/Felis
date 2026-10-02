@@ -1,9 +1,7 @@
 <div align="center">
   <h1 align="center">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.svg">
-      <img src="docs/assets/banner.svg" alt="Felis" width="660">
-    </picture>
+    <img src="docs/assets/felis-logo.png" alt="Felis logo" width="270"><br>
+    Felis
   </h1>
   <p align="center">
     基于 Kubernetes 的 Minecraft 服务器托管平台<br>
@@ -71,21 +69,6 @@ curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/main/deploy/bootstrap
 ```
 
 脚本将安装 K3s，在 K3s 中部署 PostgreSQL 与控制平面，随后启动设置向导。设置完成后，通过浏览器访问所配置的域名即可进入控制面板。
-
-> [!IMPORTANT]
-> **本仓库目前为私有仓库**，上述命令将返回 404，请改用带凭据的安装方式。安装器解析和下载 release 时同样需要该 token，
-> 因此须使用 `sudo -E` 传递环境变量：
->
-> ```bash
-> export FELIS_GITHUB_TOKEN=<对本仓库有读权限的 token>
-> printf 'header = "Authorization: Bearer %s"\n' "$FELIS_GITHUB_TOKEN" \
->   | curl -fsSL --config - -H "Accept: application/vnd.github.raw" \
->       https://api.github.com/repos/FelisMC/Felis/contents/deploy/bootstrap.sh \
->   | sudo -E bash
-> ```
->
-> token 通过标准输入传给 `curl --config -`，不出现在命令行参数中。命令行参数可经 `/proc` 被本机任意用户读取，
-> 安装器内部的 `github_api` 也因此采用相同写法。
 
 * **支持的系统**：CentOS Stream 9（aarch64）已在实机上验证；Ubuntu 24.04（x86_64）在每次推送时由 CI 执行全新安装、重复安装、升级及上述安装命令（参见 [运维手册 §1](docs/operations.md#1-supported-hosts)）。
 

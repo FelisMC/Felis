@@ -1,9 +1,7 @@
 <div align="center">
   <h1 align="center">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.svg">
-      <img src="docs/assets/banner.svg" alt="Felis" width="660">
-    </picture>
+    <img src="docs/assets/felis-logo.png" alt="Felis logo" width="270"><br>
+    Felis
   </h1>
   <p align="center">
     A Kubernetes-driven Minecraft server hosting platform<br>
@@ -70,23 +68,6 @@ curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/main/deploy/bootstrap
 ```
 
 The script installs K3s, deploys PostgreSQL and the control plane inside it, and launches a setup wizard. When setup completes, open the configured domain in a browser to reach the control panel.
-
-> [!IMPORTANT]
-> **This repository is currently private**, so the command above returns 404. Use the
-> authenticated form below instead. The installer requires the same token to resolve and
-> download the release, so the environment must be passed through with `sudo -E`:
->
-> ```bash
-> export FELIS_GITHUB_TOKEN=<a token with read access to this repository>
-> printf 'header = "Authorization: Bearer %s"\n' "$FELIS_GITHUB_TOKEN" \
->   | curl -fsSL --config - -H "Accept: application/vnd.github.raw" \
->       https://api.github.com/repos/FelisMC/Felis/contents/deploy/bootstrap.sh \
->   | sudo -E bash
-> ```
->
-> The token is passed to `curl --config -` through standard input and never appears in the
-> command-line arguments, which any local user can read through `/proc`. The installer's
-> internal `github_api` uses the same approach for this reason.
 
 * **Supported hosts**: CentOS Stream 9 (aarch64) is verified on physical hardware; Ubuntu 24.04 (x86_64) is tested in CI on every push with a fresh install, a rerun, an upgrade and the install command above (see [operations §1](docs/operations.md#1-supported-hosts)).
 
