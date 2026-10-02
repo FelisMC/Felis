@@ -212,13 +212,13 @@ export FELIS_IMAGE=felis:dev
 export FELIS_ROOT_DOMAIN=<node-ip>.nip.io
 ```
 
-By default the installer builds the newest **published GitHub release**. While this
-repository is private that lookup — and the clone itself — needs a token, and building
-the development tip needs an opt-in:
+By default the installer builds the newest **published GitHub release**. Building the
+development tip needs an opt-in, and installing from a private fork additionally needs a
+token for the release lookup and the clone:
 
 ```bash
-export FELIS_GITHUB_TOKEN=<token with read access to the repo>
 export FELIS_VERSION_BOOTSTRAP=dev      # build main instead of the newest release
+export FELIS_GITHUB_TOKEN=<token>       # private forks only: read access to the fork
 ```
 
 `dev` is also the escape hatch before the first `vX.Y.Z` tag exists: with no published

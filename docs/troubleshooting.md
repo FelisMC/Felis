@@ -2534,9 +2534,6 @@ an unpublished tag stops the install before anything changes. [SH-TESTED]
   `curl -fsSL <that URL> | grep -c FELIS_RELEASE` prints `0` for one of those;
   run it with `FELIS_REF=v1.2.3` instead, which builds that tag from source
   (slower, and it needs the build resources of §15c).
-- While the repository is private, read the installer through the README's
-  token'd form with `?ref=v1.2.3` after `contents/deploy/bootstrap.sh`, and run
-  it as `sudo -E FELIS_RELEASE=v1.2.3 bash`.
 
 ### Whole-host disaster recovery: what comes back, and from where
 

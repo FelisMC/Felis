@@ -62,9 +62,7 @@ type updateTarget struct {
 // The URL is the one-liner both READMEs hand out, read at a tag rather than main: the
 // script's release channel installs the newest release's binary, and main can carry
 // installer changes that binary was never tested with. installerRef picks the tag and
-// renderApplyGuidance substitutes it for {ref}. While the repo is private the URL
-// answers 404 (raw.githubusercontent.com hides private repos), which is why the trailer
-// below points at the README's token'd form for that case.
+// renderApplyGuidance substitutes it for {ref}.
 const installerRerun = "curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/{ref}/deploy/bootstrap.sh | sudo bash"
 
 // installerRerunDeps is the same re-run with FELIS_UPGRADE_DEPS=1, which lets it move an
@@ -436,12 +434,11 @@ func renderApplyGuidance(res updater.Result, selected map[string]bool, force boo
 	// completed install (shouldRunHostBootstrapBeforeConfig only enters the host
 	// bootstrap while an install marker is missing), so the installer re-run is the one
 	// worked path for every component Felis installs and there is no per-component exception left
-	// to scope. Two caveats stay because following the advice without them bites real
+	// to scope. One caveat stays because following the advice without it bites real
 	// hosts: the channel is not persisted anywhere (a bare re-run on a main host quietly
-	// moves it onto releases), and the private repo's one-liner needs the read token
-	// back in the environment before it can resolve anything.
+	// moves it onto releases).
 	if offeredInstaller {
-		b.WriteString("\nRe-running the installer applies each installer command above: it fetches the newest version on\nthe channel in effect and re-applies the bundle (release is the default). The channel\nis not persisted, so pass FELIS_VERSION_BOOTSTRAP=dev if this host tracks main. While\nthis repo is private, the one-liner above 404s without a token; the README's install\nsection has the token'd form that works. felis setup is not this path: on a completed\ninstall it opens the config console and installs nothing newer. Restart game servers\nafterwards.\n")
+		b.WriteString("\nRe-running the installer applies each installer command above: it fetches the newest version on\nthe channel in effect and re-applies the bundle (release is the default). The channel\nis not persisted, so pass FELIS_VERSION_BOOTSTRAP=dev if this host tracks main.\nfelis setup is not this path: on a completed install it opens the config console and\ninstalls nothing newer. Restart game servers afterwards.\n")
 	}
 	return b.String()
 }

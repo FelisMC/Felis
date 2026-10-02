@@ -87,7 +87,7 @@
 #                     Docker Hub, nor built (FELIS_GAME_STACK=latest aside: no release
 #                     ships that stack, so its game images are built here). A file missing
 #                     from it or not matching its SHA256SUMS stops the install.
-#   FELIS_GITHUB_TOKEN GitHub token; REQUIRED while the repo is private
+#   FELIS_GITHUB_TOKEN GitHub token; needed only when installing from a private fork
 #   FELIS_REF         branch/tag/sha — pins the build, overrides the channel, and forces a
 #                     source build (naming a ref asks for that tree, not a published asset)
 #   FELIS_RELEASE     a published release tag (v1.2.3) the release channel installs, from
@@ -197,7 +197,7 @@ DOCKER_INSTALLED=""
 # hour.
 RELEASE_JSON_TAG=""
 RELEASE_JSON=""
-# Optional GitHub credential, needed while this repository is private: GitHub answers
+# Optional GitHub credential, needed only for a private fork: GitHub answers
 # 404 (not 403) for a repo the caller cannot see, so without it both the release lookup
 # and the clone fail as "not found". Exported because git's credential helper below runs
 # as a child process and reads it from the environment — which is also why it is never
