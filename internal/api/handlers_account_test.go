@@ -50,8 +50,8 @@ func TestAccountLinkVertical(t *testing.T) {
 		t.Fatalf("mint code: code = %d, want 201 (%s)", w.Code, w.Body.String())
 	}
 	code, _ := acctBody(t, w)["code"].(string)
-	if len(code) != linkCodeLen {
-		t.Fatalf("minted code %q: len = %d, want %d", code, len(code), linkCodeLen)
+	if len(code) != LinkCodeLen {
+		t.Fatalf("minted code %q: len = %d, want %d", code, len(code), LinkCodeLen)
 	}
 
 	// 2) the player submits the code on the panel (external face).
@@ -113,11 +113,11 @@ func TestCreateLinkCode(t *testing.T) {
 		if rec.authSource != authSourceMojang {
 			t.Errorf("default authSource = %q, want %q", rec.authSource, authSourceMojang)
 		}
-		if want := api.now().Add(linkCodeTTL); !rec.expiresAt.Equal(want) {
+		if want := api.now().Add(LinkCodeTTL); !rec.expiresAt.Equal(want) {
 			t.Errorf("expiresAt = %v, want %v", rec.expiresAt, want)
 		}
 		for _, c := range code {
-			if !strings.ContainsRune(linkCodeAlphabet, c) {
+			if !strings.ContainsRune(LinkCodeAlphabet, c) {
 				t.Errorf("code %q contains out-of-alphabet rune %q", code, c)
 			}
 		}

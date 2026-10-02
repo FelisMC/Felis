@@ -8,7 +8,7 @@ package best.lolicon.felis.limbo;
 final class GateConfig {
 
     static final int DEFAULT_HEALTH_PORT = 8080;
-    // The default window (10 min) matches the Bind Code TTL (linkCodeTTL in
+    // The default window (10 min) matches the Bind Code TTL (LinkCodeTTL in
     // internal/api): no point holding a player past code expiry, and no point cutting
     // them off while it is still valid.
     static final long DEFAULT_TIMEOUT_SECONDS = 600L;

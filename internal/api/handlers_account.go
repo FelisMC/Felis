@@ -24,18 +24,18 @@ import (
 // ownership operation (claim, §9.3), which otherwise dead-ends at a 412.
 
 const (
-	// linkCodeTTL bounds how long a freshly minted code is accepted (spec §10:
+	// LinkCodeTTL bounds how long a freshly minted code is accepted (spec §10:
 	// 短 TTL). Long enough to alt-tab from the game to the panel, short enough that
 	// a leaked code is useless minutes later.
-	linkCodeTTL = 10 * time.Minute
-	// linkCodeAlphabet is a 32-symbol set with the visually ambiguous characters
+	LinkCodeTTL = 10 * time.Minute
+	// LinkCodeAlphabet is a 32-symbol set with the visually ambiguous characters
 	// I, O, 0 and 1 removed, so a player can read a code off chat and type it on the
 	// panel without confusion. 32 divides 256 evenly, so a uniform random byte
 	// reduced mod 32 is itself uniform — no modulo bias, no rejection sampling.
-	linkCodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-	// linkCodeLen is the symbol count: a 32^8 ≈ 1.1e12 keyspace, far beyond brute
+	LinkCodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+	// LinkCodeLen is the symbol count: a 32^8 ≈ 1.1e12 keyspace, far beyond brute
 	// force inside the TTL.
-	linkCodeLen = 8
+	LinkCodeLen = 8
 
 	// authSource records which Yggdrasil established the in-game UUID when a code
 	// was minted (spec §10, dual-Yggdrasil): the official Mojang service, or a
@@ -97,12 +97,12 @@ func deriveAuthSource(mcUUID string) string {
 
 // newLinkCode returns a cryptographically random, unambiguous link code.
 func newLinkCode() (string, error) {
-	buf := make([]byte, linkCodeLen)
+	buf := make([]byte, LinkCodeLen)
 	if _, err := rand.Read(buf); err != nil {
 		return "", err
 	}
 	for i, b := range buf {
-		buf[i] = linkCodeAlphabet[int(b)%len(linkCodeAlphabet)]
+		buf[i] = LinkCodeAlphabet[int(b)%len(LinkCodeAlphabet)]
 	}
 	return string(buf), nil
 }
@@ -151,7 +151,7 @@ func (a *API) handleCreateLinkCode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	expiresAt := a.now().Add(linkCodeTTL)
+	expiresAt := a.now().Add(LinkCodeTTL)
 	if err := a.Repo.CreateLinkCode(r.Context(), code, mcUUID, authSource, expiresAt); err != nil {
 		writeError(w, r, err)
 		return

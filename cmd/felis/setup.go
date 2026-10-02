@@ -112,7 +112,8 @@ func cmdSetup(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	res, err := runSetupTUI(ctx, setup.repo, setup.cfg.Database, setup.cfg.Server.RootDomain, setup.cfg.Auth.AdminHostname, setup.cfg.Auth.PanelHostname, setup.cfg.Auth.AccessJWTAud, setup.cfg.K8s.Namespace, accountableOSUser(), setup.adminExists)
+	gameAddr := setupGameAddress(setup.cfg.Server.RootDomain, setup.cfg.Velocity.GamePort)
+	res, err := runSetupTUI(ctx, setup.repo, setup.cfg.Database, setup.cfg.Server.RootDomain, setup.cfg.Auth.AdminHostname, setup.cfg.Auth.PanelHostname, setup.cfg.Auth.AccessJWTAud, setup.cfg.K8s.Namespace, accountableOSUser(), gameAddr, setup.adminExists)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis setup: %v\n", err)
 		return 1
@@ -120,6 +121,18 @@ func cmdSetup(args []string, stdout, stderr io.Writer) int {
 	panelURL := res.panelURL
 	if panelURL == "" {
 		panelURL = localPanelURL(setup.cfg.Server.RootDomain, setup.cfg.Auth.AdminHostname)
+	}
+	reportSetupResult(stdout, res, bootstrapped, setup.adminExists, panelURL, gameAddr)
+	return 0
+}
+
+// reportSetupResult prints what the console did, past the alt-screen teardown that
+// wipes it. A run that ends with no Owner bound, skipped or quit, ends on how to bind
+// one: nobody can sign in to the panel until then.
+func reportSetupResult(stdout io.Writer, res breakGlassResult, bootstrapped, adminExisted bool, panelURL, gameAddr string) {
+	if !adminExisted && !res.provisioned {
+		defer fmt.Fprintf(stdout, "\nNo Owner is bound yet, so nobody can sign in to the panel. To bind one, run\n"+
+			"  sudo felis setup\nand join %s in Minecraft when it asks.\n", ownerJoinTarget(gameAddr))
 	}
 
 	if !res.provisioned && !res.connectConfigured {
@@ -129,19 +142,22 @@ func cmdSetup(args []string, stdout, stderr io.Writer) int {
 				fmt.Fprintf(stdout, "Panel: %s\n", panelURL)
 				fmt.Fprintln(stdout, "The local HTTPS certificate is self-signed; your browser may ask for confirmation on first visit.")
 			}
-			return 0
+			return
 		}
 		// A re-run lands on the status screen, which changes nothing by design —
 		// reporting that as "cancelled" reads as a failure the operator did not cause.
 		msg := "felis setup: cancelled — no changes made."
-		if res.alreadySetUp {
+		switch {
+		case res.alreadySetUp:
 			msg = "felis setup: already set up — nothing to change."
+		case res.ownerSkipped:
+			msg = "felis setup: finished without an Owner."
 		}
 		fmt.Fprintln(stdout, msg)
 		if panelURL != "" {
 			fmt.Fprintf(stdout, "Panel: %s\n", panelURL)
 		}
-		return 0
+		return
 	}
 
 	if res.provisioned {
@@ -176,8 +192,6 @@ func cmdSetup(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stdout, "Felis config, Kubernetes Secret and API rollout were updated.")
 		}
 	}
-
-	return 0
 }
 
 // provisionSystemServers ensures the login limbo and lobby system services exist,

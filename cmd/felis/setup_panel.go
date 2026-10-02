@@ -57,6 +57,33 @@ func rootDomainEmbeddedIP(rootDomain string) string {
 	return ""
 }
 
+// setupGameAddress is where the operator joins in Minecraft to bind the Owner: the
+// IP a nip.io or sslip.io root domain spells out (nothing to resolve), otherwise the
+// root domain, with the port when it is not Minecraft's default. The proxy lands
+// every fresh connection on the login server whatever name it was dialled by.
+func setupGameAddress(rootDomain string, gamePort int) string {
+	host := rootDomainEmbeddedIP(rootDomain)
+	if host == "" {
+		host = strings.TrimSpace(strings.TrimSuffix(rootDomain, "."))
+	}
+	if host == "" {
+		return ""
+	}
+	if gamePort == 0 || gamePort == 25565 {
+		return host
+	}
+	return net.JoinHostPort(host, strconv.Itoa(gamePort))
+}
+
+// gameAddrIsIP reports whether addr, a host or host:port, names its host by IP.
+func gameAddrIsIP(addr string) bool {
+	host := addr
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		host = h
+	}
+	return net.ParseIP(host) != nil
+}
+
 func localPanelOrigin() string {
 	return fmt.Sprintf("https://127.0.0.1:%d", setupPanelNodePort())
 }

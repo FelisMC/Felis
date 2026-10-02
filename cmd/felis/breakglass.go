@@ -569,6 +569,7 @@ type breakGlassResult struct {
 	// from a cancel and reports itself as one.
 	alreadySetUp  bool
 	isOperator    bool // an Operator was added rather than the Owner provisioned
+	ownerSkipped  bool // setup's Owner step was skipped; no Owner is bound
 	mode          string
 	accountable   string
 	osUser        string
@@ -633,8 +634,11 @@ func runBreakGlassTUI(ctx context.Context, s ownerStore, db config.DatabaseConfi
 
 // runSetupTUI never reaches recovery: setup with a staff account present lands on
 // the status screen, so it has no relay to hand over.
-func runSetupTUI(ctx context.Context, s ownerStore, db config.DatabaseConfig, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser string, adminExists bool) (breakGlassResult, error) {
-	return runConsoleTUI(ctx, s, db, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser, adminExists, consoleModeSetup, recoveryConfig{})
+// gameAddr is where the Owner step tells the operator to join (setupGameAddress).
+func runSetupTUI(ctx context.Context, s ownerStore, db config.DatabaseConfig, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser, gameAddr string, adminExists bool) (breakGlassResult, error) {
+	rm := newConsoleRoot(ctx, s, db, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser, adminExists, consoleModeSetup, recoveryConfig{})
+	rm.gameAddr = gameAddr
+	return runConsoleRoot(rm)
 }
 
 // newConsoleRoot is the console's root model as the host runs it: the summary
@@ -649,7 +653,10 @@ func newConsoleRoot(ctx context.Context, s ownerStore, db config.DatabaseConfig,
 }
 
 func runConsoleTUI(ctx context.Context, s ownerStore, db config.DatabaseConfig, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser string, adminExists bool, mode consoleMode, recovery recoveryConfig) (breakGlassResult, error) {
-	rm := newConsoleRoot(ctx, s, db, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser, adminExists, mode, recovery)
+	return runConsoleRoot(newConsoleRoot(ctx, s, db, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser, adminExists, mode, recovery))
+}
+
+func runConsoleRoot(rm *rootModel) (breakGlassResult, error) {
 	final, err := tea.NewProgram(rm, tea.WithAltScreen()).Run()
 	if err != nil {
 		return breakGlassResult{}, err

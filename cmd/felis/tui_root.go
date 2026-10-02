@@ -142,6 +142,7 @@ type rootModel struct {
 	panelHost   string
 	accessAud   string
 	namespace   string // minecraft workload namespace (cfg.K8s.Namespace); target of the halt op
+	gameAddr    string // where to join in Minecraft to bind the Owner (setupGameAddress)
 	adminExists bool
 	recovery    recoveryConfig // how the account operations mail a recovery code
 	// alertRoute reads where the watchdog's alerts go for the summary; nil
@@ -216,7 +217,7 @@ func (m *rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.stage = stageOwner
 		if m.mode == consoleModeSetup {
-			return m.adopt(newMCBindModel(m.ctx, m.store, defaultAdminHostname(m.rootDomain, m.adminHost), m.osUser))
+			return m.adopt(newMCBindModel(m.ctx, m.store, defaultAdminHostname(m.rootDomain, m.adminHost), m.osUser, m.gameAddr))
 		}
 		return m.adopt(newOwnerModel(m.ctx, m.store, m.osUser, false))
 
@@ -289,6 +290,13 @@ func (m *rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		m.adminExists = true
+		m.stage = stageConnect
+		return m.adopt(newConnectChooserModel(m.rootDomain, m.adminHost, m.panelHost))
+
+	case ownerSkippedMsg:
+		// The rest of the wizard needs no Owner; the summary and the exit message say
+		// how to come back and bind one.
+		m.result.ownerSkipped = true
 		m.stage = stageConnect
 		return m.adopt(newConnectChooserModel(m.rootDomain, m.adminHost, m.panelHost))
 
@@ -424,6 +432,11 @@ func (m *rootModel) reviewBody(stage int) string {
 		b.WriteString(tuiOK.Render("✓ Preflight") + "\n")
 		b.WriteString(tuiHint.Render("Control plane verified before configuration."))
 	case stageOwner:
+		if m.result.ownerSkipped {
+			b.WriteString(tuiWarn.Render("– Owner account skipped") + "\n")
+			b.WriteString(tuiHint.Render("Run  sudo felis setup  again to bind it."))
+			break
+		}
 		b.WriteString(tuiOK.Render("✓ Owner account") + "\n")
 		if m.result.username != "" {
 			b.WriteString(tuiLabel.Render("username  ") + m.result.username + "\n")
@@ -553,6 +566,8 @@ func (m *rootModel) showSummary() (tea.Model, tea.Cmd) {
 	return m.adopt(&summaryModel{
 		panelURL:      m.result.panelURL,
 		ownerUsername: m.result.username,
+		ownerSkipped:  m.result.ownerSkipped,
+		gameAddr:      m.gameAddr,
 		setupTokenURL: m.result.setupTokenURL,
 		accessLabel:   connectMethodLabel(m.result.connectMethod),
 		storageLabel:  m.result.storageDetail,

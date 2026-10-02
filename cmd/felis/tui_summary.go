@@ -16,6 +16,8 @@ import (
 type summaryModel struct {
 	panelURL      string
 	ownerUsername string
+	ownerSkipped  bool   // the Owner step was skipped: say how to bind one
+	gameAddr      string // where to join in Minecraft to bind the Owner
 	setupTokenURL string // one-time first-login URL; shown once
 	accessLabel   string
 	storageLabel  string // build-context storage backend recap; empty to omit
@@ -51,15 +53,21 @@ func (m *summaryModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *summaryModel) View() string {
 	var b strings.Builder
 
-	if m.alreadySetUp {
+	switch {
+	case m.alreadySetUp:
 		b.WriteString(tuiOK.Render("✓ Felis is already set up.") + "\n\n")
-	} else {
+	case m.ownerSkipped:
+		b.WriteString(tuiWarn.Render("⚠ Setup finished without an Owner.") + "\n\n")
+	default:
 		b.WriteString(tuiOK.Render("✓ Setup complete.") + "\n\n")
 	}
 
 	var card strings.Builder
 	if m.ownerUsername != "" {
 		card.WriteString(tuiLabel.Render("owner     ") + m.ownerUsername + "\n")
+	}
+	if m.ownerSkipped {
+		card.WriteString(routeRow("owner     ", "not bound: nobody can sign in to the panel yet", false))
 	}
 	if m.setupTokenURL != "" {
 		card.WriteString(tuiLabel.Render("setup URL ") + tuiPassword.Render(m.setupTokenURL) + "\n")
@@ -85,7 +93,11 @@ func (m *summaryModel) View() string {
 	}
 	b.WriteString(tuiCardStyle.Render(strings.TrimRight(card.String(), "\n")) + "\n\n")
 
-	b.WriteString(tuiHint.Render("ℹ Everything else — servers, users, plugins — is configured in the panel. You won't need this console again.") + "\n")
+	if m.ownerSkipped {
+		b.WriteString(tuiWarn.Render("To bind the Owner, run  sudo felis setup  again and join "+ownerJoinTarget(m.gameAddr)+" in Minecraft.") + "\n")
+	} else {
+		b.WriteString(tuiHint.Render("ℹ Everything else — servers, users, plugins — is configured in the panel. You won't need this console again.") + "\n")
+	}
 	if m.localHint {
 		b.WriteString(tuiHint.Render("  The local certificate is self-signed; your browser may warn on first visit.") + "\n")
 	}

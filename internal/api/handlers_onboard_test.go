@@ -34,7 +34,7 @@ func seedBindAPI(t *testing.T) (*API, *fakeRepo) {
 // mint (handleCreateLinkCode → CreateLinkCode).
 func mintBindCode(t *testing.T, api *API, repo *fakeRepo, code, uuid, authSource string) {
 	t.Helper()
-	if err := repo.CreateLinkCode(t.Context(), code, uuid, authSource, api.now().Add(linkCodeTTL)); err != nil {
+	if err := repo.CreateLinkCode(t.Context(), code, uuid, authSource, api.now().Add(LinkCodeTTL)); err != nil {
 		t.Fatalf("mint bind code: %v", err)
 	}
 }
