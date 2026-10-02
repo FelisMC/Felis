@@ -527,6 +527,12 @@ K3S_IMAGES_DIR="/var/lib/rancher/k3s/agent/images"
 # stores the journal persistently.
 JOURNALD_DROPIN="/etc/systemd/journald.conf.d/50-felis.conf"
 JOURNAL_DIR="/var/log/journal"
+# dpkg's journal of a run in progress: not empty after a dpkg run was cut off
+# (finish_interrupted_dpkg).
+DPKG_UPDATES_DIR="/var/lib/dpkg/updates"
+# Held for the whole run (acquire_run_lock), so a second installer started while one is
+# still going stops at once instead of working the same files and cluster beside it.
+RUN_LOCK_FILE="/run/felis-bootstrap.lock"
 APT_LOCK_FILES=(
   /var/lib/dpkg/lock-frontend
   /var/lib/dpkg/lock
@@ -658,6 +664,19 @@ trap 'on_error "$LINENO" "$?"' ERR
 trap cleanup EXIT
 
 k3s_cmd() { [ -x "$K3S_BIN" ] || die "k3s binary not found at ${K3S_BIN}"; "$K3S_BIN" "$@"; }
+
+# acquire_run_lock takes RUN_LOCK_FILE for the rest of the run. A rerun started while an
+# earlier one still runs (in tmux after the SSH session dropped, in a second terminal)
+# would otherwise install the same packages, rewrite the same files and apply the same
+# cluster objects beside it. The lock goes with the process, however it ends.
+acquire_run_lock() {
+  if ! command -v flock >/dev/null 2>&1; then
+    warn "flock not found; nothing stops a second installer run beside this one"
+    return 0
+  fi
+  exec 9>"$RUN_LOCK_FILE"
+  flock -n 9 || die "another installer run is still going on this host; wait for it to finish, then rerun (ps -ef | grep bootstrap)"
+}
 kube() { k3s_cmd kubectl "$@"; }
 
 # Create or update a single-key Secret without putting the value in kubectl's argv.
@@ -1566,10 +1585,23 @@ pkg_install() {
   esac
 }
 
+# finish_interrupted_dpkg completes a dpkg run that was cut off: an earlier install killed
+# halfway through a package, a reboot during unattended-upgrades. Until then apt-get refuses
+# everything with "dpkg was interrupted, you must manually run 'dpkg --configure -a'", so
+# each rerun failed exactly as the run before it.
+finish_interrupted_dpkg() {
+  [ -n "$(ls -A "$DPKG_UPDATES_DIR" 2>/dev/null)" ] || [ -n "$(dpkg --audit 2>/dev/null)" ] || return 0
+  warn "an earlier dpkg run was cut off; finishing it (dpkg --configure -a)"
+  wait_for_pkg_locks
+  NEEDRESTART_SUSPEND=1 DEBIAN_FRONTEND=noninteractive \
+    dpkg --force-confdef --force-confold --configure -a \
+    || die "dpkg --configure -a failed; fix the package it names, then rerun the installer"
+}
+
 pkg_refresh_once() {
   [ -n "${_PKG_REFRESHED:-}" ] && return 0
   case "$PKG" in
-    apt) apt_get update -y ;;
+    apt) finish_interrupted_dpkg; apt_get update -y ;;
     dnf|yum) : ;;   # dnf/yum refresh metadata on demand
     zypper) wait_for_pkg_locks; zypper --non-interactive refresh ;;
     # Arch supports only whole-system upgrades (-Sy alone leaves a partial upgrade), so the
@@ -1968,7 +2000,17 @@ install_k3s() {
   write_k3s_service_dropin
 
   local installer_ran=0
-  if [ -x "$K3S_BIN" ]; then
+  if [ -x "$K3S_BIN" ] && [ ! -f "$K3S_UNIT_FILE" ]; then
+    # k3s's installer moves the binary into place before it writes k3s.service, so a run
+    # cut short between the two left a k3s nothing starts, and every rerun stopped at
+    # `systemctl enable`. Its installer run again around the binary in place finishes the
+    # job: no download, no version change, the cluster's data untouched.
+    "$K3S_BIN" --version >/dev/null 2>&1 \
+      || die "${K3S_BIN} does not run and k3s.service is missing: an earlier k3s install was cut short. Remove ${K3S_BIN} and rerun to install k3s ${FELIS_K3S_VERSION}"
+    log "k3s.service is missing beside ${K3S_BIN}: an earlier k3s install was cut short; finishing it around the binary in place"
+    run_k3s_installer --keep-binary
+    installer_ran=1
+  elif [ -x "$K3S_BIN" ]; then
     local current
     current="$("$K3S_BIN" --version 2>/dev/null | awk 'NR == 1 { print $3 }')"
     if [ "$current" = "$FELIS_K3S_VERSION" ]; then
@@ -2135,8 +2177,13 @@ strip_k3s_kubeconfig_mode_flag() {
 # The script from the release's own tag rather than get.k3s.io, which serves whatever
 # master holds today. '+' is literal in a URL path, so the tag needs no escaping. On an
 # installed k3s the same script replaces the binary in place and restarts the service.
-run_k3s_installer() {
+# --keep-binary keeps the k3s already at K3S_BIN (INSTALL_K3S_SKIP_DOWNLOAD=binary) and
+# still does everything after it, the SELinux policy included.
+run_k3s_installer() { # [--keep-binary]
+  local skip=""
+  [ "${1:-}" != --keep-binary ] || skip=binary
   curl -sfL --retry 5 --retry-delay 2 "https://raw.githubusercontent.com/k3s-io/k3s/${FELIS_K3S_VERSION}/install.sh" | \
+    INSTALL_K3S_SKIP_DOWNLOAD="$skip" \
     INSTALL_K3S_VERSION="$FELIS_K3S_VERSION" \
     INSTALL_K3S_BIN_DIR="$K3S_BIN_DIR" \
     INSTALL_K3S_EXEC="--disable traefik --disable servicelb --disable metrics-server" \
@@ -2892,6 +2939,9 @@ fetch_source() {
     # whole: git clone refuses a non-empty destination, which stopped the rerun outright.
     log "cloning ${FELIS_REPO_URL} (${FELIS_REF})"
     mkdir -p "$(dirname "$SRC_DIR")"
+    # A run killed outright (no EXIT trap) leaves its half-made checkout; the run lock
+    # means none of these belongs to a run still going.
+    rm -rf -- "${SRC_DIR}".new.*
     work="$(mktemp -d "${SRC_DIR}.new.XXXXXX")"
     chmod 755 "$work"
     if ! { git -C "$work" init -q && git -C "$work" remote add origin "$FELIS_REPO_URL" \
@@ -5798,6 +5848,9 @@ summary_next() {
 start_setup_console() {
   [ "$SETUP_CONSOLE" = 1 ] || return 0
   resume_package_background_timers
+  # The install is done, and felis setup can start the installer itself (its host
+  # bootstrap step): an inherited run lock would stop that run as a second one.
+  exec 9>&-
   "$HOST_BIN" setup <"$SETUP_TTY" \
     || warn "the setup console exited with status $?; run 'sudo felis setup' to come back to it"
 }
@@ -6222,6 +6275,7 @@ EOF_MIRROR
 }
 
 main() {
+  acquire_run_lock
   ensure_k3s_on_path
   resolve_nano_listen
   validate_settings

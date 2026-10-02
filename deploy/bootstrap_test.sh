@@ -1237,14 +1237,25 @@ kblock="$(awk '/^run_k3s_installer\(\) \{/,/^}/' "$BS")"
 expect "k3s's install script comes from the pinned tag" 'raw.githubusercontent.com/k3s-io/k3s/${FELIS_K3S_VERSION}/install.sh' "$kblock"
 expect "k3s's install script is told the pinned version" 'INSTALL_K3S_VERSION="$FELIS_K3S_VERSION"' "$kblock"
 case "$kblock" in *"https://get.k3s.io"*) echo "FAIL: get.k3s.io serves master's script; read it from the pinned tag"; fails=$((fails + 1)) ;; esac
+run_kinst() { # [--keep-binary]
+  bash -c '
+    curl() { :; }
+    sh() { printf "SKIP=[%s] VERSION=%s\n" "$INSTALL_K3S_SKIP_DOWNLOAD" "$INSTALL_K3S_VERSION"; }
+    FELIS_K3S_VERSION=v1.36.4+k3s1 K3S_BIN_DIR=/usr/local/bin
+    '"$kblock"'
+    run_k3s_installer "$@"' _ "$@"
+}
+expect "finishing a cut-short k3s install keeps the binary in place" "SKIP=[binary] VERSION=v1.36.4+k3s1" "$(run_kinst --keep-binary)"
+expect "an install or an upgrade downloads k3s" "SKIP=[] VERSION=v1.36.4+k3s1" "$(run_kinst)"
 
 # An installed k3s moves only under FELIS_UPGRADE_DEPS=1, one minor version at a time and
 # never backwards; the refusal names the release to go through first.
 kfake="$sdir/k3s"
+: > "$sdir/k3s.service"
 run_k3s() { # installed-version pinned-version [FELIS_UPGRADE_DEPS]
   printf '#!/bin/sh\necho "k3s version %s (0123abcd)"\necho "go version go1.26"\n' "$1" > "$kfake"
   chmod +x "$kfake"
-  K3S_BIN="$kfake" FELIS_K3S_VERSION="$2" FELIS_UPGRADE_DEPS="${3:-0}" bash -c '
+  K3S_BIN="$kfake" K3S_UNIT_FILE="$sdir/k3s.service" FELIS_K3S_VERSION="$2" FELIS_UPGRADE_DEPS="${3:-0}" bash -c '
     die() { printf "DIE: %s\n" "$*"; exit 1; }
     log() { printf "LOG: %s\n" "$*"; }
     ok() { printf "OK: %s\n" "$*"; }
@@ -1383,8 +1394,13 @@ case "$out" in
 esac
 expect "a rerun over a shallow checkout takes an abbreviated commit id" "AT ${first} one" \
   "$(run_real_fetch "$gdir/src" "$first")"
+# A run killed outright (no EXIT trap) leaves its half-made checkout beside SRC_DIR.
+mkdir -p "$gdir/fresh.new.Ab12Cd"
+echo killed >"$gdir/fresh.new.Ab12Cd/a.txt"
 expect "a fresh clone takes an abbreviated commit id" "AT ${first} one" \
   "$(run_real_fetch "$gdir/fresh" "$first")"
+[ ! -e "$gdir/fresh.new.Ab12Cd" ] && echo "PASS   and clears the half-made checkout a killed run left" \
+  || { echo "FAIL the half-made checkout a killed run left is still there"; fails=$((fails + 1)); }
 # A full clone left a local main behind origin's; with the shallow fetch failing, the whole
 # history arm must still land on origin's main.
 git clone -q "file://$gdir/up" "$gdir/stale"
@@ -2537,6 +2553,7 @@ printf 'keys from the terminal\n' > "$next_dir/tty"
 cat > "$next_dir/felis" <<'XEOF'
 #!/bin/sh
 echo "felis $*" >> "$NEXT_JOURNAL"
+if (: >&9) 2>/dev/null; then echo "fd 9 open" >> "$NEXT_JOURNAL"; fi
 cat > "$NEXT_STDIN"
 exit "${SETUP_EXIT:-0}"
 XEOF
@@ -2547,10 +2564,11 @@ chmod +x "$next_dir/felis"
 run_next() {
   : > "$next_dir/journal"
   : > "$next_dir/stdin"
-  PG_ANSWER="$1" NEXT_JOURNAL="$next_dir/journal" NEXT_STDIN="$next_dir/stdin" \
+  PG_ANSWER="$1" NEXT_JOURNAL="$next_dir/journal" NEXT_STDIN="$next_dir/stdin" NEXT_LOCK="$next_dir/lock" \
     HOST_BIN="$next_dir/felis" SETUP_TTY="$next_dir/tty" bash -c '
     set -Eeuo pipefail
     trap "echo TRAP" ERR
+    exec 9>"$NEXT_LOCK" # the run lock acquire_run_lock holds
     log() { printf "LOG: %s\n" "$*"; }; warn() { printf "WARN: %s\n" "$*"; }
     auth_hostname() { printf "%s" "$2"; }
     pg_exec() { echo "pg_exec $*" >> "$NEXT_JOURNAL"; [ "$PG_ANSWER" != fail ] || return 1; echo "$PG_ANSWER"; }
@@ -2578,6 +2596,12 @@ expect "with no Owner on a terminal the summary says the setup console starts" "
 expect "  and how it binds the Owner" "has you join 10.0.0.5:25565 in Minecraft" "$out"
 if started; then echo "PASS   and starts it"; else echo "FAIL the setup console did not start: $out"; fails=$((fails + 1)); fi
 expect "  on the terminal's keys" "keys from the terminal" "$(cat "$next_dir/stdin")"
+# felis setup can run the installer itself (its host bootstrap step), which would take an
+# inherited run lock for a second installer run.
+case "$(cat "$next_dir/journal")" in
+  *"fd 9 open"*) echo "FAIL the setup console must not inherit the installer's run lock"; fails=$((fails + 1)) ;;
+  *) echo "PASS   without the installer's run lock" ;;
+esac
 case "$(cat "$next_dir/journal")" in
   *"systemctl start apt-daily.timer"*"felis setup"*) echo "PASS   after the package timers are back" ;;
   *) echo "FAIL the package timers must restart before the setup console: $(cat "$next_dir/journal")"; fails=$((fails + 1)) ;;
@@ -3190,6 +3214,96 @@ esac
 printf '16\n' > "$pmdir/PG_VERSION"
 expect "an Arch rerun holds PostgreSQL at the cluster's version" "PACMAN -Syu --noconfirm --ignore postgresql" "$(run_refresh)"
 rm -rf "$pmdir"
+expect "an apt refresh first finishes a dpkg run that was cut off" "FINISH
+APT_GET update -y" "$(PKG=apt bash -c '
+  finish_interrupted_dpkg() { echo FINISH; }
+  apt_get() { echo "APT_GET $*"; }
+  '"$rfblock"'
+  pkg_refresh_once')"
+
+# An install killed halfway through a package leaves dpkg's journal behind, and apt-get then
+# refuses everything until `dpkg --configure -a` runs: the rerun runs it.
+fdblock="$(awk '/^finish_interrupted_dpkg\(\) \{/,/^}/' "$BS")"
+[ -n "$fdblock" ] || { echo "FAIL: no finish_interrupted_dpkg found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$fdblock" | wc -l)" -lt 15 ] \
+  || { echo "FAIL: the extracted block is not finish_interrupted_dpkg -- did its closing brace move?"; exit 1; }
+dpdir="$(mktemp -d)"
+run_finish_dpkg() { # $1: what dpkg --audit prints, $2: dpkg --configure's exit status
+  AUDIT="$1" DPKG_RC="${2:-0}" DPKG_UPDATES_DIR="$dpdir/updates" bash -c '
+    set -Eeuo pipefail
+    warn() { printf "WARN: %s\n" "$*"; }; die() { printf "DIE: %s\n" "$*"; exit 1; }
+    wait_for_pkg_locks() { echo LOCKS; }
+    dpkg() {
+      if [ "$1" = --audit ]; then printf "%s" "$AUDIT"; return 0; fi
+      printf "DPKG: %s (frontend=%s)\n" "$*" "${DEBIAN_FRONTEND:-}"
+      return "$DPKG_RC"
+    }
+    '"$fdblock"'
+    finish_interrupted_dpkg
+    echo DONE' 2>&1
+}
+out="$(run_finish_dpkg "")"
+expect "a host without dpkg's journal carries on" "DONE" "$out"
+case "$out" in *DPKG:*) echo "FAIL a host without dpkg's journal must not run dpkg --configure: $out"; fails=$((fails + 1)) ;; *) echo "PASS   without running dpkg --configure" ;; esac
+mkdir -p "$dpdir/updates"
+case "$(run_finish_dpkg "")" in *DPKG:*) echo "FAIL an empty dpkg journal must not run dpkg --configure"; fails=$((fails + 1)) ;; *) echo "PASS an empty dpkg journal runs nothing" ;; esac
+: > "$dpdir/updates/0007"
+out="$(run_finish_dpkg "")"
+expect "a dpkg run cut off mid-package is finished first" "LOCKS
+DPKG: --force-confdef --force-confold --configure -a (frontend=noninteractive)" "$out"
+expect "  and the install carries on" "DONE" "$out"
+out="$(run_finish_dpkg "" 1)"
+expect "a dpkg run that cannot be finished stops the install" "DIE: dpkg --configure -a failed" "$out"
+case "$out" in *DONE*) echo "FAIL a dpkg run that cannot be finished must stop the install"; fails=$((fails + 1)) ;; esac
+rm -f "$dpdir/updates/0007"
+expect "a package dpkg --audit names as half configured is finished too" "DPKG: --force-confdef --force-confold --configure -a" \
+  "$(run_finish_dpkg "The following packages are only half configured")"
+rm -rf "$dpdir"
+
+# A second installer started while one still runs (in tmux after the SSH session dropped)
+# stops at once.
+alblock="$(awk '/^acquire_run_lock\(\) \{/,/^}/' "$BS")"
+[ -n "$alblock" ] || { echo "FAIL: no acquire_run_lock found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$alblock" | wc -l)" -lt 15 ] \
+  || { echo "FAIL: the extracted block is not acquire_run_lock -- did its closing brace move?"; exit 1; }
+case "$(awk '/^main\(\) \{/,/^}/' "$BS" | sed -n 2p)" in
+  "  acquire_run_lock") echo "PASS the installer takes its run lock before anything else" ;;
+  *) echo "FAIL main must start with acquire_run_lock"; fails=$((fails + 1)) ;;
+esac
+lkdir="$(mktemp -d)"
+run_lock() { # $1: flock's exit status ("" = no flock on the host)
+  FLOCK_RC="$1" RUN_LOCK_FILE="$lkdir/run.lock" NOPATH="$lkdir/nopath" bash -c '
+    set -Eeuo pipefail
+    warn() { printf "WARN: %s\n" "$*"; }; die() { printf "DIE: %s\n" "$*"; exit 1; }
+    if [ -n "$FLOCK_RC" ]; then
+      flock() { printf "FLOCK: %s\n" "$*"; if (: >&9) 2>/dev/null; then echo "FD9 OPEN"; fi; return "$FLOCK_RC"; }
+    else
+      PATH="$NOPATH"
+    fi
+    '"$alblock"'
+    acquire_run_lock
+    echo CONTINUES' 2>&1
+}
+out="$(run_lock 0)"
+expect "the installer takes its run lock on the lock file" "FLOCK: -n 9
+FD9 OPEN
+CONTINUES" "$out"
+[ -e "$lkdir/run.lock" ] && echo "PASS   which it creates" || { echo "FAIL the run lock file was not created"; fails=$((fails + 1)); }
+out="$(run_lock 1)"
+expect "a run lock held by another run stops the install" "DIE: another installer run is still going on this host" "$out"
+case "$out" in *CONTINUES*) echo "FAIL a second installer run must stop: $out"; fails=$((fails + 1)) ;; esac
+expect "a host without flock warns and carries on" "WARN: flock not found" "$(run_lock "")"
+if command -v flock >/dev/null 2>&1; then
+  out="$(flock "$lkdir/held.lock" env RUN_LOCK_FILE="$lkdir/held.lock" bash -c '
+    die() { printf "DIE: %s\n" "$*"; exit 1; }; warn() { :; }
+    '"$alblock"'
+    acquire_run_lock
+    echo CONTINUES' 2>&1)"
+  expect "a lock another process holds stops the install (real flock)" "DIE: another installer run" "$out"
+else
+  echo "SKIP a lock another process holds (real flock): flock is not installed here"
+fi
+rm -rf "$lkdir"
 
 
 
@@ -3532,21 +3646,29 @@ iblock="$(awk '/^install_k3s\(\) \{/,/^}/' "$BS")"
 iblock="$iblock
 $(awk '/^version_newer\(\) \{/,/^}/' "$BS")
 $(awk '/^k3s_upgrade_allowed\(\) \{/,/^}/' "$BS")"
-run_install_k3s() { # $1: installed version ("" = none), $2: config drop-in changed (0|1), $3: FELIS_UPGRADE_DEPS, $4: service drop-in changed (0|1)
-  INSTALLED="$1" CHANGED="$2" UPGRADE="${3:-0}" SVC_CHANGED="${4:-0}" KDIR="$kdir" bash -c '
+run_install_k3s() { # $1: installed version ("" = none, "broken" = a binary that does not run), $2: config drop-in changed (0|1), $3: FELIS_UPGRADE_DEPS, $4: service drop-in changed (0|1), $5: k3s.service present (1|0)
+  INSTALLED="$1" CHANGED="$2" UPGRADE="${3:-0}" SVC_CHANGED="${4:-0}" UNIT="${5:-1}" KDIR="$kdir" bash -c '
     set -Eeuo pipefail
     ok() { echo "OK: $*"; }; log() { echo "LOG: $*"; }; warn() { echo "WARN: $*"; }
     die() { echo "DIE: $*"; exit 1; }
     FELIS_K3S_VERSION=v1.36.4+k3s1 FELIS_UPGRADE_DEPS="$UPGRADE" K3S_BIN_DIR="$KDIR" K3S_BIN="$KDIR/k3s-under-test"
     K3S_CONFIG_DROPIN=/etc/rancher/k3s/config.yaml.d/50-felis.yaml K3S_KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-    K3S_SERVICE_DROPIN=/etc/systemd/system/k3s.service.d/50-felis.conf
-    rm -f "$K3S_BIN"
-    if [ -n "$INSTALLED" ]; then printf "#!/bin/sh\necho \"k3s version %s (abc)\"\n" "$INSTALLED" > "$K3S_BIN"; chmod +x "$K3S_BIN"; fi
+    K3S_SERVICE_DROPIN=/etc/systemd/system/k3s.service.d/50-felis.conf K3S_UNIT_FILE="$KDIR/k3s.service-under-test"
+    rm -f "$K3S_BIN" "$K3S_UNIT_FILE"
+    [ "$UNIT" = 0 ] || : > "$K3S_UNIT_FILE"
+    case "$INSTALLED" in
+      "") ;;
+      broken) printf "#!/bin/sh\nexit 1\n" > "$K3S_BIN"; chmod +x "$K3S_BIN" ;;
+      *) printf "#!/bin/sh\necho \"k3s version %s (abc)\"\n" "$INSTALLED" > "$K3S_BIN"; chmod +x "$K3S_BIN" ;;
+    esac
     configure_k3s_firewall() { :; }
     write_k3s_config() { [ "$CHANGED" = 0 ] || K3S_RESTART_NEEDED=1; }
     write_k3s_service_dropin() { echo "SERVICE-DROPIN"; [ "$SVC_CHANGED" = 0 ] || K3S_RESTART_NEEDED=1; }
     strip_k3s_kubeconfig_mode_flag() { :; }
-    run_k3s_installer() { echo "INSTALLER"; printf "#!/bin/sh\n" > "$K3S_BIN"; command chmod +x "$K3S_BIN"; }
+    run_k3s_installer() {
+      echo "INSTALLER${1:+ $1}"
+      [ "${1:-}" = --keep-binary ] || { printf "#!/bin/sh\n" > "$K3S_BIN"; command chmod +x "$K3S_BIN"; }
+    }
     stage_k3s_airgap_images() { echo "STAGE"; }
     systemctl() { echo "SYSTEMCTL: $*"; }
     wait_for_node_ready() { echo "READY"; }
@@ -3573,6 +3695,18 @@ case "$out" in *"restart k3s"*) echo "FAIL the k3s installer already started k3s
 out="$(run_install_k3s v1.35.2+k3s1 1 1)"
 expect "an upgrade runs the k3s installer" "INSTALLER" "$out"
 case "$out" in *"restart k3s"*) echo "FAIL the upgrade already restarted k3s on the new settings; no second restart"; fails=$((fails + 1)) ;; *) echo "PASS an upgraded k3s is not restarted a second time" ;; esac
+# k3s's installer puts the binary in place before it writes k3s.service: a run cut short
+# between the two is finished around that binary, at its own version.
+out="$(run_install_k3s v1.36.4+k3s1 1 0 0 0)"
+expect "a k3s binary without k3s.service has its installer finish around it" "INSTALLER --keep-binary
+SYSTEMCTL: enable --now k3s" "$out"
+case "$out" in *"restart k3s"*) echo "FAIL the finishing installer already started k3s; no second restart"; fails=$((fails + 1)) ;; *) echo "PASS   and k3s is not restarted a second time" ;; esac
+expect "an older binary without k3s.service is finished at its own version" "INSTALLER --keep-binary" \
+  "$(run_install_k3s v1.35.2+k3s1 0 1 0 0)"
+out="$(run_install_k3s broken 0 0 0 0)"
+expect "a k3s binary that does not run, without k3s.service, stops the install" \
+  "does not run and k3s.service is missing: an earlier k3s install was cut short" "$out"
+case "$out" in *INSTALLER*) echo "FAIL a k3s binary that does not run must not be installed around"; fails=$((fails + 1)) ;; *) echo "PASS   and the installer is not run around it" ;; esac
 rm -rf "$kdir"
 
 jblock="$(awk '/^ensure_persistent_journal\(\) \{/,/^}/' "$BS")"
