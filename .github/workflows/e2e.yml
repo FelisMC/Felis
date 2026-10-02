@@ -21,6 +21,11 @@
 # This runs on pushes that touch what gets installed, by hand, and weekly (a moving
 # upstream: apt mirrors, k3s's install script and release assets, Adoptium).
 # deploy/e2e_check.sh holds the assertions, deploy/e2e_seed.sh the upgrade's seed and its check.
+#
+# An installer that stops on an upstream download refused or dropped (a GitHub 403, a 5xx, a
+# timeout) ends its job green, with a warning on the run: each install step hands a failed
+# run's log to deploy/e2e_upstream.sh, which sets E2E_UPSTREAM_SKIP for the job's later
+# steps. Every other installer failure, a 404 included, fails the job.
 name: e2e
 
 on:
@@ -43,8 +48,8 @@ on:
 permissions:
   contents: read
 
-# An explicit bash runs with -o pipefail, so `bootstrap.sh | tee install.log` fails the step
-# when the installer fails; the default shell reports tee's status.
+# An explicit bash runs with -o pipefail, so `bootstrap.sh | tee install.log` carries the
+# installer's status to deploy/e2e_upstream.sh; the default shell reports tee's status.
 defaults:
   run:
     shell: bash
@@ -107,9 +112,10 @@ jobs:
         run: sudo ufw --force enable
 
       - name: Install
-        run: sudo FELIS_ARTIFACT_DIR="$GITHUB_WORKSPACE/dist" FELIS_INSTALL_MODE=full bash deploy/bootstrap.sh 2>&1 | tee install.log
+        run: sudo FELIS_ARTIFACT_DIR="$GITHUB_WORKSPACE/dist" FELIS_INSTALL_MODE=full bash deploy/bootstrap.sh 2>&1 | tee install.log || bash deploy/e2e_upstream.sh install.log $?
 
       - name: Check the install
+        if: env.E2E_UPSTREAM_SKIP != '1'
         run: |
           sudo bash deploy/e2e_check.sh install
           for tag in felis-k3s-pods felis-k3s-services felis-panel felis-proxy; do
@@ -124,11 +130,13 @@ jobs:
           grep -q "felis-velocity.jar is the release's" install.log
 
       - name: Rerun the same assets
-        run: sudo FELIS_ARTIFACT_DIR="$GITHUB_WORKSPACE/dist" FELIS_INSTALL_MODE=full bash deploy/bootstrap.sh 2>&1 | tee rerun.log
+        if: env.E2E_UPSTREAM_SKIP != '1'
+        run: sudo FELIS_ARTIFACT_DIR="$GITHUB_WORKSPACE/dist" FELIS_INSTALL_MODE=full bash deploy/bootstrap.sh 2>&1 | tee rerun.log || bash deploy/e2e_upstream.sh rerun.log $?
 
       # containerd and the registry already hold every image under the digest the listing
       # names, so nothing is imported or uploaded twice.
       - name: Check the rerun
+        if: env.E2E_UPSTREAM_SKIP != '1'
         run: |
           sudo bash deploy/e2e_check.sh rerun
           grep -q 'felis-velocity unchanged; left running' rerun.log
@@ -160,8 +168,9 @@ jobs:
   # The README's command on a fresh host: this commit's installer, as main serves it, on its
   # default channel with nothing pinned. It resolves the newest release and installs that
   # release's binary, images and plugin from its assets, each checked against its
-  # SHA256SUMS; the private repo's token is the only thing added. FELIS_INSTALL_MODE picks the
-  # mode the setup console would ask for.
+  # SHA256SUMS. The workflow's token is the only thing added: it lifts GitHub's limit of 60 API
+  # calls an hour for an address without one. FELIS_INSTALL_MODE picks the mode the setup
+  # console would ask for.
   readme:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -181,12 +190,12 @@ jobs:
         if: steps.release.outputs.tag != ''
         env:
           TOKEN: ${{ github.token }}
-        run: sudo FELIS_GITHUB_TOKEN="$TOKEN" FELIS_INSTALL_MODE=full bash deploy/bootstrap.sh 2>&1 | tee readme.log
+        run: sudo FELIS_GITHUB_TOKEN="$TOKEN" FELIS_INSTALL_MODE=full bash deploy/bootstrap.sh 2>&1 | tee readme.log || bash deploy/e2e_upstream.sh readme.log $?
 
       # The binary is the release's, so the phase is `release`: its database backup and
       # timers are the release's to have or lack.
       - name: Check the install
-        if: steps.release.outputs.tag != ''
+        if: steps.release.outputs.tag != '' && env.E2E_UPSTREAM_SKIP != '1'
         env:
           TAG: ${{ steps.release.outputs.tag }}
           BINARY: ${{ steps.release.outputs.binary }}
@@ -246,10 +255,10 @@ jobs:
           TOKEN: ${{ github.token }}
         run: |
           git show "${TAG}:deploy/bootstrap.sh" > release-bootstrap.sh
-          sudo FELIS_GITHUB_TOKEN="$TOKEN" FELIS_RELEASE="$TAG" FELIS_INSTALL_MODE=full bash release-bootstrap.sh 2>&1 | tee release.log
+          sudo FELIS_GITHUB_TOKEN="$TOKEN" FELIS_RELEASE="$TAG" FELIS_INSTALL_MODE=full bash release-bootstrap.sh 2>&1 | tee release.log || bash deploy/e2e_upstream.sh release.log $?
 
       - name: Check the release install
-        if: steps.release.outputs.tag != ''
+        if: steps.release.outputs.tag != '' && env.E2E_UPSTREAM_SKIP != '1'
         env:
           TAG: ${{ steps.release.outputs.tag }}
           BINARY: ${{ steps.release.outputs.binary }}
@@ -260,17 +269,17 @@ jobs:
       # A fresh install's database holds only what its migrations wrote: the seed gives the
       # upgrade's move and its pending migrations existing rows to carry.
       - name: Seed the release's database
-        if: steps.release.outputs.tag != ''
+        if: steps.release.outputs.tag != '' && env.E2E_UPSTREAM_SKIP != '1'
         run: sudo bash deploy/e2e_seed.sh seed
 
       - name: Upgrade to this commit
-        if: steps.release.outputs.tag != ''
-        run: sudo FELIS_ARTIFACT_DIR="$GITHUB_WORKSPACE/dist" FELIS_INSTALL_MODE=full bash deploy/bootstrap.sh 2>&1 | tee upgrade.log
+        if: steps.release.outputs.tag != '' && env.E2E_UPSTREAM_SKIP != '1'
+        run: sudo FELIS_ARTIFACT_DIR="$GITHUB_WORKSPACE/dist" FELIS_INSTALL_MODE=full bash deploy/bootstrap.sh 2>&1 | tee upgrade.log || bash deploy/e2e_upstream.sh upgrade.log $?
 
       # Both checks run and report: the seeded rows go last, after the restore drill has
       # also put them back from a bundle.
       - name: Check the upgrade
-        if: steps.release.outputs.tag != ''
+        if: steps.release.outputs.tag != '' && env.E2E_UPSTREAM_SKIP != '1'
         run: |
           rc=0
           sudo bash deploy/e2e_check.sh upgrade || rc=1
@@ -313,9 +322,10 @@ jobs:
           sudo chown -R root:root /opt/felis/src
 
       - name: Install
-        run: sudo FELIS_SKIP_FETCH=1 FELIS_INSTALL_MODE=full bash /opt/felis/src/deploy/bootstrap.sh 2>&1 | tee source.log
+        run: sudo FELIS_SKIP_FETCH=1 FELIS_INSTALL_MODE=full bash /opt/felis/src/deploy/bootstrap.sh 2>&1 | tee source.log || bash deploy/e2e_upstream.sh source.log $?
 
       - name: Check the install
+        if: env.E2E_UPSTREAM_SKIP != '1'
         run: sudo bash deploy/e2e_check.sh install
 
       - name: Diagnostics

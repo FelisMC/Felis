@@ -151,6 +151,7 @@ jobs:
       - run: sh deploy/bootstrap_test.sh
       - run: sh deploy/uninstall_test.sh
       - run: bash deploy/e2e_release_test.sh
+      - run: bash deploy/e2e_upstream_test.sh
 
   # The shipped alert rules (deploy/alerts): promtool parses them and runs their unit tests,
   # which pin when each alert fires and that it stays quiet before. internal/metrics'
