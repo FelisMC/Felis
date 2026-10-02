@@ -2362,6 +2362,14 @@ repo_slug() {
   printf '%s\n' "$FELIS_REPO_URL" | sed -e 's#^.*github\.com[:/]##' -e 's#\.git$##'
 }
 
+# fork_token_hint is what a failed GitHub fetch says about FELIS_GITHUB_TOKEN. The official
+# repository is public and needs none, so the sentence appears only for a fork, where GitHub
+# answers a private repository the caller cannot see with 404, as it does a missing one.
+fork_token_hint() {
+  [ "$(repo_slug | tr '[:upper:]' '[:lower:]')" != "felismc/felis" ] || return 0
+  printf ' If %s is a private fork, set FELIS_GITHUB_TOKEN to a token with read access to it.' "$FELIS_REPO_URL"
+}
+
 # github_api GETs a REST path and prints the body.
 #
 # The token goes in through `curl --config -` rather than `-H "Authorization: ..."`
@@ -2812,12 +2820,11 @@ resolve_install_ref() {
         # to an earlier release (docs/troubleshooting.md §16). validate_settings checked
         # the tag's form; this checks it was published.
         load_release_json "$FELIS_RELEASE" || die "could not find the published Felis release ${FELIS_RELEASE}.
-  Check the tag against the repository's releases page. If the repository is private, set FELIS_GITHUB_TOKEN to a token with read access to it."
+  Check the tag against the repository's releases page.$(fork_token_hint)"
         FELIS_REF="$FELIS_RELEASE"
       else
         log "resolving the newest published Felis release"
-        FELIS_REF="$(github_latest_tag)" || die "could not resolve the newest Felis release.
-  If the repository is private, set FELIS_GITHUB_TOKEN to a token with read access to it.
+        FELIS_REF="$(github_latest_tag)" || die "could not resolve the newest Felis release from api.github.com.$(fork_token_hint)
   If no release has been published yet, set FELIS_VERSION_BOOTSTRAP=dev to build main instead."
       fi
       # A release IS its tag, so the stamp is final here and stamp_version leaves it be.
@@ -2849,11 +2856,11 @@ resolve_install_ref() {
 # "+" the tail is build metadata, ignored for ordering, so the build reads as current
 # against v1.2.3 and as behind against v1.3.0 — both correct.
 #
-# `git describe` is also unreliable here: the primary clone is --depth 1 and carries no
+# `git describe` is also unreliable here: the primary fetch is --depth 1 and carries no
 # tags, so describe falls back to a bare SHA, which updates.Parse rejects outright (it
-# fails closed on a non-numeric core). fetch_source does retry with a full clone when the
-# shallow one fails, which WOULD carry tags — that is exactly the point: the stamp must not
-# depend on which arm happened to win. rev-parse needs no history at all.
+# fails closed on a non-numeric core). checkout_ref does fall back to the whole history
+# when the shallow fetch fails, which WOULD carry tags — that is exactly the point: the
+# stamp must not depend on which arm happened to win. rev-parse needs no history at all.
 stamp_version() {
   local sha
   [ -n "$FELIS_VERSION" ] && return 0
@@ -2874,25 +2881,51 @@ fetch_source() {
     return 0
   fi
   resolve_install_ref
+  local work failed
+  failed="could not check out ${FELIS_REF} from ${FELIS_REPO_URL}: check that this ref exists there and that this host can reach it.$(fork_token_hint)"
   if [ -d "${SRC_DIR}/.git" ]; then
     log "updating source in ${SRC_DIR}"
-    git_auth -C "$SRC_DIR" fetch --depth 1 origin "$FELIS_REF" \
-      || die "could not fetch ${FELIS_REF} from ${FELIS_REPO_URL}; if the repository is private, set FELIS_GITHUB_TOKEN to a token with read access to it"
-    git -C "$SRC_DIR" checkout -f FETCH_HEAD
+    checkout_ref "$SRC_DIR" || die "$failed"
   else
+    # Whatever sits at SRC_DIR without a .git (a tree staged for FELIS_SKIP_FETCH, the
+    # remains of an interrupted clone) is replaced, and only once the new checkout is
+    # whole: git clone refuses a non-empty destination, which stopped the rerun outright.
     log "cloning ${FELIS_REPO_URL} (${FELIS_REF})"
     mkdir -p "$(dirname "$SRC_DIR")"
-    # The fallback checks the ref out explicitly. It used to be a bare full clone, which
-    # silently landed on the default branch: harmless when FELIS_REF was always "main",
-    # but the release channel now asks for a tag, and a build stamped v1.2.3 that
-    # actually contains main is worse than a failed install.
-    git_auth clone --depth 1 --branch "$FELIS_REF" "$FELIS_REPO_URL" "$SRC_DIR" 2>/dev/null \
-      || { git_auth clone "$FELIS_REPO_URL" "$SRC_DIR" \
-           && git_auth -C "$SRC_DIR" checkout -f "$FELIS_REF"; } \
-      || die "could not check out ${FELIS_REF} from ${FELIS_REPO_URL}; if the repository is private, set FELIS_GITHUB_TOKEN to a token with read access to it"
+    work="$(mktemp -d "${SRC_DIR}.new.XXXXXX")"
+    chmod 755 "$work"
+    if ! { git -C "$work" init -q && git -C "$work" remote add origin "$FELIS_REPO_URL" \
+           && checkout_ref "$work"; }; then
+      rm -rf "$work"
+      die "$failed"
+    fi
+    rm -rf "$SRC_DIR"
+    mv "$work" "$SRC_DIR"
   fi
   stamp_version
   ok "source ready at ${SRC_DIR}"
+}
+
+# checkout_ref checks FELIS_REF out in the repository at $1, whose origin is FELIS_REPO_URL.
+# A branch, a tag or a full commit id comes down at depth 1. An abbreviated commit id is no
+# ref a server answers for, so it falls back to the whole history and is resolved there,
+# with origin's branch ahead of a local one an earlier clone left behind. The ref is always
+# checked out explicitly: a build stamped v1.2.3 that actually holds main is worse than a
+# failed install.
+checkout_ref() {
+  local commit
+  if git_auth -C "$1" fetch -q --depth 1 origin "$FELIS_REF" 2>/dev/null; then
+    git -C "$1" checkout -q -f FETCH_HEAD
+    return
+  fi
+  if [ -f "$1/.git/shallow" ]; then
+    git_auth -C "$1" fetch -q --unshallow --tags origin '+refs/heads/*:refs/remotes/origin/*' || return 1
+  else
+    git_auth -C "$1" fetch -q --tags origin '+refs/heads/*:refs/remotes/origin/*' || return 1
+  fi
+  commit="$(git -C "$1" rev-parse -q --verify "refs/remotes/origin/${FELIS_REF}^{commit}" \
+    || git -C "$1" rev-parse -q --verify "${FELIS_REF}^{commit}")" || return 1
+  git -C "$1" checkout -q -f "$commit"
 }
 
 install_embedded_binary() {

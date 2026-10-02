@@ -1305,12 +1305,16 @@ expect "git never prompts without a token" "GIT: prompt=0" "$(run_git_auth '')"
 expect "git never prompts with a token" "GIT: prompt=0" "$(run_git_auth ghp_example)"
 
 fblock="$(awk '/^fetch_source\(\) \{/,/^}/' "$BS")"
-[ -n "$fblock" ] || { echo "FAIL: no fetch_source found in $BS"; exit 1; }
-[ "$(printf '%s\n' "$fblock" | wc -l)" -lt 40 ] \
-  || { echo "FAIL: the extracted block is not the function -- did its closing brace move?"; exit 1; }
+cblock="$(awk '/^checkout_ref\(\) \{/,/^}/' "$BS")"
+hblock="$(awk '/^repo_slug\(\) \{/,/^}/; /^fork_token_hint\(\) \{/,/^}/' "$BS")"
+for blk in "$fblock" "$cblock" "$hblock"; do
+  [ -n "$blk" ] || { echo "FAIL: fetch_source, checkout_ref or fork_token_hint is missing from $BS"; exit 1; }
+  [ "$(printf '%s\n' "$blk" | wc -l)" -lt 40 ] \
+    || { echo "FAIL: an extracted block is not the function -- did its closing brace move?"; exit 1; }
+done
 
-run_fetch() { # src-dir
-  SRC_DIR="$1" FELIS_REF=main FELIS_REPO_URL=https://example.invalid/felis.git bash -c '
+run_fetch() { # src-dir repo-url
+  SRC_DIR="$1" FELIS_REF=main FELIS_REPO_URL="$2" bash -c '
     die() { printf "DIE: %s\n" "$*"; exit 1; }
     log() { :; }
     ok() { :; }
@@ -1318,14 +1322,90 @@ run_fetch() { # src-dir
     stamp_version() { :; }
     git_auth() { return 128; }
     git() { :; }
+    '"$hblock"'
+    '"$cblock"'
     '"$fblock"'
     fetch_source'
 }
 
-expect "a failed clone names the token" "set FELIS_GITHUB_TOKEN" "$(run_fetch "$sdir/src")"
+expect "a failed clone from a fork names the token" "set FELIS_GITHUB_TOKEN" \
+  "$(run_fetch "$sdir/src" https://github.com/someone/felis.git)"
+out="$(run_fetch "$sdir/src" https://github.com/FelisMC/Felis.git)"
+expect "a failed clone from the official repository says what to check" "check that this ref exists" "$out"
+case "$out" in
+  *private*|*FELIS_GITHUB_TOKEN*) echo "FAIL the official repository is public, so no token is asked for: $out"; fails=$((fails + 1)) ;;
+  *) echo "PASS the official repository is public, so no token is asked for" ;;
+esac
 mkdir -p "$sdir/src/.git"
-expect "a failed fetch into an existing checkout names the token" "set FELIS_GITHUB_TOKEN" \
-  "$(run_fetch "$sdir/src")"
+expect "a failed fetch into an existing checkout of a fork names the token" "set FELIS_GITHUB_TOKEN" \
+  "$(run_fetch "$sdir/src" https://github.com/someone/felis.git)"
+
+# --- a rerun takes over whatever sits at SRC_DIR, and an abbreviated commit id ----------------
+# Real git against a local repository: git clone refuses a non-empty destination, so a tree
+# staged for FELIS_SKIP_FETCH (or left by an interrupted clone) used to stop the rerun, and a
+# short sha is no ref a server answers a shallow fetch for.
+
+gdir="$(mktemp -d)"
+trap 'rm -f "$jar" "$sfn"; rm -rf "$vdir" "$sdir" "$smtp_dir" "$gdir"' EXIT
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+git init -q -b main "$gdir/up"
+for v in one two; do
+  echo "$v" >"$gdir/up/a.txt"
+  git -C "$gdir/up" add a.txt
+  git -C "$gdir/up" -c user.name=t -c user.email=t@example.invalid commit -q -m "$v"
+done
+first="$(git -C "$gdir/up" rev-parse --short=7 HEAD~1)"
+second="$(git -C "$gdir/up" rev-parse --short=7 HEAD)"
+
+run_real_fetch() { # src-dir ref
+  SRC_DIR="$1" FELIS_REF="$2" FELIS_REPO_URL="file://$gdir/up" FELIS_GITHUB_TOKEN="" bash -c '
+    set -Eeuo pipefail
+    die() { printf "DIE: %s\n" "$*"; exit 1; }
+    log() { :; }
+    ok() { :; }
+    resolve_install_ref() { :; }
+    stamp_version() { :; }
+    '"$gablock"'
+    '"$hblock"'
+    '"$cblock"'
+    '"$fblock"'
+    fetch_source
+    printf "AT %s %s | %s\n" "$(git -C "$SRC_DIR" rev-parse --short=7 HEAD)" "$(cat "$SRC_DIR/a.txt")" "$(ls -A "$SRC_DIR" | tr "\n" " ")"' 2>&1
+}
+
+mkdir -p "$gdir/src"
+echo staged >"$gdir/src/staged.txt"
+out="$(run_real_fetch "$gdir/src" main)"
+expect "a staged tree without .git is replaced by the checkout" "AT ${second} two" "$out"
+case "$out" in
+  *staged.txt*) echo "FAIL the staged tree's files are gone after the checkout: $out"; fails=$((fails + 1)) ;;
+  *) echo "PASS the staged tree's files are gone after the checkout" ;;
+esac
+expect "a rerun over a shallow checkout takes an abbreviated commit id" "AT ${first} one" \
+  "$(run_real_fetch "$gdir/src" "$first")"
+expect "a fresh clone takes an abbreviated commit id" "AT ${first} one" \
+  "$(run_real_fetch "$gdir/fresh" "$first")"
+# A full clone left a local main behind origin's; with the shallow fetch failing, the whole
+# history arm must still land on origin's main.
+git clone -q "file://$gdir/up" "$gdir/stale"
+git -C "$gdir/stale" reset -q --hard HEAD~1
+gablock_noshallow="$gablock
+git_auth() { case \" \$* \" in *\" --depth \"*) return 1 ;; esac; GIT_TERMINAL_PROMPT=0 git \"\$@\"; }"
+gablock_real="$gablock"; gablock="$gablock_noshallow"
+expect "the whole-history arm takes origin's branch over a stale local one" "AT ${second} two" \
+  "$(run_real_fetch "$gdir/stale" main)"
+gablock="$gablock_real"
+mkdir -p "$gdir/kept"
+echo staged >"$gdir/kept/staged.txt"
+expect "a ref that does not exist stops the install" "DIE: could not check out nope" \
+  "$(run_real_fetch "$gdir/kept" nope)"
+[ "$(cat "$gdir/kept/staged.txt" 2>/dev/null)" = staged ] \
+  && echo "PASS a failed checkout leaves what was there alone" \
+  || { echo "FAIL a failed checkout must leave what was there alone"; fails=$((fails + 1)); }
+leftover="$(find "$gdir" -maxdepth 1 -name '*.new.*')"
+[ -z "$leftover" ] && echo "PASS no half-made checkout is left beside SRC_DIR" \
+  || { echo "FAIL a half-made checkout was left behind: $leftover"; fails=$((fails + 1)); }
+unset GIT_CONFIG_GLOBAL GIT_CONFIG_NOSYSTEM
 
 # --- default install keeps backups, and retention envs reach the renderer ----------------
 # A default install must render the world-archive PVC (without one, backup/restore answer an
