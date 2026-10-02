@@ -32,6 +32,9 @@
 #   export FELIS_INSTALL_MODE=nano; curl -fsSL <raw-url>/deploy/bootstrap.sh | sudo -E bash
 #   FELIS_INSTALL_MODE full|nano — skip the prompt (default: ask on a tty, else full; nano
 #                     instead on a host that runs felis-nano and no full install)
+#   FELIS_NO_SETUP    1 ends a full install at its summary. By default an install that
+#                     leaves no Owner account goes on into `felis setup` when it runs on
+#                     a terminal
 #   FELIS_NANO_LISTEN listen addr for `felis nano` (default: the address an installed
 #                     felis-nano already uses, else 127.0.0.1:8081 — loopback only; set a
 #                     private-network IP to serve an off-host proxy)
@@ -440,6 +443,10 @@ OFFSITE_ENV="${STATE_DIR}/offsite.env"
 # Where summary_offsite shows a newly generated off-site key: the operator's terminal alone.
 # stdout and stderr are what `2>&1 | tee install.log`, cloud-init and CI keep on disk.
 OFFSITE_KEY_TTY=/dev/tty
+# Where the setup console the installer starts at the end reads its keys (setup_terminal).
+SETUP_TTY=/dev/tty
+# Set by summary_next when the installer goes on into the setup console.
+SETUP_CONSOLE=0
 # Host copies of the credentials `felis setup` takes at the keyboard, one bare value per
 # file, mode 0600 (cmd/felis/hostcreds.go); apply_setup_credential_secrets applies their
 # Secrets from them on every run.
@@ -588,13 +595,10 @@ on_error() {
 }
 
 cleanup() {
-  local status=$? id path unit
+  local status=$? id path
   restore_previous_host_binary "$status"
   if [ "$status" -ne 0 ]; then undo_postgres_move; fi
-  for unit in "${PKG_TIMERS_TO_RESTORE[@]-}"; do
-    [ -n "$unit" ] || continue
-    systemctl start "$unit" >/dev/null 2>&1 || true
-  done
+  resume_package_background_timers
   if command -v docker >/dev/null 2>&1; then
     for id in "${DOCKER_CONTAINERS[@]-}"; do
       [ -n "$id" ] && docker rm "$id" >/dev/null 2>&1 || true
@@ -826,6 +830,17 @@ pause_package_background_timers() {
       systemctl stop "$unit" || warn "could not stop ${unit}; package operations may need to wait"
     fi
   done
+}
+
+# Starts the timers pause_package_background_timers stopped: from the EXIT cleanup, and
+# before the setup console, which stays open as long as the operator likes.
+resume_package_background_timers() {
+  local unit
+  for unit in "${PKG_TIMERS_TO_RESTORE[@]-}"; do
+    [ -n "$unit" ] || continue
+    systemctl start "$unit" >/dev/null 2>&1 || true
+  done
+  PKG_TIMERS_TO_RESTORE=()
 }
 
 pkg_lock_files() {
@@ -5675,14 +5690,6 @@ summary() {
   log "The proxy authenticates against Mojang and forwards the verified profile to the"
   log "login gate; the backends are reachable in-cluster only. Follow it with:"
   log "    sudo journalctl -u felis-velocity -f"
-  if [ "${FELIS_BOOTSTRAP_FROM_TUI:-}" = "1" ]; then
-    log "Returning to the setup console to create the Owner account and verify panel access."
-  else
-    log "Next: run  'sudo felis setup'  on this host to create the Owner account."
-  fi
-  log "setup provisions the login/lobby servers, then asks the Owner to bind by joining"
-  log "the proxy in Minecraft — that is what makes the Owner's admin identity a real"
-  log "Mojang account rather than a password."
   log "Use 'sudo felis breakGlass' only for emergency local Owner recovery/reset."
   if [ -n "${PREVIOUS_FELIS_IMAGE:-}" ]; then
     echo
@@ -5696,6 +5703,70 @@ summary() {
   summary_alerts
   summary_heartbeat
   echo
+  summary_next
+  echo
+}
+
+# owner_state: whether the database holds a staff account (an Owner or an Admin), the test
+# `felis setup` makes to choose between the Owner wizard and its status screen (AdminExists
+# in internal/api/pgrepo.go). "unknown" when the database does not answer.
+owner_state() {
+  local out
+  out="$(pg_exec psql -XtA -U postgres -d "$DB_NAME" -c "SELECT EXISTS (SELECT 1 FROM users WHERE role IN ('admin', 'owner'))" 2>/dev/null || true)"
+  case "$out" in
+    t) echo yes ;;
+    f) echo no ;;
+    *) echo unknown ;;
+  esac
+}
+
+# setup_terminal: whether the full-screen setup console has a terminal to draw on and to
+# read keys from. Under `curl | sudo bash` stdin is the script, so the console reads
+# SETUP_TTY; stdout must be the terminal itself, which `| tee install.log`, cloud-init and
+# CI are not. /dev/tty is mode 0666 everywhere, so only opening it tells.
+setup_terminal() { [ -t 1 ] && (: <"$SETUP_TTY") 2>/dev/null; }
+
+# summary_next is the installer's last word: what the operator does now. It comes after the
+# warnings, so it is what the terminal is left showing. Until a staff account exists that is
+# `felis setup`, which creates the Owner; on a terminal the installer starts it itself
+# (start_setup_console), as the README's install line promises. With an Owner in place it
+# is the address to sign in at. Under felis setup the console carries on by itself.
+summary_next() {
+  local owner rule="================================================================================"
+  if bootstrap_from_tui; then
+    log "Returning to the setup console to create the Owner account and verify panel access."
+    return 0
+  fi
+  owner="$(owner_state)"
+  log "$rule"
+  if [ "$owner" = yes ]; then
+    log "Felis is running. Sign in at https://$(auth_hostname admin_hostname "op.console.${FELIS_ROOT_DOMAIN}")"
+    log "(https://${NODE_IP}:${FELIS_PANEL_NODEPORT} until the edge routes it there)."
+    log "Email, edge and storage settings: sudo felis setup"
+    log "$rule"
+    return 0
+  fi
+  if [ "$owner" = no ] && [ -z "${FELIS_NO_SETUP:-}" ] && setup_terminal; then
+    SETUP_CONSOLE=1
+    log "Next: create the Owner account. The setup console starts now; if you leave it,"
+    log "run  sudo felis setup  to come back to it."
+  else
+    log "Next: create the Owner account. Run on this host:"
+    log "    sudo felis setup"
+  fi
+  log "It starts the login and lobby servers, has you join ${NODE_IP}:${FELIS_GAME_PORT} in Minecraft to"
+  log "bind your Mojang account as the Owner, then sets up how the panel is reached."
+  log "$rule"
+}
+
+# start_setup_console runs `felis setup` when summary_next said it would. The install has
+# succeeded by then, so the console's own failure never fails the run: the EXIT cleanup
+# would take that for a failed install and undo the database move.
+start_setup_console() {
+  [ "$SETUP_CONSOLE" = 1 ] || return 0
+  resume_package_background_timers
+  "$HOST_BIN" setup <"$SETUP_TTY" \
+    || warn "the setup console exited with status $?; run 'sudo felis setup' to come back to it"
 }
 
 # ---------------------------------------------------------------------------
@@ -6204,6 +6275,7 @@ main() {
   install_watchdog_timer
   mark_bootstrap_done
   summary
+  start_setup_console
 }
 
 main "$@"

@@ -69,6 +69,8 @@ curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/main/deploy/bootstrap
 
 The script installs K3s, deploys PostgreSQL and the control plane inside it, and launches a setup wizard. When setup completes, open the configured domain in a browser to reach the control panel.
 
+* **Setup wizard**: The wizard first binds the platform Owner: join the address it shows in Minecraft Java Edition, then enter the 8-character link code that the login server displays (valid for 10 minutes). The step can be skipped and completed later by running `sudo felis setup` again; until an Owner is bound, nobody can sign in to the control panel. The installer launches the wizard automatically only on an interactive terminal; when output is redirected to a log or the install runs under cloud-init, run `sudo felis setup` after it finishes. Setting `FELIS_NO_SETUP=1` makes the installer end at its summary.
+
 * **Supported hosts**: CentOS Stream 9 (aarch64) is verified on physical hardware; Ubuntu 24.04 (x86_64) is tested in CI on every push with a fresh install, a rerun, an upgrade and the install command above (see [operations §1](docs/operations.md#1-supported-hosts)).
 
 * **Preflight checks**: Before modifying the host, the installer checks memory, disk, ports, network range conflicts, existing Kubernetes installations and outbound connectivity. If any check fails, it lists all problems and exits, leaving the host unchanged (see [operations §1](docs/operations.md#1-supported-hosts) for the checks).

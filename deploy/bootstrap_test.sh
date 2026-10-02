@@ -2428,9 +2428,106 @@ case "$(awk '/^validate_settings\(\) \{/,/^}/' "$BS")" in
   *) echo "FAIL validate_settings must call validate_heartbeat_url"; fails=$((fails + 1)) ;;
 esac
 case "$(awk '/^summary\(\) \{/,/^}/' "$BS")" in
-  *summary_offsite*summary_alerts*summary_heartbeat*) echo "PASS the install's summary ends on the alerts, then the heartbeat" ;;
-  *) echo "FAIL summary must call summary_alerts, then summary_heartbeat"; fails=$((fails + 1)) ;;
+  *summary_offsite*summary_alerts*summary_heartbeat*summary_next*) echo "PASS the install's summary ends on the alerts, the heartbeat, then the next step" ;;
+  *) echo "FAIL summary must call summary_alerts, summary_heartbeat, then summary_next"; fails=$((fails + 1)) ;;
 esac
+
+# --- the installer's last word: what the operator does next ------------------------------
+# An install that leaves no Owner ends on `felis setup`, and starts it when there is a
+# terminal for it; one with an Owner ends on where to sign in. The setup console must never
+# start into a log (`| tee`, cloud-init, CI), and its own failure must not fail the install.
+case "$(awk '/^main\(\) \{/,/^}/' "$BS" | tail -n 3)" in
+  "  summary
+  start_setup_console
+}") echo "PASS the full install ends on the summary, then the setup console" ;;
+  *) echo "FAIL main must end with summary, then start_setup_console"; fails=$((fails + 1)) ;;
+esac
+nextblock=""
+for fn in bootstrap_from_tui resume_package_background_timers owner_state setup_terminal summary_next start_setup_console; do
+  # A one-line function ends on its own line.
+  b="$(awk -v fn="$fn" '$0 ~ "^" fn "\\(\\) \\{" { print; if (/\}$/) exit; on = 1; next } on { print } on && /^}/ { exit }' "$BS")"
+  [ -n "$b" ] || { echo "FAIL: no ${fn} found in $BS"; exit 1; }
+  [ "$(printf '%s\n' "$b" | wc -l)" -lt 40 ] \
+    || { echo "FAIL: the extracted block is not ${fn} -- did its closing brace move?"; exit 1; }
+  nextblock="${nextblock}${b}
+"
+done
+next_dir="$(mktemp -d)"
+printf 'keys from the terminal\n' > "$next_dir/tty"
+cat > "$next_dir/felis" <<'XEOF'
+#!/bin/sh
+echo "felis $*" >> "$NEXT_JOURNAL"
+cat > "$NEXT_STDIN"
+exit "${SETUP_EXIT:-0}"
+XEOF
+chmod +x "$next_dir/felis"
+# run_next PG_ANSWER: summary_next then start_setup_console under the installer's own shell
+# options and ERR trap. PG_ANSWER is what psql prints, or "fail". TERMINAL=1 stands in for
+# a terminal on stdout, which a test's captured output never is.
+run_next() {
+  : > "$next_dir/journal"
+  : > "$next_dir/stdin"
+  PG_ANSWER="$1" NEXT_JOURNAL="$next_dir/journal" NEXT_STDIN="$next_dir/stdin" \
+    HOST_BIN="$next_dir/felis" SETUP_TTY="$next_dir/tty" bash -c '
+    set -Eeuo pipefail
+    trap "echo TRAP" ERR
+    log() { printf "LOG: %s\n" "$*"; }; warn() { printf "WARN: %s\n" "$*"; }
+    auth_hostname() { printf "%s" "$2"; }
+    pg_exec() { echo "pg_exec $*" >> "$NEXT_JOURNAL"; [ "$PG_ANSWER" != fail ] || return 1; echo "$PG_ANSWER"; }
+    systemctl() { echo "systemctl $*" >> "$NEXT_JOURNAL"; }
+    DB_NAME=felis FELIS_ROOT_DOMAIN=example.net NODE_IP=10.0.0.5 FELIS_PANEL_NODEPORT=30443 FELIS_GAME_PORT=25565
+    SETUP_CONSOLE=0
+    PKG_TIMERS_TO_RESTORE=(apt-daily.timer)
+    '"$nextblock"'
+    if [ "${TERMINAL:-}" = 1 ]; then setup_terminal() { return 0; }; fi
+    summary_next
+    start_setup_console
+    echo "exit 0"' 2>&1
+}
+started() { grep -q '^felis setup$' "$next_dir/journal"; }
+
+out="$(TERMINAL=1 run_next t)"
+expect "with an Owner the summary ends on where to sign in" "LOG: Felis is running. Sign in at https://op.console.example.net" "$out"
+expect "  and where to change settings" "LOG: Email, edge and storage settings: sudo felis setup" "$out"
+if started; then echo "FAIL with an Owner the setup console must not start: $out"; fails=$((fails + 1)); else echo "PASS   and the setup console does not start"; fi
+admin_roles="$(grep -o "role IN ('admin', 'owner')" "$(dirname "$BS")/../internal/api/pgrepo.go" | head -n 1)"
+expect "the Owner test is felis setup's own (AdminExists)" "${admin_roles:-AdminExists query not found}" "$(cat "$next_dir/journal")"
+
+out="$(TERMINAL=1 run_next f)"
+expect "with no Owner on a terminal the summary says the setup console starts" "LOG: Next: create the Owner account. The setup console starts now" "$out"
+expect "  and how it binds the Owner" "has you join 10.0.0.5:25565 in Minecraft" "$out"
+if started; then echo "PASS   and starts it"; else echo "FAIL the setup console did not start: $out"; fails=$((fails + 1)); fi
+expect "  on the terminal's keys" "keys from the terminal" "$(cat "$next_dir/stdin")"
+case "$(cat "$next_dir/journal")" in
+  *"systemctl start apt-daily.timer"*"felis setup"*) echo "PASS   after the package timers are back" ;;
+  *) echo "FAIL the package timers must restart before the setup console: $(cat "$next_dir/journal")"; fails=$((fails + 1)) ;;
+esac
+expect "  and the install ends cleanly" "exit 0" "$out"
+
+out="$(run_next f)"
+expect "with no Owner and no terminal the summary names the command" "LOG:     sudo felis setup" "$out"
+if started; then echo "FAIL with no terminal the setup console must not start: $out"; fails=$((fails + 1)); else echo "PASS   and the setup console does not start into the log"; fi
+
+out="$(TERMINAL=1 FELIS_NO_SETUP=1 run_next f)"
+expect "FELIS_NO_SETUP names the command" "LOG:     sudo felis setup" "$out"
+if started; then echo "FAIL FELIS_NO_SETUP must keep the setup console closed: $out"; fails=$((fails + 1)); else echo "PASS   and keeps the setup console closed"; fi
+
+out="$(TERMINAL=1 run_next fail)"
+expect "a database that does not answer names the command" "LOG:     sudo felis setup" "$out"
+if started; then echo "FAIL an unknown Owner must not start the setup console: $out"; fails=$((fails + 1)); else echo "PASS   and the setup console does not start"; fi
+
+out="$(TERMINAL=1 FELIS_BOOTSTRAP_FROM_TUI=1 run_next f)"
+expect "under felis setup the console carries on" "LOG: Returning to the setup console to create the Owner account" "$out"
+if started; then echo "FAIL under felis setup a second console must not start: $out"; fails=$((fails + 1)); else echo "PASS   and no second console starts"; fi
+
+out="$(TERMINAL=1 SETUP_EXIT=3 run_next f)"
+expect "a setup console that fails says how to come back" "WARN: the setup console exited with status 3; run 'sudo felis setup' to come back to it" "$out"
+expect "  and the install still succeeds" "exit 0" "$out"
+case "$out" in
+  *TRAP*) echo "FAIL the setup console's failure must not reach the ERR trap: $out"; fails=$((fails + 1)) ;;
+  *) echo "PASS   without the ERR trap" ;;
+esac
+rm -rf "$next_dir"
 
 # The watchdog alerts by mail only, through the [smtp] relay. An install without one must
 # say that its alerts are only logged; one with a relay must not cry wolf.
