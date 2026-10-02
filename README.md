@@ -70,7 +70,7 @@ curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/main/deploy/bootstrap
 
 脚本将安装 K3s，在 K3s 中部署 PostgreSQL 与控制平面，随后启动设置向导。设置完成后，通过浏览器访问所配置的域名即可进入控制面板。
 
-* **设置向导**：向导首先绑定平台所有者：以 Minecraft Java 版加入向导所示的地址，登录服务器会给出 8 位绑定码（10 分钟内有效），将其输入向导即可。该步骤可以跳过，之后再次执行 `sudo felis setup` 补做；绑定所有者之前，任何人均无法登录控制面板。安装器仅在交互式终端中自动启动向导；输出重定向至日志或经由 cloud-init 安装时，请在安装结束后执行 `sudo felis setup`。设置 `FELIS_NO_SETUP=1` 时，安装器在输出摘要后直接结束。
+* **设置向导**：向导首先绑定平台所有者：以 Minecraft Java 版加入向导所示的地址，登录服务器会给出 8 位绑定码（10 分钟内有效），将其输入向导即可。该步骤可以跳过，之后再次执行 `sudo felis setup` 补做；绑定所有者之前，任何人均无法登录控制面板，登录页届时会说明原因并列出绑定步骤及连接地址。安装器仅在交互式终端中自动启动向导；输出重定向至日志或经由 cloud-init 安装时，请在安装结束后执行 `sudo felis setup`。设置 `FELIS_NO_SETUP=1` 时，安装器在输出摘要后直接结束。
 
 * **支持的系统**：CentOS Stream 9（aarch64）已在实机上验证；Ubuntu 24.04（x86_64）在每次推送时由 CI 执行全新安装、重复安装、升级及上述安装命令（参见 [运维手册 §1](docs/operations.md#1-supported-hosts)）。
 

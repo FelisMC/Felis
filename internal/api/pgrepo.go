@@ -1334,7 +1334,6 @@ func (p *PGRepo) UserByUsername(ctx context.Context, username string) (*StaffUse
 // break-glass console's bootstrap-vs-recovery switch: false means the typed
 // credential mints the first Owner (no prior identity to verify against), true
 // means the operator must identify against an existing staff account for accountability.
-// It is not on the Repo interface because only the break-glass CLI consults it.
 func (p *PGRepo) AdminExists(ctx context.Context) (bool, error) {
 	const q = `SELECT 1 FROM users WHERE role IN ('admin', 'owner') LIMIT 1`
 	var one int

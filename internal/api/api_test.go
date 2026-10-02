@@ -94,6 +94,7 @@ type fakeRepo struct {
 	failRevokeOthers error
 	failMarkReauth   error
 	failGetSetting   error
+	failAdminExists  error // AdminExists fails with it (a store outage)
 	failRedeemSetup  error
 	failUserDetail   error
 	// player email OTPs (spec §B2). Keyed by row id; the verify path scans for the
@@ -1105,6 +1106,17 @@ func (f *fakeRepo) UpsertOwner(_ context.Context, id, username, email string) er
 		ID: id, Username: username, Email: email, Role: "admin",
 	}
 	return nil
+}
+func (f *fakeRepo) AdminExists(_ context.Context) (bool, error) {
+	if f.failAdminExists != nil {
+		return false, f.failAdminExists
+	}
+	for _, u := range f.staff {
+		if u.Role == "admin" || u.Role == "owner" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 func (f *fakeRepo) CreateSession(_ context.Context, ns NewSession) error {
 	f.sessions[ns.TokenHash] = &fakeSession{

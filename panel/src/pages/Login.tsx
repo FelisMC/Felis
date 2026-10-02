@@ -1,6 +1,6 @@
 import { useState, useEffect, type FormEvent } from "react";
 import { Navigate, useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import { Loader2, KeyRound, Mail, Fingerprint, ShieldCheck } from "lucide-react";
+import { Loader2, KeyRound, Mail, Fingerprint, ShieldCheck, RefreshCw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { AuthLayout } from "@/components/AuthLayout";
 import { Card, CardContent } from "@/components/ui/card";
@@ -10,7 +10,8 @@ import { Label } from "@/components/ui/label";
 import { useTier } from "@/lib/tier";
 import { loginReturnPath } from "@/lib/auth";
 import { api, humanizeError } from "@/lib/api";
-import { loadConfig } from "@/lib/config";
+import { entryAddress, isIPAddress, loadConfig } from "@/lib/config";
+import { CopyAddress } from "@/components/CopyAddress";
 import { requestAssertion } from "@/lib/passkey";
 import { InlineError } from "@/components/MessageLine";
 import { formatCountdown, opLoginDeadline, useOpLoginPoll } from "@/lib/opLoginPoll";
@@ -50,6 +51,13 @@ export function Login() {
   const [isOpHost, setIsOpHost] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Where Minecraft players join for a code; empty until config.json is read, or
+  // when it cannot be.
+  const [joinAddr, setJoinAddr] = useState("");
+  // Whether `felis setup` has bound an Owner: undefined while asking, null when the
+  // answer could not be had (the doors show as usual), false on an unclaimed install,
+  // where every door is off and the page explains how to bind one instead.
+  const [ownerBound, setOwnerBound] = useState<boolean | null | undefined>(undefined);
 
   // Countdown timer for OTP resend
   useEffect(() => {
@@ -64,11 +72,23 @@ export function Login() {
   // (the player doors refuse staff accounts anyway).
   useEffect(() => {
     void loadConfig().then((cfg) => {
+      setJoinAddr(entryAddress(cfg));
       if (cfg.adminHostname && window.location.hostname === cfg.adminHostname) {
         setIsOpHost(true);
         setActiveTab("op");
       }
     });
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    api.authOwnerStatus().then(
+      (res) => alive && setOwnerBound(res.owner_bound),
+      () => alive && setOwnerBound(null),
+    );
+    return () => {
+      alive = false;
+    };
   }, []);
 
   // Polls until the in-game approval lands, the request's deadline passes, or the
@@ -77,8 +97,9 @@ export function Login() {
   const opApproved = opPoll.approved;
 
   // Don't flash the form while the boot /me is still in flight: a signed-in visitor
-  // would briefly see a login form before being redirected away.
-  if (loading) {
+  // would briefly see a login form before being redirected away. Nor while the Owner
+  // probe is: an unclaimed install would flash doors that cannot work.
+  if (loading || (!identity && ownerBound === undefined)) {
     return (
       <AuthLayout title={t("common:brand_name")}>
         <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
@@ -89,6 +110,9 @@ export function Login() {
     );
   }
   if (identity) return <Navigate to={next} replace />;
+  if (ownerBound === false) {
+    return <NoOwnerNotice joinAddr={joinAddr} onBound={() => setOwnerBound(true)} />;
+  }
 
   async function handleBindSubmit(e: FormEvent) {
     e.preventDefault();
@@ -370,8 +394,9 @@ export function Login() {
                   aria-invalid={error ? true : undefined}
                 />
                 <p className="text-[11px] text-muted-foreground/80 mt-1 leading-normal">
-                  {t("bind_hint")}
+                  {t(joinAddr ? "bind_hint" : "bind_hint_no_address")}
                 </p>
+                {joinAddr && <CopyAddress address={joinAddr} />}
               </div>
               <InlineError message={error} />
               <Button
@@ -564,6 +589,104 @@ export function Login() {
               </div>
             </form>
           )}
+        </CardContent>
+      </Card>
+    </AuthLayout>
+  );
+}
+
+// NoOwnerNotice replaces the doors on an install `felis setup` has not bound an Owner
+// on. Local sign-in is off until it does, so every door would answer "disabled"; this
+// says why and walks through the binding, which happens in the server's terminal plus
+// one Minecraft join. The steps match the terminal's own bind screen (tui_mc_bind.go).
+function NoOwnerNotice({ joinAddr, onBound }: { joinAddr: string; onBound: () => void }) {
+  const { t } = useTranslation("auth");
+  const [checking, setChecking] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+
+  async function recheck() {
+    if (checking) return;
+    setChecking(true);
+    setResult(null);
+    try {
+      const res = await api.authOwnerStatus();
+      if (res.owner_bound) {
+        onBound();
+        return;
+      }
+      setResult(t("no_owner_still_unbound"));
+    } catch (err) {
+      setResult(humanizeError(err));
+    }
+    setChecking(false);
+  }
+
+  const steps = [
+    <>
+      <p>{t("no_owner_step_setup")}</p>
+      <code className="mt-1.5 inline-block select-all rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">
+        sudo felis setup
+      </code>
+    </>,
+    joinAddr ? (
+      <>
+        <p>{t("no_owner_step_join")}</p>
+        <CopyAddress address={joinAddr} className="mt-1" />
+        {!isIPAddress(joinAddr) && (
+          <p className="mt-1 text-xs text-muted-foreground/80">{t("no_owner_ip_fallback")}</p>
+        )}
+      </>
+    ) : (
+      <p>{t("no_owner_step_join_no_address")}</p>
+    ),
+    <p>{t("no_owner_step_code")}</p>,
+    <p>{t("no_owner_step_link")}</p>,
+  ];
+
+  return (
+    <AuthLayout title={t("no_owner_title")} subtitle={t("no_owner_subtitle")}>
+      <Card>
+        <CardContent className="space-y-5 pt-6 text-sm">
+          <p className="text-muted-foreground leading-relaxed">{t("no_owner_intro")}</p>
+          <ol className="space-y-4">
+            {steps.map((step, i) => (
+              <li key={i} className="flex gap-3">
+                <span
+                  aria-hidden
+                  className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[11px] font-semibold text-primary"
+                >
+                  {i + 1}
+                </span>
+                <div className="min-w-0 flex-1 leading-relaxed">{step}</div>
+              </li>
+            ))}
+          </ol>
+          <div className="space-y-2">
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full justify-center gap-2 font-medium"
+              onClick={() => void recheck()}
+              disabled={checking}
+            >
+              {checking ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  {t("no_owner_rechecking")}
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="h-4 w-4 text-muted-foreground" />
+                  {t("no_owner_recheck")}
+                </>
+              )}
+            </Button>
+            {result && (
+              <p role="status" className="text-center text-xs text-muted-foreground leading-normal">
+                {result}
+              </p>
+            )}
+          </div>
         </CardContent>
       </Card>
     </AuthLayout>

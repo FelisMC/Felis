@@ -1106,6 +1106,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/owner-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Report whether an Owner has been bound on this install.
+         * @description Public, pre-session probe the sign-in page reads on load. Until `felis setup` binds an Owner, local sign-in is off and every login door answers 403 local_auth_disabled; the page then explains that no Owner exists and how to bind one instead of offering the doors. It discloses only whether the install is still unclaimed, and claiming it needs root on the host. It is not gated on local_auth_enabled and does not draw on the login doors' per-address rate limit.
+         */
+        get: operations["ownerStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/logout": {
         parameters: {
             query?: never;
@@ -6313,6 +6333,29 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+        };
+    };
+    ownerStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Whether any Owner or admin account exists. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        owner_bound: boolean;
+                    };
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     logout: {

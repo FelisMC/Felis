@@ -372,6 +372,11 @@ export const api = rejectingSync({
   bind: (code: string) =>
     request<BindResult>("POST", "/auth/bind", { code }),
 
+  // Whether `felis setup` has bound an Owner yet. Until it has, every door above
+  // answers 403 local_auth_disabled, so the sign-in page explains that instead.
+  authOwnerStatus: () =>
+    request<{ owner_bound: boolean }>("GET", "/auth/owner-status"),
+
   authEmailStart: (email: string) =>
     request<{ sent: boolean; expires_at: string }>("POST", "/auth/email/start", { email }),
 

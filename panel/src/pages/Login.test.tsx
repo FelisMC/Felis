@@ -15,16 +15,19 @@ const calls = vi.hoisted(() => ({
   authPasskeyLoginFinish: vi.fn(),
   opLoginStart: vi.fn(),
   opLoginStatus: vi.fn(),
+  authOwnerStatus: vi.fn(),
   credentialsGet: vi.fn(),
   refresh: vi.fn(),
 }));
 vi.mock("@/lib/tier", () => ({
   useTier: () => ({ loading: false, identity: null, refresh: calls.refresh }),
 }));
-vi.mock("@/lib/config", () => ({
-  loadConfig: () => Promise.resolve({ apiBase: "/api/v1", rootDomain: "localhost" }),
-  useConfig: () => null,
-}));
+// The page builds the join address with the real helpers; only the file is faked.
+const config = vi.hoisted(() => ({ value: {} as Record<string, unknown> }));
+vi.mock("@/lib/config", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/config")>();
+  return { ...actual, loadConfig: () => Promise.resolve(config.value), useConfig: () => null };
+});
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
   return {
@@ -39,22 +42,29 @@ vi.mock("@/lib/api", async (importOriginal) => {
       authPasskeyLoginFinish: calls.authPasskeyLoginFinish,
       opLoginStart: calls.opLoginStart,
       opLoginStatus: calls.opLoginStatus,
+      authOwnerStatus: calls.authOwnerStatus,
     },
   };
 });
 
 const t = (key: string, opts?: Record<string, unknown>) => i18next.t(key, opts);
 
-function renderLogin() {
-  return render(
+// renderLogin waits out the Owner probe, which holds the page on a spinner, and
+// returns once the heading is the one wanted: the doors by default.
+async function renderLogin(heading = t("auth:login_title")) {
+  const view = render(
     <MemoryRouter initialEntries={["/login"]}>
       <Login />
     </MemoryRouter>,
   );
+  await screen.findByRole("heading", { name: heading });
+  return view;
 }
 
 beforeEach(() => {
   for (const fn of Object.values(calls)) fn.mockReset();
+  calls.authOwnerStatus.mockResolvedValue({ owner_bound: true });
+  config.value = { apiBase: "/api/v1", rootDomain: "localhost" };
   // jsdom has no WebAuthn; the browser handing back nothing is what a
   // dismissed or empty authenticator looks like to the page.
   Object.defineProperty(navigator, "credentials", { value: { get: calls.credentialsGet }, configurable: true });
@@ -63,7 +73,7 @@ beforeEach(() => {
 describe("Login", () => {
   it("reads out why the code could not be sent", async () => {
     calls.authEmailStart.mockRejectedValue({ status: 429, code: "otp_resend_cooldown", message: "" });
-    renderLogin();
+    await renderLogin();
 
     await userEvent.type(screen.getByLabelText(t("auth:email_address")), "a@b.c");
     await userEvent.click(screen.getByRole("button", { name: t("auth:send_otp") }));
@@ -75,7 +85,7 @@ describe("Login", () => {
     calls.authEmailStart.mockResolvedValue(undefined);
     calls.authEmailVerify.mockRejectedValueOnce({ status: 400, code: "invalid_code", message: "" });
     calls.authEmailVerify.mockReturnValueOnce(new Promise(() => {}));
-    renderLogin();
+    await renderLogin();
 
     await userEvent.type(screen.getByLabelText(t("auth:email_address")), "a@b.c");
     await userEvent.click(screen.getByRole("button", { name: t("auth:send_otp") }));
@@ -91,7 +101,7 @@ describe("Login", () => {
     calls.credentialsGet.mockResolvedValue(null);
     calls.authPasskeyDiscoverableBegin.mockResolvedValue({ login_id: "l1", publicKey: { challenge: "AAAA" } });
     calls.authPasskeyLoginBegin.mockResolvedValue({ challenge: "AAAA" });
-    renderLogin();
+    await renderLogin();
 
     await userEvent.click(screen.getByRole("button", { name: t("auth:passkey_btn") }));
     expect((await screen.findByRole("alert")).textContent).toBe("The browser returned no passkey. Try again.");
@@ -122,7 +132,7 @@ describe("operator sign-in", () => {
       request_id: `req-${calls.opLoginStart.mock.calls.length}`,
       expires_at: new Date(Date.now() + expiresInMs).toISOString(),
     }));
-    renderLogin();
+    await renderLogin();
     await user.click(screen.getByRole("button", { name: t("auth:tab_op_btn") }));
     await user.type(screen.getByLabelText(t("auth:email_address")), "op@example.test");
     await user.click(screen.getByRole("button", { name: t("auth:op_start_btn") }));
@@ -204,3 +214,99 @@ describe("operator sign-in", () => {
   });
 });
 
+
+// Until `felis setup` binds an Owner every door answers "disabled", so the page says
+// why and how to bind one, naming the address to join in Minecraft.
+describe("an install with no Owner", () => {
+  const NO_OWNER = () => t("auth:no_owner_title");
+
+  beforeEach(() => {
+    calls.authOwnerStatus.mockResolvedValue({ owner_bound: false });
+  });
+
+  it("explains why nobody can sign in, with the command and the address to join", async () => {
+    config.value = { apiBase: "/api/v1", rootDomain: "203.0.113.7.nip.io", gamePort: 25570 };
+    await renderLogin(NO_OWNER());
+
+    expect(screen.getByText("sudo felis setup")).toBeTruthy();
+    expect(await screen.findByText("203.0.113.7:25570")).toBeTruthy();
+    expect(screen.queryByText(t("auth:no_owner_ip_fallback"))).toBeNull();
+    // None of the doors that cannot work is offered.
+    expect(screen.queryByLabelText(t("auth:email_address"))).toBeNull();
+    expect(screen.queryByRole("button", { name: t("auth:passkey_btn") })).toBeNull();
+    expect(screen.queryByRole("button", { name: t("auth:tab_bind_btn") })).toBeNull();
+  });
+
+  it("offers the IP when the address is a domain name", async () => {
+    config.value = { apiBase: "/api/v1", rootDomain: "mc.example" };
+    await renderLogin(NO_OWNER());
+
+    expect(await screen.findByText("mc.example")).toBeTruthy();
+    expect(screen.getByText(t("auth:no_owner_ip_fallback"))).toBeTruthy();
+  });
+
+  it("points at the terminal for the address when config.json could not be read", async () => {
+    config.value = { apiBase: "/api/v1", rootDomain: "localhost", fallback: true };
+    await renderLogin(NO_OWNER());
+
+    expect(screen.getByText(t("auth:no_owner_step_join_no_address"))).toBeTruthy();
+    expect(screen.queryByText("localhost")).toBeNull();
+  });
+
+  it("checks again on request and shows the doors once an Owner is bound", async () => {
+    calls.authOwnerStatus
+      .mockResolvedValueOnce({ owner_bound: false })
+      .mockResolvedValueOnce({ owner_bound: false })
+      .mockResolvedValue({ owner_bound: true });
+    await renderLogin(NO_OWNER());
+
+    await userEvent.click(screen.getByRole("button", { name: t("auth:no_owner_recheck") }));
+    expect(await screen.findByText(t("auth:no_owner_still_unbound"))).toBeTruthy();
+    expect(calls.authOwnerStatus).toHaveBeenCalledTimes(2);
+
+    await userEvent.click(screen.getByRole("button", { name: t("auth:no_owner_recheck") }));
+    await screen.findByRole("heading", { name: t("auth:login_title") });
+    expect(screen.getByLabelText(t("auth:email_address"))).toBeTruthy();
+  });
+
+  it("holds the page while it asks, so an unclaimed install never flashes the doors", async () => {
+    calls.authOwnerStatus.mockReturnValue(new Promise(() => {}));
+    render(
+      <MemoryRouter initialEntries={["/login"]}>
+        <Login />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(calls.authOwnerStatus).toHaveBeenCalled());
+
+    expect(screen.getByText(t("common:loading"))).toBeTruthy();
+    expect(screen.queryByLabelText(t("auth:email_address"))).toBeNull();
+  });
+
+  it("shows the doors when the server cannot say", async () => {
+    calls.authOwnerStatus.mockRejectedValue({ status: 503, code: "auth_unavailable", message: "" });
+    await renderLogin();
+
+    expect(screen.getByLabelText(t("auth:email_address"))).toBeTruthy();
+  });
+});
+
+// A player gets a bind code by joining in Minecraft, so the hint names where.
+describe("the bind-code door", () => {
+  it("names the address to join", async () => {
+    config.value = { apiBase: "/api/v1", rootDomain: "mc.example", gamePort: 25570 };
+    await renderLogin();
+    await userEvent.click(screen.getByRole("button", { name: t("auth:tab_bind_btn") }));
+
+    expect(screen.getByText(t("auth:bind_hint"))).toBeTruthy();
+    expect(screen.getByText("mc.example:25570")).toBeTruthy();
+  });
+
+  it("names the server when config.json could not be read", async () => {
+    config.value = { apiBase: "/api/v1", rootDomain: "localhost", fallback: true };
+    await renderLogin();
+    await userEvent.click(screen.getByRole("button", { name: t("auth:tab_bind_btn") }));
+
+    expect(screen.getByText(t("auth:bind_hint_no_address"))).toBeTruthy();
+    expect(screen.queryByText("localhost")).toBeNull();
+  });
+});

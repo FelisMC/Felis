@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
@@ -236,6 +237,9 @@ type API struct {
 	authDoorBuckets *bucketSet
 	mailOnce        sync.Once
 	mailBuckets     *bucketSet
+
+	// ownerBound caches the first "an Owner exists" answer (handleOwnerStatus).
+	ownerBound atomic.Bool
 
 	drainInit  sync.Once
 	drainClose sync.Once
@@ -502,6 +506,9 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "POST", Pattern: "/api/v1/auth/options", Public: true, AuthDoor: true, h: a.handleAuthOptions},
 		{Method: "POST", Pattern: "/api/v1/auth/setup/redeem", Public: true, AuthDoor: true, h: a.handleSetupRedeem},
 		{Method: "GET", Pattern: "/api/v1/auth/setup/status", SetupAllowed: true, h: a.handleSetupStatus},
+		// Whether an Owner is bound yet: before one is, every login door here is off, and the
+		// sign-in page says so instead of offering them (handlers_auth_owner.go).
+		{Method: "GET", Pattern: "/api/v1/auth/owner-status", Public: true, h: a.handleOwnerStatus},
 		{Method: "POST", Pattern: "/api/v1/auth/passkey/login/begin", Public: true, AuthDoor: true, h: a.handlePasskeyLoginBegin},
 		{Method: "POST", Pattern: "/api/v1/auth/passkey/login/finish", Public: true, AuthDoor: true, h: a.handlePasskeyLoginFinish},
 		// Discoverable ("usernameless") passkey login (task #40): the from-zero sibling of the

@@ -133,3 +133,40 @@ describe("joinAddress", () => {
     }
   });
 });
+
+// The address the sign-in page tells people to join must be the one `felis setup`
+// prints (Go setupGameAddress), or the page and the terminal disagree.
+describe("entryAddress", () => {
+  const base = { apiBase: "/api/v1", rootDomain: "mc.example" };
+
+  it("is the IP a nip.io or sslip.io root domain spells out", async () => {
+    const { entryAddress } = await freshConfig();
+    expect(entryAddress({ ...base, rootDomain: "203.0.113.7.nip.io" })).toBe("203.0.113.7");
+    expect(entryAddress({ ...base, rootDomain: "203.0.113.7.sslip.io." })).toBe("203.0.113.7");
+    expect(entryAddress({ ...base, rootDomain: "203.0.113.7.nip.io", gamePort: 25570 })).toBe("203.0.113.7:25570");
+  });
+
+  it("is the root domain otherwise, with a port only off 25565", async () => {
+    const { entryAddress } = await freshConfig();
+    expect(entryAddress(base)).toBe("mc.example");
+    expect(entryAddress({ ...base, gamePort: 25565 })).toBe("mc.example");
+    expect(entryAddress({ ...base, gamePort: 25570 })).toBe("mc.example:25570");
+    // Not an address Go's net.ParseIP accepts, so the name is kept whole.
+    expect(entryAddress({ ...base, rootDomain: "203.0.113.07.nip.io" })).toBe("203.0.113.07.nip.io");
+    expect(entryAddress({ ...base, rootDomain: "203.0.113.256.nip.io" })).toBe("203.0.113.256.nip.io");
+    expect(entryAddress({ ...base, rootDomain: "play.nip.io" })).toBe("play.nip.io");
+  });
+
+  it("is empty when config.json could not be read", async () => {
+    const { entryAddress } = await freshConfig();
+    expect(entryAddress({ ...base, fallback: true })).toBe("");
+  });
+
+  it("tells an IP from a name", async () => {
+    const { isIPAddress } = await freshConfig();
+    expect(isIPAddress("203.0.113.7")).toBe(true);
+    expect(isIPAddress("203.0.113.7:25570")).toBe(true);
+    expect(isIPAddress("mc.example")).toBe(false);
+    expect(isIPAddress("mc.example:25570")).toBe(false);
+  });
+});

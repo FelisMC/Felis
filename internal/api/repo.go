@@ -702,6 +702,10 @@ type Repo interface {
 	// re-asserted, so a reset is idempotent and a pre-0011 'admin' Owner row is
 	// promoted. The account is passwordless by design.
 	UpsertOwner(ctx context.Context, id, username, email string) error
+	// AdminExists reports whether any staff account (admin or owner) exists. It is false
+	// only on an install `felis setup` has not bound an Owner on yet, where local sign-in
+	// is still off: the sign-in page reads it to say so (handleOwnerStatus).
+	AdminExists(ctx context.Context) (bool, error)
 	// CreateSession records a minted session (spec §B sessions). Only the hash of
 	// the cookie is stored, mirroring tokens, so a database read never yields a
 	// usable cookie. The session counts as seen at creation.

@@ -966,6 +966,10 @@ async function handlePublic(ctx: RequestContext): Promise<boolean> {
       });
       return true;
     }
+    // The mock install always has its Owner; the unbound page is covered by Login.test.tsx.
+    case "GET auth/owner-status":
+      sendJSON(ctx.res, 200, { owner_bound: true });
+      return true;
     case "POST auth/email/start": {
       const body = await readJSON<{ email?: string }>(ctx.req);
       if (!body.email || !body.email.includes("@")) {

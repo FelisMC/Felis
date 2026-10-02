@@ -106,3 +106,35 @@ export function joinAddress(subdomain: string, cfg: RuntimeConfig): string {
   const host = hostFor(subdomain, cfg);
   return cfg.gamePort && cfg.gamePort !== 25565 ? `${host}:${cfg.gamePort}` : host;
 }
+
+// The IPv4 address a nip.io or sslip.io root domain spells out ("203.0.113.7.nip.io"),
+// read as strictly as Go's net.ParseIP: four parts, each 0-255, no leading zeros.
+function embeddedIPv4(rootDomain: string): string {
+  const domain = rootDomain.trim().replace(/\.$/, "");
+  for (const suffix of [".nip.io", ".sslip.io"]) {
+    if (!domain.endsWith(suffix)) continue;
+    const base = domain.slice(0, -suffix.length);
+    const parts = base.split(".");
+    if (parts.length === 4 && parts.every((p) => /^(0|[1-9]\d{0,2})$/.test(p) && Number(p) <= 255)) {
+      return base;
+    }
+  }
+  return "";
+}
+
+/** entryAddress is where anyone joins in Minecraft to reach the login server, which
+ *  hands out link codes: the IP a nip.io or sslip.io root domain spells out, otherwise
+ *  the root domain, with the port when it is not 25565. It mirrors the Go side's
+ *  setupGameAddress, so the page and the `felis setup` terminal name the same address.
+ *  Empty when config.json could not be read, as the root domain is then a guess. */
+export function entryAddress(cfg: RuntimeConfig): string {
+  if (cfg.fallback) return "";
+  const host = embeddedIPv4(cfg.rootDomain) || cfg.rootDomain.trim().replace(/\.$/, "");
+  if (!host) return "";
+  return cfg.gamePort && cfg.gamePort !== 25565 ? `${host}:${cfg.gamePort}` : host;
+}
+
+/** isIPAddress reports whether an entry address names its host by IPv4 address. */
+export function isIPAddress(address: string): boolean {
+  return /^\d{1,3}(\.\d{1,3}){3}(:\d+)?$/.test(address);
+}
