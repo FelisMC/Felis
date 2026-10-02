@@ -282,7 +282,7 @@ before the proxy Connects them.
 > no real game client has joined through the stack, so §27 scenario 10 stays
 > **FAIL (live-unverified)** until such a join is exercised. The client-independent
 > faces (proxy edge, subdomain MOTD, login boundary, backend registration) are
-> exercised on a live deployment — see `AUDIT-2026-09-22.md`.
+> exercised on a live deployment.
 
 ## Building
 

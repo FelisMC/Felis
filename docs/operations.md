@@ -396,8 +396,6 @@ curl -fsSL <raw-url>/deploy/uninstall.sh | sudo bash -s -- --yes     # keep the 
 curl -fsSL <raw-url>/deploy/uninstall.sh | sudo bash -s -- --purge   # remove the data too
 ```
 
-With a private repository, fetch it the way the README fetches `bootstrap.sh`.
-
 Both modes remove the `felis-*` systemd units and `cloudflared-felis.service`, the
 Velocity user, `/opt/felis`, `/usr/local/bin/felis`, the release assets an interrupted
 install left in `/var/lib/felis/artifacts`, the installer's cloudflared binary (unless

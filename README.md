@@ -1,14 +1,22 @@
-# Felis
+<div align="center">
+  <h1 align="center">
+    <img src="docs/assets/felis-logo.png" alt="Felis logo" width="270"><br>
+    Felis
+  </h1>
+  <p align="center">
+    基于 Kubernetes 的 Minecraft 服务器托管平台<br>
+    单条命令完成部署，自动管理服务器生命周期、备份与安全
+    <br><br>
+    <a href="README.md">简体中文</a> | <a href="README_EN.md">English</a>
+  </p>
+</div>
 
-**此项目仍处于早期开发阶段，您不该在任何生产环境使用该项目。若产生任何问题，贵用户的使用行为与 FelisMC 团队无任何民事刑事法律关系。**
-**THIS PROJECT IS STILL WIP, YOU SHOULD DO NOT USE THIS PROJECT IN ANY PRODUCTION USAGE. WE ARE NOT RESPOND FOR ANY LEGAL OR HUMANLY PROBLEM.**
+> [!CAUTION]
+> **此项目仍处于早期开发阶段，您不该在任何生产环境使用该项目。若产生任何问题，贵用户的使用行为与 FelisMC 团队无任何民事刑事法律关系。**<br>
+> **THIS PROJECT IS STILL WIP, YOU SHOULD DO NOT USE THIS PROJECT IN ANY PRODUCTION USAGE. WE ARE NOT RESPOND FOR ANY LEGAL OR HUMANLY PROBLEM.**
 
-一款 Kubernetes 驱动的 Minecraft 服务器托管平台，一行命令部署，自动管理生命周期与安全。  
-A Kubernetes-driven Minecraft server hosting platform — one command to deploy, automatic lifecycle, backup, and security.
-
-[简体中文](README.md) | [English](README_EN.md)
-
-目录
+<details>
+<summary>目录</summary>
 
 - [特性](#特性)
 - [使用方式](#使用方式)
@@ -16,53 +24,73 @@ A Kubernetes-driven Minecraft server hosting platform — one command to deploy,
 - [开源协议](#开源协议)
 - [致谢](#致谢)
 
+</details>
+
 ## 特性
 
-- **即开即玩**：玩家尝试连接时自动唤醒服务器，空闲后自动休眠，像游戏主机一样省资源。
-- **Web 控制面板**：浏览器中查看服务器状态、在线玩家与资源用量，管理备份与恢复。
-- **备份与恢复**：一键把整服数据（世界、配置、插件/模组，即整个 /data 卷）打包进集群内的归档库，支持从任意备份点回滚；默认安装就已启用（归档 PVC 与路径由安装器一并生成）。
-- **控制面数据库备份**：账号、服务器归属、配额与存档索引所在的数据库每天自动备份，每次升级迁移前先快照，出错可用 `felis db restore` 整库原子回滚；面板「维护与备份」页显示备份是否新鲜（见 [故障排查 §16](docs/troubleshooting.md)）。
-- **运维自检**：`sudo felis status` 一屏列出节点、控制面、游戏代理、每台服务器、备份与未解决的告警；`sudo felis doctor` 把健康检查全跑一遍，按区域给出问题和下一步去哪看，不发邮件；`sudo felis support-bundle` 打出一个脱敏的诊断包，求助时直接附上（见 [故障排查 §0](docs/troubleshooting.md)）。
-- **智慧回收（可选开启）**：超过 15 天无人游玩的世界自动备份后删除，释放磁盘空间；安装时设置 `FELIS_WORLDS_HOST_PATH`（k3s 默认 `/var/lib/rancher/k3s/storage`）即启用每日回收，不设置则不删任何世界。过期备份无论是否开启都会每天清理。
-- **多核心支持**：兼容 Paper、Fabric、Forge、NeoForge，经由 Velocity 代理统一入口。
-- **模组自助提交**：玩家自行上传模组包，服主审批通过后自动构建；构建产物进入镜像白名单，可直接选用为服务器镜像完成部署。
-- **Passkey 登录**：支持指纹、面容、硬件密钥等无密码认证方式。
-- **零信任安全**：面板流量由 Cloudflare Access 保护，集群内 API 不暴露到公网。
+* **按需启停**：玩家连接代理时自动启动目标服务器，启动期间玩家进入等待队列，服务器就绪后自动传送；服务器空闲后自动停止，释放内存。
+
+* **Web 控制面板**：在浏览器中查看服务器状态、在线玩家与资源用量。
+  * 控制台（RCON）、白名单、封禁、OP 与 LuckPerms 权限管理
+  * 文件管理：新建、删除、重命名、分片上传、下载，以及停服状态下解压 zip，可用于导入世界
+  * 计划任务：按星期与时区定时执行命令、重启、停止、启动或备份，执行前在游戏内向玩家发送提醒
+
+* **备份与恢复**：默认启用，归档 PVC 及其路径由安装器生成。
+  * 手动备份：将服务器的完整数据卷（`/data`，含世界、配置、插件与模组）归档至集群内的归档存储，可回滚至任一备份点
+  * 每日恢复点：当天有玩家进入过的服务器在停止后自动生成恢复点，默认保留 7 个，保存期限 90 天；恢复点单独轮换，不影响手动备份
+  * 下载与导出：支持下载单个备份（附 sha256 校验）、删除单个备份及导出完整世界
+  * 异地副本（可选）：备份在主机上加密后同步至 S3 兼容存储（AWS S3、Cloudflare R2、Backblaze B2、MinIO 等）
+  * 控制面数据库：存放账号、服务器归属、配额与存档索引的数据库每日自动备份，每次升级迁移前额外创建快照，故障时可通过 `felis db restore` 整库原子回滚；面板「维护与备份」页显示最近一次备份的时效（参见 [故障排查 §16](docs/troubleshooting.md)）
+
+* **运维诊断**
+  * `sudo felis status`：汇总显示节点、控制面、游戏代理、各服务器、备份及未解决的告警
+  * `sudo felis doctor`：执行全部健康检查，按模块列出问题及排查方向，执行过程中不发送邮件
+  * `sudo felis support-bundle`：生成已脱敏的诊断包，供提交问题时附带（参见 [故障排查 §0](docs/troubleshooting.md)）
+  * 看门狗：每 2 分钟执行一次巡检，异常持续时向平台所有者发送邮件告警，支持外部心跳监测
+
+* **世界回收（可选）**：超过 15 天无人游玩的世界在备份后删除，以释放磁盘空间。安装时设置 `FELIS_WORLDS_HOST_PATH`（k3s 默认为 `/var/lib/rancher/k3s/storage`）即启用每日回收；未设置时不删除任何世界。过期备份的每日清理与此设置无关，始终执行。
+
+* **多核心支持**：兼容 Paper、Fabric、Forge 与 NeoForge，统一经由 Velocity 代理接入。
+
+* **模组包投稿**：玩家可上传模组包，经服主审批后自动构建并通过 Trivy 安全扫描；构建产物加入镜像白名单后，可直接选作服务器镜像。
+
+* **安全**
+  * Passkey 登录：支持指纹、面容识别及硬件密钥等无密码认证方式
+  * 零信任访问：面板流量经 Cloudflare Access 保护，集群内部 API 不对公网开放
+
+* **多机部署（实验性，默认关闭）**：由一台主控节点统一下发指令，其余节点仅运行游戏服务器，已停止的服务器可迁移至其他节点。该功能目前仅位于 main 分支，尚未完成三机验收（参见 [多机部署](docs/distributed.md)）。
 
 ## 使用方式
 
-在准备好的 Linux 主机上执行（已验证的发行版与架构见 [运维手册 §1](docs/operations.md#1-supported-hosts)：CentOS Stream 9 aarch64 实机验证，Ubuntu 24.04 x86_64 每次推送由 CI 跑全新安装、重跑、升级和下面这条命令本身）：
+在已准备好的 Linux 主机上执行：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/main/deploy/bootstrap.sh | sudo bash
 ```
 
-脚本将自动安装 K3s，在 K3s 内部署 PostgreSQL 与控制平面，并启动设置向导。完成后浏览器访问已配置的域名进入控制面板即可使用。
+脚本将安装 K3s，在 K3s 中部署 PostgreSQL 与控制平面，随后启动设置向导。设置完成后，通过浏览器访问所配置的域名即可进入控制面板。
 
-安装发布版时，二进制、全部镜像与 Velocity 插件都取自该版本在 CI 里预构建好的 release 附件，逐个核对 `SHA256SUMS` 后导入，主机上无需 Docker、Gradle 或 Go，也不从 Docker Hub 拉取；某个附件缺失或校验不符时，只有那一个镜像退回到本机构建，并给出提示（见 [故障排查 §15c](docs/troubleshooting.md)）。附件也可以先拷到本机，再用 `FELIS_ARTIFACT_DIR=<绝对路径>` 安装，Felis 自己的二进制、镜像和插件就都取自这个目录；k3s 及其镜像、JRE、cloudflared、Velocity 和 Via 插件照旧从 GitHub 与 PaperMC 下载，RHEL、Fedora、openSUSE Leap 这类开着 SELinux 的主机还要从 rpm.rancher.io 装 k3s-selinux，系统软件包来自发行版的源。所以出网受限的主机要放行这几处的 HTTPS（或设 `https_proxy`），preflight 会在改动主机之前逐个探测，完全断网的主机目前装不了（地址清单见 [运维手册 §1](docs/operations.md#1-supported-hosts)）。旧版本装在宿主上的 PostgreSQL 会在重跑时整库迁进 K3s，宿主上的那份停用保留，供回退（见 [运维手册 §4](docs/operations.md#4-upgrading-the-pieces-around-felis)）。
+* **支持的系统**：CentOS Stream 9（aarch64）已在实机上验证；Ubuntu 24.04（x86_64）在每次推送时由 CI 执行全新安装、重复安装、升级及上述安装命令（参见 [运维手册 §1](docs/operations.md#1-supported-hosts)）。
 
-动手之前，脚本先检查内存、磁盘、端口、网段冲突、已有的 Kubernetes 和外网连通，把所有问题一次列出并停下，主机上什么都没改（检查项见 [运维手册 §1](docs/operations.md#1-supported-hosts)）。
+* **安装前检查**：安装器在修改主机之前检查内存、磁盘、端口、网段冲突、已有的 Kubernetes 及外网连通性。发现问题时一次性列出全部问题并退出，主机保持原状（检查项参见 [运维手册 §1](docs/operations.md#1-supported-hosts)）。
 
-> **本仓库当前为私有**，上面这条会返回 404。请改用带凭据的形式；安装器自身也需要同一个 token
-> 去解析并下载 release，所以用 `sudo -E` 把它带进去：
->
-> ```bash
-> export FELIS_GITHUB_TOKEN=<对本仓库有读权限的 token>
-> printf 'header = "Authorization: Bearer %s"\n' "$FELIS_GITHUB_TOKEN" \
->   | curl -fsSL --config - -H "Accept: application/vnd.github.raw" \
->       https://api.github.com/repos/FelisMC/Felis/contents/deploy/bootstrap.sh \
->   | sudo -E bash
-> ```
->
-> token 经 stdin 交给 `curl --config -`，不放在命令行上：argv 在 `/proc` 下对本机任意用户可读，
-> 而这正是安装器内部 `github_api` 采用同一写法的原因。
+* **升级**：重新执行安装命令即可将 felis-api 升级至新版本；`felis setup` 仅使用本机已安装的二进制，无法用于升级。重新执行时沿用已安装的根域名，发布通道需重新指定：跟随 main 分支的主机须同时设置 `export FELIS_VERSION_BOOTSTRAP=dev`。早期版本安装在宿主机上的 PostgreSQL 会在重新执行时整库迁入 K3s，宿主机上的原实例停用并保留，以便回退（参见 [运维手册 §4](docs/operations.md#4-upgrading-the-pieces-around-felis)）。
 
-重跑这条命令也是把 felis-api 升到新版本的方式（`felis setup` 做不到，它用的是本机已有的二进制）。
-重跑会沿用已安装的根域名，但**不会**沿用通道：若本机跟随 main，需一并 `export FELIS_VERSION_BOOTSTRAP=dev`。
+<details>
+<summary>安装来源与受限网络环境下的安装</summary>
+<br>
+
+安装发布版时，二进制文件、全部镜像及 Velocity 插件均取自该版本由 CI 预构建的 release 附件，逐一校验 `SHA256SUMS` 后导入。主机无需安装 Docker、Gradle 或 Go，也无需访问 Docker Hub。若某个附件缺失或校验失败，仅该镜像回退为本机构建，并输出提示（参见 [故障排查 §15c](docs/troubleshooting.md)）。
+
+也可将附件预先复制到主机，再通过 `FELIS_ARTIFACT_DIR=<绝对路径>` 安装，此时 Felis 自身的二进制、镜像与插件均从该目录读取。k3s 及其镜像、JRE、cloudflared、Velocity 与 Via 插件仍从 GitHub 和 PaperMC 下载；RHEL、Fedora、openSUSE Leap 等启用 SELinux 的主机还需从 rpm.rancher.io 安装 k3s-selinux；系统软件包来自发行版软件源。
+
+因此，出站网络受限的主机须放行上述地址的 HTTPS 访问，或设置 `https_proxy`。preflight 会在修改主机之前逐一探测这些地址。目前暂不支持完全离线安装（地址清单参见 [运维手册 §1](docs/operations.md#1-supported-hosts)）。
+
+</details>
 
 ## 从源码构建
 
-本项目基于 Go 和 Node.js 开发：
+本项目基于 Go 与 Node.js 开发：
 
 ```bash
 # 后端（Go 1.26+）
@@ -79,22 +107,22 @@ docker build -t felis:custom .
 
 ## 开源协议
 
-本项目遵循 [AGPL-3.0-only](LICENSE) 开源协议。
+本项目采用 [AGPL-3.0-only](LICENSE) 许可证。
 
 ### 协议注意事项
 
-1. **衍生作品同样是 AGPL**：分发本项目的副本或基于本项目衍生的软件时，必须以 AGPL-3.0 开源，并保留原作者的版权声明和许可声明。
-2. **通过网络提供服务同样要开源**（AGPL 第 13 条）：如果你把修改过的 Felis 架起来给别人用，即使从不分发任何二进制，也必须向这些用户提供你那份修改后的完整源码。这是 AGPL 相对 GPL 的唯一实质区别，而 Felis 正是一个跑在网络上的托管平台，所以这一条基本总会触发。
-3. **免责声明**：本项目按"原样"提供，作者不承担任何因使用本项目而产生的法律责任。
+1. **衍生作品须采用 AGPL**：分发本项目副本或基于本项目的衍生软件时，须以 AGPL-3.0 开源，并保留原作者的版权声明与许可声明。
+2. **网络服务同样须提供源码**（AGPL 第 13 条）：通过网络向他人提供经修改的 Felis 服务时，即使未分发任何二进制文件，也须向这些用户提供修改后的完整源码。这是 AGPL 与 GPL 唯一的实质区别；Felis 作为通过网络访问的托管平台，几乎所有部署场景都适用此条款。
+3. **免责声明**：本项目按"原样"提供，作者不承担因使用本项目而产生的任何法律责任。
 
 ## 致谢
 
-- [Kubernetes](https://kubernetes.io/)：底层容器编排引擎
-- [K3s](https://k3s.io/)：轻量级 Kubernetes 发行版
-- [Cloudflare Zero Trust](https://www.cloudflare.com/zero-trust/)：零信任安全基础设施
-- [PostgreSQL](https://www.postgresql.org/)：数据持久化
-- [React](https://react.dev/)：前端用户界面框架
-- [Vite](https://vitejs.dev/)：前端构建工具
-- [TailwindCSS](https://tailwindcss.com/)：CSS 框架
-- [Bubble Tea](https://github.com/charmbracelet/bubbletea)：TUI 框架
-- [Minecraft](https://www.minecraft.net/)：让这一切值得做
+* [Kubernetes](https://kubernetes.io/)：容器编排引擎
+* [K3s](https://k3s.io/)：轻量级 Kubernetes 发行版
+* [Cloudflare Zero Trust](https://www.cloudflare.com/zero-trust/)：零信任安全基础设施
+* [PostgreSQL](https://www.postgresql.org/)：数据持久化
+* [React](https://react.dev/)：前端用户界面框架
+* [Vite](https://vitejs.dev/)：前端构建工具
+* [TailwindCSS](https://tailwindcss.com/)：CSS 框架
+* [Bubble Tea](https://github.com/charmbracelet/bubbletea)：TUI 框架
+* [Minecraft](https://www.minecraft.net/)：本项目服务的游戏

@@ -40,9 +40,9 @@ type github struct {
 	baseURL   string // e.g. "https://api.github.com"
 	userAgent string // MUST be non-empty — GitHub 403s a UA-less request
 	// token is an optional credential. Empty means unauthenticated, which is the right
-	// posture for the public repos Felis tracks (k3s, cloudflared) and is what the
-	// 60-req/h note above is about. It is load-bearing only for felis-api's own repo
-	// while that repo is private, where its absence does not look like an auth failure:
+	// posture for the public repos Felis tracks (felis-api, k3s, cloudflared) and is what
+	// the 60-req/h note above is about. It is load-bearing only when felis-api is built
+	// from a private fork, where its absence does not look like an auth failure:
 	// GitHub answers 404 — not 401 or 403 — for a private repo the caller cannot see, so
 	// "no token" is indistinguishable from "no release published yet" by status alone.
 	// latestStable says both in the error rather than making an operator guess.

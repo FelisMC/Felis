@@ -9,8 +9,8 @@
 # The push trigger is limited to main rather than every branch, for the reason release.yml is
 # not repeated here: a branch with an open PR would otherwise run the whole suite twice per
 # push, once for refs/heads/<branch> and once for refs/pull/N/merge. Those are different
-# concurrency groups, so neither cancels the other, and this repository is private and billed
-# for both. A branch with no PR open yet is the one case that loses coverage, and opening the
+# concurrency groups, so neither cancels the other, and both would occupy runners for the
+# same commit. A branch with no PR open yet is the one case that loses coverage, and opening the
 # PR is what asks for the answer.
 name: ci
 
