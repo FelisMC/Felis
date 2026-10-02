@@ -13,6 +13,9 @@ const (
 	sourcePostgres                   // postgresql.org/versions.json, within Current's major
 )
 
+// officialRepo is Felis's own GitHub repository, which is public.
+const officialRepo = "FelisMC/Felis"
+
 // Spec is one platform component's static update policy plus how to find its latest
 // upstream version. Current is deliberately NOT here — it is gathered at runtime
 // (integration: an image tag, `k3s --version`, a jar manifest) and combined with the
@@ -56,11 +59,9 @@ type Spec struct {
 func Topology() []Spec {
 	return []Spec{
 		// Felis's own release repo, and the same slug deploy/bootstrap.sh clones from
-		// (FELIS_REPO_URL). It is PRIVATE today, which is why the github source carries an
-		// optional token: unauthenticated, this coord answers 404 — the status GitHub uses
-		// to hide a repo's existence — and felis-api is the one tracked component where
-		// that happens. k3s and cloudflared are public and need no credential.
-		{Name: "felis-api", Policy: updates.PolicyScheduled, Manageable: true, Source: sourceGitHub, Coord: "FelisMC/Felis"},
+		// (FELIS_REPO_URL). It is public, like k3s and cloudflared; the github source's
+		// optional token is for a build whose coord names a private fork.
+		{Name: "felis-api", Policy: updates.PolicyScheduled, Manageable: true, Source: sourceGitHub, Coord: officialRepo},
 		{Name: "k3s", Policy: updates.PolicyNotify, Manageable: false, Source: sourceGitHub, Coord: "k3s-io/k3s"},
 		{Name: "cloudflared", Policy: updates.PolicyScheduled, Manageable: true, Source: sourceGitHub, Coord: "cloudflare/cloudflared"},
 		{Name: "velocity", Policy: updates.PolicyNotify, Manageable: false, Source: sourcePaperMC, Coord: "velocity"},

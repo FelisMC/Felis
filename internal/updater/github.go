@@ -45,7 +45,8 @@ type github struct {
 	// from a private fork, where its absence does not look like an auth failure:
 	// GitHub answers 404 — not 401 or 403 — for a private repo the caller cannot see, so
 	// "no token" is indistinguishable from "no release published yet" by status alone.
-	// latestStable says both in the error rather than making an operator guess.
+	// latestStable says both in the error rather than making an operator guess, for any
+	// repository other than the official one, which is public.
 	//
 	// It is read from the environment and never compiled in. A constant would be
 	// committed to the very repository it protects, ship inside every felis binary where
@@ -56,7 +57,7 @@ type github struct {
 }
 
 // tokenEnv names the environment variable holding the GitHub credential. deploy/bootstrap.sh
-// reads the same variable to clone a private repo, so an operator sets one value once.
+// reads the same variable to clone a private fork, so an operator sets one value once.
 const tokenEnv = "FELIS_GITHUB_TOKEN"
 
 // newGitHub builds a source pointed at the live GitHub REST API with sane defaults.
@@ -148,7 +149,10 @@ func (g github) latestTag(ctx context.Context, repo string) (string, error) {
 		// 404 is the ambiguous one: GitHub hides a private repo behind it rather than
 		// answering 401/403, so an unauthenticated miss and a repo with no stable release
 		// are the same status. Name both causes, and name the fix for the one an operator
-		// can act on.
+		// can act on. The official repository is public, so there only the first applies.
+		if resp.StatusCode == http.StatusNotFound && strings.EqualFold(repo, officialRepo) {
+			return "", fmt.Errorf("github: %s releases/latest returned HTTP 404 — it has no published stable release", repo)
+		}
 		if resp.StatusCode == http.StatusNotFound && g.token == "" {
 			return "", fmt.Errorf(
 				"github: %s releases/latest returned HTTP 404 — either it has no published stable release, or it is private and %s is unset",

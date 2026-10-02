@@ -223,4 +223,18 @@ func TestGitHubNamesTheTokenOnAnUnauthenticated404(t *testing.T) {
 	if strings.Contains(err.Error(), tokenEnv) {
 		t.Errorf("a 404 WITH a token set must not blame the missing token; got: %v", err)
 	}
+
+	// The official repository is public: a 404 there means no stable release, whatever
+	// the token.
+	g.token = ""
+	_, err = g.latestStable(context.Background(), "felismc/felis")
+	if err == nil {
+		t.Fatal("want an error on 404")
+	}
+	if strings.Contains(err.Error(), tokenEnv) || strings.Contains(err.Error(), "private") {
+		t.Errorf("a 404 from the public official repository must not suggest it is private; got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "no published stable release") {
+		t.Errorf("a 404 from the official repository must say it has no stable release; got: %v", err)
+	}
 }
