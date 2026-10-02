@@ -8,6 +8,8 @@
     单条命令完成部署，自动管理服务器生命周期、备份与安全
     <br><br>
     <a href="README.md">简体中文</a> | <a href="README_EN.md">English</a>
+    <br>
+    <a href="https://felismc.com/">官网</a> | <a href="https://docs.felismc.com/">文档</a>
   </p>
 </div>
 

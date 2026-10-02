@@ -8,6 +8,8 @@
     One command to deploy, with automatic lifecycle, backup, and security
     <br><br>
     <a href="README.md">简体中文</a> | <a href="README_EN.md">English</a>
+    <br>
+    <a href="https://felismc.com/">Website</a> | <a href="https://docs.felismc.com/en/">Documentation</a>
   </p>
 </div>
 
