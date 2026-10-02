@@ -51,3 +51,7 @@ AGENTS.md
 docs/Felis-Spec-V4.1.md
 panel/DESIGN.md
 panel/DESIGN-WEB-3SIDES.md
+
+# Audit ledgers and readiness reviews stay on the maintainer's disk.
+/AUDIT-*.md
+/READINESS-*.md
