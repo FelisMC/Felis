@@ -3945,11 +3945,11 @@ paths:
     get:
       tags: [auth]
       operationId: ownerStatus
-      summary: Report whether an Owner has been bound on this install.
+      summary: Report whether an Owner has been created on this install.
       description: >-
         Public, pre-session probe the sign-in page reads on load. Until `felis setup`
-        binds an Owner, local sign-in is off and every login door answers 403
-        local_auth_disabled; the page then explains that no Owner exists and how to bind
+        creates an Owner, local sign-in is off and every login door answers 403
+        local_auth_disabled; the page then explains that no Owner exists and how to create
         one instead of offering the doors. It discloses only whether the install is
         still unclaimed, and claiming it needs root on the host. It is not gated on
         local_auth_enabled and does not draw on the login doors' per-address rate limit.
@@ -6457,6 +6457,104 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/account/link/sources:
+    get:
+      tags: [account]
+      operationId: linkSources
+      summary: List configured sources for staff game-role designation.
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: Sources in game-authentication priority order; no upstream URLs are exposed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sources]
+                properties:
+                  sources:
+                    type: array
+                    items:
+                      type: object
+                      required: [tag, lookup_available]
+                      properties:
+                        tag: { type: string }
+                        lookup_available: { type: boolean }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/account/link/profile:
+    get:
+      tags: [account]
+      operationId: lookupProfile
+      summary: Look up a role by name or native UUID in a selected authentication source.
+      description: Staff-only preview; role lookup does not prove account ownership and creates no binding.
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: source, in: query, required: true, schema: { type: string } }
+        - { name: profile, in: query, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Role found. mc_uuid uses the exact same per-source mapping as game authentication.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [source, name, profile_uuid, mc_uuid, auth_source]
+                properties:
+                  source: { type: string }
+                  name: { type: string }
+                  profile_uuid: { type: string }
+                  mc_uuid: { type: string, format: uuid }
+                  auth_source: { type: string, enum: [mojang, thirdparty] }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: No matching role in the selected source. }
+        '502': { description: Source returned an invalid or mismatched profile. }
+        '503': { description: Source unavailable. }
+    post:
+      tags: [account]
+      operationId: linkProfile
+      summary: Designate a role as the authenticated staff account's game identity.
+      description: Requires a fresh login factor. Re-queries the native UUID, maps it on the server, and binds only to the caller. Other users' bindings cannot be overwritten. Panel initialization does not require this operation.
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source, profile_uuid]
+              properties:
+                source: { type: string }
+                profile_uuid: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Role linked, idempotently for the same user and UUID.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [linked, mc_uuid, auth_source]
+                properties:
+                  linked: { type: boolean }
+                  mc_uuid: { type: string, format: uuid }
+                  auth_source: { type: string, enum: [mojang, thirdparty] }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: Role no longer exists. }
+        '409': { description: Role already linked to another user, or reauthentication required. }
+        '502': { description: Source returned an invalid or mismatched profile. }
+        '503': { description: Source unavailable. }
 
   /api/v1/account/link/start:
     post:

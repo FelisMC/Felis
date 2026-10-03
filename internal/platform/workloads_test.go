@@ -331,6 +331,15 @@ func TestAPIService_NodePort(t *testing.T) {
 	p.PanelNodePort = 30445
 	svc := apiService(p)
 	dep := APIDeployment(p)
+	foundPort := false
+	for _, env := range dep.Spec.Template.Spec.Containers[0].Env {
+		if env.Name == "FELIS_PANEL_NODEPORT" {
+			foundPort = env.Value == "30445"
+		}
+	}
+	if !foundPort {
+		t.Fatal("API passkey origins do not know the Service's public NodePort")
+	}
 
 	if svc.Name != SAAPI || svc.Namespace != p.ControlNamespace {
 		t.Errorf("api Service = %s/%s, want %s/%s", svc.Namespace, svc.Name, p.ControlNamespace, SAAPI)

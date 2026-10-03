@@ -501,6 +501,28 @@ func TestLoadRejectsUnqueryableAuthSourceURL(t *testing.T) {
 	}
 }
 
+func TestAuthSourceProfileAPIURL(t *testing.T) {
+	for _, tc := range []struct {
+		url   string
+		valid bool
+	}{
+		{"https://ygg.example.net/api/yggdrasil", true},
+		{"http://127.0.0.1:8080/ygg", true},
+		{"ygg.example.net/api", false},
+		{"http://ygg.example.net/api", false},
+		{"https://ygg.example.net/api?token=x", false},
+	} {
+		cfg, err := config.LoadNano(writeTOML(t, "[[auth_source]]\ntag = \"a\"\nprefix = \"AA\"\nurl = \"https://ygg.example.net/custom-check\"\napi_url = \""+tc.url+"\"\n"))
+		if tc.valid {
+			if err != nil || cfg.AuthSources[0].APIURL != tc.url {
+				t.Fatalf("api_url %q = %v, %v", tc.url, cfg, err)
+			}
+		} else if err == nil || !strings.Contains(err.Error(), "api_url") {
+			t.Fatalf("invalid api_url %q: %v", tc.url, err)
+		}
+	}
+}
+
 // A source reached over plaintext can be answered by anyone on the path, who can then log in
 // as any player of that source. Only a same-host or private-network root may skip TLS, and
 // that is decided on the literal host, since nothing is resolved at load time.

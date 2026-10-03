@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"felis.lolicon.best/internal/api"
-	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/config"
 	"felis.lolicon.best/internal/platform"
 	"felis.lolicon.best/internal/store"
@@ -100,20 +99,7 @@ func cmdSetup(args []string, stdout, stderr io.Writer) int {
 	}
 	defer setup.drv.Close()
 
-	// The wizard's first screen asks the operator to join the server and run /link:
-	// the Owner IS the Minecraft account, so the login gate must be UP before we ask
-	// for a link code. This used to run after the wizard, which is why setup asked
-	// for a code from a server that had never been started. On a re-run the Owner
-	// already exists, so provisioning stays best-effort and never blocks the
-	// operator from reaching the status screen.
-	if err := provisionSystemServers(ctx, setup.cfg, stdout, !setup.adminExists); err != nil {
-		fmt.Fprintf(stderr, "felis setup: %v\n", err)
-		fmt.Fprintln(stderr, "The Owner is bound by joining the login gate in-game, so setup cannot continue without it.")
-		return 1
-	}
-
-	gameAddr := setupGameAddress(setup.cfg.Server.RootDomain, setup.cfg.Velocity.GamePort)
-	res, err := runSetupTUI(ctx, setup.repo, setup.cfg.Database, setup.cfg.Server.RootDomain, setup.cfg.Auth.AdminHostname, setup.cfg.Auth.PanelHostname, setup.cfg.Auth.AccessJWTAud, setup.cfg.K8s.Namespace, accountableOSUser(), gameAddr, setup.adminExists)
+	res, err := runSetupTUI(ctx, setup.repo, setup.cfg.Database, setup.cfg.Server.RootDomain, setup.cfg.Auth.AdminHostname, setup.cfg.Auth.PanelHostname, setup.cfg.Auth.AccessJWTAud, setup.cfg.K8s.Namespace, accountableOSUser(), setup.adminExists)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis setup: %v\n", err)
 		return 1
@@ -122,22 +108,25 @@ func cmdSetup(args []string, stdout, stderr io.Writer) int {
 	if panelURL == "" {
 		panelURL = localPanelURL(setup.cfg.Server.RootDomain, setup.cfg.Auth.AdminHostname)
 	}
-	reportSetupResult(stdout, res, bootstrapped, setup.adminExists, panelURL, gameAddr)
+	// Game services are provisioned independently. A failed login/lobby must not
+	// stop the host administrator from opening the panel to diagnose it.
+	if err := provisionSystemServers(ctx, setup.cfg, stdout); err != nil {
+		fmt.Fprintf(stdout, "felis setup: Minecraft services need attention: %v\n", err)
+	}
+
+	reportSetupResult(stdout, res, bootstrapped, setup.adminExists, panelURL)
 	return 0
 }
 
-// reportSetupResult prints what the console did, past the alt-screen teardown that
-// wipes it. A run that ends with no Owner bound, skipped or quit, ends on how to bind
-// one: nobody can sign in to the panel until then.
-func reportSetupResult(stdout io.Writer, res breakGlassResult, bootstrapped, adminExisted bool, panelURL, gameAddr string) {
+// reportSetupResult preserves the browser handoff after the TUI closes.
+func reportSetupResult(stdout io.Writer, res breakGlassResult, bootstrapped, adminExisted bool, panelURL string) {
 	if !adminExisted && !res.provisioned {
-		defer fmt.Fprintf(stdout, "\nNo Owner is bound yet, so nobody can sign in to the panel. To bind one, run\n"+
-			"  sudo felis setup\nand join %s in Minecraft when it asks.\n", ownerJoinTarget(gameAddr))
+		defer fmt.Fprintln(stdout, "\nOwner login is unfinished. Run sudo felis setup again to get a panel setup link; Minecraft is not required.")
 	}
 
 	if !res.provisioned && !res.connectConfigured {
 		if bootstrapped {
-			fmt.Fprintln(stdout, "felis setup: host bootstrap completed; Owner/connection setup skipped.")
+			fmt.Fprintln(stdout, "felis setup: host bootstrap completed; panel/connection setup unfinished.")
 			if panelURL != "" {
 				fmt.Fprintf(stdout, "Panel: %s\n", panelURL)
 				fmt.Fprintln(stdout, "The local HTTPS certificate is self-signed; your browser may ask for confirmation on first visit.")
@@ -150,8 +139,6 @@ func reportSetupResult(stdout io.Writer, res breakGlassResult, bootstrapped, adm
 		switch {
 		case res.alreadySetUp:
 			msg = "felis setup: already set up — nothing to change."
-		case res.ownerSkipped:
-			msg = "felis setup: finished without an Owner."
 		}
 		fmt.Fprintln(stdout, msg)
 		if panelURL != "" {
@@ -164,7 +151,7 @@ func reportSetupResult(stdout io.Writer, res breakGlassResult, bootstrapped, adm
 		fmt.Fprintf(stdout, "\nfelis setup: Owner account %q provisioned (passwordless).\n", res.username)
 		fmt.Fprintf(stdout, "Recorded as %q (mode: %s, os user: %s).\n", res.accountable, res.mode, res.osUser)
 		if res.setupTokenURL != "" {
-			fmt.Fprintf(stdout, "Open this URL to complete passwordless login setup (verify email / enroll passkey):\n\n    %s\n\n", res.setupTokenURL)
+			fmt.Fprintf(stdout, "Open this URL to record your email and create a passkey (Minecraft is optional):\n\n    %s\n\n", res.setupTokenURL)
 		}
 		if res.auditWarning != "" {
 			fmt.Fprintf(stdout, "WARNING: the accountability audit row was NOT written: %s\n", res.auditWarning)
@@ -198,30 +185,15 @@ func reportSetupResult(stdout io.Writer, res breakGlassResult, bootstrapped, adm
 // then prints the login-first Velocity wiring. deploy/bootstrap.sh writes this
 // configuration for its host proxy; operators only need to mirror it when they
 // deliberately run Velocity elsewhere.
-//
-// required is set on a first run, where the next screen asks the operator to join
-// the server and run /link. There a gate that never comes up is not a degraded
-// install, it is an impossible one — so every soft landing below becomes a hard
-// error and we block until the gate reports Ready. On a re-run the Owner already
-// exists and nothing downstream needs the gate, so unconfigured images or an
-// unreachable cluster degrade to printed guidance exactly as before.
-func provisionSystemServers(ctx context.Context, cfg *config.Config, out io.Writer, required bool) error {
-	// fail is the one place the two modes diverge: fatal on a first run, guidance
-	// on a re-run.
+
+func provisionSystemServers(ctx context.Context, cfg *config.Config, out io.Writer) error {
 	fail := func(format string, args ...any) error {
-		if required {
-			return fmt.Errorf(format, args...)
-		}
 		fmt.Fprintf(out, "\nfelis setup: "+format+"\n", args...)
 		return nil
 	}
 	if cfg.Velocity.LoginImage == "" && cfg.Velocity.LobbyImage == "" {
 		return fail("login/lobby system servers NOT provisioned — set [velocity] login_image " +
 			"and lobby_image in felis.toml (build them from deploy/limbo and deploy/lobby), then re-run `sudo felis setup`")
-	}
-	if required && cfg.Velocity.LoginImage == "" {
-		return errors.New("the Owner binds by joining the login gate, but [velocity] login_image is not set in felis.toml " +
-			"(build it from deploy/limbo), then re-run `sudo felis setup`")
 	}
 	cl, err := buildSystemServerClient()
 	if err != nil {
@@ -242,7 +214,7 @@ func provisionSystemServers(ctx context.Context, cfg *config.Config, out io.Writ
 	// mount them are created: the login gate's token (login authenticates to
 	// felis-api with it), the Velocity forwarding secret (every backend verifies the proxy's
 	// signed handshake with it — without it the login gate would derive an OFFLINE
-	// UUID and the Owner would bind the wrong Minecraft identity), and felis-config
+	// UUID and players would bind the wrong Minecraft identity), and felis-config
 	// (the on-demand BACKUP Job runs in the minecraft namespace and mounts it to
 	// self-record its world_backups row; without the replica the Job's volume
 	// mount fails and every backup request strands in the cluster).
@@ -267,19 +239,6 @@ func provisionSystemServers(ctx context.Context, cfg *config.Config, out io.Writ
 		default:
 			fmt.Fprintf(out, "  - %s: skipped (%s)\n", o.name, o.skipped)
 		}
-	}
-	if required {
-		if err := requiredProvisioningError(outcomes); err != nil {
-			return fmt.Errorf("required Minecraft provisioning failed: %w", err)
-		}
-		fmt.Fprintln(out, "\nfelis setup: waiting for the login gate to accept players…")
-		err := awaitLoginGateReady(ctx, cl, cfg.K8s.Namespace, loginGateReadyTimeout, loginGatePollInterval, func(p v1alpha1.Phase) {
-			fmt.Fprintf(out, "  login: %s\n", phaseOrPending(p))
-		})
-		if err != nil {
-			return err
-		}
-		fmt.Fprintln(out, "  login: Ready")
 	}
 	printVelocityWiringGuidance(out, cfg.Server.RootDomain)
 	return nil

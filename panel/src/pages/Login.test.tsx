@@ -215,8 +215,7 @@ describe("operator sign-in", () => {
 });
 
 
-// Until `felis setup` binds an Owner every door answers "disabled", so the page says
-// why and how to bind one, naming the address to join in Minecraft.
+// Host setup creates the Owner before any game identity is linked.
 describe("an install with no Owner", () => {
   const NO_OWNER = () => t("auth:no_owner_title");
 
@@ -224,33 +223,17 @@ describe("an install with no Owner", () => {
     calls.authOwnerStatus.mockResolvedValue({ owner_bound: false });
   });
 
-  it("explains why nobody can sign in, with the command and the address to join", async () => {
+  it("guides the administrator from host setup to the browser without entering Minecraft", async () => {
     config.value = { apiBase: "/api/v1", rootDomain: "203.0.113.7.nip.io", gamePort: 25570 };
     await renderLogin(NO_OWNER());
 
     expect(screen.getByText("sudo felis setup")).toBeTruthy();
-    expect(await screen.findByText("203.0.113.7:25570")).toBeTruthy();
-    expect(screen.queryByText(t("auth:no_owner_ip_fallback"))).toBeNull();
-    // None of the doors that cannot work is offered.
+    expect(screen.getByText(t("auth:no_owner_step_link"))).toBeTruthy();
+    expect(screen.queryByText("203.0.113.7:25570")).toBeNull();
+    expect(screen.queryByText("/link")).toBeNull();
     expect(screen.queryByLabelText(t("auth:email_address"))).toBeNull();
     expect(screen.queryByRole("button", { name: t("auth:passkey_btn") })).toBeNull();
     expect(screen.queryByRole("button", { name: t("auth:tab_bind_btn") })).toBeNull();
-  });
-
-  it("offers the IP when the address is a domain name", async () => {
-    config.value = { apiBase: "/api/v1", rootDomain: "mc.example" };
-    await renderLogin(NO_OWNER());
-
-    expect(await screen.findByText("mc.example")).toBeTruthy();
-    expect(screen.getByText(t("auth:no_owner_ip_fallback"))).toBeTruthy();
-  });
-
-  it("points at the terminal for the address when config.json could not be read", async () => {
-    config.value = { apiBase: "/api/v1", rootDomain: "localhost", fallback: true };
-    await renderLogin(NO_OWNER());
-
-    expect(screen.getByText(t("auth:no_owner_step_join_no_address"))).toBeTruthy();
-    expect(screen.queryByText("localhost")).toBeNull();
   });
 
   it("checks again on request and shows the doors once an Owner is bound", async () => {

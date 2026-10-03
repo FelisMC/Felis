@@ -49,5 +49,6 @@
   "go_to_servers_btn": "Manage My Servers",
   "fleet_flat_webgl": "WebGL is unavailable in this browser, so the fleet is shown flat.",
   "fleet_flat_error": "The 3D view failed to load, so the fleet is shown flat.",
-  "fleet_flat_empty": "No servers yet"
+  "fleet_flat_empty": "No servers yet",
+  "staff_unlinked_desc": "No Minecraft role is linked yet. Panel management is available; choose an authentication source and link a role from Account when you are ready to play."
 }

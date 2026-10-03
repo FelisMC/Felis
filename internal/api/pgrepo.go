@@ -264,86 +264,61 @@ func (p *PGRepo) RedeemPlayerBindCode(ctx context.Context, newUserID, code strin
 	return userID, mcUUID, authSource, nil
 }
 
-// CompleteOwnerSetup consumes an in-game link code, creates-or-promotes the bound
-// account to the passwordless Owner (role='owner'), enables local auth, and stores
-// the one-time first-login token in one transaction. It is the `felis setup`
-// MC-bind path: the operator enters limbo, runs /link, and types the code here.
-// Unlike RedeemPlayerBindCode — which refuses an already-staff account so a game
-// login can never self-elevate — this DELIBERATELY elevates: an unlinked UUID is
-// born directly as staff, and an already-linked account (player OR staff) is
-// promoted in place, preserving its id so any live sessions and its username
-// survive. The elevation is gated by the caller's local-root break-glass
-// authority, not by anything in-band. Returns the Owner's (userID, mcUUID,
-// authSource); an absent or expired code is ErrLinkCodeInvalid and consumes
-// nothing. Any failure in the auth-toggle or token writes rolls the elevation and
-// code consumption back, leaving the operator able to retry setup.
-func (p *PGRepo) CompleteOwnerSetup(ctx context.Context, newUserID, code string, now time.Time,
-	tokenHash string, tokenExpiresAt time.Time) (string, string, string, error) {
+// CompleteOwnerSetup creates the first Owner and a one-time panel login under
+// host-root authority. An unfinished setup renews the link without resetting the
+// account; an Owner with a login factor is left untouched (ErrConflict).
+func (p *PGRepo) CompleteOwnerSetup(ctx context.Context, newUserID string, now time.Time,
+	tokenHash string, tokenExpiresAt time.Time) (string, string, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
-		return "", "", "", err
+		return "", "", err
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op after commit
 
-	var mcUUID, authSource string
-	switch err := tx.QueryRowContext(ctx,
-		`SELECT mc_uuid, auth_source FROM account_link_codes WHERE code = $1 AND expires_at > $2`,
-		code, now).Scan(&mcUUID, &authSource); {
-	case errors.Is(err, sql.ErrNoRows):
-		return "", "", "", ErrLinkCodeInvalid
-	case err != nil:
-		return "", "", "", err
+	// Serialize first-run creation as well as link renewal, including the case
+	// where there is no user row to lock yet.
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('felis.owner_setup'))`); err != nil {
+		return "", "", err
 	}
-
-	// Create-or-promote keyed on the verified UUID. An unlinked UUID births a fresh
-	// staff row (role='owner') with a uuid-derived username; an already-linked
-	// account is promoted to role='owner' in place (idempotent when it already is),
-	// keeping its id and username. Setup elevates on purpose, so there is no staff
-	// refusal here — that guard belongs to the player path only.
-	userID := newUserID
-	switch err := tx.QueryRowContext(ctx,
-		`SELECT user_id FROM account_links WHERE mc_uuid = $1`, mcUUID).Scan(&userID); {
+	userID, username := newUserID, "owner"
+	var onboarded bool
+	err = tx.QueryRowContext(ctx,
+		`SELECT u.id, u.username, u.email_verified OR EXISTS (
+		   SELECT 1 FROM webauthn_credentials c WHERE c.user_id = u.id)
+		 FROM users u WHERE u.role IN ('owner', 'admin') AND u.deleted_at IS NULL
+		 ORDER BY (u.role = 'owner') DESC, u.created_at, u.id LIMIT 1 FOR UPDATE`,
+	).Scan(&userID, &username, &onboarded)
+	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO users (id, username, role, created_at) VALUES ($1, $2, 'owner', $3)`,
-			newUserID, mcUUID, now); err != nil {
-			return "", "", "", fmt.Errorf("create owner: %w", err)
+			newUserID, username, now); err != nil {
+			return "", "", fmt.Errorf("create owner: %w", err)
 		}
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO account_links (user_id, mc_uuid, auth_source, verified_at) VALUES ($1, $2, $3, $4)`,
-			newUserID, mcUUID, authSource, now); err != nil {
-			return "", "", "", fmt.Errorf("write account link: %w", err)
-		}
-		userID = newUserID
 	case err != nil:
-		return "", "", "", err
-	default:
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE users SET role = 'owner' WHERE id = $1`, userID); err != nil {
-			return "", "", "", fmt.Errorf("promote owner: %w", err)
-		}
+		return "", "", err
+	case onboarded:
+		return userID, username, ErrConflict
 	}
-
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO platform_settings (key, value, updated_at) VALUES ($1, $2::jsonb, $3)
 		 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at`,
 		LocalAuthEnabledKey, "true", now); err != nil {
-		return "", "", "", fmt.Errorf("enable local auth: %w", err)
+		return "", "", fmt.Errorf("enable local auth: %w", err)
+	}
+	// A renewed link replaces any unused links for this account.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM setup_tokens WHERE user_id = $1`, userID); err != nil {
+		return "", "", err
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO setup_tokens (token_hash, user_id, expires_at, created_at) VALUES ($1, $2, $3, $4)`,
 		tokenHash, userID, tokenExpiresAt, now); err != nil {
-		return "", "", "", fmt.Errorf("mint setup token: %w", err)
-	}
-
-	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM account_link_codes WHERE code = $1`, code); err != nil {
-		return "", "", "", fmt.Errorf("consume link code: %w", err)
+		return "", "", fmt.Errorf("mint setup token: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return "", "", "", err
+		return "", "", err
 	}
-	return userID, mcUUID, authSource, nil
+	return userID, username, nil
 }
 
 // QuotaCheck reports whether accepting a server with resource spec `incoming`
@@ -3008,8 +2983,8 @@ func (p *PGRepo) RedeemSetupToken(ctx context.Context, tokenHash string, now tim
 }
 
 // CreateSetupToken persists a one-time first-web-login token, storing only its
-// hash (the raw value rides in the /setup?token=... URL). The setup Owner-bind
-// path uses CompleteOwnerSetup so identity binding, local auth, and this token
+// hash (the raw value rides in the /setup?token=... URL). The setup Owner-creation
+// path uses CompleteOwnerSetup so Owner creation, local auth, and this token
 // commit atomically; this lower-level helper remains for callers that already
 // established the user. The token is redeemed exactly once by RedeemSetupToken.
 func (p *PGRepo) CreateSetupToken(ctx context.Context, tokenHash, userID string, expiresAt time.Time) error {

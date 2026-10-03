@@ -1,4 +1,4 @@
-import { test, expect, t } from "./fixtures";
+import { test, expect, t, expectFitsScreen } from "./fixtures";
 
 test("a signed-out visit signs in by email code and returns to the page it asked for", async ({ page }) => {
   await page.goto("/servers");
@@ -52,6 +52,47 @@ test("an admin reaches the user list", async ({ page, signIn }) => {
 
   await expect(page.getByRole("heading", { name: t("admin:users_title") })).toBeVisible();
   await expect(page.getByText("linked@mock.felis.local")).toBeVisible();
+});
+
+test("an unlinked Owner can manage the panel, then preview and confirm a game role", async ({ page, signIn }) => {
+  const profile = { source: "littleskin", name: "LemonMiaow", profile_uuid: "123456781234423482341234567890ab", mc_uuid: "canonical-role", auth_source: "thirdparty" };
+  let linked = false;
+  let designations = 0;
+  await page.route("**/api/v1/account/link/start", (route) => route.fulfill({ json: { linked } }));
+  await page.route("**/api/v1/account/link/sources", (route) => route.fulfill({ json: { sources: [{ tag: "littleskin", lookup_available: true }] } }));
+  await page.route("**/api/v1/account/link/profile**", async (route) => {
+    const request = route.request();
+    if (request.method() === "POST") {
+      expect(request.postDataJSON()).toEqual({ source: profile.source, profile_uuid: profile.profile_uuid });
+      linked = true;
+      designations++;
+      await route.fulfill({ json: { linked: true, mc_uuid: profile.mc_uuid, auth_source: profile.auth_source } });
+    } else {
+      expect(new URL(request.url()).searchParams.get("profile")).toBe("LemonMiaow");
+      await route.fulfill({ json: profile });
+    }
+  });
+  await page.route("**/config.json", (route) => route.fulfill({ json: { apiBase: "/api/v1", rootDomain: "mc.example", gameVersion: "26.3", gamePort: 25570 } }));
+  await signIn("owner");
+  await page.goto("/admin/users");
+  await expect(page.getByRole("heading", { name: t("admin:users_title") })).toBeVisible();
+
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.goto("/account");
+  await page.getByLabel(t("account:staff_profile")).fill("LemonMiaow");
+  await page.getByRole("button", { name: t("account:staff_lookup") }).click();
+  await expect(page.getByText(profile.profile_uuid)).toBeVisible();
+  expect(designations).toBe(0);
+  await expectFitsScreen(page);
+  await page.getByRole("button", { name: t("account:staff_confirm") }).click();
+  await expect(page.getByText(t("account:staff_linked_desc"))).toBeVisible();
+  expect(designations).toBe(1);
+
+  await page.getByText(t("account:game_guide"), { exact: true }).click();
+  await expect(page.getByText(t("account:game_version", { version: "26.3" }))).toBeVisible();
+  await expect(page.getByText("mc.example:25570", { exact: true })).toBeVisible();
+  await expect(page.getByText(t("account:game_lobby"))).toBeVisible();
+  await expectFitsScreen(page);
 });
 
 // Admin pages are chunks of their own, so a player never downloads them: every

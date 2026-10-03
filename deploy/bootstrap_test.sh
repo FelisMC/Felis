@@ -2034,7 +2034,7 @@ run_write() { # out-file [state-dir] [database-deployment]; under the installer'
     persisted_auth_source_blocks() { :; }
     . "$FNFILE"
     FELIS_ROOT_DOMAIN=r.example.com DB_USER=u DB_PASSWORD=p DB_NAME=d MINECRAFT_NS=minecraft \
-    FELIS_EGRESS_MODE=nodeport FELIS_LIMBO_IMAGE=li FELIS_LOBBY_IMAGE=lo FELIS_GAME_PORT=25570 \
+    FELIS_EGRESS_MODE=nodeport FELIS_LIMBO_IMAGE=li FELIS_LOBBY_IMAGE=lo FELIS_GAME_PORT=25570 MC_VERSION=26.3 \
     REGISTRY_URL=registry.felis.svc:5000 BUILD_NS=felis-build FELIS_ARCHIVE_LOCAL_PATH=/a \
     FELIS_OFFSITE_BUCKET= write_felis_toml "$OUT_TOML" 127.0.0.1:15432 "$DEPLOY"'
 }
@@ -2075,6 +2075,7 @@ expect "a re-run carries the scheduled backup count" 'scheduled_keep = 14' "$out
 expect "a re-run carries the scheduled backup retention" 'scheduled_retention = "45d"' "$out"
 expect "the archive mount stays installer-owned" 'local_path = "/a"' "$out"
 expect "the panel learns the public game port" 'game_port = 25570' "$out"
+expect "the panel learns the built login protocol" 'game_version = "26.3"' "$out"
 expect "a re-run keeps the off-site bucket, set apart from the next section" '[offsite]
 endpoint = "https://objects.example"
 bucket = "felis-offsite"

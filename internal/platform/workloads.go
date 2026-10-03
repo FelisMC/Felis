@@ -371,6 +371,8 @@ func APIDeployment(p Params) *appsv1.Deployment {
 	}
 	env = append(env,
 		corev1.EnvVar{Name: "FELIS_IMAGE", Value: p.FelisImage},
+		// Passkey origins must include the same public port the Service exposes.
+		corev1.EnvVar{Name: "FELIS_PANEL_NODEPORT", Value: fmt.Sprint(p.PanelNodePort)},
 		// The api's own internal-face base URL, so it derives the submission
 		// context URLs that build Pods fetch through it. Same value the login gate
 		// is handed; one address for one face.

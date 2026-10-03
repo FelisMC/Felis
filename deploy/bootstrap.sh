@@ -4765,6 +4765,7 @@ login_image = "${FELIS_LIMBO_IMAGE}"
 lobby_image = "${FELIS_LOBBY_IMAGE}"
 # The public port players connect on; the panel shows it in server addresses.
 game_port = ${FELIS_GAME_PORT}
+game_version = "${MC_VERSION:-}"
 
 [registry]
 url = "${REGISTRY_URL}"

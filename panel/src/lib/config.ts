@@ -25,6 +25,8 @@ export interface RuntimeConfig {
   adminHostname?: string;
   /** The public Minecraft port, absent when it is the default 25565. */
   gamePort?: number;
+  /** Login/lobby Minecraft protocol, unknown for unconfigured custom images. */
+  gameVersion?: string;
   /** What the server runs, for the version badge. */
   build?: BuildInfo;
   /** /config.json could not be read, so these are build-time defaults and
@@ -85,6 +87,7 @@ export async function loadConfig(): Promise<RuntimeConfig> {
       panelHostname: raw.panelHostname,
       adminHostname: raw.adminHostname,
       gamePort: parsePort(raw.gamePort),
+      gameVersion: typeof raw.gameVersion === "string" && raw.gameVersion ? raw.gameVersion : undefined,
       build: parseBuild(raw.build),
     };
   } catch (err) {

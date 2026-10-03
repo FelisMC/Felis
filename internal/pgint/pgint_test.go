@@ -1138,25 +1138,162 @@ func TestOwnerProvisioningWritesOwnerRole(t *testing.T) {
 	}
 }
 
-// The setup wizard's MC-bind path establishes THE Owner, so it writes the same
-// role as break-glass rather than a plain admin.
-func TestCompleteOwnerSetupWritesOwnerRole(t *testing.T) {
+// First-owner initialization needs an empty installation, rather than the
+// accounts left by other contract tests. Migrate an isolated schema using the
+// same database and real migration files.
+func setupRepository(t *testing.T) (*api.PGRepo, *sql.DB) {
+	t.Helper()
+	schema := "setup_" + suffix(t)
+	mustExec(t, `CREATE SCHEMA `+schema)
+	u, err := url.Parse(os.Getenv("FELIS_TEST_PG_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := u.Query()
+	q.Set("search_path", schema)
+	u.RawQuery = q.Encode()
+	drv, err := store.Open(context.Background(), u.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { drv.Close(); mustExec(t, `DROP SCHEMA `+schema+` CASCADE`) })
+	ms, err := store.LoadMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Up(context.Background(), drv, ms); err != nil {
+		t.Fatal(err)
+	}
+	return api.NewPGRepo(drv.DB()), drv.DB()
+}
+
+func TestCompleteOwnerSetupContract(t *testing.T) {
 	ctx := context.Background()
+	r, setupDB := setupRepository(t)
+	now := mustNow().Truncate(time.Second)
+	id, username, err := r.CompleteOwnerSetup(ctx, "first-owner", now, "first-link", now.Add(time.Hour))
+	if err != nil || id != "first-owner" || username != "owner" {
+		t.Fatalf("setup = %q, %q, %v", id, username, err)
+	}
+	var role string
+	if err := setupDB.QueryRow(`SELECT role FROM users WHERE id = $1`, id).Scan(&role); err != nil || role != "owner" {
+		t.Fatalf("role = %q, %v", role, err)
+	}
+	linked, err := r.IsLinked(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	} else if linked {
+		t.Fatal("first panel login must not create a game binding")
+	}
+	// Deliberately fail token insertion. Auth/account state and the old link survive.
+	if err := r.CreateSetupToken(ctx, "collision", id, now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	// Reusing an existing token hash for a different user forces the insert to fail.
+	_, err = setupDB.Exec(`INSERT INTO users (id, username, role) VALUES ('other-user', 'other', 'user')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = setupDB.Exec(`UPDATE setup_tokens SET user_id = 'other-user' WHERE token_hash = 'collision'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.CompleteOwnerSetup(ctx, "unused-id", now, "collision", now.Add(time.Hour)); err == nil {
+		t.Fatal("token collision accepted")
+	}
+	var count int
+	if err := setupDB.QueryRow(`SELECT count(*) FROM setup_tokens WHERE token_hash = 'first-link'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("old link lost after rollback: %d %v", count, err)
+	}
+	resumed, _, err := r.CompleteOwnerSetup(ctx, "unused-id", now, "renewed-link", now.Add(time.Hour))
+	if err != nil || resumed != id {
+		t.Fatalf("resume = %q %v", resumed, err)
+	}
+	if err := setupDB.QueryRow(`SELECT count(*) FROM users WHERE role = 'owner'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("duplicate owners: %d %v", count, err)
+	}
+	if err := setupDB.QueryRow(`SELECT count(*) FROM setup_tokens WHERE user_id = $1`, id).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("unused links not replaced: %d %v", count, err)
+	}
+	if _, err := setupDB.Exec(`UPDATE users SET email = 'owner@example.net', email_verified = true WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.CompleteOwnerSetup(ctx, "unused-id", now, "must-not-exist", now.Add(time.Hour)); !errors.Is(err, api.ErrConflict) {
+		t.Fatalf("settled account = %v", err)
+	}
+	if err := setupDB.QueryRow(`SELECT count(*) FROM setup_tokens WHERE token_hash = 'renewed-link'`).Scan(&count); err != nil || count != 1 {
+		t.Fatal("settled account was changed")
+	}
+}
+
+func TestCompleteOwnerSetupSerializesFirstOwner(t *testing.T) {
+	r, setupDB := setupRepository(t)
 	now := mustNow()
-	mc := testUUID(t)
-	code := "osc-" + suffix(t)
-	if err := repo.CreateLinkCode(ctx, code, mc, "mojang", now.Add(10*time.Minute)); err != nil {
-		t.Fatalf("CreateLinkCode: %v", err)
+	var wg sync.WaitGroup
+	errs := make(chan error, 8)
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, _, err := r.CompleteOwnerSetup(context.Background(), fmt.Sprintf("racer-%d", i), now, fmt.Sprintf("token-%d", i), now.Add(time.Hour))
+			errs <- err
+		}(i)
 	}
-	newID := "usr-setup-" + suffix(t)
-	userID, gotUUID, src, err := repo.CompleteOwnerSetup(ctx, newID, code, now,
-		"tok-"+suffix(t), now.Add(time.Hour))
-	if err != nil || userID != newID || gotUUID != mc || src != "mojang" {
-		t.Fatalf("CompleteOwnerSetup = (%s, %s, %s, %v), want (%s, %s, mojang, nil)",
-			userID, gotUUID, src, err, newID, mc)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
-	if role := userRole(t, newID); role != "owner" {
-		t.Fatalf("CompleteOwnerSetup role = %q, want owner", role)
+	var count int
+	if err := setupDB.QueryRow(`SELECT count(*) FROM users WHERE role = 'owner'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("owners = %d %v", count, err)
+	}
+	if err := setupDB.QueryRow(`SELECT count(*) FROM setup_tokens`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("links = %d %v", count, err)
+	}
+}
+
+func TestCompleteOwnerSetupCreationRollsBack(t *testing.T) {
+	r, setupDB := setupRepository(t)
+	now := mustNow()
+	// Failing the final insert must undo the new Owner and
+	// local-auth setting as well, not strand an account without a usable link.
+	if _, err := setupDB.Exec(`ALTER TABLE setup_tokens ADD CONSTRAINT reject_setup_token CHECK (token_hash <> 'rejected')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.CompleteOwnerSetup(context.Background(), "rolled-back", now, "rejected", now.Add(time.Hour)); err == nil {
+		t.Fatal("failed token insert accepted")
+	}
+	var count int
+	if err := setupDB.QueryRow(`SELECT count(*) FROM users`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("partial Owner remained: %d %v", count, err)
+	}
+	if err := setupDB.QueryRow(`SELECT count(*) FROM platform_settings WHERE key = $1`, api.LocalAuthEnabledKey).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("partial local-auth setting remained: %d %v", count, err)
+	}
+}
+
+func TestCompleteOwnerSetupPreservesPasskey(t *testing.T) {
+	r, setupDB := setupRepository(t)
+	now := mustNow()
+	id, _, err := r.CompleteOwnerSetup(context.Background(), "owner-key", now, "first-link", now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := setupDB.Exec(`INSERT INTO webauthn_credentials (id, user_id, credential_id, public_key, name) VALUES ('key', $1, 'credential', 'public-key', 'Laptop')`, id); err != nil {
+		t.Fatal(err)
+	}
+	if got, name, err := r.CompleteOwnerSetup(context.Background(), "unused", now, "new-link", now.Add(time.Hour)); !errors.Is(err, api.ErrConflict) || got != id || name != "owner" {
+		t.Fatalf("established passkey = %q %q %v", got, name, err)
+	}
+	var count int
+	if err := setupDB.QueryRow(`SELECT count(*) FROM webauthn_credentials WHERE user_id = $1`, id).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("existing credential changed: %d %v", count, err)
+	}
+	if err := setupDB.QueryRow(`SELECT count(*) FROM setup_tokens WHERE token_hash = 'new-link'`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("setup created a reset link: %d %v", count, err)
 	}
 }
 

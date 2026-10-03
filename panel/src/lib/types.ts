@@ -357,6 +357,19 @@ export interface CreateServerRequest {
   };
 }
 
+export interface MinecraftAuthSource {
+  tag: string;
+  lookup_available: boolean;
+}
+
+export interface MinecraftProfile {
+  source: string;
+  name: string;
+  profile_uuid: string;
+  mc_uuid: string;
+  auth_source: string;
+}
+
 /** LinkStatus projects POST /account/link/start (spec §10): whether the caller's
  *  session is already bound to a Minecraft identity. The endpoint also returns an
  *  API-consumer `instructions` string; the panel renders its own player-facing copy

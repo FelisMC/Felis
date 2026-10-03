@@ -33,9 +33,6 @@ func setupPanelNodePort() int {
 }
 
 func localPanelURL(rootDomain, adminHostname string) string {
-	if ip := rootDomainEmbeddedIP(rootDomain); ip != "" {
-		return fmt.Sprintf("https://%s:%d", ip, setupPanelNodePort())
-	}
 	host := defaultAdminHostname(rootDomain, adminHostname)
 	if host == "" {
 		return ""
@@ -57,7 +54,7 @@ func rootDomainEmbeddedIP(rootDomain string) string {
 	return ""
 }
 
-// setupGameAddress is where the operator joins in Minecraft to bind the Owner: the
+// setupGameAddress is where players join Minecraft: the
 // IP a nip.io or sslip.io root domain spells out (nothing to resolve), otherwise the
 // root domain, with the port when it is not Minecraft's default. The proxy lands
 // every fresh connection on the login server whatever name it was dialled by.
@@ -73,15 +70,6 @@ func setupGameAddress(rootDomain string, gamePort int) string {
 		return host
 	}
 	return net.JoinHostPort(host, strconv.Itoa(gamePort))
-}
-
-// gameAddrIsIP reports whether addr, a host or host:port, names its host by IP.
-func gameAddrIsIP(addr string) bool {
-	host := addr
-	if h, _, err := net.SplitHostPort(addr); err == nil {
-		host = h
-	}
-	return net.ParseIP(host) != nil
 }
 
 func localPanelOrigin() string {

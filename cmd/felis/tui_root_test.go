@@ -46,94 +46,38 @@ func newTestRoot(adminExists bool, mode consoleMode, accessAud string) *rootMode
 
 func TestRootSetupHappyPath(t *testing.T) {
 	m := newTestRoot(false, consoleModeSetup, "")
-
-	// First-run setup begins at preflight.
-	if m.stage != stagePreflight {
-		t.Fatalf("initial stage = %v, want stagePreflight", m.stage)
-	}
-	if _, ok := m.screen.(*preflightModel); !ok {
-		t.Fatalf("initial screen = %T, want *preflightModel", m.screen)
-	}
-
-	// Preflight done → MC-bind (setup mode establishes the Owner by binding a
-	// Minecraft account, not by typing a username/password). The stage label is
-	// still stageOwner; only the screen differs by mode.
 	m = drive(t, m, preflightDoneMsg{})
-	if m.stage != stageOwner {
-		t.Fatalf("after preflight, stage = %v, want stageOwner", m.stage)
-	}
-	if _, ok := m.screen.(*mcBindModel); !ok {
-		t.Fatalf("after preflight, screen = %T, want *mcBindModel", m.screen)
-	}
-
-	// Owner provisioned → Connection chooser.
-	m = drive(t, m, ownerResultMsg{username: "owner", setupTokenURL: "https://op.console.example.com/setup?token=t0ken"})
 	if m.stage != stageConnect {
-		t.Fatalf("after owner, stage = %v, want stageConnect", m.stage)
+		t.Fatalf("stage = %v, want Connection", m.stage)
 	}
-	if _, ok := m.screen.(*connectChooserModel); !ok {
-		t.Fatalf("after owner, screen = %T, want *connectChooserModel", m.screen)
-	}
-	if !m.result.provisioned || m.result.username != "owner" || m.result.setupTokenURL != "https://op.console.example.com/setup?token=t0ken" {
-		t.Fatalf("owner result not recorded: %+v", m.result)
-	}
-
-	// Reverse-proxy chosen → Storage chooser, with the connection recorded.
-	guide := "caddy config…"
-	m = drive(t, m, connectResultMsg{
-		method:        connectReverseProxy,
-		panelHostname: "panel.felis.example.com",
-		adminHostname: "admin.felis.example.com",
-		guide:         guide,
-	})
+	m = drive(t, m, connectResultMsg{method: connectReverseProxy, panelHostname: "panel.felis.example.com", adminHostname: "new-admin.felis.example.com", guide: "caddy…"})
 	if m.stage != stageStorage {
-		t.Fatalf("after connect, stage = %v, want stageStorage", m.stage)
+		t.Fatalf("stage = %v, want Storage", m.stage)
 	}
-	if _, ok := m.screen.(*storageChooserModel); !ok {
-		t.Fatalf("after connect, screen = %T, want *storageChooserModel", m.screen)
+	m = drive(t, m, storageResultMsg{method: storageS3, detail: "s3://bucket"})
+	owner, ok := m.screen.(*setupOwnerModel)
+	if !ok || owner.panelURL != "https://new-admin.felis.example.com" {
+		t.Fatalf("owner setup = %#v", m.screen)
 	}
-	if !m.result.connectConfigured {
-		t.Fatalf("connectConfigured not set")
+	if m.result.provisioned {
+		t.Fatal("Owner must not be minted before configuration")
 	}
-	if m.result.connectMethod != connectReverseProxy {
-		t.Fatalf("connectMethod = %v, want connectReverseProxy", m.result.connectMethod)
-	}
-	if m.result.reverseProxyGuide != guide {
-		t.Fatalf("reverseProxyGuide = %q, want %q", m.result.reverseProxyGuide, guide)
-	}
-
-	// Storage chosen → Summary, with both the connection and storage recorded.
-	m = drive(t, m, storageResultMsg{method: storageS3, detail: "s3://bucket  ·  minio:9000"})
-	if m.stage != stageSummary {
-		t.Fatalf("after storage, stage = %v, want stageSummary", m.stage)
-	}
+	m = drive(t, m, ownerResultMsg{username: "owner", setupTokenURL: "https://new-admin.felis.example.com/setup?token=t0ken"})
 	sum, ok := m.screen.(*summaryModel)
-	if !ok {
-		t.Fatalf("after storage, screen = %T, want *summaryModel", m.screen)
+	if !ok || sum.setupTokenURL != m.result.setupTokenURL || sum.panelURL != "https://new-admin.felis.example.com" || sum.storageLabel != "s3://bucket" {
+		t.Fatalf("summary = %#v", m.screen)
 	}
-	if m.result.storageMethod != storageS3 || m.result.storageDetail == "" {
-		t.Fatalf("storage result not recorded: %+v", m.result)
-	}
-	if sum.storageLabel != m.result.storageDetail {
-		t.Fatalf("summary storageLabel = %q, want %q", sum.storageLabel, m.result.storageDetail)
-	}
-	if want := "https://panel.felis.example.com"; sum.panelURL != want {
-		t.Fatalf("summary panelURL = %q, want %q", sum.panelURL, want)
-	}
-	if want := "https://op.console.example.com/setup?token=t0ken"; sum.setupTokenURL != want {
-		t.Fatalf("summary setupTokenURL = %q, want %q", sum.setupTokenURL, want)
-	}
-	if sum.alreadySetUp {
-		t.Fatalf("first-run summary should not be marked alreadySetUp")
+	if !strings.Contains(sum.View(), "Finish Owner login") || !strings.Contains(sum.View(), "Minecraft can be linked later") {
+		t.Fatal(sum.View())
 	}
 }
 
 func TestRootSetupLocalSummary(t *testing.T) {
 	m := newTestRoot(false, consoleModeSetup, "")
 	m = drive(t, m, preflightDoneMsg{})
-	m = drive(t, m, ownerResultMsg{username: "owner"})
 	m = drive(t, m, connectResultMsg{method: connectLocal, panelHostname: "panel.felis.example.com"})
 	m = drive(t, m, storageResultMsg{method: storageLocal, detail: "local disk · /var/lib/felis/uploads"})
+	m = drive(t, m, ownerResultMsg{username: "owner"})
 
 	sum, ok := m.screen.(*summaryModel)
 	if !ok {
@@ -155,9 +99,9 @@ func TestRootSetupLocalSummary(t *testing.T) {
 func TestRootReconfigureConnectSkipsStorage(t *testing.T) {
 	m := newTestRoot(false, consoleModeSetup, "")
 	m = drive(t, m, preflightDoneMsg{})
-	m = drive(t, m, ownerResultMsg{username: "owner", setupTokenURL: "https://op.console.example.com/setup?token=t0ken"})
 	m = drive(t, m, connectResultMsg{method: connectLocal, panelHostname: "panel.felis.example.com"})
 	m = drive(t, m, storageResultMsg{method: storageS3, detail: "s3://bucket"})
+	m = drive(t, m, ownerResultMsg{username: "owner", setupTokenURL: "https://op.console.example.com/setup?token=t0ken"})
 	if _, ok := m.screen.(*summaryModel); !ok {
 		t.Fatalf("after first run, screen = %T, want *summaryModel", m.screen)
 	}
@@ -174,6 +118,10 @@ func TestRootReconfigureConnectSkipsStorage(t *testing.T) {
 	// Completing it returns straight to the summary — NOT the storage chooser —
 	// with the original storage recap intact.
 	m = drive(t, m, connectResultMsg{method: connectReverseProxy, panelHostname: "panel.felis.example.com", guide: "caddy…"})
+	if _, ok := m.screen.(*setupOwnerModel); !ok {
+		t.Fatalf("pending link should refresh, screen = %T", m.screen)
+	}
+	m = drive(t, m, ownerResultMsg{username: "owner", setupTokenURL: "https://admin.felis.example.com/setup?token=fresh"})
 	if m.stage != stageSummary {
 		t.Fatalf("after reconfigure connect, stage = %v, want stageSummary", m.stage)
 	}
@@ -195,9 +143,9 @@ func TestRootReconfigureConnectSkipsStorage(t *testing.T) {
 func TestRootReconfigureStorageReEntersChooser(t *testing.T) {
 	m := newTestRoot(false, consoleModeSetup, "")
 	m = drive(t, m, preflightDoneMsg{})
-	m = drive(t, m, ownerResultMsg{username: "owner"})
 	m = drive(t, m, connectResultMsg{method: connectLocal, panelHostname: "panel.felis.example.com"})
 	m = drive(t, m, storageResultMsg{method: storageLocal, detail: "local disk · /var/lib/felis/uploads"})
+	m = drive(t, m, ownerResultMsg{username: "owner"})
 	if _, ok := m.screen.(*summaryModel); !ok {
 		t.Fatalf("after first run, screen = %T, want *summaryModel", m.screen)
 	}
@@ -232,6 +180,7 @@ func TestRootReconfigureStorageReEntersChooser(t *testing.T) {
 func TestRootReconfigureSMTP(t *testing.T) {
 	m := newTestRoot(true, consoleModeSetup, "")
 	m = drive(t, m, preflightDoneMsg{})
+	m = drive(t, m, setupReadyMsg{username: "owner"})
 	if _, ok := m.screen.(*summaryModel); !ok {
 		t.Fatalf("re-run after preflight, screen = %T, want *summaryModel", m.screen)
 	}
@@ -257,6 +206,7 @@ func TestRootReconfigureSMTP(t *testing.T) {
 func TestRootReconfigureStorageKeepsStatusFraming(t *testing.T) {
 	m := newTestRoot(true, consoleModeSetup, "")
 	m = drive(t, m, preflightDoneMsg{})
+	m = drive(t, m, setupReadyMsg{username: "owner"})
 	if _, ok := m.screen.(*summaryModel); !ok {
 		t.Fatalf("re-run after preflight, screen = %T, want *summaryModel", m.screen)
 	}
@@ -280,23 +230,27 @@ func TestRootReconfigureStorageKeepsStatusFraming(t *testing.T) {
 }
 
 func TestRootRerunLandsOnStatus(t *testing.T) {
-	// adminExists at start of a setup run = re-run: preflight should skip straight
-	// to the "manage in panel" status screen, never touching owner/connect.
 	m := newTestRoot(true, consoleModeSetup, "")
-	if _, ok := m.screen.(*preflightModel); !ok {
-		t.Fatalf("re-run initial screen = %T, want *preflightModel", m.screen)
-	}
-
 	m = drive(t, m, preflightDoneMsg{})
-	sum, ok := m.screen.(*summaryModel)
-	if !ok {
-		t.Fatalf("re-run after preflight, screen = %T, want *summaryModel", m.screen)
+	if _, ok := m.screen.(*setupOwnerModel); !ok {
+		t.Fatalf("screen = %T", m.screen)
 	}
-	if !sum.alreadySetUp {
-		t.Fatalf("re-run summary should be marked alreadySetUp")
+	m = drive(t, m, setupReadyMsg{username: "owner"})
+	if m.stage != stageSummary || !m.result.alreadySetUp || m.result.provisioned {
+		t.Fatalf("result = %+v", m.result)
 	}
-	if m.result.provisioned {
-		t.Fatalf("re-run must not provision an owner")
+}
+
+func TestRootRerunResumesUnfinishedLogin(t *testing.T) {
+	m := newTestRoot(true, consoleModeSetup, "")
+	m = drive(t, m, preflightDoneMsg{})
+	m = drive(t, m, ownerResultMsg{username: "owner", setupTokenURL: "https://admin.felis.example.com:30443/setup?token=new"})
+	sum := m.screen.(*summaryModel)
+	if sum.setupTokenURL == "" || !sum.alreadySetUp {
+		t.Fatalf("summary = %+v", sum)
+	}
+	if strings.Contains(m.View(), "Bootstrap") {
+		t.Fatal("renewing a login link restarted the deployment rail")
 	}
 }
 
@@ -342,58 +296,18 @@ func key(t tea.KeyType) tea.KeyMsg { return tea.KeyMsg{Type: t} }
 func TestRootRailReviewNavigation(t *testing.T) {
 	m := newTestRoot(false, consoleModeSetup, "")
 	m = drive(t, m, preflightDoneMsg{})
-
-	// On the Owner screen (text inputs) ← must NOT hijack the arrow: it stays
-	// with the field, so we remain on the live screen.
 	m = drive(t, m, key(tea.KeyLeft))
-	if m.reviewing != -1 {
-		t.Fatalf("← on the owner (text-input) screen entered review (%d); arrows belong to the field", m.reviewing)
-	}
-
-	// Advance to the Connection chooser (a select — it yields ←/→).
-	m = drive(t, m, ownerResultMsg{username: "owner", setupTokenURL: "https://op.console.example.com/setup?token=t0ken"})
-	if m.reviewing != -1 {
-		t.Fatalf("fresh chooser should start live, reviewing = %d", m.reviewing)
-	}
-
-	// ← walks back to Owner (read-only recap), then Preflight, then clamps.
-	m = drive(t, m, key(tea.KeyLeft))
-	if m.reviewing != int(stageOwner) {
-		t.Fatalf("first ← = stage %d, want stageOwner %d", m.reviewing, stageOwner)
-	}
-	if v := m.View(); !strings.Contains(v, "Owner account") || !strings.Contains(v, "username") {
-		t.Fatalf("owner review body missing recap, got:\n%s", v)
-	}
-	m = drive(t, m, key(tea.KeyLeft))
-	if m.reviewing != int(stagePreflight) {
-		t.Fatalf("second ← = stage %d, want stagePreflight %d", m.reviewing, stagePreflight)
-	}
-	m = drive(t, m, key(tea.KeyLeft))
-	if m.reviewing != int(stagePreflight) {
-		t.Fatalf("← past the first step should clamp, got %d", m.reviewing)
-	}
-
-	// → walks forward; stepping past the last completed step returns to live.
-	m = drive(t, m, key(tea.KeyRight))
-	if m.reviewing != int(stageOwner) {
-		t.Fatalf("→ = stage %d, want stageOwner %d", m.reviewing, stageOwner)
+	if m.reviewing != int(stagePreflight) || !strings.Contains(m.View(), "Control plane verified") {
+		t.Fatal("connection review should return to preflight")
 	}
 	m = drive(t, m, key(tea.KeyRight))
 	if m.reviewing != -1 {
-		t.Fatalf("→ past the last completed step should return live, reviewing = %d", m.reviewing)
+		t.Fatal("right should return to live connection chooser")
 	}
-	if v := m.View(); !strings.Contains(v, "reach the panel") {
-		t.Fatalf("returning live should show the chooser, got:\n%s", v)
-	}
-
-	// esc is an immediate escape hatch back to the live screen.
 	m = drive(t, m, key(tea.KeyLeft))
-	if m.reviewing < 0 {
-		t.Fatalf("← should re-enter review")
-	}
 	m = drive(t, m, key(tea.KeyEsc))
 	if m.reviewing != -1 {
-		t.Fatalf("esc should return to the live screen, reviewing = %d", m.reviewing)
+		t.Fatal("escape should return to live screen")
 	}
 }
 
@@ -411,8 +325,8 @@ func TestSetupRailSpansBootstrap(t *testing.T) {
 	m := newTestRoot(false, consoleModeSetup, "")
 	m = drive(t, m, tea.WindowSizeMsg{Width: 90, Height: 30})
 	m = drive(t, m, preflightDoneMsg{})
-	if _, ok := m.screen.(*mcBindModel); !ok {
-		t.Fatalf("expected MC-bind screen after preflight, got %T", m.screen)
+	if _, ok := m.screen.(*connectChooserModel); !ok {
+		t.Fatalf("expected connection screen after preflight, got %T", m.screen)
 	}
 	if v := m.View(); !strings.Contains(v, "✓ Bootstrap") {
 		t.Fatalf("wizard rail should carry Bootstrap as a completed step, got:\n%s", v)

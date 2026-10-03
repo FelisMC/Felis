@@ -20,6 +20,8 @@ import type {
   Identity,
   KickResult,
   LinkResult,
+  MinecraftAuthSource,
+  MinecraftProfile,
   LinkStatus,
   BindResult,
   PasskeyCredential,
@@ -942,6 +944,14 @@ export const api = rejectingSync({
 
   linkVerify: (code: string) =>
     request<LinkResult>("POST", "/account/link/verify", { code }),
+
+  linkSources: () => request<{ sources: MinecraftAuthSource[] }>("GET", "/account/link/sources"),
+
+  lookupProfile: (source: string, profile: string) =>
+    request<MinecraftProfile>("GET", `/account/link/profile?${new URLSearchParams({ source, profile })}`),
+
+  linkProfile: (source: string, profile_uuid: string) =>
+    request<LinkResult>("POST", "/account/link/profile", { source, profile_uuid }),
 
   emailStart: (email: string) =>
     request<{ sent: boolean; expires_at: string }>("POST", "/account/email/start", { email }),

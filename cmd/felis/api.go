@@ -61,9 +61,9 @@ func passkeyRelyingParty(cfg *config.Config) (string, []string) {
 	if rpID == "" {
 		return "", nil
 	}
-	origins := []string{"https://" + rpID}
+	origins := []string{"https://" + rpID, fmt.Sprintf("https://%s:%d", rpID, setupPanelNodePort())}
 	if admin := defaultAdminHostname(cfg.Server.RootDomain, cfg.Auth.AdminHostname); admin != "" && admin != rpID {
-		origins = append(origins, "https://"+admin)
+		origins = append(origins, "https://"+admin, fmt.Sprintf("https://%s:%d", admin, setupPanelNodePort()))
 	}
 	return rpID, origins
 }
@@ -77,7 +77,7 @@ func authSourcesFromConfig(configured []config.AuthSourceConfig) []api.AuthSourc
 	sources := make([]api.AuthSource, 0, len(configured)+1)
 	sources = append(sources, api.AuthSource{Tag: "mojang", URL: mojangSessionServer, Identity: true})
 	for _, s := range configured {
-		sources = append(sources, api.AuthSource{Tag: s.Tag, Prefix: s.Prefix, URL: s.URL})
+		sources = append(sources, api.AuthSource{Tag: s.Tag, Prefix: s.Prefix, URL: s.URL, APIURL: s.APIURL})
 	}
 	return sources
 }
@@ -495,7 +495,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	externalHandler := panel.Handler(a.ExternalHandler(), cfg.Server.RootDomain,
 		defaultPanelHostname(cfg.Server.RootDomain, cfg.Auth.PanelHostname),
 		defaultAdminHostname(cfg.Server.RootDomain, cfg.Auth.AdminHostname),
-		cfg.Velocity.GamePort, resolvedVersion(), distribution != nil)
+		cfg.Velocity.GamePort, cfg.Velocity.GameVersion, resolvedVersion(), distribution != nil)
 	internalSrv := newAPIServer(*internalAddr, a.InternalHandler())
 	externalSrv := newAPIServer(cfg.Server.Listen, externalHandler)
 

@@ -211,23 +211,14 @@ func TestOwnerResultCmdCarriesIsOperator(t *testing.T) {
 	}
 }
 
-func TestMCBindCarriesAuditWarning(t *testing.T) {
-	m := newMCBindModel(context.Background(), &fakeOwnerStore{}, "console.example.com", "root", "10.0.0.5")
-	next, _ := m.Update(mcBindMsg{outcome: breakGlassOutcome{
-		ownerIdentity: "mc-uuid-1",
-		setupTokenURL: "https://op.console.example.com/setup?token=t0ken",
-		auditErr:      errors.New("audit insert failed"),
+func TestSetupOwnerCarriesAuditWarning(t *testing.T) {
+	m := newSetupOwnerModel(context.Background(), &fakeOwnerStore{}, "https://op.console.example.com", "root")
+	_, cmd := m.Update(setupOwnerMsg{outcome: breakGlassOutcome{
+		ownerUsername: "owner", setupTokenURL: "https://op.console.example.com/setup?token=t0ken", auditErr: errors.New("audit insert failed"),
 	}})
-	bound := next.(*mcBindModel)
-	if !strings.Contains(bound.doneView(), "audit insert failed") {
-		t.Fatalf("done view did not surface audit warning:\n%s", bound.doneView())
-	}
-	res := bound.resultCmd()().(ownerResultMsg)
-	if res.username != "mc-uuid-1" {
-		t.Fatalf("result username = %q, want verified Minecraft UUID", res.username)
-	}
-	if res.auditWarning != "audit insert failed" {
-		t.Fatalf("result audit warning = %q", res.auditWarning)
+	res := cmd().(ownerResultMsg)
+	if res.username != "owner" || res.auditWarning != "audit insert failed" {
+		t.Fatalf("result = %+v", res)
 	}
 }
 

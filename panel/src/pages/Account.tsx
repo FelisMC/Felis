@@ -11,13 +11,16 @@ import { MessageLine, InlineError } from "@/components/MessageLine";
 import { PageHeader } from "@/components/PageHeader";
 import { api, clientError, humanizeError } from "@/lib/api";
 import { formatAbsolute } from "@/lib/format";
-import type { PasskeyCredential } from "@/lib/types";
-import { useAsync } from "@/lib/hooks";
+import type { MinecraftProfile, PasskeyCredential } from "@/lib/types";
+import { useAsync, useConfig } from "@/lib/hooks";
 import { AccountSessionsCard } from "@/pages/AccountSessions";
 import { isReauthCancelled, isReauthRequired, useReauth } from "@/components/ReauthDialog";
 import { useTier } from "@/lib/tier";
 import { base64urlToBytes, bytesToBase64url } from "@/lib/utils";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { requestAssertion } from "@/lib/passkey";
+import { entryAddress } from "@/lib/config";
+import { CopyAddress } from "@/components/CopyAddress";
 import {
   Dialog,
   DialogContent,
@@ -28,11 +31,8 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 
-// The Account page is the web half of the §10 link flow. A code is born in-game
-// (online-mode auth proves the UUID) and consumed here (the session proves the
-// user) — so this page only ever reports status and redeems a code; it can never
-// originate a binding. The Minecraft-link card is a small state machine: checking
-// → linked, or → the two-step "get a code in-game, enter it here" form.
+// Players redeem a code proven in-game. Staff can designate a role from a
+// configured authentication source after their panel login is established.
 
 export function Account() {
   const status = useAsync(() => api.linkStatus(), []);
@@ -293,6 +293,7 @@ export function Account() {
     }
   }
 
+  const codeForm = <LinkForm code={code} setCode={setCode} submitting={submitting} error={error} onSubmit={submit} />;
   return (
     <>
       <PageHeader icon={UserRound} title={t("title")} subtitle={t("subtitle")} />
@@ -305,20 +306,23 @@ export function Account() {
         </CardHeader>
         <CardContent className="text-sm">
           {linked ? (
-            <LinkedState uuid={verifiedUUID} />
+            <LinkedState uuid={verifiedUUID} staff={identity?.is_admin === true} />
           ) : status.loading && !status.data ? (
             <Loading label={t("checking_link")} />
           ) : status.error ? (
             <ErrorState error={status.error} onRetry={status.reload} />
+          ) : identity?.is_admin ? (
+            <StaffLinkForm onLinked={(uuid) => { setVerifiedUUID(uuid); void refresh(); }} />
           ) : (
-            <LinkForm
-              code={code}
-              setCode={setCode}
-              submitting={submitting}
-              error={error}
-              onSubmit={submit}
-            />
+            codeForm
           )}
+          {identity?.is_admin && !linked && (
+            <details className="mt-4 space-y-3">
+              <summary className="cursor-pointer text-muted-foreground">{t("staff_code_alternative")}</summary>
+              {codeForm}
+            </details>
+          )}
+          <MinecraftGuide />
         </CardContent>
       </Card>
 
@@ -575,7 +579,7 @@ export function Account() {
 /** LinkedState confirms the binding. The UUID is shown only when this session
  *  just verified it (start does not return it), so a pre-existing link renders
  *  the confirmation without a UUID rather than inventing one. */
-function LinkedState({ uuid }: { uuid: string | null }) {
+function LinkedState({ uuid, staff }: { uuid: string | null; staff: boolean }) {
   const { t } = useTranslation("account");
   return (
     <div className="space-y-3">
@@ -583,7 +587,7 @@ function LinkedState({ uuid }: { uuid: string | null }) {
         <CheckCircle2 className="h-4 w-4 text-emerald-500" />
         {t("linked_title")}
       </div>
-      <p className="text-muted-foreground">{t("linked_desc")}</p>
+      <p className="text-muted-foreground">{t(staff ? "staff_linked_desc" : "linked_desc")}</p>
       {uuid && (
         <div className="flex items-center gap-2 text-muted-foreground">
           <span className="text-xs uppercase tracking-wide">{t("uuid_label")}</span>
@@ -593,6 +597,103 @@ function LinkedState({ uuid }: { uuid: string | null }) {
         </div>
       )}
     </div>
+  );
+}
+
+function StaffLinkForm({ onLinked }: { onLinked: (uuid: string) => void }) {
+  const { t } = useTranslation("account");
+  const sources = useAsync(() => api.linkSources(), []);
+  const reauth = useReauth();
+  const [selected, setSelected] = useState("");
+  const [input, setInput] = useState("");
+  const [preview, setPreview] = useState<MinecraftProfile | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const source = selected || sources.data?.sources[0]?.tag || "";
+  const available = sources.data?.sources.find((item) => item.tag === source)?.lookup_available;
+
+  async function lookup(e: FormEvent) {
+    e.preventDefault();
+    if (busy || !input.trim()) return;
+    setBusy(true);
+    setError(null);
+    setPreview(null);
+    try {
+      setPreview(await api.lookupProfile(source, input.trim()));
+    } catch (err) {
+      setError(humanizeError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirm() {
+    if (busy || !preview) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await reauth.guard(() => api.linkProfile(preview.source, preview.profile_uuid));
+      onLinked(result.mc_uuid);
+    } catch (err) {
+      if (!isReauthCancelled(err)) setError(humanizeError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (sources.loading && !sources.data) return <Loading label={t("staff_sources_loading")} />;
+  if (sources.error) return <ErrorState error={sources.error} onRetry={sources.reload} />;
+
+  const sourceLabel = (tag: string) => tag === "mojang" ? t("staff_source_mojang") : tag;
+  return (
+    <div className="space-y-4">
+      <p className="text-muted-foreground">{t("staff_link_desc")}</p>
+      <p className="text-muted-foreground">{t("staff_source_help")}</p>
+      <form onSubmit={lookup} className="space-y-3 max-w-lg">
+        <div className="space-y-2">
+          <Label htmlFor="role-source">{t("staff_source")}</Label>
+          <Select value={source} disabled={busy} onValueChange={(value) => { setSelected(value); setPreview(null); setError(null); }}>
+            <SelectTrigger id="role-source"><SelectValue placeholder={t("staff_source")} /></SelectTrigger>
+            <SelectContent>
+              {sources.data?.sources.map((item) => <SelectItem key={item.tag} value={item.tag}>{sourceLabel(item.tag)}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="role-profile">{t("staff_profile")}</Label>
+          <Input id="role-profile" value={input} disabled={busy} maxLength={64} autoComplete="off" spellCheck={false}
+            onChange={(e) => { setInput(e.target.value); setPreview(null); setError(null); }} />
+        </div>
+        {available === false && <p className="text-muted-foreground">{t("staff_lookup_unsupported")}</p>}
+        <Button type="submit" disabled={busy || !available || !input.trim()}>{t(busy ? "staff_working" : "staff_lookup")}</Button>
+      </form>
+      {preview && (
+        <div className="space-y-3 rounded-md border p-4 max-w-lg">
+          <p className="font-medium">{preview.name}</p>
+          <p className="text-muted-foreground">{sourceLabel(preview.source)}</p>
+          <code className="block break-all font-mono text-xs">{preview.profile_uuid}</code>
+          <p className="text-muted-foreground">{t("staff_confirm_desc")}</p>
+          <Button disabled={busy} onClick={() => void confirm()}>{t(busy ? "staff_working" : "staff_confirm")}</Button>
+        </div>
+      )}
+      <InlineError message={error} />
+      {reauth.dialog}
+    </div>
+  );
+}
+
+function MinecraftGuide() {
+  const { t } = useTranslation("account");
+  const cfg = useConfig();
+  if (!cfg) return null;
+  return (
+    <details className="mt-4 border-t pt-4 space-y-3">
+      <summary className="cursor-pointer font-medium">{t("game_guide")}</summary>
+      <p className="text-muted-foreground">{cfg.gameVersion ? t("game_version", { version: cfg.gameVersion }) : t("game_version_unknown")}</p>
+      {!cfg.fallback && <CopyAddress address={entryAddress(cfg)} />}
+      <p className="text-muted-foreground">{t("game_lobby")}</p>
+      <p className="text-muted-foreground">{t("game_thirdparty")}</p>
+    </details>
   );
 }
 

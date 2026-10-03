@@ -49,5 +49,6 @@
   "go_to_servers_btn": "操作我的服务器",
   "fleet_flat_webgl": "浏览器未启用 WebGL，已切换为平面视图。",
   "fleet_flat_error": "3D 视图加载失败，已切换为平面视图。",
-  "fleet_flat_empty": "还没有服务器"
+  "fleet_flat_empty": "还没有服务器",
+  "staff_unlinked_desc": "Minecraft 角色尚未关联。面板管理功能已可使用；准备进入游戏时，可在账户页选择认证源并关联角色。"
 }

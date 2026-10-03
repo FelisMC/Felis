@@ -24,6 +24,7 @@ import (
 // that names only its root domain still gets passkeys, on console.<root>, with the
 // operator host as the second origin; only an install with no panel host goes without.
 func TestPasskeyRelyingParty(t *testing.T) {
+	t.Setenv("FELIS_PANEL_NODEPORT", "")
 	for _, tc := range []struct {
 		name               string
 		root, panel, admin string
@@ -43,11 +44,25 @@ func TestPasskeyRelyingParty(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &config.Config{}
 			cfg.Server.RootDomain, cfg.Auth.PanelHostname, cfg.Auth.AdminHostname = tc.root, tc.panel, tc.admin
+			var wantOrigins []string
+			for _, origin := range tc.wantOrigins {
+				wantOrigins = append(wantOrigins, origin, fmt.Sprintf("%s:%d", origin, defaultPanelNodePort))
+			}
 			rp, origins := passkeyRelyingParty(cfg)
-			if rp != tc.wantRP || !slices.Equal(origins, tc.wantOrigins) {
-				t.Fatalf("relying party = %q %q, want %q %q", rp, origins, tc.wantRP, tc.wantOrigins)
+			if rp != tc.wantRP || !slices.Equal(origins, wantOrigins) {
+				t.Fatalf("relying party = %q %q, want %q %q", rp, origins, tc.wantRP, wantOrigins)
 			}
 		})
+	}
+}
+
+func TestPasskeyRelyingPartyIncludesConfiguredNodePort(t *testing.T) {
+	t.Setenv("FELIS_PANEL_NODEPORT", "30445")
+	cfg := &config.Config{}
+	cfg.Server.RootDomain = "example.com"
+	_, origins := passkeyRelyingParty(cfg)
+	if !slices.Contains(origins, "https://op.console.example.com:30445") {
+		t.Fatalf("configured NodePort origin missing: %v", origins)
 	}
 }
 
@@ -64,7 +79,7 @@ func TestAuthSourcesFromConfig(t *testing.T) {
 		{"no configured sources", nil},
 		{"configured sources", []config.AuthSourceConfig{
 			{Tag: "littleskin", Prefix: "LS", URL: "https://littleskin.example/hasJoined"},
-			{Tag: "guild", Prefix: "GD", URL: "https://guild.example/hasJoined"},
+			{Tag: "guild", Prefix: "GD", URL: "https://guild.example/hasJoined", APIURL: "https://guild.example/api"},
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -80,7 +95,7 @@ func TestAuthSourcesFromConfig(t *testing.T) {
 				if s.Identity {
 					t.Errorf("configured source %q is marked Identity; only Mojang may be", c.Tag)
 				}
-				if s.Tag != c.Tag || s.Prefix != c.Prefix || s.URL != c.URL {
+				if s.Tag != c.Tag || s.Prefix != c.Prefix || s.URL != c.URL || s.APIURL != c.APIURL {
 					t.Errorf("source %d = %+v, want %+v in config order", i+1, s, c)
 				}
 			}

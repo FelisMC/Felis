@@ -24,16 +24,14 @@ type fakeOwnerStore struct {
 	settings  map[string][]byte
 	audits    []api.AuditEntry
 	tokens    []setupTokenCall
-	redeems   []redeemCall
+	setupIDs  []string
 	users     map[string]*api.StaffUser // keyed by username
 	admins    bool                      // AdminExists answer
 	ownerSeat string                    // OwnerUsername answer: the occupied seat, "" when none
 
-	// CompleteOwnerSetup's success result. redeemUserID defaults to the fresh id
-	// the caller passes (the unlinked-UUID case) when left empty.
-	redeemUserID     string
-	redeemMCUUID     string
-	redeemAuthSource string
+	setupUserID   string
+	setupUsername string
+	onboarded     bool
 
 	upsertErr      error
 	insertErr      error
@@ -57,12 +55,6 @@ type setupTokenCall struct {
 	tokenHash string
 	userID    string
 	expiresAt time.Time
-}
-
-// redeemCall records the inputs CompleteOwnerSetup was called with.
-type redeemCall struct {
-	newUserID string
-	code      string
 }
 
 func (f *fakeOwnerStore) AdminExists(_ context.Context) (bool, error) {
@@ -118,30 +110,31 @@ func (f *fakeOwnerStore) InsertOperator(_ context.Context, id, username, email s
 	return nil
 }
 
-// CompleteOwnerSetup models the real all-or-nothing transaction: injected failures
-// record none of the redeem, auth-toggle, or setup-token writes.
-func (f *fakeOwnerStore) CompleteOwnerSetup(_ context.Context, newUserID, code string, _ time.Time,
-	tokenHash string, expiresAt time.Time) (string, string, string, error) {
-	if f.redeemErr != nil {
-		return "", "", "", f.redeemErr
+// CompleteOwnerSetup models the transaction without any game link code.
+func (f *fakeOwnerStore) CompleteOwnerSetup(_ context.Context, newUserID string, _ time.Time,
+	tokenHash string, expiresAt time.Time) (string, string, error) {
+	for _, err := range []error{f.redeemErr, f.setErr, f.createTokenErr} {
+		if err != nil {
+			return "", "", err
+		}
 	}
-	if f.setErr != nil {
-		return "", "", "", f.setErr
-	}
-	if f.createTokenErr != nil {
-		return "", "", "", f.createTokenErr
-	}
-	f.redeems = append(f.redeems, redeemCall{newUserID, code})
-	userID := f.redeemUserID
+	userID, username := f.setupUserID, f.setupUsername
 	if userID == "" {
-		userID = newUserID // unlinked UUID → the fresh id becomes the Owner
+		userID = newUserID
 	}
+	if username == "" {
+		username = "owner"
+	}
+	if f.onboarded {
+		return userID, username, api.ErrConflict
+	}
+	f.setupIDs = append(f.setupIDs, newUserID)
 	if f.settings == nil {
 		f.settings = map[string][]byte{}
 	}
 	f.settings[api.LocalAuthEnabledKey] = []byte("true")
 	f.tokens = append(f.tokens, setupTokenCall{tokenHash, userID, expiresAt})
-	return userID, f.redeemMCUUID, f.redeemAuthSource, nil
+	return userID, username, nil
 }
 
 func (f *fakeOwnerStore) SetSetting(_ context.Context, key string, value []byte) error {
@@ -710,149 +703,70 @@ func TestPerformAddOperator(t *testing.T) {
 	})
 }
 
-func TestPerformSetupMCBind(t *testing.T) {
+func TestPerformSetupOwner(t *testing.T) {
 	ctx := context.Background()
+	f := &fakeOwnerStore{setupUserID: "usr-owner-1"}
+	out, err := performSetupOwner(ctx, f, "https://op.console.example.com:30443", "deploybot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.ownerUsername != "owner" {
+		t.Fatalf("username = %q", out.ownerUsername)
+	}
+	const prefix = "https://op.console.example.com:30443/setup?token="
+	if !strings.HasPrefix(out.setupTokenURL, prefix) {
+		t.Fatalf("URL = %q", out.setupTokenURL)
+	}
+	if len(f.tokens) != 1 || f.tokens[0].userID != "usr-owner-1" {
+		t.Fatalf("tokens = %+v", f.tokens)
+	}
+	raw := strings.TrimPrefix(out.setupTokenURL, prefix)
+	sum := sha256.Sum256([]byte(raw))
+	if f.tokens[0].tokenHash != hex.EncodeToString(sum[:]) {
+		t.Fatal("stored token does not match URL")
+	}
+	if !f.tokens[0].expiresAt.After(time.Now()) {
+		t.Fatal("token already expired")
+	}
+	if string(f.settings[api.LocalAuthEnabledKey]) != "true" {
+		t.Fatal("local auth stayed disabled")
+	}
+	e, payload := auditOf(t, f)
+	if e.Actor != "deploybot" || e.Action != "setup.owner_login" || payload["user_id"] != "usr-owner-1" {
+		t.Fatalf("audit = %+v, %v", e, payload)
+	}
 
-	t.Run("binds the owner and mints a setup URL whose token hash is what is stored", func(t *testing.T) {
-		f := &fakeOwnerStore{redeemUserID: "usr-owner-1", redeemMCUUID: "mc-uuid-1", redeemAuthSource: "mojang"}
-		out, err := performSetupMCBind(ctx, f, "  abc-123  ", "console.example.com", "deploybot")
-		if err != nil {
-			t.Fatalf("performSetupMCBind: %v", err)
-		}
-		// The Owner this mints has no password and no email, so the setup token is the
-		// only door — and handleSetupRedeem is gated on local_auth_enabled. A bind that
-		// leaves the toggle off hands back a URL that answers 403.
-		if _, ok := f.settings[api.LocalAuthEnabledKey]; !ok {
-			t.Error("local auth was not enabled — the setup URL would 403 local_auth_disabled")
-		}
-		// The bind is attributed by Minecraft identity, because that is what the login
-		// gate verified; a username would be the one thing nobody checked.
-		e, payload := auditOf(t, f)
-		if e.Actor != "deploybot" || e.Source != "setup" || e.Action != "setup.owner_bind" {
-			t.Errorf("audit = %+v, want actor=deploybot source=setup action=setup.owner_bind", e)
-		}
-		if payload["mc_uuid"] != "mc-uuid-1" || payload["auth_source"] != "mojang" {
-			t.Errorf("audit payload = %v, want the redeemed mc_uuid + auth_source", payload)
-		}
-		if out.ownerIdentity != "mc-uuid-1" {
-			t.Errorf("owner identity = %q, want the verified Minecraft UUID", out.ownerIdentity)
-		}
-		const prefix = "https://console.example.com/setup?token="
-		if !strings.HasPrefix(out.setupTokenURL, prefix) {
-			t.Fatalf("setup URL = %q, want prefix %q", out.setupTokenURL, prefix)
-		}
-		// The link code is trimmed and upper-cased before redemption.
-		if len(f.redeems) != 1 {
-			t.Fatalf("want 1 redeem, got %d", len(f.redeems))
-		}
-		if f.redeems[0].code != "ABC-123" {
-			t.Errorf("redeemed code = %q, want ABC-123 (trimmed + upper-cased)", f.redeems[0].code)
-		}
-		if !strings.HasPrefix(f.redeems[0].newUserID, "usr-") {
-			t.Errorf("redeem newUserID = %q, want usr- prefix", f.redeems[0].newUserID)
-		}
-		// Exactly one token minted, for the redeemed user, and only its hash stored —
-		// the stored hash must be sha-256 of the raw token carried in the URL.
-		if len(f.tokens) != 1 {
-			t.Fatalf("want 1 setup token, got %d", len(f.tokens))
-		}
-		tok := f.tokens[0]
-		if tok.userID != "usr-owner-1" {
-			t.Errorf("token userID = %q, want usr-owner-1 (the redeemed owner)", tok.userID)
-		}
-		raw := strings.TrimPrefix(out.setupTokenURL, prefix)
-		sum := sha256.Sum256([]byte(raw))
-		if tok.tokenHash != hex.EncodeToString(sum[:]) {
-			t.Error("stored token hash is not sha-256 of the raw token in the URL")
-		}
-		if tok.tokenHash == raw || tok.tokenHash == "" {
-			t.Error("the raw token (or nothing) was stored instead of its hash")
-		}
-		// The token is short-lived and in the future.
-		if !tok.expiresAt.After(time.Now()) {
-			t.Errorf("token expiresAt = %v, want a future time", tok.expiresAt)
+	t.Run("failed writes leave no partially initialized login", func(t *testing.T) {
+		for _, store := range []*fakeOwnerStore{
+			{redeemErr: errors.New("database unavailable")},
+			{setErr: errors.New("settings write failed")},
+			{createTokenErr: errors.New("token write failed")},
+		} {
+			if _, err := performSetupOwner(ctx, store, "https://op.console.example.com", "root"); err == nil {
+				t.Fatal("want failure")
+			}
+			if len(store.tokens) != 0 || len(store.setupIDs) != 0 || len(store.settings) != 0 {
+				t.Fatal("partial setup")
+			}
 		}
 	})
-
-	t.Run("an empty link code mints nothing", func(t *testing.T) {
-		f := &fakeOwnerStore{}
-		if _, err := performSetupMCBind(ctx, f, "   ", "console.example.com", "root"); err == nil {
-			t.Fatal("want error for an empty link code")
-		}
-		if len(f.redeems) != 0 || len(f.tokens) != 0 {
-			t.Errorf("want no redeem/token on an empty code, got redeems=%d tokens=%d", len(f.redeems), len(f.tokens))
-		}
-		if _, ok := f.settings[api.LocalAuthEnabledKey]; ok {
-			t.Error("local auth was enabled without an owner — the gate must not open on a failed bind")
+	t.Run("settled account is not reset", func(t *testing.T) {
+		store := &fakeOwnerStore{setupUserID: "existing", setupUsername: "alice", onboarded: true}
+		out, err := performSetupOwner(ctx, store, "https://op.console.example.com", "root")
+		if !errors.Is(err, api.ErrConflict) || out.ownerUsername != "alice" || len(store.tokens) != 0 {
+			t.Fatalf("out = %+v err = %v", out, err)
 		}
 	})
-
-	t.Run("a link-code redemption failure mints no token", func(t *testing.T) {
-		f := &fakeOwnerStore{redeemErr: errors.New("code expired")}
-		if _, err := performSetupMCBind(ctx, f, "abc-123", "console.example.com", "root"); err == nil {
-			t.Fatal("want error when the link code cannot be redeemed")
-		}
-		if len(f.tokens) != 0 {
-			t.Errorf("want no token minted on a redeem failure, got %d", len(f.tokens))
-		}
-		if _, ok := f.settings[api.LocalAuthEnabledKey]; ok {
-			t.Error("local auth was enabled without an owner — the gate must not open on a failed redeem")
+	t.Run("audit failure still returns the login link", func(t *testing.T) {
+		out, err := performSetupOwner(ctx, &fakeOwnerStore{auditErr: errors.New("audit down")}, "https://op.console.example.com", "root")
+		if err != nil || out.auditErr == nil || out.setupTokenURL == "" {
+			t.Fatalf("out = %+v err = %v", out, err)
 		}
 	})
-
-	t.Run("a local-auth failure fails the bind rather than minting an unredeemable URL", func(t *testing.T) {
-		f := &fakeOwnerStore{redeemUserID: "usr-owner-1", setErr: errors.New("db down")}
-		if _, err := performSetupMCBind(ctx, f, "abc-123", "console.example.com", "root"); err == nil {
-			t.Fatal("want error when local auth cannot be enabled")
-		}
-		if len(f.redeems) != 0 || len(f.tokens) != 0 {
-			t.Errorf("atomic setup was partially recorded: redeems=%d tokens=%d", len(f.redeems), len(f.tokens))
-		}
-	})
-
-	t.Run("a token-store failure rolls the bind back", func(t *testing.T) {
-		f := &fakeOwnerStore{redeemUserID: "usr-owner-1", createTokenErr: errors.New("db down")}
-		if _, err := performSetupMCBind(ctx, f, "abc-123", "console.example.com", "root"); err == nil {
-			t.Fatal("want error when the setup token cannot be stored")
-		}
-		if len(f.redeems) != 0 {
-			t.Errorf("link code was consumed despite token failure, got %d redeems", len(f.redeems))
-		}
-		if len(f.tokens) != 0 {
-			t.Errorf("want no recorded token when the store fails, got %d", len(f.tokens))
-		}
-		if _, ok := f.settings[api.LocalAuthEnabledKey]; ok {
-			t.Error("local auth stayed enabled despite transaction rollback")
-		}
-	})
-
-	t.Run("an audit failure does not cost the operator their install", func(t *testing.T) {
-		f := &fakeOwnerStore{redeemUserID: "usr-owner-1", auditErr: errors.New("audit sink down")}
-		out, err := performSetupMCBind(ctx, f, "abc-123", "console.example.com", "root")
-		if err != nil {
-			t.Fatalf("an audit failure must not fail the bind: %v", err)
-		}
-		if out.auditErr == nil {
-			t.Error("the audit failure was swallowed instead of surfaced on the outcome")
-		}
-		if out.setupTokenURL == "" {
-			t.Error("no setup URL minted despite a recoverable audit failure")
-		}
-		if _, ok := f.settings[api.LocalAuthEnabledKey]; !ok {
-			t.Error("local auth was not enabled despite a recoverable audit failure")
-		}
-	})
-
-	t.Run("defaults to the op.console host when adminHostname is empty", func(t *testing.T) {
-		f := &fakeOwnerStore{redeemUserID: "usr-owner-1"}
-		out, err := performSetupMCBind(ctx, f, "abc-123", "  ", "root")
-		if err != nil {
-			t.Fatalf("performSetupMCBind: %v", err)
-		}
-		// The Owner is staff, so onboarding lands on the operator console, not the
-		// player panel — the empty-host fallback must reflect that.
-		if !strings.HasPrefix(out.setupTokenURL, "https://op.console.localhost/setup?token=") {
-			t.Errorf("setup URL = %q, want the op.console.localhost default host", out.setupTokenURL)
+	t.Run("missing HTTPS origin cannot create an account", func(t *testing.T) {
+		store := &fakeOwnerStore{}
+		if _, err := performSetupOwner(ctx, store, "", "root"); err == nil || len(store.tokens) != 0 {
+			t.Fatal("invalid origin accepted")
 		}
 	})
 }

@@ -64,6 +64,7 @@ describe("Setup", () => {
     await userEvent.click(screen.getByRole("button", { name: t("auth:setup_retry") }));
 
     expect(await screen.findByText(t("auth:setup_welcome", { name: "owner" }))).toBeTruthy();
+    expect(screen.getByText(t("auth:setup_game_optional"))).toBeTruthy();
     expect(calls.setupRedeem.mock.calls).toEqual([["raw-token"], ["raw-token"]]);
   });
 

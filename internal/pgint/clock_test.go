@@ -126,18 +126,23 @@ func TestLinkWritesStampTheAPIClock(t *testing.T) {
 	})
 
 	t.Run("owner setup", func(t *testing.T) {
-		mc := testUUID(t)
+		r, setupDB := setupRepository(t)
 		id := "usr-clk-owner-" + suffix(t)
 		tok := "tok-clk-" + suffix(t)
-		if got, _, _, err := repo.CompleteOwnerSetup(ctx, id, code(mc), now, tok, now.Add(time.Hour)); err != nil || got != id {
-			t.Fatalf("CompleteOwnerSetup = %q, %v; want %s", got, err, id)
+		if got, _, err := r.CompleteOwnerSetup(ctx, id, now, tok, now.Add(time.Hour)); err != nil || got != id {
+			t.Fatalf("setup = %q, %v", got, err)
 		}
-		wantStamp(t, "user created_at", createdAt(id), now)
-		wantStamp(t, "verified_at", linkedAt(mc), now)
-		wantStamp(t, "setup token created_at",
-			stampAt(t, `SELECT created_at FROM setup_tokens WHERE token_hash = $1`, tok), now)
-		wantStamp(t, "local auth updated_at",
-			stampAt(t, `SELECT updated_at FROM platform_settings WHERE key = $1`, api.LocalAuthEnabledKey), now)
+		for _, query := range []string{
+			`SELECT created_at FROM users WHERE id = '` + id + `'`,
+			`SELECT created_at FROM setup_tokens WHERE token_hash = '` + tok + `'`,
+			`SELECT updated_at FROM platform_settings WHERE key = '` + api.LocalAuthEnabledKey + `'`,
+		} {
+			var stamp time.Time
+			if err := setupDB.QueryRow(query).Scan(&stamp); err != nil {
+				t.Fatal(err)
+			}
+			wantStamp(t, "owner setup clock", stamp, now)
+		}
 	})
 }
 

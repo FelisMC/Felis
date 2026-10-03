@@ -135,5 +135,9 @@
   "schedule_limit": "这台服务器的计划任务数量已达上限，请先删除一个。",
   "schedule_running": "这个任务正在执行，请等本次执行结束后再试。",
   "schedule_stale": "保存这个任务后服务器换了所有者，请先重新保存任务再执行。",
-  "bad_schedule": "计划任务未保存：{{detail}}"
+  "bad_schedule": "计划任务未保存：{{detail}}",
+  "auth_source_unknown": "请选择已配置的认证源。",
+  "auth_source_unavailable": "认证源暂时不可用或返回了无效角色，请稍后重试。",
+  "auth_source_lookup_unsupported": "此认证源尚未配置角色查询地址。",
+  "minecraft_profile_not_found": "在所选认证源中没有找到这个角色，请检查角色名或 UUID。"
 }

@@ -94,9 +94,9 @@ type wizardStage int
 
 const (
 	stagePreflight wizardStage = iota
-	stageOwner
 	stageConnect
 	stageStorage
+	stageOwner
 	stageSummary
 	// stageMenu is the break-glass operation menu. It is appended last so the
 	// setup-flow rail indices (Preflight…Done) are unshifted; the rail is suppressed
@@ -109,7 +109,7 @@ const (
 // and the post-install wizard owns cells 1–4. Defining it once keeps the two
 // programs' breadcrumbs identical so the rail reads as a single continuous bar
 // rather than restarting when the wizard takes over.
-var setupRailSteps = []string{"Bootstrap", "Preflight", "Owner", "Connection", "Storage", "Done"}
+var setupRailSteps = []string{"Bootstrap", "Preflight", "Connection", "Storage", "Panel login", "Done"}
 
 type rootModel struct {
 	ctx context.Context
@@ -142,7 +142,6 @@ type rootModel struct {
 	panelHost   string
 	accessAud   string
 	namespace   string // minecraft workload namespace (cfg.K8s.Namespace); target of the halt op
-	gameAddr    string // where to join in Minecraft to bind the Owner (setupGameAddress)
 	adminExists bool
 	recovery    recoveryConfig // how the account operations mail a recovery code
 	// alertRoute reads where the watchdog's alerts go for the summary; nil
@@ -212,14 +211,14 @@ func (m *rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case preflightDoneMsg:
 		if m.adminExists {
-			// Re-run: setup already happened. Land on the status screen.
-			return m.showStatus()
+			return m.startOwnerSetup()
 		}
-		m.stage = stageOwner
-		if m.mode == consoleModeSetup {
-			return m.adopt(newMCBindModel(m.ctx, m.store, defaultAdminHostname(m.rootDomain, m.adminHost), m.osUser, m.gameAddr))
-		}
-		return m.adopt(newOwnerModel(m.ctx, m.store, m.osUser, false))
+		m.stage = stageConnect
+		return m.adopt(newConnectChooserModel(m.rootDomain, m.adminHost, m.panelHost))
+
+	case setupReadyMsg:
+		m.result.username = msg.username
+		return m.showStatus()
 
 	case menuChoiceMsg:
 		// The break-glass menu picked an account operation; build its screen. Both reuse
@@ -290,21 +289,19 @@ func (m *rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		m.adminExists = true
-		m.stage = stageConnect
-		return m.adopt(newConnectChooserModel(m.rootDomain, m.adminHost, m.panelHost))
-
-	case ownerSkippedMsg:
-		// The rest of the wizard needs no Owner; the summary and the exit message say
-		// how to come back and bind one.
-		m.result.ownerSkipped = true
-		m.stage = stageConnect
-		return m.adopt(newConnectChooserModel(m.rootDomain, m.adminHost, m.panelHost))
+		if m.result.alreadySetUp {
+			return m.showStatus()
+		}
+		return m.showSummary()
 
 	case connectResultMsg:
 		m.applyConnectResult(msg)
 		if m.reconfiguringConnect {
 			// Changing only the connection — storage is already set, so skip it.
 			m.reconfiguringConnect = false
+			if m.result.setupTokenURL != "" {
+				return m.startOwnerSetup()
+			}
 			return m.showSummary()
 		}
 		m.stage = stageStorage
@@ -313,6 +310,9 @@ func (m *rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case storageResultMsg:
 		m.result.storageMethod = msg.method
 		m.result.storageDetail = msg.detail
+		if !m.adminExists {
+			return m.startOwnerSetup()
+		}
 		return m.showSummary()
 
 	case storageBackMsg:
@@ -423,7 +423,7 @@ func (m *rootModel) displayStage() int {
 
 // reviewBody renders a read-only recap of an already-completed step. Steps in
 // this wizard commit as you finish them (the Owner account and its one-time
-// password are created on submit), so review is deliberately look-only — there
+// login link are created on submit), so review is deliberately look-only — there
 // is no re-editing a step you've passed.
 func (m *rootModel) reviewBody(stage int) string {
 	var b strings.Builder
@@ -432,16 +432,8 @@ func (m *rootModel) reviewBody(stage int) string {
 		b.WriteString(tuiOK.Render("✓ Preflight") + "\n")
 		b.WriteString(tuiHint.Render("Control plane verified before configuration."))
 	case stageOwner:
-		if m.result.ownerSkipped {
-			b.WriteString(tuiWarn.Render("– Owner account skipped") + "\n")
-			b.WriteString(tuiHint.Render("Run  sudo felis setup  again to bind it."))
-			break
-		}
-		b.WriteString(tuiOK.Render("✓ Owner account") + "\n")
-		if m.result.username != "" {
-			b.WriteString(tuiLabel.Render("username  ") + m.result.username + "\n")
-		}
-		b.WriteString(tuiHint.Render("Created and recorded. The one-time setup URL was shown on the Owner step."))
+		b.WriteString(tuiOK.Render("✓ Panel login") + "\n")
+		b.WriteString(tuiHint.Render("Open the one-time setup link in the summary to create your passkey."))
 	case stageConnect:
 		b.WriteString(tuiOK.Render("✓ Connection") + "\n")
 		b.WriteString(tuiLabel.Render("method    ") + connectMethodLabel(m.result.connectMethod) + "\n")
@@ -504,10 +496,9 @@ func (m *rootModel) View() string {
 // adminExistsAtStart reports whether this run began with an Owner already
 // present (a re-run). The rail only makes sense for the first-run linear wizard.
 func (m *rootModel) adminExistsAtStart() bool {
-	// adminExists flips true once we provision the Owner mid-run; the rail should
-	// keep showing through the connect/summary stages of that same first run. So
-	// only suppress the rail when the Owner pre-existed AND we never provisioned.
-	return m.adminExists && !m.result.provisioned
+	// First-run creation flips adminExists, but must keep its rail. Resuming an
+	// unfinished browser login is still a re-run even though it renews a token.
+	return m.result.alreadySetUp || (m.adminExists && !m.result.provisioned)
 }
 
 func (m *rootModel) rail() string {
@@ -554,7 +545,7 @@ func (m *rootModel) applyConnectResult(msg connectResultMsg) {
 		m.result.connectConfigured = true
 		m.result.reverseProxyGuide = msg.guide
 	}
-	m.result.panelURL = panelURLFor(msg.method, msg.panelHostname, m.rootDomain, m.adminHost)
+	m.result.panelURL = panelURLFor(msg.method, m.rootDomain, m.result.adminHostname)
 }
 
 func (m *rootModel) showSummary() (tea.Model, tea.Cmd) {
@@ -566,9 +557,8 @@ func (m *rootModel) showSummary() (tea.Model, tea.Cmd) {
 	return m.adopt(&summaryModel{
 		panelURL:      m.result.panelURL,
 		ownerUsername: m.result.username,
-		ownerSkipped:  m.result.ownerSkipped,
-		gameAddr:      m.gameAddr,
 		setupTokenURL: m.result.setupTokenURL,
+		auditWarning:  m.result.auditWarning,
 		accessLabel:   connectMethodLabel(m.result.connectMethod),
 		storageLabel:  m.result.storageDetail,
 		routedHosts:   routed,
@@ -576,6 +566,28 @@ func (m *rootModel) showSummary() (tea.Model, tea.Cmd) {
 		alreadySetUp:  m.result.alreadySetUp,
 		alerts:        m.readAlertRoute(),
 	})
+}
+
+func (m *rootModel) startOwnerSetup() (tea.Model, tea.Cmd) {
+	m.stage = stageOwner
+	method := m.result.connectMethod
+	adminHost := defaultAdminHostname(m.rootDomain, m.adminHost)
+	if m.result.adminHostname != "" {
+		adminHost = m.result.adminHostname
+	}
+	if m.adminExists && !m.result.provisioned {
+		m.result.alreadySetUp = true
+		if m.accessAud != "" {
+			method = connectCloudflare
+		}
+	}
+	base := "https://" + adminHost
+	if method == connectLocal {
+		base = localPanelURL(m.rootDomain, adminHost)
+	}
+	model := newSetupOwnerModel(m.ctx, m.store, base, m.osUser)
+	model.probe = func() error { return checkPanelAccess(m.rootDomain, adminHost).err }
+	return m.adopt(model)
 }
 
 // showStatus is the re-run landing: prove the backend is up, then point the
@@ -589,13 +601,16 @@ func (m *rootModel) showStatus() (tea.Model, tea.Cmd) {
 		method = connectCloudflare
 		accessLabel = connectMethodLabel(connectCloudflare)
 	}
-	m.result.panelURL = panelURLFor(method, m.panelHost, m.rootDomain, m.adminHost)
+	m.result.panelURL = panelURLFor(method, m.rootDomain, m.result.adminHostname)
 	return m.adopt(&summaryModel{
-		panelURL:     m.result.panelURL,
-		accessLabel:  accessLabel,
-		alreadySetUp: true,
-		localHint:    m.accessAud == "" && rootDomainEmbeddedIP(m.rootDomain) != "",
-		alerts:       m.readAlertRoute(),
+		panelURL:      m.result.panelURL,
+		ownerUsername: m.result.username,
+		setupTokenURL: m.result.setupTokenURL,
+		auditWarning:  m.result.auditWarning,
+		accessLabel:   accessLabel,
+		alreadySetUp:  true,
+		localHint:     m.accessAud == "" && rootDomainEmbeddedIP(m.rootDomain) != "",
+		alerts:        m.readAlertRoute(),
 	})
 }
 
@@ -609,9 +624,9 @@ func (m *rootModel) readAlertRoute() *alertRoute {
 	return &r
 }
 
-func panelURLFor(method connectMethod, panelHostname, rootDomain, adminHostname string) string {
-	if method != connectLocal && panelHostname != "" {
-		return "https://" + panelHostname
+func panelURLFor(method connectMethod, rootDomain, adminHostname string) string {
+	if method != connectLocal {
+		return "https://" + defaultAdminHostname(rootDomain, adminHostname)
 	}
 	return localPanelURL(rootDomain, adminHostname)
 }

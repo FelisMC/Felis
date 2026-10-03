@@ -14,7 +14,7 @@ import { useTier } from "@/lib/tier";
 import { InlineError } from "@/components/MessageLine";
 
 // Setup is the Owner's first-run onboarding wizard (spec §B setup bootstrap). The
-// `felis setup` MC-bind flow prints https://op.console.<root>/setup?token=<raw> —
+// `felis setup` host-authorized flow prints https://op.console.<root>/setup?token=<raw> —
 // the Owner is staff, so onboarding lands on the operator console, not the player
 // panel; this page redeems that one-time token (minting a lockdown session), then drives the
 // two remaining steps — record an email, enroll a passkey — before handing off to the
@@ -167,7 +167,8 @@ export function Setup() {
   return (
     <AuthLayout title={t("setup_title")} subtitle={t("setup_welcome", { name: state.username })}>
       <Card>
-        <CardContent className="pt-6">
+        <CardContent className="space-y-4 pt-6">
+          <p className="text-sm text-muted-foreground">{t("setup_game_optional")}</p>
           {!state.email ? (
             <EmailStep initialEmail={state.email} onRecorded={reload} />
           ) : !state.has_passkey ? (

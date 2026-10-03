@@ -4,7 +4,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/naming"
@@ -328,98 +327,6 @@ func TestEnsureSecretReplicaRefresh(t *testing.T) {
 		}
 		if got := replicaBody(t, cl); got != "stale" {
 			t.Errorf("replica = %q, want untouched stale", got)
-		}
-	})
-}
-
-func TestRequiredProvisioningError(t *testing.T) {
-	ready := []systemServerOutcome{
-		{name: "limbo-token (minecraft ns)", available: true},
-		{name: "forwarding-secret (minecraft ns)", available: true},
-		{name: naming.SystemLoginServer, available: true},
-		{name: naming.SystemLobbyServer, skipped: "image not configured"},
-	}
-	if err := requiredProvisioningError(ready); err != nil {
-		t.Fatalf("ready outcomes: %v", err)
-	}
-
-	missing := append([]systemServerOutcome(nil), ready...)
-	missing[1] = systemServerOutcome{name: "forwarding-secret (minecraft ns)", skipped: "source missing"}
-	if err := requiredProvisioningError(missing); err == nil || !strings.Contains(err.Error(), "forwarding-secret") {
-		t.Fatalf("missing forwarding secret = %v, want named error", err)
-	}
-
-	// The login gate cannot reach felis-api without its token, so setup must not
-	// report success while that replica is missing.
-	noToken := append([]systemServerOutcome(nil), ready...)
-	noToken[0] = systemServerOutcome{name: "limbo-token (minecraft ns)", skipped: "source missing"}
-	if err := requiredProvisioningError(noToken); err == nil || !strings.Contains(err.Error(), "limbo-token") {
-		t.Fatalf("missing limbo token = %v, want named error", err)
-	}
-
-	failed := append([]systemServerOutcome(nil), ready...)
-	failed[3] = systemServerOutcome{name: naming.SystemLobbyServer, err: context.DeadlineExceeded}
-	if err := requiredProvisioningError(failed); err == nil || !strings.Contains(err.Error(), naming.SystemLobbyServer) {
-		t.Fatalf("lobby create failure = %v, want immediate named error", err)
-	}
-}
-
-// The Owner binds by joining the game, so setup blocks on the login gate rather
-// than racing it. What matters is that each ending is distinguishable: Ready
-// proceeds, Failed reports the operator's own reason instead of waiting out the
-// clock, and a gate that never appears (no operator reconciling it) times out
-// saying so rather than dropping the operator on a bind screen that cannot work.
-func TestAwaitLoginGateReady(t *testing.T) {
-	scheme := newSystemServerScheme(t)
-	ctx := context.Background()
-
-	gate := func(mut func(*v1alpha1.MinecraftServer)) *v1alpha1.MinecraftServer {
-		ms := &v1alpha1.MinecraftServer{
-			ObjectMeta: metav1.ObjectMeta{Name: naming.SystemLoginServer, Namespace: "minecraft"},
-		}
-		mut(ms)
-		return ms
-	}
-
-	t.Run("returns once the gate is ready", func(t *testing.T) {
-		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gate(func(ms *v1alpha1.MinecraftServer) {
-			ms.Status.Phase = v1alpha1.PhaseRunning
-			ms.Status.Ready = true
-		})).Build()
-		if err := awaitLoginGateReady(ctx, cl, "minecraft", time.Second, 10*time.Millisecond, nil); err != nil {
-			t.Fatalf("await: %v", err)
-		}
-	})
-
-	t.Run("fails fast on Failed, carrying the operator's reason", func(t *testing.T) {
-		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gate(func(ms *v1alpha1.MinecraftServer) {
-			ms.Status.Phase = v1alpha1.PhaseFailed
-			ms.Status.Conditions = []metav1.Condition{{
-				Type:               v1alpha1.ConditionReady,
-				Status:             metav1.ConditionFalse,
-				Reason:             "StartupTimeout",
-				Message:            "pod never became ready: ImagePullBackOff",
-				LastTransitionTime: metav1.Now(),
-			}}
-		})).Build()
-		start := time.Now()
-		err := awaitLoginGateReady(ctx, cl, "minecraft", time.Minute, 10*time.Millisecond, nil)
-		if err == nil {
-			t.Fatal("await: nil error, want failure")
-		}
-		if !strings.Contains(err.Error(), "ImagePullBackOff") {
-			t.Errorf("error = %q, want the operator's Ready-condition message", err)
-		}
-		if time.Since(start) > 5*time.Second {
-			t.Error("await sat out the full timeout on a settled Failed verdict")
-		}
-	})
-
-	t.Run("times out when nothing ever reconciles the gate", func(t *testing.T) {
-		cl := fake.NewClientBuilder().WithScheme(scheme).Build()
-		err := awaitLoginGateReady(ctx, cl, "minecraft", 30*time.Millisecond, 10*time.Millisecond, nil)
-		if err == nil || !strings.Contains(err.Error(), "timed out") {
-			t.Fatalf("await = %v, want a timeout", err)
 		}
 	})
 }

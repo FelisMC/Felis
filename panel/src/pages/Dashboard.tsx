@@ -103,7 +103,7 @@ export function Dashboard() {
   );
 }
 
-function LinkCard({ link }: { link: AsyncState<{ linked: boolean }> }) {
+function LinkCard({ link, staff }: { link: AsyncState<{ linked: boolean }>; staff: boolean }) {
   const { t } = useTranslation("dashboard");
 
   if (link.error) {
@@ -164,11 +164,11 @@ function LinkCard({ link }: { link: AsyncState<{ linked: boolean }> }) {
     <>
       <div className="space-y-1 max-w-xl">
         <div className="flex items-center gap-2 text-amber-600 dark:text-amber-500 font-semibold text-sm">
-          <AlertTriangle className="h-5 w-5 shrink-0 animate-bounce" />
+          <AlertTriangle className="h-5 w-5 shrink-0" />
           <span>{t("account_unlinked_title")}</span>
         </div>
         <p className="text-xs text-muted-foreground leading-relaxed">
-          {t("account_unlinked_desc")}
+          {t(staff ? "staff_unlinked_desc" : "account_unlinked_desc")}
         </p>
       </div>
       <Link to="/account" className="shrink-0 w-full sm:w-auto">
@@ -290,7 +290,7 @@ function FleetView({
           {/* 1. 游戏角色绑定 Banner */}
           <Card className="overflow-hidden">
             <CardContent className="p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-              <LinkCard link={link} />
+              <LinkCard link={link} staff={isAdmin} />
             </CardContent>
           </Card>
 

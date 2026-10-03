@@ -62,6 +62,8 @@ type AuthSourceConfig struct {
 	Tag    string `toml:"tag"`
 	Prefix string `toml:"prefix"`
 	URL    string `toml:"url"`
+	// APIURL is optional for sources whose hasJoined URL does not use the standard path.
+	APIURL string `toml:"api_url"`
 }
 
 // SMTPConfig is the [smtp] table: the outbound mail relay felis-api delivers
@@ -149,6 +151,9 @@ type VelocityConfig struct {
 	// FELIS_GAME_PORT). The panel adds it to the server addresses players copy
 	// when it is not Minecraft's default; 0 means that default, 25565.
 	GamePort int `toml:"game_port"`
+	// GameVersion is the login/lobby protocol built by bootstrap. Empty means
+	// unknown for custom images; the panel must not guess a client version.
+	GameVersion string `toml:"game_version"`
 }
 
 // AuthConfig is the [auth] table: the two privileged faces and the Cloudflare
@@ -720,6 +725,11 @@ func (c *Config) validateAuthSources() error {
 		seenPrefixes[lower] = struct{}{}
 		if problem := hasJoinedURLProblem(s.URL); problem != "" {
 			return fmt.Errorf("config: [[auth_source]] %q url %q %s", s.Tag, s.URL, problem)
+		}
+		if s.APIURL != "" {
+			if problem := hasJoinedURLProblem(s.APIURL); problem != "" {
+				return fmt.Errorf("config: [[auth_source]] %q api_url %q %s", s.Tag, s.APIURL, problem)
+			}
 		}
 	}
 	return nil

@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// Setup-token redemption (spec §B setup bootstrap). The `felis setup` MC-bind
+// Setup-token redemption (spec §B setup bootstrap). The `felis setup` host bootstrap
 // flow mints a one-time token and prints a URL like:
 //
 //	https://op.console.<root>/setup?token=<raw>
@@ -58,7 +58,7 @@ func (a *API) handleSetupRedeem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Hash the raw token — only the hash is stored (mirroring session cookies and
-	// setup token creation in performSetupMCBind).
+	// setup token creation in performSetupOwner).
 	sum := sha256.Sum256([]byte(token))
 	tokenHash := hex.EncodeToString(sum[:])
 

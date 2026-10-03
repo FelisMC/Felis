@@ -9,6 +9,11 @@ import { Account } from "./Account";
 
 const mocks = vi.hoisted(() => ({
   passkeyList: vi.fn(),
+  linkStatus: vi.fn(),
+  linkSources: vi.fn(),
+  lookupProfile: vi.fn(),
+  linkProfile: vi.fn(),
+  linkVerify: vi.fn(),
   passkeyDelete: vi.fn(),
   listMySessions: vi.fn(),
   migrateStatus: vi.fn(),
@@ -22,7 +27,11 @@ vi.mock("@/lib/api", async (importOriginal) => {
     ...actual,
     api: {
       ...actual.api,
-      linkStatus: () => Promise.resolve({ linked: true }),
+      linkStatus: mocks.linkStatus,
+      linkSources: mocks.linkSources,
+      lookupProfile: mocks.lookupProfile,
+      linkProfile: mocks.linkProfile,
+      linkVerify: mocks.linkVerify,
       migrateStatus: mocks.migrateStatus,
       migrateIssueCode: mocks.migrateIssueCode,
       passkeyList: mocks.passkeyList,
@@ -68,6 +77,11 @@ function renderAccount() {
 }
 
 beforeEach(() => {
+  mocks.linkStatus.mockReset().mockResolvedValue({ linked: true });
+  mocks.linkSources.mockReset().mockResolvedValue({ sources: [{ tag: "littleskin", lookup_available: true }] });
+  mocks.lookupProfile.mockReset();
+  mocks.linkProfile.mockReset();
+  mocks.linkVerify.mockReset();
   mocks.passkeyList.mockReset();
   mocks.passkeyDelete.mockReset();
   mocks.listMySessions.mockReset();
@@ -204,5 +218,63 @@ describe("Account migration", () => {
     expect(await screen.findByText(t("account:migration_confirm_title"))).toBeTruthy();
     expect(screen.getByText(t("errors:not_confirmed"))).toBeTruthy();
     expect(screen.queryByPlaceholderText(t("account:migration_target_placeholder"))).toBeNull();
+  });
+});
+
+
+describe("staff Minecraft role designation", () => {
+  const profile = { source: "littleskin", name: "LemonMiaow", profile_uuid: "123456781234423482341234567890ab", mc_uuid: "canonical-role", auth_source: "thirdparty" };
+  beforeEach(() => {
+    mocks.identity = { ...identity(true), role: "owner", is_admin: true, is_owner: true };
+    mocks.linkStatus.mockResolvedValue({ linked: false });
+    mocks.passkeyList.mockResolvedValue({ credentials: [laptop] });
+    mocks.lookupProfile.mockResolvedValue(profile);
+    mocks.linkProfile.mockResolvedValue({ linked: true, mc_uuid: profile.mc_uuid });
+  });
+
+  async function previewRole() {
+    await userEvent.type(await screen.findByLabelText(t("account:staff_profile")), "LemonMiaow");
+    await userEvent.click(screen.getByRole("button", { name: t("account:staff_lookup") }));
+    await screen.findByRole("button", { name: t("account:staff_confirm") });
+  }
+
+  it("previews a role in the chosen source before confirmation writes a binding", async () => {
+    renderAccount();
+    await previewRole();
+    expect(mocks.lookupProfile).toHaveBeenCalledWith("littleskin", "LemonMiaow");
+    expect(screen.getByText(profile.profile_uuid)).toBeTruthy();
+    expect(mocks.linkProfile).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: t("account:staff_confirm") }));
+    expect(mocks.linkProfile).toHaveBeenCalledWith("littleskin", profile.profile_uuid);
+    expect(await screen.findByText(t("account:staff_linked_desc"))).toBeTruthy();
+    expect(mocks.linkVerify).not.toHaveBeenCalled();
+  });
+
+  it("discards a preview when the input changes", async () => {
+    renderAccount();
+    await previewRole();
+    await userEvent.type(screen.getByLabelText(t("account:staff_profile")), "2");
+    expect(screen.queryByRole("button", { name: t("account:staff_confirm") })).toBeNull();
+    expect(mocks.linkProfile).not.toHaveBeenCalled();
+  });
+
+  it("keeps the role preview and explains a refused binding", async () => {
+    mocks.linkProfile.mockRejectedValue({ status: 409, code: "already_linked", message: "" });
+    renderAccount();
+    await previewRole();
+    await userEvent.click(screen.getByRole("button", { name: t("account:staff_confirm") }));
+    expect((await screen.findByRole("alert")).textContent).toBe(t("errors:already_linked"));
+    expect(screen.getByText(profile.profile_uuid)).toBeTruthy();
+  });
+
+  it("retains game-code proof for players", async () => {
+    mocks.identity = identity(true);
+    mocks.linkVerify.mockResolvedValue({ linked: true, mc_uuid: profile.mc_uuid });
+    renderAccount();
+    await userEvent.type(await screen.findByLabelText(t("account:link_code")), "abcd1234");
+    await userEvent.click(screen.getByRole("button", { name: t("account:verify_btn") }));
+    expect(mocks.linkVerify).toHaveBeenCalledWith("ABCD1234");
+    expect(mocks.linkSources).not.toHaveBeenCalled();
+    expect(mocks.linkProfile).not.toHaveBeenCalled();
   });
 });

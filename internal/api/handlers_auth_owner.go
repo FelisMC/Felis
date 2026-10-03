@@ -5,14 +5,13 @@ import (
 	"net/http"
 )
 
-// Pre-session install-state probe. Until `felis setup` binds an Owner, local sign-in is
+// Pre-session install-state probe. Until `felis setup` creates an Owner, local sign-in is
 // off and every login door answers 403 local_auth_disabled, so the sign-in page would
 // offer four doors that all fail. This Public route lets the page say instead that no
 // Owner exists yet and how to bind one.
 //
 // It discloses one bit: whether the install is still unclaimed. Claiming it needs root
-// on the host (`felis setup` or the break-glass console) plus a Minecraft join whose
-// link code is typed into that terminal; no web door works before then, so knowing the
+// on the host (`felis setup` or the break-glass console); no web door works before then, so knowing the
 // bit gives a remote caller nothing to act on. It must answer while local auth is off,
 // so unlike its sibling doors it is not gated on local_auth_enabled.
 //

@@ -40,7 +40,7 @@ func newPanelHandler(t *testing.T) http.Handler {
 	api := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	})
-	return Handler(api, "example.test", "", "", 0, "")
+	return Handler(api, "example.test", "", "", 0, "", "")
 }
 
 func TestGuardServesInterstitialForWeChatNavigation(t *testing.T) {

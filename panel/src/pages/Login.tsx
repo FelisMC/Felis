@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label";
 import { useTier } from "@/lib/tier";
 import { loginReturnPath } from "@/lib/auth";
 import { api, humanizeError } from "@/lib/api";
-import { entryAddress, isIPAddress, loadConfig } from "@/lib/config";
+import { entryAddress, loadConfig } from "@/lib/config";
 import { CopyAddress } from "@/components/CopyAddress";
 import { requestAssertion } from "@/lib/passkey";
 import { InlineError } from "@/components/MessageLine";
@@ -111,7 +111,7 @@ export function Login() {
   }
   if (identity) return <Navigate to={next} replace />;
   if (ownerBound === false) {
-    return <NoOwnerNotice joinAddr={joinAddr} onBound={() => setOwnerBound(true)} />;
+    return <NoOwnerNotice onBound={() => setOwnerBound(true)} />;
   }
 
   async function handleBindSubmit(e: FormEvent) {
@@ -595,11 +595,11 @@ export function Login() {
   );
 }
 
-// NoOwnerNotice replaces the doors on an install `felis setup` has not bound an Owner
+// NoOwnerNotice replaces the doors on an install `felis setup` has not created an Owner
 // on. Local sign-in is off until it does, so every door would answer "disabled"; this
-// says why and walks through the binding, which happens in the server's terminal plus
-// one Minecraft join. The steps match the terminal's own bind screen (tui_mc_bind.go).
-function NoOwnerNotice({ joinAddr, onBound }: { joinAddr: string; onBound: () => void }) {
+// says why and walks through provisioning in the server's terminal plus
+// the browser handoff produced by the host setup console.
+function NoOwnerNotice({ onBound }: { onBound: () => void }) {
   const { t } = useTranslation("auth");
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<string | null>(null);
@@ -628,18 +628,6 @@ function NoOwnerNotice({ joinAddr, onBound }: { joinAddr: string; onBound: () =>
         sudo felis setup
       </code>
     </>,
-    joinAddr ? (
-      <>
-        <p>{t("no_owner_step_join")}</p>
-        <CopyAddress address={joinAddr} className="mt-1" />
-        {!isIPAddress(joinAddr) && (
-          <p className="mt-1 text-xs text-muted-foreground/80">{t("no_owner_ip_fallback")}</p>
-        )}
-      </>
-    ) : (
-      <p>{t("no_owner_step_join_no_address")}</p>
-    ),
-    <p>{t("no_owner_step_code")}</p>,
     <p>{t("no_owner_step_link")}</p>,
   ];
 

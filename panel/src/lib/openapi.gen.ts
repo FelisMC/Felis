@@ -1114,8 +1114,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Report whether an Owner has been bound on this install.
-         * @description Public, pre-session probe the sign-in page reads on load. Until `felis setup` binds an Owner, local sign-in is off and every login door answers 403 local_auth_disabled; the page then explains that no Owner exists and how to bind one instead of offering the doors. It discloses only whether the install is still unclaimed, and claiming it needs root on the host. It is not gated on local_auth_enabled and does not draw on the login doors' per-address rate limit.
+         * Report whether an Owner has been created on this install.
+         * @description Public, pre-session probe the sign-in page reads on load. Until `felis setup` creates an Owner, local sign-in is off and every login door answers 403 local_auth_disabled; the page then explains that no Owner exists and how to create one instead of offering the doors. It discloses only whether the install is still unclaimed, and claiming it needs root on the host. It is not gated on local_auth_enabled and does not draw on the login doors' per-address rate limit.
          */
         get: operations["ownerStatus"];
         put?: never;
@@ -1933,6 +1933,47 @@ export interface paths {
         post?: never;
         /** Remove a single Minecraft UUID binding from a user (admin only). */
         delete: operations["unlinkAccount"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/account/link/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List configured sources for staff game-role designation. */
+        get: operations["linkSources"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/account/link/profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Look up a role by name or native UUID in a selected authentication source.
+         * @description Staff-only preview; role lookup does not prove account ownership and creates no binding.
+         */
+        get: operations["lookupProfile"];
+        put?: never;
+        /**
+         * Designate a role as the authenticated staff account's game identity.
+         * @description Requires a fresh login factor. Re-queries the native UUID, maps it on the server, and binds only to the caller. Other users' bindings cannot be overwritten. Panel initialization does not require this operation.
+         */
+        post: operations["linkProfile"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -8946,6 +8987,153 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Error"];
                 };
+            };
+        };
+    };
+    linkSources: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sources in game-authentication priority order; no upstream URLs are exposed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        sources: {
+                            tag: string;
+                            lookup_available: boolean;
+                        }[];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    lookupProfile: {
+        parameters: {
+            query: {
+                source: string;
+                profile: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Role found. mc_uuid uses the exact same per-source mapping as game authentication. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        source: string;
+                        name: string;
+                        profile_uuid: string;
+                        /** Format: uuid */
+                        mc_uuid: string;
+                        /** @enum {string} */
+                        auth_source: "mojang" | "thirdparty";
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description No matching role in the selected source. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Source returned an invalid or mismatched profile. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Source unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    linkProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    source: string;
+                    /** Format: uuid */
+                    profile_uuid: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Role linked, idempotently for the same user and UUID. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        linked: boolean;
+                        /** Format: uuid */
+                        mc_uuid: string;
+                        /** @enum {string} */
+                        auth_source: "mojang" | "thirdparty";
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Role no longer exists. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Role already linked to another user */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Source returned an invalid or mismatched profile. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Source unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

@@ -104,6 +104,7 @@ func TestRootSummaryReadsAlertRoute(t *testing.T) {
 		return route
 	}
 	m = drive(t, m, storageResultMsg{method: storageLocal, detail: "local disk"})
+	m = drive(t, m, ownerResultMsg{username: "owner", setupTokenURL: "https://op.console.example.com/setup?token=t0ken"})
 	sum, ok := m.screen.(*summaryModel)
 	if !ok || sum.alerts == nil || sum.alerts.relay != "" {
 		t.Fatalf("summary after storage: %T %+v", m.screen, sum)

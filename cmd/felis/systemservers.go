@@ -4,13 +4,11 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"time"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/naming"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -560,75 +558,6 @@ func convergeDerivedEnv(existing, desired *v1alpha1.MinecraftServer) []string {
 	return changes
 }
 
-// The login gate is a hard prerequisite of the Owner bind, so setup waits for it
-// rather than racing it. The ceiling covers a cold image pull on a fresh node;
-// the poll is fast enough that a warm start feels immediate.
-const (
-	loginGateReadyTimeout = 5 * time.Minute
-	loginGatePollInterval = 3 * time.Second
-)
-
-// awaitLoginGateReady blocks until the login system server reports status.ready.
-//
-// The Owner claims their seat by JOINING the game and running /link, so the gate
-// being up is not a nicety — it is the precondition for the very next thing setup
-// asks of the operator. progress is called on each phase change so the caller can
-// show movement during a cold image pull; it may be nil.
-func awaitLoginGateReady(ctx context.Context, cl client.Client, namespace string, timeout, poll time.Duration, progress func(v1alpha1.Phase)) error {
-	key := client.ObjectKey{Namespace: namespace, Name: naming.SystemLoginServer}
-	deadline := time.Now().Add(timeout)
-	last := v1alpha1.Phase("")
-	for {
-		var ms v1alpha1.MinecraftServer
-		switch err := cl.Get(ctx, key, &ms); {
-		case err == nil:
-			if ms.Status.Ready {
-				return nil
-			}
-			if ms.Status.Phase != last {
-				last = ms.Status.Phase
-				if progress != nil {
-					progress(last)
-				}
-			}
-			// The operator only marks Failed once its OWN startup deadline has already
-			// elapsed, so Failed is a settled verdict rather than a transient — sitting
-			// out the rest of our timeout on top of it would only hide the reason.
-			if ms.Status.Phase == v1alpha1.PhaseFailed {
-				return fmt.Errorf("the login gate failed to start: %s", readyConditionMessage(&ms))
-			}
-		case !apierrors.IsNotFound(err):
-			return err
-		}
-		if !time.Now().Before(deadline) {
-			return fmt.Errorf("timed out after %s waiting for the login gate to become ready (last phase: %s)", timeout, phaseOrPending(last))
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(poll):
-		}
-	}
-}
-
-// readyConditionMessage is the operator's own account of why the gate is not
-// ready — far more useful to an operator than "phase: Failed".
-func readyConditionMessage(ms *v1alpha1.MinecraftServer) string {
-	if c := meta.FindStatusCondition(ms.Status.Conditions, v1alpha1.ConditionReady); c != nil && c.Message != "" {
-		return c.Message
-	}
-	return "no Ready condition was reported"
-}
-
-// phaseOrPending names the empty phase, which means the operator has not
-// reconciled the server yet (commonly: the operator itself is not running).
-func phaseOrPending(p v1alpha1.Phase) string {
-	if p == "" {
-		return "not yet reconciled — is the felis operator running?"
-	}
-	return string(p)
-}
-
 // provisionSecretReplicas copies the Secrets workload pods mount from the control
 // namespace into the namespaces those pods run in. The proxy's felis-service-token
 // is not among them: it lives in the control namespace and on the host, and a copy
@@ -793,25 +722,4 @@ func ensureSecretReplica(ctx context.Context, cl client.Client, controlNamespace
 		return systemServerOutcome{name: name, err: err}
 	}
 	return systemServerOutcome{name: name, created: true, available: true}
-}
-
-func requiredProvisioningError(outcomes []systemServerOutcome) error {
-	required := map[string]struct{}{
-		"limbo-token (minecraft ns)":       {},
-		"forwarding-secret (minecraft ns)": {},
-		naming.SystemLoginServer:           {},
-	}
-	for _, o := range outcomes {
-		if o.err != nil {
-			return fmt.Errorf("%s: %w", o.name, o.err)
-		}
-		if _, ok := required[o.name]; ok && !o.available {
-			reason := o.skipped
-			if reason == "" {
-				reason = "object was not created"
-			}
-			return fmt.Errorf("%s unavailable: %s", o.name, reason)
-		}
-	}
-	return nil
 }

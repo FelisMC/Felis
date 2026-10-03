@@ -26,8 +26,9 @@ type runtimeConfig struct {
 	PanelHostname string `json:"panelHostname,omitempty"`
 	AdminHostname string `json:"adminHostname,omitempty"`
 	// GamePort is the public Minecraft port, absent when it is the default 25565.
-	GamePort int       `json:"gamePort,omitempty"`
-	Build    buildInfo `json:"build"`
+	GamePort    int       `json:"gamePort,omitempty"`
+	GameVersion string    `json:"gameVersion,omitempty"`
+	Build       buildInfo `json:"build"`
 }
 
 // buildInfo is the resolved build stamp the panel renders in its version badge.
@@ -113,7 +114,7 @@ func parseBuildVersion(raw string) buildInfo {
 // right surface (player console vs SysAdmin console) without a rebuild. gamePort
 // is the public Minecraft port ([velocity] game_port), which the SPA appends to
 // the server addresses players copy; 0 or 25565 leaves them bare.
-func Handler(api http.Handler, rootDomain, panelHost, adminHost string, gamePort int, version string, distributed ...bool) http.Handler {
+func Handler(api http.Handler, rootDomain, panelHost, adminHost string, gamePort int, gameVersion, version string, distributed ...bool) http.Handler {
 	files, err := fs.Sub(static, "static")
 	if err != nil {
 		panic(err)
@@ -125,6 +126,7 @@ func Handler(api http.Handler, rootDomain, panelHost, adminHost string, gamePort
 		panelHostname: panelHost,
 		adminHostname: adminHost,
 		gamePort:      publicGamePort(gamePort),
+		gameVersion:   gameVersion,
 		build:         parseBuildVersion(version),
 		files:         files,
 		fileServer:    http.FileServer(http.FS(files)),
@@ -151,6 +153,7 @@ type handler struct {
 	panelHostname string
 	adminHostname string
 	gamePort      int
+	gameVersion   string
 	build         buildInfo
 	files         fs.FS
 	fileServer    http.Handler
@@ -231,6 +234,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			PanelHostname: h.panelHostname,
 			AdminHostname: h.adminHostname,
 			GamePort:      h.gamePort,
+			GameVersion:   h.gameVersion,
 			Build:         h.build,
 		})
 	case h.hasStaticFile(r.URL.Path):

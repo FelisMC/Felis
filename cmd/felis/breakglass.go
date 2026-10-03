@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -93,11 +94,9 @@ type ownerStore interface {
 	// role=owner identity (migration 0011 adds that role); the two are the only
 	// staff roles.
 	InsertOperator(ctx context.Context, id, username, email string) error
-	// CompleteOwnerSetup atomically consumes the in-game link code, creates or
-	// promotes the bound Owner, enables local auth, and stores the one-time setup
-	// token. A failure rolls all four writes back so setup is always retryable.
-	CompleteOwnerSetup(ctx context.Context, newUserID, code string, now time.Time,
-		tokenHash string, tokenExpiresAt time.Time) (userID, mcUUID, authSource string, err error)
+	// CompleteOwnerSetup creates or resumes the first panel login atomically.
+	CompleteOwnerSetup(ctx context.Context, newUserID string, now time.Time,
+		tokenHash string, tokenExpiresAt time.Time) (userID, username string, err error)
 	SetSetting(ctx context.Context, key string, value []byte) error
 	// Audit records the break-glass accountability row.
 	Audit(ctx context.Context, e api.AuditEntry) error
@@ -368,7 +367,7 @@ type breakGlassOp struct {
 // breakGlassOutcome is what performBreakGlass reports back to the TUI.
 type breakGlassOutcome struct {
 	setupTokenURL string // non-empty when setup minted a one-time first-login URL
-	ownerIdentity string // verified Minecraft UUID for the setup Owner-bind path
+	ownerUsername string // panel Owner created or resumed by setup
 	auditErr      error  // non-nil if the accountability row could not be written
 }
 
@@ -408,25 +407,12 @@ func newSetupToken() (raw, hash string, err error) {
 	return raw, hex.EncodeToString(sum[:]), nil
 }
 
-// performSetupMCBind is the `felis setup` Owner-establishment path: the operator
-// binds their Minecraft account via a one-time link code the login gate handed
-// them in-game, the bound user is promoted to role='owner' (passwordless Owner),
-// local auth is enabled, and a one-time setup URL is minted for the first web
-// login where the Owner verifies email / enrolls a passkey. adminHostname is the
-// operator-console host the URL points at (op.console.<root>): the Owner is staff,
-// so first-run onboarding belongs on the operator face, not the player panel. The
-// passkey verifier's RP id is the panel host, but its permitted origins now include
-// op.console (cmd/felis/api.go), so enrollment on op.console is a valid ceremony —
-// one binding that works on both faces. osUser is recorded as the accountable actor.
-//
-// Local auth is as load-bearing here as it is in break-glass, and for a sharper
-// reason: an MC-bound Owner has no password AND no email, so the setup token is
-// their ONLY door. CompleteOwnerSetup therefore commits the identity bind, auth
-// toggle, and token together; any failed write leaves the link code retryable.
-func performSetupMCBind(ctx context.Context, s ownerStore, code, adminHostname, osUser string) (breakGlassOutcome, error) {
-	code = strings.TrimSpace(strings.ToUpper(code))
-	if code == "" {
-		return breakGlassOutcome{}, errors.New("link code is required")
+// performSetupOwner establishes panel access under the caller's host-root
+// authority. Minecraft identity can be linked later from the authenticated panel.
+func performSetupOwner(ctx context.Context, s ownerStore, panelURL, osUser string) (breakGlassOutcome, error) {
+	base, err := url.Parse(strings.TrimRight(panelURL, "/"))
+	if err != nil || base.Scheme != "https" || base.Host == "" {
+		return breakGlassOutcome{}, errors.New("a configured HTTPS operator console is required")
 	}
 	newID := newOwnerID()
 	if newID == "" {
@@ -437,46 +423,19 @@ func performSetupMCBind(ctx context.Context, s ownerStore, code, adminHostname, 
 		return breakGlassOutcome{}, err
 	}
 	now := time.Now()
-	_, mcUUID, authSource, err := s.CompleteOwnerSetup(
-		ctx, newID, code, now, hash, now.Add(setupTokenTTL))
+	userID, username, err := s.CompleteOwnerSetup(ctx, newID, now, hash, now.Add(setupTokenTTL))
+	out := breakGlassOutcome{ownerUsername: username}
 	if err != nil {
-		return breakGlassOutcome{}, fmt.Errorf("complete owner setup: %w", err)
+		return out, err
 	}
-	// The load-bearing writes committed together above. Accountability remains
-	// best-effort: an unhappy audit sink never costs the operator their install.
-	out := breakGlassOutcome{
-		ownerIdentity: mcUUID,
-		auditErr:      auditSetupMCBind(ctx, s, osUser, mcUUID, authSource),
-	}
-	host := strings.TrimSpace(adminHostname)
-	if host == "" {
-		host = "op.console.localhost"
-	}
-	out.setupTokenURL = "https://" + host + "/setup?token=" + raw
+	base.Path = "/setup"
+	base.RawQuery = url.Values{"token": {raw}}.Encode()
+	out.setupTokenURL = base.String()
+	blob, _ := json.Marshal(map[string]string{"os_user": osUser, "user_id": userID, "username": username})
+	out.auditErr = s.Audit(ctx, api.AuditEntry{
+		Actor: osUser, Source: "setup", Action: "setup.owner_login", Payload: blob,
+	})
 	return out, nil
-}
-
-// auditSetupMCBind records who claimed the Owner seat at setup. It carries the
-// Minecraft identity rather than a username because that IS the evidence: the
-// login gate only issues a link code to a player it authenticated, so mc_uuid +
-// auth_source say which account was verified and by whom. Actor is the OS user who
-// ran `felis setup` — honest attribution, not proof (root can edit the row).
-func auditSetupMCBind(ctx context.Context, s ownerStore, osUser, mcUUID, authSource string) error {
-	blob, err := json.Marshal(map[string]any{
-		"mode":        "setup",
-		"os_user":     osUser,
-		"mc_uuid":     mcUUID,
-		"auth_source": authSource,
-	})
-	if err != nil {
-		return err
-	}
-	return s.Audit(ctx, api.AuditEntry{
-		Actor:   osUser,
-		Source:  "setup",
-		Action:  "setup.owner_bind",
-		Payload: blob,
-	})
 }
 
 // auditBreakGlass writes the break-glass accountability row. The actor is the
@@ -569,7 +528,6 @@ type breakGlassResult struct {
 	// from a cancel and reports itself as one.
 	alreadySetUp  bool
 	isOperator    bool // an Operator was added rather than the Owner provisioned
-	ownerSkipped  bool // setup's Owner step was skipped; no Owner is bound
 	mode          string
 	accountable   string
 	osUser        string
@@ -632,13 +590,9 @@ func runBreakGlassTUI(ctx context.Context, s ownerStore, db config.DatabaseConfi
 	return runConsoleTUI(ctx, s, db, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser, adminExists, consoleModeBreakGlass, recovery)
 }
 
-// runSetupTUI never reaches recovery: setup with a staff account present lands on
-// the status screen, so it has no relay to hand over.
-// gameAddr is where the Owner step tells the operator to join (setupGameAddress).
-func runSetupTUI(ctx context.Context, s ownerStore, db config.DatabaseConfig, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser, gameAddr string, adminExists bool) (breakGlassResult, error) {
-	rm := newConsoleRoot(ctx, s, db, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser, adminExists, consoleModeSetup, recoveryConfig{})
-	rm.gameAddr = gameAddr
-	return runConsoleRoot(rm)
+// runSetupTUI configures deployment before issuing the first panel login link.
+func runSetupTUI(ctx context.Context, s ownerStore, db config.DatabaseConfig, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser string, adminExists bool) (breakGlassResult, error) {
+	return runConsoleRoot(newConsoleRoot(ctx, s, db, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser, adminExists, consoleModeSetup, recoveryConfig{}))
 }
 
 // newConsoleRoot is the console's root model as the host runs it: the summary

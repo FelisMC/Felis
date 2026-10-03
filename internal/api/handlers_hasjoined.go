@@ -78,6 +78,7 @@ type AuthSource struct {
 	Tag      string
 	Prefix   string
 	URL      string
+	APIURL   string // optional Yggdrasil API root for role lookup
 	Identity bool
 }
 
@@ -145,15 +146,12 @@ func (a *API) handleHasJoined(w http.ResponseWriter, r *http.Request) {
 	// nor onto another source's. resolveHasJoined has already screened both shapes and
 	// skipped unusable ones as failed; the two guards below are the last line before
 	// anything leaves, kept even though nothing reaches them.
-	var canonical uuid.UUID
-	if src.Identity {
-		id, err := uuid.Parse(prof.ID)
-		if err != nil {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		canonical = id
-	} else {
+	canonical, err := canonicalProfileUUID(src, prof.ID)
+	if err != nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if !src.Identity {
 		// A third-party source is untrusted input, its name included: nothing stops a
 		// hostile or sloppy root from answering with "§4admin", an empty string, or 200
 		// characters, all of which must not be relayed straight into the proxy's player
@@ -162,7 +160,6 @@ func (a *API) handleHasJoined(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		canonical = uuid.NewMD5(felisAuthNS, []byte(src.Tag+":"+prof.ID))
 
 		// Give a Mojang player's name back to the Mojang player. The UUID rewrite above
 		// already keeps the two apart as identities, but the proxy's player registry is
@@ -222,6 +219,15 @@ func prefixedName(prefix, name string) string {
 		name = name[:keep]
 	}
 	return p + name
+}
+
+// canonicalProfileUUID is shared by game login and staff-initiated role binding.
+// Keep the source's native ID byte-for-byte: existing third-party identities use it.
+func canonicalProfileUUID(src AuthSource, nativeID string) (uuid.UUID, error) {
+	if src.Identity {
+		return uuid.Parse(nativeID)
+	}
+	return uuid.NewMD5(felisAuthNS, []byte(src.Tag+":"+nativeID)), nil
 }
 
 // mojangProfileAPI answers the one question that decides a rename: is this username

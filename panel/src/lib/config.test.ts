@@ -27,7 +27,7 @@ afterEach(() => {
 
 describe("loadConfig", () => {
   it("reads the server's config and build stamp", async () => {
-    serve({ apiBase: "/api/v1", rootDomain: "mc.example", adminHostname: "op.console.mc.example", build });
+    serve({ apiBase: "/api/v1", rootDomain: "mc.example", adminHostname: "op.console.mc.example", gameVersion: "26.3", build });
     const { loadConfig } = await freshConfig();
 
     const cfg = await loadConfig();
@@ -37,6 +37,7 @@ describe("loadConfig", () => {
       rootDomain: "mc.example",
       panelHostname: undefined,
       adminHostname: "op.console.mc.example",
+      gameVersion: "26.3",
       build,
     });
     expect(cfg.fallback).toBeUndefined();

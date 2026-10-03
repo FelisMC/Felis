@@ -18,7 +18,7 @@ func TestHandlerServesPanelAndConfig(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusTeapot)
 	})
-	h := Handler(api, "example.test", "console.example.test", "op.console.example.test", 0, "v1.2.3")
+	h := Handler(api, "example.test", "console.example.test", "op.console.example.test", 0, "26.3", "v1.2.3")
 
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
@@ -41,7 +41,7 @@ func TestHandlerServesPanelAndConfig(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &cfg); err != nil {
 		t.Fatalf("decode config: %v", err)
 	}
-	if cfg.APIBase != "/api/v1" || cfg.RootDomain != "example.test" {
+	if cfg.APIBase != "/api/v1" || cfg.RootDomain != "example.test" || cfg.GameVersion != "26.3" {
 		t.Fatalf("config = %+v", cfg)
 	}
 	// The tiering plumbing surfaces the two console hostnames so one bundle can
@@ -69,7 +69,7 @@ func TestHandlerServesPanelAndConfig(t *testing.T) {
 // /config.json carries it, except when a bare hostname already reaches the proxy.
 func TestHandlerPublishesNonDefaultGamePort(t *testing.T) {
 	for _, tc := range []struct{ in, want int }{{0, 0}, {25565, 0}, {25570, 25570}} {
-		h := Handler(http.NotFoundHandler(), "example.test", "", "", tc.in, "v1.2.3")
+		h := Handler(http.NotFoundHandler(), "example.test", "", "", tc.in, "", "v1.2.3")
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/config.json", nil))
 		var cfg map[string]any
@@ -115,7 +115,7 @@ func TestParseBuildVersionSplitsBothStampForms(t *testing.T) {
 // its hash (and nothing else inline), cannot be framed, and cache by name:
 // hashed assets forever, the page itself never without revalidation.
 func TestHandlerSetsPageSecurityAndCacheHeaders(t *testing.T) {
-	h := Handler(http.NotFoundHandler(), "example.test", "", "", 0, "v1.2.3")
+	h := Handler(http.NotFoundHandler(), "example.test", "", "", 0, "26.3", "v1.2.3")
 
 	w := httptest.NewRecorder()
 	// Through the tunnel: TLS to the origin as well, the edge's scheme in XFP.

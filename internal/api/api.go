@@ -643,6 +643,11 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		// authenticated operation.
 		{Method: "POST", Pattern: "/api/v1/account/link/start", SetupAllowed: true, h: a.handleLinkStart},
 		{Method: "POST", Pattern: "/api/v1/account/link/verify", SetupAllowed: true, h: a.handleLinkVerify},
+		// Staff can designate their own game identity after panel setup. Players
+		// retain the in-game proof flow above.
+		{Method: "GET", Pattern: "/api/v1/account/link/sources", Admin: true, h: a.handleLinkSources},
+		{Method: "GET", Pattern: "/api/v1/account/link/profile", Admin: true, h: a.handleLookupProfile},
+		{Method: "POST", Pattern: "/api/v1/account/link/profile", Admin: true, h: a.handleLinkProfile},
 		// Email verification (spec §B2 onboarding), web side: /start mints+delivers a
 		// one-time code for the caller's chosen address, /verify redeems it and flips
 		// email_verified. App-tier like the link routes — proving control of your own
