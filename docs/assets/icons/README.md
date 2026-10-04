@@ -20,6 +20,8 @@
 
 网页资源已放入 `panel/public/`，并由 `panel/index.html` 引用：SVG / ICO / PNG favicon、180 px Apple Touch Icon、Safari 固定标签图标，以及 192 / 512 px 普通和 maskable 图标。`site.webmanifest` 提供应用名称和图标元数据，不提供离线缓存。
 
+登录页、桌面侧栏和手机导航通过 `panel/src/assets/felis-logo.svg` 使用透明标识。构建时生成带内容哈希的文件名，重新导出会同步更新这个文件。
+
 修改矢量原稿后可重新导出；需要 Node.js 和 `sharp`，macOS 的 ICNS 导出还使用系统 `iconutil`。在仓库根目录运行：
 
 ```sh

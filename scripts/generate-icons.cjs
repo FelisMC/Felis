@@ -9,6 +9,7 @@ const root = path.resolve(__dirname, "..");
 const assets = path.join(root, "docs/assets");
 const kit = path.join(assets, "icons");
 const web = path.join(root, "panel/public");
+const panelAssets = path.join(root, "panel/src/assets");
 const sizes = [16, 20, 24, 32, 40, 48, 64, 96, 128, 180, 192, 256, 512, 1024];
 
 function svg(defs, content, viewBox = "0 0 1024 1024", width = 1024, height = width) {
@@ -29,8 +30,9 @@ async function render(source, size, destination, background) {
 }
 
 async function main() {
-  await Promise.all([kit, `${kit}/png`, `${kit}/felis.iconset`, `${web}/icons`].map((dir) => fs.mkdir(dir, { recursive: true })));
+  await Promise.all([kit, `${kit}/png`, `${kit}/felis.iconset`, `${web}/icons`, panelAssets].map((dir) => fs.mkdir(dir, { recursive: true })));
   const source = await fs.readFile(`${assets}/felis-logo.svg`, "utf8");
+  await fs.writeFile(`${panelAssets}/felis-logo.svg`, source);
   const defs = source.match(/<defs>[\s\S]*?<\/defs>/)[0];
   const art = source.match(/<g id="felis">[\s\S]*<\/g>/)[0];
   const icon = svg(defs, place(art));
