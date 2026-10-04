@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { LobbyPage } from "./LobbyPage";
@@ -25,10 +25,39 @@ function page(space = "lobby") {
   render(<MemoryRouter initialEntries={[`/admin/lobby${space ? `?space=${space}` : ""}`]}><LobbyPage /></MemoryRouter>);
 }
 
+async function readyField(label: string) {
+  const field = await screen.findByLabelText(label) as HTMLInputElement;
+  await waitFor(() => expect(field.disabled).toBe(false));
+  return field;
+}
+
 describe("LobbyPage", () => {
+  it.each([["login", "Login book title"], ["lobby", "English menu title"]])("shows %s fields before either status or settings finish loading", async (space, label) => {
+    let resolveRead!: (value: { content: string; sha256: string }) => void;
+    let resolveStatus!: (value: object) => void;
+    calls.readServerFile.mockReturnValue(new Promise((resolve) => { resolveRead = resolve; }));
+    calls.status.mockReturnValue(new Promise((resolve) => { resolveStatus = resolve; }));
+    page(space);
+    const field = screen.getByLabelText(label) as HTMLInputElement;
+    expect(field.value).toBe("");
+    expect(field.disabled).toBe(true);
+    expect(screen.getByText("Loading settings. Editing will be available once loaded.")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Save settings" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Restart & apply" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(calls.readServerFile).toHaveBeenCalledWith(space, "felis-experience.json");
+    await act(async () => resolveRead({ content: btoa(JSON.stringify({ bookTitle: "My Login", menuTitleEn: "My Lobby" })), sha256: "read-hash" }));
+    await readyField(label);
+    expect(field.value).toBe(space === "login" ? "My Login" : "My Lobby");
+    expect(screen.queryByText("Loading settings. Editing will be available once loaded.")).toBeNull();
+    expect((screen.getByRole("button", { name: "Restart & apply" }) as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => resolveStatus({ name: space, phase: "Running", desiredState: "Running", ready: true }));
+    expect((screen.getByRole("button", { name: "Restart & apply" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(calls.writeServerFile).not.toHaveBeenCalled();
+  });
+
   it("saves with the read hash and preserves unknown plugin settings", async () => {
     page();
-    fireEvent.change(await screen.findByLabelText("English menu title"), { target: { value: "My Network" } });
+    fireEvent.change(await readyField("English menu title"), { target: { value: "My Network" } });
     await userEvent.click(screen.getByRole("button", { name: "Save settings" }));
     await screen.findByText("Saved. Settings apply on the next start or restart.");
     const [name, path, content, hash] = calls.writeServerFile.mock.calls[0];
@@ -39,7 +68,7 @@ describe("LobbyPage", () => {
   it("uses defaults for a missing file and creates without overwriting a concurrent file", async () => {
     calls.readServerFile.mockRejectedValue({ status: 404, code: "not_found" });
     page("login");
-    fireEvent.change(await screen.findByLabelText("Login timeout (30–3600 seconds)"), { target: { value: "900" } });
+    fireEvent.change(await readyField("Login timeout (30–3600 seconds)"), { target: { value: "900" } });
     await userEvent.click(screen.getByRole("button", { name: "Save settings" }));
     await waitFor(() => expect(calls.createServerFile).toHaveBeenCalled());
     expect(calls.createServerFile.mock.calls[0].slice(0, 2)).toEqual(["login", "felis-experience.json"]);
@@ -56,7 +85,7 @@ describe("LobbyPage", () => {
   it("saves while running and restarts only when requested", async () => {
     calls.status.mockResolvedValue({ name: "lobby", phase: "Running", desiredState: "Running", ready: true, playersOnline: 0 });
     page();
-    fireEvent.change(await screen.findByLabelText("English menu title"), { target: { value: "My Network" } });
+    fireEvent.change(await readyField("English menu title"), { target: { value: "My Network" } });
     expect((screen.getByRole("button", { name: "Restart & apply" }) as HTMLButtonElement).disabled).toBe(true);
     await userEvent.click(screen.getByRole("button", { name: "Save settings" }));
     await screen.findByText("Saved. Settings apply on the next start or restart.");
@@ -69,7 +98,7 @@ describe("LobbyPage", () => {
     calls.status.mockResolvedValue({ name: "lobby", phase: "Running", desiredState: "Running", ready: true, playersOnline: 2 });
     calls.restart.mockRejectedValue({ status: 409, code: "maintenance_in_progress", message: "busy" });
     page();
-    await screen.findByLabelText("English menu title");
+    await readyField("English menu title");
     await userEvent.click(screen.getByRole("button", { name: "Restart & apply" }));
     const dialog = await screen.findByRole("dialog", { name: "Restart this space?" });
     expect(calls.restart).not.toHaveBeenCalled();
@@ -82,7 +111,7 @@ describe("LobbyPage", () => {
   it("keeps the draft when another editor changed the file", async () => {
     calls.writeServerFile.mockRejectedValue({ status: 409, code: "file_changed" });
     page();
-    fireEvent.change(await screen.findByLabelText("English menu title"), { target: { value: "My Network" } });
+    fireEvent.change(await readyField("English menu title"), { target: { value: "My Network" } });
     await userEvent.click(screen.getByRole("button", { name: "Save settings" }));
     await screen.findByRole("alert");
     expect((screen.getByLabelText("English menu title") as HTMLInputElement).value).toBe("My Network");
@@ -91,7 +120,7 @@ describe("LobbyPage", () => {
 
   it("confirms a switch with unsaved edits", async () => {
     page();
-    fireEvent.change(await screen.findByLabelText("English menu title"), { target: { value: "My Network" } });
+    fireEvent.change(await readyField("English menu title"), { target: { value: "My Network" } });
     await userEvent.click(screen.getByRole("button", { name: "Login space" }));
     await screen.findByRole("dialog", { name: "Discard unsaved settings?" });
     expect(calls.status).not.toHaveBeenCalledWith("login");
@@ -100,10 +129,16 @@ describe("LobbyPage", () => {
     expect(calls.writeServerFile).not.toHaveBeenCalled();
   });
 
-  it("does not offer to save malformed JSON", async () => {
+  it("keeps the form disabled after malformed JSON and enables it after retry", async () => {
     calls.readServerFile.mockResolvedValue({ content: btoa("{broken"), sha256: "hash" });
     page();
     await screen.findByRole("alert");
-    expect(screen.queryByRole("button", { name: "Save settings" })).toBeNull();
+    expect((screen.getByLabelText("English menu title") as HTMLInputElement).disabled).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(calls.writeServerFile).not.toHaveBeenCalled();
+    calls.readServerFile.mockResolvedValue({ content: btoa('{"menuTitleEn":"Recovered title"}'), sha256: "hash" });
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect((await readyField("English menu title")).value).toBe("Recovered title");
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });

@@ -53,6 +53,24 @@ type fakeFileEditor struct {
 	ops []fileedit.OpState
 }
 
+func TestFileBrowserStaysOnInternalFaceWithScopedAuthentication(t *testing.T) {
+	a := newTestAPI(newFakeRepo(), newFakeCluster())
+	a.Internal = CallerTokens{CallerVelocity: "service-token"}
+	a.External = staticExternal{p: &Principal{UserID: "owner", Role: "owner", ViaAdminAccess: true}}
+	a.FileBrowser = &fileedit.Browser{}
+	for _, h := range []http.Handler{a.InternalHandler(), a.ExternalHandler()} {
+		w := do(h, "POST", fileedit.BrowserRoute+"unknown", `{}`, map[string]string{"Authorization": "Bearer service-token"})
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("service token opened a browser: status %d (%s)", w.Code, w.Body.String())
+		}
+	}
+	a.FileBrowser = nil
+	w := do(a.InternalHandler(), "POST", fileedit.BrowserRoute+"unknown", `{}`, nil)
+	if w.Code != http.StatusServiceUnavailable || decodeErr(t, w) != "files_unavailable" {
+		t.Fatalf("unconfigured browser: status %d (%s)", w.Code, w.Body.String())
+	}
+}
+
 func (f *fakeFileEditor) List(_ context.Context, server, path string) (fileedit.Listing, error) {
 	f.calls++
 	f.gotServer, f.gotPath = server, path

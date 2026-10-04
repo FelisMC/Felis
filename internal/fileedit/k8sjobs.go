@@ -18,12 +18,10 @@ import (
 )
 
 // pollInterval is how often the runner re-Lists Pods while waiting for the file
-// Job to finish. It is a POLL rather than a Watch because felis-api holds
+// container to start. It is a POLL rather than a Watch because felis-api holds
 // pods:list and NOT pods:watch (internal/platform.APIMinecraftRole) — establishing
-// a watch would need a permission this design exists to avoid. Half a second is
-// well inside the human-perceptible floor for an operation already dominated by
-// Pod scheduling, while keeping the request count on a slow image pull modest.
-const pollInterval = 500 * time.Millisecond
+// a watch would need a permission this design exists to avoid.
+const pollInterval = 150 * time.Millisecond
 
 // maxLogBytes bounds what the runner will buffer from a Pod's log. The payload is
 // at most a base64-encoded MaxReadBytes (≈4/3 of 1 MiB) plus the JSON envelope, so
@@ -45,12 +43,11 @@ const maxLogBytes = 4 << 20
 // the Job create is available on both — so one client covers all three calls
 // instead of the binding carrying two.
 //
-// INTEGRATION-ONLY: like K8sLogStreamer and K8sCluster this needs a live cluster;
-// it compiles here but is exercised only against one, never by the hermetic test
-// suite. The Oracle verifies the layer above it (Editor orchestration and error
-// mapping) against a fake Runner, and the Job shape via the pure jobspec.
+// The transport is tested against the Kubernetes HTTP API shape; the Editor
+// tests separately verify orchestration and error mapping against a fake Runner.
 type K8sRunner struct {
-	cs kubernetes.Interface
+	cs      kubernetes.Interface
+	Browser *Browser
 }
 
 // NewK8sRunner builds a Runner over cs. Every per-operation parameter — the
@@ -60,14 +57,23 @@ func NewK8sRunner(cs kubernetes.Interface) *K8sRunner {
 	return &K8sRunner{cs: cs}
 }
 
-// Run creates the file Job, waits for its Pod to reach a terminal phase, and
-// returns the JSON payload from the ResultPrefix line of that Pod's log.
+// Run streams read results as soon as they are printed. Mutations still wait
+// for termination so returning success does not leave the next write racing
+// the cluster-side world lock.
 //
 // The Job name carries a fresh random OpID (FilesJobName), so a create collision is
 // not an expected condition the way it is for restore — an AlreadyExists here means
 // a 64-bit collision inside one TTL window and is reported rather than absorbed,
 // because absorbing it would mean returning ANOTHER operation's output.
 func (k *K8sRunner) Run(ctx context.Context, p JobParams) ([]byte, error) {
+	if k.Browser != nil && !mutates(p.Op) {
+		payload, err := k.Browser.Run(ctx, p, k.Start)
+		// At capacity, retain the bounded one-shot path instead of starting
+		// more idle workers. All reads still use the same containment checks.
+		if !errors.Is(err, errBrowserFull) {
+			return payload, err
+		}
+	}
 	job, err := FilesJob(p)
 	if err != nil {
 		return nil, err
@@ -81,24 +87,30 @@ func (k *K8sRunner) Run(ctx context.Context, p JobParams) ([]byte, error) {
 		return nil, err
 	}
 
-	log, err := k.podLog(ctx, p.Namespace, pod.Name)
+	stream, err := k.cs.CoreV1().Pods(p.Namespace).GetLogs(pod.Name, &corev1.PodLogOptions{
+		Container: containerName, Follow: true,
+	}).Stream(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("fileedit: read file job log: %w", err)
 	}
-
-	payload, ok := extractResult(log)
-	if !ok {
-		// No marked line: the entrypoint died before printing (an unmountable volume,
-		// an OOM kill, a deadline). The log tail travels in the error for the operator's
-		// benefit — this error reaches felis-api's logs, while the caller gets the
-		// generic 500 writeError produces, so no node detail leaks to the browser.
-		return nil, fmt.Errorf("fileedit: file job %s produced no result (phase %s): %s",
-			job.Name, pod.Status.Phase, tail(log))
+	defer stream.Close()
+	sc := bufio.NewScanner(io.LimitReader(stream, maxLogBytes))
+	sc.Buffer(make([]byte, 0, 64*1024), maxLogBytes)
+	var last string
+	for sc.Scan() {
+		if payload, ok := strings.CutPrefix(sc.Text(), ResultPrefix); ok {
+			return []byte(payload), nil
+		}
+		last = sc.Text()
 	}
-	return payload, nil
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("fileedit: read file job result: %w", err)
+	}
+	return nil, fmt.Errorf("fileedit: file job %s produced no result (phase %s): %s",
+		job.Name, pod.Status.Phase, tail(last))
 }
 
-// awaitPod polls until the operation's Pod reaches a terminal phase. It selects by
+// awaitPod polls until the file container has started (or failed). It selects by
 // the per-invocation LabelOpID, so it can never observe a different operation's Pod
 // — the reason that label exists.
 //
@@ -107,7 +119,7 @@ func (k *K8sRunner) Run(ctx context.Context, p JobParams) ([]byte, error) {
 // is too large) is printed and then exited on cleanly, and even a genuinely failed
 // Pod may have printed a diagnosable result first. Deciding what the outcome MEANS
 // is the caller's job (Run reads the printed result); this function only decides
-// when there is nothing left to wait for.
+// when its log can be opened without a ContainerCreating refusal.
 func (k *K8sRunner) awaitPod(ctx context.Context, p JobParams) (*corev1.Pod, error) {
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
@@ -120,9 +132,17 @@ func (k *K8sRunner) awaitPod(ctx context.Context, p JobParams) (*corev1.Pod, err
 			return nil, fmt.Errorf("fileedit: find file job pod: %w", err)
 		}
 		for i := range pods.Items {
-			switch pods.Items[i].Status.Phase {
+			pod := &pods.Items[i]
+			if !mutates(p.Op) {
+				for _, c := range pod.Status.ContainerStatuses {
+					if c.Name == containerName && (c.State.Running != nil || c.State.Terminated != nil) {
+						return pod, nil
+					}
+				}
+			}
+			switch pod.Status.Phase {
 			case corev1.PodSucceeded, corev1.PodFailed:
-				return &pods.Items[i], nil
+				return pod, nil
 			}
 		}
 

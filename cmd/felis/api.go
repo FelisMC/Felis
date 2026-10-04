@@ -342,11 +342,15 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	// orphaned (the index is in memory), so the stage starts empty.
 	var files api.FileEditor
 	var fileStage *fileedit.Stage
+	var fileBrowser *fileedit.Browser
 	if felisImage != "" {
 		fcfg := fileEditConfig(cfg, felisImage)
 		fcfg.ResolveWorld = worldResolver
+		fileBrowser = &fileedit.Browser{BaseURL: internalAPIBaseURL()}
+		runner := fileedit.NewK8sRunner(clientset)
+		runner.Browser = fileBrowser
 		files = &fileedit.Editor{
-			Runner: fileedit.NewK8sRunner(clientset),
+			Runner: runner,
 			Config: fcfg,
 		}
 		fileStage = &fileedit.Stage{Dir: fileStagingDir()}
@@ -416,6 +420,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		RestoreChains: jobStatus,
 		Files:         files,
 		FileStage:     fileStage,
+		FileBrowser:   fileBrowser,
 		// The file Job fetches an upload from here; it runs in the minecraft
 		// namespace, where the internal face is reachable like it is for the login
 		// gate.

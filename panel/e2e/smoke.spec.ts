@@ -1,5 +1,27 @@
 import { test, expect, t, expectFitsScreen } from "./fixtures";
 
+test("space settings keep the form visible while reading configuration", async ({ page, signIn }) => {
+  await signIn("owner");
+  await page.emulateMedia({ colorScheme: "dark" });
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/v1/servers/login/file?path=felis-experience.json", async (route) => { await pending; await route.continue(); });
+  await page.goto("/admin/lobby");
+  const title = page.getByLabel(t("lobby:bookTitle"));
+  await expect(title).toBeVisible();
+  await expect(title).toBeDisabled();
+  await expect(title).toHaveValue("");
+  await expect(page.getByText(t("lobby:loading_settings"), { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: t("lobby:save"), exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: t("lobby:save"), exact: true })).toBeDisabled();
+  await expectFitsScreen(page);
+  await page.screenshot({ path: "/tmp/felis-lobby-loading.png", fullPage: true });
+  release();
+  await expect(title).toBeEnabled();
+  await expect(title).toHaveValue("Felis Login");
+  await expect(page.getByText(t("lobby:loading_settings"), { exact: true })).toHaveCount(0);
+});
+
 test("login is the default space; live lobby settings save before a confirmed restart", async ({ page, signIn }) => {
   await signIn("owner");
   await page.goto("/admin/lobby");

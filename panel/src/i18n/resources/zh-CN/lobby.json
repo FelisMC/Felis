@@ -94,5 +94,6 @@
   "loginBook_description": "编辑玩家打开登录书时看到的引导内容。",
   "content_tools": "内容与维护",
   "unsaved": "有未保存的更改",
-  "apply_on_start": "可以在运行中保存；设置将在下次启动或重启后生效"
+  "apply_on_start": "可以在运行中保存；设置将在下次启动或重启后生效",
+  "loading_settings": "正在加载配置，读取完成后即可编辑。"
 }

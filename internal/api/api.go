@@ -99,6 +99,7 @@ type API struct {
 	// InternalBaseURL is where that Job reaches felis-api's internal face to do so
 	// (handleUploadFile). Uploads report 503 unless both are set.
 	FileStage       *fileedit.Stage
+	FileBrowser     *fileedit.Browser
 	InternalBaseURL string
 
 	// Exporter starts the Job behind a world or backup download (exports.go),
@@ -476,6 +477,8 @@ func (a *API) internalAPIRoutes() []apiRoute {
 		// with the upload is the check (handlers_files.go).
 		{Method: "GET", Pattern: "/api/v1/internal/file-uploads/{id}", Public: true, h: a.handleInternalFileUpload},
 		{Method: "DELETE", Pattern: "/api/v1/internal/file-uploads/{id}", Public: true, h: a.handleInternalFileUploadLanded},
+		// Read-only file Jobs pull commands with their own scoped bearer token.
+		{Method: "POST", Pattern: "/api/v1/internal/file-browser/{id}", Public: true, h: a.handleInternalFileBrowser},
 
 		// An export Job's archive, held open until the owner's browser downloads
 		// it. Public for the same reason as file uploads: the Job holds no service

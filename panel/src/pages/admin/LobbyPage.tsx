@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { BookOpen, ChevronRight, DoorOpen, FolderOpen, Globe, Map, MessageSquare, Package, RotateCw, Save, Shield, Sun, Terminal, type LucideIcon } from "lucide-react";
+import { BookOpen, ChevronRight, DoorOpen, FolderOpen, Globe, Loader2, Map, MessageSquare, Package, RotateCw, Save, Shield, Sun, Terminal, type LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { PageHeader } from "@/components/PageHeader";
@@ -12,7 +12,7 @@ import { PhaseBadge, shownPhase, startFailure } from "@/components/PhaseBadge";
 import { PowerButton, SUBMITTED_HOLD_MS } from "@/components/PowerButton";
 import { CopyAddress } from "@/components/CopyAddress";
 import { EditServerDialog } from "@/components/EditServerDialog";
-import { ErrorState, Loading } from "@/components/States";
+import { ErrorState } from "@/components/States";
 import { InlineError, MessageLine } from "@/components/MessageLine";
 import { api, humanizeError } from "@/lib/api";
 import { joinAddress } from "@/lib/config";
@@ -28,7 +28,7 @@ const GROUP_ICONS: Record<string, LucideIcon> = {
   loginBook: BookOpen,
 };
 
-function ExperienceSettings({ name, server, onDirtyChange, onChanged }: { name: string; server: ServerStatus; onDirtyChange: (dirty: boolean) => void; onChanged: () => void }) {
+function ExperienceSettings({ name, server, onDirtyChange, onChanged }: { name: string; server: ServerStatus | null; onDirtyChange: (dirty: boolean) => void; onChanged: () => void }) {
   const { t } = useTranslation("lobby");
   const groups = name === "login" ? LOGIN_GROUPS : LOBBY_GROUPS;
   const query = useAsync(() => readExperience(name, groups), [name]);
@@ -37,7 +37,7 @@ function ExperienceSettings({ name, server, onDirtyChange, onChanged }: { name: 
   const [needsRestart, setNeedsRestart] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [confirmRestart, setConfirmRestart] = useState(false);
-  const running = server.phase === "Running" && server.desiredState === "Running";
+  const running = server?.phase === "Running" && server.desiredState === "Running";
   useEffect(() => {
     if (!restarting) return;
     if (!running) { setRestarting(false); return; }
@@ -53,6 +53,10 @@ function ExperienceSettings({ name, server, onDirtyChange, onChanged }: { name: 
   const dirty = draft !== null && JSON.stringify(draft.values) !== draft.original;
   useUnsavedGuard(dirty);
   useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
+
+  function setValue(key: string, value: unknown) {
+    setDraft((current) => current && { ...current, values: { ...current.values, [key]: value } });
+  }
 
   async function save() {
     if (!draft || saving || !experienceValid(draft.values, groups)) return;
@@ -85,10 +89,10 @@ function ExperienceSettings({ name, server, onDirtyChange, onChanged }: { name: 
   }
 
   return (
-    <div className="space-y-4">
-      {query.loading && !draft && <Loading />}
-      {query.error != null && <ErrorState error={t("read_failed", { reason: humanizeError(query.error) })} onRetry={query.reload} />}
-      {draft && groups.map((group) => {
+    <div aria-busy={query.loading} className="space-y-4">
+      {query.loading && <p role="status" className="flex items-center gap-2 rounded-lg border border-border bg-muted/20 px-3 py-2.5 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 shrink-0 animate-spin" />{t("loading_settings")}</p>}
+      {query.error != null && <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3"><InlineError message={t("read_failed", { reason: humanizeError(query.error) })} /><Button variant="outline" size="sm" onClick={query.reload}>{t("common:try_again")}</Button></div>}
+      {groups.map((group) => {
         const Icon = GROUP_ICONS[group.key];
         const fields = group.fields.filter((field) => typeof field.value !== "boolean");
         const switches = group.fields.filter((field) => typeof field.value === "boolean");
@@ -104,20 +108,20 @@ function ExperienceSettings({ name, server, onDirtyChange, onChanged }: { name: 
             <CardContent className="space-y-5 pt-5">
               <div className="grid items-start gap-x-5 gap-y-4 sm:grid-cols-2">
                 {fields.map((field) => {
-                  const value = draft.values[field.key] ?? field.value;
+                  const value = draft ? draft.values[field.key] ?? field.value : "";
                   const id = `experience-${field.key}`;
-                  const set = (next: unknown) => setDraft({ ...draft, values: { ...draft.values, [field.key]: next } });
                   return (
                     <div key={id} className="min-w-0 space-y-2">
                       <Label htmlFor={id} className="block text-xs font-medium text-muted-foreground">{t(field.key)}</Label>
                       {field.choices ? (
-                        <select id={id} value={value as string} onChange={(e) => set(e.target.value)} disabled={saving || restarting} className="h-10 w-full rounded-lg border border-input bg-background px-3 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
+                        <select id={id} value={value as string} onChange={(e) => setValue(field.key, e.target.value)} disabled={!draft || saving || restarting} className="h-10 w-full rounded-lg border border-input bg-background px-3 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
+                          {!draft && <option value="">{query.loading ? t("common:loading") : "—"}</option>}
                           {field.choices.map((choice) => <option key={choice} value={choice}>{t(choice)}</option>)}
                         </select>
                       ) : field.multiline ? (
-                        <textarea id={id} value={value as string} maxLength={512} onChange={(e) => set(e.target.value)} disabled={saving || restarting} className="block h-32 w-full resize-y rounded-lg border border-input bg-background px-3 py-2.5 text-sm leading-6 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50" />
+                        <textarea id={id} value={value as string} placeholder={!draft && query.loading ? t("common:loading") : undefined} maxLength={512} onChange={(e) => setValue(field.key, e.target.value)} disabled={!draft || saving || restarting} className="block h-32 w-full resize-y rounded-lg border border-input bg-background px-3 py-2.5 text-sm leading-6 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50" />
                       ) : (
-                        <Input id={id} type={typeof field.value === "number" ? "number" : "text"} value={value as string | number} min={field.min} max={field.max} step={1} maxLength={512} onChange={(e) => set(typeof field.value === "number" ? (e.target.value === "" ? "" : Number(e.target.value)) : e.target.value)} disabled={saving || restarting} className="h-10 rounded-lg bg-background shadow-none" />
+                        <Input id={id} type={typeof field.value === "number" ? "number" : "text"} value={value as string | number} placeholder={!draft && query.loading ? t("common:loading") : undefined} min={field.min} max={field.max} step={1} maxLength={512} onChange={(e) => setValue(field.key, typeof field.value === "number" ? (e.target.value === "" ? "" : Number(e.target.value)) : e.target.value)} disabled={!draft || saving || restarting} className="h-10 rounded-lg bg-background shadow-none" />
                       )}
                     </div>
                   );
@@ -128,7 +132,7 @@ function ExperienceSettings({ name, server, onDirtyChange, onChanged }: { name: 
                   <label key={field.key} htmlFor={`experience-${field.key}`} className="flex min-h-12 cursor-pointer items-center justify-between gap-4 py-3 text-sm">
                     <span>{t(field.key)}</span>
                     <span className="relative shrink-0">
-                      <input id={`experience-${field.key}`} type="checkbox" role="switch" checked={(draft.values[field.key] ?? field.value) as boolean} onChange={(e) => setDraft({ ...draft, values: { ...draft.values, [field.key]: e.target.checked } })} disabled={saving || restarting} className="peer sr-only" />
+                      <input id={`experience-${field.key}`} type="checkbox" role="switch" checked={draft ? (draft.values[field.key] ?? field.value) as boolean : false} onChange={(e) => setValue(field.key, e.target.checked)} disabled={!draft || saving || restarting} className="peer sr-only" />
                       <span aria-hidden="true" className="block h-5 w-9 rounded-full bg-muted-foreground/25 p-0.5 transition-colors peer-checked:bg-primary peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-focus-visible:ring-offset-2 peer-disabled:opacity-50 peer-checked:[&>span]:translate-x-4">
                         <span className="block h-4 w-4 rounded-full bg-white shadow-sm transition-transform motion-reduce:transition-none" />
                       </span>
@@ -140,21 +144,19 @@ function ExperienceSettings({ name, server, onDirtyChange, onChanged }: { name: 
           </Card>
         );
       })}
-      {draft && <>
-        <p className="text-sm text-muted-foreground">{t(name === "login" ? "login_settings_hint" : "lobby_settings_hint")}</p>
-        {message && <MessageLine kind={message.kind} message={message.text} />}
-        {!experienceValid(draft.values, groups) && <InlineError message={t("invalid_values")} />}
-        <div className={cn("flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-3", needsRestart ? "border-amber-500/30 bg-amber-500/5" : "border-border")}>
-          <p className={cn("text-xs", needsRestart ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground")}>{t(dirty ? "unsaved" : needsRestart ? "restart_required" : "apply_on_start")}</p>
-          <div className="flex flex-wrap gap-2">
-            <Button variant="outline" disabled={!running || dirty || saving || restarting} onClick={() => {
-              if ((server.playersOnline ?? 0) > 0 || server.playerCountUnknown) setConfirmRestart(true);
-              else void restart().catch((error) => setMessage({ kind: "error", text: humanizeError(error) }));
-            }}><RotateCw className={cn(restarting && "animate-spin")} />{t(restarting ? "restarting" : "restart")}</Button>
-            <Button onClick={() => void save()} disabled={!dirty || saving || restarting || !experienceValid(draft.values, groups)}><Save className="h-4 w-4" />{t(saving ? "saving" : "save")}</Button>
-          </div>
+      <p className="text-sm text-muted-foreground">{t(name === "login" ? "login_settings_hint" : "lobby_settings_hint")}</p>
+      {message && <MessageLine kind={message.kind} message={message.text} />}
+      {draft && !experienceValid(draft.values, groups) && <InlineError message={t("invalid_values")} />}
+      <div className={cn("flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-3", needsRestart ? "border-amber-500/30 bg-amber-500/5" : "border-border")}>
+        <p className={cn("text-xs", needsRestart ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground")}>{t(dirty ? "unsaved" : needsRestart ? "restart_required" : "apply_on_start")}</p>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" disabled={!draft || !running || dirty || saving || restarting} onClick={() => {
+            if ((server?.playersOnline ?? 0) > 0 || server?.playerCountUnknown) setConfirmRestart(true);
+            else void restart().catch((error) => setMessage({ kind: "error", text: humanizeError(error) }));
+          }}><RotateCw className={cn(restarting && "animate-spin")} />{t(restarting ? "restarting" : "restart")}</Button>
+          <Button onClick={() => void save()} disabled={!draft || !dirty || saving || restarting || !experienceValid(draft.values, groups)}><Save className="h-4 w-4" />{t(saving ? "saving" : "save")}</Button>
         </div>
-      </>}
+      </div>
       <ConfirmDialog open={confirmRestart} onOpenChange={setConfirmRestart} title={t("restart_title")} description={t("restart_hint")} confirmLabel={t("restart")} onConfirm={restart} />
     </div>
   );
@@ -236,35 +238,32 @@ export function LobbyPage() {
       ))}
     </div>
     <p className="text-sm text-muted-foreground">{t(`${name}_description`)}</p>
-    {status.loading && !data && <Loading />}
     {status.error != null && <ErrorState error={humanizeError(status.error)} onRetry={status.reload} />}
-    {data && <>
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card p-4">
-        <div className="min-w-0 space-y-2"><div className="flex flex-wrap items-center gap-3"><h2 className="font-semibold">{data.displayName || t(name)}</h2><PhaseBadge phase={shownPhase(data)} /></div><p className="break-all text-xs text-muted-foreground">{data.image}</p></div>
-        <PowerButton name={name} phase={data.phase} desiredState={data.desiredState} failed={startFailure(data) !== null} playersOnline={data.playersOnline} playerCountUnknown={data.playerCountUnknown} onChanged={status.reload} />
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card p-4">
+      <div className="min-w-0 space-y-2"><div className="flex flex-wrap items-center gap-3"><h2 className="font-semibold">{data?.displayName || t(name)}</h2>{data ? <PhaseBadge phase={shownPhase(data)} /> : status.loading && <span role="status" className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" />{t("common:loading")}</span>}</div><p className="break-all text-xs text-muted-foreground">{data?.image || "\u00a0"}</p></div>
+      {data && <PowerButton name={name} phase={data.phase} desiredState={data.desiredState} failed={startFailure(data) !== null} playersOnline={data.playersOnline} playerCountUnknown={data.playerCountUnknown} onChanged={status.reload} />}
+    </div>
+    <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+      <ExperienceSettings key={name} name={name} server={data} onDirtyChange={setDirty} onChanged={status.reload} />
+      <div className="space-y-4">
+        <Card className="overflow-hidden rounded-xl shadow-none">
+          <CardHeader className="border-b border-border/60 bg-muted/20 py-4"><CardTitle className="text-sm">{t("content_tools")}</CardTitle></CardHeader>
+          <CardContent className="divide-y divide-border/60 p-0">
+            {links.map(({ icon: Icon, title, hint, to }) => (
+              <Link key={title} to={to} className="group flex gap-3 p-4 transition-colors hover:bg-muted/40">
+                <Icon className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                <div className="min-w-0 flex-1">
+                  <p className="flex items-center justify-between gap-2 text-sm font-medium">{t(title)}<ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" /></p>
+                  <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{t(hint)}</p>
+                </div>
+              </Link>
+            ))}
+          </CardContent>
+        </Card>
+        {data && <EditServerDialog serverName={name} systemService currentDisplayName={data.displayName} currentPolicy={data.autostartPolicy} currentImage={data.image} currentMemory={data.memory} currentStorage={data.storageSize} currentCpu={data.cpu} currentIdleStopSeconds={0} onUpdated={status.reload} />}
+        {name === "lobby" && <BuilderAccess ready={data?.ready ?? false} />}
       </div>
-      <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-        <ExperienceSettings key={name} name={name} server={data} onDirtyChange={setDirty} onChanged={status.reload} />
-        <div className="space-y-4">
-          <Card className="overflow-hidden rounded-xl shadow-none">
-            <CardHeader className="border-b border-border/60 bg-muted/20 py-4"><CardTitle className="text-sm">{t("content_tools")}</CardTitle></CardHeader>
-            <CardContent className="divide-y divide-border/60 p-0">
-              {links.map(({ icon: Icon, title, hint, to }) => (
-                <Link key={title} to={to} className="group flex gap-3 p-4 transition-colors hover:bg-muted/40">
-                  <Icon className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
-                  <div className="min-w-0 flex-1">
-                    <p className="flex items-center justify-between gap-2 text-sm font-medium">{t(title)}<ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" /></p>
-                    <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{t(hint)}</p>
-                  </div>
-                </Link>
-              ))}
-            </CardContent>
-          </Card>
-          <EditServerDialog serverName={name} systemService currentDisplayName={data.displayName} currentPolicy={data.autostartPolicy} currentImage={data.image} currentMemory={data.memory} currentStorage={data.storageSize} currentCpu={data.cpu} currentIdleStopSeconds={0} onUpdated={status.reload} />
-          {name === "lobby" && <BuilderAccess ready={data.ready} />}
-        </div>
-      </div>
-    </>}
+    </div>
     <ConfirmDialog open={nextSpace !== null} onOpenChange={(open) => { if (!open) setNextSpace(null); }} title={t("discard_title")} description={t("discard_hint")} confirmLabel={t("discard")} onConfirm={async () => { if (nextSpace) { setParams({ space: nextSpace }); setDirty(false); setNextSpace(null); } }} />
   </div>;
 }

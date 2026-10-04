@@ -40,6 +40,7 @@ func cmdFiles(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("files", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	op := fs.String("op", "", "operation: list, read, write, mkdir, delete, rename, upload or unzip")
+	browseURL := fs.String("browse-url", "", "internal command channel for a read-only file browser")
 	path := fs.String("path", "", "path to operate on, relative to the world root (empty = the root itself)")
 	worldsRoot := fs.String("worlds-root", "/data", "mount path of the world PVC; every path resolves under it")
 	expect := fs.String("expect-sha256", "", "write only: refuse unless the file's current SHA-256 (hex) is this")
@@ -53,6 +54,16 @@ func cmdFiles(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
+	if *browseURL != "" {
+		limitHeapToCgroup()
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if err := fileedit.Browse(ctx, *worldsRoot, *browseURL, os.Getenv(fileedit.BrowserTokenEnv)); err != nil {
+			fmt.Fprintf(stderr, "felis files: %v\n", err)
+			return 1
+		}
+		return 0
+	}
 	if *op == "" {
 		fmt.Fprintln(stderr, "felis files: --op is required")
 		return 2

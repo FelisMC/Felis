@@ -3170,8 +3170,18 @@ for 10 seconds (the Free plan's limits).
 ## 18. Server files: a change or an upload is refused
 
 The panel's Files page is for the server's owner or an admin, and only while
-the server is fully stopped. Each call runs a one-shot `felis files` Job in the
-`minecraft` namespace, labelled `app.kubernetes.io/managed-by=felis-files` and
+the server is fully stopped. Reads reuse a read-only `felis files` Job for the
+same world, avoiding Pod startup for every folder and file. The worker pulls
+commands from the existing internal API with a random, world-scoped token;
+each request still passes the owner/admin and stopped gates. It exits after
+45 idle seconds or four minutes total; at most four workers exist per API
+process, with one-shot reads used at capacity. No file contents are cached.
+The panel caches directory listings for 30 seconds; Refresh, a write, upload
+or restore invalidates them. The text editor highlights common config formats
+and preserves CRLF; binary and oversized files offer download instead.
+
+Changes still run one-shot Jobs in the `minecraft` namespace, labelled
+`app.kubernetes.io/managed-by=felis-files` and
 `felis.lolicon.best/files-mode=<list|read|write|mkdir|delete|rename|upload|unzip>`.
 A listing or a read holds nothing. Every change (a save, a new file or folder,
 a rename, a delete, an upload, an unzip) holds the world for its Job (§3b), so a wake or a

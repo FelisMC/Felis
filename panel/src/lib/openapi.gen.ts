@@ -232,6 +232,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/internal/file-browser/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Exchange a read-only file Job's result for its next command.
+         * @description Internal face only. A random bearer token scopes the worker to one world and a four-minute session; idle workers exit after 45 seconds. The first request sends an empty object. Later requests return the previous command's id and result or error. This endpoint dispatches only reads already authorized by the external file API.
+         */
+        post: operations["internalFileBrowser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/internal/exports/{id}": {
         parameters: {
             query?: never;
@@ -4177,6 +4197,48 @@ export interface operations {
         responses: {
             204: components["responses"]["NoContent"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    internalFileBrowser: {
+        parameters: {
+            query?: never;
+            header: {
+                Authorization: string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    id?: string;
+                    result?: Record<string, never>;
+                    error?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The next authorized read command. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        id: string;
+                        /** @enum {string} */
+                        op: "list" | "read";
+                        path: string;
+                    };
+                };
+            };
+            204: components["responses"]["NoContent"];
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     internalExportUpload: {

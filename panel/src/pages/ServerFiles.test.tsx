@@ -68,6 +68,12 @@ vi.mock("@/lib/api", async (importOriginal) => {
   };
 });
 vi.mock("@/lib/tier", () => ({ useTier: () => ({ isAdmin: true, loading: false }) }));
+// Editor interactions are exercised in the browser; page tests focus on reads,
+// writes, conflict protection and the dialog lifecycle.
+vi.mock("@/components/files/TextFileEditor", () => ({
+  TextFileEditor: ({ value, onChange, label }: { value: string; onChange: (v: string) => void; label: string }) =>
+    <textarea aria-label={label} value={value} onChange={(e) => onChange(e.target.value)} />,
+}));
 
 const t = (key: string) => i18next.t(key);
 
@@ -85,7 +91,7 @@ async function openEditor() {
   renderFiles();
   await userEvent.click(await screen.findByText("server.properties"));
   const dialog = await screen.findByRole("dialog");
-  return { dialog, editor: within(dialog).getByRole("textbox") as HTMLTextAreaElement };
+  return { dialog, editor: await within(dialog).findByRole("textbox") as HTMLTextAreaElement };
 }
 
 let opsNow: FileOp[] = [];
@@ -301,6 +307,56 @@ describe("ServerFiles from the keyboard", () => {
 
     expect(await screen.findByRole("dialog")).toBeTruthy();
     expect(mocks.readServerFile.mock.calls).toEqual([["lobby", "server.properties"]]);
+  });
+});
+
+describe("ServerFiles opening feedback", () => {
+  it("shows the selected file and loading dialog immediately, and ignores a cancelled read", async () => {
+    let resolve!: (value: { content: string; sha256: string }) => void;
+    mocks.readServerFile.mockReturnValue(new Promise((r) => { resolve = r; }));
+    renderFiles();
+    await userEvent.click(await screen.findByText("server.properties"));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText(t("files:opening_file"))).toBeTruthy();
+    expect(screen.getByRole("row", { selected: true, hidden: true }).textContent).toContain("server.properties");
+    await userEvent.keyboard("{Escape}");
+    await act(async () => resolve({ content: btoa("late file"), sha256: "abc" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it.each([
+    ["Limbo.jar", 8 * 1024 * 1024, "binary_title"],
+    ["spawn.schem", 6000, "binary_title"],
+    ["large.log", 2 * 1024 * 1024, "preview_large_title"],
+  ])("explains why %s cannot be edited without starting a read Job", async (name, size, title) => {
+    mocks.listServerFiles.mockResolvedValue({ entries: [{ name, size, is_dir: false, mod_time: "" }] });
+    renderFiles();
+    await userEvent.click(await screen.findByText(name));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText(t(`files:${title}`))).toBeTruthy();
+    expect(within(dialog).getByRole("button", { name: t("files:download_file") })).toBeTruthy();
+    expect(within(dialog).queryByRole("textbox")).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: t("files:save") })).toBeNull();
+    expect(mocks.readServerFile).not.toHaveBeenCalled();
+  });
+
+  it("detects binary bytes even with an unfamiliar extension", async () => {
+    mocks.readServerFile.mockResolvedValue({ content: btoa("a\0b"), sha256: "abc" });
+    renderFiles();
+    await userEvent.click(await screen.findByText("server.properties"));
+    expect(await screen.findByText(t("files:binary_title"))).toBeTruthy();
+    expect(screen.queryByRole("textbox")).toBeNull();
+  });
+
+  it("reuses recent directories, but an explicit refresh invalidates them", async () => {
+    renderFiles();
+    await userEvent.click(await screen.findByText("world"));
+    await screen.findByRole("button", { name: "world" });
+    await userEvent.click(screen.getByRole("button", { name: t("files:up") }));
+    expect(mocks.listServerFiles.mock.calls).toEqual([["lobby", ""], ["lobby", "world"]]);
+    await userEvent.click(screen.getByRole("button", { name: t("files:refresh") }));
+    await userEvent.click(await screen.findByText("world"));
+    expect(mocks.listServerFiles.mock.calls).toEqual([["lobby", ""], ["lobby", "world"], ["lobby", ""], ["lobby", "world"]]);
   });
 });
 

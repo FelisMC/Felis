@@ -1625,6 +1625,56 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /api/v1/internal/file-browser/{id}:
+    post:
+      tags: [files]
+      operationId: internalFileBrowser
+      summary: Exchange a read-only file Job's result for its next command.
+      description: >-
+        Internal face only. A random bearer token scopes the worker to one
+        world and a four-minute session; idle workers exit after 45 seconds.
+        The first request sends an empty object. Later requests return the
+        previous command's id and result or error. This endpoint dispatches
+        only reads already authorized by the external file API.
+      x-felis-face: [internal]
+      x-felis-tier: public
+      security: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: Authorization, in: header, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id: { type: string }
+                result: { type: object }
+                error: { type: string }
+      responses:
+        '200':
+          description: The next authorized read command.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, op, path]
+                properties:
+                  id: { type: string }
+                  op: { type: string, enum: [list, read] }
+                  path: { type: string }
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   /api/v1/internal/exports/{id}:
     put:
       tags: [backups]

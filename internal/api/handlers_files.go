@@ -30,7 +30,7 @@ import (
 // internal/fileedit, which explains why that transport needs no RBAC felis-api
 // does not already hold. Unlike Restorer and Backuper these calls are
 // SYNCHRONOUS: the caller wants the listing or the bytes, so the handler blocks on
-// the Job (seconds, dominated by Pod scheduling) rather than answering 202.
+// the result rather than answering 202.
 //
 // It is an interface so the handlers are unit-tested against a fake; the
 // production implementation is *fileedit.Editor. Using fileedit.Entry directly
@@ -59,6 +59,14 @@ type FileEditor interface {
 	StartUpload(ctx context.Context, server, path string, src fileedit.UploadSource, overwrite bool) (fileedit.OpState, error)
 	StartUnzip(ctx context.Context, server, path string, overwrite bool) (fileedit.OpState, error)
 	Ops(ctx context.Context, server string) ([]fileedit.OpState, error)
+}
+
+func (a *API) handleInternalFileBrowser(w http.ResponseWriter, r *http.Request) {
+	if a.FileBrowser == nil {
+		writeError(w, r, newError(http.StatusServiceUnavailable, "files_unavailable", "file browser is not configured"))
+		return
+	}
+	a.FileBrowser.ServeHTTP(w, r)
 }
 
 // writeFileRequest is the PUT /servers/{name}/file body. Content is []byte, so

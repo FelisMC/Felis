@@ -94,5 +94,6 @@
   "loginBook_description": "Edit the guidance players see in the login book.",
   "content_tools": "Content & maintenance",
   "unsaved": "You have unsaved changes",
-  "apply_on_start": "Save while running; settings take effect on the next start or restart"
+  "apply_on_start": "Save while running; settings take effect on the next start or restart",
+  "loading_settings": "Loading settings. Editing will be available once loaded."
 }

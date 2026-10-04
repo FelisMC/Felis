@@ -3,6 +3,10 @@ package fileedit
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,9 +14,72 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/rest"
 	k8stesting "k8s.io/client-go/testing"
 )
+
+func TestRunReadsResultBeforePodTermination(t *testing.T) {
+	for _, op := range []string{OpList, OpRead} {
+		t.Run(op, func(t *testing.T) {
+			closed := make(chan struct{})
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/jobs"):
+					w.Header().Set("Content-Type", "application/json")
+					io.WriteString(w, `{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"files-test"}}`)
+				case strings.HasSuffix(r.URL.Path, "/pods"):
+					if !strings.Contains(r.URL.Query().Get("labelSelector"), LabelOpID+"=") {
+						t.Error("pod lookup did not select this operation")
+					}
+					w.Header().Set("Content-Type", "application/json")
+					io.WriteString(w, `{"apiVersion":"v1","kind":"PodList","items":[{"metadata":{"name":"file-pod"},"status":{"phase":"Running","containerStatuses":[{"name":"files","state":{"running":{}}}]}}]}`)
+				case strings.HasSuffix(r.URL.Path, "/log"):
+					if r.URL.Query().Get("follow") != "true" {
+						t.Error("result log was not streamed")
+					}
+					io.WriteString(w, "diagnostic line\n"+ResultPrefix+`{"entries":[]}`+"\n")
+					w.(http.Flusher).Flush()
+					// The log stays open and the Pod stays Running. Run must return
+					// on the result line and close the stream, not await either EOF.
+					<-r.Context().Done()
+					close(closed)
+				default:
+					t.Errorf("unexpected cluster call: %s %s", r.Method, r.URL)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer srv.Close()
+			cs, err := kubernetes.NewForConfig(&rest.Config{Host: srv.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			got, err := NewK8sRunner(cs).Run(ctx, testParams(op))
+			if err != nil || string(got) != `{"entries":[]}` {
+				t.Fatalf("Run = %s, %v", got, err)
+			}
+			select {
+			case <-closed:
+			case <-ctx.Done():
+				t.Fatal("result stream was not closed")
+			}
+		})
+	}
+}
+
+func TestAwaitPodKeepsWritesWaitingForTermination(t *testing.T) {
+	p := testParams(OpWrite)
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "file-pod", Namespace: p.Namespace, Labels: filesLabels(p)},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{Name: containerName, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}}}}}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	if got, err := NewK8sRunner(fake.NewSimpleClientset(pod)).awaitPod(ctx, p); err == nil || got != nil {
+		t.Fatalf("a running writer was treated as finished: %v, %v", got, err)
+	}
+}
 
 var (
 	opCreated = time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC)

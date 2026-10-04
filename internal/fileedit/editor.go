@@ -32,14 +32,14 @@
 // upload fetched by the Job from felis-api's internal face (see Stage), because a
 // 64 MiB jar fits in neither a Job spec nor an environment.
 //
-// The price is latency: every operation is a Pod schedule + image pull, so a
-// listing takes seconds rather than milliseconds. That is inherent to RWO plus a
-// stopped server, not a property of this transport: the file manager works on a
-// stopped server, one operation per Job.
+// Interactive reads reuse a bounded, short-lived, read-only Job through Browser.
+// Its command channel uses the existing internal API face. At capacity, reads
+// use one-shot Jobs and stream results before the Pod's terminal phase. Changes
+// still wait for termination to preserve the world lock's ordering.
 //
 // The Editor depends on the Runner interface, so the orchestration and the error
-// mapping are unit-tested against an in-memory fake; the client-go implementation
-// (k8sjobs.go) compiles here but is exercised only against a live cluster.
+// mapping are unit-tested against an in-memory fake; the client-go transport
+// (k8sjobs.go) is tested against the Kubernetes HTTP API shape.
 package fileedit
 
 import (

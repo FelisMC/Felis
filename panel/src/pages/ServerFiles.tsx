@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import {
   AlertTriangle,
@@ -65,6 +65,9 @@ import { cn } from "@/lib/utils";
  *  are capped at 1 MiB server-side; a larger file is refused there with 413, so
  *  this only gates the save button to keep the common case honest up front. */
 const MAX_WRITE_BYTES = 256 * 1024;
+const MAX_READ_BYTES = 1024 * 1024;
+const TextFileEditor = lazy(() => import("@/components/files/TextFileEditor").then((m) => ({ default: m.TextFileEditor })));
+const BINARY_EXTENSION = /\.(jar|zip|gz|tar|7z|rar|dat|mca|mcr|schem|schematic|nbt|db|sqlite|png|jpe?g|gif|webp|ico|ogg|mp[34]|pdf|class|exe|dll|so|bin)$/i;
 
 /** The []byte wire codec: Go's encoding/json renders []byte as base64, so the
  *  editor must speak it explicitly in both directions. Chunked so a ~256 KiB
@@ -134,6 +137,9 @@ export function ServerFiles() {
   const [truncated, setTruncated] = useState(false);
   const [listErr, setListErr] = useState<unknown>(null);
   const [listLoading, setListLoading] = useState(false);
+  const [listTarget, setListTarget] = useState("");
+  const [selected, setSelected] = useState<string | null>(null);
+  const folders = useRef(new Map<string, { at: number; listing: Awaited<ReturnType<typeof api.listServerFiles>> }>());
   // Bytes free on the world volume by the latest listing; null while unknown
   // (the listing says null when the Job could not tell; 0 is a full volume).
   const [free, setFree] = useState<number | null>(null);
@@ -144,13 +150,21 @@ export function ServerFiles() {
   // folder already left behind would otherwise replace the one clicked after it.
   const loadSeq = useRef(0);
   const load = useCallback(
-    async (p: string) => {
+    async (p: string, cached = false) => {
       const ticket = ++loadSeq.current;
+      if (!cached) folders.current.clear();
+      const previous = folders.current.get(`${name}:${p}`);
       setListLoading(true);
+      setListTarget(p);
       setListErr(null);
       try {
-        const r = await api.listServerFiles(name, p);
+        const fresh = cached && previous && Date.now() - previous.at < 30_000;
+        const r = fresh
+          ? previous.listing
+          : await api.listServerFiles(name, p);
         if (ticket !== loadSeq.current) return;
+        if (folders.current.size >= 20) folders.current.delete(folders.current.keys().next().value!);
+        folders.current.set(`${name}:${p}`, { at: fresh ? previous.at : Date.now(), listing: r });
         setEntries(sortEntries(r.entries ?? []));
         setTruncated(r.truncated === true);
         setFree(r.free_bytes ?? null);
@@ -174,6 +188,9 @@ export function ServerFiles() {
     if (owned && stopped) void load(dir);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [owned, stopped, load]);
+  useEffect(() => {
+    if (!stopped) folders.current.clear();
+  }, [stopped]);
 
   // While the server is not stopped, poll the phase so the first successful
   // stop flips the page from the notice to the listing without a manual reload.
@@ -192,8 +209,12 @@ export function ServerFiles() {
     sha256: string;
     conflict: boolean;
     error: string | null;
+    preview?: "binary" | "large";
+    size?: number;
   } | null>(null);
   const [opening, setOpening] = useState<string | null>(null);
+  const openingSeq = useRef(0);
+  useEffect(() => () => { ++openingSeq.current; ++loadSeq.current; }, []);
   const [saving, setSaving] = useState(false);
   const [reloading, setReloading] = useState(false);
   // Closing an editor with unsaved text (Esc, the overlay, ✕, Cancel) asks
@@ -208,6 +229,8 @@ export function ServerFiles() {
       setConfirmDiscard(true);
       return;
     }
+    ++openingSeq.current;
+    setOpening(null);
     setOpen(null);
   }
 
@@ -216,9 +239,11 @@ export function ServerFiles() {
     setOpen(null);
   }
 
-  async function readInto(p: string) {
+  async function readInto(p: string, ticket = openingSeq.current) {
     const r = await api.readServerFile(name, p);
-    const text = decodeText(base64ToBytes(r.content ?? ""));
+    if (ticket !== openingSeq.current) return;
+    const bytes = base64ToBytes(r.content ?? "");
+    const text = decodeText(bytes);
     setConfirmDiscard(false);
     setOpen({
       path: p,
@@ -228,25 +253,36 @@ export function ServerFiles() {
       sha256: r.sha256 ?? "",
       conflict: false,
       error: null,
+      preview: text === null ? "binary" : undefined,
+      size: bytes.length,
     });
   }
 
   async function openFile(entry: ServerFileEntry) {
+    if (opening !== null) return;
     const p = joinPath(dir, entry.name);
+    setSelected(p);
+    setMsg(null);
     // The read path refuses this one outright; saying why beats a Job that
     // answers "invalid path".
     if (p === SECRET_CONFIG_PATH) {
       setMsg({ kind: "error", text: t("secret_config_unreadable") });
       return;
     }
+    const preview = BINARY_EXTENSION.test(entry.name) ? "binary" : entry.size > MAX_READ_BYTES ? "large" : undefined;
+    if (preview) {
+      setOpen({ path: p, text: "", original: "", editable: false, sha256: "", conflict: false, error: null, preview, size: entry.size });
+      return;
+    }
+    const ticket = ++openingSeq.current;
     setOpening(p);
     setMsg(null);
     try {
-      await readInto(p);
+      await readInto(p, ticket);
     } catch (e) {
-      setMsg({ kind: "error", text: humanizeError(e) });
+      if (ticket === openingSeq.current) setMsg({ kind: "error", text: humanizeError(e) });
     } finally {
-      setOpening(null);
+      if (ticket === openingSeq.current) setOpening(null);
     }
   }
 
@@ -266,7 +302,7 @@ export function ServerFiles() {
   // handleSave writes the editor's text. `overwrite` drops the precondition,
   // which is what "Overwrite anyway" on a conflict means.
   async function handleSave(overwrite = false) {
-    if (!open || saving) return;
+    if (!open?.editable || saving || (!overwrite && open.conflict) || !dirty || tooLarge) return;
     setSaving(true);
     setMsg(null);
     setOpen({ ...open, error: null });
@@ -314,6 +350,9 @@ export function ServerFiles() {
   // whichever tab or person started them. A restore replaces the files listed.
   const worldJobs = useWorldJobs(name, owned && stopped, () => void load(dir));
   const held = worldJobs.holder;
+  useEffect(() => {
+    if (held !== null) folders.current.clear();
+  }, [held]);
 
   // A download holds the world while felis-api gets it ready, and a change
   // sent meanwhile could only be refused.
@@ -663,7 +702,7 @@ export function ServerFiles() {
                   <Button
                     size="sm"
                     variant="outline"
-                    onClick={() => void load(parentOf(dir))}
+                    onClick={() => void load(parentOf(dir), true)}
                     disabled={dir === "" || listLoading}
                   >
                     <ArrowUp className="h-4 w-4" />
@@ -672,7 +711,7 @@ export function ServerFiles() {
                   <nav className="flex min-w-0 flex-wrap items-center gap-1 text-sm">
                     <button
                       type="button"
-                      onClick={() => void load("")}
+                      onClick={() => void load("", true)}
                       className={cn(
                         "rounded px-1.5 py-0.5 hover:bg-muted",
                         dir === "" ? "font-medium text-foreground" : "text-muted-foreground",
@@ -688,7 +727,7 @@ export function ServerFiles() {
                           <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/60" />
                           <button
                             type="button"
-                            onClick={() => void load(target)}
+                            onClick={() => void load(target, true)}
                             className={cn(
                               "rounded px-1.5 py-0.5 font-mono text-xs hover:bg-muted",
                               last ? "font-medium text-foreground" : "text-muted-foreground",
@@ -760,6 +799,13 @@ export function ServerFiles() {
                   </div>
                 </div>
 
+                {listLoading && (
+                  <div role="status" className="flex items-center gap-2 border-b border-border bg-primary/5 px-4 py-2 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                    {t("loading_folder", { path: listTarget || t("root") })}
+                  </div>
+                )}
+
                 {held !== null && (
                   <section role="status" className="border-b border-border bg-muted/20 px-4 py-2.5">
                     <p className="flex items-start gap-2.5 text-sm">
@@ -811,8 +857,13 @@ export function ServerFiles() {
                           return (
                             <tr
                               key={e.name}
-                              onClick={() => (e.is_dir ? void load(p) : void openFile(e))}
-                              className="cursor-pointer transition-colors hover:bg-muted/30"
+                              onClick={() => {
+                                setSelected(p);
+                                if (e.is_dir) void load(p, true);
+                                else void openFile(e);
+                              }}
+                              aria-selected={selected === p}
+                              className={cn("cursor-pointer transition-colors hover:bg-muted/30", selected === p && "bg-primary/10 ring-1 ring-inset ring-primary/30")}
                             >
                               <td className="px-4 py-3">
                                 {/* The name is a button so the keyboard and a screen
@@ -829,7 +880,7 @@ export function ServerFiles() {
                                     <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
                                   )}
                                   <span className="truncate font-mono text-xs">{e.name}</span>
-                                  {opening === p && (
+                                  {(opening === p || (listLoading && listTarget === p)) && (
                                     <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
                                   )}
                                 </button>
@@ -940,16 +991,18 @@ export function ServerFiles() {
       )}
 
       {/* File editor dialog */}
-      <Dialog open={open !== null} onOpenChange={(v) => !v && requestClose()}>
-        <DialogContent className="max-w-3xl">
+      <Dialog open={open !== null || opening !== null} onOpenChange={(v) => !v && requestClose()}>
+        <DialogContent className="max-w-4xl">
           <DialogHeader>
             <DialogTitle className="break-all font-mono text-sm">
-              {open?.path}
+              {opening ?? open?.path}
             </DialogTitle>
-            {open && !open.editable && (
-              <p className="text-xs text-muted-foreground">{t("binary_hint")}</p>
-            )}
           </DialogHeader>
+          {opening !== null && (
+            <div role="status" className="flex h-[30vh] items-center justify-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-5 w-5 animate-spin text-primary" />{t("opening_file")}
+            </div>
+          )}
           {open && (
             <>
               {open.conflict && (
@@ -997,18 +1050,29 @@ export function ServerFiles() {
                 </div>
               )}
               {open.error && <MessageLine kind="error" message={open.error} />}
-              <textarea
-                value={open.text}
-                onChange={(e) => setOpen({ ...open, text: e.target.value })}
-                readOnly={!open.editable}
-                spellCheck={false}
-                className="h-[50vh] w-full resize-none rounded-md border border-input bg-background p-3 font-mono text-xs leading-relaxed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              />
+              {open.editable ? (
+                <Suspense fallback={<Loading />}>
+                  <TextFileEditor path={open.path} value={open.text} label={t("file_content")}
+                    onChange={(text) => setOpen({ ...open, text })} onSave={() => void handleSave()} />
+                </Suspense>
+              ) : (
+                <div className="flex min-h-52 flex-col items-center justify-center gap-3 rounded-md border border-border bg-muted/20 px-6 py-8 text-center">
+                  <FileArchive className="h-9 w-9 text-muted-foreground" />
+                  <p className="font-medium">{t(open.preview === "large" ? "preview_large_title" : "binary_title")}</p>
+                  <p className="max-w-md text-sm text-muted-foreground">{t(open.preview === "large" ? "preview_large_hint" : "binary_hint", { limit: formatBytes(MAX_READ_BYTES) })}</p>
+                  <Button variant="outline" disabled={changing}
+                    onClick={() => void download({ name: open.path.slice(dir.length ? dir.length + 1 : 0), is_dir: false, size: open.size ?? 0, mod_time: "" })}>
+                    {downloading === open.path ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                    {t("download_file")}
+                  </Button>
+                </div>
+              )}
+              {!open.editable && msg && <MessageLine kind={msg.kind} message={msg.text} />}
               <DialogFooter className="items-center gap-2 sm:justify-between">
                 <span className={cn("text-xs", tooLarge ? "text-destructive" : "text-muted-foreground")}>
                   {tooLarge
                     ? t("too_large", { limit: formatBytes(MAX_WRITE_BYTES) })
-                    : formatBytes(dirtyBytes)}
+                    : `${formatBytes(open.editable ? dirtyBytes : open.size ?? 0)}${open.editable ? " · UTF-8 · Ctrl/⌘ S" : ""}`}
                 </span>
                 {confirmDiscard ? (
                   <div role="alert" className="flex flex-wrap items-center justify-end gap-2">
@@ -1033,7 +1097,7 @@ export function ServerFiles() {
                     >
                       {t("common:cancel")}
                     </Button>
-                    <Button
+                    {open.editable && <Button
                       onClick={() => void handleSave()}
                       disabled={saving || reloading || open.conflict || !open.editable || !dirty || tooLarge}
                     >
@@ -1043,7 +1107,7 @@ export function ServerFiles() {
                         <Save className="h-4 w-4" />
                       )}
                       {saving ? t("saving") : t("save")}
-                    </Button>
+                    </Button>}
                   </div>
                 )}
               </DialogFooter>

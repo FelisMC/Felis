@@ -69,8 +69,10 @@ type JobParams struct {
 	// Async marks a Job felis-api does not wait on: it carries LabelAsync and
 	// AnnotationPath, which Ops reads it back by. Only an upload or an unzip
 	// runs so.
-	Async    bool
-	WorldPVC string
+	Async        bool
+	WorldPVC     string
+	BrowserURL   string
+	BrowserToken string
 
 	Namespace      string
 	ServiceAccount string
@@ -128,7 +130,7 @@ func filesLabels(p JobParams) map[string]string {
 //   - mounts EXACTLY ONE volume — the world PVC — and NO Secret, NO ConfigMap, and
 //     NO backup PVC. It is therefore strictly blinder than the backup Pod, which
 //     mounts the config Secret to self-record its row: a file-editor Pod has nothing
-//     to record, so it is handed no database URL and no credential of any kind (the
+//     to record, so it is handed no database URL or platform credential (the
 //     four-power red line, spec §22);
 //   - mounts that one volume READ-ONLY for list and read (see mutates), so the
 //     two operations that only look physically cannot change anything — the
@@ -147,8 +149,12 @@ func filesLabels(p JobParams) map[string]string {
 //
 // The container runs `/usr/local/bin/felis files` (cmd/felis), which performs the
 // operation under os.Root containment and prints the marked JSON Result line that
-// felis-api reads back through pods/log.
+// felis-api reads back through pods/log. A browser instead pulls read commands
+// from the internal API and posts each result there using a scoped token.
 func FilesJob(p JobParams) (*batchv1.Job, error) {
+	if p.BrowserURL != "" && (mutates(p.Op) || p.BrowserToken == "" || p.Async) {
+		return nil, fmt.Errorf("fileedit: a browser must be read-only and have a token")
+	}
 	if p.Image == "" {
 		return nil, fmt.Errorf("fileedit: image is empty")
 	}
@@ -246,7 +252,7 @@ func FilesJob(p JobParams) (*batchv1.Job, error) {
 	// so the spec is the sole channel into the Pod; base64 keeps arbitrary bytes —
 	// CRLF line endings, a UTF-8 BOM, a binary blob — intact through a field that
 	// must be a valid string. Content is set ONLY for a write and the token ONLY
-	// for an upload, so no other Job spec carries either.
+	// for an upload or read-only browser, so no other Job spec carries either.
 	switch p.Op {
 	case OpWrite:
 		parts := splitContent(p.Content)
@@ -256,6 +262,11 @@ func FilesJob(p JobParams) (*batchv1.Job, error) {
 		}
 	case OpUpload:
 		container.Env = []corev1.EnvVar{{Name: UploadTokenEnv, Value: p.UploadToken}}
+	}
+	if p.BrowserURL != "" {
+		container.Args = []string{"--browse-url", p.BrowserURL, "--worlds-root", p.WorldsRoot}
+		container.Env = []corev1.EnvVar{{Name: BrowserTokenEnv, Value: p.BrowserToken}}
+		container.Resources.Requests = corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("10m"), corev1.ResourceMemory: resource.MustParse("32Mi")}
 	}
 
 	job := &batchv1.Job{
