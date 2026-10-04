@@ -51,7 +51,7 @@ RUN if [ -z "${LIMBO_VERSION:-}" ]; then \
         echo "LIMBO_VERSION is required (deploy/game-stack.lock)" >&2; exit 1; \
     fi \
     && cd plugins/limbo \
-    && gradle --no-daemon -PlimboVersion="$LIMBO_VERSION" build \
+    && gradle --no-daemon --console=plain --init-script ../shared/build-progress.gradle -PlimboVersion="$LIMBO_VERSION" build \
     && cp build/libs/*.jar /felis-limbo.jar
 
 # ---- assemble the runtime ----

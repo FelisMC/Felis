@@ -126,7 +126,7 @@ mkdir -p "${WORK}/velocity"
 tar -C . --exclude=build --exclude=.gradle -cf - plugins/velocity plugins/shared | tar -C "${WORK}/velocity" -xf -
 docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e GRADLE_USER_HOME=/tmp/gradle \
   -v "${WORK}/velocity:/src" -w /src/plugins/velocity \
-  "$PLUGIN_BUILD_IMAGE" gradle --no-daemon clean build
+  "$PLUGIN_BUILD_IMAGE" gradle --no-daemon clean build --console=plain --init-script ../shared/build-progress.gradle
 jars=( "${WORK}"/velocity/plugins/velocity/build/libs/felis-velocity-*.jar )
 [ "${#jars[@]}" -eq 1 ] && [ -f "${jars[0]}" ] || die "the felis-velocity build must produce exactly one plugin jar"
 install -m 0644 "${jars[0]}" "${OUT}/felis-velocity.jar"

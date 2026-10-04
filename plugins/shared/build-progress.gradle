@@ -1,0 +1,74 @@
+import org.gradle.api.logging.Logging
+import org.gradle.internal.operations.BuildOperationListener
+import org.gradle.internal.operations.BuildOperationListenerManager
+import org.gradle.internal.operations.OperationProgressDetails
+import org.gradle.internal.resource.ExternalResourceReadBuildOperationType
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+
+// The Docker images pin Gradle. Observe its download events without changing requests,
+// dependency verification or caching; plain console output otherwise hides these events.
+def logger = Logging.getLogger('felis.download')
+def downloads = new ConcurrentHashMap()
+def bytes = { long value ->
+    value >= 1024 * 1024 ? String.format(Locale.ROOT, '%.1f MiB', value / (1024.0 * 1024)) :
+                          String.format(Locale.ROOT, '%.1f KiB', value / 1024.0)
+}
+def seconds = { long since -> TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - since) }
+def listener = [
+    started: { operation, event ->
+        if (!(operation.details instanceof ExternalResourceReadBuildOperationType.Details)) return
+        def uri = URI.create(operation.details.location)
+        if (!(uri.scheme in ['http', 'https'])) return
+        def now = System.nanoTime()
+        def name = "${uri.path.tokenize('/').last()} (${uri.host})"
+        downloads[operation.id] = [name: name, bytes: 0L, total: 0L, started: now,
+                                   changed: now, sampled: now, sampledBytes: 0L]
+        logger.lifecycle("[felis] Downloading ${name}")
+    },
+    progress: { id, event ->
+        def download = downloads[id]
+        if (download == null || !(event.details instanceof OperationProgressDetails)) return
+        if (event.details.units != 'bytes') return
+        synchronized (download) {
+            if (event.details.progress > download.bytes) download.changed = System.nanoTime()
+            download.bytes = event.details.progress
+            download.total = event.details.total
+        }
+    },
+    finished: { operation, event ->
+        def download = downloads.remove(operation.id)
+        if (download == null) return
+        def outcome = event.failure != null ? 'Download failed' :
+                      event.result?.missing ? 'Not found' : 'Downloaded'
+        logger.lifecycle("[felis] ${outcome} ${download.name} (${seconds(download.started)}s)")
+    }
+] as BuildOperationListener
+
+def manager = gradle.services.get(BuildOperationListenerManager)
+manager.addListener(listener)
+def timer = Executors.newSingleThreadScheduledExecutor({ task ->
+    def thread = new Thread(task, 'felis-download-progress')
+    thread.daemon = true
+    thread
+} as java.util.concurrent.ThreadFactory)
+timer.scheduleAtFixedRate({
+    downloads.values().each { download ->
+        synchronized (download) {
+            def now = System.nanoTime()
+            def rate = (long) ((download.bytes - download.sampledBytes) * 1e9 / (now - download.sampled))
+            def total = download.total > 0 ? bytes(download.total) : 'unknown size'
+            def percent = download.total > 0 ? " (${Math.min(100, (100L * download.bytes).intdiv(download.total))}%)" : ''
+            def idle = seconds(download.changed)
+            def waiting = idle >= 30 ? " | no new data for ${idle}s; waiting for the download" : ''
+            logger.lifecycle("[felis] ${download.name}: ${bytes(download.bytes)} / ${total}${percent} | ${bytes(rate)}/s | ${seconds(download.started)}s elapsed${waiting}")
+            download.sampled = now
+            download.sampledBytes = download.bytes
+        }
+    }
+} as Runnable, 10, 10, TimeUnit.SECONDS)
+gradle.buildFinished {
+    timer.shutdownNow()
+    manager.removeListener(listener)
+}

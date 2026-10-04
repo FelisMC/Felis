@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+	"io"
+	"os"
 	"strings"
 	"time"
 
+	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // summaryModel is the terminal screen of the setup wizard. On a first run it
@@ -24,8 +28,13 @@ type summaryModel struct {
 	alreadySetUp  bool // re-run: Owner pre-existed
 	localHint     bool // show the self-signed-cert note
 	// alerts is where the watchdog's alerts go; nil leaves the rows out.
-	alerts *alertRoute
+	alerts     *alertRoute
+	copyText   func(string) error
+	copyNotice string
+	copyFailed bool
 }
+
+type summaryCopiedMsg struct{ err error }
 
 func (m *summaryModel) Init() tea.Cmd { return nil }
 
@@ -34,9 +43,35 @@ func (m *summaryModel) Init() tea.Cmd { return nil }
 func (m *summaryModel) arrowNavOK() bool { return true }
 
 func (m *summaryModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if copied, ok := msg.(summaryCopiedMsg); ok {
+		m.copyFailed = copied.err != nil
+		switch {
+		case copied.err != nil:
+			m.copyNotice = "Could not copy: " + copied.err.Error()
+		case os.Getenv("SSH_TTY") != "" || os.Getenv("SSH_CONNECTION") != "":
+			m.copyNotice = "Copy sent to terminal. If it does not paste, your terminal needs OSC 52 support."
+		default:
+			m.copyNotice = "Link copied to clipboard."
+		}
+		return m, nil
+	}
 	if key, ok := msg.(tea.KeyMsg); ok {
 		switch key.String() {
 		case "c", "C":
+			link := m.panelURL
+			if m.setupTokenURL != "" {
+				link = m.setupTokenURL
+			}
+			if link == "" {
+				m.copyNotice, m.copyFailed = "No link to copy.", true
+				return m, nil
+			}
+			copyText := m.copyText
+			if copyText == nil {
+				copyText = copyTerminalText
+			}
+			return m, func() tea.Msg { return summaryCopiedMsg{err: copyText(link)} }
+		case "n", "N":
 			return m, func() tea.Msg { return reconfigureConnectMsg{} }
 		case "s", "S":
 			return m, func() tea.Msg { return reconfigureStorageMsg{} }
@@ -101,8 +136,38 @@ func (m *summaryModel) View() string {
 		b.WriteString(tuiHint.Render("  The local certificate is self-signed; your browser may warn on first visit.") + "\n")
 	}
 
-	b.WriteString("\n" + tuiAction("c", "change connection", "s", "change storage", "e", "configure email", "enter/esc", "exit"))
+	if m.copyNotice != "" {
+		style := tuiOK
+		if m.copyFailed {
+			style = tuiWarn
+		}
+		b.WriteString("\n" + style.Render(m.copyNotice) + "\n")
+	}
+	copyLabel := "copy panel link"
+	if m.setupTokenURL != "" {
+		copyLabel = "copy setup link"
+	}
+	b.WriteString("\n" + tuiAction("c", copyLabel, "n", "change connection", "s", "change storage", "e", "configure email", "enter/esc", "exit"))
 	return b.String()
+}
+
+// SSH copies through the terminal; the remote host's desktop clipboard is unrelated.
+// /dev/tty keeps the one-time link out of redirected stdout and install logs.
+func copyTerminalText(text string) error {
+	if os.Getenv("SSH_TTY") == "" && os.Getenv("SSH_CONNECTION") == "" {
+		return clipboard.WriteAll(text)
+	}
+	tty, err := os.OpenFile("/dev/tty", os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer tty.Close()
+	sequence := ansi.SetSystemClipboard(text)
+	if os.Getenv("TMUX") != "" {
+		sequence = ansi.TmuxPassthrough(sequence)
+	}
+	_, err = io.WriteString(tty, sequence)
+	return err
 }
 
 // alertRoute is where this host's watchdog alerts go, as the summary shows it:

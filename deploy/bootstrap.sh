@@ -3017,7 +3017,7 @@ EOF
   chmod 0755 "${tmp}/felis"
 
   log "building ${FELIS_IMAGE} from the current felis binary"
-  docker build -t "$FELIS_IMAGE" "$tmp"
+  docker build --progress=plain -t "$FELIS_IMAGE" "$tmp"
   rm -rf "$tmp"
 }
 
@@ -3031,7 +3031,7 @@ build_image_from_source() {
   # Without the stamp main.version stays "dev", and `felis update` refuses to compare a
   # "dev" build against upstream rather than treating it as 0.0.0. So an unstamped image
   # is not a cosmetic problem: it silently disables update reporting for the install.
-  docker build -t "$FELIS_IMAGE" \
+  docker build --progress=plain -t "$FELIS_IMAGE" \
     --build-arg FELIS_VERSION="${FELIS_VERSION:-dev}" "$SRC_DIR"
 
   log "extracting the felis binary onto the host (${HOST_BIN})"
@@ -3504,7 +3504,7 @@ build_game_image() {
     limbo)
       img="$FELIS_LIMBO_IMAGE"
       log "building ${img} (LOOHP/Limbo ${LIMBO_VERSION}, Minecraft ${MC_VERSION})"
-      docker build -f "${GAME_STACK_DIR}/deploy/limbo/Dockerfile" \
+      docker build --progress=plain -f "${GAME_STACK_DIR}/deploy/limbo/Dockerfile" \
         --build-arg LIMBO_JAR_URL="$LIMBO_JAR_URL" \
         --build-arg LIMBO_JAR_SHA256="$LIMBO_JAR_SHA256" \
         --build-arg LIMBO_SCHEM_URL="$LIMBO_SCHEM_URL" \
@@ -3515,7 +3515,7 @@ build_game_image() {
     lobby)
       img="$FELIS_LOBBY_IMAGE"
       log "building ${img} (Paper ${MC_VERSION} + felis-paper /menu + LuckPerms)"
-      docker build -f "${GAME_STACK_DIR}/deploy/lobby/Dockerfile" \
+      docker build --progress=plain -f "${GAME_STACK_DIR}/deploy/lobby/Dockerfile" \
         --build-arg PAPER_JAR_URL="$PAPER_JAR_URL" \
         --build-arg PAPER_JAR_SHA256="$PAPER_JAR_SHA256" \
         --build-arg LUCKPERMS_JAR_URL="$LUCKPERMS_JAR_URL" \
@@ -3527,7 +3527,7 @@ build_game_image() {
       # operator initContainer's job, so this image carries no /menu plugin and no secret gate.
       img="$FELIS_PAPER_IMAGE"
       log "building ${img} (plain Paper ${MC_VERSION}, forwarding via the operator initContainer)"
-      docker build -f "${GAME_STACK_DIR}/deploy/paper/Dockerfile" \
+      docker build --progress=plain -f "${GAME_STACK_DIR}/deploy/paper/Dockerfile" \
         --build-arg PAPER_JAR_URL="$PAPER_JAR_URL" \
         --build-arg PAPER_JAR_SHA256="$PAPER_JAR_SHA256" \
         -t "$img" "$GAME_STACK_DIR"
@@ -3633,7 +3633,7 @@ build_velocity_plugin() {
   docker run --rm \
     -v "${GAME_STACK_DIR}:/src:z" \
     -w /src/plugins/velocity \
-    "$PLUGIN_BUILD_IMAGE" gradle --no-daemon clean build \
+    "$PLUGIN_BUILD_IMAGE" gradle --no-daemon clean build --console=plain --init-script ../shared/build-progress.gradle \
     || die "felis-velocity plugin build failed"
   local -a jars=( "${GAME_STACK_DIR}"/plugins/velocity/build/libs/felis-velocity-*.jar )
   [ "${#jars[@]}" -eq 1 ] && [ -f "${jars[0]}" ] \

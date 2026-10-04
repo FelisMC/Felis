@@ -147,6 +147,9 @@ func TestBootstrapPinsViaBlockConnectionsOff(t *testing.T) {
 // inputs from the script and from each Dockerfile's own COPY lines instead of restating
 // them here; a fourth image inherits the check for free.
 func TestGameStackTarCarriesEveryBuildInput(t *testing.T) {
+	// The plugin builds invoke this shared init script after COPYing the directory;
+	// a directory entry alone would pass the COPY check even if the script was omitted.
+	requireEmbedded(t, "plugins/shared/build-progress.gradle")
 	// Matches the path only when GAME_STACK_DIR is followed by one, which skips the
 	// build-context arguments (`"$GAME_STACK_DIR"`, `"${GAME_STACK_DIR}:/src:z"`) and
 	// the glob for gradle's output, none of which are inputs this tar has to carry.

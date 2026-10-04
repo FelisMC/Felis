@@ -226,7 +226,7 @@ java -cp "$work/linkcard-classes:$adventure_api:$adventure_key:$examination_api"
 
 for module in velocity paper; do
   echo "==> plugins/$module: ./gradlew --no-daemon build"
-  ( cd "plugins/$module" && ./gradlew --no-daemon build )
+  ( cd "plugins/$module" && ./gradlew --no-daemon --console=plain --init-script ../shared/build-progress.gradle build )
 done
 
 echo "==> plugins/velocity: ./gradlew --no-daemon routingTest"
@@ -238,4 +238,4 @@ echo "==> plugins/paper: ./gradlew --no-daemon lobbyTest"
 limbo_version="$(sed -n 's/^LIMBO_VERSION=//p' deploy/game-stack.lock)"
 [ -n "$limbo_version" ] || { echo "deploy/game-stack.lock sets no LIMBO_VERSION" >&2; exit 1; }
 echo "==> plugins/limbo: ./gradlew --no-daemon -PlimboVersion=${limbo_version} build loginTest"
-( cd plugins/limbo && ./gradlew --no-daemon -PlimboVersion="$limbo_version" build loginTest )
+( cd plugins/limbo && ./gradlew --no-daemon --console=plain --init-script ../shared/build-progress.gradle -PlimboVersion="$limbo_version" build loginTest )

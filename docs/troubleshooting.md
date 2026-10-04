@@ -2320,6 +2320,13 @@ about … MiB under /var/lib/containerd, and … has … MiB free; nothing has b
 once the asset downloads (the messages above it say which one failed), free that space, or
 set `FELIS_PREFLIGHT=warn` to build anyway **[SH-TESTED]**.
 
+Host builds keep Docker's output in the terminal scrollback. During plugin builds,
+`[felis] Downloading <file> (<host>)` identifies each Gradle dependency download;
+every ten seconds an active download reports bytes, speed and elapsed time. A
+percentage appears only when the server supplies a total size. After thirty seconds
+without new bytes the line says `no new data for …; waiting for the download`;
+this reports a wait, without changing Gradle's timeout or retry behavior.
+
 | Message | Meaning | What to do |
 |---|---|---|
 | `release vX publishes no SHA256SUMS … building them on this host instead` | the release predates release assets, or release.yml is still uploading them | nothing for an old release; for a new one, rerun once the release page lists `SHA256SUMS` |
@@ -2747,7 +2754,7 @@ host yourself, plus the off-site encryption key if the copy is in the bucket.
     `cloudflared-felis` unit stay behind with the old disk, so the panel
     hostnames answer Cloudflare error 1033 until a connector runs here.
 
-    Run `sudo felis setup`, press `c` (change connection) on the status
+    Run `sudo felis setup`, press `n` (change connection) on the status
     screen and choose Cloudflare Tunnel + Access. On the step's first screen
     press `i` to install cloudflared, then `l` for `cloudflared tunnel login`
     (browser consent on your account, which writes `cert.pem`); `enter` opens

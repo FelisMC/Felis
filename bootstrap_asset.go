@@ -33,7 +33,7 @@ var bootstrapAssets embed.FS
 //go:embed plugins/limbo/build.gradle plugins/limbo/settings.gradle plugins/limbo/src plugins/limbo/gradle/verification-metadata.xml
 //go:embed plugins/paper/build.gradle plugins/paper/settings.gradle plugins/paper/src plugins/paper/gradle/verification-metadata.xml
 //go:embed plugins/velocity/build.gradle plugins/velocity/settings.gradle plugins/velocity/src plugins/velocity/gradle/verification-metadata.xml
-//go:embed plugins/shared/src
+//go:embed plugins/shared/src plugins/shared/build-progress.gradle
 var gameStackAssets embed.FS
 
 // GameStackTar streams the embedded game-stack sources as a tar, rooted so that

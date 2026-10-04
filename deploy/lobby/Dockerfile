@@ -40,7 +40,7 @@ WORKDIR /src
 COPY plugins/paper/ ./plugins/paper/
 COPY plugins/shared/ ./plugins/shared/
 RUN cd plugins/paper \
-    && gradle --no-daemon build \
+    && gradle --no-daemon --console=plain --init-script ../shared/build-progress.gradle build \
     && cp build/libs/*.jar /felis-paper.jar
 
 # ---- assemble the runtime ----
