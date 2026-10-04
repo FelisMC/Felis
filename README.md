@@ -14,6 +14,7 @@
 </div>
 
 > [!CAUTION]
+> **当前仅提供开发快照，已撤下公开 Release。仅供开发者在隔离的测试环境中验证，不建议普通用户部署。**
 > **此项目仍处于早期开发阶段，您不该在任何生产环境使用该项目。若产生任何问题，贵用户的使用行为与 FelisMC 团队无任何民事刑事法律关系。**<br>
 > **THIS PROJECT IS STILL WIP, YOU SHOULD DO NOT USE THIS PROJECT IN ANY PRODUCTION USAGE. WE ARE NOT RESPOND FOR ANY LEGAL OR HUMANLY PROBLEM.**
 
@@ -64,10 +65,10 @@
 
 ## 使用方式
 
-在已准备好的 Linux 主机上执行：
+开发测试需在已准备好的 Linux 测试主机上显式选择 `dev` 通道（跟随 `main`，从源码构建）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/main/deploy/bootstrap.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/main/deploy/bootstrap.sh | sudo FELIS_VERSION_BOOTSTRAP=dev bash
 ```
 
 脚本将安装 K3s，在 K3s 中部署 PostgreSQL 与控制平面，随后启动设置向导。设置完成后，通过浏览器访问所配置的域名即可进入控制面板。
@@ -76,7 +77,7 @@ curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/main/deploy/bootstrap
 
 * **认证源管理**：Owner 可在左侧“平台 → 认证源”添加、编辑、排序、停用第三方 Yggdrasil 认证站，并测试认证接口。保存后立即用于下一次登录和角色查询，无需重启；面板配置优先于安装配置。已保存的永久标识不能改名或删除，以保留玩家 UUID 与账号绑定；不再使用的源可停用。Mojang 始终优先验证。Nano 继续使用 TOML 配置。
 
-* **支持的系统**：CentOS Stream 9（aarch64）已在实机上验证；Ubuntu 24.04（x86_64）在每次推送时由 CI 执行全新安装、重复安装、升级及上述安装命令（参见 [运维手册 §1](docs/operations.md#1-supported-hosts)）。
+* **支持的系统**：CentOS Stream 9（aarch64）已在实机上验证；Ubuntu 24.04（x86_64）在每次推送时由 CI 验证开发构建的全新安装与重复安装（参见 [运维手册 §1](docs/operations.md#1-supported-hosts)）。
 
 * **安装前检查**：安装器在修改主机之前检查内存、磁盘、端口、网段冲突、已有的 Kubernetes 及外网连通性。发现问题时一次性列出全部问题并退出，主机保持原状（检查项参见 [运维手册 §1](docs/operations.md#1-supported-hosts)）。
 
@@ -85,6 +86,8 @@ curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/main/deploy/bootstrap
 <details>
 <summary>安装来源与受限网络环境下的安装</summary>
 <br>
+
+以下说明发布机制；当前暂无公开 Release 附件，开发测试使用源码构建。
 
 安装发布版时，二进制文件、全部镜像及 Velocity 插件均取自该版本由 CI 预构建的 release 附件，逐一校验 `SHA256SUMS` 后导入。主机无需安装 Docker、Gradle 或 Go，也无需访问 Docker Hub。若某个附件缺失或校验失败，仅该镜像回退为本机构建，并输出提示（参见 [故障排查 §15c](docs/troubleshooting.md)）。
 

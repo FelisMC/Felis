@@ -14,6 +14,7 @@
 </div>
 
 > [!CAUTION]
+> **Only development snapshots are available; public releases have been withdrawn. These builds are for developers testing in isolated environments and are not recommended for general deployment.**
 > **THIS PROJECT IS STILL WIP, YOU SHOULD DO NOT USE THIS PROJECT IN ANY PRODUCTION USAGE. WE ARE NOT RESPOND FOR ANY LEGAL OR HUMANLY PROBLEM.**
 
 <details>
@@ -63,17 +64,17 @@
 
 ## Getting Started
 
-On a prepared Linux host, run:
+For development testing on a prepared Linux test host, explicitly select the `dev` channel, which follows `main` and builds from source:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/main/deploy/bootstrap.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/main/deploy/bootstrap.sh | sudo FELIS_VERSION_BOOTSTRAP=dev bash
 ```
 
 The script installs K3s, deploys PostgreSQL and the control plane inside it, and launches a setup wizard. When setup completes, open the configured domain in a browser to reach the control panel.
 
 * **Setup wizard**: Configure panel access and storage first. The host administrator then initializes the first Owner and receives a one-time browser setup link (valid for 30 minutes). Open it, record an email, and create a passkey to enter the panel; Minecraft is not required. Later, link a game role from Account by selecting an authentication source, entering a role name or UUID, and confirming it. Players retain the in-game bind-code flow. Rerun `sudo felis setup` if login setup is unfinished or the link expires; accounts with an established login factor are never reset. Login/lobby failures do not block panel initialization. Account explains Yggdrasil authentication and shows the join address and Java client version for the login/lobby servers. Bootstrap records the built protocol in `[velocity].game_version`; set it yourself for custom images, otherwise the panel reports it as unknown. Standard Yggdrasil endpoints support role lookup directly; sources with a nonstandard `hasJoined` path can set `[[auth_source]].api_url` to their API root, with game-code linking still available as a fallback. The installer launches the wizard automatically only on an interactive terminal; when output is redirected to a log or the install runs under cloud-init, run `sudo felis setup` after it finishes. Setting `FELIS_NO_SETUP=1` makes the installer end at its summary.
 
-* **Supported hosts**: CentOS Stream 9 (aarch64) is verified on physical hardware; Ubuntu 24.04 (x86_64) is tested in CI on every push with a fresh install, a rerun, an upgrade and the install command above (see [operations §1](docs/operations.md#1-supported-hosts)).
+* **Supported hosts**: CentOS Stream 9 (aarch64) is verified on physical hardware; CI tests fresh installation and repeat installation of development builds on Ubuntu 24.04 (x86_64) on every push (see [operations §1](docs/operations.md#1-supported-hosts)).
 
 * **Preflight checks**: Before modifying the host, the installer checks memory, disk, ports, network range conflicts, existing Kubernetes installations and outbound connectivity. If any check fails, it lists all problems and exits, leaving the host unchanged (see [operations §1](docs/operations.md#1-supported-hosts) for the checks).
 
@@ -82,6 +83,8 @@ The script installs K3s, deploys PostgreSQL and the control plane inside it, and
 <details>
 <summary>Installation sources and restricted networks</summary>
 <br>
+
+The following describes the release mechanism. No public release assets are currently available; development testing uses source builds.
 
 A release installation takes the binary, all images and the Velocity plugin from the release assets prebuilt in CI, verifying each against `SHA256SUMS` before import. The host requires no Docker, Gradle or Go, and no access to Docker Hub. If an asset is missing or fails verification, only that image falls back to a local build, and the installer prints a notice (see [troubleshooting §15c](docs/troubleshooting.md)).
 
