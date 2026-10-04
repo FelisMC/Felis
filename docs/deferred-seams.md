@@ -31,19 +31,19 @@ A grep across `*.md` and `*.go` returns both sets; only the Go ones are seams.
   update` passes nil deliberately. The notification is the panel instead:
   `felis-update-check.timer` runs `felis update --record` daily on the host, which
   stores the report under `platform_settings.update_report`, and **Admin → Updates →
-  Component versions** shows it with the command that applies each update.
-- `internal/updates/seams.go:43` — `Applier`. Nothing applies an update anywhere. A
-  nil applier is not silent — `Run` records `errNoApplier` against every planned
-  apply, so a mis-scheduled apply is loud rather than lost.
+  Component versions** shows it with the read-only command that prepares an update.
+- `internal/updates/seams.go:43` — `Applier`. No unattended runner adapts this interface.
+  The host CLI implements explicit `felis update --apply` separately, using the target
+  installer after window checks and backup. A nil applier in the read-only runner
+  still records `errNoApplier` against a mistakenly scheduled apply.
 - `internal/updater/gatherer_integration.go:22` — the two current-version seams
   `NewSysGatherer` leaves nil, for the in-cluster path: the k8s read of the
   control-plane Deployment image, and the Velocity jar inspection. Both are answered
   on the host path (see "Built" below), so this gap is specific to a caller that has
   a cluster client instead of the node.
-- `internal/api/handlers_updates.go` — the maintenance window is advisory: no
-  in-cluster runner applies updates. `felis update` reads the stored window, prints
-  where now sits against it and warns before an apply outside it; the runner itself
-  still runs with a zero window, so no path can claim an apply is under way.
+- `internal/api/handlers_updates.go` — no in-cluster runner applies updates. The host
+  `felis update --apply` now consumes the stored window and refuses outside it unless
+  explicit `--now` starts manual maintenance. The check/record runner remains read-only.
 - `internal/submit/blobstore.go` — CLOSED 2026-09-22. The uploads PVC still cannot
   cross namespaces, so the transport went through the API instead of a mount: the
   derived context ref is now the internal-face URL

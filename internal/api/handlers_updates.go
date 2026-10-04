@@ -19,16 +19,14 @@ import (
 // SINGLE GLOBAL WINDOW (deliberate). internal/updates models the window PER
 // Component (Component.Window), but this endpoint stores ONE platform-wide window.
 // The task scopes "the SysAdmin-set update Window" as a single maintenance slot,
-// and the core's own comment defers recurrence to the caller — so the (not-yet-
-// built, INTEGRATION-ONLY) `felis update` runner reads this one window and fans it
-// out to every Scheduled+manageable component when it assembles its []Component.
+// and the core's own comment defers recurrence to the caller. The host
+// `felis update --apply` reads this window before backup and before installation.
 // A future need for per-component windows would layer keys on top; this is the
 // platform default.
 //
-// Felis applies no update on its own, so the window is advisory. Its consumer
-// is `felis update` on the host (cmd/felis/update.go readUpdateWindow), which
-// reads this row, prints where now sits against it, and warns before an apply
-// outside it. The panel's Updates page says the same.
+// Felis applies no update on its own. `felis update` reports this window, and
+// explicit --apply refuses outside it unless --now starts manual maintenance.
+// An unreadable window is always a refusal, including for --now and --force.
 
 // updateWindowKey is the platform_settings key holding the maintenance window as
 // JSON {"start","end"} (RFC3339, or null when unset). It reuses the generic

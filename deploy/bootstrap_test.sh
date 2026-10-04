@@ -1085,9 +1085,10 @@ dsum="$(sha256sum <"$ddir/asset" | cut -d' ' -f1)"
 # command inside fetch_source. The log lands in $ddir/log; stdout says what the caller did.
 run_download() {
   rm -f "$ddir/bin/felis"
+  if [ "${ALREADY_INSTALLED:-0}" = 1 ]; then cp "$ddir/asset" "$ddir/bin/felis"; chmod +x "$ddir/bin/felis"; fi
   : > "$ddir/log"
   SUMS="$1" ENTRY="${2:-acquire_felis_binary}" ASSET="$ddir/asset" LOG="$ddir/log" FELIS_REF=v9.9.9 \
-    HOST_BIN="$ddir/bin/felis" TMPDIR="$sdir" INSTALL_FAILS="${INSTALL_FAILS:-}" FETCH_FAILS="${FETCH_FAILS:-}" bash -c '
+    HOST_BIN="$ddir/bin/felis" TMPDIR="$sdir" FELIS_FORCE_UPDATE="${FELIS_FORCE_UPDATE:-0}" INSTALL_FAILS="${INSTALL_FAILS:-}" FETCH_FAILS="${FETCH_FAILS:-}" bash -c '
     set -Eeuo pipefail
     ok() { printf "OK: %s\n" "$*" >> "$LOG"; }
     warn() { printf "WARN: %s\n" "$*" >> "$LOG"; }
@@ -1142,6 +1143,15 @@ same_log "the release binary is hashed before it is first executed" "$(printf '%
   "RAN: version" \
   "OK: installed felis-linux-amd64 v9.9.9 at $ddir/bin/felis")"
 if cmp -s "$ddir/asset" "$ddir/bin/felis"; then echo "PASS the installed binary is the download"; else echo "FAIL the installed binary is not the download"; fails=$((fails + 1)); fi
+
+out="$(ALREADY_INSTALLED=1 run_download "")"
+same_out "the matching host binary skips download" "PREBUILT[1]" $?
+out="$(FELIS_FORCE_UPDATE=1 ALREADY_INSTALLED=1 run_download "$(printf '%s  felis-linux-amd64\n' "$dsum")")"
+same_out "force reinstalls the matching verified binary" "PREBUILT[1]" $?
+same_log "force verifies the download before executing it" "$(printf '%s\n' \
+  "OK: felis-linux-amd64 matches release v9.9.9's SHA256SUMS" \
+  "RAN: version" \
+  "OK: installed felis-linux-amd64 v9.9.9 at $ddir/bin/felis")"
 
 out="$(run_download "$(printf '%s  felis-linux-amd64\n' deadbeef)")"
 same_out "a mismatched release binary asks for the source build" "FETCH_SOURCE
@@ -5221,6 +5231,42 @@ case "$out" in
   *) expect "one bucket key alone is reported as missing keys" "WARN: uploads go to an S3 bucket" "$out" ;;
 esac
 rm -rf "$credir" "$credcalls"
+
+# Existing clusters must pass compatibility before the install changes the host.
+compatdir="$(mktemp -d)"
+mkdir -p "$compatdir/pg/18/docker"
+printf '18' > "$compatdir/pg/18/docker/PG_VERSION"
+printf '#!/bin/sh\necho "k3s version v1.36.4+k3s1 (example)"\n' > "$compatdir/k3s"
+chmod +x "$compatdir/k3s"
+run_compatibility_guard() {
+  PG_DATA_DIR="$compatdir/pg" K3S_BIN="$compatdir/k3s" WANT_PG="$1" FELIS_K3S_VERSION="$2" FELIS_UPGRADE_DEPS=1 bash -c '
+    set -Eeuo pipefail
+    die() { echo "DIE: $*"; exit 1; }
+    ok() { :; }
+    version_newer() { return 1; }
+    postgres_image_major() { echo "$WANT_PG"; }
+    acquire_run_lock() { :; }
+    ensure_k3s_on_path() { :; }
+    resolve_nano_listen() { :; }
+    validate_settings() { :; }
+    detect_os() { :; }
+    prompt_install_mode() { INSTALL_MODE=full; }
+    detect_node_ip() { :; }
+    preflight() { :; }
+    quiet_watchdog() { echo HOST_CHANGE; exit 0; }
+    '"$(bsfn check_postgres_major)"'
+    '"$(bsfn k3s_upgrade_allowed)"'
+    '"$(bsfn main)"'
+    main
+  ' 2>&1
+}
+out="$(run_compatibility_guard 19 v1.37.1+k3s1)"
+expect "PostgreSQL major mismatch is refused before host changes" 'holds a PostgreSQL 18 cluster' "$out"
+case "$out" in *HOST_CHANGE*) echo "FAIL PostgreSQL refusal came after a host change"; fails=$((fails + 1));; esac
+out="$(run_compatibility_guard 18 v1.38.1+k3s1)"
+expect "k3s minor skip is refused before host changes" 'skips a minor version' "$out"
+case "$out" in *HOST_CHANGE*) echo "FAIL k3s refusal came after a host change"; fails=$((fails + 1));; esac
+rm -rf "$compatdir"
 
 # Worker admission reuses the installer but must never enter host control-plane setup.
 before "distributed host firewall runs the newly built binary" \

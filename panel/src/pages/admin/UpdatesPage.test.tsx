@@ -24,7 +24,7 @@ afterEach(() => {
 });
 
 describe("UpdatesPage", () => {
-  it("says the window is advisory, since nothing applies an update on its own", async () => {
+  it("explains the maintenance guard and explicit apply flow", async () => {
     render(
       <MemoryRouter>
         <UpdatesPage />
@@ -32,10 +32,10 @@ describe("UpdatesPage", () => {
     );
     expect(
       await screen.findByText(
-        "The window is advisory. Updates happen only when someone runs the apply commands `felis update` prints; it reads this window and warns when run outside it.",
+        "Apply is allowed inside this window. The host checks it before taking a backup and again before installation. Outside the window, apply is refused unless `--now` explicitly starts manual maintenance; `--force` does not bypass the checks.",
       ),
     ).toBeTruthy();
-    expect(screen.getByText("No maintenance window set. `felis update` will say so and leave the timing to you.")).toBeTruthy();
+    expect(screen.getByText("No maintenance window set. Configure one before applying, or explicitly use `--apply --now` for manual maintenance.")).toBeTruthy();
     expect(screen.queryByText(/applied automatically|may apply a Scheduled update/)).toBeNull();
   });
 });

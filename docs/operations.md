@@ -501,8 +501,8 @@ store=/var/lib/rancher/k3s/storage
 
 ## 4. Upgrading the pieces around Felis
 
-A rerun of the installer upgrades Felis itself (§15). The components it installs keep
-the version they were installed with unless noted:
+The host updater reuses the installer to reconcile Felis itself and its core components
+(§15). The components it installs keep the version they were installed with unless noted:
 
 | Component | How a rerun treats it | Upgrade |
 |---|---|---|
@@ -513,23 +513,54 @@ the version they were installed with unless noted:
 | PostgreSQL | follows the image the release pins | a minor release comes with a Felis release, and the rerun restarts felis-postgres on it (a few seconds without the API); a major version is a dump and restore (below) |
 | Docker, git, nftables | distribution packages | the package manager |
 
+`felis update` is a read-only check. It reports upstream availability, resolves the
+Felis target, downloads and syntax-checks its matching installer, and prints an explicit
+apply command. The upstream table is advisory: applying uses the target's compatible
+pins, rather than installing each component's newest upstream version independently.
+`--k3s`, `--cloudflared`, `--jre` and `--postgres` narrow the report; applying any core
+selector reconciles the whole platform bundle. `--all` also enables the release-pinned
+k3s and cloudflared upgrades. Minecraft user server images stay pinned.
+
 ```sh
-curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/main/deploy/bootstrap.sh \
-  | sudo FELIS_UPGRADE_DEPS=1 bash
+sudo felis update                       # newest stable release; no installation
+sudo felis update --all                 # also plan pinned host dependency upgrades
+sudo felis update --version v0.2.0       # inspect a named published release
+sudo felis update --dev                 # inspect the latest main commit
+sudo felis update --ref <commit-or-tag> # inspect a specific source tree
 ```
 
-`sudo felis update` reports Felis, Velocity, k3s, cloudflared, the JRE and PostgreSQL
-against their newest releases; `--k3s`, `--cloudflared`, `--jre` and `--postgres` narrow
-it to one. PostgreSQL is read from the felis-postgres container and compared within its
-major, since a minor release arrives with a Felis release, and a major past its end of life
-gets a note naming the current one.
+Review the target, full commit, scope and restart impact, then run the exact `--apply`
+command printed by the check. A source apply uses the full SHA, while a release apply
+also includes `--expect-commit` so a moved tag is refused. `--apply --dev` is supported
+for deliberately resolving main at execution time; the printed command pins the commit
+you inspected instead.
+
+Set the maintenance window in **Admin → Updates** first. Application reads that window
+before backup and again before installation: unset, future or expired windows refuse
+application. `--apply --now` explicitly starts one-off manual maintenance instead;
+an unreadable window is always refused. The daily `--record` timer never applies.
+`--force` reinstalls the same version or permits an intentional Felis downgrade; it
+never bypasses the window, backup or component compatibility guards.
+
+Before installation the running binary takes a database + `/etc/felis` + MinecraftServer
+specification backup; failure stops the update. Worlds are covered separately by server
+backups (§16), not this control-plane snapshot. Application then streams the existing
+installer's progress, reconciles the CLI, API/operator/panel, manifests/RBAC, plugins,
+proxy and system images, and verifies the installed binary's version. Installer rollout
+checks still gate success. A failed installer can leave some components changed: retain
+the pre-update backup and follow troubleshooting §15/§16; schema rollback is not automatic.
+PostgreSQL major changes require dump/restore, and k3s upgrades cannot skip a minor version.
+
+Older host binaries whose `update -h` has no `--apply` need one installer run to acquire
+this updater. Published assets are checksum-verified; older releases without the required
+installer options must be selected through `--ref` for a source build instead.
 
 The installer also sets up `felis-update-check.timer`, which runs `felis update --record`
 once a day around 05:30 (and at boot after a missed run). `--record` stores the result
 in `platform_settings`, and the panel's **Admin → Updates → Component versions** card
 shows it: each component's installed and newest version, and for the ones with a newer
 release the `sudo felis update --<component>` line that prints how to apply it. Felis
-applies nothing on its own; the installer re-run above is the apply path. The card turns
+applies nothing on its own; the explicit `--apply` command above is the apply path. The card turns
 red when the newest record is older than 26 hours, meaning the timer stopped:
 
 ```sh

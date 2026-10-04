@@ -44,7 +44,7 @@ Commands:
   support-bundle    Collect status, doctor, logs and cluster state into one redacted tar.gz to share when asking for help (requires root/sudo)
   watchdog          Check the platform once and mail the owners what has gone wrong (run by felis-watchdog.timer)
   version           Print the build stamp of this binary
-  update            Report which platform components have updates available
+  update            Check platform versions; --apply installs a reviewed target
   breakGlass        Open the local break-glass emergency console (TUI; requires root/sudo)
 
 Run "felis <command> -h" for command-specific flags.

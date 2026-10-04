@@ -69,6 +69,7 @@
 #   FELIS_CLOUDFLARED_VERSION / FELIS_CLOUDFLARED_SHA256 cloudflared release installed
 #                     when none is present (default: 2026.9.1, digests pinned); the
 #                     sha256 is REQUIRED for any other version
+#   FELIS_FORCE_UPDATE=1 reinstalls the binary even when its version already matches.
 #   FELIS_UPGRADE_DEPS 1 moves an installed k3s and cloudflared to the versions above
 #                     (k3s one minor version at a time; neither is ever downgraded) and
 #                     restarts cloudflared-felis onto the new binary (default: 0)
@@ -2612,7 +2613,7 @@ download_release_binary() {
 
   # Convergence check, and the cheapest one available: no API call, no download, and it asks
   # the exact question that matters. Reruns are the common case for this installer.
-  if [ -x "$HOST_BIN" ] && [ "$("$HOST_BIN" version 2>/dev/null | head -n 1)" = "felis ${FELIS_REF}" ]; then
+  if [ "${FELIS_FORCE_UPDATE:-0}" != 1 ] && [ -x "$HOST_BIN" ] && [ "$("$HOST_BIN" version 2>/dev/null | head -n 1)" = "felis ${FELIS_REF}" ]; then
     HAVE_PREBUILT_BINARY=1
     ok "host binary is already ${FELIS_REF}; skipping the download"
     return 0
@@ -6287,6 +6288,10 @@ main() {
   # Before the first change to the host: a problem found here costs a rerun, one found
   # halfway through costs an install to unwind.
   preflight
+  check_postgres_major
+  if [ "$FELIS_UPGRADE_DEPS" = 1 ] && [ -x "$K3S_BIN" ]; then
+    k3s_upgrade_allowed "$("$K3S_BIN" --version 2>/dev/null | awk 'NR == 1 { print $3 }')" "$FELIS_K3S_VERSION" || true
+  fi
   quiet_watchdog
   pause_package_background_timers
   ensure_swap

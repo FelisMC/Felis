@@ -7,8 +7,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
+	"os/exec"
+	"os/signal"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -23,51 +27,14 @@ import (
 // leave the operator staring at a silent terminal.
 const updateTimeout = 60 * time.Second
 
-// updateTarget maps a user-facing selector (`--panel`) onto the planner's component
-// name and the command that actually performs the update.
-//
-// The apply side is deliberately NOT implemented in this command. Every component
-// here is installed by deploy/bootstrap.sh, which is idempotent, already handles the
-// parts that are easy to get wrong (Velocity's pinned MINOR, the atomic jar install,
-// the image re-import + registry push that a byte-identical StatefulSet template
-// will not trigger on its own), and is the path that gets exercised on every
-// install. A
-// second installer living in this file would duplicate that policy, could drift from
-// it silently, and would be reachable only on a live node where a mistake takes the
-// proxy or the control plane down. So `felis update` reports, and hands the operator
-// the tested command — it does not re-implement it.
+// updateTarget maps report selectors onto the components tracked by the planner.
+// Application always reuses bootstrap.sh for the compatible platform bundle.
 type updateTarget struct {
-	// selector is the flag name without dashes.
-	selector string
-	// help is the flag's usage line.
-	help string
-	// component is the updates planner's name for this piece, or "" when the planner
-	// deliberately does not track it (Minecraft, which is pinned).
+	selector  string
+	help      string
 	component string
-	// note explains what this selector covers, printed above the command.
-	note string
-	// command is the exact, already-tested way to apply it.
-	command string
-	// installer marks a command that re-runs the installer, which the trailer explains.
-	installer bool
+	note      string // explanation for the untracked Minecraft selector
 }
-
-// installerRerun is the tested apply path for every selector Felis installs: re-run the
-// installer. It is idempotent, and it is the only path that fetches a newer version --
-// `felis setup` skips its host-bootstrap phase on a completed install (all four install
-// markers already exist), so there it opens the config console and moves no component,
-// and even on the bootstrap path it re-images felis-api from the binary setup is already
-// running (FELIS_BOOTSTRAP_BINARY), which looks like an update and changes nothing.
-//
-// The URL is the one-liner both READMEs hand out, read at a tag rather than main: the
-// script's release channel installs the newest release's binary, and main can carry
-// installer changes that binary was never tested with. installerRef picks the tag and
-// renderApplyGuidance substitutes it for {ref}.
-const installerRerun = "curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/{ref}/deploy/bootstrap.sh | sudo bash"
-
-// installerRerunDeps is the same re-run with FELIS_UPGRADE_DEPS=1, which lets it move an
-// installed k3s and cloudflared to the versions the release pins.
-const installerRerunDeps = "curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/{ref}/deploy/bootstrap.sh | sudo FELIS_UPGRADE_DEPS=1 bash"
 
 // updateTargets is the selector table. panel and plugins both resolve to felis-api
 // because they are not separately versioned: the panel is compiled into the felis
@@ -78,82 +45,52 @@ var updateTargets = []updateTarget{
 		selector:  "panel",
 		help:      "select the panel + control plane (felis-api)",
 		component: "felis-api",
-		note:      "the panel is embedded in the felis binary (//go:embed), so updating it means rebuilding the felis image and rolling felis-api",
-		command:   installerRerun,
-		installer: true,
+	},
+	{
+		selector:  "self",
+		help:      "select the Felis binary and its core services",
+		component: "felis-api",
 	},
 	{
 		selector:  "velocity",
 		help:      "select the Velocity proxy",
 		component: "velocity",
-		note:      "re-runs install_velocity: the build the release pins in deploy/game-stack.lock (FELIS_VELOCITY_VERSION=<minor> takes that minor's newest build instead), sha256-checked, atomic jar install, then restarts felis-velocity only if the jar or its config changed",
-		command:   installerRerun,
-		installer: true,
 	},
 	{
 		selector:  "plugins",
 		help:      "select the Felis plugin jars (velocity/paper/limbo)",
 		component: "felis-api",
-		note:      "felis-velocity.jar is a host-file swap, but felis-paper.jar and felis-limbo.jar are baked into the lobby/limbo images and need a rebuild + re-mirror into the in-cluster registry (the installer re-run does both)",
-		command:   installerRerun,
-		installer: true,
 	},
 	{
 		selector:  "k3s",
 		help:      "select k3s",
 		component: "k3s",
-		note:      "FELIS_UPGRADE_DEPS=1 moves k3s to the version the Felis release pins, which can trail the newest upstream; it moves one minor version at a time and refuses a larger jump. Running game servers keep running while k3s restarts",
-		command:   installerRerunDeps,
-		installer: true,
 	},
 	{
 		selector:  "cloudflared",
 		help:      "select cloudflared",
 		component: "cloudflared",
-		note:      "FELIS_UPGRADE_DEPS=1 swaps the binary for the sha256-pinned build the Felis release names and restarts cloudflared-felis; the panel's tunnel drops for a few seconds",
-		command:   installerRerunDeps,
-		installer: true,
 	},
 	{
 		selector:  "jre",
 		help:      "select the Temurin JRE Velocity runs on",
 		component: "jre",
-		note:      "the installer installs the Temurin build the Felis release pins (sha256-checked) and restarts felis-velocity when it changed; a newer upstream build reaches the host with a release that pins it",
-		command:   installerRerun,
-		installer: true,
 	},
 	{
 		selector:  "postgres",
 		help:      "select PostgreSQL",
 		component: "postgresql",
-		note:      "PostgreSQL runs as the felis-postgres Deployment from the image the Felis release pins by digest; a newer minor reaches the host with a release that moves the pin, and the installer re-run restarts the database on it (a few seconds without the API). A new major is a dump and restore: docs/operations.md §4",
-		command:   installerRerun,
-		installer: true,
 	},
 	{
 		selector:  "mc",
 		help:      "select Minecraft (pinned; reported only)",
 		component: "", // never tracked: see the pin note below
 		note:      "Minecraft is pinned by policy (\"能不动的就别动\") and Felis never proposes a version change for it. A server's version is a property of that server's image — change it on the server, not through a platform update",
-		command:   "",
 	},
 }
 
-// cmdUpdate reports what can be updated and what is already current.
-//
-// Bare `felis update` prints the status of every tracked component. Selector flags
-// (--panel/--velocity/--plugins/--k3s/--cloudflared/--jre/--postgres/--mc/--all) narrow that report to the components
-// they name AND print how to apply each one. --force additionally prints the apply
-// instruction for a selected component that is already up to date, for the
-// reinstall/repair case.
-//
-// It never applies anything and never mutates the node, so unlike setup/breakGlass
-// it needs no root, apart from PostgreSQL's version, which the felis-postgres container
-// answers through the cluster's admin kubeconfig. The versions it reads come from this
-// host: k3s, cloudflared and PostgreSQL answer `--version`, Velocity's version is read out of the installed jar's
-// manifest, the JRE's out of its release file, and felis-api's is this binary's own
-// build stamp — the same value `felis version` prints, which is what the user asked
-// to be the source of truth.
+// cmdUpdate checks by default; only --apply changes the host. --record remains
+// read-only so the daily timer cannot start an unattended upgrade.
 func cmdUpdate(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -161,11 +98,19 @@ func cmdUpdate(args []string, stdout, stderr io.Writer) int {
 	for _, t := range updateTargets {
 		flags[t.selector] = fs.Bool(t.selector, false, t.help)
 	}
-	all := fs.Bool("all", false, "select every component above")
-	force := fs.Bool("force", false, "print the apply command for a selected component even when it is already up to date")
-	velocityJar := fs.String("velocity-jar", updater.DefaultVelocityJarPath, "path to the installed Velocity jar to read the current version from")
-	cfgPath := fs.String("config", "/etc/felis/felis.toml", "path to felis.toml, read for the maintenance window the panel stores")
-	record := fs.Bool("record", false, "also store this check for the panel's Updates page (felis-update-check.timer runs it daily)")
+	var opts updateOptions
+	fs.BoolVar(&opts.all, "all", false, "include the release-pinned k3s and cloudflared updates")
+	fs.BoolVar(&opts.force, "force", false, "reinstall even at the same version; allow an explicitly requested Felis downgrade (does not bypass maintenance or dependency guards)")
+	fs.BoolVar(&opts.apply, "apply", false, "apply the inspected target after checking maintenance and taking a database/state backup")
+	fs.BoolVar(&opts.now, "now", false, "explicitly start manual maintenance now instead of using the configured window (requires --apply)")
+	fs.StringVar(&opts.release, "version", "", "install a published Felis release, e.g. v0.2.0")
+	fs.StringVar(&opts.expectedCommit, "expect-commit", "", "refuse application if the target differs from the full SHA printed by the check")
+	fs.StringVar(&opts.ref, "ref", "", "build an exact commit, tag or branch from source")
+	dev := fs.Bool("dev", false, "build the newest main commit (the check prints its full SHA)")
+	check := fs.Bool("check", false, "check and print the apply command without changing the host (default)")
+	velocityJar := fs.String("velocity-jar", updater.DefaultVelocityJarPath, "path to the installed Velocity jar")
+	fs.StringVar(&opts.cfgPath, "config", "/etc/felis/felis.toml", "host config for the maintenance window and pre-update backup")
+	record := fs.Bool("record", false, "store this read-only check for the panel (used by the daily timer)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -173,52 +118,108 @@ func cmdUpdate(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "felis update: unexpected argument %q (this command takes flags only)\n", fs.Arg(0))
 		return 2
 	}
-
-	selected := map[string]bool{}
+	if err := opts.validate(*dev, *check, *record); err != nil {
+		fmt.Fprintf(stderr, "felis update: %v\n", err)
+		return 2
+	}
+	if *dev {
+		opts.ref = "main"
+	}
+	opts.selected = map[string]bool{}
 	for sel, on := range flags {
-		if *on || *all {
-			selected[sel] = true
+		if *on || opts.all {
+			opts.selected[sel] = true
 		}
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), updateTimeout)
-	defer cancel()
-
-	src := updater.NewRoutingSource(updater.Topology())
-	rn := &updater.Runner{
-		Gatherer: updater.NewHostGatherer(resolvedVersion(), *velocityJar),
-		Source:   src,
-		// Notifier and Applier stay nil on purpose: a human typing this command IS the
-		// notification, and nothing here applies. The zero Window below means every
-		// Scheduled component degrades to a notify, so the report can never claim an
-		// apply is under way.
+	if len(opts.selected) == 1 && opts.selected["mc"] {
+		if opts.apply {
+			fmt.Fprintln(stderr, "felis update: Minecraft is managed through each server's image, not a platform update")
+			return 2
+		}
+		for _, t := range updateTargets {
+			if t.selector == "mc" {
+				fmt.Fprintln(stdout, t.note)
+			}
+		}
+		return 0
 	}
-	res, err := rn.Run(ctx, time.Now(), updates.Window{})
+	if opts.apply && os.Geteuid() != 0 {
+		fmt.Fprintln(stderr, "felis update: --apply must run as root (use sudo)")
+		return 1
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if !opts.apply {
+		if code := checkUpdates(ctx, opts, *velocityJar, *record, stdout, stderr); code != 0 {
+			return code
+		}
+		if *record {
+			return 0
+		}
+	}
+	source, err := updater.NewInstallerSource(os.Getenv("FELIS_REPO_URL"))
 	if err != nil {
 		fmt.Fprintf(stderr, "felis update: %v\n", err)
 		return 1
 	}
-
-	now := time.Now()
-	win, winErr := readUpdateWindow(ctx, *cfgPath)
-	fmt.Fprint(stdout, renderWindowLine(win, winErr, now))
-	fmt.Fprint(stdout, renderUpdateReport(res, selected))
-	fmt.Fprint(stdout, renderNotes(src.Notes(), selected))
-	if len(selected) > 0 {
-		if winErr == nil && !win.Start.IsZero() && !win.Contains(now) {
-			fmt.Fprint(stdout, "Warning: this is outside the maintenance window; the commands below take effect as soon as you run them.\n")
-		}
-		fmt.Fprint(stdout, renderApplyGuidance(res, selected, *force))
+	fmt.Fprintln(stdout, "Resolving the Felis target and downloading its matching installer...")
+	lookup, cancel := context.WithTimeout(ctx, updateTimeout)
+	target, err := source.Prepare(lookup, opts.release, opts.ref)
+	cancel()
+	if err != nil {
+		fmt.Fprintf(stderr, "felis update: cannot prepare an update: %v\n", err)
+		return 1
 	}
-	if *record {
-		// A fresh context: the discovery pass may have spent most of updateTimeout.
-		rctx, rcancel := context.WithTimeout(context.Background(), updateWindowTimeout)
+	if opts.expectedCommit != "" && target.Revision != opts.expectedCommit {
+		fmt.Fprintf(stderr, "felis update: target moved since the check: expected %s, got %s; check again before applying\n", opts.expectedCommit, target.Revision)
+		return 1
+	}
+	syntax := exec.CommandContext(ctx, "bash", "-n")
+	syntax.Stdin, syntax.Stderr = strings.NewReader(target.Script), stderr
+	if err := syntax.Run(); err != nil {
+		fmt.Fprintf(stderr, "felis update: invalid installer: %v\n", err)
+		return 1
+	}
+	if os.Getenv("FELIS_REPO_URL") != "" {
+		opts.repoURL = source.RepoURL()
+	}
+	opts.preserveToken = os.Getenv("FELIS_GITHUB_TOKEN") != ""
+	fmt.Fprint(stdout, renderInstallPlan(target, opts))
+	if !opts.apply {
+		return 0
+	}
+	if err := applyHostUpdate(ctx, target, opts, source.RepoURL(), stdout, stderr); err != nil {
+		fmt.Fprintf(stderr, "felis update: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(stdout, "Felis binary and core components updated and verified.")
+	return 0
+}
+
+func checkUpdates(ctx context.Context, opts updateOptions, velocityJar string, record bool, stdout, stderr io.Writer) int {
+	lookup, cancel := context.WithTimeout(ctx, updateTimeout)
+	defer cancel()
+	src := updater.NewRoutingSource(updater.Topology())
+	rn := &updater.Runner{Gatherer: updater.NewHostGatherer(resolvedVersion(), velocityJar), Source: src}
+	fmt.Fprintln(stdout, "Checking installed components and upstream versions (read-only)...")
+	res, err := rn.Run(lookup, time.Now(), updates.Window{})
+	if err != nil {
+		fmt.Fprintf(stderr, "felis update: %v\n", err)
+		return 1
+	}
+	now := time.Now()
+	win, winErr := readUpdateWindow(ctx, opts.cfgPath)
+	fmt.Fprint(stdout, renderWindowLine(win, winErr, now))
+	fmt.Fprint(stdout, renderUpdateReport(res, opts.selected))
+	fmt.Fprint(stdout, renderNotes(src.Notes(), opts.selected))
+	if record {
+		rctx, rcancel := context.WithTimeout(ctx, updateWindowTimeout)
 		defer rcancel()
-		if err := recordUpdateStatus(rctx, *cfgPath, buildStatusReport(res, src.Notes(), resolvedVersion(), now)); err != nil {
+		if err := recordUpdateStatus(rctx, opts.cfgPath, buildStatusReport(res, src.Notes(), resolvedVersion(), now)); err != nil {
 			fmt.Fprintf(stderr, "felis update: record the check for the panel: %v\n", err)
 			return 1
 		}
-		fmt.Fprint(stdout, "Recorded this check for the panel's Updates page.\n")
+		fmt.Fprintln(stdout, "Recorded this check for the panel's Updates page.")
 	}
 	return 0
 }
@@ -388,98 +389,14 @@ func selectedCovers(selected map[string]bool, component string) bool {
 	return false
 }
 
-// renderApplyGuidance prints, for each selected target, how to actually apply the
-// update. A target that is already current is skipped unless --force was passed.
-func renderApplyGuidance(res updater.Result, selected map[string]bool, force bool) string {
-	byComponent := map[string]updates.Action{}
-	for _, a := range res.RunResult.Plan {
-		byComponent[a.Component] = a
-	}
-
-	var b strings.Builder
-	var offeredInstaller bool
-	for _, t := range updateTargets {
-		if !selected[t.selector] {
-			continue
-		}
-		// Minecraft has no planner entry by design; state the pin and move on. There is
-		// no command to offer, so this must not arm the trailer below.
-		if t.component == "" {
-			fmt.Fprintf(&b, "\n--%s: %s.\n", t.selector, t.note)
-			continue
-		}
-		a, planned := byComponent[t.component]
-		// "Up to date" requires actually KNOWING the latest version. ActionNone covers
-		// both "nothing newer exists" and "the release feed could not be read", and
-		// collapsing those would report an unreachable upstream as currency — telling an
-		// operator they are current when nobody checked is the one answer an update tool
-		// must never give. LatestKnown is what separates them.
-		if planned && a.Kind == updates.ActionNone && a.LatestKnown && !force {
-			fmt.Fprintf(&b, "\n--%s: %s is already up to date; nothing to apply (use --force to reinstall anyway).\n", t.selector, t.component)
-			continue
-		}
-		fmt.Fprintf(&b, "\n--%s: %s\n", t.selector, t.note)
-		if planned && !a.LatestKnown {
-			// Unknown latest still offers the command: the operator asked about this
-			// component, and reinstalling the current release is a valid repair action.
-			fmt.Fprintf(&b, "  note: cannot tell whether %s is current — its latest version could not be discovered (see above); this reinstalls it either way\n", t.component)
-		}
-		fmt.Fprintf(&b, "  run: %s\n", strings.ReplaceAll(t.command, "{ref}", installerRef(byComponent)))
-		offeredInstaller = offeredInstaller || t.installer
-	}
-	// Only explain the command when one was actually offered; a --mc-only run has
-	// nothing to run and the trailer would be a non-sequitur.
-	//
-	// One trailer serves every selector now: setup is not an apply path at all on a
-	// completed install (shouldRunHostBootstrapBeforeConfig only enters the host
-	// bootstrap while an install marker is missing), so the installer re-run is the one
-	// worked path for every component Felis installs and there is no per-component exception left
-	// to scope. One caveat stays because following the advice without it bites real
-	// hosts: the channel is not persisted anywhere (a bare re-run on a main host quietly
-	// moves it onto releases).
-	if offeredInstaller {
-		b.WriteString("\nRe-running the installer applies each installer command above: it fetches the newest version on\nthe channel in effect and re-applies the bundle (release is the default). The channel\nis not persisted, so pass FELIS_VERSION_BOOTSTRAP=dev if this host tracks main.\nfelis setup is not this path: on a completed install it opens the config console and\ninstalls nothing newer. Restart game servers afterwards.\n")
-	}
-	return b.String()
-}
-
-// installerRef is the git ref the installer re-run reads bootstrap.sh from: the newest
-// stable felis release when the feed answered, which is the release that script then
-// installs; else the release this host runs; main only when neither is a release tag.
-func installerRef(byComponent map[string]updates.Action) string {
-	a, ok := byComponent["felis-api"]
-	if !ok {
-		return "main"
-	}
-	if a.LatestKnown && isReleaseTag(a.Latest) {
-		return a.Latest.String()
-	}
-	if isReleaseTag(a.Current) {
-		return a.Current.String()
-	}
-	return "main"
-}
-
-// isReleaseTag reports whether v was read from a stable vX.Y.Z tag, the only refs
-// release.yml publishes a binary for. A source build stamps v0.0.0+g<commit>, which
-// names no tag, so build metadata disqualifies a version too.
-func isReleaseTag(v updates.Version) bool {
-	s := v.String()
-	if !strings.HasPrefix(s, "v") || v.IsPrerelease() || strings.Contains(s, "+") {
-		return false
-	}
-	_, err := updates.Parse(s)
-	return err == nil
-}
-
 // updateWindowTimeout bounds the maintenance-window read, so an unreachable
 // database costs the report a line and never the report itself.
 const updateWindowTimeout = 3 * time.Second
 
 // readUpdateWindow reads the maintenance window the panel stores
 // (platform_settings "update_window"). Felis applies nothing on its own: this
-// command is the window's consumer, showing it and warning before an apply
-// outside it. A missing row is an unset window.
+// command consumes it for both reporting and admission to an explicit apply.
+// A missing row is an unset window.
 func readUpdateWindow(ctx context.Context, cfgPath string) (updates.Window, error) {
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
@@ -515,12 +432,12 @@ func renderWindowLine(w updates.Window, err error, now time.Time) string {
 	case err != nil:
 		return fmt.Sprintf("Maintenance window: unknown (%v).\n", err)
 	case w.Start.IsZero() || w.End.IsZero():
-		return "Maintenance window: not set; apply whenever suits you.\n"
+		return "Maintenance window: not set; configure it in the panel, or explicitly use --apply --now for manual maintenance.\n"
 	case w.Contains(now):
 		return fmt.Sprintf("Maintenance window: open now, until %s.\n", w.End.Local().Format(layout))
 	case now.Before(w.Start):
-		return fmt.Sprintf("Maintenance window: opens %s, until %s. Felis applies nothing on its own; run the apply commands inside it.\n", w.Start.Local().Format(layout), w.End.Local().Format(layout))
+		return fmt.Sprintf("Maintenance window: opens %s, until %s. Apply is blocked until this window opens (unless --now explicitly starts manual maintenance).\n", w.Start.Local().Format(layout), w.End.Local().Format(layout))
 	default:
-		return fmt.Sprintf("Maintenance window: ended %s; set a new one in the panel before applying.\n", w.End.Local().Format(layout))
+		return fmt.Sprintf("Maintenance window: ended %s; apply is blocked; set a new window in the panel or explicitly use --now.\n", w.End.Local().Format(layout))
 	}
 }

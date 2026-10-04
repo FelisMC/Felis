@@ -47,8 +47,11 @@
 //     ON-HOST caller has both: NewHostGatherer (gatherer_host.go) answers felis-api from
 //     the running binary's build stamp and Velocity from the installed jar's manifest,
 //     and that is what the built `felis update` CLI runs on. Still absent: the concrete
-//     Notifier (SMTP + in-game) and Applier (control-plane image bump, cloudflared swap)
-//     — the CLI passes nil for both on purpose, so it reports and never applies — the
+//     Notifier (SMTP + in-game) and unattended Applier — the check/record runner
+//     passes nil for both. Explicit host application uses the target installer in
+//     cmd/felis/update_apply.go after window checks and a database/state backup.
+//     InstallerSource pins that script and the source checkout to a full commit;
+//     its HTTP boundaries and the host execution order are tested with fakes. Still absent: the
 //     in-cluster CronJob entry point, and the runtime append of the live Pinned
 //     Minecraft fleet. The scheduled check runs on the host instead:
 //     felis-update-check.timer runs `felis update --record`, which stores the report

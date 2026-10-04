@@ -2136,14 +2136,18 @@ annotated Service endpoints picks them up as is.
 
 ## 15. Control-plane upgrades, and rolling back a bad one
 
-There is no in-place updater: an upgrade is re-running the installer
-(`curl -fsSL <installer URL> | sudo bash`), which imports the release's images
-(or rebuilds them on the host, operations §1 "Where the binary and the images come
-from") and re-applies the bundle. `felis update --panel` prints that command with the
-script read at the newest release's tag, so the installer and the binary it
-downloads come from the same release. (`sudo felis setup` is not this path; on a completed
-install it only opens the config console.) The channel is not persisted across
-the re-run, so pass `FELIS_VERSION_BOOTSTRAP=dev` on a host that tracks main.
+`felis update` checks only; it prints a target and explicit `--apply` command. The host
+updater downloads the installer from the target's resolved full commit, backs up the
+database and deployment state, then uses that installer to reconcile the CLI, core
+services, plugins and system images. See operations §4 for `--version`, `--ref`, `--dev`
+and `--all`. Use the exact printed command to retain the reviewed target. Application
+requires an active maintenance window or explicit `--now`; `--force` never skips the
+backup, an unreadable window or compatibility guards.
+
+A host whose `felis update -h` lacks `--apply` still needs one installer run
+(`curl -fsSL <installer URL> | sudo bash`) to acquire the new CLI. `sudo felis setup`
+on a completed install opens the configuration console, so it is not an upgrade path.
+The updater reuses the same checksum, image import/build and rollout checks as that installer.
 Two properties of the control plane matter when you do:
 
 - Both Deployments use strategy **Recreate** (single replica, no leader election:

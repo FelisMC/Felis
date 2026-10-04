@@ -25,11 +25,11 @@ func TestRenderWindowLinePlacesNowAgainstTheWindow(t *testing.T) {
 		want string
 	}{
 		{"unreadable", updates.Window{}, errors.New("connection refused"), w.Start, "Maintenance window: unknown (connection refused).\n"},
-		{"unset", updates.Window{}, nil, w.Start, "Maintenance window: not set; apply whenever suits you.\n"},
-		{"half set", updates.Window{Start: w.Start}, nil, w.Start, "Maintenance window: not set; apply whenever suits you.\n"},
+		{"unset", updates.Window{}, nil, w.Start, "Maintenance window: not set; configure it in the panel, or explicitly use --apply --now for manual maintenance.\n"},
+		{"half set", updates.Window{Start: w.Start}, nil, w.Start, "Maintenance window: not set; configure it in the panel, or explicitly use --apply --now for manual maintenance.\n"},
 		{"at the opening instant", w, nil, w.Start, "Maintenance window: open now, until 2026-09-27 04:00 CST.\n"},
-		{"before", w, nil, w.Start.Add(-time.Minute), "Maintenance window: opens 2026-09-27 02:00 CST, until 2026-09-27 04:00 CST. Felis applies nothing on its own; run the apply commands inside it.\n"},
-		{"at the closing instant", w, nil, w.End, "Maintenance window: ended 2026-09-27 04:00 CST; set a new one in the panel before applying.\n"},
+		{"before", w, nil, w.Start.Add(-time.Minute), "Maintenance window: opens 2026-09-27 02:00 CST, until 2026-09-27 04:00 CST. Apply is blocked until this window opens (unless --now explicitly starts manual maintenance).\n"},
+		{"at the closing instant", w, nil, w.End, "Maintenance window: ended 2026-09-27 04:00 CST; apply is blocked; set a new window in the panel or explicitly use --now.\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
