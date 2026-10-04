@@ -45,6 +45,21 @@ func run(root, op, path string, content []byte, expect string) (Result, error) {
 	return Execute(root, Request{Op: op, Path: path, Content: content, Expect: expect})
 }
 
+func TestExperienceConfigCannotWriteThroughSymlink(t *testing.T) {
+	root, _ := worldRoot(t)
+	if err := os.Symlink("server.properties", filepath.Join(root, "felis-experience.json")); err != nil {
+		t.Fatal(err)
+	}
+	res, err := run(root, OpWrite, "felis-experience.json", []byte("{}"), "")
+	if err != nil || res.Code != CodeBadPath {
+		t.Fatalf("symlink write: result=%+v err=%v", res, err)
+	}
+	content, err := os.ReadFile(filepath.Join(root, "server.properties"))
+	if err != nil || string(content) != "motd=hello\n" {
+		t.Fatalf("live world file was changed: content=%q err=%v", content, err)
+	}
+}
+
 // TestExecuteContainment is the security test of this package. The world directory
 // holds attacker-influenced content (players and plugins create files in it), so
 // each vector below is a path a caller could genuinely supply to try to leave the

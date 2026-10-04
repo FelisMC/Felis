@@ -529,6 +529,9 @@ func write(r *os.Root, name string, content []byte, sum, expect string, createOn
 	if res.Code != "" {
 		return res
 	}
+	if name == naming.ExperienceConfigFile && target != name {
+		return Result{Code: CodeBadPath, Error: "the experience config must be a regular file, not a symlink"}
+	}
 	if expect != "" {
 		if res := checkUnchanged(r, name, target, expect); res.Code != "" {
 			return res

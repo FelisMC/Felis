@@ -580,6 +580,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/servers/{name}/restart": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restart your own running server, or a system service as staff.
+         * @description Records a durable request for the operator to gracefully recreate the game pod. Desired state remains Running. A concurrent stop supersedes the request; maintenance blocks admission.
+         */
+        post: operations["restart"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/servers/{name}/claim": {
         parameters: {
             query?: never;
@@ -1495,13 +1515,13 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Read a file from a server's world volume (owner-or-admin; server must be stopped).
-         * @description Returns one file's bytes, base64-encoded, from inside the server's world volume. Same stopped-gate and os.Root containment as the directory listing. Reads are capped at 1 MiB; a larger file is 413 rather than a truncated read, because a config editor that silently returned half a file would let a subsequent save destroy the other half.
+         * Read a file from a server's world volume (owner-or-admin).
+         * @description Returns one file's bytes, base64-encoded, from inside the server's world volume. Same stopped-gate and os.Root containment as the directory listing, except staff may read login/lobby's felis-experience.json while running. Reads are capped at 1 MiB; a larger file is 413 rather than a truncated read, because a config editor that silently returned half a file would let a subsequent save destroy the other half.
          */
         get: operations["readServerFile"];
         /**
-         * Write a file in a server's world volume (owner-or-admin; server must be stopped).
-         * @description Replaces a file's contents, creating the file if absent but never creating its parent directories. Content is base64 so arbitrary bytes (CRLF endings, a BOM) survive intact. Writes are capped at 256 KiB — the Job spec carries the content, and etcd bounds the object — so a larger body is 413. Same stopped-gate and os.Root containment as the read; a write through a symlink leaving the world root is refused. The replacement is atomic (a synced temporary sibling renamed over the file, keeping its mode), so a failed write leaves the old file whole. With expect_sha256 the write lands only if the file still has that hash; otherwise 409 file_changed. content_sha256 is the SHA-256 of the content: content that hashes otherwise changed on the way and is refused (400 digest_mismatch) before a Job starts, and the Job checks the bytes it received the same way before writing. Audited as file.write.
+         * Write a file in a server's world volume (owner-or-admin).
+         * @description Replaces a file's contents, creating the file if absent but never creating its parent directories. Content is base64 so arbitrary bytes (CRLF endings, a BOM) survive intact. Writes are capped at 256 KiB — the Job spec carries the content, and etcd bounds the object — so a larger body is 413. Same stopped-gate and os.Root containment as the read; a write through a symlink leaving the world root is refused. The replacement is atomic (a synced temporary sibling renamed over the file, keeping its mode), so a failed write leaves the old file whole. With expect_sha256 the write lands only if the file still has that hash; otherwise 409 file_changed. content_sha256 is the SHA-256 of the content: content that hashes otherwise changed on the way and is refused (400 digest_mismatch) before a Job starts, and the Job checks the bytes it received the same way before writing. Staff may save login/lobby's startup-only felis-experience.json while running; restart to apply. That config cannot be a symlink. Audited as file.write.
          */
         put: operations["writeServerFile"];
         post?: never;
@@ -4927,6 +4947,45 @@ export interface operations {
             404: components["responses"]["NotFound"];
         };
     };
+    restart: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Restart accepted. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        name: string;
+                        /** @constant */
+                        desiredState: "Running";
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description Server is not running, is retiring, or maintenance is in progress. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     claim: {
         parameters: {
             query?: never;
@@ -7286,7 +7345,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Server is not stopped (its world PVC is still mounted). */
+            /** @description Server is not stopped (except startup-only system experience config). */
             409: {
                 headers: {
                     [name: string]: unknown;

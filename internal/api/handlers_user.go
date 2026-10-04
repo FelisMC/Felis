@@ -92,6 +92,29 @@ func (a *API) handleWake(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]any{"name": name, "desiredState": "Running"})
 }
 
+// handleRestart records a restart request for the operator to consume once.
+func (a *API) handleRestart(w http.ResponseWriter, r *http.Request) {
+	name, ok := a.authorizeServerFiles(w, r)
+	if !ok {
+		return
+	}
+	rec, err := a.managedServerRecord(r.Context(), name)
+	if err != nil {
+		a.writeLookupError(w, r, err)
+		return
+	}
+	if rec.Retire != nil {
+		writeError(w, r, errServerRetiring)
+		return
+	}
+	if err := a.Cluster.RestartServer(r.Context(), rec.Name); err != nil {
+		a.writeLookupError(w, r, maintenanceError(err, "wait for maintenance to finish before restarting"))
+		return
+	}
+	a.audit(r, "server.restart", rec.Name)
+	writeJSON(w, http.StatusAccepted, map[string]string{"name": rec.Name, "desiredState": "Running"})
+}
+
 // handleStop flips desiredState to Stopped. Only the owner or an admin may stop a
 // server (spec §14: operating someone else's server is admin-tier).
 func (a *API) handleStop(w http.ResponseWriter, r *http.Request) {

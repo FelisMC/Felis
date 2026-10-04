@@ -39,6 +39,8 @@ const (
 	// the automatic restarts were spent. The operator takes the request once —
 	// fresh restart budget, new start anchor, pod recreated — and removes it.
 	AnnotationStartRetry = GroupName + "/start-retry"
+	// AnnotationRestart requests one pod recreation while keeping desiredState Running.
+	AnnotationRestart = GroupName + "/restart"
 )
 
 // ForwardingLegacy is the LabelForwarding value that selects legacy forwarding.

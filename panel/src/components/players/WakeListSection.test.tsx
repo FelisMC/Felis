@@ -104,7 +104,7 @@ describe("WakeListSection", () => {
     calls.serverAllowlist.mockRejectedValue({ status: 500, code: "internal", message: "db down" });
     render(<WakeListSection name="lobby" policy="allowlist" defaultOpen />);
     expect((await screen.findByRole("alert")).textContent).toBe(
-      "Couldn't load the wake list. The service is unavailable right now (it may be restarting or upgrading). Try again shortly.",
+      "Couldn't load the wake list. The operation failed because of an internal server error. Ask an admin to check the logs.",
     );
   });
 

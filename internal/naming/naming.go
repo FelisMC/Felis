@@ -46,6 +46,8 @@ const (
 	// reachable only after the login gate passes a player through, so it must
 	// never be used as a fallback target (that would bypass the gate).
 	SystemLobbyServer = "lobby"
+	// ExperienceConfigFile is read by the system plugins only at startup.
+	ExperienceConfigFile = "felis-experience.json"
 )
 
 // IsSystemServer identifies platform services whose reserved names may be managed

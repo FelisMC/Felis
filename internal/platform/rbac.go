@@ -90,8 +90,8 @@ func ControlPlaneRBAC(p Params) RBAC {
 // claim. felis-api reads the fleet (velocity's pull, the fleet page, the wake
 // cap) from an informer cache of minecraftservers, hence watch on that one
 // resource; everything else goes through a DIRECT client, so it needs no
-// list/watch beyond the explicit List calls — and the PVC grant is get-only,
-// mirroring that.
+// list/watch beyond the explicit List calls. PVC list finds retained world
+// volumes before creating a server of the same name.
 //
 // The read-side grant is deliberately minimal: pods:list + pods/log:get, NOT
 // pods:get — the streamer lists pods by the server label then reads the chosen
@@ -103,9 +103,7 @@ func APIMinecraftRole(p Params) *rbacv1.Role {
 	rules := []rbacv1.PolicyRule{
 		rule([]string{groupFelis}, []string{"minecraftservers"}, []string{"get", "list", "watch", "create", "patch"}),
 		rule([]string{groupCore}, []string{"secrets"}, []string{"get"}),
-		// get-only: WorldVolumeExists does a single direct Get of the world PVC;
-		// nothing in felis-api lists or deletes PVCs.
-		rule([]string{groupCore}, []string{"persistentvolumeclaims"}, []string{"get"}),
+		rule([]string{groupCore}, []string{"persistentvolumeclaims"}, []string{"get", "list"}),
 		// list backs GET /servers/{name}/jobs — the async status outlet reads the
 		// backup/restore Jobs back by the server label — and finds the pending
 		// restore chains; patch settles a chain by relabelling its safety-snapshot

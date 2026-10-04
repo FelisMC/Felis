@@ -56,7 +56,7 @@ import i18next from "i18next";
 // the upstream Zero-Trust / Access cookie rides along; the panel never holds a
 // service token, and the RCON password is never requested (spec §8).
 
-function isApiError(x: unknown): x is { error: { code: string; message: string } } {
+function isApiError(x: unknown): x is { error: { code: string; message: string; request_id?: string } } {
   if (typeof x !== "object" || x === null || !("error" in x)) return false;
   const e = (x as { error: unknown }).error;
   return typeof e === "object" && e !== null && typeof (e as { code?: unknown }).code === "string";
@@ -193,7 +193,7 @@ function failed(path: string, status: number, statusText: string, text: string):
     /* no body, or not JSON: an ingress or tunnel answered */
   }
   const err: ApiError = isApiError(parsed)
-    ? { status, code: parsed.error.code, message: parsed.error.message }
+    ? { status, code: parsed.error.code, message: parsed.error.message, ...(typeof parsed.error.request_id === "string" && { request_id: parsed.error.request_id }) }
     : {
         status,
         code: status >= 500 ? "upstream_unavailable" : "error",
@@ -446,6 +446,9 @@ export const api = rejectingSync({
 
   stop: (name: string) =>
     request<{ name: string; desiredState: string }>("POST", urlPath`/servers/${name}/stop`),
+
+  restart: (name: string) =>
+    request<{ name: string; desiredState: string }>("POST", urlPath`/servers/${name}/restart`),
 
   claim: (name: string) =>
     request<{ name: string; claimed: boolean }>("POST", urlPath`/servers/${name}/claim`),
@@ -1567,6 +1570,8 @@ export function humanizeError(e: unknown): string {
       return err.message ? t("bad_request", { detail: err.message }) : t("generic");
     case "bad_schedule":
       return err.message ? t("bad_schedule", { detail: err.message }) : t("generic");
+    case "internal":
+      return t("internal_error") + (err.request_id ? " " + t("request_id", { id: err.request_id }) : "");
     default:
       if (err.status === 401) return t("session_expired");
       if (err.status === 403) return t("forbidden");

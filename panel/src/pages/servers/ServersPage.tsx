@@ -533,7 +533,7 @@ function ServerActions({
 
   if (server.system) {
     // Staff customize system services in the dedicated lobby view.
-    if (isAdmin) return <Link className="text-sm text-primary hover:underline" to={`/admin/lobby?space=${server.name}`}>{ts("system_customize")}</Link>;
+    if (isAdmin) return <Button asChild variant="outline" size="sm"><Link to={`/admin/lobby?space=${server.name}`}>{ts("system_customize")}</Link></Button>;
     return (
       <span className="text-xs text-muted-foreground/70" title={ts("system_service_hint")}>
         {ts("system_service")}

@@ -37,6 +37,8 @@ func maintenanceLabel(kind string) string {
 		return "a backup"
 	case maintenance.KindFileWrite:
 		return "a file write"
+	case maintenance.KindConfigWrite:
+		return "a settings save"
 	case maintenance.KindExport:
 		return "a world export or file download"
 	case maintenance.KindReap:

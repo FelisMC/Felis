@@ -566,6 +566,7 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		// (handlers_retire.go); owner/admin-gated inside the handlers.
 		{Method: "PUT", Pattern: "/api/v1/servers/{name}/retirement", h: a.handleRetire},
 		{Method: "DELETE", Pattern: "/api/v1/servers/{name}/retirement", h: a.handleCancelRetire},
+		{Method: "POST", Pattern: "/api/v1/servers/{name}/restart", h: a.handleRestart},
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/status", h: a.handleStatus},
 		// Identity self-read (spec §14 tiering): the panel reads this once at boot to
 		// learn its own tier and decide which navigation surfaces to render. App-tier —

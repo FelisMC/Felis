@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { LobbyPage } from "./LobbyPage";
 
 const calls = vi.hoisted(() => ({
-  status: vi.fn(), listImages: vi.fn(), readServerFile: vi.fn(), writeServerFile: vi.fn(), createServerFile: vi.fn(), accessPermission: vi.fn(),
+  status: vi.fn(), restart: vi.fn(), listImages: vi.fn(), readServerFile: vi.fn(), writeServerFile: vi.fn(), createServerFile: vi.fn(), accessPermission: vi.fn(),
 }));
 vi.mock("@/lib/api", async (original) => ({ ...await original<typeof import("@/lib/api")>(), api: calls }));
 vi.mock("@/lib/config", async (original) => ({ ...await original<typeof import("@/lib/config")>(), loadConfig: () => Promise.resolve({ apiBase: "/api/v1", rootDomain: "example.test", gameVersion: "26.3" }) }));
@@ -18,10 +18,11 @@ beforeEach(() => {
   calls.readServerFile.mockResolvedValue({ content: btoa(JSON.stringify({ menuTitleEn: "Old title", customPlugin: { enabled: true } })), sha256: "read-hash" });
   calls.writeServerFile.mockResolvedValue({ sha256: "saved-hash" });
   calls.createServerFile.mockResolvedValue({ sha256: "saved-hash" });
+  calls.restart.mockResolvedValue({ name: "lobby", desiredState: "Running" });
 });
 
 function page(space = "lobby") {
-  render(<MemoryRouter initialEntries={[`/admin/lobby?space=${space}`]}><LobbyPage /></MemoryRouter>);
+  render(<MemoryRouter initialEntries={[`/admin/lobby${space ? `?space=${space}` : ""}`]}><LobbyPage /></MemoryRouter>);
 }
 
 describe("LobbyPage", () => {
@@ -29,7 +30,7 @@ describe("LobbyPage", () => {
     page();
     fireEvent.change(await screen.findByLabelText("English menu title"), { target: { value: "My Network" } });
     await userEvent.click(screen.getByRole("button", { name: "Save settings" }));
-    await screen.findByText("Saved. Start this space to apply the settings.");
+    await screen.findByText("Saved. Settings apply on the next start or restart.");
     const [name, path, content, hash] = calls.writeServerFile.mock.calls[0];
     expect([name, path, hash]).toEqual(["lobby", "felis-experience.json", "read-hash"]);
     expect(JSON.parse(atob(content))).toEqual({ menuTitleEn: "My Network", customPlugin: { enabled: true } });
@@ -45,12 +46,37 @@ describe("LobbyPage", () => {
     expect(calls.writeServerFile).not.toHaveBeenCalled();
   });
 
-  it("requires a stop before reading or writing a running space", async () => {
-    calls.status.mockResolvedValue({ name: "lobby", phase: "Running", desiredState: "Running", ready: true });
+  it("opens the leftmost login space by default", async () => {
+    page("");
+    await screen.findByLabelText("Login book title");
+    expect(calls.status).toHaveBeenCalledWith("login");
+    expect(screen.getByRole("button", { name: "Login space" }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("saves while running and restarts only when requested", async () => {
+    calls.status.mockResolvedValue({ name: "lobby", phase: "Running", desiredState: "Running", ready: true, playersOnline: 0 });
     page();
-    await screen.findByText(/Stop the lobby to read and save settings/);
-    expect(calls.readServerFile).not.toHaveBeenCalled();
-    expect(screen.queryByRole("button", { name: "Save settings" })).toBeNull();
+    fireEvent.change(await screen.findByLabelText("English menu title"), { target: { value: "My Network" } });
+    expect((screen.getByRole("button", { name: "Restart & apply" }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    await screen.findByText("Saved. Settings apply on the next start or restart.");
+    expect(calls.restart).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Restart & apply" }));
+    await waitFor(() => expect(calls.restart).toHaveBeenCalledWith("lobby"));
+  });
+
+  it("confirms a restart when players are online and keeps failures visible", async () => {
+    calls.status.mockResolvedValue({ name: "lobby", phase: "Running", desiredState: "Running", ready: true, playersOnline: 2 });
+    calls.restart.mockRejectedValue({ status: 409, code: "maintenance_in_progress", message: "busy" });
+    page();
+    await screen.findByLabelText("English menu title");
+    await userEvent.click(screen.getByRole("button", { name: "Restart & apply" }));
+    const dialog = await screen.findByRole("dialog", { name: "Restart this space?" });
+    expect(calls.restart).not.toHaveBeenCalled();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Restart & apply" }));
+    await waitFor(() => expect(calls.restart).toHaveBeenCalledWith("lobby"));
+    await screen.findByRole("alert");
+    expect(screen.getByRole("dialog", { name: "Restart this space?" })).toBeTruthy();
   });
 
   it("keeps the draft when another editor changed the file", async () => {

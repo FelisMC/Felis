@@ -1102,8 +1102,20 @@ describe("responses that are not the API's JSON", () => {
   });
 
   it("maps an unknown 5xx code to the unavailable line", () => {
-    expect(humanizeError({ status: 500, code: "internal", message: "internal error" })).toMatch(/unavailable/i);
+    expect(humanizeError({ status: 500, code: "unknown", message: "internal error" })).toMatch(/unavailable/i);
     expect(humanizeError({ status: 413, code: "error", message: "Payload Too Large" })).toMatch(/larger/i);
+  });
+
+  it("keeps an internal error's request ID without exposing backend details", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: false, status: 500,
+      text: async () => JSON.stringify({ error: { code: "internal", message: "database credentials rejected", request_id: "req-123" } }),
+    })));
+    const err = await api.status("lobby").catch((e) => e);
+    expect(err.request_id).toBe("req-123");
+    expect(humanizeError(err)).toMatch(/internal server error/);
+    expect(humanizeError(err)).toContain("req-123");
+    expect(humanizeError(err)).not.toContain("credentials");
   });
 });
 

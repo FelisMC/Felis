@@ -13,7 +13,13 @@
   "stop_login": "停止登录空间后可读取和保存配置。维护期间新玩家无法进入；完成后请启动登录空间。",
   "stop_lobby": "停止大厅后可读取和保存配置。维护前可先备份地图，完成后请启动大厅。",
   "read_failed": "读取设置失败：{{reason}}。可在文件管理中检查 felis-experience.json。",
-  "saved": "已保存。启动该空间后生效。",
+  "saved": "已保存，下次启动或重启后生效。",
+  "restart": "重启并应用",
+  "restarting": "正在重启…",
+  "restart_requested": "已发送重启请求，可在上方查看启动状态。",
+  "restart_title": "重启该空间？",
+  "restart_hint": "重启会暂时断开这里的玩家，重新启动后应用已保存的设置。",
+  "restart_required": "设置已保存，等待重启生效",
   "save": "保存设置",
   "saving": "正在保存…",
   "invalid_values": "请检查数字范围和选项，文案最多 512 个字符。",
@@ -88,5 +94,5 @@
   "loginBook_description": "编辑玩家打开登录书时看到的引导内容。",
   "content_tools": "内容与维护",
   "unsaved": "有未保存的更改",
-  "apply_on_start": "保存的设置将在启动后生效"
+  "apply_on_start": "可以在运行中保存；设置将在下次启动或重启后生效"
 }

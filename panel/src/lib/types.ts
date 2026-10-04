@@ -391,6 +391,7 @@ export interface ApiError {
   status: number;
   code: string;
   message: string;
+  request_id?: string;
 }
 
 /** Identity mirrors GET /api/v1/me (app-tier — every authenticated principal may

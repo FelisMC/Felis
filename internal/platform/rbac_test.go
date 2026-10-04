@@ -127,13 +127,15 @@ func TestAPIRole_MinecraftPowersExact(t *testing.T) {
 	if hasRule(mc, groupCore, "secrets", "list") || hasRule(mc, groupCore, "secrets", "watch") {
 		t.Error("felis-api must NOT list or watch secrets (RCON reads are a direct Get by name)")
 	}
-	// WorldVolumeExists (backup/restore pre-gate) does a single direct PVC Get;
-	// nothing in felis-api lists or deletes claims.
+	// WorldVolumeExists reads a claim and lists retained claims on server creation.
 	if !hasRule(mc, groupCore, "persistentvolumeclaims", "get") {
 		t.Error("felis-api must get the world PVC (persistentvolumeclaims:get) for the backup/restore world-volume gate")
 	}
-	if hasRule(mc, groupCore, "persistentvolumeclaims", "list") || hasRule(mc, groupCore, "persistentvolumeclaims", "delete") {
-		t.Error("felis-api must NOT list or delete PVCs (the gate is a single direct Get)")
+	if !hasRule(mc, groupCore, "persistentvolumeclaims", "list") {
+		t.Error("felis-api must list retained PVCs before creating a server")
+	}
+	if hasRule(mc, groupCore, "persistentvolumeclaims", "watch") || hasRule(mc, groupCore, "persistentvolumeclaims", "delete") {
+		t.Error("felis-api must NOT watch or delete PVCs")
 	}
 	// Read-side console (spec §8 读=pods/log follow): list pods to find the
 	// running pod, then read its log subresource — and nothing wider.

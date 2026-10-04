@@ -37,6 +37,38 @@ func podPresent(t *testing.T, c client.Client) bool {
 	return err == nil
 }
 
+func TestExplicitRestartIsConsumedOnce(t *testing.T) {
+	srv := runningServer()
+	srv.Status.Phase = v1alpha1.PhaseRunning
+	srv.Annotations = map[string]string{v1alpha1.AnnotationRestart: "2026-07-01T12:00:00Z"}
+	r, c := newReconciler(t, fakeProber{}, srv, rconSecret(), gamePod())
+	reconcile(t, r, "survival")
+	s := getServer(t, c, "survival")
+	if s.Annotations[v1alpha1.AnnotationRestart] != "" || s.Spec.DesiredState != v1alpha1.DesiredRunning || s.Status.Phase != v1alpha1.PhaseStarting || podPresent(t, c) {
+		t.Fatalf("restart: desired=%s phase=%s request=%s pod=%v", s.Spec.DesiredState, s.Status.Phase, s.Annotations[v1alpha1.AnnotationRestart], podPresent(t, c))
+	}
+	if err := c.Create(context.Background(), gamePod()); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, r, "survival")
+	if !podPresent(t, c) {
+		t.Fatal("consumed request deleted the replacement pod")
+	}
+}
+
+func TestStopSupersedesExplicitRestart(t *testing.T) {
+	srv := runningServer()
+	srv.Spec.DesiredState = v1alpha1.DesiredStopped
+	srv.Status.Phase = v1alpha1.PhaseRunning
+	srv.Annotations = map[string]string{v1alpha1.AnnotationRestart: "2026-07-01T12:00:00Z"}
+	r, c := newReconciler(t, fakeProber{}, srv, rconSecret(), gamePod())
+	reconcile(t, r, "survival")
+	s := getServer(t, c, "survival")
+	if s.Annotations[v1alpha1.AnnotationRestart] != "" || s.Spec.DesiredState != v1alpha1.DesiredStopped || s.Status.Phase == v1alpha1.PhaseStarting {
+		t.Fatalf("restart overrode stop: desired=%s phase=%s annotations=%v", s.Spec.DesiredState, s.Status.Phase, s.Annotations)
+	}
+}
+
 // Once the automatic restarts are spent, a retry request starts the server over
 // with the whole budget back: the pod is recreated, the start re-anchored, and
 // the next timeout is retried automatically again.

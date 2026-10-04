@@ -2267,7 +2267,7 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
     streamConsole(ctx.req, ctx.res, serverInfo);
     return true;
   }
-  if (is("POST", ctx) && ctx.parts[4] === "wake") {
+  if (is("POST", ctx) && (ctx.parts[4] === "wake" || ctx.parts[4] === "restart")) {
     if (!canManage(ctx.account, serverInfo)) {
       sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
       return true;
@@ -2276,8 +2276,12 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
       sendError(ctx.res, 409, "server_retiring", "this server is being given up or deleted; cancel that first");
       return true;
     }
+    if (ctx.parts[4] === "restart" && serverInfo.phase !== "Running") {
+      sendError(ctx.res, 409, "not_running", "start the server before restarting it");
+      return true;
+    }
     setPhase(serverInfo, "Starting");
-    sendJSON(ctx.res, 200, { name: serverInfo.name, desiredState: "Running" });
+    sendJSON(ctx.res, 202, { name: serverInfo.name, desiredState: "Running" });
     return true;
   }
   if (is("POST", ctx) && ctx.parts[4] === "stop") {
@@ -2454,11 +2458,13 @@ async function handleFilesMock(ctx: SessionContext, serverInfo: MockServer): Pro
     sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
     return true;
   }
-  if (serverInfo.phase !== "Stopped") {
+  const url = new URL(ctx.req.url ?? "/", "http://localhost");
+  const liveConfig = ["login", "lobby"].includes(serverInfo.name) &&
+    ["GET file", "PUT file"].includes(key) && url.searchParams.get("path") === "felis-experience.json";
+  if (!liveConfig && serverInfo.phase !== "Stopped") {
     sendError(ctx.res, 409, "not_stopped", "stop the server before editing its files");
     return true;
   }
-  const url = new URL(ctx.req.url ?? "/", "http://localhost");
   const tree = filesOf(ctx.state, serverInfo.name);
   const p = cleanFilePath(ctx, url.searchParams.get("path"), key === "GET files");
   if (p === null) return true;

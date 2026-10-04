@@ -66,7 +66,8 @@ info:
     services through existing management routes, without player ownership rows.
     Creating and claiming these reserved names remain prohibited. System patches
     keep public autostart and idle stop disabled. Customization is persisted as
-    felis-experience.json using the existing stopped-server file API.
+    felis-experience.json using the existing file API. Staff may read and save
+    this startup-only config while system services run; restart to apply it.
 
     Control plane for the Felis Minecraft orchestration platform. The same binary
     exposes an internal face (per-caller service tokens, for velocity / backend
@@ -2452,6 +2453,45 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /api/v1/servers/{name}/restart:
+    post:
+      tags: [servers]
+      operationId: restart
+      summary: Restart your own running server, or a system service as staff.
+      description: >-
+        Records a durable request for the operator to gracefully recreate the
+        game pod. Desired state remains Running. A concurrent stop supersedes
+        the request; maintenance blocks admission.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '202':
+          description: Restart accepted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, desiredState]
+                properties:
+                  name: { type: string }
+                  desiredState: { type: string, const: Running }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Server is not running, is retiring, or maintenance is in progress.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /api/v1/servers/{name}/claim:
     post:
       tags: [servers]
@@ -4830,10 +4870,11 @@ paths:
     get:
       tags: [files]
       operationId: readServerFile
-      summary: Read a file from a server's world volume (owner-or-admin; server must be stopped).
+      summary: Read a file from a server's world volume (owner-or-admin).
       description: >-
         Returns one file's bytes, base64-encoded, from inside the server's world
-        volume. Same stopped-gate and os.Root containment as the directory listing.
+        volume. Same stopped-gate and os.Root containment as the directory listing,
+        except staff may read login/lobby's felis-experience.json while running.
         Reads are capped at 1 MiB; a larger file is 413 rather than a truncated read,
         because a config editor that silently returned half a file would let a
         subsequent save destroy the other half.
@@ -4886,7 +4927,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '409':
-          description: Server is not stopped (its world PVC is still mounted).
+          description: Server is not stopped (except startup-only system experience config).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -4914,7 +4955,7 @@ paths:
     put:
       tags: [files]
       operationId: writeServerFile
-      summary: Write a file in a server's world volume (owner-or-admin; server must be stopped).
+      summary: Write a file in a server's world volume (owner-or-admin).
       description: >-
         Replaces a file's contents, creating the file if absent but never creating its
         parent directories. Content is base64 so arbitrary bytes (CRLF endings, a BOM)
@@ -4927,7 +4968,9 @@ paths:
         otherwise 409 file_changed. content_sha256 is the SHA-256 of the content:
         content that hashes otherwise changed on the way and is refused (400
         digest_mismatch) before a Job starts, and the Job checks the bytes it received
-        the same way before writing. Audited as file.write.
+        the same way before writing. Staff may save login/lobby's startup-only
+        felis-experience.json while running; restart to apply. That config cannot
+        be a symlink. Audited as file.write.
       x-felis-face: [external]
       x-felis-tier: app
       security: [{ sessionCookie: [] }]

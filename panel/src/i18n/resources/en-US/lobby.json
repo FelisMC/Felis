@@ -13,7 +13,13 @@
   "stop_login": "Stop the login space to read and save settings. New players cannot join during maintenance; start it again when finished.",
   "stop_lobby": "Stop the lobby to read and save settings. Back up its map before maintenance, then start it again when finished.",
   "read_failed": "Could not read settings: {{reason}}. Check felis-experience.json in the file manager.",
-  "saved": "Saved. Start this space to apply the settings.",
+  "saved": "Saved. Settings apply on the next start or restart.",
+  "restart": "Restart & apply",
+  "restarting": "Restarting…",
+  "restart_requested": "Restart requested. Follow the startup status above.",
+  "restart_title": "Restart this space?",
+  "restart_hint": "Players here will be disconnected briefly. Saved settings take effect when this space starts again.",
+  "restart_required": "Settings saved; restart to apply",
   "save": "Save settings",
   "saving": "Saving…",
   "invalid_values": "Check numeric ranges and selected options. Text is limited to 512 characters.",
@@ -88,5 +94,5 @@
   "loginBook_description": "Edit the guidance players see in the login book.",
   "content_tools": "Content & maintenance",
   "unsaved": "You have unsaved changes",
-  "apply_on_start": "Saved settings apply when this space starts"
+  "apply_on_start": "Save while running; settings take effect on the next start or restart"
 }

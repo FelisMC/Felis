@@ -1935,6 +1935,36 @@ func (c *fakeCluster) RetryStart(ctx context.Context, n string) error {
 	c.retried = append(c.retried, n)
 	return nil
 }
+func (c *fakeCluster) RestartServer(ctx context.Context, n string) error {
+	return c.RetryStart(ctx, n)
+}
+
+func TestRestartAuthorization(t *testing.T) {
+	for _, tc := range []struct {
+		name, server, role, user string
+		staff                    bool
+		status                   int
+	}{
+		{"owner of player server", "survival", "user", "owner1", false, 202},
+		{"other player", "survival", "user", "stranger", false, 403},
+		{"Owner console system service", "lobby", "owner", "owner1", true, 202},
+		{"player system service", "lobby", "user", "owner1", false, 400},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _, cl, _ := mkFiles(t)
+			cl.byName[tc.server] = &ServerInfo{Name: tc.server, Phase: "Running", DesiredState: "Running", Ready: true}
+			a.External = staticExternal{p: &Principal{UserID: tc.user, Role: tc.role, ViaAdminAccess: tc.staff}}
+			w := do(a.ExternalHandler(), "POST", "/api/v1/servers/"+tc.server+"/restart", "", nil)
+			if w.Code != tc.status {
+				t.Fatalf("status=%d want=%d body=%s", w.Code, tc.status, w.Body.String())
+			}
+			if (len(cl.retried) == 1) != (tc.status == 202) {
+				t.Fatalf("unauthorized restart or missing request: %v", cl.retried)
+			}
+		})
+	}
+}
+
 func (c *fakeCluster) AcquireMaintenance(_ context.Context, n, kind string) error {
 	if err := c.maintErr[n]; err != nil {
 		return err

@@ -1,5 +1,24 @@
 import { test, expect, t, expectFitsScreen } from "./fixtures";
 
+test("login is the default space; live lobby settings save before a confirmed restart", async ({ page, signIn }) => {
+  await signIn("owner");
+  await page.goto("/admin/lobby");
+  await expect(page.getByRole("button", { name: t("lobby:login"), exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByLabel(t("lobby:bookTitle"))).toBeVisible();
+  await page.getByRole("button", { name: t("lobby:lobby"), exact: true }).click();
+  await page.getByLabel(t("lobby:menuTitleEn")).fill("Our Network");
+  await expect(page.getByRole("button", { name: t("lobby:restart"), exact: true })).toBeDisabled();
+  await page.getByRole("button", { name: t("lobby:save"), exact: true }).click();
+  await expect(page.getByText(t("lobby:saved"), { exact: true })).toBeVisible();
+  await expectFitsScreen(page);
+  await page.getByRole("button", { name: t("lobby:restart"), exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: t("lobby:restart_title") });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: t("lobby:restart"), exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByText(t("lobby:restart_requested"), { exact: true })).toBeVisible();
+});
+
 test("a signed-out visit signs in by email code and returns to the page it asked for", async ({ page }) => {
   await page.goto("/servers");
   await expect(page).toHaveURL(/\/login\?next=%2Fservers$/);

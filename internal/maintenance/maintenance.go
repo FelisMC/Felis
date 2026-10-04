@@ -90,11 +90,12 @@ const (
 
 // Kinds of holder.
 const (
-	KindMigration = "migration"
-	KindRestore   = "restore"
-	KindBackup    = "backup"
-	KindFileWrite = "file-write"
-	KindExport    = "export"
+	KindMigration   = "migration"
+	KindRestore     = "restore"
+	KindBackup      = "backup"
+	KindFileWrite   = "file-write"
+	KindConfigWrite = "config-write"
+	KindExport      = "export"
 	// KindReap is the reaper archiving an idle world and reclaiming its volume.
 	// It runs no Job: the reaper holds the Annotation itself and rewrites it
 	// well inside Grace for as long as it works on the world.

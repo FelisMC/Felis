@@ -15,6 +15,7 @@ import (
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/fileedit"
 	"felis.lolicon.best/internal/maintenance"
+	"felis.lolicon.best/internal/naming"
 )
 
 // FileEditor is the server-file-editor surface the API depends on: list a
@@ -233,7 +234,11 @@ func (a *API) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 	// beside it, and a read that overlaps a restore or another change can at worst
 	// show a file mid-change: the sha256 it returned then no longer matches, so a
 	// save built on it is refused with file_changed.
-	release, ok := a.acquireWorld(w, r, name, maintenance.KindFileWrite, "stop the server before editing its files")
+	kind := maintenance.KindFileWrite
+	if liveExperienceFile(r, name) {
+		kind = maintenance.KindConfigWrite
+	}
+	release, ok := a.acquireWorld(w, r, name, kind, "stop the server before editing its files")
 	if !ok {
 		return
 	}
@@ -582,16 +587,12 @@ var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 //	② ServerByName — an unknown server is 404
 //	③ owner-or-admin, else 403. An unowned (released) server fails for everyone
 //	   but admin, which is the same "must re-claim first" rule restore enforces
-//	④ stopped gate: the world PVC is RWO and held by a running server, so a file
-//	   Job cannot mount it — refuse unless the server is fully stopped. Ready means
-//	   it is up; any desiredState other than Stopped means it is up or coming up
-//	   and still owns the volume. This yields a specific 409 instead of a Job that
-//	   silently fails to mount
+//	④ stopped gate: world files must not change under a live game process.
+//	   Only the system plugin's startup-only config may be read and saved live;
+//	   its Job mounts the RWO volume on the same node as the game pod.
 //	⑤ the FileEditor must be wired, else 503
 //
-// Single-sourcing it is what keeps the handlers from drifting: a read path that
-// forgot the stopped gate would not merely fail, it would hang waiting for a Pod
-// that can never be scheduled.
+// All file routes share this gate so the live-config exception stays narrow.
 //
 // It returns the validated server name and false if it has already written a
 // response.
@@ -606,7 +607,7 @@ func (a *API) authorizeFileOp(w http.ResponseWriter, r *http.Request) (string, b
 		a.writeLookupError(w, r, err)
 		return "", false
 	}
-	if info.Ready || info.DesiredState != string(v1alpha1.DesiredStopped) {
+	if !liveExperienceFile(r, name) && (info.Ready || info.DesiredState != string(v1alpha1.DesiredStopped)) {
 		writeError(w, r, newError(http.StatusConflict, "not_stopped",
 			"stop the server before working with its files"))
 		return "", false
@@ -634,6 +635,14 @@ func (a *API) authorizeFileOp(w http.ResponseWriter, r *http.Request) (string, b
 		return "", false
 	}
 	return name, true
+}
+
+// Only the startup-only system plugin settings may be edited while running.
+// World files, uploads, deletes and plugin binaries keep the stopped gate.
+func liveExperienceFile(r *http.Request, name string) bool {
+	return naming.IsSystemServer(name) && strings.HasSuffix(r.URL.Path, "/file") &&
+		(r.Method == http.MethodGet || r.Method == http.MethodPut) &&
+		r.URL.Query().Get("path") == naming.ExperienceConfigFile
 }
 
 // writeFileEditError maps executor errors onto HTTP status codes. The

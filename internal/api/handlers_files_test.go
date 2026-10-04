@@ -163,6 +163,49 @@ func mkFiles(t *testing.T) (*API, *fakeRepo, *fakeCluster, *fakeFileEditor) {
 	return api, repo, cl, files
 }
 
+func TestRunningSystemExperienceFile(t *testing.T) {
+	for _, name := range []string{"login", "lobby"} {
+		for _, tc := range []struct {
+			method, suffix, body string
+			allowed              bool
+		}{
+			{"GET", "/file?path=felis-experience.json", "", true},
+			{"PUT", "/file?path=felis-experience.json", `{"content":"aGk=","content_sha256":"` + hiSum + `"}`, true},
+			{"PUT", "/file?path=felis-experience.json", `{"content":"aGk=","content_sha256":"` + hiSum + `","create_only":true}`, true},
+			{"PUT", "/file?path=world/level.dat", `{"content":"aGk=","content_sha256":"` + hiSum + `"}`, false},
+			{"GET", "/file?path=./felis-experience.json", "", false},
+			{"DELETE", "/file?path=felis-experience.json", "", false},
+			{"GET", "/files", "", false},
+		} {
+			t.Run(name+" "+tc.method+tc.suffix, func(t *testing.T) {
+				a, _, cl, files := mkFiles(t)
+				cl.byName[name] = &ServerInfo{Name: name, Phase: "Running", Ready: true, DesiredState: "Running"}
+				a.External = staticExternal{p: &Principal{UserID: "owner1", Role: "owner", ViaAdminAccess: true}}
+				w := do(a.ExternalHandler(), tc.method, "/api/v1/servers/"+name+tc.suffix, tc.body, jsonHeader)
+				if tc.allowed {
+					if w.Code != http.StatusOK || files.calls != 1 {
+						t.Fatalf("live config: status=%d calls=%d body=%s", w.Code, files.calls, w.Body.String())
+					}
+					if tc.method == "PUT" && (len(cl.acquired) != 1 || cl.acquired[0] != name+":"+maintenance.KindConfigWrite) {
+						t.Fatalf("wrong lock: %v", cl.acquired)
+					}
+				} else if w.Code != http.StatusConflict || decodeErr(t, w) != "not_stopped" || files.calls != 0 {
+					t.Fatalf("world gate: status=%d calls=%d body=%s", w.Code, files.calls, w.Body.String())
+				}
+			})
+		}
+	}
+	t.Run("player cannot edit system config", func(t *testing.T) {
+		a, _, cl, files := mkFiles(t)
+		cl.byName["lobby"] = &ServerInfo{Name: "lobby", Phase: "Running", Ready: true, DesiredState: "Running"}
+		a.External = staticExternal{p: &Principal{UserID: "owner1", Role: "user"}}
+		w := do(a.ExternalHandler(), "GET", "/api/v1/servers/lobby/file?path=felis-experience.json", "", nil)
+		if w.Code < 400 || files.calls != 0 {
+			t.Fatalf("player reached config: status=%d calls=%d", w.Code, files.calls)
+		}
+	})
+}
+
 // TestFileEditorStoppedGate is the gate this whole subsystem hinges on. The world
 // PVC is ReadWriteOnce, but RWO is per node: on a single node a file Job mounts it
 // right beside a running server, and a write lands under a live world that the

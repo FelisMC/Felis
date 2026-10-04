@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 	"time"
 
@@ -264,21 +265,28 @@ func (k *K8sCluster) SetDesiredState(ctx context.Context, name string, state v1a
 // against, the same as AcquireMaintenance's: whichever of a racing wake and
 // admission writes second gets a conflict, re-reads, and sees the other.
 func (k *K8sCluster) start(ctx context.Context, name string) error {
-	return k.startWith(ctx, name, false)
+	return k.startWith(ctx, name, "")
 }
 
 // RetryStart starts a Failed server over: the same guarded write as start, plus
 // v1alpha1.AnnotationStartRetry so the operator resets the restart budget and
 // recreates the pod.
 func (k *K8sCluster) RetryStart(ctx context.Context, name string) error {
-	return k.startWith(ctx, name, true)
+	return k.startWith(ctx, name, v1alpha1.AnnotationStartRetry)
 }
 
-func (k *K8sCluster) startWith(ctx context.Context, name string, retryFailed bool) error {
+func (k *K8sCluster) RestartServer(ctx context.Context, name string) error {
+	return k.startWith(ctx, name, v1alpha1.AnnotationRestart)
+}
+
+func (k *K8sCluster) startWith(ctx context.Context, name, annotation string) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var ms v1alpha1.MinecraftServer
 		if err := k.getServer(ctx, name, &ms); err != nil {
 			return err
+		}
+		if annotation == v1alpha1.AnnotationRestart && (ms.Spec.DesiredState != v1alpha1.DesiredRunning || ms.Status.Phase != v1alpha1.PhaseRunning) {
+			return newError(http.StatusConflict, "not_running", "start the server before restarting it")
 		}
 		node := ms.Spec.NodeName
 		if node == "" {
@@ -308,11 +316,11 @@ func (k *K8sCluster) startWith(ctx context.Context, name string, retryFailed boo
 		// A lock still on the object here no longer holds anything (Holder said
 		// so): drop it in the same write.
 		delete(ms.Annotations, maintenance.Annotation)
-		if retryFailed {
+		if annotation != "" {
 			if ms.Annotations == nil {
 				ms.Annotations = map[string]string{}
 			}
-			ms.Annotations[v1alpha1.AnnotationStartRetry] = k.clock().UTC().Format(time.RFC3339)
+			ms.Annotations[annotation] = k.clock().UTC().Format(time.RFC3339Nano)
 		}
 		return k.c.Patch(ctx, &ms, patch)
 	})
@@ -320,8 +328,9 @@ func (k *K8sCluster) startWith(ctx context.Context, name string, retryFailed boo
 
 // AcquireMaintenance admits one world-volume operation of the given kind: the
 // server must be fully stopped (desiredState Stopped, phase Stopped, and no game
-// pod left, so a pod still saving on its way down is waited out) and nothing else
-// may hold the volume. Admission writes the maintenance lock under the resourceVersion it
+// pod left, so a pod still saving on its way down is waited out). System config
+// writes may run beside the game pod, but not during a pending restart. Nothing
+// else may hold the volume. Admission writes the lock under the resourceVersion it
 // checked; the caller creates its Job and then calls ReleaseMaintenance, after
 // which the Job itself is the lock.
 func (k *K8sCluster) AcquireMaintenance(ctx context.Context, name, kind string) error {
@@ -334,13 +343,18 @@ func (k *K8sCluster) AcquireMaintenance(ctx context.Context, name, kind string) 
 		if desired == "" {
 			desired = v1alpha1.DesiredStopped
 		}
-		if desired != v1alpha1.DesiredStopped || ms.Status.Ready || ms.Status.Phase != v1alpha1.PhaseStopped {
-			return ErrNotStopped
+		if kind != maintenance.KindConfigWrite || !naming.IsSystemServer(name) {
+			if desired != v1alpha1.DesiredStopped || ms.Status.Ready || ms.Status.Phase != v1alpha1.PhaseStopped {
+				return ErrNotStopped
+			}
+			if up, err := k.gamePodExists(ctx, name); err != nil {
+				return err
+			} else if up {
+				return ErrNotStopped
+			}
 		}
-		if up, err := k.gamePodExists(ctx, name); err != nil {
-			return err
-		} else if up {
-			return ErrNotStopped
+		if ms.Annotations[v1alpha1.AnnotationRestart] != "" {
+			return ErrMaintenanceInProgress
 		}
 		holder, held, err := k.maintenanceHolder(ctx, &ms)
 		if err != nil {

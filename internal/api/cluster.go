@@ -137,8 +137,10 @@ type Cluster interface {
 	// also asks the operator to start it over with a fresh auto-restart budget
 	// (v1alpha1.AnnotationStartRetry). Maintenance refuses it the same way.
 	RetryStart(ctx context.Context, name string) error
+	// RestartServer requests a pod restart without changing desired state.
+	RestartServer(ctx context.Context, name string) error
 	// AcquireMaintenance admits one world-volume operation (internal/maintenance
-	// kind): ErrNotStopped unless the server is fully stopped, a
+	// kind): ErrNotStopped unless fully stopped (except system config writes), a
 	// *MaintenanceBusyError while another operation holds the volume. The check
 	// and the lock are one atomic write against a concurrent wake.
 	AcquireMaintenance(ctx context.Context, name, kind string) error

@@ -156,7 +156,7 @@ describe("BuildScanPanel", () => {
     calls.getBuildScan.mockResolvedValueOnce(BLOCKED);
     render(<BuildScanPanel build={FAILED} />);
     expect((await screen.findByRole("alert")).textContent).toBe(
-      "Couldn't load the security scan: The service is unavailable right now (it may be restarting or upgrading). Try again shortly.",
+      "Couldn't load the security scan: The operation failed because of an internal server error. Ask an admin to check the logs.",
     );
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(await screen.findByRole("region", { name: "Security scan" })).toBeTruthy();

@@ -35,6 +35,54 @@ func stoppedServer() *v1alpha1.MinecraftServer {
 	}
 }
 
+func TestSystemConfigSaveAndRestartAdmission(t *testing.T) {
+	ctx := context.Background()
+	ms := stoppedServer()
+	ms.Name = "lobby"
+	ms.Spec.DesiredState = v1alpha1.DesiredRunning
+	ms.Status.Phase, ms.Status.Ready = v1alpha1.PhaseRunning, true
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "lobby-0", Namespace: "minecraft",
+		Labels: map[string]string{v1alpha1.LabelServer: "lobby", v1alpha1.LabelComponent: gamePodComponent}}}
+	k, c := lockCluster(t, ms, pod)
+	if err := k.AcquireMaintenance(ctx, "lobby", maintenance.KindConfigWrite); err != nil {
+		t.Fatalf("save beside running pod: %v", err)
+	}
+	if err := k.RestartServer(ctx, "lobby"); !errors.Is(err, ErrMaintenanceInProgress) {
+		t.Fatalf("restart during save: %v", err)
+	}
+	if err := k.ReleaseMaintenance(ctx, "lobby"); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.RestartServer(ctx, "lobby"); err != nil {
+		t.Fatalf("restart after save: %v", err)
+	}
+	var got v1alpha1.MinecraftServer
+	if err := c.Get(ctx, client.ObjectKeyFromObject(ms), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Annotations[v1alpha1.AnnotationRestart] == "" || got.Spec.DesiredState != v1alpha1.DesiredRunning {
+		t.Fatalf("restart not recorded durably: %+v", got)
+	}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(pod), &corev1.Pod{}); err != nil {
+		t.Fatalf("API must leave pod deletion to operator: %v", err)
+	}
+	if err := k.AcquireMaintenance(ctx, "lobby", maintenance.KindConfigWrite); !errors.Is(err, ErrMaintenanceInProgress) {
+		t.Fatalf("save racing a pending restart: %v", err)
+	}
+
+	userServer := stoppedServer()
+	userServer.Spec.DesiredState = v1alpha1.DesiredRunning
+	userServer.Status.Phase = v1alpha1.PhaseRunning
+	k, _ = lockCluster(t, userServer)
+	if err := k.AcquireMaintenance(ctx, "survival", maintenance.KindConfigWrite); !errors.Is(err, ErrNotStopped) {
+		t.Fatalf("live config exception reached a player world: %v", err)
+	}
+	k, _ = lockCluster(t, stoppedServer())
+	if err := k.RestartServer(ctx, "survival"); err == nil {
+		t.Fatal("restart admitted a stopped server")
+	}
+}
+
 func lockCluster(t *testing.T, objs ...client.Object) (*K8sCluster, client.Client) {
 	t.Helper()
 	scheme := runtime.NewScheme()
