@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="640" viewBox="110 445 1040 640" role="img" aria-labelledby="title desc">
+  <title id="title">Felis</title>
+  <desc id="desc">A fluffy ivory kitten with sage green ears and eyes, pink cheeks, and green whiskers.</desc>
+  <defs>
+    <linearGradient id="rim" x1="250" y1="460" x2="940" y2="1090" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#91bd86"/>
+      <stop offset=".5" stop-color="#8bbd83"/>
+      <stop offset="1" stop-color="#74ae77"/>
+    </linearGradient>
+    <linearGradient id="ear" x1="220" y1="540" x2="1010" y2="800" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#83b57e"/>
+      <stop offset=".48" stop-color="#8cbd83"/>
+      <stop offset="1" stop-color="#80b47b"/>
+    </linearGradient>
+    <linearGradient id="earShade" x1="220" y1="610" x2="365" y2="740" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#71aa75" stop-opacity=".32"/>
+      <stop offset="1" stop-color="#a6cb91" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="furShade" x1="220" y1="570" x2="1010" y2="1085" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#e6ecda"/>
+      <stop offset=".52" stop-color="#e8eddf"/>
+      <stop offset="1" stop-color="#e4ebd8"/>
+    </linearGradient>
+    <radialGradient id="fur" cx=".48" cy=".56" r=".75">
+      <stop stop-color="#fdfbf4"/>
+      <stop offset="1" stop-color="#fcfaf3"/>
+    </radialGradient>
+    <linearGradient id="eye" x1="411" y1="860" x2="843" y2="993" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#65a26c"/>
+      <stop offset=".48" stop-color="#6ba770"/>
+      <stop offset="1" stop-color="#63a16b"/>
+    </linearGradient>
+    <radialGradient id="cheek" cx=".45" cy=".42" r=".7">
+      <stop stop-color="#ffd2d2"/>
+      <stop offset="1" stop-color="#ffcccc"/>
+    </radialGradient>
+    <linearGradient id="whisker" x1="201" y1="1015" x2="282" y2="1015" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#92bf87"/>
+      <stop offset="1" stop-color="#62a16c"/>
+    </linearGradient>
+  </defs>
+  <g id="felis">
+    <!-- Ear rims sit behind the pale ear fur and the forehead. -->
+    <path fill="url(#rim)" d="M174 633C176 566 202 481 233 459C263 438 329 462 384 484C443 509 488 550 517 580C553 560 601 548 643 549L631 569C666 566 704 573 734 583C792 517 880 470 949 454C977 448 1008 447 1024 462C1057 490 1075 568 1078 632L1027 801L935 777L749 625L509 624L315 774L218 814Z"/>
+    <path fill="url(#rim)" d="M194 782C188 799 191 821 199 837C187 854 175 869 163 882L220 866L265 800Z"/>
+    <path fill="url(#rim)" d="M1020 800C1037 815 1050 806 1062 786C1064 809 1059 829 1051 843L1080 882L1034 861Z"/>
+    <path fill="url(#furShade)" d="M236 479C211 512 189 568 177 623C168 678 173 743 191 785C199 805 210 815 225 812L258 778L386 651L285 518Z"/>
+    <path fill="url(#furShade)" d="M1018 480C1049 520 1067 578 1078 632C1083 689 1076 749 1059 789C1050 809 1036 814 1022 802L974 752L884 647L968 522Z"/>
+    <path fill="url(#fur)" d="M235 479C243 463 267 467 289 472C364 489 451 543 501 606L501 800L234 797C205 730 203 598 240 496C235 493 231 487 235 479Z"/>
+    <path fill="url(#fur)" d="M1018 479C1008 460 982 465 960 470C885 486 803 533 756 598L756 800L1019 796C1043 725 1042 596 1011 494C1017 491 1021 485 1018 479Z"/>
+    <path fill="url(#ear)" d="M234 797C215 752 215 693 222 651C229 606 244 557 261 542C274 531 284 533 296 547C326 581 356 630 374 684C353 664 329 655 293 649C299 672 308 686 323 694C289 719 257 759 234 797Z"/>
+    <path fill="url(#earShade)" d="M261 542C269 544 282 565 294 588C309 620 325 649 338 666C322 658 308 653 293 649C299 672 308 686 323 694C287 720 257 759 234 797C216 752 215 693 222 651C229 606 244 557 261 542Z"/>
+    <path fill="url(#ear)" d="M1019 796C1038 750 1036 688 1029 646C1021 600 1008 554 990 540C978 529 968 533 956 547C925 581 896 628 878 681C900 662 922 653 961 647C954 671 945 684 929 692C966 717 996 757 1019 796Z"/>
+    <path fill="#a6cb91" opacity=".64" d="M265 712C274 693 290 681 306 678C311 685 316 690 323 694C301 695 281 701 265 712Z"/>
+    <path fill="#a4c990" opacity=".64" d="M929 692C936 688 942 682 947 676C965 678 976 688 983 701C966 694 949 691 929 692Z"/>
+    <!-- Green fur tips show around the ivory face. -->
+    <path fill="url(#rim)" d="M111 896C117 926 132 948 153 959C132 984 118 1018 117 1048C139 1014 156 992 184 974L228 916Z"/>
+    <path fill="url(#rim)" d="M1145 916C1132 939 1113 953 1090 960C1113 989 1127 1020 1133 1053C1106 1019 1087 996 1057 977L1017 914Z"/>
+    <!-- One continuous face silhouette keeps the exported outline clean. -->
+    <path fill="url(#fur)" d="M118 1085C120 1037 141 989 174 953C142 941 121 922 111 896C156 891 193 871 221 839C244 813 264 789 287 772C268 778 251 785 234 797C255 759 287 719 323 694C308 686 299 672 293 649C329 655 353 664 374 684C394 654 443 624 501 606C544 579 591 558 637 551C627 567 614 580 599 592C656 566 729 580 797 614C827 632 855 656 878 681C900 662 922 653 961 647C954 671 945 684 929 692C966 717 996 757 1019 796C1038 833 1058 866 1083 887C1104 905 1126 913 1145 916C1129 935 1107 945 1079 948C1111 990 1129 1037 1133 1085Z"/>
+    <path fill="url(#furShade)" d="M668 633C692 632 711 639 720 654C730 670 735 687 740 703Z"/>
+    <path fill="url(#furShade)" d="M111 896C144 905 173 908 212 901L174 953C142 941 121 922 111 896Z"/>
+    <path fill="url(#furShade)" d="M163 882C192 861 209 840 225 812L244 794C258 784 271 777 287 772C246 827 212 868 163 882Z"/>
+    <path fill="url(#furShade)" d="M1037 887C1074 901 1107 914 1145 916C1129 935 1107 945 1079 948Z"/>
+    <path fill="url(#furShade)" d="M118 1085C121 1054 133 1023 151 997C146 1034 151 1063 172 1085Z"/>
+    <path fill="url(#furShade)" d="M1081 1085C1094 1069 1101 1049 1103 1028C1115 1045 1120 1063 1122 1085Z"/>
+    <ellipse fill="url(#eye)" cx="454" cy="922" rx="43.5" ry="66"/>
+    <ellipse fill="url(#eye)" cx="800.5" cy="922" rx="43.5" ry="66"/>
+    <path fill="url(#eye)" d="M591 971C591 960 610 955 626 955C642 955 661 960 661 971C661 987 642 1009 626 1009C610 1009 591 987 591 971Z"/>
+    <ellipse fill="url(#cheek)" cx="364.5" cy="1015.5" rx="56.5" ry="38"/>
+    <ellipse fill="url(#cheek)" cx="889.5" cy="1015.5" rx="56.5" ry="38"/>
+    <path fill="url(#whisker)" d="M204 980C225 972 259 974 278 981C283 983 283 988 278 988C251 986 228 988 208 994C200 996 196 983 204 980Z"/>
+    <path fill="url(#whisker)" d="M204 1036C224 1022 251 1016 274 1015C280 1015 281 1021 275 1023C251 1030 230 1040 212 1050C204 1055 194 1043 204 1036Z"/>
+    <g transform="translate(1254 0) scale(-1 1)">
+      <path fill="url(#whisker)" d="M204 980C225 972 259 974 278 981C283 983 283 988 278 988C251 986 228 988 208 994C200 996 196 983 204 980Z"/>
+      <path fill="url(#whisker)" d="M204 1036C224 1022 251 1016 274 1015C280 1015 281 1021 275 1023C251 1030 230 1040 212 1050C204 1055 194 1043 204 1036Z"/>
+    </g>
+  </g>
+</svg>
