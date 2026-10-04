@@ -81,5 +81,12 @@
   "builder_running": "Start the lobby before changing builder access.",
   "discard_title": "Discard unsaved settings?",
   "discard_hint": "Switching spaces discards your edits. Cancel to save them first.",
-  "discard": "Discard & switch"
+  "discard": "Discard & switch",
+  "appearance_description": "Set the welcome message and server menu players see.",
+  "players_description": "Choose join behavior, game mode and player protection.",
+  "world_description": "Adjust time, weather and the lobby game rules.",
+  "loginBook_description": "Edit the guidance players see in the login book.",
+  "content_tools": "Content & maintenance",
+  "unsaved": "You have unsaved changes",
+  "apply_on_start": "Saved settings apply when this space starts"
 }

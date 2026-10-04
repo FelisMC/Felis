@@ -50,10 +50,10 @@ export const LOGIN_GROUPS: ExperienceGroup[] = [
     { key: "bookTitle", value: "Felis Login" },
     { key: "bookAuthor", value: "Felis" },
     { key: "bookHeading", value: "Felis 登录 / Login" },
+    { key: "loginTimeoutSeconds", value: 600, min: 30, max: 3600 },
     { key: "bookAction", value: "▶ 点此打开登录页\n▶ Open login page", multiline: true },
     { key: "bookHelp", value: "在系统浏览器中完成。\nUse your SYSTEM browser —\nnot WeChat / QQ (passkey\nwon't work there).", multiline: true },
     { key: "openBook", value: true },
-    { key: "loginTimeoutSeconds", value: 600, min: 30, max: 3600 },
   ] },
 ];
 

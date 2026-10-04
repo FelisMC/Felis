@@ -81,5 +81,12 @@
   "builder_running": "请先启动大厅，才能修改建造权限。",
   "discard_title": "放弃未保存的设置？",
   "discard_hint": "切换空间会丢失本次编辑。可以取消后先保存。",
-  "discard": "放弃并切换"
+  "discard": "放弃并切换",
+  "appearance_description": "设置玩家加入时看到的欢迎信息与菜单。",
+  "players_description": "设置加入行为、游戏模式与玩家保护。",
+  "world_description": "调整大厅的时间、天气和游戏规则。",
+  "loginBook_description": "编辑玩家打开登录书时看到的引导内容。",
+  "content_tools": "内容与维护",
+  "unsaved": "有未保存的更改",
+  "apply_on_start": "保存的设置将在启动后生效"
 }
