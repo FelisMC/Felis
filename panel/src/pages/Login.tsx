@@ -240,7 +240,7 @@ export function Login() {
         </p>
       )}
       <Card>
-        <CardContent className="pt-6">
+        <CardContent className="p-6 sm:p-7">
           {activeTab === "main" && (
             <div className="space-y-4">
               <form onSubmit={handleEmailSubmit} className="space-y-4">

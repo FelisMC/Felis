@@ -213,7 +213,7 @@ function MobileNav({ sections }: { sections: NavSection[] }) {
         >
           <div className="mb-5 flex items-center justify-between px-2">
             <DialogPrimitive.Title className="flex items-center gap-2 text-lg font-semibold tracking-tight">
-              <FelisLogo className="h-8 w-auto" />
+              <FelisLogo />
               {t("brand_name")}
             </DialogPrimitive.Title>
             <DialogPrimitive.Close className={FOOT_ICON_BTN} aria-label={t("close_sr")}>
@@ -261,7 +261,7 @@ export function AppShell() {
     <div className="flex h-screen overflow-hidden">
       <aside className="hidden w-60 shrink-0 flex-col border-r border-border bg-card/40 p-4 md:flex">
         <div className="mb-6 flex items-center gap-2 px-2">
-          <FelisLogo className="h-8 w-auto" />
+          <FelisLogo />
           <span className="text-lg font-semibold tracking-tight">{t("common:brand_name")}</span>
         </div>
 
@@ -297,7 +297,7 @@ export function AppShell() {
         <header className="flex h-14 shrink-0 items-center justify-between border-b border-border px-4 md:hidden">
           <div className="flex items-center gap-2">
             <MobileNav sections={sections} />
-            <FelisLogo className="h-6 w-auto" />
+            <FelisLogo />
             <span className="font-semibold">{t("common:brand_name")}</span>
           </div>
           <div className="flex items-center gap-2">

@@ -16,9 +16,9 @@ function svg(defs, content, viewBox = "0 0 1024 1024", width = 1024, height = wi
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="${viewBox}" role="img" aria-label="Felis">\n${defs}\n${content}\n</svg>\n`;
 }
 
-function place(art, width = 896) {
+function place(art, width = 896, offsetY = 0) {
   const scale = width / 1040;
-  return `<g transform="translate(${(1024 - width) / 2} ${(1024 - 640 * scale) / 2}) scale(${scale}) translate(-110 -445)">${art}</g>`;
+  return `<g transform="translate(${(1024 - width) / 2} ${(1024 - 640 * scale) / 2 + offsetY}) scale(${scale}) translate(-110 -445)">${art}</g>`;
 }
 
 async function render(source, size, destination, background) {
@@ -29,10 +29,28 @@ async function render(source, size, destination, background) {
   return png;
 }
 
+async function writeIco(pngs, destination) {
+  const icoSizes = [16, 24, 32, 48, 64, 128, 256];
+  const directory = Buffer.alloc(6 + 16 * icoSizes.length);
+  directory.writeUInt16LE(1, 2);
+  directory.writeUInt16LE(icoSizes.length, 4);
+  let offset = directory.length;
+  icoSizes.forEach((size, index) => {
+    const data = pngs.get(size);
+    const entry = 6 + index * 16;
+    directory[entry] = directory[entry + 1] = size === 256 ? 0 : size;
+    directory.writeUInt16LE(1, entry + 4);
+    directory.writeUInt16LE(32, entry + 6);
+    directory.writeUInt32LE(data.length, entry + 8);
+    directory.writeUInt32LE(offset, entry + 12);
+    offset += data.length;
+  });
+  await fs.writeFile(destination, Buffer.concat([directory, ...icoSizes.map((size) => pngs.get(size))]));
+}
+
 async function main() {
   await Promise.all([kit, `${kit}/png`, `${kit}/felis.iconset`, `${web}/icons`, panelAssets].map((dir) => fs.mkdir(dir, { recursive: true })));
   const source = await fs.readFile(`${assets}/felis-logo.svg`, "utf8");
-  await fs.writeFile(`${panelAssets}/felis-logo.svg`, source);
   const defs = source.match(/<defs>[\s\S]*?<\/defs>/)[0];
   const art = source.match(/<g id="felis">[\s\S]*<\/g>/)[0];
   const icon = svg(defs, place(art));
@@ -51,6 +69,21 @@ async function main() {
   const monoArt = '<rect x="110" y="445" width="1040" height="640" fill="#000" mask="url(#shape)"/>';
   const mono = svg(monoDefs, monoArt, "110 445 1040 640", 1040, 640);
   const mask = svg(monoDefs, place(monoArt));
+
+  // A slight optical offset aligns the wide cat face with the browser tab label.
+  const favicon = svg(defs, place(art, 896, 96));
+  const faviconPngs = new Map();
+  for (const size of [16, 24, 32, 48, 64, 128, 256]) {
+    const destination = size === 16 || size === 32 ? `${web}/favicon-${size}x${size}.png` : undefined;
+    const png = await sharp(Buffer.from(favicon), { density: 192 }).resize(size, size).png().toBuffer();
+    faviconPngs.set(size, png);
+    if (destination) await fs.writeFile(destination, png);
+  }
+  await fs.writeFile(`${web}/favicon.svg`, favicon);
+  await writeIco(faviconPngs, `${web}/favicon.ico`);
+  await fs.writeFile(`${web}/safari-pinned-tab.svg`, svg(monoDefs, place(monoArt, 896, 96)));
+  if (process.argv.includes("--favicons-only")) return;
+  await fs.writeFile(`${panelAssets}/felis-logo.svg`, app.replace('fill="#e9f1e3"', 'fill="#fff"'));
   for (const [name, value] of Object.entries({
     "felis-icon.svg": icon, "felis-app.svg": app, "felis-app-dark.svg": dark,
     "felis-maskable.svg": maskable, "felis-monochrome.svg": mono,
@@ -65,22 +98,7 @@ async function main() {
   await render(reference, 1254, `${kit}/felis-reference.png`);
   await sharp(Buffer.from(source), { density: 192 }).resize(540, 341, { fit: "contain", background: "#00000000" }).png().toFile(`${assets}/felis-logo.png`);
 
-  const icoSizes = [16, 24, 32, 48, 64, 128, 256];
-  const directory = Buffer.alloc(6 + 16 * icoSizes.length);
-  directory.writeUInt16LE(1, 2);
-  directory.writeUInt16LE(icoSizes.length, 4);
-  let offset = directory.length;
-  icoSizes.forEach((size, index) => {
-    const data = pngs.get(size);
-    const entry = 6 + index * 16;
-    directory[entry] = directory[entry + 1] = size === 256 ? 0 : size;
-    directory.writeUInt16LE(1, entry + 4);
-    directory.writeUInt16LE(32, entry + 6);
-    directory.writeUInt32LE(data.length, entry + 8);
-    directory.writeUInt32LE(offset, entry + 12);
-    offset += data.length;
-  });
-  await fs.writeFile(`${kit}/felis.ico`, Buffer.concat([directory, ...icoSizes.map((size) => pngs.get(size))]));
+  await writeIco(pngs, `${kit}/felis.ico`);
 
   for (const size of [16, 32, 128, 256, 512]) {
     await render(app, size, `${kit}/felis.iconset/icon_${size}x${size}.png`);
@@ -88,10 +106,6 @@ async function main() {
   }
   if (process.platform === "darwin") execFileSync("iconutil", ["-c", "icns", `${kit}/felis.iconset`, "-o", `${kit}/felis.icns`]);
 
-  await fs.writeFile(`${web}/favicon.svg`, icon);
-  await fs.copyFile(`${kit}/felis.ico`, `${web}/favicon.ico`);
-  for (const size of [16, 32]) await fs.writeFile(`${web}/favicon-${size}x${size}.png`, pngs.get(size));
-  await fs.writeFile(`${web}/safari-pinned-tab.svg`, mask);
   await render(app, 180, `${web}/apple-touch-icon.png`, "#e9f1e3");
   for (const size of [192, 512]) {
     await render(app, size, `${web}/icons/icon-${size}.png`);

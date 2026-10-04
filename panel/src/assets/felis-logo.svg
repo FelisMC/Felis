@@ -1,7 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="640" viewBox="110 445 1040 640" role="img" aria-labelledby="title desc">
-  <title id="title">Felis</title>
-  <desc id="desc">A fluffy ivory kitten with sage green ears and eyes, pink cheeks, and green whiskers.</desc>
-  <defs>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="Felis">
+<defs>
     <linearGradient id="rim" x1="250" y1="460" x2="940" y2="1090" gradientUnits="userSpaceOnUse">
       <stop stop-color="#91bd86"/>
       <stop offset=".5" stop-color="#8bbd83"/>
@@ -39,7 +37,7 @@
       <stop offset="1" stop-color="#62a16c"/>
     </linearGradient>
   </defs>
-  <g id="felis">
+<rect width="1024" height="1024" rx="224" fill="#fff"/><g transform="translate(64 236.30769230769226) scale(0.8615384615384616) translate(-110 -445)"><g id="felis">
     <!-- Ear rims sit behind the pale ear fur and the forehead. -->
     <path fill="url(#rim)" d="M174 633C176 566 202 481 233 459C263 438 329 462 384 484C443 509 488 550 517 580C553 560 601 548 643 549L631 569C666 566 704 573 734 583C792 517 880 470 949 454C977 448 1008 447 1024 462C1057 490 1075 568 1078 632L1027 801L935 777L749 625L509 624L315 774L218 814Z"/>
     <path fill="url(#rim)" d="M194 782C188 799 191 821 199 837C187 854 175 869 163 882L220 866L265 800Z"/>
@@ -75,5 +73,5 @@
       <path fill="url(#whisker)" d="M204 980C225 972 259 974 278 981C283 983 283 988 278 988C251 986 228 988 208 994C200 996 196 983 204 980Z"/>
       <path fill="url(#whisker)" d="M204 1036C224 1022 251 1016 274 1015C280 1015 281 1021 275 1023C251 1030 230 1040 212 1050C204 1055 194 1043 204 1036Z"/>
     </g>
-  </g>
+  </g></g>
 </svg>

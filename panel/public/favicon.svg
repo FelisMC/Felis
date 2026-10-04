@@ -37,7 +37,7 @@
       <stop offset="1" stop-color="#62a16c"/>
     </linearGradient>
   </defs>
-<g transform="translate(64 236.30769230769226) scale(0.8615384615384616) translate(-110 -445)"><g id="felis">
+<g transform="translate(64 332.30769230769226) scale(0.8615384615384616) translate(-110 -445)"><g id="felis">
     <!-- Ear rims sit behind the pale ear fur and the forehead. -->
     <path fill="url(#rim)" d="M174 633C176 566 202 481 233 459C263 438 329 462 384 484C443 509 488 550 517 580C553 560 601 548 643 549L631 569C666 566 704 573 734 583C792 517 880 470 949 454C977 448 1008 447 1024 462C1057 490 1075 568 1078 632L1027 801L935 777L749 625L509 624L315 774L218 814Z"/>
     <path fill="url(#rim)" d="M194 782C188 799 191 821 199 837C187 854 175 869 163 882L220 866L265 800Z"/>
