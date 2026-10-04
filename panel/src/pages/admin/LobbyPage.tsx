@@ -197,7 +197,7 @@ export function LobbyPage() {
       <Link to="/admin/images" className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline">{t("images_link")}<ChevronRight className="h-3.5 w-3.5" /></Link>
     </CardContent></Card>
     <div className="inline-flex gap-1 rounded-lg bg-muted/60 p-1" role="group" aria-label={t("space_label")}>
-      {(["lobby", "login"] as const).map((space) => (
+      {(["login", "lobby"] as const).map((space) => (
         <Button key={space} variant="ghost" aria-pressed={name === space} onClick={() => selectSpace(space)} className={cn("px-4", name === space ? "bg-card text-primary shadow-sm hover:bg-card" : "text-muted-foreground")}>
           {space === "lobby" ? <DoorOpen /> : <BookOpen />}{t(space)}
         </Button>
