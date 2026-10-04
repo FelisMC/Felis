@@ -201,7 +201,8 @@ type API struct {
 	// first for 正版优先). Nil makes the session verifier reject every login (204);
 	// cmd/felis always wires at least the Mojang source through authSourcesFromConfig.
 	// Consumed by handleHasJoined (handlers_hasjoined.go).
-	AuthSources []AuthSource
+	AuthSources        []AuthSource
+	AuthSourceSettings *AuthSourceSettings
 
 	// AuthDoorLimit bounds how often one client address may call the public
 	// pre-session auth doors (ratelimit.go). MailLimit bounds all mail the API
@@ -651,6 +652,9 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		// Staff can designate their own game identity after panel setup. Players
 		// retain the in-game proof flow above.
 		{Method: "GET", Pattern: "/api/v1/account/link/sources", Admin: true, h: a.handleLinkSources},
+		{Method: "GET", Pattern: "/api/v1/settings/auth-sources", Owner: true, Admin: true, h: a.handleGetAuthSources},
+		{Method: "PUT", Pattern: "/api/v1/settings/auth-sources", Owner: true, Admin: true, h: a.handleSetAuthSources},
+		{Method: "POST", Pattern: "/api/v1/settings/auth-sources/test", Owner: true, Admin: true, h: a.handleTestAuthSource},
 		{Method: "GET", Pattern: "/api/v1/account/link/profile", Admin: true, h: a.handleLookupProfile},
 		{Method: "POST", Pattern: "/api/v1/account/link/profile", Admin: true, h: a.handleLinkProfile},
 		// Email verification (spec §B2 onboarding), web side: /start mints+delivers a

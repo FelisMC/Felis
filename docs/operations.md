@@ -874,3 +874,32 @@ the moved domain and left `check` clean; moving back restored every surface
 on every run, so a host upgraded from one can show that line once with the file already
 on the names; `sudo systemctl restart felis-velocity` clears it. The installer now leaves
 the file alone when its content is the same.
+
+## 7. Authentication sources
+
+On the operator console, the Owner's **Platform → Authentication sources** page
+(`/admin/auth-sources`) manages third-party Yggdrasil providers. It imports the
+installation's `[[auth_source]]` list on first use. Save stores the ordered list
+in `platform_settings.auth_sources`; that override then takes precedence over TOML
+and is read by every full-API replica for the next game login and role lookup.
+No restart is required, and existing players stay connected. Nano continues to
+use its TOML list. A database read failure refuses new authentication rather than
+falling back to an obsolete or disabled provider.
+
+Mojang remains enabled and first, retaining official UUIDs. Every third-party
+provider uses a permanent tag as its UUID namespace; saved or imported tags cannot
+be renamed or removed. Disable a provider to stop accepting its logins, or enable
+it again to restore the same identities. Changing a provider's endpoint changes
+who verifies identities in that namespace; keep it pointed at the same trusted
+service. Prefixes are 1–4 letters/digits and must be unique regardless of case.
+
+Set the full `hasJoined` URL. Standard paths infer the profile-query API root;
+nonstandard paths need an explicit API root for role-name/UUID lookup. HTTPS is
+required, except for localhost or literal private IPs; query strings and fragments
+are rejected. Launchers must authenticate with the same provider. **Test connection**
+probes an unused session and expects HTTP 204; it does not save, verify launcher
+configuration, or test the profile-query API.
+
+Saving requires Owner access on the operator host and recent reauthentication for
+a local session. A revision conflict preserves the draft; discard it and reload
+before editing the newer configuration.

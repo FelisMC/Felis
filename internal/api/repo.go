@@ -750,6 +750,9 @@ type Repo interface {
 	GetSetting(ctx context.Context, key string) ([]byte, error)
 	// SetSetting upserts a runtime setting's raw jsonb value by key.
 	SetSetting(ctx context.Context, key string, value []byte) error
+	// CompareAndSetSetting refuses a concurrent edit with ErrConflict. A nil
+	// expected value creates only when the setting has never been written.
+	CompareAndSetSetting(ctx context.Context, key string, expected, value []byte) error
 
 	// ---- user admin (spec §7, admin-only) ----
 

@@ -10,5 +10,6 @@
   "admin_builds": "构建流水线",
   "admin_submissions": "审核提交",
   "admin_updates": "维护与备份",
-  "admin_lobby": "登录与大厅"
+  "admin_lobby": "登录与大厅",
+  "auth_sources": "认证源"
 }

@@ -68,14 +68,13 @@ export function Login() {
     return () => clearTimeout(timer);
   }, [countdown]);
 
-  // Tier-aware copy: on the op.console hostname the staff door is the default tab
-  // (the player doors refuse staff accounts anyway).
+  // The operator hostname changes the copy, while every visit starts with the
+  // login methods (including passkeys). Staff explicitly choose vouched login.
   useEffect(() => {
     void loadConfig().then((cfg) => {
       setJoinAddr(entryAddress(cfg));
       if (cfg.adminHostname && window.location.hostname === cfg.adminHostname) {
         setIsOpHost(true);
-        setActiveTab("op");
       }
     });
   }, []);

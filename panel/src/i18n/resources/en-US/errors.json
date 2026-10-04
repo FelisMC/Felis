@@ -141,5 +141,8 @@
   "auth_source_unknown": "Select a configured authentication source.",
   "auth_source_unavailable": "The authentication source is unavailable or returned an invalid role. Try again later.",
   "auth_source_lookup_unsupported": "Role lookup is not configured for this authentication source.",
-  "minecraft_profile_not_found": "No role matched in this source. Check the role name or UUID."
+  "minecraft_profile_not_found": "No role matched in this source. Check the role name or UUID.",
+  "auth_sources_unavailable": "Authentication source management is unavailable.",
+  "auth_sources_changed": "Authentication sources changed. Discard your edits and reload before saving.",
+  "auth_source_tag_locked": "Saved source IDs cannot be renamed or removed. Disable the source instead."
 }

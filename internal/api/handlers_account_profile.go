@@ -37,8 +37,13 @@ func (a *API) handleLinkSources(w http.ResponseWriter, r *http.Request) {
 		Tag             string `json:"tag"`
 		LookupAvailable bool   `json:"lookup_available"`
 	}
-	sources := make([]sourceView, 0, len(a.AuthSources))
-	for _, src := range a.AuthSources {
+	configured, err := a.currentAuthSources(r.Context())
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	sources := make([]sourceView, 0, len(configured))
+	for _, src := range configured {
 		sources = append(sources, sourceView{src.Tag, src.Identity || profileAPIBase(src) != ""})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sources": sources})
@@ -105,7 +110,11 @@ func (a *API) lookupProfile(ctx context.Context, source, input string) (*linkedP
 	}
 	var src AuthSource
 	found := false
-	for _, candidate := range a.AuthSources {
+	sources, err := a.currentAuthSources(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, candidate := range sources {
 		if candidate.Tag == source {
 			src, found = candidate, true
 			break

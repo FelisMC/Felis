@@ -362,6 +362,20 @@ export interface MinecraftAuthSource {
   lookup_available: boolean;
 }
 
+export interface AuthSourceConfig {
+  tag: string;
+  prefix: string;
+  url: string;
+  api_url: string;
+  enabled: boolean;
+}
+
+export interface AuthSourcesSettings {
+  sources: AuthSourceConfig[];
+  revision: string;
+  managed: boolean;
+}
+
 export interface MinecraftProfile {
   source: string;
   name: string;

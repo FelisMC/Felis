@@ -1243,6 +1243,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/settings/auth-sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read authentication sources (Owner). */
+        get: operations["getAuthSources"];
+        /**
+         * Save authentication sources (Owner, fresh reauthentication).
+         * @description Atomically persists an override in platform_settings. It applies to the next login and role lookup on every API replica without restarting; existing players stay online. Tags identify permanent UUID namespaces; retain every saved tag and disable unwanted sources. Mojang remains built-in and trusted, while configured sources always remain third-party. Nano remains TOML-only.
+         */
+        put: operations["setAuthSources"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settings/auth-sources/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Probe a hasJoined endpoint (Owner).
+         * @description Checks an unsaved source with a fresh random serverId. A healthy endpoint returns 204 for a session that never joined. Uses a five-second timeout, verified TLS and no redirects. This tests connectivity and hasJoined behavior, not launcher login or profile lookup. Does not save configuration.
+         */
+        post: operations["testAuthSource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/updates/window": {
         parameters: {
             query?: never;
@@ -2863,6 +2904,25 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        AuthSourceConfig: {
+            /** @description Permanent UUID namespace; saved tags cannot be renamed or removed. mojang is reserved. */
+            tag: string;
+            /** @description Unique case-insensitive display prefix. */
+            prefix: string;
+            /** @description hasJoined endpoint; HTTPS required except for localhost or private literal IP addresses. No query or fragment. */
+            url: string;
+            /** @description Optional Yggdrasil API base for role lookup; empty infers it from the standard hasJoined suffix. */
+            api_url: string;
+            enabled: boolean;
+        };
+        AuthSourcesSettings: {
+            /** @description Third-party sources in priority order; built-in Mojang always precedes them and is immutable. */
+            sources: components["schemas"]["AuthSourceConfig"][];
+            /** @description Opaque revision to send unchanged when saving; stale or concurrent writes return 409. */
+            revision: string;
+            /** @description True when stored in platform_settings; false while using installation TOML defaults. */
+            managed: boolean;
+        };
         /** @description Uniform error envelope emitted by every handler (internal/api/errors.go). */
         Error: {
             error: {
@@ -6667,6 +6727,102 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+        };
+    };
+    getAuthSources: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current third-party sources and their revision. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthSourcesSettings"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    setAuthSources: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    sources: components["schemas"]["AuthSourceConfig"][];
+                    revision: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Saved configuration and new revision. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthSourcesSettings"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description auth_sources_changed or auth_source_tag_locked; reload instead of overwriting another Owner's changes. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    testAuthSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AuthSourceConfig"];
+            };
+        };
+        responses: {
+            /** @description Probe result; non-204 status has ok=false. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ok: boolean;
+                        status: number;
+                        /** Format: int64 */
+                        elapsed_ms: number;
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     getUpdateWindow: {

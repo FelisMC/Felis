@@ -311,6 +311,42 @@ components:
               output: { type: string }
 
   schemas:
+    AuthSourceConfig:
+      type: object
+      additionalProperties: false
+      required: [tag, prefix, url, api_url, enabled]
+      properties:
+        tag:
+          type: string
+          description: Permanent UUID namespace; saved tags cannot be renamed or removed. mojang is reserved.
+        prefix:
+          type: string
+          pattern: '^[A-Za-z0-9]{1,4}$'
+          description: Unique case-insensitive display prefix.
+        url:
+          type: string
+          description: hasJoined endpoint; HTTPS required except for localhost or private literal IP addresses. No query or fragment.
+        api_url:
+          type: string
+          description: Optional Yggdrasil API base for role lookup; empty infers it from the standard hasJoined suffix.
+        enabled: { type: boolean }
+
+    AuthSourcesSettings:
+      type: object
+      required: [sources, revision, managed]
+      properties:
+        sources:
+          type: array
+          maxItems: 32
+          description: Third-party sources in priority order; built-in Mojang always precedes them and is immutable.
+          items: { $ref: '#/components/schemas/AuthSourceConfig' }
+        revision:
+          type: string
+          description: Opaque revision to send unchanged when saving; stale or concurrent writes return 409.
+        managed:
+          type: boolean
+          description: True when stored in platform_settings; false while using installation TOML defaults.
+
     Error:
       type: object
       description: Uniform error envelope emitted by every handler (internal/api/errors.go).
@@ -4228,6 +4264,101 @@ paths:
                     items: { $ref: '#/components/schemas/MyServerView' }
         '401':
           $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/settings/auth-sources:
+    get:
+      tags: [account]
+      operationId: getAuthSources
+      summary: Read authentication sources (Owner).
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: Current third-party sources and their revision.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthSourcesSettings' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    put:
+      tags: [account]
+      operationId: setAuthSources
+      summary: Save authentication sources (Owner, fresh reauthentication).
+      description: >-
+        Atomically persists an override in platform_settings. It applies to the next
+        login and role lookup on every API replica without restarting; existing
+        players stay online. Tags identify permanent UUID namespaces; retain every
+        saved tag and disable unwanted sources. Mojang remains built-in and trusted,
+        while configured sources always remain third-party. Nano remains TOML-only.
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [sources, revision]
+              properties:
+                sources:
+                  type: array
+                  maxItems: 32
+                  items: { $ref: '#/components/schemas/AuthSourceConfig' }
+                revision: { type: string }
+      responses:
+        '200':
+          description: Saved configuration and new revision.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthSourcesSettings' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: auth_sources_changed or auth_source_tag_locked; reload instead of overwriting another Owner's changes.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/v1/settings/auth-sources/test:
+    post:
+      tags: [account]
+      operationId: testAuthSource
+      summary: Probe a hasJoined endpoint (Owner).
+      description: >-
+        Checks an unsaved source with a fresh random serverId. A healthy endpoint
+        returns 204 for a session that never joined. Uses a five-second timeout,
+        verified TLS and no redirects. This tests connectivity and hasJoined
+        behavior, not launcher login or profile lookup. Does not save configuration.
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthSourceConfig' }
+      responses:
+        '200':
+          description: Probe result; non-204 status has ok=false.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, status, elapsed_ms]
+                properties:
+                  ok: { type: boolean }
+                  status: { type: integer }
+                  elapsed_ms: { type: integer, format: int64 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
   /api/v1/updates/window:
     get:

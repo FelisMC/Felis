@@ -9,6 +9,7 @@ import {
   ClipboardCheck,
   Upload,
   Clock,
+  ShieldCheck,
   type LucideIcon,
 } from "lucide-react";
 
@@ -76,6 +77,7 @@ export const NAV_SECTIONS: NavSection[] = [
     ownerOnly: true,
     items: [
       { to: "/admin/users", key: "admin_users", icon: Users },
+      { to: "/admin/auth-sources", key: "auth_sources", icon: ShieldCheck },
     ],
   },
 ];

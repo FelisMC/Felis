@@ -141,5 +141,8 @@
   "auth_source_unknown": "请选择已配置的认证源。",
   "auth_source_unavailable": "认证源暂时不可用或返回了无效角色，请稍后重试。",
   "auth_source_lookup_unsupported": "此认证源尚未配置角色查询地址。",
-  "minecraft_profile_not_found": "在所选认证源中没有找到这个角色，请检查角色名或 UUID。"
+  "minecraft_profile_not_found": "在所选认证源中没有找到这个角色，请检查角色名或 UUID。",
+  "auth_sources_unavailable": "认证源管理暂不可用。",
+  "auth_sources_changed": "认证源已被其他操作修改。请放弃当前更改并重新读取后再保存。",
+  "auth_source_tag_locked": "已保存的认证源标识不能改名或移除，请使用停用。"
 }

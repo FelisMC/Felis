@@ -71,6 +71,14 @@ beforeEach(() => {
 });
 
 describe("Login", () => {
+  it("starts with login methods on the operator host after signing out", async () => {
+    config.value.adminHostname = window.location.hostname;
+    await renderLogin();
+    expect(screen.getByRole("button", { name: t("auth:passkey_btn") })).toBeTruthy();
+    expect(screen.getByRole("button", { name: t("auth:tab_op_btn") })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: t("auth:op_start_btn") })).toBeNull();
+  });
+
   it("reads out why the code could not be sent", async () => {
     calls.authEmailStart.mockRejectedValue({ status: 429, code: "otp_resend_cooldown", message: "" });
     await renderLogin();

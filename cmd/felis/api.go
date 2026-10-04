@@ -475,7 +475,8 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	// [[auth_source]] is configured, so an empty list has to mean a Mojang-only relay, the
 	// same as under `felis nano`. A nil list would 204 every login, premium ones included.
 	a.AuthSources = authSourcesFromConfig(cfg.AuthSources)
-	fmt.Fprintf(stderr, "felis api: hasJoined multiplexer active — Mojang + %d third-party source(s)\n", len(cfg.AuthSources))
+	a.AuthSourceSettings = &api.AuthSourceSettings{Repo: repo, Defaults: a.AuthSources}
+	fmt.Fprintf(stderr, "felis api: hasJoined multiplexer active — Mojang + %d default third-party source(s); panel settings take precedence\n", len(cfg.AuthSources))
 
 	// Passkey (WebAuthn) verifier (spec §14, Phase 6). One relying party spans BOTH
 	// web faces: the RP id is the panel hostname (console.<root>), and because that is

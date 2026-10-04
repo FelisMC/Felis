@@ -3,6 +3,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { gzipSync } from "node:zlib";
 import type { Plugin } from "vite";
 import type {
+  AuthSourceConfig,
+  AuthSourcesSettings,
   AutostartPolicy,
   BackupView,
   Build,
@@ -89,6 +91,7 @@ interface MockState {
   passkeys: Record<AccountID, { id: string; name: string; created_at: string }[]>;
   submissions: Submission[];
   updateWindow: { start: string | null; end: string | null };
+  authSources: AuthSourcesSettings;
   // Each server's world volume, seeded on first visit.
   files: Record<string, MockTree>;
 }
@@ -452,6 +455,11 @@ function initialState(): MockState {
       },
     ],
     updateWindow: { start: null, end: null },
+    authSources: {
+      sources: [{ tag: "littleskin", prefix: "LS", url: "https://littleskin.cn/api/yggdrasil/sessionserver/session/minecraft/hasJoined", api_url: "", enabled: true }],
+      revision: "installation-defaults",
+      managed: false,
+    },
     files: {},
   };
 }
@@ -1008,6 +1016,38 @@ async function handlePublic(ctx: RequestContext): Promise<boolean> {
 
 async function handleSession(ctx: SessionContext): Promise<boolean> {
   switch (route(ctx)) {
+    case "GET settings/auth-sources":
+    case "PUT settings/auth-sources":
+    case "POST settings/auth-sources/test": {
+      if (!isOwner(ctx.account.role)) {
+        sendError(ctx.res, 403, "forbidden", "Owner account required");
+        return true;
+      }
+      if (is("GET", ctx)) {
+        sendJSON(ctx.res, 200, ctx.state.authSources);
+      } else if (is("PUT", ctx)) {
+        const body = await readJSON<{ sources: AuthSourceConfig[]; revision: string }>(ctx.req);
+        if (body.revision !== ctx.state.authSources.revision) {
+          sendError(ctx.res, 409, "auth_sources_changed", "authentication sources changed; reload before saving");
+        } else if (ctx.state.authSources.sources.some((source) => !body.sources.some((s) => s.tag === source.tag))) {
+          sendError(ctx.res, 409, "auth_source_tag_locked", "disable saved sources instead of removing or renaming them");
+        } else {
+          ctx.state.authSources = { sources: body.sources, revision: createHash("sha256").update(JSON.stringify(body.sources)).digest("hex"), managed: true };
+          sendJSON(ctx.res, 200, ctx.state.authSources);
+        }
+      } else {
+        await readJSON<AuthSourceConfig>(ctx.req);
+        sendJSON(ctx.res, 200, { ok: true, status: 204, elapsed_ms: 20 });
+      }
+      return true;
+    }
+    case "GET account/link/sources":
+      if (!isAdmin(ctx.account.role)) {
+        sendError(ctx.res, 403, "forbidden", "admin account required");
+        return true;
+      }
+      sendJSON(ctx.res, 200, { sources: [{ tag: "mojang", prefix: "", lookup_available: true }, ...ctx.state.authSources.sources.filter((source) => source.enabled).map((source) => ({ tag: source.tag, prefix: source.prefix, lookup_available: !!source.api_url || source.url.endsWith("/sessionserver/session/minecraft/hasJoined") }))] });
+      return true;
     case "GET platform/db-backup": {
       if (!isAdmin(ctx.account.role)) {
         sendError(ctx.res, 403, "forbidden", "admin account required");

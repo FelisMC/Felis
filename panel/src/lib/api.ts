@@ -21,6 +21,8 @@ import type {
   KickResult,
   LinkResult,
   MinecraftAuthSource,
+  AuthSourceConfig,
+  AuthSourcesSettings,
   MinecraftProfile,
   LinkStatus,
   BindResult,
@@ -949,6 +951,10 @@ export const api = rejectingSync({
     request<LinkResult>("POST", "/account/link/verify", { code }),
 
   linkSources: () => request<{ sources: MinecraftAuthSource[] }>("GET", "/account/link/sources"),
+
+  getAuthSources: () => request<AuthSourcesSettings>("GET", "/settings/auth-sources"),
+  setAuthSources: (sources: AuthSourceConfig[], revision: string) => request<AuthSourcesSettings>("PUT", "/settings/auth-sources", { sources, revision }),
+  testAuthSource: (source: AuthSourceConfig) => request<{ ok: boolean; status: number; elapsed_ms: number }>("POST", "/settings/auth-sources/test", source),
 
   lookupProfile: (source: string, profile: string) =>
     request<MinecraftProfile>("GET", `/account/link/profile?${new URLSearchParams({ source, profile })}`),

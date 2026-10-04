@@ -59,11 +59,11 @@ type Config struct {
 // the tag, which cannot know that "littleskin" is meant to read LS.
 // No trusted/identity field, by design — see Config.AuthSources.
 type AuthSourceConfig struct {
-	Tag    string `toml:"tag"`
-	Prefix string `toml:"prefix"`
-	URL    string `toml:"url"`
+	Tag    string `toml:"tag" json:"tag"`
+	Prefix string `toml:"prefix" json:"prefix"`
+	URL    string `toml:"url" json:"url"`
 	// APIURL is optional for sources whose hasJoined URL does not use the standard path.
-	APIURL string `toml:"api_url"`
+	APIURL string `toml:"api_url" json:"api_url"`
 }
 
 // SMTPConfig is the [smtp] table: the outbound mail relay felis-api delivers
@@ -671,6 +671,12 @@ func (o OffsiteConfig) validate() error {
 // username (LS_steve), so it is confined to the username charset and kept short enough to
 // leave a legible name behind after truncation.
 var authSourcePrefixRe = regexp.MustCompile(`^[A-Za-z0-9]{1,4}$`)
+
+// ValidateAuthSources applies the same identity and endpoint rules to panel and
+// TOML configuration. Mojang remains the code-owned first source.
+func ValidateAuthSources(sources []AuthSourceConfig) error {
+	return (&Config{AuthSources: sources}).validateAuthSources()
+}
 
 // validateAuthSources checks the [[auth_source]] block: each needs a namespace tag, a rename
 // prefix, and a scheme-qualified hasJoined URL, and both tag and prefix must be unique. A

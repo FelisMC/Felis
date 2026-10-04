@@ -1231,6 +1231,14 @@ func (f *fakeRepo) SetSetting(_ context.Context, key string, value []byte) error
 	return nil
 }
 
+func (f *fakeRepo) CompareAndSetSetting(ctx context.Context, key string, expected, value []byte) error {
+	current, exists := f.settings[key]
+	if (expected == nil && exists) || (expected != nil && (!exists || string(current) != string(expected))) {
+		return ErrConflict
+	}
+	return f.SetSetting(ctx, key, value)
+}
+
 // ---- user admin fakes ----
 
 // seededUser is a test-only user row held in the fake repo.

@@ -333,7 +333,12 @@ func lookupPremiumName(ctx context.Context, username string) (bool, error) {
 // as failed: otherwise a dead or mistyped source looks exactly like a player it does not
 // know, and nobody finds out.
 func (a *API) resolveHasJoined(ctx context.Context, username, serverID, ip string) (prof *sessionProfile, src AuthSource, failed bool) {
-	for _, src := range a.AuthSources {
+	sources, err := a.currentAuthSources(ctx)
+	if err != nil {
+		log.Printf("hasJoined: read authentication sources: %v", err)
+		return nil, AuthSource{}, true
+	}
+	for _, src := range sources {
 		u := src.URL + "?username=" + url.QueryEscape(username) + "&serverId=" + url.QueryEscape(serverID)
 		if ip != "" {
 			u += "&ip=" + url.QueryEscape(ip)

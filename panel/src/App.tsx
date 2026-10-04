@@ -65,6 +65,7 @@ const LobbyPage = lazyWithReload(() =>
 const UpdatesPage = lazyWithReload(() =>
   import("@/pages/admin/UpdatesPage").then((m) => ({ default: m.UpdatesPage })),
 );
+const AuthSourcesPage = lazyWithReload(() => import("@/pages/admin/AuthSourcesPage").then((m) => ({ default: m.AuthSourcesPage })));
 
 // Three UX surfaces over two Zero-Trust tiers (DESIGN-WEB-3SIDES):
 //   /        User-Side    — app-tier, every authenticated principal
@@ -129,8 +130,9 @@ export default function App() {
                 <Route path="builds" element={<ImageBuildPage />} />
                 <Route path="submissions" element={<SubmissionsPage />} />
                 <Route path="updates" element={<UpdatesPage />} />
-                {/* Owner-gated: user management (one level above admin). */}
+                {/* Owner-gated platform settings and user management. */}
                 <Route element={<RequireOwner />}>
+                  <Route path="auth-sources" element={<AuthSourcesPage />} />
                   <Route path="users" element={<UsersPage />} />
                   <Route path="users/:id" element={<ValidParam param="id" pattern={USER_ID_PARAM} />}>
                     <Route index element={<UserDetailPage />} />

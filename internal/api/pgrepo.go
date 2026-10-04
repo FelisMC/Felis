@@ -1494,6 +1494,24 @@ func (p *PGRepo) SetSetting(ctx context.Context, key string, value []byte) error
 	return err
 }
 
+func (p *PGRepo) CompareAndSetSetting(ctx context.Context, key string, expected, value []byte) error {
+	query := `UPDATE platform_settings SET value = $2::jsonb, updated_at = now() WHERE key = $1 AND value = $3::jsonb`
+	args := []any{key, string(value), string(expected)}
+	if expected == nil {
+		query = `INSERT INTO platform_settings (key, value) VALUES ($1, $2::jsonb) ON CONFLICT (key) DO NOTHING`
+		args = args[:2]
+	}
+	res, err := p.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err == nil && n == 0 {
+		return ErrConflict
+	}
+	return err
+}
+
 // ---- player passkey enrollment (spec §14 WebAuthn / Phase 6 bind, migration 0007) ----
 
 // CreatePasskeyChallenge supersedes any prior challenge for (user, purpose) and inserts

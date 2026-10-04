@@ -20,6 +20,7 @@ for (const [account, path] of [
   ["linked", "/account"],
   ["owner", "/servers"],
   ["owner", "/admin/users"],
+  ["owner", "/admin/auth-sources"],
   ["owner", "/servers/survival/luckperms"],
 ] as const) {
   test(`${path} fits a 375px screen for ${account}`, async ({ page, signIn }) => {
@@ -60,4 +61,13 @@ test("login customization fits a phone and retains a saved title", async ({ page
   await expect(page.getByText(t("lobby:saved"), { exact: true })).toBeVisible();
   await page.reload();
   await expect(page.getByLabel(t("lobby:bookTitle"))).toHaveValue("Our Network");
+});
+
+test("authentication source drafts with long IDs fit a phone", async ({ page, signIn }) => {
+  await signIn("owner");
+  await page.goto("/admin/auth-sources");
+  await page.getByRole("button", { name: t("authSources:add"), exact: true }).click();
+  await page.getByLabel(t("authSources:tag")).nth(1).fill("a".repeat(128));
+  await expectFitsScreen(page);
+  await expect(page.getByRole("button", { name: t("authSources:remove"), exact: true })).toBeVisible();
 });
