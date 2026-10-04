@@ -20,7 +20,7 @@ import (
 func (a *API) handleWake(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	name := r.PathValue("name")
-	if err := naming.ValidateServerName(name); err != nil {
+	if err := validateManagedServerName(r, name); err != nil {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
 		return
 	}
@@ -97,12 +97,12 @@ func (a *API) handleWake(w http.ResponseWriter, r *http.Request) {
 func (a *API) handleStop(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	name := r.PathValue("name")
-	if err := naming.ValidateServerName(name); err != nil {
+	if err := validateManagedServerName(r, name); err != nil {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
 		return
 	}
 
-	rec, err := a.Repo.ServerByName(r.Context(), name)
+	rec, err := a.managedServerRecord(r.Context(), name)
 	if err != nil {
 		a.writeLookupError(w, r, err)
 		return
@@ -217,7 +217,7 @@ func (a *API) claimResources(ctx context.Context, name string) (ResourceSpec, er
 // handleStatus returns the CRD status view (spec §7 GET /servers/{name}/status).
 func (a *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	if err := naming.ValidateServerName(name); err != nil {
+	if err := validateManagedServerName(r, name); err != nil {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
 		return
 	}
@@ -899,7 +899,7 @@ const (
 // the adminOnly wrapper in routing — every caller here is already an admin.
 func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	if err := naming.ValidateServerName(name); err != nil {
+	if err := validateManagedServerName(r, name); err != nil {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
 		return
 	}
@@ -907,6 +907,13 @@ func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
 	var body patchServerRequest
 	if err := decodeJSON(w, r, &body); err != nil {
 		writeError(w, r, err)
+		return
+	}
+
+	if naming.IsSystemServer(name) &&
+		((body.AutostartPolicy != nil && *body.AutostartPolicy != string(v1alpha1.AutostartPublic)) ||
+			(body.IdleStopSeconds != nil && *body.IdleStopSeconds != 0)) {
+		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "system services must remain public and exempt from idle stop"))
 		return
 	}
 
@@ -1073,7 +1080,7 @@ func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
 	// fits (ResizeServer). Only growth is held to the caps: a change that grows
 	// neither CPU nor memory cannot push the owner past one, and it is how an admin
 	// brings a server back under a cap lowered below what the owner already uses.
-	if resUpdated {
+	if resUpdated && !naming.IsSystemServer(name) {
 		newCPU := quantityToMilli(newResources.Limits[corev1.ResourceCPU])
 		newMemMB := quantityToMB(newResources.Limits[corev1.ResourceMemory])
 

@@ -64,7 +64,7 @@
   "schedules_link_title": "计划任务",
   "schedules_link_desc": "定时重启、备份或执行命令。",
   "system_service": "系统服务",
-  "system_service_hint": "由平台预置并管理（felis systemservers），不接受用户操作。",
+  "system_service_hint": "系统服务由管理员在“登录与大厅”中管理。",
   "players_back_to_console": "返回控制台",
   "players_not_yours_title": "这不是你的服务器",
   "players_not_yours_body": "只有所有者或管理员才能管理此服务器的玩家。",
@@ -267,5 +267,7 @@
   "migration_state_restoring": "正在恢复并校验目标卷",
   "migration_state_switching": "正在切换活动卷",
   "migration_state_succeeded": "迁移完成，等待手动启动",
-  "migration_state_failed": "迁移失败，服务器保持停服"
+  "migration_state_failed": "迁移失败，服务器保持停服",
+  "system_customize": "自定义大厅",
+  "edit_system_desc": "调整名称、镜像与资源。更换镜像需保留 Felis 登录或菜单插件，并保持与代理的版本兼容。系统服务不自动休眠。"
 }

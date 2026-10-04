@@ -48,11 +48,8 @@ const (
 	SystemLobbyServer = "lobby"
 )
 
-// IsSystemServer reports whether name is one of the platform-provisioned system
-// services above. They carry reserved names on purpose, and the API's per-server
-// routes reject those names outright (ValidateServerName) — so a caller that only
-// DISPLAYS fleet rows uses this to mark them as not user-manageable instead of
-// offering actions (claim/wake/stop/console) that would answer 400.
+// IsSystemServer identifies platform services whose reserved names may be managed
+// by staff, but never created or claimed through player-facing routes.
 func IsSystemServer(name string) bool {
 	return name == SystemLoginServer || name == SystemLobbyServer
 }

@@ -2,6 +2,9 @@ package best.lolicon.felis.paper;
 
 import best.lolicon.felis.link.Control;
 import best.lolicon.felis.link.ControlFrame;
+import best.lolicon.felis.link.ExperienceConfig;
+
+import java.io.IOException;
 
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
@@ -62,10 +65,16 @@ import java.util.List;
 public final class FelisPaperPlugin extends JavaPlugin {
 
     private LobbyMenu menu;
+    private ExperienceConfig experience;
 
     @Override
     public void onEnable() {
         saveDefaultConfig();
+        try {
+            experience = ExperienceConfig.load(ExperienceConfig.PATH);
+        } catch (IOException e) {
+            throw new IllegalStateException("Cannot load lobby settings", e);
+        }
         if (!getConfig().getStringList("servers").isEmpty()) {
             getLogger().info("config.yml 'servers' is no longer read: the menu lists what the proxy routes.");
         }
@@ -81,7 +90,7 @@ public final class FelisPaperPlugin extends JavaPlugin {
 
         // The lobby is a hub nobody can hurt or be hurt in (LobbyGuard). Worlds loaded
         // before this point get the rules here, later ones on their WorldLoadEvent.
-        LobbyGuard guard = new LobbyGuard(getLogger());
+        LobbyGuard guard = new LobbyGuard(getLogger(), experience);
         getServer().getPluginManager().registerEvents(guard, this);
         getServer().getWorlds().forEach(guard::protect);
 
@@ -123,6 +132,11 @@ public final class FelisPaperPlugin extends JavaPlugin {
         @Override
         public boolean zh() {
             return FelisPaperPlugin.zh(player);
+        }
+
+        @Override
+        public String menuTitle() {
+            return experience.text(zh() ? "menuTitleZh" : "menuTitleEn", zh() ? "Felis 服务器" : "Felis Servers");
         }
 
         @Override

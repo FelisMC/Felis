@@ -4,7 +4,10 @@
 # channel to the Velocity proxy. It holds no felis-api token and never contacts
 # felis-api directly.
 #
-# There is nothing to configure. /menu asks the proxy which servers to show
+# Player-facing settings are edited in the panel at /admin/lobby and stored in
+# /data/felis-experience.json. This file does not hold those settings.
+#
+# /menu asks the proxy which servers to show
 # (a ListRequest over felis:control) and the proxy answers from the same registry
 # it routes by, so a server created in the panel appears here on its own. Tiles are
 # paged 45 at a time. Status, ownership and autostart stay with the proxy and

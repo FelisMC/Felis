@@ -50,3 +50,14 @@ test("the LuckPerms player list leaves the rest of the page on the first screen"
   await page.getByRole("button", { name: "Herobrine", exact: true }).click();
   await expect(page.getByRole("textbox", { name: t("servers:luckperms_player_lookup") })).toHaveValue("Herobrine");
 });
+
+test("login customization fits a phone and retains a saved title", async ({ page, signIn }) => {
+  await signIn("owner");
+  await page.goto("/admin/lobby?space=login");
+  await page.getByLabel(t("lobby:bookTitle")).fill("Our Network");
+  await expectFitsScreen(page);
+  await page.getByRole("button", { name: t("lobby:save"), exact: true }).click();
+  await expect(page.getByText(t("lobby:saved"), { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.getByLabel(t("lobby:bookTitle"))).toHaveValue("Our Network");
+});

@@ -42,6 +42,10 @@ final class LobbyMenu implements Listener, PluginMessageListener {
         /** zh mirrors the Velocity rule: Chinese when the client locale is zh-*. */
         boolean zh();
 
+        default String menuTitle() {
+            return zh() ? "Felis 服务器" : "Felis Servers";
+        }
+
         boolean online();
 
         void send(ControlFrame frame);
@@ -189,7 +193,7 @@ final class LobbyMenu implements Listener, PluginMessageListener {
                 slots[NEXT_SLOT] = new Nav(true, zh ? "下一页" : "Next page");
             }
         }
-        screen.open(holder, title(zh, p, pages), size, slots);
+        screen.open(holder, title(screen.menuTitle(), p, pages), size, slots);
         // Ask the proxy for live status of every tile on this page; answers repaint them.
         for (String server : view) {
             screen.send(ControlFrame.statusQuery(server));
@@ -286,7 +290,10 @@ final class LobbyMenu implements Listener, PluginMessageListener {
     // ---- text ----
 
     static String title(boolean zh, int page, int pages) {
-        String title = zh ? "Felis 服务器" : "Felis Servers";
+        return title(zh ? "Felis 服务器" : "Felis Servers", page, pages);
+    }
+
+    static String title(String title, int page, int pages) {
         if (pages > 1) {
             title += "  (" + (page + 1) + "/" + pages + ")";
         }

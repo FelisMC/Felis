@@ -4,8 +4,6 @@ import (
 	"context"
 	"net/http"
 	"time"
-
-	"felis.lolicon.best/internal/naming"
 )
 
 // AsyncJob is the observable outcome of one asynchronous world operation. The API
@@ -45,11 +43,11 @@ type JobStatusReader interface {
 func (a *API) handleServerJobs(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	name := r.PathValue("name")
-	if err := naming.ValidateServerName(name); err != nil {
+	if err := validateManagedServerName(r, name); err != nil {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
 		return
 	}
-	rec, err := a.Repo.ServerByName(r.Context(), name)
+	rec, err := a.managedServerRecord(r.Context(), name)
 	if err != nil {
 		a.writeLookupError(w, r, err)
 		return

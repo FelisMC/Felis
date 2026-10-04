@@ -1,4 +1,5 @@
 import {
+  DoorOpen,
   LayoutDashboard,
   Server,
   UserRound,
@@ -61,6 +62,7 @@ export const NAV_SECTIONS: NavSection[] = [
     adminOnly: true,
     ownerOnly: false,
     items: [
+      { to: "/admin/lobby", key: "admin_lobby", icon: DoorOpen },
       { to: "/admin/images", key: "admin_images", icon: Boxes },
       { to: "/admin/builds", key: "admin_builds", icon: Cpu },
       { to: "/admin/submissions", key: "admin_submissions", icon: ClipboardCheck },

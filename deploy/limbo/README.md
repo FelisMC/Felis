@@ -164,3 +164,20 @@ set them by hand:
 The Velocity gate/lobby wiring is printed by `felis setup` and enforces the
 invariant: fresh connections hit `login` first, and only an authenticated release
 from that gate can enter the post-auth lobby or a remembered user backend.
+
+## Customize in the panel
+
+Administrators open **Login & lobby**, select **Login space**, and stop it before
+editing. The form configures the login book title/author/heading/link text/help,
+automatic book opening and the login timeout (30–3600 seconds). These settings
+persist in `/data/felis-experience.json`; an explicit
+`FELIS_LOGIN_TIMEOUT_SECONDS` environment variable takes precedence. The generated
+code, generated login URL and chat guidance are preserved. The authentication
+and transfer destination are not player-facing customization fields.
+
+Use the linked file manager to upload a replacement `/data/spawn.schem`, edit
+Limbo's `server.properties` or add Limbo-compatible plugins, then start the space.
+Paper world ZIPs and Paper plugins do not work in Limbo. The page also exposes
+logs, backups/restore and image/resource settings. New joins are unavailable
+while this front door is stopped; a custom image must retain the login plugin
+and support the proxy's forwarding protocol.

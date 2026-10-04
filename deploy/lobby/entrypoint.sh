@@ -76,7 +76,10 @@ set_prop online-mode false
 # what one node serves at once, and a flood beyond it is refused at the door instead
 # of running the 1Gi lobby out of memory. What the world itself allows (no damage, no
 # building, the /menu hint) is felis-paper's LobbyGuard.
-set_prop max-players 200
+# Seed capacity once; administrators can tune it in the panel file editor.
+if ! grep -q '^max-players=' "$PROPS"; then
+  set_prop max-players 200
+fi
 
 # RCON is the control plane's write channel (spec §8 写=RCON): the operator probes it
 # for readiness and the player tally, and felis-api runs console/permission commands over
@@ -105,21 +108,21 @@ else
   echo "  injects it from the <server>-rcon Secret when spec.rcon.enabled is true." >&2
 fi
 
-# Rewritten whole, not merged. Paper loads this file and fills every key it does
-# not find with the default, then writes the full tree back — so a proxies-only file is a
-# complete, stable input, and the lobby's other globals are simply always the defaults.
-# That is true of a system server Felis owns end to end; if admins are ever allowed to tune
-# the lobby's globals, this has to become a real YAML merge (yq) instead.
+# The operator's existing init-forwarding step merges the proxy keys on every
+# start, preserving other Paper globals. Standalone runs retain the mandatory
+# rewrite because no initContainer has verified their forwarding settings.
 mkdir -p config
-cat > config/paper-global.yml <<YAML
-# Written by felis-lobby's entrypoint on every boot. Do not hand-edit: the forwarding
-# secret is injected from the felis-forwarding-secret Secret and must match the proxy.
+if [ "${FELIS_MANAGED_FORWARDING:-false}" = true ]; then
+  [ -f config/paper-global.yml ] || { echo "felis-lobby: missing managed forwarding config" >&2; exit 1; }
+else
+  cat > config/paper-global.yml <<YAML
 proxies:
   velocity:
     enabled: true
     online-mode: true
     secret: "${SECRET}"
 YAML
+fi
 
 echo "felis-lobby: server-port=${PORT}, velocity modern forwarding on (UUIDs are Mojang-verified)"
 JAVA_MEMORY_ARG=""

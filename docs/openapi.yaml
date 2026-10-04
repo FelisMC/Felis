@@ -62,6 +62,12 @@ info:
   title: felis-api
   version: 4.1.0
   description: |
+    Staff on the operator console may manage the reserved login/lobby system
+    services through existing management routes, without player ownership rows.
+    Creating and claiming these reserved names remain prohibited. System patches
+    keep public autostart and idle stop disabled. Customization is persisted as
+    felis-experience.json using the existing stopped-server file API.
+
     Control plane for the Felis Minecraft orchestration platform. The same binary
     exposes an internal face (per-caller service tokens, for velocity / backend
     callbacks, never Zero Trust) and an external face (the felis_session cookie, for
@@ -600,9 +606,9 @@ components:
               type: boolean
               description: >-
                 True for a platform-provisioned system service (the login gate, the
-                lobby). Their reserved names are rejected by every per-server route,
-                so the cockpit renders them read-only instead of offering actions
-                that would 400.
+                lobby). Staff can manage them through the existing server routes;
+                players see them read-only. Creating, claiming and deleting these
+                reserved names remain prohibited.
 
     RetireState:
       type: object
@@ -2437,6 +2443,8 @@ paths:
                 properties:
                   name: { type: string }
                   desiredState: { type: string, const: Stopped }
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -2465,6 +2473,8 @@ paths:
                 properties:
                   name: { type: string }
                   claimed: { type: boolean, const: true }
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -3182,6 +3192,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ServerInfo' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -4488,7 +4500,7 @@ paths:
         recorded when it was written as it streams; a mismatch cuts the
         download off short of its end. On the way out config/paper-global.yml
         (the cluster's forwarding secret) is left out and server.properties has
-        its rcon.password redacted, so the download carries no Content-Length.
+        its rcon.password and forwarding-secrets redacted, so the download carries no Content-Length.
         A user gets 404 for a backup outside their scope, as their list never
         shows it. One export per user at a time, 2 across the install, 6 per
         user per hour.
@@ -4850,7 +4862,7 @@ paths:
                     type: string
                     pattern: '^[0-9a-f]{64}$'
                     description: >-
-                      SHA-256 of the file as stored (before the rcon.password redaction in
+                      SHA-256 of the file as stored (before secret redaction in
                       server.properties). Send it back as expect_sha256 on the next write.
                   content_sha256:
                     type: string
@@ -5204,7 +5216,7 @@ paths:
         without one, with symbolic links, devices and sockets left out.
         config/paper-global.yml, the cluster's forwarding secret, is refused as
         a file and left out of a folder, and server.properties goes out with
-        its rcon.password redacted; both are matched by the file itself, so a
+        its rcon.password and forwarding-secrets redacted; both are matched by the file itself, so a
         link to either under another name is guarded too. The server cannot
         start until the download has ended. Two file downloads per user at a
         time, 4 across the install, 30 per user per hour, counted apart from

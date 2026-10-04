@@ -13,6 +13,8 @@ import enNavigation from "./resources/en-US/navigation.json";
 import enBackups from "./resources/en-US/backups.json";
 import enSubmissions from "./resources/en-US/submissions.json";
 import enFiles from "./resources/en-US/files.json";
+import enLobby from "./resources/en-US/lobby.json";
+import zhLobby from "./resources/zh-CN/lobby.json";
 import enSchedules from "./resources/en-US/schedules.json";
 import zhCommon from "./resources/zh-CN/common.json";
 import zhAuth from "./resources/zh-CN/auth.json";
@@ -46,6 +48,7 @@ export const i18nOptions: InitOptions = {
       submissions: enSubmissions,
       files: enFiles,
       schedules: enSchedules,
+      lobby: enLobby,
     },
     "zh-CN": {
       common: zhCommon,
@@ -61,6 +64,7 @@ export const i18nOptions: InitOptions = {
       submissions: zhSubmissions,
       files: zhFiles,
       schedules: zhSchedules,
+      lobby: zhLobby,
     },
   },
   supportedLngs: [...SUPPORTED_LANGUAGES],

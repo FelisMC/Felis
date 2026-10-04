@@ -9,7 +9,7 @@ import (
 )
 
 // The lobby and login gate take their player cap from server.properties, which the
-// entrypoint rewrites on every boot over whatever the volume already holds. These run
+// login gate rewrites on every boot; the lobby seeds it only when absent. These run
 // the shipped entrypoints the way a pod does (image and volume paths pointed into temp
 // dirs, java replaced by a stub that exits) and read the file the server would start on.
 
@@ -91,11 +91,11 @@ func assertProp(t *testing.T, props, key, want string) {
 
 var lobbyImage = []string{"paper.jar", "plugins/felis-paper.jar", "plugins/LuckPerms.jar"}
 
-func TestLobbyEntrypointLiftsThePlayerCap(t *testing.T) {
-	t.Run("over the cap Paper wrote on an earlier boot", func(t *testing.T) {
+func TestLobbyEntrypointSeedsAndPreservesThePlayerCap(t *testing.T) {
+	t.Run("preserves an administrator capacity", func(t *testing.T) {
 		props := runEntrypoint(t, "deploy/lobby/entrypoint.sh", `RUNTIME_DIR="/paper"`, lobbyImage,
 			"#Minecraft server properties\nmax-players=20\nmotd=Kept as it was\n")
-		assertProp(t, props, "max-players", "200")
+		assertProp(t, props, "max-players", "20")
 		assertProp(t, props, "motd", "Kept as it was")
 	})
 	t.Run("on a first boot", func(t *testing.T) {

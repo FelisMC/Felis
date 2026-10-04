@@ -5,6 +5,7 @@ import best.lolicon.felis.link.FelisApiClient;
 import best.lolicon.felis.link.LinkClient;
 import best.lolicon.felis.link.LinkCode;
 import best.lolicon.felis.link.LinkConfig;
+import best.lolicon.felis.link.ExperienceConfig;
 import best.lolicon.felis.link.LinkConfigLoader;
 
 import com.loohp.limbo.events.EventHandler;
@@ -92,6 +93,7 @@ public final class FelisLimboPlugin extends LimboPlugin implements Listener {
 
     private volatile Readiness readiness;
     private volatile LoginFlow flow;
+    private ExperienceConfig experience;
 
     @Override
     public void onEnable() {
@@ -146,6 +148,7 @@ public final class FelisLimboPlugin extends LimboPlugin implements Listener {
         try {
             File props = new File(getDataFolder(), "felis-link.properties");
             cfg = LinkConfigLoader.load(props.toPath());
+            experience = ExperienceConfig.load(ExperienceConfig.PATH);
         } catch (IOException e) {
             // Missing/half config: like the other Felis plugins, load un-crippled —
             // readiness stays up, the login flow just never turns on.
@@ -161,7 +164,9 @@ public final class FelisLimboPlugin extends LimboPlugin implements Listener {
         }
         String consoleUrl = "https://" + panelHost;
         String lobby = GateConfig.lobby(System.getenv("FELIS_LOBBY_SERVER"));
-        long timeoutMillis = GateConfig.loginTimeoutSeconds(System.getenv("FELIS_LOGIN_TIMEOUT_SECONDS")) * 1000L;
+        long timeoutMillis = GateConfig.loginTimeoutSeconds(System.getenv("FELIS_LOGIN_TIMEOUT_SECONDS") != null
+                ? System.getenv("FELIS_LOGIN_TIMEOUT_SECONDS")
+                : Long.toString(experience.number("loginTimeoutSeconds", GateConfig.DEFAULT_TIMEOUT_SECONDS))) * 1000L;
         this.flow = new LoginFlow(new LimboGate(), new FelisApiClient(cfg), new LinkClient(cfg),
                 consoleUrl, timeoutMillis, System::currentTimeMillis, LOG);
         LOG.info("FelisLimbo: login flow ON — console=" + consoleUrl
@@ -187,7 +192,7 @@ public final class FelisLimboPlugin extends LimboPlugin implements Listener {
         @Override
         public LoginFlow.Seat player(UUID id) {
             Player player = getServer().getPlayer(id);
-            return player != null && player.isValid() ? new LimboSeat(player) : null;
+            return player != null && player.isValid() ? new LimboSeat(player, experience) : null;
         }
 
         @Override
@@ -222,7 +227,7 @@ public final class FelisLimboPlugin extends LimboPlugin implements Listener {
     }
 
     /** LimboSeat is one Limbo player as the flow sees them. */
-    private record LimboSeat(Player player) implements LoginFlow.Seat {
+    private record LimboSeat(Player player, ExperienceConfig experience) implements LoginFlow.Seat {
         @Override
         public String name() {
             return player.getName();
@@ -235,7 +240,9 @@ public final class FelisLimboPlugin extends LimboPlugin implements Listener {
 
         @Override
         public void showCode(LinkCode code, String url) {
-            player.openBook(LoginBook.book(code.code(), url));
+            if (experience.flag("openBook", true)) {
+                player.openBook(LoginBook.book(code.code(), url, experience));
+            }
         }
 
         @Override

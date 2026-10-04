@@ -3659,16 +3659,12 @@ build_velocity_plugin() {
 # signed with a matching HMAC. Only protocol 47 was measured; the rest of Via's 1.7-1.12 range
 # is its own documented support.
 #
-# Pinned by hash and not by "latest" on purpose. These three jars sit in front of every packet
-# on the proxy, and they are the exact bytes FL-007 measured — a moving tag would quietly make
-# this an unmeasured configuration. Bumping a version means bumping its checksum here.
-#
-# The three versions are a set, not three independent pins. ViaRewind is the component that
-# carries 1.8/1.7 support, and 4.1.2 against ViaVersion/ViaBackwards 5.11.0 fails to load
-# Protocol1_9To1_8 — the single protocol every 1.8 client needs — with "Invalid version: 1"
-# at proxy startup. 4.1.3 is the release that adds 5.11.0 compatibility; a two-arm run of the
-# same proxy image logs that error three times on 4.1.2 and not at all on 4.1.3. Read the
-# ViaRewind release notes before moving ViaVersion or ViaBackwards.
+# Pin the three jars as one compatible set. ViaVersion/ViaBackwards 5.12.0 add
+# the 26.3 protocol used by game-stack.lock; ViaRewind 4.2.0 explicitly supports
+# that pair. The earlier FL-007 join measured 1.8 against Paper 1.21.11, not every
+# client on 26.3. Release notes:
+# https://github.com/ViaVersion/ViaBackwards/releases/tag/5.12.0
+# https://github.com/ViaVersion/ViaRewind/releases/tag/4.2.0
 install_via_plugins() {
   prepare_velocity_layout
   local name version want target url tmp have
@@ -3694,12 +3690,12 @@ install_via_plugins() {
       || die "${name} ${version} checksum mismatch: got ${have}, expected ${want}"
     atomic_install_file "$tmp" "$target" 0644 root root
   done <<'EOF'
-ViaVersion 5.11.0 18d19e90fc9467d68128c076630ae8700449c901402a3ef421837ce006bc8cae
-ViaBackwards 5.11.0 b21983d561e3f92df257683f0133ab6c68ec68175e8acfd82c6231723bf83587
-ViaRewind 4.1.3 2d5970d22b4711c9ab2800932326c7b08acdace25ed7c6bbb8f6ea81054962b4
+ViaVersion 5.12.0 72c40a6a702d67f226fc9a0d8ad82aba1483fdabe2e6159bcdddb2dc070750b0
+ViaBackwards 5.12.0 194e9250224632274d7b3c17e411e031a9223c1863c6f5138d53c721f07ab78d
+ViaRewind 4.2.0 d6634ba57bb82d5161c68dfb393571cdf40511a0beb1b04b8c7ed794a3532c6a
 EOF
   pin_via_block_connections
-  ok "Via staged; clients from 1.8 up can join under modern forwarding"
+  ok "Via staged with 26.3 support; verify client versions against your chosen backend images"
 }
 
 # pin_via_block_connections turns ViaVersion's serverside block-connection tracking off.

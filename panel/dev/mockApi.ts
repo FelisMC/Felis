@@ -286,6 +286,10 @@ function initialState(): MockState {
       server("claim-me", "Claimable Node", "Stopped", null, {
         playersMax: 10,
       }),
+      server("login", "Login space", "Stopped", null, {
+        autostartPolicy: "public", idleStopSeconds: 0, reaperExempt: true,
+        image: "registry.felis.svc:5000/felis/limbo:demo", memory: "512Mi", storageSize: "1Gi",
+      }),
       ...generatedServers(),
     ],
     access: {
@@ -764,7 +768,8 @@ function fleetView(state: MockState, accountInfo: MockAccount): FleetServer[] {
       playersOnline: s.ready ? s.playersOnline : 0,
       owner: owner ? state.accounts[owner].email : "",
       owned: owner === accountInfo.id,
-      claimable: owner === null && !s.retiring,
+      claimable: owner === null && !s.retiring && !s.reaperExempt,
+      system: s.reaperExempt,
     };
   });
 }
@@ -2241,6 +2246,10 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
     sendError(ctx.res, 404, "not_found", "server not found");
     return true;
   }
+  if (serverInfo.reaperExempt && !isAdmin(ctx.account.role)) {
+    sendError(ctx.res, 400, "bad_name", "system service is reserved for staff");
+    return true;
+  }
   if (!canSee(ctx.account, serverInfo)) {
     sendError(ctx.res, 403, "forbidden", "server is not visible to this account");
     return true;
@@ -2474,7 +2483,7 @@ async function handleFilesMock(ctx: SessionContext, serverInfo: MockServer): Pro
       if (!node) return fail(404, "not_found", `${p} does not exist`);
       if (node.is_dir) return fail(400, "bad_path", `${p} is a directory, not a file`);
       if (node.data.length > MOCK_MAX_READ) return fail(413, "too_large", `${p} is larger than the editor reads`);
-      sendJSON(ctx.res, 200, { path: p, content: node.data.toString("base64"), sha256: mockSha(node.data) });
+      sendJSON(ctx.res, 200, { path: p, content: node.data.toString("base64"), sha256: mockSha(node.data), content_sha256: mockSha(node.data) });
       return true;
     }
     case "PUT file": {

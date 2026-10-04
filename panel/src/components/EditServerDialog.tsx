@@ -83,6 +83,7 @@ interface EditServerForm {
 
 interface Props {
   serverName: string;
+  systemService?: boolean;
   currentDisplayName?: string;
   currentPolicy?: AutostartPolicy;
   currentImage?: string;
@@ -97,6 +98,7 @@ interface Props {
 
 export function EditServerDialog({
   serverName,
+  systemService = false,
   currentDisplayName = "",
   currentPolicy = "ownerOnly",
   currentImage = "",
@@ -176,7 +178,7 @@ export function EditServerDialog({
       if (displayName !== currentDisplayName) {
         payload.displayName = displayName;
       }
-      if (form.autostartPolicy !== currentPolicy) {
+      if (!systemService && form.autostartPolicy !== currentPolicy) {
         payload.autostartPolicy = form.autostartPolicy;
       }
       if (imageChanged) {
@@ -190,7 +192,7 @@ export function EditServerDialog({
       if (cpu !== currentCpu) {
         payload.resources = { cpu };
       }
-      if (form.idleStop !== currentIdleStop) {
+      if (!systemService && form.idleStop !== currentIdleStop) {
         payload.idleStopSeconds = Number(form.idleStop);
       }
 
@@ -218,7 +220,7 @@ export function EditServerDialog({
           <div className="min-w-0 flex-1 text-left">
             <p className="text-sm font-medium">{t("edit_server_title")}</p>
             <p className="text-xs text-muted-foreground mt-0.5">
-              {t("edit_server_desc")}
+              {t(systemService ? "edit_system_desc" : "edit_server_desc")}
             </p>
           </div>
           <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
@@ -228,7 +230,7 @@ export function EditServerDialog({
         <DialogHeader>
           <DialogTitle>{t("edit_server_title")}</DialogTitle>
           <DialogDescription>
-            {t("edit_server_desc_long")}
+            {t(systemService ? "edit_system_desc" : "edit_server_desc_long")}
           </DialogDescription>
         </DialogHeader>
 
@@ -350,6 +352,7 @@ export function EditServerDialog({
               <Label htmlFor="edit-server-policy">{t("create_server_policy")}</Label>
               <Select
                 value={form.autostartPolicy}
+                disabled={systemService}
                 onValueChange={(v) => set("autostartPolicy", v as AutostartPolicy)}
               >
                 <SelectTrigger id="edit-server-policy">
@@ -368,7 +371,7 @@ export function EditServerDialog({
 
           <div className="grid gap-2">
             <Label htmlFor="edit-server-idle">{t("edit_server_idle")}</Label>
-            <Select value={form.idleStop} onValueChange={(v) => set("idleStop", v)}>
+            <Select disabled={systemService} value={form.idleStop} onValueChange={(v) => set("idleStop", v)}>
               <SelectTrigger id="edit-server-idle">
                 <SelectValue />
               </SelectTrigger>

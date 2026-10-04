@@ -1,5 +1,6 @@
 package best.lolicon.felis.paper;
 
+import best.lolicon.felis.link.ExperienceConfig;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.event.HoverEvent;
@@ -36,6 +37,7 @@ import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.vehicle.VehicleDestroyEvent;
 import org.bukkit.event.world.WorldLoadEvent;
 
+import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -44,6 +46,8 @@ import java.util.logging.Logger;
  * on the way to a server, which nobody can hurt, get hurt in, or leave a mark on.
  * Without it the lobby is a plain survival world: mobs at night, PvP, and every block
  * broken or placed by a passer-by stays in the world volume for the next player.
+ *
+ * <p>The following are defaults; felis-experience.json can adjust each behavior.
  *
  * <p><b>World.</b> Every world is made peaceful with natural spawning, PvP, mob
  * griefing and TNT off, time frozen at noon and the weather clear, and inventories
@@ -70,14 +74,20 @@ final class LobbyGuard implements Listener {
     /** Noon: the lobby is always lit. */
     private static final long NOON = 6000L;
 
-    static boolean guarded(Player player) {
-        return !player.hasPermission(BUILD_PERMISSION);
+    boolean guarded(Player player) {
+        return settings.flag("protectBuild", true) && !player.hasPermission(BUILD_PERMISSION);
     }
 
     private final Logger log;
+    private final ExperienceConfig settings;
 
     LobbyGuard(Logger log) {
+        this(log, new ExperienceConfig(Map.of()));
+    }
+
+    LobbyGuard(Logger log, ExperienceConfig settings) {
         this.log = log;
+        this.settings = settings;
     }
 
     /**
@@ -94,25 +104,27 @@ final class LobbyGuard implements Listener {
         }
     }
 
-    static void applyRules(World world) {
-        world.setDifficulty(Difficulty.PEACEFUL);
+    void applyRules(World world) {
+        world.setDifficulty(Difficulty.valueOf(settings.text("difficulty", "PEACEFUL")));
         // Only a world with its own clock has a time of day to set; the nether and the
         // end have none and refuse.
-        if (!world.isFixedTime()) {
-            world.setTime(NOON);
+        if (settings.flag("freezeTime", true) && !world.isFixedTime()) {
+            world.setTime(Math.floorMod(settings.number("time", NOON), 24000L));
         }
-        world.setStorm(false);
-        world.setThundering(false);
-        world.setGameRule(GameRules.PVP, false);
-        world.setGameRule(GameRules.SPAWN_MOBS, false);
-        world.setGameRule(GameRules.SPAWN_WANDERING_TRADERS, false);
-        world.setGameRule(GameRules.MOB_GRIEFING, false);
-        world.setGameRule(GameRules.TNT_EXPLODES, false);
-        world.setGameRule(GameRules.KEEP_INVENTORY, true);
-        world.setGameRule(GameRules.IMMEDIATE_RESPAWN, true);
-        world.setGameRule(GameRules.SHOW_ADVANCEMENT_MESSAGES, false);
-        world.setGameRule(GameRules.ADVANCE_TIME, false);
-        world.setGameRule(GameRules.ADVANCE_WEATHER, false);
+        if (settings.flag("clearWeather", true)) {
+            world.setStorm(false);
+            world.setThundering(false);
+        }
+        world.setGameRule(GameRules.PVP, settings.flag("pvp", false));
+        world.setGameRule(GameRules.SPAWN_MOBS, settings.flag("spawnMobs", false));
+        world.setGameRule(GameRules.SPAWN_WANDERING_TRADERS, settings.flag("spawnMobs", false));
+        world.setGameRule(GameRules.MOB_GRIEFING, settings.flag("mobGriefing", false));
+        world.setGameRule(GameRules.TNT_EXPLODES, settings.flag("tntExplodes", false));
+        world.setGameRule(GameRules.KEEP_INVENTORY, settings.flag("keepInventory", true));
+        world.setGameRule(GameRules.IMMEDIATE_RESPAWN, settings.flag("immediateRespawn", true));
+        world.setGameRule(GameRules.SHOW_ADVANCEMENT_MESSAGES, settings.flag("showAdvancementMessages", false));
+        world.setGameRule(GameRules.ADVANCE_TIME, !settings.flag("freezeTime", true));
+        world.setGameRule(GameRules.ADVANCE_WEATHER, !settings.flag("clearWeather", true));
     }
 
     @EventHandler
@@ -125,20 +137,30 @@ final class LobbyGuard implements Listener {
     @EventHandler
     public void onJoin(PlayerJoinEvent event) {
         Player player = event.getPlayer();
-        player.setFoodLevel(20);
-        if (guarded(player)) {
-            player.setGameMode(GameMode.ADVENTURE);
-            player.teleport(player.getWorld().getSpawnLocation());
+        if (settings.flag("disableHunger", true)) {
+            player.setFoodLevel(20);
         }
-        player.sendMessage(hint(FelisPaperPlugin.zh(player)));
+        if (!player.hasPermission(BUILD_PERMISSION)) {
+            player.setGameMode(GameMode.valueOf(settings.text("gameMode", "ADVENTURE")));
+            if (settings.flag("teleportOnJoin", true)) {
+                player.teleport(player.getWorld().getSpawnLocation());
+            }
+        }
+        if (settings.flag("showWelcome", true)) {
+            player.sendMessage(hint(FelisPaperPlugin.zh(player)));
+        }
+        if (settings.flag("openMenuOnJoin", false)) {
+            player.performCommand("menu");
+        }
     }
 
-    static Component hint(boolean zh) {
+    Component hint(boolean zh) {
         Component open = Component.text(zh ? "[打开服务器菜单]" : "[Open the server menu]",
                         NamedTextColor.GREEN, TextDecoration.BOLD)
                 .clickEvent(ClickEvent.runCommand("/menu"))
                 .hoverEvent(HoverEvent.showText(Component.text(zh ? "点击运行 /menu" : "Click to run /menu")));
-        return Component.text(zh ? "欢迎来到大厅。输入 /menu 或点击 " : "Welcome to the lobby. Type /menu or click ",
+        return Component.text(settings.text(zh ? "welcomeZh" : "welcomeEn",
+                        zh ? "欢迎来到大厅。输入 /menu 或点击 " : "Welcome to the lobby. Type /menu or click "),
                         NamedTextColor.GOLD)
                 .append(open)
                 .append(Component.text(zh ? "，选一个服务器进入。" : " to pick a server to join.",
@@ -152,15 +174,17 @@ final class LobbyGuard implements Listener {
         if (!(event.getEntity() instanceof Player player)) {
             return;
         }
-        event.setCancelled(true);
-        if (event.getCause() == EntityDamageEvent.DamageCause.VOID) {
+        if (settings.flag("invulnerable", true)) {
+            event.setCancelled(true);
+        }
+        if (settings.flag("voidRescue", true) && event.getCause() == EntityDamageEvent.DamageCause.VOID) {
             player.teleport(player.getWorld().getSpawnLocation());
         }
     }
 
     @EventHandler(priority = EventPriority.LOW)
     public void onHunger(FoodLevelChangeEvent event) {
-        if (event.getEntity() instanceof Player) {
+        if (settings.flag("disableHunger", true) && event.getEntity() instanceof Player) {
             event.setCancelled(true);
         }
     }
@@ -211,14 +235,17 @@ final class LobbyGuard implements Listener {
     /** Fire spreads and burns with nobody behind it, so only a builder may start one. */
     @EventHandler(priority = EventPriority.LOW)
     public void onIgnite(BlockIgniteEvent event) {
-        if (!(event.getIgnitingEntity() instanceof Player player) || guarded(player)) {
+        if (settings.flag("protectBuild", true) &&
+                (!(event.getIgnitingEntity() instanceof Player player) || guarded(player))) {
             event.setCancelled(true);
         }
     }
 
     @EventHandler(priority = EventPriority.LOW)
     public void onBurn(BlockBurnEvent event) {
-        event.setCancelled(true);
+        if (settings.flag("protectBuild", true)) {
+            event.setCancelled(true);
+        }
     }
 
     @EventHandler(priority = EventPriority.LOW)
@@ -258,7 +285,7 @@ final class LobbyGuard implements Listener {
     }
 
     /** guardedCulprit: the entity is a guarded player, or something one of them shot. */
-    private static boolean guardedCulprit(Entity culprit) {
+    private boolean guardedCulprit(Entity culprit) {
         if (culprit instanceof Projectile projectile && projectile.getShooter() instanceof Player shooter) {
             return guarded(shooter);
         }

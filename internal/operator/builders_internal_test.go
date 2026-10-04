@@ -89,7 +89,7 @@ func TestReadinessProbeHTTPCustomPath(t *testing.T) {
 
 // A user server (no system-role label) gets the forwarding-config initContainer after
 // prepare-data, running the felis image and mounting the world volume. A system
-// server gets no forwarding step, and a build with no felis image name gets no step.
+// login gate handles its own properties; a build with no felis image name gets no step.
 func TestBuildStatefulSetForwardingInitContainer(t *testing.T) {
 	user := &v1alpha1.MinecraftServer{}
 	user.Spec.Storage.Size = "1Gi"
@@ -143,14 +143,23 @@ func TestBuildStatefulSetForwardingInitContainer(t *testing.T) {
 		t.Error("no felis image must yield no initContainer")
 	}
 
-	// System server handles forwarding in its own entrypoint, but its world still
-	// needs handing to the game uid and its image waits for the fence all the same.
+	// The lobby shares the forwarding merge, preserving its custom Paper globals.
 	sys := &v1alpha1.MinecraftServer{}
 	sys.Spec.Storage.Size = "1Gi"
 	sys.Labels = map[string]string{v1alpha1.LabelSystemRole: "lobby"}
 	sysSts, _ := buildStatefulSet(sys, 1, "felis:demo")
-	if got := sysSts.Spec.Template.Spec.InitContainers; len(got) != 2 || got[0].Name != "prepare-data" || got[1].Name != "egress-gate" {
-		t.Errorf("system server must get [prepare-data egress-gate], got %+v", got)
+	if got := sysSts.Spec.Template.Spec.InitContainers; len(got) != 3 || got[0].Name != "prepare-data" || got[1].Name != "init-forwarding" || got[2].Name != "egress-gate" {
+		t.Errorf("lobby must get [prepare-data init-forwarding egress-gate], got %+v", got)
+	}
+
+	managed := false
+	for _, env := range sysSts.Spec.Template.Spec.Containers[0].Env {
+		if env.Name == "FELIS_MANAGED_FORWARDING" && env.Value == "true" {
+			managed = true
+		}
+	}
+	if !managed {
+		t.Fatal("lobby entrypoint would overwrite the merged forwarding config")
 	}
 }
 

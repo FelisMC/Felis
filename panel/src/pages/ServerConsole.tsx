@@ -340,6 +340,7 @@ export function ServerConsole() {
               {isAdmin && (
                 <EditServerDialog
                   serverName={name}
+                  systemService={name === "login" || name === "lobby"}
                   currentDisplayName={data.displayName}
                   currentPolicy={data.autostartPolicy as AutostartPolicy}
                   currentImage={data.image}

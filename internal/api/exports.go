@@ -21,7 +21,6 @@ import (
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/fileedit"
 	"felis.lolicon.best/internal/maintenance"
-	"felis.lolicon.best/internal/naming"
 	"felis.lolicon.best/internal/worldexport"
 )
 
@@ -605,11 +604,11 @@ func errExportUnavailable() error {
 func (a *API) exportGate(w http.ResponseWriter, r *http.Request) (string, *ServerRecord, bool) {
 	p := principalFromContext(r.Context())
 	name := r.PathValue("name")
-	if err := naming.ValidateServerName(name); err != nil {
+	if err := validateManagedServerName(r, name); err != nil {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
 		return "", nil, false
 	}
-	rec, err := a.Repo.ServerByName(r.Context(), name)
+	rec, err := a.managedServerRecord(r.Context(), name)
 	if err != nil {
 		a.writeLookupError(w, r, err)
 		return "", nil, false

@@ -41,7 +41,8 @@ dependencies {
 // plugin-message channel and never holds a felis-api token or talks to felis-api
 // directly. We enforce that physically here — the shared source root is on the
 // path, but the include filter ships ONLY the paper package and the three codec
-// files (Control + ControlFrame + Json). FelisApiClient, LinkClient and the token
+// files (Control + ControlFrame + Json) plus the local ExperienceConfig reader.
+// FelisApiClient, LinkClient and the token
 // config are not compiled in at all, so the lobby cannot reach the API even by
 // mistake. If a codec class grows a new dependency, compilation fails loudly here
 // rather than silently widening the lobby's reach.
@@ -53,6 +54,7 @@ sourceSets {
             include 'best/lolicon/felis/link/Control.java'
             include 'best/lolicon/felis/link/ControlFrame.java'
             include 'best/lolicon/felis/link/Json.java'
+            include 'best/lolicon/felis/link/ExperienceConfig.java'
         }
     }
 }

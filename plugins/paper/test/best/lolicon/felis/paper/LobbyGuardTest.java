@@ -1,6 +1,8 @@
 package best.lolicon.felis.paper;
 
+import best.lolicon.felis.link.ExperienceConfig;
 import best.lolicon.felis.paper.Fakes.FakePlayer;
+import java.util.Map;
 import best.lolicon.felis.paper.Fakes.FakeWorld;
 
 import net.kyori.adventure.text.Component;
@@ -82,6 +84,7 @@ public final class LobbyGuardTest {
         nobodyIsHurt();
         joining();
         worldRules();
+        customization();
         System.out.println("LobbyGuardTest OK (" + checks + " checks)");
     }
 
@@ -194,6 +197,33 @@ public final class LobbyGuardTest {
         GUARD.onJoin(new PlayerJoinEvent(zh.player, Component.text("joined")));
         assertEq("a Chinese client is told in Chinese", true, Fakes.text(zh.messages.get(0)).contains("输入 /menu"));
         assertEq("... with the same click", List.of("/menu"), commands(zh.messages.get(0)));
+    }
+
+    private static void customization() {
+        LobbyGuard custom = new LobbyGuard(capturingLogger(), new ExperienceConfig(Map.of(
+                "protectBuild", false, "invulnerable", false, "disableHunger", false,
+                "teleportOnJoin", false, "gameMode", "SURVIVAL", "welcomeEn", "Hello, builders! ",
+                "difficulty", "HARD", "freezeTime", false, "clearWeather", false)));
+        FakePlayer player = new FakePlayer(false, world, Locale.US);
+        custom.onJoin(new PlayerJoinEvent(player.player, Component.text("joined")));
+        assertEq("custom mode", GameMode.SURVIVAL, player.gameMode);
+        assertEq("custom join does not teleport", 0, player.teleports.size());
+        assertEq("hunger remains enabled", 3, player.food);
+        assertEq("custom welcome keeps menu click", List.of("/menu"), commands(player.messages.get(0)));
+        assertEq("custom welcome", true, Fakes.text(player.messages.get(0)).startsWith("Hello, builders!"));
+        BlockBreakEvent build = new BlockBreakEvent(Fakes.block(Material.STONE), player.player);
+        custom.onBreak(build);
+        assertEq("building can be opened", false, build.isCancelled());
+        EntityDamageEvent damage = new EntityDamageEvent(player.player, DamageCause.FALL, HIT, 4);
+        custom.onDamage(damage);
+        assertEq("damage can be enabled", false, damage.isCancelled());
+        FoodLevelChangeEvent hunger = new FoodLevelChangeEvent(player.player, 2);
+        custom.onHunger(hunger);
+        assertEq("hunger can be enabled", false, hunger.isCancelled());
+        FakeWorld natural = new FakeWorld();
+        custom.protect(natural.world);
+        assertEq("custom difficulty, advancing time and weather", List.of("setDifficulty HARD"), natural.calls);
+        assertEq("custom menu keeps pagination", "My Hub  (2/3)", LobbyMenu.title("My Hub", 1, 3));
     }
 
     private static void worldRules() {

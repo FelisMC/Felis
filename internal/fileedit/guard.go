@@ -9,7 +9,7 @@ import (
 // What leaves a world mount — a read, a download, a world export, a backup
 // export — passes the same two guards: the forwarding-secret file
 // (secretConfigPath) is withheld, and server.properties has its RCON password
-// redacted (propsPath).
+// redacted (propsPath), along with Limbo's forwarding-secrets.
 //
 // On a live mount both are matched by the file itself (os.SameFile), not by the
 // name it was reached under. A plugin runs arbitrary code as the game uid and can
@@ -51,7 +51,7 @@ func ArchiveRule(name string) (withhold, redact bool) {
 	return name == secretConfigPath, name == propsPath
 }
 
-// RedactProps replaces the RCON password in server.properties content with
+// RedactProps replaces RCON and Limbo forwarding secrets in server.properties with
 // redactedValue (see redactSecretProps for why a placeholder and not a blank).
 func RedactProps(content []byte) []byte {
 	return redactSecretProps(propsPath, content)

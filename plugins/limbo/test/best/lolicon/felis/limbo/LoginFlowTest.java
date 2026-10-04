@@ -1,5 +1,6 @@
 package best.lolicon.felis.limbo;
 
+import best.lolicon.felis.link.ExperienceConfig;
 import best.lolicon.felis.link.Control;
 import best.lolicon.felis.link.ControlFrame;
 import best.lolicon.felis.link.FelisApiClient;
@@ -24,6 +25,8 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -356,7 +359,22 @@ public final class LoginFlowTest {
         assertEq("lobby set", "hub", GateConfig.lobby(" hub "));
     }
 
-    private static void loginBook() {
+    private static void loginBook() throws IOException {
+        Path file = Files.createTempFile("felis-experience", ".json");
+        ExperienceConfig settings;
+        try {
+            Files.writeString(file, "{\"bookTitle\":\"My Network\",\"bookHeading\":\"欢迎 / Welcome\"}");
+            settings = ExperienceConfig.load(file);
+        } finally {
+            Files.deleteIfExists(file);
+        }
+        Book customized = LoginBook.book(CODE, CONSOLE + "/link", settings);
+        assertEq("custom book title", "My Network", plain(customized.title()));
+        assertTrue("custom book reads UTF-8 from the world volume", plain(customized.pages().get(0)).contains("欢迎 / Welcome"));
+        assertEq("custom book keeps the code", true, plain(customized.pages().get(0)).contains(CODE));
+        List<Component> customLinks = new ArrayList<>();
+        collectLinks(customized.pages().get(0), customLinks);
+        assertEq("custom book keeps the generated login URL", CONSOLE + "/link", customLinks.get(0).clickEvent().value());
         Book book = LoginBook.book(CODE, CONSOLE + "/link");
         assertEq("book title", "Felis Login", plain(book.title()));
         Component page = book.pages().get(0);

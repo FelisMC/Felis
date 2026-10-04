@@ -1378,7 +1378,7 @@ export interface paths {
         put?: never;
         /**
          * Start downloading one backup (owner-or-admin plus a former-owner match).
-         * @description Starts a Job that reads the archive from the backup store and hands it to felis-api, which streams it to the browser (poll GET /exports/{ticket}, then open its download). The Job checks the archive against the sha256 recorded when it was written as it streams; a mismatch cuts the download off short of its end. On the way out config/paper-global.yml (the cluster's forwarding secret) is left out and server.properties has its rcon.password redacted, so the download carries no Content-Length. A user gets 404 for a backup outside their scope, as their list never shows it. One export per user at a time, 2 across the install, 6 per user per hour.
+         * @description Starts a Job that reads the archive from the backup store and hands it to felis-api, which streams it to the browser (poll GET /exports/{ticket}, then open its download). The Job checks the archive against the sha256 recorded when it was written as it streams; a mismatch cuts the download off short of its end. On the way out config/paper-global.yml (the cluster's forwarding secret) is left out and server.properties has its rcon.password and forwarding-secrets redacted, so the download carries no Content-Length. A user gets 404 for a backup outside their scope, as their list never shows it. One export per user at a time, 2 across the install, 6 per user per hour.
          */
         post: operations["exportBackup"];
         delete?: never;
@@ -1566,7 +1566,7 @@ export interface paths {
         put?: never;
         /**
          * Start downloading one file or folder of a stopped server's world (owner-or-admin).
-         * @description An export (poll GET /exports/{ticket}, then open its download): a Job reads the file, or zips the folder, from the world volume read-only and hands it to felis-api, which streams it to the browser. A file saves under its own name with its length; a folder as NAME.zip, streamed without one, with symbolic links, devices and sockets left out. config/paper-global.yml, the cluster's forwarding secret, is refused as a file and left out of a folder, and server.properties goes out with its rcon.password redacted; both are matched by the file itself, so a link to either under another name is guarded too. The server cannot start until the download has ended. Two file downloads per user at a time, 4 across the install, 30 per user per hour, counted apart from world and backup exports. Audited as file.download.
+         * @description An export (poll GET /exports/{ticket}, then open its download): a Job reads the file, or zips the folder, from the world volume read-only and hands it to felis-api, which streams it to the browser. A file saves under its own name with its length; a folder as NAME.zip, streamed without one, with symbolic links, devices and sockets left out. config/paper-global.yml, the cluster's forwarding secret, is refused as a file and left out of a folder, and server.properties goes out with its rcon.password and forwarding-secrets redacted; both are matched by the file itself, so a link to either under another name is guarded too. The server cannot start until the download has ended. Two file downloads per user at a time, 4 across the install, 30 per user per hour, counted apart from world and backup exports. Audited as file.download.
          */
         post: operations["downloadServerFile"];
         delete?: never;
@@ -3035,7 +3035,7 @@ export interface components {
             claimable: boolean;
             /** @description Present and true when the owner lookup failed, so an absent owner says nothing about whether the server is claimed. */
             ownerUnknown?: boolean;
-            /** @description True for a platform-provisioned system service (the login gate, the lobby). Their reserved names are rejected by every per-server route, so the cockpit renders them read-only instead of offering actions that would 400. */
+            /** @description True for a platform-provisioned system service (the login gate, the lobby). Staff can manage them through the existing server routes; players see them read-only. Creating, claiming and deleting these reserved names remain prohibited. */
             system?: boolean;
         };
         /** @description A pending retirement (internal/api/repo.go RetireState): the owner gave the server up, or with delete an admin is deleting it. The reaper carries it out on its next daily run: it archives the world as a released backup, deletes the world volume and releases the server, and for a deletion also removes it. Until then the server stays stopped and cannot be woken or claimed. */
@@ -4921,6 +4921,7 @@ export interface operations {
                     };
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
@@ -4950,6 +4951,7 @@ export interface operations {
                     };
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             /** @description Quota exceeded. */
             403: {
@@ -5627,6 +5629,7 @@ export interface operations {
                     "application/json": components["schemas"]["ServerInfo"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
@@ -7256,7 +7259,7 @@ export interface operations {
                          * @description Base64-encoded file bytes.
                          */
                         content: string;
-                        /** @description SHA-256 of the file as stored (before the rcon.password redaction in server.properties). Send it back as expect_sha256 on the next write. */
+                        /** @description SHA-256 of the file as stored (before secret redaction in server.properties). Send it back as expect_sha256 on the next write. */
                         sha256: string;
                         /** @description SHA-256 of the decoded content as sent (after any redaction). A client that gets content hashing otherwise got it damaged on the way, and reads it again. */
                         content_sha256: string;

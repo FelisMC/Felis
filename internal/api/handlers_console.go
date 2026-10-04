@@ -3,8 +3,6 @@ package api
 import (
 	"errors"
 	"net/http"
-
-	"felis.lolicon.best/internal/naming"
 )
 
 // maxConsoleCommandLen caps the command body well under RCON's single-packet
@@ -39,7 +37,7 @@ type commandRequest struct {
 func (a *API) handleCommand(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	name := r.PathValue("name")
-	if err := naming.ValidateServerName(name); err != nil {
+	if err := validateManagedServerName(r, name); err != nil {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
 		return
 	}
@@ -58,7 +56,7 @@ func (a *API) handleCommand(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Ownership: owner or admin, mirroring handleStop. An unknown server is 404.
-	rec, err := a.Repo.ServerByName(r.Context(), name)
+	rec, err := a.managedServerRecord(r.Context(), name)
 	if err != nil {
 		a.writeLookupError(w, r, err)
 		return

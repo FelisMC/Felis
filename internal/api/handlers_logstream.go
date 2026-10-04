@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-
-	"felis.lolicon.best/internal/naming"
 )
 
 // handleServerConsole streams the caller's server console as Server-Sent Events
@@ -39,13 +37,13 @@ import (
 func (a *API) handleServerConsole(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	name := r.PathValue("name")
-	if err := naming.ValidateServerName(name); err != nil {
+	if err := validateManagedServerName(r, name); err != nil {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
 		return
 	}
 
 	// Ownership: owner or admin, mirroring handleCommand. An unknown server is 404.
-	rec, err := a.Repo.ServerByName(r.Context(), name)
+	rec, err := a.managedServerRecord(r.Context(), name)
 	if err != nil {
 		a.writeLookupError(w, r, err)
 		return
@@ -105,7 +103,7 @@ func (a *API) handleServerConsole(w http.ResponseWriter, r *http.Request) {
 
 	a.audit(r, "console.attach", name)
 	relayLogStream(w, r, src, a.streamRecheck(r, func(ctx context.Context, p *Principal) error {
-		rec, err := a.Repo.ServerByName(ctx, name)
+		rec, err := a.managedServerRecord(ctx, name)
 		switch {
 		case errors.Is(err, ErrNotFound):
 			return errForbidden // the server is gone, and the grant with it

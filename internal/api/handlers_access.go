@@ -7,8 +7,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-
-	"felis.lolicon.best/internal/naming"
 )
 
 // Access / permissions domain (spec §7). These endpoints let an owner manage
@@ -101,12 +99,12 @@ func (a *API) issueLuckPermsCommand(w http.ResponseWriter, r *http.Request, name
 // the path, not the body) is validated here.
 func (a *API) issueAccessCommand(w http.ResponseWriter, r *http.Request, name, command string) (string, bool) {
 	p := principalFromContext(r.Context())
-	if err := naming.ValidateServerName(name); err != nil {
+	if err := validateManagedServerName(r, name); err != nil {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
 		return "", false
 	}
 
-	rec, err := a.Repo.ServerByName(r.Context(), name)
+	rec, err := a.managedServerRecord(r.Context(), name)
 	if err != nil {
 		a.writeLookupError(w, r, err)
 		return "", false

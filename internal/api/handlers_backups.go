@@ -183,7 +183,7 @@ func restoreMayRead(jobs []AsyncJob, id string) bool {
 func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	name := r.PathValue("name")
-	if err := naming.ValidateServerName(name); err != nil {
+	if err := validateManagedServerName(r, name); err != nil {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
 		return
 	}
@@ -191,7 +191,7 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 	// Ownership: owner or admin, mirroring handleStop. An unknown server is 404; an
 	// unowned (released) server fails the owner check for everyone but admin, which
 	// is exactly the "must re-claim first" rule.
-	rec, err := a.Repo.ServerByName(r.Context(), name)
+	rec, err := a.managedServerRecord(r.Context(), name)
 	if err != nil {
 		a.writeLookupError(w, r, err)
 		return
@@ -367,12 +367,12 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 func (a *API) handleBackupNow(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	name := r.PathValue("name")
-	if err := naming.ValidateServerName(name); err != nil {
+	if err := validateManagedServerName(r, name); err != nil {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
 		return
 	}
 
-	rec, err := a.Repo.ServerByName(r.Context(), name)
+	rec, err := a.managedServerRecord(r.Context(), name)
 	if err != nil {
 		a.writeLookupError(w, r, err)
 		return

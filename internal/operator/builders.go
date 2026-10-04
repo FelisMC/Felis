@@ -269,15 +269,18 @@ func buildStatefulSet(server *v1alpha1.MinecraftServer, replicas int32, felisIma
 	// Every server first hands its world volume to the game uid (prepareDataInitContainer),
 	// since the pod runs as that uid and a world an older root-run release wrote would
 	// otherwise be read-only to it. An arbitrary user Paper image then gets the forwarding
-	// config written for it (it does not consume FELIS_FORWARDING_SECRET itself); system
-	// servers (login/lobby) are Felis-built and handle forwarding in their own
-	// entrypoints. Last, every server waits for its egress fence (egressGateInitContainer).
+	// config written for it (it does not consume FELIS_FORWARDING_SECRET itself).
+	// The lobby uses the same merge so custom settings survive; the login Limbo
+	// handles its own properties format. Every server then waits for its egress fence.
 	// Without a felis image name there is nothing to run any step with.
 	var initContainers []corev1.Container
 	if felisImage != "" {
 		initContainers = append(initContainers, prepareDataInitContainer(felisImage))
-		if server.Labels[v1alpha1.LabelSystemRole] == "" {
+		if server.Labels[v1alpha1.LabelSystemRole] != naming.SystemLoginServer {
 			initContainers = append(initContainers, forwardingInitContainer(felisImage))
+			if server.Labels[v1alpha1.LabelSystemRole] == naming.SystemLobbyServer {
+				container.Env = append(container.Env, corev1.EnvVar{Name: "FELIS_MANAGED_FORWARDING", Value: "true"})
+			}
 		}
 		gate := egressGateInitContainer(felisImage)
 		if server.Spec.NodeName != "" || (len(gateProbe) > 0 && gateProbe[0] != "") {
@@ -447,8 +450,8 @@ func forwardingSecretEnvVar() corev1.EnvVar {
 // at all: no capability, a read-only root filesystem, and the files it writes are
 // owned by the very uid that rewrites them on boot.
 //
-// Only user servers get it: the Felis-built system images (login limbo, lobby) already
-// consume the secret in their own entrypoints, and the login limbo is not Paper at all.
+// User Paper servers and the lobby share this merge. The login Limbo handles
+// its own properties format in its entrypoint.
 func forwardingInitContainer(felisImage string) corev1.Container {
 	return corev1.Container{
 		Name:    "init-forwarding",

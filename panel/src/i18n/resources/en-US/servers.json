@@ -64,7 +64,7 @@
   "schedules_link_title": "Scheduled tasks",
   "schedules_link_desc": "Restart, back up or run commands at set times.",
   "system_service": "System service",
-  "system_service_hint": "Provisioned and managed by the platform (felis systemservers); it accepts no user operations.",
+  "system_service_hint": "Staff manage system services in Login & lobby.",
   "players_back_to_console": "Back to console",
   "players_not_yours_title": "Not your server",
   "players_not_yours_body": "Only the owner or an admin can manage this server's players.",
@@ -268,5 +268,7 @@
   "migration_state_restoring": "Restoring and verifying target world",
   "migration_state_switching": "Switching active volume",
   "migration_state_succeeded": "Migration complete; start manually after inspection",
-  "migration_state_failed": "Migration failed; server remains stopped"
+  "migration_state_failed": "Migration failed; server remains stopped",
+  "system_customize": "Customize space",
+  "edit_system_desc": "Adjust the name, image and resources. A replacement must retain the Felis login or menu plugin and match the proxy protocol. System services do not stop when idle."
 }

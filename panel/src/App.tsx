@@ -59,6 +59,9 @@ const UsersPage = lazyWithReload(() =>
 const UserDetailPage = lazyWithReload(() =>
   import("@/pages/admin/UserDetailPage").then((m) => ({ default: m.UserDetailPage })),
 );
+const LobbyPage = lazyWithReload(() =>
+  import("@/pages/admin/LobbyPage").then((m) => ({ default: m.LobbyPage })),
+);
 const UpdatesPage = lazyWithReload(() =>
   import("@/pages/admin/UpdatesPage").then((m) => ({ default: m.UpdatesPage })),
 );
@@ -121,6 +124,7 @@ export default function App() {
                   so the section root and any stale bookmarks land somewhere useful. */}
               <Route path="admin" element={<RequireAdmin />}>
                 <Route index element={<Navigate to="/admin/images" replace />} />
+                <Route path="lobby" element={<LobbyPage />} />
                 <Route path="images" element={<ImageAdmin />} />
                 <Route path="builds" element={<ImageBuildPage />} />
                 <Route path="submissions" element={<SubmissionsPage />} />

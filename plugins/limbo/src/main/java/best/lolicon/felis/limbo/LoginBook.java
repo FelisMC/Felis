@@ -1,5 +1,7 @@
 package best.lolicon.felis.limbo;
 
+import best.lolicon.felis.link.ExperienceConfig;
+import java.util.Map;
 import net.kyori.adventure.inventory.Book;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.ClickEvent;
@@ -30,15 +32,20 @@ final class LoginBook {
     }
 
     static Book book(String code, String url) {
-        Component page = Component.text("Felis 登录 / Login\n\n")
+        return book(code, url, new ExperienceConfig(Map.of()));
+    }
+
+    static Book book(String code, String url, ExperienceConfig settings) {
+        Component page = Component.text(settings.text("bookHeading", "Felis 登录 / Login") + "\n\n")
                 .append(Component.text("绑定码 / Code:\n"))
                 .append(Component.text(code + "\n\n").color(NamedTextColor.GOLD))
-                .append(Component.text("▶ 点此打开登录页\n▶ Open login page\n")
+                .append(Component.text(settings.text("bookAction", "▶ 点此打开登录页\n▶ Open login page") + "\n")
                         .color(NamedTextColor.AQUA)
                         .clickEvent(ClickEvent.openUrl(url)))
-                .append(Component.text("\n在系统浏览器中完成。\nUse your SYSTEM browser —\nnot WeChat / QQ (passkey\nwon't work there).")
+                .append(Component.text("\n" + settings.text("bookHelp", "在系统浏览器中完成。\nUse your SYSTEM browser —\nnot WeChat / QQ (passkey\nwon't work there)."))
                         .color(NamedTextColor.GRAY));
-        return Book.book(Component.text("Felis Login"), Component.text("Felis"), page);
+        return Book.book(Component.text(settings.text("bookTitle", "Felis Login")),
+                Component.text(settings.text("bookAuthor", "Felis")), page);
     }
 
     /** chatLine renders one chat line with § colour codes, its web addresses clickable. */

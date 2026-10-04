@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import {
   AlertTriangle,
   ArrowUp,
@@ -115,6 +115,7 @@ type Naming =
  *  instead of letting each call fail. */
 export function ServerFiles() {
   const { name = "" } = useParams();
+  const [params] = useSearchParams();
   const { t, i18n } = useTranslation("files");
   const locale = i18n.language;
   const { isAdmin, loading: tierLoading } = useTier();
@@ -128,7 +129,7 @@ export function ServerFiles() {
   const owned = canManage(isAdmin, mineQ.data, name);
   const stopped = statusQ.data?.phase === "Stopped";
 
-  const [dir, setDir] = useState("");
+  const [dir, setDir] = useState(params.get("path") ?? "");
   const [entries, setEntries] = useState<ServerFileEntry[] | null>(null);
   const [truncated, setTruncated] = useState(false);
   const [listErr, setListErr] = useState<unknown>(null);

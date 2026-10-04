@@ -26,6 +26,7 @@ import (
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/fileedit"
+	"felis.lolicon.best/internal/naming"
 )
 
 // API holds the dependencies shared by every handler.
@@ -1197,7 +1198,7 @@ func (l *streamLimiter) release(key string) {
 // reconcile is idempotent and the §18 reaper / §9.3 quota bound steady-state
 // load; the cap exists to refuse an obvious flood, not to hold a hard ceiling.
 func (a *API) withinRunningCap(ctx context.Context, info *ServerInfo) (bool, error) {
-	if a.MaxRunningServers <= 0 {
+	if a.MaxRunningServers <= 0 || naming.IsSystemServer(info.Name) {
 		return true, nil
 	}
 	if info.DesiredState == string(v1alpha1.DesiredRunning) {

@@ -678,3 +678,23 @@ func assertNoTemporaries(t *testing.T, dir string) {
 		}
 	}
 }
+
+func TestReadRedactsLimboForwardingSecret(t *testing.T) {
+	root := t.TempDir()
+	props := "spawn-x=8\nforwarding-secrets=shared-key\nvelocity-modern=true\n"
+	if err := os.WriteFile(filepath.Join(root, "server.properties"), []byte(props), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(filepath.Join(root, "server.properties"), filepath.Join(root, "copy.properties")); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"server.properties", "copy.properties"} {
+		res, err := run(root, OpRead, path, nil, "")
+		if err != nil || res.Code != "" {
+			t.Fatalf("read: %+v %v", res, err)
+		}
+		if strings.Contains(string(res.Content), "shared-key") || !strings.Contains(string(res.Content), "spawn-x=8") {
+			t.Fatalf("unsafe redaction: %s", res.Content)
+		}
+	}
+}

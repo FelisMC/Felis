@@ -98,7 +98,7 @@ test("an unlinked Owner can manage the panel, then preview and confirm a game ro
 // Admin pages are chunks of their own, so a player never downloads them: every
 // page module is fetched by its name (/src/pages/admin/UsersPage.tsx under the
 // dev server, /assets/UsersPage-<hash>.js in a build).
-const ADMIN_PAGE = /\/(UsersPage|UserDetailPage|ImageAdmin|ImageBuildPage|SubmissionsPage|UpdatesPage)[.-]/;
+const ADMIN_PAGE = /\/(UsersPage|UserDetailPage|LobbyPage|ImageAdmin|ImageBuildPage|SubmissionsPage|UpdatesPage)[.-]/;
 const ACCOUNT_PAGE = /\/Account[.-]/;
 
 test("a player's pages load on demand and never pull in the admin pages", async ({ page, signIn }) => {
@@ -129,4 +129,23 @@ test("on a wide screen the LuckPerms player list runs down its column", async ({
   // A taller screen grows the card to its cap, whatever the roster holds.
   await page.setViewportSize({ width: 1280, height: 1000 });
   await expect.poll(async () => (await list.locator("..").boundingBox())!.height).toBe(700);
+});
+
+test("staff customize the login space through the persistent file editor", async ({ page, signIn }) => {
+  await signIn("owner");
+  await page.goto("/admin/lobby?space=login");
+  await expect(page.getByRole("heading", { name: t("lobby:title"), exact: true })).toBeVisible();
+  const heading = page.getByLabel(t("lobby:bookHeading"));
+  await expect(heading).toBeVisible();
+  await heading.fill("Welcome to our network");
+  await page.getByRole("button", { name: t("lobby:save"), exact: true }).click();
+  await expect(page.getByText(t("lobby:saved"), { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(heading).toHaveValue("Welcome to our network");
+});
+
+test("players cannot open the lobby administration page", async ({ page, signIn }) => {
+  await signIn("linked");
+  await page.goto("/admin/lobby");
+  await expect(page.getByRole("heading", { name: t("lobby:title"), exact: true })).toHaveCount(0);
 });

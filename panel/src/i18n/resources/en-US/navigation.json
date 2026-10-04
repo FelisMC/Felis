@@ -9,5 +9,6 @@
   "admin_images": "Images",
   "admin_builds": "Build Pipeline",
   "admin_submissions": "Submissions",
-  "admin_updates": "Maintenance & Backups"
+  "admin_updates": "Maintenance & Backups",
+  "admin_lobby": "Login & lobby"
 }

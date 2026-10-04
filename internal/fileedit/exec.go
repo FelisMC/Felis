@@ -456,7 +456,7 @@ const (
 	redactedValue = "<redacted by felis>"
 )
 
-// redactSecretProps blanks the RCON password when server.properties is read.
+// redactSecretProps hides RCON and Limbo forwarding secrets when server.properties is read.
 //
 // Unlike secretConfigPath this is a value redaction rather than a whole-file
 // denial, because the file is not platform material that merely happens to sit in
@@ -467,6 +467,9 @@ const (
 // anyone else's server; it is withheld because §286 draws the line at the frontend
 // regardless of blast radius, and because the console already gives an owner every
 // capability the password would.
+//
+// Limbo stores its cluster forwarding key in this file too; that value is
+// withheld by the same redaction and refreshed by the Limbo entrypoint.
 //
 // The write path is left alone on purpose, mirroring the reasoning at
 // secretConfigPath: felis-lobby's entrypoint rewrites all three rcon keys from the
@@ -481,8 +484,10 @@ func redactSecretProps(name string, content []byte) []byte {
 	for i, line := range lines {
 		// TrimSpace before matching: a properties key may be indented, and the
 		// trailing \r of a CRLF file would otherwise ride along into the value.
-		if bytes.HasPrefix(bytes.TrimSpace(line), []byte(rconPasswordKey+"=")) {
-			lines[i] = []byte(rconPasswordKey + "=" + redactedValue)
+		for _, key := range []string{rconPasswordKey, "forwarding-secrets"} {
+			if bytes.HasPrefix(bytes.TrimSpace(line), []byte(key+"=")) {
+				lines[i] = []byte(key + "=" + redactedValue)
+			}
 		}
 	}
 	return bytes.Join(lines, []byte("\n"))
