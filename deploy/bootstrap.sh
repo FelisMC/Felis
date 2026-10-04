@@ -4707,6 +4707,13 @@ offsite_enabled() {
 # database password.
 write_felis_toml() {
   local target="$1" db_addr="$2" deployment="${3:-}" deployment_line="" smtp_block auth_body auth_source_blocks registry_block archive_block offsite_section
+  local config_keys game_version_line=""
+  # main's installer also installs older releases, whose strict TOML parser rejects
+  # newer optional keys. Ask the installed binary rather than guessing from its stamp.
+  config_keys="$("$HOST_BIN" bootstrap-assets config-keys 2>/dev/null || true)"
+  if grep -Fxq 'velocity.game_version' <<<"$config_keys"; then
+    game_version_line="game_version = \"${MC_VERSION:-}\""
+  fi
   if [ -n "$deployment" ]; then
     # Starts with the newline that ends the url line, so the pod copy has no blank line there.
     deployment_line="
@@ -4762,7 +4769,7 @@ login_image = "${FELIS_LIMBO_IMAGE}"
 lobby_image = "${FELIS_LOBBY_IMAGE}"
 # The public port players connect on; the panel shows it in server addresses.
 game_port = ${FELIS_GAME_PORT}
-game_version = "${MC_VERSION:-}"
+${game_version_line}
 
 [registry]
 url = "${REGISTRY_URL}"

@@ -2042,11 +2042,16 @@ run_write() { # out-file [state-dir] [database-deployment]; under the installer'
     [ -z "${CAT_FAILS:-}" ] || cat() { head -c 40; return 1; }
     persisted_smtp_block() { :; }
     persisted_auth_source_blocks() { :; }
+    felis() {
+      [ "$*" = "bootstrap-assets config-keys" ] || return 2
+      [ "${OLD_CONFIG:-0}" != 1 ] || return 2
+      printf "%s\n" velocity.game_version
+    }
     . "$FNFILE"
     FELIS_ROOT_DOMAIN=r.example.com DB_USER=u DB_PASSWORD=p DB_NAME=d MINECRAFT_NS=minecraft \
     FELIS_EGRESS_MODE=nodeport FELIS_LIMBO_IMAGE=li FELIS_LOBBY_IMAGE=lo FELIS_GAME_PORT=25570 MC_VERSION=26.3 \
     REGISTRY_URL=registry.felis.svc:5000 BUILD_NS=felis-build FELIS_ARCHIVE_LOCAL_PATH=/a \
-    FELIS_OFFSITE_BUCKET= write_felis_toml "$OUT_TOML" 127.0.0.1:15432 "$DEPLOY"'
+    HOST_BIN=felis FELIS_OFFSITE_BUCKET= write_felis_toml "$OUT_TOML" 127.0.0.1:15432 "$DEPLOY"'
 }
 
 run_write "$rdir/out.toml"
@@ -2086,6 +2091,13 @@ expect "a re-run carries the scheduled backup retention" 'scheduled_retention = 
 expect "the archive mount stays installer-owned" 'local_path = "/a"' "$out"
 expect "the panel learns the public game port" 'game_port = 25570' "$out"
 expect "the panel learns the built login protocol" 'game_version = "26.3"' "$out"
+(OLD_CONFIG=1 run_write "$rdir/release.toml")
+release_config="$(cat "$rdir/release.toml")"
+case "$release_config" in
+  *game_version*) echo "FAIL an older binary must not receive velocity.game_version"; fails=$((fails + 1)) ;;
+  *) echo "PASS an older binary receives no unsupported game-version key" ;;
+esac
+expect "an older binary still receives the public game port" 'game_port = 25570' "$release_config"
 expect "a re-run keeps the off-site bucket, set apart from the next section" '[offsite]
 endpoint = "https://objects.example"
 bucket = "felis-offsite"

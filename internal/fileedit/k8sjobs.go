@@ -157,25 +157,6 @@ func (k *K8sRunner) awaitPod(ctx context.Context, p JobParams) (*corev1.Pod, err
 	}
 }
 
-// podLog reads a finished Pod's log. Follow is off — the Pod has already
-// terminated, so the log is complete and a follow would merely block until the
-// stream closed.
-func (k *K8sRunner) podLog(ctx context.Context, namespace, pod string) (string, error) {
-	stream, err := k.cs.CoreV1().Pods(namespace).GetLogs(pod, &corev1.PodLogOptions{
-		Container: containerName,
-	}).Stream(ctx)
-	if err != nil {
-		return "", fmt.Errorf("fileedit: read file job log: %w", err)
-	}
-	defer stream.Close()
-
-	b, err := io.ReadAll(io.LimitReader(stream, maxLogBytes))
-	if err != nil && !errors.Is(err, io.EOF) {
-		return "", fmt.Errorf("fileedit: read file job log: %w", err)
-	}
-	return string(b), nil
-}
-
 // extractResult finds the marked payload in a Pod log. It scans for the LAST line
 // carrying ResultPrefix because pods/log returns stdout and stderr MERGED: a Go
 // runtime warning or a libc message can appear anywhere in the stream, so the

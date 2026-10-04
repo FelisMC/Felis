@@ -5,7 +5,26 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/BurntSushi/toml"
+
+	"felis.lolicon.best/internal/config"
 )
+
+func TestBootstrapConfigKeys(t *testing.T) {
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"bootstrap-assets", "config-keys"}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit code = %d: %s", code, errBuf.String())
+	}
+	var cfg config.Config
+	meta, err := toml.Decode(strings.TrimSpace(out.String())+` = "26.3"`, &cfg)
+	if err != nil || len(meta.Undecoded()) != 0 {
+		t.Fatalf("advertised config key is unsupported: %v, undecoded: %v", err, meta.Undecoded())
+	}
+	if cfg.Velocity.GameVersion != "26.3" {
+		t.Fatalf("advertised key did not set the game version: %q", cfg.Velocity.GameVersion)
+	}
+}
 
 func TestRunNoArgsPrintsUsage(t *testing.T) {
 	var out, errBuf bytes.Buffer
