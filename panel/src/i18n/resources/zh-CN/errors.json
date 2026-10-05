@@ -144,5 +144,6 @@
   "minecraft_profile_not_found": "所选认证源中不存在此角色。请检查角色名或 UUID。",
   "auth_sources_unavailable": "认证源管理暂不可用。",
   "auth_sources_changed": "认证源已被其他操作修改。请放弃当前更改并重新读取后再保存。",
-  "auth_source_tag_locked": "已保存的认证源标识不能改名或移除，请使用停用。"
+  "auth_source_tag_locked": "已保存的认证源标识不能改名或移除，请使用停用。",
+  "distributed_unavailable": "分布式部署未配置。请先按部署流程配置主控与 worker 节点。"
 }

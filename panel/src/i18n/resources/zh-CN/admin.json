@@ -317,5 +317,19 @@
   "platform_unsaved": "有尚未保存的更改",
   "platform_live": "保存后会立即在所有 API 实例上生效。",
   "platform_discard": "放弃更改",
-  "platform_save": "保存并生效"
+  "platform_save": "保存并生效",
+  "platform_distribution_title": "多节点分布式部署",
+  "platform_distribution_unknown": "部署模式未确认",
+  "platform_distribution_enabled": "分布式模式已启用",
+  "platform_distribution_disabled": "单节点模式",
+  "platform_distribution_architecture": "一个主控运行 API、operator、数据库、镜像仓库和公网入口；多个 worker 节点承载游戏服务器及维护任务。当前不支持多个主控、主控高可用或自动故障迁移。",
+  "platform_distribution_enable_hint": "启用分布式模式需要在维护窗口使用安装器配置主控身份、WireGuard、归档服务和节点隔离。该部署配置不能通过面板即时切换。",
+  "platform_distribution_join": "接入与批准 worker 节点",
+  "platform_distribution_prepare": "先备份数据库与 k3s 状态，按部署文档配置主控，并更新所有现有节点的完整对等地址列表。worker 必须与主控使用相同架构和 k3s 版本。",
+  "platform_distribution_token": "在主控以 root 为每个 worker 创建独立的限时接入令牌。令牌文件须通过可信 SSH/SCP 传输，不得向 worker 提供 server token 或管理员 kubeconfig。以下命令中的占位符须替换为实际值。",
+  "platform_distribution_worker": "在 worker 执行部署文档中的 felis node join，填写主控地址、固定节点地址、令牌文件、Registry 地址及完整对等地址列表。新节点在批准前保持 NoSchedule 隔离状态。",
+  "platform_distribution_approve": "在主控批准节点。该命令验证节点身份、网络隔离、镜像拉取和跨节点连通性；任何检查失败均保留隔离状态。批准检查会删除指定缓存镜像，须在该节点尚无游戏任务时执行。",
+  "platform_distribution_runbook": "查看完整部署与验收流程",
+  "platform_distribution_management": "在线且已批准的 worker 可在创建服务器时选择。已有服务器须完全停止后才能迁移；迁移完成后仍保持停止，源世界卷保留。",
+  "platform_distribution_servers": "管理服务器节点与迁移"
 }

@@ -1,6 +1,9 @@
+import { Link } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { Loader2, RefreshCw, Save, Settings } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { DistributedNodes } from "@/components/DistributedNodes";
+import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/PageHeader";
 import { MessageLine } from "@/components/MessageLine";
 import { isReauthCancelled, useReauth } from "@/components/ReauthDialog";
@@ -9,11 +12,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api, humanizeError } from "@/lib/api";
-import { useAsync, useUnsavedGuard } from "@/lib/hooks";
+import { useAsync, useConfig, useUnsavedGuard } from "@/lib/hooks";
 import type { WakePolicySettings } from "@/lib/types";
 
 export function PlatformSettingsPage() {
   const { t } = useTranslation("admin");
+  const config = useConfig();
   const query = useAsync(api.getWakePolicy, []);
   const reauth = useReauth();
   const [saved, setSaved] = useState<WakePolicySettings | null>(null);
@@ -64,6 +68,29 @@ export function PlatformSettingsPage() {
         <Button disabled={!dirty || !valid || busy} onClick={() => void save()}>{saving ? <Loader2 className="animate-spin" /> : <Save />}{t("platform_save")}</Button>
       </div>
     </div>
+    <Card>
+      <CardHeader><CardTitle>{t("platform_distribution_title")}</CardTitle></CardHeader>
+      <CardContent className="space-y-4">
+        <Badge variant={config?.distributed && !config.fallback ? "default" : "muted"}>
+          {t(!config || config.fallback ? "platform_distribution_unknown" : config.distributed ? "platform_distribution_enabled" : "platform_distribution_disabled")}
+        </Badge>
+        <p className="text-sm leading-relaxed text-muted-foreground">{t("platform_distribution_architecture")}</p>
+        {config && !config.fallback && !config.distributed && <p className="text-sm leading-relaxed">{t("platform_distribution_enable_hint")}</p>}
+        <details className="rounded-lg border border-border p-4">
+          <summary className="cursor-pointer text-sm font-medium">{t("platform_distribution_join")}</summary>
+          <ol className="mt-4 list-decimal space-y-3 pl-5 text-sm leading-relaxed text-muted-foreground">
+            <li>{t("platform_distribution_prepare")}</li>
+            <li>{t("platform_distribution_token")}<pre className="mt-2 overflow-x-auto rounded-md bg-muted p-3 text-xs">{"felis node token --name <worker-name> --ttl 10m --out /root/worker.bootstrap"}</pre></li>
+            <li>{t("platform_distribution_worker")}</li>
+            <li>{t("platform_distribution_approve")}<pre className="mt-2 overflow-x-auto rounded-md bg-muted p-3 text-xs">{"felis node approve --name <worker-name> --ssh-target <worker-ssh-alias> --image <felis-image>\nfelis node list"}</pre></li>
+          </ol>
+          <Button asChild variant="outline" size="sm" className="mt-4"><a href="https://github.com/FelisMC/Felis/blob/main/docs/distributed.md" target="_blank" rel="noreferrer">{t("platform_distribution_runbook")}</a></Button>
+        </details>
+        <p className="text-sm leading-relaxed text-muted-foreground">{t("platform_distribution_management")}</p>
+        <Button asChild variant="outline" size="sm"><Link to="/servers">{t("platform_distribution_servers")}</Link></Button>
+      </CardContent>
+    </Card>
+    {config?.distributed && !config.fallback && <DistributedNodes />}
     {reauth.dialog}
   </div>;
 }

@@ -296,5 +296,11 @@
   "host_recovery_verify": "Pod 仍在终止或节点不可达时，无法确认进程已停止。请检查对应节点及容器运行时；强制删除 Pod 不能作为进程退出的依据。",
   "log_show_rcon": "显示 RCON 连接日志",
   "log_hide_rcon": "隐藏 RCON 连接日志",
-  "log_rcon_only": "RCON 连接生命周期日志已隐藏。其他日志将在产生后显示。"
+  "log_rcon_only": "RCON 连接生命周期日志已隐藏。其他日志将在产生后显示。",
+  "nodes_loading": "正在读取执行节点…",
+  "nodes_empty": "未发现执行节点。请检查集群连接及节点接入状态。",
+  "node_controller": "主控节点",
+  "node_worker": "Worker 节点",
+  "node_unassigned": "未分配角色",
+  "nodes_reload": "重新读取"
 }

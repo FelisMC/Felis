@@ -2,7 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MigrationDialog } from "./DistributedNodes";
+import { DistributedNodes, MigrationDialog } from "./DistributedNodes";
 
 const calls = vi.hoisted(() => ({ nodes: vi.fn(), migration: vi.fn(), retryMigration: vi.fn(), migrateServer: vi.fn() }));
 vi.mock("@/lib/api", async (importActual) => {
@@ -40,5 +40,18 @@ describe("durable migration", () => {
     expect((retry as HTMLButtonElement).disabled).toBe(true);
     await user.click(retry);
     expect(calls.retryMigration).not.toHaveBeenCalled();
+  });
+});
+
+describe("execution node overview", () => {
+  it("shows a failed read and reloads without interpreting failure as an empty cluster", async () => {
+    calls.nodes.mockRejectedValueOnce({ status: 503, code: "distributed_unavailable" });
+    calls.nodes.mockResolvedValueOnce([]);
+    render(<DistributedNodes />);
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Distributed deployment is not configured. Configure the controller and worker nodes using the deployment runbook first.");
+    expect(screen.queryByText(/No execution nodes were found/)).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Reload nodes" }));
+    expect(await screen.findByText(/No execution nodes were found/)).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });

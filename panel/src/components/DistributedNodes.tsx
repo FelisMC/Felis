@@ -1,3 +1,6 @@
+import { RefreshCw, Loader2 } from "lucide-react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { api, humanizeError } from "@/lib/api";
@@ -10,21 +13,25 @@ import { Label } from "@/components/ui/label";
 
 export function DistributedNodes() {
   const { t } = useTranslation("servers");
-  const nodes = useAsync(api.nodes);
+  const nodes = useAsync(api.nodes, [], { coalesce: true });
   usePolling(nodes.reload, 10_000);
   return (
-    <div className="rounded-lg border p-4 space-y-2">
-      <h2 className="font-medium">{t("nodes")}</h2>
+    <Card>
+      <CardHeader className="flex-row items-center justify-between gap-3"><CardTitle>{t("nodes")}</CardTitle><Button variant="outline" size="sm" disabled={nodes.loading} onClick={nodes.reload}><RefreshCw />{t("nodes_reload")}</Button></CardHeader>
+      <CardContent className="space-y-3">
+      {nodes.loading && <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />{t("nodes_loading")}</p>}
+      {!nodes.loading && !nodes.error && nodes.data?.length === 0 && <p className="text-sm text-muted-foreground">{t("nodes_empty")}</p>}
       {!!nodes.error && <InlineError message={humanizeError(nodes.error)} />}
       <ul className="space-y-1 text-sm">{nodes.data?.map((n) => (
         <li key={n.name} className="flex flex-wrap gap-3">
-          <code>{n.name}</code><span>{n.role || t("node_pending")}</span>
-          <span>{n.ready ? t("node_online") : t("node_offline")}</span>
-          <span>{n.approved ? t("node_approved") : t("node_pending")}</span>
+          <code>{n.name}</code><span>{t(n.role === "controller" ? "node_controller" : n.role === "worker" ? "node_worker" : "node_unassigned")}</span>
+          <Badge variant={n.ready ? "default" : "destructive"}>{n.ready ? t("node_online") : t("node_offline")}</Badge>
+          {n.role === "worker" && <Badge variant={n.approved ? "default" : "muted"}>{n.approved ? t("node_approved") : t("node_pending")}</Badge>}
           <span className="text-muted-foreground">{n.architecture} · {n.addresses.join(", ")}</span>
         </li>
       ))}</ul>
-    </div>
+      </CardContent>
+    </Card>
   );
 }
 

@@ -1253,6 +1253,8 @@ export function humanizeError(e: unknown): string {
   switch (err.code) {
     // Session doors (spec §B): every passwordless door 403s this when local
     // sessions are disabled on a Zero-Trust-only deployment.
+    case "distributed_unavailable":
+      return t("distributed_unavailable");
     case "local_auth_disabled":
       return t("local_auth_disabled");
     case "staff_account":

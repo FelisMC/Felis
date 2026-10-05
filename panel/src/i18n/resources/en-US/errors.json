@@ -144,5 +144,6 @@
   "minecraft_profile_not_found": "The profile was not found in the selected authentication source. Check the profile name or UUID.",
   "auth_sources_unavailable": "Authentication source management is unavailable.",
   "auth_sources_changed": "Authentication sources changed. Discard your edits and reload before saving.",
-  "auth_source_tag_locked": "Saved source IDs cannot be renamed or removed. Disable the source instead."
+  "auth_source_tag_locked": "Saved source IDs cannot be renamed or removed. Disable the source instead.",
+  "distributed_unavailable": "Distributed deployment is not configured. Configure the controller and worker nodes using the deployment runbook first."
 }

@@ -321,5 +321,19 @@
   "platform_unsaved": "Unsaved changes",
   "platform_live": "Saved changes apply immediately on all API replicas.",
   "platform_discard": "Discard changes",
-  "platform_save": "Save and apply"
+  "platform_save": "Save and apply",
+  "platform_distribution_title": "Distributed deployment",
+  "platform_distribution_unknown": "Deployment mode unconfirmed",
+  "platform_distribution_enabled": "Distributed mode enabled",
+  "platform_distribution_disabled": "Single-node mode",
+  "platform_distribution_architecture": "One controller runs the API, operator, database, registry, and public entry point. Multiple workers run game servers and maintenance tasks. Multiple controllers, controller high availability, and automatic failover are not supported.",
+  "platform_distribution_enable_hint": "Enabling distributed mode requires installer configuration of controller identity, WireGuard, archive transport, and node isolation during a maintenance window. This deployment configuration cannot be switched live from the panel.",
+  "platform_distribution_join": "Connect and approve worker nodes",
+  "platform_distribution_prepare": "Back up the database and k3s state, configure the controller using the deployment runbook, and update the complete peer address list on all existing nodes. Workers must use the same architecture and k3s version as the controller.",
+  "platform_distribution_token": "On the controller, create a separate expiring bootstrap token for each worker as root. Transfer the token file over trusted SSH/SCP. Do not provide the server token or administrator kubeconfig to workers. Replace command placeholders with actual values.",
+  "platform_distribution_worker": "Run felis node join on the worker using the runbook, supplying the controller address, fixed node address, token file, Registry address, and complete peer list. New nodes remain isolated with NoSchedule until approval.",
+  "platform_distribution_approve": "Approve the node from the controller. The command verifies identity, network isolation, image pulling, and cross-node connectivity. Failed checks preserve isolation. Approval removes the specified cached image and must run before the node hosts game workloads.",
+  "platform_distribution_runbook": "Deployment and acceptance runbook",
+  "platform_distribution_management": "Online approved workers can be selected when creating a server. Existing servers must be fully stopped before migration. Successful migration leaves the server stopped and retains its source world volume.",
+  "platform_distribution_servers": "Manage server placement and migration"
 }
