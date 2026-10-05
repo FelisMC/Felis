@@ -36,6 +36,18 @@ export const test = base.extend<{ signIn: (account: Account) => Promise<void> }>
 
 export { expect };
 
+export async function expectPinnedHeading(page: Page, title: string, top: number) {
+  const heading = page.getByRole("heading", { name: title, exact: true });
+  const before = (await heading.boundingBox())!;
+  const pane = page.getByRole("main");
+  await pane.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+  await expect.poll(() => pane.evaluate((el) => el.scrollTop)).toBeGreaterThan(100);
+  const after = (await heading.boundingBox())!;
+  expect(after.y).toBeCloseTo(before.y, 0);
+  expect(after.y).toBeGreaterThanOrEqual(top);
+  await expect(heading).toBeInViewport({ ratio: 1 });
+}
+
 /** expectFitsScreen fails when anything scrolls sideways or a visible element
  *  pokes past the viewport edge (an overflow-hidden parent would just cut it
  *  off). The shell scrolls in an overflow-y-auto pane, whose computed

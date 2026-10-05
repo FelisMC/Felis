@@ -1,4 +1,4 @@
-import { test, expect, t, expectFitsScreen } from "./fixtures";
+import { test, expect, t, expectFitsScreen, expectPinnedHeading } from "./fixtures";
 
 test("the menu drawer reaches the other sections", async ({ page, signIn }) => {
   await signIn("linked");
@@ -70,4 +70,13 @@ test("authentication source drafts with long IDs fit a phone", async ({ page, si
   await page.getByLabel(t("authSources:tag")).nth(1).fill("a".repeat(128));
   await expectFitsScreen(page);
   await expect(page.getByRole("button", { name: t("authSources:remove"), exact: true })).toBeVisible();
+});
+
+test("the mobile navigation and page heading stay visible above a scrolling form", async ({ page, signIn }) => {
+  await signIn("owner");
+  await page.goto("/admin/lobby");
+  await expect(page.getByLabel(t("lobby:bookTitle"))).toBeEnabled();
+  await expectPinnedHeading(page, t("lobby:title"), 56);
+  await expect(page.getByRole("button", { name: t("common:open_menu") })).toBeInViewport({ ratio: 1 });
+  await expectFitsScreen(page);
 });

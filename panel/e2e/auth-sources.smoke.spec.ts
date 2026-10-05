@@ -7,6 +7,7 @@ test("Owner manages durable authentication sources from the sidebar", async ({ p
   await expect(page).toHaveURL(/\/admin\/auth-sources$/);
   await expect(page.getByLabel(t("authSources:tag"))).toHaveValue("littleskin");
   await expect(page.getByLabel(t("authSources:tag"))).toHaveAttribute("readonly", "");
+  await page.getByRole("button", { name: t("authSources:expand", { name: "littleskin" }) }).click();
   await page.getByRole("button", { name: t("authSources:add"), exact: true }).click();
   await page.getByLabel(t("authSources:tag")).nth(1).fill("custom");
   await page.getByLabel(t("authSources:prefix")).nth(1).fill("CS");
@@ -14,12 +15,12 @@ test("Owner manages durable authentication sources from the sidebar", async ({ p
   await page.getByRole("button", { name: t("authSources:test"), exact: true }).nth(1).click();
   await expect(page.getByText(t("authSources:test_ok", { ms: 20 }), { exact: true })).toBeVisible();
   await page.getByRole("button", { name: t("authSources:move_up"), exact: true }).nth(1).click();
-  await page.getByRole("checkbox", { name: t("authSources:enabled"), exact: true }).nth(1).uncheck();
+  await page.getByRole("switch", { name: t("authSources:enabled"), exact: true }).nth(1).uncheck();
   await page.getByRole("button", { name: t("authSources:save"), exact: true }).click();
   await expect(page.getByText(t("authSources:saved"), { exact: true })).toBeVisible();
   await page.reload();
   await expect(page.getByLabel(t("authSources:tag")).nth(0)).toHaveValue("custom");
-  await expect(page.getByRole("checkbox", { name: t("authSources:enabled"), exact: true }).nth(1)).not.toBeChecked();
+  await expect(page.getByRole("switch", { name: t("authSources:enabled"), exact: true }).nth(1)).not.toBeChecked();
   await expect(page.getByRole("button", { name: t("authSources:remove"), exact: true })).toHaveCount(0);
   const available = await page.request.get("/api/v1/account/link/sources");
   expect((await available.json()).sources.map((source: { tag: string }) => source.tag)).toEqual(["mojang", "custom"]);

@@ -1,4 +1,57 @@
-import { test, expect, t, expectFitsScreen } from "./fixtures";
+import { test, expect, t, expectFitsScreen, expectPinnedHeading } from "./fixtures";
+
+test("admin headings share their size and gutters and stay pinned while content scrolls", async ({ page, signIn }) => {
+  await signIn("owner");
+  await page.setViewportSize({ width: 1440, height: 600 });
+  const metrics = [];
+  for (const [path, title] of [
+    ["/admin/submissions", "admin:submissions_title"],
+    ["/admin/lobby", "lobby:title"],
+    ["/admin/auth-sources", "authSources:title"],
+  ]) {
+    await page.goto(path);
+    const heading = page.getByRole("heading", { name: t(title), exact: true });
+    await expect(heading).toBeVisible();
+    metrics.push(await heading.evaluate((el) => ({ x: el.getBoundingClientRect().x, y: el.getBoundingClientRect().y, size: getComputedStyle(el).fontSize })));
+    expect(await page.getByRole("main").getByRole("heading", { level: 1 }).count()).toBe(0);
+    if (path === "/admin/auth-sources") {
+      await page.getByRole("button", { name: t("authSources:expand", { name: "littleskin" }) }).click();
+      await expectPinnedHeading(page, t(title), 0);
+    } else if (path === "/admin/lobby") {
+      await expect(page.getByLabel(t("lobby:bookTitle"))).toBeEnabled();
+      await expectPinnedHeading(page, t(title), 0);
+    }
+  }
+  expect(metrics[1]).toEqual(metrics[0]);
+  expect(metrics[2]).toEqual(metrics[0]);
+});
+
+test("saved authentication sources start closed and switches leave them closed", async ({ page, signIn }) => {
+  await signIn("owner");
+  await page.goto("/admin/auth-sources");
+  const expand = page.getByRole("button", { name: t("authSources:expand", { name: "littleskin" }) });
+  await expect(expand).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByLabel(t("authSources:prefix"))).toBeHidden();
+  const enabled = page.getByRole("switch", { name: t("authSources:enabled"), exact: true });
+  await enabled.focus();
+  await page.keyboard.press("Space");
+  await expect(enabled).toHaveAttribute("aria-checked", "false");
+  await expect(expand).toHaveAttribute("aria-expanded", "false");
+  await page.getByRole("button", { name: t("authSources:save"), exact: true }).click();
+  await expect(page.getByText(t("authSources:saved"), { exact: true })).toBeVisible();
+  await expand.click();
+  await expect(page.getByLabel(t("authSources:prefix"))).toBeVisible();
+});
+
+test("the console keeps a bounded log pane below the fixed heading", async ({ page, signIn }) => {
+  await signIn("owner");
+  await page.setViewportSize({ width: 1440, height: 960 });
+  await page.goto("/servers/lobby");
+  await expect(page.getByRole("textbox", { name: t("servers:command_label") })).toBeInViewport({ ratio: 1 });
+  await expect(page.getByRole("button", { name: t("servers:log_clear_btn") })).toBeInViewport({ ratio: 1 });
+  await expect(page.getByRole("heading", { name: "Hub Lobby", exact: true })).toBeInViewport({ ratio: 1 });
+  expect(await page.getByRole("main").evaluate((el) => el.scrollTop)).toBe(0);
+});
 
 test("space settings keep the form visible while reading configuration", async ({ page, signIn }) => {
   await signIn("owner");

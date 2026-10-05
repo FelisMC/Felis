@@ -13,7 +13,7 @@ const settings = (sources = [source()]): AuthSourcesSettings => ({ sources, revi
 function page() { render(<MemoryRouter><AuthSourcesPage /></MemoryRouter>); }
 const button = (name: string) => screen.getByRole("button", { name });
 const field = (label: string, index = 0) => screen.getAllByLabelText(label)[index] as HTMLInputElement;
-async function ready() { await waitFor(() => expect(field("Permanent source ID").disabled).toBe(false)); }
+async function ready() { await userEvent.click(await screen.findByRole("button", { name: "Expand littleskin" })); }
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -23,6 +23,32 @@ beforeEach(() => {
 });
 
 describe("AuthSourcesPage", () => {
+  it("collapses saved sources and retains unsaved edits through keyboard folding", async () => {
+    page();
+    const toggle = await screen.findByRole("button", { name: "Expand littleskin" });
+    expect(screen.queryByRole("textbox")).toBeNull();
+    toggle.focus();
+    await userEvent.keyboard("{Enter}");
+    fireEvent.change(field("Name collision prefix"), { target: { value: "NEW" } });
+    await userEvent.keyboard("{Enter}");
+    expect(screen.queryByRole("textbox")).toBeNull();
+    await userEvent.keyboard(" ");
+    expect(screen.getByRole("textbox", { name: "Name collision prefix" })).toHaveProperty("value", "NEW");
+    expect(calls.setAuthSources).not.toHaveBeenCalled();
+  });
+  it("toggles a closed source with the keyboard without expanding its fields", async () => {
+    page();
+    await screen.findByRole("button", { name: "Expand littleskin" });
+    expect((button("Reload") as HTMLButtonElement).disabled).toBe(false);
+    const enabled = screen.getByRole("switch", { name: "Enabled" });
+    enabled.focus();
+    await userEvent.keyboard(" ");
+    expect(enabled.getAttribute("aria-checked")).toBe("false");
+    expect(screen.queryByRole("textbox")).toBeNull();
+    await userEvent.click(button("Save & apply"));
+    await waitFor(() => expect(calls.setAuthSources).toHaveBeenCalledWith([{ ...source(), enabled: false }], "original"));
+    expect(screen.getByRole("button", { name: "Expand littleskin" })).toBeTruthy();
+  });
   it("shows disabled fields while loading, then protects saved IDs", async () => {
     let resolve!: (settings: AuthSourcesSettings) => void;
     calls.getAuthSources.mockReturnValue(new Promise((r) => { resolve = r; }));
@@ -37,8 +63,11 @@ describe("AuthSourcesPage", () => {
     expect(screen.queryByRole("button", { name: "Remove unsaved source" })).toBeNull();
   });
   it("adds a source, fixes a duplicate ID, saves and locks it without sending UI state", async () => {
-    page(); await ready();
+    page(); await screen.findByRole("button", { name: "Expand littleskin" });
     await userEvent.click(button("Add source"));
+    expect(screen.getByRole("button", { name: "Expand littleskin" }).getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByRole("button", { name: "Collapse New source" }).getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("textbox", { name: "Permanent source ID" })).toBe(field("Permanent source ID", 1));
     fireEvent.change(field("Permanent source ID", 1), { target: { value: "littleskin" } });
     expect(field("Permanent source ID", 1).readOnly).toBe(false);
     expect(button("Remove unsaved source")).toBeTruthy();
@@ -57,11 +86,14 @@ describe("AuthSourcesPage", () => {
     calls.getAuthSources.mockResolvedValue(settings([source(), source("custom", "CS")]));
     page(); await ready();
     await userEvent.click(screen.getAllByRole("button", { name: "Move source up" })[1]);
+    expect(screen.getByRole("button", { name: "Collapse littleskin" }).getAttribute("aria-controls")).toBe("source-fields-1");
+    expect(screen.getByRole("button", { name: "Expand custom" }).getAttribute("aria-expanded")).toBe("false");
     expect(field("Permanent source ID").value).toBe("custom");
-    await userEvent.click(screen.getAllByRole("checkbox", { name: "Enabled" })[0]);
+    await userEvent.click(screen.getAllByRole("switch", { name: "Enabled" })[0]);
     await userEvent.click(button("Save & apply"));
     await waitFor(() => expect(calls.setAuthSources).toHaveBeenCalledWith([{ ...source("custom", "CS"), enabled: false }, source()], "original"));
     await waitFor(() => expect((button("Save & apply") as HTMLButtonElement).disabled).toBe(true));
+    await userEvent.click(button("Expand custom"));
     fireEvent.change(field("Name collision prefix"), { target: { value: "NEW" } });
     await userEvent.click(button("Discard changes"));
     expect(field("Name collision prefix").value).toBe("CS");

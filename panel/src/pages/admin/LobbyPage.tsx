@@ -4,6 +4,7 @@ import { BookOpen, ChevronRight, DoorOpen, FolderOpen, Globe, Loader2, Map, Mess
 import { useTranslation } from "react-i18next";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { PageHeader } from "@/components/PageHeader";
+import { Switch } from "@/components/ui/switch";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -131,12 +132,7 @@ function ExperienceSettings({ name, server, onDirtyChange, onChanged }: { name: 
                 {switches.map((field) => (
                   <label key={field.key} htmlFor={`experience-${field.key}`} className="flex min-h-12 cursor-pointer items-center justify-between gap-4 py-3 text-sm">
                     <span>{t(field.key)}</span>
-                    <span className="relative shrink-0">
-                      <input id={`experience-${field.key}`} type="checkbox" role="switch" checked={draft ? (draft.values[field.key] ?? field.value) as boolean : false} onChange={(e) => setValue(field.key, e.target.checked)} disabled={!draft || saving || restarting} className="peer sr-only" />
-                      <span aria-hidden="true" className="block h-5 w-9 rounded-full bg-muted-foreground/25 p-0.5 transition-colors peer-checked:bg-primary peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-focus-visible:ring-offset-2 peer-disabled:opacity-50 peer-checked:[&>span]:translate-x-4">
-                        <span className="block h-4 w-4 rounded-full bg-white shadow-sm transition-transform motion-reduce:transition-none" />
-                      </span>
-                    </span>
+                    <Switch id={`experience-${field.key}`} checked={draft ? (draft.values[field.key] ?? field.value) as boolean : false} onCheckedChange={(value) => setValue(field.key, value)} disabled={!draft || saving || restarting} />
                   </label>
                 ))}
               </div>
@@ -217,7 +213,7 @@ export function LobbyPage() {
     { icon: Terminal, title: "console_title", hint: name === "login" ? "login_console_hint" : "console_hint", to: `/servers/${name}` },
     { icon: Shield, title: "backups_title", hint: "backups_hint", to: `/servers/${name}/backups` },
   ];
-  return <div className="mx-auto max-w-7xl space-y-5">
+  return <div className="space-y-6">
     <PageHeader icon={DoorOpen} title={t("title")} subtitle={t("subtitle")} />
     <Card className="rounded-xl bg-muted/20 shadow-none"><CardContent className="flex flex-wrap items-start justify-between gap-4 pt-5">
       <div className="flex min-w-0 gap-3">

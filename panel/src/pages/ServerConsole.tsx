@@ -263,7 +263,7 @@ export function ServerConsole() {
   const failure = data ? startFailure(data) : null;
 
   return (
-    <div className="flex flex-col lg:h-[calc(100vh-3.5rem)] lg:min-h-[35rem] gap-4 min-h-0">
+    <div className="flex flex-col lg:flex-1 lg:min-h-[35rem] gap-4 min-h-0">
       <div>
         <BackLink to="/servers" label={t("my_servers_breadcrumb")} />
       </div>
@@ -301,7 +301,7 @@ export function ServerConsole() {
             <RetireNotice name={name} retiring={data.retiring} isAdmin={isAdmin} onChanged={reload} />
           )}
 
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-4 flex-1 lg:min-h-0 min-h-0">
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-4 lg:grid-rows-[minmax(0,1fr)] flex-1 lg:min-h-0 min-h-0">
             {/* Left/Main column: Console */}
             <div className="lg:col-span-3 flex flex-col lg:min-h-0 min-h-0 h-full">
               <Card className="dark flex flex-col flex-1 lg:min-h-0 min-h-0 overflow-hidden bg-black text-zinc-50 border-zinc-800">
@@ -336,7 +336,7 @@ export function ServerConsole() {
             </div>
 
              {/* Right/Sidebar column: Navigation */}
-            <div className="flex flex-col gap-4 lg:col-span-1 shrink-0">
+            <div className="flex flex-col gap-4 lg:col-span-1 lg:min-h-0 lg:overflow-y-auto shrink-0">
               {isAdmin && (
                 <EditServerDialog
                   serverName={name}

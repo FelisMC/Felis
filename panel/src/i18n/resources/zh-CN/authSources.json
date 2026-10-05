@@ -10,6 +10,8 @@
   "new_source": "新认证源",
   "loading": "正在加载认证源…",
   "enabled": "启用",
+  "expand": "展开 {{name}}",
+  "collapse": "收起 {{name}}",
   "move_up": "上移认证源",
   "move_down": "下移认证源",
   "remove": "移除未保存的认证源",

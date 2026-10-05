@@ -10,6 +10,8 @@
   "new_source": "New source",
   "loading": "Loading authentication sources…",
   "enabled": "Enabled",
+  "expand": "Expand {{name}}",
+  "collapse": "Collapse {{name}}",
   "move_up": "Move source up",
   "move_down": "Move source down",
   "remove": "Remove unsaved source",

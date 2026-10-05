@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import userEvent from "@testing-library/user-event";
+import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
 import i18next from "i18next";
 import { AppShell } from "./AppShell";
+import { PageHeader } from "./PageHeader";
 import type { Identity } from "@/lib/types";
 
 const tier = vi.hoisted(() => ({
@@ -42,6 +44,21 @@ function roleLine(email: string) {
 }
 
 describe("AppShell user card", () => {
+  it("keeps page headings and actions outside the scrolling content and replaces them on navigation", async () => {
+    const action = vi.fn();
+    render(<MemoryRouter><Routes><Route element={<AppShell />}>
+      <Route path="/" element={<div><PageHeader title="First page" actions={<button onClick={action}>Header action</button>} /><Link to="/next">Next page</Link></div>} />
+      <Route path="/next" element={<div><PageHeader title="Second page" /><p>Second content</p></div>} />
+    </Route></Routes></MemoryRouter>);
+    expect(screen.getByRole("main").contains(screen.getByRole("heading", { name: "First page" }))).toBe(false);
+    await userEvent.click(screen.getByRole("button", { name: "Header action" }));
+    expect(action).toHaveBeenCalledOnce();
+    await userEvent.click(screen.getByRole("link", { name: "Next page" }));
+    expect(screen.queryByRole("heading", { name: "First page" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Header action" })).toBeNull();
+    expect(screen.getByRole("main").contains(screen.getByRole("heading", { name: "Second page" }))).toBe(false);
+    expect(screen.getByRole("main").textContent).toContain("Second content");
+  });
   it.each([
     ["en-US", "owner", "Owner"],
     ["en-US", "user", "User"],

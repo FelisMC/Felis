@@ -16,6 +16,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { Loading } from "@/components/States";
 import { ROLE_LABEL_KEY } from "@/components/RoleBadge";
 import { FelisLogo } from "@/components/FelisLogo";
+import { PageHeaderHostContext } from "@/components/PageHeader";
 
 function SectionGroup({
   section,
@@ -242,6 +243,7 @@ function MobileNav({ sections }: { sections: NavSection[] }) {
 }
 
 export function AppShell() {
+  const [headerHost, setHeaderHost] = useState<HTMLDivElement | null>(null);
   const { isAdmin, isOwner } = useTier();
   const { pathname } = useLocation();
   const { t, i18n } = useTranslation("navigation");
@@ -291,34 +293,37 @@ export function AppShell() {
         </div>
       </aside>
 
-      <div className="flex min-w-0 flex-1 flex-col h-full overflow-y-auto">
-        <ConnectionBanner />
-        <ConfigBanner />
-        <header className="flex h-14 shrink-0 items-center justify-between border-b border-border px-4 md:hidden">
-          <div className="flex items-center gap-2">
-            <MobileNav sections={sections} />
-            <FelisLogo />
-            <span className="font-semibold">{t("common:brand_name")}</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <LangToggle />
-            <ThemeToggle />
-          </div>
-        </header>
-        <main className="flex flex-1 flex-col p-4 md:p-6">
-          <div className="mx-auto flex w-full max-w-8xl flex-1 flex-col gap-6">
-            {/* A crash on one page leaves the navigation usable; moving to
-                another route clears it. Pages load as their own chunks, so the
-                first visit to one shows a spinner here with the shell in place,
-                and a chunk gone after a deploy lands in the boundary. */}
-            <ErrorBoundary resetKey={pathname}>
-              <Suspense fallback={<Loading />}>
-                <Outlet />
-              </Suspense>
-            </ErrorBoundary>
-          </div>
-        </main>
-      </div>
+      <PageHeaderHostContext.Provider value={headerHost}>
+        <div className="flex min-w-0 flex-1 flex-col h-full">
+          <ConnectionBanner />
+          <ConfigBanner />
+          <header className="flex h-14 shrink-0 items-center justify-between border-b border-border px-4 md:hidden">
+            <div className="flex items-center gap-2">
+              <MobileNav sections={sections} />
+              <FelisLogo />
+              <span className="font-semibold">{t("common:brand_name")}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <LangToggle />
+              <ThemeToggle />
+            </div>
+          </header>
+          <div ref={setHeaderHost} className="shrink-0 border-b border-border bg-background p-4 empty:hidden md:p-6" />
+          <main className="flex min-h-0 flex-1 flex-col overflow-y-auto p-4 md:p-6">
+            <div className="mx-auto flex min-h-0 w-full max-w-8xl flex-1 flex-col gap-6">
+              {/* A crash on one page leaves the navigation usable; moving to
+                  another route clears it. Pages load as their own chunks, so the
+                  first visit to one shows a spinner here with the shell in place,
+                  and a chunk gone after a deploy lands in the boundary. */}
+              <ErrorBoundary resetKey={pathname}>
+                <Suspense fallback={<Loading />}>
+                  <Outlet />
+                </Suspense>
+              </ErrorBoundary>
+            </div>
+          </main>
+        </div>
+      </PageHeaderHostContext.Provider>
     </div>
   );
 }

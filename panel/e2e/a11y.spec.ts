@@ -31,6 +31,7 @@ for (const [account, path] of [
   ["owner", "/"],
   ["owner", "/servers"],
   ["owner", "/admin/lobby?space=login"],
+  ["owner", "/admin/auth-sources"],
   ["owner", "/admin/images"],
   ["owner", "/admin/builds"],
   ["owner", "/admin/submissions"],
