@@ -23,6 +23,17 @@ The codebase is intentionally split by responsibility. Prefer changing the
 smallest owning module instead of adding broad abstractions or rebuilding nearby
 code.
 
+## Interface Copy
+
+Interface copy must use a formal documentation style: objective, concise, and
+precise. State the current condition, its cause or impact, and the available
+action. Describe confirmed facts only; avoid conversational phrasing,
+personification, and unsupported duration estimates. Chinese instructions should
+use explicit verbs such as “执行”, “选择”, “查看”, and “配置”, with operation names
+matching the actual UI labels. English and Chinese copy must retain the same
+meaning and degree of formality. Update existing translation entries rather than
+adding duplicate messages or components.
+
 ## Local Development
 
 You can do most day-to-day development on macOS or Linux without a full cluster.

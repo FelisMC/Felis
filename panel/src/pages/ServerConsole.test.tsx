@@ -72,7 +72,7 @@ describe("ServerConsole failed start", () => {
     renderConsole();
 
     const notice = await screen.findByRole("status", { name: "Server failed to start" });
-    expect(within(notice).getByText(/automatic retries are spent/)).toBeTruthy();
+    expect(within(notice).getByText(/automatic retry limit has been reached/)).toBeTruthy();
     expect(await screen.findByTestId("log-stream")).toBeTruthy();
     expect(screen.getByRole("button", { name: /Retry start/ })).toBeTruthy();
   });
