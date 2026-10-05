@@ -114,7 +114,7 @@ describe("session auth wire shapes", () => {
 
   it("maps the auth error codes to stable human copy", async () => {
     const { humanizeError } = await import("./api");
-    expect(humanizeError({ code: "local_auth_disabled" })).toMatch(/turned off/i);
+    expect(humanizeError({ code: "local_auth_disabled" })).toMatch(/disabled/i);
     expect(humanizeError({ code: "staff_account" })).toMatch(/operator/i);
   });
 
@@ -227,7 +227,7 @@ describe("account migration wire shapes", () => {
 
   it("says a redeem over quota can be retried with the same code once the quota fits", () => {
     expect(humanizeError({ status: 403, code: "migrate_quota_exceeded" })).toBe(
-      "The servers this migration brings over don't fit your quota. Ask an admin to raise it, then redeem the same code again before it expires.",
+      "The migration exceeds the current account’s server quota. Request a quota adjustment from an administrator and redeem the same code again before it expires.",
     );
   });
 });
@@ -430,36 +430,36 @@ describe("api access-control wire shapes", () => {
   it("says a server name is held by a world volume left behind", async () => {
     const { humanizeError } = await import("./api");
     expect(humanizeError({ status: 409, code: "world_volume_exists" })).toBe(
-      "An earlier server with that name left its world volume behind. Choose another name, or ask the operator to delete the old volume.",
+      "A world volume from a server of the same name still exists. Use a different name or request an operator to verify and process the existing volume.",
     );
   });
 
   it("says why a user change was refused for the caller's own or the owner account", async () => {
     const { humanizeError } = await import("./api");
     expect(humanizeError({ status: 403, code: "self_protected" })).toBe(
-      "You can't do that to the account you're signed in with.",
+      "This operation is not permitted on the signed-in account.",
     );
     expect(humanizeError({ status: 403, code: "owner_protected" })).toBe(
-      "The owner account can't be demoted, disabled or deleted from the panel. Only the host's break-glass console (sudo felis breakGlass) manages it.",
+      "The Owner account cannot be demoted, disabled, or deleted from the panel. Manage it through the host recovery console (sudo felis breakGlass).",
     );
   });
 
   it("says what a Minecraft UUID looks like when the typed one is not", () => {
     expect(humanizeError({ status: 400, code: "bad_mc_uuid" })).toBe(
-      "That isn't a Minecraft UUID. It looks like 069a79f4-44e9-4726-a5be-fca90e38aaf5, with or without the dashes.",
+      "Invalid Minecraft UUID format. Example: 069a79f4-44e9-4726-a5be-fca90e38aaf5. Hyphens are optional.",
     );
   });
 
   it("says what a display name may hold when the server refuses one", () => {
     expect(humanizeError({ status: 400, code: "bad_display_name" })).toBe(
-      "That display name is invalid — use at most 64 characters, all visible ones or spaces, with no line breaks, tabs or invisible control characters.",
+      "Invalid display name. Use at most 64 visible characters or spaces, excluding line breaks, tabs, and control characters.",
     );
   });
 
   it("says email codes are off when the install has no mail relay", async () => {
     const { humanizeError } = await import("./api");
     expect(humanizeError({ status: 503, code: "mail_unavailable" })).toBe(
-      "This server can't send email codes because no mail relay is set up. Sign in with a passkey, or ask the server operator to configure email.",
+      "Mail delivery is not configured, so verification codes cannot be sent. Sign in with a Passkey or request mail configuration from an administrator.",
     );
   });
 
@@ -673,7 +673,7 @@ describe("image whitelist and builds wire shapes", () => {
     it("says an uploads store that did not answer is worth another try", async () => {
       const { humanizeError } = await import("./api");
       expect(humanizeError({ status: 503, code: "uploads_store_unavailable" })).toBe(
-        "The uploads store did not answer — try again in a moment; what was already sent is kept.",
+        "Upload storage did not respond. Received content is retained. Retry later.",
       );
     });
 
@@ -876,7 +876,7 @@ describe("image whitelist and builds wire shapes", () => {
         fakeFetch({ path: "world/level.dat", content, sha256: "a".repeat(64), content_sha256: hexOf(new Uint8Array([0, 1, 2])) }),
       );
       await expect(api.readServerFile("survival", "world/level.dat")).rejects.toMatchObject({ code: "read_damaged" });
-      expect(humanizeError({ code: "read_damaged" })).toMatch(/arrived damaged/);
+      expect(humanizeError({ code: "read_damaged" })).toMatch(/File transfer verification failed/);
     });
 
     it("writeServerFile PUTs {content} — an explicit \"\" is a deliberate truncate, not an omitted field", async () => {
@@ -992,7 +992,7 @@ describe("path parameters", () => {
       await expect(api.deleteUser(bad)).rejects.toMatchObject({ code: "bad_path_param" });
     }
     expect(spy).not.toHaveBeenCalled();
-    expect(humanizeError({ status: 0, code: "bad_path_param" })).toMatch(/not valid/i);
+    expect(humanizeError({ status: 0, code: "bad_path_param" })).toMatch(/invalid/i);
   });
 
   it("does not encode a value twice", async () => {
@@ -1041,7 +1041,7 @@ describe("the caller's own sessions", () => {
   });
 
   it("says a session that is already gone has ended", () => {
-    expect(humanizeError({ status: 404, code: "session_not_found" })).toBe("That session has already ended.");
+    expect(humanizeError({ status: 404, code: "session_not_found" })).toBe("The session has ended or does not exist.");
   });
 });
 
@@ -1091,11 +1091,11 @@ describe("responses that are not the API's JSON", () => {
       message: "this build's scan kept no sbom: it was too large to keep, or the step that writes it failed",
     };
     expect(humanizeError(err)).toBe(
-      "This build kept no copy of that scan file: it was too large to keep, or the step that writes it failed.",
+      "The scan document was not retained for this build. The file may have exceeded the size limit or its generation step may have failed.",
     );
     await i18next.changeLanguage("zh-CN");
     try {
-      expect(humanizeError(err)).toBe("这次构建没有留下这份扫描文件：文件太大没有保存，或者生成它的步骤失败了。");
+      expect(humanizeError(err)).toBe("构建未留存此扫描文件，可能由于文件过大或生成步骤失败。");
     } finally {
       await i18next.changeLanguage("en-US");
     }
@@ -1103,7 +1103,7 @@ describe("responses that are not the API's JSON", () => {
 
   it("maps an unknown 5xx code to the unavailable line", () => {
     expect(humanizeError({ status: 500, code: "unknown", message: "internal error" })).toMatch(/unavailable/i);
-    expect(humanizeError({ status: 413, code: "error", message: "Payload Too Large" })).toMatch(/larger/i);
+    expect(humanizeError({ status: 413, code: "error", message: "Payload Too Large" })).toMatch(/exceeds/i);
   });
 
   it("keeps an internal error's request ID without exposing backend details", async () => {
@@ -1381,13 +1381,13 @@ describe("server file manager wire shapes", () => {
       code: "file_unreadable",
     });
     expect(FakeXHR.last).toBeUndefined();
-    expect(humanizeError({ code: "file_unreadable" })).toMatch(/changed, moved or deleted/);
+    expect(humanizeError({ code: "file_unreadable" })).toMatch(/modified, moved, or deleted/);
   });
 
   it("the upload refusals over a checksum read as what to do next", () => {
-    expect(humanizeError({ code: "digest_mismatch" })).toMatch(/changed on its way/);
-    expect(humanizeError({ code: "digest_required" })).toMatch(/without a checksum/);
-    expect(humanizeError({ code: "bad_digest" })).toMatch(/checksum was malformed/);
+    expect(humanizeError({ code: "digest_mismatch" })).toMatch(/File transfer verification failed/);
+    expect(humanizeError({ code: "digest_required" })).toMatch(/omitted its checksum/);
+    expect(humanizeError({ code: "bad_digest" })).toMatch(/checksum format is invalid/);
   });
 
   it("createServerFile PUTs the content with create_only, so nothing already there is replaced", async () => {
@@ -1580,9 +1580,9 @@ describe("server file manager wire shapes", () => {
   });
 
   it("words the upload session codes in the panel's own copy", () => {
-    expect(humanizeError({ status: 404, code: "upload_not_found", message: "raw" })).toMatch(/^This upload is gone/);
-    expect(humanizeError({ status: 429, code: "too_many_uploads", message: "raw" })).toMatch(/4 large uploads in progress/);
-    expect(humanizeError({ status: 0, code: "op_lost", message: "" })).toMatch(/progress can no longer be read/);
+    expect(humanizeError({ status: 404, code: "upload_not_found", message: "raw" })).toMatch(/^The multipart upload record is unavailable/);
+    expect(humanizeError({ status: 429, code: "too_many_uploads", message: "raw" })).toMatch(/four concurrent large-file uploads/);
+    expect(humanizeError({ status: 0, code: "op_lost", message: "" })).toMatch(/Operation progress is unavailable/);
   });
 });
 
@@ -1679,10 +1679,10 @@ describe("scheduled task wire shapes", () => {
 // "invalid request"); the panel words them itself so a Chinese UI never shows it.
 describe("copy for the generic server codes", () => {
   it("names a missing record, a lost race and a refused format in the UI's words", () => {
-    expect(humanizeError({ status: 404, code: "not_found", message: "user not found" })).toMatch(/no longer exists/);
-    expect(humanizeError({ status: 409, code: "conflict", message: "conflict" })).toMatch(/changed in the meantime/);
+    expect(humanizeError({ status: 404, code: "not_found", message: "user not found" })).toMatch(/does not exist/);
+    expect(humanizeError({ status: 409, code: "conflict", message: "conflict" })).toMatch(/changed during the operation/);
     expect(humanizeError({ status: 409, code: "restore_in_progress", message: "restore running" })).toMatch(
-      /still being restored/,
+      /being restored to the world/,
     );
     expect(humanizeError({ status: 415, code: "unsupported_media_type", message: "json only" })).toMatch(
       /format the server does not accept/,
@@ -1693,35 +1693,35 @@ describe("copy for the generic server codes", () => {
     expect(humanizeError({ status: 400, code: "bad_request", message: "mc_uuid is required" })).toBe(
       "The request was not accepted: mc_uuid is required",
     );
-    expect(humanizeError({ status: 400, code: "bad_request", message: "" })).toBe("Something went wrong.");
+    expect(humanizeError({ status: 400, code: "bad_request", message: "" })).toBe("The operation failed. Retry later.");
   });
 
   it("words the file manager's refusals itself", () => {
     expect(humanizeError({ status: 409, code: "file_exists", message: "something is already at a.txt" })).toBe(
-      "Something with that name is already there. Pick another name, or rename or delete the one that is there first.",
+      "A file or folder with this name already exists in the current directory. Use a different name, or rename or delete the existing entry.",
     );
-    expect(humanizeError({ status: 507, code: "upload_staging_full", message: "raw" })).toMatch(/upload space is nearly full/);
-    expect(humanizeError({ status: 400, code: "upload_incomplete", message: "raw" })).toMatch(/stopped before the whole file arrived/);
-    expect(humanizeError({ status: 411, code: "length_required", message: "raw" })).toMatch(/did not say how large it is/);
+    expect(humanizeError({ status: 507, code: "upload_staging_full", message: "raw" })).toMatch(/Upload staging space is insufficient/);
+    expect(humanizeError({ status: 400, code: "upload_incomplete", message: "raw" })).toMatch(/interrupted before the complete file was transferred/);
+    expect(humanizeError({ status: 411, code: "length_required", message: "raw" })).toMatch(/omitted the file size/);
   });
 
   it("words the scheduled tasks' refusals itself, and keeps the reason a schedule was refused", () => {
     expect(humanizeError({ status: 503, code: "schedules_unavailable", message: "raw" })).toBe(
-      "Scheduled tasks aren't available right now.",
+      "Scheduled tasks are currently unavailable.",
     );
     expect(humanizeError({ status: 409, code: "schedule_limit", message: "raw" })).toBe(
-      "This server already has as many scheduled tasks as it can hold. Delete one first.",
+      "The server’s scheduled-task limit has been reached. Remove an existing task before retrying.",
     );
     expect(humanizeError({ status: 409, code: "schedule_running", message: "raw" })).toBe(
-      "This task is running right now. Try again once the run finishes.",
+      "The task is running. Retry after the current execution completes.",
     );
     expect(humanizeError({ status: 409, code: "schedule_stale", message: "raw" })).toBe(
-      "The server has a new owner since this task was saved. Save the task again before running it.",
+      "The server owner changed after the task was saved. Save the task again before execution.",
     );
     expect(
       humanizeError({ status: 400, code: "bad_schedule", message: "a restart can repeat at most every 60 minutes" }),
     ).toBe("The task was not saved: a restart can repeat at most every 60 minutes");
-    expect(humanizeError({ status: 400, code: "bad_schedule", message: "" })).toBe("Something went wrong.");
+    expect(humanizeError({ status: 400, code: "bad_schedule", message: "" })).toBe("The operation failed. Retry later.");
   });
 
   it("reads a full upload store as full, not as an outage", () => {
@@ -1731,18 +1731,18 @@ describe("copy for the generic server codes", () => {
   it("words a failure the panel caught itself from its code", () => {
     const err = clientError("passkey_no_credential");
     expect(err.status).toBe(0);
-    expect(humanizeError(err)).toBe("The browser returned no passkey. Try again.");
+    expect(humanizeError(err)).toBe("The browser returned no Passkey credential. Retry.");
   });
 
   it("words the re-authentication refusals", () => {
     expect(humanizeError({ status: 403, code: "reauth_required", message: "raw" })).toBe(
-      "Confirm it's you first: this change needs your Passkey or an email code from the last few minutes.",
+      "This operation requires recent identity verification. Verify identity again using a Passkey or email code.",
     );
     expect(humanizeError({ status: 403, code: "staff_reauth", message: "raw" })).toBe(
       "Operator accounts confirm with a Passkey or by signing in again.",
     );
     expect(humanizeError({ status: 400, code: "no_session", message: "raw" })).toBe(
-      "This only works in a browser signed in to Felis.",
+      "This operation requires an active Felis browser session.",
     );
   });
 });
@@ -1800,16 +1800,16 @@ describe("world export wire shapes", () => {
 
   it("words the export refusals itself", () => {
     expect(humanizeError({ status: 429, code: "export_busy", message: "raw" })).toBe(
-      "Too many exports are being prepared: one at a time per person, two at a time across the platform, and six an hour per person. Try again in a few minutes.",
+      "Export limits have been reached: one concurrent request per account, two across the platform, and six per account per hour. Retry after existing tasks complete or rate limits reset.",
     );
     expect(humanizeError({ status: 410, code: "export_expired", message: "raw" })).toBe(
-      "This download has expired or was already used — start the export again.",
+      "The download link has expired or has already been used. Export the content again.",
     );
     expect(humanizeError({ status: 409, code: "export_not_ready", message: "raw" })).toBe(
-      "The download isn't ready yet — wait a moment and try again.",
+      "Download preparation is incomplete. Retry later.",
     );
     expect(humanizeError({ status: 503, code: "export_unavailable", message: "raw" })).toBe(
-      "Downloading worlds and backups isn't set up on this deployment — ask an administrator.",
+      "World and backup downloads are not configured in this deployment. Contact an administrator.",
     );
   });
 });

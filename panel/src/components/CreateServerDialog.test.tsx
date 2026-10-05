@@ -154,7 +154,7 @@ describe("CreateServerDialog names", () => {
     ["survival-", "Use 3–32 lowercase letters, digits or hyphens, with no hyphen at either end."],
     ["my_world", "Use 3–32 lowercase letters, digits or hyphens, with no hyphen at either end."],
     ["a".repeat(33), "Use 3–32 lowercase letters, digits or hyphens, with no hyphen at either end."],
-    ["lobby", "“lobby” is kept for the platform. Pick another."],
+    ["lobby", "“lobby” is reserved by the platform. Use a different name."],
   ])("refuses the name %j before sending, and says why", async (name, why) => {
     const user = await openDialog();
     await fillValid(user);
@@ -176,7 +176,7 @@ describe("CreateServerDialog names", () => {
     await user.type(subdomainBox(), "api");
 
     expect(create().disabled).toBe(true);
-    expect(screen.getByText("“api” is kept for the platform. Pick another.")).toBeTruthy();
+    expect(screen.getByText("“api” is reserved by the platform. Use a different name.")).toBeTruthy();
     expect(screen.queryByText(/Will be reachable at/)).toBeNull();
   });
 
@@ -249,10 +249,10 @@ describe("CreateServerDialog on reopening", () => {
 
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain(humanizeError(outage));
-    expect(screen.getByText("Image list not loaded")).toBeTruthy();
+    expect(screen.getByText("Image list unavailable")).toBeTruthy();
     expect(screen.queryByText("No whitelisted images")).toBeNull();
 
-    await user.click(within(alert).getByRole("button", { name: "Try again" }));
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
     expect(calls.listImages).toHaveBeenCalledTimes(2);
     await pick(user, "Image", PAPER);
     expect(screen.queryByRole("alert")).toBeNull();

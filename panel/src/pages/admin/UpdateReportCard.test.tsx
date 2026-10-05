@@ -54,7 +54,7 @@ describe("UpdateReportCard", () => {
     expect(rowText("k3s")).toBe("k3sInstalled: v1.36.2+k3s1Newer release: —Up to date");
     expect(rowText("jre")).toBe("jreInstalled: 21.0.8+9Newer release: —Feed unreachableadoptium: context deadline exceeded");
     expect(rowText("postgresql")).toBe(
-      "postgresqlInstalled: —Newer release: —Version unreadablepsql: not foundPostgreSQL 13 is past its end of life",
+      "postgresqlInstalled: —Newer release: —Version read failedpsql: not foundPostgreSQL 13 is past its end of life",
     );
     expect(screen.getByTitle("sudo felis update --panel --cloudflared").textContent).toBe("sudo felis update --panel --cloudflared");
     expect(screen.queryByText("sudo felis update --record")).toBeNull();
@@ -76,7 +76,7 @@ describe("UpdateReportCard", () => {
     calls.getUpdateReport.mockResolvedValue({ report: null, stale: true, max_age_seconds: 93600 });
     render(<UpdateReportCard />);
     expect(await screen.findByText("Never checked")).toBeTruthy();
-    expect(screen.getByText("No version check has been recorded yet")).toBeTruthy();
+    expect(screen.getByText("No version check records")).toBeTruthy();
     expect(screen.getByTitle("sudo felis update --record")).toBeTruthy();
     expect(screen.getByTitle("journalctl -u felis-update-check -n 50 --no-pager")).toBeTruthy();
   });

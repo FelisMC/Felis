@@ -70,7 +70,7 @@ describe("NotRunning", () => {
     ] as const) {
       const { unmount } = render(notRunning(phase, desired));
       expect(screen.getByText("Server is starting"), `${phase}/${desired}`).toBeTruthy();
-      expect(screen.getByText(/switches over by itself/), `${phase}/${desired}`).toBeTruthy();
+      expect(screen.getByText(/updates the startup status automatically/), `${phase}/${desired}`).toBeTruthy();
       expect(screen.queryByRole("button"), `${phase}/${desired}`).toBeNull();
       unmount();
     }
@@ -122,7 +122,7 @@ describe("RefreshError", () => {
     const err = { status: 429, code: "quota_exceeded", message: "raw" };
     render(<RefreshError error={err} />);
     const alert = screen.getByRole("alert");
-    expect(alert.textContent).toContain("Couldn't refresh; what you see is the last status read.");
+    expect(alert.textContent).toContain("Refresh failed. The last successfully retrieved status is displayed.");
     expect(alert.textContent).toContain(humanizeError(err));
   });
 });

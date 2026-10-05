@@ -109,7 +109,7 @@ describe("EditServerDialog request body", () => {
     for (const bad of ["two", "0", "1.5m", "-1"]) {
       await user.clear(cpuInput());
       await user.type(cpuInput(), bad);
-      expect(screen.getByText("Enter cores (1, 1.5) or millicores (500m), above zero."), bad).toBeTruthy();
+      expect(screen.getByText("The CPU limit must be greater than zero, expressed as cores (for example, 1 or 1.5) or millicores (for example, 500m)."), bad).toBeTruthy();
       expect(cpuInput().getAttribute("aria-invalid"), bad).toBe("true");
       expect(save().disabled, bad).toBe(true);
     }

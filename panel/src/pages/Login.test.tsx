@@ -112,13 +112,13 @@ describe("Login", () => {
     await renderLogin();
 
     await userEvent.click(screen.getByRole("button", { name: t("auth:passkey_btn") }));
-    expect((await screen.findByRole("alert")).textContent).toBe("The browser returned no passkey. Try again.");
+    expect((await screen.findByRole("alert")).textContent).toBe("The browser returned no Passkey credential. Retry.");
     expect(calls.authPasskeyDiscoverableFinish).not.toHaveBeenCalled();
 
     await userEvent.type(screen.getByLabelText(t("auth:email_address")), "a@b.c");
     await userEvent.click(screen.getByRole("button", { name: t("auth:passkey_btn") }));
     await vi.waitFor(() => expect(calls.authPasskeyLoginBegin).toHaveBeenCalledWith("a@b.c"));
-    expect((await screen.findByRole("alert")).textContent).toBe("The browser returned no passkey. Try again.");
+    expect((await screen.findByRole("alert")).textContent).toBe("The browser returned no Passkey credential. Retry.");
     expect(calls.authPasskeyLoginFinish).not.toHaveBeenCalled();
   });
 });

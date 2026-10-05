@@ -89,18 +89,18 @@ describe("AccountSessionsCard", () => {
     expect(within(phone).queryByText("This device")).toBeNull();
     expect(within(phone).getByText("Active 20 hours ago")).toBeTruthy();
     expect(within(phone).getByText("203.0.113.24")).toBeTruthy();
-    expect(within(phone).getByRole("button", { name: "Sign out Safari on iPhone" })).toBeTruthy();
+    expect(within(phone).getByRole("button", { name: "Sign out the session on Safari on iPhone" })).toBeTruthy();
 
     // Seen a minute ago: the server records activity once a minute, so that is now.
     expect(within(row("Edge on Windows")).getByText("Active now")).toBeTruthy();
-    expect(screen.queryByText("Operator sessions sign out on their own after 30 minutes without activity.")).toBeNull();
+    expect(screen.queryByText("Operations account sessions expire after 30 minutes of inactivity.")).toBeNull();
   });
 
   it("tells an operator that their sessions idle out", async () => {
     mocks.listMySessions.mockResolvedValue([mac]);
     renderCard({ staff: true });
     expect(
-      await screen.findByText("Operator sessions sign out on their own after 30 minutes without activity."),
+      await screen.findByText("Operations account sessions expire after 30 minutes of inactivity."),
     ).toBeTruthy();
   });
 
@@ -109,7 +109,7 @@ describe("AccountSessionsCard", () => {
     mocks.revokeMySession.mockResolvedValue({ ok: true, signed_out: false });
     renderCard();
 
-    await userEvent.click(await screen.findByRole("button", { name: "Sign out Safari on iPhone" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Sign out the session on Safari on iPhone" }));
 
     expect(mocks.revokeMySession).toHaveBeenCalledWith("h-iphone");
     expect((await screen.findByRole("status")).textContent).toBe("Signed out Safari on iPhone.");
@@ -122,7 +122,7 @@ describe("AccountSessionsCard", () => {
     mocks.revokeMySession.mockRejectedValue({ status: 404, code: "session_not_found", message: "gone" });
     renderCard();
 
-    await userEvent.click(await screen.findByRole("button", { name: "Sign out Safari on iPhone" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Sign out the session on Safari on iPhone" }));
 
     expect((await screen.findByRole("status")).textContent).toBe("Signed out Safari on iPhone.");
     expect(screen.queryByRole("alert")).toBeNull();
@@ -134,10 +134,10 @@ describe("AccountSessionsCard", () => {
     mocks.revokeMySession.mockRejectedValue({ status: 403, code: "self_protected", message: "no" });
     renderCard();
 
-    await userEvent.click(await screen.findByRole("button", { name: "Sign out Safari on iPhone" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Sign out the session on Safari on iPhone" }));
 
     expect((await screen.findByRole("alert")).textContent).toBe(
-      "You can't do that to the account you're signed in with.",
+      "This operation is not permitted on the signed-in account.",
     );
     expect(screen.queryByRole("status")).toBeNull();
     await waitFor(() => expect(mocks.listMySessions).toHaveBeenCalledTimes(2));
@@ -151,13 +151,13 @@ describe("AccountSessionsCard", () => {
 
     await userEvent.click(await screen.findByRole("button", { name: "Sign out other devices" }));
     const dialog = screen.getByRole("dialog");
-    expect(within(dialog).getByText("Sign out every other device?")).toBeTruthy();
+    expect(within(dialog).getByText("Sign out all other device sessions?")).toBeTruthy();
     expect(mocks.revokeMyOtherSessions).not.toHaveBeenCalled();
 
     await userEvent.click(within(dialog).getByRole("button", { name: "Sign out other devices" }));
 
     expect(mocks.revokeMyOtherSessions).toHaveBeenCalledTimes(1);
-    expect((await screen.findByRole("status")).textContent).toBe("Signed out 2 other devices.");
+    expect((await screen.findByRole("status")).textContent).toBe("Sessions on 2 other devices have been signed out.");
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     await waitFor(() => expect(screen.queryByText("Safari on iPhone")).toBeNull());
     expect(screen.getByText("Chrome on macOS")).toBeTruthy();
@@ -171,7 +171,7 @@ describe("AccountSessionsCard", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Sign out other devices" }));
     await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Sign out other devices" }));
 
-    expect((await screen.findByRole("status")).textContent).toBe("Signed out 1 other device.");
+    expect((await screen.findByRole("status")).textContent).toBe("The session on 1 other device has been signed out.");
   });
 
   it("has nothing to sign out elsewhere when this is the only device", async () => {

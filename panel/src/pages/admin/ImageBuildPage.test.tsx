@@ -229,7 +229,7 @@ describe("ImageBuildPage cancel", () => {
     calls.listBuilds.mockRejectedValue({ status: 409, code: "test", message: "database is away" });
     await userEvent.click(within(dialog).getByRole("button", { name: t("admin:cancel_build_confirm") }));
 
-    expect((await screen.findByRole("alert")).textContent).toBe("Couldn't refresh the build list: database is away");
+    expect((await screen.findByRole("alert")).textContent).toBe("Unable to refresh the build list: database is away");
     expect(screen.getByText(RUNNING.image_ref)).toBeTruthy();
     expect(screen.getByText(MINE.image_ref)).toBeTruthy();
   });

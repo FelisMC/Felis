@@ -169,9 +169,9 @@ describe("ServerSchedules", () => {
 
     const backup = await rowOf("Backup");
     expect(within(backup).getByText("Mon, Wed, Fri at 05:30")).toBeTruthy();
-    expect(within(backup).getByText("Off: it runs only when you press Run now")).toBeTruthy();
+    expect(within(backup).getByText("Disabled; runs only when Run now is selected")).toBeTruthy();
     expect(within(backup).getByText("Off")).toBeTruthy();
-    expect(within(backup).getByText("Hasn't run yet")).toBeTruthy();
+    expect(within(backup).getByText("Not executed")).toBeTruthy();
 
     expect(screen.getByText("3 of 20 tasks")).toBeTruthy();
   });
@@ -210,7 +210,7 @@ describe("ServerSchedules", () => {
     expect(within(nightly).getByText("Skipped")).toBeTruthy();
     expect(
       within(nightly).getByText(
-        "The server changed owner, so this task switched itself off. Check it, then save it or switch it on to use it again.",
+        "The server owner has changed and the task was disabled automatically. Verify the configuration before saving or enabling it again.",
       ),
     ).toBeTruthy();
     expect(within(await rowOf("Who")).getByText("Reply: There are 0 of a max of 20 players online")).toBeTruthy();
@@ -359,7 +359,7 @@ describe("ServerSchedules", () => {
     const dialog = await openCreate();
     await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
     expect((await within(dialog).findByRole("alert")).textContent).toBe(
-      "This server already has as many scheduled tasks as it can hold. Delete one first.",
+      "The server’s scheduled-task limit has been reached. Remove an existing task before retrying.",
     );
     expect(screen.getByRole("dialog")).toBe(dialog);
     expect((within(dialog).getByRole("button", { name: "Create" }) as HTMLButtonElement).disabled).toBe(false);
@@ -370,7 +370,7 @@ describe("ServerSchedules", () => {
     renderPage();
     await userEvent.click(await screen.findByRole("button", { name: "Back up every night at 05:00" }));
     const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByText(/A backup of a running server stops it/)).toBeTruthy();
+    expect(within(dialog).getByText(/Backing up a running server first stops it/)).toBeTruthy();
     await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
     expect(calls.createSchedule).toHaveBeenCalledWith("survival", {
       label: "",
@@ -483,11 +483,11 @@ describe("ServerSchedules", () => {
     const busy = await rowOf("Busy");
     expect(within(busy).getByText("Stopping the server…")).toBeTruthy();
     expect(within(busy).getByText("Started 5 minutes ago")).toBeTruthy();
-    expect(within(busy).queryByText("Hasn't run yet")).toBeNull();
+    expect(within(busy).queryByText("Not executed")).toBeNull();
     for (const name of ["Run now", "Edit", "Delete"]) {
       const button = within(busy).getByRole("button", { name }) as HTMLButtonElement;
       expect(button.disabled).toBe(true);
-      expect(button.parentElement?.title).toBe("This task is running. Wait for the run to finish.");
+      expect(button.parentElement?.title).toBe("The task is running. Wait for the current execution to complete.");
     }
     expect((within(busy).getByRole("switch") as HTMLButtonElement).disabled).toBe(true);
 
@@ -504,7 +504,7 @@ describe("ServerSchedules", () => {
     const add = (await screen.findByRole("button", { name: "New task" })) as HTMLButtonElement;
     await rowOf("One");
     expect(add.disabled).toBe(true);
-    expect(add.parentElement?.title).toBe("A server holds at most 2 tasks. Delete one to add another.");
+    expect(add.parentElement?.title).toBe("The scheduled-task limit of 2 has been reached. Remove an existing task before adding another.");
   });
 
   it("says plainly when felis-api has no schedule store, and treats other failures as errors", async () => {

@@ -59,7 +59,7 @@ describe("ServerConsole host recovery", () => {
     tier.isOwner = true;
     calls.status.mockRejectedValue(new Error("API offline"));
     renderConsole();
-    expect(await screen.findByText("Control API unreachable? Show host recovery steps")).toBeTruthy();
+    expect(await screen.findByText("Host emergency shutdown procedure")).toBeTruthy();
     expect(screen.getByText(/kubectl patch minecraftserver survival/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
     tier.isOwner = false;
@@ -235,7 +235,7 @@ describe("ServerConsole retirement", () => {
     calls.status.mockResolvedValue(stopped({ retiring: { requested_at: new Date().toISOString(), delete: false } }));
     renderConsole();
 
-    expect(await screen.findByText("This server has been given up")).toBeTruthy();
+    expect(await screen.findByText("Server pending reclamation")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Cancel request" })).toBeTruthy();
     expect(screen.getByText("Given up")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Wake" })).toBeNull();
@@ -350,13 +350,13 @@ describe("startup diagnostics and stale state", () => {
     expect(await screen.findByText("Startup issue")).toBeTruthy();
     expect(screen.getByText(/OOMKilled.*137/)).toBeTruthy();
     expect(screen.queryByText("Starting", { exact: true })).toBeNull();
-    expect(screen.getByText("Logs are not available yet")).toBeTruthy();
+    expect(screen.getByText("Logs unavailable")).toBeTruthy();
   });
   it("explains scheduling failure before logs exist", async () => {
     calls.status.mockResolvedValue(status({ phase: "Starting", desiredState: "Running", startup: { stage: "scheduling", reason: "Unschedulable", message: "0/1 nodes: Insufficient memory", startedAt: new Date().toISOString(), logsAvailable: false } }));
     renderConsole();
     expect(await screen.findByText("Waiting for resources and scheduling")).toBeTruthy();
-    expect(screen.getByText(/Not enough schedulable memory/)).toBeTruthy();
+    expect(screen.getByText(/Insufficient schedulable memory/)).toBeTruthy();
     expect(screen.queryByTestId("log-stream")).toBeNull();
     expect(screen.queryByRole("button", { name: "Delete server" })).toBeNull();
     expect(screen.getByRole("button", { name: "More actions" })).toBeTruthy();

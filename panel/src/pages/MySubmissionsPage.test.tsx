@@ -162,12 +162,12 @@ describe("MySubmissionsPage", () => {
 
     expect(
       await screen.findByText(
-        "Can't reach Felis: the network is down, or your Cloudflare Access sign-in expired. Reload the page to sign in again.",
+        "Unable to connect to Felis. The network may be unavailable or the Cloudflare Access session may have expired. Check the network. If the Access session has expired, reload the page and sign in again.",
       ),
     ).toBeTruthy();
     expect(
       screen.getByText(
-        "“Skyblock Pack” is saved and 2 KB of its build context is on the server. Submit again to continue from there.",
+        "“Skyblock Pack” is saved and the server has received 2 KB of its build context. Resubmission resumes from the confirmed offset.",
       ),
     ).toBeTruthy();
     expect((screen.getByLabelText(/Display Name/) as HTMLInputElement).disabled).toBe(true);
@@ -197,7 +197,7 @@ describe("MySubmissionsPage", () => {
 
     const other = new File(["\x1f\x8bother"], "other.tar.gz", { type: "application/gzip" });
     await userEvent.upload(screen.getByLabelText(/Build Context/), other);
-    expect(screen.getByText("“Skyblock Pack” is saved. The file you picked uploads from the start.")).toBeTruthy();
+    expect(screen.getByText("“Skyblock Pack” is saved. A newly selected file is uploaded from the beginning.")).toBeTruthy();
     upload.uploadContext.mockResolvedValueOnce(undefined);
     await userEvent.click(screen.getByRole("button", { name: "Submit" }));
     await vi.waitFor(() => expect(upload.uploadContext).toHaveBeenCalledTimes(2));
@@ -222,7 +222,7 @@ describe("MySubmissionsPage", () => {
 
     expect(
       await screen.findByText(
-        "“Skyblock Pack” is saved and 1 KB of its build context is on the server. Submit again to continue from there.",
+        "“Skyblock Pack” is saved and the server has received 1 KB of its build context. Resubmission resumes from the confirmed offset.",
       ),
     ).toBeTruthy();
     expect(screen.queryByRole("alert")).toBeNull();

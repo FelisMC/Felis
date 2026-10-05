@@ -66,7 +66,7 @@ describe("ServerLuckPerms without LuckPerms", () => {
     await userEvent.type(await screen.findByPlaceholderText("Steve"), "Alex{Enter}");
 
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toMatch(/LuckPerms isn't installed/);
+    expect(alert.textContent).toMatch(/LuckPerms is not installed/);
     expect(calls.accessLuckPermsInfo).toHaveBeenCalledWith("lobby", "Alex");
 
     await userEvent.type(screen.getByLabelText("Group Name"), "vip");
@@ -74,7 +74,7 @@ describe("ServerLuckPerms without LuckPerms", () => {
     expect(calls.accessGroup).toHaveBeenCalledWith("lobby", "add", "Alex", "vip");
     const alerts = await screen.findAllByRole("alert");
     expect(alerts).toHaveLength(2);
-    expect(alerts.every((a) => /LuckPerms isn't installed/.test(a.textContent ?? ""))).toBe(true);
+    expect(alerts.every((a) => /LuckPerms is not installed/.test(a.textContent ?? ""))).toBe(true);
     expect(screen.queryByText(/success/i)).toBeNull();
   });
 });
@@ -126,12 +126,12 @@ describe("ServerLuckPerms when LuckPerms does not answer", () => {
   async function lookUpAlex() {
     renderPage();
     await userEvent.type(await screen.findByPlaceholderText("Steve"), "Alex{Enter}");
-    await screen.findByText(/Couldn't read this player's groups/);
+    await screen.findByText(/The player’s current groups could not be read/);
   }
 
   it("says the lists are unread, never that they are empty", async () => {
     await lookUpAlex();
-    expect(screen.getByText(/Couldn't read this player's permission nodes/)).toBeTruthy();
+    expect(screen.getByText(/The player’s current permission nodes could not be read/)).toBeTruthy();
     expect(screen.queryByText("No parent groups assigned")).toBeNull();
     expect(screen.queryByText("No explicit permission nodes assigned")).toBeNull();
   });
@@ -169,7 +169,7 @@ describe("ServerLuckPerms when LuckPerms does not answer", () => {
     await lookUpAlex();
     await userEvent.type(screen.getByLabelText("Permission Node"), "essentials.fly");
     await userEvent.click(screen.getByRole("button", { name: /^remove permission$/i }));
-    expect((await screen.findByRole("alert")).textContent).toMatch(/LuckPerms isn't installed/);
+    expect((await screen.findByRole("alert")).textContent).toMatch(/LuckPerms is not installed/);
     expect((screen.getByLabelText("Permission Node") as HTMLInputElement).value).toBe("essentials.fly");
   });
 
@@ -179,7 +179,7 @@ describe("ServerLuckPerms when LuckPerms does not answer", () => {
     await userEvent.type(await screen.findByPlaceholderText("Steve"), "Alex{Enter}");
     expect(await screen.findByText("No parent groups assigned")).toBeTruthy();
     expect(screen.getByText("No explicit permission nodes assigned")).toBeTruthy();
-    expect(screen.queryByText(/Couldn't read this player's/)).toBeNull();
+    expect(screen.queryByText(/The player’s current/)).toBeNull();
   });
 });
 
@@ -259,17 +259,17 @@ describe("ServerLuckPerms reverting a permission change", () => {
         reason: humanizeError({ status: 502, code: "rcon_unavailable", message: "console down" }),
       }),
     );
-    expect(alert.textContent?.startsWith("Couldn't revert: ")).toBe(true);
+    expect(alert.textContent?.startsWith("Unable to revert: ")).toBe(true);
     expect(screen.getByRole("button", { name: "Revert" })).toBeTruthy();
   });
 
   it("offers no revert for a removal whose value was never read", async () => {
     calls.accessLuckPermsInfo.mockResolvedValue({ player: "Alex", groups: [], permissions: [], output: "" });
     await lookUpAlex();
-    await screen.findByText(/Couldn't read this player's permission nodes/);
+    await screen.findByText(/The player’s current permission nodes could not be read/);
     await typeNode("essentials.fly", "world_nether");
     await userEvent.click(screen.getByRole("button", { name: /^remove permission$/i }));
-    expect(await screen.findByText("Can't revert: value unknown")).toBeTruthy();
+    expect(await screen.findByText("Cannot revert: previous value unknown")).toBeTruthy();
     expect(screen.getByText("- essentials.fly [world_nether]")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Revert" })).toBeNull();
 
@@ -290,7 +290,7 @@ describe("ServerLuckPerms reverting a permission change", () => {
     await typeNode("essentials.fly", "world_nether");
     await userEvent.click(screen.getByRole("button", { name: /^remove permission$/i }));
     expect(calls.accessPermission).toHaveBeenLastCalledWith("lobby", "unset", "Alex", "essentials.fly", undefined, "world_nether");
-    expect(await screen.findByText("Can't revert: value unknown")).toBeTruthy();
+    expect(await screen.findByText("Cannot revert: previous value unknown")).toBeTruthy();
     expect(screen.getByText("- essentials.fly [world_nether]")).toBeTruthy();
   }
 

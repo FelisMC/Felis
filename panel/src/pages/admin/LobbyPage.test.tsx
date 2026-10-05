@@ -137,7 +137,7 @@ describe("LobbyPage", () => {
     await userEvent.click(screen.getByRole("button", { name: "Save settings" }));
     expect(calls.writeServerFile).not.toHaveBeenCalled();
     calls.readServerFile.mockResolvedValue({ content: btoa('{"menuTitleEn":"Recovered title"}'), sha256: "hash" });
-    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect((await readyField("English menu title")).value).toBe("Recovered title");
     expect(screen.queryByRole("alert")).toBeNull();
   });

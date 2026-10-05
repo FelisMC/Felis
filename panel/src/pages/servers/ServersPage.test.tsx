@@ -324,7 +324,7 @@ describe("ServersPage order and paging", () => {
     await sortBy(user, "Sort by status");
     expect(await tableOrder()).toEqual(["skyblock", "survival", "Arcade", "node-2", "node-10", "creative"]);
 
-    await sortBy(user, "Most players first");
+    await sortBy(user, "Online players, descending");
     expect(await tableOrder()).toEqual(["skyblock", "survival", "Arcade", "creative", "node-2", "node-10"]);
   });
 
@@ -340,7 +340,7 @@ describe("ServersPage order and paging", () => {
 
     // "surv" opens both survival names and sits inside my-surv, which ranks it below.
     expect(await tableOrder()).toEqual(["survival-a", "survival-b", "my-surv"]);
-    await sortBy(user, "Most players first");
+    await sortBy(user, "Online players, descending");
     expect(await tableOrder()).toEqual(["survival-b", "survival-a", "my-surv"]);
     await user.clear(screen.getByPlaceholderText(/Search/));
     expect(await tableOrder()).toEqual(["my-surv", "survival-b", "survival-a"]);

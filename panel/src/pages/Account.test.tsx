@@ -178,7 +178,7 @@ describe("Account passkey delete", () => {
 
     expect(await screen.findByText("Firefox on Windows")).toBeTruthy();
     await userEvent.click(await screen.findByRole("button", deleteButton("Laptop")));
-    expect(within(screen.getByRole("dialog")).getByText(/Your other devices are signed out too\./)).toBeTruthy();
+    expect(within(screen.getByRole("dialog")).getByText(/signs out sessions on other devices/)).toBeTruthy();
     await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: t("account:passkey_delete_confirm") }));
 
     await waitFor(() => expect(screen.queryByText("Firefox on Windows")).toBeNull());

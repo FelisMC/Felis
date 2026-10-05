@@ -228,7 +228,7 @@ describe("ServerBackups back up now", () => {
     renderPage();
     await screen.findByText("Page 1 of 3");
     await vi.waitFor(() => expect(backUp().disabled).toBe(true));
-    expect(backUp().title).toBe("A backup, restore or world export is already running; back up once it finishes.");
+    expect(backUp().title).toBe("A backup, restoration, or world export is in progress. Wait for the current operation to complete before starting a backup.");
   });
 
   it("keeps the page when a reread fails, and says the status may be stale", async () => {

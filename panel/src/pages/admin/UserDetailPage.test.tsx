@@ -140,7 +140,7 @@ describe("UserDetailPage", () => {
       expect(calls.revokeUserSession).toHaveBeenCalledWith("u-1", "h-phone");
       await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
       await waitFor(() => expect(screen.queryByText("Chrome on Android")).toBeNull());
-      expect(screen.queryByText("That session has already ended.")).toBeNull();
+      expect(screen.queryByText("The session has ended or does not exist.")).toBeNull();
     });
 
     it("shows why a revoke failed for any other reason", async () => {
@@ -178,9 +178,9 @@ describe("UserDetailPage", () => {
   });
 
   describe("danger zone for accounts the server protects", () => {
-    const SELF_REASON = "You can't disable or delete the account you're signed in with.";
+    const SELF_REASON = "The signed-in account cannot be disabled or deleted.";
     const OWNER_REASON =
-      "The owner account can't be disabled or deleted from the panel. Only the host's break-glass console (sudo felis breakGlass) manages it.";
+      "The Owner account cannot be disabled or deleted from the panel. Manage it through the host recovery console (sudo felis breakGlass).";
 
     const button = (name: string) => screen.getByRole("button", { name }) as HTMLButtonElement;
     const describedBy = (b: HTMLElement) =>
@@ -197,7 +197,7 @@ describe("UserDetailPage", () => {
         expect(button(name).parentElement?.getAttribute("title")).toBe(SELF_REASON);
       }
       expect(button("Unbind passkeys").disabled).toBe(false);
-      expect(screen.getByText("You can't change your own role.")).toBeTruthy();
+      expect(screen.getByText("The current account’s role cannot be changed.")).toBeTruthy();
       expect(screen.queryByRole("combobox")).toBeNull();
     });
 
@@ -212,7 +212,7 @@ describe("UserDetailPage", () => {
       expect(describedBy(button("Delete User"))).toBe(OWNER_REASON);
       expect(
         screen.getByText(
-          "The owner's role is fixed. Only the host's break-glass console (sudo felis breakGlass) manages the owner.",
+          "The Owner role cannot be changed. Manage it through the host recovery console (sudo felis breakGlass).",
         ),
       ).toBeTruthy();
       expect(screen.queryByRole("combobox")).toBeNull();

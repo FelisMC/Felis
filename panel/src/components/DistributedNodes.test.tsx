@@ -26,7 +26,7 @@ describe("durable migration", () => {
     await screen.findByText("source node is offline");
     expect(calls.migration).toHaveBeenCalledWith("survival");
     expect(screen.getByText("persisted-op")).toBeTruthy();
-    await user.click(screen.getByRole("button", { name: "Try again" }));
+    await user.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(calls.retryMigration).toHaveBeenCalledWith("survival", "persisted-op"));
     expect(changed).toHaveBeenCalled();
     expect(calls.migrateServer).not.toHaveBeenCalled();
@@ -36,7 +36,7 @@ describe("durable migration", () => {
     const user = userEvent.setup();
     render(<MigrationDialog name="survival" nodeName="b" stopped={false} onChanged={() => {}} />);
     await user.click(screen.getByRole("button", { name: "Migrate world" }));
-    const retry = await screen.findByRole("button", { name: "Try again" });
+    const retry = await screen.findByRole("button", { name: "Retry" });
     expect((retry as HTMLButtonElement).disabled).toBe(true);
     await user.click(retry);
     expect(calls.retryMigration).not.toHaveBeenCalled();

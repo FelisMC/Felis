@@ -54,7 +54,7 @@ describe("DBBackupCard", () => {
     expect(await screen.findByText("Incomplete")).toBeTruthy();
     expect(screen.queryByText("Healthy")).toBeNull();
     expect(screen.getByText("The newest backup lacks the server definitions")).toBeTruthy();
-    expect(screen.getByText(/Restoring from it brings back accounts and the database, but no servers/)).toBeTruthy();
+    expect(screen.getByText(/Restoring the database alone cannot recreate servers/)).toBeTruthy();
     expect(screen.getByText(REASON)).toBeTruthy();
     expect(screen.getByTitle("sudo k3s kubectl get minecraftservers -A")).toBeTruthy();
     expect(screen.getByTitle("sudo felis db backup")).toBeTruthy();
@@ -74,7 +74,7 @@ describe("DBBackupCard", () => {
     render(<DBBackupCard />);
     expect(await screen.findByText("Overdue")).toBeTruthy();
     expect(screen.getByText("The newest backup is more than 26 hours old")).toBeTruthy();
-    expect(screen.getByText(/find out why the timer missed it:$/)).toBeTruthy();
+    expect(screen.getByText(/inspect the timer logs:$/)).toBeTruthy();
     expect(screen.getByText("yesterday").className).toBe("text-destructive");
     expect(screen.getByTitle("sudo systemctl start felis-db-backup.service")).toBeTruthy();
   });
@@ -87,7 +87,7 @@ describe("DBBackupCard", () => {
     render(<DBBackupCard />);
     expect(await screen.findByText("Overdue")).toBeTruthy();
     expect(screen.getByText("The daily backup last completed 2 days ago, past the 26-hour limit")).toBeTruthy();
-    expect(screen.getByText(/^The newer backup above was taken by hand or by another job and can be restored from/)).toBeTruthy();
+    expect(screen.getByText(/^The newer backup was created manually or by another task and is available for restoration/)).toBeTruthy();
     // The manual bundle itself is fresh: its age stays out of the alarm.
     expect(screen.getByText("3 hours ago").className).toBe("");
     expect(screen.getByTitle("sudo systemctl start felis-db-backup.service")).toBeTruthy();
@@ -96,8 +96,8 @@ describe("DBBackupCard", () => {
   it("says the daily timer never completed when only other kinds exist", async () => {
     calls.getDBBackup.mockResolvedValue(status({ label: "pre-migrate", name: "felis-db-20260926T101500Z-pre-migrate.tar" }, true));
     render(<DBBackupCard />);
-    expect(await screen.findByText("The daily timer has not completed a backup yet")).toBeTruthy();
-    expect(screen.getByText(/^The newer backup above was taken by hand/)).toBeTruthy();
+    expect(await screen.findByText("The daily timer has not completed a backup")).toBeTruthy();
+    expect(screen.getByText(/^The newer backup was created manually/)).toBeTruthy();
   });
 
   it("names an off-site copy snapshot by its kind", async () => {

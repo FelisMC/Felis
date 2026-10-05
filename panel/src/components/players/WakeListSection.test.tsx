@@ -59,12 +59,12 @@ describe("WakeListSection", () => {
   it("says the list has no effect under the other two policies", async () => {
     calls.serverAllowlist.mockResolvedValue([]);
     const owner = render(<WakeListSection name="lobby" policy="ownerOnly" defaultOpen />);
-    expect(await screen.findByText(/Owner only, so only you and admins/)).toBeTruthy();
-    expect(screen.getByText("No player has joined this server yet.")).toBeTruthy();
+    expect(await screen.findByText(/Owner only policy permits only the server owner and administrators/)).toBeTruthy();
+    expect(screen.getByText("No player join records available.")).toBeTruthy();
     owner.unmount();
 
     render(<WakeListSection name="lobby" policy="public" defaultOpen />);
-    expect(await screen.findByText(/Public, so any player's join starts it/)).toBeTruthy();
+    expect(await screen.findByText(/Public policy allows any player’s join to trigger startup/)).toBeTruthy();
   });
 
   it("revokes and restores in place, reading the list again after each change", async () => {
@@ -97,14 +97,14 @@ describe("WakeListSection", () => {
     calls.setAllowlistWake.mockRejectedValue({ status: 403, code: "forbidden", message: "forbidden" });
     const first = render(<WakeListSection name="lobby" policy="allowlist" defaultOpen />);
     await user.click(await screen.findByRole("button", { name: "Take away Steve's right to wake the server" }));
-    expect((await screen.findByRole("alert")).textContent).toBe("You are not allowed to do that.");
+    expect((await screen.findByRole("alert")).textContent).toBe("The current account is not authorized to perform this operation.");
     expect(within(rowOf("Steve")).queryByText("Revoked")).toBeNull();
     first.unmount();
 
     calls.serverAllowlist.mockRejectedValue({ status: 500, code: "internal", message: "db down" });
     render(<WakeListSection name="lobby" policy="allowlist" defaultOpen />);
     expect((await screen.findByRole("alert")).textContent).toBe(
-      "Couldn't load the wake list. The operation failed because of an internal server error. Ask an admin to check the logs.",
+      "Unable to load the wake list. The operation failed because of an internal server error. Ask an admin to check the logs.",
     );
   });
 

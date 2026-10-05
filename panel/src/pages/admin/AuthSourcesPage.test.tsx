@@ -129,7 +129,7 @@ describe("AuthSourcesPage", () => {
     calls.getAuthSources.mockRejectedValueOnce({ status: 503, code: "auth_sources_unavailable" });
     page(); await screen.findByRole("alert");
     expect(field("Permanent source ID").disabled).toBe(true);
-    await userEvent.click(button("Try again"));
+    await userEvent.click(button("Retry"));
     await ready();
     expect(field("Permanent source ID").value).toBe("littleskin");
   });

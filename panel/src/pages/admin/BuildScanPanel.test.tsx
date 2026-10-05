@@ -100,7 +100,7 @@ describe("BuildScanPanel", () => {
       "Listed in [registry] scan_accept as a known risk, so it never blocks.",
     );
     const unfixed = within(panel).getByText("CVE-2024-0002").closest("li")!;
-    expect(unfixed.textContent).toBe("CVE-2024-0002HIGHopenssl3.0.13 → no fix yetusr/lib/libssl.so.3");
+    expect(unfixed.textContent).toBe("CVE-2024-0002HIGHopenssl3.0.13 → No fix availableusr/lib/libssl.so.3");
     expect(within(panel).getByText("Showing 4 of 6 findings. The full report lists every one.")).toBeTruthy();
   });
 
@@ -112,7 +112,7 @@ describe("BuildScanPanel", () => {
     const sbom = within(panel).getByRole("button", { name: "SBOM" }) as HTMLButtonElement;
     expect(sbom.disabled).toBe(true);
     expect(sbom.getAttribute("title")).toBe(
-      "Not kept with this build: the file was too large, or the step that writes it failed.",
+      "The file was not retained for this build. It may have exceeded the size limit or its generation step may have failed.",
     );
     await userEvent.click(within(panel).getByRole("button", { name: "Trivy report" }));
     expect(calls.downloadBuildScanDocument).toHaveBeenCalledWith("bld-7", "report");
@@ -124,7 +124,7 @@ describe("BuildScanPanel", () => {
     });
     await userEvent.click(within(panel).getByRole("button", { name: "Trivy report" }));
     expect((await within(panel).findByRole("alert")).textContent).toBe(
-      "Couldn't download: This build kept no copy of that scan file: it was too large to keep, or the step that writes it failed.",
+      "Unable to download: The scan document was not retained for this build. The file may have exceeded the size limit or its generation step may have failed.",
     );
   });
 
@@ -135,7 +135,7 @@ describe("BuildScanPanel", () => {
     expect(within(panel).getByText("Passed")).toBeTruthy();
     expect(panel.textContent).toContain("· 1 package · Blocks on HIGH, including vulnerabilities with no fixed release");
     expect(panel.textContent).not.toContain("accepted");
-    expect(within(panel).getByText("Trivy found nothing to report in this image.")).toBeTruthy();
+    expect(within(panel).getByText("Trivy detected no findings in this image.")).toBeTruthy();
     expect(within(panel).queryByText("Found in")).toBeNull();
     calls.downloadBuildScanDocument.mockResolvedValue(undefined);
     await userEvent.click(within(panel).getByRole("button", { name: "SBOM" }));
@@ -147,7 +147,7 @@ describe("BuildScanPanel", () => {
     const { unmount } = render(<BuildScanPanel build={FAILED} />);
     expect(
       await screen.findByText(
-        "No security scan was kept for this build. It stopped before the scan step, or it ran before builds kept their scans.",
+        "This build has no retained security scan record. It may have ended before scanning or been created before scan retention was enabled.",
       ),
     ).toBeTruthy();
     unmount();
@@ -156,9 +156,9 @@ describe("BuildScanPanel", () => {
     calls.getBuildScan.mockResolvedValueOnce(BLOCKED);
     render(<BuildScanPanel build={FAILED} />);
     expect((await screen.findByRole("alert")).textContent).toBe(
-      "Couldn't load the security scan: The operation failed because of an internal server error. Ask an admin to check the logs.",
+      "Unable to load the security scan: The operation failed because of an internal server error. Ask an admin to check the logs.",
     );
-    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByRole("region", { name: "Security scan" })).toBeTruthy();
     expect(screen.queryByRole("alert")).toBeNull();
   });

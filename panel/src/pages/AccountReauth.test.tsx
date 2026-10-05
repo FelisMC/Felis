@@ -82,11 +82,11 @@ function renderAccount() {
   );
 }
 
-const checkDialog = () => screen.findByRole("dialog", { name: "Confirm it's you" });
+const checkDialog = () => screen.findByRole("dialog", { name: "Account identity verification" });
 
 async function askToDeleteLaptop() {
   await userEvent.click(await screen.findByRole("button", { name: "Delete passkey “Laptop”" }));
-  const confirmDelete = screen.getByRole("dialog", { name: "Delete this passkey?" });
+  const confirmDelete = screen.getByRole("dialog", { name: "Delete this Passkey?" });
   await userEvent.click(within(confirmDelete).getByRole("button", { name: "Delete" }));
 }
 
@@ -140,8 +140,8 @@ describe("Account re-authentication", () => {
     const dialog = await checkDialog();
     await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
 
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Confirm it's you" })).toBeNull());
-    const confirmDelete = screen.getByRole("dialog", { name: "Delete this passkey?" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Account identity verification" })).toBeNull());
+    const confirmDelete = screen.getByRole("dialog", { name: "Delete this Passkey?" });
     expect(within(confirmDelete).queryByRole("alert")).toBeNull();
     expect(mocks.passkeyDelete).toHaveBeenCalledTimes(1);
     expect(mocks.passkeyList).toHaveBeenCalledTimes(1);
@@ -159,7 +159,7 @@ describe("Account re-authentication", () => {
     await proveByEmail(dialog);
 
     const alert = await within(dialog).findByRole("alert");
-    expect(alert.textContent).toBe("That code is invalid or expired — request a fresh one and try again.");
+    expect(alert.textContent).toBe("The binding code is invalid or expired. Obtain a new code.");
     expect(mocks.passkeyDelete).toHaveBeenCalledTimes(1);
   });
 
@@ -249,7 +249,7 @@ describe("Account re-authentication", () => {
     await proveByEmail(await checkDialog());
 
     const status = await within(screen.getByRole("dialog", { name: "Add Passkey" })).findByRole("status");
-    expect(status.textContent).toBe("Confirmed. Press Continue to add the passkey.");
+    expect(status.textContent).toBe("Identity verified. Select Continue to add a Passkey.");
     expect(mocks.passkeyRegisterBegin).toHaveBeenCalledTimes(1);
     expect(mocks.credentialsCreate).not.toHaveBeenCalled();
     expect(within(screen.getByRole("dialog", { name: "Add Passkey" })).getByRole("button", { name: "Continue" })).toHaveProperty(
@@ -268,7 +268,7 @@ describe("Account re-authentication", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Change email" }));
     expect(
       screen.getByText(
-        "Enter the new address and we'll send it a code. Once it's verified, sign-in codes go there, the old address gets a notice, and your other devices are signed out.",
+        "Enter the new email address to receive a verification code. After verification, sign-in codes will be sent to the new address, a change notification will be sent to the previous address, and sessions on other devices will be signed out.",
       ),
     ).toBeTruthy();
     const address = screen.getByPlaceholderText("user@example.com");
