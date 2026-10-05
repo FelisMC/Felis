@@ -109,6 +109,9 @@ func APIMinecraftRole(p Params) *rbacv1.Role {
 		// restore chains; patch settles a chain by relabelling its safety-snapshot
 		// Job (internal/api restorechain.go).
 		rule([]string{groupBatch}, []string{"jobs"}, []string{"create", "get", "delete", "list", "patch"}),
+		// Emergency shutdown bypasses the operator through the scale subresource.
+		rule([]string{groupApps}, []string{"statefulsets"}, []string{"get"}),
+		rule([]string{groupApps}, []string{"statefulsets/scale"}, []string{"update"}),
 		// Read-side console (spec §8 读=pods/log follow): list pods to find the
 		// server's running pod, then read its log subresource. Two separate rules so
 		// the verbs stay tight — list on pods, get on pods/log, and nothing else.

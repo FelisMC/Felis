@@ -57,6 +57,8 @@ type ServerInfo struct {
 	// Resources is the spec's pod resource block. It stays off the wire; a spec
 	// patch reads it so the fields the admin left out keep their values.
 	Resources corev1.ResourceRequirements `json:"-"`
+	// Startup explains scheduling and container state independently of the CR phase.
+	Startup *StartupStatus `json:"startup,omitempty"`
 }
 
 // CreateServerInput is the validated, structured create-server form (spec §15).

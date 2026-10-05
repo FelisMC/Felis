@@ -21,6 +21,7 @@ export interface AsyncState<T> {
   data: T | null;
   error: unknown;
   loading: boolean;
+  updatedAt: number | null;
   /** Re-run the async fn (e.g. after a mutation). */
   reload: () => void;
 }
@@ -30,6 +31,8 @@ export interface AsyncOptions {
    *  are its filter or page: the old rows stay put (each still acts on its own
    *  item) instead of blanking to a spinner on every keystroke. */
   keepPrevious?: boolean;
+  /** Polling must not supersede a request that is still awaiting its timeout. */
+  coalesce?: boolean;
 }
 
 interface Settled<T> {
@@ -38,6 +41,7 @@ interface Settled<T> {
   data: T | null;
   error: unknown;
   loading: boolean;
+  updatedAt: number | null;
 }
 
 /** useAsync runs an async producer on mount and on demand, guarding against
@@ -49,33 +53,39 @@ interface Settled<T> {
 export function useAsync<T>(
   fn: () => Promise<T>,
   deps: unknown[] = [],
-  { keepPrevious = false }: AsyncOptions = {},
+  { keepPrevious = false, coalesce = false }: AsyncOptions = {},
 ): AsyncState<T> {
   const [settled, setSettled] = useState<Settled<T> | null>(null);
   const seq = useRef(0);
+  const inFlight = useRef<{ run: () => Promise<T>; ticket: number } | null>(null);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const run = useCallback(fn, deps);
 
   const reload = useCallback(() => {
+    if (coalesce && inFlight.current?.run === run) return;
     const ticket = ++seq.current;
+    inFlight.current = { run, ticket };
     setSettled((s) => ({
       run,
       data: s?.run === run || keepPrevious ? (s?.data ?? null) : null,
-      error: null,
+      error: s?.run === run ? s.error : null,
+      updatedAt: s?.run === run ? s.updatedAt : null,
       loading: true,
     }));
     run().then(
       (d) => {
-        if (ticket === seq.current) setSettled({ run, data: d, error: null, loading: false });
+        if (inFlight.current?.ticket === ticket) inFlight.current = null;
+        if (ticket === seq.current) setSettled({ run, data: d, error: null, loading: false, updatedAt: Date.now() });
       },
       (e) => {
+        if (inFlight.current?.ticket === ticket) inFlight.current = null;
         if (ticket === seq.current) {
-          setSettled((s) => ({ run, data: s?.data ?? null, error: e, loading: false }));
+          setSettled((s) => ({ run, data: s?.data ?? null, error: e, loading: false, updatedAt: s?.updatedAt ?? null }));
         }
       },
     );
-  }, [run, keepPrevious]);
+  }, [run, keepPrevious, coalesce]);
 
   useEffect(() => {
     reload();
@@ -83,6 +93,7 @@ export function useAsync<T>(
     const tickets = seq;
     return () => {
       tickets.current++;
+      inFlight.current = null;
     };
   }, [reload]);
 
@@ -94,6 +105,7 @@ export function useAsync<T>(
     error: current ? settled.error : null,
     loading: current ? settled.loading : true,
     reload,
+    updatedAt: current ? settled.updatedAt : null,
   };
 }
 

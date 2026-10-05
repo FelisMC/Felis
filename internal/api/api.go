@@ -177,12 +177,9 @@ type API struct {
 	SubmitCreateCooldown time.Duration
 	SubmitUploadCooldown time.Duration
 
-	// MaxRunningServers caps how many servers may be desired-Running cluster-wide
-	// (spec §9.1: the concurrency-上限 lever hanging on the same wake chokepoint as
-	// cooldown and autostartPolicy). Zero — the default — disables it: §9.2 wires
-	// only autostartPolicy + cooldown as active wake gates, so this lever ships
-	// inert, exactly like a zero WakeCooldown, and a deployment opts in by setting
-	// a positive value. Enforced via withinRunningCap on the wake path.
+	// MaxRunningServers is the default desired-Running admission limit (spec §9.1).
+	// Zero disables it. A saved Owner wake policy overrides this and WakeCooldown;
+	// panel, in-game and scheduled starts share withinRunningCap.
 	MaxRunningServers int
 
 	// MaxStreamsPerPrincipal caps how many concurrent Server-Sent Event streams
@@ -538,6 +535,7 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		// App-auth tier: operations on your own servers (spec §14).
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/wake", h: a.handleWake},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/stop", h: a.handleStop},
+		{Method: "POST", Pattern: "/api/v1/servers/{name}/emergency-stop", h: a.handleEmergencyStop, Admin: true, Owner: true},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/claim", h: a.handleClaim},
 		// Console write (spec §8 写=RCON): owner/admin-gated inside the handler, so
 		// it sits in the app-tier block (操作自己服 → app 鉴权), not behind adminOnly.
@@ -652,6 +650,8 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		// Staff can designate their own game identity after panel setup. Players
 		// retain the in-game proof flow above.
 		{Method: "GET", Pattern: "/api/v1/account/link/sources", Admin: true, h: a.handleLinkSources},
+		{Method: "GET", Pattern: "/api/v1/settings/wake-policy", Owner: true, Admin: true, h: a.handleGetWakePolicy},
+		{Method: "PUT", Pattern: "/api/v1/settings/wake-policy", Owner: true, Admin: true, h: a.handleSetWakePolicy},
 		{Method: "GET", Pattern: "/api/v1/settings/auth-sources", Owner: true, Admin: true, h: a.handleGetAuthSources},
 		{Method: "PUT", Pattern: "/api/v1/settings/auth-sources", Owner: true, Admin: true, h: a.handleSetAuthSources},
 		{Method: "POST", Pattern: "/api/v1/settings/auth-sources/test", Owner: true, Admin: true, h: a.handleTestAuthSource},
@@ -1205,8 +1205,8 @@ func (l *streamLimiter) release(key string) {
 // can momentarily exceed the cap. That is acceptable because the operator
 // reconcile is idempotent and the §18 reaper / §9.3 quota bound steady-state
 // load; the cap exists to refuse an obvious flood, not to hold a hard ceiling.
-func (a *API) withinRunningCap(ctx context.Context, info *ServerInfo) (bool, error) {
-	if a.MaxRunningServers <= 0 || naming.IsSystemServer(info.Name) {
+func (a *API) withinRunningCap(ctx context.Context, info *ServerInfo, cap int) (bool, error) {
+	if cap <= 0 || naming.IsSystemServer(info.Name) {
 		return true, nil
 	}
 	if info.DesiredState == string(v1alpha1.DesiredRunning) {
@@ -1222,5 +1222,5 @@ func (a *API) withinRunningCap(ctx context.Context, info *ServerInfo) (bool, err
 			running++
 		}
 	}
-	return running < a.MaxRunningServers, nil
+	return running < cap, nil
 }

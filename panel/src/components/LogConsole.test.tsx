@@ -104,3 +104,20 @@ describe("LogConsole", () => {
     expect(verdicts.filter((same) => same === false)).toHaveLength(1);
   });
 });
+
+describe("startup log retries", () => {
+  it("recovers from a fatal early attach without requiring a manual reconnect", async () => {
+    vi.useFakeTimers();
+    const view = render(<LogConsole url="/startup" starting />);
+    try {
+      const original = FakeEventSource.last!;
+      act(() => { original.readyState = 2; original.onerror?.({}); });
+      expect(screen.getByText(i18next.t("servers:log_reconnecting"))).toBeTruthy();
+      expect(screen.getByText(i18next.t("servers:log_starting_wait"))).toBeTruthy();
+      await act(async () => vi.advanceTimersByTime(5000));
+      expect(FakeEventSource.last).not.toBe(original);
+      act(() => FakeEventSource.last!.onopen?.({}));
+      expect(screen.getByText(i18next.t("servers:log_live"))).toBeTruthy();
+    } finally { view.unmount(); vi.useRealTimers(); }
+  });
+});

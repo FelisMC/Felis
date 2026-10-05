@@ -31,6 +31,7 @@ vi.mock("@/components/LogConsole", () => ({ LogConsole: () => <div data-testid="
 
 beforeEach(() => {
   tier.isAdmin = true;
+  tier.isOwner = false;
   calls.status.mockReset();
   calls.myServers.mockReset();
   calls.myServers.mockResolvedValue([]);
@@ -52,6 +53,18 @@ function renderConsole() {
 function status(over: Record<string, unknown>) {
   return { name: "survival", subdomain: "survival", phase: "Failed", ready: false, playersOnline: 0, playersMax: 20, ...over };
 }
+
+describe("ServerConsole host recovery", () => {
+  it("offers host recovery even when the first API read fails", async () => {
+    tier.isOwner = true;
+    calls.status.mockRejectedValue(new Error("API offline"));
+    renderConsole();
+    expect(await screen.findByText("Control API unreachable? Show host recovery steps")).toBeTruthy();
+    expect(screen.getByText(/kubectl patch minecraftserver survival/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
+    tier.isOwner = false;
+  });
+});
 
 describe("ServerConsole failed start", () => {
   it("shows the failed attempt's log under what the owner can do once retries are spent", async () => {
@@ -157,10 +170,10 @@ describe("ServerConsole following the server", () => {
 
     calls.status.mockRejectedValue({ status: 409, code: "test_failure", message: "status backend down" });
     await advance(STATUS_POLL_SLOW_MS);
-    await waitFor(() => expect(screen.getByText(/Couldn't refresh/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/Cannot confirm the current server state/)).toBeTruthy());
     expect(screen.getByText(/status backend down/)).toBeTruthy();
     expect(screen.getByTestId("log-stream")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
   });
 });
 
@@ -178,16 +191,21 @@ describe("ServerConsole retirement", () => {
     calls.status.mockResolvedValue(stopped());
     renderConsole();
 
-    expect(await screen.findByRole("button", { name: "Give up" })).toBeTruthy();
+    const more = await screen.findByRole("button", { name: "More actions" });
+    expect(giveUp()).toBeNull();
+    await userEvent.click(more);
+    expect(screen.getByRole("button", { name: "Give up" })).toBeTruthy();
     expect(del()).toBeNull();
-    expect(screen.getByRole("button", { name: "Wake" })).toBeTruthy();
   });
 
   it("offers an admin both", async () => {
     calls.status.mockResolvedValue(stopped());
     renderConsole();
 
-    expect(await screen.findByRole("button", { name: "Delete" })).toBeTruthy();
+    const more = await screen.findByRole("button", { name: "More actions" });
+    expect(del()).toBeNull();
+    await userEvent.click(more);
+    expect(screen.getByRole("button", { name: "Delete" })).toBeTruthy();
     expect(giveUp()).toBeTruthy();
   });
 
@@ -322,5 +340,44 @@ describe("ServerConsole command line", () => {
     expect(kept).toHaveLength(50);
     expect(kept[0]).toBe("cmd 1");
     expect(kept.slice(-2)).toEqual(["cmd 49", "list"]);
+  });
+});
+
+describe("startup diagnostics and stale state", () => {
+  it("shows a crashed container even while the operator phase still says Starting", async () => {
+    calls.status.mockResolvedValue(status({ phase: "Starting", desiredState: "Running", startup: { stage: "failed", reason: "OOMKilled", message: "Container minecraft exited with code 137", logsAvailable: false } }));
+    renderConsole();
+    expect(await screen.findByText("Startup issue")).toBeTruthy();
+    expect(screen.getByText(/OOMKilled.*137/)).toBeTruthy();
+    expect(screen.queryByText("Starting", { exact: true })).toBeNull();
+    expect(screen.getByText("Logs are not available yet")).toBeTruthy();
+  });
+  it("explains scheduling failure before logs exist", async () => {
+    calls.status.mockResolvedValue(status({ phase: "Starting", desiredState: "Running", startup: { stage: "scheduling", reason: "Unschedulable", message: "0/1 nodes: Insufficient memory", startedAt: new Date().toISOString(), logsAvailable: false } }));
+    renderConsole();
+    expect(await screen.findByText("Waiting for resources and scheduling")).toBeTruthy();
+    expect(screen.getByText(/Not enough schedulable memory/)).toBeTruthy();
+    expect(screen.queryByTestId("log-stream")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete server" })).toBeNull();
+    expect(screen.getByRole("button", { name: "More actions" })).toBeTruthy();
+  });
+  it("does not claim a live startup state when the API is unavailable, and recovers automatically", async () => {
+    calls.status.mockResolvedValue(status({ phase: "Starting", desiredState: "Running", startup: { stage: "booting", logsAvailable: true } }));
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    renderConsole();
+    await screen.findByText("Starting Minecraft and checking readiness");
+    try {
+      calls.status.mockRejectedValue({ status: 0, code: "network_error", message: "backend unavailable" });
+      await act(async () => vi.advanceTimersByTimeAsync(STATUS_POLL_FAST_MS));
+      expect(screen.getByText("Status unavailable")).toBeTruthy();
+      expect(screen.getByRole("alert").textContent).toContain("Last successful read");
+      expect(screen.queryByText("Starting Minecraft and checking readiness")).toBeNull();
+      expect(screen.getByTestId("log-stream")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: /^Stop/ })).toBeNull();
+      calls.status.mockResolvedValue(status({ phase: "Running", ready: true, desiredState: "Running" }));
+      await act(async () => vi.advanceTimersByTimeAsync(STATUS_POLL_FAST_MS));
+      expect(screen.queryByText("Status unavailable")).toBeNull();
+      expect(screen.getByTestId("log-stream")).toBeTruthy();
+    } finally { vi.useRealTimers(); }
   });
 });

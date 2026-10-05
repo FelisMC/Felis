@@ -10,6 +10,7 @@ import {
   Upload,
   Clock,
   ShieldCheck,
+  Settings,
   type LucideIcon,
 } from "lucide-react";
 
@@ -78,6 +79,7 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { to: "/admin/users", key: "admin_users", icon: Users },
       { to: "/admin/auth-sources", key: "auth_sources", icon: ShieldCheck },
+      { to: "/admin/platform", key: "platform_settings", icon: Settings },
     ],
   },
 ];

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Hourglass, Loader2, PackageX } from "lucide-react";
+import { ChevronRight, Ellipsis, Hourglass, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,6 +15,7 @@ import { MessageLine } from "@/components/MessageLine";
 import { api, humanizeError } from "@/lib/api";
 import { formatAbsolute, formatRelative } from "@/lib/format";
 import type { RetireState } from "@/lib/types";
+import { isReauthCancelled, useReauth } from "@/components/ReauthDialog";
 import { cn } from "@/lib/utils";
 
 // A server leaves its owner, or the platform, through a retirement
@@ -100,7 +101,7 @@ export function RetireNotice({
   );
 }
 
-type Mode = "release" | "delete";
+type Mode = "release" | "delete" | "stop";
 
 /** RetireCard is the console sidebar's way to give a server up (its owner or an
  *  admin) or delete it (an admin). Either asks for the server's name typed out,
@@ -109,43 +110,40 @@ export function RetireCard({
   name,
   label,
   isAdmin,
+  isOwner = false,
+  canRetire = true,
   onChanged,
 }: {
   name: string;
   /** What the dialog calls the server: its display name, else its name. */
   label: string;
   isAdmin: boolean;
+  isOwner?: boolean;
+  canRetire?: boolean;
   onChanged: () => void;
 }) {
   const { t } = useTranslation("servers");
   const [mode, setMode] = useState<Mode | null>(null);
+  const [open, setOpen] = useState(false);
 
   return (
-    <div className="space-y-3 rounded-lg border border-destructive/30 bg-card p-4">
-      <div className="flex items-start gap-3">
-        <PackageX className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium">{isAdmin ? t("retire_card_title_admin") : t("retire_card_title")}</p>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            {isAdmin ? t("retire_card_desc_admin") : t("retire_card_desc")}
-          </p>
-        </div>
-      </div>
-      <div className="flex flex-wrap gap-2">
-        <Button
-          size="sm"
-          variant="outline"
-          className="border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive"
-          onClick={() => setMode("release")}
-        >
-          {t("retire_release")}
-        </Button>
-        {isAdmin && (
-          <Button size="sm" variant="destructive" onClick={() => setMode("delete")}>
-            {t("retire_delete")}
-          </Button>
-        )}
-      </div>
+    <div>
+      <Button variant="outline" className="h-auto w-full justify-start gap-3 border-border bg-card p-4 text-left active:scale-100" onClick={() => setOpen(true)}>
+        <Ellipsis className="text-muted-foreground" /><span className="flex-1">{t("more_actions")}</span><ChevronRight className="text-muted-foreground" />
+      </Button>
+      <Dialog open={open && mode === null} onOpenChange={setOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("more_actions")}</DialogTitle>
+            <DialogDescription>{canRetire ? (isAdmin ? t("retire_card_desc_admin") : t("retire_card_desc")) : t("emergency_stop_warning")}</DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-wrap gap-2">
+            {isOwner && <Button variant="outline" onClick={() => setMode("stop")}>{t("emergency_stop")}</Button>}
+            {canRetire && <Button variant="outline" onClick={() => setMode("release")}>{t("retire_release")}</Button>}
+            {canRetire && isAdmin && <Button variant="destructive" onClick={() => setMode("delete")}>{t("retire_delete")}</Button>}
+          </div>
+        </DialogContent>
+      </Dialog>
       {mode && (
         <RetireDialog
           name={name}
@@ -153,7 +151,7 @@ export function RetireCard({
           mode={mode}
           isAdmin={isAdmin}
           onClose={() => setMode(null)}
-          onDone={onChanged}
+          onDone={() => { setOpen(false); onChanged(); }}
         />
       )}
     </div>
@@ -180,40 +178,51 @@ function RetireDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const del = mode === "delete";
+  const stopping = mode === "stop";
+  const reauth = useReauth();
+  const [accepted, setAccepted] = useState(false);
 
   function setOpen(open: boolean) {
     if (!open && !busy) onClose();
   }
 
   async function confirm() {
-    if (typed !== name || busy) return;
+    if (typed !== name || busy || accepted) return;
     setBusy(true);
     setError(null);
     try {
+      if (stopping) {
+        await reauth.guard(() => api.emergencyStop(name, typed));
+        setAccepted(true);
+        setBusy(false);
+        onDone();
+        return;
+      }
       await api.retireServer(name, { confirm: typed, delete: del });
       setBusy(false);
       onClose();
       onDone();
     } catch (e) {
-      setError(humanizeError(e));
+      if (!isReauthCancelled(e)) setError(humanizeError(e));
       setBusy(false);
     }
   }
 
   return (
+    <>
     <Dialog open onOpenChange={setOpen}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>{del ? t("retire_delete_title", { name: label }) : t("retire_release_title", { name: label })}</DialogTitle>
-          <DialogDescription asChild>
+          <DialogTitle>{stopping ? t("emergency_stop") : del ? t("retire_delete_title", { name: label }) : t("retire_release_title", { name: label })}</DialogTitle>
+          {stopping ? <DialogDescription>{t("emergency_stop_warning")}</DialogDescription> : <DialogDescription asChild>
             <ul className="list-disc space-y-1 pl-5 text-left">
               <li>{t("retire_step_stop")}</li>
               <li>{del ? t("retire_step_delete") : t("retire_step_release")}</li>
               <li>{isAdmin ? t("retire_step_cancel_admin") : t("retire_step_cancel_owner")}</li>
             </ul>
-          </DialogDescription>
+          </DialogDescription>}
         </DialogHeader>
-        <div className="grid gap-2">
+        {accepted ? <MessageLine kind="success" message={t("emergency_stop_accepted")} /> : <div className="grid gap-2">
           <label htmlFor="retire-confirm" className="text-sm">
             {t("retire_confirm_label")} <code className="rounded bg-muted px-1 font-mono text-xs">{name}</code>
           </label>
@@ -228,17 +237,20 @@ function RetireDialog({
             spellCheck={false}
             className="font-mono"
           />
-        </div>
+        </div>}
         {error && <MessageLine kind="error" message={error} compact />}
+        {stopping && error && <p className="text-sm text-muted-foreground">{t("emergency_stop_unknown")}</p>}
         <ConfirmFooter
           onCancel={() => setOpen(false)}
           onConfirm={() => void confirm()}
-          disabled={typed !== name}
+          disabled={typed !== name || accepted}
           loading={busy}
-          cancelLabel={t("access_cancel")}
-          confirmLabel={del ? t("retire_confirm_delete") : t("retire_confirm_release")}
+          cancelLabel={accepted ? t("common:close_sr") : t("access_cancel")}
+          confirmLabel={stopping ? t("emergency_stop") : del ? t("retire_confirm_delete") : t("retire_confirm_release")}
         />
       </DialogContent>
     </Dialog>
+    {reauth.dialog}
+    </>
   );
 }

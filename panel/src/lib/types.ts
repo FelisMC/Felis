@@ -59,6 +59,7 @@ export interface MyServerView {
  *  A caller who does not own the server gets the public subset, so everything
  *  past the counts may be absent. */
 export interface ServerStatus {
+  startup?: { stage: "creating" | "scheduling" | "preparing" | "booting" | "failed"; reason?: string; message?: string; startedAt?: string; logsAvailable: boolean };
   nodeName?: string;
   name: string;
   subdomain: string;
@@ -767,4 +768,11 @@ export interface WorldMigration {
   error?: string;
   switched: boolean;
   attempt: number;
+}
+
+export interface WakePolicySettings {
+  maxRunningServers: number;
+  wakeCooldownSeconds: number;
+  revision: string;
+  managed: boolean;
 }

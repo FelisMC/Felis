@@ -306,5 +306,20 @@
   "scan_download_report": "Trivy report",
   "scan_download_sbom": "SBOM",
   "scan_not_kept": "Not kept with this build: the file was too large, or the step that writes it failed.",
-  "scan_download_failed": "Couldn't download: {{reason}}"
+  "scan_download_failed": "Couldn't download: {{reason}}",
+  "platform_title": "Platform settings",
+  "platform_subtitle": "Global controls for server startup and wake requests.",
+  "platform_reload": "Reload",
+  "platform_wake_title": "Startup and wake policy",
+  "platform_loading": "Loading the saved policy…",
+  "platform_limit": "Running server limit (0–10000)",
+  "platform_limit_hint": "0 means unlimited. New starts count servers already running or requested to run; system services can always start. Lowering the limit does not stop existing servers.",
+  "platform_cooldown": "Wake cooldown (0–3600 seconds)",
+  "platform_cooldown_hint": "Minimum interval between accepted wake requests for the same server. 0 disables the cooldown.",
+  "platform_scope": "The limit applies to panel starts, in-game wakes and scheduled starts. It is an admission check; available memory still determines whether Kubernetes can schedule a server. User quotas remain under Users.",
+  "platform_saved": "Saved. The new policy is active without a restart.",
+  "platform_unsaved": "Unsaved changes",
+  "platform_live": "Saved changes apply immediately on all API replicas.",
+  "platform_discard": "Discard changes",
+  "platform_save": "Save and apply"
 }

@@ -600,6 +600,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/servers/{name}/emergency-stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Scale an owned game workload to zero independently of Operator and RCON.
+         * @description Owner only; fresh authentication and exact name confirmation required. A 202 acknowledges scaling, not process exit. Normal Pod termination grace is retained.
+         */
+        post: operations["emergencyStop"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/servers/{name}/restart": {
         parameters: {
             query?: never;
@@ -1236,6 +1256,27 @@ export interface paths {
         /** List the servers the caller owns or may claim. */
         get: operations["myServers"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settings/wake-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read platform startup policy (Owner). */
+        get: operations["getWakePolicy"];
+        /**
+         * Save platform startup policy (Owner, fresh reauthentication).
+         * @description Atomically persists an override shared by all replicas. The admission limit applies to panel, in-game and scheduled starts without restarting. It does not stop existing servers or reserve memory. Wake cooldown applies to panel and in-game wakes.
+         */
+        put: operations["setWakePolicy"];
         post?: never;
         delete?: never;
         options?: never;
@@ -2915,6 +2956,21 @@ export interface components {
             api_url: string;
             enabled: boolean;
         };
+        StartupStatus: {
+            /** @enum {string} */
+            stage: "creating" | "scheduling" | "preparing" | "booting" | "failed";
+            reason?: string;
+            message?: string;
+            /** Format: date-time */
+            startedAt?: string;
+            logsAvailable: boolean;
+        };
+        WakePolicySettings: {
+            maxRunningServers: number;
+            wakeCooldownSeconds: number;
+            revision: string;
+            managed: boolean;
+        };
         AuthSourcesSettings: {
             /** @description Third-party sources in priority order; built-in Mojang always precedes them and is immutable. */
             sources: components["schemas"]["AuthSourceConfig"][];
@@ -3074,6 +3130,8 @@ export interface components {
         };
         /** @description Status projection of one server (internal/api/cluster.go ServerInfo). */
         ServerInfo: {
+            /** @description Private runtime and startup diagnostics for authorized server managers. */
+            startup?: components["schemas"]["StartupStatus"];
             /** @description Execution node; legacy servers report the observed node. */
             nodeName?: string;
             name: string;
@@ -5069,6 +5127,44 @@ export interface operations {
             404: components["responses"]["NotFound"];
         };
     };
+    emergencyStop: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    confirm: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Stop intent persisted and workload scaled to zero; await Pod termination. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        name: string;
+                        /** @constant */
+                        desiredState: "Stopped";
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
     restart: {
         parameters: {
             query?: never;
@@ -6727,6 +6823,68 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+        };
+    };
+    getWakePolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current startup policy and revision. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WakePolicySettings"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    setWakePolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    maxRunningServers: number;
+                    wakeCooldownSeconds: number;
+                    revision: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Saved policy and new revision. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WakePolicySettings"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description The policy changed; reload before saving. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     getAuthSources: {

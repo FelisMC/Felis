@@ -326,8 +326,22 @@ per-server cooldown → global running cap**. Map the API result:
 | `403` | `forbidden` | `autostartPolicy=allowlist` and UUID not allowlisted, or `ownerOnly` and caller is not owner | Add the UUID / claim the server / set `autostartPolicy=public` |
 | `409` | `maintenance_in_progress` | A restore, backup or file change holds the server's world volume (§3b) | Wait for the Job to finish |
 | `409` | `world_reclaiming` | The idle reaper is archiving the world (§3b item 3); afterwards the server is released with an empty world | Nothing to wait for; the old world stays in the archive |
-| `429` | (cooldown) | Wake retried within the 30s per-server `WakeCooldown` | Wait out the cooldown |
+| `429` | (cooldown) | Wake retried within the configured per-server cooldown | Wait out the cooldown |
 | `503` | `at_capacity` | Global `MaxRunningServers` cap reached | Stop another server or raise the cap |
+
+Owners can change the running-server limit and wake cooldown in **Platform
+settings**. Saved values apply on all API replicas without a restart; the running
+limit also applies to scheduled starts. Zero disables the corresponding control.
+The running limit is an admission check, not an atomic reservation: concurrent
+requests can briefly exceed it, and lowering it never stops existing servers.
+
+A server marked Starting need not have launched Java. Its console now reads Pod
+scheduling and container state: `Unschedulable` / insufficient memory means it is
+waiting for resources, while image-pull failures and container exits show their
+reasons. Logs attach once the container can produce them. A status request that
+cannot complete within 12 seconds marks the last view as stale, shows its last
+successful read time, and retries without overlapping polls. Do not infer game
+readiness from an old Starting label or a disconnected log stream.
 
 [GO-TESTED: `handlers_internal_wake_test.go`, cooldown, running-cap shape.] The
 operator's RCON probe — **not** the wake call — is the authoritative readiness
@@ -3406,3 +3420,23 @@ PG-TESTED: `TestScheduleStoreRunCAS`, `TestDueSchedules`, `TestSchedulesFollowTh
 | How long sessions, codes and audit rows are kept; export audit rows | §17 |
 | Files page: a change, upload or unzip refused (`file_exists`, `bad_path`, `too_large`, `upload_staging_full`, `upload_not_found`, `volume_full`, `archive_unsafe`, `job_failed`, `files_timeout`) | §18 |
 | A scheduled task shows `skipped`, `missed` or `failed`; a task switched itself off after an owner change | §19 |
+
+### 面板无法确认状态与应急停止
+
+控制 API 超时或失联时，最后一次读取的状态仅作参考；“启动中”不能表示
+游戏进程仍然健康。控制台保留已有日志，显示状态已过期和最后读取时间，
+并自动重试。首次读取失败也提供 Owner 可见的主机侧恢复步骤。
+
+普通停止由 Operator 执行。Owner 可以在服务器控制台的“更多操作”中选择
+“应急停止”，输入服务器名并重新验证身份。它先持久保存 `desiredState=Stopped`，
+再通过 Kubernetes 的 scale 子资源将该 MinecraftServer 自己拥有的 StatefulSet
+缩到零，绕过游戏 RCON 和 Operator，但保留正常 Pod 终止时间，不删除世界。
+如果缩容失败，已保存的停止意图不会撤销；界面明确提示结果未确认。
+受理请求不等于游戏已停止：状态读取独立检查 StatefulSet 副本目标和游戏 Pod，
+在副本目标仍非零或游戏 Pod 仍运行/退出时显示“停止中”。
+
+控制 API 自己离线时，浏览器不能凭空执行集群操作。Owner 可展开主机侧恢复
+步骤，在部署主机依次保存停止意图、缩容并检查 Pod（命名空间不是 `minecraft`
+时需要替换）。节点离线时还需检查节点和容器运行时；强制删除 Pod 不是
+进程已经退出的证据。不要靠强制删除世界、Pod 或 PVC 解决控制端失联。
+应急停止入口的 Kubernetes 权限需要随平台更新应用新的 RBAC。

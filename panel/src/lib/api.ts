@@ -23,6 +23,7 @@ import type {
   MinecraftAuthSource,
   AuthSourceConfig,
   AuthSourcesSettings,
+  WakePolicySettings,
   MinecraftProfile,
   LinkStatus,
   BindResult,
@@ -441,7 +442,8 @@ export const api = rejectingSync({
   fleet: () =>
     request<{ servers: FleetServer[] }>("GET", "/fleet").then((r) => r.servers ?? []),
 
-  status: (name: string) => request<ServerStatus>("GET", urlPath`/servers/${name}/status`),
+  emergencyStop: (name: string, confirm: string) => send<{ name: string; desiredState: string }>(urlPath`/servers/${name}/emergency-stop`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm }), signal: AbortSignal.timeout(20_000) }),
+  status: (name: string) => send<ServerStatus>(urlPath`/servers/${name}/status`, { method: "GET", signal: AbortSignal.timeout(12_000) }),
 
   wake: (name: string) =>
     request<{ name: string; desiredState: string }>("POST", urlPath`/servers/${name}/wake`),
@@ -952,6 +954,8 @@ export const api = rejectingSync({
 
   linkSources: () => request<{ sources: MinecraftAuthSource[] }>("GET", "/account/link/sources"),
 
+  getWakePolicy: () => request<WakePolicySettings>("GET", "/settings/wake-policy"),
+  setWakePolicy: (policy: Omit<WakePolicySettings, "managed">) => request<WakePolicySettings>("PUT", "/settings/wake-policy", policy),
   getAuthSources: () => request<AuthSourcesSettings>("GET", "/settings/auth-sources"),
   setAuthSources: (sources: AuthSourceConfig[], revision: string) => request<AuthSourcesSettings>("PUT", "/settings/auth-sources", { sources, revision }),
   testAuthSource: (source: AuthSourceConfig) => request<{ ok: boolean; status: number; elapsed_ms: number }>("POST", "/settings/auth-sources/test", source),

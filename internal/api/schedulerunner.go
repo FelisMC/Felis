@@ -431,7 +431,11 @@ func (a *API) startScheduled(ctx context.Context, name string) (why string, retr
 	if err != nil {
 		return "", false, err
 	}
-	ok, err := a.withinRunningCap(ctx, info)
+	policy, _, err := a.readWakePolicy(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	ok, err := a.withinRunningCap(ctx, info, policy.MaxRunningServers)
 	if err != nil {
 		return "", false, err
 	}

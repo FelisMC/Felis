@@ -302,5 +302,20 @@
   "scan_download_report": "Trivy 报告",
   "scan_download_sbom": "SBOM",
   "scan_not_kept": "这次构建未留存该文件：文件过大，或生成它的步骤失败。",
-  "scan_download_failed": "下载失败：{{reason}}"
+  "scan_download_failed": "下载失败：{{reason}}",
+  "platform_title": "平台设置",
+  "platform_subtitle": "统一管理服务器启动与唤醒的全局策略。",
+  "platform_reload": "重新读取",
+  "platform_wake_title": "启动与唤醒策略",
+  "platform_loading": "正在读取已保存的策略…",
+  "platform_limit": "同时运行的服务器上限（0–10000）",
+  "platform_limit_hint": "0 表示不限制。启动时计入已运行和已请求运行的服务器；系统服务始终可以启动。降低上限不会自动停止现有服务器。",
+  "platform_cooldown": "唤醒冷却时间（0–3600 秒）",
+  "platform_cooldown_hint": "同一服务器两次成功接受唤醒请求的最短间隔。0 表示关闭冷却。",
+  "platform_scope": "运行上限统一用于面板启动、游戏内唤醒与计划任务。此上限用于启动准入，能否实际调度仍取决于节点可用内存。用户配额在“用户管理”中调整。",
+  "platform_saved": "已保存并立即生效，无需重启。",
+  "platform_unsaved": "有尚未保存的更改",
+  "platform_live": "保存后会立即在所有 API 实例上生效。",
+  "platform_discard": "放弃更改",
+  "platform_save": "保存并生效"
 }

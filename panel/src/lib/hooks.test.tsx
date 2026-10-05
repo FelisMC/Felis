@@ -154,3 +154,30 @@ describe("usePolling", () => {
     expect(reload).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("polling slow or unavailable backends", () => {
+  it("does not supersede an in-flight poll and keeps a failure visible until a successful read", async () => {
+    vi.useFakeTimers();
+    const req = requests();
+    const hook = renderHook(() => {
+      const query = useAsync(() => req.fetch("a"), [], { coalesce: true });
+      usePolling(query.reload, 4000);
+      return query;
+    });
+    try {
+      await req.settle(0, { ok: "Starting" });
+      const checked = hook.result.current.updatedAt;
+      act(() => vi.advanceTimersByTime(4000));
+      act(() => vi.advanceTimersByTime(12000));
+      expect(req.pending).toHaveLength(2);
+      await req.settle(1, { fail: new Error("backend timeout") });
+      expect(hook.result.current).toMatchObject({ data: "Starting", loading: false, updatedAt: checked });
+      act(() => vi.advanceTimersByTime(4000));
+      expect(hook.result.current.error).toBeInstanceOf(Error);
+      expect(req.pending).toHaveLength(3);
+      await req.settle(2, { ok: "Running" });
+      expect(hook.result.current).toMatchObject({ data: "Running", error: null, loading: false });
+      expect(hook.result.current.updatedAt).toBeGreaterThan(checked!);
+    } finally { hook.unmount(); vi.useRealTimers(); }
+  });
+});

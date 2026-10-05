@@ -228,6 +228,7 @@ describe("LogStreamController", () => {
     es.emitOpen();
     es.emitMessage("[12:00:00] [Server thread/INFO]: hello");
     es.emitEvent("revoked"); // no frame ran: the status change carries the line
+    expect(ctrl.getSnapshot().retryable).toBe(false);
     expect(ctrl.getSnapshot().status).toBe("ended");
     expect(es.closed).toBe(true);
     expect(ctrl.getSnapshot().lines).toHaveLength(1);

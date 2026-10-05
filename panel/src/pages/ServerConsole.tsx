@@ -2,12 +2,13 @@ import { useState, useRef, useCallback, useId, useLayoutEffect, type KeyboardEve
 import { Link, useParams } from "react-router-dom";
 import { Terminal, Moon, Shield, ShieldAlert, HelpCircle, Loader2, Users, Archive, FolderOpen, CalendarClock, ChevronRight, type LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { BackLink } from "@/components/BackLink";
 import { MAX_AUTO_RESTARTS, PhaseBadge, pendingPower, shownPhase, startFailure, type StartFailure } from "@/components/PhaseBadge";
 import { PageHeader } from "@/components/PageHeader";
 import { LogConsole } from "@/components/LogConsole";
-import { Loading, ErrorState, RefreshError } from "@/components/States";
+import { Loading, ErrorState } from "@/components/States";
 import { api, consoleStreamURL, humanizeError } from "@/lib/api";
 import { STATUS_POLL_FAST_MS, STATUS_POLL_SLOW_MS, useAsync, useConfig, usePolling } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
@@ -19,15 +20,16 @@ import { EditServerDialog } from "@/components/EditServerDialog";
 import { PowerButton } from "@/components/PowerButton";
 import { RetireCard, RetireNotice } from "@/components/Retirement";
 import { cn } from "@/lib/utils";
-import { InlineError } from "@/components/MessageLine";
+import { InlineError, MessageLine } from "@/components/MessageLine";
 
 // notStreamingCopy explains why there is no live feed for a phase that has no
 // streamable pod. The read path only has something to relay once a pod is up, so
 // Stopped/Failed/Stopping each get their own honest line rather than an empty
 // console. `default` covers Unknown plus any future phase the backend may emit
 // that the panel hasn't modelled yet — the screen stays informative regardless.
-function useNotStreamingCopy(phase: Phase): { icon: LucideIcon; title: string; body: string; spin?: boolean } {
+function useNotStreamingCopy(phase: Phase, waitingForContainer: boolean): { icon: LucideIcon; title: string; body: string; spin?: boolean } {
   const { t } = useTranslation("servers");
+  if (waitingForContainer) return { icon: HelpCircle, title: t("logs_unavailable_title"), body: t("logs_unavailable_body") };
   switch (phase) {
     case "Starting":
       // Asked to start with no pod yet: the stream attaches once the pod is up.
@@ -58,8 +60,8 @@ function useNotStreamingCopy(phase: Phase): { icon: LucideIcon; title: string; b
   }
 }
 
-function NotStreaming({ phase }: { phase: Phase }) {
-  const { icon: Icon, title, body, spin } = useNotStreamingCopy(phase);
+function NotStreaming({ phase, waitingForContainer = false }: { phase: Phase; waitingForContainer?: boolean }) {
+  const { icon: Icon, title, body, spin } = useNotStreamingCopy(phase, waitingForContainer);
   return (
     <div className="flex items-start gap-3 rounded-md border border-dashed border-border bg-muted/30 p-6 text-sm text-muted-foreground">
       <Icon className={cn("mt-0.5 h-5 w-5 shrink-0 text-muted-foreground/70", spin && "animate-spin")} />
@@ -229,11 +231,12 @@ function CommandInput({ name }: { name: string }) {
 export function ServerConsole() {
   const { name = "" } = useParams();
   const cfg = useConfig();
-  const { isAdmin } = useTier();
+  const { isAdmin, isOwner } = useTier();
   const { t } = useTranslation("servers");
-  const { data, error, loading, reload } = useAsync(
+  const { data, error, loading, reload, updatedAt } = useAsync(
     () => api.status(name),
     [name],
+    { coalesce: true },
   );
   // The header, the power button and whether the stream attaches all follow the
   // status, so it is reread: fast while the server is on its way somewhere (a
@@ -259,8 +262,10 @@ export function ServerConsole() {
   // read most wants them, so the gate streams for both, not Running alone. A
   // Failed start usually leaves its pod behind, and that pod's log is how the
   // owner finds out why it failed, so Failed streams too.
-  const streamable = data?.phase === "Running" || data?.phase === "Starting" || data?.phase === "Failed";
+  const streamable = data?.phase === "Running" || ((data?.phase === "Starting" || data?.phase === "Failed") && data.startup?.logsAvailable !== false);
   const failure = data ? startFailure(data) : null;
+  const startup = data?.startup;
+  const startupBlocked = startup?.stage === "failed" || startup?.reason === "Unschedulable";
 
   return (
     <div className="flex flex-col lg:flex-1 lg:min-h-[35rem] gap-4 min-h-0">
@@ -271,18 +276,26 @@ export function ServerConsole() {
       {loading && !data ? (
         <Loading />
       ) : error && !data ? (
-        <ErrorState error={error} onRetry={reload} />
+        <div className="space-y-3"><ErrorState error={error} onRetry={reload} />{isOwner && <HostRecovery name={name} />}</div>
       ) : data ? (
         <>
-          {error && <RefreshError error={error} />}
+          {error && <div className="space-y-2"><MessageLine kind="error" message={t("status_stale_detail", { time: updatedAt ? new Date(updatedAt).toLocaleTimeString() : "—", error: humanizeError(error) })} />{isOwner && <HostRecovery name={name} />}</div>}
           <PageHeader
             icon={Terminal}
             title={data.displayName || data.name}
             subtitle={cfg ? <CopyAddress address={joinAddress(data.subdomain, cfg)} /> : undefined}
             actions={
               <div className="flex items-center gap-2">
-                <PhaseBadge phase={shownPhase(data)} failure={failure} autoRestarts={data.autoRestarts} />
-                <PowerButton
+                {error ? (
+                  <span role="status" className="text-sm font-medium text-destructive">{t("status_stale")}</span>
+                ) : startupBlocked ? (
+                  <Badge variant="outline" className="border-amber-500/30 text-amber-600 dark:text-amber-400">
+                    {t(startup?.stage === "failed" ? "startup_problem" : "startup_waiting_resources")}
+                  </Badge>
+                ) : (
+                  <PhaseBadge phase={shownPhase(data)} failure={failure} autoRestarts={data.autoRestarts} />
+                )}
+                {!error && <PowerButton
                   name={name}
                   phase={data.phase}
                   desiredState={data.desiredState}
@@ -291,7 +304,7 @@ export function ServerConsole() {
                   playerCountUnknown={data.playerCountUnknown}
                   retiring={data.retiring}
                   onChanged={reload}
-                />
+                />}
               </div>
             }
             className="mb-6"
@@ -301,6 +314,14 @@ export function ServerConsole() {
             <RetireNotice name={name} retiring={data.retiring} isAdmin={isAdmin} onChanged={reload} />
           )}
 
+          {!error && startup && (
+            <div role="status" className="shrink-0 space-y-2 rounded-lg border border-border bg-card p-4 text-sm">
+              <p className="flex items-center gap-2 font-medium">{startupBlocked ? <ShieldAlert className="h-4 w-4 text-amber-500" /> : <Loader2 className="h-4 w-4 animate-spin text-primary" />}{t(`startup_${startup.stage}`)}</p>
+              {startup.startedAt && <p className="text-xs text-muted-foreground">{t("startup_elapsed", { seconds: Math.max(0, Math.floor((Date.now() - new Date(startup.startedAt).getTime()) / 1000)) })}</p>}
+              {startup.reason && <p className="break-words text-muted-foreground">{startup.reason === "Unschedulable" && startup.message?.includes("Insufficient memory") ? t("startup_memory") : [startup.reason, startup.message].filter(Boolean).join(": ")}</p>}
+              <p className="text-xs text-muted-foreground">{t(startup.stage === "failed" ? "startup_failed_hint" : "startup_hint")}</p>
+            </div>
+          )}
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-4 lg:grid-rows-[minmax(0,1fr)] flex-1 lg:min-h-0 min-h-0">
             {/* Left/Main column: Console */}
             <div className="lg:col-span-3 flex flex-col lg:min-h-0 min-h-0 h-full">
@@ -308,7 +329,7 @@ export function ServerConsole() {
                 <CardContent className="p-0 flex-1 flex flex-col lg:min-h-0 min-h-0 bg-black">
                   {!streamable ? (
                     <div className="flex-1 flex flex-col justify-center p-6 bg-black">
-                      <NotStreaming phase={shownPhase(data)} />
+                      <NotStreaming phase={error ? "Unknown" : shownPhase(data)} waitingForContainer={!error && data.startup?.logsAvailable === false} />
                     </div>
                   ) : cfg ? (
                     <div className="flex-1 flex flex-col lg:min-h-0 min-h-0 bg-black">
@@ -317,10 +338,11 @@ export function ServerConsole() {
                       )}
                       <LogConsole
                         key={name}
+                        starting={!error && data.phase === "Starting"}
                         url={consoleStreamURL(cfg.apiBase, name)}
                         className="border-0 rounded-none bg-transparent"
                       />
-                      {data.phase === "Running" && (
+                      {!error && data.phase === "Running" && (
                         <div className="p-3 bg-zinc-900/40 border-t border-zinc-800">
                           <CommandInput name={name} />
                         </div>
@@ -430,8 +452,8 @@ export function ServerConsole() {
               {/* Giving the server up (owner) or deleting it (admin) closes the
                   sidebar. A system server is never retired, and one already on its
                   way out shows the notice above with the way back instead. */}
-              {owned && !data.reaperExempt && !data.retiring && (
-                <RetireCard name={name} label={data.displayName || data.name} isAdmin={isAdmin} onChanged={reload} />
+              {owned && (isOwner || (!data.reaperExempt && !data.retiring)) && (
+                <RetireCard name={name} label={data.displayName || data.name} isAdmin={isAdmin} isOwner={isOwner} canRetire={!data.reaperExempt && !data.retiring} onChanged={reload} />
               )}
             </div>
           </div>
@@ -439,4 +461,12 @@ export function ServerConsole() {
       ) : null}
     </div>
   );
+}
+
+function HostRecovery({ name }: { name: string }) {
+  const { t } = useTranslation("servers");
+  if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(name)) return null;
+  return <details className="rounded-lg border border-border bg-card p-3 text-sm"><summary className="cursor-pointer font-medium">{t("host_recovery")}</summary><p className="my-3 text-muted-foreground">{t("host_recovery_hint")}</p><pre className="overflow-x-auto whitespace-pre-wrap rounded bg-muted p-3 text-xs">{`kubectl patch minecraftserver ${name} -n minecraft --type=merge -p '{"spec":{"desiredState":"Stopped"}}'
+kubectl scale statefulset ${name} -n minecraft --replicas=0
+kubectl get pods -n minecraft -l felis.lolicon.best/server=${name},felis.lolicon.best/component=server -o wide`}</pre><p className="mt-3 text-muted-foreground">{t("host_recovery_verify")}</p></details>;
 }

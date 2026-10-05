@@ -1,4 +1,4 @@
-import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { memo, useEffect, useCallback, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { ArrowDown, RotateCw, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
@@ -81,9 +81,14 @@ function StatusIndicator({ status }: { status: StreamStatus }) {
  * scrolling back to the bottom re-pins. The buffer is bounded by the controller,
  * which also batches lines to one update per frame.
  */
-export function LogConsole({ url, className }: { url: string; className?: string }) {
+export function LogConsole({ url, className, starting = false }: { url: string; className?: string; starting?: boolean }) {
   const { t } = useTranslation("servers");
-  const { lines, status, clear, reconnect } = useLogStream(url);
+  const { lines, status, retryable, clear, reconnect } = useLogStream(url);
+  useEffect(() => {
+    if (!starting || !retryable || status !== "ended") return;
+    const timer = window.setTimeout(reconnect, 5000);
+    return () => window.clearTimeout(timer);
+  }, [starting, retryable, status, reconnect]);
   const chunks = useMemo(() => chunkLines(lines), [lines]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [pinned, setPinned] = useState(true);
@@ -110,7 +115,7 @@ export function LogConsole({ url, className }: { url: string; className?: string
     <div className={cn("overflow-hidden rounded-md border border-border bg-black flex-1 flex flex-col min-h-0", className)}>
       {/* Toolbar */}
       <div className="flex items-center justify-between gap-2 border-b border-zinc-800 bg-zinc-900/60 px-3 py-2 shrink-0">
-        <StatusIndicator status={status} />
+        <StatusIndicator status={starting && retryable && status === "ended" ? "reconnecting" : status} />
         <div className="flex items-center gap-1.5">
           {status === "ended" && (
             <Button
@@ -143,9 +148,9 @@ export function LogConsole({ url, className }: { url: string; className?: string
         >
           {lines.length === 0 ? (
             <p className="select-none py-8 text-center text-zinc-600">
-              {status === "ended"
+              {status === "ended" && (!starting || !retryable)
                 ? t("log_ended_empty")
-                : t("log_waiting")}
+                : t(starting ? "log_starting_wait" : "log_waiting")}
             </p>
           ) : (
             chunks.map((chunk) => <LogChunk key={chunk.key} lines={chunk.lines} />)

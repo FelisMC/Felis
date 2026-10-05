@@ -11,6 +11,7 @@ import (
 	"felis.lolicon.best/internal/maintenance"
 	"felis.lolicon.best/internal/naming"
 	"felis.lolicon.best/internal/placement"
+	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -98,7 +99,34 @@ func (k *K8sCluster) GetServer(ctx context.Context, name string) (*ServerInfo, e
 		}
 		return nil, err
 	}
-	return serverInfo(&ms), nil
+	info := serverInfo(&ms)
+	if ms.Spec.DesiredState != v1alpha1.DesiredStopped && ms.Status.Phase != v1alpha1.PhaseStarting && ms.Status.Phase != v1alpha1.PhaseFailed && ms.Status.Phase != v1alpha1.PhaseRunning {
+		return info, nil
+	}
+	var pods corev1.PodList
+	if err := k.c.List(ctx, &pods, client.InNamespace(k.namespace), client.MatchingLabels{v1alpha1.LabelServer: name, v1alpha1.LabelComponent: gamePodComponent}); err != nil {
+		return nil, err
+	}
+	if ms.Spec.DesiredState == v1alpha1.DesiredStopped {
+		info.Phase, info.Ready = string(v1alpha1.PhaseStopped), false
+		var sts appsv1.StatefulSet
+		err := k.c.Get(ctx, types.NamespacedName{Namespace: k.namespace, Name: name}, &sts)
+		if err != nil && !apierrors.IsNotFound(err) {
+			return nil, err
+		}
+		if len(pods.Items) > 0 || (err == nil && (sts.Spec.Replicas == nil || *sts.Spec.Replicas != 0)) {
+			info.Phase = string(v1alpha1.PhaseStopping)
+		}
+		return info, nil
+	}
+	diagnostic := startupStatus(&ms, pods.Items)
+	if ms.Status.Phase != v1alpha1.PhaseRunning || diagnostic.Stage == "failed" || diagnostic.Stage == "scheduling" || diagnostic.Stage == "creating" {
+		info.Startup = diagnostic
+		if ms.Status.Phase == v1alpha1.PhaseRunning {
+			info.Ready, info.Phase = false, string(v1alpha1.PhaseFailed)
+		}
+	}
+	return info, nil
 }
 
 // WorldVolumeExists reads the world PVC the operator's StatefulSet

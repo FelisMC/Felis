@@ -5,6 +5,7 @@ import type { Plugin } from "vite";
 import type {
   AuthSourceConfig,
   AuthSourcesSettings,
+  WakePolicySettings,
   AutostartPolicy,
   BackupView,
   Build,
@@ -92,6 +93,7 @@ interface MockState {
   submissions: Submission[];
   updateWindow: { start: string | null; end: string | null };
   authSources: AuthSourcesSettings;
+  wakePolicy: WakePolicySettings;
   // Each server's world volume, seeded on first visit.
   files: Record<string, MockTree>;
 }
@@ -455,6 +457,7 @@ function initialState(): MockState {
       },
     ],
     updateWindow: { start: null, end: null },
+    wakePolicy: { maxRunningServers: 0, wakeCooldownSeconds: 30, revision: "initial", managed: false },
     authSources: {
       sources: [{ tag: "littleskin", prefix: "LS", url: "https://littleskin.cn/api/yggdrasil/sessionserver/session/minecraft/hasJoined", api_url: "", enabled: true }],
       revision: "installation-defaults",
@@ -1016,6 +1019,23 @@ async function handlePublic(ctx: RequestContext): Promise<boolean> {
 
 async function handleSession(ctx: SessionContext): Promise<boolean> {
   switch (route(ctx)) {
+    case "GET settings/wake-policy":
+    case "PUT settings/wake-policy": {
+      if (!isOwner(ctx.account.role)) {
+        sendError(ctx.res, 403, "forbidden", "Owner account required");
+      } else if (is("GET", ctx)) {
+        sendJSON(ctx.res, 200, ctx.state.wakePolicy);
+      } else {
+        const body = await readJSON<Omit<WakePolicySettings, "managed">>(ctx.req);
+        if (body.revision !== ctx.state.wakePolicy.revision) sendError(ctx.res, 409, "conflict", "policy changed; reload before saving");
+        else if (!Number.isInteger(body.maxRunningServers) || body.maxRunningServers < 0 || body.maxRunningServers > 10000 || !Number.isInteger(body.wakeCooldownSeconds) || body.wakeCooldownSeconds < 0 || body.wakeCooldownSeconds > 3600) sendError(ctx.res, 400, "bad_request", "invalid wake policy");
+        else {
+          ctx.state.wakePolicy = { ...body, revision: createHash("sha256").update(JSON.stringify(body)).digest("hex"), managed: true };
+          sendJSON(ctx.res, 200, ctx.state.wakePolicy);
+        }
+      }
+      return true;
+    }
     case "GET settings/auth-sources":
     case "PUT settings/auth-sources":
     case "POST settings/auth-sources/test": {
@@ -2322,6 +2342,14 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
     }
     setPhase(serverInfo, "Starting");
     sendJSON(ctx.res, 202, { name: serverInfo.name, desiredState: "Running" });
+    return true;
+  }
+  if (is("POST", ctx) && ctx.parts[4] === "emergency-stop") {
+    if (!ctx.account || !isOwner(ctx.account.role)) { sendError(ctx.res, 403, "forbidden", "owner access required"); return true; }
+    const body = await readJSON(ctx.req) as { confirm?: string };
+    if (body.confirm !== serverInfo.name) { sendError(ctx.res, 400, "bad_request", "type the server name"); return true; }
+    setPhase(serverInfo, "Stopped");
+    sendJSON(ctx.res, 202, { name: serverInfo.name, desiredState: "Stopped" });
     return true;
   }
   if (is("POST", ctx) && ctx.parts[4] === "stop") {

@@ -46,13 +46,18 @@ func (a *API) handleWake(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, errServerRetiring)
 		return
 	}
-	if !a.limiter().allowed(name, a.WakeCooldown) {
+	policy, _, err := a.readWakePolicy(r.Context())
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if !a.limiter().allowed(name, policy.cooldown(a.WakeCooldown)) {
 		writeError(w, r, newError(http.StatusTooManyRequests, "cooldown", "wake is cooling down, retry shortly"))
 		return
 	}
 	// Global running-server cap (spec §9.1). Distinct from the per-server cooldown:
 	// 503 at_capacity means the cluster is full, not that this server is throttled.
-	ok, err := a.withinRunningCap(r.Context(), info)
+	ok, err := a.withinRunningCap(r.Context(), info, policy.MaxRunningServers)
 	if err != nil {
 		writeError(w, r, err)
 		return

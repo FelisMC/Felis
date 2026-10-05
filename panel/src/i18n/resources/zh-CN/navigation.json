@@ -11,5 +11,6 @@
   "admin_submissions": "审核提交",
   "admin_updates": "维护与备份",
   "admin_lobby": "登录与大厅",
-  "auth_sources": "认证源"
+  "auth_sources": "认证源",
+  "platform_settings": "平台设置"
 }

@@ -117,7 +117,7 @@ export function AuthSourcesPage() {
         return <Card key={index} className="overflow-hidden rounded-xl shadow-none">
           <CardHeader className={cn("flex-row flex-wrap items-center justify-between gap-3 space-y-0 bg-muted/20 py-4", expanded && "border-b border-border/60")}>
             <CardTitle className="min-w-0 flex-1 text-sm">
-              <Button variant="ghost" className="h-auto w-full justify-start whitespace-normal p-0 text-left hover:bg-transparent" aria-expanded={expanded} aria-controls={`source-fields-${index}`} aria-label={t(expanded ? "collapse" : "expand", { name: source.tag || t("new_source") })} disabled={!draft} onClick={() => setDraft((current) => current && { ...current, sources: current.sources.map((s, i) => i === index ? { ...s, expanded: !expanded } : s) })}>
+              <Button variant="ghost" className="h-auto w-full justify-start whitespace-normal p-0 text-left hover:bg-transparent active:scale-100" aria-expanded={expanded} aria-controls={`source-fields-${index}`} aria-label={t(expanded ? "collapse" : "expand", { name: source.tag || t("new_source") })} disabled={!draft} onClick={() => setDraft((current) => current && { ...current, sources: current.sources.map((s, i) => i === index ? { ...s, expanded: !expanded } : s) })}>
                 <ChevronRight className={cn("transition-transform motion-reduce:transition-none", expanded && "rotate-90")} />
                 <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-xs font-semibold text-primary">{index + 2}</span>
                 <span className="break-all">{source.tag || t(draft ? "new_source" : "loading")}</span>

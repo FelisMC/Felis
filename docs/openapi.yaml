@@ -331,6 +331,25 @@ components:
           description: Optional Yggdrasil API base for role lookup; empty infers it from the standard hasJoined suffix.
         enabled: { type: boolean }
 
+    StartupStatus:
+      type: object
+      required: [stage, logsAvailable]
+      properties:
+        stage: { type: string, enum: [creating, scheduling, preparing, booting, failed] }
+        reason: { type: string }
+        message: { type: string }
+        startedAt: { type: string, format: date-time }
+        logsAvailable: { type: boolean }
+
+    WakePolicySettings:
+      type: object
+      required: [maxRunningServers, wakeCooldownSeconds, revision, managed]
+      properties:
+        maxRunningServers: { type: integer, minimum: 0, maximum: 10000 }
+        wakeCooldownSeconds: { type: integer, minimum: 0, maximum: 3600 }
+        revision: { type: string }
+        managed: { type: boolean }
+
     AuthSourcesSettings:
       type: object
       required: [sources, revision, managed]
@@ -551,6 +570,7 @@ components:
       description: Status projection of one server (internal/api/cluster.go ServerInfo).
       required: [name, subdomain, phase, ready, playersOnline, playersMax, idleStopSeconds]
       properties:
+        startup: { $ref: '#/components/schemas/StartupStatus', description: Private runtime and startup diagnostics for authorized server managers. }
         nodeName: { type: string, description: Execution node; legacy servers report the observed node. }
         name: { type: string }
         subdomain: { type: string }
@@ -2539,6 +2559,52 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /api/v1/servers/{name}/emergency-stop:
+    post:
+      tags: [servers]
+      operationId: emergencyStop
+      summary: Scale an owned game workload to zero independently of Operator and RCON.
+      description: Owner only; fresh authentication and exact name confirmation required. A 202 acknowledges scaling, not process exit. Normal Pod termination grace is retained.
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [confirm]
+              properties:
+                confirm: { type: string }
+      responses:
+        '202':
+          description: Stop intent persisted and workload scaled to zero; await Pod termination.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, desiredState]
+                properties:
+                  name: { type: string }
+                  desiredState: { type: string, const: Stopped }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   /api/v1/servers/{name}/restart:
     post:
       tags: [servers]
@@ -4264,6 +4330,56 @@ paths:
                     items: { $ref: '#/components/schemas/MyServerView' }
         '401':
           $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/settings/wake-policy:
+    get:
+      tags: [account]
+      operationId: getWakePolicy
+      summary: Read platform startup policy (Owner).
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: Current startup policy and revision.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WakePolicySettings' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    put:
+      tags: [account]
+      operationId: setWakePolicy
+      summary: Save platform startup policy (Owner, fresh reauthentication).
+      description: Atomically persists an override shared by all replicas. The admission limit applies to panel, in-game and scheduled starts without restarting. It does not stop existing servers or reserve memory. Wake cooldown applies to panel and in-game wakes.
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [maxRunningServers, wakeCooldownSeconds, revision]
+              properties:
+                maxRunningServers: { type: integer, minimum: 0, maximum: 10000 }
+                wakeCooldownSeconds: { type: integer, minimum: 0, maximum: 3600 }
+                revision: { type: string }
+      responses:
+        '200':
+          description: Saved policy and new revision.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WakePolicySettings' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: The policy changed; reload before saving.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /api/v1/settings/auth-sources:
     get:

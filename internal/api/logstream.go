@@ -359,7 +359,7 @@ func (k *K8sLogStreamer) StreamLogs(ctx context.Context, name string) (io.ReadCl
 	// the <name>-0 pod naming. The name is DNS-1123-validated upstream, so it is a
 	// safe label-selector value.
 	pods, err := k.clientset.CoreV1().Pods(k.namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: v1alpha1.LabelServer + "=" + name,
+		LabelSelector: v1alpha1.LabelServer + "=" + name + "," + v1alpha1.LabelComponent + "=" + gamePodComponent,
 	})
 	if err != nil {
 		return nil, ErrConsoleUnavailable

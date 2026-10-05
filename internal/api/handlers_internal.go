@@ -173,7 +173,12 @@ func (a *API) handleInternalWake(w http.ResponseWriter, r *http.Request) {
 			"the server failed to start and its automatic retries are spent; its owner can retry from the panel"))
 		return
 	}
-	if !a.limiter().allowed(name, a.WakeCooldown) {
+	policy, _, err := a.readWakePolicy(r.Context())
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if !a.limiter().allowed(name, policy.cooldown(a.WakeCooldown)) {
 		writeError(w, r, newError(http.StatusTooManyRequests, "cooldown", "wake is cooling down, retry shortly"))
 		return
 	}
@@ -181,7 +186,7 @@ func (a *API) handleInternalWake(w http.ResponseWriter, r *http.Request) {
 	// treats 503 at_capacity as "cluster full, tell the player to try later" and does
 	// NOT enqueue them (nothing is coming up, so waiting would only strand them),
 	// distinct from the 429 cooldown's "already waking, keep waiting".
-	ok, err := a.withinRunningCap(r.Context(), info)
+	ok, err := a.withinRunningCap(r.Context(), info, policy.MaxRunningServers)
 	if err != nil {
 		writeError(w, r, err)
 		return

@@ -127,6 +127,14 @@ func TestAPIRole_MinecraftPowersExact(t *testing.T) {
 	if hasRule(mc, groupCore, "secrets", "list") || hasRule(mc, groupCore, "secrets", "watch") {
 		t.Error("felis-api must NOT list or watch secrets (RCON reads are a direct Get by name)")
 	}
+	if !hasRule(mc, groupApps, "statefulsets", "get") || !hasRule(mc, groupApps, "statefulsets/scale", "update") {
+		t.Error("API needs read and scale-only emergency shutdown grants")
+	}
+	for _, verb := range []string{"patch", "update", "delete"} {
+		if hasRule(mc, groupApps, "statefulsets", verb) {
+			t.Errorf("API must not mutate StatefulSets directly: %s", verb)
+		}
+	}
 	// WorldVolumeExists reads a claim and lists retained claims on server creation.
 	if !hasRule(mc, groupCore, "persistentvolumeclaims", "get") {
 		t.Error("felis-api must get the world PVC (persistentvolumeclaims:get) for the backup/restore world-volume gate")

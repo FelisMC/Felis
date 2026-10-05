@@ -11,5 +11,6 @@
   "admin_submissions": "Submissions",
   "admin_updates": "Maintenance & Backups",
   "admin_lobby": "Login & lobby",
-  "auth_sources": "Authentication sources"
+  "auth_sources": "Authentication sources",
+  "platform_settings": "Platform settings"
 }

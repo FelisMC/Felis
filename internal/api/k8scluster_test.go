@@ -12,6 +12,7 @@ import (
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/maintenance"
 	"felis.lolicon.best/internal/naming"
+	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -114,6 +115,8 @@ func TestCreateServerDefaultsIdleStop(t *testing.T) {
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatalf("scheme: %v", err)
 	}
+	corev1.AddToScheme(scheme)
+	appsv1.AddToScheme(scheme)
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	k := NewK8sCluster(c, "minecraft")
 	if err := k.CreateServer(context.Background(), CreateServerInput{

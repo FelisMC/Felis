@@ -17,6 +17,7 @@ const browserEventSource: EventSourceFactory = (url) =>
 export interface UseLogStream {
   lines: LogLine[];
   status: StreamStatus;
+  retryable: boolean;
   clear: () => void;
   reconnect: () => void;
 }
@@ -58,5 +59,5 @@ export function useLogStream(url: string): UseLogStream {
   const clear = useCallback(() => controller.clear(), [controller]);
   const reconnect = useCallback(() => controller.reconnect(), [controller]);
 
-  return { lines: snapshot.lines, status: snapshot.status, clear, reconnect };
+  return { lines: snapshot.lines, status: snapshot.status, retryable: snapshot.retryable, clear, reconnect };
 }

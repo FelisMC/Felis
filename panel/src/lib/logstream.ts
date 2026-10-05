@@ -43,6 +43,7 @@ export interface LogLine {
 export interface LogStreamSnapshot {
   lines: LogLine[];
   status: StreamStatus;
+  retryable: boolean;
 }
 
 // EventSource readyState constants. We avoid referencing the DOM EventSource
@@ -158,13 +159,14 @@ export class LogStreamController {
   // reference between mutations — required by useSyncExternalStore to avoid an
   // infinite render loop.
   private snapshot: LogStreamSnapshot;
+  private retryable = true;
 
   constructor(opts: LogStreamOptions) {
     this.url = opts.url;
     this.factory = opts.factory;
     this.maxLines = opts.maxLines ?? DEFAULT_MAX_LINES;
     this.frame = opts.frame ?? nextFrame;
-    this.snapshot = { lines: this.lines, status: this.status };
+    this.snapshot = { lines: this.lines, status: this.status, retryable: this.retryable };
   }
 
   subscribe = (fn: () => void): (() => void) => {
@@ -201,6 +203,7 @@ export class LogStreamController {
   }
 
   private connect(): void {
+    this.retryable = true;
     this.setStatus("connecting");
     const es = this.factory(this.url);
     this.es = es;
@@ -212,6 +215,7 @@ export class LogStreamController {
     es.addEventListener("revoked", () => {
       if (this.es !== es) return;
       this.disconnect();
+      this.retryable = false;
       this.setStatus("ended");
     });
     es.onerror = () => {
@@ -281,7 +285,7 @@ export class LogStreamController {
   }
 
   private commit(): void {
-    this.snapshot = { lines: this.lines, status: this.status };
+    this.snapshot = { lines: this.lines, status: this.status, retryable: this.retryable };
     this.listeners.forEach((fn) => fn());
   }
 }
