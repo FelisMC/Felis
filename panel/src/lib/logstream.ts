@@ -112,7 +112,7 @@ const DEFAULT_MAX_LINES = 2000;
  * "plain" and renders in the default colour.
  */
 export function classifyLogLine(line: string): LogLevel {
-  const m = line.match(/[/[](SEVERE|FATAL|ERROR|WARNING|WARN|INFO|DEBUG|TRACE)\]/);
+  const m = line.match(/(?:[/[]|^\[\d{2}:\d{2}:\d{2} )(SEVERE|FATAL|ERROR|WARNING|WARN|INFO|DEBUG|TRACE)\]/);
   if (!m) return "plain";
   switch (m[1]) {
     case "SEVERE":

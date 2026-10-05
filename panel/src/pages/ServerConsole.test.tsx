@@ -27,7 +27,10 @@ vi.mock("@/lib/api", async (importActual) => {
   return { ...actual, api: { ...actual.api, ...calls } };
 });
 // The live log is a WebSocket; here it only matters whether the page shows it.
-vi.mock("@/components/LogConsole", () => ({ LogConsole: () => <div data-testid="log-stream" /> }));
+vi.mock("@/components/LogConsole", async (importActual) => ({
+  ...await importActual<typeof import("@/components/LogConsole")>(),
+  LogConsole: () => <div data-testid="log-stream" />,
+}));
 
 beforeEach(() => {
   tier.isAdmin = true;
@@ -266,6 +269,21 @@ describe("ServerConsole command line", () => {
     expect(await screen.findByText("There are 0 of a max of 20 players online.")).toBeTruthy();
     expect(screen.getByText(/^> list/)).toBeTruthy();
     expect(box.value).toBe("");
+  });
+
+  it("renders Minecraft and ANSI formatting in command replies without interpreting markup", async () => {
+    calls.sendCommand.mockResolvedValue({ output: "§eHelp: §fIndex §lBold§r\n§x§1§2§3§4§5§6Hex\n\x1b[31m<b>unsafe</b>\x1b[0m" });
+    const box = await commandLine();
+    await userEvent.type(box, "help{Enter}");
+    const help = await screen.findByText("Help:");
+    expect(help.style.color).toBe("rgb(255, 255, 85)");
+    expect(screen.getByText("Index").style.color).toBe("rgb(255, 255, 255)");
+    expect(screen.getByText("Bold").style.fontWeight).toBe("700");
+    expect(screen.getByText("Hex").style.color).toBe("rgb(18, 52, 86)");
+    const unsafe = screen.getByText("<b>unsafe</b>");
+    expect(unsafe.style.color).toBe("rgb(205, 49, 49)");
+    expect(unsafe.closest("pre")?.querySelector("b")).toBeNull();
+    expect(unsafe.closest("pre")?.textContent).not.toMatch(/§|\x1b/);
   });
 
   it("sends nothing for a blank line", async () => {

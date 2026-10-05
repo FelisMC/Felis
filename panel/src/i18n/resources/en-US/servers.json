@@ -294,5 +294,8 @@
   "emergency_stop_unknown": "The result is unconfirmed. Stop intent may already be saved. Refresh status; if the control API is unreachable, use the host recovery steps.",
   "host_recovery": "Host emergency shutdown procedure",
   "host_recovery_hint": "When the control API is offline, the panel cannot perform cluster operations. Run these commands on the deployment host to save stop intent, set replicas to zero, and inspect game Pods. Replace minecraft if the deployment uses a different namespace.",
-  "host_recovery_verify": "If a Pod is terminating or its node is unreachable, process termination cannot be confirmed. Inspect the node and container runtime. Force-deleting a Pod is not evidence of process termination."
+  "host_recovery_verify": "If a Pod is terminating or its node is unreachable, process termination cannot be confirmed. Inspect the node and container runtime. Force-deleting a Pod is not evidence of process termination.",
+  "log_show_rcon": "Show RCON connection logs",
+  "log_hide_rcon": "Hide RCON connection logs",
+  "log_rcon_only": "RCON connection lifecycle logs are hidden. Other logs will appear when available."
 }

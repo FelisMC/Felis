@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import { useLogStream } from "@/lib/useLogStream";
 import { chunkLines, sameChunk } from "@/lib/logchunks";
 import type { LogLevel, LogLine, StreamStatus } from "@/lib/logstream";
-import type { Segment } from "@/lib/mcformat";
+import type { Formatted, Segment } from "@/lib/mcformat";
 
 // Per-level tint. Plain/info are the default readable foreground; warn/error draw
 // the eye. Debug is dimmed so it recedes. The console body is a fixed dark
@@ -32,6 +32,15 @@ function segmentStyle(s: Segment): CSSProperties | undefined {
   };
 }
 
+export function FormattedText({ formatted }: { formatted: Formatted }) {
+  return formatted.segments
+    ? formatted.segments.map((segment, i) => <span key={i} style={segmentStyle(segment)}>{segment.text}</span>)
+    : formatted.text;
+}
+
+// Match only INFO lifecycle messages; RCON failures and command output remain visible.
+const RCON_LIFECYCLE = /^(?:\[\d{2}:\d{2}:\d{2} INFO\]|\[\d{2}:\d{2}:\d{2}(?:\.\d+)?\] \[[^\]]+\/INFO\]): Thread RCON Client \/\S+ (?:started|shutting down)$/;
+
 // A chunk off screen is sized from its last layout, or before it has had one,
 // from 100 unwrapped lines of text-xs at leading-relaxed (19.5px each).
 const LogChunk = memo(function LogChunk({ lines }: { lines: LogLine[] }) {
@@ -39,13 +48,7 @@ const LogChunk = memo(function LogChunk({ lines }: { lines: LogLine[] }) {
     <div className="[content-visibility:auto] [contain-intrinsic-size:auto_1950px]">
       {lines.map((line) => (
         <div key={line.seq} className={cn("whitespace-pre-wrap break-all", LEVEL_CLASS[line.level])}>
-          {line.segments
-            ? line.segments.map((s, i) => (
-                <span key={i} style={segmentStyle(s)}>
-                  {s.text}
-                </span>
-              ))
-            : line.text || "\u00A0"}
+          <FormattedText formatted={line.text ? line : { text: "\u00A0" }} />
         </div>
       ))}
     </div>
@@ -89,7 +92,10 @@ export function LogConsole({ url, className, starting = false }: { url: string; 
     const timer = window.setTimeout(reconnect, 5000);
     return () => window.clearTimeout(timer);
   }, [starting, retryable, status, reconnect]);
-  const chunks = useMemo(() => chunkLines(lines), [lines]);
+  const [showRcon, setShowRcon] = useState(false);
+  const visibleLines = useMemo(() => showRcon ? lines : lines.filter((line) => !RCON_LIFECYCLE.test(line.text)), [lines, showRcon]);
+  const hiddenCount = lines.length - visibleLines.length;
+  const chunks = useMemo(() => chunkLines(visibleLines), [visibleLines]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [pinned, setPinned] = useState(true);
 
@@ -107,7 +113,7 @@ export function LogConsole({ url, className, starting = false }: { url: string; 
     if (!pinned) return;
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [lines, pinned]);
+  }, [visibleLines, pinned]);
 
   const jumpToLatest = useCallback(() => setPinned(true), []);
 
@@ -117,6 +123,18 @@ export function LogConsole({ url, className, starting = false }: { url: string; 
       <div className="flex items-center justify-between gap-2 border-b border-zinc-800 bg-zinc-900/60 px-3 py-2 shrink-0">
         <StatusIndicator status={starting && retryable && status === "ended" ? "reconnecting" : status} />
         <div className="flex items-center gap-1.5">
+          {(hiddenCount > 0 || showRcon) && (
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-pressed={showRcon}
+              onClick={() => setShowRcon((shown) => !shown)}
+              className="text-zinc-300 hover:bg-zinc-800 hover:text-zinc-50"
+            >
+              {t(showRcon ? "log_hide_rcon" : "log_show_rcon")}
+              {hiddenCount > 0 && <span className="tabular-nums">({hiddenCount})</span>}
+            </Button>
+          )}
           {status === "ended" && (
             <Button
               variant="outline"
@@ -146,11 +164,11 @@ export function LogConsole({ url, className, starting = false }: { url: string; 
           onScroll={onScroll}
           className="h-full overflow-y-auto px-3 py-2 font-mono text-xs leading-relaxed"
         >
-          {lines.length === 0 ? (
+          {visibleLines.length === 0 ? (
             <p className="select-none py-8 text-center text-zinc-600">
               {status === "ended" && (!starting || !retryable)
                 ? t("log_ended_empty")
-                : t(starting ? "log_starting_wait" : "log_waiting")}
+                : t(hiddenCount > 0 ? "log_rcon_only" : starting ? "log_starting_wait" : "log_waiting")}
             </p>
           ) : (
             chunks.map((chunk) => <LogChunk key={chunk.key} lines={chunk.lines} />)

@@ -293,5 +293,8 @@
   "emergency_stop_unknown": "操作结果尚未确认。停止意图可能已经保存，请重新读取状态；若控制 API 不可达，请使用主机侧恢复步骤。",
   "host_recovery": "主机侧应急停止步骤",
   "host_recovery_hint": "控制 API 离线时，面板无法执行集群操作。请在部署主机依次执行以下命令：保存停止意图、将副本数设为零、检查游戏 Pod。命名空间不是 minecraft 时须替换命令中的命名空间。",
-  "host_recovery_verify": "Pod 仍在终止或节点不可达时，无法确认进程已停止。请检查对应节点及容器运行时；强制删除 Pod 不能作为进程退出的依据。"
+  "host_recovery_verify": "Pod 仍在终止或节点不可达时，无法确认进程已停止。请检查对应节点及容器运行时；强制删除 Pod 不能作为进程退出的依据。",
+  "log_show_rcon": "显示 RCON 连接日志",
+  "log_hide_rcon": "隐藏 RCON 连接日志",
+  "log_rcon_only": "RCON 连接生命周期日志已隐藏。其他日志将在产生后显示。"
 }

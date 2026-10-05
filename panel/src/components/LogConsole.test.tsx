@@ -64,6 +64,37 @@ describe("LogConsole", () => {
     expect(container.textContent).not.toContain("§");
   });
 
+  it("hides only RCON connection lifecycle notices and can reveal them", async () => {
+    render(<LogConsole url="/c" />);
+    const started = "[15:42:03 INFO]: Thread RCON Client /10.42.0.80 started";
+    const stopped = "[15:42:03] [RCON Client /10.42.0.80/INFO]: Thread RCON Client /10.42.0.80 shutting down";
+    const warning = "[15:42:04 WARN]: Thread RCON Client /10.42.0.80 shutting down";
+    const error = "[15:42:04 ERROR]: RCON authentication failed";
+    const chat = "[15:42:04 INFO]: <Steve> Thread RCON Client /10.42.0.80 started";
+    await send(started, stopped, warning, error, chat);
+    expect(screen.queryByText(started)).toBeNull();
+    expect(screen.queryByText(stopped)).toBeNull();
+    expect(screen.getByText(warning)).toBeTruthy();
+    expect(screen.getByText(error).className).toContain("text-red-400");
+    expect(screen.getByText(chat)).toBeTruthy();
+    const toggle = screen.getByRole("button", { name: /Show RCON connection logs/ });
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    expect(toggle.textContent).toContain("(2)");
+    fireEvent.click(toggle);
+    expect(screen.getByText(started)).toBeTruthy();
+    expect(screen.getByText(stopped)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Hide RCON connection logs" }));
+    expect(screen.queryByText(started)).toBeNull();
+  });
+
+  it("explains when the buffer contains only filtered connection notices", async () => {
+    render(<LogConsole url="/c" />);
+    await send("[15:42:03 INFO]: Thread RCON Client /10.42.0.80 started");
+    expect(screen.getByText(i18next.t("servers:log_rcon_only"))).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Show RCON connection logs/ }));
+    expect(screen.queryByText(i18next.t("servers:log_rcon_only"))).toBeNull();
+  });
+
   it("keeps showing new lines in a chunk that was already on screen, and after a clear", async () => {
     const { container } = render(<LogConsole url="/c" />);
     await send(...range(0, 150));

@@ -7,7 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { BackLink } from "@/components/BackLink";
 import { MAX_AUTO_RESTARTS, PhaseBadge, pendingPower, shownPhase, startFailure, type StartFailure } from "@/components/PhaseBadge";
 import { PageHeader } from "@/components/PageHeader";
-import { LogConsole } from "@/components/LogConsole";
+import { FormattedText, LogConsole } from "@/components/LogConsole";
 import { Loading, ErrorState } from "@/components/States";
 import { api, consoleStreamURL, humanizeError } from "@/lib/api";
 import { STATUS_POLL_FAST_MS, STATUS_POLL_SLOW_MS, useAsync, useConfig, usePolling } from "@/lib/hooks";
@@ -19,6 +19,7 @@ import type { Phase, AutostartPolicy } from "@/lib/types";
 import { EditServerDialog } from "@/components/EditServerDialog";
 import { PowerButton } from "@/components/PowerButton";
 import { RetireCard, RetireNotice } from "@/components/Retirement";
+import { parseFormatting, type Formatted } from "@/lib/mcformat";
 import { cn } from "@/lib/utils";
 import { InlineError, MessageLine } from "@/components/MessageLine";
 
@@ -122,7 +123,7 @@ const MAX_HISTORY = 50;
 const HISTORY_KEY = (name: string) => `felis:cmd:history:${name}`;
 
 /** CommandInput is the §8 write-side console input: a one-line text field that
- *  sends an RCON command to the running server and displays its plain-text reply.
+ *  sends an RCON command to the running server and displays its formatted reply.
  *  Enter sends; Up/Down cycle through persistent per-server command history.
  *  Only available when the server is Running (RCON reachable). */
 function CommandInput({ name }: { name: string }) {
@@ -133,7 +134,7 @@ function CommandInput({ name }: { name: string }) {
   // The last command's echo + the server's reply, rendered above the prompt the
   // way a terminal does. The reply IS the result of a write: RCON returns text
   // only, so dropping it would leave the user with no way to see what happened.
-  const [last, setLast] = useState<{ cmd: string; out: string } | null>(null);
+  const [last, setLast] = useState<{ cmd: string; out: Formatted } | null>(null);
   const historyRef = useRef<string[]>(loadHistory(name));
   const cursorRef = useRef(-1);
   // What was typed before stepping up into the history.
@@ -155,7 +156,7 @@ function CommandInput({ name }: { name: string }) {
     cursorRef.current = h.length;
     try {
       const res = await api.sendCommand(name, text);
-      setLast({ cmd: text, out: (res.output ?? "").trim() });
+      setLast({ cmd: text, out: parseFormatting((res.output ?? "").trim()) });
     } catch (ex) {
       setErr(humanizeError(ex));
     } finally {
@@ -203,7 +204,7 @@ function CommandInput({ name }: { name: string }) {
       {last && (
         <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2 font-mono text-xs text-zinc-300">
           <span className="text-zinc-500">{"> " + last.cmd + "\n"}</span>
-          {last.out}
+          <FormattedText formatted={last.out} />
         </pre>
       )}
       <div className="flex items-center gap-2 rounded-md border border-zinc-700 bg-zinc-900 px-3 font-mono text-xs text-zinc-200">
