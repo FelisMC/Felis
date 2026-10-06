@@ -5316,6 +5316,28 @@ out="$(WORKER_TOKEN_FILE="$badtoken" bash -c '
 expect "worker refuses a copied server token before changing the machine" 'worker accepts only CA-pinned bootstrap tokens' "$out"
 rm -f "$badtoken"
 
+# SELinux rejects /run paths when the policy aliases them to /var/run.
+node_fcontext="$(bsfn install_node_control_service | awk '/^  if .*command -v semanage/,/^  fi/')"
+[ -n "$node_fcontext" ] && [ "$(printf '%s\n' "$node_fcontext" | wc -l)" -lt 12 ] \
+  || { echo "FAIL: node-control fcontext block could not be extracted"; exit 1; }
+for existing in 0 1; do
+  out="$(EXISTING="$existing" bash -c '
+    selinux_environment=enabled
+    semanage() {
+      case "$5" in /run/felis-node-control*) echo "alias conflict"; return 1;; esac
+      echo "$*"
+      [ "$EXISTING" != 1 ] || [ "$2" = -m ]
+    }
+    '"$node_fcontext"
+  )"
+  expect "node-control registers the canonical SELinux path ($existing)" \
+    "fcontext -a -t felis_node_control_socket_t /var/run/felis-node-control(/.*)?" "$out"
+  if [ "$existing" = 1 ]; then
+    expect "node-control updates an existing canonical rule" \
+      "fcontext -m -t felis_node_control_socket_t /var/run/felis-node-control(/.*)?" "$out"
+  fi
+done
+
 # ---------------------------------------------------------------------------------------
 if [ "$fails" -eq 0 ]; then
   echo "ALL PASS"

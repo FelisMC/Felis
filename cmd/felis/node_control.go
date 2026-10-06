@@ -172,7 +172,7 @@ func (e nodeExecutor) run(ctx context.Context, r nodecontrol.Request, stage func
 		return err
 	}
 	if len(deployment.Spec.Template.Spec.Containers) == 0 {
-		return errors.New("Felis API image is unavailable")
+		return errors.New("the Felis API image is unavailable")
 	}
 	image := deployment.Spec.Template.Spec.Containers[0].Image
 	if r.Action == "enable" {
@@ -301,7 +301,7 @@ func (e nodeExecutor) requireStopped(ctx context.Context, r nodecontrol.Request)
 			continue
 		}
 		if p.Status.Phase != corev1.PodSucceeded && p.Status.Phase != corev1.PodFailed {
-			return fmt.Errorf("Pod %s has not exited (phase %s); wait for game and maintenance workloads to stop", p.Name, p.Status.Phase)
+			return fmt.Errorf("pod %s has not exited (phase %s); wait for game and maintenance workloads to stop", p.Name, p.Status.Phase)
 		}
 	}
 	// Prevent a pending wake intent racing admission or an installation.

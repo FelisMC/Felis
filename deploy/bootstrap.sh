@@ -5238,8 +5238,9 @@ EOF_NODE_SELINUX
 d /run/felis-node-control 0750 root 65532 -
 EOF_NODE_TMP
   if [ -n "$selinux_environment" ] && command -v semanage >/dev/null 2>&1; then
-    semanage fcontext -a -t felis_node_control_socket_t '/run/felis-node-control(/.*)?' 2>/dev/null \
-      || semanage fcontext -m -t felis_node_control_socket_t '/run/felis-node-control(/.*)?'
+    # /run is an SELinux equivalence alias for /var/run. Register the canonical path.
+    semanage fcontext -a -t felis_node_control_socket_t '/var/run/felis-node-control(/.*)?' 2>/dev/null \
+      || semanage fcontext -m -t felis_node_control_socket_t '/var/run/felis-node-control(/.*)?'
   fi
   if [ -n "$selinux_environment" ] && command -v chcon >/dev/null 2>&1; then
     chcon -R -t felis_node_control_socket_t /run/felis-node-control 2>/dev/null || true
