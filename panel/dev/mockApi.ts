@@ -1019,6 +1019,10 @@ async function handlePublic(ctx: RequestContext): Promise<boolean> {
 
 async function handleSession(ctx: SessionContext): Promise<boolean> {
   switch (route(ctx)) {
+    case "GET settings/node-control":
+      if (!isOwner(ctx.account.role)) sendError(ctx.res, 403, "forbidden", "Owner account required");
+      else sendJSON(ctx.res, 200, { available: false, tasks: [] });
+      return true;
     case "GET settings/wake-policy":
     case "PUT settings/wake-policy": {
       if (!isOwner(ctx.account.role)) {

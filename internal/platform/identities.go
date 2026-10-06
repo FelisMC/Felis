@@ -90,6 +90,8 @@ const (
 // Params parameterises the install bundle. Namespaces and the registry location
 // have safe defaults; VelocityCIDRs has none — see the field comment.
 type Params struct {
+	NodeControlSocket string
+	NodeControlNode   string
 	Distributed       bool
 	ControllerNode    string
 	EgressProbe       string

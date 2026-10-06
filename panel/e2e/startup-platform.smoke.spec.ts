@@ -84,3 +84,32 @@ test("Owner emergency stop stays secondary, confirms name, and distinguishes acc
   const links = await ownerNav.evaluateAll((elements) => elements.map((el) => el.getAttribute("href")));
   expect(links.at(-1)).toBe("/admin/platform");
 });
+
+test("Owner executes node management and receives stage, failure logs and retry", async ({ page, signIn }) => {
+  await signIn("owner");
+  let task: Record<string, unknown> = {};
+  let submitted: Record<string, unknown> | null = null;
+  await page.route("**/api/v1/settings/node-control", (route) => route.fulfill({ json: { available: true, tasks: task.id ? [task] : [] } }));
+  await page.route("**/api/v1/settings/node-control/tasks", async (route) => {
+    submitted = route.request().postDataJSON();
+    task = { id: "test-task", request: submitted, actor: "owner", state: "running", stage: "database_backup", startedAt: new Date().toISOString(), log: "[felis] database_backup" };
+    await route.fulfill({ status: 202, json: task });
+  });
+  await page.route("**/api/v1/settings/node-control/tasks/test-task", (route) => route.fulfill({ json: task }));
+  await page.route("**/api/v1/settings/node-control/tasks/test-task/retry", (route) => { task = { ...task, state: "running", error: undefined }; return route.fulfill({ status: 202, json: task }); });
+  await page.goto("/admin/platform");
+  await page.getByLabel(t("admin:node_control_ip")).fill("192.0.2.10");
+  const submit = page.getByRole("button", { name: t("admin:node_control_submit"), exact: true });
+  await expect(submit).toBeDisabled();
+  await page.getByRole("switch").click();
+  await submit.click();
+  expect(submitted).toMatchObject({ action: "enable", externalIP: "192.0.2.10", confirmMaintenance: true });
+  await expect(page.getByText(t("admin:node_control_stage_database_backup"), { exact: true })).toBeVisible();
+  task = { ...task, state: "failed", error: "Database backup failed", log: "[felis] pg_dump failed: connection refused" };
+  await page.getByRole("button", { name: t("admin:node_control_reload"), exact: true }).click();
+  await expect(page.getByText("Database backup failed", { exact: true })).toBeVisible();
+  await expect(page.getByLabel(t("admin:node_control_log"))).toContainText("pg_dump failed: connection refused");
+  await page.getByRole("button", { name: t("admin:node_control_retry"), exact: true }).click();
+  await expect(page.getByText(t("admin:node_control_state_running"), { exact: true })).toBeVisible();
+  await expectFitsScreen(page);
+});

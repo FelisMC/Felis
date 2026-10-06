@@ -39,6 +39,13 @@ func (a *API) handleNodes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleMigration(w http.ResponseWriter, r *http.Request) {
+	if a.NodeControl != nil {
+		if err := NodeMaintenanceGuard(a.NodeControl)(r.Context()); err != nil {
+			writeError(w, r, err)
+			return
+		}
+	}
+
 	if !a.distributedReady(w, r) {
 		return
 	}
@@ -88,6 +95,13 @@ func (a *API) handleMigrationStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleMigrationRetry(w http.ResponseWriter, r *http.Request) {
+	if a.NodeControl != nil {
+		if err := NodeMaintenanceGuard(a.NodeControl)(r.Context()); err != nil {
+			writeError(w, r, err)
+			return
+		}
+	}
+
 	if !a.distributedReady(w, r) {
 		return
 	}

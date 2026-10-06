@@ -776,3 +776,23 @@ export interface WakePolicySettings {
   revision: string;
   managed: boolean;
 }
+
+export interface NodeControlRequest {
+  action: "enable" | "join" | "approve";
+  name?: string;
+  sshTarget?: string;
+  externalIP?: string;
+  peers?: string[];
+  confirmMaintenance: boolean;
+}
+export interface NodeControlTask {
+  id: string;
+  request: NodeControlRequest;
+  actor: string;
+  state: "running" | "succeeded" | "failed";
+  stage: string;
+  startedAt: string;
+  finishedAt?: string;
+  error?: string;
+  log?: string;
+}

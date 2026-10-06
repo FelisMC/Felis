@@ -30,6 +30,7 @@ Commands:
   mirror-build-tools Copy kaniko, trivy and Trivy's DBs into the registry (run by felis-build-tools.timer)
   server-migrate    Move a stopped world between approved nodes (start|status|retry; requires root)
   node              Join and approve trusted daemon nodes (list|token|join|approve|firewall; requires root)
+  node-control      Run the host node-task service on an API-only Unix socket (requires root)
   node-probe        Verify reachability and observed sources (internal admission probe)
   archive-serve     Serve scoped one-use archive transfers on the controller (internal entrypoint)
   registry-gate     Authorize registry writes in front of registry:2 (internal sidecar entrypoint)
@@ -80,6 +81,7 @@ var commands = map[string]func(args []string, stdout, stderr io.Writer) int{
 	"registry-gate":      cmdRegistryGate,
 	"archive-serve":      cmdArchiveServe,
 	"node":               cmdNode,
+	"node-control":       cmdNodeControl,
 	"server-migrate":     cmdServerMigrate,
 	"node-probe":         cmdNodeProbe,
 	"manifests":          cmdManifests,

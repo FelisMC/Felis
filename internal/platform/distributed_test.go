@@ -59,3 +59,43 @@ func TestDistributedControllerPinningAndArchivePowers(t *testing.T) {
 		t.Fatal("broad Velocity source accepted")
 	}
 }
+
+func TestNodeControlSocketIsAPIOnly(t *testing.T) {
+	p := testParams()
+	p.NodeControlSocket = "/run/felis-node-control/control.sock"
+	p.NodeControlNode = "controller"
+	for _, object := range Objects(p) {
+		d, ok := object.(*appsv1.Deployment)
+		if !ok {
+			continue
+		}
+		for _, volume := range d.Spec.Template.Spec.Volumes {
+			if volume.Name == "node-control" && d.Name != SAAPI {
+				t.Fatal("host socket leaked to", d.Name)
+			}
+		}
+		if d.Name != SAAPI {
+			continue
+		}
+		if d.Spec.Template.Spec.NodeSelector["kubernetes.io/hostname"] != "controller" {
+			t.Fatal("API can run away from socket")
+		}
+		found := false
+		for _, container := range d.Spec.Template.Spec.Containers {
+			for _, mount := range container.VolumeMounts {
+				if mount.Name == "node-control" {
+					found = true
+					if !mount.ReadOnly {
+						t.Fatal("host directory writable")
+					}
+				}
+			}
+			if d.Spec.Template.Spec.SecurityContext.RunAsUser == nil || *d.Spec.Template.Spec.SecurityContext.RunAsUser == 0 {
+				t.Fatal("API elevated")
+			}
+		}
+		if !found {
+			t.Fatal("API has no node socket")
+		}
+	}
+}

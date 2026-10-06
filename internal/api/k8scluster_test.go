@@ -459,3 +459,26 @@ func TestResourcePatchesKeepWhatTheyLeaveOut(t *testing.T) {
 		t.Fatalf("cleared cpu: limits %v, want the CPU limit gone and memory 8Gi kept", after.Resources.Limits)
 	}
 }
+
+func TestHostNodeMaintenanceBlocksStartsAndWorldJobs(t *testing.T) {
+	scheme := runtime.NewScheme()
+	v1alpha1.AddToScheme(scheme)
+	server := &v1alpha1.MinecraftServer{ObjectMeta: metav1.ObjectMeta{Name: "survival", Namespace: "minecraft"}, Spec: v1alpha1.MinecraftServerSpec{DesiredState: v1alpha1.DesiredStopped}, Status: v1alpha1.MinecraftServerStatus{Phase: v1alpha1.PhaseStopped}}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(server).Build()
+	k := NewK8sCluster(c, server.Namespace)
+	blocked := newError(409, "node_operation_busy", "host task running")
+	k.NodeMaintenanceGuard = func(context.Context) error { return blocked }
+	ctx := context.Background()
+	for _, operation := range []func() error{func() error { return k.SetDesiredState(ctx, server.Name, v1alpha1.DesiredRunning) }, func() error { return k.RetryStart(ctx, server.Name) }, func() error { return k.AcquireMaintenance(ctx, server.Name, maintenance.KindBackup) }} {
+		if err := operation(); err != blocked {
+			t.Fatal("host maintenance bypassed", err)
+		}
+	}
+	if err := k.SetDesiredState(ctx, server.Name, v1alpha1.DesiredStopped); err != nil {
+		t.Fatal("stop entry blocked", err)
+	}
+	var got v1alpha1.MinecraftServer
+	if err := c.Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: server.Name}, &got); err != nil || got.Spec.DesiredState != v1alpha1.DesiredStopped || len(got.Annotations) != 0 {
+		t.Fatal("state changed during host maintenance", got, err)
+	}
+}

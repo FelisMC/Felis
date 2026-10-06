@@ -1,4 +1,6 @@
 import type {
+  NodeControlRequest,
+  NodeControlTask,
   AccessResult,
   ExecutionNode,
   WorldMigration,
@@ -610,6 +612,10 @@ export const api = rejectingSync({
     URL.revokeObjectURL(url);
   },
 
+  nodeTasks: () => request<{ available: boolean; tasks: NodeControlTask[] }>("GET", "/settings/node-control"),
+  nodeTask: (id: string) => request<NodeControlTask>("GET", `/settings/node-control/tasks/${encodeURIComponent(id)}`),
+  startNodeTask: (body: NodeControlRequest) => request<NodeControlTask>("POST", "/settings/node-control/tasks", body),
+  retryNodeTask: (id: string) => request<NodeControlTask>("POST", `/settings/node-control/tasks/${encodeURIComponent(id)}/retry`),
   nodes: () => request<{ nodes: ExecutionNode[] }>("GET", "/nodes").then((r) => r.nodes),
   migration: (name: string) => request<WorldMigration>("GET", `/servers/${encodeURIComponent(name)}/migrations`),
   migrateServer: (name: string, targetNode: string) =>
@@ -1253,6 +1259,10 @@ export function humanizeError(e: unknown): string {
   switch (err.code) {
     // Session doors (spec §B): every passwordless door 403s this when local
     // sessions are disabled on a Zero-Trust-only deployment.
+    case "node_operation_busy":
+      return t("node_operation_busy");
+    case "node_control_unavailable":
+      return t("node_control_unavailable");
     case "distributed_unavailable":
       return t("distributed_unavailable");
     case "local_auth_disabled":

@@ -2,6 +2,20 @@
 
 分布式模式默认关闭。A 运行唯一 Felis API/operator、k3s server、PostgreSQL、Registry、归档服务和系统服；Velocity 继续使用 A 的 systemd 服务。B、C 等节点只运行 k3s-agent/containerd、游戏 Pod 和 A 创建的维护 Job。节点必须与 A 同架构、同 k3s 版本，宿主机由管理员信任并维护。
 
+## 面板管理
+
+Owner 可在「平台设置 → 节点操作」中启用分布式部署、通过 SSH 接入 worker、批准已接入的 worker，以及查询或重试失败任务。服务器的节点选择和停止后的世界迁移继续使用服务器管理页面。以下 CLI 流程保留为维护及恢复入口。
+
+完整安装会安装 `felis-node-control.service`。面板 API 保持非 root 身份，仅挂载该服务的只读 Unix socket 目录；宿主机服务只接受固定的节点操作，不提供通用命令执行。SELinux 主机为专用 socket 目录与文件配置独立类型；API 通过文件权限及独占挂载访问该服务。HTTP 接口仅限 Owner，并沿用敏感操作的身份复核与审计要求。SSH 私钥、bootstrap token 和宿主机 kubeconfig 不返回浏览器。
+
+首次接入前，在 A 的 root SSH 配置中准备免交互认证并核验主机指纹。SSH 账户须为 root 或具有 `sudo -n` 权限；已接入 worker 的 SSH 别名须与节点名称一致，以便增加节点时更新所有对等防火墙。系统不会接受未知主机指纹，也不会重新安装已经加入集群的主机。安装中断后，若 worker 已加入集群，应改用批准操作。
+
+启用部署前须停止全部游戏及维护任务。服务暂停 operator 后再次检查停止状态，备份数据库，并停止 k3s 保存 `db`、`token`、`tls` 快照后重新启动 k3s；快照保存在 `/var/lib/felis/cluster-backups`。随后复用当前二进制的安装器配置 WireGuard、主控身份与平台组件。期间面板可能暂时无法访问，宿主机任务继续执行。worker 批准复用 CLI 的镜像拉取、网络隔离及节点身份验收；失败时不解除隔离。手动 cordon 的节点不会自动解除 cordon。
+
+任务状态及日志持久化在 `/var/lib/felis/node-control`，由 root 保护。操作执行超时上限为 45 分钟，中断后执行必要恢复动作；保留最近 100 条记录；单项日志文件限制为 4 MiB，面板读取最近 64 KiB。服务重启会将未完成任务标记为失败，恢复前应核对主机状态，不自动重复执行安装。配置了主机服务的 API 在节点操作期间阻止启动、维护及迁移；主机服务不可用时这些操作返回明确错误，停止入口仍保留。
+
+主机服务异常时，宿主机管理员可执行 `systemctl status felis-node-control`、`journalctl -u felis-node-control` 和 `systemctl restart felis-node-control`。首次升级至包含该功能的版本，需要通过完整安装流程安装服务及 socket 挂载；仅替换网页资源不能启用宿主机操作。
+
 ## 先准备 A
 
 在维护窗口停服，使用现有数据库备份流程备份 PostgreSQL，并离线保存 k3s 状态、server token 和当前安装配置。SQLite k3s 的状态目录是 `/var/lib/rancher/k3s/server/db`；使用其他 datastore 时按对应备份流程操作。不要把这些文件复制到 worker。

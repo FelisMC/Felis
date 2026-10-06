@@ -5217,6 +5217,56 @@ EOF
 # The daily database backup. The first run happens now, so a broken pipeline (pg_dump
 # missing, directory unwritable) shows up in this install rather than in the first
 # restore someone needs.
+# The API mounts only this Unix socket, never the host kubeconfig or SSH keys.
+install_node_control_service() {
+  local selinux_environment=""
+  if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then
+    command -v semodule >/dev/null 2>&1 || die "node control on SELinux requires semodule"
+    cat > "${STATE_DIR}/felis-node-control.cil" <<'EOF_NODE_SELINUX'
+(type felis_node_control_socket_t)
+(typeattributeset file_type (felis_node_control_socket_t))
+(typeattributeset non_auth_file_type (felis_node_control_socket_t))
+(allow container_t felis_node_control_socket_t (dir (search getattr open read)))
+(allow container_t felis_node_control_socket_t (sock_file (write open read getattr)))
+(allow container_t unconfined_service_t (unix_stream_socket (connectto)))
+EOF_NODE_SELINUX
+    semodule -i "${STATE_DIR}/felis-node-control.cil" || die "could not install the node-control SELinux policy"
+    selinux_environment="Environment=FELIS_NODE_CONTROL_SELINUX=1"
+  fi
+  install -d -o root -g 65532 -m 0750 /run/felis-node-control
+  cat > /etc/tmpfiles.d/felis-node-control.conf <<'EOF_NODE_TMP'
+d /run/felis-node-control 0750 root 65532 -
+EOF_NODE_TMP
+  if [ -n "$selinux_environment" ] && command -v semanage >/dev/null 2>&1; then
+    semanage fcontext -a -t felis_node_control_socket_t '/run/felis-node-control(/.*)?' 2>/dev/null \
+      || semanage fcontext -m -t felis_node_control_socket_t '/run/felis-node-control(/.*)?'
+  fi
+  if [ -n "$selinux_environment" ] && command -v chcon >/dev/null 2>&1; then
+    chcon -R -t felis_node_control_socket_t /run/felis-node-control 2>/dev/null || true
+  fi
+  cat > /etc/systemd/system/felis-node-control.service <<EOF_NODE_UNIT
+[Unit]
+Description=Felis host node operations
+After=network-online.target k3s.service
+Wants=network-online.target
+[Service]
+Type=simple
+ExecStart=${HOST_BIN} node-control --config ${STATE_DIR}/felis.host.toml --state /var/lib/felis/node-control --namespace ${MINECRAFT_NS} --control-namespace ${CONTROL_NS}
+${selinux_environment}
+Restart=on-failure
+RestartSec=5
+UMask=0077
+[Install]
+WantedBy=multi-user.target
+EOF_NODE_UNIT
+  systemctl daemon-reload
+  systemctl enable felis-node-control.service
+  # A conversion task runs inside this service; restarting it would terminate the installer.
+  if [ "${FELIS_NODE_CONTROL_TASK:-0}" != 1 ]; then
+    systemctl restart felis-node-control.service
+  fi
+}
+
 install_db_backup_timer() {
   install -d -m 0700 "$FELIS_DB_BACKUP_DIR"
   cat > "$DB_BACKUP_SERVICE" <<EOF
@@ -5406,6 +5456,7 @@ deploy_bundle() {
     --postgres-image "$POSTGRES_IMAGE"
     --panel-node-port "$FELIS_PANEL_NODEPORT"
     --velocity-cidr "${NODE_IP}/32"
+    --node-control-socket /run/felis-node-control/control.sock --node-control-node "$(k3s_node_name)"
   )
   if [ "${DISTRIBUTED:-0}" = 1 ]; then
     manifest_args+=(--distributed --controller-node "$controller" --egress-probe "felis-api.${CONTROL_NS}.svc:443")
@@ -6351,6 +6402,7 @@ main() {
   # move, the database is the host PostgreSQL an earlier release installed.
   migrate_host_postgres
   run_migrations
+  install_node_control_service
   deploy_bundle
   # AFTER deploy_bundle: the registry the built images are mirrored into is part
   # of that bundle.

@@ -565,6 +565,35 @@ components:
         attempt: { type: integer }
         error: { type: string }
 
+    NodeControlRequest:
+      type: object
+      required: [action, confirmMaintenance]
+      additionalProperties: false
+      properties:
+        action: { type: string, enum: [enable, join, approve] }
+        name: { type: string, description: Stable worker node name; required for join and approve. }
+        sshTarget: { type: string, description: Verified root SSH alias or user@host; required for workers. }
+        externalIP: { type: string, description: Fixed node IP; required for enable and join. }
+        peers:
+          type: array
+          maxItems: 100
+          items: { type: string }
+          description: Additional exact /32 or /128 peer addresses.
+        confirmMaintenance: { type: boolean, const: true }
+    NodeControlTask:
+      type: object
+      required: [id, request, actor, state, stage, startedAt]
+      properties:
+        id: { type: string }
+        request: { $ref: '#/components/schemas/NodeControlRequest' }
+        actor: { type: string }
+        state: { type: string, enum: [running, succeeded, failed] }
+        stage: { type: string }
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+        error: { type: string }
+        log: { type: string, description: Most recent 64 KiB of host execution output; absent in task lists. }
+
     ServerInfo:
       type: object
       description: Status projection of one server (internal/api/cluster.go ServerInfo).
@@ -4330,6 +4359,100 @@ paths:
                     items: { $ref: '#/components/schemas/MyServerView' }
         '401':
           $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/settings/node-control:
+    get:
+      operationId: nodeTasks
+      summary: Read host node-service availability and persistent task history (Owner).
+      tags: [account]
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: Availability and most recent task records; no credentials or logs.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [available, tasks]
+                properties:
+                  available: { type: boolean }
+                  tasks: { type: array, items: { $ref: '#/components/schemas/NodeControlTask' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: Another node task is running or this task cannot be retried. }
+        '503': { description: Host node execution service is unavailable. }
+  /api/v1/settings/node-control/tasks:
+    post:
+      operationId: startNodeTask
+      summary: Execute fixed host node operation (Owner, fresh reauthentication).
+      description: Tasks are serialized, audited and persisted on the controller. The host verifies stopped workloads and SSH trust before enrollment or admission. Bootstrap credentials never cross the external API. Server starts fail closed during node operations and when the configured host service cannot report its state.
+      tags: [account]
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NodeControlRequest' }
+      responses:
+        '202':
+          description: Persistent task created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NodeControlTask' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: Another node task is running or this task cannot be retried. }
+        '503': { description: Host node execution service is unavailable. }
+  /api/v1/settings/node-control/tasks/{id}:
+    get:
+      operationId: nodeTask
+      summary: Read task stage, terminal error and bounded execution log (Owner).
+      tags: [account]
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Current task and recent output.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NodeControlTask' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: Another node task is running or this task cannot be retried. }
+        '503': { description: Host node execution service is unavailable. }
+  /api/v1/settings/node-control/tasks/{id}/retry:
+    post:
+      operationId: retryNodeTask
+      summary: Create a new attempt from a failed task (Owner, fresh reauthentication).
+      tags: [account]
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '202':
+          description: New task created; original task is retained.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NodeControlTask' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: Another node task is running or this task cannot be retried. }
+        '503': { description: Host node execution service is unavailable. }
 
   /api/v1/settings/wake-policy:
     get:

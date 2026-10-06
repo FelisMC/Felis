@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"path/filepath"
 	"strings"
 
 	"felis.lolicon.best/internal/platform"
@@ -48,6 +49,8 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 	probe := fs.String("egress-probe", "", "reachable controller host:port denied to game Pods")
 	var registryNodes multiFlag
 	fs.Var(&registryNodes, "registry-node-cidr", "exact node pull source for the registry (repeatable)")
+	socket := fs.String("node-control-socket", "", "host node-control Unix socket (optional, API only)")
+	nodeControlNode := fs.String("node-control-node", "", "controller hostname hosting the socket")
 	controlNS := fs.String("control-namespace", platform.DefaultControlNamespace, "namespace the control plane (api/operator/reaper) runs in")
 	minecraftNS := fs.String("minecraft-namespace", platform.DefaultMinecraftNamespace, "namespace MinecraftServer workloads run in")
 	buildNS := fs.String("build-namespace", platform.DefaultBuildNamespace, "namespace image-build Jobs run in")
@@ -181,7 +184,12 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	if *socket != "" && (!filepath.IsAbs(*socket) || *nodeControlNode == "") {
+		fmt.Fprintln(stderr, "node-control requires an absolute socket and its controller hostname")
+		return 2
+	}
 	params := platform.Params{
+		NodeControlSocket: *socket, NodeControlNode: *nodeControlNode,
 		Distributed: *distributed, ControllerNode: *controller, EgressProbe: *probe, RegistryNodeCIDRs: registryNodes,
 		ControlNamespace:   *controlNS,
 		MinecraftNamespace: *minecraftNS,

@@ -173,7 +173,7 @@ func approveNode(ctx context.Context, cl client.Client, cs kubernetes.Interface,
 		"proof=$(mktemp); trap 'rm -f \"$proof\"' EXIT\n" +
 		"if /usr/local/bin/k3s kubectl --kubeconfig \"$kubeconfig\" label node " + shellQuote(name) + " felis.node-restriction.kubernetes.io/probe=controller --overwrite 2>\"$proof\"; then echo 'NodeRestriction failed' >&2;exit 1;fi\ngrep -qi forbidden \"$proof\"\n" +
 		"image=" + shellQuote(image) + "\nif [ -n \"$(/usr/local/bin/k3s crictl images -q \"$image\")\" ]; then /usr/local/bin/k3s crictl rmi \"$image\" >/dev/null; fi\ntest -z \"$(/usr/local/bin/k3s crictl images -q \"$image\")\"\n/usr/local/bin/k3s crictl pull \"$image\" >/dev/null\n"
-	cmd := exec.CommandContext(ctx, "ssh", "--", remote, "if [ \"$(id -u)\" = 0 ]; then bash -s; else sudo -n bash -s; fi")
+	cmd := exec.CommandContext(ctx, "ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10", "--", remote, "if [ \"$(id -u)\" = 0 ]; then bash -s; else sudo -n bash -s; fi")
 	cmd.Stdin = strings.NewReader(script)
 	cmd.Stdout = stdout
 	cmd.Stderr = stdout

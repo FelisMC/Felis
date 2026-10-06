@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"felis.lolicon.best/internal/naming"
@@ -480,7 +481,18 @@ func APIDeployment(p Params) *appsv1.Deployment {
 		},
 	}
 
-	return controlPlaneDeployment(p, SAAPI, container, volumes)
+	if p.NodeControlSocket != "" {
+		directory := filepath.Dir(p.NodeControlSocket)
+		hostType := corev1.HostPathDirectory
+		volumes = append(volumes, corev1.Volume{Name: "node-control", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: directory, Type: &hostType}}})
+		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{Name: "node-control", MountPath: directory, ReadOnly: true})
+		container.Env = append(container.Env, corev1.EnvVar{Name: "FELIS_NODE_CONTROL_SOCKET", Value: p.NodeControlSocket})
+	}
+	deployment := controlPlaneDeployment(p, SAAPI, container, volumes)
+	if p.NodeControlNode != "" && p.ControllerNode == "" {
+		deployment.Spec.Template.Spec.NodeSelector = map[string]string{"kubernetes.io/hostname": p.NodeControlNode}
+	}
+	return deployment
 }
 
 // apiService exposes the built-in HTTPS panel/API origin as a stable NodePort.

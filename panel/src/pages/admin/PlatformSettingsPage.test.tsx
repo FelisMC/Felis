@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { PlatformSettingsPage } from "./PlatformSettingsPage";
 import type { WakePolicySettings } from "@/lib/types";
-const calls = vi.hoisted(() => ({ getWakePolicy: vi.fn(), setWakePolicy: vi.fn(), nodes: vi.fn() }));
+const calls = vi.hoisted(() => ({ getWakePolicy: vi.fn(), setWakePolicy: vi.fn(), nodes: vi.fn(), nodeTasks: vi.fn(), nodeTask: vi.fn(), startNodeTask: vi.fn(), retryNodeTask: vi.fn() }));
 vi.mock("@/lib/api", async (original) => ({ ...await original<typeof import("@/lib/api")>(), api: calls }));
 const runtime = vi.hoisted(() => ({ distributed: false, fallback: false, apiBase: "/api/v1", rootDomain: "example.test" }));
 vi.mock("@/lib/hooks", async (original) => ({ ...await original<typeof import("@/lib/hooks")>(), useConfig: () => runtime }));
@@ -18,6 +18,7 @@ beforeEach(() => {
   runtime.distributed = false;
   runtime.fallback = false;
   calls.nodes.mockResolvedValue([]);
+  calls.nodeTasks.mockResolvedValue({ available: false, tasks: [] });
   calls.getWakePolicy.mockResolvedValue(policy);
   calls.setWakePolicy.mockImplementation(async (body) => ({ ...body, revision: "saved", managed: true }));
 });
@@ -28,7 +29,7 @@ describe("platform policy", () => {
     page();
     expect(limit().disabled).toBe(true);
     expect(limit().value).toBe("");
-    expect(screen.getByRole("status").textContent).toContain("Loading the saved policy");
+    expect(screen.getAllByRole("status").some((node) => node.textContent?.includes("Loading the saved policy"))).toBe(true);
     await act(async () => resolve(policy));
     expect(limit().disabled).toBe(false);
     expect(limit().value).toBe("0");
@@ -57,9 +58,8 @@ describe("distributed deployment entry", () => {
     page();
     await waitFor(() => expect(limit().disabled).toBe(false));
     expect(screen.getByText("Single-node mode")).toBeTruthy();
-    expect(screen.getByText(/cannot be switched live from the panel/)).toBeTruthy();
-    expect(screen.getByText("Connect and approve worker nodes")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Deployment and acceptance runbook" }).getAttribute("href")).toContain("docs/distributed.md");
+    expect(screen.getByText("Node operations")).toBeTruthy();
+    expect(await screen.findByText(/Host node service is not installed/)).toBeTruthy();
     expect(calls.nodes).not.toHaveBeenCalled();
   });
 

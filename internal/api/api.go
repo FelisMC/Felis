@@ -32,6 +32,7 @@ import (
 // API holds the dependencies shared by every handler.
 type API struct {
 	Distribution Distribution
+	NodeControl  NodeControl
 	Repo         Repo
 	Cluster      Cluster
 	Internal     InternalAuth
@@ -650,6 +651,10 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		// Staff can designate their own game identity after panel setup. Players
 		// retain the in-game proof flow above.
 		{Method: "GET", Pattern: "/api/v1/account/link/sources", Admin: true, h: a.handleLinkSources},
+		{Method: "GET", Pattern: "/api/v1/settings/node-control", Owner: true, Admin: true, h: a.handleNodeTasks},
+		{Method: "POST", Pattern: "/api/v1/settings/node-control/tasks", Owner: true, Admin: true, h: a.handleStartNodeTask},
+		{Method: "GET", Pattern: "/api/v1/settings/node-control/tasks/{id}", Owner: true, Admin: true, h: a.handleNodeTask},
+		{Method: "POST", Pattern: "/api/v1/settings/node-control/tasks/{id}/retry", Owner: true, Admin: true, h: a.handleRetryNodeTask},
 		{Method: "GET", Pattern: "/api/v1/settings/wake-policy", Owner: true, Admin: true, h: a.handleGetWakePolicy},
 		{Method: "PUT", Pattern: "/api/v1/settings/wake-policy", Owner: true, Admin: true, h: a.handleSetWakePolicy},
 		{Method: "GET", Pattern: "/api/v1/settings/auth-sources", Owner: true, Admin: true, h: a.handleGetAuthSources},

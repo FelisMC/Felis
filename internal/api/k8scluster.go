@@ -36,10 +36,12 @@ import (
 // the direct client c, so a write never works from a copy the watch has not caught
 // up with yet.
 type K8sCluster struct {
-	distributed bool
-	controller  string
-	c           client.Client
-	namespace   string
+	// NodeMaintenanceGuard checks host maintenance for all manual and scheduled starts.
+	NodeMaintenanceGuard func(context.Context) error
+	distributed          bool
+	controller           string
+	c                    client.Client
+	namespace            string
 	// servers serves the fleet-wide reads; nil means c.
 	servers client.Reader
 	// synced reports whether servers has its first full list; nil means no cache.
@@ -308,6 +310,11 @@ func (k *K8sCluster) RestartServer(ctx context.Context, name string) error {
 }
 
 func (k *K8sCluster) startWith(ctx context.Context, name, annotation string) error {
+	if k.NodeMaintenanceGuard != nil {
+		if err := k.NodeMaintenanceGuard(ctx); err != nil {
+			return err
+		}
+	}
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var ms v1alpha1.MinecraftServer
 		if err := k.getServer(ctx, name, &ms); err != nil {
@@ -350,6 +357,11 @@ func (k *K8sCluster) startWith(ctx context.Context, name, annotation string) err
 			}
 			ms.Annotations[annotation] = k.clock().UTC().Format(time.RFC3339Nano)
 		}
+		if k.NodeMaintenanceGuard != nil {
+			if err := k.NodeMaintenanceGuard(ctx); err != nil {
+				return err
+			}
+		}
 		return k.c.Patch(ctx, &ms, patch)
 	})
 }
@@ -362,6 +374,12 @@ func (k *K8sCluster) startWith(ctx context.Context, name, annotation string) err
 // checked; the caller creates its Job and then calls ReleaseMaintenance, after
 // which the Job itself is the lock.
 func (k *K8sCluster) AcquireMaintenance(ctx context.Context, name, kind string) error {
+	if k.NodeMaintenanceGuard != nil {
+		if err := k.NodeMaintenanceGuard(ctx); err != nil {
+			return err
+		}
+	}
+
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var ms v1alpha1.MinecraftServer
 		if err := k.getServer(ctx, name, &ms); err != nil {

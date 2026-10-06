@@ -1263,6 +1263,77 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/settings/node-control": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read host node-service availability and persistent task history (Owner). */
+        get: operations["nodeTasks"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settings/node-control/tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Execute fixed host node operation (Owner, fresh reauthentication).
+         * @description Tasks are serialized, audited and persisted on the controller. The host verifies stopped workloads and SSH trust before enrollment or admission. Bootstrap credentials never cross the external API. Server starts fail closed during node operations and when the configured host service cannot report its state.
+         */
+        post: operations["startNodeTask"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settings/node-control/tasks/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read task stage, terminal error and bounded execution log (Owner). */
+        get: operations["nodeTask"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settings/node-control/tasks/{id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create a new attempt from a failed task (Owner, fresh reauthentication). */
+        post: operations["retryNodeTask"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/settings/wake-policy": {
         parameters: {
             query?: never;
@@ -3127,6 +3198,35 @@ export interface components {
             switched: boolean;
             attempt: number;
             error?: string;
+        };
+        NodeControlRequest: {
+            /** @enum {string} */
+            action: "enable" | "join" | "approve";
+            /** @description Stable worker node name; required for join and approve. */
+            name?: string;
+            /** @description Verified root SSH alias or user@host; required for workers. */
+            sshTarget?: string;
+            /** @description Fixed node IP; required for enable and join. */
+            externalIP?: string;
+            /** @description Additional exact /32 or /128 peer addresses. */
+            peers?: string[];
+            /** @constant */
+            confirmMaintenance: true;
+        };
+        NodeControlTask: {
+            id: string;
+            request: components["schemas"]["NodeControlRequest"];
+            actor: string;
+            /** @enum {string} */
+            state: "running" | "succeeded" | "failed";
+            stage: string;
+            /** Format: date-time */
+            startedAt: string;
+            /** Format: date-time */
+            finishedAt?: string;
+            error?: string;
+            /** @description Most recent 64 KiB of host execution output; absent in task lists. */
+            log?: string;
         };
         /** @description Status projection of one server (internal/api/cluster.go ServerInfo). */
         ServerInfo: {
@@ -6823,6 +6923,167 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+        };
+    };
+    nodeTasks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Availability and most recent task records; no credentials or logs. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        available: boolean;
+                        tasks: components["schemas"]["NodeControlTask"][];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Another node task is running or this task cannot be retried. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Host node execution service is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    startNodeTask: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NodeControlRequest"];
+            };
+        };
+        responses: {
+            /** @description Persistent task created. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NodeControlTask"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Another node task is running or this task cannot be retried. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Host node execution service is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    nodeTask: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current task and recent output. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NodeControlTask"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description Another node task is running or this task cannot be retried. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Host node execution service is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    retryNodeTask: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description New task created; original task is retained. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NodeControlTask"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description Another node task is running or this task cannot be retried. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Host node execution service is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     getWakePolicy: {

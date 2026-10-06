@@ -145,5 +145,7 @@
   "auth_sources_unavailable": "Authentication source management is unavailable.",
   "auth_sources_changed": "Authentication sources changed. Discard your edits and reload before saving.",
   "auth_source_tag_locked": "Saved source IDs cannot be renamed or removed. Disable the source instead.",
-  "distributed_unavailable": "Distributed deployment is not configured. Configure the controller and worker nodes using the deployment runbook first."
+  "distributed_unavailable": "Distributed deployment is not configured. Configure the controller and worker nodes using the deployment runbook first.",
+  "node_operation_busy": "Node maintenance is running. Server starts and additional node tasks are temporarily blocked.",
+  "node_control_unavailable": "Host node service is unavailable. Inspect felis-node-control.service on the controller."
 }

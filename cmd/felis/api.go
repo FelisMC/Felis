@@ -26,6 +26,7 @@ import (
 	"felis.lolicon.best/internal/mail"
 	"felis.lolicon.best/internal/metrics"
 	"felis.lolicon.best/internal/naming"
+	"felis.lolicon.best/internal/nodecontrol"
 	"felis.lolicon.best/internal/panel"
 	"felis.lolicon.best/internal/passkey"
 	"felis.lolicon.best/internal/placement"
@@ -548,6 +549,10 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	if distribution != nil {
 		a.Distribution = distribution
 		go reconcileDistribution(ctx, distribution, stderr)
+	}
+	if socket := os.Getenv("FELIS_NODE_CONTROL_SOCKET"); socket != "" {
+		a.NodeControl = nodecontrol.NewClient(socket)
+		cluster.NodeMaintenanceGuard = api.NodeMaintenanceGuard(a.NodeControl)
 	}
 	servers := []*http.Server{internalSrv, externalSrv}
 	if httpsSrv != nil {
