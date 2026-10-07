@@ -6,24 +6,14 @@ import (
 	"testing"
 )
 
-// Auto-update maintenance-window admin API tests (task #38; decision core
-// internal/updates). The load-bearing cases: an unset window and an explicitly
-// cleared window both read back as {null,null} (two paths, one shape); a valid
-// window round-trips through persistence; a half-set or inverted window is
-// rejected fail-closed and never stored; and — the tier boundary — the routes are
-// admin-only, gating precisely on IsAdmin() = role==admin AND the admin-access
-// path, so neither a role=user nor an admin off the operator host can touch them.
-
-// seedUpdatesAPI returns an API whose external face authenticates every request as
-// a full admin (role=admin AND ViaAdminAccess), so the admin-tier routes are
-// reachable and the tests exercise the handler logic. Gating tests override
-// api.External to vary the principal.
+// Platform maintenance handlers require Owner access through the operator host.
+// Handler tests use an Owner; boundary tests vary the principal explicitly.
 func seedUpdatesAPI(t *testing.T) (*API, *fakeRepo) {
 	t.Helper()
 	repo := newFakeRepo()
 	api := newTestAPI(repo, newFakeCluster())
 	api.External = staticExternal{p: &Principal{
-		UserID: "admin1", Email: "admin@" + testRoot, Role: "admin", ViaAdminAccess: true,
+		UserID: "owner1", Email: "owner@" + testRoot, Role: "owner", ViaAdminAccess: true,
 	}}
 	return api, repo
 }
@@ -152,17 +142,16 @@ func TestUpdateWindowContentTypeGuard(t *testing.T) {
 	}
 }
 
-// TestUpdateWindowAdminGating proves the tier boundary discriminates on IsAdmin()
-// precisely — role==admin AND the admin-access path — not on accident. A full admin
-// reads 200; an admin who did NOT arrive via admin access, and a role=user player,
-// are both 403 on both the GET and the mutating PUT.
-func TestUpdateWindowAdminGating(t *testing.T) {
+// Verify the Owner and operator-host boundaries for reads and writes.
+func TestUpdateWindowOwnerGating(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		p    *Principal
 		want int
 	}{
-		{"admin via admin-access", &Principal{UserID: "a1", Role: "admin", ViaAdminAccess: true}, http.StatusOK},
+		{"owner via operator host", &Principal{UserID: "o1", Role: "owner", ViaAdminAccess: true}, http.StatusOK},
+		{"owner off operator host", &Principal{UserID: "o1", Role: "owner", ViaAdminAccess: false}, http.StatusForbidden},
+		{"admin via admin-access", &Principal{UserID: "a1", Role: "admin", ViaAdminAccess: true}, http.StatusForbidden},
 		{"admin off operator host", &Principal{UserID: "a1", Role: "admin", ViaAdminAccess: false}, http.StatusForbidden},
 		{"role=user player", &Principal{UserID: "u1", Role: "user", ViaAdminAccess: false}, http.StatusForbidden},
 	} {
@@ -171,11 +160,13 @@ func TestUpdateWindowAdminGating(t *testing.T) {
 			api := newTestAPI(repo, newFakeCluster())
 			api.External = staticExternal{p: tc.p}
 
-			get := do(api.ExternalHandler(), "GET", "/api/v1/updates/window", "", nil)
-			if get.Code != tc.want {
-				t.Fatalf("GET code = %d, want %d (%s)", get.Code, tc.want, get.Body.String())
+			for _, path := range []string{"/api/v1/updates/window", "/api/v1/updates/report", "/api/v1/platform/db-backup"} {
+				get := do(api.ExternalHandler(), "GET", path, "", nil)
+				if get.Code != tc.want {
+					t.Fatalf("GET %s code = %d, want %d (%s)", path, get.Code, tc.want, get.Body.String())
+				}
 			}
-			// A valid PUT by a full admin is 200; a non-admin is 403 (adminOnly rejects
+			// A valid PUT by an Owner is 200; other identities are rejected
 			// before the handler), so the wanted PUT code is the same as the GET's.
 			put := do(api.ExternalHandler(), "PUT", "/api/v1/updates/window",
 				`{"start":"2026-08-01T02:00:00Z","end":"2026-08-01T04:00:00Z"}`, jsonHeader)

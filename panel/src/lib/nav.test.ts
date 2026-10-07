@@ -24,6 +24,13 @@ describe("visibleSections", () => {
     expect(ids).toEqual(["user", "admin"]);
   });
 
+  it("places platform maintenance exclusively in Owner navigation, before platform settings", () => {
+    expect(visibleSections(true, false).flatMap((section) => section.items).some((item) => item.to === "/admin/updates")).toBe(false);
+    const owner = visibleSections(true, true).find((section) => section.id === "owner");
+    expect(owner?.items.map((item) => item.to)).toContain("/admin/updates");
+    expect(owner?.items.at(-1)?.to).toBe("/admin/platform");
+  });
+
   it("keeps the User-Side section ungated so it survives both branches", () => {
     const user = NAV_SECTIONS.find((s) => s.id === "user");
     expect(user?.adminOnly).toBe(false);

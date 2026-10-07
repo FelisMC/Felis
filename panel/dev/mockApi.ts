@@ -1073,8 +1073,8 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
       sendJSON(ctx.res, 200, { sources: [{ tag: "mojang", prefix: "", lookup_available: true }, ...ctx.state.authSources.sources.filter((source) => source.enabled).map((source) => ({ tag: source.tag, prefix: source.prefix, lookup_available: !!source.api_url || source.url.endsWith("/sessionserver/session/minecraft/hasJoined") }))] });
       return true;
     case "GET platform/db-backup": {
-      if (!isAdmin(ctx.account.role)) {
-        sendError(ctx.res, 403, "forbidden", "admin account required");
+      if (ctx.account.role !== "owner") {
+        sendError(ctx.res, 403, "forbidden", "owner account required");
         return true;
       }
       // Yesterday's daily run: fresh, so the card shows its healthy state.
@@ -1097,8 +1097,8 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
       return true;
     }
     case "GET updates/report": {
-      if (!isAdmin(ctx.account.role)) {
-        sendError(ctx.res, 403, "forbidden", "admin account required");
+      if (ctx.account.role !== "owner") {
+        sendError(ctx.res, 403, "forbidden", "owner account required");
         return true;
       }
       // Last night's timer run: one update waiting, one feed unreachable, one
@@ -1122,15 +1122,15 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
       return true;
     }
     case "GET updates/window":
-      if (!isAdmin(ctx.account.role)) {
-        sendError(ctx.res, 403, "forbidden", "admin account required");
+      if (ctx.account.role !== "owner") {
+        sendError(ctx.res, 403, "forbidden", "owner account required");
         return true;
       }
       sendJSON(ctx.res, 200, ctx.state.updateWindow);
       return true;
     case "PUT updates/window": {
-      if (!isAdmin(ctx.account.role)) {
-        sendError(ctx.res, 403, "forbidden", "admin account required");
+      if (ctx.account.role !== "owner") {
+        sendError(ctx.res, 403, "forbidden", "owner account required");
         return true;
       }
       const body = await readJSON<{ start: string | null; end: string | null }>(ctx.req);

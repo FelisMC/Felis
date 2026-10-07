@@ -4603,7 +4603,7 @@ paths:
     get:
       tags: [admin-updates]
       operationId: getUpdateWindow
-      summary: Read the SysAdmin-set auto-update maintenance window (admin).
+      summary: Read the Owner-set auto-update maintenance window (Owner).
       description: >-
         Felis applies no update on its own. `felis update` checks versions and
         prints an explicit apply command. `felis update --apply` reads this
@@ -4612,7 +4612,7 @@ paths:
         An unreadable window is always a refusal, including with `--now` or
         `--force`. An unset window reads back as {start:null,end:null}.
       x-felis-face: [external]
-      x-felis-tier: admin
+      x-felis-tier: owner
       security: [{ sessionCookie: [] }]
       responses:
         '200':
@@ -4628,7 +4628,7 @@ paths:
     put:
       tags: [admin-updates]
       operationId: setUpdateWindow
-      summary: Set or clear the SysAdmin auto-update maintenance window (admin).
+      summary: Set or clear the SysAdmin auto-update maintenance window (Owner).
       description: >-
         Persist the maintenance window as an absolute [start,end) interval. Both
         ends must be set with end strictly after start, or both null to clear the
@@ -4638,7 +4638,7 @@ paths:
         setting a window only permits an apply inside it; outside, a Scheduled
         component degrades to notify.
       x-felis-face: [external]
-      x-felis-tier: admin
+      x-felis-tier: owner
       security: [{ sessionCookie: [] }]
       requestBody:
         required: true
@@ -4664,14 +4664,14 @@ paths:
     get:
       tags: [admin-updates]
       operationId: getDBBackup
-      summary: Freshness of the newest control-plane database backup (admin).
+      summary: Freshness of the newest control-plane database backup (Owner).
       description: >-
         What the host's felis-db-backup.timer (or a manual `felis db backup`)
         last recorded in platform_settings. last is null before the first
         backup; stale is true then, and whenever the newest daily backup
         (last.daily_at) is missing or older than max_age_seconds. Read-only: backups run on the host, never through the API.
       x-felis-face: [external]
-      x-felis-tier: admin
+      x-felis-tier: owner
       security: [{ sessionCookie: [] }]
       responses:
         '200':
@@ -4689,7 +4689,7 @@ paths:
     get:
       tags: [admin-updates]
       operationId: getUpdateReport
-      summary: The newest recorded version check of every tracked component (admin).
+      summary: The newest recorded version check of every tracked component (Owner).
       description: >-
         What `felis update --record` last stored in platform_settings; the
         installer's felis-update-check.timer runs it daily on the host, where the
@@ -4697,7 +4697,7 @@ paths:
         stale is true then, and whenever the check is older than max_age_seconds.
         Read-only: Felis applies no update on its own.
       x-felis-face: [external]
-      x-felis-tier: admin
+      x-felis-tier: owner
       security: [{ sessionCookie: [] }]
       responses:
         '200':

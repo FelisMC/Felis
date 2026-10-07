@@ -115,3 +115,19 @@ test("Owner executes node management and receives stage, failure logs and retry"
   await expect(page.getByText(t("admin:node_control_state_running"), { exact: true })).toBeVisible();
   await expectFitsScreen(page);
 });
+
+test("platform backup and version maintenance are Owner-only", async ({ page, signIn }) => {
+  await signIn("owner");
+  expect((await page.request.patch("/api/v1/users/user", { data: { role: "admin" } })).ok()).toBe(true);
+  await signIn("user");
+  await page.goto("/admin/updates");
+  await expect(page.getByRole("navigation").getByRole("link", { name: t("navigation:admin_updates"), exact: true })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: t("admin:updates_title"), exact: true })).toHaveCount(0);
+  for (const path of ["updates/window", "updates/report", "platform/db-backup"]) {
+    expect((await page.request.get(`/api/v1/${path}`)).status()).toBe(403);
+  }
+  await signIn("owner");
+  await page.goto("/admin/updates");
+  await expect(page.getByRole("heading", { name: t("admin:updates_title"), exact: true })).toBeVisible();
+  await expect(page.getByRole("navigation").getByRole("link", { name: t("navigation:admin_updates"), exact: true })).toBeVisible();
+});

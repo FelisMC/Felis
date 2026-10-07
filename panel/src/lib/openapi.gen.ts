@@ -1404,12 +1404,12 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Read the SysAdmin-set auto-update maintenance window (admin).
+         * Read the Owner-set auto-update maintenance window (Owner).
          * @description Felis applies no update on its own. `felis update` checks versions and prints an explicit apply command. `felis update --apply` reads this platform-wide [start,end) window before backup and before installation, refusing outside it unless `--now` explicitly starts manual maintenance. An unreadable window is always a refusal, including with `--now` or `--force`. An unset window reads back as {start:null,end:null}.
          */
         get: operations["getUpdateWindow"];
         /**
-         * Set or clear the SysAdmin auto-update maintenance window (admin).
+         * Set or clear the SysAdmin auto-update maintenance window (Owner).
          * @description Persist the maintenance window as an absolute [start,end) interval. Both ends must be set with end strictly after start, or both null to clear the window to unset. A half-set (exactly one end) or inverted/empty (end not after start) body is rejected 400, mirroring the decision core's fail-closed Window so a malformed schedule can never be stored. No forced auto-update: setting a window only permits an apply inside it; outside, a Scheduled component degrades to notify.
          */
         put: operations["setUpdateWindow"];
@@ -1428,7 +1428,7 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Freshness of the newest control-plane database backup (admin).
+         * Freshness of the newest control-plane database backup (Owner).
          * @description What the host's felis-db-backup.timer (or a manual `felis db backup`) last recorded in platform_settings. last is null before the first backup; stale is true then, and whenever the newest daily backup (last.daily_at) is missing or older than max_age_seconds. Read-only: backups run on the host, never through the API.
          */
         get: operations["getDBBackup"];
@@ -1448,7 +1448,7 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * The newest recorded version check of every tracked component (admin).
+         * The newest recorded version check of every tracked component (Owner).
          * @description What `felis update --record` last stored in platform_settings; the installer's felis-update-check.timer runs it daily on the host, where the installed versions are readable. report is null before the first check; stale is true then, and whenever the check is older than max_age_seconds. Read-only: Felis applies no update on its own.
          */
         get: operations["getUpdateReport"];

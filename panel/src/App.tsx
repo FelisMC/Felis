@@ -130,9 +130,9 @@ export default function App() {
                 <Route path="images" element={<ImageAdmin />} />
                 <Route path="builds" element={<ImageBuildPage />} />
                 <Route path="submissions" element={<SubmissionsPage />} />
-                <Route path="updates" element={<UpdatesPage />} />
                 {/* Owner-gated platform settings and user management. */}
                 <Route element={<RequireOwner />}>
+                  <Route path="updates" element={<UpdatesPage />} />
                   <Route path="platform" element={<PlatformSettingsPage />} />
                   <Route path="auth-sources" element={<AuthSourcesPage />} />
                   <Route path="users" element={<UsersPage />} />

@@ -783,16 +783,16 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		// lives inside it, so approval would otherwise be blind.
 		{Method: "GET", Pattern: "/api/v1/submissions/{id}/context", Admin: true, h: a.handleAdminSubmissionContext},
 		// Auto-update maintenance window (spec §B; decision core internal/updates).
-		// Admin-tier: it governs whether Felis may apply an update to itself, so setting
-		// it requires the admin Zero-Trust path, not a mere session. Advisory: `felis
-		// update` on the host reads it and warns before an apply outside it.
-		{Method: "GET", Pattern: "/api/v1/updates/window", Admin: true, h: a.handleGetUpdateWindow},
-		{Method: "PUT", Pattern: "/api/v1/updates/window", Admin: true, h: a.handleSetUpdateWindow},
+		// Owner-tier: it governs whether Felis may apply an update to itself, so setting
+		// it requires Owner access through the operator host. `felis update --apply`
+		// checks the configured window before backup and installation.
+		{Method: "GET", Pattern: "/api/v1/updates/window", Admin: true, Owner: true, h: a.handleGetUpdateWindow},
+		{Method: "PUT", Pattern: "/api/v1/updates/window", Admin: true, Owner: true, h: a.handleSetUpdateWindow},
 		// The newest version check felis-update-check.timer recorded on the host.
-		{Method: "GET", Pattern: "/api/v1/updates/report", Admin: true, h: a.handleGetUpdateReport},
+		{Method: "GET", Pattern: "/api/v1/updates/report", Admin: true, Owner: true, h: a.handleGetUpdateReport},
 		// Control-plane database backup freshness, as the host's felis-db-backup.timer
-		// last recorded it. Admin-tier: it names the host backup directory.
-		{Method: "GET", Pattern: "/api/v1/platform/db-backup", Admin: true, h: a.handleGetDBBackup},
+		// last recorded it. Owner-tier: it names the host backup directory.
+		{Method: "GET", Pattern: "/api/v1/platform/db-backup", Admin: true, Owner: true, h: a.handleGetDBBackup},
 
 		// User admin (spec §7, owner-only). Every route gates on the admin Zero-Trust
 		// path AND the owner role: listing, mutating, disabling, or deleting users is

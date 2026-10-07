@@ -18,8 +18,7 @@ import {
 // identity see" decision is a pure function (visibleSections) that vitest can pin
 // without rendering React. The three sections map onto DESIGN-WEB-3SIDES §2:
 // User-Side is always present (app-tier); Admin-Side and SysAdmin-Side are a
-// navigational separation of *concern* over the SAME admin tier — both gated by
-// the one `is_admin` flag, surfaced as two sections only for admins.
+// separation between server administration and Owner-only platform operations.
 //
 // Hiding a section is UX convenience, NOT a security control: every /admin and
 // /ops data call is independently 403-gated server-side (the RequireAdmin route
@@ -68,7 +67,6 @@ export const NAV_SECTIONS: NavSection[] = [
       { to: "/admin/images", key: "admin_images", icon: Boxes },
       { to: "/admin/builds", key: "admin_builds", icon: Cpu },
       { to: "/admin/submissions", key: "admin_submissions", icon: ClipboardCheck },
-      { to: "/admin/updates", key: "admin_updates", icon: Clock },
     ],
   },
   {
@@ -79,6 +77,7 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { to: "/admin/users", key: "admin_users", icon: Users },
       { to: "/admin/auth-sources", key: "auth_sources", icon: ShieldCheck },
+      { to: "/admin/updates", key: "admin_updates", icon: Clock },
       { to: "/admin/platform", key: "platform_settings", icon: Settings },
     ],
   },
