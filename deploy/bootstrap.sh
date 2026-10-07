@@ -5881,7 +5881,8 @@ summary_next() {
   log "$rule"
   if [ "$owner" = yes ]; then
     log "Felis is running. Sign in at https://$(auth_hostname admin_hostname "op.console.${FELIS_ROOT_DOMAIN}")"
-    log "(https://${NODE_IP}:${FELIS_PANEL_NODEPORT} until the edge routes it there)."
+    log "Local access: https://$(auth_hostname admin_hostname "op.console.${FELIS_ROOT_DOMAIN}"):${FELIS_PANEL_NODEPORT}"
+    log "Passkey requires the configured hostname; direct IP access cannot use Passkey."
     log "Email, edge and storage settings: sudo felis setup"
     log "$rule"
     return 0

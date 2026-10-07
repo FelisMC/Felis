@@ -5316,6 +5316,21 @@ out="$(WORKER_TOKEN_FILE="$badtoken" bash -c '
 expect "worker refuses a copied server token before changing the machine" 'worker accepts only CA-pinned bootstrap tokens' "$out"
 rm -f "$badtoken"
 
+# Local panel URLs must keep the WebAuthn hostname, including before edge setup.
+out="$(bash -c '
+  bootstrap_from_tui() { return 1; }
+  owner_state() { echo yes; }
+  auth_hostname() { echo "$2"; }
+  log() { printf "%s\n" "$*"; }
+  FELIS_ROOT_DOMAIN=10.211.55.6.nip.io NODE_IP=10.211.55.6 FELIS_PANEL_NODEPORT=30443
+  '"$(bsfn summary_next)"'
+  summary_next
+')"
+expect "local sign-in URL preserves the Passkey hostname" \
+  "Local access: https://op.console.10.211.55.6.nip.io:30443" "$out"
+expect "local sign-in explains why IP access cannot use Passkey" \
+  "direct IP access cannot use Passkey" "$out"
+
 # SELinux rejects /run paths when the policy aliases them to /var/run.
 node_fcontext="$(bsfn install_node_control_service | awk '/^  if .*command -v semanage/,/^  fi/')"
 [ -n "$node_fcontext" ] && [ "$(printf '%s\n' "$node_fcontext" | wc -l)" -lt 12 ] \
