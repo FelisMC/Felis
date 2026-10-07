@@ -903,3 +903,49 @@ configuration, or test the profile-query API.
 Saving requires Owner access on the operator host and recent reauthentication for
 a local session. A revision conflict preserves the draft; discard it and reload
 before editing the newer configuration.
+
+## 8. Player entry policy
+
+Owner → Platform settings → Player entry policy configures the proxy's destination
+independently from game identity authentication and panel account association.
+
+| Mode | Destination after authentication |
+| --- | --- |
+| Lobby | Formal lobby, where the player selects a server |
+| Direct to main server | Selected main server, regardless of connection hostname |
+| Route by hostname | Server matched by hostname; optional default for unmatched hostnames |
+
+For a single-server deployment, select **Direct to main server**, choose the main
+server, and disable **Require panel account linking**. A running main server then
+accepts authenticated players without entering the login space or lobby. Game
+identity authentication and the global blacklist remain enforced; this setting does
+not enable offline-mode or change authentication sources. Players can associate a
+panel account separately through `/link`.
+
+Choose how to handle an offline destination:
+
+- **Start automatically and wait** uses the existing wake permission, maintenance,
+  admission limit and cooldown checks. Select a running Limbo login space or formal
+  lobby for the wait. An unlinked player requires an autostart policy that permits
+  their verified identity; selecting a main server does not grant startup rights.
+- **Enter a fallback server** requires a separate running server. The proxy does not
+  start the fallback implicitly; it rejects the connection if both destinations
+  are unavailable.
+- **Reject with an explanation** requires no waiting space.
+
+When panel account linking is required, Limbo retains its web sign-in, blacklist
+check, timeout and release controls. The existing web sign-in flow requires the
+login space and formal lobby, and uses the lobby for startup waiting. Automatic
+Limbo waiting does not issue a link code or start a web sign-in timer; the proxy's
+queue controls startup progress and disconnects Limbo waits after failure or timeout.
+A failed transfer includes the backend refusal when available.
+
+Saving requires fresh Owner reauthentication and the current revision. The proxy
+reads changes within 15 seconds and snapshots the policy for each new connection;
+current players keep their connection policy. Existing deployments retain hostname
+routing, required web sign-in and lobby waiting until a policy is saved. Update the
+API and game plugins together before using this setting.
+
+Unused login/lobby spaces can be stopped from **Login & lobby**. Saving a policy
+does not stop them automatically or disconnect existing players. Re-running setup
+preserves the desired state of existing system servers.

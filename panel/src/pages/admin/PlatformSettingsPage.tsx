@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { Loader2, RefreshCw, Save, Settings } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { PlayerEntrySettings } from "@/components/PlayerEntrySettings";
 import { NodeControlPanel } from "@/components/NodeControlPanel";
 import { DistributedNodes } from "@/components/DistributedNodes";
 import { Badge } from "@/components/ui/badge";
@@ -52,6 +53,7 @@ export function PlatformSettingsPage() {
   }
   return <div className="space-y-6">
     <PageHeader icon={Settings} title={t("platform_title")} subtitle={t("platform_subtitle")} actions={<Button variant="outline" size="sm" disabled={dirty || busy} onClick={query.reload}><RefreshCw />{t("platform_reload")}</Button>} />
+    <PlayerEntrySettings />
     <Card><CardHeader><CardTitle>{t("platform_wake_title")}</CardTitle></CardHeader><CardContent className="space-y-6">
       {query.loading && <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />{t("platform_loading")}</p>}
       <div className="grid gap-6 md:grid-cols-2">

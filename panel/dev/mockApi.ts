@@ -6,6 +6,7 @@ import type {
   AuthSourceConfig,
   AuthSourcesSettings,
   WakePolicySettings,
+  EntryPolicySettings,
   AutostartPolicy,
   BackupView,
   Build,
@@ -94,6 +95,7 @@ interface MockState {
   updateWindow: { start: string | null; end: string | null };
   authSources: AuthSourcesSettings;
   wakePolicy: WakePolicySettings;
+  entryPolicy: EntryPolicySettings;
   // Each server's world volume, seeded on first visit.
   files: Record<string, MockTree>;
 }
@@ -457,6 +459,7 @@ function initialState(): MockState {
       },
     ],
     updateWindow: { start: null, end: null },
+    entryPolicy: { mode: "domain", defaultServer: "", requireAccountLink: true, offlineAction: "wake", waitingSpace: "lobby", fallbackServer: "", revision: "initial" },
     wakePolicy: { maxRunningServers: 0, wakeCooldownSeconds: 30, revision: "initial", managed: false },
     authSources: {
       sources: [{ tag: "littleskin", prefix: "LS", url: "https://littleskin.cn/api/yggdrasil/sessionserver/session/minecraft/hasJoined", api_url: "", enabled: true }],
@@ -1023,6 +1026,20 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
       if (!isOwner(ctx.account.role)) sendError(ctx.res, 403, "forbidden", "Owner account required");
       else sendJSON(ctx.res, 200, { available: false, tasks: [] });
       return true;
+    case "GET settings/entry-policy":
+    case "PUT settings/entry-policy": {
+      if (!isOwner(ctx.account.role)) sendError(ctx.res, 403, "forbidden", "Owner account required");
+      else if (is("GET", ctx)) sendJSON(ctx.res, 200, ctx.state.entryPolicy);
+      else {
+        const body = await readJSON<EntryPolicySettings>(ctx.req);
+        if (body.revision !== ctx.state.entryPolicy.revision) sendError(ctx.res, 409, "conflict", "Entry policy changed");
+        else {
+          ctx.state.entryPolicy = { ...body, revision: createHash("sha256").update(JSON.stringify(body)).digest("hex") };
+          sendJSON(ctx.res, 200, ctx.state.entryPolicy);
+        }
+      }
+      return true;
+    }
     case "GET settings/wake-policy":
     case "PUT settings/wake-policy": {
       if (!isOwner(ctx.account.role)) {

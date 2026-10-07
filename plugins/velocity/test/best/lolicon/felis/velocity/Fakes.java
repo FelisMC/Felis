@@ -459,6 +459,7 @@ final class Fakes {
     static final class Api implements AutoCloseable {
         final Set<UUID> linked = ConcurrentHashMap.newKeySet();
         volatile boolean linkDown;
+        final Set<UUID> barred = ConcurrentHashMap.newKeySet();
         final Map<String, Boolean> ready = new ConcurrentHashMap<>();
         /** address is the direct endpoint a server reports while it is ready. */
         final Map<String, String> address = new ConcurrentHashMap<>();
@@ -535,6 +536,12 @@ final class Fakes {
                         Thread.currentThread().interrupt();
                     }
                 }
+            }
+            String blacklist = "/api/v1/internal/player/blacklist/";
+            if (path.startsWith(blacklist)) {
+                if (linkDown) reply(ex, 500, "{}");
+                else reply(ex, 200, "{\"blacklisted\":" + barred.contains(UUID.fromString(path.substring(blacklist.length()))) + "}");
+                return;
             }
             String status = "/api/v1/internal/account/link/status/";
             String servers = "/api/v1/internal/servers/";

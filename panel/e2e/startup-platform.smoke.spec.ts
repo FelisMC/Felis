@@ -103,7 +103,7 @@ test("Owner executes node management and receives stage, failure logs and retry"
   await page.getByLabel(t("admin:node_control_ip")).fill("192.0.2.10");
   const submit = page.getByRole("button", { name: t("admin:node_control_enable"), exact: true });
   await expect(submit).toBeDisabled();
-  await page.getByRole("switch").click();
+  await page.getByLabel(t("admin:node_control_confirm_enable")).click();
   await submit.click();
   expect(submitted).toMatchObject({ action: "enable", externalIP: "192.0.2.10", confirmMaintenance: true });
   await expect(page.getByText(t("admin:node_control_stage_database_backup"), { exact: true })).toBeVisible();

@@ -324,6 +324,11 @@ public final class FelisVelocityPlugin {
     private void refreshRegistrations() {
         if (router != null) {
             router.pruneLinks();
+            try {
+                router.setEntryPolicy(apiClient.entryPolicy());
+            } catch (LinkException error) {
+                logger.warn("Felis: entry policy refresh failed; retaining the last policy: {}", error.getMessage());
+            }
         }
         ServerListSource.Result r = serverList.next();
         if (r.servers != null) {

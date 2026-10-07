@@ -341,6 +341,18 @@ components:
         startedAt: { type: string, format: date-time }
         logsAvailable: { type: boolean }
 
+    EntryPolicySettings:
+      type: object
+      required: [mode, defaultServer, requireAccountLink, offlineAction, waitingSpace, fallbackServer, revision]
+      properties:
+        mode: { type: string, enum: [lobby, direct, domain] }
+        defaultServer: { type: string, description: Required for direct mode; optional fallback destination for unmatched hostnames. }
+        requireAccountLink: { type: boolean, description: Require Limbo web sign-in and panel association in addition to proxy game identity authentication. }
+        offlineAction: { type: string, enum: [wake, fallback, disconnect] }
+        waitingSpace: { type: string, enum: [login, lobby], description: Web sign-in currently requires lobby waiting. }
+        fallbackServer: { type: string, description: Required for fallback action and distinct from the default server. }
+        revision: { type: string, description: Opaque revision; stale or concurrent writes return 409. }
+
     WakePolicySettings:
       type: object
       required: [maxRunningServers, wakeCooldownSeconds, revision, managed]
@@ -4453,6 +4465,65 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { description: Another node task is running or this task cannot be retried. }
         '503': { description: Host node execution service is unavailable. }
+
+  /api/v1/internal/settings/entry-policy:
+    get:
+      tags: [internal]
+      operationId: internalEntryPolicy
+      summary: Read player entry policy for the authenticated proxy and login gate.
+      x-felis-face: [internal]
+      x-felis-tier: service
+      x-felis-callers: [velocity, limbo]
+      security: [{ serviceToken: [] }]
+      responses:
+        '200':
+          description: Current policy; proxy snapshots it for each new connection.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EntryPolicySettings' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/settings/entry-policy:
+    get:
+      tags: [account]
+      operationId: getEntryPolicy
+      summary: Read player entry policy (Owner).
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: Current policy and revision; an unsaved deployment preserves its legacy routing.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EntryPolicySettings' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    put:
+      tags: [account]
+      operationId: setEntryPolicy
+      summary: Save player entry policy (Owner, fresh reauthentication).
+      description: Applies to new connections within the proxy's 15-second refresh interval. Does not change online-mode, autostart authorization or existing players, and does not stop system spaces automatically.
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EntryPolicySettings' }
+      responses:
+        '200':
+          description: Saved policy and revision.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EntryPolicySettings' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: Selected server does not exist. }
+        '409': { description: Policy changed; reload before saving. }
 
   /api/v1/settings/wake-policy:
     get:

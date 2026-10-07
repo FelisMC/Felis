@@ -1,6 +1,7 @@
 package best.lolicon.felis.velocity;
 
 import best.lolicon.felis.link.FelisApiClient;
+import best.lolicon.felis.link.EntryPolicy;
 import best.lolicon.felis.link.LinkConfig;
 import best.lolicon.felis.link.ServerView;
 
@@ -81,10 +82,79 @@ public final class WaitingRouterTest {
             slowApi();
             backToLobby();
             disconnectAndRelease();
+            automaticEntry();
         } finally {
             api.close();
         }
         System.out.println("WaitingRouterTest OK (" + checks + " checks)");
+    }
+
+    private static void automaticEntry() {
+        reg.refresh(servers(true));
+        api.ready.put("beta", true);
+        router.setEntryPolicy(new EntryPolicy("direct", "beta", false, "disconnect", "login", ""));
+        Fakes.FakePlayer direct = player("alpha.mc.test", false);
+        assertEq("automatic direct ignores hostname and web linking", "beta", choose(direct));
+        assertEq("automatic does not query link status", 0, api.count(LINK + direct.id));
+        Fakes.FakePlayer barred = player(null, false);
+        api.barred.add(barred.id);
+        assertEq("barred automatic connection has no destination", null, choose(barred));
+        assertEq("barred automatic connection explained", true, barred.disconnectedWith != null && barred.disconnectedWith.contains("barred"));
+        api.linkDown = true;
+        assertEq("identity service failure fails closed", null, choose(player(null, false)));
+        api.linkDown = false;
+        router.setEntryPolicy(new EntryPolicy("direct", "alpha", false, "fallback", "login", "beta"));
+        api.ready.put("alpha", false);
+        assertEq("offline destination uses configured fallback", "beta", choose(player(null, false)));
+        router.setEntryPolicy(new EntryPolicy("direct", "alpha", false, "disconnect", "login", ""));
+        assertEq("offline disconnect has no destination", null, choose(player(null, false)));
+        router.setEntryPolicy(new EntryPolicy("domain", "beta", false, "disconnect", "login", ""));
+        assertEq("unknown hostname uses default", "beta", choose(player("unknown.mc.test", false)));
+        router.setEntryPolicy(new EntryPolicy("direct", "alpha", false, "wake", "login", ""));
+        api.ready.put("login", true);
+        Fakes.FakePlayer waiting = player(null, false);
+        int before = api.count("POST " + SERVERS + "alpha/wake");
+        assertEq("automatic startup waits in Limbo", "login", choose(waiting));
+        assertEq("automatic startup requests wake", before + 1, api.count("POST " + SERVERS + "alpha/wake"));
+        waiting.current = login;
+        router.onServerConnected(new ServerConnectedEvent(waiting.player, login, null));
+        assertEq("Limbo waiting immediately shows destination progress", true, waiting.said("Waiting for « alpha »"));
+        api.ready.put("alpha", true);
+        router.tick();
+        assertEq("automatic wait transfers without panel account", List.of("alpha"), List.copyOf(waiting.connects));
+        api.ready.put("alpha", false);
+        api.ready.put("login", false);
+        int wakes = api.count("POST " + SERVERS + "alpha/wake");
+        Fakes.FakePlayer noSpace = player(null, false);
+        assertEq("stopped waiting space rejects connection", null, choose(noSpace));
+        assertEq("stopped waiting space does not initiate startup", wakes, api.count("POST " + SERVERS + "alpha/wake"));
+        api.ready.put("login", true);
+        Fakes.FakePlayer failed = player(null, false);
+        assertEq("failed startup starts with a wait", "login", choose(failed));
+        failed.current = login;
+        api.gaveUp.add("alpha");
+        router.tick();
+        assertEq("failed startup disconnects Limbo wait", true, failed.disconnectedWith != null);
+        api.gaveUp.remove("alpha");
+        Fakes.FakePlayer revoked = player(null, false);
+        assertEq("barred wait initially enters Limbo", "login", choose(revoked));
+        revoked.current = login;
+        api.barred.add(revoked.id);
+        api.ready.put("alpha", true);
+        router.tick();
+        assertEq("blacklist revocation disconnects the wait with its reason", true, revoked.disconnectedWith != null && revoked.disconnectedWith.contains("barred"));
+        api.ready.put("alpha", false);
+        api.policy.put("alpha", "ownerOnly");
+        assertEq("automatic wake cannot bypass owner-only startup", null, choose(player(null, false)));
+        api.policy.remove("alpha");
+        api.ready.put("lobby", true);
+        router.setEntryPolicy(new EntryPolicy("lobby", "", false, "disconnect", "login", ""));
+        assertEq("lobby mode ignores a server hostname", "lobby", choose(player("beta.mc.test", false)));
+        net.proxy.unregisterServer(net.proxy.getServer("login").orElseThrow().getServerInfo());
+        net.proxy.unregisterServer(net.proxy.getServer("lobby").orElseThrow().getServerInfo());
+        router.setEntryPolicy(new EntryPolicy("direct", "beta", false, "disconnect", "login", ""));
+        assertEq("direct entry works without login or lobby registrations", "beta", choose(player(null, false)));
+        router.setEntryPolicy(EntryPolicy.legacy());
     }
 
     // The server list the stub control plane serves. "gone" is dropped by a later
@@ -858,7 +928,7 @@ public final class WaitingRouterTest {
         net.remove("login");
         Fakes.FakePlayer stranded = player("beta.mc.test", true);
         PlayerChooseInitialServerEvent e = new PlayerChooseInitialServerEvent(stranded.player, null);
-        router.onChooseInitialServer(e);
+        chooseEvent(e);
         assertEq("no login: no initial server", false, e.getInitialServer().isPresent());
         assertEq("no login: disconnected with a reason", "The Felis login gate is unavailable. Please reconnect shortly.",
                 stranded.disconnectedWith);
@@ -880,8 +950,16 @@ public final class WaitingRouterTest {
     // try server, login, preset) and returns the server the player will land on.
     private static String choose(Fakes.FakePlayer p) {
         PlayerChooseInitialServerEvent e = new PlayerChooseInitialServerEvent(p.player, login);
-        router.onChooseInitialServer(e);
+        chooseEvent(e);
         return e.getInitialServer().map(s -> s.getServerInfo().getName()).orElse(null);
+    }
+
+    private static void chooseEvent(PlayerChooseInitialServerEvent event) {
+        EventTask task = router.onChooseInitialServer(event);
+        if (task != null) task.execute(new Continuation() {
+            public void resume() { }
+            public void resumeWithException(Throwable error) { throw new AssertionError(error); }
+        });
     }
 
     // release is the login gate asking to move the player to the lobby, with the

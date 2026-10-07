@@ -796,3 +796,13 @@ export interface NodeControlTask {
   error?: string;
   log?: string;
 }
+
+export interface EntryPolicySettings {
+  mode: "lobby" | "direct" | "domain";
+  defaultServer: string;
+  requireAccountLink: boolean;
+  offlineAction: "wake" | "fallback" | "disconnect";
+  waitingSpace: "login" | "lobby";
+  fallbackServer: string;
+  revision: string;
+}

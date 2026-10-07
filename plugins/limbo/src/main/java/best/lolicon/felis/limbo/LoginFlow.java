@@ -137,6 +137,10 @@ final class LoginFlow {
                 disconnect(id, BLACKLISTED);
                 return;
             }
+            if (!api.entryPolicy().requireAccountLink()) {
+                // The proxy owns routing and startup progress; this space is only a waiting room.
+                return;
+            }
             // Check registration before minting: an already-linked player needs no
             // bind code, so send them straight to the lobby instead of flashing a
             // useless code. Only unlinked players get one. The on-demand /link

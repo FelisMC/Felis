@@ -1334,6 +1334,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/internal/settings/entry-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read player entry policy for the authenticated proxy and login gate. */
+        get: operations["internalEntryPolicy"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settings/entry-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read player entry policy (Owner). */
+        get: operations["getEntryPolicy"];
+        /**
+         * Save player entry policy (Owner, fresh reauthentication).
+         * @description Applies to new connections within the proxy's 15-second refresh interval. Does not change online-mode, autostart authorization or existing players, and does not stop system spaces automatically.
+         */
+        put: operations["setEntryPolicy"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/settings/wake-policy": {
         parameters: {
             query?: never;
@@ -3035,6 +3073,25 @@ export interface components {
             /** Format: date-time */
             startedAt?: string;
             logsAvailable: boolean;
+        };
+        EntryPolicySettings: {
+            /** @enum {string} */
+            mode: "lobby" | "direct" | "domain";
+            /** @description Required for direct mode; optional fallback destination for unmatched hostnames. */
+            defaultServer: string;
+            /** @description Require Limbo web sign-in and panel association in addition to proxy game identity authentication. */
+            requireAccountLink: boolean;
+            /** @enum {string} */
+            offlineAction: "wake" | "fallback" | "disconnect";
+            /**
+             * @description Web sign-in currently requires lobby waiting.
+             * @enum {string}
+             */
+            waitingSpace: "login" | "lobby";
+            /** @description Required for fallback action and distinct from the default server. */
+            fallbackServer: string;
+            /** @description Opaque revision; stale or concurrent writes return 409. */
+            revision: string;
         };
         WakePolicySettings: {
             maxRunningServers: number;
@@ -7079,6 +7136,91 @@ export interface operations {
             };
             /** @description Host node execution service is unavailable. */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    internalEntryPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current policy; proxy snapshots it for each new connection. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntryPolicySettings"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    getEntryPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current policy and revision; an unsaved deployment preserves its legacy routing. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntryPolicySettings"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    setEntryPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EntryPolicySettings"];
+            };
+        };
+        responses: {
+            /** @description Saved policy and revision. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntryPolicySettings"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Selected server does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Policy changed; reload before saving. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

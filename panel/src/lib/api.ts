@@ -26,6 +26,7 @@ import type {
   AuthSourceConfig,
   AuthSourcesSettings,
   WakePolicySettings,
+  EntryPolicySettings,
   MinecraftProfile,
   LinkStatus,
   BindResult,
@@ -959,6 +960,9 @@ export const api = rejectingSync({
     request<LinkResult>("POST", "/account/link/verify", { code }),
 
   linkSources: () => request<{ sources: MinecraftAuthSource[] }>("GET", "/account/link/sources"),
+
+  getEntryPolicy: () => request<EntryPolicySettings>("GET", "/settings/entry-policy"),
+  setEntryPolicy: (policy: EntryPolicySettings) => request<EntryPolicySettings>("PUT", "/settings/entry-policy", policy),
 
   getWakePolicy: () => request<WakePolicySettings>("GET", "/settings/wake-policy"),
   setWakePolicy: (policy: Omit<WakePolicySettings, "managed">) => request<WakePolicySettings>("PUT", "/settings/wake-policy", policy),

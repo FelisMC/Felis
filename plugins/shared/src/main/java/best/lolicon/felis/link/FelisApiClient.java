@@ -69,6 +69,10 @@ public final class FelisApiClient {
         return stats;
     }
 
+    public EntryPolicy entryPolicy() throws LinkException {
+        return EntryPolicy.fromJson(getObject("/api/v1/internal/settings/entry-policy", 200));
+    }
+
     /** listServers returns the lifecycle view of every MinecraftServer (GET /servers). */
     public List<ServerView> listServers() throws LinkException {
         return ServerView.listFrom(getObject("/api/v1/servers", 200));

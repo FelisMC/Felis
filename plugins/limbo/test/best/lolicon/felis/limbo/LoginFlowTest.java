@@ -65,6 +65,7 @@ public final class LoginFlowTest {
         QUIET.setLevel(Level.OFF);
         Stub stub = new Stub();
         try {
+            automaticWaitDoesNotRequireWebSignIn(stub);
             linkedPlayerGoesStraightToTheLobby(stub);
             unlinkedPlayerGetsTheCodeAndIsReleasedOnceLinked(stub);
             codeWithoutPanelUrlPointsAtTheConsole(stub);
@@ -90,6 +91,18 @@ public final class LoginFlowTest {
     }
 
     // ---- the flow ----
+
+    private static void automaticWaitDoesNotRequireWebSignIn(Stub stub) {
+        stub.requireAccountLink = false;
+        Rig rig = new Rig(stub);
+        Seat seat = rig.join(stub.player(false, false), "Automatic");
+        rig.gate.advance(20 * 1000);
+        assertEq("automatic wait: no code", 0, stub.mints.get());
+        assertEq("automatic wait: no web release", 0, seat.releases.size());
+        assertEq("automatic wait: no login timeout", null, seat.disconnected);
+        assertEq("automatic wait: no web timers", 0, rig.gate.pending());
+        stub.requireAccountLink = true;
+    }
 
     private static void linkedPlayerGoesStraightToTheLobby(Stub stub) {
         Rig rig = new Rig(stub);
@@ -595,6 +608,7 @@ public final class LoginFlowTest {
         final Map<String, AtomicInteger> hits = new ConcurrentHashMap<>();
         final AtomicInteger mints = new AtomicInteger();
         volatile int failWith;
+        volatile boolean requireAccountLink = true;
         volatile int mintStatus = 201;
         volatile String panelUrl;
 
@@ -630,6 +644,10 @@ public final class LoginFlowTest {
             String path = ex.getRequestURI().getPath();
             if (!"Bearer gate-token".equals(ex.getRequestHeaders().getFirst("Authorization"))) {
                 reply(ex, 401, "{\"error\":{\"code\":\"unauthorized\",\"message\":\"unauthorized\"}}");
+                return;
+            }
+            if (path.endsWith("/settings/entry-policy")) {
+                reply(ex, 200, "{\"mode\":\"domain\",\"requireAccountLink\":" + requireAccountLink + ",\"offlineAction\":\"wake\",\"waitingSpace\":\"lobby\"}");
                 return;
             }
             String kind = path.contains("/link/status/") ? "/link/status/"

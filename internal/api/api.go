@@ -437,6 +437,7 @@ func (a *API) internalAPIRoutes() []apiRoute {
 		// and keyed by the verified UUID (not the scanned code), so it consumes nothing
 		// and is safe to poll repeatedly.
 		{Method: "GET", Pattern: "/api/v1/internal/account/link/status/{mc_uuid}", Callers: gate, h: a.handleLinkStatus},
+		{Method: "GET", Pattern: "/api/v1/internal/settings/entry-policy", Callers: gate, h: a.handleGetEntryPolicy},
 		// Account migration (spec §B3 inherit), in-game side: /felis migrate puts the
 		// account linked to the running player's verified UUID into migrate mode. Internal
 		// only — the initiator is proven by online-mode auth, and the sensitive proof
@@ -655,6 +656,8 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "POST", Pattern: "/api/v1/settings/node-control/tasks", Owner: true, Admin: true, h: a.handleStartNodeTask},
 		{Method: "GET", Pattern: "/api/v1/settings/node-control/tasks/{id}", Owner: true, Admin: true, h: a.handleNodeTask},
 		{Method: "POST", Pattern: "/api/v1/settings/node-control/tasks/{id}/retry", Owner: true, Admin: true, h: a.handleRetryNodeTask},
+		{Method: "GET", Pattern: "/api/v1/settings/entry-policy", Owner: true, Admin: true, h: a.handleGetEntryPolicy},
+		{Method: "PUT", Pattern: "/api/v1/settings/entry-policy", Owner: true, Admin: true, h: a.handleSetEntryPolicy},
 		{Method: "GET", Pattern: "/api/v1/settings/wake-policy", Owner: true, Admin: true, h: a.handleGetWakePolicy},
 		{Method: "PUT", Pattern: "/api/v1/settings/wake-policy", Owner: true, Admin: true, h: a.handleSetWakePolicy},
 		{Method: "GET", Pattern: "/api/v1/settings/auth-sources", Owner: true, Admin: true, h: a.handleGetAuthSources},

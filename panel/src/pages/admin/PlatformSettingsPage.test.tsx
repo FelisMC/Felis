@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { PlatformSettingsPage } from "./PlatformSettingsPage";
 import type { WakePolicySettings } from "@/lib/types";
-const calls = vi.hoisted(() => ({ getWakePolicy: vi.fn(), setWakePolicy: vi.fn(), nodes: vi.fn(), nodeTasks: vi.fn(), nodeTask: vi.fn(), startNodeTask: vi.fn(), retryNodeTask: vi.fn() }));
+const calls = vi.hoisted(() => ({ getEntryPolicy: vi.fn(), setEntryPolicy: vi.fn(), fleet: vi.fn(), getWakePolicy: vi.fn(), setWakePolicy: vi.fn(), nodes: vi.fn(), nodeTasks: vi.fn(), nodeTask: vi.fn(), startNodeTask: vi.fn(), retryNodeTask: vi.fn() }));
 vi.mock("@/lib/api", async (original) => ({ ...await original<typeof import("@/lib/api")>(), api: calls }));
 const runtime = vi.hoisted(() => ({ distributed: false, fallback: false, apiBase: "/api/v1", rootDomain: "example.test" }));
 vi.mock("@/lib/hooks", async (original) => ({ ...await original<typeof import("@/lib/hooks")>(), useConfig: () => runtime }));
@@ -17,6 +17,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   runtime.distributed = false;
   runtime.fallback = false;
+  calls.getEntryPolicy.mockResolvedValue({ mode: "domain", defaultServer: "", requireAccountLink: true, offlineAction: "wake", waitingSpace: "lobby", fallbackServer: "", revision: "initial" });
+  calls.fleet.mockResolvedValue([]);
   calls.nodes.mockResolvedValue([]);
   calls.nodeTasks.mockResolvedValue({ available: false, tasks: [] });
   calls.getWakePolicy.mockResolvedValue(policy);
@@ -42,7 +44,7 @@ describe("platform policy", () => {
     await userEvent.click(screen.getByRole("button", { name: "Save and apply" }));
     await screen.findByRole("alert");
     expect(limit().value).toBe("2");
-    expect(screen.getByRole("button", { name: "Reload" })).toHaveProperty("disabled", true);
+    expect(screen.getAllByRole("button", { name: "Reload" })[0]).toHaveProperty("disabled", true);
     await userEvent.click(screen.getByRole("button", { name: "Save and apply" }));
     await screen.findByText("Saved. The new policy is active without a restart.");
     expect(calls.setWakePolicy).toHaveBeenLastCalledWith({ maxRunningServers: 2, wakeCooldownSeconds: 30, revision: "initial" });
