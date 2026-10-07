@@ -34,6 +34,17 @@ matching the actual UI labels. English and Chinese copy must retain the same
 meaning and degree of formality. Update existing translation entries rather than
 adding duplicate messages or components.
 
+## Panel Visual Style
+
+Reuse `PageHeader`, the `Card` family, and the shared form and button components.
+Card titles, borders, corner radii, spacing, and save footers follow their shared
+definitions; avoid redefining these styles in individual pages. Use white card
+backgrounds in the light theme, restrained semantic colors, and 16px functional
+icons. Use `CardFooter` for save actions and `Button` for interactive controls.
+Tables, consoles, compact statistics, and status messages may retain spacing and
+colors suited to their content. Preserve the shared page margins and bottom
+spacing.
+
 ## Local Development
 
 You can do most day-to-day development on macOS or Linux without a full cluster.

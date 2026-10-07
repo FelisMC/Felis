@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { ArrowRight, DoorOpen, Globe, Loader2, LogIn, RefreshCw, Route, Save, Server, ShieldCheck } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -60,7 +60,7 @@ export function PlayerEntrySettings() {
     } finally { setSaving(false); }
   }
   return <Card>
-    <CardHeader className="flex-row items-center justify-between gap-3"><CardTitle className="flex items-center gap-2"><Route className="h-4 w-4 text-primary" aria-hidden="true" />{t("entry_title")}</CardTitle><Button variant="outline" size="sm" disabled={dirty || saving || query.loading} onClick={() => { query.reload(); fleet.reload(); }}><RefreshCw />{t("platform_reload")}</Button></CardHeader>
+    <CardHeader className="flex-row flex-wrap items-center justify-between gap-3"><CardTitle className="flex items-center gap-2"><Route className="h-4 w-4 text-primary" aria-hidden="true" />{t("entry_title")}</CardTitle><Button variant="outline" size="sm" disabled={dirty || saving || query.loading} onClick={() => { query.reload(); fleet.reload(); }}><RefreshCw />{t("platform_reload")}</Button></CardHeader>
     <CardContent className="space-y-6" aria-busy={query.loading}>
       <p className="text-sm text-muted-foreground">{t("entry_description")}</p>
       {query.loading && <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />{t("platform_loading")}</p>}
@@ -90,8 +90,8 @@ export function PlayerEntrySettings() {
       {query.error != null && <MessageLine kind="error" message={humanizeError(query.error)} />}
       {fleet.error != null && <MessageLine kind="error" message={humanizeError(fleet.error)} />}
       {message && <MessageLine kind={message.kind} message={message.text} />}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4"><p className="text-xs text-muted-foreground">{t("entry_scope")}</p><div className="flex gap-2">{dirty && <Button variant="outline" disabled={saving} onClick={() => { if (saved) setDraft(saved); setMessage(null); }}>{t("platform_discard")}</Button>}<Button disabled={busy || !dirty || !valid} onClick={() => void save()}>{saving ? <Loader2 className="animate-spin" /> : <Save />}{t("entry_save")}</Button></div></div>
-      {reauth.dialog}
     </CardContent>
+    <CardFooter><p className="text-xs text-muted-foreground">{t("entry_scope")}</p><div className="flex gap-2">{dirty && <Button variant="outline" disabled={saving} onClick={() => { if (saved) setDraft(saved); setMessage(null); }}>{t("platform_discard")}</Button>}<Button disabled={busy || !dirty || !valid} onClick={() => void save()}>{saving ? <Loader2 className="animate-spin" /> : <Save />}{t("entry_save")}</Button></div></CardFooter>
+    {reauth.dialog}
   </Card>;
 }

@@ -207,52 +207,52 @@ export function ImageAdmin() {
           {/* Filters Bar */}
           <div className="flex flex-col sm:flex-row gap-3 p-4 border-b">
             <SearchInput value={search} onChange={setSearch} placeholder={t("images_search_placeholder")} />
-            <div className="inline-flex h-9 items-center justify-center rounded-lg bg-muted p-1 text-muted-foreground shrink-0 select-none border border-border/40">
-              <button
+            <div className="inline-flex h-10 items-center justify-center rounded-lg bg-muted p-1 text-muted-foreground shrink-0 select-none border border-border/40">
+              <Button variant="ghost" size="sm"
                 type="button"
                 onClick={() => {
                   setStatusFilter("all");
                   setPage(1);
                 }}
                 className={cn(
-                  "inline-flex items-center justify-center whitespace-nowrap rounded-md px-3 py-1 text-xs font-semibold transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                  "font-medium",
                   statusFilter === "all"
-                    ? "bg-background text-foreground shadow-sm"
+                    ? "bg-background text-foreground"
                     : "text-muted-foreground hover:bg-background/30 hover:text-foreground"
                 )}
               >
                 {t("filter_all")} ({stats.total})
-              </button>
-              <button
+              </Button>
+              <Button variant="ghost" size="sm"
                 type="button"
                 onClick={() => {
                   setStatusFilter("enabled");
                   setPage(1);
                 }}
                 className={cn(
-                  "inline-flex items-center justify-center whitespace-nowrap rounded-md px-3 py-1 text-xs font-semibold transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                  "font-medium",
                   statusFilter === "enabled"
-                    ? "bg-background text-primary shadow-sm"
+                    ? "bg-background text-primary"
                     : "text-muted-foreground hover:bg-background/30 hover:text-foreground"
                 )}
               >
                 {t("filter_enabled")} ({stats.enabled})
-              </button>
-              <button
+              </Button>
+              <Button variant="ghost" size="sm"
                 type="button"
                 onClick={() => {
                   setStatusFilter("disabled");
                   setPage(1);
                 }}
                 className={cn(
-                  "inline-flex items-center justify-center whitespace-nowrap rounded-md px-3 py-1 text-xs font-semibold transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                  "font-medium",
                   statusFilter === "disabled"
-                    ? "bg-background text-foreground/80 shadow-sm"
+                    ? "bg-background text-foreground/80"
                     : "text-muted-foreground hover:bg-background/30 hover:text-foreground"
                 )}
               >
                 {t("filter_disabled")} ({stats.disabled})
-              </button>
+              </Button>
             </div>
           </div>
 

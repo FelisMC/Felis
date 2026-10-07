@@ -947,8 +947,8 @@ export function ServerBackups() {
                 <Pagination page={page} pageSize={BACKUP_PAGE_SIZE} total={total} onChange={setPage} />
               )}
 
-              <Card className="border-dashed bg-transparent shadow-none">
-                <CardContent className="p-4 text-xs text-muted-foreground">
+              <Card className="border-dashed bg-transparent">
+                <CardContent className="text-xs text-muted-foreground">
                   {t("history_note")}
                 </CardContent>
               </Card>
@@ -961,7 +961,7 @@ export function ServerBackups() {
             <ErrorState error={jobsQ.error} onRetry={jobsQ.reload} />
           ) : (
             <Card className="overflow-hidden">
-              <CardContent className="p-4">
+              <CardContent>
                 <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
                   <Clock className="h-3.5 w-3.5" />
                   {t("jobs_title")}

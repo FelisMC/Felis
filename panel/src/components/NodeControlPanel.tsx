@@ -52,7 +52,7 @@ export function NodeControlPanel({ distributed }: { distributed: boolean | null 
   const showForm = distributed === true || distributed === false && enabling;
   const valid = confirmed && (action === "enable" || !!name.trim() && !!ssh.trim()) && (action === "approve" || !!ip.trim());
   return <Card>
-    <CardHeader className="flex-row items-center justify-between gap-3"><CardTitle>{t("node_control_title")}</CardTitle><Button variant="outline" size="sm" disabled={tasks.loading} onClick={() => { tasks.reload(); progress.reload(); }}><RefreshCw />{t("node_control_reload")}</Button></CardHeader>
+    <CardHeader className="flex-row flex-wrap items-center justify-between gap-3"><CardTitle>{t("node_control_title")}</CardTitle><Button variant="outline" size="sm" disabled={tasks.loading} onClick={() => { tasks.reload(); progress.reload(); }}><RefreshCw />{t("node_control_reload")}</Button></CardHeader>
     <CardContent className="space-y-5">
       <p className="text-sm leading-relaxed text-muted-foreground">{t("node_control_description")}</p>
       {tasks.loading && !tasks.data && <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />{t("node_control_loading")}</p>}

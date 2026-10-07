@@ -5,7 +5,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { InlineError, MessageLine } from "@/components/MessageLine";
 import { isReauthCancelled, useReauth } from "@/components/ReauthDialog";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -90,8 +90,8 @@ export function AuthSourcesPage() {
 
   return <div className="space-y-6">
     <PageHeader icon={ShieldCheck} title={t("title")} subtitle={t("subtitle")} />
-    <Card className="rounded-xl shadow-none"><CardContent className="flex items-start gap-3 pt-5">
-      <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
+    <Card><CardContent className="flex items-start gap-3">
+      <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
       <div className="space-y-1"><p className="text-sm font-semibold">{t("builtin_title")}</p><p className="text-xs leading-relaxed text-muted-foreground">{t("builtin_hint")}</p></div>
     </CardContent></Card>
     <div className="flex flex-wrap items-center justify-between gap-3">
@@ -114,10 +114,10 @@ export function AuthSourcesPage() {
           [sources[index], sources[index + offset]] = [sources[index + offset], sources[index]];
           edit(sources);
         };
-        return <Card key={index} className="overflow-hidden rounded-xl shadow-none">
-          <CardHeader className={cn("flex-row flex-wrap items-center justify-between gap-3 space-y-0 bg-muted/20 py-4", expanded && "border-b border-border/60")}>
-            <CardTitle className="min-w-0 flex-1 text-sm">
-              <Button variant="ghost" className="h-auto w-full justify-start whitespace-normal p-0 text-left hover:bg-transparent active:scale-100" aria-expanded={expanded} aria-controls={`source-fields-${index}`} aria-label={t(expanded ? "collapse" : "expand", { name: source.tag || t("new_source") })} disabled={!draft} onClick={() => setDraft((current) => current && { ...current, sources: current.sources.map((s, i) => i === index ? { ...s, expanded: !expanded } : s) })}>
+        return <Card key={index} className="overflow-hidden">
+          <CardHeader className="flex-row flex-wrap items-center justify-between gap-3">
+            <CardTitle className="min-w-0 flex-1">
+              <Button variant="ghost" className="h-auto w-full justify-start whitespace-normal p-0 text-left font-semibold hover:bg-transparent active:scale-100" aria-expanded={expanded} aria-controls={`source-fields-${index}`} aria-label={t(expanded ? "collapse" : "expand", { name: source.tag || t("new_source") })} disabled={!draft} onClick={() => setDraft((current) => current && { ...current, sources: current.sources.map((s, i) => i === index ? { ...s, expanded: !expanded } : s) })}>
                 <ChevronRight className={cn("transition-transform motion-reduce:transition-none", expanded && "rotate-90")} />
                 <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-xs font-semibold text-primary">{index + 2}</span>
                 <span className="break-all">{source.tag || t(draft ? "new_source" : "loading")}</span>
@@ -130,7 +130,7 @@ export function AuthSourcesPage() {
               {!locked && <Button variant="outline" size="icon" className="h-8 w-8" aria-label={t("remove")} disabled={!draft || busy} onClick={() => draft && edit(draft.sources.filter((_, i) => i !== index))}><Trash2 /></Button>}
             </div>
           </CardHeader>
-          <CardContent id={`source-fields-${index}`} hidden={!expanded} className="space-y-4 pt-5">
+          <CardContent id={`source-fields-${index}`} hidden={!expanded} className="space-y-4">
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2"><Label htmlFor={`source-tag-${index}`}>{t("tag")}</Label><Input id={`source-tag-${index}`} value={source.tag} readOnly={locked} disabled={!draft || busy} placeholder="littleskin" maxLength={128} onChange={(e) => set({ tag: e.target.value })} /><p className="text-xs text-muted-foreground">{t(locked ? "tag_locked" : "tag_hint")}</p></div>
               <div className="space-y-2"><Label htmlFor={`source-prefix-${index}`}>{t("prefix")}</Label><Input id={`source-prefix-${index}`} value={source.prefix} disabled={!draft || busy} placeholder="LS" maxLength={4} onChange={(e) => set({ prefix: e.target.value })} /><p className="text-xs text-muted-foreground">{t("prefix_hint")}</p></div>
@@ -142,18 +142,18 @@ export function AuthSourcesPage() {
           </CardContent>
         </Card>;
       })}
-      {draft?.sources.length === 0 && <Card className="border-dashed shadow-none"><CardContent className="py-8 text-center text-sm text-muted-foreground">{t("empty")}</CardContent></Card>}
+      {draft?.sources.length === 0 && <Card className="border-dashed"><CardContent className="py-8 text-center text-sm text-muted-foreground">{t("empty")}</CardContent></Card>}
     </div>
     <p className="text-xs leading-relaxed text-muted-foreground">{t("disable_hint")}</p>
     {message && <MessageLine kind={message.kind} message={message.text} />}
     {draft && !valid && <InlineError message={t("invalid")} />}
-    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card p-3">
+    <Card><CardFooter className="border-t-0">
       <p className="text-xs text-muted-foreground">{draft ? t(dirty ? "unsaved" : draft.managed ? "active" : "defaults") : query.loading ? t("loading") : ""}</p>
       <div className="flex gap-2">
         {dirty && <Button variant="outline" disabled={busy} onClick={discard}>{t("discard")}</Button>}
         <Button disabled={!dirty || !valid || busy} onClick={() => void save()}>{saving ? <Loader2 className="animate-spin" /> : <Save />}{t(saving ? "saving" : "save")}</Button>
       </div>
-    </div>
+    </CardFooter></Card>
     {reauth.dialog}
   </div>;
 }

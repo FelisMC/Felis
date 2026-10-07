@@ -316,7 +316,7 @@ export function ServersPage() {
           {/* Distribution card in a full grid row */}
           {stats.total > 0 && (
             <Card>
-              <CardContent className="space-y-3 p-4">
+              <CardContent className="space-y-3">
                 <div className="text-xs font-medium text-muted-foreground text-left">
                   {t("fleet_distribution")}
                 </div>
@@ -749,8 +749,8 @@ function ServerMobileCard({
 
   return (
     <li className="flex min-w-0">
-      <Card className="flex min-w-0 flex-1 flex-col border border-border/80">
-        <CardContent className="flex flex-1 flex-col gap-3 p-4">
+      <Card className="flex min-w-0 flex-1 flex-col border">
+        <CardContent className="flex flex-1 flex-col gap-3">
           <div className="space-y-1">
             <div className="flex items-start justify-between gap-3">
               <div className="flex min-w-0 items-baseline gap-2">

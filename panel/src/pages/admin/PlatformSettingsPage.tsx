@@ -10,7 +10,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { MessageLine } from "@/components/MessageLine";
 import { isReauthCancelled, useReauth } from "@/components/ReauthDialog";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api, humanizeError } from "@/lib/api";
@@ -64,13 +64,13 @@ export function PlatformSettingsPage() {
     </CardContent></Card>
     {query.error != null && <MessageLine kind="error" message={humanizeError(query.error)} />}
     {message && <MessageLine kind={message.kind} message={message.text} />}
-    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card p-3">
+    <Card><CardFooter className="border-t-0">
       <p className="text-xs text-muted-foreground">{t(dirty ? "platform_unsaved" : "platform_live")}</p>
       <div className="flex gap-2">
         {dirty && <Button variant="outline" disabled={busy} onClick={() => { if (saved) load(saved); setMessage(null); }}>{t("platform_discard")}</Button>}
         <Button disabled={!dirty || !valid || busy} onClick={() => void save()}>{saving ? <Loader2 className="animate-spin" /> : <Save />}{t("platform_save")}</Button>
       </div>
-    </div>
+    </CardFooter></Card>
     <Card>
       <CardHeader><CardTitle>{t("platform_distribution_title")}</CardTitle></CardHeader>
       <CardContent className="space-y-4">

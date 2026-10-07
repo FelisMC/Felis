@@ -5,8 +5,9 @@ import { useTranslation } from "react-i18next";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { PageHeader } from "@/components/PageHeader";
 import { Switch } from "@/components/ui/switch";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PhaseBadge, shownPhase, startFailure } from "@/components/PhaseBadge";
@@ -98,31 +99,31 @@ function ExperienceSettings({ name, server, onDirtyChange, onChanged }: { name: 
         const fields = group.fields.filter((field) => typeof field.value !== "boolean");
         const switches = group.fields.filter((field) => typeof field.value === "boolean");
         return (
-          <Card key={group.key} className="overflow-hidden rounded-xl shadow-none">
-            <CardHeader className="flex-row items-center gap-3 space-y-0 border-b border-border/60 bg-muted/20 py-4">
-              <span className="rounded-lg bg-primary/10 p-2 text-primary"><Icon className="h-4 w-4" /></span>
+          <Card key={group.key} className="overflow-hidden">
+            <CardHeader className="flex-row flex-wrap items-center gap-3">
+              <span className="shrink-0 text-primary"><Icon className="h-4 w-4" /></span>
               <div className="space-y-1.5">
-                <CardTitle className="text-sm">{t(group.key)}</CardTitle>
+                <CardTitle>{t(group.key)}</CardTitle>
                 <p className="text-xs text-muted-foreground">{t(`${group.key}_description`)}</p>
               </div>
             </CardHeader>
-            <CardContent className="space-y-5 pt-5">
+            <CardContent className="space-y-5">
               <div className="grid items-start gap-x-5 gap-y-4 sm:grid-cols-2">
                 {fields.map((field) => {
                   const value = draft ? draft.values[field.key] ?? field.value : "";
                   const id = `experience-${field.key}`;
                   return (
                     <div key={id} className="min-w-0 space-y-2">
-                      <Label htmlFor={id} className="block text-xs font-medium text-muted-foreground">{t(field.key)}</Label>
+                      <Label htmlFor={id} className="block">{t(field.key)}</Label>
                       {field.choices ? (
-                        <select id={id} value={value as string} onChange={(e) => setValue(field.key, e.target.value)} disabled={!draft || saving || restarting} className="h-10 w-full rounded-lg border border-input bg-background px-3 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
-                          {!draft && <option value="">{query.loading ? t("common:loading") : "—"}</option>}
-                          {field.choices.map((choice) => <option key={choice} value={choice}>{t(choice)}</option>)}
-                        </select>
+                        <Select value={(value as string) || undefined} onValueChange={(choice) => setValue(field.key, choice)} disabled={!draft || saving || restarting}>
+                          <SelectTrigger id={id}><SelectValue placeholder={query.loading ? t("common:loading") : "—"} /></SelectTrigger>
+                          <SelectContent>{field.choices.map((choice) => <SelectItem key={choice} value={choice}>{t(choice)}</SelectItem>)}</SelectContent>
+                        </Select>
                       ) : field.multiline ? (
-                        <textarea id={id} value={value as string} placeholder={!draft && query.loading ? t("common:loading") : undefined} maxLength={512} onChange={(e) => setValue(field.key, e.target.value)} disabled={!draft || saving || restarting} className="block h-32 w-full resize-y rounded-lg border border-input bg-background px-3 py-2.5 text-sm leading-6 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50" />
+                        <textarea id={id} value={value as string} placeholder={!draft && query.loading ? t("common:loading") : undefined} maxLength={512} onChange={(e) => setValue(field.key, e.target.value)} disabled={!draft || saving || restarting} className="block h-32 w-full resize-y rounded-md border border-input bg-background px-3 py-2.5 text-sm leading-6 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50" />
                       ) : (
-                        <Input id={id} type={typeof field.value === "number" ? "number" : "text"} value={value as string | number} placeholder={!draft && query.loading ? t("common:loading") : undefined} min={field.min} max={field.max} step={1} maxLength={512} onChange={(e) => setValue(field.key, typeof field.value === "number" ? (e.target.value === "" ? "" : Number(e.target.value)) : e.target.value)} disabled={!draft || saving || restarting} className="h-10 rounded-lg bg-background shadow-none" />
+                        <Input id={id} type={typeof field.value === "number" ? "number" : "text"} value={value as string | number} placeholder={!draft && query.loading ? t("common:loading") : undefined} min={field.min} max={field.max} step={1} maxLength={512} onChange={(e) => setValue(field.key, typeof field.value === "number" ? (e.target.value === "" ? "" : Number(e.target.value)) : e.target.value)} disabled={!draft || saving || restarting} />
                       )}
                     </div>
                   );
@@ -143,7 +144,7 @@ function ExperienceSettings({ name, server, onDirtyChange, onChanged }: { name: 
       <p className="text-sm text-muted-foreground">{t(name === "login" ? "login_settings_hint" : "lobby_settings_hint")}</p>
       {message && <MessageLine kind={message.kind} message={message.text} />}
       {draft && !experienceValid(draft.values, groups) && <InlineError message={t("invalid_values")} />}
-      <div className={cn("flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-3", needsRestart ? "border-amber-500/30 bg-amber-500/5" : "border-border")}>
+      <Card className={cn(needsRestart && "border-amber-500/30 bg-amber-500/5")}><CardFooter className="border-t-0">
         <p className={cn("text-xs", needsRestart ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground")}>{t(dirty ? "unsaved" : needsRestart ? "restart_required" : "apply_on_start")}</p>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" disabled={!draft || !running || dirty || saving || restarting} onClick={() => {
@@ -152,7 +153,7 @@ function ExperienceSettings({ name, server, onDirtyChange, onChanged }: { name: 
           }}><RotateCw className={cn(restarting && "animate-spin")} />{t(restarting ? "restarting" : "restart")}</Button>
           <Button onClick={() => void save()} disabled={!draft || !dirty || saving || restarting || !experienceValid(draft.values, groups)}><Save className="h-4 w-4" />{t(saving ? "saving" : "save")}</Button>
         </div>
-      </div>
+      </CardFooter></Card>
       <ConfirmDialog open={confirmRestart} onOpenChange={setConfirmRestart} title={t("restart_title")} description={t("restart_hint")} confirmLabel={t("restart")} onConfirm={restart} />
     </div>
   );
@@ -175,8 +176,8 @@ function BuilderAccess({ ready }: { ready: boolean }) {
       setBusy(false);
     }
   }
-  return <Card className="overflow-hidden rounded-xl shadow-none">
-    <CardHeader className="border-b border-border/60 bg-muted/20 py-4"><CardTitle className="text-sm">{t("builder_title")}</CardTitle></CardHeader>
+  return <Card className="overflow-hidden">
+    <CardHeader><CardTitle>{t("builder_title")}</CardTitle></CardHeader>
     <CardContent className="space-y-3 pt-4">
       <p className="text-sm text-muted-foreground">{t("builder_hint")}</p>
       <Label htmlFor="builder-player">{t("builder_player")}</Label>
@@ -215,9 +216,9 @@ export function LobbyPage() {
   ];
   return <div className="space-y-6">
     <PageHeader icon={DoorOpen} title={t("title")} subtitle={t("subtitle")} />
-    <Card className="rounded-xl bg-muted/20 shadow-none"><CardContent className="flex flex-wrap items-start justify-between gap-4 pt-5">
+    <Card><CardContent className="flex flex-wrap items-start justify-between gap-4">
       <div className="flex min-w-0 gap-3">
-        <Globe className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
+        <Globe className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
         <div className="space-y-1">
           <p className="text-sm font-medium">{t("connection_version", { version: cfg?.gameVersion ?? t("unknown_version") })}</p>
           {cfg && <CopyAddress address={joinAddress("login", cfg)} />}
@@ -228,22 +229,22 @@ export function LobbyPage() {
     </CardContent></Card>
     <div className="inline-flex gap-1 rounded-lg bg-muted/60 p-1" role="group" aria-label={t("space_label")}>
       {(["login", "lobby"] as const).map((space) => (
-        <Button key={space} variant="ghost" aria-pressed={name === space} onClick={() => selectSpace(space)} className={cn("px-4", name === space ? "bg-card text-primary shadow-sm hover:bg-card" : "text-muted-foreground")}>
+        <Button key={space} variant="ghost" aria-pressed={name === space} onClick={() => selectSpace(space)} className={cn("px-4", name === space ? "bg-card text-primary hover:bg-card" : "text-muted-foreground")}>
           {space === "lobby" ? <DoorOpen /> : <BookOpen />}{t(space)}
         </Button>
       ))}
     </div>
     <p className="text-sm text-muted-foreground">{t(`${name}_description`)}</p>
     {status.error != null && <ErrorState error={humanizeError(status.error)} onRetry={status.reload} />}
-    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card p-4">
-      <div className="min-w-0 space-y-2"><div className="flex flex-wrap items-center gap-3"><h2 className="font-semibold">{data?.displayName || t(name)}</h2>{data ? <PhaseBadge phase={shownPhase(data)} /> : status.loading && <span role="status" className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" />{t("common:loading")}</span>}</div><p className="break-all text-xs text-muted-foreground">{data?.image || "\u00a0"}</p></div>
+    <Card className="flex flex-wrap items-center justify-between gap-3 p-5">
+      <div className="min-w-0 space-y-2"><div className="flex flex-wrap items-center gap-3"><h2 className="text-sm font-semibold">{data?.displayName || t(name)}</h2>{data ? <PhaseBadge phase={shownPhase(data)} /> : status.loading && <span role="status" className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" />{t("common:loading")}</span>}</div><p className="break-all text-xs text-muted-foreground">{data?.image || "\u00a0"}</p></div>
       {data && <PowerButton name={name} phase={data.phase} desiredState={data.desiredState} failed={startFailure(data) !== null} playersOnline={data.playersOnline} playerCountUnknown={data.playerCountUnknown} onChanged={status.reload} />}
-    </div>
+    </Card>
     <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
       <ExperienceSettings key={name} name={name} server={data} onDirtyChange={setDirty} onChanged={status.reload} />
       <div className="space-y-4">
-        <Card className="overflow-hidden rounded-xl shadow-none">
-          <CardHeader className="border-b border-border/60 bg-muted/20 py-4"><CardTitle className="text-sm">{t("content_tools")}</CardTitle></CardHeader>
+        <Card className="overflow-hidden">
+          <CardHeader><CardTitle>{t("content_tools")}</CardTitle></CardHeader>
           <CardContent className="divide-y divide-border/60 p-0">
             {links.map(({ icon: Icon, title, hint, to }) => (
               <Link key={title} to={to} className="group flex gap-3 p-4 transition-colors hover:bg-muted/40">

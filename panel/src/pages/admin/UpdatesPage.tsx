@@ -209,7 +209,7 @@ export function UpdatesPage() {
       {/* Configuration Card */}
       <Card className="w-full">
         <CardHeader>
-          <CardTitle className="text-base font-semibold">{t("updates_set_title")}</CardTitle>
+          <CardTitle>{t("updates_set_title")}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-6 text-sm">
           <p className="text-muted-foreground leading-relaxed">{t("updates_window_advisory")}</p>

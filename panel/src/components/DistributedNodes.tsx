@@ -17,7 +17,7 @@ export function DistributedNodes() {
   usePolling(nodes.reload, 10_000);
   return (
     <Card>
-      <CardHeader className="flex-row items-center justify-between gap-3"><CardTitle>{t("nodes")}</CardTitle><Button variant="outline" size="sm" disabled={nodes.loading} onClick={nodes.reload}><RefreshCw />{t("nodes_reload")}</Button></CardHeader>
+      <CardHeader className="flex-row flex-wrap items-center justify-between gap-3"><CardTitle>{t("nodes")}</CardTitle><Button variant="outline" size="sm" disabled={nodes.loading} onClick={nodes.reload}><RefreshCw />{t("nodes_reload")}</Button></CardHeader>
       <CardContent className="space-y-3">
       {nodes.loading && <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />{t("nodes_loading")}</p>}
       {!nodes.loading && !nodes.error && nodes.data?.length === 0 && <p className="text-sm text-muted-foreground">{t("nodes_empty")}</p>}

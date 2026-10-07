@@ -214,7 +214,7 @@ export function EditServerDialog({
         {/* Unified Sidebar Link/Card style trigger */}
         <button
           type="button"
-          className="group flex w-full text-left items-center gap-3 rounded-lg border border-border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-accent focus:outline-none"
+          className="group flex w-full text-left items-center gap-3 rounded-xl border border-border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-accent focus:outline-none"
         >
           <Settings className="h-5 w-5 shrink-0 text-primary" />
           <div className="min-w-0 flex-1 text-left">

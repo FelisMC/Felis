@@ -400,9 +400,9 @@ export function ServerLuckPerms() {
           {/* Left Directory Sidebar: Single card for Search + Online Players. On a
               wide screen it fills the column; on a phone it fits its content and the
               list scrolls inside it, so the player's panel below is on the first screen. */}
-          <Card className="lg:col-span-1 flex flex-col lg:h-[calc(100vh-14rem)] lg:min-h-[500px] lg:max-h-[700px] border-border bg-card/60 backdrop-blur-sm overflow-hidden">
-            <CardHeader className="p-4 pb-2 border-b border-border/50 shrink-0">
-              <CardTitle className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
+          <Card className="lg:col-span-1 flex flex-col lg:h-[calc(100vh-14rem)] lg:min-h-[500px] lg:max-h-[700px] overflow-hidden">
+            <CardHeader className="shrink-0">
+              <CardTitle className="flex items-center gap-2">
                 <Users className="h-4 w-4 text-primary" />
                 {t("luckperms_batch_players")}
               </CardTitle>
@@ -426,7 +426,7 @@ export function ServerLuckPerms() {
                 {t("access_online_title")}
               </span>
             </div>
-            <CardContent className="p-2 overflow-y-auto max-h-52 lg:max-h-none flex-1 space-y-0.5 min-h-0">
+            <CardContent className="p-2 overflow-y-auto max-h-48 lg:max-h-none flex-1 space-y-0.5 min-h-0">
               {playersLoading && onlinePlayers.length === 0 ? (
                 <div className="flex justify-center py-6">
                   <Loader2 className="h-5 w-5 animate-spin text-primary" />
@@ -465,7 +465,7 @@ export function ServerLuckPerms() {
           {/* Right Main Panel */}
           <div className="lg:col-span-3 space-y-6">
             {!selectedPlayer ? (
-              <Card className="flex flex-col items-center justify-center py-8 lg:py-24 text-center border-dashed border-border bg-card/20 lg:min-h-[500px]">
+              <Card className="flex flex-col items-center justify-center py-8 lg:py-24 text-center border-dashed lg:min-h-[500px]">
                 <Shield className="h-14 w-14 text-muted-foreground/15 mb-4 animate-pulse" />
                 <p className="text-sm text-muted-foreground font-medium max-w-xs leading-normal">
                   {t("luckperms_select_player_prompt")}
@@ -525,13 +525,13 @@ export function ServerLuckPerms() {
                 )}
 
                 {/* Groups Management Card */}
-                <Card className="border-border bg-card/40 shadow-sm">
-                  <CardHeader className="p-5 pb-3 border-b border-border/50 bg-muted/20 shrink-0">
-                    <CardTitle className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                <Card>
+                  <CardHeader className="shrink-0">
+                    <CardTitle>
                       {t("luckperms_groups_title")}
                     </CardTitle>
                   </CardHeader>
-                  <CardContent className="p-5 space-y-4">
+                  <CardContent className="space-y-4">
                     {lpLoading && !lpInfo ? (
                       <div className="flex justify-center py-4">
                         <Loader2 className="h-6 w-6 animate-spin text-primary" />
@@ -635,13 +635,13 @@ export function ServerLuckPerms() {
                 </Card>
 
                 {/* Permissions Management Card */}
-                <Card className="border-border bg-card/40 shadow-sm">
-                  <CardHeader className="p-5 pb-3 border-b border-border/50 bg-muted/20 shrink-0">
-                    <CardTitle className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                <Card>
+                  <CardHeader className="shrink-0">
+                    <CardTitle>
                       {t("luckperms_permissions_title")}
                     </CardTitle>
                   </CardHeader>
-                  <CardContent className="p-5 space-y-4">
+                  <CardContent className="space-y-4">
                     {lpLoading && !lpInfo ? (
                       <div className="flex justify-center py-4">
                         <Loader2 className="h-6 w-6 animate-spin text-primary" />
@@ -831,10 +831,10 @@ export function ServerLuckPerms() {
             )}
 
             {/* Action History Log */}
-            <Card className="border-border bg-card/40 shadow-sm">
-              <CardHeader className="p-5 pb-3 border-b border-border/50 bg-muted/20 shrink-0">
+            <Card>
+              <CardHeader className="shrink-0">
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                  <CardTitle className="flex items-center gap-1.5">
                     <History className="h-4 w-4 text-primary" />
                     {t("luckperms_recent_actions")}
                   </CardTitle>
@@ -851,7 +851,7 @@ export function ServerLuckPerms() {
                   )}
                 </div>
               </CardHeader>
-              <CardContent className="p-4 pt-3">
+              <CardContent className="pt-3">
                 {history.length === 0 ? (
                   <p className="text-xs text-muted-foreground/60 py-4 italic select-none text-center">
                     {t("luckperms_no_recent_actions")}

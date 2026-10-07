@@ -80,22 +80,22 @@ export function UpdateReportCard() {
 
   return (
     <Card className="w-full">
-      <CardHeader className="flex flex-row items-center justify-between gap-3 space-y-0">
+      <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3">
           <div
             className={cn(
-              "hidden rounded-md p-2 sm:block",
+              "hidden sm:block",
               state === "stale" || state === "never"
-                ? "bg-destructive/10 text-destructive"
+                ? "text-destructive"
                 : available.length > 0
-                  ? "bg-amber-500/10 text-amber-500"
-                  : "bg-primary/10 text-primary",
+                  ? "text-amber-500"
+                  : "text-primary",
             )}
           >
-            <PackageCheck className="h-5 w-5" />
+            <PackageCheck className="h-4 w-4" />
           </div>
           <div className="min-w-0">
-            <CardTitle className="flex flex-wrap items-center gap-2 text-base font-semibold">
+            <CardTitle className="flex flex-wrap items-center gap-2">
               {t("versions_title")}
               {badge}
             </CardTitle>

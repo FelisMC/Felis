@@ -179,7 +179,7 @@ function EditProfileCard({ user, onSaved, isSelf }: { user: UserDetail; onSaved:
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base font-semibold">{t("users_edit_profile")}</CardTitle>
+        <CardTitle>{t("users_edit_profile")}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="space-y-1.5">
@@ -302,8 +302,8 @@ function LinkedAccountsCard({ user, onChanged }: { user: UserDetail; onChanged: 
   return (
     <>
       <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle className="text-base font-semibold">
+        <CardHeader className="flex flex-row flex-wrap items-center justify-between">
+          <CardTitle>
             {t("users_linked_accounts")} ({accounts.length})
         </CardTitle>
         <Button
@@ -462,7 +462,7 @@ function QuotasCard({ userId }: { userId: string }) {
   if (loading && !quotas) return <Loading label={t("common:loading")} />;
   if (error) return (
     <Card>
-      <CardHeader><CardTitle className="text-base font-semibold">{t("users_quotas")}</CardTitle></CardHeader>
+      <CardHeader><CardTitle>{t("users_quotas")}</CardTitle></CardHeader>
       <CardContent><ErrorState error={error} onRetry={reload} /></CardContent>
     </Card>
   );
@@ -470,7 +470,7 @@ function QuotasCard({ userId }: { userId: string }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base font-semibold">{t("users_quotas")}</CardTitle>
+        <CardTitle>{t("users_quotas")}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid grid-cols-2 gap-3">
@@ -600,8 +600,8 @@ function SessionsCard({ userId, onChanged }: { userId: string; onChanged: () => 
   return (
     <>
       <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle className="text-base font-semibold">
+        <CardHeader className="flex flex-row flex-wrap items-center justify-between">
+          <CardTitle>
             {t("users_sessions")} ({sessions?.length ?? 0})
         </CardTitle>
         <Button
@@ -764,7 +764,7 @@ function DangerZone({
   return (
     <Card className="border-destructive/30">
       <CardHeader>
-        <CardTitle className="text-base font-semibold text-destructive">{t("users_danger_zone")}</CardTitle>
+        <CardTitle className="text-destructive">{t("users_danger_zone")}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-5">
         {reason && (

@@ -300,7 +300,7 @@ export function Account() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
+          <CardTitle className="flex items-center gap-2">
             <Link2 className="h-4 w-4 text-primary" /> {t("minecraft_link")}
           </CardTitle>
         </CardHeader>
@@ -328,7 +328,7 @@ export function Account() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
+          <CardTitle className="flex items-center gap-2">
             <Mail className="h-4 w-4 text-primary" /> {t("email_verification")}
           </CardTitle>
         </CardHeader>
@@ -423,8 +423,8 @@ export function Account() {
       </Card>
 
       <Card>
-        <CardHeader className="flex flex-row items-center justify-between space-y-0">
-          <CardTitle className="flex items-center gap-2 text-base">
+        <CardHeader className="flex flex-row flex-wrap items-center justify-between">
+          <CardTitle className="flex items-center gap-2">
             <Fingerprint className="h-4 w-4 text-primary" /> {t("passkeys")}
           </CardTitle>
           <Dialog open={registerDialogOpen} onOpenChange={(open) => {
@@ -817,7 +817,7 @@ function MigrationCard({ userId, hasPasskey }: { userId?: string; hasPasskey: bo
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-base">
+        <CardTitle className="flex items-center gap-2">
           <ArrowRightLeft className="h-4 w-4 text-primary" /> {t("migration")}
         </CardTitle>
       </CardHeader>

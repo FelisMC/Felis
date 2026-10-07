@@ -289,7 +289,7 @@ function FleetView({
         <div className="lg:col-span-8 flex flex-col gap-6 h-full">
           {/* 1. 游戏角色绑定 Banner */}
           <Card className="overflow-hidden">
-            <CardContent className="p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <CardContent className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
               <LinkCard link={link} staff={isAdmin} />
             </CardContent>
           </Card>
@@ -299,10 +299,10 @@ function FleetView({
             <>
               {/* 集群负载与健康卡片 */}
               <Card>
-                <CardHeader className="pb-3 pt-5">
-                  <CardTitle className="text-base">{t("fleet_load")}</CardTitle>
+                <CardHeader>
+                  <CardTitle>{t("fleet_load")}</CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-5 pb-5">
+                <CardContent className="space-y-5">
                   {/* 玩家负载进度条 */}
                   <div className="space-y-2">
                     <div className="flex justify-between text-xs">
@@ -356,12 +356,12 @@ function FleetView({
 
               {/* 平台环境与配置参数卡片 (flex-1 自动拉伸) */}
               <Card className="flex-1 flex flex-col justify-between">
-                <CardHeader className="pb-3 pt-5 px-6">
-                  <CardTitle className="text-base font-semibold text-foreground">
+                <CardHeader>
+                  <CardTitle>
                     {t("system_specs")}
                   </CardTitle>
                 </CardHeader>
-                <CardContent className="px-6 pb-6 pt-1 flex-1 flex flex-col justify-between">
+                <CardContent className="flex-1 flex flex-col justify-between">
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-8 gap-y-6">
                     {/* 镜像总数 */}
                     <div className="space-y-1">
@@ -449,12 +449,12 @@ function FleetView({
             </>
           ) : (
             <Card className="overflow-hidden flex flex-col justify-between flex-1">
-              <CardHeader className="pb-3 pt-5 px-6">
-                <CardTitle className="text-base font-semibold text-foreground">
+              <CardHeader>
+                <CardTitle>
                   {t("welcome_title")}
                 </CardTitle>
               </CardHeader>
-              <CardContent className="px-6 pb-6 pt-1 flex-1 flex flex-col justify-between gap-4">
+              <CardContent className="flex-1 flex flex-col justify-between gap-4">
                 <p className="text-xs text-muted-foreground leading-relaxed">
                   {t("welcome_desc")}
                 </p>
@@ -483,8 +483,8 @@ function FleetView({
 
         {/* 右侧：3D星图拓扑监控 (lg:col-span-4 h-full) */}
         <Card className="lg:col-span-4 flex flex-col overflow-hidden h-full">
-          <CardHeader className="space-y-1 pb-4">
-            <CardTitle className="text-base">{t("fleet")}</CardTitle>
+          <CardHeader>
+            <CardTitle>{t("fleet")}</CardTitle>
           </CardHeader>
           <CardContent className="flex-1 flex flex-col p-0 justify-between">
             <div className="flex-1 min-h-[220px] w-full bg-gradient-to-b from-transparent to-primary/5 border-b relative">

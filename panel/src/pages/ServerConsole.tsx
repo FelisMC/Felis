@@ -316,7 +316,7 @@ export function ServerConsole() {
           )}
 
           {!error && startup && (
-            <div role="status" className="shrink-0 space-y-2 rounded-lg border border-border bg-card p-4 text-sm">
+            <div role="status" className="shrink-0 space-y-2 rounded-xl border border-border bg-card p-4 text-sm">
               <p className="flex items-center gap-2 font-medium">{startupBlocked ? <ShieldAlert className="h-4 w-4 text-amber-500" /> : <Loader2 className="h-4 w-4 animate-spin text-primary" />}{t(`startup_${startup.stage}`)}</p>
               {startup.startedAt && <p className="text-xs text-muted-foreground">{t("startup_elapsed", { seconds: Math.max(0, Math.floor((Date.now() - new Date(startup.startedAt).getTime()) / 1000)) })}</p>}
               {startup.reason && <p className="break-words text-muted-foreground">{startup.reason === "Unschedulable" && startup.message?.includes("Insufficient memory") ? t("startup_memory") : [startup.reason, startup.message].filter(Boolean).join(": ")}</p>}
@@ -378,9 +378,9 @@ export function ServerConsole() {
               {owned && (
                 <Link
                   to={`/servers/${name}/luckperms`}
-                  className="group flex items-center gap-3 rounded-lg border border-border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-accent"
+                  className="group flex items-center gap-3 rounded-xl border border-border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-accent"
                 >
-                  <Shield className="h-5 w-5 shrink-0 text-primary" />
+                  <Shield className="h-4 w-4 shrink-0 text-primary" />
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-medium">{t("luckperms_link_title")}</p>
                     <p className="text-xs text-muted-foreground mt-0.5">
@@ -395,9 +395,9 @@ export function ServerConsole() {
                   itself owns the ownership + readiness gating. */}
               <Link
                 to={`/servers/${name}/players`}
-                className="group flex items-center gap-3 rounded-lg border border-border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-accent"
+                className="group flex items-center gap-3 rounded-xl border border-border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-accent"
               >
-                <Users className="h-5 w-5 shrink-0 text-primary" />
+                <Users className="h-4 w-4 shrink-0 text-primary" />
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium">{t("players_link_title")}</p>
                   <p className="text-sm text-muted-foreground">{t("players_link_desc")}</p>
@@ -410,9 +410,9 @@ export function ServerConsole() {
                   restore in fact needs it stopped, so this doorway shows at every phase). */}
               <Link
                 to={`/servers/${name}/backups`}
-                className="group flex items-center gap-3 rounded-lg border border-border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-accent"
+                className="group flex items-center gap-3 rounded-xl border border-border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-accent"
               >
-                <Archive className="h-5 w-5 shrink-0 text-primary" />
+                <Archive className="h-4 w-4 shrink-0 text-primary" />
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium">{t("backups_link_title")}</p>
                   <p className="text-sm text-muted-foreground">{t("backups_link_desc")}</p>
@@ -425,9 +425,9 @@ export function ServerConsole() {
                   and offers the stop action; the doorway shows at every phase. */}
               <Link
                 to={`/servers/${name}/files`}
-                className="group flex items-center gap-3 rounded-lg border border-border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-accent"
+                className="group flex items-center gap-3 rounded-xl border border-border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-accent"
               >
-                <FolderOpen className="h-5 w-5 shrink-0 text-primary" />
+                <FolderOpen className="h-4 w-4 shrink-0 text-primary" />
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium">{t("files_link_title")}</p>
                   <p className="text-sm text-muted-foreground">{t("files_link_desc")}</p>
@@ -440,9 +440,9 @@ export function ServerConsole() {
                   doorway shows at every phase and the page owns its gating. */}
               <Link
                 to={`/servers/${name}/schedules`}
-                className="group flex items-center gap-3 rounded-lg border border-border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-accent"
+                className="group flex items-center gap-3 rounded-xl border border-border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-accent"
               >
-                <CalendarClock className="h-5 w-5 shrink-0 text-primary" />
+                <CalendarClock className="h-4 w-4 shrink-0 text-primary" />
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium">{t("schedules_link_title")}</p>
                   <p className="text-sm text-muted-foreground">{t("schedules_link_desc")}</p>
@@ -467,7 +467,7 @@ export function ServerConsole() {
 function HostRecovery({ name }: { name: string }) {
   const { t } = useTranslation("servers");
   if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(name)) return null;
-  return <details className="rounded-lg border border-border bg-card p-3 text-sm"><summary className="cursor-pointer font-medium">{t("host_recovery")}</summary><p className="my-3 text-muted-foreground">{t("host_recovery_hint")}</p><pre className="overflow-x-auto whitespace-pre-wrap rounded bg-muted p-3 text-xs">{`kubectl patch minecraftserver ${name} -n minecraft --type=merge -p '{"spec":{"desiredState":"Stopped"}}'
+  return <details className="rounded-xl border border-border bg-card p-3 text-sm"><summary className="cursor-pointer font-medium">{t("host_recovery")}</summary><p className="my-3 text-muted-foreground">{t("host_recovery_hint")}</p><pre className="overflow-x-auto whitespace-pre-wrap rounded bg-muted p-3 text-xs">{`kubectl patch minecraftserver ${name} -n minecraft --type=merge -p '{"spec":{"desiredState":"Stopped"}}'
 kubectl scale statefulset ${name} -n minecraft --replicas=0
 kubectl get pods -n minecraft -l felis.lolicon.best/server=${name},felis.lolicon.best/component=server -o wide`}</pre><p className="mt-3 text-muted-foreground">{t("host_recovery_verify")}</p></details>;
 }

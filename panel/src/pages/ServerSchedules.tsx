@@ -956,8 +956,8 @@ export function ServerSchedules() {
             </ul>
           </Card>
         )}
-        <Card className="border-dashed bg-transparent shadow-none">
-          <CardContent className="p-4 text-xs text-muted-foreground">
+        <Card className="border-dashed bg-transparent">
+          <CardContent className="text-xs text-muted-foreground">
             <p className="mb-2 flex items-center gap-1.5 font-medium text-foreground">
               <Info className="h-3.5 w-3.5" />
               {t("notes_title")}
