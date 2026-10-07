@@ -75,7 +75,17 @@ func TestNodeControlSocketIsAPIOnly(t *testing.T) {
 			}
 		}
 		if d.Name != SAAPI {
+			if len(d.Spec.Template.Spec.SecurityContext.SupplementalGroups) != 0 {
+				t.Fatal("host socket group leaked to", d.Name)
+			}
 			continue
+		}
+		groups := d.Spec.Template.Spec.SecurityContext.SupplementalGroups
+		if len(groups) != 1 || groups[0] != 65532 {
+			t.Fatal("API lacks host socket group", groups)
+		}
+		if *d.Spec.Template.Spec.SecurityContext.RunAsUser != nonRootUID || *d.Spec.Template.Spec.SecurityContext.RunAsGroup != nonRootUID {
+			t.Fatal("API identity changed")
 		}
 		if d.Spec.Template.Spec.NodeSelector["kubernetes.io/hostname"] != "controller" {
 			t.Fatal("API can run away from socket")

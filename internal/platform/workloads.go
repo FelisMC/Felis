@@ -489,6 +489,10 @@ func APIDeployment(p Params) *appsv1.Deployment {
 		container.Env = append(container.Env, corev1.EnvVar{Name: "FELIS_NODE_CONTROL_SOCKET", Value: p.NodeControlSocket})
 	}
 	deployment := controlPlaneDeployment(p, SAAPI, container, volumes)
+	if p.NodeControlSocket != "" {
+		// The host socket uses a dedicated group; preserve the API's existing UID and volume identity.
+		deployment.Spec.Template.Spec.SecurityContext.SupplementalGroups = []int64{65532}
+	}
 	if p.NodeControlNode != "" && p.ControllerNode == "" {
 		deployment.Spec.Template.Spec.NodeSelector = map[string]string{"kubernetes.io/hostname": p.NodeControlNode}
 	}
