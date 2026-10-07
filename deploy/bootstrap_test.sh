@@ -910,6 +910,7 @@ run_ed() { # [DOCKER_INSTALLED]; ED_FREE_MIB free on the filesystem holding /var
     set -Eeuo pipefail
     ok() { printf "OK: %s\n" "$*"; }; warn() { printf "WARN: %s\n" "$*"; }; die() { printf "DIE: %s\n" "$*"; exit 1; }
     install_docker() { echo INSTALL; }
+    start_docker() { systemctl start docker; }
     systemctl() { echo "SYSTEMCTL $*"; }
     path_populated() { [ -n "${ED_POPULATED:-}" ]; }
     existing_ancestor() { echo /; }
@@ -989,7 +990,7 @@ out="$(run_sd "" 'moby\n')"
 [ -z "$out" ] && echo "PASS a Docker this run never started is left alone" \
   || { echo "FAIL a Docker this run never started was touched: $out"; fails=$((fails + 1)); }
 
-idblock="$(awk '/^install_docker\(\) \{/,/^}/' "$BS")"
+idblock="$(awk '/^start_docker\(\) \{/,/^}/' "$BS"; awk '/^install_docker\(\) \{/,/^}/' "$BS")"
 [ -n "$idblock" ] || { echo "FAIL: no install_docker found in $BS"; exit 1; }
 run_id() { # docker-on-PATH(0|1) containerd-on-PATH(0|1)
   fb="$(mktemp -d)"
@@ -5354,6 +5355,44 @@ for existing in 0 1; do
 done
 
 # ---------------------------------------------------------------------------------------
+# --- Docker starts retain their firewalld zone, including NetworkManager's profile -------
+docker_start="$(awk '/^start_docker\(\) \{/,/^}/' "$BS")"
+[ -n "$docker_start" ] || { echo "FAIL: no start_docker found in $BS"; exit 1; }
+run_docker_start() { # firewalld-active existing-docker-zone connection-profile
+  FIREWALLD="$1" DOCKER_ZONE="$2" CONNECTION="$3" bash -ec '
+    systemctl() {
+      if [ "$1" = is-active ]; then [ "$FIREWALLD" = 1 ]; else printf "START: %s\n" "$*"; fi
+    }
+    ip() { return 0; }
+    firewall-cmd() {
+      if [ "$2" = --get-target ]; then [ "$DOCKER_ZONE" = 1 ]; else printf "FW: %s\n" "$*"; fi
+    }
+    nmcli() {
+      if [ "$1" = -g ]; then printf "%s\n" "$CONNECTION"; else printf "NM: %s\n" "$*"; fi
+    }
+    '"$docker_start"'
+    start_docker'
+}
+out="$(run_docker_start 1 1 'Docker bridge')"
+expect "Docker corrects NetworkManager zone" "NM: connection modify Docker bridge connection.zone docker" "$out"
+expect "Docker persists its firewalld zone" "FW: --permanent --zone=docker --change-interface=docker0" "$out"
+expect "Docker corrects its runtime zone" "FW: --zone=docker --change-interface=docker0" "$out"
+expect "Docker starts after zone correction" "START: start docker" "$out"
+for args in '0 1' '1 0'; do
+  # shellcheck disable=SC2086 # the words are the arguments
+  out="$(run_docker_start $args --)"
+  expect "Docker starts without an existing active zone ($args)" "START: start docker" "$out"
+  case "$out" in
+    *FW:*|*NM:*) echo "FAIL inactive or absent Docker zone must be left alone"; fails=$((fails + 1)) ;;
+    *) echo "PASS inactive or absent Docker zone is left alone" ;;
+  esac
+done
+out="$(run_docker_start 1 1 --)"
+case "$out" in
+  *NM:*) echo "FAIL an unmanaged bridge has no connection profile to change"; fails=$((fails + 1)) ;;
+  *) echo "PASS an unmanaged bridge keeps its firewalld binding without a profile" ;;
+esac
+
 if [ "$fails" -eq 0 ]; then
   echo "ALL PASS"
 else

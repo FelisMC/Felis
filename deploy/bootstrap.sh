@@ -1882,6 +1882,25 @@ install_docker_pacman() {
   pkg_install docker docker-buildx
 }
 
+start_docker() {
+  # NetworkManager can put docker0 back in its default zone after firewalld reloads.
+  # Preserve Docker's zone in both the connection profile and firewalld before each start.
+  if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld \
+    && ip link show docker0 >/dev/null 2>&1 \
+    && firewall-cmd --zone=docker --get-target >/dev/null 2>&1; then
+    local connection
+    if command -v nmcli >/dev/null 2>&1 && systemctl is-active --quiet NetworkManager; then
+      connection="$(nmcli -g GENERAL.CONNECTION device show docker0)"
+      if [ -n "$connection" ] && [ "$connection" != -- ]; then
+        nmcli connection modify "$connection" connection.zone docker
+      fi
+    fi
+    firewall-cmd --permanent --zone=docker --change-interface=docker0
+    firewall-cmd --zone=docker --change-interface=docker0
+  fi
+  systemctl start docker
+}
+
 install_docker() {
   if command -v docker >/dev/null 2>&1; then
     ok "docker already installed"
@@ -1901,7 +1920,7 @@ install_docker() {
     systemctl disable docker.service docker.socket 2>/dev/null || true
     [ -n "$had_containerd" ] || systemctl disable containerd.service 2>/dev/null || true
   fi
-  systemctl start docker
+  start_docker
   ok "docker running"
 }
 
@@ -1914,7 +1933,7 @@ ensure_docker() {
     install_docker
     DOCKER_INSTALLED=1
   else
-    systemctl start docker
+    start_docker
   fi
 }
 
