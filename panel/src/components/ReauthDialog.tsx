@@ -277,7 +277,7 @@ function ReauthBody({ onDone, onCancel }: { onDone: () => void; onCancel: () => 
         <InlineError message={error} />
       </div>
       <DialogFooter>
-        <Button variant="ghost" size="sm" onClick={onCancel}>
+        <Button variant="outline" onClick={onCancel}>
           {t("common:cancel")}
         </Button>
       </DialogFooter>

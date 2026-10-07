@@ -156,8 +156,8 @@ export function ImageAdmin() {
               </DialogDescription>
             </DialogHeader>
             <form onSubmit={handleAdd} className="space-y-4">
-              <div className="space-y-1.5">
-                <Label htmlFor="imageRefInput" className="text-xs font-medium text-muted-foreground">
+              <div className="space-y-2">
+                <Label htmlFor="imageRefInput">
                   {t("image_ref_label")} *
                 </Label>
                 <Input
@@ -284,8 +284,8 @@ export function ImageAdmin() {
                   <div
                     key={img.image_ref}
                     className={`grid grid-cols-1 md:grid-cols-12 gap-3 items-center px-4 py-2 text-xs transition-colors ${
-                      img.enabled 
-                        ? "hover:bg-accent/40 text-foreground" 
+                      img.enabled
+                        ? "hover:bg-accent/40 text-foreground"
                         : "bg-muted/10 text-muted-foreground/80 opacity-60 hover:bg-muted/20"
                     }`}
                   >

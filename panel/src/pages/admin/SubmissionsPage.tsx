@@ -1,3 +1,4 @@
+import { Textarea } from "@/components/ui/textarea";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ClipboardCheck, CheckCircle2, CircleSlash, ChevronDown, ChevronUp, Check, X, Loader2, Download, Trash2, ShieldCheck, TriangleAlert } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -540,11 +541,11 @@ export function SubmissionsPage() {
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={handleRejectSubmit} className="space-y-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="rejectReasonInput" className="text-xs font-medium text-muted-foreground">
+            <div className="space-y-2">
+              <Label htmlFor="rejectReasonInput">
                 {t("reject_reason_label")} *
               </Label>
-              <textarea
+              <Textarea
                 id="rejectReasonInput"
                 placeholder={t("reject_reason_placeholder")}
                 value={rejectReason}
@@ -552,7 +553,7 @@ export function SubmissionsPage() {
                 maxLength={1000}
                 disabled={!!busyId}
                 required
-                className="flex min-h-[100px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+
               />
             </div>
             <ConfirmFooter

@@ -6,6 +6,7 @@ import { SearchInput } from "@/components/SearchInput";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ConfirmFooter } from "@/components/ConfirmFooter";
@@ -262,7 +263,7 @@ export function ImageBuildPage() {
             </DialogHeader>
             <form onSubmit={handleTrigger} className="space-y-4">
               <div className="space-y-1.5 p-3 rounded-lg border border-border bg-muted/20">
-                <Label htmlFor="build-import-submission" className="text-xs font-semibold text-muted-foreground">
+                <Label htmlFor="build-import-submission">
                   {t("build_import_submission_label")}
                 </Label>
                 <SearchInput
@@ -272,7 +273,7 @@ export function ImageBuildPage() {
                   className="min-w-0"
                 />
                 <Select onValueChange={handleSelectSubmission} disabled={triggering}>
-                  <SelectTrigger id="build-import-submission" className="w-full text-xs h-9 bg-background [&>span]:flex [&>span]:w-full [&>span]:items-center [&>span]:justify-between [&>span]:gap-2 pr-2">
+                  <SelectTrigger id="build-import-submission" className="w-full [&>span]:flex [&>span]:w-full [&>span]:items-center [&>span]:justify-between [&>span]:gap-2 pr-2">
                     <SelectValue placeholder={t("build_import_submission_placeholder")} />
                   </SelectTrigger>
                   <SelectContent className="max-h-60 overflow-y-auto">
@@ -325,14 +326,14 @@ export function ImageBuildPage() {
                   </div>
                 )}
                 {!!subsQ.data && subsQ.data.total > subsQ.data.submissions.length && (
-                  <p className="text-[10px] text-muted-foreground leading-normal">
+                  <p className="text-xs text-muted-foreground leading-normal">
                     {t("build_import_submission_more", {
                       shown: subsQ.data.submissions.length,
                       total: subsQ.data.total,
                     })}
                   </p>
                 )}
-                <p className="text-[10px] text-muted-foreground/80 leading-normal">
+                <p className="text-xs text-muted-foreground leading-normal">
                   {t("build_import_submission_hint")}
                 </p>
               </div>
@@ -344,7 +345,7 @@ export function ImageBuildPage() {
                     <p className="font-bold text-amber-400">
                       {t("build_import_submission_warning_title", { status: selectedSub.status === "pending_review" ? t("status_pending_review") : t("status_rejected") })}
                     </p>
-                    <p className="text-[10px] text-muted-foreground leading-normal">
+                    <p className="text-xs text-muted-foreground leading-normal">
                       {t("build_import_submission_warning_desc")}
                     </p>
                   </div>
@@ -352,8 +353,8 @@ export function ImageBuildPage() {
               )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <Label htmlFor="imageRef" className="text-xs font-medium text-muted-foreground">
+                <div className="space-y-2">
+                  <Label htmlFor="imageRef">
                     {t("image_ref_label")} *
                   </Label>
                   <Input
@@ -366,8 +367,8 @@ export function ImageBuildPage() {
                   />
                 </div>
 
-                <div className="space-y-1.5">
-                  <Label htmlFor="contextRef" className="text-xs font-medium text-muted-foreground">
+                <div className="space-y-2">
+                  <Label htmlFor="contextRef">
                     {t("context_ref_label")} *
                   </Label>
                   <Input
@@ -381,8 +382,8 @@ export function ImageBuildPage() {
                 </div>
               </div>
 
-              <div className="space-y-1.5">
-                <Label htmlFor="baseImage" className="text-xs font-medium text-muted-foreground">
+              <div className="space-y-2">
+                <Label htmlFor="baseImage">
                   {t("base_image_label")}
                 </Label>
                 <Input
@@ -394,11 +395,11 @@ export function ImageBuildPage() {
                 />
               </div>
 
-              <div className="space-y-1.5">
-                <Label htmlFor="dockerfile" className="text-xs font-medium text-muted-foreground">
+              <div className="space-y-2">
+                <Label htmlFor="dockerfile">
                   {t("dockerfile_label")} *
                 </Label>
-                <textarea
+                <Textarea
                   id="dockerfile"
                   placeholder={t("dockerfile_placeholder")}
                   value={dockerfile}
@@ -406,9 +407,9 @@ export function ImageBuildPage() {
                   disabled={triggering}
                   required
                   rows={8}
-                  className="w-full rounded-md border border-input bg-zinc-950 px-3 py-2 text-xs font-mono text-zinc-200 shadow-sm placeholder:text-muted-foreground/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-0 disabled:cursor-not-allowed disabled:opacity-50 resize-y"
+                  className="font-mono"
                 />
-                <p className="text-[10px] text-muted-foreground/80 leading-relaxed">{t("dockerfile_audit_hint")}</p>
+                <p className="text-xs text-muted-foreground leading-relaxed">{t("dockerfile_audit_hint")}</p>
               </div>
 
               {triggerError && <MessageLine kind="error" message={triggerError} compact />}

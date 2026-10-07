@@ -126,7 +126,7 @@ export function BansSection({ name }: { name: string }) {
         {/* Ban-by-name — the one action whose target isn't already on screen, so it
             is the most guarded: the button arms a full-sentence confirm rather than
             firing, and Enter arms it too (PlayerField.onEnter={arm}). */}
-        <div className="space-y-1.5">
+        <div className="space-y-2">
           <div className="flex items-start gap-2">
             <div className="flex-1">
               <PlayerField

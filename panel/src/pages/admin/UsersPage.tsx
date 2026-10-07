@@ -99,11 +99,11 @@ export function UsersPage() {
                 placeholder={t("users_search_placeholder")}
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                className="pl-8 h-9 text-sm"
+                className="pl-8 text-sm"
               />
             </div>
             <Select value={roleFilter} onValueChange={(v) => { setRoleFilter(v); setPage(0); }}>
-              <SelectTrigger className="h-9 w-[120px] text-sm" aria-label={t("users_filter_role")}>
+              <SelectTrigger className="w-[120px] text-sm" aria-label={t("users_filter_role")}>
                 <SelectValue placeholder={t("users_filter_role_all")} />
               </SelectTrigger>
               <SelectContent>
@@ -114,7 +114,7 @@ export function UsersPage() {
               </SelectContent>
             </Select>
             <Select value={disabledFilter} onValueChange={(v) => { setDisabledFilter(v); setPage(0); }}>
-              <SelectTrigger className="h-9 w-[130px] text-sm" aria-label={t("users_filter_status")}>
+              <SelectTrigger className="w-[130px] text-sm" aria-label={t("users_filter_status")}>
                 <SelectValue placeholder={t("users_filter_status_all")} />
               </SelectTrigger>
               <SelectContent>
@@ -123,7 +123,7 @@ export function UsersPage() {
                 <SelectItem value="true">{t("users_status_disabled")}</SelectItem>
               </SelectContent>
             </Select>
-            <Button type="submit" variant="outline" size="sm" className="h-9 text-sm">
+            <Button type="submit" variant="outline" className="h-9 text-sm">
               {t("users_search_btn")}
             </Button>
           </form>

@@ -253,7 +253,7 @@ export function SearchBox({
         placeholder={t("access_search_placeholder")}
         autoComplete="off"
         spellCheck={false}
-        className="h-8 pl-8 text-sm"
+        className="pl-8 text-sm"
       />
     </div>
   );

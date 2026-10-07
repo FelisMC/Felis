@@ -125,7 +125,7 @@ export function NameDialog({
             <Button type="button" variant="outline" size="sm" onClick={() => setOpen(false)} disabled={busy}>
               {t("cancel")}
             </Button>
-            <Button type="submit" size="sm" disabled={busy || issue !== null || unchanged}>
+            <Button type="submit" disabled={busy || issue !== null || unchanged}>
               {busy && <Loader2 className="h-4 w-4 animate-spin" />}
               {confirmLabel}
             </Button>

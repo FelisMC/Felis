@@ -1,3 +1,4 @@
+import { Checkbox } from "@/components/ui/checkbox";
 import { useId, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
@@ -401,13 +402,13 @@ function ScheduleDialog({
 
           <fieldset className="grid gap-3">
             <legend className="mb-2 text-sm font-medium">{t("field_when")}</legend>
-            <div className="inline-flex w-fit rounded-md border border-border p-0.5">
+            <div className="inline-flex w-fit rounded-lg bg-muted p-1">
               {(["daily", "interval"] as const).map((m) => (
                 <label
                   key={m}
                   className={cn(
                     "cursor-pointer rounded px-3 py-1.5 text-sm font-medium transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring",
-                    form.mode === m ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground",
+                    form.mode === m ? "bg-card text-primary" : "text-muted-foreground hover:text-foreground",
                   )}
                 >
                   <input
@@ -575,9 +576,9 @@ function ScheduleDialog({
           </div>
 
           <label className="flex cursor-pointer items-start gap-3 rounded-md border border-border p-3 text-sm">
-            <input
-              type="checkbox"
-              className="mt-0.5 h-4 w-4 shrink-0 cursor-pointer accent-primary"
+            <Checkbox
+
+              className="mt-0.5"
               checked={form.enabled}
               onChange={(e) => set("enabled", e.target.checked)}
               aria-labelledby={`${id}-enabled`}

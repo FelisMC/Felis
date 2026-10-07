@@ -222,8 +222,8 @@ export function UpdatesPage() {
 
           <form onSubmit={handleSubmit} className="space-y-5">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="space-y-1.5">
-                <Label htmlFor="startTime" className="text-xs font-semibold text-muted-foreground">{t("updates_start_label")} *</Label>
+              <div className="space-y-2">
+                <Label htmlFor="startTime">{t("updates_start_label")} *</Label>
                 <Input
                   id="startTime"
                   type="datetime-local"
@@ -235,8 +235,8 @@ export function UpdatesPage() {
                 />
               </div>
 
-              <div className="space-y-1.5">
-                <Label htmlFor="endTime" className="text-xs font-semibold text-muted-foreground">{t("updates_end_label")} *</Label>
+              <div className="space-y-2">
+                <Label htmlFor="endTime">{t("updates_end_label")} *</Label>
                 <Input
                   id="endTime"
                   type="datetime-local"

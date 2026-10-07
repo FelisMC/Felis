@@ -118,7 +118,7 @@ export function WhitelistSection({ name, defaultOpen = false }: { name: string; 
         <p className="text-sm text-muted-foreground">{t("access_whitelist_desc")}</p>
 
         {/* Add row — the primary action, kept at the top so it is always in reach. */}
-        <div className="space-y-1.5">
+        <div className="space-y-2">
           <div className="flex items-start gap-2">
             <div className="flex-1">
               <PlayerField

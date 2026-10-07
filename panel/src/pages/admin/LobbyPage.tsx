@@ -8,6 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PhaseBadge, shownPhase, startFailure } from "@/components/PhaseBadge";
@@ -102,7 +103,7 @@ function ExperienceSettings({ name, server, onDirtyChange, onChanged }: { name: 
           <Card key={group.key} className="overflow-hidden">
             <CardHeader className="flex-row flex-wrap items-center gap-3">
               <span className="shrink-0 text-primary"><Icon className="h-4 w-4" /></span>
-              <div className="space-y-1.5">
+              <div className="space-y-2">
                 <CardTitle>{t(group.key)}</CardTitle>
                 <p className="text-xs text-muted-foreground">{t(`${group.key}_description`)}</p>
               </div>
@@ -121,7 +122,7 @@ function ExperienceSettings({ name, server, onDirtyChange, onChanged }: { name: 
                           <SelectContent>{field.choices.map((choice) => <SelectItem key={choice} value={choice}>{t(choice)}</SelectItem>)}</SelectContent>
                         </Select>
                       ) : field.multiline ? (
-                        <textarea id={id} value={value as string} placeholder={!draft && query.loading ? t("common:loading") : undefined} maxLength={512} onChange={(e) => setValue(field.key, e.target.value)} disabled={!draft || saving || restarting} className="block h-32 w-full resize-y rounded-md border border-input bg-background px-3 py-2.5 text-sm leading-6 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50" />
+                        <Textarea id={id} value={value as string} placeholder={!draft && query.loading ? t("common:loading") : undefined} maxLength={512} onChange={(e) => setValue(field.key, e.target.value)} disabled={!draft || saving || restarting} className="h-32" />
                       ) : (
                         <Input id={id} type={typeof field.value === "number" ? "number" : "text"} value={value as string | number} placeholder={!draft && query.loading ? t("common:loading") : undefined} min={field.min} max={field.max} step={1} maxLength={512} onChange={(e) => setValue(field.key, typeof field.value === "number" ? (e.target.value === "" ? "" : Number(e.target.value)) : e.target.value)} disabled={!draft || saving || restarting} />
                       )}

@@ -94,8 +94,8 @@ export function CreateUserDialog({ onCreated }: Props) {
 
         <form onSubmit={handleSubmit} className="space-y-4">
           {/* Username */}
-          <div className="space-y-1.5">
-            <Label htmlFor="create-user-username" className="text-xs font-semibold text-muted-foreground">
+          <div className="space-y-2">
+            <Label htmlFor="create-user-username">
               {t("users_field_username")} *
             </Label>
             <Input
@@ -103,14 +103,14 @@ export function CreateUserDialog({ onCreated }: Props) {
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               placeholder={t("users_create_username_placeholder")}
-              className="h-9 text-sm"
+              className="text-sm"
               autoFocus
             />
           </div>
 
           {/* Email */}
-          <div className="space-y-1.5">
-            <Label htmlFor="create-user-email" className="text-xs font-semibold text-muted-foreground">
+          <div className="space-y-2">
+            <Label htmlFor="create-user-email">
               {t("users_field_email")}
             </Label>
             <Input
@@ -119,17 +119,17 @@ export function CreateUserDialog({ onCreated }: Props) {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="user@example.com"
-              className="h-9 text-sm"
+              className="text-sm"
             />
           </div>
 
           {/* Role */}
-          <div className="space-y-1.5">
-            <Label htmlFor="create-user-role" className="text-xs font-semibold text-muted-foreground">
+          <div className="space-y-2">
+            <Label htmlFor="create-user-role">
               {t("users_field_role")}
             </Label>
             <Select value={role} onValueChange={(v: "user" | "admin") => setRole(v)}>
-              <SelectTrigger id="create-user-role" className="h-9 text-sm">
+              <SelectTrigger id="create-user-role" className="text-sm">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -142,6 +142,9 @@ export function CreateUserDialog({ onCreated }: Props) {
           {err && <MessageLine kind="error" message={err} />}
 
           <DialogFooter>
+            <Button type="button" variant="outline" disabled={submitting} onClick={() => { setOpen(false); reset(); }}>
+              {t("common:cancel")}
+            </Button>
             <Button type="submit" disabled={submitting} className="gap-1.5">
               {submitting ? (
                 <Loader2 className="h-4 w-4 animate-spin" />

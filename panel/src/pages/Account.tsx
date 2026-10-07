@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, type FormEvent } from "react";
-import { ArrowRightLeft, CheckCircle2, Link2, UserRound, Mail, Fingerprint, Trash2, KeyRound } from "lucide-react";
+import { ArrowRightLeft, CheckCircle2, Link2, UserRound, Mail, Fingerprint, Trash2, KeyRound, ChevronRight, Search, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -317,8 +317,8 @@ export function Account() {
             codeForm
           )}
           {identity?.is_admin && !linked && (
-            <details className="mt-4 space-y-3">
-              <summary className="cursor-pointer text-muted-foreground">{t("staff_code_alternative")}</summary>
+            <details className="group mt-4 space-y-3">
+              <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden"><ChevronRight className="h-4 w-4 shrink-0 transition-transform group-open:rotate-90" />{t("staff_code_alternative")}</summary>
               {codeForm}
             </details>
           )}
@@ -371,7 +371,7 @@ export function Account() {
                         {emailSending ? t("sending_code") : t("send_code")}
                       </Button>
                       {changingEmail && (
-                        <Button type="button" variant="ghost" onClick={cancelChangeEmail} disabled={emailSending}>
+                        <Button type="button" variant="outline" onClick={cancelChangeEmail} disabled={emailSending}>
                           {t("common:cancel")}
                         </Button>
                       )}
@@ -436,7 +436,7 @@ export function Account() {
           }}>
             <DialogTrigger asChild>
               <Button size="sm" variant="outline">
-                <Fingerprint className="mr-1 h-3.5 w-3.5" />
+                <Fingerprint />
                 {t("add_passkey")}
               </Button>
             </DialogTrigger>
@@ -466,7 +466,7 @@ export function Account() {
                 <DialogFooter>
                   <Button
                     type="button"
-                    variant="ghost"
+                    variant="outline"
                     onClick={cancelRegistration}
                     disabled={registeringPasskey}
                   >
@@ -647,9 +647,11 @@ function StaffLinkForm({ onLinked }: { onLinked: (uuid: string) => void }) {
   const sourceLabel = (tag: string) => tag === "mojang" ? t("staff_source_mojang") : tag;
   return (
     <div className="space-y-4">
-      <p className="text-muted-foreground">{t("staff_link_desc")}</p>
-      <p className="text-muted-foreground">{t("staff_source_help")}</p>
-      <form onSubmit={lookup} className="space-y-3 max-w-lg">
+      <div className="max-w-3xl space-y-2 text-sm leading-relaxed text-muted-foreground">
+        <p>{t("staff_link_desc")}</p>
+        <p>{t("staff_source_help")}</p>
+      </div>
+      <form onSubmit={lookup} className="grid max-w-3xl gap-4 sm:grid-cols-2">
         <div className="space-y-2">
           <Label htmlFor="role-source">{t("staff_source")}</Label>
           <Select value={source} disabled={busy} onValueChange={(value) => { setSelected(value); setPreview(null); setError(null); }}>
@@ -664,11 +666,11 @@ function StaffLinkForm({ onLinked }: { onLinked: (uuid: string) => void }) {
           <Input id="role-profile" value={input} disabled={busy} maxLength={64} autoComplete="off" spellCheck={false}
             onChange={(e) => { setInput(e.target.value); setPreview(null); setError(null); }} />
         </div>
-        {available === false && <p className="text-muted-foreground">{t("staff_lookup_unsupported")}</p>}
-        <Button type="submit" disabled={busy || !available || !input.trim()}>{t(busy ? "staff_working" : "staff_lookup")}</Button>
+        {available === false && <p className="text-muted-foreground sm:col-span-2">{t("staff_lookup_unsupported")}</p>}
+        <div className="sm:col-span-2"><Button type="submit" disabled={busy || !available || !input.trim()}>{busy ? <Loader2 className="animate-spin" /> : <Search />}{t(busy ? "staff_working" : "staff_lookup")}</Button></div>
       </form>
       {preview && (
-        <div className="space-y-3 rounded-md border p-4 max-w-lg">
+        <div className="space-y-3 rounded-md border border-border p-4 max-w-3xl">
           <p className="font-medium">{preview.name}</p>
           <p className="text-muted-foreground">{sourceLabel(preview.source)}</p>
           <code className="block break-all font-mono text-xs">{preview.profile_uuid}</code>
@@ -687,8 +689,8 @@ function MinecraftGuide() {
   const cfg = useConfig();
   if (!cfg) return null;
   return (
-    <details className="mt-4 border-t pt-4 space-y-3">
-      <summary className="cursor-pointer font-medium">{t("game_guide")}</summary>
+    <details className="group mt-4 border-t border-border pt-4 space-y-3">
+      <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden"><ChevronRight className="h-4 w-4 shrink-0 transition-transform group-open:rotate-90" />{t("game_guide")}</summary>
       <p className="text-muted-foreground">{cfg.gameVersion ? t("game_version", { version: cfg.gameVersion }) : t("game_version_unknown")}</p>
       {!cfg.fallback && <CopyAddress address={entryAddress(cfg)} />}
       <p className="text-muted-foreground">{t("game_lobby")}</p>
@@ -894,7 +896,7 @@ function MigrationCard({ userId, hasPasskey }: { userId?: string; hasPasskey: bo
                       disabled={busy}
                       className="max-w-[12rem] font-mono text-center tracking-[0.2em]"
                     />
-                    <Button type="submit" size="sm" disabled={busy || otpCode.trim().length !== 6}>
+                    <Button type="submit" disabled={busy || otpCode.trim().length !== 6}>
                       {busy ? t("migration_confirming") : t("email_verify_btn")}
                     </Button>
                   </form>
@@ -935,7 +937,7 @@ function MigrationCard({ userId, hasPasskey }: { userId?: string; hasPasskey: bo
                     disabled={busy}
                     className="font-mono"
                   />
-                  <Button type="submit" size="sm" disabled={busy || !targetId.trim()}>
+                  <Button type="submit" disabled={busy || !targetId.trim()}>
                     {busy ? t("migration_issuing") : t("migration_issue_btn")}
                   </Button>
                 </div>
@@ -988,7 +990,7 @@ function MigrationCard({ userId, hasPasskey }: { userId?: string; hasPasskey: bo
                       disabled={busy}
                       className="font-mono"
                     />
-                    <Button type="submit" size="sm" disabled={busy || !redeemCode.trim()}>
+                    <Button type="submit" disabled={busy || !redeemCode.trim()}>
                       {busy ? t("migration_redeeming") : t("migration_redeem_btn")}
                     </Button>
                   </div>

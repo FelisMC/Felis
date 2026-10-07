@@ -148,6 +148,22 @@ test("an admin reaches the user list", async ({ page, signIn }) => {
   await expect(page.getByText("linked@mock.felis.local")).toBeVisible();
 });
 
+test("account cards keep aligned headings with and without actions", async ({ page, signIn }) => {
+  await page.route("**/api/v1/account/link/start", (route) => route.fulfill({ json: { linked: false } }));
+  await signIn("owner");
+  await page.goto("/account");
+  await expect(page.getByLabel(t("account:staff_profile"))).toBeEnabled();
+  const linkHeader = page.getByRole("heading", { name: t("account:minecraft_link"), exact: true }).locator("..");
+  const passkeyHeader = page.getByRole("heading", { name: t("account:passkeys"), exact: true }).locator("..");
+  const plain = (await linkHeader.boundingBox())!;
+  const withAction = (await passkeyHeader.boundingBox())!;
+  expect(plain.height).toBeCloseTo(withAction.height, 0);
+  const source = (await page.getByRole("combobox", { name: t("account:staff_source") }).boundingBox())!;
+  const profile = (await page.getByLabel(t("account:staff_profile")).boundingBox())!;
+  expect(source.y).toBeCloseTo(profile.y, 0);
+  expect(source.width).toBeCloseTo(profile.width, 0);
+});
+
 test("an unlinked Owner can manage the panel, then preview and confirm a game role", async ({ page, signIn }) => {
   const profile = { source: "littleskin", name: "LemonMiaow", profile_uuid: "123456781234423482341234567890ab", mc_uuid: "canonical-role", auth_source: "thirdparty" };
   let linked = false;

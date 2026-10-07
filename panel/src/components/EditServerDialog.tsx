@@ -1,3 +1,4 @@
+import { Checkbox } from "@/components/ui/checkbox";
 import { useState, useEffect } from "react";
 import { Settings, ChevronRight, AlertTriangle } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -292,9 +293,9 @@ export function EditServerDialog({
                   {t("edit_server_image_warning")}
                 </p>
                 <label className="flex cursor-pointer items-center gap-2 font-medium text-foreground">
-                  <input
-                    type="checkbox"
-                    className="h-4 w-4 shrink-0 cursor-pointer accent-primary"
+                  <Checkbox
+
+                    className="mt-0.5"
                     checked={imageConfirmed}
                     onChange={(e) => setImageConfirmed(e.target.checked)}
                   />
@@ -327,7 +328,7 @@ export function EditServerDialog({
             <div className="grid gap-2">
               {/* Storage is immutable but displayed to maintain visual consistency */}
               <Label htmlFor="edit-server-storage">{t("create_server_storage")}</Label>
-              <Input id="edit-server-storage" value={currentStorage} disabled className="opacity-60 cursor-not-allowed select-none bg-muted" />
+              <Input id="edit-server-storage" value={currentStorage} disabled className="select-none bg-muted" />
             </div>
           </div>
 

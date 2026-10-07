@@ -182,40 +182,40 @@ function EditProfileCard({ user, onSaved, isSelf }: { user: UserDetail; onSaved:
         <CardTitle>{t("users_edit_profile")}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="space-y-1.5">
-          <Label htmlFor="user-detail-username" className="text-xs font-semibold text-muted-foreground">{t("users_field_username")}</Label>
+        <div className="space-y-2">
+          <Label htmlFor="user-detail-username">{t("users_field_username")}</Label>
           <Input
             id="user-detail-username"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
-            className="h-9 text-sm"
+            className="text-sm"
           />
         </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="user-detail-email" className="text-xs font-semibold text-muted-foreground">{t("users_field_email")}</Label>
+        <div className="space-y-2">
+          <Label htmlFor="user-detail-email">{t("users_field_email")}</Label>
           <Input
             id="user-detail-email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             placeholder="user@example.com"
-            className="h-9 text-sm"
+            className="text-sm"
           />
         </div>
         {/* Your own role and the owner's are what the server refuses to change
             (self_protected / owner_protected), so they show read-only with why. */}
         {isSelf || user.role === "owner" ? (
-          <div className="space-y-1.5">
-            <p className="text-xs font-semibold text-muted-foreground">{t("users_field_role")}</p>
+          <div className="space-y-2">
+            <p className="text-sm font-medium">{t("users_field_role")}</p>
             <RoleBadge role={user.role} />
             <p className="text-xs text-muted-foreground">
               {isSelf ? t("users_role_locked_self") : t("users_role_locked_owner")}
             </p>
           </div>
         ) : (
-          <div className="space-y-1.5">
-            <Label htmlFor="user-detail-role" className="text-xs font-semibold text-muted-foreground">{t("users_field_role")}</Label>
+          <div className="space-y-2">
+            <Label htmlFor="user-detail-role">{t("users_field_role")}</Label>
             <Select value={role} onValueChange={(v: "admin" | "user") => setRole(v)}>
-              <SelectTrigger id="user-detail-role" className="h-9 text-sm">
+              <SelectTrigger id="user-detail-role" className="text-sm">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -321,20 +321,20 @@ function LinkedAccountsCard({ user, onChanged }: { user: UserDetail; onChanged: 
         {showAdd && (
           <form onSubmit={handleAdd} className="space-y-3 rounded-md border border-border/50 bg-muted/20 p-3">
             <div className="flex gap-2">
-              <div className="flex-1 space-y-1.5">
-                <Label htmlFor="user-detail-uuid" className="text-[11px] font-semibold text-muted-foreground">Minecraft UUID</Label>
+              <div className="flex-1 space-y-2">
+                <Label htmlFor="user-detail-uuid">Minecraft UUID</Label>
                 <Input
                   id="user-detail-uuid"
                   value={newUUID}
                   onChange={(e) => setNewUUID(e.target.value)}
                   placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                  className="h-8 text-xs font-mono"
+                  className="font-mono"
                 />
               </div>
-              <div className="w-28 space-y-1.5">
-                <Label htmlFor="user-detail-link-source" className="text-[11px] font-semibold text-muted-foreground">{t("users_link_source")}</Label>
+              <div className="w-28 space-y-2">
+                <Label htmlFor="user-detail-link-source">{t("users_link_source")}</Label>
                 <Select value={newSource} onValueChange={setNewSource}>
-                  <SelectTrigger id="user-detail-link-source" className="h-8 text-xs">
+                  <SelectTrigger id="user-detail-link-source">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -345,7 +345,7 @@ function LinkedAccountsCard({ user, onChanged }: { user: UserDetail; onChanged: 
               </div>
             </div>
             <InlineError message={err} className="text-xs" />
-            <Button type="submit" size="sm" disabled={adding || !newUUID.trim()} className="h-8 text-xs gap-1">
+            <Button type="submit" disabled={adding || !newUUID.trim()}>
               {adding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Link className="h-3.5 w-3.5" />}
               {t("users_link_confirm")}
             </Button>
@@ -474,8 +474,8 @@ function QuotasCard({ userId }: { userId: string }) {
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid grid-cols-2 gap-3">
-          <div className="space-y-1.5">
-            <Label htmlFor="user-detail-quota-servers" className="text-xs font-semibold text-muted-foreground">{t("users_quota_servers")}</Label>
+          <div className="space-y-2">
+            <Label htmlFor="user-detail-quota-servers">{t("users_quota_servers")}</Label>
             <Input
               id="user-detail-quota-servers"
               type="text"
@@ -483,11 +483,11 @@ function QuotasCard({ userId }: { userId: string }) {
               value={maxServers}
               onChange={(e) => setMaxServers(e.target.value)}
               placeholder={t("users_quota_unlimited")}
-              className="h-9 text-sm"
+              className="text-sm"
             />
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="user-detail-quota-cpu" className="text-xs font-semibold text-muted-foreground">{t("users_quota_cpu")}</Label>
+          <div className="space-y-2">
+            <Label htmlFor="user-detail-quota-cpu">{t("users_quota_cpu")}</Label>
             <Input
               id="user-detail-quota-cpu"
               type="text"
@@ -495,11 +495,11 @@ function QuotasCard({ userId }: { userId: string }) {
               value={maxCpu}
               onChange={(e) => setMaxCpu(e.target.value)}
               placeholder={t("users_quota_unlimited")}
-              className="h-9 text-sm"
+              className="text-sm"
             />
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="user-detail-quota-memory" className="text-xs font-semibold text-muted-foreground">{t("users_quota_memory")}</Label>
+          <div className="space-y-2">
+            <Label htmlFor="user-detail-quota-memory">{t("users_quota_memory")}</Label>
             <Input
               id="user-detail-quota-memory"
               type="text"
@@ -507,11 +507,11 @@ function QuotasCard({ userId }: { userId: string }) {
               value={maxMem}
               onChange={(e) => setMaxMem(e.target.value)}
               placeholder={t("users_quota_unlimited")}
-              className="h-9 text-sm"
+              className="text-sm"
             />
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="user-detail-quota-storage" className="text-xs font-semibold text-muted-foreground">{t("users_quota_storage")}</Label>
+          <div className="space-y-2">
+            <Label htmlFor="user-detail-quota-storage">{t("users_quota_storage")}</Label>
             <Input
               id="user-detail-quota-storage"
               type="text"
@@ -519,7 +519,7 @@ function QuotasCard({ userId }: { userId: string }) {
               value={maxStorage}
               onChange={(e) => setMaxStorage(e.target.value)}
               placeholder={t("users_quota_unlimited")}
-              className="h-9 text-sm"
+              className="text-sm"
             />
           </div>
         </div>

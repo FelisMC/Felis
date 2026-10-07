@@ -41,6 +41,10 @@ Card titles, borders, corner radii, spacing, and save footers follow their share
 definitions; avoid redefining these styles in individual pages. Use white card
 backgrounds in the light theme, restrained semantic colors, and 16px functional
 icons. Use `CardFooter` for save actions and `Button` for interactive controls.
+Form labels use the shared `Label` style and 8px field spacing; single-line
+controls use the shared 36px height. Reuse `Textarea` and `Checkbox` for multiline
+fields and confirmations. Page-specific control classes should only adjust layout,
+code fonts, or semantic validation states.
 Tables, consoles, compact statistics, and status messages may retain spacing and
 colors suited to their content. Preserve the shared page margins and bottom
 spacing.

@@ -1,3 +1,4 @@
+import { Checkbox } from "@/components/ui/checkbox";
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
@@ -560,9 +561,9 @@ function RestoreControls({
           submitting && "cursor-not-allowed opacity-60",
         )}
       >
-        <input
-          type="checkbox"
-          className="mt-0.5 h-4 w-4 shrink-0 cursor-pointer accent-primary disabled:cursor-not-allowed"
+        <Checkbox
+
+          className="mt-0.5"
           checked={safety}
           disabled={submitting}
           onChange={(e) => setSafety(e.target.checked)}

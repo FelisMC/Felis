@@ -616,8 +616,8 @@ export function MySubmissionsPage() {
             )}
 
             {/* Display Name Input */}
-            <div className="space-y-1.5">
-              <Label htmlFor="displayName" className="text-xs font-semibold text-foreground">
+            <div className="space-y-2">
+              <Label htmlFor="displayName">
                 {t("display_name_label")} <span className="text-destructive">*</span>
               </Label>
               <Input
@@ -631,8 +631,8 @@ export function MySubmissionsPage() {
             </div>
 
             {/* File Dropzone */}
-            <div className="space-y-1.5">
-              <Label htmlFor="submission-file" className="text-xs font-semibold text-foreground">
+            <div className="space-y-2">
+              <Label htmlFor="submission-file">
                 {t("file_label")} <span className="text-destructive">*</span>
               </Label>
 

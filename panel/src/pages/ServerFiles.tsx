@@ -1174,7 +1174,7 @@ function ConflictList({ op }: { op: FileOp | null }) {
   const more = conflictCount(op) - listed.length;
   if (listed.length === 0) return null;
   return (
-    <div className="grid gap-1.5">
+    <div className="grid gap-2">
       <ul className="max-h-48 overflow-y-auto rounded-md border border-border bg-muted/30 px-3 py-2 font-mono text-xs">
         {listed.map((path) => (
           <li key={path} className="truncate py-0.5" title={path}>

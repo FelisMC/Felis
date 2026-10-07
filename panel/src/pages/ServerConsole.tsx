@@ -200,7 +200,7 @@ function CommandInput({ name }: { name: string }) {
   }, [command, send]);
 
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-2">
       {last && (
         <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2 font-mono text-xs text-zinc-300">
           <span className="text-zinc-500">{"> " + last.cmd + "\n"}</span>

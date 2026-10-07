@@ -415,7 +415,7 @@ export function ServerLuckPerms() {
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder="Steve"
                   aria-label={t("luckperms_player_lookup")}
-                  className="pl-9 h-9 text-xs font-mono bg-background/50 border-input focus-visible:ring-primary/30"
+                  className="pl-9 font-mono"
                   autoComplete="off"
                   disabled={submitting}
                 />
@@ -567,8 +567,8 @@ export function ServerLuckPerms() {
                         </div>
 
                         <div className="border-t border-border/50 pt-4 flex flex-col sm:flex-row gap-3 items-end">
-                          <div className="grid gap-1.5 flex-1 w-full">
-                            <Label htmlFor="lp-group-name" className="text-xs text-muted-foreground font-semibold">
+                          <div className="grid gap-2 flex-1 w-full">
+                            <Label htmlFor="lp-group-name">
                               {t("luckperms_group_name")}
                             </Label>
                             <div className="flex gap-2">
@@ -577,7 +577,6 @@ export function ServerLuckPerms() {
                                 placeholder={t("luckperms_custom_group_placeholder")}
                                 value={groupNameInput}
                                 onChange={(e) => setGroupNameInput(e.target.value)}
-                                className="h-9 text-xs bg-background/50 border-input focus-visible:ring-primary/20"
                                 disabled={submitting}
                               />
                               <Select
@@ -585,7 +584,7 @@ export function ServerLuckPerms() {
                                 onValueChange={(v) => setGroupNameInput(v)}
                                 disabled={submitting}
                               >
-                                <SelectTrigger className="w-[120px] h-9 text-xs bg-background/50 border-input text-muted-foreground" aria-label={t("luckperms_presets")}>
+                                <SelectTrigger className="w-[120px]" aria-label={t("luckperms_presets")}>
                                   <span>{t("luckperms_presets")}</span>
                                 </SelectTrigger>
                                 <SelectContent className="border-border">
@@ -727,12 +726,12 @@ export function ServerLuckPerms() {
 
                         {/* Add Permission Node Inline Form */}
                         <form onSubmit={handleAddPermission} className="border-t border-border/50 pt-4 space-y-4">
-                          <Label className="text-xs font-semibold text-muted-foreground">
+                          <Label>
                             {t("luckperms_perm_form_title")}
                           </Label>
                           <div className="grid grid-cols-1 sm:grid-cols-4 gap-3.5">
-                            <div className="sm:col-span-2 grid gap-1.5">
-                              <Label htmlFor="lp-node-input" className="text-[10px] text-muted-foreground font-semibold">
+                            <div className="sm:col-span-2 grid gap-2">
+                              <Label htmlFor="lp-node-input">
                                 {t("luckperms_node")}
                               </Label>
                               <div className="flex gap-2">
@@ -741,7 +740,6 @@ export function ServerLuckPerms() {
                                   placeholder="essentials.fly"
                                   value={permNodeInput}
                                   onChange={(e) => setPermNodeInput(e.target.value)}
-                                  className="h-9 text-xs bg-background/50 border-input focus-visible:ring-primary/20"
                                   disabled={submitting}
                                   autoComplete="off"
                                 />
@@ -750,7 +748,7 @@ export function ServerLuckPerms() {
                                   onValueChange={(v) => setPermNodeInput(v)}
                                   disabled={submitting}
                                 >
-                                  <SelectTrigger className="w-[100px] h-9 text-xs shrink-0 bg-background/50 border-input text-muted-foreground" aria-label={t("luckperms_presets")}>
+                                  <SelectTrigger className="w-[100px] shrink-0" aria-label={t("luckperms_presets")}>
                                     <span>{t("luckperms_presets")}</span>
                                   </SelectTrigger>
                                   <SelectContent className="border-border">
@@ -762,8 +760,8 @@ export function ServerLuckPerms() {
                               </div>
                             </div>
 
-                            <div className="grid gap-1.5">
-                              <Label htmlFor="lp-value-input" className="text-[10px] text-muted-foreground font-semibold">
+                            <div className="grid gap-2">
+                              <Label htmlFor="lp-value-input">
                                 {t("luckperms_value")}
                               </Label>
                               <Select
@@ -771,7 +769,7 @@ export function ServerLuckPerms() {
                                 onValueChange={(v) => setPermValueInput(v === "true")}
                                 disabled={submitting}
                               >
-                                <SelectTrigger id="lp-value-input" className="h-9 text-xs bg-background/50 border-input">
+                                <SelectTrigger id="lp-value-input">
                                   <SelectValue />
                                 </SelectTrigger>
                                 <SelectContent className="border-border">
@@ -781,8 +779,8 @@ export function ServerLuckPerms() {
                               </Select>
                             </div>
 
-                            <div className="grid gap-1.5">
-                              <Label htmlFor="lp-world-input" className="text-[10px] text-muted-foreground font-semibold">
+                            <div className="grid gap-2">
+                              <Label htmlFor="lp-world-input">
                                 {t("luckperms_world")}
                               </Label>
                               <Input
@@ -790,7 +788,7 @@ export function ServerLuckPerms() {
                                 placeholder="world"
                                 value={permWorldInput}
                                 onChange={(e) => setPermWorldInput(e.target.value)}
-                                className="h-9 text-xs font-mono bg-background/50 border-input focus-visible:ring-primary/20"
+                                className="font-mono"
                                 disabled={submitting}
                                 autoComplete="off"
                               />
