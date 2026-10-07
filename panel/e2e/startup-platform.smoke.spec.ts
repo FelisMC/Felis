@@ -98,8 +98,10 @@ test("Owner executes node management and receives stage, failure logs and retry"
   await page.route("**/api/v1/settings/node-control/tasks/test-task", (route) => route.fulfill({ json: task }));
   await page.route("**/api/v1/settings/node-control/tasks/test-task/retry", (route) => { task = { ...task, state: "running", error: undefined }; return route.fulfill({ status: 202, json: task }); });
   await page.goto("/admin/platform");
+  await expect(page.getByLabel(t("admin:node_control_ip"))).toHaveCount(0);
+  await page.getByRole("button", { name: t("admin:node_control_enable"), exact: true }).click();
   await page.getByLabel(t("admin:node_control_ip")).fill("192.0.2.10");
-  const submit = page.getByRole("button", { name: t("admin:node_control_submit"), exact: true });
+  const submit = page.getByRole("button", { name: t("admin:node_control_enable"), exact: true });
   await expect(submit).toBeDisabled();
   await page.getByRole("switch").click();
   await submit.click();

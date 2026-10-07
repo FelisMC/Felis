@@ -387,5 +387,11 @@
   "node_control_started": "Started: {{time}}",
   "node_control_timeout": "Operation timeout: 45 minutes",
   "node_control_other_running": "Another node task is running; new node operations are temporarily blocked.",
-  "node_control_show_running": "View running task"
+  "node_control_show_running": "View running task",
+  "node_control_mode_loading": "Reading deployment mode.",
+  "node_control_enable_required": "The platform is in single-node mode. Enable distributed deployment before enrolling or approving workers. Activation changes controller configuration and may temporarily interrupt panel access.",
+  "node_control_enable_ip_hint": "Required. Enter the controller’s currently registered fixed IP, using a static address or DHCP reservation.",
+  "node_control_ip_hint": "Required. Enter the fixed IP configured on the target worker.",
+  "node_control_incomplete": "Complete all required fields and acknowledge the maintenance conditions before executing.",
+  "node_control_back": "Back"
 }

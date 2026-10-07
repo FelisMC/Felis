@@ -383,5 +383,11 @@
   "node_control_started": "开始时间：{{time}}",
   "node_control_timeout": "操作超时上限为 45 分钟",
   "node_control_other_running": "另一项节点任务正在执行，当前暂不允许新的节点操作。",
-  "node_control_show_running": "查看执行中任务"
+  "node_control_show_running": "查看执行中任务",
+  "node_control_mode_loading": "正在读取部署模式。",
+  "node_control_enable_required": "当前为单节点模式。接入或批准 worker 前，需先启用分布式部署。启用过程将变更主控配置，并可能暂时中断面板访问。",
+  "node_control_enable_ip_hint": "必填。填写主控当前登记的固定 IP；应为静态地址或已配置 DHCP 地址保留。",
+  "node_control_ip_hint": "必填。填写目标 worker 已配置的固定 IP。",
+  "node_control_incomplete": "填写全部必填项并确认维护条件后，方可执行。",
+  "node_control_back": "返回"
 }

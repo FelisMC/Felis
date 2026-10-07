@@ -53,11 +53,29 @@ describe("host node management", () => {
     expect(calls.retryNodeTask).toHaveBeenCalledWith("task-1");
     await waitFor(() => expect(calls.nodeTask).toHaveBeenCalledWith("task-2"));
   });
+  it("gates worker operations behind explicit activation and explains its required input", async () => {
+    const running = { ...failed, state: "running" as const, request: { action: "enable" as const, confirmMaintenance: true } };
+    calls.startNodeTask.mockResolvedValue(running); calls.nodeTask.mockResolvedValue(running);
+    render(<NodeControlPanel distributed={false} />);
+    expect(screen.queryByRole("combobox", { name: "Operation" })).toBeNull();
+    expect(screen.queryByLabelText("Fixed node IP")).toBeNull();
+    const enable = screen.getByRole("button", { name: "Enable distributed deployment" });
+    await waitFor(() => expect(enable).toHaveProperty("disabled", false));
+    await userEvent.click(enable);
+    expect(screen.getByText(/Required. Enter the controller/)).toBeTruthy();
+    expect(screen.queryByLabelText("Node name")).toBeNull();
+    await userEvent.click(screen.getByRole("switch"));
+    expect(screen.getByRole("button", { name: "Enable distributed deployment" })).toHaveProperty("disabled", true);
+    fireEvent.change(screen.getByLabelText("Fixed node IP"), { target: { value: "192.0.2.10" } });
+    await userEvent.click(screen.getByRole("button", { name: "Enable distributed deployment" }));
+    expect(calls.startNodeTask).toHaveBeenCalledWith({ action: "enable", externalIP: "192.0.2.10", peers: [], confirmMaintenance: true });
+  });
   it("reports a host connection failure and disables changes", async () => {
     calls.nodeTasks.mockRejectedValue({ status: 503, code: "node_control_unavailable" });
     render(<NodeControlPanel distributed={false} />);
     expect(await screen.findByRole("alert")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Execute operation" })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: "Enable distributed deployment" })).toHaveProperty("disabled", true);
+    expect(screen.queryByLabelText("Fixed node IP")).toBeNull();
     expect(calls.startNodeTask).not.toHaveBeenCalled();
   });
 });
