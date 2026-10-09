@@ -58,7 +58,7 @@ RUN if [ -z "${LIMBO_VERSION:-}" ]; then \
 # 21-jre: the Limbo jar is Java 21 bytecode (class-file major 65), so a Java 17
 # JRE cannot run it (UnsupportedClassVersionError). A 21 JRE also runs the
 # plugin's release-17 bytecode fine.
-FROM eclipse-temurin:21-jre@sha256:49e21e16e3c86eb7816a44a67549910ed090fbeb40c29c525d58bf5e02e91b0f
+FROM eclipse-temurin:21-jre@sha256:cff19e6215689161eb6162c11b86b0c60ddf802164f2eaf48d570f8fb79a36c5
 ARG LIMBO_JAR_URL
 ARG LIMBO_JAR_SHA256
 ARG LIMBO_SCHEM_URL
