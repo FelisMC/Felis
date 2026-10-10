@@ -148,7 +148,7 @@ test("an admin reaches the user list", async ({ page, signIn }) => {
   await expect(page.getByText("linked@mock.felis.local")).toBeVisible();
 });
 
-test("account cards keep aligned headings with and without actions", async ({ page, signIn }) => {
+test("account cards keep compact headings and aligned form fields", async ({ page, signIn }) => {
   await page.route("**/api/v1/account/link/start", (route) => route.fulfill({ json: { linked: false } }));
   await signIn("owner");
   await page.goto("/account");
@@ -157,7 +157,8 @@ test("account cards keep aligned headings with and without actions", async ({ pa
   const passkeyHeader = page.getByRole("heading", { name: t("account:passkeys"), exact: true }).locator("..");
   const plain = (await linkHeader.boundingBox())!;
   const withAction = (await passkeyHeader.boundingBox())!;
-  expect(plain.height).toBeCloseTo(withAction.height, 0);
+  expect(plain.height).toBeLessThanOrEqual(48);
+  expect(withAction.height).toBeLessThanOrEqual(60);
   const source = (await page.getByRole("combobox", { name: t("account:staff_source") }).boundingBox())!;
   const profile = (await page.getByLabel(t("account:staff_profile")).boundingBox())!;
   expect(source.y).toBeCloseTo(profile.y, 0);

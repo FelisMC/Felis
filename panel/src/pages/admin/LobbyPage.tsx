@@ -103,10 +103,7 @@ function ExperienceSettings({ name, server, onDirtyChange, onChanged }: { name: 
           <Card key={group.key} className="overflow-hidden">
             <CardHeader className="flex-row flex-wrap items-center gap-3">
               <span className="shrink-0 text-primary"><Icon className="h-4 w-4" /></span>
-              <div className="space-y-2">
-                <CardTitle>{t(group.key)}</CardTitle>
-                <p className="text-xs text-muted-foreground">{t(`${group.key}_description`)}</p>
-              </div>
+              <CardTitle>{t(group.key)}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-5">
               <div className="grid items-start gap-x-5 gap-y-4 sm:grid-cols-2">
