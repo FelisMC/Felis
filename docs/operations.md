@@ -35,7 +35,7 @@ cloudflared is left as it is, see §4):
 | k3s | v1.36.4+k3s1 | `FELIS_K3S_VERSION` in `bootstrap.sh` |
 | cloudflared | 2026.9.1 | `FELIS_CLOUDFLARED_VERSION`, sha256 per architecture |
 | Temurin JRE (Velocity) | 25, patch build pinned | `FELIS_JRE_VERSION`, sha256 per architecture |
-| Go (nano builds) | 1.26.8 | `GO_PINNED_VERSION`, sha256 per architecture |
+| Go (nano builds) | 1.26.9 | `GO_PINNED_VERSION`, sha256 per architecture |
 | Minecraft / Limbo / Paper / Velocity / LuckPerms | `deploy/game-stack.lock` | §15b |
 | PostgreSQL | 18.6, the official `postgres` image by digest | `POSTGRES_IMAGE` in `bootstrap.sh`, `defaultPostgresImage` in `internal/platform` |
 

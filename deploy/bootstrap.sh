@@ -61,7 +61,7 @@
 #                     digests are pinned; a rerun moves an installer-managed JRE to the
 #                     pinned build). Another feature version is checked against the
 #                     digest Adoptium's API publishes for it.
-#   FELIS_GO_VERSION  Go toolchain used to build the nano binary (default: 1.26.8)
+#   FELIS_GO_VERSION  Go toolchain used to build the nano binary (default: 1.26.9)
 #   FELIS_GO_SHA256   sha256 of that version's linux tarball for this host's architecture.
 #                     REQUIRED for a non-default FELIS_GO_VERSION; the default's is pinned.
 #   FELIS_K3S_VERSION k3s release a fresh install gets (default: v1.36.4+k3s1). An
@@ -306,9 +306,9 @@ FELIS_VELOCITY_XMX="${FELIS_VELOCITY_XMX:-1G}"
 # The Go tarball is unpacked and run as root, so the default version is pinned by the sha256
 # go.dev/dl publishes for each architecture install_go_toolchain handles. Move all three
 # together; any other FELIS_GO_VERSION has to bring its own FELIS_GO_SHA256.
-GO_PINNED_VERSION="1.26.8"
-GO_PINNED_SHA256_AMD64="d0f743b33e8d8945e6b1f432edd15785c70507121d6e2a723b21285eddf8b57b"
-GO_PINNED_SHA256_ARM64="211ffced9dcb9633a55eac6364816ec0ddd951389a740e88fa8b3337971bdda0"
+GO_PINNED_VERSION="1.26.9"
+GO_PINNED_SHA256_AMD64="42d158b4d8f7b61ac0a830567c940a86098fb7aac52e467a5ebec03ef5cc2f8d"
+GO_PINNED_SHA256_ARM64="4a97373d49fcacdcf3694fea368a500b00ee3e963974f3e7514132717632f052"
 FELIS_GO_VERSION="${FELIS_GO_VERSION:-$GO_PINNED_VERSION}"
 FELIS_GO_SHA256="${FELIS_GO_SHA256:-}"
 # cloudflared runs as root on the edge, so it gets the same treatment: a pinned release and
