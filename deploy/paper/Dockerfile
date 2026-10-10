@@ -29,7 +29,7 @@
 
 # 25-jre, not 21: Paper 26.2 declares java.version.minimum=25 (PaperMC Fill v3) and refuses
 # to boot on anything older.
-FROM eclipse-temurin:25-jre@sha256:bb036ed6cfdc57e3da7c22634d15f1b840d2caf76183861c80e81ca4b5104abb
+FROM eclipse-temurin:25-jre@sha256:fcd7fd7b387f94bb2ac461478a7436ad8e349924c374ea8313919624dceae636
 ARG PAPER_JAR_URL
 # Required alongside the URL: Fill's URLs are content-addressed, but nothing enforces
 # that shape at build time. Checking the digest after the download turns a truncated or
