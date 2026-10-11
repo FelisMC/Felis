@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"math"
 	"net"
 	"net/http"
@@ -74,6 +75,14 @@ type bucketSet struct {
 
 func newBucketSet(limit RateLimit, now func() time.Time) *bucketSet {
 	return &bucketSet{now: now, limit: limit, buckets: map[string]*tokenBucket{}, maxKeys: bucketMaxKeys}
+}
+
+// setLimit moves the set to a new limit; a token count above the new burst is capped at
+// the next refill.
+func (s *bucketSet) setLimit(limit RateLimit) {
+	s.mu.Lock()
+	s.limit = limit
+	s.mu.Unlock()
 }
 
 // refill brings b up to now. The caller holds mu.
@@ -224,8 +233,8 @@ func errMailUnavailable() *apiError {
 // mail_rate_limited. The public doors call it before resolving the address, so
 // either refusal is the same for every address and says nothing about whether
 // it has an account.
-func (a *API) checkMailBudget() error {
-	if a.Mailer == nil {
+func (a *API) checkMailBudget(ctx context.Context) error {
+	if a.mailer(ctx) == nil {
 		return errMailUnavailable()
 	}
 	if ok, wait := a.mailGate().peek(mailGateKey); !ok {

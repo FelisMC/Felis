@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"felis.lolicon.best/internal/config"
+	"felis.lolicon.best/internal/heartbeatsettings"
 	"felis.lolicon.best/internal/mail"
+	"felis.lolicon.best/internal/mailsettings"
 	"felis.lolicon.best/internal/offsite"
 	"felis.lolicon.best/internal/platform"
 	"felis.lolicon.best/internal/store"
@@ -72,10 +74,10 @@ func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 		report.Findings = append(report.Findings, watchdog.StateSetAside(aside))
 	}
 	cl, owners, ownersErr := watchdogProbes(ctx, w, cfg, now, &report)
-	if cfg.SMTP.Host != "" {
+	panel, panelBeat, panelErr := panelSettings(ctx, cfg.Database.URL)
+	m := relayFor(state, panel, panelErr, cfg.SMTP, watchdogSender, func() {
 		refreshSMTPPassword(ctx, w.smtpPasswordFile, cl, w.controlNS, state, stderr)
-	}
-	state.Relay = cachedRelay(cfg.SMTP)
+	})
 	if ownersErr == nil {
 		state.Recipients = owners
 	}
@@ -94,9 +96,11 @@ func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 		standby: standsBy(cfg.Offsite.Enabled(), w.offsiteStatus),
 		quiet:   now.Before(watchdog.QuietUntil(w.quietPath)),
 	}
-	if beat.url, err = readHeartbeatURL(w.heartbeatFile); err != nil {
-		fmt.Fprintf(stderr, "felis watchdog: %v; pinging no heartbeat\n", err)
+	fileURL, err := readHeartbeatURL(w.heartbeatFile)
+	if err != nil {
+		fmt.Fprintf(stderr, "felis watchdog: %v; pinging no heartbeat from the host file\n", err)
 	}
+	beat.url = heartbeatFor(state, panelBeat, panelErr, fileURL)
 	if w.dryRun {
 		if plan.Empty() {
 			fmt.Fprintln(stdout, "felis watchdog: nothing is due to be mailed")
@@ -109,7 +113,6 @@ func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	m := configMailer(cfg.SMTP, state.SMTPPassword, watchdogSender)
 	unheard, mailFailed := m.deliver(ctx, state, plan, subject, body, mailHold(w.quietPath, cfg.Offsite.Enabled(), w.offsiteStatus, now), now, stdout, stderr)
 	saveErr := watchdog.SaveStateOr(w.statePath, w.fallbackState, state)
 	if saveErr != nil {
@@ -335,7 +338,7 @@ func watchdogUnitFailed(r unitFailedRun, stdout, stderr io.Writer) int {
 	}
 	var err error
 	if beat.url, err = readHeartbeatURL(r.heartbeatFile); err != nil {
-		fmt.Fprintf(stderr, "felis watchdog: %v; pinging no heartbeat\n", err)
+		fmt.Fprintf(stderr, "felis watchdog: %v; pinging no heartbeat from the host file\n", err)
 	}
 	state, err := watchdog.LoadState(watchdog.NewestState(r.statePath, r.fallbackPath))
 	if err != nil {
@@ -346,11 +349,18 @@ func watchdogUnitFailed(r unitFailedRun, stdout, stderr io.Writer) int {
 		beat.send(r.client, stdout, stderr)
 		return 1
 	}
+	// The heartbeat the Owner set in the panel, as the last good run cached it, wins over
+	// the host file.
+	if state.Heartbeat != "" {
+		beat.url = state.Heartbeat
+	}
 	plan := state.Observe(watchdog.Report{Findings: []watchdog.Finding{watchdog.WatchdogFailed(detail)}, Unknown: []string{""}}, r.now)
 	host, _ := os.Hostname()
 	subject, body := plan.Message(host, r.now)
+	// The relay the last run used, which the Owner's panel relay overrides felis.toml's
+	// for; felis.toml's only when that run used it too.
 	m := mailer{relay: state.Relay, password: state.SMTPPassword, send: r.send}
-	if cfgErr == nil {
+	if cfgErr == nil && !state.RelayFromPanel {
 		m = configMailer(cfg.SMTP, state.SMTPPassword, r.send)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
@@ -507,4 +517,44 @@ func splitList(s string) []string {
 		}
 	}
 	return out
+}
+
+// panelSettings reads the relay and the heartbeat URL the Owner saved in the panel, each
+// nil when there is none.
+func panelSettings(ctx context.Context, url string) (*mailsettings.Settings, *heartbeatsettings.Settings, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	drv, err := store.Open(ctx, url)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer drv.Close()
+	relay, err := mailsettings.Read(ctx, drv.DB())
+	if err != nil {
+		return nil, nil, err
+	}
+	beat, err := heartbeatsettings.Read(ctx, drv.DB())
+	return relay, beat, err
+}
+
+// relayFor picks the relay this run mails through and caches it in state, so a run while
+// the database is out (when an alert matters most) still reaches the owners. The Owner's
+// panel relay wins over felis.toml's; with the database unreadable the last run's relay
+// stands, and felis.toml's is used only when that was felis.toml's too.
+func relayFor(state *watchdog.State, panel *mailsettings.Settings, panelErr error, c config.SMTPConfig, send func(*mail.SMTP) alertSender, refreshHostPassword func()) mailer {
+	switch {
+	case panel != nil:
+		state.Relay = &watchdog.Relay{Host: panel.Host, Port: panel.Port, From: panel.From, Username: panel.Username, RequireTLS: panel.RequireTLS}
+		state.SMTPPassword = panel.Password
+		state.RelayFromPanel = true
+		return mailer{relay: state.Relay, password: state.SMTPPassword, send: send}
+	case panelErr != nil && state.RelayFromPanel:
+		return mailer{relay: state.Relay, password: state.SMTPPassword, send: send}
+	}
+	if c.Host != "" {
+		refreshHostPassword()
+	}
+	state.Relay = cachedRelay(c)
+	state.RelayFromPanel = false
+	return configMailer(c, state.SMTPPassword, send)
 }

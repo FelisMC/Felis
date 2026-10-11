@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import i18next from "i18next";
@@ -20,6 +20,7 @@ const calls = vi.hoisted(() => ({
   startWorldExport: vi.fn(),
   exportStatus: vi.fn(),
   exportDownloadURL: vi.fn(),
+  backupNow: vi.fn(),
 }));
 vi.mock("@/lib/tier", () => ({
   useTier: () => ({
@@ -191,7 +192,7 @@ describe("ServerBackups back up now", () => {
     renderPage();
     await screen.findByText("Page 1 of 3");
     expect(backUp().disabled).toBe(true);
-    expect(backUp().title).toBe("Stop the server before backing it up.");
+    expect(backUp().title).toBe("The server is starting or stopping. Back it up once it is running or fully stopped.");
 
     calls.status.mockResolvedValue({ name: "survival", displayName: "Survival", phase: "Stopped", desiredState: "Stopped" });
     await act(() => vi.advanceTimersByTimeAsync(14_000));
@@ -199,6 +200,18 @@ describe("ServerBackups back up now", () => {
     await act(() => vi.advanceTimersByTimeAsync(1_000));
     expect(backUp().disabled).toBe(false);
     expect(backUp().title).toBe("");
+  });
+
+  // A ready running server is backed up live, its players staying on.
+  it("backs up a ready running server live", async () => {
+    calls.status.mockResolvedValue({ name: "survival", displayName: "Survival", phase: "Running", desiredState: "Running", ready: true });
+    calls.backupNow.mockResolvedValue({ name: "survival", status: "backing_up" });
+    renderPage();
+    await screen.findByText("Page 1 of 3");
+    expect(backUp().disabled).toBe(false);
+    expect(backUp().title).toBe("A running server can be backed up too: saving pauses for a few seconds while the world is copied, and players stay connected.");
+    await userEvent.click(backUp());
+    await waitFor(() => expect(calls.backupNow).toHaveBeenCalledWith("survival"));
   });
 
   it("rereads fast while the server is on its way somewhere", async () => {

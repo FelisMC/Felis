@@ -362,6 +362,79 @@ components:
         revision: { type: string }
         managed: { type: boolean }
 
+    ArchivePolicySettings:
+      type: object
+      description: >-
+        The backup and audit retention in force. source is panel when the Owner saved it
+        here, host when felis.toml's [archive] and [audit] stand.
+      required: [manualKeep, manualRetentionDays, manualCooldownMinutes, scheduledEveryHours, scheduledKeep, scheduledRetentionDays, releasedRetentionDays, maxStoreGiB, auditRetentionDays, source, revision]
+      properties:
+        manualKeep: { type: integer, minimum: 1, maximum: 100 }
+        manualRetentionDays: { type: integer, minimum: 1, maximum: 3650 }
+        manualCooldownMinutes: { type: integer, minimum: 0, maximum: 1440 }
+        scheduledEveryHours: { type: integer, minimum: 0, maximum: 720, description: "0 turns the scheduled restore points off." }
+        scheduledKeep: { type: integer, minimum: 1, maximum: 100 }
+        scheduledRetentionDays: { type: integer, minimum: 1, maximum: 3650 }
+        releasedRetentionDays: { type: integer, minimum: 1, maximum: 3650, description: How long the archive of a released world is kept. }
+        maxStoreGiB: { type: integer, minimum: 0, description: "The backup store's soft cap; 0 for none." }
+        auditRetentionDays: { type: integer, minimum: 0, maximum: 3650, description: "0 keeps every audit row; otherwise at least 30." }
+        source: { type: string, enum: [panel, host] }
+        revision: { type: string }
+
+    HeartbeatSettings:
+      type: object
+      description: >-
+        The watchdog's heartbeat URL as set in the panel. Only its scheme and host are
+        shown: the path is the check's key. With none set here, the watchdog pings the
+        host file's URL, if the installer wrote one.
+      required: [set, display, revision]
+      properties:
+        set: { type: boolean }
+        display: { type: string, description: "scheme://host/... of the saved URL; empty when none is set." }
+        revision: { type: string }
+
+    FailoverPolicySettings:
+      type: object
+      description: >-
+        The Owner's failover setting. automatic fails a lost node over without waiting for
+        the Owner once it has been gone afterMinutes (only while a controller is up and
+        exactly one node is lost); the node is a worker or, with controller high
+        availability, a controller. replicaMinutes is how often a world running on such a
+        node is copied live, so a failover loses little; 0 turns the copies off.
+      required: [automatic, afterMinutes, replicaMinutes, revision, managed]
+      properties:
+        automatic: { type: boolean }
+        afterMinutes: { type: integer, minimum: 10, maximum: 1440 }
+        replicaMinutes: { type: integer, minimum: 0, maximum: 1440, description: "0, or 15 to 1440." }
+        revision: { type: string }
+        managed: { type: boolean }
+
+    MailSettings:
+      type: object
+      required: [source, host, port, from, username, password_set, require_tls, max_per_hour, revision]
+      properties:
+        source: { type: string, enum: [panel, host, none] }
+        host: { type: string }
+        port: { type: integer }
+        from: { type: string }
+        username: { type: string }
+        password_set: { type: boolean }
+        require_tls: { type: boolean }
+        max_per_hour: { type: integer, description: "Install-wide hourly mail cap; 0 is the default." }
+        revision: { type: string, description: "Changes with every save; empty while the panel has no relay." }
+    MailSettingsRequest:
+      type: object
+      additionalProperties: false
+      required: [host, port, from, username, require_tls, max_per_hour, revision]
+      properties:
+        host: { type: string }
+        port: { type: integer, enum: [25, 465, 587, 2525] }
+        from: { type: string }
+        username: { type: string }
+        password: { type: string, description: "Absent keeps the current password." }
+        require_tls: { type: boolean }
+        max_per_hour: { type: integer, minimum: 0 }
+        revision: { type: string }
     AuthSourcesSettings:
       type: object
       required: [sources, revision, managed]
@@ -544,7 +617,7 @@ components:
 
     ExecutionNode:
       type: object
-      required: [name, role, ready, approved, addresses, architecture]
+      required: [name, role, ready, approved, addresses, architecture, k3sVersion, fenced]
       properties:
         name: { type: string }
         role: { type: string }
@@ -552,13 +625,17 @@ components:
         approved: { type: boolean }
         addresses: { type: array, items: { type: string } }
         architecture: { type: string }
+        k3sVersion: { type: string, description: "The node's k3s version." }
+        felisVersion: { type: string, description: "The felis build the node last installed; absent for a node enrolled before it was recorded." }
+        fenced: { type: boolean, description: "A lost worker taken out of service for a failover: cordoned, no longer approved, tainted out of service." }
+        lostSince: { type: string, format: date-time, description: "When an offline node stopped reporting ready." }
     WorldMigration:
       type: object
       required: [id, server, state, stage, sourceNode, targetNode, sourcePVC, targetPVC, backup, started, updated, switched, attempt]
       properties:
         id: { type: string }
         server: { type: string }
-        state: { type: string, enum: [backing_up, restoring, switching, succeeded, failed] }
+        state: { type: string, enum: [fencing, backing_up, restoring, switching, succeeded, failed, aborted] }
         stage: { type: string }
         sourceNode: { type: string }
         targetNode: { type: string }
@@ -576,16 +653,18 @@ components:
         switched: { type: boolean }
         attempt: { type: integer }
         error: { type: string }
+        kind: { type: string, enum: [failover], description: "failover for a failover; absent for a migration." }
+        resume: { type: string, description: "The desired state a failover gives the server back once it has switched." }
 
     NodeControlRequest:
       type: object
       required: [action, confirmMaintenance]
       additionalProperties: false
       properties:
-        action: { type: string, enum: [enable, join, approve] }
-        name: { type: string, description: Stable worker node name; required for join and approve. }
-        sshTarget: { type: string, description: Verified root SSH alias or user@host; required for workers. }
-        externalIP: { type: string, description: Fixed node IP; required for enable and join. }
+        action: { type: string, enum: [enable, join, approve, upgrade, fence, unfence, enable-ha, join-controller] }
+        name: { type: string, description: Stable node name; required for every action except enable and enable-ha. }
+        sshTarget: { type: string, description: Verified root SSH alias or user@host; required for join, approve, upgrade and join-controller. }
+        externalIP: { type: string, description: Fixed node IP; required for enable, join and join-controller. }
         peers:
           type: array
           maxItems: 100
@@ -605,6 +684,53 @@ components:
         finishedAt: { type: string, format: date-time }
         error: { type: string }
         log: { type: string, description: Most recent 64 KiB of host execution output; absent in task lists. }
+
+    FailoverBackup:
+      type: object
+      required: [id, createdAt, sizeBytes]
+      properties:
+        id: { type: string }
+        createdAt: { type: string, format: date-time }
+        sizeBytes: { type: integer, format: int64 }
+    FailoverServer:
+      type: object
+      required: [name, desiredState, backup, operation]
+      properties:
+        name: { type: string }
+        desiredState: { type: string }
+        backup:
+          allOf: [{ $ref: '#/components/schemas/FailoverBackup' }]
+          nullable: true
+          description: The newest intact backup a failover would restore; null when there is none.
+        operation:
+          allOf: [{ $ref: '#/components/schemas/WorldMigration' }]
+          nullable: true
+          description: The migration or failover the server has underway; null when none.
+    FailoverPlan:
+      type: object
+      required: [node, lost, fenced, lostSince, servers, targets]
+      properties:
+        node: { type: string }
+        lost: { type: boolean, description: An offline worker (or, with controller high availability, controller), which may be failed over. }
+        fenced: { type: boolean }
+        lostSince: { type: string, format: date-time, nullable: true }
+        servers: { type: array, items: { $ref: '#/components/schemas/FailoverServer' } }
+        targets: { type: array, items: { type: string }, description: Online nodes that can take the worlds. }
+    FailoverSkip:
+      type: object
+      required: [name, reason]
+      properties:
+        name: { type: string }
+        reason: { type: string, enum: [no_backup, unknown_server, failed] }
+        error: { type: string }
+    FailoverResult:
+      type: object
+      required: [operations, skipped]
+      properties:
+        operations: { type: array, items: { $ref: '#/components/schemas/WorldMigration' } }
+        skipped: { type: array, items: { $ref: '#/components/schemas/FailoverSkip' } }
+        fenceTask: { $ref: '#/components/schemas/NodeControlTask' }
+        fenceError: { type: string, description: Why no fence task could be started now; it is retried in the background. }
 
     ServerInfo:
       type: object
@@ -1408,6 +1534,40 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
+  /api/v1/servers/{name}/migrations/{id}/abort:
+    post:
+      operationId: abortWorldMigration
+      tags: [admin-servers]
+      summary: Give up a failed migration; the server stays on its source world and node.
+      description: >-
+        Only a failed migration that never switched can be aborted. Its Jobs and its
+        partial target world are removed and the maintenance lock is released, so the
+        server can start where it was. The safety backup stays as a restore point. The
+        target node does not need to be online.
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The aborted operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorldMigration'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   # ----------------------------------------------------------------- health ---
   /healthz:
     get:
@@ -1614,6 +1774,73 @@ paths:
           $ref: '#/components/responses/Conflict'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/nodes/{node}/failover:
+    get:
+      operationId: failoverPlan
+      tags: [admin-servers]
+      summary: What failing a lost worker over would do (Owner).
+      description: >-
+        The user servers whose worlds are on the node, each with the newest intact backup
+        a failover would restore (so what it loses), and the online nodes that can take
+        the worlds. lost is true only for an offline worker.
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: node, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The failover plan.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FailoverPlan' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    post:
+      operationId: failOverNode
+      tags: [admin-servers]
+      summary: Fail a lost worker over to another node (Owner, fresh reauthentication).
+      description: >-
+        Starts a failover of every server on the node towards targetNode, each from its
+        newest intact backup, and asks the host node service to fence the node (cordon,
+        remove its approval, taint it out of service). A server already failing over keeps
+        its failover; one without an intact backup, or that cannot start, is reported in
+        skipped and left where it is. confirm must repeat the node's name.
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: node, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [targetNode, confirm]
+              properties:
+                targetNode: { type: string }
+                confirm: { type: string, description: The node's name, typed by the Owner. }
+      responses:
+        '202':
+          description: The failovers started, and what was left.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FailoverResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The node is online or not a worker (node_not_lost), or a migration conflict.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
   /api/v1/internal/servers/{name}/ready:
     post:
@@ -2513,6 +2740,53 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '409':
           description: Server is not stopped (not_stopped), a restore, backup or file write already holds its world volume (maintenance_in_progress), or the file changed since expect_sha256 was read (file_changed).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/internal/servers/{name}/restore:
+    post:
+      tags: [account-internal]
+      operationId: internalRestoreLatest
+      summary: Restore a server's newest backup while rebuilding a host (service token; server must be stopped).
+      description: >-
+        felis restore-host POSTs here for each server it brings back from the
+        off-site copy. It restores the newest intact backup without a safety
+        snapshot, creating the world volume first when the server has never started
+        on this host, and is audited to "restore-host".
+      x-felis-face: [internal]
+      x-felis-tier: service
+      x-felis-callers: [ops]
+      security: [{ serviceToken: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '202':
+          description: Restore started.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, backup_id]
+                properties:
+                  name: { type: string }
+                  backup_id: { type: string }
+        '400':
+          description: Invalid server name (bad_name).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Unknown server (not_found) or no restorable backup (no_backup).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: The server is not stopped (not_stopped), or a restore or another operation holds its world (restore_in_progress, maintenance_in_progress).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -4574,6 +4848,310 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/settings/archive-policy:
+    get:
+      tags: [account]
+      operationId: getArchivePolicy
+      summary: Read the backup and audit retention (Owner).
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: The retention in force and its revision.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ArchivePolicySettings' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    put:
+      tags: [account]
+      operationId: setArchivePolicy
+      summary: Save the backup and audit retention (Owner, fresh reauthentication).
+      description: >-
+        Overrides felis.toml's [archive] and [audit] keys for felis-api, the backup Job
+        and the reaper. It takes effect within seconds on every felis-api replica and on
+        the next backup or reaper run.
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [manualKeep, manualRetentionDays, manualCooldownMinutes, scheduledEveryHours, scheduledKeep, scheduledRetentionDays, releasedRetentionDays, maxStoreGiB, auditRetentionDays, revision]
+              properties:
+                manualKeep: { type: integer, minimum: 1, maximum: 100 }
+                manualRetentionDays: { type: integer, minimum: 1, maximum: 3650 }
+                manualCooldownMinutes: { type: integer, minimum: 0, maximum: 1440 }
+                scheduledEveryHours: { type: integer, minimum: 0, maximum: 720 }
+                scheduledKeep: { type: integer, minimum: 1, maximum: 100 }
+                scheduledRetentionDays: { type: integer, minimum: 1, maximum: 3650 }
+                releasedRetentionDays: { type: integer, minimum: 1, maximum: 3650 }
+                maxStoreGiB: { type: integer, minimum: 0 }
+                auditRetentionDays: { type: integer, minimum: 0, maximum: 3650 }
+                revision: { type: string }
+      responses:
+        '200':
+          description: The saved retention and its new revision.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ArchivePolicySettings' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: The retention changed; reload before saving.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    delete:
+      tags: [account]
+      operationId: clearArchivePolicy
+      summary: Hand the retention back to felis.toml (Owner, fresh reauthentication).
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: The retention now in force (felis.toml's).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ArchivePolicySettings' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: The retention changed meanwhile.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/v1/settings/heartbeat:
+    get:
+      tags: [account]
+      operationId: getHeartbeat
+      summary: Read the watchdog heartbeat setting (Owner).
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: Whether a heartbeat URL is set here, and its revision.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HeartbeatSettings' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    put:
+      tags: [account]
+      operationId: setHeartbeat
+      summary: Save the watchdog heartbeat URL (Owner, fresh reauthentication).
+      description: The watchdog pings it on its next run, in preference to the host file's URL.
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url, revision]
+              properties:
+                url: { type: string, description: An http:// or https:// URL. }
+                revision: { type: string }
+      responses:
+        '200':
+          description: The saved setting.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HeartbeatSettings' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: The setting changed; reload before saving.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [account]
+      operationId: clearHeartbeat
+      summary: Remove the panel's heartbeat URL (Owner, fresh reauthentication).
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: The setting, now unset.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HeartbeatSettings' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: The setting changed meanwhile.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/settings/failover:
+    get:
+      tags: [account]
+      operationId: getFailoverPolicy
+      summary: Read the failover setting (Owner).
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: Current failover setting and revision.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FailoverPolicySettings' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    put:
+      tags: [account]
+      operationId: setFailoverPolicy
+      summary: Save the failover setting (Owner, fresh reauthentication).
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [automatic, afterMinutes, replicaMinutes, revision]
+              properties:
+                automatic: { type: boolean }
+                afterMinutes: { type: integer, minimum: 10, maximum: 1440 }
+                replicaMinutes: { type: integer, minimum: 0, maximum: 1440, description: "0, or 15 to 1440." }
+                revision: { type: string }
+      responses:
+        '200':
+          description: Saved setting and new revision.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FailoverPolicySettings' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: The setting changed; reload before saving.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/settings/smtp:
+    get:
+      tags: [account]
+      operationId: getMailSettings
+      summary: Read the mail relay (Owner).
+      description: >-
+        The relay in force and where it comes from - panel (saved here), host (the
+        [smtp] relay felis setup wrote into felis.toml) or none. The password is never
+        returned; password_set says whether one is stored.
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: The relay in force.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MailSettings' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    put:
+      tags: [account]
+      operationId: setMailSettings
+      summary: Save the mail relay (Owner, fresh reauthentication).
+      description: >-
+        Proves the relay accepts mail from the sender (a complete transaction delivering
+        one self-test message to the sender) and then saves it, overriding felis.toml's
+        relay for felis-api, the reaper, the watchdog and the break-glass console. It
+        takes effect without restarting. An absent password keeps the current one. Only
+        the submission ports 25, 465, 587 and 2525 are accepted.
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MailSettingsRequest' }
+      responses:
+        '200':
+          description: The saved relay.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MailSettings' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    delete:
+      tags: [account]
+      operationId: clearMailSettings
+      summary: Hand the mail relay back to felis.toml (Owner, fresh reauthentication).
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: The relay now in force.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MailSettings' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/v1/settings/smtp/test:
+    post:
+      tags: [account]
+      operationId: testMailSettings
+      summary: Send a test message through an unsaved relay (Owner, fresh reauthentication).
+      description: >-
+        Sends one message to the caller's verified address, else to the sender itself,
+        and spends the install's mail budget like any other mail.
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MailSettingsRequest' }
+      responses:
+        '200':
+          description: Where the test message went.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sent_to]
+                properties:
+                  sent_to: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
   /api/v1/settings/auth-sources:
     get:

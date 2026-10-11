@@ -120,6 +120,10 @@ type Reconciler struct {
 	Nodes          client.Reader
 	EgressProbe    string
 	ControllerNode string
+	// ControllerHA is controller high availability: a system server (login, lobby) whose
+	// world sits on replicated storage runs on whichever controller is up, instead of
+	// being pinned to ControllerNode (floats).
+	ControllerHA bool
 	client.Client
 	Scheme *runtime.Scheme
 	// Prober gates readiness on RCON reachability.
@@ -336,7 +340,7 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 		if node == "" {
 			node = r.ControllerNode
 		}
-		if node != "" {
+		if node != "" && !r.floats(server) {
 			var n corev1.Node
 			err := r.Nodes.Get(ctx, types.NamespacedName{Name: node}, &n)
 			if err != nil && !apierrors.IsNotFound(err) {
@@ -389,6 +393,10 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 		// A malformed spec (e.g. bad storage quantity) is terminal until edited.
 		r.markFailed(server, "InvalidSpec", err.Error())
 		return ctrl.Result{}, r.patchStatus(ctx, server)
+	}
+	// A floating system server takes any controller in place of the home one it was built for.
+	if r.floats(server) {
+		desired.Spec.Template.Spec.NodeSelector = map[string]string{placement.LabelRole: placement.RoleController}
 	}
 	if passwordStamp != "" {
 		if desired.Spec.Template.Annotations == nil {
@@ -503,6 +511,11 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 				}
 			} else if r.now().Time.Sub(server.Status.EmptySince.Time).Seconds() >=
 				float64(server.Spec.Idle.EmptySecondsBeforeStop) {
+				if liveBackupFreezing(server, r.now().Time) {
+					// A live backup is copying the world: the stop would save into the
+					// copy. EmptySince stands, so the stop follows the thaw.
+					return ctrl.Result{RequeueAfter: liveBackupPoll}, nil
+				}
 				// Merge patch, not Update: an unrelated reconcile writes status
 				// concurrently, and shipping the whole object back risks
 				// clobbering it (the reaper's Stop uses the same pattern for
@@ -581,6 +594,11 @@ func (r *Reconciler) reconcileStopped(ctx context.Context, server *v1alpha1.Mine
 	if sts.Spec.Replicas == nil || *sts.Spec.Replicas != 0 {
 		if wait, err := r.noticeStop(ctx, server, &sts); err != nil || wait > 0 {
 			return ctrl.Result{RequeueAfter: wait}, err
+		}
+		// The pod saves on its way down; a live backup still copying the world would
+		// catch that save half-written, so the stop waits for the thaw (bounded).
+		if liveBackupFreezing(server, r.now().Time) {
+			return ctrl.Result{RequeueAfter: liveBackupPoll}, nil
 		}
 		r.saveBeforeStop(ctx, server, &sts)
 		server.Status.StopNoticeAt = nil
@@ -1187,4 +1205,35 @@ func (r *Reconciler) recoverFailedStart(ctx context.Context, server *v1alpha1.Mi
 	server.Status.StartRequestedAt = nil
 	r.markStarting(server, "AutoRestart", fmt.Sprintf("start timed out; recreated the pod (attempt %d of %d)", n+1, maxAutoRestarts))
 	return nil
+}
+
+// liveBackupWait bounds how long the operator defers to a live backup (felis-api's
+// AnnotationLiveBackup): a little past felis-api's own freeze cap, so a freeze felis-api
+// never cleared (it died) cannot keep a server from stopping.
+const liveBackupWait = 6 * time.Minute
+
+// liveBackupPoll is how often a deferred stop looks again.
+const liveBackupPoll = 2 * time.Second
+
+// liveBackupFreezing reports a live backup copying the server's world, fresh enough to
+// wait for.
+func liveBackupFreezing(server *v1alpha1.MinecraftServer, now time.Time) bool {
+	raw := server.Annotations[v1alpha1.AnnotationLiveBackup]
+	if raw == "" {
+		return false
+	}
+	var f struct {
+		Started time.Time `json:"started"`
+	}
+	if err := json.Unmarshal([]byte(raw), &f); err != nil || f.Started.IsZero() {
+		return false
+	}
+	return now.Sub(f.Started) < liveBackupWait
+}
+
+// floats reports whether a server runs on any controller rather than a fixed node: with
+// controller high availability, a system server nobody pinned. Its world is on the
+// replicated class (felis ha migrate-storage, felis setup), so it follows the pod.
+func (r *Reconciler) floats(server *v1alpha1.MinecraftServer) bool {
+	return r.ControllerHA && server.Labels[v1alpha1.LabelSystemRole] != "" && server.Spec.NodeName == ""
 }

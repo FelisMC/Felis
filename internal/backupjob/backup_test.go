@@ -84,3 +84,27 @@ func TestBackupScheduledMarksTheJob(t *testing.T) {
 		t.Error("an on-demand backup is marked scheduled")
 	}
 }
+
+// TestBackupLiveReturnsTheJobItCreated pins that a live backup is created live, carries
+// the scratch cap and the scheduled flag, and hands back the Job name felis-api watches.
+func TestBackupLiveReturnsTheJobItCreated(t *testing.T) {
+	jobs := &captureJobs{}
+	b := &Backuper{Jobs: jobs, Config: Config{Image: "img", BackupPVC: "pvc", StageLimit: "8Gi"}}
+	name, err := b.BackupLive(context.Background(), "survival", "usr-1", ReasonScheduled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs.got) != 1 {
+		t.Fatalf("created %d jobs, want 1", len(jobs.got))
+	}
+	p := jobs.got[0]
+	if !p.Live || p.StageLimit != "8Gi" || !p.Scheduled || p.FormerOwner != "usr-1" || p.JobName != name || name == "" {
+		t.Errorf("params = %+v, returned %q", p, name)
+	}
+	if _, err := b.BackupLive(context.Background(), "survival", "usr-1", ""); err != nil || jobs.got[1].Scheduled || jobs.got[1].Replica {
+		t.Errorf("an on-demand live backup = %+v (%v)", jobs.got[1], err)
+	}
+	if _, err := b.BackupLive(context.Background(), "survival", "usr-1", ReasonReplica); err != nil || jobs.got[2].Scheduled || !jobs.got[2].Replica {
+		t.Errorf("a replica = %+v (%v)", jobs.got[2], err)
+	}
+}

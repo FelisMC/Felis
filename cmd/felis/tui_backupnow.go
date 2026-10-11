@@ -18,7 +18,7 @@ import (
 // lives in backupnow.go (unit-tested); this file is the untested terminal glue.
 //
 // It reuses listServersForHalt for the picker (the same "list servers with phase"
-// need) — the API enforces the stopped-gate, so a running pick returns a friendly 409.
+// need) — the API backs a running pick up live and refuses one starting or stopping.
 type backupStep int
 
 const (
@@ -200,12 +200,12 @@ func (m *backupModel) buildPickForm() *huh.Form {
 	return m.sized(newFelisForm(huh.NewGroup(
 		huh.NewSelect[string]().
 			Title("Back up a world now").
-			Description("Snapshots a STOPPED server's world through the live felis-api.").
+			Description("Snapshots a server's world through the live felis-api.").
 			Value(&m.pick).
 			Options(opts...),
 		huh.NewNote().Description(
-			"The world PVC is single-writer, so the server must be stopped. If it is still "+
-				"running, halt it first, then back it up."),
+			"A stopped world is archived as it is. A running one is archived live: the game "+
+				"stops saving while its world is copied, then saves again; players stay on."),
 	)))
 }
 

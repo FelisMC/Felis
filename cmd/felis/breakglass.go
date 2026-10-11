@@ -18,6 +18,7 @@ import (
 
 	"felis.lolicon.best/internal/api"
 	"felis.lolicon.best/internal/config"
+	"felis.lolicon.best/internal/mailsettings"
 	"felis.lolicon.best/internal/platform"
 	"felis.lolicon.best/internal/store"
 
@@ -155,7 +156,16 @@ func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 	// Recovery mails its code through [smtp]; the relay is opened only if a code is
 	// asked for.
 	host, _ := os.Hostname()
-	recovery := recoveryConfig{open: hostRecoveryMailer(cfg.SMTP, hostSMTPPasswordPath, platform.DefaultControlNamespace), host: host}
+	recovery := recoveryConfig{open: panelFirstRecoveryMailer(func(ctx context.Context) (*mailsettings.Settings, error) {
+		raw, err := repo.GetSetting(ctx, mailsettings.Key)
+		if errors.Is(err, api.ErrNotFound) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		return mailsettings.Parse(raw)
+	}, hostRecoveryMailer(cfg.SMTP, hostSMTPPasswordPath, platform.DefaultControlNamespace)), host: host}
 
 	res, err := runBreakGlassTUI(ctx, repo, cfg.Database, cfg.Server.RootDomain, cfg.Auth.AdminHostname, cfg.Auth.PanelHostname, cfg.Auth.AccessJWTAud, cfg.K8s.Namespace, accountableOSUser(), adminExists, recovery)
 	if err != nil {

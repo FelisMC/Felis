@@ -11,10 +11,14 @@ import (
 	"strings"
 )
 
+// nodePeersFile records the peer list the host firewall last installed.
+const nodePeersFile = "/etc/felis/node-peers"
+
 func nodeFirewall(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("node firewall", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	peers := fs.String("peers", "", "comma-separated exact node IP CIDRs")
+	controllerPeers := fs.String("controller-peers", "", "comma-separated exact CIDRs of every controller (controller high availability): their API servers reach each node's kubelet, and on a controller their etcd and supervisor ports")
 	controller := fs.String("controller-ip", "", "controller address (optionally :6443)")
 	main := fs.Bool("controller", false, "A hosts the public API NodePort")
 	pod := fs.String("pod-cidr", "10.42.0.0/16", "cluster Pod CIDR")
@@ -37,30 +41,25 @@ func nodeFirewall(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	var v4, v6 []string
-	for _, p := range strings.Split(*peers, ",") {
-		ip, n, err := net.ParseCIDR(p)
-		if err != nil {
-			fmt.Fprintln(stderr, "node firewall: invalid peer CIDR")
+	v4, v6, err := exactPeers(*peers)
+	if err != nil {
+		fmt.Fprintln(stderr, "node firewall:", err)
+		return 2
+	}
+	var c4, c6 []string
+	if *controllerPeers != "" {
+		if c4, c6, err = exactPeers(*controllerPeers); err != nil {
+			fmt.Fprintln(stderr, "node firewall: controller peers:", err)
 			return 2
-		}
-		ones, bits := n.Mask.Size()
-		if ones != bits {
-			fmt.Fprintln(stderr, "node firewall: only exact peer addresses accepted")
-			return 2
-		}
-		if ip.To4() != nil {
-			v4 = append(v4, n.String())
-		} else {
-			v6 = append(v6, n.String())
 		}
 	}
 	script := "#!/bin/bash\nset -euo pipefail\n"
 	for _, f := range []struct {
-		bin      string
-		peers    []string
-		metadata string
-	}{{"iptables", v4, "169.254.0.0/16"}, {"ip6tables", v6, "fe80::/10"}} {
+		bin         string
+		peers       []string
+		controllers []string
+		metadata    string
+	}{{"iptables", v4, c4, "169.254.0.0/16"}, {"ip6tables", v6, c6, "fe80::/10"}} {
 		if f.bin == "ip6tables" && len(f.peers) == 0 {
 			continue
 		}
@@ -125,6 +124,14 @@ func nodeFirewall(args []string, stdout, stderr io.Writer) int {
 		if ctrlFamily == family {
 			script += b + " -A FELIS-HOST -s " + ctrlIP.String() + " -p tcp --dport 10250 -j RETURN\n"
 		}
+		// With controller high availability every controller's API server reaches the
+		// kubelet, and the controllers reach each other's etcd and supervisor.
+		for _, c := range f.controllers {
+			script += b + " -A FELIS-HOST -s " + c + " -p tcp --dport 10250 -j RETURN\n"
+			if *main {
+				script += b + " -A FELIS-HOST -s " + c + " -p tcp -m multiport --dports 2379,2380,6444 -j RETURN\n"
+			}
+		}
 		script += b + " -A FELIS-HOST -p tcp -m multiport --dports 6443,6444,10250,10255,2379,2380,5000,5001,15432 -j DROP\n"
 	}
 	if *dryRun {
@@ -139,6 +146,12 @@ func nodeFirewall(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if err := os.WriteFile("/etc/felis/node-firewall.sh", []byte(script), 0700); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	// The installer reads this back on a rerun that passes no peers (bootstrap.sh
+	// recall_distributed_settings), so updating a controller keeps its workers reachable.
+	if err := os.WriteFile(nodePeersFile, []byte(strings.Join(append(v4, v6...), ",")+"\n"), 0600); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
@@ -180,6 +193,25 @@ func nodeFirewall(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	return 0
+}
+
+// exactPeers splits a comma-separated list of exact host CIDRs by family.
+func exactPeers(list string) (v4, v6 []string, err error) {
+	for _, p := range strings.Split(list, ",") {
+		ip, n, err := net.ParseCIDR(p)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid peer CIDR")
+		}
+		if ones, bits := n.Mask.Size(); ones != bits {
+			return nil, nil, fmt.Errorf("only exact peer addresses accepted")
+		}
+		if ip.To4() != nil {
+			v4 = append(v4, n.String())
+		} else {
+			v6 = append(v6, n.String())
+		}
+	}
+	return v4, v6, nil
 }
 
 func controlFirewallScript(controlNS, minecraftNS string) string {

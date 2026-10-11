@@ -67,7 +67,7 @@ func (a *API) noteOTPLock(r *http.Request, err error, userID, purpose string) {
 	if !notify || uerr != nil || u.Email == "" {
 		return
 	}
-	sender, ok := a.Mailer.(noticeSender)
+	sender, ok := a.mailer(r.Context()).(noticeSender)
 	if !ok {
 		log.Printf("auth: no notice mailer; user %s was not told their %s is locked", userID, purpose)
 		return

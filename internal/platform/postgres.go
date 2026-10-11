@@ -96,13 +96,16 @@ var postgresPingCommand = []string{"pg_isready", "-q", "-h", "127.0.0.1", "-p", 
 // again so a full apply never prunes or drifts them.
 func PostgresObjects(p Params) []Object {
 	p = p.withDefaults()
-	return []Object{
-		namespaceObject(p.ControlNamespace),
+	objs := []Object{namespaceObject(p.ControlNamespace)}
+	if p.ControllerHA {
+		objs = append(objs, ReplicatedStorageClass(p), postgresPVC(p))
+	}
+	return append(objs,
 		postgresHBAConfig(p),
 		PostgresIngressPolicy(p),
 		postgresDeployment(p),
 		postgresService(p),
-	}
+	)
 }
 
 // postgresLabels are the database's labels. Like the registry it is not
@@ -139,7 +142,6 @@ func postgresHBAConfig(p Params) *corev1.ConfigMap {
 // the image's signal.
 func postgresDeployment(p Params) *appsv1.Deployment {
 	labels := postgresLabels()
-	hostPathDir := corev1.HostPathDirectory
 	probe := func(period, timeout, failures int32) *corev1.Probe {
 		return &corev1.Probe{
 			ProbeHandler:     corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: postgresPingCommand}},
@@ -209,6 +211,7 @@ func postgresDeployment(p Params) *appsv1.Deployment {
 					NodeSelector:                 controllerSelector(p),
 					AutomountServiceAccountToken: boolPtr(false),
 					EnableServiceLinks:           boolPtr(false),
+					Tolerations:                  haTolerations(p),
 					PriorityClassName:            controlPlanePriorityName,
 					// pg_ctl's -t 50 in the preStop hook fits inside it.
 					TerminationGracePeriodSeconds: int64Ptr(60),
@@ -221,16 +224,7 @@ func postgresDeployment(p Params) *appsv1.Deployment {
 					},
 					Containers: []corev1.Container{container},
 					Volumes: []corev1.Volume{
-						{
-							Name: postgresDataVol,
-							VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{
-								Path: PostgresDataHostPath,
-								// Directory, not DirectoryOrCreate: a directory
-								// kubelet made would belong to root, and a missing
-								// one means the installer did not run.
-								Type: &hostPathDir,
-							}},
-						},
+						postgresDataVolume(p),
 						{Name: postgresSocketVol, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 						{Name: tmpVolume, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 						{Name: postgresShmVol, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{
@@ -243,6 +237,24 @@ func postgresDeployment(p Params) *appsv1.Deployment {
 				},
 			},
 		},
+	}
+}
+
+// postgresDataVolume is the database's data: PostgresDataHostPath, or the replicated
+// volume in ControllerHA mode, which follows the pod to any controller.
+func postgresDataVolume(p Params) corev1.Volume {
+	if p.ControllerHA {
+		return corev1.Volume{Name: postgresDataVol, VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: PostgresHAClaim}}}
+	}
+	hostPathDir := corev1.HostPathDirectory
+	return corev1.Volume{
+		Name: postgresDataVol,
+		VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{
+			Path: PostgresDataHostPath,
+			// Directory, not DirectoryOrCreate: a directory kubelet made would belong
+			// to root, and a missing one means the installer did not run.
+			Type: &hostPathDir,
+		}},
 	}
 }
 

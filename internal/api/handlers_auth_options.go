@@ -91,7 +91,7 @@ func (a *API) handleAuthOptions(w http.ResponseWriter, r *http.Request) {
 	// email_verified rows), so it is on offer whenever a relay can mail the code; with
 	// none the email door answers 503 mail_unavailable, so it is left out like an
 	// unwired passkey verifier.
-	if a.Mailer != nil {
+	if a.mailer(r.Context()) != nil {
 		methods = append(methods, "email_otp")
 	}
 

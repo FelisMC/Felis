@@ -452,3 +452,44 @@ func TestRoleBindings_RefLocalRoleAndControlPlaneSA(t *testing.T) {
 		}
 	}
 }
+
+// TestLeaseRolesAreNarrow pins the leader-election grants: each control-plane identity may
+// create a lease and read and renew its own one only, record Events, and nothing else, in
+// the control namespace, bound to that identity alone.
+func TestLeaseRolesAreNarrow(t *testing.T) {
+	p := testParams()
+	rbac := ControlPlaneRBAC(p)
+	for sa, lease := range map[string]string{SAAPI: LeaseAPILoops, SAOperator: LeaseOperator} {
+		role := roleByName(t, rbac.Roles, sa+"-leases")
+		if role.Namespace != p.ControlNamespace || len(role.Rules) != 3 {
+			t.Fatalf("%s role = %+v", sa, role)
+		}
+		for _, r := range role.Rules {
+			switch {
+			case contains(r.Resources, "leases") && len(r.ResourceNames) == 0:
+				if len(r.Verbs) != 1 || r.Verbs[0] != "create" {
+					t.Errorf("%s unnamed lease verbs = %v", sa, r.Verbs)
+				}
+			case contains(r.Resources, "leases"):
+				if len(r.ResourceNames) != 1 || r.ResourceNames[0] != lease || len(r.Verbs) != 2 || !contains(r.Verbs, "get") || !contains(r.Verbs, "update") {
+					t.Errorf("%s named lease rule = %+v", sa, r)
+				}
+			case contains(r.Resources, "events"):
+				if len(r.Verbs) != 2 || !contains(r.Verbs, "create") || !contains(r.Verbs, "patch") {
+					t.Errorf("%s event verbs = %v", sa, r.Verbs)
+				}
+			default:
+				t.Errorf("%s has an unexpected rule %+v", sa, r)
+			}
+		}
+		bound := false
+		for _, rb := range rbac.RoleBindings {
+			if rb.RoleRef.Name == role.Name {
+				bound = len(rb.Subjects) == 1 && rb.Subjects[0].Name == sa && rb.Namespace == p.ControlNamespace
+			}
+		}
+		if !bound {
+			t.Errorf("%s lease role is not bound to %s alone", sa, sa)
+		}
+	}
+}

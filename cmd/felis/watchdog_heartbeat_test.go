@@ -17,7 +17,9 @@ import (
 	"unicode/utf8"
 
 	"felis.lolicon.best/internal/config"
+	"felis.lolicon.best/internal/heartbeatsettings"
 	"felis.lolicon.best/internal/mail"
+	"felis.lolicon.best/internal/mailsettings"
 	"felis.lolicon.best/internal/offsite"
 	"felis.lolicon.best/internal/watchdog"
 )
@@ -279,7 +281,8 @@ func TestMailerDeliver(t *testing.T) {
 			t.Errorf("%s: sent %v, want %d mails", tc.what, f.sent, tc.sent)
 		}
 		if len(f.relays) > 0 {
-			if got := *f.relays[0]; got != (mail.SMTP{Host: "smtp.example.com", Port: 587, From: "felis@example.com", Username: "felis", Password: "relay-pw"}) {
+			got := *f.relays[0]
+			if got.Host != "smtp.example.com" || got.Port != 587 || got.From != "felis@example.com" || got.Username != "felis" || got.Password != "relay-pw" || got.RequireTLS {
 				t.Errorf("%s: relay %+v", tc.what, got)
 			}
 		}
@@ -611,5 +614,85 @@ func TestWatchdogRunHeartbeat(t *testing.T) {
 				t.Errorf("%s: moved aside %v, want one file", tc.what, aside)
 			}
 		}
+	}
+}
+
+// TestRelayForPrefersThePanelRelay pins the relay an alert goes through: the Owner's panel
+// relay wins over felis.toml's; with the database out the last run's relay stands, so an
+// outage is still mailed through the relay the Owner chose.
+func TestRelayForPrefersThePanelRelay(t *testing.T) {
+	host := config.SMTPConfig{Host: "host.example.com", Port: 587, From: "felis@example.com", Username: "felis"}
+	panel := &mailsettings.Settings{Host: "panel.example.com", Port: 465, From: "alerts@example.com", Username: "alerts", Password: "panel-pw", RequireTLS: true}
+	send := func(*mail.SMTP) alertSender { return nil }
+
+	state := &watchdog.State{SMTPPassword: "host-pw"}
+	refreshed := 0
+	refresh := func() { refreshed++ }
+	m := relayFor(state, panel, nil, host, send, refresh)
+	if m.relay == nil || m.relay.Host != "panel.example.com" || m.password != "panel-pw" || !state.RelayFromPanel || refreshed != 0 {
+		t.Fatalf("with a panel relay: mailer %+v, state %+v, refreshed %d", m, state, refreshed)
+	}
+
+	m = relayFor(state, nil, errors.New("database down"), host, send, refresh)
+	if m.relay == nil || m.relay.Host != "panel.example.com" || m.password != "panel-pw" || refreshed != 0 {
+		t.Fatalf("database out after a panel relay: mailer %+v, refreshed %d", m, refreshed)
+	}
+
+	m = relayFor(state, nil, nil, host, send, refresh)
+	if m.relay == nil || m.relay.Host != "host.example.com" || state.RelayFromPanel || refreshed != 1 {
+		t.Fatalf("panel relay cleared: mailer %+v, state %+v, refreshed %d", m, state, refreshed)
+	}
+
+	fresh := &watchdog.State{}
+	if m = relayFor(fresh, nil, errors.New("database down"), host, send, refresh); m.relay == nil || m.relay.Host != "host.example.com" {
+		t.Fatalf("database out with no panel relay ever: mailer %+v", m)
+	}
+}
+
+// TestHeartbeatForPrefersThePanelURL pins which URL a run pings: the Owner's panel URL
+// over the host file, the cached panel URL while the database is unreadable, and the host
+// file again once the panel no longer has one.
+func TestHeartbeatForPrefersThePanelURL(t *testing.T) {
+	state := &watchdog.State{}
+	const file = "https://file.example/key"
+	if got := heartbeatFor(state, nil, nil, file); got != file || state.Heartbeat != "" {
+		t.Fatalf("no panel URL = %q (cached %q)", got, state.Heartbeat)
+	}
+	panel := &heartbeatsettings.Settings{URL: "https://panel.example/key"}
+	if got := heartbeatFor(state, panel, nil, file); got != panel.URL || state.Heartbeat != panel.URL {
+		t.Fatalf("panel URL = %q (cached %q)", got, state.Heartbeat)
+	}
+	if got := heartbeatFor(state, nil, errors.New("database down"), file); got != panel.URL {
+		t.Fatalf("database down = %q, want the cached panel URL", got)
+	}
+	if got := heartbeatFor(state, nil, nil, file); got != file || state.Heartbeat != "" {
+		t.Fatalf("panel URL removed = %q (cached %q)", got, state.Heartbeat)
+	}
+	if got := heartbeatFor(&watchdog.State{}, nil, errors.New("database down"), ""); got != "" {
+		t.Fatalf("nothing anywhere = %q", got)
+	}
+}
+
+// TestWatchdogUnitFailedPingsThePanelHeartbeat pins that a failed run pings the panel URL
+// the last good run cached, not the host file's.
+func TestWatchdogUnitFailedPingsThePanelHeartbeat(t *testing.T) {
+	r, _, fileLog := unitFailedFixture(t, "[database\n")
+	panelLog, panelSrv := newPingServer(t)
+	state, err := watchdog.LoadState(r.statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Heartbeat = panelSrv.URL + "/panel-key"
+	if err := watchdog.SaveState(r.statePath, state); err != nil {
+		t.Fatal(err)
+	}
+	if code := watchdogUnitFailed(r, io.Discard, io.Discard); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if pings, _ := panelLog.got(); len(pings) != 1 || pings[0] != "POST /panel-key/fail" {
+		t.Fatalf("panel pings = %v", pings)
+	}
+	if pings, _ := fileLog.got(); len(pings) != 0 {
+		t.Fatalf("the host file's URL was pinged too: %v", pings)
 	}
 }

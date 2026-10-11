@@ -1,12 +1,18 @@
 // @vitest-environment jsdom
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 import { NodeControlPanel } from "./NodeControlPanel";
 import type { NodeControlTask } from "@/lib/types";
 const calls = vi.hoisted(() => ({ nodeTasks: vi.fn(), nodeTask: vi.fn(), startNodeTask: vi.fn(), retryNodeTask: vi.fn() }));
 vi.mock("@/lib/api", async (original) => ({ ...await original<typeof import("@/lib/api")>(), api: calls }));
 const failed: NodeControlTask = { id: "task-1", request: { action: "approve", name: "worker-01", sshTarget: "worker-01", confirmMaintenance: true }, actor: "owner", state: "failed", stage: "approval", startedAt: "2026-10-06T10:00:00Z", error: "Network isolation probe failed", log: "probe: controller port rejected" };
+// Radix Select opens through pointer capture, which jsdom lacks.
+beforeAll(() => {
+  Element.prototype.hasPointerCapture ??= () => false;
+  Element.prototype.releasePointerCapture ??= () => {};
+  Element.prototype.scrollIntoView ??= () => {};
+});
 beforeEach(() => {
   vi.clearAllMocks(); calls.nodeTasks.mockResolvedValue({ available: true, tasks: [] }); calls.nodeTask.mockResolvedValue(failed);
 });
@@ -42,6 +48,65 @@ describe("host node management", () => {
     expect(calls.startNodeTask).toHaveBeenCalledWith({ action: "join", name: "worker-01", sshTarget: "root@192.0.2.10", externalIP: "192.0.2.10", peers: [], confirmMaintenance: true });
     await screen.findByRole("region", { name: "Task progress" });
     expect(screen.getByRole("button", { name: "Execute operation" })).toHaveProperty("disabled", true);
+  });
+  // Updating acts on an enrolled worker: it names the node and its SSH target, asks for no
+  // fixed IP, and has its own maintenance acknowledgement.
+  it("updates an enrolled worker without asking for its address", async () => {
+    const user = userEvent.setup();
+    const running = { ...failed, state: "running", request: { ...failed.request, action: "upgrade" } };
+    calls.startNodeTask.mockResolvedValue(running); calls.nodeTask.mockResolvedValue(running);
+    render(<NodeControlPanel distributed />);
+    await waitFor(() => expect(screen.getByLabelText("Node name")).toHaveProperty("disabled", false));
+    await user.click(screen.getByRole("combobox", { name: "Operation" }));
+    await user.click(await screen.findByRole("option", { name: "Update node" }));
+    expect(screen.queryByLabelText("Fixed node IP")).toBeNull();
+    expect(screen.getByText(/Moving the node's felis binary and k3s to the controller's versions/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Node name"), { target: { value: "worker-01" } });
+    fireEvent.change(screen.getByLabelText("SSH target"), { target: { value: "worker-01" } });
+    await user.click(screen.getByRole("switch"));
+    await user.click(screen.getByRole("button", { name: "Execute operation" }));
+    expect(calls.startNodeTask).toHaveBeenCalledWith({ action: "upgrade", name: "worker-01", sshTarget: "worker-01", confirmMaintenance: true });
+  });
+  // Controller high availability: a single-controller install offers to enable it, which
+  // names no node and states its own impact; once on, the operation becomes adding a
+  // controller, which names the new host and its fixed address.
+  it("enables controller high availability without naming a node", async () => {
+    const user = userEvent.setup();
+    const running = { ...failed, state: "running" as const, request: { action: "enable-ha" as const, confirmMaintenance: true } };
+    calls.startNodeTask.mockResolvedValue(running); calls.nodeTask.mockResolvedValue(running);
+    render(<NodeControlPanel distributed />);
+    await waitFor(() => expect(screen.getByLabelText("Node name")).toHaveProperty("disabled", false));
+    await user.click(screen.getByRole("combobox", { name: "Operation" }));
+    expect(screen.queryByRole("option", { name: "Add a controller" })).toBeNull();
+    await user.click(await screen.findByRole("option", { name: "Enable controller high availability" }));
+    expect(screen.queryByLabelText("Node name")).toBeNull();
+    expect(screen.queryByLabelText("Fixed node IP")).toBeNull();
+    expect(screen.getByText(/three or more controllers/)).toBeTruthy();
+    expect(screen.getByText(/Login and Lobby pause during the move/)).toBeTruthy();
+    const submit = screen.getByRole("button", { name: "Enable controller high availability" });
+    expect(submit).toHaveProperty("disabled", true);
+    await user.click(screen.getByRole("switch"));
+    await user.click(submit);
+    expect(calls.startNodeTask).toHaveBeenCalledWith({ action: "enable-ha", confirmMaintenance: true });
+  });
+  it("adds a controller once high availability is on", async () => {
+    const user = userEvent.setup();
+    const running = { ...failed, state: "running" as const, request: { action: "join-controller" as const, name: "controller-02", sshTarget: "root@192.0.2.11", externalIP: "192.0.2.11", confirmMaintenance: true } };
+    calls.startNodeTask.mockResolvedValue(running); calls.nodeTask.mockResolvedValue(running);
+    render(<NodeControlPanel distributed controllerHA />);
+    await waitFor(() => expect(screen.getByLabelText("Node name")).toHaveProperty("disabled", false));
+    await user.click(screen.getByRole("combobox", { name: "Operation" }));
+    expect(screen.queryByRole("option", { name: "Enable controller high availability" })).toBeNull();
+    await user.click(await screen.findByRole("option", { name: "Add a controller" }));
+    expect(screen.getByText(/fixed IP configured on the new controller/)).toBeTruthy();
+    expect(screen.getByText(/cluster tokens, the Felis configuration/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Node name"), { target: { value: "controller-02" } });
+    fireEvent.change(screen.getByLabelText("SSH target"), { target: { value: "root@192.0.2.11" } });
+    await user.click(screen.getByRole("switch"));
+    expect(screen.getByRole("button", { name: "Execute operation" })).toHaveProperty("disabled", true);
+    fireEvent.change(screen.getByLabelText("Fixed node IP"), { target: { value: "192.0.2.11" } });
+    await user.click(screen.getByRole("button", { name: "Execute operation" }));
+    expect(calls.startNodeTask).toHaveBeenCalledWith({ action: "join-controller", name: "controller-02", sshTarget: "root@192.0.2.11", externalIP: "192.0.2.11", peers: [], confirmMaintenance: true });
   });
   it("restores failed tasks with concrete errors and logs and retries as a new attempt", async () => {
     calls.nodeTasks.mockResolvedValue({ available: true, tasks: [failed] });

@@ -88,7 +88,7 @@ func (a *API) handleLoginEmailStart(w http.ResponseWriter, r *http.Request) {
 
 	// The install-wide mail budget is checked before the address is resolved,
 	// so while it is spent every address gets the same 429.
-	if err := a.checkMailBudget(); err != nil {
+	if err := a.checkMailBudget(r.Context()); err != nil {
 		writeError(w, r, err)
 		return
 	}

@@ -25,7 +25,15 @@ import type {
   MinecraftAuthSource,
   AuthSourceConfig,
   AuthSourcesSettings,
+  MailSettings,
+  MailSettingsRequest,
   WakePolicySettings,
+  FailoverPolicySettings,
+  ArchivePolicy,
+  ArchivePolicySettings,
+  HeartbeatSettings,
+  FailoverPlan,
+  FailoverResult,
   EntryPolicySettings,
   MinecraftProfile,
   LinkStatus,
@@ -623,6 +631,14 @@ export const api = rejectingSync({
     request<WorldMigration>("POST", `/servers/${encodeURIComponent(name)}/migrations`, { targetNode }),
   retryMigration: (name: string, id: string) =>
     request<WorldMigration>("POST", `/servers/${encodeURIComponent(name)}/migrations/${encodeURIComponent(id)}/retry`),
+  // Gives up a failed migration: the server stays on its source world and node.
+  abortMigration: (name: string, id: string) =>
+    request<WorldMigration>("POST", `/servers/${encodeURIComponent(name)}/migrations/${encodeURIComponent(id)}/abort`),
+  // What failing a lost worker over would do, and the failover itself (Owner): each
+  // server comes back on targetNode from its newest intact backup.
+  failoverPlan: (node: string) => request<FailoverPlan>("GET", `/nodes/${encodeURIComponent(node)}/failover`),
+  failOverNode: (node: string, targetNode: string, confirm: string) =>
+    request<FailoverResult>("POST", `/nodes/${encodeURIComponent(node)}/failover`, { targetNode, confirm }),
 
   createServer: (req: CreateServerRequest) =>
     request<{ name: string; subdomain: string; desiredState: string }>(
@@ -966,6 +982,20 @@ export const api = rejectingSync({
 
   getWakePolicy: () => request<WakePolicySettings>("GET", "/settings/wake-policy"),
   setWakePolicy: (policy: Omit<WakePolicySettings, "managed">) => request<WakePolicySettings>("PUT", "/settings/wake-policy", policy),
+  getHeartbeat: () => request<HeartbeatSettings>("GET", "/settings/heartbeat"),
+  setHeartbeat: (url: string, revision: string) => request<HeartbeatSettings>("PUT", "/settings/heartbeat", { url, revision }),
+  clearHeartbeat: () => request<HeartbeatSettings>("DELETE", "/settings/heartbeat"),
+  getArchivePolicy: () => request<ArchivePolicySettings>("GET", "/settings/archive-policy"),
+  setArchivePolicy: (policy: ArchivePolicy & { revision: string }) => request<ArchivePolicySettings>("PUT", "/settings/archive-policy", policy),
+  clearArchivePolicy: () => request<ArchivePolicySettings>("DELETE", "/settings/archive-policy"),
+  getFailoverPolicy: () => request<FailoverPolicySettings>("GET", "/settings/failover"),
+  setFailoverPolicy: (policy: Omit<FailoverPolicySettings, "managed">) => request<FailoverPolicySettings>("PUT", "/settings/failover", policy),
+  // The mail relay (Owner). Saving proves the relay first; clearing hands it back to
+  // felis.toml; a test mails the caller without saving.
+  getMailSettings: () => request<MailSettings>("GET", "/settings/smtp"),
+  setMailSettings: (body: MailSettingsRequest) => request<MailSettings>("PUT", "/settings/smtp", body),
+  clearMailSettings: () => request<MailSettings>("DELETE", "/settings/smtp"),
+  testMailSettings: (body: MailSettingsRequest) => request<{ sent_to: string }>("POST", "/settings/smtp/test", body),
   getAuthSources: () => request<AuthSourcesSettings>("GET", "/settings/auth-sources"),
   setAuthSources: (sources: AuthSourceConfig[], revision: string) => request<AuthSourcesSettings>("PUT", "/settings/auth-sources", { sources, revision }),
   testAuthSource: (source: AuthSourceConfig) => request<{ ok: boolean; status: number; elapsed_ms: number }>("POST", "/settings/auth-sources/test", source),
@@ -1269,6 +1299,10 @@ export function humanizeError(e: unknown): string {
       return t("node_control_unavailable");
     case "distributed_unavailable":
       return t("distributed_unavailable");
+    case "node_not_lost":
+      return t("node_not_lost");
+    case "bad_heartbeat_url":
+      return t("bad_heartbeat_url");
     case "local_auth_disabled":
       return t("local_auth_disabled");
     case "staff_account":
@@ -1581,6 +1615,18 @@ export function humanizeError(e: unknown): string {
       return t("uploads_full");
     case "unsupported_media_type":
       return t("unsupported_media_type");
+    // The mail relay (internal/api/mail_settings.go): why a relay check failed, in a
+    // few words the Owner can act on.
+    case "auth_sources_changed":
+    case "mail_settings_changed":
+    case "mail_settings_unavailable":
+    case "smtp_unreachable":
+    case "smtp_tls":
+    case "smtp_auth":
+    case "smtp_sender_refused":
+    case "smtp_recipient_refused":
+    case "smtp_failed":
+      return t(err.code);
     // Scheduled tasks (internal/api/handlers_schedules.go).
     case "schedules_unavailable":
       return t("schedules_unavailable");

@@ -73,6 +73,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/servers/{name}/migrations/{id}/abort": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Give up a failed migration; the server stays on its source world and node.
+         * @description Only a failed migration that never switched can be aborted. Its Jobs and its partial target world are removed and the maintenance lock is released, so the server can start where it was. The safety backup stays as a restore point. The target node does not need to be online.
+         */
+        post: operations["abortWorldMigration"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -165,6 +185,30 @@ export interface paths {
          * @description Requires a staff session on the operator console host; the image must be whitelisted. An image in the platform registry is stored pinned to the digest its tag names at creation (name:tag@sha256:…), so a later push over the tag never moves the server; 400 image_not_in_registry when the registry lacks the tag, 503 registry_unavailable when it cannot be asked.
          */
         post: operations["createServer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/nodes/{node}/failover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What failing a lost worker over would do (Owner).
+         * @description The user servers whose worlds are on the node, each with the newest intact backup a failover would restore (so what it loses), and the online nodes that can take the worlds. lost is true only for an offline worker.
+         */
+        get: operations["failoverPlan"];
+        put?: never;
+        /**
+         * Fail a lost worker over to another node (Owner, fresh reauthentication).
+         * @description Starts a failover of every server on the node towards targetNode, each from its newest intact backup, and asks the host node service to fence the node (cordon, remove its approval, taint it out of service). A server already failing over keeps its failover; one without an intact backup, or that cannot start, is reported in skipped and left where it is. confirm must repeat the node's name.
+         */
+        post: operations["failOverNode"];
         delete?: never;
         options?: never;
         head?: never;
@@ -557,6 +601,26 @@ export interface paths {
          * @description The break-glass console (root on the node, holding the service token) POSTs here to snapshot a stopped world while the API is alive — it goes through the API rather than direct-to-CRD because rendering the backup Job needs deployment coordinates only felis-api holds. Same RWO stopped-gate and async 202 as the external backupNow; there is no Principal (trusted machine caller), and the action is audited to "break-glass".
          */
         post: operations["internalBackupNow"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/internal/servers/{name}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restore a server's newest backup while rebuilding a host (service token; server must be stopped).
+         * @description felis restore-host POSTs here for each server it brings back from the off-site copy. It restores the newest intact backup without a safety snapshot, creating the world volume first when the server has never started on this host, and is audited to "restore-host".
+         */
+        post: operations["internalRestoreLatest"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1387,6 +1451,113 @@ export interface paths {
          */
         put: operations["setWakePolicy"];
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settings/archive-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the backup and audit retention (Owner). */
+        get: operations["getArchivePolicy"];
+        /**
+         * Save the backup and audit retention (Owner, fresh reauthentication).
+         * @description Overrides felis.toml's [archive] and [audit] keys for felis-api, the backup Job and the reaper. It takes effect within seconds on every felis-api replica and on the next backup or reaper run.
+         */
+        put: operations["setArchivePolicy"];
+        post?: never;
+        /** Hand the retention back to felis.toml (Owner, fresh reauthentication). */
+        delete: operations["clearArchivePolicy"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settings/heartbeat": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the watchdog heartbeat setting (Owner). */
+        get: operations["getHeartbeat"];
+        /**
+         * Save the watchdog heartbeat URL (Owner, fresh reauthentication).
+         * @description The watchdog pings it on its next run, in preference to the host file's URL.
+         */
+        put: operations["setHeartbeat"];
+        post?: never;
+        /** Remove the panel's heartbeat URL (Owner, fresh reauthentication). */
+        delete: operations["clearHeartbeat"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settings/failover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the failover setting (Owner). */
+        get: operations["getFailoverPolicy"];
+        /** Save the failover setting (Owner, fresh reauthentication). */
+        put: operations["setFailoverPolicy"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settings/smtp": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the mail relay (Owner).
+         * @description The relay in force and where it comes from - panel (saved here), host (the [smtp] relay felis setup wrote into felis.toml) or none. The password is never returned; password_set says whether one is stored.
+         */
+        get: operations["getMailSettings"];
+        /**
+         * Save the mail relay (Owner, fresh reauthentication).
+         * @description Proves the relay accepts mail from the sender (a complete transaction delivering one self-test message to the sender) and then saves it, overriding felis.toml's relay for felis-api, the reaper, the watchdog and the break-glass console. It takes effect without restarting. An absent password keeps the current one. Only the submission ports 25, 465, 587 and 2525 are accepted.
+         */
+        put: operations["setMailSettings"];
+        post?: never;
+        /** Hand the mail relay back to felis.toml (Owner, fresh reauthentication). */
+        delete: operations["clearMailSettings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settings/smtp/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Send a test message through an unsaved relay (Owner, fresh reauthentication).
+         * @description Sends one message to the caller's verified address, else to the sender itself, and spends the install's mail budget like any other mail.
+         */
+        post: operations["testMailSettings"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3099,6 +3270,67 @@ export interface components {
             revision: string;
             managed: boolean;
         };
+        /** @description The backup and audit retention in force. source is panel when the Owner saved it here, host when felis.toml's [archive] and [audit] stand. */
+        ArchivePolicySettings: {
+            manualKeep: number;
+            manualRetentionDays: number;
+            manualCooldownMinutes: number;
+            /** @description 0 turns the scheduled restore points off. */
+            scheduledEveryHours: number;
+            scheduledKeep: number;
+            scheduledRetentionDays: number;
+            /** @description How long the archive of a released world is kept. */
+            releasedRetentionDays: number;
+            /** @description The backup store's soft cap; 0 for none. */
+            maxStoreGiB: number;
+            /** @description 0 keeps every audit row; otherwise at least 30. */
+            auditRetentionDays: number;
+            /** @enum {string} */
+            source: "panel" | "host";
+            revision: string;
+        };
+        /** @description The watchdog's heartbeat URL as set in the panel. Only its scheme and host are shown: the path is the check's key. With none set here, the watchdog pings the host file's URL, if the installer wrote one. */
+        HeartbeatSettings: {
+            set: boolean;
+            /** @description scheme://host/... of the saved URL; empty when none is set. */
+            display: string;
+            revision: string;
+        };
+        /** @description The Owner's failover setting. automatic fails a lost node over without waiting for the Owner once it has been gone afterMinutes (only while a controller is up and exactly one node is lost); the node is a worker or, with controller high availability, a controller. replicaMinutes is how often a world running on such a node is copied live, so a failover loses little; 0 turns the copies off. */
+        FailoverPolicySettings: {
+            automatic: boolean;
+            afterMinutes: number;
+            /** @description 0, or 15 to 1440. */
+            replicaMinutes: number;
+            revision: string;
+            managed: boolean;
+        };
+        MailSettings: {
+            /** @enum {string} */
+            source: "panel" | "host" | "none";
+            host: string;
+            port: number;
+            from: string;
+            username: string;
+            password_set: boolean;
+            require_tls: boolean;
+            /** @description Install-wide hourly mail cap; 0 is the default. */
+            max_per_hour: number;
+            /** @description Changes with every save; empty while the panel has no relay. */
+            revision: string;
+        };
+        MailSettingsRequest: {
+            host: string;
+            /** @enum {integer} */
+            port: 25 | 465 | 587 | 2525;
+            from: string;
+            username: string;
+            /** @description Absent keeps the current password. */
+            password?: string;
+            require_tls: boolean;
+            max_per_hour: number;
+            revision: string;
+        };
         AuthSourcesSettings: {
             /** @description Third-party sources in priority order; built-in Mojang always precedes them and is immutable. */
             sources: components["schemas"]["AuthSourceConfig"][];
@@ -3231,12 +3463,23 @@ export interface components {
             approved: boolean;
             addresses: string[];
             architecture: string;
+            /** @description The node's k3s version. */
+            k3sVersion: string;
+            /** @description The felis build the node last installed; absent for a node enrolled before it was recorded. */
+            felisVersion?: string;
+            /** @description A lost worker taken out of service for a failover: cordoned, no longer approved, tainted out of service. */
+            fenced: boolean;
+            /**
+             * Format: date-time
+             * @description When an offline node stopped reporting ready.
+             */
+            lostSince?: string;
         };
         WorldMigration: {
             id: string;
             server: string;
             /** @enum {string} */
-            state: "backing_up" | "restoring" | "switching" | "succeeded" | "failed";
+            state: "fencing" | "backing_up" | "restoring" | "switching" | "succeeded" | "failed" | "aborted";
             stage: string;
             sourceNode: string;
             targetNode: string;
@@ -3255,15 +3498,22 @@ export interface components {
             switched: boolean;
             attempt: number;
             error?: string;
+            /**
+             * @description failover for a failover; absent for a migration.
+             * @enum {string}
+             */
+            kind?: "failover";
+            /** @description The desired state a failover gives the server back once it has switched. */
+            resume?: string;
         };
         NodeControlRequest: {
             /** @enum {string} */
-            action: "enable" | "join" | "approve";
-            /** @description Stable worker node name; required for join and approve. */
+            action: "enable" | "join" | "approve" | "upgrade" | "fence" | "unfence" | "enable-ha" | "join-controller";
+            /** @description Stable node name; required for every action except enable and enable-ha. */
             name?: string;
-            /** @description Verified root SSH alias or user@host; required for workers. */
+            /** @description Verified root SSH alias or user@host; required for join */
             sshTarget?: string;
-            /** @description Fixed node IP; required for enable and join. */
+            /** @description Fixed node IP; required for enable */
             externalIP?: string;
             /** @description Additional exact /32 or /128 peer addresses. */
             peers?: string[];
@@ -3284,6 +3534,45 @@ export interface components {
             error?: string;
             /** @description Most recent 64 KiB of host execution output; absent in task lists. */
             log?: string;
+        };
+        FailoverBackup: {
+            id: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: int64 */
+            sizeBytes: number;
+        };
+        FailoverServer: {
+            name: string;
+            desiredState: string;
+            /** @description The newest intact backup a failover would restore; null when there is none. */
+            backup: components["schemas"]["FailoverBackup"] | null;
+            /** @description The migration or failover the server has underway; null when none. */
+            operation: components["schemas"]["WorldMigration"] | null;
+        };
+        FailoverPlan: {
+            node: string;
+            /** @description An offline worker (or */
+            lost: boolean;
+            fenced: boolean;
+            /** Format: date-time */
+            lostSince: string | null;
+            servers: components["schemas"]["FailoverServer"][];
+            /** @description Online nodes that can take the worlds. */
+            targets: string[];
+        };
+        FailoverSkip: {
+            name: string;
+            /** @enum {string} */
+            reason: "no_backup" | "unknown_server" | "failed";
+            error?: string;
+        };
+        FailoverResult: {
+            operations: components["schemas"]["WorldMigration"][];
+            skipped: components["schemas"]["FailoverSkip"][];
+            fenceTask?: components["schemas"]["NodeControlTask"];
+            /** @description Why no fence task could be started now; it is retried in the background. */
+            fenceError?: string;
         };
         /** @description Status projection of one server (internal/api/cluster.go ServerInfo). */
         ServerInfo: {
@@ -4188,6 +4477,34 @@ export interface operations {
             503: components["responses"]["ServiceUnavailable"];
         };
     };
+    abortWorldMigration: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The aborted operation. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorldMigration"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
     healthz: {
         parameters: {
             query?: never;
@@ -4386,6 +4703,77 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    failoverPlan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                node: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The failover plan. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FailoverPlan"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    failOverNode: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                node: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    targetNode: string;
+                    /** @description The node's name */
+                    confirm: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The failovers started, and what was left. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FailoverResult"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description The node is online or not a worker (node_not_lost), or a migration conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -5187,6 +5575,60 @@ export interface operations {
                 };
             };
             /** @description Server is not stopped (not_stopped), a restore, backup or file write already holds its world volume (maintenance_in_progress), or the file changed since expect_sha256 was read (file_changed). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    internalRestoreLatest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Restore started. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        name: string;
+                        backup_id: string;
+                    };
+                };
+            };
+            /** @description Invalid server name (bad_name). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description Unknown server (not_found) or no restorable backup (no_backup). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The server is not stopped (not_stopped), or a restore or another operation holds its world (restore_in_progress, maintenance_in_progress). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -7288,6 +7730,375 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+        };
+    };
+    getArchivePolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The retention in force and its revision. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArchivePolicySettings"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    setArchivePolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    manualKeep: number;
+                    manualRetentionDays: number;
+                    manualCooldownMinutes: number;
+                    scheduledEveryHours: number;
+                    scheduledKeep: number;
+                    scheduledRetentionDays: number;
+                    releasedRetentionDays: number;
+                    maxStoreGiB: number;
+                    auditRetentionDays: number;
+                    revision: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The saved retention and its new revision. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArchivePolicySettings"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description The retention changed; reload before saving. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    clearArchivePolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The retention now in force (felis.toml's). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArchivePolicySettings"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description The retention changed meanwhile. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getHeartbeat: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Whether a heartbeat URL is set here, and its revision. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HeartbeatSettings"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    setHeartbeat: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description An http:// or https:// URL. */
+                    url: string;
+                    revision: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The saved setting. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HeartbeatSettings"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description The setting changed; reload before saving. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    clearHeartbeat: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The setting, now unset. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HeartbeatSettings"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description The setting changed meanwhile. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getFailoverPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current failover setting and revision. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FailoverPolicySettings"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    setFailoverPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    automatic: boolean;
+                    afterMinutes: number;
+                    /** @description 0, or 15 to 1440. */
+                    replicaMinutes: number;
+                    revision: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Saved setting and new revision. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FailoverPolicySettings"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description The setting changed; reload before saving. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getMailSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The relay in force. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailSettings"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    setMailSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MailSettingsRequest"];
+            };
+        };
+        responses: {
+            /** @description The saved relay. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailSettings"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            415: components["responses"]["UnsupportedMediaType"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    clearMailSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The relay now in force. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailSettings"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    testMailSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MailSettingsRequest"];
+            };
+        };
+        responses: {
+            /** @description Where the test message went. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        sent_to: string;
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            415: components["responses"]["UnsupportedMediaType"];
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     getAuthSources: {

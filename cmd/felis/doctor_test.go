@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"felis.lolicon.best/internal/config"
+	"felis.lolicon.best/internal/heartbeatsettings"
+	"felis.lolicon.best/internal/mailsettings"
 	"felis.lolicon.best/internal/watchdog"
 )
 
@@ -133,17 +135,19 @@ func TestAlertReachFindings(t *testing.T) {
 	for _, tc := range []struct {
 		what      string
 		cfg       *config.Config
+		panel     bool
 		owners    []string
 		ownersErr error
 		want      string
 	}{
-		{"a relay and an owner", relay, []string{"owner@example.com"}, nil, ""},
-		{"no relay", &config.Config{}, []string{"owner@example.com"}, nil, "alerts/relay"},
-		{"no owner with an address", relay, nil, nil, "alerts/recipients"},
-		{"PostgreSQL down: its own finding says so", relay, nil, errors.New("refused"), ""},
-		{"neither", &config.Config{}, nil, nil, "alerts/relay,alerts/recipients"},
+		{"a relay and an owner", relay, false, []string{"owner@example.com"}, nil, ""},
+		{"a relay saved in the panel only", &config.Config{}, true, []string{"owner@example.com"}, nil, ""},
+		{"no relay", &config.Config{}, false, []string{"owner@example.com"}, nil, "alerts/relay"},
+		{"no owner with an address", relay, false, nil, nil, "alerts/recipients"},
+		{"PostgreSQL down: its own finding says so", relay, false, nil, errors.New("refused"), ""},
+		{"neither", &config.Config{}, false, nil, nil, "alerts/relay,alerts/recipients"},
 	} {
-		if got := keys(alertReachFindings(tc.cfg, tc.owners, tc.ownersErr)); got != tc.want {
+		if got := keys(alertReachFindings(tc.cfg, tc.panel, tc.owners, tc.ownersErr)); got != tc.want {
 			t.Errorf("%s: %q, want %q", tc.what, got, tc.want)
 		}
 	}
@@ -269,7 +273,7 @@ func TestDoctorReportsByArea(t *testing.T) {
 		"-  node address: not checked, no -node-ip\n",
 		"✗  systemd units and timers\n     critical unit/felis-db-backup.service: felis-db-backup.service failed\n" +
 			"              → journalctl -u felis-db-backup.service -n 100 --no-pager; once fixed, sudo systemctl reset-failed felis-db-backup.service",
-		"!  alerting\n     warning  alerts/relay: no [smtp] relay is configured",
+		"!  alerting\n     warning  alerts/relay: no mail relay is configured, in the panel or in [smtp]",
 		"\n4 problem(s): 3 critical, 1 warning(s)\n",
 	} {
 		if !strings.Contains(got, want) {
@@ -341,6 +345,35 @@ func TestDoctorNotes(t *testing.T) {
 	runDoctor(context.Background(), env, &out)
 	if !strings.Contains(out.String(), "warning  watchdog/heartbeat: the heartbeat URL is unusable") {
 		t.Errorf("an unusable heartbeat URL is not reported:\n%s", out.String())
+	}
+}
+
+// A relay and a heartbeat the Owner saved in the panel count: the doctor reports neither
+// missing, nor an unusable heartbeat file the watchdog then never reads. When the database
+// cannot be read, felis.toml and the file are judged as before.
+func TestDoctorCountsPanelSettings(t *testing.T) {
+	env, h := doctorHost(t, testWatchdogConfig, "")
+	writeTestFile(t, filepath.Join(h.dir, "watchdog-heartbeat-url"), "not a url\n", 0o600)
+	env.panel = func(context.Context, string) (*mailsettings.Settings, *heartbeatsettings.Settings, error) {
+		return &mailsettings.Settings{Host: "smtp.panel.example", Port: 587, From: "felis@panel.example"}, &heartbeatsettings.Settings{URL: "https://hc.example/ping/abc"}, nil
+	}
+	var out bytes.Buffer
+	runDoctor(context.Background(), env, &out)
+	for _, absent := range []string{"alerts/relay", "watchdog/heartbeat", "note: no heartbeat URL"} {
+		if strings.Contains(out.String(), absent) {
+			t.Errorf("reported %q although the panel has one:\n%s", absent, out.String())
+		}
+	}
+
+	env.panel = func(context.Context, string) (*mailsettings.Settings, *heartbeatsettings.Settings, error) {
+		return nil, nil, errors.New("connection refused")
+	}
+	out.Reset()
+	runDoctor(context.Background(), env, &out)
+	for _, want := range []string{"alerts/relay: no mail relay", "watchdog/heartbeat: the heartbeat URL is unusable"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("with the database unreadable, the report lacks %q:\n%s", want, out.String())
+		}
 	}
 }
 

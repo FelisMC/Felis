@@ -7,9 +7,12 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"felis.lolicon.best/internal/config"
+	"felis.lolicon.best/internal/mailsettings"
 	"felis.lolicon.best/internal/platform"
+	"felis.lolicon.best/internal/store"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -345,6 +348,11 @@ func applySMTPConfig(ctx context.Context, in smtpInputs) error {
 	if err := applyFelisConfigSecret(ctx); err != nil {
 		return err
 	}
+	// The relay typed here is the one in force: a relay saved earlier in the panel would
+	// otherwise keep overriding it.
+	if err := clearPanelMailSettings(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "felis setup: warning: could not hand the relay back from the panel (a relay saved there keeps overriding this one until it is cleared in the panel): %v\n", err)
+	}
 	// Refresh the workload-namespace copies too (the reaper's warning path): the
 	// OTP path is already live in the control namespace, so a replica miss is
 	// reported but not fatal.
@@ -430,4 +438,20 @@ func replicateSMTPToWorkloadNamespace(ctx context.Context, password string) erro
 		return fmt.Errorf("replicate %s to %s: %w", platform.SMTPSecretName, ns, err)
 	}
 	return nil
+}
+
+// clearPanelMailSettings hands the relay back from the panel to felis.toml.
+func clearPanelMailSettings(ctx context.Context) error {
+	cfg, err := config.Load(hostSetupConfigPath)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	drv, err := store.Open(ctx, cfg.Database.URL)
+	if err != nil {
+		return err
+	}
+	defer drv.Close()
+	return mailsettings.Clear(ctx, drv.DB())
 }

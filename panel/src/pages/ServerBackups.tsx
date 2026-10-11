@@ -690,8 +690,9 @@ export function ServerBackups() {
   const [backingUp, setBackingUp] = useState(false);
   const [backupMsg, setBackupMsg] = useState<{ kind: "success" | "error"; text: string } | null>(null);
 
-  // Manual backup (POST /backup): the backend enforces the stopped gate, so the
-  // button only enables on Stopped and a raced 409 is surfaced in its own words.
+  // Manual backup (POST /backup): a stopped world is archived as it is, a running one
+  // live (its saving pauses while the world is copied). One starting or stopping waits,
+  // so the button enables on Stopped or a ready Running, and a raced 409 says why.
   async function handleBackupNow() {
     if (backingUp) return;
     setBackingUp(true);
@@ -703,7 +704,7 @@ export function ServerBackups() {
     } catch (e: any) {
       setBackupMsg({
         kind: "error",
-        text: e && e.code === "not_stopped" ? t("backup_requires_stopped") : humanizeError(e),
+        text: e && e.code === "not_stopped" ? t("backup_requires_settled") : humanizeError(e),
       });
     } finally {
       setBackingUp(false);
@@ -808,6 +809,9 @@ export function ServerBackups() {
   // holds the world (the API would answer 409), so the buttons wait for it too;
   // a backup download only reads the backup store and holds nothing.
   const phase = shownPhase(statusQ.data);
+  // A backup takes a stopped world as it is and a ready running one live; a server on
+  // its way up or down waits.
+  const backupReady = phase === "Stopped" || (phase === "Running" && !!statusQ.data?.ready);
   const worldBusy = (jobsQ.data ?? []).some(
     (j) => (j.state === "running" && j.kind !== "export_backup") || j.then_restore === "pending",
   );
@@ -850,13 +854,15 @@ export function ServerBackups() {
               size="sm"
               variant="outline"
               onClick={handleBackupNow}
-              disabled={backingUp || phase !== "Stopped" || worldBusy}
+              disabled={backingUp || !backupReady || worldBusy}
               title={
-                phase !== "Stopped"
-                  ? t("backup_requires_stopped")
+                !backupReady
+                  ? t("backup_requires_settled")
                   : worldBusy
                     ? t("backup_world_busy")
-                    : undefined
+                    : phase === "Running"
+                      ? t("backup_live_hint")
+                      : undefined
               }
             >
               {backingUp ? (

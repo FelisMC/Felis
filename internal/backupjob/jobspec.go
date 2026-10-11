@@ -32,14 +32,25 @@ const (
 	// ReasonScheduled is the world_backups reason of the daily restore point
 	// felis-api takes of a world played since its last one.
 	ReasonScheduled = "scheduled"
+	// ReasonReplica is the world_backups reason of the frequent live copy felis-api
+	// takes of a world running on a worker, so a failover off that worker loses little;
+	// a server keeps only its newest few.
+	ReasonReplica = "replica"
 	// LabelReason marks a scheduled backup Job, so the jobs route can tell it
 	// from one somebody asked for.
 	LabelReason = "felis.lolicon.best/backup-reason"
+	// LabelLive marks a live backup's Job and pod: felis-api watches its init container
+	// to know when the copy is done and the game may save again.
+	LabelLive = "felis.lolicon.best/live-backup"
+	// StageContainer is the live backup's copying init container.
+	StageContainer = "stage"
 
 	worldVolume     = "world"
 	backupVolume    = "backup"
 	configVolume    = "config"
 	tmpVolume       = "tmp"
+	stageVolume     = "stage"
+	liveMountPath   = "/live"
 	felisBinaryPath = "/usr/local/bin/felis"
 )
 
@@ -78,10 +89,19 @@ type JobParams struct {
 	// the restore will extract.
 	RestoreRef      string
 	RestoreBackupID string
+	// Live backs up a running server (api livebackup.go): an init container copies the
+	// world, mounted read-only, into a scratch volume while felis-api holds the game's
+	// saving off, and the archive step reads that copy instead of the volume. StageLimit
+	// caps the scratch volume (a resource quantity; empty means no cap).
+	Live       bool
+	StageLimit string
+
 	// Scheduled records the backup as ReasonScheduled, pruned to its own
 	// [archive] scheduled_keep, and labels the Job LabelReason. It never carries
 	// a restore.
 	Scheduled bool
+	// Replica records the backup as ReasonReplica. It never carries a restore.
+	Replica bool
 
 	TTLAfterFinished time.Duration
 }
@@ -176,6 +196,9 @@ func BackupJob(p JobParams) (*batchv1.Job, error) {
 	if p.Scheduled {
 		args = append(args, "--reason", ReasonScheduled)
 	}
+	if p.Replica {
+		args = append(args, "--reason", ReasonReplica)
+	}
 
 	container := corev1.Container{
 		Name:    "backup",
@@ -231,6 +254,33 @@ func BackupJob(p JobParams) (*batchv1.Job, error) {
 	if p.Scheduled {
 		meta.Labels[LabelReason] = ReasonScheduled
 	}
+	podLabels := backupLabels(p)
+	volumes := []corev1.Volume{
+		{
+			Name: worldVolume,
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: p.WorldPVC,
+					ReadOnly:  true,
+				},
+			},
+		},
+		{
+			Name: backupVolume,
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: p.BackupPVC,
+				},
+			},
+		},
+		{
+			Name: configVolume,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{SecretName: p.ConfigSecret},
+			},
+		},
+		{Name: tmpVolume, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+	}
 	job := &batchv1.Job{
 		ObjectMeta: meta,
 		Spec: batchv1.JobSpec{
@@ -241,7 +291,7 @@ func BackupJob(p JobParams) (*batchv1.Job, error) {
 			ActiveDeadlineSeconds:   int64Ptr(deadline),
 			TTLSecondsAfterFinished: int32Ptr(ttl),
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: backupLabels(p)},
+				ObjectMeta: metav1.ObjectMeta{Labels: podLabels},
 				Spec: corev1.PodSpec{
 					RestartPolicy:                corev1.RestartPolicyNever,
 					ServiceAccountName:           p.ServiceAccount,
@@ -252,35 +302,15 @@ func BackupJob(p JobParams) (*batchv1.Job, error) {
 					// so a root pod never triggers a volume chgrp.
 					SecurityContext: backupPodSecurityContext(p),
 					Containers:      []corev1.Container{container},
-					Volumes: []corev1.Volume{
-						{
-							Name: worldVolume,
-							VolumeSource: corev1.VolumeSource{
-								PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-									ClaimName: p.WorldPVC,
-									ReadOnly:  true,
-								},
-							},
-						},
-						{
-							Name: backupVolume,
-							VolumeSource: corev1.VolumeSource{
-								PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-									ClaimName: p.BackupPVC,
-								},
-							},
-						},
-						{
-							Name: configVolume,
-							VolumeSource: corev1.VolumeSource{
-								Secret: &corev1.SecretVolumeSource{SecretName: p.ConfigSecret},
-							},
-						},
-						{Name: tmpVolume, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-					},
+					Volumes:         volumes,
 				},
 			},
 		},
+	}
+	if p.Live {
+		if err := MakeLive(job, worldVolume, p.WorldsRoot, p.Image, p.StageLimit); err != nil {
+			return nil, err
+		}
 	}
 	return job, nil
 }
@@ -326,4 +356,61 @@ func backupPodSecurityContext(p JobParams) *corev1.PodSecurityContext {
 		sc.FSGroup = int64Ptr(p.FSGroup)
 	}
 	return sc
+}
+
+// MakeLive turns a Job whose first container reads the world volume (worldVol, mounted
+// at worldsRoot) into a live backup of a running server: an init container with the
+// first container's security context and limits copies the world, mounted read-only,
+// into a scratch volume capped at stageLimit (empty: no cap), and the first container
+// then reads that copy at worldsRoot instead of the volume the game writes. The Job and
+// its pod are labelled LabelLive so felis-api knows to turn saving back on once the copy
+// step exits. Both the backup Job and the distributed upload Job go through it.
+func MakeLive(job *batchv1.Job, worldVol, worldsRoot, image, stageLimit string) error {
+	spec := &job.Spec.Template.Spec
+	if len(spec.Containers) == 0 {
+		return fmt.Errorf("backup: a live backup needs the archive container")
+	}
+	archive := &spec.Containers[0]
+	found := false
+	for i, m := range archive.VolumeMounts {
+		if m.Name == worldVol {
+			// The archive step reads the frozen copy, never the volume the game writes.
+			archive.VolumeMounts[i] = corev1.VolumeMount{Name: stageVolume, MountPath: worldsRoot, ReadOnly: true}
+			found = true
+		}
+	}
+	if !found {
+		return fmt.Errorf("backup: the archive container does not mount %s", worldVol)
+	}
+	scratch := &corev1.EmptyDirVolumeSource{}
+	if stageLimit != "" {
+		q, err := resource.ParseQuantity(stageLimit)
+		if err != nil {
+			return fmt.Errorf("backup: stage limit %q: %w", stageLimit, err)
+		}
+		scratch.SizeLimit = &q
+	}
+	spec.InitContainers = append(spec.InitContainers, corev1.Container{
+		Name:    StageContainer,
+		Image:   image,
+		Command: []string{felisBinaryPath, "stage-world"},
+		Args:    []string{"--from", liveMountPath, "--to", worldsRoot},
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: worldVol, MountPath: liveMountPath, ReadOnly: true},
+			{Name: stageVolume, MountPath: worldsRoot},
+		},
+		Resources:                archive.Resources,
+		SecurityContext:          archive.SecurityContext,
+		TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
+	})
+	spec.Volumes = append(spec.Volumes, corev1.Volume{Name: stageVolume, VolumeSource: corev1.VolumeSource{EmptyDir: scratch}})
+	if job.Labels == nil {
+		job.Labels = map[string]string{}
+	}
+	if job.Spec.Template.Labels == nil {
+		job.Spec.Template.Labels = map[string]string{}
+	}
+	job.Labels[LabelLive] = "true"
+	job.Spec.Template.Labels[LabelLive] = "true"
+	return nil
 }

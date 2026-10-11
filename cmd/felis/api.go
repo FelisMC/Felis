@@ -24,6 +24,7 @@ import (
 	"felis.lolicon.best/internal/fileedit"
 	"felis.lolicon.best/internal/imagepin"
 	"felis.lolicon.best/internal/mail"
+	"felis.lolicon.best/internal/mailsettings"
 	"felis.lolicon.best/internal/metrics"
 	"felis.lolicon.best/internal/naming"
 	"felis.lolicon.best/internal/nodecontrol"
@@ -166,12 +167,14 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	// every door that mails a code answers 503 mail_unavailable: a code that is
 	// not mailed is never written anywhere else either.
 	var mailer api.OTPMailer
+	var smtpPassword string
 	if cfg.SMTP.Host != "" {
 		passRef := cfg.SMTP.PasswordRef
 		if passRef == "" {
 			passRef = platform.SMTPPasswordEnv
 		}
 		password := os.Getenv(passRef)
+		smtpPassword = password
 		if cfg.SMTP.Username != "" && password == "" {
 			fmt.Fprintf(stderr, "felis api: warning: [smtp] username is set but credentials env %s is empty — OTP sends will fail AUTH\n", passRef)
 		}
@@ -180,7 +183,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "felis api: warning: [smtp] %s may be sent codes without TLS (require_tls off or a relay on this host)\n", cfg.SMTP.Host)
 		}
 	} else {
-		fmt.Fprintln(stderr, "felis api: [smtp] not configured — email sign-in and verification are off (503 mail_unavailable); sign in with a passkey, or run felis setup to add a relay")
+		fmt.Fprintln(stderr, "felis api: no [smtp] in felis.toml — email codes go through the relay saved in the panel (Platform settings → Mail delivery); while there is none, email sign-in and verification answer 503 mail_unavailable")
 	}
 
 	// Build subsystem (spec §16): the weak-SA build Job runs in the configured
@@ -381,6 +384,10 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		rcfg = reaper.DefaultConfig()
 	}
 
+	// The retention in force: the Owner's panel policy when one is saved, else [archive]
+	// and [audit] above.
+	archive := &api.ArchivePolicy{Repo: repo, Host: rcfg, HostAudit: auditRetention}
+
 	serverCache, serversSynced, err := startServerCache(ctx, restCfg, scheme, cfg.K8s.Namespace, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis api: MinecraftServer cache: %v\n", err)
@@ -389,7 +396,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	cluster := api.NewK8sCluster(cl, cfg.K8s.Namespace).WithServerCache(serverCache, serversSynced).WithDistributed(distribution != nil, os.Getenv("FELIS_CONTROLLER_NODE"))
 	if distribution != nil {
 		distribution.Record = func(ctx context.Context, b distributed.Backup) error {
-			keep, retention, ok := backupPolicy(b.Reason, rcfg)
+			keep, retention, ok := backupPolicy(b.Reason, archive.Reaper(ctx))
 			if !ok {
 				return fmt.Errorf("unknown backup reason %s", b.Reason)
 			}
@@ -446,6 +453,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		// while the store is at max_local_bytes (data-durability-9).
 		BackupCooldown: rcfg.ManualCooldown,
 		BackupStoreCap: rcfg.MaxLocalBytes,
+		ArchivePolicy:  archive,
 		// The user-modpack lane's per-user throttles: a create spaces out
 		// review-queue rows, an upload spaces out (up to 1 GiB) context streams.
 		// Separate keys, so the normal create→upload sequence stays immediate.
@@ -461,7 +469,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		// is the edge's header when the install names one (config.AuthConfig).
 		AuthDoorLimit:  api.RateLimit{Burst: 20, PerMinute: 20},
 		ClientIPHeader: cfg.Auth.EffectiveClientIPHeader(),
-		MailLimit:      mailLimit(cfg.SMTP.MaxPerHour),
+		MailLimit:      api.MailRateLimit(cfg.SMTP.MaxPerHour),
 	}
 	if a.ClientIPHeader != "" {
 		fmt.Fprintf(stderr, "felis api: sign-in rate limit keys on the %s header\n", a.ClientIPHeader)
@@ -477,6 +485,9 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	// same as under `felis nano`. A nil list would 204 every login, premium ones included.
 	a.AuthSources = authSourcesFromConfig(cfg.AuthSources)
 	a.AuthSourceSettings = &api.AuthSourceSettings{Repo: repo, Defaults: a.AuthSources}
+	// The relay the Owner saves in the panel wins over [smtp] from here on, without a
+	// restart (api.MailSettings); felis.toml's relay is what it falls back to.
+	a.MailSettings = &api.MailSettings{Repo: repo, Host: hostMailSettings(cfg.SMTP, smtpPassword), NewMailer: func(s mailsettings.Settings) api.OTPMailer { return s.SMTP() }}
 	fmt.Fprintf(stderr, "felis api: hasJoined multiplexer active — Mojang + %d default third-party source(s); panel settings take precedence\n", len(cfg.AuthSources))
 
 	// Passkey (WebAuthn) verifier (spec §14, Phase 6). One relying party spans BOTH
@@ -502,7 +513,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	externalHandler := panel.Handler(a.ExternalHandler(), cfg.Server.RootDomain,
 		defaultPanelHostname(cfg.Server.RootDomain, cfg.Auth.PanelHostname),
 		defaultAdminHostname(cfg.Server.RootDomain, cfg.Auth.AdminHostname),
-		cfg.Velocity.GamePort, cfg.Velocity.GameVersion, resolvedVersion(), distribution != nil)
+		cfg.Velocity.GamePort, cfg.Velocity.GameVersion, resolvedVersion(), panel.Topology{Distributed: distribution != nil, ControllerHA: distribution != nil && os.Getenv("FELIS_CONTROLLER_HA") == "true"})
 	internalSrv := newAPIServer(*internalAddr, a.InternalHandler())
 	externalSrv := newAPIServer(cfg.Server.Listen, externalHandler)
 
@@ -520,40 +531,53 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "felis api: internal=%s external=%s\n", *internalAddr, cfg.Server.Listen)
 	}
 
-	// reconcileBuilds drives the scan-gate translation: poll unfinished builds
-	// and advance any whose Job has reached a terminal phase. GET on a build also
-	// reconciles it, but this loop converges builds nobody is polling.
-	go reconcileBuilds(ctx, builder, stderr)
-	go settleRestoreChains(ctx, a, stderr)
-	go runSchedules(ctx, a, stderr)
-	// A daily restore point of every world played since its last one, taken
-	// once the server stops ([archive] scheduled_every; 0s turns it off).
-	if backuper != nil && rcfg.ScheduledEvery > 0 {
-		go scheduleBackups(ctx, &api.BackupScheduler{API: a, Store: repo, Jobs: jobStatus, Every: rcfg.ScheduledEvery}, stderr)
-	} else {
-		fmt.Fprintln(stderr, "felis api: scheduled backups off (needs the backup executor and [archive] scheduled_every above 0s)")
+	if distribution != nil {
+		a.Distribution = distribution
 	}
-
-	if pruner := registryPruner(cfg, builder.Store, cluster, stderr); pruner != nil {
-		go pruner.Loop(ctx, registryPruneInterval)
+	if socket := os.Getenv("FELIS_NODE_CONTROL_SOCKET"); socket != "" {
+		a.NodeControl = nodecontrol.NewClient(socket)
+		cluster.NodeMaintenanceGuard = api.NodeMaintenanceGuard(a.NodeControl)
 	}
-	go reapRejectedContexts(ctx, submissions, stderr)
+	// What each felis-api keeps for itself: its upload staging and its export
+	// registry live in this process.
 	if fileStage != nil {
 		go expireFileSessions(ctx, fileStage, fileSessionSweep, stderr)
 	}
 	if exporter != nil {
 		go expireExports(ctx, a, exportSweep)
 	}
-	go retention.Loop(ctx, drv.DB(), retention.Policy{Audit: auditRetention}, retentionInterval, slog.Default())
-
-	if distribution != nil {
-		a.Distribution = distribution
-		go reconcileDistribution(ctx, distribution, stderr)
+	// The loops that act on shared state run in one felis-api at a time: the one holding
+	// the lease (leadLoops), which a pod moved by controller high availability takes
+	// over once the old one is gone.
+	loops := func(ctx context.Context) {
+		// reconcileBuilds drives the scan-gate translation: poll unfinished builds
+		// and advance any whose Job has reached a terminal phase. GET on a build also
+		// reconciles it, but this loop converges builds nobody is polling.
+		go reconcileBuilds(ctx, builder, stderr)
+		go settleRestoreChains(ctx, a, stderr)
+		go settleLiveBackups(ctx, a, stderr)
+		go runSchedules(ctx, a, stderr)
+		// A daily restore point of every world played since its last one ([archive]
+		// scheduled_every, or the Owner's retention policy; 0 turns it off, which each
+		// tick reads again).
+		if backuper != nil {
+			go scheduleBackups(ctx, &api.BackupScheduler{API: a, Store: repo, Jobs: jobStatus, Every: rcfg.ScheduledEvery}, stderr)
+		} else {
+			fmt.Fprintln(stderr, "felis api: scheduled backups off (needs the backup executor)")
+		}
+		if pruner := registryPruner(cfg, builder.Store, cluster, stderr); pruner != nil {
+			go pruner.Loop(ctx, registryPruneInterval)
+		}
+		go reapRejectedContexts(ctx, submissions, stderr)
+		go retention.Loop(ctx, drv.DB(), func(ctx context.Context) retention.Policy {
+			return retention.Policy{Audit: archive.Audit(ctx)}
+		}, retentionInterval, slog.Default())
+		if distribution != nil {
+			go reconcileDistribution(ctx, distribution, stderr)
+			go runFailover(ctx, a, stderr)
+		}
 	}
-	if socket := os.Getenv("FELIS_NODE_CONTROL_SOCKET"); socket != "" {
-		a.NodeControl = nodecontrol.NewClient(socket)
-		cluster.NodeMaintenanceGuard = api.NodeMaintenanceGuard(a.NodeControl)
-	}
+	go leadLoops(ctx, clientset, podNamespace(), loops, stderr)
 	servers := []*http.Server{internalSrv, externalSrv}
 	if httpsSrv != nil {
 		servers = append(servers, httpsSrv)
@@ -802,6 +826,24 @@ func reconcileBuilds(ctx context.Context, b *build.Builder, stderr io.Writer) {
 	}
 }
 
+// settleLiveBackups turns a running server's saving back on once its live backup has
+// copied the world (api.API.SettleLiveBackups). The interval is how much longer than the
+// copy itself the game goes without saving.
+func settleLiveBackups(ctx context.Context, a *api.API, stderr io.Writer) {
+	t := time.NewTicker(2 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if err := a.SettleLiveBackups(ctx); err != nil {
+				fmt.Fprintf(stderr, "felis api: live backups: %v\n", err)
+			}
+		}
+	}
+}
+
 // settleRestoreChains starts the restore behind each safety snapshot that has
 // finished (and gives up the one behind a snapshot that failed). The world stays
 // locked in between, so the interval is how long a finished snapshot keeps the
@@ -1023,13 +1065,6 @@ func inUseImageRefs(ctx context.Context, store imageRefStore, servers serverList
 // mailLimit turns smtp.max_per_hour into the API's install-wide mail bucket:
 // the hourly cap as the refill rate, with a quarter of it (at least 5) allowed
 // at once so a burst of real sign-ins is not queued behind the average.
-func mailLimit(perHour int) api.RateLimit {
-	if perHour <= 0 {
-		perHour = config.DefaultMailPerHour
-	}
-	return api.RateLimit{Burst: max(perHour/4, 5), PerMinute: float64(perHour) / 60}
-}
-
 // imagePinner resolves a new server's image against the platform registry
 // through its in-cluster Service, the address its refs already spell. An install
 // without a registry has no platform-built images to pin.
@@ -1136,4 +1171,13 @@ func contextMaxBytes(cfg *config.Config) (int64, error) {
 		return 0, fmt.Errorf("not a positive size: %q", v)
 	}
 	return n, nil
+}
+
+// hostMailSettings is felis.toml's [smtp] relay as the panel's mail settings fall back to
+// it, nil when felis.toml has none.
+func hostMailSettings(c config.SMTPConfig, password string) *mailsettings.Settings {
+	if c.Host == "" {
+		return nil
+	}
+	return &mailsettings.Settings{Host: c.Host, Port: c.Port, From: c.From, Username: c.Username, Password: password, RequireTLS: c.TLSRequired(), MaxPerHour: c.MaxPerHour}
 }

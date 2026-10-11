@@ -21,6 +21,7 @@ import (
 	"felis.lolicon.best/internal/dbbackup"
 	"felis.lolicon.best/internal/imagepush"
 	"felis.lolicon.best/internal/offsite"
+	"felis.lolicon.best/internal/reaper"
 )
 
 func TestLoadOffsiteEnvFile(t *testing.T) {
@@ -707,7 +708,7 @@ func TestOffsiteSyncerSnapshotsAndSweeps(t *testing.T) {
 	env := &offsiteEnv{cfg: config.OffsiteConfig{DBKeep: 5}}
 	var log bytes.Buffer
 	cfg := &config.Config{Database: podDB, Archive: config.ArchiveConfig{Retention: "120d"}}
-	s := offsiteSyncer(cfg, env, offsiteSources{dbDir: bundles}, "/archives", "/uploads", nil, &log)
+	s := offsiteSyncer(cfg, env, offsiteSources{dbDir: bundles}, "/archives", "/uploads", nil, &log, nil)
 	if s.DBDir != bundles || s.DBKeep != 5 || s.ArchiveDir != "/archives" || s.UploadsDir != "/uploads" {
 		t.Fatalf("syncer = %+v", s)
 	}
@@ -759,13 +760,26 @@ func TestOffsiteSyncerSnapshotsAndSweeps(t *testing.T) {
 		{config.ArchiveConfig{ScheduledRetention: "200d"}, 200 * 24 * time.Hour},
 		{config.ArchiveConfig{ManualRetention: "150d", Retention: "30d", ScheduledRetention: "60d"}, 150 * 24 * time.Hour},
 	} {
-		s := offsiteSyncer(&config.Config{Database: podDB, Archive: c.archive}, env, offsiteSources{dbDir: bundles}, "", "", nil, io.Discard)
+		s := offsiteSyncer(&config.Config{Database: podDB, Archive: c.archive}, env, offsiteSources{dbDir: bundles}, "", "", nil, io.Discard, nil)
 		if s.OrphanAfter != c.want {
 			t.Errorf("%+v: OrphanAfter = %s, want %s", c.archive, s.OrphanAfter, c.want)
 		}
 	}
+	// The panel's policy overrides [archive]; one that cannot be read leaves [archive].
+	s = offsiteSyncer(cfg, env, offsiteSources{}, "", "", nil, io.Discard, func(rc *reaper.Config) error {
+		rc.ManualRetention = 400 * 24 * time.Hour
+		return nil
+	})
+	if s.OrphanAfter != 400*24*time.Hour {
+		t.Errorf("with the panel's 400-day manual retention: OrphanAfter = %s", s.OrphanAfter)
+	}
 	log.Reset()
-	s = offsiteSyncer(&config.Config{Database: podDB, Archive: config.ArchiveConfig{Retention: "soon"}}, env, offsiteSources{}, "", "", nil, &log)
+	s = offsiteSyncer(cfg, env, offsiteSources{}, "", "", nil, &log, func(*reaper.Config) error { return errors.New("connection refused") })
+	if s.OrphanAfter != 120*24*time.Hour || !strings.Contains(log.String(), "[archive] stands") {
+		t.Errorf("an unreadable panel policy: OrphanAfter %s, log %q; want [archive]'s 120d, said", s.OrphanAfter, log.String())
+	}
+	log.Reset()
+	s = offsiteSyncer(&config.Config{Database: podDB, Archive: config.ArchiveConfig{Retention: "soon"}}, env, offsiteSources{}, "", "", nil, &log, nil)
 	if s.OrphanAfter != 0 || !strings.Contains(log.String(), "world objects no backup records are kept") {
 		t.Errorf("a retention that does not parse: OrphanAfter %s, log %q; want no sweep, said", s.OrphanAfter, log.String())
 	}

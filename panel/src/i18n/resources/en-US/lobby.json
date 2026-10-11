@@ -13,6 +13,7 @@
   "stop_login": "Stop the login space to read and save settings. New players cannot join during maintenance; start it again when finished.",
   "stop_lobby": "Stop the lobby to read and save settings. Back up its map before maintenance, then start it again when finished.",
   "read_failed": "Could not read settings: {{reason}}. Check felis-experience.json in the file manager.",
+  "damaged_file": "The settings file felis-experience.json is damaged, so the game uses the defaults for whatever it cannot read. Settings that are still valid are kept below and the rest show their defaults; saving writes these settings over the file.",
   "saved": "Saved. Settings apply on the next start or restart.",
   "restart": "Restart & apply",
   "restarting": "Restarting…",

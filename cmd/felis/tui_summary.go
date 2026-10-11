@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"io"
+	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -171,21 +173,27 @@ func copyTerminalText(text string) error {
 }
 
 // alertRoute is where this host's watchdog alerts go, as the summary shows it:
-// by mail through the [smtp] relay to the Owners' verified addresses, and the
+// by mail through the relay (the panel's, else felis.toml's [smtp]) to the Owners'
+// verified addresses, and the
 // heartbeat that notices the host itself going down (docs/troubleshooting.md
 // §14). Setup runs mail-less by design, so a fresh install has neither; the
 // summary says so where the Owner can press e.
 type alertRoute struct {
-	relay        string   // "host:port", "" with no [smtp] relay
+	relay        string   // "host:port", "" with no relay
 	recipients   []string // enabled Owners' verified addresses
 	lookupErr    error    // the recipients could not be read
 	heartbeat    string   // the heartbeat URL's scheme and host, "" with none
 	heartbeatErr error    // the heartbeat file does not read
 }
 
+// readPanelSettings reads the relay and the heartbeat the Owner saved in the panel; tests
+// replace it.
+var readPanelSettings = panelSettings
+
 // hostAlertRoute reads the route from the host config at cfgPath, the database
 // at dbURL and the heartbeat file at heartbeatPath: what the next watchdog run
-// uses.
+// uses. A relay or heartbeat saved in the panel wins over the host's, as it does
+// in the watchdog.
 func hostAlertRoute(ctx context.Context, cfgPath, dbURL, heartbeatPath string) alertRoute {
 	var r alertRoute
 	if in := smtpInputsFrom(cfgPath); in.host != "" {
@@ -194,8 +202,14 @@ func hostAlertRoute(ctx context.Context, cfgPath, dbURL, heartbeatPath string) a
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	r.recipients, r.lookupErr = ownerEmails(ctx, dbURL)
+	panelRelay, panelBeat, _ := readPanelSettings(ctx, dbURL)
+	if panelRelay != nil {
+		r.relay = net.JoinHostPort(panelRelay.Host, strconv.Itoa(panelRelay.Port))
+	}
 	u, err := readHeartbeatURL(heartbeatPath)
 	switch {
+	case panelBeat != nil:
+		r.heartbeat = redactURL(panelBeat.URL)
 	case err != nil:
 		r.heartbeatErr = err
 	case u != "":
@@ -208,7 +222,7 @@ func hostAlertRoute(ctx context.Context, cfgPath, dbURL, heartbeatPath string) a
 func (r alertRoute) alertsLine() (line string, ok bool) {
 	switch {
 	case r.relay == "":
-		return "only logged: no email relay (press e)", false
+		return "only logged: no email relay (press e, or set it in the panel)", false
 	case r.lookupErr != nil:
 		return "via " + r.relay + "; could not read the Owner addresses", false
 	case len(r.recipients) == 0:
@@ -223,7 +237,7 @@ func (r alertRoute) heartbeatLine() (line string, ok bool) {
 	case r.heartbeatErr != nil:
 		return "unreadable: " + r.heartbeatErr.Error(), false
 	case r.heartbeat == "":
-		return "none: no outside check (troubleshooting.md §14)", false
+		return "none: no outside check (set one in the panel)", false
 	}
 	return r.heartbeat + " every 2 minutes", true
 }

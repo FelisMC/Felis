@@ -100,6 +100,13 @@ func (k *K8sConsole) RunCommand(ctx context.Context, name, command string) (stri
 		return "", ErrConsoleUnavailable
 	}
 	defer conn.Close()
+	// A caller allowing longer than the default command timeout gets it: a live
+	// backup's save-all flush can take a minute on a large world.
+	if dl, ok := ctx.Deadline(); ok {
+		if err := conn.SetDeadline(dl); err != nil {
+			return "", ErrConsoleUnavailable
+		}
+	}
 
 	out, err := conn.ExecuteContext(ctx, command)
 	if err != nil {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
+	"felis.lolicon.best/internal/backupjob"
 	"felis.lolicon.best/internal/maintenance"
 )
 
@@ -135,20 +136,26 @@ func (a *API) warnRun(ctx context.Context, s *Schedule, due, now time.Time) erro
 	// Warned late (felis-api was restarting at the warning time): say how long
 	// is really left.
 	minutes := int(math.Ceil(due.Sub(now).Minutes()))
-	if _, err := a.Console.RunCommand(ctx, s.Server, "say "+scheduleWarning(s.Action, minutes)); err != nil {
+	_, _, live := a.liveBackupParts()
+	if _, err := a.Console.RunCommand(ctx, s.Server, "say "+scheduleWarning(s.Action, minutes, live)); err != nil {
 		return fmt.Errorf("warn the players: %w", err)
 	}
 	return nil
 }
 
 // scheduleWarning is the in-game line announcing a run minutes ahead, in both
-// panel languages.
-func scheduleWarning(action string, minutes int) string {
+// panel languages. live says a backup will be taken while the server runs.
+func scheduleWarning(action string, minutes int, live bool) string {
 	switch action {
 	case ScheduleRestart:
 		return fmt.Sprintf("[Felis] 服务器将在 %d 分钟后重启 / Server restarts in %d min", minutes, minutes)
 	case ScheduleStop:
 		return fmt.Sprintf("[Felis] 服务器将在 %d 分钟后关闭 / Server stops in %d min", minutes, minutes)
+	case ScheduleBackup:
+		if live {
+			return fmt.Sprintf("[Felis] %d 分钟后进行备份，存档会暂停几秒钟 / A backup runs in %d min; saving pauses for a few seconds", minutes, minutes)
+		}
+		fallthrough
 	default:
 		return fmt.Sprintf("[Felis] 服务器将在 %d 分钟后暂停做备份，完成后自动恢复 / Server pauses for a backup in %d min and comes back after", minutes, minutes)
 	}
@@ -215,7 +222,7 @@ func (a *API) beginRun(ctx context.Context, s *Schedule) error {
 		if _, ok := a.Backuper.(ScheduledBackuper); !ok {
 			return finish(ScheduleFailed, "backups are not configured")
 		}
-		if limit := a.BackupStoreCap; limit > 0 {
+		if limit := a.backupStoreCap(ctx); limit > 0 {
 			used, err := a.Repo.BackupStoreBytes(ctx)
 			if err != nil {
 				return finish(ScheduleFailed, "could not read the backup store size: "+err.Error())
@@ -232,7 +239,7 @@ func (a *API) beginRun(ctx context.Context, s *Schedule) error {
 			return finish(ScheduleSkipped, "the server has no world yet")
 		}
 		if running {
-			return a.stopForRun(ctx, s, true)
+			return a.backUpRunning(ctx, s)
 		}
 		// Already stopped: back it up as soon as the world volume is free, and
 		// leave it stopped afterwards.
@@ -488,3 +495,22 @@ func stripFormatting(s string) string {
 }
 
 func ptrTime(t time.Time) *time.Time { return &t }
+
+// backUpRunning takes a scheduled backup of a running server live (livebackup.go), so
+// players stay on and saving pauses only while the world is copied. Where that cannot
+// be done (no live support, the game not answering its console, the world busy) it falls
+// back to stopping the server, backing up and starting it again.
+func (a *API) backUpRunning(ctx context.Context, s *Schedule) error {
+	if _, _, ok := a.liveBackupParts(); !ok {
+		return a.stopForRun(ctx, s, true)
+	}
+	if err := a.startLiveBackup(ctx, s.Server, s.OwnerID, backupjob.ReasonScheduled); err != nil {
+		log.Printf("api: schedule %d could not back %s up while it runs (%v); stopping it for the backup", s.ID, s.Server, err)
+		return a.stopForRun(ctx, s, true)
+	}
+	log.Printf("api: schedule %d started a backup of %s while it runs", s.ID, s.Server)
+	if ok, err := a.Schedules.AdvanceScheduleRun(ctx, s.ID, runClaimed, runBackingUp, false, "", "", a.now()); err != nil || !ok {
+		return err
+	}
+	return nil
+}

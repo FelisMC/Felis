@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -396,14 +397,14 @@ func (a *API) handleBackupNow(w http.ResponseWriter, r *http.Request) {
 // BackupStoreCap. The owner's older backups are pruned by the Job itself
 // ([archive] manual_keep), so these two gates bound the rate and the total.
 func (a *API) backupAllowance(ctx context.Context, name string) error {
-	if a.BackupCooldown > 0 {
+	if cooldown := a.backupCooldown(ctx); cooldown > 0 {
 		now := a.now()
-		last, err := a.Repo.LastBackupRequest(ctx, name, now.Add(-a.BackupCooldown))
+		last, err := a.Repo.LastBackupRequest(ctx, name, now.Add(-cooldown))
 		if err != nil {
 			return err
 		}
 		if !last.IsZero() {
-			wait := last.Add(a.BackupCooldown).Sub(now)
+			wait := last.Add(cooldown).Sub(now)
 			if wait > 0 {
 				return newError(http.StatusTooManyRequests, "backup_cooldown",
 					"a backup of this server was started %s ago; the next one can start in %s",
@@ -411,12 +412,12 @@ func (a *API) backupAllowance(ctx context.Context, name string) error {
 			}
 		}
 	}
-	if a.BackupStoreCap > 0 {
+	if limit := a.backupStoreCap(ctx); limit > 0 {
 		used, err := a.Repo.BackupStoreBytes(ctx)
 		if err != nil {
 			return err
 		}
-		if used >= a.BackupStoreCap {
+		if used >= limit {
 			return newError(http.StatusInsufficientStorage, "backup_store_full",
 				"the backup store is full; ask an administrator to free space")
 		}
@@ -486,8 +487,27 @@ func (a *API) enqueueBackup(w http.ResponseWriter, r *http.Request, name string,
 		return
 	}
 	if info.Ready || info.DesiredState != string(v1alpha1.DesiredStopped) {
-		writeError(w, r, newError(http.StatusConflict, "not_stopped",
-			"stop the server before backing up its world"))
+		// A running server is backed up live (livebackup.go): its saving pauses only
+		// while the world is copied. One starting or stopping is neither frozen nor
+		// down, so it waits.
+		if !info.Ready || info.DesiredState != string(v1alpha1.DesiredRunning) || a.Backuper == nil {
+			writeError(w, r, newError(http.StatusConflict, "not_stopped",
+				"the server is starting or stopping; back it up once it is running or stopped"))
+			return
+		}
+		if err := a.startLiveBackup(r.Context(), name, rec.OwnerID, ""); err != nil {
+			if errors.Is(err, ErrNotRunning) {
+				err = newError(http.StatusConflict, "not_stopped", "the server is starting or stopping; back it up once it is running or stopped")
+			}
+			a.writeLookupError(w, r, maintenanceError(err, "stop the server before backing up its world"))
+			return
+		}
+		e := AuditEntry{Actor: actor, Source: source, Action: "backup.create", ServerName: name, Payload: []byte(`{"live":true}`)}
+		if p := principalFromContext(r.Context()); p != nil {
+			e.ActorUserID = p.UserID
+		}
+		a.auditEntry(r, e)
+		writeJSON(w, http.StatusAccepted, map[string]any{"name": name, "status": "backing_up"})
 		return
 	}
 
@@ -534,4 +554,64 @@ func (a *API) enqueueBackup(w http.ResponseWriter, r *http.Request, name string,
 		"name":   name,
 		"status": "backing_up",
 	})
+}
+
+// handleInternalRestore restores a server's newest intact backup for the host console
+// rebuilding an install from its off-site copy (felis restore-host). Service-token auth
+// with no Principal, like the break-glass backup; no safety snapshot, since a rebuilt
+// host has nothing of the world to keep; and the world volume is created first when the
+// server has never started on this host. The server must be stopped.
+func (a *API) handleInternalRestore(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if err := naming.ValidateServerName(name); err != nil {
+		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
+		return
+	}
+	if _, err := a.Repo.ServerByName(r.Context(), name); err != nil {
+		a.writeLookupError(w, r, err)
+		return
+	}
+	backup, err := a.Repo.LatestBackup(r.Context(), name)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, r, newError(http.StatusNotFound, "no_backup", "no restorable backup exists for this server"))
+		return
+	}
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	info, err := a.Cluster.GetServer(r.Context(), name)
+	if err != nil {
+		a.writeLookupError(w, r, err)
+		return
+	}
+	if info.Ready || info.DesiredState != string(v1alpha1.DesiredStopped) {
+		writeError(w, r, newError(http.StatusConflict, "not_stopped", "stop the server before restoring a backup"))
+		return
+	}
+	if a.Restorer == nil {
+		writeError(w, r, newError(http.StatusServiceUnavailable, "restore_unavailable", "restore subsystem is not configured"))
+		return
+	}
+	if err := a.Cluster.EnsureWorldVolume(r.Context(), name); err != nil {
+		a.writeLookupError(w, r, err)
+		return
+	}
+	release, ok := a.acquireWorld(w, r, name, maintenance.KindRestore, "stop the server before restoring a backup")
+	if !ok {
+		return
+	}
+	defer release()
+	if err := a.Restorer.Restore(r.Context(), name, backup.BackupRef); err != nil {
+		if isRestoreInProgress(err) {
+			writeError(w, r, newError(http.StatusConflict, "restore_in_progress",
+				"a restore is still running on this server's world; retry once it finishes"))
+			return
+		}
+		a.writeLookupError(w, r, err)
+		return
+	}
+	payload, _ := json.Marshal(map[string]any{"backup_id": backup.ID, "rebuild": true})
+	a.auditEntry(r, AuditEntry{Actor: "restore-host", Source: internalSource(r), Action: "backup.restore", ServerName: name, Payload: payload})
+	writeJSON(w, http.StatusAccepted, map[string]any{"name": name, "backup_id": backup.ID})
 }

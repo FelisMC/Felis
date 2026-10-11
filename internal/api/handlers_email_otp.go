@@ -141,7 +141,7 @@ func (a *API) handleEmailOTPStart(w http.ResponseWriter, r *http.Request) {
 	}
 	// No relay (or a spent budget) is said before asking for a re-verification
 	// the player could not then use.
-	if err := a.checkMailBudget(); err != nil {
+	if err := a.checkMailBudget(r.Context()); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -288,7 +288,8 @@ func (a *API) handleEmailOTPVerify(w http.ResponseWriter, r *http.Request) {
 // Every real send spends one token of the install-wide mail budget (mailGate);
 // a spent budget is a 429 mail_rate_limited and nothing reaches the relay.
 func (a *API) deliverOTP(ctx context.Context, email, code string) error {
-	if a.Mailer == nil {
+	mailer := a.mailer(ctx)
+	if mailer == nil {
 		return errMailUnavailable()
 	}
 	if ok, wait := a.mailGate().take(mailGateKey); !ok {
@@ -296,7 +297,7 @@ func (a *API) deliverOTP(ctx context.Context, email, code string) error {
 		log.Printf("api: OTP mail refused by the install-wide mail budget (request_id=%s)", requestIDFromContext(ctx))
 		return errMailRateLimited(wait)
 	}
-	if err := a.Mailer.SendOTP(ctx, email, code); err != nil {
+	if err := mailer.SendOTP(ctx, email, code); err != nil {
 		metrics.MailTotal.WithLabelValues("otp", "failed").Inc()
 		// Mapped here rather than at each of the four call sites, so every door that
 		// mails a code answers the same way. A relay refusal is neither the caller's

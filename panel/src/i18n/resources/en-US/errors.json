@@ -144,8 +144,19 @@
   "minecraft_profile_not_found": "The profile was not found in the selected authentication source. Check the profile name or UUID.",
   "auth_sources_unavailable": "Authentication source management is unavailable.",
   "auth_sources_changed": "Authentication sources changed. Discard your edits and reload before saving.",
+  "mail_settings_changed": "The mail settings were changed elsewhere. Reload them before saving.",
+  "mail_settings_unavailable": "This install cannot configure mail delivery from the panel.",
+  "smtp_unreachable": "The mail server could not be reached. Check its host and port, and that it accepts connections from this host.",
+  "smtp_tls": "An encrypted connection to the mail server could not be established. Use port 465, or confirm the server offers STARTTLS.",
+  "smtp_auth": "The mail server refused the user name or password.",
+  "smtp_sender_refused": "The mail server refused to send from this address. Confirm with your mail provider that it is an authorized sending identity.",
+  "smtp_recipient_refused": "The mail server refused the recipient address.",
+  "smtp_failed": "The mail server did not accept the test message.",
   "auth_source_tag_locked": "Saved source IDs cannot be renamed or removed. Disable the source instead.",
   "distributed_unavailable": "Distributed deployment is not configured. Configure the controller and worker nodes using the deployment runbook first.",
   "node_operation_busy": "Node maintenance is running. Server starts and additional node tasks are temporarily blocked.",
-  "node_control_unavailable": "Host node service is unavailable. Inspect felis-node-control.service on the controller."
+  "node_control_unavailable": "Host node service is unavailable. Inspect felis-node-control.service on the controller.",
+  "node_not_lost": "The node is online or is not a worker. Only a lost worker can be failed over.",
+  "confirm_mismatch": "Type the node name to confirm the failover.",
+  "bad_heartbeat_url": "The heartbeat URL must be a full address starting with http:// or https://."
 }

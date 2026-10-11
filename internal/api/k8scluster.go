@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
@@ -593,3 +595,45 @@ func (k *K8sCluster) WithDistributed(enabled bool, controller ...string) *K8sClu
 	}
 	return k
 }
+
+// EnsureWorldVolume creates the world volume claim of a server that has none, under the
+// name and with the size and class the operator's StatefulSet asks for, so the
+// StatefulSet adopts it when the server first starts. A server that has its claim keeps
+// it untouched.
+func (k *K8sCluster) EnsureWorldVolume(ctx context.Context, name string) error {
+	var ms v1alpha1.MinecraftServer
+	if err := k.getServer(ctx, name, &ms); err != nil {
+		return err
+	}
+	var pvc corev1.PersistentVolumeClaim
+	err := k.c.Get(ctx, types.NamespacedName{Namespace: k.namespace, Name: ms.WorldPVC()}, &pvc)
+	if err == nil {
+		return nil
+	}
+	if !apierrors.IsNotFound(err) {
+		return err
+	}
+	size := ms.Spec.Storage.Size
+	if size == "" {
+		size = defaultWorldSize
+	}
+	qty, err := resource.ParseQuantity(size)
+	if err != nil {
+		return fmt.Errorf("world size %q: %w", size, err)
+	}
+	pvc = corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: ms.WorldPVC(), Namespace: k.namespace, Labels: map[string]string{v1alpha1.LabelServer: name}},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources:   corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: qty}},
+		},
+	}
+	if sc := ms.Spec.Storage.StorageClassName; sc != "" {
+		pvc.Spec.StorageClassName = &sc
+	}
+	return client.IgnoreAlreadyExists(k.c.Create(ctx, &pvc))
+}
+
+// defaultWorldSize is the operator's world size for a server that names none
+// (internal/operator builders.go defaultStorageSize).
+const defaultWorldSize = "8Gi"

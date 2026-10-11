@@ -23,6 +23,7 @@ import (
 	"net/smtp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -43,6 +44,9 @@ type SMTP struct {
 	// RequireTLS refuses a relay on a port other than 465 that does not offer
 	// STARTTLS. Callers set it from config.SMTPConfig.TLSRequired.
 	RequireTLS bool
+	// Control, when set, vets the address the relay is dialled at before connecting
+	// (felis-api sets netguard.RefuseLinkLocal for a relay an Owner typed in).
+	Control func(network, address string, c syscall.RawConn) error
 }
 
 // SendOTP mails code to email as a small bilingual plain-text message. It is
@@ -151,7 +155,7 @@ func (s *SMTP) connect(ctx context.Context) (*smtp.Client, error) {
 	if !ok {
 		deadline = time.Now().Add(sendTimeout)
 	}
-	dialer := &net.Dialer{Deadline: deadline}
+	dialer := &net.Dialer{Deadline: deadline, Control: s.Control}
 
 	var conn net.Conn
 	var err error

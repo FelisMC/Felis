@@ -129,16 +129,29 @@ describe("LobbyPage", () => {
     expect(calls.writeServerFile).not.toHaveBeenCalled();
   });
 
-  it("keeps the form disabled after malformed JSON and enables it after retry", async () => {
-    calls.readServerFile.mockResolvedValue({ content: btoa("{broken"), sha256: "hash" });
+  // A file broken in the file manager must stay repairable here: the game runs on the
+  // defaults, and saving writes a good file over the damaged one.
+  it("opens a damaged file on the defaults and saves a good file over it", async () => {
+    calls.readServerFile.mockResolvedValue({ content: btoa("{broken"), sha256: "damaged-hash" });
     page();
-    await screen.findByRole("alert");
-    expect((screen.getByLabelText("English menu title") as HTMLInputElement).disabled).toBe(true);
+    expect((await screen.findByRole("alert")).textContent).toContain("felis-experience.json is damaged");
+    // The form shows the defaults the game falls back to.
+    expect((await readyField("English menu title")).value).toBe("Felis Servers");
+    expect(screen.getByText("You have unsaved changes")).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "Save settings" }));
-    expect(calls.writeServerFile).not.toHaveBeenCalled();
-    calls.readServerFile.mockResolvedValue({ content: btoa('{"menuTitleEn":"Recovered title"}'), sha256: "hash" });
-    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
-    expect((await readyField("English menu title")).value).toBe("Recovered title");
-    expect(screen.queryByRole("alert")).toBeNull();
+    await waitFor(() => expect(calls.writeServerFile).toHaveBeenCalledWith("lobby", "felis-experience.json", expect.any(String), "damaged-hash"));
+    const written = JSON.parse(atob(calls.writeServerFile.mock.calls[0][2]));
+    expect(written).toEqual({});
+    await waitFor(() => expect(screen.queryByText(/is damaged/)).toBeNull());
+  });
+
+  it("keeps the still-valid settings of a damaged file", async () => {
+    calls.readServerFile.mockResolvedValue({ content: btoa(JSON.stringify({ menuTitleEn: "Kept title", keepInventory: "yes" })), sha256: "damaged-hash" });
+    page();
+    expect((await screen.findByRole("alert")).textContent).toContain("is damaged");
+    expect((await readyField("English menu title")).value).toBe("Kept title");
+    await userEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    await waitFor(() => expect(calls.writeServerFile).toHaveBeenCalled());
+    expect(JSON.parse(atob(calls.writeServerFile.mock.calls[0][2]))).toEqual({ menuTitleEn: "Kept title" });
   });
 });

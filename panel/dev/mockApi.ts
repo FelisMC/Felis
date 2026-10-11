@@ -6,6 +6,11 @@ import type {
   AuthSourceConfig,
   AuthSourcesSettings,
   WakePolicySettings,
+  MailSettings,
+  MailSettingsRequest,
+  ArchivePolicySettings,
+  HeartbeatSettings,
+  FailoverPolicySettings,
   EntryPolicySettings,
   AutostartPolicy,
   BackupView,
@@ -95,6 +100,11 @@ interface MockState {
   updateWindow: { start: string | null; end: string | null };
   authSources: AuthSourcesSettings;
   wakePolicy: WakePolicySettings;
+  mailSettings: MailSettings;
+  mailPassword: string;
+  archivePolicy: ArchivePolicySettings;
+  heartbeat: HeartbeatSettings;
+  failoverPolicy: FailoverPolicySettings;
   entryPolicy: EntryPolicySettings;
   // Each server's world volume, seeded on first visit.
   files: Record<string, MockTree>;
@@ -461,6 +471,11 @@ function initialState(): MockState {
     updateWindow: { start: null, end: null },
     entryPolicy: { mode: "domain", defaultServer: "", requireAccountLink: true, offlineAction: "wake", waitingSpace: "lobby", fallbackServer: "", revision: "initial" },
     wakePolicy: { maxRunningServers: 0, wakeCooldownSeconds: 30, revision: "initial", managed: false },
+    mailSettings: { source: "host", host: "smtp.mock.felis.local", port: 587, from: "noreply@mock.felis.local", username: "noreply@mock.felis.local", password_set: true, require_tls: true, max_per_hour: 0, revision: "" },
+    mailPassword: "mock",
+    archivePolicy: hostArchivePolicy(),
+    heartbeat: { set: false, display: "", revision: "" },
+    failoverPolicy: { automatic: false, afterMinutes: 15, replicaMinutes: 60, revision: "", managed: false },
     authSources: {
       sources: [{ tag: "littleskin", prefix: "LS", url: "https://littleskin.cn/api/yggdrasil/sessionserver/session/minecraft/hasJoined", api_url: "", enabled: true }],
       revision: "installation-defaults",
@@ -1020,6 +1035,11 @@ async function handlePublic(ctx: RequestContext): Promise<boolean> {
   }
 }
 
+// hostArchivePolicy is the retention felis.toml's defaults amount to (reaper.DefaultConfig).
+function hostArchivePolicy(): ArchivePolicySettings {
+  return { manualKeep: 5, manualRetentionDays: 30, manualCooldownMinutes: 10, scheduledEveryHours: 24, scheduledKeep: 7, scheduledRetentionDays: 90, releasedRetentionDays: 90, maxStoreGiB: 0, auditRetentionDays: 365, source: "host", revision: "" };
+}
+
 async function handleSession(ctx: SessionContext): Promise<boolean> {
   switch (route(ctx)) {
     case "GET settings/node-control":
@@ -1053,6 +1073,106 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
         else {
           ctx.state.wakePolicy = { ...body, revision: createHash("sha256").update(JSON.stringify(body)).digest("hex"), managed: true };
           sendJSON(ctx.res, 200, ctx.state.wakePolicy);
+        }
+      }
+      return true;
+    }
+    // The mail relay: a host "smtp.fail…" refuses the check, so the panel's failure path
+    // can be seen; anything else is accepted.
+    case "GET settings/smtp":
+    case "PUT settings/smtp":
+    case "DELETE settings/smtp":
+    case "POST settings/smtp/test": {
+      if (!isOwner(ctx.account.role)) {
+        sendError(ctx.res, 403, "forbidden", "Owner account required");
+        return true;
+      }
+      if (is("GET", ctx)) {
+        sendJSON(ctx.res, 200, ctx.state.mailSettings);
+        return true;
+      }
+      if (is("DELETE", ctx)) {
+        ctx.state.mailSettings = { source: "host", host: "smtp.mock.felis.local", port: 587, from: "noreply@mock.felis.local", username: "noreply@mock.felis.local", password_set: true, require_tls: true, max_per_hour: 0, revision: "" };
+        sendJSON(ctx.res, 200, ctx.state.mailSettings);
+        return true;
+      }
+      const body = await readJSON<MailSettingsRequest>(ctx.req);
+      if (![25, 465, 587, 2525].includes(body.port) || !body.host || !/^[^\s@]+@[^\s@]+$/.test(body.from)) {
+        sendError(ctx.res, 400, "bad_request", "invalid relay");
+      } else if (body.host.startsWith("smtp.fail")) {
+        sendError(ctx.res, 400, "smtp_auth", "the relay refused the user name or password");
+      } else if (is("POST", ctx)) {
+        sendJSON(ctx.res, 200, { sent_to: ctx.account.email || body.from });
+      } else if (body.revision !== ctx.state.mailSettings.revision) {
+        sendError(ctx.res, 409, "mail_settings_changed", "the mail settings changed; reload before saving");
+      } else {
+        if (body.password !== undefined) ctx.state.mailPassword = body.password;
+        const { password: _password, revision: _revision, ...relay } = body;
+        ctx.state.mailSettings = { ...relay, source: "panel", password_set: ctx.state.mailPassword !== "", revision: createHash("sha256").update(JSON.stringify(relay)).digest("hex") };
+        sendJSON(ctx.res, 200, ctx.state.mailSettings);
+      }
+      return true;
+    }
+    // Retention: the felis.toml defaults until a save; a manual keep of 0 is refused, so the
+    // panel's validation failure can be seen.
+    case "GET settings/archive-policy":
+    case "PUT settings/archive-policy":
+    case "DELETE settings/archive-policy": {
+      if (!isOwner(ctx.account.role)) {
+        sendError(ctx.res, 403, "forbidden", "Owner account required");
+      } else if (is("GET", ctx)) {
+        sendJSON(ctx.res, 200, ctx.state.archivePolicy);
+      } else if (is("DELETE", ctx)) {
+        ctx.state.archivePolicy = hostArchivePolicy();
+        sendJSON(ctx.res, 200, ctx.state.archivePolicy);
+      } else {
+        const { revision, source: _source, ...saved } = await readJSON<ArchivePolicySettings>(ctx.req);
+        if (revision !== ctx.state.archivePolicy.revision) sendError(ctx.res, 409, "conflict", "the retention changed; reload before saving");
+        else if (!(saved.manualKeep >= 1 && saved.manualKeep <= 100)) sendError(ctx.res, 400, "bad_request", "manualKeep must be 1–100");
+        else {
+          ctx.state.archivePolicy = { ...saved, source: "panel", revision: createHash("sha256").update(JSON.stringify(saved)).digest("hex") };
+          sendJSON(ctx.res, 200, ctx.state.archivePolicy);
+        }
+      }
+      return true;
+    }
+    case "GET settings/heartbeat":
+    case "PUT settings/heartbeat":
+    case "DELETE settings/heartbeat": {
+      if (!isOwner(ctx.account.role)) {
+        sendError(ctx.res, 403, "forbidden", "Owner account required");
+      } else if (is("GET", ctx)) {
+        sendJSON(ctx.res, 200, ctx.state.heartbeat);
+      } else if (is("DELETE", ctx)) {
+        ctx.state.heartbeat = { set: false, display: "", revision: "" };
+        sendJSON(ctx.res, 200, ctx.state.heartbeat);
+      } else {
+        const body = await readJSON<{ url: string; revision: string }>(ctx.req);
+        let parsed: URL | null = null;
+        try { parsed = new URL(body.url); } catch { parsed = null; }
+        if (body.revision !== ctx.state.heartbeat.revision) sendError(ctx.res, 409, "conflict", "the heartbeat changed; reload before saving");
+        else if (!parsed || (parsed.protocol !== "https:" && parsed.protocol !== "http:")) sendError(ctx.res, 400, "bad_heartbeat_url", "the heartbeat must be an http(s) URL");
+        else {
+          ctx.state.heartbeat = { set: true, display: `${parsed.protocol}//${parsed.host}`, revision: createHash("sha256").update(body.url).digest("hex") };
+          sendJSON(ctx.res, 200, ctx.state.heartbeat);
+        }
+      }
+      return true;
+    }
+    case "GET settings/failover":
+    case "PUT settings/failover": {
+      if (!isOwner(ctx.account.role)) {
+        sendError(ctx.res, 403, "forbidden", "Owner account required");
+      } else if (is("GET", ctx)) {
+        sendJSON(ctx.res, 200, ctx.state.failoverPolicy);
+      } else {
+        const body = await readJSON<Omit<FailoverPolicySettings, "managed">>(ctx.req);
+        if (body.revision !== ctx.state.failoverPolicy.revision) sendError(ctx.res, 409, "conflict", "the failover setting changed; reload before saving");
+        else if (body.afterMinutes < 10 || body.afterMinutes > 1440 || (body.replicaMinutes !== 0 && (body.replicaMinutes < 15 || body.replicaMinutes > 1440))) sendError(ctx.res, 400, "bad_request", "invalid failover setting");
+        else {
+          const { revision: _revision, ...policy } = body;
+          ctx.state.failoverPolicy = { ...policy, managed: true, revision: createHash("sha256").update(JSON.stringify(policy)).digest("hex") };
+          sendJSON(ctx.res, 200, ctx.state.failoverPolicy);
         }
       }
       return true;
@@ -2714,15 +2834,16 @@ async function handleRestoreBackupMock(ctx: SessionContext, serverInfo: MockServ
   return true;
 }
 
-// handleBackupNowMock mirrors POST /servers/{name}/backup: owner-or-admin, then
-// the stopped gate (the world volume is RWO), then 202. The Job finishes at once.
+// handleBackupNowMock mirrors POST /servers/{name}/backup: owner-or-admin, then a
+// stopped world archived as it is or a running one live; a server starting or stopping
+// is refused. The Job finishes at once.
 function handleBackupNowMock(ctx: SessionContext, serverInfo: MockServer): void {
   if (!canManage(ctx.account, serverInfo)) {
     sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
     return;
   }
-  if (serverInfo.phase !== "Stopped") {
-    sendError(ctx.res, 409, "not_stopped", "stop the server before backing it up");
+  if (serverInfo.phase !== "Stopped" && serverInfo.phase !== "Running") {
+    sendError(ctx.res, 409, "not_stopped", "the server is starting or stopping; back it up once it is running or stopped");
     return;
   }
   const now = new Date().toISOString();

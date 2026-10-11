@@ -1071,7 +1071,8 @@ deadline is **hard-fixed in code** (only `warn_before` / `retention` /
 `max_local_bytes`, the on-demand backup keys `manual_retention` /
 `manual_keep` / `manual_cooldown` and the scheduled backup keys
 `scheduled_every` / `scheduled_keep` / `scheduled_retention` are configurable
-from `felis.toml [archive]`).
+from `felis.toml [archive]`). The Owner can override every one of these keys
+except `warn_before` in the panel ("Retention set in the panel" below).
 
 ### What a "backup" contains
 
@@ -1186,7 +1187,10 @@ reports `the world reaper has not succeeded for …`. [GO-TESTED:
 ### On-demand backups ("Back up now")
 
 An owner's "Back up now" writes a `manual` backup into the same store and onto
-the same disk as the worlds and the database, so it is rationed:
+the same disk as the worlds and the database. On a stopped server the Job
+archives the world volume as it is; on a running one it takes a live backup
+(next section). Either way it is rationed, by these `[archive]` keys or the
+values the Owner saved in the panel ("Retention set in the panel" below):
 
 | Key | Default | Effect |
 |---|---|---|
@@ -1202,6 +1206,67 @@ with `not enough free disk for the archive`. A failed backup or restore shows
 the error its container exited on under Recent operations on the server's
 backup page. [GO-TESTED: `TestBackupNow`, `TestCheckRoom`,
 `TestReaperConfigManualKeys`, `TestLatestJobsExplainsFailures`]
+
+### Live backups: backing up a running server
+
+A backup of a running server leaves it running. "Back up now" on a running
+server, the scheduled restore point of a running world (below), a scheduled
+task's backup (§19) and `felis backup-now` all take a live backup, after the
+snapshot mode of Proxmox VE, with the game's own save system in place of a
+filesystem snapshot:
+
+1. felis-api admits the backup only for a server that is running and ready
+   and whose world nothing else holds (§3b). It records the freeze on the
+   MinecraftServer (annotation `felis.lolicon.best/live-backup`, naming the
+   backup Job and the game pod it froze) together with the world lock, so a
+   felis-api that restarts mid-backup still finishes it.
+2. Over RCON it turns saving off (`save-off`) and writes everything in memory
+   to disk (`save-all flush`, allowed up to 2 minutes on a large world). The
+   world on disk is then complete and stays still.
+3. The backup Job's init container (`felis stage-world`) copies the world,
+   mounted read-only, into a scratch volume on the same node. Where the
+   filesystem supports it (XFS, Btrfs) each file is cloned by reflink, which
+   makes the copy near-instant whatever the world's size. The copy refuses to
+   start when the scratch volume has less free space than the world occupies.
+4. felis-api checks every 2 seconds and turns saving back on (`save-on`) the
+   moment the copy step exits. The archive, its sha256 and the read-back then
+   run from the copy while the game keeps running.
+
+Players see saving paused only for the copy, a matter of seconds for a few GB.
+Saving stays off for at most 5 minutes: a copy still running then is dropped
+and saving comes back on. A server whose saving was already off before the
+backup keeps it off afterwards. The freeze has these costs:
+
+- A crash during the freeze loses what changed since the flush, as any crash
+  between two autosaves does, and chunks stay loaded meanwhile. The operator
+  does not idle-stop a frozen server, and before scaling one down it waits a
+  bounded time for the freeze to end, so the shutdown's own save does not land
+  in the middle of the copy.
+- A game that restarted mid-copy saved on its way down, so its copy is
+  dropped as possibly torn.
+- Plugin databases written outside the save system (SQLite, H2) are copied as
+  they stand at the moment of the copy, which can be later than the flush.
+
+The live backup is otherwise an ordinary backup: the same Job, the same
+cooldown, cap and keep-N as above, the same 10% free-disk check, and the audit
+action `backup.create` (or `backup.scheduled`) with `{"live":true}` in its
+payload. A refusal names its cause:
+
+| Answer | Cause | Fix |
+|---|---|---|
+| `409 not_stopped`, `the server is starting or stopping; back it up once it is running or stopped` | the server is between states: neither running and ready, nor stopped | retry once it has settled |
+| `503 live_backup_console` | the game did not answer `save-off` or `save-all flush` over its console: RCON is off (a user server created before RCON was the default, §12b) or unreachable (§1c) | retry, stop the server and back it up stopped, or turn its RCON on with `sudo felis converge -user-rcon` (§12b) |
+| `409 maintenance_in_progress` | another operation holds the world, a restart is under way, or another live backup is still copying | retry once it ends (§3b) |
+| `409 not_stopped`, `stop the server before backing up its world` | this felis-api cannot back up a running server (no console, or a backup executor without live support) | stop the server first |
+
+[GO-TESTED: `TestLiveBackupFreezesCopiesAndThaws`,
+`TestLiveBackupLeavesSavingOffWhenItWasOff`, `TestLiveBackupUndoesAFailedStart`,
+`TestSettleLiveBackupDropsATornCopy`, `TestSettleLiveBackupKeepsTryingSaveOn`,
+`TestSettleLiveBackupRecoversAnUnrecordedJob`, `TestLiveBackupRefusesAServerInTransit`,
+`TestAcquireLiveBackupAdmitsOnlyARunningFreeServer`, `TestLiveBackupRecordLifecycle`,
+`TestLiveBackupProgressReadsTheCopyStep`, `TestBackupJobLiveCopiesBeforeArchiving`,
+`TestBackupLiveReturnsTheJobItCreated`, `TestStageWorldCopiesTheFrozenWorld`,
+`TestStageWorldRefusesWhatItCannotHold`]
 
 ### Deleting one backup
 
@@ -1300,8 +1365,8 @@ from the node:
 
 ```bash
 sudo felis backup-now                    # the plan; nothing changes
-sudo felis backup-now -yes               # archive every stopped world, one at a time
-sudo felis backup-now -yes -stop         # stop the running servers first
+sudo felis backup-now -yes               # archive every world, one at a time; running servers live
+sudo felis backup-now -yes -stop         # stop the running servers first and leave them stopped
 sudo felis backup-now -yes alpha bravo   # only these servers
 ```
 
@@ -1312,19 +1377,31 @@ backup (the same Job, the same 10% free-disk check, the audit action
 from the owner cooldown and the `max_local_bytes` cap like the break-glass console.
 
 - **The plan** lists every user server with its phase and what the run does with
-  it: `back up`, `stop, then back up`, `skip: running (stop it first, or pass
-  -stop)`, or `skip: no world volume (never started, nothing to save)`. With
-  nothing to archive it ends `Nothing to back up.`
+  it: `back up` (stopped), `back up while it runs (saving pauses for the copy)`
+  (running and ready), `stop, then back up` (running, with `-stop`), `skip:
+  starting or stopping (run again later, or pass -stop)`, or `skip: no world
+  volume (never started, nothing to save)`. With nothing to archive it ends
+  `Nothing to back up.`
+- **Running servers are backed up live** ("Live backups" above): their players
+  stay on, and the game stops saving only while its world is copied. Each
+  request returns once the game has flushed its world and the Job exists, which
+  can take up to 2 minutes on a large world. A running server whose console
+  does not answer (RCON off, §12b) fails its backup; back it up with `-stop`,
+  or turn its RCON on first.
 - **Each archive counts against `manual_keep`**: a server that already holds that
   many manual backups loses its oldest, and the plan says so. Raise
-  `[archive] manual_keep` first when those older backups matter.
+  `[archive] manual_keep` (or the panel's value, below) first when those older
+  backups matter.
 - **Stopped servers go first**, so a felis-api that cannot take a backup is found
   before anything is stopped for one. The run waits for each Job (`alpha: archived
   in 42s`) before starting the next.
-- **`-stop` disconnects the players** and leaves those servers stopped (`Left
-  stopped: …`; start them from the panel). Each stop writes `break_glass.halt` to
-  the audit log. A server still up after 10 minutes counts as failed, and the run
-  moves on.
+- **`-stop` stops each running server before its backup**, as every run did
+  before live backups. This disconnects its players, and the server stays
+  stopped (`Left stopped: …`; start them from the panel). It also takes the
+  servers that are starting or stopping. Use it when no world may change after
+  its archive, as before a move to another host (operations.md §5). Each stop
+  writes `break_glass.halt` to the audit log. A server still up after 10
+  minutes counts as failed, and the run moves on.
 - **An unreachable felis-api ends the run** (`Stopped: nothing more can be backed
   up until felis-api answers`). Ctrl-C ends it after the current step; a backup Job
   already started runs to its end.
@@ -1333,13 +1410,14 @@ from the owner cooldown and the `max_local_bytes` cap like the break-glass conso
   felis-offsite.service`, which sends them now; `sudo felis offsite status` shows
   what still waits.
 
-It exits 0 when every world with a volume was archived, 1 when a backup failed, a
-running server was skipped (no `-stop`) or the run was interrupted, and 2 for a
-name that is no user server. [GO-TESTED: `TestBackupNowPlanChangesNothing`,
-`TestBackupNowPlanWithNothingToSave`, `TestBackupNowBacksUpEachWorldInTurn`,
-`TestBackupNowSkipsRunningServersWithoutStop`,
-`TestBackupNowStopsAtAnUnreachableAPI`, `TestBackupNowStopsWhenInterrupted`,
-`TestBackupNowNamedServers`]
+The run ends with a count (`3 backed up, 1 skipped (starting or stopping).`). It
+exits 0 when every world with a volume was archived, 1 when a backup failed, a
+server starting or stopping was skipped (no `-stop`) or the run was interrupted,
+and 2 for a name that is no user server. [GO-TESTED:
+`TestBackupNowPlanChangesNothing`, `TestBackupNowPlanWithNothingToSave`,
+`TestBackupNowBacksUpEachWorldInTurn`, `TestBackupNowBacksUpRunningServersLive`,
+`TestListBackupNowWorlds`, `TestBackupNowStopsAtAnUnreachableAPI`,
+`TestBackupNowStopsWhenInterrupted`, `TestBackupNowNamedServers`]
 
 ### Scheduled backups (daily restore points)
 
@@ -1348,8 +1426,10 @@ felis-api therefore takes a `scheduled` backup of every owned world that
 somebody joined since its owner's last intact scheduled backup, once that
 backup is `scheduled_every` old. This works without a worlds root: it is the
 same backup Job "Back up now" starts, so it needs only `FELIS_IMAGE` and
-`FELIS_BACKUP_PVC` (felis-api logs `scheduled backups off` at start when
-either is missing or `scheduled_every` is `0s`).
+`FELIS_BACKUP_PVC` (felis-api logs `scheduled backups off (needs the backup
+executor)` at start when either is missing). A `scheduled_every` of `0s`, in
+felis.toml or in the panel, turns the points off; felis-api reads it again at
+every check, so a change in the panel needs no restart.
 
 | Key | Default | Effect |
 |---|---|---|
@@ -1359,16 +1439,18 @@ either is missing or `scheduled_every` is `0s`).
 
 How it behaves:
 
-- **Only a stopped server is backed up.** The Job mounts the world volume,
-  which a running server holds. Idle auto-stop brings a played world down
-  minutes after its last player leaves, so the point normally lands the same
-  day. A server with auto-stop turned off gets its point the next time it
-  stops; one that never stops never gets one.
+- **Running worlds are taken live.** A stopped world is archived as it is; a
+  running one gets a live backup (above), its saving paused only while the
+  world is copied, so a server kept running around the clock gets its daily
+  point too. A server starting or stopping, or whose world another operation
+  holds, waits for a later check. One whose game does not answer its console
+  (`live_backup_console` above) is tried again after a quarter of
+  `scheduled_every`.
 - **One Job at a time, cluster-wide.** felis-api checks every 2 minutes and
   starts one scheduled backup only while no backup or restore Job is running,
   worlds without a point first. It holds the world like any backup, so a player
-  who wakes the server during those minutes sees the maintenance message and can
-  retry once it finishes.
+  who wakes a stopped server during those minutes sees the maintenance message
+  and can retry once it finishes.
 - **Paused while the store is full.** While the present backups add up to
   `max_local_bytes`, no scheduled backup starts (felis-api logs
   `scheduled backups paused` and `resumed` once each). The backup Job's 10%
@@ -1385,8 +1467,49 @@ How it behaves:
 
 [GO-TESTED: `TestBackupScheduler`, `TestK8sScheduledBackupJobs`,
 `TestBackupJobRecordsAScheduledBackup`, `TestBackupPolicyPerReason`,
-`TestReaperConfigScheduledKeys`; PG-TESTED: `TestScheduledBackupCandidates`,
+`TestReaperConfigScheduledKeys`, `TestBackupSchedulerTakesARunningWorldLive`,
+`TestScheduledBackupsFollowThePolicy`; PG-TESTED: `TestScheduledBackupCandidates`,
 `TestExcessBackupsPerOwner`]
+
+### Retention set in the panel
+
+The Owner can set the backup and audit retention on the panel's **Platform
+settings → Backup and audit retention** card instead of in `felis.toml`. The
+values live in one `platform_settings` row (`archive_policy`), and each
+overrides the matching key of `[archive]` or `[audit]`:
+
+| Panel field (API key) | Overrides | Bounds |
+|---|---|---|
+| Manual backups, kept per server (`manualKeep`) | `manual_keep` | 1–100 |
+| Manual backups, days kept (`manualRetentionDays`) | `manual_retention` | 1–3650 days |
+| Minutes between two backups (`manualCooldownMinutes`) | `manual_cooldown` | 0–1440 (0: no cooldown) |
+| Scheduled restore points, interval (`scheduledEveryHours`) | `scheduled_every` | 0–720 hours (0: off) |
+| Scheduled restore points, kept per server (`scheduledKeep`) | `scheduled_keep` | 1–100 |
+| Scheduled restore points, days kept (`scheduledRetentionDays`) | `scheduled_retention` | 1–3650 days |
+| Days a removed world's archive is kept (`releasedRetentionDays`) | `retention`, which covers every archive the reaper writes: of idle, released and deleted worlds | 1–3650 days |
+| Backup store cap (`maxStoreGiB`) | `max_local_bytes` | 0–1048576 GiB (0: no cap) |
+| Days audit rows are kept (`auditRetentionDays`) | `[audit] retention` (§17) | 0 (keep every row), or 30–3650 days |
+
+Until a policy is saved, the card shows what felis.toml amounts to, rounded to
+the card's units (the store cap rounded up to whole GiB). felis-api applies a
+save at once, on every replica within 15 seconds; the backup Job reads the
+policy when it starts, and the reaper on its next daily run. `warn_before`
+stays in felis.toml. **Restore install-time settings** clears the row, and
+felis.toml applies again. A row that cannot be read leaves felis.toml in force:
+felis-api logs `felis.toml stands`, the backup Job and the reaper log `the
+panel's retention policy is unreadable, [archive] stands`. The off-site copy's
+removal of bucket objects no backup row lists (§16) waits for the longest of the
+three retentions in force, the panel's when it holds a policy.
+
+Saving and clearing take a fresh identity confirmation, like other sensitive
+changes; a save made against a policy that changed since the card loaded
+answers `409 conflict`. The audit actions are `platform.archive_policy` and
+`platform.archive_policy.clear`. API: `GET`, `PUT` and `DELETE
+/api/v1/settings/archive-policy` (Owner). [GO-TESTED: `TestValidateBounds`,
+`TestFromConfigAndApplyRoundTrip`, `TestArchivePolicyRoutesAreOwnerOnly`,
+`TestArchivePolicyOverridesTheHostAndHandsItBack`,
+`TestArchivePolicyAsksForAFreshProof`, `TestBackupLimitsFollowThePolicy`,
+`TestScheduledBackupsFollowThePolicy`, `TestOffsiteSyncerSnapshotsAndSweeps`]
 
 ### Exemptions (world never reaped)
 
@@ -1399,19 +1522,22 @@ How it behaves:
 
 An OWNED server inside a warning window gets an email notice (`3d`/`1d` before
 the deadline, `warn_before` from `[archive]`) to the owner's **verified** email —
-the same `[smtp]` relay felis-api uses. The `warned_3d_at` / `warned_1d_at`
-stamps record a **delivered** notice:
+the same relay felis-api uses: the one the Owner saved in the panel (§17,
+"The mail relay set in the panel"), else `[smtp]`. The reaper reads the panel's
+relay from the database at each run [CODE-ONLY]. The `warned_3d_at` /
+`warned_1d_at` stamps record a **delivered** notice:
 
-- No `[smtp]` configured (or owner has no verified address): the run logs
-  `reaper: warning suppressed — no warner wired` / a delivery error and does
-  NOT stamp. Nothing is falsely recorded as sent, and the day SMTP is
-  configured the pending warning can still go out.
+- No relay configured, in the panel or as `[smtp]` (or owner has no verified
+  address): the run logs `reaper: warning suppressed — no warner wired` / a
+  delivery error and does NOT stamp. Nothing is falsely recorded as sent, and
+  the day a relay is configured the pending warning can still go out.
 - Delivery failure (relay down): logged and retried on the next daily run —
   bounded by the warning window, since the reap removes the candidate anyway.
 - `warned=` in the run output counts DELIVERED notices, not attempts.
 
-The reaper runs in the minecraft namespace and reads the **mirrors** of
-`felis-smtp` and `felis-config` there (a `secretKeyRef` is namespace-local). The
+For the `[smtp]` relay, the reaper runs in the minecraft namespace and reads
+the **mirrors** of `felis-smtp` and `felis-config` there (a `secretKeyRef` is
+namespace-local). The
 installed `felis setup`'s "configure email" screen refreshes both mirrors when it
 applies, so configuring SMTP after install is enough; a manual edit of the
 control-namespace Secret alone is not. [GO-TESTED: the delivered/retried/
@@ -1886,7 +2012,9 @@ Every two minutes the host checks:
 How it mails:
 
 - **Recipients** are the verified email addresses of enabled owner accounts.
-  The relay is the `[smtp]` one sign-in codes use.
+  The relay is the one sign-in codes use: the relay the Owner saved in the
+  panel (**Platform settings → Mail delivery**, §17), read from the database at
+  each run, else `[smtp]`.
 - **One mail per run**, holding everything that came due: new problems, a
   daily reminder for each problem still open, and a resolved notice once a
   problem has stayed gone for 10 minutes. A condition that heals before its
@@ -1900,22 +2028,28 @@ How it mails:
   logs `this host stands by for host ...; holding this mail`. Once that host
   stops running, the standby is mailed like any other finding (§16).
   [GO-TESTED: `TestMailHold`]
-- **Caching:** the relay password comes from `/etc/felis/smtp-password`, which
-  the watchdog reads even while the API server is down (an install without that
-  file reads the `felis-smtp` Secret instead). It and the recipient list are
-  cached in `/var/lib/felis/watchdog/state.json` (root-only). An outage of
-  PostgreSQL or of the API server can therefore still be mailed. [GO-TESTED: a
-  run with the API server and PostgreSQL both down caches the host copy.]
+- **Caching:** for the `[smtp]` relay the password comes from
+  `/etc/felis/smtp-password`, which the watchdog reads even while the API
+  server is down (an install without that file reads the `felis-smtp` Secret
+  instead). The relay in use, its password and the recipient list are cached
+  in `/var/lib/felis/watchdog/state.json` (root-only). A run that cannot read
+  the database keeps mailing through the panel's relay as the last good run
+  cached it, and falls back to `[smtp]` only when that run used `[smtp]` too.
+  An outage of PostgreSQL or of the API server can therefore still be mailed.
+  [GO-TESTED: a run with the API server and PostgreSQL both down caches the
+  host copy; `TestRelayForPrefersThePanelRelay`.]
 - **No relay or no verified owner address:** each alert is written to the
   journal only, and a run with a heartbeat pings its failure endpoint while an
   alert is open (below). Setup runs without mail, so a fresh install is in
   this state. The install ends with `NO ALERT MAIL`, and the card at the end
   of `sudo felis setup` has an `alerts` row that says where alerts go: `mailed
   to <address> via <relay>`, or what is missing, marked `⚠`. Press `e` there
-  to configure email, then verify the Owner's address in the panel (Account →
-  Email Verification). The `heartbeat` row below it shows the check that is
-  pinged. [SH-TESTED; GO-TESTED: `TestAlertRouteLines`,
-  `TestHostAlertRoute`]
+  to configure email (or save a relay in the panel), then verify the Owner's
+  address in the panel (Account → Email Verification). The `heartbeat` row
+  below it shows the check that is pinged. That card and `felis doctor` read
+  `felis.toml` and the heartbeat file alone, so a relay or heartbeat saved only
+  in the panel still shows there as missing. [SH-TESTED; GO-TESTED:
+  `TestAlertRouteLines`, `TestHostAlertRoute`]
 
 Commands:
 
@@ -1941,14 +2075,38 @@ Every run pings a check at an outside monitoring service (Healthchecks.io, or
 one that copies its API), and that service mails you when the pings stop.
 
 1. Create a check there with a period of 2 minutes and a grace of 10 minutes.
-2. Re-run the installer with `FELIS_WATCHDOG_HEARTBEAT_URL=<the check's ping
-   URL>`. It writes the URL to `/etc/felis/watchdog-heartbeat-url` (root-only,
-   0600). The URL's path is the check's key, so the install and the journal
-   show only its scheme and host.
+2. Give the watchdog the check's ping URL, in either of two places:
+   - In the panel, on the **Platform settings → Monitoring heartbeat** card.
+     The next watchdog run pings it.
+   - On the host: re-run the installer with `FELIS_WATCHDOG_HEARTBEAT_URL=<the
+     check's ping URL>`. It writes the URL to `/etc/felis/watchdog-heartbeat-url`
+     (root-only, 0600).
+
+   The URL's path is the check's key, so the panel, the install and the
+   journal show only its scheme and host.
 
 A later install without the variable keeps the file, and
 `FELIS_WATCHDOG_HEARTBEAT_URL=off` removes it. An install with no heartbeat
-ends with a `NO HEARTBEAT` warning. [SH-TESTED: `deploy/bootstrap_test.sh`]
+file ends with a `NO HEARTBEAT` warning. [SH-TESTED: `deploy/bootstrap_test.sh`]
+
+The URL saved in the panel lives in one `platform_settings` row
+(`watchdog_heartbeat`) and wins over the host file. Each run reads it from the
+database and caches it in the watchdog's state, so a run while the database is
+down, and the failure fallback below, still ping it. **Remove heartbeat URL**
+on the card clears the row; the watchdog then pings the host file's URL, if
+the installer wrote one, and the check at the service alerts on the missing
+pings until it is paused there. Saving and removing take a fresh identity
+confirmation; the audit actions are `platform.heartbeat` and
+`platform.heartbeat.clear`. API: `GET`, `PUT` and `DELETE
+/api/v1/settings/heartbeat` (Owner); `GET` answers only whether a URL is set
+and its scheme and host. The installer's closing summary (through `felis
+panel-settings`), the setup card's `heartbeat` row and `felis doctor` count a
+URL saved in the panel, and warn only when neither the panel nor the host file
+has one.
+[GO-TESTED: `TestHeartbeatForPrefersThePanelURL`,
+`TestWatchdogUnitFailedPingsThePanelHeartbeat`,
+`TestHeartbeatSettingKeepsItsKeyPrivate`, `TestHeartbeatSettingAsksForAFreshProof`,
+`TestCheckAndRedact`]
 
 What a run pings:
 
@@ -1965,9 +2123,10 @@ or gets a non-2xx answer logs `felis watchdog: heartbeat: ...`; the run's exit
 status stays that of its checks and its mail. [GO-TESTED:
 `TestHeartbeatSend`, `TestWatchdogRunHeartbeat`]
 
-A bundle (§16) carries `/etc/felis` and the heartbeat file with it. A host
-rebuilt from one stands by and pings nothing until `felis offsite take-over`;
-from then on it pings the same check.
+A bundle (§16) carries `/etc/felis` and the heartbeat file with it, and a URL
+saved in the panel with the database. A host rebuilt from one stands by and
+pings nothing until `felis offsite take-over`; from then on it pings the same
+check.
 
 ### When the watchdog itself fails
 
@@ -1980,8 +2139,9 @@ starts `felis watchdog -unit-failed`, which:
   while the installer runs or the host stands by;
 - records `watchdog/run` and mails it once runs have kept failing for 10
   minutes. The relay and recipients come from `felis.toml` when it loads and
-  from the watchdog's cache when it does not. The first passing run resolves
-  it like any other finding.
+  from the watchdog's cache when it does not; a relay the Owner saved in the
+  panel, as the last good run cached it, takes precedence over `felis.toml`.
+  The first passing run resolves it like any other finding.
 
 [VM-TESTED: on systemd 252, a failing unit with this `OnFailure=` passed
 `result exit-code, exit status 3` to the fallback, which posted it to a local
@@ -2570,7 +2730,7 @@ off-site bucket (next sections) plus a fresh install. What the host holds:
 | Control-plane database (accounts, passkeys, ownership, quotas, audit, submissions, the `world_backups` index) | felis-postgres, `/var/lib/felis/postgres` | every bundle, copied within the hour of being written, plus a fresh one after every pass that copied a world archive | `fetch-db`, `db restore` | changes since the newest bundle: up to a day plus an hour with the daily timer |
 | Host state (`/etc/felis`: secrets, both `felis.toml` copies, `offsite.env`, the mail relay password and uploads bucket keys, panel TLS pair) | `/etc/felis` | inside every bundle | `tar -x` of the bundle's `state/` | as the database |
 | MinecraftServer objects | k3s | inside every bundle (`k8s/minecraftservers.json`) | `kubectl apply` | as the database |
-| World archives (reaper, "Back up now", pre-restore snapshots) | `felis-backups` volume | each one within the hour, followed by a bundle listing it | `fetch-worlds` | archives written in the last hour |
+| World archives (reaper, scheduled restore points, "Back up now", pre-restore snapshots) | `felis-backups` volume | each one within the hour, followed by a bundle listing it | `fetch-worlds` | archives written in the last hour |
 | Live worlds | `world-*` volumes under `/var/lib/rancher/k3s/storage` | **only as their archives** | a restore from the newest archive (§10) | everything since that world's newest archive |
 | User images | `registry` volume | hourly; image lists kept 14 days | `fetch-images` | images pushed in the last hour |
 | Submission uploads (modpacks awaiting or past review) | `felis-uploads` volume | hourly; upload lists kept 14 days | `fetch-uploads` | uploads of the last hour |
@@ -2579,11 +2739,13 @@ off-site bucket (next sections) plus a fresh install. What the host holds:
 | k3s itself (its token, CA, datastore, Secrets, Deployments) | `/var/lib/rancher/k3s` | not copied | the installer makes a new single-node cluster and renders every Secret and Deployment from `/etc/felis` | nothing: no Felis data lives only there |
 
 **Live worlds are the gap.** A world's current state exists only in its
-volume; the bucket holds the archives the reaper, an owner's "Back up now" or
-a pre-restore snapshot wrote. A world that was never archived comes back as a
-server with an empty world. Tell owners to back up before anything they would
-hate to lose, and treat the newest archive's age (the server's backup page) as
-that world's recovery point.
+volume; the bucket holds the archives the reaper, the scheduled restore points,
+an owner's "Back up now" or a pre-restore snapshot wrote. Scheduled restore
+points are taken of running worlds too (§10), so a world played since its last
+point normally has one no older than `scheduled_every` (one day by default).
+A world that was never archived comes back as a server with an empty world.
+Tell owners to back up before anything they would hate to lose, and treat the
+newest archive's age (the server's backup page) as that world's recovery point.
 
 For a smaller database loss window, give the installer a tighter
 `FELIS_DB_BACKUP_TIME` (any systemd calendar, e.g. `*-*-* 00/6:30:00` for
@@ -2598,7 +2760,8 @@ bucket holding (images, uploads, world archives) at the bucket's bandwidth,
 and each skips what is already in place, so an interrupted one resumes. Write
 those sizes down with the bucket's download rate and you have the recovery
 time for your install. A whole-host rehearsal on a spare machine, once per
-release, is the way to know it for sure. The spare follows the steps below
+release, is the way to know it for sure. The spare runs `felis restore-host`
+without `-take-over` (next section), or follows the manual steps below
 without steps 8 and 11. It finds the production host named in the bucket and
 stands by, so it copies nothing into the bucket, prunes nothing there and,
 while production keeps writing, mails none of the owners its restored
@@ -2619,6 +2782,99 @@ MinecraftServers are applied, since the login gate's env carries it.
 
 This needs the off-site copy (next section) or a bundle you copied off the old
 host yourself, plus the off-site encryption key if the copy is in the bucket.
+
+**In one command: `felis restore-host`.** With the off-site copy, the installer
+rebuilds a fresh host on its own. Give it the old install's bucket, its
+credentials and its key (with `FELIS_OFFSITE_REGION` and `FELIS_OFFSITE_PREFIX`
+when the old install had them) and ask for the rebuild:
+
+```
+FELIS_OFFSITE_ENDPOINT=https://s3.example.com FELIS_OFFSITE_BUCKET=felis-backups \
+FELIS_OFFSITE_ACCESS_KEY=... FELIS_OFFSITE_SECRET_KEY=... FELIS_OFFSITE_KEY=... \
+FELIS_RESTORE_FROM_OFFSITE=1 FELIS_RESTORE_TAKE_OVER=1 \
+  bash deploy/bootstrap.sh          # or the curl | sudo bash one-liner
+```
+
+The installer checks the request before it touches the host: it refuses
+`FELIS_RESTORE_FROM_OFFSITE=1` without all five `FELIS_OFFSITE_*` values
+above, and on a host where Felis is already installed (`sudo felis restore-host
+-yes -force` replaces such an install's data). `FELIS_RESTORE_BUNDLE` names an
+older bundle than the newest (`felis-db-<stamp>-<label>.tar`, from `felis
+offsite list`). Leave `FELIS_RESTORE_TAKE_OVER` unset on a rehearsal machine.
+Once the install is complete, and before its summary and the setup console, it
+runs `felis restore-host -yes` (with `-bundle` and `-take-over` from those
+variables), so the setup console finds the old install's Owner. When the
+rebuild stops, the installer says `the rebuild stopped before it finished; fix
+the cause above and run: sudo felis restore-host -yes`; that command carries
+on where the run stopped (add `-take-over` when the installer had it).
+
+On a host already installed with the old bucket in its `[offsite]` settings
+and no servers yet, run the command directly, as root:
+
+```
+sudo felis restore-host                      # the steps; nothing changes
+sudo felis restore-host -yes                 # rebuild, leaving the bucket to the old host
+sudo felis restore-host -yes -take-over      # rebuild, then make this host write the bucket
+```
+
+It runs the numbered steps below up to taking the bucket over, each as the
+command the step names:
+
+| `restore-host` step | What it does | Manual step |
+|---|---|---|
+| `fetch_db` | `felis offsite fetch-db` of the newest bundle (or `-bundle <name>`) into `/var/lib/felis/restore-host` | 1 |
+| `images` | `felis offsite fetch-images` | 4 |
+| `uploads` | `felis offsite fetch-uploads` | 5 |
+| `database` | scales felis-api and felis-operator to 0, `felis db restore -yes -no-safety-backup`, `felis migrate up`, scales both back and waits up to 5 minutes for felis-api | 6 |
+| `servers` | applies the bundle's `k8s/minecraftservers.json`: user servers only (the new install made its own login gate and lobby), each `Stopped`, without the old cluster's node placement, volume claim names, locks or in-flight marks | 6 |
+| `worlds` | `felis offsite fetch-worlds` | 7 |
+| `restore_worlds` | restores each brought-back server's newest intact backup through felis-api and waits for its restore Job (up to 2 hours each); a server with no backup keeps an empty world | 7 |
+| `take_over` | `felis offsite take-over -yes`, only with `-take-over` | 8 |
+
+- **Resumable.** Each step is recorded in
+  `/var/lib/felis/restore-host/state.json` once done, so a run cut short (a
+  dropped SSH session, a bucket timeout) picks up where it stopped. The
+  database is restored once only: a rerun never restores it over what the
+  rebuilt install has written since. The bundle the first run fetched stays
+  the rebuild's bundle on later runs.
+- **A fresh install only.** Before the database step it refuses an install
+  whose database already holds servers; `-force` restores over them.
+- **Failed worlds are retried.** A server whose restore fails is listed with
+  the reason and fails the step; the next run retries only the servers not yet
+  restored.
+- **Host state stays this host's.** It does not put the old `/etc/felis` in
+  place (step 2): the installer generated fresh secrets, and this host keeps
+  its own root domain, `[smtp]` relay, uploads bucket keys and tunnel
+  configuration. A mail relay, retention or heartbeat the Owner saved in the
+  panel comes back with the database. To reuse the old host's state as well,
+  put it in place as in step 2 before running the installer with the variables
+  above. [CODE-ONLY]
+- **The end of the run** prints which backup each server's world came from and
+  what is left by hand: step 9 (mail), step 10 (pointing the domain here and
+  `felis domain set`, or keeping this host's address, in which case passkeys
+  registered on the old address stop working and their users sign in with an
+  email code and register new ones), step 11 (the Cloudflare tunnel) and,
+  without `-take-over`, step 8. After a take-over, `sudo systemctl start
+  felis-offsite.service` sends this host's first copy before the hourly timer
+  does.
+
+Flags: `-yes` (without it the steps are printed and nothing changes),
+`-bundle <name>`, `-take-over`, `-force`, `-dir` (default
+`/var/lib/felis/restore-host`) and `-config` (default `/etc/felis/felis.toml`).
+A rerun with a different `-bundle` fetches and uses that bundle while the
+database has not been restored yet; once it has, the run refuses and names the
+bundle the database came from (delete `/var/lib/felis/restore-host/state.json`
+to start over).
+[GO-TESTED: `TestRestoreHostRunsTheRunbookOnce`, `TestRestoreHostTakesTheNamedBundle`,
+`TestRestoreHostResumesAfterAFailure`, `TestRestoreHostRefusesAnInstallWithServers`,
+`TestRestorableServersCleansTheOldCluster`, `TestNewestBundleAndBundleEntry`,
+`TestInternalRestoreRebuildsAWorld`] [SH-TESTED: the installer's checks of the
+`FELIS_RESTORE_*` variables, `deploy/bootstrap_test.sh`] [CODE-ONLY: a whole
+rebuild through the installer on a real host]
+
+**By hand.** The numbered steps are the reference for what `restore-host`
+does, the way to rebuild from a bundle copied off the old host without a
+bucket, and the way to finish a step the command could not.
 
 1. Get the newest bundle. From the bucket, with any `felis` binary of the same
    or a newer release (the `felis-linux-<arch>` release asset runs on its own;
@@ -2739,8 +2995,12 @@ host yourself, plus the off-site encryption key if the copy is in the bucket.
    message to the From address and writes nothing unless it arrives. A relay
    that admits senders by address, or an SPF record for the From domain that
    lists the old host's address, refuses this host or sends its mail to spam:
-   add the new address there and save again. With no relay at all, an Owner
-   who cannot sign in recovers with `sudo felis breakGlass` (§17).
+   add the new address there and save again. A relay the Owner saved in the
+   panel came back with the database in step 6 and is the one in force; saving
+   the setup screen replaces it with the relay typed there (§17). Check that
+   one from the panel instead, with **Send test message** on **Platform
+   settings → Mail delivery**, once the panel is reachable. With no relay at
+   all, an Owner who cannot sign in recovers with `sudo felis breakGlass` (§17).
 10. Move the install to this host's address when its names still lead to the
     old one. The installer kept the bundle's root domain (its log says
     `(reusing the installed domain)`).
@@ -3027,7 +3287,8 @@ The address comes from `[auth] client_ip_header`:
 ### `mail_rate_limited`: the install-wide mail budget is spent
 
 Every code and notice the API mails spends one token of a single budget,
-`[smtp] max_per_hour` (default 120; a quarter of it may go at once), so a flood
+`[smtp] max_per_hour`, or the **Hourly mail cap** of a relay saved in the panel
+(default 120; a quarter of it may go at once), so a flood
 cannot burn the relay's quota and get the sending account suspended. While it
 is spent, every address gets the same 429 and nothing reaches the relay.
 `felis_mail_total{result="throttled"}` counts refusals and
@@ -3041,30 +3302,97 @@ The relay's reason is in the `felis-api` log.
 
 ### `mail_unavailable`: no mail relay
 
-With no `[smtp]` section every door that mails a code answers 503
-`mail_unavailable` before minting one: email sign-in, op.console sign-in,
-email verification, and the email step-up for sensitive changes and
-migration. The public doors answer before looking up the address, so every
-address gets the same reply. Sign-in is by passkey only, and a verified email
-stops counting as a way into the account (it is no longer offered as a
-re-verification factor). Codes are never logged: `felis api` says at start
-`[smtp] not configured`. Run `felis setup` and configure email to open the
-doors.
+With no relay, neither saved in the panel nor as an `[smtp]` section, every
+door that mails a code answers 503 `mail_unavailable` before minting one:
+email sign-in, op.console sign-in, email verification, and the email step-up
+for sensitive changes and migration. The public doors answer before looking up
+the address, so every address gets the same reply. Sign-in is by passkey only,
+and a verified email stops counting as a way into the account (it is no longer
+offered as a re-verification factor). Codes are never logged. To open the
+doors, save a relay on the panel's **Platform settings → Mail delivery** card
+(next section), or run `felis setup` and configure email. When felis.toml has no
+`[smtp]`, `felis api` says so at start and names the panel's relay as the one in
+use; whether one is saved there shows on the Mail delivery card.
+
+### The mail relay set in the panel
+
+The Owner can configure the relay on the panel's **Platform settings → Mail
+delivery** card. It is stored in one `platform_settings` row (`smtp`), and
+every sender reads it: felis-api (sign-in codes, verification, step-up codes
+and notices), the reaper's pre-deletion notices (§10), the watchdog's alerts
+(§14) and the break-glass console's codes (below). Without the row each falls
+back to the `[smtp]` relay `felis setup` wrote into felis.toml. Once saved in
+the panel it wins everywhere without a restart: felis-api reads the row at
+most every 15 seconds, and the reaper, the watchdog and the break-glass
+console at their next run. The card shows which relay is in force: **Panel
+settings**, **Install-time settings** or **Not configured**.
+
+- **Saving proves the relay first.** **Check and save** delivers one self-test
+  message to the sender address and saves only once the relay has accepted it;
+  the check cannot be skipped, since a relay that silently fails would lock
+  people out. **Send test message** (`POST /api/v1/settings/smtp/test`) sends
+  one message through the relay as typed, saved or not, to the Owner's
+  verified address (else to the sender), and spends the install-wide mail
+  budget above. A failure names its stage: `smtp_unreachable`, `smtp_tls`,
+  `smtp_auth`, `smtp_sender_refused`, `smtp_recipient_refused`, else
+  `smtp_failed`. The relay's own text stays in the felis-api log, since it can
+  echo internal addresses.
+- **What the card accepts.** Ports 25, 465, 587 and 2525 only: felis-api dials
+  the relay from inside the cluster, and any other port would turn the check
+  into a probe of internal services. The sender is a plain address, without a
+  display name. **Require an encrypted connection** (on by default) refuses a
+  relay on a port other than 465 that does not offer STARTTLS, with no
+  exemption for a relay on this host. The **Hourly mail cap** replaces
+  `[smtp] max_per_hour` (0: the default, 120). felis-api refuses to dial a
+  link-local, unspecified or multicast address, checked after DNS, so a relay
+  setting cannot reach the cloud metadata address (169.254.169.254); such a
+  relay answers `smtp_unreachable`.
+- **The password** is never sent back to the panel (the card shows only that
+  one is saved, and an empty field keeps it) and never written to the audit
+  log. It lives in the database row, so it travels in the database bundles and
+  their encrypted off-site copies (§16).
+- **Revert to install-time settings** clears the row and hands the relay back
+  to felis.toml. The setup console's email screen does the same each time it
+  saves, so the relay typed there is the one in force.
+- Saving, clearing and the test take a fresh identity confirmation; a save made
+  against a relay that changed since the card loaded answers `409
+  mail_settings_changed`. The audit actions are `smtp.updated` and
+  `smtp.cleared`. API: `GET`, `PUT` and `DELETE /api/v1/settings/smtp`, and
+  `POST /api/v1/settings/smtp/test` (Owner).
+- `sudo felis doctor`, the `alerts` row of the `felis setup` card and the
+  installer's closing summary count a relay saved in the panel (the installer
+  asks `felis panel-settings`, which prints only yes or no), and report none
+  only when neither the panel nor felis.toml has one. [GO-TESTED:
+  `TestDoctorCountsPanelSettings`, `TestHostAlertRoute`,
+  `TestPanelSettingsSaysWhatThePanelHolds`] [SH-TESTED: `deploy/bootstrap_test.sh`]
+
+[GO-TESTED: `TestMailSettingsReadShowsWhereTheRelayComesFrom`,
+`TestMailSettingsSaveChecksTheRelayAndOverridesFelisToml`,
+`TestMailSettingsRefusesAPortOffTheSubmissionList`,
+`TestMailSettingsClearHandsTheRelayBack`, `TestMailSettingsTestMailsTheOwner`,
+`TestMailSettingsOwnerOnly`, `TestRelayTestErrorCategories`,
+`TestValidateRefusesWhatCannotBeARelay`, `TestParseTreatsAClearedRowAsAbsent`,
+`TestRelayForPrefersThePanelRelay`, `TestPanelFirstRecoveryMailer`,
+`TestRefuseLinkLocal`]
 
 ### Relay refused for lacking TLS
 
 A relay on port 465 is spoken to over TLS from the first byte. On any other
 port Felis upgrades with STARTTLS, and when the relay does not offer it the
 send fails with `smtp: <host>:<port> does not offer STARTTLS` (502
-`mail_undeliverable` to the caller, the full text in the `felis-api` log, and
-the same error on the `felis setup` email screen). Without TLS anyone on the
+`mail_undeliverable` to the caller, the full text in the `felis-api` log, the
+same error on the `felis setup` email screen, and `smtp_tls` on the panel's
+check). Without TLS anyone on the
 path reads the codes, and anyone who can rewrite the conversation can strip
 the STARTTLS offer, so this is the default for every relay except one on this
 host (`localhost`, `127.0.0.0/8`, `::1`). Use port 465 or a relay that offers
 STARTTLS. For a relay you reach over a link you trust, set
 `require_tls = false` under `[smtp]` in `/etc/felis/felis.toml` and
 `/etc/felis/felis.pod.toml`; installer re-runs and the setup email screen keep
-it. `felis api` warns at start whenever codes may go out without TLS.
+it. `felis api` warns at start whenever codes may go out without TLS. For a
+relay saved in the panel, turn off **Require an encrypted connection** on the
+**Mail delivery** card instead; that setting has no exemption for a relay on
+this host, so a local relay without STARTTLS needs it off too.
 
 ### `otp_account_locked`: ten wrong codes in 24 hours
 
@@ -3118,12 +3446,16 @@ after that, and logs `retention: pruned spent rows` with a count per table:
 | `/felis link` bind codes | 30 days after they expired |
 | account migrations that never completed | 30 days after their last step (completed ones stay) |
 | wrong-code windows (`otp_failure_windows`) | 30 days after they began |
-| `audit_logs` | once older than `[audit] retention` |
+| `audit_logs` | once older than `[audit] retention`, or the value saved in the panel |
 
 `[audit] retention` defaults to `365d`; it takes days (`90d`), months of 30
-days (`18mo`) or `forever`, and refuses anything under `30d`. The daily
-`felis db backup` bundles (§16) still hold the rows for as long as the bundles
-are kept. To keep audit rows past the retention, export them before they go:
+days (`18mo`) or `forever`, and refuses anything under `30d`. The Owner can
+override it on the panel's **Platform settings → Backup and audit retention**
+card (**Days audit rows are kept**: 0 keeps every row, otherwise 30 to 3650
+days; §10, "Retention set in the panel"), which felis-api applies at its next
+prune. The daily `felis db backup` bundles (§16) still hold the rows for as
+long as the bundles are kept. To keep audit rows past the retention, export
+them before they go:
 
 ```sh
 sudo felis db audit-export -until 2026-01-01 -out /root/audit-2025.jsonl
@@ -3137,9 +3469,10 @@ file is created `0600` and an existing file is never overwritten.
 
 Once a staff account exists, `sudo felis breakGlass` asks which admin or owner
 is breaking the glass and mails that account's verified address a six-digit
-code through the same `[smtp]` relay as the sign-in codes. The code works for
-10 minutes and five wrong ones end it. The console reads the relay password
-the way the watchdog does (the `password_ref` env var, else
+code through the same relay as the sign-in codes: the one the Owner saved in
+the panel when the database answers, else felis.toml's `[smtp]`. The code works
+for 10 minutes and five wrong ones end it. For `[smtp]` the console reads the
+relay password the way the watchdog does (the `password_ref` env var, else
 `/etc/felis/smtp-password`, else the `felis-smtp` Secret, else no AUTH), so a
 host whose k3s is down still gets its code, and the mail skips the API's
 `max_per_hour` budget.
@@ -3333,7 +3666,12 @@ What each action does:
 | restart | stops the pod, then starts it | skipped |
 | stop | stops it | skipped |
 | start | skipped (a start that `Failed` is started over) | starts it, as the panel's start does (running-server cap, retiring server, busy world) |
-| backup | stops it, takes the same backup Job as "Back up now", then starts it again | takes the backup |
+| backup | takes a live backup (§10), with the players kept on and saving paused only while the world is copied; where that cannot be done (the game does not answer its console, the world is busy) it stops the server, takes the backup and starts it again | takes the backup |
+
+The warning before a live backup says so (`A backup runs in <n> min; saving
+pauses for a few seconds`); the one before a backup that stops the server says
+it pauses and comes back after. Either backup is recorded as a scheduled
+restore point (`scheduled_keep`, `scheduled_retention`, §10).
 
 A step has a deadline: the pod must stop within 15 minutes, the backup Job must
 end within 45, and the start is given 15. A restart or backup that cannot finish
@@ -3368,7 +3706,8 @@ server of the same name starts with none. The audit actions are `schedule.create
 `schedule.run` (every finished run, with its result and detail).
 
 [GO-TESTED: `TestScheduleNextRun`, `TestScheduleInputValidation`,
-`TestScheduleRunnerBackup`, `TestScheduleRunnerRestart`, `TestScheduleRunnerStaleClaim`;
+`TestScheduleRunnerBackup`, `TestScheduleRunnerRestart`, `TestScheduleRunnerStaleClaim`,
+`TestScheduleRunnerBacksUpARunningServerLive`, `TestScheduleWarningSaysTheServerStaysUp`;
 PG-TESTED: `TestScheduleStoreRunCAS`, `TestDueSchedules`, `TestSchedulesFollowTheServer`]
 
 ---
@@ -3393,6 +3732,8 @@ PG-TESTED: `TestScheduleStoreRunCAS`, `TestDueSchedules`, `TestSchedulesFollowTh
 | Build push 400 / SA denied / egress hang / Failed / executor ImagePullBackOff | §8, §8e |
 | Registry push/pull unreachable | §9 |
 | World deleted unexpectedly / backup skipped | §10 |
+| Back up a running server; `live_backup_console`; players see saving paused | §10 |
+| Backup or audit retention set in the panel; which value is in force | §10, §17 |
 | Reaper `awaiting_stop` stays above 0; `corrupt=` / backup shown as damaged; `orphan_archives` | §10 |
 | Backup or world download refused or cut off (`export_busy`, `export_expired`, `export_unavailable`) | §10 |
 | Idle auto-stop not firing; player count 0; `PlayersCounted=False` | §11 |
@@ -3401,18 +3742,20 @@ PG-TESTED: `TestScheduleStoreRunCAS`, `TestDueSchedules`, `TestSchedulesFollowTh
 | Node out of disk; pods evicted / ImagePullBackOff | §13b |
 | Which metric to scrape | §14 |
 | An alert mail from the watchdog; nothing is mailed when something breaks | §14 |
-| The host went down and nothing noticed; `NO HEARTBEAT` at install; `felis-watchdog-failed` in the journal; `state.json.unreadable-*` | §14 |
+| The host went down and nothing noticed; `NO HEARTBEAT` at install; heartbeat URL set in the panel; `felis-watchdog-failed` in the journal; `state.json.unreadable-*` | §14 |
 | `FelisOperatorDown` / `FelisAPIDown` / `FelisLoginGateDown` / `FelisReconcileStuck` | §14, §1, §2 |
 | Upgrade / roll back a bad control-plane image | §15 |
 | `image_change_unconfirmed` / `image_not_in_registry` / `registry_unavailable`; move a world to a newer Minecraft | §15b |
 | Database backup overdue / `FelisDBBackupStale` / panel shows 从未备份 | §16 |
 | `pre-migration backup failed, nothing applied` during an upgrade | §16 |
 | Undo a mistaken change / restore the control-plane database | §16 |
-| Host lost: rebuild from a database bundle | §16 |
+| Host lost: rebuild from a database bundle; `felis restore-host`, `FELIS_RESTORE_FROM_OFFSITE` | §16 |
+| A worker node is offline and its servers are down; controller high availability | docs/distributed.md |
 | `felis-postgres did not become ready`; `kubectl exec` finds no database pod | §16 |
 | `the off-site copy last completed ... ago` / `NO OFF-SITE COPY` / reaper `awaiting_offsite` stays above 0 | §16, §10 |
 | Sign-in 429 `rate_limited` for everyone at once | §17 |
 | 429 `mail_rate_limited` / `FelisMailBudgetExhausted` | §17 |
+| Mail relay saved in the panel; `smtp_unreachable`, `smtp_tls`, `smtp_auth`, `mail_settings_changed` | §17 |
 | Right code refused; `otp_account_locked` / `FelisOTPAccountLocked` | §17 |
 | `FelisSignInFailures` / who is guessing, from where | §17 |
 | `FelisAuditWriteFailing` | §17 |

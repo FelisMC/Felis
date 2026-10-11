@@ -23,7 +23,7 @@ func (a *API) notifyAccountChange(r *http.Request, to, subject, body string) {
 	if to == "" {
 		return
 	}
-	sender, ok := a.Mailer.(noticeSender)
+	sender, ok := a.mailer(r.Context()).(noticeSender)
 	if !ok {
 		log.Printf("auth: no notice mailer; account change notice %q was not sent (request_id=%s)",
 			subject, requestIDFromContext(r.Context()))

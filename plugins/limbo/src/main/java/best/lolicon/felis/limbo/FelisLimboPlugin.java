@@ -148,7 +148,6 @@ public final class FelisLimboPlugin extends LimboPlugin implements Listener {
         try {
             File props = new File(getDataFolder(), "felis-link.properties");
             cfg = LinkConfigLoader.load(props.toPath());
-            experience = ExperienceConfig.load(ExperienceConfig.PATH);
         } catch (IOException e) {
             // Missing/half config: like the other Felis plugins, load un-crippled —
             // readiness stays up, the login flow just never turns on.
@@ -156,6 +155,8 @@ public final class FelisLimboPlugin extends LimboPlugin implements Listener {
             logLoginOff();
             return;
         }
+        // A damaged settings file only loses the customizations, never the login flow.
+        experience = ExperienceConfig.loadOrDefaults(ExperienceConfig.PATH, msg -> LOG.warning("FelisLimbo: " + msg));
         String panelHost = GateConfig.panelHost(System.getenv("FELIS_PANEL_HOSTNAME"), System.getenv("FELIS_ROOT_DOMAIN"));
         if (panelHost == null) {
             LOG.warning("FelisLimbo: neither FELIS_PANEL_HOSTNAME nor FELIS_ROOT_DOMAIN set — cannot build the console login link");

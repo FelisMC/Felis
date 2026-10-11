@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -15,6 +16,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"felis.lolicon.best/internal/netguard"
 )
 
 // Felis-nano: the multi-source hasJoined multiplexer behind player game-login.
@@ -61,10 +64,12 @@ var authHTTPClient = &http.Client{
 // upstreamTransport caps response headers, which the 64 KiB body limit does not cover. The
 // default allows 1 MiB, so a root that sends that much and then stalls the body pins a few
 // MiB per in-flight login for the whole timeout, and enough parallel logins OOM the host
-// for every source. Real roots answer in well under 1 KiB of headers.
+// for every source. Real roots answer in well under 1 KiB of headers. Its dialer refuses
+// link-local addresses (netguard.RefuseLinkLocal).
 var upstreamTransport = func() *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.MaxResponseHeaderBytes = 16 << 10
+	t.DialContext = (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second, Control: netguard.RefuseLinkLocal}).DialContext
 	return t
 }()
 

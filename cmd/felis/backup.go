@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"felis.lolicon.best/internal/archivepolicy"
 	"felis.lolicon.best/internal/backup"
 	"felis.lolicon.best/internal/backupjob"
 	"felis.lolicon.best/internal/config"
@@ -37,7 +38,7 @@ func cmdBackup(args []string, stdout, stderr io.Writer) int {
 	server := fs.String("server", "", "server name whose world is being backed up")
 	formerOwner := fs.String("former-owner", "", "owner recorded on the backup row (empty for an unowned server)")
 	worldsRoot := fs.String("worlds-root", "/world", "mount path of the world PVC being archived")
-	reason := fs.String("reason", reasonManual, "world_backups reason: manual, pre_restore for the safety snapshot in front of a restore, or scheduled for felis-api's daily restore point")
+	reason := fs.String("reason", reasonManual, "world_backups reason: manual, pre_restore for the safety snapshot in front of a restore, scheduled for felis-api's daily restore point, or replica for the frequent copy of a world on a worker")
 	protect := fs.String("protect", "", "backup id the prune must keep (the one a chained restore extracts)")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -47,7 +48,7 @@ func cmdBackup(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if _, _, ok := backupPolicy(*reason, reaper.DefaultConfig()); !ok {
-		fmt.Fprintf(stderr, "felis backup: unknown --reason %q (manual, %s or %s)\n", *reason, backupjob.ReasonPreRestore, backupjob.ReasonScheduled)
+		fmt.Fprintf(stderr, "felis backup: unknown --reason %q (manual, %s, %s or %s)\n", *reason, backupjob.ReasonPreRestore, backupjob.ReasonScheduled, backupjob.ReasonReplica)
 		return 2
 	}
 
@@ -61,13 +62,13 @@ func cmdBackup(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	// The [archive] parse the reaper uses: it holds each reason's keep and
-	// retention.
+	// retention. The Owner's retention policy, read once the database is open,
+	// overrides it.
 	rcfg, err := reaperConfig(cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis backup: %v\n", err)
 		return 1
 	}
-	keep, retention, _ := backupPolicy(*reason, rcfg)
 
 	// The world PVC is mounted directly at worldsRoot; the resolver returns it for
 	// any target, exactly as in cmdRestore. This is the same TarLocal the reaper
@@ -106,6 +107,11 @@ func cmdBackup(args []string, stdout, stderr io.Writer) int {
 	}
 	defer drv.Close()
 
+	if err := archivepolicy.ApplyFrom(ctx, drv.DB(), &rcfg); err != nil {
+		fmt.Fprintf(stderr, "felis backup: the panel's retention policy is unreadable, [archive] stands: %v\n", err)
+	}
+	keep, retention, _ := backupPolicy(*reason, rcfg)
+
 	rec := reaper.BackupRecord{
 		ID:          newBackupID(),
 		ServerName:  *server,
@@ -142,14 +148,19 @@ const (
 	// back a couple of restores in a row, without every restore adding a world's
 	// worth of bytes for the full manual retention.
 	preRestoreKeep = 3
+	// replicaKeep and replicaRetention bound the frequent copies of a world running on a
+	// worker: only the newest matter to a failover, and an hourly copy kept for long would
+	// fill the archive store.
+	replicaKeep      = 2
+	replicaRetention = 48 * time.Hour
 )
 
 // backupPolicy is how many backups of one reason a server keeps and how long
 // each lives: an owner's own backups and the safety snapshots in front of a
 // restore by [archive] manual_keep / manual_retention (the snapshots capped at
 // preRestoreKeep), felis-api's daily restore points by scheduled_keep /
-// scheduled_retention, so neither kind crowds out the other. ok is false for a
-// reason this command does not record.
+// scheduled_retention, and a worker's replicas by replicaKeep / replicaRetention, so no
+// kind crowds out another. ok is false for a reason this command does not record.
 func backupPolicy(reason string, rcfg reaper.Config) (keep int, retention time.Duration, ok bool) {
 	switch reason {
 	case reasonManual:
@@ -158,6 +169,8 @@ func backupPolicy(reason string, rcfg reaper.Config) (keep int, retention time.D
 		return preRestoreKeep, rcfg.ManualRetention, true
 	case backupjob.ReasonScheduled:
 		return rcfg.ScheduledKeep, rcfg.ScheduledRetention, true
+	case backupjob.ReasonReplica:
+		return replicaKeep, replicaRetention, true
 	}
 	return 0, 0, false
 }

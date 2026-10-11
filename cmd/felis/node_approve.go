@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -41,15 +42,13 @@ func approveNode(ctx context.Context, cl client.Client, cs kubernetes.Interface,
 		return err
 	}
 	var controller *corev1.Node
+	var controllers []*corev1.Node
 	var peers []string
 	var denied []string
 	for i := range nodes.Items {
 		node := &nodes.Items[i]
 		if node.Labels[placement.LabelRole] == placement.RoleController {
-			if controller != nil {
-				return fmt.Errorf("multiple controllers found")
-			}
-			controller = node
+			controllers = append(controllers, node)
 		}
 		for _, addr := range node.Status.Addresses {
 			if addr.Type == corev1.NodeInternalIP || addr.Type == corev1.NodeExternalIP {
@@ -64,7 +63,27 @@ func approveNode(ctx context.Context, cl client.Client, cs kubernetes.Interface,
 			}
 		}
 	}
-	if controller == nil || controller.Name == n.Name || controller.Status.NodeInfo.Architecture != n.Status.NodeInfo.Architecture {
+	// This controller's exact interface addresses: admission runs on a controller (with
+	// controller high availability, any of them), and the probe observes DNAT/SNAT from
+	// here before the production policy is adjusted.
+	var aCIDRs []string
+	if addrs, err := net.InterfaceAddrs(); err == nil {
+		for _, a := range addrs {
+			ip, _, err := net.ParseCIDR(a.String())
+			if err == nil && !ip.IsLoopback() {
+				cidr, _ := exactCIDR(ip.String())
+				aCIDRs = append(aCIDRs, cidr)
+			}
+		}
+	}
+	if len(aCIDRs) == 0 {
+		return fmt.Errorf("cannot determine A's exact interface addresses")
+	}
+	controller = localController(controllers, aCIDRs)
+	if controller == nil {
+		return fmt.Errorf("run admission on an online controller")
+	}
+	if controller.Name == n.Name || controller.Status.NodeInfo.Architecture != n.Status.NodeInfo.Architecture {
 		return fmt.Errorf("candidate architecture must match the sole controller")
 	}
 	if n.Status.NodeInfo.KubeletVersion != controller.Status.NodeInfo.KubeletVersion {
@@ -81,35 +100,6 @@ func approveNode(ctx context.Context, cl client.Client, cs kubernetes.Interface,
 	}
 	if len(apiSvc.Spec.Ports) == 0 || apiSvc.Spec.Ports[0].NodePort == 0 {
 		return fmt.Errorf("controller API NodePort is absent")
-	}
-	// A's exact interface addresses let the probe observe DNAT/SNAT before the production policy is adjusted.
-	var aCIDRs []string
-	if addrs, err := net.InterfaceAddrs(); err == nil {
-		for _, a := range addrs {
-			ip, _, err := net.ParseCIDR(a.String())
-			if err == nil && !ip.IsLoopback() {
-				cidr, _ := exactCIDR(ip.String())
-				aCIDRs = append(aCIDRs, cidr)
-			}
-		}
-	}
-	if len(aCIDRs) == 0 {
-		return fmt.Errorf("cannot determine A's exact interface addresses")
-	}
-	onController := false
-	for _, addr := range controller.Status.Addresses {
-		cidr, err := exactCIDR(addr.Address)
-		if err != nil {
-			continue
-		}
-		for _, local := range aCIDRs {
-			if cidr == local {
-				onController = true
-			}
-		}
-	}
-	if !onController || !placement.Online(controller) {
-		return fmt.Errorf("run admission on the online controller A")
 	}
 	// Quarantine first. Approval is the final write, after all checks have succeeded.
 	before := n.DeepCopy()
@@ -167,7 +157,7 @@ func approveNode(ctx context.Context, cl client.Client, cs kubernetes.Interface,
 	script := "set -euo pipefail\numask 077\n" +
 		"systemctl is-active --quiet k3s-agent\n! systemctl is-active --quiet k3s\ntest ! -f /etc/rancher/k3s/k3s.yaml\n" +
 		"ip -d link show flannel-wg | grep -q wireguard\n" +
-		"/usr/local/bin/felis node firewall --peers " + shellQuote(strings.Join(peers, ",")) + " --controller-ip " + shellQuote(ctrlIP) + " --api-service-ip " + shellQuote(kubernetesSvc.Spec.ClusterIP) + " --node-port " + strconv.Itoa(int(apiSvc.Spec.Ports[0].NodePort)) + " --namespace " + shellQuote(ns) + " --control-namespace " + shellQuote(controlNS) + "\n" +
+		"/usr/local/bin/felis node firewall --peers " + shellQuote(strings.Join(peers, ",")) + " --controller-ip " + shellQuote(ctrlIP) + " --controller-peers " + shellQuote(strings.Join(controllerCIDRs(nodes.Items), ",")) + " --api-service-ip " + shellQuote(kubernetesSvc.Spec.ClusterIP) + " --node-port " + strconv.Itoa(int(apiSvc.Spec.Ports[0].NodePort)) + " --namespace " + shellQuote(ns) + " --control-namespace " + shellQuote(controlNS) + "\n" +
 		"kubeconfig=/var/lib/rancher/k3s/agent/kubelet.kubeconfig\n" +
 		"/usr/local/bin/k3s kubectl --kubeconfig \"$kubeconfig\" get node " + shellQuote(name) + " -o name >/dev/null\n" +
 		"proof=$(mktemp); trap 'rm -f \"$proof\"' EXIT\n" +
@@ -200,7 +190,7 @@ func approveNode(ctx context.Context, cl client.Client, cs kubernetes.Interface,
 	var echoPods []*corev1.Pod
 	for i := range nodes.Items {
 		node := &nodes.Items[i]
-		if !placement.Online(node) || (node.Name != name && node.Name != controller.Name && node.Labels[placement.LabelApproved] != "true") {
+		if !placement.Online(node) || (node.Name != name && node.Labels[placement.LabelRole] != placement.RoleController && node.Labels[placement.LabelApproved] != "true") {
 			continue
 		}
 		echoName := fmt.Sprintf("%s-%d", id, i)
@@ -463,4 +453,21 @@ func denyNodeAddresses(ctx context.Context, cl client.Client, ns string, nodes [
 		}
 	}
 	return cl.Patch(ctx, &np, client.MergeFrom(before))
+}
+
+// localController is the online controller one of whose addresses is this host's: the
+// one admission runs on, whichever of several it is.
+func localController(controllers []*corev1.Node, local []string) *corev1.Node {
+	for _, c := range controllers {
+		if !placement.Online(c) {
+			continue
+		}
+		for _, addr := range c.Status.Addresses {
+			cidr, err := exactCIDR(addr.Address)
+			if err == nil && slices.Contains(local, cidr) {
+				return c
+			}
+		}
+	}
+	return nil
 }

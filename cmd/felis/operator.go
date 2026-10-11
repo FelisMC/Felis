@@ -14,6 +14,7 @@ import (
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	felismetrics "felis.lolicon.best/internal/metrics"
 	"felis.lolicon.best/internal/operator"
+	"felis.lolicon.best/internal/platform"
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -64,6 +65,14 @@ func cmdOperator(args []string, _, stderr io.Writer) int {
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: *metricsAddr},
 		HealthProbeBindAddress: *healthAddr,
+		// One active reconciler: with controller high availability the operator moves when
+		// its node stops answering, and the old pod may run on until that node learns it
+		// was replaced. The lease (platform.LeaseOperator, in the pod's own namespace)
+		// keeps it from reconciling beside the new one; released on a clean stop, so a
+		// restart takes over at once.
+		LeaderElection:                true,
+		LeaderElectionID:              platform.LeaseOperator,
+		LeaderElectionReleaseOnCancel: true,
 		// Scope every informer to the single watched namespace. Without this the
 		// cached client (mgr.GetClient) would LIST/WATCH cluster-wide, which a
 		// namespaced Role cannot grant — the operator would fail closed at runtime
@@ -118,6 +127,7 @@ func cmdOperator(args []string, _, stderr io.Writer) int {
 		Nodes:          nil,
 		EgressProbe:    os.Getenv("FELIS_EGRESS_PROBE"),
 		ControllerNode: os.Getenv("FELIS_CONTROLLER_NODE"),
+		ControllerHA:   os.Getenv("FELIS_CONTROLLER_HA") == "true",
 		// Uncached: the maintenance-lock check lists Jobs only when a server is
 		// about to start, which does not justify a namespace-wide Job informer.
 		Jobs: mgr.GetAPIReader(),

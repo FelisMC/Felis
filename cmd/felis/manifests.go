@@ -46,6 +46,9 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	distributed := fs.Bool("distributed", false, "enable approved workers and archive transport")
 	controller := fs.String("controller-node", "", "protected controller identity for A")
+	controllerHA := fs.Bool("controller-ha", false, "spread the control plane over several controllers: any controller may run it, and its volumes are replicated (requires --distributed and Longhorn)")
+	replicatedClass := fs.String("replicated-class", "", "StorageClass of the control plane's volumes with --controller-ha (default felis-replicated)")
+	postgresStorage := fs.String("postgres-storage", "", "capacity of the replicated database volume with --controller-ha (default 10Gi)")
 	probe := fs.String("egress-probe", "", "reachable controller host:port denied to game Pods")
 	var registryNodes multiFlag
 	fs.Var(&registryNodes, "registry-node-cidr", "exact node pull source for the registry (repeatable)")
@@ -60,7 +63,7 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 	felisImage := fs.String("felis-image", "", "container image the felis-api/operator Deployments run, also passed through as FELIS_IMAGE (REQUIRED)")
 	registryImage := fs.String("registry-image", "", "in-cluster registry image (default: registry 2.8.3, pinned by digest)")
 	postgresImage := fs.String("postgres-image", "", "control-plane database image (default: PostgreSQL 18.6, pinned by digest)")
-	only := fs.String("only", "", `render one part of the bundle instead of all of it; "postgres" is the control-plane database`)
+	only := fs.String("only", "", `render one part of the bundle instead of all of it: "postgres" is the control-plane database, "replicated-class" the Longhorn StorageClass of controller high availability`)
 	backupPVC := fs.String("backup-pvc", "felis-backups", "name of the world-archive PVC this bundle renders in the Minecraft namespace and advertises to the backup/restore executors via FELIS_BACKUP_PVC (default: felis-backups; pass an empty value to render none, leaving backup/restore answering 503)")
 	worldsHostPath := fs.String("worlds-host-path", "", "node directory the reaper reads worlds from: each world PVC resolves as <path>/<pvc>, or as the stock local-path directory <path>/<pv-name>_<ns>_<pvc-name> (k3s storage root: /var/lib/rancher/k3s/storage); enables the reaper CronJob (requires --archive-local-path and a non-empty --backup-pvc)")
 	archiveLocalPath := fs.String("archive-local-path", "", "path the backup PVC is mounted at in the reaper CronJob; MUST equal felis.toml [archive] local_path. With the backup PVC alone it renders the retention-only CronJob, which deletes backups past their expiry and never touches a world")
@@ -83,13 +86,19 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 	case "":
 	case "postgres":
 		return renderManifests(stdout, stderr, platform.PostgresObjects(platform.Params{
-			ControllerNode:     *controller,
-			ControlNamespace:   *controlNS,
-			MinecraftNamespace: *minecraftNS,
-			PostgresImage:      *postgresImage,
+			ControllerNode:         *controller,
+			Distributed:            *distributed,
+			ControllerHA:           *controllerHA,
+			ReplicatedStorageClass: *replicatedClass,
+			PostgresStorage:        *postgresStorage,
+			ControlNamespace:       *controlNS,
+			MinecraftNamespace:     *minecraftNS,
+			PostgresImage:          *postgresImage,
 		}))
+	case "replicated-class":
+		return renderManifests(stdout, stderr, []platform.Object{platform.ReplicatedStorageClass(platform.Params{ControllerHA: true, ReplicatedStorageClass: *replicatedClass})})
 	default:
-		fmt.Fprintf(stderr, "felis manifests: --only %q: the one part that renders alone is \"postgres\"\n", *only)
+		fmt.Fprintf(stderr, "felis manifests: --only %q: the parts that render alone are \"postgres\" and \"replicated-class\"\n", *only)
 		return 2
 	}
 
@@ -190,7 +199,7 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 	}
 	params := platform.Params{
 		NodeControlSocket: *socket, NodeControlNode: *nodeControlNode,
-		Distributed: *distributed, ControllerNode: *controller, EgressProbe: *probe, RegistryNodeCIDRs: registryNodes,
+		Distributed: *distributed, ControllerNode: *controller, ControllerHA: *controllerHA, ReplicatedStorageClass: *replicatedClass, PostgresStorage: *postgresStorage, EgressProbe: *probe, RegistryNodeCIDRs: registryNodes,
 		ControlNamespace:   *controlNS,
 		MinecraftNamespace: *minecraftNS,
 		BuildNamespace:     *buildNS,

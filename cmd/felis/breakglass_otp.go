@@ -13,6 +13,7 @@ import (
 
 	"felis.lolicon.best/internal/api"
 	"felis.lolicon.best/internal/config"
+	"felis.lolicon.best/internal/mailsettings"
 	"felis.lolicon.best/internal/platform"
 )
 
@@ -255,5 +256,17 @@ func hostRecoveryMailer(c config.SMTPConfig, passwordPath, controlNS string) fun
 			return nil, fmt.Errorf("read the relay password from %s/%s: %w", controlNS, platform.SMTPSecretName, err)
 		}
 		return smtpRelay(c, password), nil
+	}
+}
+
+// panelFirstRecoveryMailer opens the relay the Owner saved in the panel when there is one,
+// the relay the panel's own codes go through. With none, or with the database out (a
+// break-glass host may be in trouble), it falls back to felis.toml's relay.
+func panelFirstRecoveryMailer(read func(context.Context) (*mailsettings.Settings, error), fallback func(context.Context) (recoveryMailer, error)) func(context.Context) (recoveryMailer, error) {
+	return func(ctx context.Context) (recoveryMailer, error) {
+		if s, err := read(ctx); err == nil && s != nil {
+			return s.SMTP(), nil
+		}
+		return fallback(ctx)
 	}
 }

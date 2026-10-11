@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -13,10 +14,13 @@ import (
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/config"
 	"felis.lolicon.best/internal/distributed"
+	"felis.lolicon.best/internal/nodecontrol"
 	"felis.lolicon.best/internal/placement"
 	"felis.lolicon.best/internal/platform"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -24,14 +28,14 @@ import (
 
 func cmdServerMigrate(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "server-migrate: start | status | retry (separate from database migrate)")
+		fmt.Fprintln(stderr, "server-migrate: start | status | retry | abort (separate from database migrate)")
 		return 2
 	}
 	fs := flag.NewFlagSet("server-migrate "+args[0], flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	name := fs.String("name", "", "stopped user server")
 	target := fs.String("target-node", "", "approved target worker")
-	id := fs.String("id", "", "operation id (required for retry)")
+	id := fs.String("id", "", "operation id (required for retry and abort)")
 	kube := fs.String("kubeconfig", "/etc/rancher/k3s/k3s.yaml", "A's local kubeconfig")
 	ns := fs.String("namespace", platform.DefaultMinecraftNamespace, "world namespace")
 	cfgPath := fs.String("config", "/var/lib/felis/felis.host.toml", "host config used to record the current owner on the safety backup")
@@ -63,16 +67,19 @@ func cmdServerMigrate(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	for _, n := range nodes.Items {
-		if n.Labels[placement.LabelRole] == placement.RoleController {
-			m.Controller = n.Name
-		}
-	}
+	m.Controller = homeController(ctx, cl, platform.DefaultControlNamespace, nodes.Items)
 	if m.Controller == "" {
 		fmt.Fprintln(stderr, "distributed controller identity is not configured")
 		return 1
 	}
 	m.Resolve = placement.Resolve(cl, *ns, m.Controller)
+	// The API refuses migration changes while a host node operation runs; so does this.
+	if args[0] != "status" {
+		if err := nodeMaintenanceBusy(ctx, nodecontrol.Socket); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+	}
 	var op distributed.Operation
 	switch args[0] {
 	case "start":
@@ -101,6 +108,12 @@ func cmdServerMigrate(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		op, err = m.RetryMigration(ctx, *name, *id)
+	case "abort":
+		if *id == "" {
+			fmt.Fprintln(stderr, "abort requires --id")
+			return 2
+		}
+		op, err = m.AbortMigration(ctx, *name, *id)
 	default:
 		fmt.Fprintln(stderr, "unknown migration operation")
 		return 2
@@ -111,4 +124,49 @@ func cmdServerMigrate(args []string, stdout, stderr io.Writer) int {
 	}
 	json.NewEncoder(stdout).Encode(op)
 	return 0
+}
+
+// nodeMaintenanceBusy refuses while a host node operation runs, read from the node-control
+// service the API consults too (api.NodeMaintenanceGuard). A host without that service has
+// no node operations to wait for; one whose service does not answer is refused.
+func nodeMaintenanceBusy(ctx context.Context, socket string) error {
+	if _, err := os.Stat(socket); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	tasks, err := nodecontrol.NewClient(socket).List(ctx)
+	if err != nil {
+		return fmt.Errorf("the node-control service is unavailable: %w", err)
+	}
+	for _, t := range tasks {
+		if t.State == "running" {
+			return errors.New("node maintenance is in progress; wait for it to finish")
+		}
+	}
+	return nil
+}
+
+// homeController is the controller worlds without a node of their own live on: the one the
+// operator is configured with (FELIS_CONTROLLER_NODE), which with controller high
+// availability is one of several; else the only node labelled a controller.
+func homeController(ctx context.Context, cl client.Reader, controlNS string, nodes []corev1.Node) string {
+	var op appsv1.Deployment
+	if err := cl.Get(ctx, types.NamespacedName{Namespace: controlNS, Name: platform.SAOperator}, &op); err == nil {
+		for _, c := range op.Spec.Template.Spec.Containers {
+			for _, e := range c.Env {
+				if e.Name == "FELIS_CONTROLLER_NODE" && e.Value != "" {
+					return e.Value
+				}
+			}
+		}
+	}
+	home := ""
+	for _, n := range nodes {
+		if n.Labels[placement.LabelRole] == placement.RoleController {
+			if home != "" {
+				return "" // several and none named: no guess
+			}
+			home = n.Name
+		}
+	}
+	return home
 }

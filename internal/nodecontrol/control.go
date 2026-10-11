@@ -56,7 +56,12 @@ func (r Request) Validate() error {
 		return errors.New("maintenance impact confirmation is required")
 	}
 	switch r.Action {
-	case "join", "approve":
+	case "fence", "unfence":
+		if !validNodeName(r.Name) {
+			return errors.New("invalid node name")
+		}
+	case "enable-ha":
+	case "join", "approve", "upgrade", "join-controller":
 		if !validNodeName(r.Name) || !targetPattern.MatchString(r.SSHTarget) {
 			return errors.New("invalid worker name or SSH target")
 		}
@@ -64,7 +69,7 @@ func (r Request) Validate() error {
 	default:
 		return errors.New("unsupported node operation")
 	}
-	if r.Action != "approve" {
+	if r.Action == "join" || r.Action == "enable" || r.Action == "join-controller" {
 		if a, err := netip.ParseAddr(r.ExternalIP); err != nil || a.IsUnspecified() || a.IsLoopback() || a.IsMulticast() || a.Zone() != "" {
 			return errors.New("a fixed node IP is required")
 		}

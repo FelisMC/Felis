@@ -7,17 +7,17 @@ import (
 	"log"
 	"time"
 
+	"felis.lolicon.best/internal/backupjob"
 	"felis.lolicon.best/internal/maintenance"
 )
 
 // Scheduled backups. A world played every day never idles long enough for the
 // reaper to archive it, and an owner's own backups are only the ones they
 // remembered to take, so felis-api takes a daily restore point of every world
-// played since its last one. The backup Job mounts the world volume, which a
-// running server holds, so the point is taken once the server is stopped: idle
-// auto-stop brings a played world down minutes after its last player leaves,
-// and the point lands the same day. A server kept running around the clock gets
-// one the next time it stops.
+// played since its last one. A stopped world is archived as it is; a running one is
+// taken live (livebackup.go): its saving pauses while the world is copied on its node,
+// seconds for a few GB, and the archive is made from the copy while the game plays on.
+// So a server kept running around the clock gets its daily point too.
 //
 // The point is an ordinary world_backups row of reason scheduled: listed and
 // restorable by its owner, copied offsite like any other, pruned to [archive]
@@ -79,7 +79,11 @@ type BackupScheduler struct {
 // Tick launches the backup of the world waiting longest, if any may run now.
 func (s *BackupScheduler) Tick(ctx context.Context) error {
 	b, ok := s.API.Backuper.(ScheduledBackuper)
-	if !ok || s.Every <= 0 {
+	every := s.Every
+	if s.API.ArchivePolicy != nil {
+		every = s.API.ArchivePolicy.Reaper(ctx).ScheduledEvery
+	}
+	if !ok || every <= 0 {
 		return nil
 	}
 	now := s.API.now()
@@ -94,7 +98,7 @@ func (s *BackupScheduler) Tick(ctx context.Context) error {
 
 	// A full store is the reaper's to evict; a scheduled point added now would
 	// only push out an older backup of somebody else's.
-	if limit := s.API.BackupStoreCap; limit > 0 {
+	if limit := s.API.backupStoreCap(ctx); limit > 0 {
 		used, err := s.API.Repo.BackupStoreBytes(ctx)
 		if err != nil {
 			return fmt.Errorf("read the backup store size: %w", err)
@@ -113,7 +117,7 @@ func (s *BackupScheduler) Tick(ctx context.Context) error {
 		}
 	}
 
-	due, err := s.Store.ScheduledBackupCandidates(ctx, now.Add(-s.Every))
+	due, err := s.Store.ScheduledBackupCandidates(ctx, now.Add(-every))
 	if err != nil {
 		return fmt.Errorf("list the worlds due a scheduled backup: %w", err)
 	}
@@ -121,12 +125,12 @@ func (s *BackupScheduler) Tick(ctx context.Context) error {
 		s.tried = map[string]time.Time{}
 	}
 	for name, at := range s.tried {
-		if now.Sub(at) >= s.Every {
+		if now.Sub(at) >= every {
 			delete(s.tried, name)
 		}
 	}
 	for _, c := range due {
-		if at, ok := s.tried[c.Name]; ok && now.Sub(at) < s.Every/4 {
+		if at, ok := s.tried[c.Name]; ok && now.Sub(at) < every/4 {
 			continue
 		}
 		// A server never started has no world yet, and one whose volume is gone
@@ -141,8 +145,15 @@ func (s *BackupScheduler) Tick(ctx context.Context) error {
 		}
 		var busy *MaintenanceBusyError
 		switch err := s.API.Cluster.AcquireMaintenance(ctx, c.Name, maintenance.KindBackup); {
-		case errors.Is(err, ErrNotStopped), errors.As(err, &busy), errors.Is(err, ErrMaintenanceInProgress):
-			continue // running, or somebody else has the world: next tick
+		case errors.Is(err, ErrNotStopped):
+			// Running: a live restore point (livebackup.go), its saving paused only
+			// while the world is copied.
+			if started, err := s.startLive(ctx, c, now); started || err != nil {
+				return err
+			}
+			continue
+		case errors.As(err, &busy), errors.Is(err, ErrMaintenanceInProgress):
+			continue // somebody else has the world: next tick
 		case errors.Is(err, ErrNotFound):
 			s.tried[c.Name] = now
 			continue
@@ -167,4 +178,30 @@ func (s *BackupScheduler) Tick(ctx context.Context) error {
 		return nil
 	}
 	return nil
+}
+
+// startLive takes the restore point of a running world live. It reports started once the
+// Job exists; a server starting or stopping, held by something else, or on an install
+// that cannot back up a running server is left for a later tick, and one whose game did
+// not answer its console waits a quarter of the interval before the next try.
+func (s *BackupScheduler) startLive(ctx context.Context, c ScheduledCandidate, now time.Time) (bool, error) {
+	var busy *MaintenanceBusyError
+	switch err := s.API.startLiveBackup(ctx, c.Name, c.OwnerID, backupjob.ReasonScheduled); {
+	case err == nil:
+	case errors.Is(err, ErrNotRunning), errors.As(err, &busy), errors.Is(err, ErrMaintenanceInProgress), errors.Is(err, errLiveBackupUnavailable):
+		return false, nil
+	case errors.Is(err, errLiveBackupConsole), errors.Is(err, ErrNotFound):
+		s.tried[c.Name] = now
+		return false, nil
+	default:
+		s.tried[c.Name] = now
+		return false, fmt.Errorf("start the live scheduled backup of %s: %w", c.Name, err)
+	}
+	s.tried[c.Name] = now
+	log.Printf("api: started the scheduled backup of %s while it runs", c.Name)
+	s.API.writeAudit(ctx, AuditEntry{
+		Actor: scheduledBackupActor, Source: scheduledBackupActor,
+		Action: scheduledBackupAction, ServerName: c.Name, Payload: []byte(`{"live":true}`),
+	})
+	return true, nil
 }

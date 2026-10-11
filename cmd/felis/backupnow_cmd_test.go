@@ -128,7 +128,12 @@ func stoppedWorld(name string) backupNowWorld {
 }
 
 func runningWorld(name string) backupNowWorld {
-	return backupNowWorld{name: name, phase: "Running", hasWorld: true}
+	return backupNowWorld{name: name, phase: "Running", live: true, hasWorld: true}
+}
+
+// startingWorld is a server on its way up: neither stopped nor backed up live.
+func startingWorld(name string) backupNowWorld {
+	return backupNowWorld{name: name, phase: "Starting", hasWorld: true}
 }
 
 func emptyWorld(name string) backupNowWorld {
@@ -149,8 +154,8 @@ func TestBackupNowPlanChangesNothing(t *testing.T) {
 		{false, "felis backup-now: 4 server(s), backed up one at a time:\n" +
 			"  alpha    Stopped   back up\n" +
 			"  charlie  Stopped   skip: no world volume (never started, nothing to save)\n" +
-			"  bravo    Running   skip: running (stop it first, or pass -stop)\n" +
-			"  delta    Starting  skip: running (stop it first, or pass -stop)\n" +
+			"  bravo    Running   back up while it runs (saving pauses for the copy)\n" +
+			"  delta    Starting  skip: starting or stopping (run again later, or pass -stop)\n" +
 			bnManualKeep +
 			"Nothing changed. Run again with -yes to back them up.\n"},
 		{true, "felis backup-now: 4 server(s), backed up one at a time:\n" +
@@ -162,9 +167,7 @@ func TestBackupNowPlanChangesNothing(t *testing.T) {
 			"Nothing changed. Run again with -yes to back them up.\n"},
 	} {
 		t.Run(fmt.Sprintf("stop=%v", tc.stop), func(t *testing.T) {
-			delta := runningWorld("delta")
-			delta.phase = "Starting"
-			g := newBNRig(stoppedWorld("alpha"), runningWorld("bravo"), emptyWorld("charlie"), delta)
+			g := newBNRig(stoppedWorld("alpha"), runningWorld("bravo"), emptyWorld("charlie"), startingWorld("delta"))
 			if code := g.run(nil, false, tc.stop); code != 0 {
 				t.Fatalf("exit = %d, want 0; stderr %q", code, g.errw.String())
 			}
@@ -178,24 +181,30 @@ func TestBackupNowPlanChangesNothing(t *testing.T) {
 	}
 }
 
-// A plan that saves nothing says so, without the manual_keep warning; a running
-// server counts as something to save once -stop is given.
+// A plan that saves nothing says so, without the manual_keep warning; a starting
+// server counts as something to save once -stop is given, and a running one always.
 func TestBackupNowPlanWithNothingToSave(t *testing.T) {
+	starting := []backupNowWorld{startingWorld("bravo"), emptyWorld("charlie")}
 	for _, tc := range []struct {
-		stop bool
-		want string
+		worlds []backupNowWorld
+		stop   bool
+		want   string
 	}{
-		{false, "felis backup-now: 2 server(s), backed up one at a time:\n" +
+		{starting, false, "felis backup-now: 2 server(s), backed up one at a time:\n" +
 			"  charlie  Stopped   skip: no world volume (never started, nothing to save)\n" +
-			"  bravo    Running   skip: running (stop it first, or pass -stop)\n" +
+			"  bravo    Starting  skip: starting or stopping (run again later, or pass -stop)\n" +
 			"Nothing to back up.\n"},
-		{true, "felis backup-now: 2 server(s), backed up one at a time:\n" +
+		{starting, true, "felis backup-now: 2 server(s), backed up one at a time:\n" +
 			"  charlie  Stopped   skip: no world volume (never started, nothing to save)\n" +
-			"  bravo    Running   stop, then back up\n" +
+			"  bravo    Starting  stop, then back up\n" +
 			bnManualKeep + bnStopping +
 			"Nothing changed. Run again with -yes to back them up.\n"},
+		{[]backupNowWorld{runningWorld("bravo")}, false, "felis backup-now: 1 server(s), backed up one at a time:\n" +
+			"  bravo  Running   back up while it runs (saving pauses for the copy)\n" +
+			bnManualKeep +
+			"Nothing changed. Run again with -yes to back them up.\n"},
 	} {
-		g := newBNRig(runningWorld("bravo"), emptyWorld("charlie"))
+		g := newBNRig(tc.worlds...)
 		if code := g.run(nil, false, tc.stop); code != 0 {
 			t.Fatalf("stop=%v: exit = %d, want 0", tc.stop, code)
 		}
@@ -237,23 +246,31 @@ func TestBackupNowBacksUpEachWorldInTurn(t *testing.T) {
 	}
 }
 
-func TestBackupNowSkipsRunningServersWithoutStop(t *testing.T) {
-	g := newBNRig(stoppedWorld("alpha"), runningWorld("bravo"))
+// Without -stop a running server is backed up where it runs and left running, after
+// the stopped ones; one starting is skipped and fails the run.
+func TestBackupNowBacksUpRunningServersLive(t *testing.T) {
+	g := newBNRig(runningWorld("bravo"), startingWorld("delta"), stoppedWorld("alpha"))
+	g.states["bravo"] = []string{"running", "succeeded"}
 	if code := g.run(nil, true, false); code != 1 {
-		t.Fatalf("exit = %d, want 1 (bravo was not backed up)", code)
+		t.Fatalf("exit = %d, want 1 (delta was not backed up)", code)
 	}
-	if want := []string{"request alpha"}; !reflect.DeepEqual(g.events, want) {
+	if want := []string{"request alpha", "request bravo"}; !reflect.DeepEqual(g.events, want) {
 		t.Fatalf("events = %v, want %v", g.events, want)
 	}
 	if len(g.polls) != 0 {
 		t.Fatalf("polled a server it did not stop: %v", g.polls)
+	}
+	if strings.Contains(g.out.String(), bnStopping) {
+		t.Fatal("warned about stopping servers when none are stopped")
 	}
 	_, run, _ := strings.Cut(g.out.String(), "Nothing changed")
 	if run != "" {
 		t.Fatalf("-yes printed the plan's closing line")
 	}
 	_, run, _ = strings.Cut(g.out.String(), bnManualKeep)
-	want := "  alpha: backing up\n  alpha: archived in 0s\n1 backed up, 1 skipped (running).\n" + bnOffsite
+	want := "  alpha: backing up\n  alpha: archived in 0s\n" +
+		"  bravo: backing up\n  bravo: archived in 2s\n" +
+		"2 backed up, 1 skipped (starting or stopping).\n" + bnOffsite
 	if run != want {
 		t.Fatalf("run =\n%s\nwant\n%s", run, want)
 	}
@@ -438,6 +455,9 @@ func TestListBackupNowWorlds(t *testing.T) {
 		mcServer("foxtrot", v1alpha1.DesiredRunning, v1alpha1.PhaseStopped), pvc("foxtrot", haltNS),
 		withStatus(mcServer("golf", v1alpha1.DesiredStopped, v1alpha1.PhaseStopped), true), pvc("golf", haltNS),
 		hotel, pvc("hotel", haltNS),
+		mcServer("india", v1alpha1.DesiredRunning, v1alpha1.PhaseRunning), pvc("india", haltNS), pod("india-0", haltNS, gameLabels("india")),
+		withStatus(mcServer("juliet", v1alpha1.DesiredStopped, v1alpha1.PhaseRunning), true), pvc("juliet", haltNS), pod("juliet-0", haltNS, gameLabels("juliet")),
+		withStatus(mcServer("kilo", v1alpha1.DesiredRunning, v1alpha1.PhaseStarting), true), pvc("kilo", haltNS), pod("kilo-0", haltNS, gameLabels("kilo")),
 		mcServer("login", v1alpha1.DesiredStopped, v1alpha1.PhaseStopped), pvc("login", haltNS),
 		mcServer("lobby", v1alpha1.DesiredStopped, v1alpha1.PhaseStopped), pvc("lobby", haltNS),
 		other, pvc("zulu", "elsewhere"),
@@ -448,13 +468,16 @@ func TestListBackupNowWorlds(t *testing.T) {
 	}
 	want := []backupNowWorld{
 		{name: "alpha", phase: "Stopped", stopped: true, hasWorld: true},
-		{name: "bravo", phase: "Running", hasWorld: true},
+		{name: "bravo", phase: "Running", live: true, hasWorld: true},
 		{name: "charlie", phase: "Stopped", stopped: true},
 		{name: "delta", phase: "Stopped", hasWorld: true},   // its pod is still going
 		{name: "echo", phase: "Stopping", hasWorld: true},   // still stopping
 		{name: "foxtrot", phase: "Stopped", hasWorld: true}, // asked to start
 		{name: "golf", phase: "Stopped", hasWorld: true},    // still reports ready
 		{name: "hotel", phase: "Stopped", hasWorld: true},   // not reconciled yet: the desired state shows
+		{name: "india", phase: "Running", hasWorld: true},   // up but not ready yet
+		{name: "juliet", phase: "Running", hasWorld: true},  // asked to stop
+		{name: "kilo", phase: "Starting", hasWorld: true},   // ready, but its phase lags
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("worlds =\n%+v\nwant\n%+v", got, want)

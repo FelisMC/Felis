@@ -50,6 +50,8 @@ func ControlPlaneRBAC(p Params) RBAC {
 			APIMinecraftRole(p),
 			APIBuildRole(p),
 			OperatorRole(p),
+			LeaseRole(p, SAAPI, LeaseAPILoops),
+			LeaseRole(p, SAOperator, LeaseOperator),
 		},
 		// Each binding lives in the Role's namespace and names the subject SA in the
 		// control namespace (a RoleBinding may reference an SA from another namespace;
@@ -60,6 +62,8 @@ func ControlPlaneRBAC(p Params) RBAC {
 			bindRole(p.MinecraftNamespace, "felis-api", p.ControlNamespace, SAAPI, ComponentAPI),
 			bindRole(p.BuildNamespace, "felis-api-builds", p.ControlNamespace, SAAPI, ComponentAPI),
 			bindRole(p.MinecraftNamespace, "felis-operator", p.ControlNamespace, SAOperator, ComponentOperator),
+			bindRole(p.ControlNamespace, SAAPI+"-leases", p.ControlNamespace, SAAPI, ComponentAPI),
+			bindRole(p.ControlNamespace, SAOperator+"-leases", p.ControlNamespace, SAOperator, ComponentOperator),
 		},
 	}
 	// The destructive fourth power is conditional on its consumer (see the doc above).
@@ -275,4 +279,33 @@ func bindRole(roleNS, roleName, saNS, saName, component string) *rbacv1.RoleBind
 
 func rule(apiGroups, resources, verbs []string) rbacv1.PolicyRule {
 	return rbacv1.PolicyRule{APIGroups: apiGroups, Resources: resources, Verbs: verbs}
+}
+
+// The leases that keep one active copy of felis-api's background loops and of the
+// operator's reconcilers. With controller high availability a pod moves when its node
+// stops answering, and the old one may still run until its node learns it was replaced;
+// the lease, not the pod count, is what stops both acting at once.
+const (
+	LeaseAPILoops = "felis-api-loops"
+	LeaseOperator = "felis-operator"
+)
+
+// LeaseRole lets sa hold its own lease in the control namespace: create it the first
+// time (create cannot be narrowed to a name), then read and renew that one lease only.
+// controller-runtime's leader election records its transitions as Events there too.
+func LeaseRole(p Params, sa, lease string) *rbacv1.Role {
+	p = p.withDefaults()
+	component := ComponentAPI
+	if sa == SAOperator {
+		component = ComponentOperator
+	}
+	return &rbacv1.Role{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "Role"},
+		ObjectMeta: metav1.ObjectMeta{Name: sa + "-leases", Namespace: p.ControlNamespace, Labels: controlPlanePodLabels(component)},
+		Rules: []rbacv1.PolicyRule{
+			rule([]string{"coordination.k8s.io"}, []string{"leases"}, []string{"create"}),
+			{APIGroups: []string{"coordination.k8s.io"}, Resources: []string{"leases"}, ResourceNames: []string{lease}, Verbs: []string{"get", "update"}},
+			rule([]string{groupCore}, []string{"events"}, []string{"create", "patch"}),
+		},
+	}
 }

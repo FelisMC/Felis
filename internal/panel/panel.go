@@ -20,7 +20,9 @@ import (
 var static embed.FS
 
 type runtimeConfig struct {
-	Distributed   bool   `json:"distributed,omitempty"`
+	Distributed bool `json:"distributed,omitempty"`
+	// ControllerHA: several controllers share the control plane (internal/platform ha.go).
+	ControllerHA  bool   `json:"controllerHA,omitempty"`
 	APIBase       string `json:"apiBase"`
 	RootDomain    string `json:"rootDomain"`
 	PanelHostname string `json:"panelHostname,omitempty"`
@@ -114,14 +116,18 @@ func parseBuildVersion(raw string) buildInfo {
 // right surface (player console vs SysAdmin console) without a rebuild. gamePort
 // is the public Minecraft port ([velocity] game_port), which the SPA appends to
 // the server addresses players copy; 0 or 25565 leaves them bare.
-func Handler(api http.Handler, rootDomain, panelHost, adminHost string, gamePort int, gameVersion, version string, distributed ...bool) http.Handler {
+func Handler(api http.Handler, rootDomain, panelHost, adminHost string, gamePort int, gameVersion, version string, topology ...Topology) http.Handler {
 	files, err := fs.Sub(static, "static")
 	if err != nil {
 		panic(err)
 	}
+	var shape Topology
+	if len(topology) > 0 {
+		shape = topology[0]
+	}
 	return &handler{
 		api:           api,
-		distributed:   len(distributed) > 0 && distributed[0],
+		topology:      shape,
 		rootDomain:    rootDomain,
 		panelHostname: panelHost,
 		adminHostname: adminHost,
@@ -146,8 +152,14 @@ func publicGamePort(p int) int {
 	return p
 }
 
+// Topology is the deployment shape the SPA adapts its node management to.
+type Topology struct {
+	Distributed  bool
+	ControllerHA bool
+}
+
 type handler struct {
-	distributed   bool
+	topology      Topology
 	api           http.Handler
 	rootDomain    string
 	panelHostname string
@@ -229,7 +241,8 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		_ = json.NewEncoder(w).Encode(runtimeConfig{
 			APIBase:       "/api/v1",
-			Distributed:   h.distributed,
+			Distributed:   h.topology.Distributed,
+			ControllerHA:  h.topology.ControllerHA,
 			RootDomain:    h.rootDomain,
 			PanelHostname: h.panelHostname,
 			AdminHostname: h.adminHostname,

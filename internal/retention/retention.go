@@ -117,8 +117,9 @@ func deleteBatched(ctx context.Context, db *sql.DB, table, where string, cutoff 
 }
 
 // Loop runs Prune a minute after it starts and then every interval until ctx
-// ends, logging what each run deleted.
-func Loop(ctx context.Context, db *sql.DB, p Policy, every time.Duration, log *slog.Logger) {
+// ends, logging what each run deleted. policy is read on every run, so a change of
+// the retention needs no restart.
+func Loop(ctx context.Context, db *sql.DB, policy func(context.Context) Policy, every time.Duration, log *slog.Logger) {
 	t := time.NewTimer(time.Minute)
 	defer t.Stop()
 	for {
@@ -127,7 +128,7 @@ func Loop(ctx context.Context, db *sql.DB, p Policy, every time.Duration, log *s
 			return
 		case <-t.C:
 		}
-		res, err := Prune(ctx, db, time.Now(), p)
+		res, err := Prune(ctx, db, time.Now(), policy(ctx))
 		if err != nil {
 			log.Error("retention: prune failed", "err", err, "deleted", res.Total())
 		} else if res.Total() > 0 {

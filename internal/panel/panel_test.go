@@ -86,6 +86,30 @@ func TestHandlerPublishesNonDefaultGamePort(t *testing.T) {
 	}
 }
 
+// The SPA offers enabling controller high availability or adding a controller from the
+// deployment shape /config.json carries.
+func TestHandlerPublishesTheTopology(t *testing.T) {
+	for _, tc := range []struct {
+		shape []Topology
+		want  runtimeConfig
+	}{
+		{nil, runtimeConfig{}},
+		{[]Topology{{Distributed: true}}, runtimeConfig{Distributed: true}},
+		{[]Topology{{Distributed: true, ControllerHA: true}}, runtimeConfig{Distributed: true, ControllerHA: true}},
+	} {
+		h := Handler(http.NotFoundHandler(), "example.test", "", "", 0, "", "v1.2.3", tc.shape...)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/config.json", nil))
+		var cfg runtimeConfig
+		if err := json.Unmarshal(w.Body.Bytes(), &cfg); err != nil {
+			t.Fatalf("decode config: %v", err)
+		}
+		if cfg.Distributed != tc.want.Distributed || cfg.ControllerHA != tc.want.ControllerHA {
+			t.Errorf("%+v: distributed=%v controllerHA=%v, want %+v", tc.shape, cfg.Distributed, cfg.ControllerHA, tc.want)
+		}
+	}
+}
+
 func TestParseBuildVersionSplitsBothStampForms(t *testing.T) {
 	for _, tc := range []struct {
 		raw     string

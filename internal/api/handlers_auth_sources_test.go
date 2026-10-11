@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"felis.lolicon.best/internal/config"
 )
@@ -240,6 +241,37 @@ func TestAuthSourcesOwnerGateAndReauth(t *testing.T) {
 	p.ReauthAt = a.now()
 	if w = saveAuthSources(a, v); w.Code != 200 {
 		t.Fatalf("fresh reauth = %d %s", w.Code, w.Body.String())
+	}
+
+	// Probing an unsaved source asks for the same fresh proof as saving one.
+	probed := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		probed++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	body, _ := json.Marshal(sourceEntry("probe", "P", upstream.URL))
+	p.ReauthAt = time.Time{}
+	w = do(a.ExternalHandler(), "POST", authSourcesPath+"/test", string(body), jsonHeader)
+	if w.Code != 403 || decodeErr(t, w) != "reauth_required" || probed != 0 {
+		t.Fatalf("stale probe = %d %s (probed %d)", w.Code, w.Body.String(), probed)
+	}
+	p.ReauthAt = a.now()
+	if w = do(a.ExternalHandler(), "POST", authSourcesPath+"/test", string(body), jsonHeader); w.Code != 200 || probed != 1 {
+		t.Fatalf("fresh probe = %d %s (probed %d)", w.Code, w.Body.String(), probed)
+	}
+}
+
+// TestUpstreamRefusesLinkLocal pins that the auth client dials through
+// netguard.RefuseLinkLocal, so no source URL reaches the cloud metadata service.
+func TestUpstreamRefusesLinkLocal(t *testing.T) {
+	resp, err := authHTTPClient.Get("http://169.254.169.254/latest/meta-data/")
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("the auth client reached the metadata address")
+	}
+	if !strings.Contains(err.Error(), "refusing to dial") {
+		t.Fatalf("metadata dial failed for another reason: %v", err)
 	}
 }
 

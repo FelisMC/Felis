@@ -169,6 +169,12 @@ func LockValue(kind string, at time.Time) string {
 	return kind + "@" + at.UTC().Format(time.RFC3339)
 }
 
+// LockKind is the kind a lock value names, empty when it does not parse.
+func LockKind(v string) string {
+	kind, _, _ := parseLock(v)
+	return kind
+}
+
 // parseLock splits a lock value. A value that does not parse is stale: a lock
 // nobody can date must not be able to hold a server down forever.
 func parseLock(v string) (string, time.Time, bool) {

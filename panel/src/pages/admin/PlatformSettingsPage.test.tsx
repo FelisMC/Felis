@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { PlatformSettingsPage } from "./PlatformSettingsPage";
 import type { WakePolicySettings } from "@/lib/types";
-const calls = vi.hoisted(() => ({ getEntryPolicy: vi.fn(), setEntryPolicy: vi.fn(), fleet: vi.fn(), getWakePolicy: vi.fn(), setWakePolicy: vi.fn(), nodes: vi.fn(), nodeTasks: vi.fn(), nodeTask: vi.fn(), startNodeTask: vi.fn(), retryNodeTask: vi.fn() }));
+const calls = vi.hoisted(() => ({ getEntryPolicy: vi.fn(), setEntryPolicy: vi.fn(), fleet: vi.fn(), getWakePolicy: vi.fn(), setWakePolicy: vi.fn(), nodes: vi.fn(), nodeTasks: vi.fn(), nodeTask: vi.fn(), startNodeTask: vi.fn(), retryNodeTask: vi.fn(), getMailSettings: vi.fn(), getArchivePolicy: vi.fn(), getFailoverPolicy: vi.fn(), getHeartbeat: vi.fn() }));
 vi.mock("@/lib/api", async (original) => ({ ...await original<typeof import("@/lib/api")>(), api: calls }));
 const runtime = vi.hoisted(() => ({ distributed: false, fallback: false, apiBase: "/api/v1", rootDomain: "example.test" }));
 vi.mock("@/lib/hooks", async (original) => ({ ...await original<typeof import("@/lib/hooks")>(), useConfig: () => runtime }));
@@ -22,6 +22,10 @@ beforeEach(() => {
   calls.nodes.mockResolvedValue([]);
   calls.nodeTasks.mockResolvedValue({ available: false, tasks: [] });
   calls.getWakePolicy.mockResolvedValue(policy);
+  calls.getMailSettings.mockResolvedValue({ source: "none", host: "", port: 587, from: "", username: "", password_set: false, require_tls: true, max_per_hour: 0, revision: "" });
+  calls.getArchivePolicy.mockResolvedValue({ manualKeep: 5, manualRetentionDays: 30, manualCooldownMinutes: 10, scheduledEveryHours: 24, scheduledKeep: 7, scheduledRetentionDays: 90, releasedRetentionDays: 90, maxStoreGiB: 0, auditRetentionDays: 365, source: "host", revision: "" });
+  calls.getHeartbeat.mockResolvedValue({ set: false, display: "", revision: "" });
+  calls.getFailoverPolicy.mockResolvedValue({ automatic: false, afterMinutes: 15, replicaMinutes: 60, revision: "", managed: false });
   calls.setWakePolicy.mockImplementation(async (body) => ({ ...body, revision: "saved", managed: true }));
 });
 describe("platform policy", () => {

@@ -123,11 +123,20 @@ func TestRequestBackup(t *testing.T) {
 		body   string // optional JSON error body
 		expect string
 	}{
-		{"409 not_stopped", http.StatusConflict, "", "must be stopped"},
+		{"409 not_stopped", http.StatusConflict, "", "starting or stopping"},
 		{"409 no_world_volume surfaces the API's own text", http.StatusConflict,
 			`{"error":{"code":"no_world_volume","message":"this server has no world volume yet — start it once to create it, then retry"}}`,
 			"no world volume yet"},
+		{"409 not_stopped from an install without live backups says so", http.StatusConflict,
+			`{"error":{"code":"not_stopped","message":"stop the server before backing up its world"}}`,
+			"stop the server before backing up"},
 		{"503 backup_unavailable", http.StatusServiceUnavailable, "", "not configured"},
+		{"503 live_backup_console points at -stop", http.StatusServiceUnavailable,
+			`{"error":{"code":"live_backup_console","message":"the server did not respond over its console"}}`,
+			"pass -stop"},
+		{"any other 503 surfaces the API's own text", http.StatusServiceUnavailable,
+			`{"error":{"code":"node_control_busy","message":"a node operation is running on this host"}}`,
+			"a node operation is running"},
 		{"404 not found", http.StatusNotFound, "", "no such server"},
 	}
 	for _, tc := range cases {

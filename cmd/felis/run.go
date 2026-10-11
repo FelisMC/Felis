@@ -14,13 +14,17 @@ Commands:
   migrate up        Apply embedded database migrations under an advisory lock (snapshots the database first)
   db                Back up, verify, list and restore the control-plane database (backup|restore|verify|list|check)
   offsite           Copy world archives, database bundles, user images and uploads to an off-site bucket, and fetch them back (sync|status|list|fetch-db|fetch-worlds|fetch-images|fetch-uploads|keygen)
+  restore-host      Rebuild this freshly installed host from the off-site copy: database, images, uploads, servers and worlds (prints the steps, -yes applies; resumable; requires root/sudo)
   operator          Run the MinecraftServer controller-manager
   api               Run the felis-api HTTP server
   nano              Run the Felis-nano hasJoined multiplexer (multi-Yggdrasil, no control plane)
   reaper            Run the world reaper / backup batch
   restore           Extract a world archive into a world volume (internal Job entrypoint)
   backup            Archive a world into the backup store and record it (internal Job entrypoint)
-  backup-now        Archive every user server's world now, one at a time (or the named ones; -stop stops running ones first; prints the plan, -yes applies; requires root/sudo)
+  stage-world       Copy a running server's frozen world into a live backup's scratch volume (internal init container entrypoint)
+  ha                Controller high availability on the host: which controller runs the host's cluster-wide jobs (leader), and moving the control plane's volumes to replicated storage (migrate-storage; the installer runs it)
+  panel-settings    Whether a mail relay and a heartbeat are saved in the panel, where they win over the host's (prints yes or no for each; the installer's summary uses it)
+  backup-now        Archive every user server's world now, one at a time (or the named ones; running ones are backed up live, -stop stops them first; prints the plan, -yes applies; requires root/sudo)
   files             List, read, write, mkdir, delete, rename, upload or unzip one path in a stopped server's world (internal Job entrypoint)
   export            Archive a stopped server's world, or read one of its backups, and hand it to felis-api for download (internal Job entrypoint)
   egress-gate       Hold a build or game server pod until its egress NetworkPolicy is enforced (internal init container entrypoint)
@@ -28,8 +32,8 @@ Commands:
   scan-gate         Apply the scan policy to a build's Trivy report and hand felis-api the report and SBOM (internal Job entrypoint)
   push-image        Push a scanned image tarball to the registry (internal Job entrypoint)
   mirror-build-tools Copy kaniko, trivy and Trivy's DBs into the registry (run by felis-build-tools.timer)
-  server-migrate    Move a stopped world between approved nodes (start|status|retry; requires root)
-  node              Join and approve trusted daemon nodes (list|token|join|approve|firewall; requires root)
+  server-migrate    Move a stopped world between approved nodes (start|status|retry|abort; requires root)
+  node              Join, approve and update trusted daemon nodes (list|token|join|approve|upgrade|firewall; requires root)
   node-control      Run the host node-task service on an API-only Unix socket (requires root)
   node-probe        Verify reachability and observed sources (internal admission probe)
   archive-serve     Serve scoped one-use archive transfers on the controller (internal entrypoint)
@@ -70,7 +74,11 @@ var commands = map[string]func(args []string, stdout, stderr io.Writer) int{
 	"reaper":             cmdReaper,
 	"restore":            cmdRestore,
 	"backup":             cmdBackup,
+	"restore-host":       cmdRestoreHost,
+	"stage-world":        cmdStageWorld,
 	"backup-now":         cmdBackupNow,
+	"ha":                 cmdHA,
+	"panel-settings":     cmdPanelSettings,
 	"files":              cmdFiles,
 	"export":             cmdExport,
 	"egress-gate":        cmdEgressGate,

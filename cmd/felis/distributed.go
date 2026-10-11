@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"felis.lolicon.best/internal/api"
 	"felis.lolicon.best/internal/archivetransfer"
 	"felis.lolicon.best/internal/config"
 	"felis.lolicon.best/internal/distributed"
@@ -22,7 +23,7 @@ func distributionManager(cl client.Client, cfg *config.Config, image string) (*d
 	if controller == "" || url == "" || len(key) < 32 || image == "" || cfg.Archive.Store != "tarLocal" {
 		return nil, fmt.Errorf("distributed mode requires controller identity, archive service/key, Felis image and tarLocal")
 	}
-	return &distributed.Manager{Client: cl, Namespace: cfg.K8s.Namespace, Image: image, Controller: controller, Archive: archivetransfer.Client{URL: url, Root: cfg.Archive.LocalPath, Key: key}, Resolve: placement.Resolve(cl, cfg.K8s.Namespace, controller)}, nil
+	return &distributed.Manager{Client: cl, Namespace: cfg.K8s.Namespace, Image: image, Controller: controller, HA: os.Getenv("FELIS_CONTROLLER_HA") == "true", Archive: archivetransfer.Client{URL: url, Root: cfg.Archive.LocalPath, Key: key}, Resolve: placement.Resolve(cl, cfg.K8s.Namespace, controller)}, nil
 }
 
 func reconcileDistribution(ctx context.Context, m *distributed.Manager, stderr io.Writer) {
@@ -39,6 +40,24 @@ func reconcileDistribution(ctx context.Context, m *distributed.Manager, stderr i
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		}
+	}
+}
+
+// runFailover drives the background half of failover (api.API.FailoverTick) every half
+// minute: the fences failovers wait on, the automatic failover when the Owner turned it
+// on, and the replicas of the worlds running on workers.
+func runFailover(ctx context.Context, a *api.API, stderr io.Writer) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := a.FailoverTick(ctx); err != nil {
+				fmt.Fprintln(stderr, "failover:", err)
+			}
 		}
 	}
 }

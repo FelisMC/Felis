@@ -11,7 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"felis.lolicon.best/internal/heartbeatsettings"
 	"felis.lolicon.best/internal/offsite"
+	"felis.lolicon.best/internal/watchdog"
 )
 
 // defaultHeartbeatFile holds the heartbeat URL deploy/bootstrap.sh writes from
@@ -126,30 +128,29 @@ func readHeartbeatURL(path string) (string, error) {
 		return "", err
 	}
 	s := strings.TrimSpace(string(raw))
-	if err := checkHeartbeatURL(s); err != nil {
+	if err := heartbeatsettings.Check(s); err != nil {
 		return "", fmt.Errorf("%s: %w", path, err)
 	}
 	return s, nil
 }
 
-// checkHeartbeatURL accepts an http(s) URL with a host. Its error leaves the
-// URL out: the path is the check's key, which anyone who reads it can ping in
-// the host's name.
-func checkHeartbeatURL(s string) error {
-	u, err := url.Parse(s)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || strings.ContainsAny(s, " \t\r\n") {
-		return errors.New("the heartbeat URL is not an http:// or https:// URL")
-	}
-	return nil
-}
-
 // redactURL is a heartbeat URL as logs show it: its scheme and host.
-func redactURL(s string) string {
-	u, err := url.Parse(s)
-	if err != nil || u.Host == "" {
-		return "(the heartbeat URL)"
+func redactURL(s string) string { return heartbeatsettings.Redact(s) }
+
+// heartbeatFor picks the URL this run pings and caches it in state: the Owner's panel
+// setting wins over the host file; with the database unreadable the last run's panel URL
+// stands, and the host file is used only when the panel had none.
+func heartbeatFor(state *watchdog.State, panel *heartbeatsettings.Settings, panelErr error, file string) string {
+	switch {
+	case panel != nil:
+		state.Heartbeat = panel.URL
+	case panelErr == nil:
+		state.Heartbeat = ""
 	}
-	return u.Scheme + "://" + u.Host + "/..."
+	if state.Heartbeat != "" {
+		return state.Heartbeat
+	}
+	return file
 }
 
 // standsBy reports whether this host stands by for another host's off-site

@@ -306,6 +306,22 @@ func TestManifestsOnlyPostgres(t *testing.T) {
 		}
 	}
 
+	// With controller HA the database brings its replicated class and claim, and runs on
+	// any controller.
+	out.Reset()
+	errBuf.Reset()
+	if code := run([]string{"manifests", "--only", "postgres", "--distributed", "--controller-node", "a", "--controller-ha", "--replicated-class", "fast-rep"}, &out, &errBuf); code != 0 {
+		t.Fatalf("--controller-ha: exit %d; stderr=%q", code, errBuf.String())
+	}
+	for _, want := range []string{"kind: StorageClass", "name: fast-rep", "provisioner: driver.longhorn.io", "claimName: felis-postgres-ha", "storageClassName: fast-rep"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("HA database missing %q", want)
+		}
+	}
+	if strings.Contains(out.String(), "path: /var/lib/felis/postgres") {
+		t.Error("the HA database still mounts the host directory")
+	}
+
 	out.Reset()
 	errBuf.Reset()
 	if code := run([]string{"manifests", "--only", "registry"}, &out, &errBuf); code != 2 || out.Len() != 0 {

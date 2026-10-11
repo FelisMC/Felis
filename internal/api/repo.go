@@ -147,6 +147,8 @@ type BackupRecord struct {
 	// export checks the bytes against as they stream. Empty for an archive from
 	// before digests were kept.
 	SHA256 string
+	// CreatedAt is when the backup was taken (set by LatestBackup).
+	CreatedAt time.Time
 }
 
 // StaffUser is the login-side projection of a users row (spec §B passwordless

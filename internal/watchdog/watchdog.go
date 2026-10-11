@@ -87,6 +87,12 @@ type State struct {
 	// so a run of the watchdog that failed can still be mailed after the
 	// config stopped loading; nil when there is none.
 	Relay *Relay `json:"relay,omitempty"`
+	// RelayFromPanel says Relay is the Owner's panel relay (mailsettings), which wins
+	// over felis.toml's; a run that cannot read the database keeps it.
+	RelayFromPanel bool `json:"relay_from_panel,omitempty"`
+	// Heartbeat is the heartbeat URL the Owner set in the panel (heartbeatsettings), cached
+	// so a run that cannot read the database still pings it; empty when the panel has none.
+	Heartbeat string `json:"heartbeat,omitempty"`
 }
 
 // Relay is the part of [smtp] a mail needs, besides the password.

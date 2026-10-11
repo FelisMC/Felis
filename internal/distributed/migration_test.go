@@ -350,3 +350,133 @@ func TestBackupResolvesActiveClaimAndPreservesConflictContract(t *testing.T) {
 		t.Fatalf("duplicate backup: %v", err)
 	}
 }
+
+// TestAbortReleasesAFailedMigrationWhoseTargetIsGone pins the way out of a failed migration
+// when the target node will never come back: the server keeps its source world and node,
+// the lock is released, the partial target world and the Jobs are removed, the safety
+// archive becomes an ordinary restore point, and a new migration can begin.
+func TestAbortReleasesAFailedMigrationWhoseTargetIsGone(t *testing.T) {
+	m, ctx := fixture(t)
+	op, err := m.BeginMigration(ctx, "alice", "c", "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.AbortMigration(ctx, "alice", op.ID); !errors.Is(err, ErrBusy) {
+		t.Fatalf("abort of a running migration: %v, want ErrBusy", err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := m.ReconcileMigrations(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The target dies: the restore never finishes and the node drops out.
+	var target corev1.Node
+	if err := m.Client.Get(ctx, types.NamespacedName{Name: "c"}, &target); err != nil {
+		t.Fatal(err)
+	}
+	target.Status.Conditions = []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionUnknown}}
+	if err := m.Client.Status().Update(ctx, &target); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ReconcileMigrations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	failed, err := m.Migration(ctx, "alice", op.ID)
+	if err != nil || failed.State != "failed" {
+		t.Fatalf("precondition: %+v %v", failed, err)
+	}
+	if _, err := m.AbortMigration(ctx, "alice", "someone-else"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("abort of another id: %v, want ErrNotFound", err)
+	}
+
+	aborted, err := m.AbortMigration(ctx, "alice", op.ID)
+	if err != nil || aborted.State != "aborted" || aborted.Switched {
+		t.Fatalf("abort %+v: %v", aborted, err)
+	}
+	s := getServer(t, m, ctx)
+	if s.WorldPVC() != op.SourcePVC || s.Spec.NodeName != "b" {
+		t.Fatal("abort moved the server off its source world")
+	}
+	if _, held := maintenance.Holder(s.Name, s.Annotations, nil, time.Now()); held {
+		t.Fatal("abort kept the maintenance lock")
+	}
+	var jobs batchv1.JobList
+	if err := m.Client.List(ctx, &jobs, client.MatchingLabels{MigrationAnnotation: op.ID}); err != nil || len(jobs.Items) != 0 {
+		t.Fatalf("migration Jobs left behind: %d (%v)", len(jobs.Items), err)
+	}
+	var pvc corev1.PersistentVolumeClaim
+	if err := m.Client.Get(ctx, types.NamespacedName{Namespace: m.Namespace, Name: op.TargetPVC}, &pvc); !apierrors.IsNotFound(err) {
+		t.Fatalf("partial target world left behind: %v", err)
+	}
+	if err := m.Client.Get(ctx, types.NamespacedName{Namespace: m.Namespace, Name: op.SourcePVC}, &pvc); err != nil {
+		t.Fatalf("source world lost: %v", err)
+	}
+	archiver := &RemoteArchiver{TarLocal: &backup.TarLocal{BackupRoot: t.TempDir()}, Manager: m}
+	if err := archiver.Delete(ctx, backup.ArchiveRef(failed.Backup.Ref)); errors.Is(err, ErrBusy) {
+		t.Fatal("an aborted migration still pins its safety archive")
+	}
+	if _, err := m.AbortMigration(ctx, "alice", op.ID); !errors.Is(err, ErrBusy) {
+		t.Fatalf("second abort: %v, want ErrBusy", err)
+	}
+
+	target.Status.Conditions = []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}
+	if err := m.Client.Status().Update(ctx, &target); err != nil {
+		t.Fatal(err)
+	}
+	again, err := m.BeginMigration(ctx, "alice", "c", "owner")
+	if err != nil || again.ID == op.ID {
+		t.Fatalf("a new migration after abort: %+v %v", again, err)
+	}
+}
+
+// TestLiveBackupCopiesOnTheWorldsNode pins that a live backup of a world on a worker copies
+// it there before uploading, and still runs on the world's node.
+func TestLiveBackupCopiesOnTheWorldsNode(t *testing.T) {
+	m, ctx := fixture(t)
+	p := backupjob.JobParams{Server: "alice", JobName: "live-backup", Live: true, StageLimit: "4Gi"}
+	if err := m.CreateBackupJob(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	var j batchv1.Job
+	if err := m.Client.Get(ctx, types.NamespacedName{Namespace: m.Namespace, Name: p.JobName}, &j); err != nil {
+		t.Fatal(err)
+	}
+	spec := j.Spec.Template.Spec
+	if j.Labels[backupjob.LabelLive] != "true" || len(spec.InitContainers) != 1 || spec.InitContainers[0].Name != backupjob.StageContainer {
+		t.Fatalf("live upload = labels %v, init %v", j.Labels, spec.InitContainers)
+	}
+	if spec.NodeSelector[placement.LabelIdentity] != "b" {
+		t.Errorf("the live upload runs on %v, want the world's node b", spec.NodeSelector)
+	}
+	for _, mnt := range spec.Containers[0].VolumeMounts {
+		if mnt.Name == "world" {
+			t.Fatal("the upload reads the live volume instead of the copy")
+		}
+	}
+}
+
+// TestBackupReasonTravelsWithTheUpload pins the reason recorded when the upload settles:
+// manual by default, scheduled or replica when asked.
+func TestBackupReasonTravelsWithTheUpload(t *testing.T) {
+	m, ctx := fixture(t)
+	for name, tc := range map[string]struct {
+		p    backupjob.JobParams
+		want string
+	}{
+		"manual":    {backupjob.JobParams{Server: "alice", JobName: "b-manual"}, "manual"},
+		"scheduled": {backupjob.JobParams{Server: "alice", JobName: "b-scheduled", Scheduled: true}, backupjob.ReasonScheduled},
+		"replica":   {backupjob.JobParams{Server: "alice", JobName: "b-replica", Live: true, Replica: true}, backupjob.ReasonReplica},
+	} {
+		if err := m.CreateBackupJob(ctx, tc.p); err != nil {
+			t.Fatal(err)
+		}
+		var j batchv1.Job
+		if err := m.Client.Get(ctx, types.NamespacedName{Namespace: m.Namespace, Name: tc.p.JobName}, &j); err != nil {
+			t.Fatal(err)
+		}
+		var pending pendingBackup
+		if err := json.Unmarshal([]byte(j.Annotations[archivetransfer.Annotation]), &pending); err != nil || pending.Reason != tc.want {
+			t.Errorf("%s: reason %q (%v), want %q", name, pending.Reason, err, tc.want)
+		}
+	}
+}

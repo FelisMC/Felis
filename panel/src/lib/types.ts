@@ -371,6 +371,32 @@ export interface AuthSourceConfig {
   enabled: boolean;
 }
 
+/** MailSettings is the relay in force (GET /settings/smtp): the Owner's, felis.toml's, or none.
+ *  The password never comes back; password_set says whether one is stored. */
+export interface MailSettings {
+  source: "panel" | "host" | "none";
+  host: string;
+  port: number;
+  from: string;
+  username: string;
+  password_set: boolean;
+  require_tls: boolean;
+  max_per_hour: number;
+  revision: string;
+}
+
+/** MailSettingsRequest is a relay to save or test; an absent password keeps the current one. */
+export interface MailSettingsRequest {
+  host: string;
+  port: 25 | 465 | 587 | 2525;
+  from: string;
+  username: string;
+  password?: string;
+  require_tls: boolean;
+  max_per_hour: number;
+  revision: string;
+}
+
 export interface AuthSourcesSettings {
   sources: AuthSourceConfig[];
   revision: string;
@@ -755,6 +781,13 @@ export interface ExecutionNode {
   approved: boolean;
   addresses: string[];
   architecture: string;
+  k3sVersion: string;
+  /** The felis build the node last installed; absent for a node enrolled before it was recorded. */
+  felisVersion?: string;
+  /** A lost worker taken out of service for a failover: cordoned, no longer approved, tainted out of service. */
+  fenced: boolean;
+  /** When an offline node stopped reporting ready. */
+  lostSince?: string;
 }
 export interface WorldMigration {
   id: string;
@@ -768,6 +801,10 @@ export interface WorldMigration {
   error?: string;
   switched: boolean;
   attempt: number;
+  /** "failover" for a failover; absent for a migration. */
+  kind?: "failover";
+  /** The desired state a failover gives the server back once it has switched. */
+  resume?: string;
 }
 
 export interface WakePolicySettings {
@@ -777,8 +814,84 @@ export interface WakePolicySettings {
   managed: boolean;
 }
 
+/** The watchdog heartbeat setting (GET/PUT/DELETE /settings/heartbeat): only the URL's
+ *  scheme and host are shown. */
+export interface HeartbeatSettings {
+  set: boolean;
+  display: string;
+  revision: string;
+}
+
+/** The backup and audit retention in force (GET/PUT/DELETE /settings/archive-policy). */
+export interface ArchivePolicy {
+  manualKeep: number;
+  manualRetentionDays: number;
+  manualCooldownMinutes: number;
+  /** 0 turns the scheduled restore points off. */
+  scheduledEveryHours: number;
+  scheduledKeep: number;
+  scheduledRetentionDays: number;
+  releasedRetentionDays: number;
+  /** 0 for no cap. */
+  maxStoreGiB: number;
+  /** 0 keeps every audit row; otherwise at least 30. */
+  auditRetentionDays: number;
+}
+
+export interface ArchivePolicySettings extends ArchivePolicy {
+  source: "panel" | "host";
+  revision: string;
+}
+
+/** The Owner's failover setting (GET/PUT /settings/failover). */
+export interface FailoverPolicySettings {
+  automatic: boolean;
+  afterMinutes: number;
+  /** 0 turns the replicas off; otherwise 15 to 1440. */
+  replicaMinutes: number;
+  revision: string;
+  managed: boolean;
+}
+
+/** The backup a failover would restore. */
+export interface FailoverBackup {
+  id: string;
+  createdAt: string;
+  sizeBytes: number;
+}
+
+export interface FailoverServer {
+  name: string;
+  desiredState: string;
+  backup: FailoverBackup | null;
+  operation: WorldMigration | null;
+}
+
+/** What failing a lost worker over would do (GET /nodes/{node}/failover). */
+export interface FailoverPlan {
+  node: string;
+  lost: boolean;
+  fenced: boolean;
+  lostSince: string | null;
+  servers: FailoverServer[];
+  targets: string[];
+}
+
+export interface FailoverSkip {
+  name: string;
+  reason: "no_backup" | "unknown_server" | "failed";
+  error?: string;
+}
+
+export interface FailoverResult {
+  operations: WorldMigration[];
+  skipped: FailoverSkip[];
+  fenceTask?: NodeControlTask;
+  fenceError?: string;
+}
+
 export interface NodeControlRequest {
-  action: "enable" | "join" | "approve";
+  action: "enable" | "join" | "approve" | "upgrade" | "fence" | "unfence" | "enable-ha" | "join-controller";
   name?: string;
   sshTarget?: string;
   externalIP?: string;

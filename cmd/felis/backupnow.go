@@ -115,15 +115,20 @@ func backupErrorFromResponse(resp *http.Response) error {
 
 	switch resp.StatusCode {
 	case http.StatusConflict:
-		// Two refusals share 409: the stopped gate and the missing-world-volume
-		// gate. The body's code distinguishes them; a code-less body reads as the
-		// stopped gate (the only 409 before the volume gate existed), and any other
-		// coded 409 falls through to the API's own operator text.
-		if e.Error.Code == "" || e.Error.Code == "not_stopped" {
-			return fmt.Errorf("the server must be stopped before its world can be backed up — halt it first")
+		// Several refusals share 409: a server between running and stopped, an install that
+		// cannot back up a running server, and the missing-world-volume gate. A body without
+		// its own text reads as the first (the only 409 before the others existed); any
+		// other falls through to the API's own operator text, which tells them apart.
+		if e.Error.Code == "" || (e.Error.Code == "not_stopped" && e.Error.Message == "") {
+			return fmt.Errorf("the server is starting or stopping — back it up once it is running or stopped")
 		}
-	case http.StatusServiceUnavailable: // backup_unavailable
-		return fmt.Errorf("the backup subsystem is not configured on felis-api (FELIS_IMAGE / FELIS_BACKUP_PVC unset)")
+	case http.StatusServiceUnavailable:
+		switch e.Error.Code {
+		case "live_backup_console":
+			return fmt.Errorf("the server did not answer over its console (RCON), so it could not be backed up while running: run again, or pass -stop to stop it first")
+		case "", "backup_unavailable":
+			return fmt.Errorf("the backup subsystem is not configured on felis-api (FELIS_IMAGE / FELIS_BACKUP_PVC unset)")
+		}
 	case http.StatusNotFound:
 		return fmt.Errorf("no such server")
 	}
@@ -133,15 +138,20 @@ func backupErrorFromResponse(resp *http.Response) error {
 	return fmt.Errorf("felis-api returned HTTP %d", resp.StatusCode)
 }
 
-// performBackupNow composes resolve + request against a short-timeout HTTP client (a
-// non-routable ClusterIP must fail fast, not hang the TUI). controlNamespace holds the
-// Service + token.
+// backupRequestTimeout bounds one backup request. A running server's request returns
+// only once the game has flushed its world to disk (save-off, then save-all flush,
+// up to two minutes on a large world) and the Job exists; the API thaws the game if
+// the caller hangs up first, so the wait covers the flush.
+const backupRequestTimeout = 3 * time.Minute
+
+// performBackupNow composes resolve + request. controlNamespace holds the Service +
+// token.
 func performBackupNow(ctx context.Context, cl client.Client, controlNamespace, name, osUser string) (backupNowOutcome, error) {
 	baseURL, token, err := resolveInternalAPI(ctx, cl, controlNamespace)
 	if err != nil {
 		return backupNowOutcome{}, err
 	}
-	hc := &http.Client{Timeout: 10 * time.Second}
+	hc := &http.Client{Timeout: backupRequestTimeout}
 	return requestBackup(ctx, hc, baseURL, token, name, osUser)
 }
 
@@ -171,12 +181,13 @@ func cmdBackupNow(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", defaultSetupConfigPath, "path to felis.toml")
 	yes := fs.Bool("yes", false, "back up; without it the plan is printed and nothing changes")
-	stop := fs.Bool("stop", false, "stop the running servers first: their players are disconnected and the servers stay stopped")
+	stop := fs.Bool("stop", false, "stop the running servers first instead of backing them up live: their players are disconnected and the servers stay stopped")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: felis backup-now [-yes] [-stop] [server ...]")
 		fmt.Fprintln(stderr)
 		fmt.Fprintln(stderr, "Archives the world of every user server, or of the named ones, one at a time, and waits for each archive.")
-		fmt.Fprintln(stderr, "A running server is skipped unless -stop is given. Without -yes it prints what it would do.")
+		fmt.Fprintln(stderr, "A running server is backed up live: the game stops saving while its world is copied, and players stay on.")
+		fmt.Fprintln(stderr, "A server starting or stopping is skipped unless -stop is given. Without -yes it prints what it would do.")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -213,7 +224,7 @@ func cmdBackupNow(args []string, stdout, stderr io.Writer) int {
 			_ = drv.Close()
 		}
 	}()
-	hc := &http.Client{Timeout: 10 * time.Second}
+	hc := &http.Client{Timeout: backupRequestTimeout}
 	r := backupNowRun{
 		out:  stdout,
 		errw: stderr,
@@ -278,6 +289,7 @@ type backupNowWorld struct {
 	name     string
 	phase    string // the observed phase, or the desired state before the operator reconciled it
 	stopped  bool   // the backup route's stopped gate admits it
+	live     bool   // up and ready: the backup route backs it up while it runs
 	hasWorld bool   // its world volume exists
 }
 
@@ -309,7 +321,8 @@ func listBackupNowWorlds(ctx context.Context, cl client.Client, namespace string
 		if phase == "" {
 			phase = string(ms.Spec.DesiredState)
 		}
-		out = append(out, backupNowWorld{name: ms.Name, phase: phase, stopped: stopped, hasWorld: err == nil})
+		live := ms.Spec.DesiredState == v1alpha1.DesiredRunning && ms.Status.Ready && ms.Status.Phase == v1alpha1.PhaseRunning
+		out = append(out, backupNowWorld{name: ms.Name, phase: phase, stopped: stopped, live: live, hasWorld: err == nil})
 	}
 	return out, nil
 }
@@ -397,8 +410,10 @@ func backupNowAction(w backupNowWorld, stop bool) string {
 		return "back up"
 	case stop:
 		return "stop, then back up"
+	case w.live:
+		return "back up while it runs (saving pauses for the copy)"
 	default:
-		return "skip: running (stop it first, or pass -stop)"
+		return "skip: starting or stopping (run again later, or pass -stop)"
 	}
 }
 
@@ -430,7 +445,7 @@ func (r *backupNowRun) run(ctx context.Context, names []string, yes, stop bool) 
 	for _, w := range worlds {
 		fmt.Fprintf(r.out, "  %-*s  %-8s  %s\n", width, w.name, w.phase, backupNowAction(w, stop))
 		stopping = stopping || (!w.stopped && stop)
-		if (w.stopped && w.hasWorld) || (!w.stopped && stop) {
+		if (w.stopped && w.hasWorld) || (!w.stopped && (stop || w.live)) {
 			work++
 		}
 	}
@@ -449,7 +464,7 @@ func (r *backupNowRun) run(ctx context.Context, names []string, yes, stop bool) 
 		return 0
 	}
 
-	var done, failed, running, empty int
+	var done, failed, busy, empty int
 	var leftStopped []string
 	for _, w := range worlds {
 		if err := ctx.Err(); err != nil {
@@ -459,11 +474,11 @@ func (r *backupNowRun) run(ctx context.Context, names []string, yes, stop bool) 
 		case w.stopped && !w.hasWorld:
 			empty++
 			continue
-		case !w.stopped && !stop:
-			running++
+		case !w.stopped && !stop && !w.live:
+			busy++
 			continue
 		}
-		if !w.stopped {
+		if !w.stopped && stop {
 			halted, err := r.stopWorld(ctx, w.name)
 			if halted {
 				leftStopped = append(leftStopped, w.name)
@@ -497,8 +512,8 @@ func (r *backupNowRun) run(ctx context.Context, names []string, yes, stop bool) 
 	if failed > 0 {
 		parts = append(parts, fmt.Sprintf("%d failed", failed))
 	}
-	if running > 0 {
-		parts = append(parts, fmt.Sprintf("%d skipped (running)", running))
+	if busy > 0 {
+		parts = append(parts, fmt.Sprintf("%d skipped (starting or stopping)", busy))
 	}
 	if empty > 0 {
 		parts = append(parts, fmt.Sprintf("%d without a world", empty))
@@ -510,7 +525,7 @@ func (r *backupNowRun) run(ctx context.Context, names []string, yes, stop bool) 
 	if done > 0 {
 		fmt.Fprintln(r.out, "The archives reach the off-site bucket with the hourly copy; sudo systemctl start felis-offsite.service sends them now.")
 	}
-	if failed > 0 || running > 0 || interrupted {
+	if failed > 0 || busy > 0 || interrupted {
 		return 1
 	}
 	return 0

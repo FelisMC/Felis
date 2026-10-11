@@ -17,6 +17,9 @@ const (
 	LabelApproved  = "felis.node-restriction.kubernetes.io/approved"
 	RoleController = "controller"
 	RoleWorker     = "worker"
+	// AnnotationFelisVersion records the felis build a node last installed (join or
+	// update), so the panel can tell a worker left behind by a controller update.
+	AnnotationFelisVersion = "felis.lolicon.best/felis-version"
 )
 
 type World struct{ Claim, Node string }
@@ -31,13 +34,19 @@ func Online(n *corev1.Node) bool {
 	return false
 }
 
-// Admitted accepts only A's protected controller identity or an approved worker.
+// Admitted accepts an online node carrying its own identity that is a controller or an
+// approved worker. The role and identity labels sit under the NodeRestriction prefix, so
+// only the cluster's administrator can set them: with controller high availability every
+// node labelled a controller is one. A node named as the controller must carry the role.
 func Admitted(n *corev1.Node, controller string) bool {
 	if !Online(n) || n.Labels[LabelIdentity] != n.Name {
 		return false
 	}
+	if n.Labels[LabelRole] == RoleController {
+		return true
+	}
 	if n.Name == controller {
-		return n.Labels[LabelRole] == RoleController
+		return false
 	}
 	return n.Labels[LabelRole] == RoleWorker && n.Labels[LabelApproved] == "true"
 }
@@ -47,7 +56,7 @@ func Worker(ctx context.Context, r client.Reader, name string) error {
 	if err := r.Get(ctx, types.NamespacedName{Name: name}, &n); err != nil {
 		return err
 	}
-	if !Admitted(&n, "") || n.Spec.Unschedulable {
+	if n.Labels[LabelRole] != RoleWorker || !Admitted(&n, "") || n.Spec.Unschedulable {
 		return fmt.Errorf("node %q is not an online, approved worker", name)
 	}
 	return nil

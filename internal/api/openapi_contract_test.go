@@ -330,6 +330,10 @@ func (v *contractValidator) check(schema map[string]any, value any, at string, s
 	if ref, ok := schema["x-unresolved"]; ok {
 		return []string{fmt.Sprintf("%s: unresolved $ref %v", at, ref)}
 	}
+	// A nullable schema takes null whatever else it says, an allOf reference included.
+	if n, _ := schema["nullable"].(bool); n && value == nil {
+		return nil
+	}
 	var errs []string
 	if all, ok := schema["allOf"].([]any); ok {
 		for _, s := range all {

@@ -171,9 +171,14 @@ func (a *API) handleSetAuthSources(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, view)
 }
 
+// handleTestAuthSource probes an unsaved source from inside the cluster, so it asks for the
+// same fresh proof as saving one: a stolen session must not get a free network probe.
 func (a *API) handleTestAuthSource(w http.ResponseWriter, r *http.Request) {
 	if err := requireJSONContentType(r); err != nil {
 		writeError(w, r, err)
+		return
+	}
+	if !a.requireReauth(w, r, principalFromContext(r.Context())) {
 		return
 	}
 	var source authSourceEntry

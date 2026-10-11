@@ -45,6 +45,9 @@ type Manager struct {
 	Namespace, Image, Controller string
 	Archive                      archivetransfer.Client
 	Resolve                      placement.Resolver
+	// HA is controller high availability: a lost controller may be failed over like a
+	// worker, and the worlds on the controllers get replicas too.
+	HA bool
 	// Record is idempotent by transfer ID and runs on A after durable archive commit.
 	Record func(context.Context, Backup) error
 }
@@ -58,9 +61,18 @@ func (m *Manager) CreateBackupJob(ctx context.Context, p backupjob.JobParams) er
 	if err != nil {
 		return err
 	}
+	if p.Live {
+		// A running server: copy the world on its node first, then upload the copy.
+		if err := backupjob.MakeLive(job, "world", "/world", m.Image, p.StageLimit); err != nil {
+			return err
+		}
+	}
 	reason := "manual"
 	if p.Scheduled {
 		reason = backupjob.ReasonScheduled
+	}
+	if p.Replica {
+		reason = backupjob.ReasonReplica
 	}
 	if p.RestoreRef != "" {
 		reason = backupjob.ReasonPreRestore
@@ -230,7 +242,7 @@ func (a *RemoteArchiver) Delete(ctx context.Context, ref backup.ArchiveRef) erro
 		if err != nil && !errors.Is(err, ErrNotFound) {
 			return err
 		}
-		if err == nil && op.State != "succeeded" && op.Backup.Ref == string(ref) {
+		if err == nil && !op.Settled() && op.Backup.Ref == string(ref) {
 			return fmt.Errorf("%w: migration retains its safety archive", ErrBusy)
 		}
 	}

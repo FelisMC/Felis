@@ -124,6 +124,10 @@ type Cluster interface {
 	// backup/restore Job would hang Pending on the missing volume with nothing
 	// ever recorded, so both handlers refuse those up front.
 	WorldVolumeExists(ctx context.Context, name string) (bool, error)
+	// EnsureWorldVolume creates the server's world volume claim when it has none, sized
+	// and classed as the operator would make it: a host rebuilt from its backups
+	// restores worlds into servers that have never started there.
+	EnsureWorldVolume(ctx context.Context, name string) error
 	// GetBySubdomain finds the MinecraftServer whose spec.subdomain matches, or
 	// ErrNotFound.
 	GetBySubdomain(ctx context.Context, subdomain string) (*ServerInfo, error)

@@ -12,10 +12,12 @@ import (
 	"strings"
 	"time"
 
+	"felis.lolicon.best/internal/archivepolicy"
 	"felis.lolicon.best/internal/config"
 	"felis.lolicon.best/internal/dbbackup"
 	"felis.lolicon.best/internal/offsite"
 	"felis.lolicon.best/internal/platform"
+	"felis.lolicon.best/internal/reaper"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -348,7 +350,11 @@ func runOffsiteSync(cfg *config.Config, env *offsiteEnv, src offsiteSources, lea
 		return offsite.Result{}, fmt.Errorf("open database: %w", err)
 	}
 	defer drv.Close()
-	s := offsiteSyncer(cfg, env, src, archiveDir, uploadsDir, lease, log)
+	// The Owner's retention policy, when the panel holds one, overrides [archive] here as in
+	// the backup Job and the reaper, so the sweep waits as long as the longest of them.
+	s := offsiteSyncer(cfg, env, src, archiveDir, uploadsDir, lease, log, func(rc *reaper.Config) error {
+		return archivepolicy.ApplyFrom(ctx, drv.DB(), rc)
+	})
 	s.Catalog = offsite.PGCatalog{DB: drv.DB()}
 	if src.registry != "" {
 		s.Images = newRegistryImages(src.registry)
@@ -361,8 +367,9 @@ func runOffsiteSync(cfg *config.Config, env *offsiteEnv, src offsiteSources, lea
 // uploads directories, before its catalog and registry are attached. It
 // snapshots the database into the bundle directory after copying archives, and
 // sweeps world objects no backup records once they outlive every retention in
-// [archive]; a retention that does not parse sweeps none.
-func offsiteSyncer(cfg *config.Config, env *offsiteEnv, src offsiteSources, archiveDir, uploadsDir string, lease *offsite.Lease, log io.Writer) *offsite.Syncer {
+// [archive], as policy (the panel's, when it holds one) overrides it; a retention
+// that does not parse sweeps none.
+func offsiteSyncer(cfg *config.Config, env *offsiteEnv, src offsiteSources, archiveDir, uploadsDir string, lease *offsite.Lease, log io.Writer, policy func(*reaper.Config) error) *offsite.Syncer {
 	s := &offsite.Syncer{
 		Bucket: env.bucket, Key: env.key,
 		ArchiveDir: archiveDir, DBDir: src.dbDir, DBKeep: env.cfg.DBKeep, UploadsDir: uploadsDir, Lease: lease, Log: log,
@@ -373,6 +380,11 @@ func offsiteSyncer(cfg *config.Config, env *offsiteEnv, src offsiteSources, arch
 	if rc, err := reaperConfig(cfg); err != nil {
 		fmt.Fprintf(log, "felis offsite: world objects no backup records are kept: %v\n", err)
 	} else {
+		if policy != nil {
+			if err := policy(&rc); err != nil {
+				fmt.Fprintf(log, "felis offsite: the panel's retention policy is unreadable, [archive] stands: %v\n", err)
+			}
+		}
 		s.OrphanAfter = max(rc.Retention, rc.ManualRetention, rc.ScheduledRetention)
 	}
 	return s
@@ -453,6 +465,14 @@ func resolveVolumeDir(ctx context.Context, ns, pvcName string, kind volumeKind, 
 		dir = pv.Spec.Local.Path
 	case pv.Spec.HostPath != nil:
 		dir = pv.Spec.HostPath.Path
+	case pv.Spec.CSI != nil:
+		// A replicated volume (controller high availability) is a directory only where
+		// a pod has it mounted: on the host leader, beside the database.
+		mounted, err := csiMountDir(kubeletRoot, pv.Name)
+		if err != nil {
+			return "", fmt.Errorf("%s %s is mounted on no pod on this host; run this on the host leader (felis ha leader), or pass %s", kind.what, pv.Name, kind.dirFlag)
+		}
+		dir = mounted
 	default:
 		return "", fmt.Errorf("%s %s is not a directory on a node (local or hostPath); pass %s with where it is mounted on this host", kind.what, pv.Name, kind.dirFlag)
 	}
@@ -460,6 +480,23 @@ func resolveVolumeDir(ctx context.Context, ns, pvcName string, kind volumeKind, 
 		return "", fmt.Errorf("%s %s is %s on its node, which is not a directory here; run this on the node that holds it, or pass %s", kind.what, pv.Name, dir, kind.dirFlag)
 	}
 	return dir, nil
+}
+
+// kubeletRoot is where the kubelet mounts pod volumes (k3s keeps the default).
+var kubeletRoot = "/var/lib/kubelet"
+
+// csiMountDir is where a pod on this host has CSI volume pv mounted, if one has.
+func csiMountDir(root, pv string) (string, error) {
+	matches, err := filepath.Glob(filepath.Join(root, "pods", "*", "volumes", "kubernetes.io~csi", pv, "mount"))
+	if err != nil {
+		return "", err
+	}
+	for _, m := range matches {
+		if fi, err := os.Stat(m); err == nil && fi.IsDir() {
+			return m, nil
+		}
+	}
+	return "", fmt.Errorf("volume %s is not mounted here", pv)
 }
 
 // bindVolume runs a pod that mounts the PVC and exits, which is what makes a

@@ -14,9 +14,11 @@ import (
 	"time"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
+	"felis.lolicon.best/internal/archivepolicy"
 	"felis.lolicon.best/internal/backup"
 	"felis.lolicon.best/internal/config"
 	"felis.lolicon.best/internal/distributed"
+	"felis.lolicon.best/internal/mailsettings"
 	"felis.lolicon.best/internal/platform"
 	"felis.lolicon.best/internal/reaper"
 	corev1 "k8s.io/api/core/v1"
@@ -99,6 +101,11 @@ func cmdReaper(args []string, stdout, stderr io.Writer) int {
 	}
 	defer drv.Close()
 
+	// The Owner's retention policy, when the panel holds one, overrides [archive].
+	if err := archivepolicy.ApplyFrom(ctx, drv.DB(), &rcfg); err != nil {
+		fmt.Fprintf(stderr, "felis reaper: the panel's retention policy is unreadable, [archive] stands: %v\n", err)
+	}
+
 	r := &reaper.Reaper{
 		Cfg:      rcfg,
 		Store:    reaper.NewPGStore(drv.DB()),
@@ -115,15 +122,7 @@ func cmdReaper(args []string, stdout, stderr io.Writer) int {
 	// stays nil and the reaper logs each suppressed warning instead of stamping
 	// it, so a later SMTP setup still gets to warn. The owner must have a
 	// VERIFIED address — that flag is what proves the mailbox.
-	if cfg.SMTP.Host != "" {
-		passRef := cfg.SMTP.PasswordRef
-		if passRef == "" {
-			passRef = platform.SMTPPasswordEnv
-		}
-		password := os.Getenv(passRef)
-		if cfg.SMTP.Username != "" && password == "" {
-			fmt.Fprintf(stderr, "felis reaper: warning: [smtp] username is set but credentials env %s is empty — warning emails will fail AUTH\n", passRef)
-		}
+	if notifier := reaperNotifier(ctx, drv.DB(), cfg.SMTP, stderr); notifier != nil {
 		db := drv.DB()
 		r.Warner = &mailWarner{
 			lookupEmail: func(ctx context.Context, ownerID string) (string, error) {
@@ -139,10 +138,10 @@ func cmdReaper(args []string, stdout, stderr io.Writer) int {
 				}
 				return email, nil
 			},
-			notifier: smtpRelay(cfg.SMTP, password),
+			notifier: notifier,
 		}
 	} else {
-		fmt.Fprintln(stderr, "felis reaper: [smtp] not configured — pre-reap warnings are logged and NOT marked sent")
+		fmt.Fprintln(stderr, "felis reaper: no mail relay (panel or [smtp]) — pre-reap warnings are logged and NOT marked sent")
 	}
 
 	sum, err := r.RunOnce(ctx)
@@ -373,4 +372,29 @@ func parseByteSize(s string) (int64, error) {
 		}
 	}
 	return strconv.ParseInt(s, 10, 64)
+}
+
+// reaperNotifier is the relay pre-reap warnings go through: the one the Owner saved in the
+// panel, else felis.toml's [smtp] (with the password_ref convention felis-api uses), nil
+// when neither is configured.
+func reaperNotifier(ctx context.Context, db *sql.DB, c config.SMTPConfig, stderr io.Writer) noticeNotifier {
+	panel, err := mailsettings.Read(ctx, db)
+	if err != nil {
+		fmt.Fprintf(stderr, "felis reaper: the panel's mail settings are unreadable (%v); using [smtp]\n", err)
+	}
+	if panel != nil {
+		return panel.SMTP()
+	}
+	if c.Host == "" {
+		return nil
+	}
+	passRef := c.PasswordRef
+	if passRef == "" {
+		passRef = platform.SMTPPasswordEnv
+	}
+	password := os.Getenv(passRef)
+	if c.Username != "" && password == "" {
+		fmt.Fprintf(stderr, "felis reaper: warning: [smtp] username is set but credentials env %s is empty — warning emails will fail AUTH\n", passRef)
+	}
+	return smtpRelay(c, password)
 }

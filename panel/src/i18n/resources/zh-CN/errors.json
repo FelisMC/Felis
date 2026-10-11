@@ -144,8 +144,19 @@
   "minecraft_profile_not_found": "所选认证源中不存在此角色。请检查角色名或 UUID。",
   "auth_sources_unavailable": "认证源管理暂不可用。",
   "auth_sources_changed": "认证源已被其他操作修改。请放弃当前更改并重新读取后再保存。",
+  "mail_settings_changed": "邮件服务设置已被其他操作修改。请重新读取后再保存。",
+  "mail_settings_unavailable": "此安装暂不支持在面板中配置邮件服务。",
+  "smtp_unreachable": "无法连接到该邮件服务器。请检查服务器地址和端口，并确认服务器允许从本机连接。",
+  "smtp_tls": "无法与该邮件服务器建立加密连接。请改用 465 端口，或确认服务器支持 STARTTLS。",
+  "smtp_auth": "邮件服务器拒绝了用户名或密码。",
+  "smtp_sender_refused": "邮件服务器拒绝以该发件地址发信。请在邮件服务商处确认该地址已授权为发件身份。",
+  "smtp_recipient_refused": "邮件服务器拒绝了收件地址。",
+  "smtp_failed": "邮件服务器未接受测试邮件。",
   "auth_source_tag_locked": "已保存的认证源标识不能改名或移除，请使用停用。",
   "distributed_unavailable": "分布式部署未配置。请先按部署流程配置主控与 worker 节点。",
   "node_operation_busy": "节点维护正在执行，暂不允许启动服务器或创建另一项节点任务。",
-  "node_control_unavailable": "主机节点执行服务不可用。请检查主控上的 felis-node-control.service。"
+  "node_control_unavailable": "主机节点执行服务不可用。请检查主控上的 felis-node-control.service。",
+  "node_not_lost": "该节点仍然在线，或者它不是 Worker 节点。只有失联的 Worker 节点可以故障切换。",
+  "confirm_mismatch": "请输入节点名称以确认故障切换。",
+  "bad_heartbeat_url": "心跳地址须为以 http:// 或 https:// 开头的完整网址。"
 }

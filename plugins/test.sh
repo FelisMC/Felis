@@ -135,6 +135,12 @@ javac -d "$work/shared-classes" \
   plugins/shared/test/best/lolicon/felis/link/OutageTrackerTest.java
 java -cp "$work/shared-classes" best.lolicon.felis.link.OutageTrackerTest
 
+echo "==> ExperienceConfigTest (a damaged settings file falls back to the defaults, shared)"
+javac -d "$work/shared-classes" \
+  plugins/shared/src/main/java/best/lolicon/felis/link/*.java \
+  plugins/shared/test/best/lolicon/felis/link/ExperienceConfigTest.java
+java -cp "$work/shared-classes" best.lolicon.felis.link.ExperienceConfigTest
+
 echo "==> ModLinkTest (the loader mods' shared /link, shared)"
 javac -d "$work/shared-classes" \
   plugins/shared/src/main/java/best/lolicon/felis/link/*.java \

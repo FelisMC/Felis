@@ -35,7 +35,7 @@ function ExperienceSettings({ name, server, onDirtyChange, onChanged }: { name: 
   const { t } = useTranslation("lobby");
   const groups = name === "login" ? LOGIN_GROUPS : LOBBY_GROUPS;
   const query = useAsync(() => readExperience(name, groups), [name]);
-  const [draft, setDraft] = useState<{ values: Experience; original: string; sha256: string } | null>(null);
+  const [draft, setDraft] = useState<{ values: Experience; original: string; sha256: string; damaged: boolean } | null>(null);
   const [saving, setSaving] = useState(false);
   const [needsRestart, setNeedsRestart] = useState(false);
   const [restarting, setRestarting] = useState(false);
@@ -50,7 +50,8 @@ function ExperienceSettings({ name, server, onDirtyChange, onChanged }: { name: 
   const [message, setMessage] = useState<{ kind: "error" | "success"; text: string } | null>(null);
   useEffect(() => {
     if (query.data && !draft) {
-      setDraft({ ...query.data, original: JSON.stringify(query.data.values) });
+      // A damaged file counts as unsaved: the form differs from what is on disk until saved.
+      setDraft({ ...query.data, original: query.data.damaged ? "" : JSON.stringify(query.data.values) });
     }
   }, [query.data, draft]);
   const dirty = draft !== null && JSON.stringify(draft.values) !== draft.original;
@@ -67,7 +68,7 @@ function ExperienceSettings({ name, server, onDirtyChange, onChanged }: { name: 
     setMessage(null);
     try {
       const sha256 = await writeExperience(name, draft.values, draft.sha256);
-      setDraft({ ...draft, original: JSON.stringify(draft.values), sha256 });
+      setDraft({ ...draft, original: JSON.stringify(draft.values), sha256, damaged: false });
       setNeedsRestart(true);
       setMessage({ kind: "success", text: t("saved") });
     } catch (error) {
@@ -94,6 +95,7 @@ function ExperienceSettings({ name, server, onDirtyChange, onChanged }: { name: 
   return (
     <div aria-busy={query.loading} className="space-y-4">
       {query.loading && <p role="status" className="flex items-center gap-2 rounded-lg border border-border bg-muted/20 px-3 py-2.5 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 shrink-0 animate-spin" />{t("loading_settings")}</p>}
+      {draft?.damaged && <p role="alert" className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-800 dark:text-amber-200">{t("damaged_file")}</p>}
       {query.error != null && <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3"><InlineError message={t("read_failed", { reason: humanizeError(query.error) })} /><Button variant="outline" size="sm" onClick={query.reload}>{t("common:try_again")}</Button></div>}
       {groups.map((group) => {
         const Icon = GROUP_ICONS[group.key];

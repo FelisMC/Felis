@@ -5,6 +5,10 @@ import { useTranslation } from "react-i18next";
 import { PlayerEntrySettings } from "@/components/PlayerEntrySettings";
 import { NodeControlPanel } from "@/components/NodeControlPanel";
 import { DistributedNodes } from "@/components/DistributedNodes";
+import { MailSettingsCard } from "@/components/MailSettingsCard";
+import { RetentionCard } from "@/components/RetentionCard";
+import { HeartbeatCard } from "@/components/HeartbeatCard";
+import { FailoverPolicyCard } from "@/components/FailoverPolicyCard";
 import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/PageHeader";
 import { MessageLine } from "@/components/MessageLine";
@@ -71,19 +75,26 @@ export function PlatformSettingsPage() {
         <Button disabled={!dirty || !valid || busy} onClick={() => void save()}>{saving ? <Loader2 className="animate-spin" /> : <Save />}{t("platform_save")}</Button>
       </div>
     </CardFooter></Card>
+    <MailSettingsCard />
+    <RetentionCard />
+    <HeartbeatCard />
     <Card>
       <CardHeader><CardTitle>{t("platform_distribution_title")}</CardTitle></CardHeader>
       <CardContent className="space-y-4">
-        <Badge variant={config?.distributed && !config.fallback ? "default" : "muted"}>
-          {t(!config || config.fallback ? "platform_distribution_unknown" : config.distributed ? "platform_distribution_enabled" : "platform_distribution_disabled")}
-        </Badge>
+        <div className="flex flex-wrap gap-2">
+          <Badge variant={config?.distributed && !config.fallback ? "default" : "muted"}>
+            {t(!config || config.fallback ? "platform_distribution_unknown" : config.distributed ? "platform_distribution_enabled" : "platform_distribution_disabled")}
+          </Badge>
+          {config?.distributed && !config.fallback && <Badge variant={config.controllerHA ? "default" : "muted"}>{t(config.controllerHA ? "platform_distribution_ha_enabled" : "platform_distribution_ha_disabled")}</Badge>}
+        </div>
         <p className="text-sm leading-relaxed text-muted-foreground">{t("platform_distribution_architecture")}</p>
         <p className="text-sm leading-relaxed text-muted-foreground">{t("platform_distribution_management")}</p>
         <Button asChild variant="outline" size="sm"><Link to="/servers">{t("platform_distribution_servers")}</Link></Button>
       </CardContent>
     </Card>
-    <NodeControlPanel distributed={!config || config.fallback ? null : !!config.distributed} />
+    <NodeControlPanel distributed={!config || config.fallback ? null : !!config.distributed} controllerHA={!!config?.controllerHA} />
     {config?.distributed && !config.fallback && <DistributedNodes />}
+    {config?.distributed && !config.fallback && <FailoverPolicyCard />}
     {reauth.dialog}
   </div>;
 }

@@ -14,7 +14,15 @@ import { api, humanizeError } from "@/lib/api";
 import { useAsync, usePolling } from "@/lib/hooks";
 import type { NodeControlRequest, NodeControlTask } from "@/lib/types";
 
-export function NodeControlPanel({ distributed }: { distributed: boolean | null }) {
+// Each operation states its own maintenance impact; joining and approving workers share one.
+const confirmKeys: Partial<Record<NodeControlRequest["action"], string>> = {
+  enable: "node_control_confirm_enable",
+  upgrade: "node_control_confirm_upgrade",
+  "enable-ha": "node_control_confirm_enable_ha",
+  "join-controller": "node_control_confirm_join_controller",
+};
+
+export function NodeControlPanel({ distributed, controllerHA = false }: { distributed: boolean | null; controllerHA?: boolean }) {
   const { t } = useTranslation("admin");
   const reauth = useReauth();
   const tasks = useAsync(api.nodeTasks, [], { coalesce: true });
@@ -33,16 +41,24 @@ export function NodeControlPanel({ distributed }: { distributed: boolean | null 
   const running = tasks.data?.tasks.some((entry) => entry.state === "running") || task?.state === "running";
   const busy = submitting || !!running;
   const available = tasks.data?.available === true && !tasks.error && distributed !== null;
-  useEffect(() => { if (distributed !== null) { setAction(distributed ? "join" : "enable"); setConfirmed(false); } }, [distributed]);
+  useEffect(() => { if (distributed !== null) { setAction(distributed ? "join" : "enable"); setConfirmed(false); } }, [distributed, controllerHA]);
   useEffect(() => { if (!id && tasks.data?.tasks[0]) setId(tasks.data.tasks[0].id); }, [id, tasks.data]);
   usePolling(() => { tasks.reload(); if (id) progress.reload(); }, running || progress.error || tasks.error ? 3000 : 10000);
+  // Enabling and joining fix a node's address; approving and updating act on an enrolled one.
+  // Enabling distributed mode or controller high availability acts on this controller and
+  // names no other node.
+  const needsNode = action !== "enable" && action !== "enable-ha";
+  const needsIP = action === "enable" || action === "join" || action === "join-controller";
+  const ha = action === "enable-ha" || action === "join-controller";
+  const confirmKey = confirmKeys[action] ?? "node_control_confirm_worker";
+  const ipHint = action === "enable" ? "node_control_enable_ip_hint" : action === "join-controller" ? "node_control_controller_ip_hint" : "node_control_ip_hint";
   async function run(retry = false) {
     if (!available || busy || (!retry && !confirmed)) return;
     setSubmitting(true); setError(null);
     try {
       const result: NodeControlTask = await reauth.guard(() => retry && id ? api.retryNodeTask(id) : api.startNodeTask({
-        action, ...(action !== "enable" ? { name: name.trim(), sshTarget: ssh.trim() } : {}),
-        ...(action !== "approve" ? { externalIP: ip.trim(), peers: peers.split(/[\s,]+/).filter(Boolean) } : {}),
+        action, ...(needsNode ? { name: name.trim(), sshTarget: ssh.trim() } : {}),
+        ...(needsIP ? { externalIP: ip.trim(), peers: peers.split(/[\s,]+/).filter(Boolean) } : {}),
         confirmMaintenance: confirmed,
       }));
       setId(result.id); setConfirmed(false); tasks.reload();
@@ -50,7 +66,7 @@ export function NodeControlPanel({ distributed }: { distributed: boolean | null 
     finally { setSubmitting(false); }
   }
   const showForm = distributed === true || distributed === false && enabling;
-  const valid = confirmed && (action === "enable" || !!name.trim() && !!ssh.trim()) && (action === "approve" || !!ip.trim());
+  const valid = confirmed && (!needsNode || !!name.trim() && !!ssh.trim()) && (!needsIP || !!ip.trim());
   return <Card>
     <CardHeader className="flex-row flex-wrap items-center justify-between gap-3"><CardTitle>{t("node_control_title")}</CardTitle><Button variant="outline" size="sm" disabled={tasks.loading} onClick={() => { tasks.reload(); progress.reload(); }}><RefreshCw />{t("node_control_reload")}</Button></CardHeader>
     <CardContent className="space-y-5">
@@ -66,20 +82,21 @@ export function NodeControlPanel({ distributed }: { distributed: boolean | null 
       </div>}
       {showForm && <>
       <div className="grid gap-5 md:grid-cols-2">
-        {distributed === true && <div className="space-y-2"><Label htmlFor="node-action">{t("node_control_action")}</Label><Select value={action} disabled={!available || busy} onValueChange={(value) => { setAction(value as NodeControlRequest["action"]); setConfirmed(false); }}><SelectTrigger id="node-action"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="join">{t("node_control_join")}</SelectItem><SelectItem value="approve">{t("node_control_approve")}</SelectItem></SelectContent></Select></div>}
-        {action !== "enable" && <>
-          <div className="space-y-2"><Label htmlFor="node-name">{t("node_control_name")}</Label><Input id="node-name" value={name} disabled={!available || busy} onChange={(e) => setName(e.target.value)} placeholder="worker-01" /></div>
+        {distributed === true && <div className="space-y-2"><Label htmlFor="node-action">{t("node_control_action")}</Label><Select value={action} disabled={!available || busy} onValueChange={(value) => { setAction(value as NodeControlRequest["action"]); setConfirmed(false); }}><SelectTrigger id="node-action"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="join">{t("node_control_join")}</SelectItem><SelectItem value="approve">{t("node_control_approve")}</SelectItem><SelectItem value="upgrade">{t("node_control_upgrade")}</SelectItem>{controllerHA ? <SelectItem value="join-controller">{t("node_control_join-controller")}</SelectItem> : <SelectItem value="enable-ha">{t("node_control_enable-ha")}</SelectItem>}</SelectContent></Select></div>}
+        {needsNode && <>
+          <div className="space-y-2"><Label htmlFor="node-name">{t("node_control_name")}</Label><Input id="node-name" value={name} disabled={!available || busy} onChange={(e) => setName(e.target.value)} placeholder={action === "join-controller" ? "controller-02" : "worker-01"} /></div>
           <div className="space-y-2"><Label htmlFor="node-ssh">{t("node_control_ssh")}</Label><Input id="node-ssh" value={ssh} disabled={!available || busy} onChange={(e) => setSSH(e.target.value)} placeholder="root@192.168.1.20" /><p className="text-xs text-muted-foreground">{t("node_control_ssh_hint")}</p></div>
         </>}
-        {action !== "approve" && <>
-          <div className="space-y-2"><Label htmlFor="node-ip">{t("node_control_ip")}</Label><Input id="node-ip" value={ip} disabled={!available || busy} onChange={(e) => setIP(e.target.value)} placeholder="192.168.1.20" /><p className="text-xs text-muted-foreground">{t(action === "enable" ? "node_control_enable_ip_hint" : "node_control_ip_hint")}</p></div>
+        {needsIP && <>
+          <div className="space-y-2"><Label htmlFor="node-ip">{t("node_control_ip")}</Label><Input id="node-ip" value={ip} disabled={!available || busy} onChange={(e) => setIP(e.target.value)} placeholder="192.168.1.20" /><p className="text-xs text-muted-foreground">{t(ipHint)}</p></div>
           <div className="space-y-2 md:col-span-2"><Label htmlFor="node-peers">{t("node_control_peers")}</Label><Input id="node-peers" value={peers} disabled={!available || busy} onChange={(e) => setPeers(e.target.value)} placeholder="192.168.1.21/32, 192.168.1.22/32" /><p className="text-xs text-muted-foreground">{t("node_control_peers_hint")}</p></div>
         </>}
       </div>
-      <div className="flex items-start gap-3 rounded-lg border border-border p-4"><Switch id="node-confirm" checked={confirmed} disabled={!available || busy} onCheckedChange={setConfirmed} /><Label htmlFor="node-confirm" className="text-sm leading-relaxed">{t(action === "enable" ? "node_control_confirm_enable" : "node_control_confirm_worker")}</Label></div>
+      {ha && <p className="text-sm leading-relaxed text-muted-foreground">{t("node_control_ha_hint")}</p>}
+      <div className="flex items-start gap-3 rounded-lg border border-border p-4"><Switch id="node-confirm" checked={confirmed} disabled={!available || busy} onCheckedChange={setConfirmed} /><Label htmlFor="node-confirm" className="text-sm leading-relaxed">{t(confirmKey)}</Label></div>
       {error && <MessageLine kind="error" message={error} />}
       {available && !busy && !valid && <p className="text-sm text-muted-foreground">{t("node_control_incomplete")}</p>}
-      <div className="flex flex-wrap gap-3"><Button disabled={!available || busy || !valid} onClick={() => void run()}>{submitting ? <Loader2 className="animate-spin" /> : <Play />}{t(action === "enable" ? "node_control_enable" : "node_control_submit")}</Button>{distributed === false && <Button variant="outline" disabled={busy} onClick={() => { setEnabling(false); setConfirmed(false); }}>{t("node_control_back")}</Button>}</div>
+      <div className="flex flex-wrap gap-3"><Button disabled={!available || busy || !valid} onClick={() => void run()}>{submitting ? <Loader2 className="animate-spin" /> : <Play />}{t(action === "enable" ? "node_control_enable" : action === "enable-ha" ? "node_control_enable-ha" : "node_control_submit")}</Button>{distributed === false && <Button variant="outline" disabled={busy} onClick={() => { setEnabling(false); setConfirmed(false); }}>{t("node_control_back")}</Button>}</div>
       </>}
       <details className="rounded-lg border border-border p-4"><summary className="cursor-pointer text-sm font-medium">{t("node_control_prerequisites")}</summary><p className="mt-3 text-sm leading-relaxed text-muted-foreground">{t("node_control_prerequisites_body")}</p><Button asChild variant="outline" size="sm" className="mt-3"><a href="https://github.com/FelisMC/Felis/blob/main/docs/distributed.md" target="_blank" rel="noreferrer">{t("platform_distribution_runbook")}</a></Button></details>
       {!!tasks.data?.tasks.length && <div className="space-y-2"><Label htmlFor="node-task">{t("node_control_history")}</Label><Select value={id ?? undefined} onValueChange={setId}><SelectTrigger id="node-task"><SelectValue /></SelectTrigger><SelectContent>{tasks.data.tasks.map((entry) => <SelectItem key={entry.id} value={entry.id}>{t(`node_control_${entry.request.action}`)} · {entry.request.name || t("node_control_controller")} · {new Date(entry.startedAt).toLocaleString()} · {t(`node_control_state_${entry.state}`)}</SelectItem>)}</SelectContent></Select></div>}
@@ -92,7 +109,7 @@ export function NodeControlPanel({ distributed }: { distributed: boolean | null 
         {task.error && <MessageLine kind="error" message={task.error} />}
         <pre aria-label={t("node_control_log")} className="max-h-80 overflow-auto rounded-md bg-muted p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-all">{task.log || t("node_control_log_pending")}</pre>
         {task.state === "failed" && <><p className="text-sm text-muted-foreground">{t("node_control_retry_hint")}</p><Button variant="outline" disabled={!available || busy} onClick={() => void run(true)}><RefreshCw />{t("node_control_retry")}</Button></>}
-        {task.state === "succeeded" && task.request.action === "enable" && <Button variant="outline" onClick={() => window.location.reload()}>{t("node_control_refresh_deployment")}</Button>}
+        {task.state === "succeeded" && (task.request.action === "enable" || task.request.action === "enable-ha") && <Button variant="outline" onClick={() => window.location.reload()}>{t("node_control_refresh_deployment")}</Button>}
       </section>}
     </CardContent>
     {reauth.dialog}

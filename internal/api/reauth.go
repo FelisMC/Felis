@@ -77,7 +77,7 @@ func (a *API) reauthState(r *http.Request, p *Principal) (reauthState, error) {
 	// A verified email is a way in only while a relay can mail it a code: with
 	// none, the email and op-login doors answer 503 mail_unavailable, so it is
 	// neither a factor to offer nor a door to guard.
-	emailWayIn := p.EmailVerified && a.Mailer != nil
+	emailWayIn := p.EmailVerified && a.mailer(r.Context()) != nil
 	if emailWayIn {
 		if staffRole(p.Role) {
 			st.Factors = append(st.Factors, reauthFactorSignIn)
@@ -347,7 +347,7 @@ func (a *API) finishStepUpPasskey(w http.ResponseWriter, r *http.Request, p *Pri
 // address and answers 202. keyPrefix namespaces the per-mailbox resend cooldown
 // so the step-up doors never perturb each other's throttle.
 func (a *API) startStepUpOTP(w http.ResponseWriter, r *http.Request, p *Principal, purpose, keyPrefix, auditAction string) {
-	if err := a.checkMailBudget(); err != nil {
+	if err := a.checkMailBudget(r.Context()); err != nil {
 		writeError(w, r, err)
 		return
 	}

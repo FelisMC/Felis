@@ -272,6 +272,19 @@ func TestBackupJobRecordsAScheduledBackup(t *testing.T) {
 	}
 }
 
+// A replica records itself as a replica, so the Job prunes it to the replicas' own keep.
+func TestBackupJobRecordsAReplica(t *testing.T) {
+	p := sampleJobParams()
+	p.Replica = true
+	job, err := BackupJob(p)
+	if err != nil {
+		t.Fatalf("BackupJob: %v", err)
+	}
+	if args := job.Spec.Template.Spec.Containers[0].Args; !argsContain(args, "--reason", ReasonReplica) {
+		t.Errorf("args = %v, want --reason %s", args, ReasonReplica)
+	}
+}
+
 func TestBackupJobRejectsMissingInputs(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -314,4 +327,63 @@ func argsContain(args []string, flag, val string) bool {
 		}
 	}
 	return false
+}
+
+// TestBackupJobLiveCopiesBeforeArchiving pins a live backup's shape: an init container
+// copies the world, mounted read-only, into a capped scratch volume, the archive step
+// reads that copy and never the volume the running game writes, and the Job and pod are
+// labelled so felis-api can tell when the copy is done.
+func TestBackupJobLiveCopiesBeforeArchiving(t *testing.T) {
+	p := sampleJobParams()
+	p.Live, p.StageLimit = true, "12Gi"
+	job, err := BackupJob(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := job.Spec.Template.Spec
+	if job.Labels[LabelLive] != "true" || job.Spec.Template.Labels[LabelLive] != "true" {
+		t.Errorf("labels = %v / %v", job.Labels, job.Spec.Template.Labels)
+	}
+	if len(spec.InitContainers) != 1 {
+		t.Fatalf("init containers = %d, want the copy step", len(spec.InitContainers))
+	}
+	stage := spec.InitContainers[0]
+	if stage.Name != StageContainer || len(stage.Command) != 2 || stage.Command[1] != "stage-world" {
+		t.Errorf("copy step = %s %v", stage.Name, stage.Command)
+	}
+	if got := mountByName(t, stage.VolumeMounts, worldVolume); !got.ReadOnly || got.MountPath != liveMountPath {
+		t.Errorf("the copy step mounts the world as %+v", got)
+	}
+	if got := mountByName(t, stage.VolumeMounts, stageVolume); got.ReadOnly || got.MountPath != p.WorldsRoot {
+		t.Errorf("the copy step mounts the scratch volume as %+v", got)
+	}
+	if stage.SecurityContext == nil || stage.SecurityContext.ReadOnlyRootFilesystem == nil || !*stage.SecurityContext.ReadOnlyRootFilesystem {
+		t.Error("the copy step is not hardened like the archive step")
+	}
+	for _, m := range spec.Containers[0].VolumeMounts {
+		if m.Name == worldVolume {
+			t.Fatal("the archive step reads the live volume")
+		}
+	}
+	if got := mountByName(t, spec.Containers[0].VolumeMounts, stageVolume); !got.ReadOnly || got.MountPath != p.WorldsRoot {
+		t.Errorf("the archive step mounts the copy as %+v", got)
+	}
+	var scratch *corev1.Volume
+	for i := range spec.Volumes {
+		if spec.Volumes[i].Name == stageVolume {
+			scratch = &spec.Volumes[i]
+		}
+	}
+	if scratch == nil || scratch.EmptyDir == nil || scratch.EmptyDir.SizeLimit == nil || scratch.EmptyDir.SizeLimit.String() != "12Gi" {
+		t.Errorf("scratch volume = %+v", scratch)
+	}
+
+	p.StageLimit = "lots"
+	if _, err := BackupJob(p); err == nil {
+		t.Error("an unparseable scratch cap was accepted")
+	}
+	plain, err := BackupJob(sampleJobParams())
+	if err != nil || len(plain.Spec.Template.Spec.InitContainers) != 0 || plain.Labels[LabelLive] != "" {
+		t.Errorf("a stopped-server backup changed shape: %+v (%v)", plain.Spec.Template.Spec.InitContainers, err)
+	}
 }

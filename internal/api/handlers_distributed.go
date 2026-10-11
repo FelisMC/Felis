@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"time"
 
+	"felis.lolicon.best/internal/archivetransfer"
 	"felis.lolicon.best/internal/distributed"
 	"felis.lolicon.best/internal/naming"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
@@ -16,6 +19,15 @@ type Distribution interface {
 	BeginMigration(context.Context, string, string, string) (distributed.Operation, error)
 	Migration(context.Context, string, string) (distributed.Operation, error)
 	RetryMigration(context.Context, string, string) (distributed.Operation, error)
+	AbortMigration(context.Context, string, string) (distributed.Operation, error)
+	// Failover (distributed failover.go).
+	LostNode(context.Context, string) (*corev1.Node, error)
+	ServersOn(context.Context, string) ([]distributed.PlacedServer, error)
+	BeginFailover(ctx context.Context, server, target, owner string, backup archivetransfer.Receipt) (distributed.Operation, error)
+	FencePending(context.Context) ([]string, error)
+	FailoverTarget(context.Context) (string, error)
+	LostNodes(context.Context) (map[string]time.Time, bool, error)
+	ReplicaCandidates(context.Context) ([]string, error)
 }
 
 func (a *API) distributedReady(w http.ResponseWriter, r *http.Request) bool {
@@ -120,6 +132,30 @@ func (a *API) handleMigrationRetry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, op)
+}
+
+// handleMigrationAbort gives up a failed migration: the server stays on its source world and
+// node and can start again (distributed.Manager.AbortMigration).
+func (a *API) handleMigrationAbort(w http.ResponseWriter, r *http.Request) {
+	if a.NodeControl != nil {
+		if err := NodeMaintenanceGuard(a.NodeControl)(r.Context()); err != nil {
+			writeError(w, r, err)
+			return
+		}
+	}
+	if !a.distributedReady(w, r) {
+		return
+	}
+	if _, err := a.Repo.ServerByName(r.Context(), r.PathValue("name")); err != nil {
+		a.writeLookupError(w, r, err)
+		return
+	}
+	op, err := a.Distribution.AbortMigration(r.Context(), r.PathValue("name"), r.PathValue("id"))
+	if err != nil {
+		a.writeMigrationError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, op)
 }
 
 func (a *API) writeMigrationError(w http.ResponseWriter, r *http.Request, err error) {

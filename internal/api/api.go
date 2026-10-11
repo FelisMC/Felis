@@ -168,6 +168,9 @@ type API struct {
 	// exempt. Zero disables each lever.
 	BackupCooldown time.Duration
 	BackupStoreCap int64
+	// ArchivePolicy, when set, supersedes both with the retention in force (the Owner's
+	// panel policy, else felis.toml), and spaces the scheduled restore points.
+	ArchivePolicy *ArchivePolicy
 
 	// SubmitCreateCooldown / SubmitUploadCooldown throttle the user-modpack
 	// submission lane per user: create bounds how quickly review-queue rows can
@@ -201,6 +204,9 @@ type API struct {
 	// Consumed by handleHasJoined (handlers_hasjoined.go).
 	AuthSources        []AuthSource
 	AuthSourceSettings *AuthSourceSettings
+	// MailSettings resolves the relay per send (the Owner panel's, else felis.toml's);
+	// nil keeps the static Mailer.
+	MailSettings *MailSettings
 
 	// AuthDoorLimit bounds how often one client address may call the public
 	// pre-session auth doors (ratelimit.go). MailLimit bounds all mail the API
@@ -238,6 +244,9 @@ type API struct {
 	authDoorBuckets *bucketSet
 	mailOnce        sync.Once
 	mailBuckets     *bucketSet
+
+	// failover is FailoverTick's memory (failover.go).
+	failover failoverState
 
 	// ownerBound caches the first "an Owner exists" answer (handleOwnerStatus).
 	ownerBound atomic.Bool
@@ -470,6 +479,9 @@ func (a *API) internalAPIRoutes() []apiRoute {
 		// snapshot a stopped world while the API is alive. Service-token auth (no
 		// Principal); the shared enqueueBackup tail enforces the RWO stopped-gate.
 		{Method: "POST", Pattern: "/api/v1/internal/servers/{name}/backup", Callers: ops, h: a.handleInternalBackup},
+		// Rebuilding a host from its off-site copy (felis restore-host): restore each
+		// server's newest backup, creating the world volume of one never started here.
+		{Method: "POST", Pattern: "/api/v1/internal/servers/{name}/restore", Callers: ops, h: a.handleInternalRestore},
 
 		// A file upload's staged bytes, fetched once by the Job landing them, which
 		// then reports them landed so a file sent in parts is deleted. Public
@@ -663,6 +675,17 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "GET", Pattern: "/api/v1/settings/auth-sources", Owner: true, Admin: true, h: a.handleGetAuthSources},
 		{Method: "PUT", Pattern: "/api/v1/settings/auth-sources", Owner: true, Admin: true, h: a.handleSetAuthSources},
 		{Method: "POST", Pattern: "/api/v1/settings/auth-sources/test", Owner: true, Admin: true, h: a.handleTestAuthSource},
+		// The mail relay (mail_settings.go): the Owner's, overriding felis.toml's.
+		{Method: "GET", Pattern: "/api/v1/settings/smtp", Owner: true, Admin: true, h: a.handleGetMailSettings},
+		{Method: "PUT", Pattern: "/api/v1/settings/smtp", Owner: true, Admin: true, h: a.handleSetMailSettings},
+		{Method: "DELETE", Pattern: "/api/v1/settings/smtp", Owner: true, Admin: true, h: a.handleClearMailSettings},
+		{Method: "POST", Pattern: "/api/v1/settings/smtp/test", Owner: true, Admin: true, h: a.handleTestMailSettings},
+		{Method: "GET", Pattern: "/api/v1/settings/archive-policy", Owner: true, Admin: true, h: a.handleGetArchivePolicy},
+		{Method: "PUT", Pattern: "/api/v1/settings/archive-policy", Owner: true, Admin: true, h: a.handleSetArchivePolicy},
+		{Method: "DELETE", Pattern: "/api/v1/settings/archive-policy", Owner: true, Admin: true, h: a.handleClearArchivePolicy},
+		{Method: "GET", Pattern: "/api/v1/settings/heartbeat", Owner: true, Admin: true, h: a.handleGetHeartbeat},
+		{Method: "PUT", Pattern: "/api/v1/settings/heartbeat", Owner: true, Admin: true, h: a.handleSetHeartbeat},
+		{Method: "DELETE", Pattern: "/api/v1/settings/heartbeat", Owner: true, Admin: true, h: a.handleClearHeartbeat},
 		{Method: "GET", Pattern: "/api/v1/account/link/profile", Admin: true, h: a.handleLookupProfile},
 		{Method: "POST", Pattern: "/api/v1/account/link/profile", Admin: true, h: a.handleLinkProfile},
 		// Email verification (spec §B2 onboarding), web side: /start mints+delivers a
@@ -756,6 +779,11 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/migrations", Admin: true, h: a.handleMigration},
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/migrations/{id}", Admin: true, h: a.handleMigrationStatus},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/migrations/{id}/retry", Admin: true, h: a.handleMigrationRetry},
+		{Method: "POST", Pattern: "/api/v1/servers/{name}/migrations/{id}/abort", Admin: true, h: a.handleMigrationAbort},
+		{Method: "GET", Pattern: "/api/v1/nodes/{node}/failover", Owner: true, Admin: true, h: a.handleFailoverPlan},
+		{Method: "POST", Pattern: "/api/v1/nodes/{node}/failover", Owner: true, Admin: true, h: a.handleFailover},
+		{Method: "GET", Pattern: "/api/v1/settings/failover", Owner: true, Admin: true, h: a.handleGetFailoverPolicy},
+		{Method: "PUT", Pattern: "/api/v1/settings/failover", Owner: true, Admin: true, h: a.handleSetFailoverPolicy},
 		{Method: "GET", Pattern: "/api/v1/fleet", Admin: true, h: a.handleFleet},
 		// Image build + whitelist (spec §16, §15). Every route is admin-tier: a build
 		// is build-time RCE against the cluster, so submission requires the admin

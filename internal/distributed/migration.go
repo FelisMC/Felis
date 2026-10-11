@@ -37,6 +37,14 @@ type Node struct {
 	Approved     bool     `json:"approved"`
 	Addresses    []string `json:"addresses"`
 	Architecture string   `json:"architecture"`
+	// K3sVersion and FelisVersion let the panel point out a worker behind its controller;
+	// FelisVersion is empty for a node enrolled before it was recorded.
+	K3sVersion   string `json:"k3sVersion"`
+	FelisVersion string `json:"felisVersion,omitempty"`
+	// Fenced marks a lost worker taken out of service for a failover (Fenced); LostSince is
+	// when an offline node stopped reporting ready.
+	Fenced    bool       `json:"fenced"`
+	LostSince *time.Time `json:"lostSince,omitempty"`
 }
 
 func (m *Manager) Nodes(ctx context.Context) ([]Node, error) {
@@ -46,7 +54,11 @@ func (m *Manager) Nodes(ctx context.Context) ([]Node, error) {
 	}
 	out := make([]Node, 0, len(list.Items))
 	for _, n := range list.Items {
-		info := Node{Name: n.Name, Role: n.Labels[placement.LabelRole], Ready: placement.Online(&n), Approved: n.Labels[placement.LabelApproved] == "true" && !n.Spec.Unschedulable, Addresses: []string{}, Architecture: n.Status.NodeInfo.Architecture}
+		info := Node{Name: n.Name, Role: n.Labels[placement.LabelRole], Ready: placement.Online(&n), Approved: n.Labels[placement.LabelApproved] == "true" && !n.Spec.Unschedulable, Addresses: []string{}, Architecture: n.Status.NodeInfo.Architecture, K3sVersion: n.Status.NodeInfo.KubeletVersion, FelisVersion: n.Annotations[placement.AnnotationFelisVersion]}
+		info.Fenced = Fenced(&n)
+		if !info.Ready {
+			info.LostSince = lostSince(&n)
+		}
 		for _, a := range n.Status.Addresses {
 			if a.Type == corev1.NodeInternalIP || a.Type == corev1.NodeExternalIP {
 				info.Addresses = append(info.Addresses, a.Address)
@@ -58,7 +70,16 @@ func (m *Manager) Nodes(ctx context.Context) ([]Node, error) {
 	return out, nil
 }
 
+// ValidateNode accepts a node a world may move to: an online, approved, schedulable worker,
+// or an online, schedulable controller (several with controller high availability).
 func (m *Manager) ValidateNode(ctx context.Context, name string) error {
+	var n corev1.Node
+	if err := m.Client.Get(ctx, types.NamespacedName{Name: name}, &n); err == nil && (name == m.Controller || n.Labels[placement.LabelRole] == placement.RoleController) {
+		if !placement.Admitted(&n, m.Controller) || n.Spec.Unschedulable {
+			return fmt.Errorf("controller %q is not online and schedulable", name)
+		}
+		return nil
+	}
 	return placement.Worker(ctx, m.Client, name)
 }
 
@@ -80,12 +101,22 @@ type Operation struct {
 	Error      string                  `json:"error,omitempty"`
 	Switched   bool                    `json:"switched"`
 	Attempt    int                     `json:"attempt"`
+	// Kind is KindFailover for a failover (failover.go) and empty for a migration. Resume
+	// is the desired state a failover gives the server back once it has switched.
+	Kind   string `json:"kind,omitempty"`
+	Resume string `json:"resume,omitempty"`
 }
 
 // owner travels in persistence, but never on the public operation view.
 type persistedOperation struct {
 	Operation
 	OwnerID string `json:"ownerId"`
+}
+
+// Settled reports whether the operation is over and no longer holds the server: it either
+// switched (succeeded) or was given up before switching (aborted).
+func (o Operation) Settled() bool {
+	return o.State == "succeeded" || o.State == "aborted"
 }
 
 func readOperation(s *v1alpha1.MinecraftServer) (Operation, error) {
@@ -140,7 +171,7 @@ func (m *Manager) BeginMigration(ctx context.Context, server, target, owner stri
 		if err := m.Client.Get(ctx, types.NamespacedName{Namespace: m.Namespace, Name: server}, &s); err != nil {
 			return err
 		}
-		if previous, err := readOperation(&s); err == nil && previous.State != "succeeded" {
+		if previous, err := readOperation(&s); err == nil && !previous.Settled() {
 			if previous.TargetNode == target {
 				op = previous
 				return nil
@@ -233,7 +264,11 @@ func (m *Manager) volumeOnNode(ctx context.Context, volume, node string) error {
 }
 
 func (m *Manager) save(ctx context.Context, s *v1alpha1.MinecraftServer, op Operation, lock bool) error {
-	before := s.DeepCopy()
+	return m.saveFrom(ctx, s.DeepCopy(), s, op, lock)
+}
+
+// saveFrom is save for a caller that changed s itself since before.
+func (m *Manager) saveFrom(ctx context.Context, before, s *v1alpha1.MinecraftServer, op Operation, lock bool) error {
 	op.Updated = time.Now().UTC()
 	raw, _ := json.Marshal(persistedOperation{Operation: op, OwnerID: op.Owner})
 	if s.Annotations == nil {
@@ -280,6 +315,70 @@ func (m *Manager) RetryMigration(ctx context.Context, server, id string) (Operat
 	return op, err
 }
 
+// AbortMigration gives up a failed migration that never switched. The server keeps its
+// source world and node; the migration's Jobs and its partial target world are removed and
+// the maintenance lock is released, so the server can start where it was. The safety
+// backup stays as an ordinary restore point. It is the way out when the target node is gone
+// for good, so nothing here needs the target online: deleting a PVC whose node is dead only
+// removes the claim, and nothing will mount it again.
+func (m *Manager) AbortMigration(ctx context.Context, server, id string) (Operation, error) {
+	var op Operation
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var s v1alpha1.MinecraftServer
+		if err := m.Client.Get(ctx, types.NamespacedName{Namespace: m.Namespace, Name: server}, &s); err != nil {
+			return err
+		}
+		var err error
+		op, err = readOperation(&s)
+		if err != nil {
+			return err
+		}
+		if op.ID != id {
+			return ErrNotFound
+		}
+		if op.State != "failed" || op.Switched {
+			return ErrBusy
+		}
+		if s.WorldPVC() != op.SourcePVC || op.TargetPVC == op.SourcePVC {
+			return errors.New("source placement changed during migration")
+		}
+		if err := m.discard(ctx, op); err != nil {
+			return err
+		}
+		op.State = "aborted"
+		op.Error = ""
+		return m.save(ctx, &s, op, false)
+	})
+	return op, err
+}
+
+// discard removes what a migration made: its Jobs (their pods with them) and its target
+// PVC, which only ever holds the copy being restored.
+func (m *Manager) discard(ctx context.Context, op Operation) error {
+	var jobs batchv1.JobList
+	if err := m.Client.List(ctx, &jobs, client.InNamespace(m.Namespace), client.MatchingLabels{MigrationAnnotation: op.ID}); err != nil {
+		return err
+	}
+	background := metav1.DeletePropagationBackground
+	for i := range jobs.Items {
+		if err := m.Client.Delete(ctx, &jobs.Items[i], &client.DeleteOptions{PropagationPolicy: &background}); client.IgnoreNotFound(err) != nil {
+			return err
+		}
+	}
+	var pvc corev1.PersistentVolumeClaim
+	err := m.Client.Get(ctx, types.NamespacedName{Namespace: m.Namespace, Name: op.TargetPVC}, &pvc)
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if pvc.Labels[MigrationAnnotation] != op.ID {
+		return errors.New("target PVC identity mismatch")
+	}
+	return client.IgnoreNotFound(m.Client.Delete(ctx, &pvc))
+}
+
 func (m *Manager) ReconcileMigrations(ctx context.Context) error {
 	var servers v1alpha1.MinecraftServerList
 	if err := m.Client.List(ctx, &servers, client.InNamespace(m.Namespace)); err != nil {
@@ -296,7 +395,7 @@ func (m *Manager) ReconcileMigrations(ctx context.Context) error {
 			errs = append(errs, err)
 			continue
 		}
-		if op.State == "succeeded" {
+		if op.Settled() {
 			if err := m.expireMigrationJobs(ctx, op.ID); err != nil {
 				errs = append(errs, err)
 			}
@@ -322,6 +421,9 @@ func (m *Manager) ReconcileMigrations(ctx context.Context) error {
 }
 
 func (m *Manager) advance(ctx context.Context, s *v1alpha1.MinecraftServer, op *Operation) error {
+	if op.Kind == KindFailover && op.State == "fencing" {
+		return m.fence(ctx, s, op)
+	}
 	if err := m.quiet(ctx, s, op.ID); err != nil {
 		return err
 	}
@@ -335,7 +437,8 @@ func (m *Manager) advance(ctx context.Context, s *v1alpha1.MinecraftServer, op *
 		return errors.New("source placement changed during migration")
 	}
 	var source corev1.Node
-	if !op.Switched {
+	// A failover's source is lost by definition; its world comes from a backup.
+	if !op.Switched && op.Kind != KindFailover {
 		if err := m.Client.Get(ctx, types.NamespacedName{Name: op.SourceNode}, &source); err != nil {
 			return err
 		}
@@ -399,6 +502,13 @@ func (m *Manager) advance(ctx context.Context, s *v1alpha1.MinecraftServer, op *
 			if err != nil {
 				return err
 			}
+			// A failover may restore an archive recorded before digests were kept: the
+			// archive store's own digest is recorded first, and every attempt verifies
+			// against it.
+			if op.Kind == KindFailover && op.Backup.SHA256 == "" {
+				op.Backup.SHA256 = p.SHA256
+				return m.save(ctx, s, *op, true)
+			}
 			if p.SHA256 != op.Backup.SHA256 {
 				return errors.New("migration archive digest changed")
 			}
@@ -459,6 +569,9 @@ func (m *Manager) advance(ctx context.Context, s *v1alpha1.MinecraftServer, op *
 		committed := *op
 		target.Spec.NodeName = op.TargetNode
 		target.Spec.Storage.ClaimName = op.TargetPVC
+		if op.Resume != "" {
+			target.Spec.DesiredState = v1alpha1.DesiredState(op.Resume)
+		}
 		committed.Switched = true
 		committed.State = "succeeded"
 		committed.Stage = "succeeded"
@@ -488,8 +601,18 @@ func (m *Manager) ensureTarget(ctx context.Context, s *v1alpha1.MinecraftServer,
 	if !apierrors.IsNotFound(err) {
 		return err
 	}
+	// The new claim matches the source's size and class; a failover whose source claim is
+	// gone falls back to the server's own storage spec.
 	var source corev1.PersistentVolumeClaim
-	if err = m.Client.Get(ctx, types.NamespacedName{Namespace: m.Namespace, Name: op.SourcePVC}, &source); err != nil {
+	err = m.Client.Get(ctx, types.NamespacedName{Namespace: m.Namespace, Name: op.SourcePVC}, &source)
+	if apierrors.IsNotFound(err) && op.Kind == KindFailover {
+		if class := s.Spec.Storage.StorageClassName; class != "" {
+			source.Spec.StorageClassName = &class
+		}
+		if q, perr := resource.ParseQuantity(s.Spec.Storage.Size); perr == nil {
+			source.Spec.Resources.Requests = corev1.ResourceList{corev1.ResourceStorage: q}
+		}
+	} else if err != nil {
 		return err
 	}
 	size := source.Spec.Resources.Requests[corev1.ResourceStorage]

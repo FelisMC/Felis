@@ -315,8 +315,9 @@ sudo resize2fs /dev/vda3                        # ext4
 df -h /
 ```
 
-`felis backup-now` (troubleshooting.md §10) archives every stopped world; add `-stop` to
-include the running ones.
+`felis backup-now` (troubleshooting.md §10) archives every world, the running ones live:
+their players stay on, and saving pauses only while the world is copied. `-stop` stops the
+running servers first instead and leaves them stopped.
 
 ### Moving the data to its own disk [VM-VERIFIED]
 
@@ -603,7 +604,9 @@ kubectl -n minecraft get minecraftserver \
 ```
 
 The env var only carries the password; mail still needs the relay itself, set in
-`felis setup` → email. A user server picks up its new RCON block at its next start.
+`felis setup` → email or on the panel's **Platform settings → Mail delivery** card, which
+takes precedence (troubleshooting.md §17). A user server picks up its new RCON block at
+its next start.
 
 ### PostgreSQL major versions [CODE-ONLY]
 
@@ -744,8 +747,12 @@ itself; anything else running on the node can reach it too.
 ## 5. Disaster recovery
 
 The procedures are in §16: what a database bundle holds, restoring one on the same host,
-rolling back an upgrade, and rebuilding on a new host from the off-site copy. For a
-production install:
+rolling back an upgrade, and rebuilding on a new host from the off-site copy. The rebuild
+runs in one command, `felis restore-host`: it brings back the database, the user images,
+the uploads, the servers and each server's newest world, and resumes where it stopped
+when interrupted. The installer runs it on its own when given `FELIS_RESTORE_FROM_OFFSITE=1`
+with the old install's `FELIS_OFFSITE_*` settings and `FELIS_OFFSITE_KEY`. Moving the
+domain's DNS and the Cloudflare tunnel stay with the operator. For a production install:
 
 - **Configure the off-site copy** (`FELIS_OFFSITE_*`, §16 "Keep a copy somewhere
   else"). Without it the world archives sit on the same disk as the worlds, and the
@@ -756,10 +763,18 @@ production install:
 - **Keep one database bundle off the host** as well when there is no bucket. It contains
   `secrets.env`, which a rebuild needs to read the rest.
 - **Rehearse the rebuild** once on a spare VM: troubleshooting.md §16 "Rebuild on a new
-  host", every step but 8 (take-over) and 11 (the tunnel), then its checks: sign in with
-  an email code, restore one world and join it. `felis offsite status` and `felis db check` exit
+  host", with `felis restore-host` without `-take-over` (the installer's
+  `FELIS_RESTORE_FROM_OFFSITE=1` without `FELIS_RESTORE_TAKE_OVER`), or by hand with every
+  step but 8 (take-over) and 11 (the tunnel), then its checks: sign in with an email code,
+  restore one world and join it. `felis offsite status` and `felis db check` exit
   non-zero when the copy or the newest daily bundle is stale; wire them into your monitoring,
   or rely on the watchdog's mail.
+
+In distributed mode, a lost worker takes its servers down with it. The panel can fail the
+lost worker's worlds over to another node, each restored from its newest backup, by hand
+or, once the Owner turns it on, automatically; live copies of the worlds on workers keep
+those backups recent. The controller itself can run with high availability. Both are
+covered in docs/distributed.md. [CODE-ONLY]
 
 ### Moving to another host (planned)
 
@@ -782,13 +797,21 @@ host serves.
    ```
 
    The order matters. The new host fetches the archives its restored database lists, so
-   the bundle comes after the last archive. The operator goes after `backup-now`, which
-   needs it to stop the servers. The quiet marker keeps the watchdog from mailing the
-   owners about the stopped proxy and operator for the next 4 hours.
-2. **On the new host**, follow troubleshooting.md §16 "Rebuild on a new host" from step 1;
-   `fetch-db latest` picks the bundle the old host just sent. Step 8 (`felis offsite
-   take-over`) makes the new host the one that writes the bucket, and from then on the
-   old host copies nothing more. Steps 10 and 11 move the names and the tunnel.
+   the bundle comes after the last archive. `backup-now` runs with `-stop` so that no
+   world changes after its archive; a live backup would leave the game running and
+   saving. The operator goes after `backup-now`, which needs it to stop the servers. The
+   quiet marker keeps the watchdog from mailing the owners about the stopped proxy and
+   operator for the next 4 hours.
+2. **On the new host**, rebuild from the bucket: run the installer with
+   `FELIS_RESTORE_FROM_OFFSITE=1` and `FELIS_RESTORE_TAKE_OVER=1` together with the old
+   install's `FELIS_OFFSITE_*` settings and `FELIS_OFFSITE_KEY` (troubleshooting.md §16,
+   "In one command"), or follow §16 "Rebuild on a new host" by hand from step 1. Either
+   way the newest bundle is the one the old host just sent. The take-over (`-take-over`,
+   or step 8 by hand) makes the new host the one that writes the bucket, and from then on
+   the old host copies nothing more. The one-command path leaves the old host's
+   `/etc/felis` behind unless it is put in place first (§16 step 2), so the new host keeps
+   its own root domain until `felis domain set` moves it. Steps 10 and 11 move the names
+   and the tunnel.
 3. **Check the new host** before announcing it: sign in with an email code, restore one
    world and join it, and see `sudo felis offsite status` show a recent `last success` and
    no stand-by notice.
@@ -849,8 +872,8 @@ What it costs, which the plan prints before `-yes`:
 - **Sign-in.** Session cookies belong to the old hostnames, so everyone signs in again.
   Passkeys are bound to the panel hostname: when it changes, the plan counts the passkeys
   that stop working, and their users sign in with an email code and register a new one.
-  Without an `[smtp]` relay no code is delivered; an Owner locked out that way recovers
-  with `sudo felis breakGlass`.
+  Without a mail relay (`[smtp]`, or one saved in the panel) no code is delivered; an
+  Owner locked out that way recovers with `sudo felis breakGlass`.
 - **Cloudflare.** The tunnel's ingress and the Access application still carry the old
   names. Re-run the Cloudflare step of `sudo felis setup` after the move; `check` lists
   the tunnel's hostnames against the new ones.

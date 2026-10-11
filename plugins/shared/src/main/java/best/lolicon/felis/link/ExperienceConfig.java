@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.function.Consumer;
 
 /** Player-facing settings on the persistent world volume, edited by the panel. */
 public final class ExperienceConfig {
@@ -26,6 +27,21 @@ public final class ExperienceConfig {
             throw new IllegalArgumentException("expected an object");
         } catch (IllegalArgumentException e) {
             throw new IOException("invalid " + path + ": " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Loads the settings like {@link #load}, but a file that cannot be read gives the
+     * defaults and one warning. The file sits on the world volume where the file manager
+     * can edit it by hand, and a typo there must not switch off the login flow or the
+     * lobby's protections; the panel shows the damage and saving there repairs it.
+     */
+    public static ExperienceConfig loadOrDefaults(Path path, Consumer<String> warn) {
+        try {
+            return load(path);
+        } catch (IOException | RuntimeException e) {
+            warn.accept("cannot read " + path + " (" + e.getMessage() + "); using the default settings until it is fixed");
+            return new ExperienceConfig(Map.of());
         }
     }
 

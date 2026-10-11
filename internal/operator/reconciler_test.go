@@ -1348,3 +1348,89 @@ func TestFelisUpgradeReachesAServerOnItsNextStart(t *testing.T) {
 	}
 	expectInitImages(t, c, felisV2)
 }
+
+// TestReconcileStopped_WaitsForALiveBackup pins that a stop does not scale the pod down
+// while a live backup copies the world (the shutdown save would land in the copy), and
+// goes ahead once the freeze is gone or too old to trust.
+func TestReconcileStopped_WaitsForALiveBackup(t *testing.T) {
+	base := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name      string
+		started   time.Time
+		wantScale bool
+	}{
+		{"a fresh freeze holds the stop", base.Add(-time.Minute), false},
+		{"a freeze felis-api never cleared stops holding", base.Add(-7 * time.Minute), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Known: true}}, runningServer(), rconSecret())
+			r.Now = func() metav1.Time { return metav1.NewTime(base) }
+			reconcile(t, r, "survival")
+			markPodReady(t, c, "survival")
+			reconcile(t, r, "survival")
+			server := getServer(t, c, "survival")
+			server.Spec.DesiredState = v1alpha1.DesiredStopped
+			server.Annotations = map[string]string{v1alpha1.AnnotationLiveBackup: `{"job":"backup-survival-x","started":"` + tc.started.Format(time.RFC3339) + `"}`}
+			if err := c.Update(context.Background(), server); err != nil {
+				t.Fatal(err)
+			}
+			reconcile(t, r, "survival")
+			sts := getSTS(t, c, "survival")
+			scaled := sts.Spec.Replicas != nil && *sts.Spec.Replicas == 0
+			if scaled != tc.wantScale {
+				t.Fatalf("scaled down = %v, want %v", scaled, tc.wantScale)
+			}
+			if !tc.wantScale {
+				server = getServer(t, c, "survival")
+				delete(server.Annotations, v1alpha1.AnnotationLiveBackup)
+				if err := c.Update(context.Background(), server); err != nil {
+					t.Fatal(err)
+				}
+				reconcile(t, r, "survival")
+				if sts := getSTS(t, c, "survival"); sts.Spec.Replicas == nil || *sts.Spec.Replicas != 0 {
+					t.Fatal("the stop did not follow the thaw")
+				}
+			}
+		})
+	}
+}
+
+// TestIdleAutoStop_WaitsForALiveBackup pins that an empty server is not stopped for
+// idleness while a live backup copies its world, and is once the freeze is gone.
+func TestIdleAutoStop_WaitsForALiveBackup(t *testing.T) {
+	prober := fakeProber{players: operator.PlayerCount{Online: 0, Max: 20, Known: true}}
+	r, c := newReconciler(t, prober, runningServer(), rconSecret())
+	base := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	clock := base
+	r.Now = func() metav1.Time { return metav1.NewTime(clock) }
+	s := getServer(t, c, "survival")
+	s.Spec.Idle = v1alpha1.IdleSpec{AutoStopEnabled: true, EmptySecondsBeforeStop: 60}
+	if err := c.Update(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, r, "survival")
+	markPodReady(t, c, "survival")
+	reconcile(t, r, "survival")
+	clock = base.Add(operator.ArrivalWindow)
+	reconcile(t, r, "survival")
+
+	clock = clock.Add(61 * time.Second)
+	s = getServer(t, c, "survival")
+	s.Annotations = map[string]string{v1alpha1.AnnotationLiveBackup: `{"started":"` + clock.Add(-30*time.Second).Format(time.RFC3339) + `"}`}
+	if err := c.Update(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, r, "survival")
+	if got := getServer(t, c, "survival").Spec.DesiredState; got != v1alpha1.DesiredRunning {
+		t.Fatalf("stopped for idleness during a live backup: %s", got)
+	}
+	s = getServer(t, c, "survival")
+	delete(s.Annotations, v1alpha1.AnnotationLiveBackup)
+	if err := c.Update(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, r, "survival")
+	if got := getServer(t, c, "survival").Spec.DesiredState; got != v1alpha1.DesiredStopped {
+		t.Fatalf("the idle stop did not follow the thaw: %s", got)
+	}
+}

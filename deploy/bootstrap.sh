@@ -137,6 +137,14 @@
 #                     disk, ports, other Kubernetes, the pod network ranges and the hosts it
 #                     downloads from, and stops on any problem with the full list (default:
 #                     strict). warn reports them and installs anyway.
+#   FELIS_RESTORE_FROM_OFFSITE 1 rebuilds this fresh host from the old install's off-site
+#                     copy once it is installed (felis restore-host): database, images,
+#                     uploads, servers and each server's newest world. It needs the old
+#                     bucket in FELIS_OFFSITE_* with its credentials and FELIS_OFFSITE_KEY.
+#   FELIS_RESTORE_BUNDLE a bundle name from `felis offsite list` to rebuild from instead of
+#                     the newest
+#   FELIS_RESTORE_TAKE_OVER 1 makes this host the one that writes the bucket once rebuilt
+#                     (leave it unset on a rehearsal machine)
 #   PKG_LOCK_TIMEOUT seconds to wait for package-manager locks (default: 900)
 #   APT_LOCK_TIMEOUT legacy alias for PKG_LOCK_TIMEOUT
 set -Eeuo pipefail
@@ -267,6 +275,12 @@ FELIS_PRE_MIGRATE_BACKUP="${FELIS_PRE_MIGRATE_BACKUP:-1}"
 # A re-run without these keeps the [offsite] felis.host.toml already has.
 FELIS_OFFSITE_ENDPOINT="${FELIS_OFFSITE_ENDPOINT:-}"
 FELIS_OFFSITE_BUCKET="${FELIS_OFFSITE_BUCKET:-}"
+# FELIS_RESTORE_FROM_OFFSITE=1 rebuilds the install from the FELIS_OFFSITE_* bucket once it
+# is installed (felis restore-host); FELIS_RESTORE_BUNDLE names an older bundle than the
+# newest, and FELIS_RESTORE_TAKE_OVER=1 makes this host the one that writes the bucket.
+RESTORE_FROM_OFFSITE="${FELIS_RESTORE_FROM_OFFSITE:-0}"
+RESTORE_BUNDLE="${FELIS_RESTORE_BUNDLE:-}"
+RESTORE_TAKE_OVER="${FELIS_RESTORE_TAKE_OVER:-0}"
 FELIS_OFFSITE_REGION="${FELIS_OFFSITE_REGION:-}"
 FELIS_OFFSITE_PREFIX="${FELIS_OFFSITE_PREFIX:-}"
 FELIS_OFFSITE_DB_KEEP="${FELIS_OFFSITE_DB_KEEP:-}"
@@ -285,6 +299,34 @@ WORKER_TOKEN_FILE="${FELIS_BOOTSTRAP_TOKEN_FILE:-}"
 WORKER_REGISTRY_IP="${FELIS_REGISTRY_CLUSTER_IP:-}"
 NODE_EXTERNAL_IP="${FELIS_NODE_EXTERNAL_IP:-}"
 WORKER_PEERS="${FELIS_PEER_CIDRS:-}"
+# `felis node firewall` records the peer list it last installed here, so a rerun or
+# `felis update` on a distributed controller, which passes no FELIS_PEER_CIDRS, keeps it.
+NODE_PEERS_FILE="/etc/felis/node-peers"
+# Controller high availability (see main_controller_join and docs/distributed.md):
+# FELIS_CONTROLLER_HA=1 on a distributed controller moves k3s onto embedded etcd, installs
+# Longhorn (FELIS_LONGHORN_VERSION) and puts the control plane's volumes on it, so more
+# controllers can join and the control plane moves to another one when its node is lost. A
+# rerun keeps it on (HA_ENV). FELIS_HA_VIP=<address>/<prefix> floats a VRRP address over the
+# controllers on FELIS_HA_VIP_INTERFACE (default: the interface of the node's address); the
+# controllers must share that network, elsewhere point DNS or the provider's floating
+# address at them.
+CONTROLLER_HA="${FELIS_CONTROLLER_HA:-}"
+HA_ENV="/etc/felis/ha.env"
+HA_HOME=""
+HA_JOIN_SERVER=""
+HA_VRRP_PASS="/etc/felis/ha-vrrp-pass"
+KEEPALIVED_CONF="/etc/keepalived/keepalived.conf"
+FELIS_LONGHORN_VERSION="${FELIS_LONGHORN_VERSION:-v1.8.1}"
+LONGHORN_DISK_LABEL="node.longhorn.io/create-default-disk"
+REPLICATED_CLASS="felis-replicated"
+FELIS_HA_VIP="${FELIS_HA_VIP:-}"
+FELIS_HA_VIP_INTERFACE="${FELIS_HA_VIP_INTERFACE:-}"
+FELIS_HA_VRID="${FELIS_HA_VRID:-51}"
+# controller-join's inputs, which felis node join-controller sets.
+SERVER_TOKEN_FILE="${FELIS_SERVER_TOKEN_FILE:-}"
+AGENT_TOKEN_FILE="${FELIS_AGENT_TOKEN_FILE:-}"
+ETC_BUNDLE="${FELIS_ETC_BUNDLE:-}"
+CONTROLLER_PEERS="${FELIS_CONTROLLER_PEERS:-}"
 # strict stops the install on any preflight problem (preflight below); warn reports them
 # and goes on, for a host the checks misjudge.
 FELIS_PREFLIGHT="${FELIS_PREFLIGHT:-strict}"
@@ -417,6 +459,8 @@ DB_USER="felis"
 STATE_DIR="/etc/felis"
 SECRETS_ENV="${STATE_DIR}/secrets.env"
 BOOTSTRAP_DONE="${STATE_DIR}/bootstrap.done"
+# felis restore-host keeps the bundle it fetched and its progress here.
+RESTORE_STATE_DIR="/var/lib/felis/restore-host"
 PANEL_TLS_CERT="${STATE_DIR}/panel-tls.crt"
 PANEL_TLS_KEY="${STATE_DIR}/panel-tls.key"
 SRC_DIR="/opt/felis/src"
@@ -1009,6 +1053,8 @@ validate_settings() {
   validate_cidr FELIS_NANO_PROXY_CIDR "$FELIS_NANO_PROXY_CIDR"
   validate_offsite_settings
   validate_heartbeat_url
+  validate_restore_settings
+  validate_ha_settings
   case "$FELIS_PREFLIGHT" in
     strict|warn) ;;
     *) die "FELIS_PREFLIGHT must be strict or warn (got '${FELIS_PREFLIGHT}')" ;;
@@ -1109,6 +1155,42 @@ validate_offsite_settings() {
   if [ -n "$FELIS_OFFSITE_DB_KEEP" ] && ! [[ "$FELIS_OFFSITE_DB_KEEP" =~ ^[1-9][0-9]*$ ]]; then
     die "FELIS_OFFSITE_DB_KEEP must be a positive number of bundles, got: ${FELIS_OFFSITE_DB_KEEP}"
   fi
+}
+
+# validate_restore_settings checks a rebuild request before anything is installed: it
+# needs the old install's bucket with its credentials and key, and a host Felis is not
+# installed on yet. A rerun of a rebuild cut short (its progress record exists) carries on.
+validate_restore_settings() {
+  case "$RESTORE_FROM_OFFSITE" in
+    0) return 0 ;;
+    1) ;;
+    *) die "FELIS_RESTORE_FROM_OFFSITE must be 1 or unset (got '${RESTORE_FROM_OFFSITE}')" ;;
+  esac
+  local name
+  for name in FELIS_OFFSITE_BUCKET FELIS_OFFSITE_ENDPOINT FELIS_OFFSITE_ACCESS_KEY FELIS_OFFSITE_SECRET_KEY FELIS_OFFSITE_KEY; do
+    [ -n "${!name:-}" ] || die "FELIS_RESTORE_FROM_OFFSITE=1 needs ${name}: the old install's bucket, its credentials and its encryption key"
+  done
+  if [ -f "$BOOTSTRAP_DONE" ] && [ ! -f "${RESTORE_STATE_DIR}/state.json" ]; then
+    die "FELIS_RESTORE_FROM_OFFSITE=1 rebuilds onto a fresh host, and Felis is already installed here; to replace this install's data anyway, run: sudo felis restore-host -yes -force"
+  fi
+  case "$RESTORE_BUNDLE" in
+    "" | felis-db-*.tar) ;;
+    *) die "FELIS_RESTORE_BUNDLE is a bundle name from \`felis offsite list\` (felis-db-<stamp>-<label>.tar), got '${RESTORE_BUNDLE}'" ;;
+  esac
+}
+
+# restore_from_offsite runs the rebuild once the install is complete: the database,
+# the servers and their worlds come back from the bucket (felis restore-host). It runs
+# before the setup console, so the console finds the old install's Owner.
+restore_from_offsite() {
+  [ "$RESTORE_FROM_OFFSITE" = 1 ] || return 0
+  local args=(restore-host -yes)
+  [ -z "$RESTORE_BUNDLE" ] || args+=(-bundle "$RESTORE_BUNDLE")
+  [ "$RESTORE_TAKE_OVER" != 1 ] || args+=(-take-over)
+  log "rebuilding this install from the off-site copy"
+  "$HOST_BIN" "${args[@]}" \
+    || die "the rebuild stopped before it finished; fix the cause above and run: sudo felis restore-host -yes (it carries on where it stopped)"
+  ok "rebuilt from the off-site copy"
 }
 
 # validate_heartbeat_url checks FELIS_WATCHDOG_HEARTBEAT_URL before anything is
@@ -2092,6 +2174,32 @@ k3s_node_name() {
   printf '%s' "$name"
 }
 
+# recall_distributed_settings carries a distributed controller's fixed public address and
+# peer list across a rerun or `felis update`, neither of which passes them. Without this the
+# rerun would rewrite k3s's node-external-ip to the detected address (moving the WireGuard
+# endpoint every worker dials) and shrink the host firewall's peers to the controller
+# alone, cutting every worker off its 6443 and WireGuard ports. What the operator passes
+# still wins; a host installed before the peer list was recorded falls back to the
+# cluster's own node addresses.
+recall_distributed_settings() {
+  [ "${DISTRIBUTED:-0}" = 1 ] || return 0
+  if [ -z "$NODE_EXTERNAL_IP" ] && [ -f "$K3S_CONFIG_DROPIN" ]; then
+    NODE_EXTERNAL_IP="$(sed -n 's/^node-external-ip: "\(.*\)"$/\1/p' "$K3S_CONFIG_DROPIN" | head -n 1)"
+  fi
+  if [ -z "$WORKER_PEERS" ] && [ -s "$NODE_PEERS_FILE" ]; then
+    WORKER_PEERS="$(head -n 1 "$NODE_PEERS_FILE")"
+  fi
+  return 0
+}
+
+# cluster_node_peers prints every node's internal and external address as an exact CIDR,
+# comma-separated: the peer list `felis node` computes, read back from a running cluster.
+cluster_node_peers() {
+  "$K3S_BIN" kubectl --kubeconfig "$K3S_KUBECONFIG" get nodes \
+    -o jsonpath='{range .items[*].status.addresses[?(@.type=="InternalIP")]}{.address}{"\n"}{end}{range .items[*].status.addresses[?(@.type=="ExternalIP")]}{.address}{"\n"}{end}' \
+    | awk 'NF { print (index($0, ":") ? $0 "/128" : $0 "/32") }' | sort -u | paste -sd, -
+}
+
 # write_k3s_config writes the installer's k3s settings to K3S_CONFIG_DROPIN and sets
 # K3S_RESTART_NEEDED when they changed, since k3s reads the file only as it starts.
 # write-kubeconfig-mode keeps the admin kubeconfig root-only: it is cluster-admin, and
@@ -2117,6 +2225,20 @@ write_k3s_config() {
       # Append to existing API-server hardening arguments in earlier config files.
       echo 'kube-apiserver-arg+:'
       echo '  - "enable-admission-plugins=NodeRestriction"'
+      if [ "${CONTROLLER_HA:-0}" = 1 ]; then
+        # The first controller starts etcd (converting k3s's SQLite on the restart); a
+        # joining one joins it through an existing controller.
+        if [ -n "$HA_JOIN_SERVER" ]; then
+          printf 'server: "%s"\n' "$HA_JOIN_SERVER"
+          echo 'token-file: "/etc/rancher/k3s/felis-server-token"'
+        else
+          echo 'cluster-init: true'
+        fi
+        if [ -n "$FELIS_HA_VIP" ]; then
+          echo 'tls-san:'
+          printf '  - "%s"\n' "${FELIS_HA_VIP%/*}"
+        fi
+      fi
       if [ ! -s /etc/rancher/k3s/felis-agent-token ]; then
         (umask 077; openssl rand -hex 32 > /etc/rancher/k3s/felis-agent-token)
       fi
@@ -2314,14 +2436,23 @@ wait_for_node_ready() {
 # (every re-run) restarts nothing. K3S_REGISTRIES_FILE is a variable so
 # bootstrap_test.sh can point the function at a scratch file.
 configure_registry_mirror() {
-  local file="$K3S_REGISTRIES_FILE" tmp
+  local file="$K3S_REGISTRIES_FILE" tmp endpoints registry_ip=""
   tmp="$(mktemp)"
   remember_temp "$tmp"
+  endpoints="      - \"http://${REGISTRY_PUSH_HOST}\""
+  # With controller high availability the registry runs beside the control plane, on
+  # whichever controller that is: pull through its Service first, then the loopback port.
+  if [ "${CONTROLLER_HA:-0}" = 1 ] && [ -f "$K3S_KUBECONFIG" ]; then
+    registry_ip="$("$K3S_BIN" kubectl --kubeconfig "$K3S_KUBECONFIG" -n "$CONTROL_NS" get service registry -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
+  fi
+  if [ -n "$registry_ip" ]; then
+    endpoints="      - \"http://${registry_ip}:5000\""$'\n'"${endpoints}"
+  fi
   cat > "$tmp" <<EOF
 mirrors:
   "${REGISTRY_URL}":
     endpoint:
-      - "http://${REGISTRY_PUSH_HOST}"
+${endpoints}
 EOF
   if [ -f "$file" ] && cmp -s "$tmp" "$file"; then
     rm -f "$tmp"
@@ -4221,7 +4352,7 @@ deploy_postgres() {
   ensure_postgres_superuser_secret
   log "deploying ${PG_DEPLOYMENT} (${POSTGRES_IMAGE%%@*})"
   "$HOST_BIN" manifests --only postgres --control-namespace "$CONTROL_NS" --minecraft-namespace "$MINECRAFT_NS" \
-    --postgres-image "$POSTGRES_IMAGE" | kube apply -f -
+    --postgres-image "$POSTGRES_IMAGE" $(postgres_ha_args) | kube apply -f -
   if ! kube -n "$CONTROL_NS" rollout status "deployment/${PG_DEPLOYMENT}" --timeout=600s; then
     diagnose_rollout "deployment/${PG_DEPLOYMENT}"
     die "${PG_DEPLOYMENT} did not become ready (docs/troubleshooting.md §16)"
@@ -4890,6 +5021,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 EnvironmentFile=${OFFSITE_ENV}
+$(ha_exec_condition)
 ExecStart=${HOST_BIN} offsite sync -config ${STATE_DIR}/felis.host.toml -env-file ${OFFSITE_ENV} -db-dir ${FELIS_DB_BACKUP_DIR} -backup-pvc "${FELIS_BACKUP_PVC}"
 TimeoutStartSec=24h
 Nice=10
@@ -5042,6 +5174,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+$(ha_exec_condition)
 ExecStart=${HOST_BIN} update --record -config ${STATE_DIR}/felis.host.toml
 TimeoutStartSec=5min
 Nice=10
@@ -5093,6 +5226,7 @@ OnFailure=felis-watchdog-failed.service
 
 [Service]
 Type=oneshot
+$(ha_exec_condition -or-unreachable)
 ExecStart=${HOST_BIN} watchdog -config ${STATE_DIR}/felis.host.toml -state ${WATCHDOG_STATE} -quiet-file ${WATCHDOG_QUIET_FILE} -backup-dir ${FELIS_DB_BACKUP_DIR} -proxy-addr 127.0.0.1:${FELIS_GAME_PORT} -disk-paths ${disks}${NODE_IP:+ -node-ip ${NODE_IP}}
 TimeoutStartSec=3min
 Nice=5
@@ -5172,24 +5306,39 @@ heartbeat_host() {
 # verified address. With no relay each alert, like each sign-in code, is only written to
 # the journal. Without this line the operator learns that from an outage no one heard of.
 summary_alerts() {
+  if panel_setting relay; then
+    log "Alerts: the watchdog mails the Owner's verified email address through the relay saved in the panel."
+    return 0
+  fi
   if persisted_smtp_block | grep -Eq '^[[:space:]]*host[[:space:]]*=[[:space:]]*"[^"]'; then
     log "Alerts: the watchdog mails the Owner's verified email address through the [smtp] relay."
     return 0
   fi
   warn "NO ALERT MAIL: no email relay is configured, so the watchdog's alerts and the sign-in codes are only written to the journal."
-  warn "Configure one in 'sudo felis setup' (e: configure email) and verify the Owner's email in the panel; alerts go to that address."
+  warn "Configure one in the panel (Platform settings → Mail delivery) or in 'sudo felis setup' (e: configure email), and verify the Owner's email in the panel; alerts go to that address."
+}
+
+# panel_setting succeeds when the Owner saved $1 (relay or heartbeat) in the panel, where
+# it wins over the host's (felis panel-settings): the summary must not warn of a missing
+# relay or heartbeat the panel has. A database it cannot read counts as nothing saved.
+panel_setting() {
+  "${HOST_BIN:-}" panel-settings -config "${STATE_DIR}/felis.host.toml" 2>/dev/null | grep -qx "$1=yes"
 }
 
 # summary_heartbeat closes the install on the heartbeat: without one, nothing off this
 # machine notices it going down.
 summary_heartbeat() {
+  if panel_setting heartbeat; then
+    log "Heartbeat: every watchdog run pings the URL saved in the panel; that service mails you when the pings stop."
+    return 0
+  fi
   if [ -f "$WATCHDOG_HEARTBEAT_FILE" ]; then
     log "Heartbeat: every watchdog run pings $(heartbeat_host); that service mails you when the pings stop."
     return 0
   fi
   warn "NO HEARTBEAT: nothing off this machine notices it going down or its watchdog stopping."
   warn "Create a check at a monitoring service (Healthchecks.io or alike; period 2 min, grace 10 min),"
-  warn "then re-run with FELIS_WATCHDOG_HEARTBEAT_URL=<its ping URL> (docs/troubleshooting.md §14)."
+  warn "then save its ping URL in the panel (Platform settings → Monitoring heartbeat), or re-run with FELIS_WATCHDOG_HEARTBEAT_URL=<its ping URL> (docs/troubleshooting.md §14)."
 }
 
 # The build lane's tools: kaniko and trivy (pinned by digest in internal/build/tools.go)
@@ -5208,6 +5357,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+$(ha_exec_condition)
 ExecStart=${HOST_BIN} mirror-build-tools -endpoint ${REGISTRY_PUSH_HOST} -status ${BUILD_TOOLS_STATUS} -secrets-env ${SECRETS_ENV}
 TimeoutStartSec=1h
 Nice=10
@@ -5296,6 +5446,7 @@ After=k3s.service
 
 [Service]
 Type=oneshot
+$(ha_exec_condition)
 ExecStart=${HOST_BIN} db backup -config ${STATE_DIR}/felis.host.toml -dir ${FELIS_DB_BACKUP_DIR} -label daily -keep ${FELIS_DB_BACKUP_KEEP} -metrics-file ${FELIS_DB_BACKUP_METRICS}
 Nice=10
 IOSchedulingClass=idle
@@ -5457,11 +5608,18 @@ deploy_bundle() {
     controller="$(k3s_node_name)"
     [ -n "$controller" ] || die "distributed deployment needs a stable controller node name"
     kube label node "$controller" "felis.node-restriction.kubernetes.io/role=controller" "felis.node-restriction.kubernetes.io/identity=$controller" --overwrite
+    # With HA the controller worlds without a node of their own live on is the home one
+    # ha.env names, whichever controller runs this; cluster add-ons run on any controller.
+    local addon_selector="{\"felis.node-restriction.kubernetes.io/identity\":\"$controller\"}"
+    if [ "${CONTROLLER_HA:-0}" = 1 ]; then
+      controller="$HA_HOME"
+      addon_selector='{"felis.node-restriction.kubernetes.io/role":"controller"}'
+    fi
     local system_deployment
     for system_deployment in coredns local-path-provisioner; do
       if kube -n kube-system get deployment "$system_deployment" >/dev/null 2>&1; then
         kube -n kube-system patch deployment "$system_deployment" --type merge \
-          -p "{\"spec\":{\"template\":{\"spec\":{\"nodeSelector\":{\"felis.node-restriction.kubernetes.io/identity\":\"$controller\"}}}}}"
+          -p "{\"spec\":{\"template\":{\"spec\":{\"nodeSelector\":${addon_selector}}}}}"
       fi
     done
     if [ ! -s "$archive_key_file" ]; then (umask 077; openssl rand -hex 32 > "$archive_key_file"); fi
@@ -5480,6 +5638,14 @@ deploy_bundle() {
   )
   if [ "${DISTRIBUTED:-0}" = 1 ]; then
     manifest_args+=(--distributed --controller-node "$controller" --egress-probe "felis-api.${CONTROL_NS}.svc:443")
+  if [ "${CONTROLLER_HA:-0}" = 1 ]; then
+    manifest_args+=(--controller-ha --replicated-class "$REPLICATED_CLASS")
+    # Velocity runs on every controller: each one's address may reach the game servers.
+    local proxy
+    for proxy in $(controller_cidrs | tr , ' '); do
+      [ "$proxy" = "${NODE_IP}/32" ] || manifest_args+=(--velocity-cidr "$proxy")
+    done
+  fi
     # Every node address, including global addresses, must be excluded from game egress.
     while read -r cidr; do
       [ -z "$cidr" ] || manifest_args+=(--server-egress-deny-cidr "$cidr")
@@ -5940,6 +6106,8 @@ start_setup_console() {
 # ---------------------------------------------------------------------------
 prompt_install_mode() {
   if [ "$INSTALL_MODE" = worker ]; then log "install mode: worker";return; fi
+  if [ "$INSTALL_MODE" = worker-upgrade ]; then log "install mode: worker update";return; fi
+  if [ "$INSTALL_MODE" = controller-join ]; then log "install mode: controller join";return; fi
   # felis setup carries on to the Owner and edge setup, which needs the control plane, so
   # a nano install under it could only end in a setup error.
   if bootstrap_from_tui; then
@@ -6278,6 +6446,335 @@ ensure_k3s_on_path() {
 }
 
 # Worker is a daemon-only branch. It neither generates Felis service credentials nor applies a controller bundle.
+# --- controller high availability -------------------------------------------------------
+#
+# FELIS_CONTROLLER_HA=1 on a distributed controller (docs/distributed.md): k3s moves onto
+# embedded etcd (cluster-init), Longhorn holds the control plane's volumes with a copy on
+# each controller, and the control plane runs on whichever controller is up. Further
+# controllers join through node-control's join-controller task, which runs this script in
+# controller-join mode on them. ha.env keeps the choice, the home controller (where worlds
+# without a node of their own live) and the floating address across reruns.
+
+validate_ha_settings() {
+  case "${CONTROLLER_HA:-}" in
+    "" | 0 | 1) ;;
+    *) die "FELIS_CONTROLLER_HA must be 1 or unset (got '${CONTROLLER_HA}')" ;;
+  esac
+  if [ -n "$FELIS_HA_VIP" ] && ! [[ "$FELIS_HA_VIP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]]; then
+    die "FELIS_HA_VIP must be an IPv4 address with its prefix, like 192.0.2.50/24 (got '${FELIS_HA_VIP}')"
+  fi
+  if ! [[ "$FELIS_HA_VRID" =~ ^[0-9]+$ ]] || [ "$FELIS_HA_VRID" -lt 1 ] || [ "$FELIS_HA_VRID" -gt 255 ]; then
+    die "FELIS_HA_VRID must be 1 to 255 (got '${FELIS_HA_VRID}')"
+  fi
+  [[ "$FELIS_LONGHORN_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "FELIS_LONGHORN_VERSION must be a release tag like v1.8.1 (got '${FELIS_LONGHORN_VERSION}')"
+}
+
+# recall_ha_settings reads ha.env: what the environment does not set comes from there.
+recall_ha_settings() {
+  if [ -f "$HA_ENV" ]; then
+    local key value
+    while IFS='=' read -r key value; do
+      case "$key" in
+        HA) [ -n "$CONTROLLER_HA" ] || CONTROLLER_HA="$value" ;;
+        HOME) HA_HOME="$value" ;;
+        VIP) [ -n "$FELIS_HA_VIP" ] || FELIS_HA_VIP="$value" ;;
+        VIP_INTERFACE) [ -n "$FELIS_HA_VIP_INTERFACE" ] || FELIS_HA_VIP_INTERFACE="$value" ;;
+        VRID) [ -z "$value" ] || FELIS_HA_VRID="$value" ;;
+      esac
+    done < "$HA_ENV"
+  fi
+  if [ "${CONTROLLER_HA:-0}" != 1 ]; then
+    CONTROLLER_HA=0
+    return 0
+  fi
+  [ "${DISTRIBUTED:-0}" = 1 ] || die "controller high availability (FELIS_CONTROLLER_HA=1) builds on distributed mode; set FELIS_DISTRIBUTED=1 too"
+  validate_ha_settings
+}
+
+# write_ha_env records the HA settings, the home controller first named when HA was
+# turned on. It travels to every controller that joins (in /etc/felis).
+write_ha_env() {
+  [ "${CONTROLLER_HA:-0}" = 1 ] || return 0
+  [ -n "$HA_HOME" ] || HA_HOME="$(k3s_node_name)"
+  [ -n "$HA_HOME" ] || die "controller high availability needs this controller's node name"
+  mkdir -p "$(dirname "$HA_ENV")"
+  (
+    umask 077
+    {
+      echo "# Written by the Felis installer (deploy/bootstrap.sh): controller high availability."
+      echo "HA=1"
+      echo "HOME=${HA_HOME}"
+      echo "VIP=${FELIS_HA_VIP}"
+      echo "VIP_INTERFACE=${FELIS_HA_VIP_INTERFACE}"
+      echo "VRID=${FELIS_HA_VRID}"
+    } > "$HA_ENV"
+  )
+}
+
+# ha_exec_condition prints the ExecCondition= line of a timer service that does
+# cluster-wide work: with HA it runs only on the host leader (felis ha leader), the
+# controller running the database; extra flags pass through (-or-unreachable for the
+# watchdog). Without HA it prints nothing and every run goes ahead.
+ha_exec_condition() {
+  [ "${CONTROLLER_HA:-0}" = 1 ] || return 0
+  printf 'ExecCondition=%s ha leader -q%s\n' "$HOST_BIN" "${1:+ $1}"
+}
+
+# controller_cidrs prints every controller's addresses as exact CIDRs, comma-separated.
+controller_cidrs() {
+  "$K3S_BIN" kubectl --kubeconfig "$K3S_KUBECONFIG" get nodes -l felis.node-restriction.kubernetes.io/role=controller \
+    -o jsonpath='{range .items[*].status.addresses[?(@.type=="InternalIP")]}{.address}{"\n"}{end}{range .items[*].status.addresses[?(@.type=="ExternalIP")]}{.address}{"\n"}{end}' \
+    | awk 'NF { print (index($0, ":") ? $0 "/128" : $0 "/32") }' | sort -u | paste -sd, -
+}
+
+# configure_ha_host_firewall lets the controllers reach each other's etcd, supervisor and
+# kubelet, and the WireGuard overlay, through ufw or firewalld when either is on (the
+# installer's own chain, felis node firewall, opens them first).
+configure_ha_host_firewall() {
+  [ "${CONTROLLER_HA:-0}" = 1 ] || return 0
+  local peers="$1" peer
+  [ -n "$peers" ] || return 0
+  if ufw_active; then
+    for peer in ${peers//,/ }; do
+      ufw allow from "$peer" to any port 2379:2380 proto tcp comment felis-ha-etcd >/dev/null
+      ufw allow from "$peer" to any port 6443:6444 proto tcp comment felis-ha-supervisor >/dev/null
+      ufw allow from "$peer" to any port 10250 proto tcp comment felis-ha-kubelet >/dev/null
+      ufw allow from "$peer" to any port 51820:51821 proto udp comment felis-ha-wireguard >/dev/null
+    done
+  fi
+  if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then
+    for peer in ${peers//,/ }; do
+      firewall-cmd --permanent --zone=trusted --add-source="$peer" >/dev/null
+    done
+    firewall-cmd --reload >/dev/null
+  fi
+}
+
+# install_iscsi installs the iSCSI initiator Longhorn attaches volumes through.
+install_iscsi() {
+  case "$PKG" in
+    apt | pacman | zypper) pkg_install open-iscsi ;;
+    dnf | yum) pkg_install iscsi-initiator-utils ;;
+  esac
+  systemctl enable --now iscsid >/dev/null 2>&1 || systemctl enable --now iscsid.socket >/dev/null 2>&1 \
+    || die "the iSCSI initiator (iscsid) does not start; Longhorn needs it"
+}
+
+# longhorn_default_settings writes Felis's Longhorn defaults into the release manifest's
+# default-setting.yaml, read once as Longhorn first starts: replicas only on the nodes
+# labelled for them (the controllers), Longhorn's own components only on controllers, and
+# the pods of a node that went down deleted so their volumes can attach elsewhere.
+longhorn_default_settings() {
+  local manifest="$1" tmp
+  tmp="$(mktemp)"
+  remember_temp "$tmp"
+  awk '
+    { print }
+    /default-setting\.yaml: *\|-? *$/ && !done {
+      match($0, /^ */)
+      pad = substr($0, 1, RLENGTH) "  "
+      print pad "create-default-disk-labeled-nodes: true"
+      print pad "node-down-pod-deletion-policy: delete-both-statefulset-and-deployment-pod"
+      print pad "system-managed-components-node-selector: \"felis.node-restriction.kubernetes.io/role:controller\""
+      done = 1
+    }
+    END { if (!done) exit 3 }
+  ' "$manifest" > "$tmp" || die "the Longhorn ${FELIS_LONGHORN_VERSION} manifest has no default-setting.yaml block to configure"
+  cat "$tmp" > "$manifest"
+}
+
+# install_longhorn installs Longhorn on a controller of an HA cluster, labels this node a
+# home for replicas, and waits until its CSI driver can provision volumes.
+install_longhorn() {
+  [ "${CONTROLLER_HA:-0}" = 1 ] || return 0
+  install_iscsi
+  local self manifest selector i
+  self="$(k3s_node_name)"
+  kube label node "$self" "${LONGHORN_DISK_LABEL}=true" --overwrite >/dev/null
+  if kube get csidriver driver.longhorn.io >/dev/null 2>&1; then
+    ok "Longhorn already installed"
+  else
+    log "installing Longhorn ${FELIS_LONGHORN_VERSION} for the control plane's replicated volumes"
+    manifest="$(mktemp)"
+    remember_temp "$manifest"
+    curl -fsSL --retry 5 --retry-delay 2 "https://raw.githubusercontent.com/longhorn/longhorn/${FELIS_LONGHORN_VERSION}/deploy/longhorn.yaml" -o "$manifest" \
+      || die "could not fetch Longhorn ${FELIS_LONGHORN_VERSION}"
+    longhorn_default_settings "$manifest"
+    kube apply -f "$manifest" >/dev/null
+  fi
+  selector='{"spec":{"template":{"spec":{"nodeSelector":{"felis.node-restriction.kubernetes.io/role":"controller"}}}}}'
+  kube -n longhorn-system patch daemonset longhorn-manager --type merge -p "$selector" >/dev/null
+  for i in longhorn-driver-deployer longhorn-ui; do
+    kube -n longhorn-system patch deployment "$i" --type merge -p "$selector" >/dev/null 2>&1 || true
+  done
+  kube -n longhorn-system rollout status daemonset/longhorn-manager --timeout=600s \
+    || die "Longhorn did not start (kubectl -n longhorn-system get pods)"
+  for i in $(seq 1 120); do
+    kube get csidriver driver.longhorn.io >/dev/null 2>&1 && break
+    sleep 5
+  done
+  kube get csidriver driver.longhorn.io >/dev/null 2>&1 || die "Longhorn's CSI driver did not register (kubectl -n longhorn-system get pods)"
+  "$HOST_BIN" manifests --only replicated-class --replicated-class "$REPLICATED_CLASS" | kube apply -f - >/dev/null
+  ok "Longhorn ready; control-plane volumes use the ${REPLICATED_CLASS} class"
+}
+
+# ha_migrate_storage moves the control plane's volumes onto Longhorn the first time HA is
+# on (felis ha migrate-storage): it stops the control plane, copies each volume, and
+# leaves the originals; the HA bundle applied next starts everything on the copies. A
+# rerun finds the copies done and moves nothing.
+ha_migrate_storage() {
+  [ "${CONTROLLER_HA:-0}" = 1 ] || return 0
+  HOST_BIN_IN_USE=1
+  "$HOST_BIN" ha migrate-storage -node "$(k3s_node_name)" -image "$FELIS_IMAGE" -class "$REPLICATED_CLASS" \
+    -control-namespace "$CONTROL_NS" -minecraft-namespace "$MINECRAFT_NS" -backup-pvc "$FELIS_BACKUP_PVC" \
+    || die "the control plane's volumes could not be moved to Longhorn; nothing was deleted, and a rerun carries on"
+}
+
+# ha_vip_interface is the interface the floating address goes on: the one named, else
+# the one carrying NODE_IP.
+ha_vip_interface() {
+  if [ -n "$FELIS_HA_VIP_INTERFACE" ]; then
+    printf '%s\n' "$FELIS_HA_VIP_INTERFACE"
+    return 0
+  fi
+  ip -o -4 addr show | awk -v ip="$NODE_IP" '{ split($4, a, "/"); if (a[1] == ip) { print $2; exit } }'
+}
+
+# install_keepalived floats FELIS_HA_VIP over the controllers (VRRP): players and the
+# panel reach whichever controller holds it, and it prefers the host leader, where the
+# control plane runs. The controllers must share the address's network.
+install_keepalived() {
+  [ "${CONTROLLER_HA:-0}" = 1 ] && [ -n "$FELIS_HA_VIP" ] || return 0
+  local iface pass
+  iface="$(ha_vip_interface)"
+  [ -n "$iface" ] || die "no interface carries ${NODE_IP}; set FELIS_HA_VIP_INTERFACE"
+  command -v keepalived >/dev/null 2>&1 || pkg_install keepalived
+  # One VRRP password for all the controllers: written once here, it travels in
+  # /etc/felis to every controller that joins.
+  if [ ! -s "$HA_VRRP_PASS" ]; then
+    (umask 077; openssl rand -hex 4 > "$HA_VRRP_PASS")
+  fi
+  pass="$(cat "$HA_VRRP_PASS")"
+  mkdir -p /etc/keepalived
+  (
+    umask 077
+    printf '%s\n' \
+      "# Written by the Felis installer (deploy/bootstrap.sh): the controllers' floating address." \
+      "global_defs {" \
+      "  enable_script_security" \
+      "  script_user root" \
+      "}" \
+      "vrrp_script felis_leader {" \
+      "  script \"${HOST_BIN} ha leader -q\"" \
+      "  interval 5" \
+      "  timeout 15" \
+      "  weight 20" \
+      "}" \
+      "vrrp_instance FELIS {" \
+      "  state BACKUP" \
+      "  interface ${iface}" \
+      "  virtual_router_id ${FELIS_HA_VRID}" \
+      "  priority 100" \
+      "  advert_int 1" \
+      "  authentication {" \
+      "    auth_type PASS" \
+      "    auth_pass ${pass}" \
+      "  }" \
+      "  virtual_ipaddress {" \
+      "    ${FELIS_HA_VIP} dev ${iface}" \
+      "  }" \
+      "  track_script {" \
+      "    felis_leader" \
+      "  }" \
+      "}" > "$KEEPALIVED_CONF"
+  )
+  unset pass
+  systemctl enable keepalived >/dev/null 2>&1
+  systemctl restart keepalived
+  ok "floating address ${FELIS_HA_VIP} on ${iface} (VRRP router ${FELIS_HA_VRID})"
+}
+
+# main_controller_join adds this host to an HA cluster as a controller. node-control on an
+# existing controller sends it here (felis node join-controller) with the cluster's server
+# and agent tokens, a copy of that controller's /etc/felis and the felis binary; it joins
+# k3s to etcd and installs what every controller runs on its host: the node-control
+# service, the Velocity proxy, the timers (cluster-wide ones only act on the host leader)
+# and the floating address.
+# postgres_ha_args are the database render's extra flags with HA: its replicated volume,
+# on any controller.
+postgres_ha_args() {
+  [ "${CONTROLLER_HA:-0}" = 1 ] || return 0
+  printf -- '--distributed --controller-node %s --controller-ha --replicated-class %s\n' "$HA_HOME" "$REPLICATED_CLASS"
+}
+
+
+main_controller_join() {
+  [ -n "$WORKER_NAME" ] && [[ "$WORKER_NAME" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || die "FELIS_NODE_NAME is required and must be a DNS node name"
+  [[ "$WORKER_SERVER" =~ ^https://([a-zA-Z0-9.:-]+|\[[0-9a-fA-F:]+\]):6443$ ]] || die "FELIS_SERVER_URL must be an HTTPS k3s endpoint on port 6443"
+  [[ "$WORKER_REGISTRY_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "FELIS_REGISTRY_CLUSTER_IP is required"
+  [ -n "$WORKER_PEERS" ] || die "FELIS_PEER_CIDRS must list exact cluster peer addresses"
+  [ -n "$CONTROLLER_PEERS" ] || die "FELIS_CONTROLLER_PEERS must list every controller's exact address"
+  local f
+  for f in "$SERVER_TOKEN_FILE" "$AGENT_TOKEN_FILE" "$ETC_BUNDLE"; do
+    [ -s "$f" ] && [ -f "$f" ] && [ ! -L "$f" ] || die "controller join needs FELIS_SERVER_TOKEN_FILE, FELIS_AGENT_TOKEN_FILE and FELIS_ETC_BUNDLE as regular files"
+    (( (8#$(stat -c %a "$f") & 077) == 0 )) || die "$f must not be readable by group or others (use chmod 600)"
+  done
+  [ ! -e /var/lib/rancher/k3s/server ] && [ ! -e /var/lib/rancher/k3s/agent ] || die "k3s is already installed here; a controller joins only onto a fresh host"
+  bootstrap_from_tui || die "a controller joins with the existing controller's felis binary (FELIS_BOOTSTRAP_BINARY)"
+  detect_node_ip
+  [ -n "$NODE_EXTERNAL_IP" ] || NODE_EXTERNAL_IP="$NODE_IP"
+  PREFLIGHT_PROBLEMS=()
+  preflight_platform; preflight_memory; preflight_disk; preflight_networks; preflight_outbound
+  [ "${#PREFLIGHT_PROBLEMS[@]}" = 0 ] || die "controller preflight failed: ${PREFLIGHT_PROBLEMS[*]}"
+  install_base
+  ensure_time_sync
+  ensure_persistent_journal
+  acquire_felis_binary
+  HOST_BIN_IN_USE=1
+  # The cluster's state: this controller's configuration and secrets are the first one's.
+  mkdir -p /etc/rancher/k3s/config.yaml.d
+  tar -xf "$ETC_BUNDLE" -C /etc --no-same-owner
+  chmod 0700 /etc/felis
+  install -m 0600 "$SERVER_TOKEN_FILE" /etc/rancher/k3s/felis-server-token
+  install -m 0600 "$AGENT_TOKEN_FILE" /etc/rancher/k3s/felis-agent-token
+  DISTRIBUTED=1
+  CONTROLLER_HA=1
+  HA_JOIN_SERVER="$WORKER_SERVER"
+  recall_ha_settings
+  "$HOST_BIN" node firewall --controller --controller-ip "$NODE_EXTERNAL_IP" --peers "$WORKER_PEERS" --controller-peers "$CONTROLLER_PEERS" \
+    --pod-cidr "$POD_CIDR" --node-port "$FELIS_PANEL_NODEPORT" --control-namespace "$CONTROL_NS" --namespace "$MINECRAFT_NS"
+  configure_ha_host_firewall "$CONTROLLER_PEERS"
+  write_k3s_service_dropin
+  K3S_RESTART_NEEDED=0
+  write_k3s_config
+  # The registry runs beside the control plane, on whichever controller that is: pull
+  # through its Service.
+  cat > "$K3S_REGISTRIES_FILE" <<EOF_MIRROR
+mirrors:
+  "$REGISTRY_URL":
+    endpoint:
+      - "http://${WORKER_REGISTRY_IP}:5000"
+EOF_MIRROR
+  chmod 0600 "$K3S_REGISTRIES_FILE"
+  stage_k3s_airgap_images
+  run_k3s_installer
+  systemctl enable --now k3s
+  export KUBECONFIG="$K3S_KUBECONFIG"
+  wait_for_node_ready
+  chmod 0600 "$K3S_KUBECONFIG"
+  install_iscsi
+  load_or_make_secrets
+  install_node_control_service
+  install_velocity
+  install_db_backup_timer
+  install_offsite_timer
+  install_update_check_timer
+  install_watchdog_timer
+  install_keepalived
+  ok "controller ${WORKER_NAME} joined; the existing controller labels it once it is ready"
+}
+
+
 main_worker() {
   [ -n "$WORKER_NAME" ] && [[ "$WORKER_NAME" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || die "FELIS_NODE_NAME is required and must be a DNS node name"
   [[ "$WORKER_SERVER" =~ ^https://([a-zA-Z0-9.:-]+|\[[0-9a-fA-F:]+\]):6443$ ]] || die "FELIS_SERVER_URL must be an HTTPS k3s endpoint on port 6443"
@@ -6351,6 +6848,40 @@ EOF_MIRROR
   ok "worker $WORKER_NAME joined under quarantine; run felis node approve on A"
 }
 
+# main_worker_upgrade moves an enrolled worker to the controller's felis build and k3s
+# version and reinstalls its host firewall with the current peers. The controller's
+# node-control sends it here (felis node upgrade) after checking the worker's servers are
+# stopped. It keeps the worker's identity: the node name and the controller it belongs to
+# must match what is installed, and no bootstrap token is needed, since the agent already
+# holds its node credentials.
+main_worker_upgrade() {
+  [ -n "$WORKER_NAME" ] && [[ "$WORKER_NAME" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || die "FELIS_NODE_NAME is required and must be a DNS node name"
+  [[ "$WORKER_SERVER" =~ ^https://([a-zA-Z0-9.:-]+|\[[0-9a-fA-F:]+\]):6443$ ]] || die "FELIS_SERVER_URL must be an HTTPS k3s endpoint on port 6443"
+  [ -n "$WORKER_PEERS" ] || die "FELIS_PEER_CIDRS must list exact cluster peer addresses"
+  [ -d /var/lib/rancher/k3s/agent ] && [ ! -e /var/lib/rancher/k3s/server ] || die "this host is not a Felis worker; join it from the controller first"
+  [ -f "$K3S_CONFIG_DROPIN" ] || die "the worker's k3s settings are missing ($K3S_CONFIG_DROPIN)"
+  local saved
+  saved="$(awk -F'"' '/^node-name:/ {print $2;exit}' "$K3S_CONFIG_DROPIN")"
+  [ "$saved" = "$WORKER_NAME" ] || die "this worker is ${saved:-unnamed}, not $WORKER_NAME"
+  saved="$(awk -F'"' '/^server:/ {print $2;exit}' "$K3S_CONFIG_DROPIN")"
+  [ "$saved" = "$WORKER_SERVER" ] || die "this worker belongs to another controller (${saved:-none})"
+  detect_node_ip
+  bootstrap_from_tui || die "a worker update takes the controller's felis binary (FELIS_BOOTSTRAP_BINARY)"
+  acquire_felis_binary
+  HOST_BIN_IN_USE=1
+  "$HOST_BIN" node firewall --peers "$WORKER_PEERS" --controller-ip "${WORKER_SERVER#https://}" --pod-cidr "$POD_CIDR" --node-port "$FELIS_PANEL_NODEPORT"
+  if [ "$("$K3S_BIN" --version 2>/dev/null | awk 'NR==1 {print $3}')" = "$FELIS_K3S_VERSION" ]; then
+    ok "worker $WORKER_NAME already runs k3s $FELIS_K3S_VERSION"
+  else
+    stage_k3s_airgap_images
+    curl -sfL --retry 5 --retry-delay 2 "https://raw.githubusercontent.com/k3s-io/k3s/${FELIS_K3S_VERSION}/install.sh" | \
+      INSTALL_K3S_VERSION="$FELIS_K3S_VERSION" INSTALL_K3S_BIN_DIR="$K3S_BIN_DIR" INSTALL_K3S_EXEC=agent sh - \
+      || die "could not move k3s-agent to $FELIS_K3S_VERSION"
+    ok "worker $WORKER_NAME moved to k3s $FELIS_K3S_VERSION"
+  fi
+  ok "worker $WORKER_NAME updated to the controller's felis build"
+}
+
 main() {
   acquire_run_lock
   ensure_k3s_on_path
@@ -6363,6 +6894,8 @@ main() {
     return
   fi
   if [ "$INSTALL_MODE" = worker ]; then main_worker; return; fi
+  if [ "$INSTALL_MODE" = worker-upgrade ]; then main_worker_upgrade; return; fi
+  if [ "$INSTALL_MODE" = controller-join ]; then main_controller_join; return; fi
   detect_node_ip
   # Before the first change to the host: a problem found here costs a rerun, one found
   # halfway through costs an install to unwind.
@@ -6394,6 +6927,9 @@ main() {
   # No install_docker here: Docker comes in only for an image this run has to build
   # (ensure_docker), and an install from a release's assets builds none.
   if [ -z "${FELIS_DISTRIBUTED+x}" ] && [ -f "$K3S_CONFIG_DROPIN" ] && grep -q 'flannel-backend: "wireguard-native"' "$K3S_CONFIG_DROPIN"; then DISTRIBUTED=1; fi
+  recall_distributed_settings
+  recall_ha_settings
+  write_ha_env
   install_k3s
   # The registry mirror must exist before the bundle's pods start pulling (and
   # before any re-run's rollouts).
@@ -6409,8 +6945,16 @@ main() {
   # Source builds install the new HOST_BIN here; an earlier call may execute the
   # old release's binary, which has no distributed node commands.
   if [ "${DISTRIBUTED:-0}" = 1 ]; then
+    [ -n "$WORKER_PEERS" ] || WORKER_PEERS="$(cluster_node_peers || true)"
     [ -n "$WORKER_PEERS" ] || WORKER_PEERS="${NODE_EXTERNAL_IP:-$NODE_IP}/32"
-    "$HOST_BIN" node firewall --controller --controller-ip "${NODE_EXTERNAL_IP:-$NODE_IP}" --peers "$WORKER_PEERS" --pod-cidr "$POD_CIDR" --node-port "$FELIS_PANEL_NODEPORT" --control-namespace "$CONTROL_NS" --namespace "$MINECRAFT_NS"
+    # With HA every controller reaches this one's etcd, supervisor and kubelet.
+    local ha_peers=""
+    if [ "${CONTROLLER_HA:-0}" = 1 ]; then
+      ha_peers="$(controller_cidrs || true)"
+      [ -n "$ha_peers" ] || ha_peers="${NODE_EXTERNAL_IP:-$NODE_IP}/32"
+    fi
+    "$HOST_BIN" node firewall --controller --controller-ip "${NODE_EXTERNAL_IP:-$NODE_IP}" --peers "$WORKER_PEERS" ${ha_peers:+--controller-peers "$ha_peers"} --pod-cidr "$POD_CIDR" --node-port "$FELIS_PANEL_NODEPORT" --control-namespace "$CONTROL_NS" --namespace "$MINECRAFT_NS"
+    configure_ha_host_firewall "$ha_peers"
   fi
   # After build_image imported the felis image: the registry pod's gate runs it.
   pin_platform_images
@@ -6418,6 +6962,10 @@ main() {
   # registry's tags before new ones replace them.
   pin_user_server_images
   build_game_stack
+  # HA: Longhorn first, then the control plane's volumes onto it, before the database
+  # starts on its replicated one.
+  install_longhorn
+  ha_migrate_storage
   deploy_postgres
   # Before run_migrations writes the host config that points at felis-postgres: until the
   # move, the database is the host PostgreSQL an earlier release installed.
@@ -6434,6 +6982,7 @@ main() {
   # After deploy_bundle: the proxy dials felis-api's internal ClusterIP, which does not
   # exist until the bundle is applied.
   install_velocity
+  install_keepalived
   # After deploy_bundle: the bundle's MinecraftServer export reads the cluster.
   install_db_backup_timer
   # After the backup timer: its first bundle is part of the first copy.
@@ -6443,6 +6992,7 @@ main() {
   # Last: its first run should see the platform as this install leaves it.
   install_watchdog_timer
   mark_bootstrap_done
+  restore_from_offsite
   summary
   start_setup_console
 }

@@ -41,6 +41,12 @@ const (
 	AnnotationStartRetry = GroupName + "/start-retry"
 	// AnnotationRestart requests one pod recreation while keeping desiredState Running.
 	AnnotationRestart = GroupName + "/restart"
+	// AnnotationLiveBackup marks a running server whose saving felis-api has turned off
+	// for a live restore point (internal/api livebackup.go): JSON naming the backup Job
+	// and the game pod it froze. The operator does not stop the server for idleness
+	// while it is present and, before scaling the pod down, waits a bounded time for it
+	// to go, so the shutdown's own save cannot land in the middle of the copy.
+	AnnotationLiveBackup = GroupName + "/live-backup"
 )
 
 // ForwardingLegacy is the LabelForwarding value that selects legacy forwarding.

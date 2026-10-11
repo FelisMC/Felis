@@ -17,6 +17,8 @@ export interface BuildInfo {
 
 export interface RuntimeConfig {
   distributed?: boolean;
+  /** Several controllers share the control plane (controller high availability). */
+  controllerHA?: boolean;
   apiBase: string;
   rootDomain: string;
   /** Player-console hostname (console.<root>), absent when unconfigured. */
@@ -83,6 +85,7 @@ export async function loadConfig(): Promise<RuntimeConfig> {
     cached = {
       apiBase: raw.apiBase ?? FALLBACK.apiBase,
       distributed: raw.distributed === true,
+      controllerHA: raw.controllerHA === true,
       rootDomain: raw.rootDomain,
       panelHostname: raw.panelHostname,
       adminHostname: raw.adminHostname,

@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"felis.lolicon.best/internal/config"
+	"felis.lolicon.best/internal/heartbeatsettings"
+	"felis.lolicon.best/internal/mailsettings"
 	"felis.lolicon.best/internal/watchdog"
 )
 
@@ -55,7 +57,7 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 	host, _ := os.Hostname()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	return runDoctor(ctx, doctorEnv{unitDir: *unitDir, run: hostCommand, now: time.Now(), host: host}, stdout)
+	return runDoctor(ctx, doctorEnv{unitDir: *unitDir, run: hostCommand, now: time.Now(), host: host, panel: panelSettings}, stdout)
 }
 
 // doctorEnv is what one doctor run reads the host through.
@@ -64,6 +66,9 @@ type doctorEnv struct {
 	run     func(ctx context.Context, name string, args ...string) ([]byte, error)
 	now     time.Time
 	host    string
+	// panel reads the relay and the heartbeat the Owner saved in the panel, which win over
+	// felis.toml's [smtp] and the heartbeat file; nil reads none.
+	panel func(ctx context.Context, url string) (*mailsettings.Settings, *heartbeatsettings.Settings, error)
 }
 
 // doctorAreas are the report's headings in order, by the area findingArea
@@ -112,6 +117,7 @@ func runDoctor(ctx context.Context, env doctorEnv, stdout io.Writer) int {
 	fmt.Fprintln(stdout)
 
 	skip := map[string]string{}
+	panelRelay, panelBeat := false, false
 	cfg, cfgErr := config.Load(w.cfgPath)
 	if cfgErr != nil {
 		report.Findings = append(report.Findings, watchdog.Finding{
@@ -127,8 +133,14 @@ func runDoctor(ctx context.Context, env doctorEnv, stdout io.Writer) int {
 			}
 		}
 	} else {
+		// What the database does not yield leaves felis.toml and the heartbeat file to judge
+		// by; PostgreSQL's own finding says why it could not be read.
+		if env.panel != nil {
+			relay, beat, _ := env.panel(ctx, cfg.Database.URL)
+			panelRelay, panelBeat = relay != nil, beat != nil
+		}
 		_, owners, ownersErr := watchdogProbes(ctx, w, cfg, env.now, &report)
-		report.Findings = append(report.Findings, alertReachFindings(cfg, owners, ownersErr)...)
+		report.Findings = append(report.Findings, alertReachFindings(cfg, panelRelay, owners, ownersErr)...)
 		if w.proxyAddr == "" {
 			skip["proxy"] = "no -proxy-addr"
 		}
@@ -151,15 +163,17 @@ func runDoctor(ctx context.Context, env doctorEnv, stdout io.Writer) int {
 	report.Findings = append(report.Findings, unitFindings(ctx, env)...)
 
 	switch url, err := readHeartbeatURL(w.heartbeatFile); {
+	case panelBeat:
+		// The panel's heartbeat wins: the file is not read by the watchdog then.
 	case err != nil:
 		report.Findings = append(report.Findings, watchdog.Finding{
 			Key: "watchdog/heartbeat", Severity: watchdog.Warning,
 			SummaryEN: fmt.Sprintf("the heartbeat URL is unusable, so no run pings it: %v", err),
-			Hint:      "rerun the installer with FELIS_WATCHDOG_HEARTBEAT_URL set (docs/troubleshooting.md §14)",
+			Hint:      "set one in the panel (Platform settings → Monitoring heartbeat), or rerun the installer with FELIS_WATCHDOG_HEARTBEAT_URL (docs/troubleshooting.md §14)",
 		})
 	case url == "":
 		notes = append(notes, "no heartbeat URL is set: a host that goes down entirely, or a watchdog that stops running, alerts no one. "+
-			"Rerun the installer with FELIS_WATCHDOG_HEARTBEAT_URL (docs/troubleshooting.md §14)")
+			"Set one in the panel (Platform settings → Monitoring heartbeat), or rerun the installer with FELIS_WATCHDOG_HEARTBEAT_URL (docs/troubleshooting.md §14)")
 	}
 	if until := watchdog.QuietUntil(w.quietPath); env.now.Before(until) {
 		notes = append(notes, fmt.Sprintf("the watchdog mails nothing until %s (%s): the installer holds it while it restarts things on purpose, "+
@@ -236,14 +250,15 @@ func findingArea(key string) string {
 }
 
 // alertReachFindings is why the watchdog's alerts would reach no one, which
-// its own runs only log: no relay, or no owner with a verified address.
-func alertReachFindings(cfg *config.Config, owners []string, ownersErr error) []watchdog.Finding {
+// its own runs only log: no relay (in the panel or in felis.toml), or no owner with a
+// verified address.
+func alertReachFindings(cfg *config.Config, panelRelay bool, owners []string, ownersErr error) []watchdog.Finding {
 	var out []watchdog.Finding
-	if cfg.SMTP.Host == "" {
+	if cfg.SMTP.Host == "" && !panelRelay {
 		out = append(out, watchdog.Finding{
 			Key: "alerts/relay", Severity: watchdog.Warning,
-			SummaryEN: "no [smtp] relay is configured: the watchdog logs its alerts to the journal and mails no one",
-			Hint:      "sudo felis setup, step SMTP",
+			SummaryEN: "no mail relay is configured, in the panel or in [smtp]: the watchdog logs its alerts to the journal and mails no one",
+			Hint:      "the panel's Platform settings → Mail delivery, or sudo felis setup, step SMTP",
 		})
 	}
 	if ownersErr == nil && len(owners) == 0 {

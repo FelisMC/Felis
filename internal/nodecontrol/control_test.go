@@ -29,6 +29,41 @@ func TestRequestRejectsUnsafeInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestUpgradeRequest pins that updating a worker names it and its SSH target, needs no
+// fixed IP, and refuses an unsafe target like the other worker operations.
+func TestUpgradeRequest(t *testing.T) {
+	r := Request{Action: "upgrade", Name: "worker-b", SSHTarget: "root@worker-b", ConfirmMaintenance: true}
+	if err := r.Validate(); err != nil {
+		t.Fatalf("a worker update was refused: %v", err)
+	}
+	for _, change := range []func(*Request){func(r *Request) { r.SSHTarget = "-oProxyCommand=sh" }, func(r *Request) { r.Name = "" }, func(r *Request) { r.ConfirmMaintenance = false }} {
+		bad := r
+		change(&bad)
+		if bad.Validate() == nil {
+			t.Fatalf("accepted %+v", bad)
+		}
+	}
+}
+
+// TestFenceRequest pins the fence request: a valid node name and the confirmation, and
+// nothing about SSH.
+func TestFenceRequest(t *testing.T) {
+	for _, action := range []string{"fence", "unfence"} {
+		r := Request{Action: action, Name: "worker-b", ConfirmMaintenance: true}
+		if err := r.Validate(); err != nil {
+			t.Fatalf("%s was refused: %v", action, err)
+		}
+		for _, change := range []func(*Request){func(r *Request) { r.Name = "" }, func(r *Request) { r.Name = "-b" }, func(r *Request) { r.ConfirmMaintenance = false }} {
+			bad := r
+			change(&bad)
+			if bad.Validate() == nil {
+				t.Fatalf("accepted %+v", bad)
+			}
+		}
+	}
+}
+
 func TestNodeNames(t *testing.T) {
 	for _, name := range []string{"worker-01", "worker.localdomain"} {
 		r := validRequest()
@@ -188,5 +223,27 @@ func TestHostSocketConnectivity(t *testing.T) {
 	}
 	if tasks == nil {
 		t.Fatal("host returned no task list")
+	}
+}
+
+// TestHARequests pins the HA requests: enabling needs only the confirmation; joining a
+// controller needs what joining a worker does, its fixed address included.
+func TestHARequests(t *testing.T) {
+	if err := (Request{Action: "enable-ha", ConfirmMaintenance: true}).Validate(); err != nil {
+		t.Fatalf("enable-ha = %v", err)
+	}
+	if (Request{Action: "enable-ha"}).Validate() == nil {
+		t.Fatal("enable-ha without the confirmation")
+	}
+	r := Request{Action: "join-controller", Name: "ctl-b", SSHTarget: "root@ctl-b", ExternalIP: "203.0.113.11", ConfirmMaintenance: true}
+	if err := r.Validate(); err != nil {
+		t.Fatalf("join-controller = %v", err)
+	}
+	for _, change := range []func(*Request){func(r *Request) { r.ExternalIP = "" }, func(r *Request) { r.SSHTarget = "-oProxyCommand=sh" }, func(r *Request) { r.Name = "" }} {
+		bad := r
+		change(&bad)
+		if bad.Validate() == nil {
+			t.Fatalf("accepted %+v", bad)
+		}
 	}
 }

@@ -11,6 +11,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"felis.lolicon.best/internal/config"
+	"felis.lolicon.best/internal/heartbeatsettings"
+	"felis.lolicon.best/internal/mailsettings"
 )
 
 // TestAlertRouteLines: the summary's alert rows say where the watchdog's
@@ -26,8 +28,8 @@ func TestAlertRouteLines(t *testing.T) {
 	}{
 		{
 			name:   "fresh install",
-			alerts: "only logged: no email relay (press e)",
-			beat:   "none: no outside check (troubleshooting.md §14)",
+			alerts: "only logged: no email relay (press e, or set it in the panel)",
+			beat:   "none: no outside check (set one in the panel)",
 		},
 		{
 			name:   "relay, no verified owner",
@@ -39,13 +41,13 @@ func TestAlertRouteLines(t *testing.T) {
 			name:   "relay, owners unreadable",
 			r:      alertRoute{relay: "smtp.example.com:587", lookupErr: errors.New("connection refused")},
 			alerts: "via smtp.example.com:587; could not read the Owner addresses",
-			beat:   "none: no outside check (troubleshooting.md §14)",
+			beat:   "none: no outside check (set one in the panel)",
 		},
 		{
 			name:   "owners but no relay",
 			r:      alertRoute{recipients: []string{"owner@example.com"}},
-			alerts: "only logged: no email relay (press e)",
-			beat:   "none: no outside check (troubleshooting.md §14)",
+			alerts: "only logged: no email relay (press e, or set it in the panel)",
+			beat:   "none: no outside check (set one in the panel)",
 		},
 		{
 			name:   "mailed",
@@ -81,7 +83,7 @@ func TestSummaryAlertRows(t *testing.T) {
 	}
 	m.alerts = &alertRoute{heartbeat: "https://hc-ping.com/..."}
 	v = m.View()
-	for _, want := range []string{"alerts    ⚠ only logged: no email relay (press e)", "heartbeat https://hc-ping.com/... every 2 minutes"} {
+	for _, want := range []string{"alerts    ⚠ only logged: no email relay (press e, or set it in the panel)", "heartbeat https://hc-ping.com/... every 2 minutes"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("summary lacks %q:\n%s", want, v)
 		}
@@ -162,6 +164,20 @@ func TestHostAlertRoute(t *testing.T) {
 	r = hostAlertRoute(context.Background(), noRelay, dbURL, filepath.Join(dir, "none"))
 	if r.heartbeat != "" || r.heartbeatErr != nil {
 		t.Errorf("no heartbeat file: %q, %v", r.heartbeat, r.heartbeatErr)
+	}
+
+	// A relay and a heartbeat saved in the panel win over the host's, an unreadable
+	// heartbeat file included, as they do in the watchdog.
+	defer func() { readPanelSettings = panelSettings }()
+	readPanelSettings = func(context.Context, string) (*mailsettings.Settings, *heartbeatsettings.Settings, error) {
+		return &mailsettings.Settings{Host: "smtp.panel.example", Port: 465}, &heartbeatsettings.Settings{URL: "https://hc.panel.example/ping/secret"}, nil
+	}
+	r = hostAlertRoute(context.Background(), cfg, dbURL, beat)
+	if r.relay != "smtp.panel.example:465" {
+		t.Errorf("panel relay: relay = %q", r.relay)
+	}
+	if r.heartbeat != "https://hc.panel.example/..." || r.heartbeatErr != nil {
+		t.Errorf("panel heartbeat = %q, %v", r.heartbeat, r.heartbeatErr)
 	}
 }
 

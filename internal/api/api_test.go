@@ -1042,7 +1042,7 @@ func (f *fakeRepo) LatestBackup(_ context.Context, serverName string) (*BackupRe
 	return &BackupRecord{
 		ID: latest.view.ID, ServerName: latest.view.ServerName,
 		FormerOwner: latest.view.FormerOwner, BackupRef: latest.ref,
-		SizeBytes: latest.view.SizeBytes,
+		SizeBytes: latest.view.SizeBytes, SHA256: latest.sha256, CreatedAt: latest.view.CreatedAt,
 	}, nil
 }
 
@@ -1872,6 +1872,7 @@ type fakeCluster struct {
 	created     map[string]CreateServerInput // name -> the validated input it was created from
 	patched     map[string]ServerSpecPatch   // name -> the validated spec patch it received
 	noWorld     map[string]bool              // server names modeled WITHOUT a world volume (never started / reaped)
+	ensured     []string                     // EnsureWorldVolume calls
 	orphanWorld map[string]bool              // names with a world volume but no server (CR deleted by hand)
 	createErr   error
 	pingErr     error
@@ -1921,6 +1922,15 @@ func (c *fakeCluster) WorldVolumeExists(_ context.Context, n string) (bool, erro
 	}
 	_, known := c.byName[n]
 	return known && !c.noWorld[n], nil
+}
+
+func (c *fakeCluster) EnsureWorldVolume(_ context.Context, n string) error {
+	if _, known := c.byName[n]; !known {
+		return ErrNotFound
+	}
+	delete(c.noWorld, n)
+	c.ensured = append(c.ensured, n)
+	return nil
 }
 
 func (c *fakeCluster) SetDesiredState(_ context.Context, n string, s v1alpha1.DesiredState) error {

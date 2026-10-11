@@ -25,7 +25,7 @@ import (
 
 func cmdNode(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "felis node: list | token | join | approve | firewall")
+		fmt.Fprintln(stderr, "felis node: list | token | join | join-controller | approve | upgrade | firewall")
 		return 2
 	}
 	if os.Geteuid() != 0 {
@@ -50,6 +50,10 @@ func cmdNode(args []string, stdout, stderr io.Writer) int {
 	registry := fs.String("registry-ip", "", "registry ClusterIP for join")
 	peers := fs.String("peers", "", "comma-separated exact peer CIDRs for host firewall")
 	external := fs.String("external-ip", "", "this worker's fixed external IP")
+	serverToken := fs.String("server-token-file", "", "the cluster's server token, for join-controller")
+	agentToken := fs.String("agent-token-file", "", "the cluster's agent token, for join-controller")
+	etcBundle := fs.String("etc-bundle", "", "a tar of the first controller's /etc/felis, for join-controller")
+	controllerPeers := fs.String("controller-peers", "", "comma-separated exact CIDRs of every controller, for join-controller")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -95,6 +99,45 @@ func cmdNode(args []string, stdout, stderr io.Writer) int {
 		cmd.Stdout = stdout
 		cmd.Stderr = stderr
 		cmd.Env = append(os.Environ(), "FELIS_INSTALL_MODE=worker", "FELIS_BOOTSTRAP_FROM_TUI=1", "FELIS_BOOTSTRAP_BINARY="+exe, "FELIS_NODE_NAME="+*name, "FELIS_SERVER_URL="+*server, "FELIS_BOOTSTRAP_TOKEN_FILE="+*tokenFile, "FELIS_REGISTRY_CLUSTER_IP="+*registry, "FELIS_PEER_CIDRS="+*peers, "FELIS_NODE_EXTERNAL_IP="+*external)
+		if err = cmd.Run(); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+	case "join-controller":
+		// Runs on the new controller, sent there by an existing controller's node-control
+		// (join-controller task): the installer's controller-join mode joins k3s to the
+		// cluster's etcd and installs the controller's host services.
+		exe, err := os.Executable()
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		cmd := exec.CommandContext(ctx, "bash", "-s")
+		cmd.Stdin = strings.NewReader(felis.BootstrapScript())
+		cmd.Stdout = stdout
+		cmd.Stderr = stderr
+		cmd.Env = append(os.Environ(), "FELIS_INSTALL_MODE=controller-join", "FELIS_BOOTSTRAP_FROM_TUI=1", "FELIS_BOOTSTRAP_BINARY="+exe, "FELIS_NODE_NAME="+*name,
+			"FELIS_SERVER_URL="+*server, "FELIS_SERVER_TOKEN_FILE="+*serverToken, "FELIS_AGENT_TOKEN_FILE="+*agentToken, "FELIS_ETC_BUNDLE="+*etcBundle,
+			"FELIS_REGISTRY_CLUSTER_IP="+*registry, "FELIS_PEER_CIDRS="+*peers, "FELIS_CONTROLLER_PEERS="+*controllerPeers, "FELIS_NODE_EXTERNAL_IP="+*external)
+		if err = cmd.Run(); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+	case "upgrade":
+		// Runs on the worker, sent there by the controller's node-control: the installer's
+		// worker-upgrade mode moves felis and k3s-agent to the controller's versions.
+		exe, err := os.Executable()
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		cmd := exec.CommandContext(ctx, "bash", "-s")
+		cmd.Stdin = strings.NewReader(felis.BootstrapScript())
+		cmd.Stdout = stdout
+		cmd.Stderr = stderr
+		cmd.Env = append(os.Environ(), "FELIS_INSTALL_MODE=worker-upgrade", "FELIS_BOOTSTRAP_FROM_TUI=1", "FELIS_BOOTSTRAP_BINARY="+exe, "FELIS_NODE_NAME="+*name, "FELIS_SERVER_URL="+*server, "FELIS_PEER_CIDRS="+*peers)
 		if err = cmd.Run(); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1

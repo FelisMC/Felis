@@ -92,6 +92,7 @@ func TestInternalRoutesServeOnlyTheirCallers(t *testing.T) {
 		{"POST", "/api/v1/internal/servers/survival/wake", []Caller{CallerVelocity}},
 		{"POST", "/api/v1/internal/servers/survival/claim", []Caller{CallerVelocity}},
 		{"POST", "/api/v1/internal/servers/survival/backup", []Caller{CallerOps}},
+		{"POST", "/api/v1/internal/servers/survival/restore", []Caller{CallerOps}},
 	}
 	tokens := map[Caller]string{CallerVelocity: "tok-velocity", CallerLimbo: "tok-limbo", CallerBuild: "tok-build", CallerOps: "tok-ops"}
 	for _, tc := range cases {

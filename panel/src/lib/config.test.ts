@@ -34,6 +34,7 @@ describe("loadConfig", () => {
     expect(cfg).toEqual({
       apiBase: "/api/v1",
       distributed: false,
+      controllerHA: false,
       rootDomain: "mc.example",
       panelHostname: undefined,
       adminHostname: "op.console.mc.example",
@@ -41,6 +42,14 @@ describe("loadConfig", () => {
       build,
     });
     expect(cfg.fallback).toBeUndefined();
+  });
+
+  it("reads the deployment shape", async () => {
+    serve({ rootDomain: "mc.example", distributed: true, controllerHA: true });
+    const { loadConfig } = await freshConfig();
+    const cfg = await loadConfig();
+    expect(cfg.distributed).toBe(true);
+    expect(cfg.controllerHA).toBe(true);
   });
 
   it("fetches once and keeps the result", async () => {

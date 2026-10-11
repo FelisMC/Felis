@@ -15,20 +15,24 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
 
 	felis "felis.lolicon.best"
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
+	"felis.lolicon.best/internal/distributed"
 	"felis.lolicon.best/internal/nodecontrol"
 	"felis.lolicon.best/internal/placement"
 	"felis.lolicon.best/internal/platform"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/util/retry"
 )
 
 func cmdNodeControl(args []string, stdout, stderr io.Writer) int {
@@ -133,13 +137,38 @@ func cmdNodeControl(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// nodeControlUncordon lifts the scheduling quarantine an approval task put on a node.
+const nodeControlUncordon = `{"spec":{"unschedulable":false},"metadata":{"annotations":{"felis.lolicon.best/node-control-cordon":null}}}`
+
 type nodeExecutor struct {
 	cs                                                                kubernetes.Interface
 	binary, kubeconfig, config, namespace, controlNamespace, stateDir string
+	// Overrides of the host paths the HA tasks read (node_control_ha.go); empty means
+	// the real ones.
+	serverToken, agentToken, etcDir, etcdDir string
+	// self is this host's node name; empty means selfNodeName's answer.
+	self string
+}
+
+func (e nodeExecutor) selfName() string {
+	if e.self != "" {
+		return e.self
+	}
+	return selfNodeName(k3sFelisDropin)
 }
 
 func (e nodeExecutor) run(ctx context.Context, r nodecontrol.Request, stage func(string) error, out io.Writer) (resultErr error) {
 	// Host-wide changes and cache-removing admission probes are serialized by the manager.
+	// admitting is set once the admission itself runs: a quarantine this task added is kept
+	// only when that fails, and lifted again when a check before it refuses (servers still
+	// on the node, SSH unreachable), so a refused approval leaves the node as it found it.
+	if r.Action == "fence" {
+		return e.fence(ctx, r.Name, stage, out)
+	}
+	if r.Action == "unfence" {
+		return e.unfence(ctx, r.Name, stage, out)
+	}
+	admitting := false
 	if r.Action == "approve" {
 		node, err := e.cs.CoreV1().Nodes().Get(ctx, r.Name, metav1.GetOptions{})
 		if err != nil {
@@ -155,15 +184,33 @@ func (e nodeExecutor) run(ctx context.Context, r nodecontrol.Request, stage func
 		if _, err = e.cs.CoreV1().Nodes().Patch(ctx, r.Name, types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
 			return err
 		}
+		if err := e.liftFence(ctx, r.Name, out); err != nil {
+			return err
+		}
+		if !node.Spec.Unschedulable {
+			defer func() {
+				if resultErr == nil || admitting {
+					return
+				}
+				cleanup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				if _, err := e.cs.CoreV1().Nodes().Patch(cleanup, r.Name, types.MergePatchType, []byte(nodeControlUncordon), metav1.PatchOptions{}); err != nil {
+					fmt.Fprintln(out, "Scheduling could not be re-enabled:", err)
+				}
+			}()
+		}
 	}
-	if err := e.requireStopped(ctx, r); err != nil {
-		return err
+	// Adding a controller or enabling HA moves no world: servers may keep running.
+	if r.Action != "enable-ha" && r.Action != "join-controller" {
+		if err := e.requireStopped(ctx, r); err != nil {
+			return err
+		}
 	}
 	nodes, err := e.cs.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err
 	}
-	controller, peers, err := nodeController(nodes.Items, r.ExternalIP, r.Peers)
+	controller, peers, err := nodeController(nodes.Items, r.ExternalIP, r.Peers, e.selfName())
 	if err != nil {
 		return err
 	}
@@ -175,6 +222,9 @@ func (e nodeExecutor) run(ctx context.Context, r nodecontrol.Request, stage func
 		return errors.New("the Felis API image is unavailable")
 	}
 	image := deployment.Spec.Template.Spec.Containers[0].Image
+	if r.Action == "enable-ha" {
+		return e.enableHA(ctx, r, controller, peers, stage, out)
+	}
 	if r.Action == "enable" {
 		if err := stage("pause_operator"); err != nil {
 			return err
@@ -239,13 +289,22 @@ func (e nodeExecutor) run(ctx context.Context, r nodecontrol.Request, stage func
 		return errors.New("unsupported host architecture")
 	}
 	check := "set -eu\n[ \"$(uname -s)\" = Linux ] || { echo 'worker requires Linux' >&2; exit 1; }\n[ \"$(uname -m)\" = " + shellQuote(arch) + " ] || { echo 'worker architecture differs from controller' >&2; exit 1; }\n"
-	if r.Action == "join" {
+	if r.Action == "join" || r.Action == "join-controller" {
 		check += "[ ! -e /etc/rancher/k3s/k3s.yaml ] && [ ! -e /var/lib/rancher/k3s/agent ] || { echo 'k3s is already installed; enrollment will not overwrite an existing node' >&2; exit 1; }\n"
 		check += "ip -o address show | awk '{print $4}' | cut -d/ -f1 | grep -Fx -- " + shellQuote(r.ExternalIP) + " >/dev/null || { echo 'fixed node IP is not assigned to the worker' >&2; exit 1; }\n"
+	}
+	if r.Action == "upgrade" {
+		check += "[ -d /var/lib/rancher/k3s/agent ] && [ ! -e /var/lib/rancher/k3s/server ] || { echo 'this host is not a Felis worker' >&2; exit 1; }\n"
 	}
 
 	if err = e.ssh(ctx, r.SSHTarget, "if [ \"$(id -u)\" = 0 ]; then bash -s; else sudo -n bash -s; fi", strings.NewReader(check), out); err != nil {
 		return fmt.Errorf("worker preflight or SSH connection failed: %w", err)
+	}
+	if r.Action == "upgrade" {
+		return e.upgrade(ctx, r, nodes.Items, controller, peers, stage, out)
+	}
+	if r.Action == "join-controller" {
+		return e.joinController(ctx, r, nodes.Items, controller, peers, stage, out)
 	}
 	if r.Action == "join" {
 		for _, n := range nodes.Items {
@@ -260,6 +319,7 @@ func (e nodeExecutor) run(ctx context.Context, r nodecontrol.Request, stage func
 	if err = stage("approval"); err != nil {
 		return err
 	}
+	admitting = true
 	cmd := exec.CommandContext(ctx, e.binary, "node", "approve", "--name", r.Name, "--ssh-target", r.SSHTarget, "--image", image, "--kubeconfig", e.kubeconfig, "--namespace", e.namespace, "--control-namespace", e.controlNamespace)
 	cmd.Stdout = out
 	cmd.Stderr = out
@@ -272,7 +332,7 @@ func (e nodeExecutor) run(ctx context.Context, r nodecontrol.Request, stage func
 		return err
 	}
 	if admitted.Annotations["felis.lolicon.best/node-control-cordon"] == "true" {
-		if _, err = e.cs.CoreV1().Nodes().Patch(ctx, r.Name, types.MergePatchType, []byte(`{"spec":{"unschedulable":false},"metadata":{"annotations":{"felis.lolicon.best/node-control-cordon":null}}}`), metav1.PatchOptions{}); err != nil {
+		if _, err = e.cs.CoreV1().Nodes().Patch(ctx, r.Name, types.MergePatchType, []byte(nodeControlUncordon), metav1.PatchOptions{}); err != nil {
 			return fmt.Errorf("node approved but scheduling remains disabled: %w", err)
 		}
 	}
@@ -324,17 +384,20 @@ func (e nodeExecutor) requireStopped(ctx context.Context, r nodecontrol.Request)
 	return nil
 }
 
-func nodeController(nodes []corev1.Node, ip string, extra []string) (*corev1.Node, []string, error) {
+// nodeController picks the controller a node task acts from, with every node's address as
+// a peer: the one this host is (node-control runs on each controller), else the first one
+// online by name. With controller high availability there are several; without it, one.
+func nodeController(nodes []corev1.Node, ip string, extra []string, self string) (*corev1.Node, []string, error) {
 	var controller *corev1.Node
 	peers := append([]string{}, extra...)
+	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
 	for i := range nodes {
 		n := &nodes[i]
 		_, controlPlane := n.Labels["node-role.kubernetes.io/control-plane"]
-		if controlPlane || n.Labels[placement.LabelRole] == placement.RoleController {
-			if controller != nil {
-				return nil, nil, errors.New("exactly one controller is required")
+		if (controlPlane || n.Labels[placement.LabelRole] == placement.RoleController) && placement.Online(n) {
+			if controller == nil || n.Name == self {
+				controller = n
 			}
-			controller = n
 		}
 		for _, a := range n.Status.Addresses {
 			if a.Type == corev1.NodeExternalIP || a.Type == corev1.NodeInternalIP {
@@ -346,8 +409,8 @@ func nodeController(nodes []corev1.Node, ip string, extra []string) (*corev1.Nod
 			}
 		}
 	}
-	if controller == nil || !placement.Online(controller) {
-		return nil, nil, errors.New("the sole controller must be online")
+	if controller == nil {
+		return nil, nil, errors.New("no controller is online")
 	}
 	if ip != "" {
 		cidr, err := exactCIDR(ip)
@@ -390,23 +453,7 @@ func (e nodeExecutor) join(ctx context.Context, r nodecontrol.Request, controlle
 	if err != nil {
 		return err
 	}
-	for _, n := range list.Items {
-		if n.Name == controller.Name || n.Name == r.Name {
-			continue
-		}
-		if n.Labels[placement.LabelRole] != placement.RoleWorker {
-			return fmt.Errorf("node %s has an unknown role", n.Name)
-		}
-		script := shellQuote(e.binary) + " node firewall --peers " + shellQuote(strings.Join(peers, ",")) + " --controller-ip " + shellQuote(controllerIP(controller))
-		script += " --namespace " + shellQuote(e.namespace) + " --control-namespace " + shellQuote(e.controlNamespace)
-		if err = e.ssh(ctx, n.Name, "if [ \"$(id -u)\" = 0 ]; then "+script+"; else sudo -n "+script+"; fi", nil, out); err != nil {
-			return fmt.Errorf("update peer firewall on %s: %w", n.Name, err)
-		}
-	}
-	cmd := exec.CommandContext(ctx, e.binary, "node", "firewall", "--controller", "--controller-ip", controllerIP(controller), "--peers", strings.Join(peers, ","), "--namespace", e.namespace, "--control-namespace", e.controlNamespace)
-	cmd.Stdout = out
-	cmd.Stderr = out
-	if err = cmd.Run(); err != nil {
+	if err = e.refreshFirewalls(ctx, list.Items, controller, peers, controllerCIDRs(list.Items), out); err != nil {
 		return err
 	}
 	if err = stage("bootstrap_token"); err != nil {
@@ -439,7 +486,6 @@ func (e nodeExecutor) join(ctx context.Context, r nodecontrol.Request, controlle
 		return err
 	}
 	script := "set -eu; umask 077; mkdir " + shellQuote(remoteDir) + "; cat > " + shellQuote(remoteDir+"/bootstrap")
-	rootCommand := "if [ \"$(id -u)\" = 0 ]; then bash -s; else sudo -n bash -s; fi"
 	defer func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -450,13 +496,7 @@ func (e nodeExecutor) join(ctx context.Context, r nodecontrol.Request, controlle
 		return err
 	}
 
-	binary, err := os.Open(e.binary)
-	if err != nil {
-		return err
-	}
-	defer binary.Close()
-	script = "set -eu; cat > " + shellQuote(remoteDir+"/felis") + "; chmod 0700 " + shellQuote(remoteDir+"/felis")
-	if err = e.ssh(ctx, r.SSHTarget, "if [ \"$(id -u)\" = 0 ]; then "+script+"; else sudo -n sh -c "+shellQuote(script)+"; fi", binary, out); err != nil {
+	if err = e.pushBinary(ctx, r.SSHTarget, remoteDir, out); err != nil {
 		return err
 	}
 	if err = stage("install_worker"); err != nil {
@@ -469,12 +509,91 @@ func (e nodeExecutor) join(ctx context.Context, r nodecontrol.Request, controlle
 	if err = stage("wait_ready"); err != nil {
 		return err
 	}
+	if err = e.waitReady(ctx, r.Name); err != nil {
+		return err
+	}
+	return e.recordFelisVersion(ctx, r.Name)
+}
+
+// rootCommand runs the script on stdin as root over SSH, through sudo -n for a non-root
+// login.
+const rootCommand = "if [ \"$(id -u)\" = 0 ]; then bash -s; else sudo -n bash -s; fi"
+
+// pushBinary copies this felis binary to remoteDir/felis on the worker, root-only.
+func (e nodeExecutor) pushBinary(ctx context.Context, target, remoteDir string, out io.Writer) error {
+	binary, err := os.Open(e.binary)
+	if err != nil {
+		return err
+	}
+	defer binary.Close()
+	script := "set -eu; cat > " + shellQuote(remoteDir+"/felis") + "; chmod 0700 " + shellQuote(remoteDir+"/felis")
+	return e.ssh(ctx, target, "if [ \"$(id -u)\" = 0 ]; then "+script+"; else sudo -n sh -c "+shellQuote(script)+"; fi", binary, out)
+}
+
+func (e nodeExecutor) recordFelisVersion(ctx context.Context, name string) error {
+	patch, _ := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": map[string]string{placement.AnnotationFelisVersion: version}}})
+	_, err := e.cs.CoreV1().Nodes().Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{})
+	return err
+}
+
+// upgrade brings an enrolled worker to this controller's felis build and k3s version and
+// reinstalls its host firewall with the current peers. Its servers must be stopped (the
+// caller checked), so a k3s-agent restart interrupts nothing.
+func (e nodeExecutor) upgrade(ctx context.Context, r nodecontrol.Request, nodes []corev1.Node, controller *corev1.Node, peers []string, stage func(string) error, out io.Writer) error {
+	found := false
+	for _, n := range nodes {
+		if n.Name == r.Name {
+			if n.Labels[placement.LabelRole] != placement.RoleWorker {
+				return errors.New("only worker nodes can be updated this way")
+			}
+			found = true
+		}
+	}
+	if !found {
+		return errors.New("no such node; join it first")
+	}
+	if err := stage("transfer"); err != nil {
+		return err
+	}
+	remoteDir := "/var/tmp/felis-node-upgrade-" + strings.ReplaceAll(r.Name, ".", "-")
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		e.ssh(cleanup, r.SSHTarget, rootCommand, strings.NewReader("rm -rf -- "+shellQuote(remoteDir)), io.Discard)
+	}()
+	if err := e.ssh(ctx, r.SSHTarget, rootCommand, strings.NewReader("set -eu; umask 077; rm -rf -- "+shellQuote(remoteDir)+"; mkdir "+shellQuote(remoteDir)), out); err != nil {
+		return err
+	}
+	if err := e.pushBinary(ctx, r.SSHTarget, remoteDir, out); err != nil {
+		return err
+	}
+	if err := stage("upgrade_worker"); err != nil {
+		return err
+	}
+	script := "set -eu\nexport FELIS_K3S_VERSION=" + shellQuote(controller.Status.NodeInfo.KubeletVersion) + "\n" + shellQuote(remoteDir+"/felis") + " node upgrade --name " + shellQuote(r.Name) + " --server " + shellQuote("https://"+net.JoinHostPort(controllerIP(controller), "6443")) + " --peers " + shellQuote(strings.Join(peers, ",")) + "\n"
+	if err := e.ssh(ctx, r.SSHTarget, rootCommand, strings.NewReader(script), out); err != nil {
+		return fmt.Errorf("worker update failed: %w", err)
+	}
+	if err := stage("wait_ready"); err != nil {
+		return err
+	}
+	if err := e.waitReady(ctx, r.Name); err != nil {
+		return err
+	}
+	if err := e.recordFelisVersion(ctx, r.Name); err != nil {
+		return err
+	}
+	return stage("complete")
+}
+
+// waitReady waits up to five minutes for the node to report Ready.
+func (e nodeExecutor) waitReady(ctx context.Context, name string) error {
 	deadline := time.NewTimer(5 * time.Minute)
 	defer deadline.Stop()
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 	for {
-		n, err := e.cs.CoreV1().Nodes().Get(ctx, r.Name, metav1.GetOptions{})
+		n, err := e.cs.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
 		if err == nil && placement.Online(n) {
 			return nil
 		}
@@ -506,7 +625,7 @@ func (e nodeExecutor) enable(ctx context.Context, r nodecontrol.Request, control
 	if err := stage("cluster_backup"); err != nil {
 		return err
 	}
-	if err := e.backupCluster(ctx, out); err != nil {
+	if err := e.backupCluster(ctx, "pre-distributed", out); err != nil {
 		return err
 	}
 	if err := stage("configure_controller"); err != nil {
@@ -545,12 +664,12 @@ func bootstrapTokenID(token string) string {
 	return id
 }
 
-func (e nodeExecutor) backupCluster(ctx context.Context, out io.Writer) (err error) {
+func (e nodeExecutor) backupCluster(ctx context.Context, label string, out io.Writer) (err error) {
 	dir := filepath.Join(filepath.Dir(e.stateDir), "cluster-backups")
 	if err = os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	path := filepath.Join(dir, "pre-distributed-"+time.Now().UTC().Format("20060102T150405.000000000Z")+".tar")
+	path := filepath.Join(dir, label+"-"+time.Now().UTC().Format("20060102T150405.000000000Z")+".tar")
 	stop := exec.CommandContext(ctx, "systemctl", "stop", "k3s")
 	stop.Stdout = out
 	stop.Stderr = out
@@ -578,4 +697,147 @@ func (e nodeExecutor) backupCluster(ctx context.Context, out io.Writer) (err err
 	}
 	fmt.Fprintln(out, "Cluster snapshot:", path)
 	return nil
+}
+
+// fence takes a lost worker out of service for a failover (distributed.Fenced): cordoned,
+// its approval removed, and Kubernetes' out-of-service taint added, so the pods and
+// volumes recorded on it are released without waiting for its kubelet; then the pods still
+// recorded there are deleted outright. A node that is online is refused (its worlds can
+// still be stopped and moved instead), and so is a controller unless another one carries
+// on (controller high availability). Running it again is harmless, and is how pods a Job
+// made on the node after the fence are released.
+func (e nodeExecutor) fence(ctx context.Context, name string, stage func(string) error, out io.Writer) error {
+	if err := stage("fence"); err != nil {
+		return err
+	}
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		node, err := e.cs.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		if placement.Online(node) {
+			return errors.New("the node is online: stop or move its servers instead of fencing it")
+		}
+		switch node.Labels[placement.LabelRole] {
+		case placement.RoleWorker:
+		case placement.RoleController:
+			// With controller high availability a lost controller is fenced from another
+			// one, never from itself and never the last one standing.
+			if name == e.selfName() {
+				return errors.New("a controller cannot fence itself")
+			}
+			nodes, err := e.cs.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+			if err != nil {
+				return err
+			}
+			others := false
+			for i := range nodes.Items {
+				n := &nodes.Items[i]
+				if n.Name != name && n.Labels[placement.LabelRole] == placement.RoleController && placement.Online(n) {
+					others = true
+				}
+			}
+			if !others {
+				return errors.New("the last controller cannot be fenced")
+			}
+		default:
+			return errors.New("only a worker or, with controller high availability, a controller can be fenced")
+		}
+		node.Spec.Unschedulable = true
+		delete(node.Labels, placement.LabelApproved)
+		if node.Annotations == nil {
+			node.Annotations = map[string]string{}
+		}
+		now := metav1.Now()
+		if node.Annotations[distributed.AnnotationFenced] == "" {
+			node.Annotations[distributed.AnnotationFenced] = now.UTC().Format(time.RFC3339)
+		}
+		if !slices.ContainsFunc(node.Spec.Taints, isOutOfService) {
+			node.Spec.Taints = append(node.Spec.Taints, corev1.Taint{Key: distributed.TaintOutOfService, Value: "nodeshutdown", Effect: corev1.TaintEffectNoExecute, TimeAdded: &now})
+		}
+		_, err = e.cs.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "Node %s is cordoned, no longer approved, and out of service.\n", name)
+	if err := stage("release_pods"); err != nil {
+		return err
+	}
+	pods, err := e.cs.CoreV1().Pods(e.namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return err
+	}
+	zero := int64(0)
+	for _, p := range pods.Items {
+		if p.Spec.NodeName != name {
+			continue
+		}
+		if err := e.cs.CoreV1().Pods(e.namespace).Delete(ctx, p.Name, metav1.DeleteOptions{GracePeriodSeconds: &zero}); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		fmt.Fprintf(out, "Released pod %s.\n", p.Name)
+	}
+	return stage("complete")
+}
+
+// liftFence takes the out-of-service taint and the fence mark off a fenced worker that is
+// online again, as part of approving it back: Kubernetes leaves that taint for an
+// administrator to remove. The cordon and the approval are the approval's own business.
+func (e nodeExecutor) liftFence(ctx context.Context, name string, out io.Writer) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		node, err := e.cs.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		fenced := slices.ContainsFunc(node.Spec.Taints, isOutOfService)
+		if !fenced && node.Annotations[distributed.AnnotationFenced] == "" {
+			return nil
+		}
+		if !placement.Online(node) {
+			return errors.New("the fenced node is still offline; approve it once it is back")
+		}
+		node.Spec.Taints = slices.DeleteFunc(node.Spec.Taints, isOutOfService)
+		delete(node.Annotations, distributed.AnnotationFenced)
+		if _, err := e.cs.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{}); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "Node %s is back in service.\n", name)
+		return nil
+	})
+}
+
+// unfence puts a fenced controller that is online again back in service: the fence lifted
+// and scheduling on again. A controller is a host the cluster already trusts with its
+// secrets, and it joins etcd again by itself, so there is nothing to admit; a worker
+// returns through approval instead, which checks it again before it runs worlds.
+func (e nodeExecutor) unfence(ctx context.Context, name string, stage func(string) error, out io.Writer) error {
+	if err := stage("unfence"); err != nil {
+		return err
+	}
+	node, err := e.cs.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	if node.Labels[placement.LabelRole] != placement.RoleController {
+		return errors.New("a fenced worker returns through approval, which checks it again")
+	}
+	if !slices.ContainsFunc(node.Spec.Taints, isOutOfService) && node.Annotations[distributed.AnnotationFenced] == "" {
+		return errors.New("the node is not fenced")
+	}
+	if !placement.Online(node) {
+		return errors.New("the fenced controller is still offline")
+	}
+	if err := e.liftFence(ctx, name, out); err != nil {
+		return err
+	}
+	if _, err := e.cs.CoreV1().Nodes().Patch(ctx, name, types.MergePatchType, []byte(nodeControlUncordon), metav1.PatchOptions{}); err != nil {
+		return err
+	}
+	return stage("complete")
+}
+
+func isOutOfService(t corev1.Taint) bool {
+	return t.Key == distributed.TaintOutOfService && t.Effect == corev1.TaintEffectNoExecute
 }

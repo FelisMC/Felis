@@ -58,29 +58,50 @@ export const LOGIN_GROUPS: ExperienceGroup[] = [
 ];
 
 export function experienceValid(values: Experience, groups: ExperienceGroup[]): boolean {
-  return groups.flatMap((g) => g.fields).every((field) => {
-    const value = values[field.key] ?? field.value;
-    if (typeof value !== typeof field.value) return false;
-    if (typeof value === "number") return Number.isInteger(value) && value >= field.min! && value <= field.max!;
-    if (typeof value === "string") return value.length <= 512 && (!field.choices || field.choices.includes(value));
-    return true;
-  });
+  return groups.flatMap((g) => g.fields).every((field) => fieldValid(field, values[field.key] ?? field.value));
 }
 
-export async function readExperience(name: string, groups: ExperienceGroup[]): Promise<{ values: Experience; sha256: string }> {
+function fieldValid(field: ExperienceGroup["fields"][number], value: unknown): boolean {
+  if (typeof value !== typeof field.value) return false;
+  if (typeof value === "number") return Number.isInteger(value) && value >= field.min! && value <= field.max!;
+  if (typeof value === "string") return value.length <= 512 && (!field.choices || field.choices.includes(value));
+  return true;
+}
+
+// salvage keeps the settings of a damaged file that are still valid; the rest falls back to
+// its default, which is also what the game runs on.
+function salvage(raw: unknown, groups: ExperienceGroup[]): Experience {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const kept: Experience = {};
+  for (const field of groups.flatMap((g) => g.fields)) {
+    const value = (raw as Experience)[field.key];
+    if (value !== undefined && fieldValid(field, value)) kept[field.key] = value;
+  }
+  return kept;
+}
+
+// readExperience reads the settings file. A file damaged by hand (in the file manager) is
+// not an error: the game runs on the defaults, and the page shows what it can salvage with
+// `damaged` set, so saving writes a good file over it.
+export async function readExperience(name: string, groups: ExperienceGroup[]): Promise<{ values: Experience; sha256: string; damaged: boolean }> {
   let file;
   try {
     file = await api.readServerFile(name, EXPERIENCE_PATH);
   } catch (error) {
-    if ((error as ApiError)?.code === "not_found") return { values: {}, sha256: "" };
+    if ((error as ApiError)?.code === "not_found") return { values: {}, sha256: "", damaged: false };
     throw error;
   }
-  const bytes = Uint8Array.from(atob(file.content), (char) => char.charCodeAt(0));
-  const values: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-  if (!values || typeof values !== "object" || Array.isArray(values) || !experienceValid(values as Experience, groups)) {
-    throw new Error("invalid_experience");
+  let values: unknown;
+  try {
+    const bytes = Uint8Array.from(atob(file.content), (char) => char.charCodeAt(0));
+    values = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch {
+    return { values: {}, sha256: file.sha256, damaged: true };
   }
-  return { values: values as Experience, sha256: file.sha256 };
+  if (!values || typeof values !== "object" || Array.isArray(values) || !experienceValid(values as Experience, groups)) {
+    return { values: salvage(values, groups), sha256: file.sha256, damaged: true };
+  }
+  return { values: values as Experience, sha256: file.sha256, damaged: false };
 }
 
 export async function writeExperience(name: string, values: Experience, sha256: string): Promise<string> {

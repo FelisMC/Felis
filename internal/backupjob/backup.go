@@ -98,6 +98,10 @@ type Config struct {
 	RunAsUser  int64
 	RunAsGroup int64
 	FSGroup    int64
+	// StageLimit caps the scratch volume a live backup copies the world into (a resource
+	// quantity); empty leaves it uncapped, and the copy step still refuses to start
+	// without room for the world.
+	StageLimit string
 	// TTLAfterFinished is how long a finished backup Job lingers before the Job
 	// controller garbage-collects it; it also bounds the window in which a re-backup
 	// sees a stale completed Job as ErrAlreadyExists.
@@ -242,6 +246,27 @@ func (b *Backuper) BackupScheduled(ctx context.Context, serverName, formerOwner 
 		return err
 	}
 	return nil
+}
+
+// BackupLive enqueues a backup of a running server and returns its Job name: the Job
+// copies the world first (MakeLive), and felis-api, which has turned the game's saving
+// off, turns it back on once that copy is done (internal/api livebackup.go). reason is the
+// world_backups reason: empty for an owner's own backup, ReasonScheduled or ReasonReplica.
+func (b *Backuper) BackupLive(ctx context.Context, serverName, formerOwner, reason string) (string, error) {
+	p := b.jobParams(serverName, formerOwner)
+	if b.Config.ResolveWorld != nil {
+		w, err := b.Config.ResolveWorld(ctx, serverName)
+		if err != nil {
+			return "", err
+		}
+		p.WorldPVC = w.Claim
+	}
+	p.Live, p.StageLimit = true, b.Config.StageLimit
+	p.Scheduled, p.Replica = reason == ReasonScheduled, reason == ReasonReplica
+	if err := b.Jobs.CreateBackupJob(ctx, p); err != nil {
+		return "", err
+	}
+	return p.JobName, nil
 }
 
 // jobNameSuffix is a short random hex tag that makes each backup Job name unique.

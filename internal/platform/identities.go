@@ -94,8 +94,15 @@ type Params struct {
 	NodeControlNode   string
 	Distributed       bool
 	ControllerNode    string
-	EgressProbe       string
-	RegistryNodeCIDRs []string
+	// ControllerHA spreads the control plane over several controllers (ha.go); it
+	// requires Distributed. ReplicatedStorageClass is the class of the control plane's
+	// volumes then (default DefaultReplicatedStorageClass), and PostgresStorage the
+	// replicated database volume's capacity (default 10Gi).
+	ControllerHA           bool
+	ReplicatedStorageClass string
+	PostgresStorage        string
+	EgressProbe            string
+	RegistryNodeCIDRs      []string
 	// ControlNamespace is where felis-api/operator run; their SAs live here and the
 	// RoleBindings' subjects reference them here, even though the Roles they bind to
 	// live in the minecraft (and build) namespaces. The reaper alone runs — CronJob
@@ -219,6 +226,9 @@ type Params struct {
 
 // Validate reports a Params the renderer cannot turn into objects.
 func (p Params) Validate() error {
+	if p.ControllerHA && !p.Distributed {
+		return fmt.Errorf("controller high availability requires distributed mode")
+	}
 	if p.Distributed && (p.ControllerNode == "" || p.EgressProbe == "" || p.BackupPVC == "" || p.ArchiveLocalPath == "") {
 		return fmt.Errorf("distributed mode requires controller node, egress probe, backup PVC and archive path")
 	}
@@ -290,6 +300,12 @@ func (p Params) withDefaults() Params {
 	}
 	if p.BackupStorage == "" {
 		p.BackupStorage = backupStorageSize
+	}
+	if p.ControllerHA && p.ReplicatedStorageClass == "" {
+		p.ReplicatedStorageClass = DefaultReplicatedStorageClass
+	}
+	if p.PostgresStorage == "" {
+		p.PostgresStorage = postgresStorageSize
 	}
 	return p
 }

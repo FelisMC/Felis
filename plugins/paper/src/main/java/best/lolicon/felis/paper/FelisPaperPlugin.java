@@ -4,7 +4,6 @@ import best.lolicon.felis.link.Control;
 import best.lolicon.felis.link.ControlFrame;
 import best.lolicon.felis.link.ExperienceConfig;
 
-import java.io.IOException;
 
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
@@ -70,11 +69,7 @@ public final class FelisPaperPlugin extends JavaPlugin {
     @Override
     public void onEnable() {
         saveDefaultConfig();
-        try {
-            experience = ExperienceConfig.load(ExperienceConfig.PATH);
-        } catch (IOException e) {
-            throw new IllegalStateException("Cannot load lobby settings", e);
-        }
+        experience = ExperienceConfig.loadOrDefaults(ExperienceConfig.PATH, getLogger()::warning);
         if (!getConfig().getStringList("servers").isEmpty()) {
             getLogger().info("config.yml 'servers' is no longer read: the menu lists what the proxy routes.");
         }

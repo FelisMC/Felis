@@ -2436,7 +2436,7 @@ wblock="$(awk '/^install_watchdog_timer\(\) \{/,/^}/' "$BS")"
 qblock="$(awk '/^quiet_watchdog\(\) \{/,/^}/' "$BS")"
 [ -n "$qblock" ] || { echo "FAIL: no quiet_watchdog found in $BS"; exit 1; }
 hbblock=""
-for fn in write_heartbeat_url heartbeat_host summary_heartbeat validate_heartbeat_url; do
+for fn in write_heartbeat_url heartbeat_host panel_setting summary_heartbeat validate_heartbeat_url; do
   blk="$(awk "/^${fn}\\(\\) \\{/,/^}/" "$BS")"
   [ -n "$blk" ] || { echo "FAIL: no ${fn} found in $BS"; exit 1; }
   [ "$(printf '%s\n' "$blk" | wc -l)" -lt 30 ] \
@@ -2527,7 +2527,19 @@ leftover="$(find "$tdir" -maxdepth 1 -name 'watchdog-heartbeat-url.*')"
   || { echo "FAIL temporary files left: $leftover"; fails=$((fails + 1)); }
 out="$(SCRIPT=summary_heartbeat run_watchdog_timer 0 "")"
 expect "without a heartbeat the summary says so loudly" "WARN: NO HEARTBEAT: nothing off this machine notices it going down or its watchdog stopping." "$out"
-expect "and says how to add one" "then re-run with FELIS_WATCHDOG_HEARTBEAT_URL=<its ping URL> (docs/troubleshooting.md §14)." "$out"
+expect "and says how to add one" "then save its ping URL in the panel (Platform settings → Monitoring heartbeat), or re-run with FELIS_WATCHDOG_HEARTBEAT_URL=<its ping URL> (docs/troubleshooting.md §14)." "$out"
+# A heartbeat saved in the panel wins over the host file, so the summary names it and warns
+# of nothing; felis panel-settings answers for the panel (stubbed here).
+printf '#!/bin/sh\n[ "$1" = panel-settings ] || exit 2\nprintf "relay=%%s\\nheartbeat=%%s\\n" "${STUB_RELAY:-no}" "${STUB_BEAT:-no}"\n' > "$tdir/panel-stub"
+chmod +x "$tdir/panel-stub"
+out="$(STUB_BEAT=yes SCRIPT="HOST_BIN=$tdir/panel-stub; summary_heartbeat" run_watchdog_timer 0 "")"
+expect "a heartbeat saved in the panel is named" "LOG: Heartbeat: every watchdog run pings the URL saved in the panel" "$out"
+case "$out" in
+  *"NO HEARTBEAT"*) echo "FAIL a heartbeat saved in the panel must not be warned about: $out"; fails=$((fails + 1)) ;;
+  *) echo "PASS a heartbeat saved in the panel is not warned about" ;;
+esac
+out="$(STUB_RELAY=yes SCRIPT="HOST_BIN=$tdir/panel-stub; summary_heartbeat" run_watchdog_timer 0 "")"
+expect "a relay alone in the panel is no heartbeat" "WARN: NO HEARTBEAT" "$out"
 out="$(FELIS_WATCHDOG_HEARTBEAT_URL='https://user:pw@status.example:8443?rid=5f1e0c2a' SCRIPT='write_heartbeat_url; heartbeat_host' run_watchdog_timer 0 "")"
 expect "the host shown drops the sign-in and the query" "https://status.example:8443/..." "$out"
 rm -f "$tdir/watchdog-heartbeat-url"
@@ -2660,6 +2672,8 @@ rm -rf "$next_dir"
 # The watchdog alerts by mail only, through the [smtp] relay. An install without one must
 # say that its alerts are only logged; one with a relay must not cry wolf.
 sablock="$(awk '/^summary_alerts\(\) \{/,/^}/' "$BS")"
+psblock="$(awk '/^panel_setting\(\) \{/,/^}/' "$BS")"
+[ -n "$psblock" ] || { echo "FAIL: no panel_setting found in $BS"; exit 1; }
 [ -n "$sablock" ] || { echo "FAIL: no summary_alerts found in $BS"; exit 1; }
 [ "$(printf '%s\n' "$sablock" | wc -l)" -lt 20 ] \
   || { echo "FAIL: the extracted block is not summary_alerts -- did its closing brace move?"; exit 1; }
@@ -2667,6 +2681,7 @@ run_summary_alerts() { # state-dir
   STATE_DIR="$1" SBLOCK_FILE="$sfn" bash -c '
     log() { printf "LOG: %s\n" "$*"; }; warn() { printf "WARN: %s\n" "$*"; }
     . "$SBLOCK_FILE"
+    '"$psblock"'
     '"$sablock"'
     summary_alerts' 2>&1
 }
@@ -2694,11 +2709,24 @@ listen = "0.0.0.0:8080"' '[smtp]
   [ -z "$toml" ] || printf '%s\n' "$toml" > "$alerts_dir/felis.host.toml"
   out="$(run_summary_alerts "$alerts_dir")"
   expect "no relay (case $alerts_case): the summary says alerts are only logged" "WARN: NO ALERT MAIL: no email relay is configured, so the watchdog's alerts and the sign-in codes are only written to the journal." "$out"
-  expect "no relay (case $alerts_case): the summary says how to add one" "WARN: Configure one in 'sudo felis setup' (e: configure email) and verify the Owner's email in the panel" "$out"
+  expect "no relay (case $alerts_case): the summary says how to add one" "WARN: Configure one in the panel (Platform settings → Mail delivery) or in 'sudo felis setup' (e: configure email), and verify the Owner's email in the panel" "$out"
   case "$out" in
     *"LOG: Alerts"*) echo "FAIL no relay must not claim the alerts are mailed: $out"; fails=$((fails + 1)) ;;
   esac
 done
+# A relay saved in the panel wins over felis.host.toml: with none there the summary still
+# says the alerts are mailed (felis panel-settings is stubbed).
+rm -f "$alerts_dir/felis.host.toml"
+printf '#!/bin/sh\n[ "$1" = panel-settings ] || exit 2\nprintf "relay=%%s\\nheartbeat=no\\n" "${STUB_RELAY:-no}"\n' > "$alerts_dir/panel-stub"
+chmod +x "$alerts_dir/panel-stub"
+out="$(HOST_BIN="$alerts_dir/panel-stub" STUB_RELAY=yes run_summary_alerts "$alerts_dir")"
+expect "a relay saved in the panel mails the alerts" "LOG: Alerts: the watchdog mails the Owner's verified email address through the relay saved in the panel." "$out"
+case "$out" in
+  *WARN*) echo "FAIL a relay saved in the panel must not be warned about: $out"; fails=$((fails + 1)) ;;
+  *) echo "PASS a relay saved in the panel is not warned about" ;;
+esac
+out="$(HOST_BIN="$alerts_dir/panel-stub" STUB_RELAY=no run_summary_alerts "$alerts_dir")"
+expect "nothing in the panel or the host: the summary warns" "WARN: NO ALERT MAIL" "$out"
 rm -rf "$alerts_dir"
 
 out="$(run_watchdog_timer 0 /srv/worlds)"
@@ -3468,7 +3496,7 @@ case "$kcblock" in
   *'k3s_node_name() {'*'write_k3s_config() {'*) ;;
   *) echo "FAIL: k3s_node_name / write_k3s_config not found in $BS"; exit 1 ;;
 esac
-[ "$(printf '%s\n' "$kcblock" | wc -l)" -lt 60 ] \
+[ "$(printf '%s\n' "$kcblock" | wc -l)" -lt 80 ] \
   || { echo "FAIL: the extracted k3s settings blocks ran past their closing braces"; exit 1; }
 
 kdir="$(mktemp -d)"
@@ -5392,6 +5420,339 @@ case "$out" in
   *NM:*) echo "FAIL an unmanaged bridge has no connection profile to change"; fails=$((fails + 1)) ;;
   *) echo "PASS an unmanaged bridge keeps its firewalld binding without a profile" ;;
 esac
+
+# A rerun or `felis update` on a distributed controller passes neither its fixed public
+# address nor its peer list. Losing them would move the WireGuard endpoint and shrink the host
+# firewall to the controller alone, cutting every worker off: the rerun reads both back.
+rdblock="$(awk '/^recall_distributed_settings\(\) \{/,/^}/' "$BS")"
+[ -n "$rdblock" ] || { echo "FAIL: no recall_distributed_settings found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$rdblock" | wc -l)" -lt 15 ] \
+  || { echo "FAIL: the extracted block is not recall_distributed_settings -- did its closing brace move?"; exit 1; }
+rddir="$(mktemp -d)"
+printf '# Written by the Felis installer\nnode-external-ip: "203.0.113.10"\nflannel-backend: "wireguard-native"\n' > "$rddir/50-felis.yaml"
+printf '192.0.2.20/32,203.0.113.10/32\n' > "$rddir/node-peers"
+run_recall() { # $1 DISTRIBUTED, $2 passed external IP, $3 passed peers
+  DISTRIBUTED="$1" NODE_EXTERNAL_IP="$2" WORKER_PEERS="$3" \
+    K3S_CONFIG_DROPIN="$rddir/50-felis.yaml" NODE_PEERS_FILE="$rddir/node-peers" bash -c '
+    set -Eeuo pipefail
+    '"$rdblock"'
+    recall_distributed_settings
+    printf "ip=%s peers=%s\n" "$NODE_EXTERNAL_IP" "$WORKER_PEERS"'
+}
+expect "a distributed rerun keeps its fixed address and peer list" \
+  "ip=203.0.113.10 peers=192.0.2.20/32,203.0.113.10/32" "$(run_recall 1 "" "")"
+expect "what the operator passes still wins" \
+  "ip=198.51.100.7 peers=198.51.100.7/32" "$(run_recall 1 198.51.100.7 198.51.100.7/32)"
+expect "a single-host install is left alone" "ip= peers=" "$(run_recall 0 "" "")"
+rm -f "$rddir/node-peers"
+expect "without a recorded peer list the rerun asks the cluster" \
+  "ip=203.0.113.10 peers=" "$(run_recall 1 "" "")"
+rm -rf "$rddir"
+mainbody="$(awk '/^main\(\) \{/,/^}/' "$BS")"
+case "$mainbody" in
+  *recall_distributed_settings*install_k3s*) echo "PASS the rerun recalls the address before k3s's config is rewritten" ;;
+  *) echo "FAIL main must call recall_distributed_settings before install_k3s"; fails=$((fails + 1)) ;;
+esac
+case "$mainbody" in
+  *'WORKER_PEERS="$(cluster_node_peers || true)"'*'WORKER_PEERS="${NODE_EXTERNAL_IP:-$NODE_IP}/32"'*)
+    echo "PASS the cluster's nodes are asked before falling back to the controller alone" ;;
+  *) echo "FAIL the controller-only peer list must be the last resort"; fails=$((fails + 1)) ;;
+esac
+gopeers="$(sed -n 's/^const nodePeersFile = "\(.*\)"$/\1/p' "$(dirname "$BS")/../cmd/felis/node_firewall.go")"
+shpeers="$(sed -n 's/^NODE_PEERS_FILE="\(.*\)"$/\1/p' "$BS")"
+if [ -n "$gopeers" ] && [ "$gopeers" = "$shpeers" ]; then
+  echo "PASS the installer reads the peer list where felis node firewall writes it"
+else
+  echo "FAIL peer list path: felis writes <$gopeers>, the installer reads <$shpeers>"; fails=$((fails + 1))
+fi
+
+# A worker update (felis node upgrade, sent by the controller) keeps the worker's identity,
+# moves k3s-agent only when the version differs, and always reinstalls the firewall.
+wublock="$(awk '/^main_worker_upgrade\(\) \{/,/^}/' "$BS")"
+[ -n "$wublock" ] || { echo "FAIL: no main_worker_upgrade found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$wublock" | wc -l)" -lt 40 ] \
+  || { echo "FAIL: the extracted block is not main_worker_upgrade -- did its closing brace move?"; exit 1; }
+wudir="$(mktemp -d)"
+wublock_here="$(printf '%s\n' "$wublock" | sed "s#/var/lib/rancher#$wudir/rancher#g")"
+mkdir -p "$wudir/rancher/k3s/agent"
+printf 'server: "https://203.0.113.10:6443"\nnode-name: "worker-b"\n' > "$wudir/50-felis.yaml"
+run_worker_upgrade() { # $1 installed k3s version, $2 FROM_TUI, $3 node name, $4 curl status
+  K3S_NOW="$1" FELIS_BOOTSTRAP_FROM_TUI="$2" WORKER_NAME="$3" CURL_RC="${4:-0}" \
+    WORKER_SERVER="https://203.0.113.10:6443" WORKER_PEERS="192.0.2.20/32,203.0.113.10/32" \
+    FELIS_K3S_VERSION="v1.36.4+k3s1" K3S_CONFIG_DROPIN="$wudir/50-felis.yaml" bash -c '
+    set -Eeuo pipefail
+    die() { printf "DIE: %s\n" "$*"; exit 1; }
+    ok() { printf "OK: %s\n" "$*"; }
+    detect_node_ip() { :; }
+    bootstrap_from_tui() { [ "${FELIS_BOOTSTRAP_FROM_TUI:-}" = 1 ]; }
+    acquire_felis_binary() { echo ACQUIRE; }
+    stage_k3s_airgap_images() { echo AIRGAP; }
+    curl() { echo "CURL $*"; return "$CURL_RC"; }
+    sh() { echo "INSTALL version=$INSTALL_K3S_VERSION exec=$INSTALL_K3S_EXEC"; }
+    HOST_BIN=felis_stub; K3S_BIN=k3s_stub; K3S_BIN_DIR=/usr/local/bin; POD_CIDR=10.42.0.0/16; FELIS_PANEL_NODEPORT=30443
+    felis_stub() { echo "FELIS $*"; }
+    k3s_stub() { echo "k3s version $K3S_NOW (abc)"; }
+    HOST_BIN=felis_stub K3S_BIN=k3s_stub
+    '"$wublock_here"'
+    main_worker_upgrade' 2>&1
+}
+out="$(run_worker_upgrade v1.36.4+k3s1 1 worker-b)"
+expect "a worker update reinstalls the firewall with the current peers" "FELIS node firewall --peers 192.0.2.20/32,203.0.113.10/32 --controller-ip 203.0.113.10:6443" "$out"
+expect "  and installs the controller's felis binary" "ACQUIRE" "$out"
+expect "  and leaves k3s alone at the controller's version" "already runs k3s v1.36.4+k3s1" "$out"
+case "$out" in *CURL*) echo "FAIL a worker at the controller's k3s version must not reinstall k3s"; fails=$((fails + 1)) ;; esac
+out="$(run_worker_upgrade v1.35.2+k3s1 1 worker-b)"
+expect "a worker behind the controller moves k3s-agent to its version" "INSTALL version=v1.36.4+k3s1 exec=agent" "$out"
+expect "  with the airgap images staged first" "AIRGAP" "$out"
+expect "a failed k3s move stops the update" "DIE: could not move k3s-agent" "$(run_worker_upgrade v1.35.2+k3s1 1 worker-b 1)"
+expect "an update for another node name is refused" "DIE: this worker is worker-b, not worker-c" "$(run_worker_upgrade v1.36.4+k3s1 1 worker-c)"
+expect "an update without the controller's binary is refused" "DIE: a worker update takes the controller's felis binary" "$(run_worker_upgrade v1.36.4+k3s1 0 worker-b)"
+printf 'server: "https://198.51.100.9:6443"\nnode-name: "worker-b"\n' > "$wudir/50-felis.yaml"
+expect "a worker of another controller is refused" "DIE: this worker belongs to another controller" "$(run_worker_upgrade v1.36.4+k3s1 1 worker-b)"
+rm -rf "$wudir/rancher/k3s/agent"
+expect "a host that is not a worker is refused" "DIE: this host is not a Felis worker" "$(run_worker_upgrade v1.36.4+k3s1 1 worker-b)"
+rm -rf "$wudir"
+case "$mainbody" in
+  *'"$INSTALL_MODE" = worker-upgrade ]; then main_worker_upgrade'*) echo "PASS main dispatches the worker update mode" ;;
+  *) echo "FAIL main must dispatch FELIS_INSTALL_MODE=worker-upgrade"; fails=$((fails + 1)) ;;
+esac
+
+# FELIS_RESTORE_FROM_OFFSITE=1 rebuilds a fresh host from the old install's bucket: it is
+# refused up front without the bucket's credentials and key or on an installed host, and
+# runs felis restore-host once the install is done, before the setup console.
+vrblock="$(awk '/^validate_restore_settings\(\) \{/,/^}/' "$BS")"
+rfblock="$(awk '/^restore_from_offsite\(\) \{/,/^}/' "$BS")"
+[ -n "$vrblock" ] && [ -n "$rfblock" ] || { echo "FAIL: no restore functions found in $BS"; exit 1; }
+vrdir="$(mktemp -d)"
+run_validate_restore() { # $1 RESTORE_FROM_OFFSITE, $2 bundle, then NAME=value overrides
+  local mode="$1" bundle="$2"; shift 2
+  env FELIS_OFFSITE_BUCKET=b FELIS_OFFSITE_ENDPOINT=https://s3 FELIS_OFFSITE_ACCESS_KEY=a FELIS_OFFSITE_SECRET_KEY=s FELIS_OFFSITE_KEY=k \
+    "$@" RESTORE_FROM_OFFSITE="$mode" RESTORE_BUNDLE="$bundle" BOOTSTRAP_DONE="$vrdir/bootstrap.done" RESTORE_STATE_DIR="$vrdir/restore" bash -c '
+    die() { printf "DIE: %s\n" "$*"; exit 1; }
+    '"$vrblock"'
+    validate_restore_settings
+    echo OK' 2>&1
+}
+expect "a plain install is not a rebuild" "OK" "$(run_validate_restore 0 "" FELIS_OFFSITE_KEY=)"
+expect "a rebuild with the bucket and its key goes ahead" "OK" "$(run_validate_restore 1 "")"
+expect "a rebuild without the encryption key is refused" "DIE: FELIS_RESTORE_FROM_OFFSITE=1 needs FELIS_OFFSITE_KEY" "$(run_validate_restore 1 "" FELIS_OFFSITE_KEY=)"
+expect "a rebuild without the bucket is refused" "needs FELIS_OFFSITE_BUCKET" "$(run_validate_restore 1 "" FELIS_OFFSITE_BUCKET=)"
+expect "a bundle that is not a bundle name is refused" "DIE: FELIS_RESTORE_BUNDLE is a bundle name" "$(run_validate_restore 1 "../etc/passwd")"
+expect "a named bundle goes ahead" "OK" "$(run_validate_restore 1 felis-db-20261001T000000Z-hourly.tar)"
+expect "a mistyped switch is refused" "DIE: FELIS_RESTORE_FROM_OFFSITE must be 1" "$(run_validate_restore yes "")"
+: > "$vrdir/bootstrap.done"
+expect "a rebuild onto an installed host is refused" "Felis is already installed here" "$(run_validate_restore 1 "")"
+mkdir -p "$vrdir/restore" && : > "$vrdir/restore/state.json"
+expect "a rebuild cut short carries on" "OK" "$(run_validate_restore 1 "")"
+rm -rf "$vrdir"
+run_restore() { # $1 mode, $2 bundle, $3 take over, $4 exit status of felis
+  RESTORE_FROM_OFFSITE="$1" RESTORE_BUNDLE="$2" RESTORE_TAKE_OVER="$3" RC="${4:-0}" bash -c '
+    die() { printf "DIE: %s\n" "$*"; exit 1; }
+    log() { :; }; ok() { printf "OK: %s\n" "$*"; }
+    felis_stub() { echo "FELIS $*"; return "$RC"; }
+    HOST_BIN=felis_stub
+    '"$rfblock"'
+    restore_from_offsite
+    echo DONE' 2>&1
+}
+case "$(run_restore 0 "" 0)" in *FELIS*) echo "FAIL a plain install must not run restore-host"; fails=$((fails + 1)) ;; *) echo "PASS a plain install runs no rebuild" ;; esac
+expect "a rebuild runs felis restore-host" "FELIS restore-host -yes
+OK: rebuilt from the off-site copy" "$(run_restore 1 "" 0)"
+expect "a rebuild passes the named bundle and the take-over" "FELIS restore-host -yes -bundle felis-db-x.tar -take-over" "$(run_restore 1 felis-db-x.tar 1)"
+out="$(run_restore 1 "" 0 1)"
+expect "a rebuild that stops says how to carry on" "DIE: the rebuild stopped before it finished; fix the cause above and run: sudo felis restore-host -yes" "$out"
+case "$out" in *DONE*) echo "FAIL a failed rebuild must stop the install"; fails=$((fails + 1)) ;; esac
+case "$mainbody" in
+  *mark_bootstrap_done*restore_from_offsite*summary*start_setup_console*) echo "PASS the rebuild runs after the install and before the setup console" ;;
+  *) echo "FAIL main must run restore_from_offsite after mark_bootstrap_done and before the setup console"; fails=$((fails + 1)) ;;
+esac
+gorestore="$(sed -n 's/^const restoreStateDir = "\(.*\)"$/\1/p' "$(dirname "$BS")/../cmd/felis/restorehost.go")"
+shrestore="$(sed -n 's/^RESTORE_STATE_DIR="\(.*\)"$/\1/p' "$BS")"
+if [ -n "$gorestore" ] && [ "$gorestore" = "$shrestore" ]; then
+  echo "PASS the installer looks for the rebuild's progress where felis restore-host keeps it"
+else
+  echo "FAIL restore progress path: felis keeps <$gorestore>, the installer reads <$shrestore>"; fails=$((fails + 1))
+fi
+
+# --- controller high availability ------------------------------------------------------
+# FELIS_CONTROLLER_HA=1 is checked before anything is installed, survives reruns in
+# ha.env with the home controller, turns k3s's datastore into etcd (or joins one), gates
+# the cluster-wide timers on the host leader, configures Longhorn's defaults, pulls through
+# the registry's Service and floats the VRRP address.
+hafn() { awk "/^$1\\(\\) \\{/,/^}/" "$BS"; }
+for f in validate_ha_settings recall_ha_settings write_ha_env ha_exec_condition longhorn_default_settings install_keepalived ha_vip_interface postgres_ha_args main_controller_join configure_registry_mirror write_k3s_config; do
+  body="$(hafn "$f")"
+  [ -n "$body" ] || { echo "FAIL: no $f found in $BS"; exit 1; }
+  [ "$(printf '%s\n' "$body" | wc -l)" -lt 160 ] || { echo "FAIL: the extracted $f is not just the function"; exit 1; }
+done
+habase='
+  stat() { if [ "$1" = -c ]; then command stat -c "$2" "$3" 2>/dev/null || command stat -f %Lp "$3"; else command stat "$@"; fi; }
+  die() { printf "DIE: %s\n" "$*"; exit 1; }
+  log() { printf "LOG: %s\n" "$*"; }
+  ok() { printf "OK: %s\n" "$*"; }
+  warn() { printf "WARN: %s\n" "$*"; }
+  remember_temp() { :; }
+  k3s_node_name() { echo ctl-a; }
+'"$(hafn validate_ha_settings)"'
+'"$(hafn recall_ha_settings)"'
+'"$(hafn write_ha_env)"'
+'"$(hafn ha_exec_condition)"'
+'"$(hafn postgres_ha_args)"
+hadir="$(mktemp -d)"
+run_ha() { # env... -- script
+  env HA_ENV="$hadir/ha.env" HOST_BIN=/usr/local/bin/felis FELIS_HA_VRID="${FELIS_HA_VRID:-51}" FELIS_LONGHORN_VERSION=v1.8.1 REPLICATED_CLASS=felis-replicated \
+    CONTROLLER_HA="${CONTROLLER_HA:-}" DISTRIBUTED="${DISTRIBUTED:-0}" FELIS_HA_VIP="${FELIS_HA_VIP:-}" FELIS_HA_VIP_INTERFACE="${FELIS_HA_VIP_INTERFACE:-}" HA_HOME="${HA_HOME:-}" \
+    bash -c "set -Eeuo pipefail
+$habase
+$1" 2>&1
+}
+expect "HA without distributed mode is refused" "DIE: controller high availability (FELIS_CONTROLLER_HA=1) builds on distributed mode" "$(CONTROLLER_HA=1 run_ha 'recall_ha_settings')"
+expect "a malformed floating address is refused" "DIE: FELIS_HA_VIP must be an IPv4 address with its prefix" "$(FELIS_HA_VIP=192.0.2.50 run_ha 'validate_ha_settings')"
+expect "a router id outside 1-255 is refused" "DIE: FELIS_HA_VRID must be 1 to 255" "$(FELIS_HA_VRID=300 run_ha 'validate_ha_settings')"
+expect "a Longhorn version that is no tag is refused" "DIE: FELIS_LONGHORN_VERSION must be a release tag" "$(run_ha 'FELIS_LONGHORN_VERSION=latest; validate_ha_settings')"
+out="$(CONTROLLER_HA=1 DISTRIBUTED=1 FELIS_HA_VIP=192.0.2.50/24 run_ha 'recall_ha_settings; write_ha_env; cat "$HA_ENV"; stat -c %a "$HA_ENV"')"
+expect "ha.env records HA" "HA=1" "$out"
+expect "ha.env records this controller as home the first time" "HOME=ctl-a" "$out"
+expect "ha.env records the floating address" "VIP=192.0.2.50/24" "$out"
+expect "ha.env is root-only" "600" "$out"
+out="$(DISTRIBUTED=1 run_ha 'recall_ha_settings; printf "ha=%s home=%s vip=%s\n" "$CONTROLLER_HA" "$HA_HOME" "$FELIS_HA_VIP"; ha_exec_condition -or-unreachable; postgres_ha_args')"
+expect "a rerun without FELIS_CONTROLLER_HA keeps HA, its home and its address" "ha=1 home=ctl-a vip=192.0.2.50/24" "$out"
+expect "with HA the watchdog runs on the host leader or when the cluster cannot be asked" "ExecCondition=/usr/local/bin/felis ha leader -q -or-unreachable" "$out"
+expect "with HA the database renders replicated, homed on the first controller" "--distributed --controller-node ctl-a --controller-ha --replicated-class felis-replicated" "$out"
+out="$(run_ha 'CONTROLLER_HA=0; printf "[%s][%s]\n" "$(ha_exec_condition)" "$(postgres_ha_args)"')"
+expect "without HA every timer runs and the database renders as before" "[][]" "$out"
+rm -f "$hadir/ha.env"
+
+# write_k3s_config: the first controller starts etcd, a joining one joins it.
+k3sblock="$(hafn write_k3s_config)"
+run_k3s_cfg() { # join-server vip
+  K3S_CONFIG_DROPIN="$hadir/50-felis.yaml" HA_JOIN_SERVER="$1" FELIS_HA_VIP="$2" bash -c '
+    set -Eeuo pipefail
+    die() { printf "DIE: %s\n" "$*"; exit 1; }; log() { :; }; ok() { :; }; warn() { :; }; remember_temp() { :; }; restore_label() { :; }
+    k3s_node_name() { echo ctl-a; }
+    DISTRIBUTED=1 CONTROLLER_HA=1 NODE_EXTERNAL_IP=203.0.113.10 NODE_IP=203.0.113.10
+    mkdir -p /tmp >/dev/null
+    openssl() { echo agent-token; }
+    '"$k3sblock"'
+    sed() { command sed "$@"; }
+    mkdir() { command mkdir "$@"; }
+    write_k3s_config >/dev/null 2>&1 || true
+    cat "$K3S_CONFIG_DROPIN"' 2>&1
+}
+if [ -d /etc/rancher/k3s ] || [ "$(id -u)" = 0 ]; then
+  echo "SKIP write_k3s_config HA cases: they would touch /etc/rancher/k3s"
+else
+  out="$(run_k3s_cfg "" 192.0.2.50/24)"
+  expect "the first HA controller converts k3s to etcd" "cluster-init: true" "$out"
+  expect "the floating address is in the API certificate" '  - "192.0.2.50"' "$out"
+  out="$(run_k3s_cfg https://203.0.113.10:6443 "")"
+  expect "a joining controller joins through an existing one" 'server: "https://203.0.113.10:6443"' "$out"
+  expect "a joining controller uses the cluster's server token" 'token-file: "/etc/rancher/k3s/felis-server-token"' "$out"
+  case "$out" in *cluster-init*) echo "FAIL a joining controller must not start its own etcd"; fails=$((fails + 1)) ;; *) echo "PASS a joining controller starts no etcd of its own" ;; esac
+fi
+
+# longhorn_default_settings: Felis's defaults go into the manifest's default-setting.yaml at
+# that block's indentation; a manifest without the block is refused.
+lhblock="$(hafn longhorn_default_settings)"
+printf 'kind: ConfigMap\ndata:\n  default-setting.yaml: |-\n    priority-class: longhorn-critical\n---\nkind: Deployment\n' > "$hadir/longhorn.yaml"
+out="$(bash -c '
+  set -Eeuo pipefail
+  die() { printf "DIE: %s\n" "$*"; exit 1; }; remember_temp() { :; }
+  FELIS_LONGHORN_VERSION=v1.8.1
+  '"$lhblock"'
+  longhorn_default_settings "'"$hadir/longhorn.yaml"'"
+  cat "'"$hadir/longhorn.yaml"'"' 2>&1)"
+expect "Longhorn keeps replicas on the labelled controllers only" "    create-default-disk-labeled-nodes: true" "$out"
+expect "Longhorn frees a down node's pods so their volumes move" "    node-down-pod-deletion-policy: delete-both-statefulset-and-deployment-pod" "$out"
+expect "Longhorn's own components stay on controllers" '    system-managed-components-node-selector: "felis.node-restriction.kubernetes.io/role:controller"' "$out"
+expect "the existing settings are kept" "    priority-class: longhorn-critical" "$out"
+printf 'kind: ConfigMap\n' > "$hadir/longhorn.yaml"
+out="$(bash -c '
+  die() { printf "DIE: %s\n" "$*"; exit 1; }; remember_temp() { :; }
+  FELIS_LONGHORN_VERSION=v1.8.1
+  '"$lhblock"'
+  longhorn_default_settings "'"$hadir/longhorn.yaml"'"' 2>&1)"
+expect "a Longhorn manifest without its settings block is refused" "DIE: the Longhorn v1.8.1 manifest has no default-setting.yaml block" "$out"
+
+# configure_registry_mirror: with HA, pull through the registry's Service first.
+mirblock="$(hafn configure_registry_mirror)"
+run_mirror() { # CONTROLLER_HA
+  bash -c '
+    set -Eeuo pipefail
+    die() { printf "DIE: %s\n" "$*"; exit 1; }; log() { :; }; ok() { :; }; remember_temp() { :; }
+    systemctl() { :; }; wait_for_node_ready() { :; }
+    K3S_REGISTRIES_FILE="'"$hadir"'/registries.yaml" K3S_KUBECONFIG="'"$hadir"'/kubeconfig" K3S_BIN="'"$hadir"'/k3s"
+    REGISTRY_URL=registry.felis.local REGISTRY_PUSH_HOST=127.0.0.1:5000 CONTROL_NS=felis CONTROLLER_HA='"$1"'
+    '"$mirblock"'
+    configure_registry_mirror >/dev/null
+    cat "$K3S_REGISTRIES_FILE"' 2>&1
+}
+: > "$hadir/kubeconfig"
+printf '#!/bin/sh\necho 10.43.0.50\n' > "$hadir/k3s"
+chmod +x "$hadir/k3s"
+out="$(run_mirror 1)"
+expect "with HA the registry's Service comes first" '      - "http://10.43.0.50:5000"
+      - "http://127.0.0.1:5000"' "$out"
+rm -f "$hadir/registries.yaml"
+out="$(run_mirror 0)"
+case "$out" in *10.43.0.50*) echo "FAIL a single controller must keep the loopback mirror alone"; fails=$((fails + 1)) ;; *) echo "PASS a single controller keeps the loopback mirror alone" ;; esac
+
+# install_keepalived: the floating address prefers the host leader, with one shared password.
+kablock="$(hafn install_keepalived)"
+out="$(bash -c '
+  set -Eeuo pipefail
+  die() { printf "DIE: %s\n" "$*"; exit 1; }; ok() { printf "OK: %s\n" "$*"; }
+  pkg_install() { :; }; systemctl() { :; }; command() { return 0; }
+  ha_vip_interface() { echo eth1; }
+  CONTROLLER_HA=1 FELIS_HA_VIP=192.0.2.50/24 FELIS_HA_VRID=77 HOST_BIN=/usr/local/bin/felis NODE_IP=192.0.2.10
+  HA_VRRP_PASS="'"$hadir"'/vrrp-pass" KEEPALIVED_CONF="'"$hadir"'/keepalived.conf"
+  mkdir() { command mkdir "$@" 2>/dev/null || true; }
+  openssl() { echo 1a2b3c4d; }
+  '"$kablock"'
+  install_keepalived
+  cat "$KEEPALIVED_CONF"' 2>&1)"
+expect "the floating address follows the host leader" 'script "/usr/local/bin/felis ha leader -q"' "$out"
+expect "the floating address is on the chosen interface" "192.0.2.50/24 dev eth1" "$out"
+expect "the router id is the configured one" "virtual_router_id 77" "$out"
+expect "the controllers share one VRRP password" "auth_pass 1a2b3c4d" "$out"
+
+# main_controller_join refuses an incomplete hand-over before touching the host.
+mcblock="$(hafn main_controller_join)"
+run_join() {
+  env WORKER_NAME="$1" WORKER_SERVER="$2" WORKER_REGISTRY_IP=10.43.0.50 WORKER_PEERS=192.0.2.10/32 CONTROLLER_PEERS="$3" \
+    SERVER_TOKEN_FILE="$4" AGENT_TOKEN_FILE="$4" ETC_BUNDLE="$4" bash -c '
+    set -Eeuo pipefail
+    stat() { if [ "$1" = -c ]; then command stat -c "$2" "$3" 2>/dev/null || command stat -f %Lp "$3"; else command stat "$@"; fi; }
+    die() { printf "DIE: %s\n" "$*"; exit 1; }
+    install_base() { echo INSTALLED; }
+    '"$mcblock"'
+    main_controller_join' 2>&1
+}
+expect "a controller join needs a node name" "DIE: FELIS_NODE_NAME is required" "$(run_join "" https://203.0.113.10:6443 192.0.2.10/32 /nonexistent)"
+expect "a controller join needs the controllers' addresses" "DIE: FELIS_CONTROLLER_PEERS must list every controller" "$(run_join ctl-b https://203.0.113.10:6443 "" /nonexistent)"
+out="$(run_join ctl-b https://203.0.113.10:6443 192.0.2.10/32 /nonexistent)"
+expect "a controller join needs the tokens and the configuration as files" "DIE: controller join needs FELIS_SERVER_TOKEN_FILE" "$out"
+case "$out" in *INSTALLED*) echo "FAIL a refused join touched the host"; fails=$((fails + 1)) ;; *) echo "PASS a refused join touches nothing" ;; esac
+printf 'secret\n' > "$hadir/token"
+chmod 644 "$hadir/token"
+expect "a controller join refuses tokens others can read" "must not be readable by group or others" "$(run_join ctl-b https://203.0.113.10:6443 192.0.2.10/32 "$hadir/token")"
+
+# The main flow: HA settings are recalled before k3s is configured, Longhorn and the move
+# come before the database starts, and the floating address after the proxy.
+mainbody="$(awk '/^main\(\) \{/,/^}/' "$BS")"
+case "$mainbody" in
+  *recall_ha_settings*write_ha_env*install_k3s*install_longhorn*ha_migrate_storage*deploy_postgres*install_velocity*install_keepalived*) echo "PASS the HA steps run in order" ;;
+  *) echo "FAIL main must recall HA before install_k3s, move the volumes before deploy_postgres, and float the address after install_velocity"; fails=$((fails + 1)) ;;
+esac
+case "$(hafn prompt_install_mode)" in *controller-join*) echo "PASS controller-join is an install mode" ;; *) echo "FAIL prompt_install_mode must accept controller-join"; fails=$((fails + 1)) ;; esac
+gocls="$(sed -n 's/^\tDefaultReplicatedStorageClass = "\(.*\)"$/\1/p' "$(dirname "$BS")/../internal/platform/ha.go")"
+shcls="$(sed -n 's/^REPLICATED_CLASS="\(.*\)"$/\1/p' "$BS")"
+if [ -n "$gocls" ] && [ "$gocls" = "$shcls" ]; then echo "PASS the installer's replicated class is felis's"; else echo "FAIL replicated class: felis <$gocls>, installer <$shcls>"; fails=$((fails + 1)); fi
+golabel="$(sed -n 's/^\tlonghornDiskLabel = "\(.*\)"$/\1/p' "$(dirname "$BS")/../cmd/felis/node_control_ha.go")"
+shlabel="$(sed -n 's/^LONGHORN_DISK_LABEL="\(.*\)"$/\1/p' "$BS")"
+if [ -n "$golabel" ] && [ "$golabel" = "$shlabel" ]; then echo "PASS joined controllers get the installer's Longhorn disk label"; else echo "FAIL Longhorn disk label: felis <$golabel>, installer <$shlabel>"; fails=$((fails + 1)); fi
+rm -rf "$hadir"
+
 
 if [ "$fails" -eq 0 ]; then
   echo "ALL PASS"

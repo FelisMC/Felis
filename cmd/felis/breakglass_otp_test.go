@@ -10,6 +10,7 @@ import (
 	"felis.lolicon.best/internal/api"
 	"felis.lolicon.best/internal/config"
 	"felis.lolicon.best/internal/mail"
+	"felis.lolicon.best/internal/mailsettings"
 	"felis.lolicon.best/internal/platform"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -494,5 +495,37 @@ func TestRootHandsRecoveryToAccountOperations(t *testing.T) {
 		if om.recovery.host != "felis-host-1" {
 			t.Errorf("op %v: the account screen has no relay config; its codes could never go out", op)
 		}
+	}
+}
+
+// TestPanelFirstRecoveryMailer pins that a break-glass code goes through the Owner's panel
+// relay when one is saved, and through felis.toml's when there is none or the database
+// cannot be read.
+func TestPanelFirstRecoveryMailer(t *testing.T) {
+	fallbackUsed := 0
+	fallback := func(context.Context) (recoveryMailer, error) {
+		fallbackUsed++
+		return &mail.SMTP{Host: "host.example.com"}, nil
+	}
+	panel := &mailsettings.Settings{Host: "panel.example.com", Port: 587, From: "a@example.com"}
+	for _, tc := range []struct {
+		name     string
+		read     func(context.Context) (*mailsettings.Settings, error)
+		wantHost string
+	}{
+		{"a panel relay", func(context.Context) (*mailsettings.Settings, error) { return panel, nil }, "panel.example.com"},
+		{"no panel relay", func(context.Context) (*mailsettings.Settings, error) { return nil, nil }, "host.example.com"},
+		{"database out", func(context.Context) (*mailsettings.Settings, error) { return nil, errors.New("down") }, "host.example.com"},
+	} {
+		got, err := panelFirstRecoveryMailer(tc.read, fallback)(context.Background())
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if relay, ok := got.(*mail.SMTP); !ok || relay.Host != tc.wantHost {
+			t.Errorf("%s: relay %+v, want host %s", tc.name, got, tc.wantHost)
+		}
+	}
+	if fallbackUsed != 2 {
+		t.Errorf("felis.toml's relay was opened %d times, want 2", fallbackUsed)
 	}
 }
