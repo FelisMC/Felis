@@ -4287,9 +4287,9 @@ expect "a quote in the password cannot end the literal" "PASSWORD 'it''s';" "$(r
 rm -f "$rcalls"
 
 dpcalls="$(mktemp)"
-run_deploy_pg() { # rollout-exit
+run_deploy_pg() { # rollout-exit [controller-ha]
   : > "$dpcalls"
-  ROLL="$1" CALLS="$dpcalls" CONTROL_NS=felis MINECRAFT_NS=minecraft PG_DEPLOYMENT=felis-postgres PG_SERVICE_ADDR=felis-postgres.felis.svc:5432 \
+  ROLL="$1" CONTROLLER_HA="${2:-0}" HA_HOME=ctl-a REPLICATED_CLASS=felis-replicated CALLS="$dpcalls" CONTROL_NS=felis MINECRAFT_NS=minecraft PG_DEPLOYMENT=felis-postgres PG_SERVICE_ADDR=felis-postgres.felis.svc:5432 \
     PG_HOST_PORT=15432 POSTGRES_IMAGE="postgres:18.6@sha256:00" HOST_BIN=fakefelis bash -c '
     set -Eeuo pipefail
     log() { :; }; ok() { printf "OK: %s\n" "$*"; }
@@ -4308,6 +4308,7 @@ run_deploy_pg() { # rollout-exit
         *) printf "KUBE %s\n" "$*" ;;
       esac
     }
+    '"$(bsfn postgres_ha_args)"'
     '"$(bsfn deploy_postgres)"'
     deploy_postgres' 2>&1
   cat "$dpcalls"
@@ -4319,6 +4320,8 @@ before "the namespace exists before the Secret" "APPLY KUBE create namespace fel
 before "the superuser password exists before the first start" "SECRET" "APPLY RENDER manifests --only postgres" "$out"
 expect "the database is rendered from the pinned image" \
   "APPLY RENDER manifests --only postgres --control-namespace felis --minecraft-namespace minecraft --postgres-image postgres:18.6@sha256:00" "$out"
+expect "with controller HA the database is rendered onto the replicated volume" \
+  "--postgres-image postgres:18.6@sha256:00 --distributed --controller-node ctl-a --controller-ha --replicated-class felis-replicated" "$(run_deploy_pg 0 1)"
 before "the role waits for the database to be ready" "ROLLOUT -n felis rollout status deployment/felis-postgres" "ROLE" "$out"
 out="$(run_deploy_pg 1)"
 expect "a database that never gets ready is diagnosed" "DIAGNOSE deployment/felis-postgres" "$out"
@@ -5525,9 +5528,9 @@ rfblock="$(awk '/^restore_from_offsite\(\) \{/,/^}/' "$BS")"
 [ -n "$vrblock" ] && [ -n "$rfblock" ] || { echo "FAIL: no restore functions found in $BS"; exit 1; }
 vrdir="$(mktemp -d)"
 run_validate_restore() { # $1 RESTORE_FROM_OFFSITE, $2 bundle, then NAME=value overrides
-  local mode="$1" bundle="$2"; shift 2
+  vrmode="$1" vrbundle="$2"; shift 2
   env FELIS_OFFSITE_BUCKET=b FELIS_OFFSITE_ENDPOINT=https://s3 FELIS_OFFSITE_ACCESS_KEY=a FELIS_OFFSITE_SECRET_KEY=s FELIS_OFFSITE_KEY=k \
-    "$@" RESTORE_FROM_OFFSITE="$mode" RESTORE_BUNDLE="$bundle" BOOTSTRAP_DONE="$vrdir/bootstrap.done" RESTORE_STATE_DIR="$vrdir/restore" bash -c '
+    "$@" RESTORE_FROM_OFFSITE="$vrmode" RESTORE_BUNDLE="$vrbundle" BOOTSTRAP_DONE="$vrdir/bootstrap.done" RESTORE_STATE_DIR="$vrdir/restore" bash -c '
     die() { printf "DIE: %s\n" "$*"; exit 1; }
     '"$vrblock"'
     validate_restore_settings

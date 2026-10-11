@@ -4351,6 +4351,8 @@ deploy_postgres() {
   kube create namespace "$CONTROL_NS" --dry-run=client -o yaml | kube apply -f - >/dev/null
   ensure_postgres_superuser_secret
   log "deploying ${PG_DEPLOYMENT} (${POSTGRES_IMAGE%%@*})"
+  # The HA flags split into words on purpose: a node name and a class name hold no spaces.
+  # shellcheck disable=SC2046
   "$HOST_BIN" manifests --only postgres --control-namespace "$CONTROL_NS" --minecraft-namespace "$MINECRAFT_NS" \
     --postgres-image "$POSTGRES_IMAGE" $(postgres_ha_args) | kube apply -f -
   if ! kube -n "$CONTROL_NS" rollout status "deployment/${PG_DEPLOYMENT}" --timeout=600s; then
