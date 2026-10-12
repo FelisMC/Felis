@@ -293,16 +293,16 @@ constraint):
 
 | Module      | Gradle | JDK | Why                                                          |
 | ----------- | ------ | --- | ------------------------------------------------------------ |
-| `velocity`  | 9.8.0  | ≥ 21 runs it, emits Java 21 | plain `java` plugin; velocity-api 3.5.1 declares `jvm.version = 21` |
-| `paper`     | 9.8.0  | **25 toolchain** | paper-api 26.3 is published as a Java-25 artifact, so the module declares a `JavaLanguageVersion.of(25)` toolchain |
-| `limbo`     | 9.8.0  | ≥ 21 runs it, emits Java 17 | current LOOHP/Limbo releases ship class-file major 65, so the compiler JDK must be ≥ 21 to read them; `release 17` bytecode loads on any Limbo running Java 17+ |
+| `velocity`  | 9.8.1  | ≥ 21 runs it, emits Java 21 | plain `java` plugin; velocity-api 3.5.1 declares `jvm.version = 21` |
+| `paper`     | 9.8.1  | **25 toolchain** | paper-api 26.3 is published as a Java-25 artifact, so the module declares a `JavaLanguageVersion.of(25)` toolchain |
+| `limbo`     | 9.8.1  | ≥ 21 runs it, emits Java 17 | current LOOHP/Limbo releases ship class-file major 65, so the compiler JDK must be ≥ 21 to read them; `release 17` bytecode loads on any Limbo running Java 17+ |
 | `fabric`    | 8.8    | 17 | loom 1.7.4 uses `Problems.forNamespace`, removed in Gradle 9 |
 | `forge`     | 8.8    | 17 | ForgeGradle 6 is Gradle-8-only                               |
 | `neoforge`  | 8.14   | 17 | NeoGradle 7.1.38 requires Gradle API ≥ 8.14                  |
 
 The three plugins the installer bakes in (`velocity`, `paper`, `limbo`) are built with
-Gradle 9.8.0 everywhere: through the wrapper locally and in CI, and inside the image
-`gradle:9.8.0-jdk25@sha256:…` in the lobby and limbo Dockerfiles and bootstrap's
+Gradle 9.8.1 everywhere: through the wrapper locally and in CI, and inside the image
+`gradle:9.8.1-jdk25@sha256:…` in the lobby and limbo Dockerfiles and bootstrap's
 Velocity build. `bootstrap_asset_test.go` fails when the image, its digest or the
 wrapper version drift apart.
 

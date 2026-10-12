@@ -549,7 +549,7 @@ PG_FIREWALL_SERVICE="/etc/systemd/system/felis-postgres-firewall.service"
 JRE_DIR="/opt/felis/jre"
 # The gradle image the lobby and limbo Dockerfiles build their plugins in, digest
 # included; build_velocity_plugin runs the same one.
-PLUGIN_BUILD_IMAGE="gradle:9.8.0-jdk25@sha256:7086a4cd10d568b35cafd6d5d30323865f3ce1f23ccddc9570ff3e3c9c8cd6e9"
+PLUGIN_BUILD_IMAGE="gradle:9.8.1-jdk25@sha256:e4f9e3d037cc0c7d8fc42cd97edb976dfd19a5b7314212b88b6de3807d13cd47"
 K3S_BIN_DIR="${K3S_BIN_DIR:-/usr/local/bin}"
 K3S_BIN="${K3S_BIN_DIR}/k3s"
 # k3s's containerd mirror config, written by configure_registry_mirror. A variable
