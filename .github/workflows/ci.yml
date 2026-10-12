@@ -55,8 +55,10 @@ jobs:
       # registry pruner, the backup scheduler, the rate limiters).
       - run: go test -race ./...
       # The version is pinned here and bumped by hand; Dependabot does not read `go run`.
+      # 2026.2.1 cannot read Go 1.27.2's export data (dominikh/go-tools#1832); this master
+      # commit carries the fix. Return to a release tag once 2026.2.2 is published.
       - name: staticcheck
-        run: go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.7.0-0.dev.0.20261009230814-452d5bb86b45 ./...
 
   # Separate from the go job so a newly published advisory reads as what it is. govulncheck
   # exits non-zero only for vulnerable code this module can actually reach, standard
