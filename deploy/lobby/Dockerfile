@@ -35,7 +35,7 @@
 # On the build platform: the jar is plain bytecode, identical for every architecture, so a
 # release building the arm64 image on an amd64 runner compiles it natively instead of under
 # QEMU (deploy/build-release-artifacts.sh). The runtime stage below stays on the target.
-FROM --platform=$BUILDPLATFORM gradle:9.8.0-jdk25@sha256:2b2fc1b1dfc3604a2acc916839f36eb5ee48fd7f232427fc5faca224c73bcb01 AS plugin
+FROM --platform=$BUILDPLATFORM gradle:9.8.0-jdk25@sha256:7086a4cd10d568b35cafd6d5d30323865f3ce1f23ccddc9570ff3e3c9c8cd6e9 AS plugin
 WORKDIR /src
 COPY plugins/paper/ ./plugins/paper/
 COPY plugins/shared/ ./plugins/shared/
@@ -47,7 +47,7 @@ RUN cd plugins/paper \
 # 25-jre, not 21: Paper 26.2 declares `java.version.minimum = 25` (PaperMC Fill v3,
 # GET /v3/projects/paper/versions/26.2) and refuses to boot on anything older. A 25 JRE
 # also runs the plugin's Java-21 bytecode, so only the runtime moves.
-FROM eclipse-temurin:25-jre@sha256:bb036ed6cfdc57e3da7c22634d15f1b840d2caf76183861c80e81ca4b5104abb
+FROM eclipse-temurin:25-jre@sha256:fcd7fd7b387f94bb2ac461478a7436ad8e349924c374ea8313919624dceae636
 ARG PAPER_JAR_URL
 # Required alongside the URL: Fill's URLs are content-addressed, but nothing enforces
 # that shape at build time. Checking the digest after the download turns a truncated or

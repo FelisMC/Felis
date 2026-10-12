@@ -39,7 +39,7 @@ cd "$(dirname "$0")/.."
 
 # The Gradle image the plugin builds run in: deploy/{limbo,lobby}/Dockerfile and bootstrap's
 # Velocity build name the same one (bootstrap_asset_test.go holds them together).
-PLUGIN_BUILD_IMAGE="gradle:9.8.0-jdk25@sha256:2b2fc1b1dfc3604a2acc916839f36eb5ee48fd7f232427fc5faca224c73bcb01"
+PLUGIN_BUILD_IMAGE="gradle:9.8.0-jdk25@sha256:7086a4cd10d568b35cafd6d5d30323865f3ce1f23ccddc9570ff3e3c9c8cd6e9"
 
 # The names and pins bootstrap uses, read from bootstrap itself so the two cannot drift.
 bootstrap_value() {

@@ -36,7 +36,7 @@
 # On the build platform: the jar is plain bytecode, identical for every architecture, so a
 # release building the arm64 image on an amd64 runner compiles it natively instead of under
 # QEMU (deploy/build-release-artifacts.sh). The runtime stage below stays on the target.
-FROM --platform=$BUILDPLATFORM gradle:9.8.0-jdk25@sha256:2b2fc1b1dfc3604a2acc916839f36eb5ee48fd7f232427fc5faca224c73bcb01 AS plugin
+FROM --platform=$BUILDPLATFORM gradle:9.8.0-jdk25@sha256:7086a4cd10d568b35cafd6d5d30323865f3ce1f23ccddc9570ff3e3c9c8cd6e9 AS plugin
 WORKDIR /src
 # Copy what the limbo module needs: its own tree plus the shared link core it
 # srcDir-includes (../shared/src/main/java → /src/plugins/shared/src/main/java), so
@@ -58,7 +58,7 @@ RUN if [ -z "${LIMBO_VERSION:-}" ]; then \
 # 21-jre: the Limbo jar is Java 21 bytecode (class-file major 65), so a Java 17
 # JRE cannot run it (UnsupportedClassVersionError). A 21 JRE also runs the
 # plugin's release-17 bytecode fine.
-FROM eclipse-temurin:21-jre@sha256:49e21e16e3c86eb7816a44a67549910ed090fbeb40c29c525d58bf5e02e91b0f
+FROM eclipse-temurin:21-jre@sha256:cff19e6215689161eb6162c11b86b0c60ddf802164f2eaf48d570f8fb79a36c5
 ARG LIMBO_JAR_URL
 ARG LIMBO_JAR_SHA256
 ARG LIMBO_SCHEM_URL

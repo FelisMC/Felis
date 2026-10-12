@@ -105,7 +105,7 @@ curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/main/deploy/bootstrap
 本项目基于 Go 与 Node.js 开发：
 
 ```bash
-# 后端（Go 1.26+）
+# 后端（Go 1.27+）
 go build -o felis ./cmd/felis
 
 # 前端（Node.js 22+）

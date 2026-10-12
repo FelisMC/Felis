@@ -102,7 +102,7 @@ A host with restricted outbound access must therefore allow HTTPS to these addre
 Felis is built with Go and Node.js:
 
 ```bash
-# Backend (Go 1.26+)
+# Backend (Go 1.27+)
 go build -o felis ./cmd/felis
 
 # Frontend (Node.js 22+)
