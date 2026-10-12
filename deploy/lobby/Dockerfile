@@ -35,7 +35,7 @@
 # On the build platform: the jar is plain bytecode, identical for every architecture, so a
 # release building the arm64 image on an amd64 runner compiles it natively instead of under
 # QEMU (deploy/build-release-artifacts.sh). The runtime stage below stays on the target.
-FROM --platform=$BUILDPLATFORM gradle:9.8.0-jdk25@sha256:7086a4cd10d568b35cafd6d5d30323865f3ce1f23ccddc9570ff3e3c9c8cd6e9 AS plugin
+FROM --platform=$BUILDPLATFORM gradle:9.8.1-jdk25@sha256:e4f9e3d037cc0c7d8fc42cd97edb976dfd19a5b7314212b88b6de3807d13cd47 AS plugin
 WORKDIR /src
 COPY plugins/paper/ ./plugins/paper/
 COPY plugins/shared/ ./plugins/shared/
