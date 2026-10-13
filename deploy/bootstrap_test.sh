@@ -5823,6 +5823,52 @@ else
 fi
 rm -rf "$rcdir"
 
+# --- Docker keeps one copy of what this host builds -------------------------------------
+# Each update builds the control-plane image under a new tag. The push step removes what
+# earlier runs left in Docker and keeps this run's images and anything that is not Felis's.
+pbfn="$(hafn prune_build_images)"
+[ -n "$pbfn" ] || { echo "FAIL: no prune_build_images found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$pbfn" | wc -l)" -lt 40 ] || { echo "FAIL: the extracted prune_build_images is not just the function"; exit 1; }
+pbdir="$(mktemp -d)"
+printf '%s\t%s\t%s\t%s\n' \
+  registry.felis.svc:5000/felis/felis v1.2.0 sha256:a1 aaa \
+  registry.felis.svc:5000/felis/felis v1.1.0 sha256:b2 bbb \
+  registry.felis.svc:5000/felis/felis v1.0.0 sha256:c3 ccc \
+  registry.felis.svc:5000/felis/lobby demo sha256:d4 ddd \
+  registry.felis.svc:5000/felis/lobby '<none>' sha256:d5 ddd \
+  127.0.0.1:5000/felis/paper demo sha256:e5 eee \
+  gradle '<none>' sha256:new fff \
+  gradle '<none>' sha256:old ggg \
+  gradle 8-jdk17 sha256:mine hhh \
+  nginx latest sha256:i9 iii > "$pbdir/images"
+out="$(env IMAGES="$pbdir/images" REGISTRY_URL=registry.felis.svc:5000 REGISTRY_PUSH_HOST=127.0.0.1:5000 \
+  FELIS_IMAGE=registry.felis.svc:5000/felis/felis:v1.2.0 FELIS_LIMBO_IMAGE=registry.felis.svc:5000/felis/limbo:demo \
+  FELIS_LOBBY_IMAGE=registry.felis.svc:5000/felis/lobby:demo FELIS_PAPER_IMAGE=registry.felis.svc:5000/felis/paper:demo \
+  PLUGIN_BUILD_IMAGE=gradle:9.8.1-jdk25@sha256:new \
+  bash -c 'set -Eeuo pipefail
+docker() { if [ "$1" = images ]; then cat "$IMAGES"; else echo "CALL docker $*"; fi; }
+'"$(hafn role_image)"'
+'"$pbfn"'
+prune_build_images' 2>&1)"
+expect "an earlier control-plane image leaves Docker" "CALL docker rmi registry.felis.svc:5000/felis/felis:v1.1.0" "$out"
+expect "every earlier control-plane image leaves Docker" "CALL docker rmi registry.felis.svc:5000/felis/felis:v1.0.0" "$out"
+expect "a push tag an interrupted run left behind leaves Docker" "CALL docker rmi 127.0.0.1:5000/felis/paper:demo" "$out"
+expect "the gradle image an earlier pin pulled leaves Docker" "CALL docker rmi gradle@sha256:old" "$out"
+expect "Docker's dangling images are pruned" "CALL docker image prune -f" "$out"
+expect "build cache unused for a week is pruned" "CALL docker builder prune -f --filter until=168h" "$out"
+for kept in registry.felis.svc:5000/felis/felis:v1.2.0 registry.felis.svc:5000/felis/lobby:demo ddd gradle@sha256:new gradle:8-jdk17 fff hhh nginx:latest iii; do
+  if printf '%s\n' "$out" | grep -qxF "CALL docker rmi ${kept}"; then
+    echo "FAIL prune_build_images removed ${kept}, which it must keep"; fails=$((fails + 1))
+  else
+    echo "PASS prune_build_images keeps ${kept}"
+  fi
+done
+case "$(hafn push_images_to_registry)" in
+  *'|| prune_build_images'*stop_docker*) echo "PASS the push step prunes Docker before it stops Docker" ;;
+  *) echo "FAIL push_images_to_registry must run prune_build_images before stop_docker"; fails=$((fails + 1)) ;;
+esac
+rm -rf "$pbdir"
+
 
 if [ "$fails" -eq 0 ]; then
   echo "ALL PASS"

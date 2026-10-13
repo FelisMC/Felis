@@ -5880,11 +5880,41 @@ push_images_to_registry() {
     push_image_to_registry "$img"
     [ "$role" = felis ] || push_version_tag "$img"
   done
+  [ -z "$docker_used" ] || prune_build_images
   stop_docker
   # Every bundle is in containerd and the registry now; a rerun that needs one fetches it again.
   if [ "$ARTIFACT_MODE" = release ]; then
     rm -rf -- "$ARTIFACT_CACHE"
   fi
+}
+
+# prune_build_images keeps one copy in Docker of each image this host builds. Every update
+# builds the control-plane image under a new tag, and a bump of the gradle pin pulls a new
+# gradle image, so without this the store gained an image per update until the disk filled.
+# Once the images are in k3s and the platform registry (which keeps the newest five
+# control-plane tags for rollbacks), Docker needs only what this run built and the gradle image
+# it builds with. It removes the other tags in Felis's own repositories and the untagged gradle
+# images an earlier pin pulled (Felis pulls gradle by digest, so a tagged one is someone
+# else's), then runs Docker's own housekeeping: dangling images and build cache unused for a
+# week. docker rmi refuses an image a container uses, and that refusal stands.
+prune_build_images() {
+  local keep=" " role repo tag digest id ref
+  local gradle="${PLUGIN_BUILD_IMAGE%%[:@]*}" pinned="${PLUGIN_BUILD_IMAGE##*@}"
+  for role in felis limbo lobby paper; do keep+="$(role_image "$role") "; done
+  while IFS=$'\t' read -r repo tag digest id; do
+    ref=""
+    case "$repo" in
+      "${REGISTRY_URL}/felis/"*|"${REGISTRY_PUSH_HOST}/felis/"*)
+        if [ "$tag" != "<none>" ]; then ref="${repo}:${tag}"; fi ;;
+      "$gradle")
+        if [ "$tag" = "<none>" ] && [ "$digest" != "$pinned" ]; then ref="${repo}@${digest}"; fi ;;
+    esac
+    [ -n "$ref" ] || continue
+    case "$keep" in *" ${ref} "*) continue ;; esac
+    docker rmi "$ref" >/dev/null 2>&1 || true
+  done < <(docker images --digests --format '{{.Repository}}{{"\t"}}{{.Tag}}{{"\t"}}{{.Digest}}{{"\t"}}{{.ID}}' 2>/dev/null)
+  docker image prune -f >/dev/null 2>&1 || true
+  docker builder prune -f --filter until=168h >/dev/null 2>&1 || true
 }
 
 # registry_manifest_digest <host/repository:tag> prints the digest the platform registry holds
