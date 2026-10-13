@@ -361,7 +361,7 @@ func checkConnection(r Request) error {
 			return errors.New("the Cloudflare account ID is 32 hexadecimal characters")
 		}
 		if r.Params["adminHost"] == "" {
-			return errors.New("Cloudflare Access needs the admin hostname")
+			return errors.New("the admin hostname is required behind Cloudflare Access")
 		}
 		if id := r.Params["identity"]; !identityPattern.MatchString(id) {
 			return errors.New("name who may sign in: an email address, or @ and an email domain")
