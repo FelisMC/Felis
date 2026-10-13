@@ -1398,6 +1398,91 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/settings/node-control/tasks/{id}/artifact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download the file a finished host task produced, such as a support bundle (Owner, fresh reauthentication). */
+        get: operations["nodeTaskArtifact"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/platform/host": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the platform at a glance as the controller host reports it (Owner). */
+        get: operations["hostOverview"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/platform/host/quiet": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Hold the watchdog's mail until a time within the next seven days, or lift the hold (Owner, fresh reauthentication). */
+        post: operations["holdAlerts"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/platform/offsite/key": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Read the key that seals the off-site copies, to keep it somewhere other than this host (Owner, fresh reauthentication). */
+        post: operations["revealOffsiteKey"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/platform/audit-export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download the audit rows of a period as JSON lines (Owner, fresh reauthentication). */
+        get: operations["exportAudit"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/internal/settings/entry-policy": {
         parameters: {
             query?: never;
@@ -3507,8 +3592,11 @@ export interface components {
             resume?: string;
         };
         NodeControlRequest: {
-            /** @enum {string} */
-            action: "enable" | "join" | "approve" | "upgrade" | "fence" | "unfence" | "enable-ha" | "join-controller";
+            /**
+             * @description The node lifecycle actions (enable to join-controller) and the platform host tasks the panel runs on the controller host.
+             * @enum {string}
+             */
+            action: "enable" | "join" | "approve" | "upgrade" | "fence" | "unfence" | "enable-ha" | "join-controller" | "db-backup" | "db-verify" | "db-restore" | "offsite-sync" | "offsite-list" | "offsite-check-key" | "offsite-take-over" | "offsite-configure" | "offsite-disable" | "restore-host" | "backup-now" | "rotate-token" | "domain-check" | "domain-set" | "storage-configure" | "connection-configure" | "converge" | "doctor" | "support-bundle" | "host-settings" | "server-forwarding";
             /** @description Stable node name; required for every action except enable and enable-ha. */
             name?: string;
             /** @description Verified root SSH alias or user@host; required for join */
@@ -3517,8 +3605,16 @@ export interface components {
             externalIP?: string;
             /** @description Additional exact /32 or /128 peer addresses. */
             peers?: string[];
-            /** @constant */
-            confirmMaintenance: true;
+            /** @description Required true for every node lifecycle action and for host tasks that disconnect players */
+            confirmMaintenance: boolean;
+            /** @description The action's own inputs, kept with the task (for example bundle, kind, domain, mode). */
+            params?: {
+                [key: string]: string;
+            };
+            /** @description Credentials the action needs (bucket keys, an API token). They reach the host only and are never stored with the task or returned, so a retry asks for them again. */
+            secrets?: {
+                [key: string]: string;
+            };
         };
         NodeControlTask: {
             id: string;
@@ -3534,6 +3630,114 @@ export interface components {
             error?: string;
             /** @description Most recent 64 KiB of host execution output; absent in task lists. */
             log?: string;
+            /** @description What the action reports as data */
+            result?: {
+                [key: string]: unknown;
+            };
+            /** @description A file the action produced; download it from the task's artifact route. */
+            artifact?: string;
+        };
+        /** @description The platform at a glance as the controller host reads it. It never carries a credential. */
+        HostOverview: {
+            host: string;
+            /** Format: date-time */
+            at: string;
+            version: string;
+            disks: {
+                path: string;
+                /** Format: int64 */
+                total: number;
+                /** Format: int64 */
+                available: number;
+            }[];
+            memory?: {
+                /** Format: int64 */
+                total: number;
+                /** Format: int64 */
+                available: number;
+            };
+            units: {
+                name: string;
+                /** @description What systemctl is-active says. */
+                active: string;
+                /**
+                 * Format: date-time
+                 * @description A timer's next trigger.
+                 */
+                next?: string;
+                /**
+                 * Format: date-time
+                 * @description A timer's last trigger.
+                 */
+                last?: string;
+            }[];
+            proxy: {
+                address?: string;
+                reachable?: boolean;
+            };
+            /** @description The watchdog's open alerts. */
+            alerts: {
+                key: string;
+                /** @enum {string} */
+                severity: "warning" | "critical";
+                summary: string;
+                summary_en: string;
+                hint?: string;
+                /** Format: date-time */
+                firstSeen: string;
+                /** Format: date-time */
+                notified?: string;
+            }[];
+            alertsError?: string;
+            /**
+             * Format: date-time
+             * @description The watchdog mails nothing until then.
+             */
+            quietUntil?: string;
+            databaseBackups: {
+                name: string;
+                label: string;
+                /** Format: int64 */
+                size: number;
+                /** Format: date-time */
+                created: string;
+            }[];
+            databaseBackupsError?: string;
+            offsite: {
+                configured: boolean;
+                endpoint?: string;
+                bucket?: string;
+                region?: string;
+                prefix?: string;
+                dbKeep?: number;
+                /** @description This host keeps the key that seals the copies. */
+                keyKept: boolean;
+                /** @description The last off-site run as the host recorded it. */
+                status?: {
+                    [key: string]: unknown;
+                };
+                error?: string;
+            };
+            settings: {
+                /** @description The daily database backup's HH:MM. */
+                dbBackupTime: string;
+                dbBackupKeep: number;
+                velocityXmx: string;
+            };
+            connection: {
+                /** @enum {string} */
+                mode: "local" | "reverse-proxy" | "cloudflare";
+                panelHost: string;
+                adminHost: string;
+            };
+            storage: {
+                /** @enum {string} */
+                mode: "local" | "s3";
+                endpoint?: string;
+                bucket?: string;
+                region?: string;
+            };
+            rootDomain: string;
         };
         FailoverBackup: {
             id: string;
@@ -7577,6 +7781,172 @@ export interface operations {
                 content?: never;
             };
             /** @description Host node execution service is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    nodeTaskArtifact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The file, as an attachment. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description Host node execution service is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    hostOverview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Disks, memory, units, open alerts, database bundles, the off-site copy and the host settings. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HostOverview"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Host node execution service is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    holdAlerts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /**
+                     * Format: date-time
+                     * @description Null lifts the hold.
+                     */
+                    until?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description The hold is in place or lifted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Host node execution service is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    revealOffsiteKey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The key. Without it the copies in the bucket cannot be read. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        key: string;
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description Host node execution service is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    exportAudit: {
+        parameters: {
+            query?: {
+                /** @description First day */
+                since?: string;
+                /** @description Day to stop before */
+                until?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One audit row per line. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/x-ndjson": string;
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Audit export is not available. */
             503: {
                 headers: {
                     [name: string]: unknown;

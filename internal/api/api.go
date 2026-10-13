@@ -16,6 +16,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"net/http"
@@ -72,6 +73,10 @@ type API struct {
 	// boundary is exercised before the restore-Job executor is wired. The list and
 	// authorization paths do not need it (they read the Repo), only the kick-off.
 	Restorer Restorer
+
+	// AuditExport writes the audit rows from since (inclusive) to until (exclusive) as
+	// JSON lines; zero bounds are open. Nil answers the export route 503.
+	AuditExport func(ctx context.Context, since, until time.Time, w io.Writer) (int, error)
 
 	// Backuper starts an on-demand world backup (spec §18/§19 WorldArchiver). Like
 	// Restorer it is optional: when nil the backup route reports 503, so the backup
@@ -668,6 +673,11 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "POST", Pattern: "/api/v1/settings/node-control/tasks", Owner: true, Admin: true, h: a.handleStartNodeTask},
 		{Method: "GET", Pattern: "/api/v1/settings/node-control/tasks/{id}", Owner: true, Admin: true, h: a.handleNodeTask},
 		{Method: "POST", Pattern: "/api/v1/settings/node-control/tasks/{id}/retry", Owner: true, Admin: true, h: a.handleRetryNodeTask},
+		{Method: "GET", Pattern: "/api/v1/settings/node-control/tasks/{id}/artifact", Owner: true, Admin: true, h: a.handleNodeTaskArtifact},
+		{Method: "GET", Pattern: "/api/v1/platform/host", Owner: true, Admin: true, h: a.handleHostOverview},
+		{Method: "POST", Pattern: "/api/v1/platform/host/quiet", Owner: true, Admin: true, h: a.handleHostQuiet},
+		{Method: "GET", Pattern: "/api/v1/platform/audit-export", Owner: true, Admin: true, h: a.handleAuditExport},
+		{Method: "POST", Pattern: "/api/v1/platform/offsite/key", Owner: true, Admin: true, h: a.handleOffsiteKey},
 		{Method: "GET", Pattern: "/api/v1/settings/entry-policy", Owner: true, Admin: true, h: a.handleGetEntryPolicy},
 		{Method: "PUT", Pattern: "/api/v1/settings/entry-policy", Owner: true, Admin: true, h: a.handleSetEntryPolicy},
 		{Method: "GET", Pattern: "/api/v1/settings/wake-policy", Owner: true, Admin: true, h: a.handleGetWakePolicy},

@@ -2,8 +2,11 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"time"
 
 	"felis.lolicon.best/internal/nodecontrol"
 )
@@ -12,6 +15,12 @@ type NodeControl interface {
 	List(context.Context) ([]nodecontrol.Task, error)
 	Get(context.Context, string) (nodecontrol.Task, error)
 	Start(context.Context, nodecontrol.Request, string) (nodecontrol.Task, error)
+	// Host is the platform's state at a glance as the host service reads it; Quiet holds
+	// the watchdog's mail until a time; Artifact opens a finished task's download.
+	Host(context.Context) (json.RawMessage, error)
+	Quiet(context.Context, time.Time) error
+	Artifact(context.Context, string) (io.ReadCloser, int64, string, error)
+	OffsiteKey(context.Context) (string, error)
 }
 
 func (a *API) handleNodeTasks(w http.ResponseWriter, r *http.Request) {
@@ -77,7 +86,11 @@ func (a *API) startNodeTask(w http.ResponseWriter, r *http.Request, req nodecont
 		a.writeNodeControlError(w, r, err)
 		return
 	}
-	a.audit(r, "platform.node."+req.Action, task.ID)
+	scope := "platform.host."
+	if nodecontrol.NodeAction(req.Action) {
+		scope = "platform.node."
+	}
+	a.audit(r, scope+req.Action, task.ID)
 	writeJSON(w, http.StatusAccepted, task)
 }
 func (a *API) nodeControlReady(w http.ResponseWriter, r *http.Request) bool {
@@ -90,7 +103,7 @@ func (a *API) nodeControlReady(w http.ResponseWriter, r *http.Request) bool {
 func (a *API) writeNodeControlError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, nodecontrol.ErrBusy):
-		writeError(w, r, newError(409, "node_operation_busy", "a node operation is already running"))
+		writeError(w, r, newError(409, "node_operation_busy", "a host task is already running"))
 	case errors.Is(err, nodecontrol.ErrNotFound):
 		writeError(w, r, newError(404, "not_found", "node task not found"))
 	default:
@@ -106,7 +119,7 @@ func NodeMaintenanceGuard(control NodeControl) func(context.Context) error {
 			return newError(503, "node_control_unavailable", "host node service is unavailable")
 		}
 		for _, task := range tasks {
-			if task.State == "running" {
+			if task.State == "running" && nodecontrol.Blocking(task.Request.Action) {
 				return newError(409, "node_operation_busy", "node maintenance is in progress")
 			}
 		}

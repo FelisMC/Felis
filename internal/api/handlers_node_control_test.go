@@ -2,8 +2,12 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"strings"
 	"testing"
+	"time"
 
 	"felis.lolicon.best/internal/nodecontrol"
 )
@@ -14,6 +18,10 @@ type fakeNodeControl struct {
 	err     error
 	request nodecontrol.Request
 	actor   string
+	host    json.RawMessage
+	key     string
+	quiet   []time.Time
+	file    string
 }
 
 func (f *fakeNodeControl) List(context.Context) ([]nodecontrol.Task, error) { return f.tasks, f.err }
@@ -31,6 +39,26 @@ func (f *fakeNodeControl) Start(_ context.Context, r nodecontrol.Request, actor 
 	f.request = r
 	f.actor = actor
 	return nodecontrol.Task{ID: "task", Request: r, State: "running"}, f.err
+}
+func (f *fakeNodeControl) Host(context.Context) (json.RawMessage, error) { return f.host, f.err }
+func (f *fakeNodeControl) OffsiteKey(context.Context) (string, error) {
+	if f.key == "" {
+		return "", nodecontrol.ErrNotFound
+	}
+	return f.key, f.err
+}
+func (f *fakeNodeControl) Quiet(_ context.Context, until time.Time) error {
+	f.quiet = append(f.quiet, until)
+	return f.err
+}
+func (f *fakeNodeControl) Artifact(_ context.Context, id string) (io.ReadCloser, int64, string, error) {
+	if f.err != nil {
+		return nil, 0, "", f.err
+	}
+	if f.file == "" {
+		return nil, 0, "", nodecontrol.ErrNotFound
+	}
+	return io.NopCloser(strings.NewReader(f.file)), int64(len(f.file)), "felis-support-" + id + ".tar.gz", nil
 }
 
 const nodeTaskPath = "/api/v1/settings/node-control/tasks"

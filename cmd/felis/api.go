@@ -454,6 +454,10 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		BackupCooldown: rcfg.ManualCooldown,
 		BackupStoreCap: rcfg.MaxLocalBytes,
 		ArchivePolicy:  archive,
+		// The panel's audit export reads the same rows `felis db audit-export` writes.
+		AuditExport: func(ctx context.Context, since, until time.Time, w io.Writer) (int, error) {
+			return retention.ExportAudit(ctx, drv.DB(), since, until, w)
+		},
 		// The user-modpack lane's per-user throttles: a create spaces out
 		// review-queue rows, an upload spaces out (up to 1 GiB) context streams.
 		// Separate keys, so the normal create→upload sequence stays immediate.

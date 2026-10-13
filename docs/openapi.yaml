@@ -661,7 +661,10 @@ components:
       required: [action, confirmMaintenance]
       additionalProperties: false
       properties:
-        action: { type: string, enum: [enable, join, approve, upgrade, fence, unfence, enable-ha, join-controller] }
+        action:
+          type: string
+          enum: [enable, join, approve, upgrade, fence, unfence, enable-ha, join-controller, db-backup, db-verify, db-restore, offsite-sync, offsite-list, offsite-check-key, offsite-take-over, offsite-configure, offsite-disable, restore-host, backup-now, rotate-token, domain-check, domain-set, storage-configure, connection-configure, converge, doctor, support-bundle, host-settings, server-forwarding]
+          description: The node lifecycle actions (enable to join-controller) and the platform host tasks the panel runs on the controller host.
         name: { type: string, description: Stable node name; required for every action except enable and enable-ha. }
         sshTarget: { type: string, description: Verified root SSH alias or user@host; required for join, approve, upgrade and join-controller. }
         externalIP: { type: string, description: Fixed node IP; required for enable, join and join-controller. }
@@ -670,7 +673,16 @@ components:
           maxItems: 100
           items: { type: string }
           description: Additional exact /32 or /128 peer addresses.
-        confirmMaintenance: { type: boolean, const: true }
+        confirmMaintenance: { type: boolean, description: Required true for every node lifecycle action and for host tasks that disconnect players, restart the panel or replace data. }
+        params:
+          type: object
+          additionalProperties: { type: string }
+          description: The action's own inputs, kept with the task (for example bundle, kind, domain, mode).
+        secrets:
+          type: object
+          writeOnly: true
+          additionalProperties: { type: string }
+          description: Credentials the action needs (bucket keys, an API token). They reach the host only and are never stored with the task or returned, so a retry asks for them again.
     NodeControlTask:
       type: object
       required: [id, request, actor, state, stage, startedAt]
@@ -684,6 +696,110 @@ components:
         finishedAt: { type: string, format: date-time }
         error: { type: string }
         log: { type: string, description: Most recent 64 KiB of host execution output; absent in task lists. }
+        result: { type: object, additionalProperties: true, description: What the action reports as data, such as the findings of a health check. }
+        artifact: { type: string, description: A file the action produced; download it from the task's artifact route. }
+
+    HostOverview:
+      type: object
+      description: The platform at a glance as the controller host reads it. It never carries a credential.
+      required: [host, at, version, disks, units, proxy, alerts, databaseBackups, offsite, settings, connection, storage, rootDomain]
+      properties:
+        host: { type: string }
+        at: { type: string, format: date-time }
+        version: { type: string }
+        disks:
+          type: array
+          items:
+            type: object
+            required: [path, total, available]
+            properties:
+              path: { type: string }
+              total: { type: integer, format: int64 }
+              available: { type: integer, format: int64 }
+        memory:
+          type: object
+          required: [total, available]
+          properties:
+            total: { type: integer, format: int64 }
+            available: { type: integer, format: int64 }
+        units:
+          type: array
+          items:
+            type: object
+            required: [name, active]
+            properties:
+              name: { type: string }
+              active: { type: string, description: What systemctl is-active says. }
+              next: { type: string, format: date-time, description: A timer's next trigger. }
+              last: { type: string, format: date-time, description: A timer's last trigger. }
+        proxy:
+          type: object
+          properties:
+            address: { type: string }
+            reachable: { type: boolean }
+        alerts:
+          type: array
+          description: The watchdog's open alerts.
+          items:
+            type: object
+            required: [key, severity, summary, summary_en, firstSeen]
+            properties:
+              key: { type: string }
+              severity: { type: string, enum: [warning, critical] }
+              summary: { type: string }
+              summary_en: { type: string }
+              hint: { type: string }
+              firstSeen: { type: string, format: date-time }
+              notified: { type: string, format: date-time }
+        alertsError: { type: string }
+        quietUntil: { type: string, format: date-time, description: The watchdog mails nothing until then. }
+        databaseBackups:
+          type: array
+          items:
+            type: object
+            required: [name, label, size, created]
+            properties:
+              name: { type: string }
+              label: { type: string }
+              size: { type: integer, format: int64 }
+              created: { type: string, format: date-time }
+        databaseBackupsError: { type: string }
+        offsite:
+          type: object
+          required: [configured, keyKept]
+          properties:
+            configured: { type: boolean }
+            endpoint: { type: string }
+            bucket: { type: string }
+            region: { type: string }
+            prefix: { type: string }
+            dbKeep: { type: integer }
+            keyKept: { type: boolean, description: This host keeps the key that seals the copies. }
+            status: { type: object, additionalProperties: true, description: The last off-site run as the host recorded it. }
+            error: { type: string }
+        settings:
+          type: object
+          required: [dbBackupTime, dbBackupKeep, velocityXmx]
+          properties:
+            dbBackupTime: { type: string, description: The daily database backup's HH:MM. }
+            dbBackupKeep: { type: integer }
+            velocityXmx: { type: string }
+        connection:
+          type: object
+          required: [mode, panelHost, adminHost]
+          properties:
+            mode: { type: string, enum: [local, reverse-proxy, cloudflare] }
+            panelHost: { type: string }
+            adminHost: { type: string }
+        storage:
+          type: object
+          required: [mode]
+          properties:
+            mode: { type: string, enum: [local, s3] }
+            endpoint: { type: string }
+            bucket: { type: string }
+            region: { type: string }
+        rootDomain: { type: string }
 
     FailoverBackup:
       type: object
@@ -4739,6 +4855,110 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { description: Another node task is running or this task cannot be retried. }
         '503': { description: Host node execution service is unavailable. }
+
+  /api/v1/settings/node-control/tasks/{id}/artifact:
+    get:
+      operationId: nodeTaskArtifact
+      summary: Download the file a finished host task produced, such as a support bundle (Owner, fresh reauthentication).
+      tags: [account]
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The file, as an attachment.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { description: Host node execution service is unavailable. }
+  /api/v1/platform/host:
+    get:
+      operationId: hostOverview
+      summary: Read the platform at a glance as the controller host reports it (Owner).
+      tags: [account]
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: Disks, memory, units, open alerts, database bundles, the off-site copy and the host settings.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HostOverview' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { description: Host node execution service is unavailable. }
+  /api/v1/platform/host/quiet:
+    post:
+      operationId: holdAlerts
+      summary: Hold the watchdog's mail until a time within the next seven days, or lift the hold (Owner, fresh reauthentication).
+      tags: [account]
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                until: { type: [string, 'null'], format: date-time, description: Null lifts the hold. }
+      responses:
+        '204': { description: The hold is in place or lifted. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { description: Host node execution service is unavailable. }
+  /api/v1/platform/offsite/key:
+    post:
+      operationId: revealOffsiteKey
+      summary: Read the key that seals the off-site copies, to keep it somewhere other than this host (Owner, fresh reauthentication).
+      tags: [account]
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: The key. Without it the copies in the bucket cannot be read.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [key]
+                properties:
+                  key: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { description: Host node execution service is unavailable. }
+  /api/v1/platform/audit-export:
+    get:
+      operationId: exportAudit
+      summary: Download the audit rows of a period as JSON lines (Owner, fresh reauthentication).
+      tags: [account]
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: since, in: query, required: false, schema: { type: string, format: date }, description: First day, inclusive. }
+        - { name: until, in: query, required: false, schema: { type: string, format: date }, description: Day to stop before, exclusive. }
+      responses:
+        '200':
+          description: One audit row per line.
+          content:
+            application/x-ndjson:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { description: Audit export is not available. }
 
   /api/v1/internal/settings/entry-policy:
     get:

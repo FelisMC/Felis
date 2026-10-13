@@ -890,13 +890,24 @@ export interface FailoverResult {
   fenceError?: string;
 }
 
+export type NodeLifecycleAction = "enable" | "join" | "approve" | "upgrade" | "fence" | "unfence" | "enable-ha" | "join-controller";
+/** Platform operations the panel runs on the controller host through node-control. */
+export type HostTaskAction =
+  | "db-backup" | "db-verify" | "db-restore"
+  | "offsite-sync" | "offsite-list" | "offsite-check-key" | "offsite-take-over" | "offsite-configure" | "offsite-disable" | "restore-host"
+  | "backup-now" | "rotate-token" | "domain-check" | "domain-set" | "storage-configure" | "connection-configure"
+  | "converge" | "doctor" | "support-bundle" | "host-settings" | "server-forwarding";
 export interface NodeControlRequest {
-  action: "enable" | "join" | "approve" | "upgrade" | "fence" | "unfence" | "enable-ha" | "join-controller";
+  action: NodeLifecycleAction | HostTaskAction;
   name?: string;
   sshTarget?: string;
   externalIP?: string;
   peers?: string[];
   confirmMaintenance: boolean;
+  /** The action's own inputs, kept with the task. */
+  params?: Record<string, string>;
+  /** Credentials the host needs; never stored with the task or returned. */
+  secrets?: Record<string, string>;
 }
 export interface NodeControlTask {
   id: string;
@@ -908,6 +919,78 @@ export interface NodeControlTask {
   finishedAt?: string;
   error?: string;
   log?: string;
+  /** What the action reports as data, such as a health check's findings. */
+  result?: Record<string, unknown>;
+  /** A file the action produced, downloadable from the task. */
+  artifact?: string;
+}
+
+export interface HostAlert {
+  key: string;
+  severity: "warning" | "critical";
+  summary: string;
+  summary_en: string;
+  hint?: string;
+  firstSeen: string;
+  notified?: string;
+}
+export interface HostOverview {
+  host: string;
+  at: string;
+  version: string;
+  disks: { path: string; total: number; available: number }[];
+  memory?: { total: number; available: number };
+  units: { name: string; active: string; next?: string; last?: string }[];
+  proxy: { address?: string; reachable?: boolean };
+  alerts: HostAlert[];
+  alertsError?: string;
+  quietUntil?: string;
+  databaseBackups: { name: string; label: string; size: number; created: string }[];
+  databaseBackupsError?: string;
+  offsite: {
+    configured: boolean;
+    endpoint?: string;
+    bucket?: string;
+    region?: string;
+    prefix?: string;
+    dbKeep?: number;
+    keyKept: boolean;
+    status?: Record<string, unknown>;
+    error?: string;
+  };
+  settings: { dbBackupTime: string; dbBackupKeep: number; velocityXmx: string };
+  connection: { mode: "local" | "reverse-proxy" | "cloudflare"; panelHost: string; adminHost: string };
+  storage: { mode: "local" | "s3"; endpoint?: string; bucket?: string; region?: string };
+  rootDomain: string;
+}
+/** The off-site run as the host records it (internal/offsite Status). */
+export interface OffsiteStatus {
+  last_attempt?: string;
+  last_success?: string;
+  last_error?: string;
+  bucket?: string;
+  key_id?: string;
+  key_mismatch?: boolean;
+  standby?: boolean;
+  displaced?: boolean;
+  writer?: { host_id: string; host: string; at: string };
+}
+/** A doctor run as the panel shows it. */
+export interface DoctorFinding {
+  key: string;
+  severity: "warning" | "critical";
+  summary: string;
+  summary_en: string;
+  hint?: string;
+}
+export interface DoctorView {
+  host: string;
+  at: string;
+  source: string;
+  areas: { key: string; title: string; state: "ok" | "problem" | "skipped"; skipped?: string; findings?: DoctorFinding[] }[];
+  notes?: string[];
+  critical: number;
+  warning: number;
 }
 
 export interface EntryPolicySettings {
