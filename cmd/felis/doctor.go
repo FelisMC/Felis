@@ -91,11 +91,81 @@ var doctorAreas = []struct{ key, title string }{
 }
 
 func runDoctor(ctx context.Context, env doctorEnv, stdout io.Writer) int {
+	return printDoctor(stdout, collectDoctor(ctx, env))
+}
+
+// doctorReport is one doctor run: what it found, the areas it could not check and why,
+// and the notes that are not problems.
+type doctorReport struct {
+	host     string
+	at       time.Time
+	source   string // how the checks were run, the report's second line
+	findings []watchdog.Finding
+	skip     map[string]string
+	notes    []string
+}
+
+// doctorView is the report as the panel shows it: every area in order, with its findings
+// or why it was not checked.
+type doctorView struct {
+	Host     string           `json:"host"`
+	At       time.Time        `json:"at"`
+	Source   string           `json:"source"`
+	Areas    []doctorAreaView `json:"areas"`
+	Notes    []string         `json:"notes,omitempty"`
+	Critical int              `json:"critical"`
+	Warning  int              `json:"warning"`
+}
+
+type doctorAreaView struct {
+	Key   string `json:"key"`
+	Title string `json:"title"`
+	// State is ok, problem or skipped; Skipped says why an area was not checked.
+	State    string             `json:"state"`
+	Skipped  string             `json:"skipped,omitempty"`
+	Findings []watchdog.Finding `json:"findings,omitempty"`
+}
+
+func (r doctorReport) view() doctorView {
+	v := doctorView{Host: r.host, At: r.at.UTC(), Source: r.source, Notes: r.notes}
+	byArea := map[string][]watchdog.Finding{}
+	for _, f := range r.findings {
+		byArea[findingArea(f.Key)] = append(byArea[findingArea(f.Key)], f)
+	}
+	for _, a := range doctorAreas {
+		area := doctorAreaView{Key: a.key, Title: a.title, State: "ok"}
+		switch fs := byArea[a.key]; {
+		case len(fs) > 0:
+			area.State, area.Findings = "problem", fs
+			for _, f := range fs {
+				if f.Severity == watchdog.Critical {
+					v.Critical++
+				} else {
+					v.Warning++
+				}
+			}
+		case r.skip[a.key] != "":
+			area.State, area.Skipped = "skipped", r.skip[a.key]
+		}
+		v.Areas = append(v.Areas, area)
+	}
+	return v
+}
+
+// printDoctor prints the report and returns the exit status: 1 when anything was found.
+func printDoctor(stdout io.Writer, r doctorReport) int {
+	fmt.Fprintf(stdout, "felis doctor on %s at %s\n", r.host, r.at.UTC().Format("2006-01-02 15:04 UTC"))
+	fmt.Fprintln(stdout, r.source)
+	fmt.Fprintln(stdout)
+	return printDoctorReport(stdout, r.findings, r.skip, r.notes)
+}
+
+func collectDoctor(ctx context.Context, env doctorEnv) doctorReport {
 	unit := filepath.Join(env.unitDir, "felis-watchdog.service")
 	w, found, unitErr := watchdogUnitFlags(unit)
 	var report watchdog.Report
 	var notes []string
-	fmt.Fprintf(stdout, "felis doctor on %s at %s\n", env.host, env.now.UTC().Format("2006-01-02 15:04 UTC"))
+	out := doctorReport{host: env.host, at: env.now}
 	switch {
 	case unitErr != nil:
 		report.Findings = append(report.Findings, watchdog.Finding{
@@ -103,18 +173,17 @@ func runDoctor(ctx context.Context, env doctorEnv, stdout io.Writer) int {
 			SummaryEN: fmt.Sprintf("cannot read the watchdog's settings: %v", unitErr),
 			Hint:      "rerun the installer (deploy/bootstrap.sh) to rewrite felis-watchdog.service",
 		})
-		fmt.Fprintf(stdout, "checks run with the watchdog's defaults (config %s)\n", w.cfgPath)
+		out.source = fmt.Sprintf("checks run with the watchdog's defaults (config %s)", w.cfgPath)
 	case !found:
 		report.Findings = append(report.Findings, watchdog.Finding{
 			Key: "watchdog/unit", Severity: watchdog.Critical,
 			SummaryEN: fmt.Sprintf("%s is not installed: nothing checks this host or mails anyone when it breaks", unit),
 			Hint:      "rerun the installer (deploy/bootstrap.sh), which installs felis-watchdog.timer",
 		})
-		fmt.Fprintf(stdout, "checks run with the watchdog's defaults (config %s)\n", w.cfgPath)
+		out.source = fmt.Sprintf("checks run with the watchdog's defaults (config %s)", w.cfgPath)
 	default:
-		fmt.Fprintf(stdout, "checks run as %s runs them (config %s)\n", unit, w.cfgPath)
+		out.source = fmt.Sprintf("checks run as %s runs them (config %s)", unit, w.cfgPath)
 	}
-	fmt.Fprintln(stdout)
 
 	skip := map[string]string{}
 	panelRelay, panelBeat := false, false
@@ -180,7 +249,8 @@ func runDoctor(ctx context.Context, env doctorEnv, stdout io.Writer) int {
 			"and a marker an installer killed mid-run left behind holds it until then",
 			until.UTC().Format("2006-01-02 15:04 UTC"), w.quietPath))
 	}
-	return printDoctorReport(stdout, report.Findings, skip, notes)
+	out.findings, out.skip, out.notes = report.Findings, skip, notes
+	return out
 }
 
 // printDoctorReport prints each area's findings under its heading, an area

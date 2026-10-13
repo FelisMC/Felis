@@ -124,6 +124,14 @@ func cmdNodeControl(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	manager.ArtifactDirs = []string{supportBundleDir}
+	manager.Host = execute.overview
+	manager.OffsiteKey = offsiteKey
+	quiet := "/run/felis/watchdog-quiet-until"
+	if w, found, err := watchdogUnitFlags(filepath.Join(systemdUnitDir, "felis-watchdog.service")); err == nil && found {
+		quiet = w.quietPath
+	}
+	manager.Quiet = hostQuiet(quiet)
 	server := &http.Server{Handler: manager.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second}
 	go func() { <-ctx.Done(); server.Close() }()
 	fmt.Fprintln(stdout, "node-control listening on", *socket)
@@ -148,6 +156,9 @@ type nodeExecutor struct {
 	serverToken, agentToken, etcDir, etcdDir string
 	// self is this host's node name; empty means selfNodeName's answer.
 	self string
+	// Overrides for the host tasks (host_tasks.go): the shell the installer runs in, the
+	// host settings file and the support bundle directory; empty means the real ones.
+	shell, settingsFile, supportDir string
 }
 
 func (e nodeExecutor) selfName() string {
@@ -162,6 +173,9 @@ func (e nodeExecutor) run(ctx context.Context, r nodecontrol.Request, stage func
 	// admitting is set once the admission itself runs: a quarantine this task added is kept
 	// only when that fails, and lifted again when a check before it refuses (servers still
 	// on the node, SSH unreachable), so a refused approval leaves the node as it found it.
+	if !nodecontrol.NodeAction(r.Action) {
+		return e.hostTask(ctx, r, stage, out)
+	}
 	if r.Action == "fence" {
 		return e.fence(ctx, r.Name, stage, out)
 	}

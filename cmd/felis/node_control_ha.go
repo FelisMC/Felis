@@ -127,6 +127,12 @@ func (e nodeExecutor) enableHA(ctx context.Context, r nodecontrol.Request, contr
 	cmd.Stderr = out
 	cmd.Env = append(os.Environ(), "FELIS_DISTRIBUTED=1", "FELIS_CONTROLLER_HA=1", "FELIS_NODE_EXTERNAL_IP="+controllerIP(controller), "FELIS_PEER_CIDRS="+strings.Join(peers, ","),
 		"FELIS_BOOTSTRAP_FROM_TUI=1", "FELIS_BOOTSTRAP_BINARY="+e.binary, "FELIS_NO_SETUP=1", "FELIS_NODE_CONTROL_TASK=1", "FELIS_INSTALL_MODE=full")
+	// The floating address the panel named, as the installer takes it (FELIS_HA_VIP*).
+	for param, env := range map[string]string{"vip": "FELIS_HA_VIP", "vipInterface": "FELIS_HA_VIP_INTERFACE", "vrid": "FELIS_HA_VRID"} {
+		if v := r.Params[param]; v != "" {
+			cmd.Env = append(cmd.Env, env+"="+v)
+		}
+	}
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("controller high availability could not be enabled; retain the database backup: %w", err)
 	}
