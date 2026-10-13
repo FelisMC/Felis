@@ -1688,6 +1688,7 @@ run_batch() { # PREBUILT_ROLES [ARTIFACT_MODE [ARTIFACT_CACHE]]
     push_version_tag() { printf "VERSION %s\n" "$1"; }
     push_release_image() { printf "RELEASE %s\n" "$1"; }
     registry_docker_login() { printf "LOGIN\n"; }
+    prune_build_images() { printf "PRUNE\n"; }
     '"$wiblock"'
     push_images_to_registry'
 }
@@ -1704,7 +1705,7 @@ stops="$(printf '%s\n' "$out" | grep -c 'SYSTEMCTL stop docker')"
   && echo "PASS the three game images, and only they, also get a version tag" \
   || { echo "FAIL: expected version tags for b c d only, got:"; printf '%s\n' "$out"; fails=$((fails + 1)); }
 out="$(run_batch " felis limbo ")"
-expect "release images are pushed from their bundles, the rest with docker" "RELEASE felis
+expect "release images are pushed from their bundles, the rest with docker, and Docker is pruned before it stops" "RELEASE felis
 RELEASE limbo
 ENSURE
 LOGIN
@@ -1712,6 +1713,7 @@ PUSH c
 VERSION c
 PUSH d
 VERSION d
+PRUNE
 SYSTEMCTL stop docker docker.socket" "$out"
 case "$out" in *"PUSH a"*|*"PUSH b"*) echo "FAIL: a release image must not also go through docker push"; fails=$((fails + 1)) ;; *) echo "PASS a release image is pushed once" ;; esac
 cachedir="$(mktemp -d)"
