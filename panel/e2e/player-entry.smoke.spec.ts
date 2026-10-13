@@ -39,8 +39,18 @@ test("entry policy keeps its form visible, saves direct routing and retains Limb
     await page.setViewportSize(viewport);
     await expectFitsScreen(page);
   }
+  await expect(page.getByTestId("entry-preview-tail")).toBeHidden();
   await page.setViewportSize({ width: 1440, height: 1050 });
   await page.getByRole("main").evaluate((el) => { el.scrollTop = 0; });
   await expect(direct).toBeInViewport();
+  // The preview's tail points at the chosen mode and follows a change.
+  const tail = page.getByTestId("entry-preview-tail");
+  const offset = async () => {
+    const [a, b] = await Promise.all([tail.boundingBox(), page.getByRole("radio", { checked: true }).boundingBox()]);
+    return a && b ? Math.abs(a.x + a.width / 2 - (b.x + b.width / 2)) : Infinity;
+  };
+  await expect.poll(offset).toBeLessThan(2);
+  await page.getByRole("radio", { name: `${t("admin:entry_lobby")} ${t("admin:entry_lobby_hint")}` }).click();
+  await expect.poll(offset).toBeLessThan(2);
   await page.screenshot({ path: "/tmp/felis-player-entry.png" });
 });

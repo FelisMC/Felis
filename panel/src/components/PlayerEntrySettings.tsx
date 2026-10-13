@@ -15,6 +15,11 @@ import type { EntryPolicySettings } from "@/lib/types";
 
 const modes = [{ value: "lobby", icon: DoorOpen }, { value: "direct", icon: Server }, { value: "domain", icon: Globe }] as const;
 
+// The route preview hangs from the chosen mode as a callout. Its colours are solid, so the
+// tail's fill covers the strip's top edge where the two meet.
+const calloutFill = "bg-[color:color-mix(in_srgb,hsl(var(--primary))_5%,hsl(var(--card)))]";
+const calloutEdge = "border-[color:color-mix(in_srgb,hsl(var(--primary))_40%,hsl(var(--card)))]";
+
 const initial: EntryPolicySettings = { mode: "domain", defaultServer: "", requireAccountLink: true, offlineAction: "wake", waitingSpace: "lobby", fallbackServer: "", revision: "" };
 
 export function PlayerEntrySettings() {
@@ -35,6 +40,7 @@ export function PlayerEntrySettings() {
   }, [query.data]);
   const busy = query.loading || saving || !saved;
   const servers = (fleet.data ?? []).filter((server) => !server.system && server.name !== "login" && server.name !== "lobby");
+  const modeIndex = modes.findIndex(({ value }) => value === draft.mode);
   const valid = (draft.mode !== "direct" || !!draft.defaultServer)
     && (draft.offlineAction !== "fallback" || (!!draft.fallbackServer && draft.fallbackServer !== draft.defaultServer));
   function change(update: Partial<EntryPolicySettings>) { setDraft((value) => ({ ...value, ...update })); setMessage(null); }
@@ -66,20 +72,23 @@ export function PlayerEntrySettings() {
     <CardContent className="space-y-6" aria-busy={query.loading}>
       <p className="text-sm text-muted-foreground">{t("entry_description")}</p>
       {query.loading && <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />{t("platform_loading")}</p>}
-      <div role="radiogroup" aria-label={t("entry_mode")} className="grid gap-3 sm:grid-cols-3" onKeyDown={(event) => {
-        if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key) || busy) return;
-        event.preventDefault();
-        const choices = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"]'));
-        const current = choices.indexOf(event.target as HTMLButtonElement);
-        const index = event.key === "Home" ? 0 : event.key === "End" ? choices.length - 1 : (current + (event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1) + choices.length) % choices.length;
-        choices[index].focus(); choices[index].click();
-      }}>
-        {modes.map(({ value: mode, icon: Icon }) => <Button key={mode} type="button" role="radio" tabIndex={draft.mode === mode ? 0 : -1} aria-checked={draft.mode === mode} variant="outline" disabled={busy} className={`h-auto justify-start whitespace-normal px-4 py-3 text-left active:scale-100 ${draft.mode === mode ? "border-primary/40 bg-primary/5 ring-1 ring-primary/20" : ""}`} onClick={() => { if (draft.mode === mode) return; change({ mode, ...(mode === "lobby" ? { defaultServer: "" } : {}), ...(mode === "direct" ? { requireAccountLink: false, offlineAction: "disconnect", waitingSpace: "login", fallbackServer: "" } : {}) }); }}>
-          <span className="space-y-1"><span className="flex items-center gap-2"><Icon className={draft.mode === mode ? "text-primary" : "text-muted-foreground"} aria-hidden="true" />{t(`entry_${mode}`)}</span><span className="block text-xs font-normal leading-relaxed text-muted-foreground">{t(`entry_${mode}_hint`)}</span></span>
-        </Button>)}
-      </div>
-      <div className="flex flex-wrap items-center gap-2 rounded-lg bg-muted/40 px-4 py-3 text-sm" aria-label={t("entry_preview")}>
-        <span className="flex items-center gap-2"><ShieldCheck className="h-4 w-4 text-primary" aria-hidden="true" />{t("entry_identity")}</span>{draft.requireAccountLink && <><ArrowRight className="h-4 w-4 text-muted-foreground" /><span className="flex items-center gap-2"><LogIn className="h-4 w-4 text-muted-foreground" aria-hidden="true" />{t("entry_web")}</span></>}<ArrowRight className="h-4 w-4 text-muted-foreground" /><span className="font-medium">{draft.mode === "lobby" ? t("entry_lobby") : draft.mode === "domain" ? t("entry_domain_target") : draft.defaultServer || t("entry_select_server")}</span>
+      <div className="space-y-3">
+        <div role="radiogroup" aria-label={t("entry_mode")} className="grid gap-3 sm:grid-cols-3" onKeyDown={(event) => {
+          if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key) || busy) return;
+          event.preventDefault();
+          const choices = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"]'));
+          const current = choices.indexOf(event.target as HTMLButtonElement);
+          const index = event.key === "Home" ? 0 : event.key === "End" ? choices.length - 1 : (current + (event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1) + choices.length) % choices.length;
+          choices[index].focus(); choices[index].click();
+        }}>
+          {modes.map(({ value: mode, icon: Icon }) => <Button key={mode} type="button" role="radio" tabIndex={draft.mode === mode ? 0 : -1} aria-checked={draft.mode === mode} variant="outline" disabled={busy} className={`h-auto justify-start whitespace-normal px-4 py-3 text-left active:scale-100 ${draft.mode === mode ? "border-primary/40 bg-primary/5 ring-1 ring-primary/20" : ""}`} onClick={() => { if (draft.mode === mode) return; change({ mode, ...(mode === "lobby" ? { defaultServer: "" } : {}), ...(mode === "direct" ? { requireAccountLink: false, offlineAction: "disconnect", waitingSpace: "login", fallbackServer: "" } : {}) }); }}>
+            <span className="space-y-1"><span className="flex items-center gap-2"><Icon className={draft.mode === mode ? "text-primary" : "text-muted-foreground"} aria-hidden="true" />{t(`entry_${mode}`)}</span><span className="block text-xs font-normal leading-relaxed text-muted-foreground">{t(`entry_${mode}_hint`)}</span></span>
+          </Button>)}
+        </div>
+        <div className={`relative flex flex-wrap items-center gap-2 rounded-lg border px-4 py-3 text-sm ${calloutFill} ${calloutEdge}`} aria-label={t("entry_preview")}>
+          {modeIndex >= 0 && <span data-testid="entry-preview-tail" aria-hidden="true" className={`absolute -top-[7px] hidden h-3.5 w-3.5 -translate-x-1/2 rotate-45 border-l border-t transition-[left] duration-200 ease-out motion-reduce:transition-none sm:block ${calloutFill} ${calloutEdge}`} style={{ left: `calc((100% + 0.75rem) * ${modeIndex} / 3 + (100% - 1.5rem) / 6)` }} />}
+          <span className="flex items-center gap-2"><ShieldCheck className="h-4 w-4 text-primary" aria-hidden="true" />{t("entry_identity")}</span>{draft.requireAccountLink && <><ArrowRight className="h-4 w-4 text-muted-foreground" /><span className="flex items-center gap-2"><LogIn className="h-4 w-4 text-muted-foreground" aria-hidden="true" />{t("entry_web")}</span></>}<ArrowRight className="h-4 w-4 text-muted-foreground" /><span className="font-medium">{draft.mode === "lobby" ? t("entry_lobby") : draft.mode === "domain" ? t("entry_domain_target") : draft.defaultServer || t("entry_select_server")}</span>
+        </div>
       </div>
       <div className="grid gap-6 md:grid-cols-2">
         {draft.mode !== "lobby" && <div className="space-y-2"><Label htmlFor="entry-defaultServer">{t(draft.mode === "direct" ? "entry_main" : "entry_default")}</Label>{serverSelect("defaultServer", draft.mode === "domain")}<p className="text-xs leading-relaxed text-muted-foreground">{t(draft.mode === "direct" ? "entry_main_hint" : "entry_default_hint")}</p></div>}
