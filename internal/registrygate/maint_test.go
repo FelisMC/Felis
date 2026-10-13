@@ -50,6 +50,26 @@ func newMaintGate(t *testing.T) (*Gate, *httptest.Server, *httptest.Server, *ups
 	return g, gs, ms, up, clk
 }
 
+// settled waits until the gate has recorded the end of the writes it answered. The client has
+// the response before the handler's deferred endWrite runs, so a test that moves the clock
+// right after a write could otherwise stamp that write's end after the move.
+func settled(t *testing.T, g *Gate) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		g.maint.mu.Lock()
+		n := g.maint.inflight
+		g.maint.mu.Unlock()
+		if n == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d write(s) still in flight", n)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func post(t *testing.T, srv *httptest.Server, path string) int {
 	t.Helper()
 	resp, err := http.Post(srv.URL+path, "text/plain", nil)
@@ -95,7 +115,7 @@ func TestPrunePrincipalMayOnlyDeleteManifestsByDigest(t *testing.T) {
 }
 
 func TestReadOnlyWindowWaitsForQuietThenRefusesWrites(t *testing.T) {
-	_, gs, ms, up, clk := newMaintGate(t)
+	g, gs, ms, up, clk := newMaintGate(t)
 	put := "/v2/user-uploads/s1/manifests/latest"
 
 	if resp := do(t, gs, http.MethodPut, put, PrincipalBuild, "build-secret"); resp.StatusCode != http.StatusCreated {
@@ -105,6 +125,7 @@ func TestReadOnlyWindowWaitsForQuietThenRefusesWrites(t *testing.T) {
 	if code := post(t, ms, "/readonly?lease=600"); code != http.StatusConflict {
 		t.Fatalf("readonly right after a write = %d, want 409", code)
 	}
+	settled(t, g)
 	clk.advance(DefaultQuiet)
 	if code := post(t, ms, "/readonly?lease=600"); code != http.StatusOK {
 		t.Fatalf("readonly after %s of quiet = %d, want 200", DefaultQuiet, code)
