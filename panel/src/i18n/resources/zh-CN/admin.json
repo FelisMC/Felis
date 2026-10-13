@@ -537,5 +537,9 @@
   "heartbeat_clear": "移除心跳地址",
   "heartbeat_clear_confirm": "移除后，巡检不再访问这个地址，监控服务会因心跳停止而发出告警，请同时在监控服务中停用该检查。",
   "heartbeat_footer": "巡检每两分钟运行一次。",
-  "heartbeat_save": "保存心跳地址"
+  "heartbeat_save": "保存心跳地址",
+  "node_control_vip": "浮动地址（可选）",
+  "node_control_vip_interface": "网卡",
+  "node_control_vrid": "VRRP 路由 ID",
+  "node_control_vip_hint": "一个未占用的 IPv4 地址，随活动主控转移，故障切换后玩家与面板仍使用同一地址。网卡和路由 ID 留空时由安装脚本确定。"
 }

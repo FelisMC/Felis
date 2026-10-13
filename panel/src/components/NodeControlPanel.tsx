@@ -15,6 +15,8 @@ import { useAsync, usePolling, useRefreshSignal } from "@/lib/hooks";
 import type { NodeControlRequest, NodeControlTask } from "@/lib/types";
 
 // Each operation states its own maintenance impact; joining and approving workers share one.
+const nodeActions = ["enable", "join", "approve", "upgrade", "fence", "unfence", "enable-ha", "join-controller"] as const;
+
 const confirmKeys: Partial<Record<NodeControlRequest["action"], string>> = {
   enable: "node_control_confirm_enable",
   upgrade: "node_control_confirm_upgrade",
@@ -32,6 +34,9 @@ export function NodeControlPanel({ distributed, controllerHA = false }: { distri
   const [ssh, setSSH] = useState("");
   const [ip, setIP] = useState("");
   const [peers, setPeers] = useState("");
+  const [vip, setVip] = useState("");
+  const [vipInterface, setVipInterface] = useState("");
+  const [vrid, setVrid] = useState("");
   const [confirmed, setConfirmed] = useState(false);
   const [enabling, setEnabling] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -42,7 +47,10 @@ export function NodeControlPanel({ distributed, controllerHA = false }: { distri
   const busy = submitting || !!running;
   const available = tasks.data?.available === true && !tasks.error && distributed !== null;
   useEffect(() => { if (distributed !== null) { setAction(distributed ? "join" : "enable"); setConfirmed(false); } }, [distributed, controllerHA]);
-  useEffect(() => { if (!id && tasks.data?.tasks[0]) setId(tasks.data.tasks[0].id); }, [id, tasks.data]);
+  // The host runs other platform tasks too; this panel lists and follows the node ones.
+  const nodeTasks = tasks.data?.tasks.filter((entry) => (nodeActions as readonly string[]).includes(entry.request.action)) ?? [];
+  const firstNodeTask = nodeTasks[0]?.id;
+  useEffect(() => { if (!id && firstNodeTask) setId(firstNodeTask); }, [id, firstNodeTask]);
   usePolling(() => { tasks.reload(); if (id) progress.reload(); }, running || progress.error || tasks.error ? 3000 : 10000);
   useRefreshSignal(tasks.reload);
   useRefreshSignal(progress.reload);
@@ -61,6 +69,7 @@ export function NodeControlPanel({ distributed, controllerHA = false }: { distri
       const result: NodeControlTask = await reauth.guard(() => retry && id ? api.retryNodeTask(id) : api.startNodeTask({
         action, ...(needsNode ? { name: name.trim(), sshTarget: ssh.trim() } : {}),
         ...(needsIP ? { externalIP: ip.trim(), peers: peers.split(/[\s,]+/).filter(Boolean) } : {}),
+        ...(action === "enable-ha" && vip.trim() ? { params: { vip: vip.trim(), ...(vipInterface.trim() ? { vipInterface: vipInterface.trim() } : {}), ...(vrid.trim() ? { vrid: vrid.trim() } : {}) } } : {}),
         confirmMaintenance: confirmed,
       }));
       setId(result.id); setConfirmed(false); tasks.reload();
@@ -94,6 +103,12 @@ export function NodeControlPanel({ distributed, controllerHA = false }: { distri
           <div className="space-y-2 md:col-span-2"><Label htmlFor="node-peers">{t("node_control_peers")}</Label><Input id="node-peers" value={peers} disabled={!available || busy} onChange={(e) => setPeers(e.target.value)} placeholder="192.168.1.21/32, 192.168.1.22/32" /><p className="text-xs text-muted-foreground">{t("node_control_peers_hint")}</p></div>
         </>}
       </div>
+      {action === "enable-ha" && <div className="grid gap-5 md:grid-cols-3">
+        <div className="space-y-2"><Label htmlFor="node-vip">{t("node_control_vip")}</Label><Input id="node-vip" value={vip} disabled={!available || busy} onChange={(e) => setVip(e.target.value)} placeholder="192.168.1.50" /></div>
+        <div className="space-y-2"><Label htmlFor="node-vip-interface">{t("node_control_vip_interface")}</Label><Input id="node-vip-interface" value={vipInterface} disabled={!available || busy || !vip.trim()} onChange={(e) => setVipInterface(e.target.value)} placeholder="eth0" /></div>
+        <div className="space-y-2"><Label htmlFor="node-vrid">{t("node_control_vrid")}</Label><Input id="node-vrid" type="number" min={1} max={255} value={vrid} disabled={!available || busy || !vip.trim()} onChange={(e) => setVrid(e.target.value)} placeholder="51" /></div>
+        <p className="text-xs leading-relaxed text-muted-foreground md:col-span-3">{t("node_control_vip_hint")}</p>
+      </div>}
       {ha && <p className="text-sm leading-relaxed text-muted-foreground">{t("node_control_ha_hint")}</p>}
       <div className="flex items-start gap-3 rounded-lg border border-border p-4"><Switch id="node-confirm" checked={confirmed} disabled={!available || busy} onCheckedChange={setConfirmed} /><Label htmlFor="node-confirm" className="text-sm leading-relaxed">{t(confirmKey)}</Label></div>
       {error && <MessageLine kind="error" message={error} />}
@@ -101,7 +116,7 @@ export function NodeControlPanel({ distributed, controllerHA = false }: { distri
       <div className="flex flex-wrap gap-3"><Button disabled={!available || busy || !valid} onClick={() => void run()}>{submitting ? <Loader2 className="animate-spin" /> : <Play />}{t(action === "enable" ? "node_control_enable" : action === "enable-ha" ? "node_control_enable-ha" : "node_control_submit")}</Button>{distributed === false && <Button variant="outline" disabled={busy} onClick={() => { setEnabling(false); setConfirmed(false); }}>{t("node_control_back")}</Button>}</div>
       </>}
       <details className="rounded-lg border border-border p-4"><summary className="cursor-pointer text-sm font-medium">{t("node_control_prerequisites")}</summary><p className="mt-3 text-sm leading-relaxed text-muted-foreground">{t("node_control_prerequisites_body")}</p><Button asChild variant="outline" size="sm" className="mt-3"><a href="https://github.com/FelisMC/Felis/blob/main/docs/distributed.md" target="_blank" rel="noreferrer">{t("platform_distribution_runbook")}</a></Button></details>
-      {!!tasks.data?.tasks.length && <div className="space-y-2"><Label htmlFor="node-task">{t("node_control_history")}</Label><Select value={id ?? undefined} onValueChange={setId}><SelectTrigger id="node-task"><SelectValue /></SelectTrigger><SelectContent>{tasks.data.tasks.map((entry) => <SelectItem key={entry.id} value={entry.id}>{t(`node_control_${entry.request.action}`)} · {entry.request.name || t("node_control_controller")} · {new Date(entry.startedAt).toLocaleString()} · {t(`node_control_state_${entry.state}`)}</SelectItem>)}</SelectContent></Select></div>}
+      {!!nodeTasks.length && <div className="space-y-2"><Label htmlFor="node-task">{t("node_control_history")}</Label><Select value={id ?? undefined} onValueChange={setId}><SelectTrigger id="node-task"><SelectValue /></SelectTrigger><SelectContent>{nodeTasks.map((entry) => <SelectItem key={entry.id} value={entry.id}>{t(`node_control_${entry.request.action}`)} · {entry.request.name || t("node_control_controller")} · {new Date(entry.startedAt).toLocaleString()} · {t(`node_control_state_${entry.state}`)}</SelectItem>)}</SelectContent></Select></div>}
       {progress.error != null && <MessageLine kind="error" message={t("node_control_connection_lost", { error: humanizeError(progress.error) })} />}
       {id && progress.loading && !task && <p role="status" className="text-sm text-muted-foreground">{t("node_control_loading")}</p>}
       {task && <section aria-label={t("node_control_progress")} className="space-y-3 rounded-lg border border-border p-4">

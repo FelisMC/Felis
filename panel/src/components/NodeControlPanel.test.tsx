@@ -89,6 +89,26 @@ describe("host node management", () => {
     await user.click(submit);
     expect(calls.startNodeTask).toHaveBeenCalledWith({ action: "enable-ha", confirmMaintenance: true });
   });
+  it("hands the floating address to high availability, and keeps host tasks out of its history", async () => {
+    const user = userEvent.setup();
+    const doctor = { ...failed, id: "host-1", request: { action: "doctor" as const, confirmMaintenance: false }, state: "succeeded" as const };
+    calls.nodeTasks.mockResolvedValue({ available: true, tasks: [doctor] });
+    const running = { ...failed, state: "running" as const, request: { action: "enable-ha" as const, confirmMaintenance: true } };
+    calls.startNodeTask.mockResolvedValue(running); calls.nodeTask.mockResolvedValue(running);
+    render(<NodeControlPanel distributed />);
+    await waitFor(() => expect(screen.getByLabelText("Node name")).toHaveProperty("disabled", false));
+    expect(screen.queryByRole("combobox", { name: "Task history" })).toBeNull();
+    expect(calls.nodeTask).not.toHaveBeenCalledWith("host-1");
+    await user.click(screen.getByRole("combobox", { name: "Operation" }));
+    await user.click(await screen.findByRole("option", { name: "Enable controller high availability" }));
+    expect(screen.getByLabelText("Network interface")).toHaveProperty("disabled", true);
+    fireEvent.change(screen.getByLabelText("Floating address (optional)"), { target: { value: "192.0.2.50" } });
+    fireEvent.change(screen.getByLabelText("Network interface"), { target: { value: "eth0" } });
+    fireEvent.change(screen.getByLabelText("VRRP router ID"), { target: { value: "77" } });
+    await user.click(screen.getByRole("switch"));
+    await user.click(screen.getByRole("button", { name: "Enable controller high availability" }));
+    expect(calls.startNodeTask).toHaveBeenCalledWith({ action: "enable-ha", params: { vip: "192.0.2.50", vipInterface: "eth0", vrid: "77" }, confirmMaintenance: true });
+  });
   it("adds a controller once high availability is on", async () => {
     const user = userEvent.setup();
     const running = { ...failed, state: "running" as const, request: { action: "join-controller" as const, name: "controller-02", sshTarget: "root@192.0.2.11", externalIP: "192.0.2.11", confirmMaintenance: true } };

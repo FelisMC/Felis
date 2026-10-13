@@ -541,5 +541,9 @@
   "heartbeat_clear": "Remove heartbeat URL",
   "heartbeat_clear_confirm": "Once removed, the watchdog stops pinging this URL and the monitoring service alerts on the missing pings. Pause the check at the service as well.",
   "heartbeat_footer": "The watchdog runs every two minutes.",
-  "heartbeat_save": "Save heartbeat URL"
+  "heartbeat_save": "Save heartbeat URL",
+  "node_control_vip": "Floating address (optional)",
+  "node_control_vip_interface": "Network interface",
+  "node_control_vrid": "VRRP router ID",
+  "node_control_vip_hint": "An unused IPv4 address that follows the active controller, so players and the panel keep one address after a failover. The installer chooses the interface and router ID when they are left empty."
 }
