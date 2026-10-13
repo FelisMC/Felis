@@ -35,6 +35,14 @@ The operator never invents the parent domain; routing identity is
 `<root-domain>` / `registry.<ns>.svc:<port>` placeholders rather than any
 concrete host.
 
+Most `felis` commands in this document also run from the panel for the Owner: host status,
+the watchdog's alerts and their hold, database bundles, world backups, the off-site copy,
+the rebuild, `felis doctor`, the support bundle, the audit export, the access method, the
+root domain, upload storage, credential rotation and system server completion.
+[operations.md section 9](operations.md#9-running-the-host-from-the-panel-go-tested-sh-tested)
+lists where each one is. The commands below remain the reference, and the only route when
+the panel or `felis-node-control` is down.
+
 ---
 
 ## 0. First look: `felis status`, `felis doctor`, `felis support-bundle`

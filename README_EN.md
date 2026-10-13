@@ -37,6 +37,7 @@
   * File manager: create, delete, rename, chunked upload, download, and unzip while the server is stopped; also used to import worlds
   * Schedules: run commands, restart, stop, start or back up by weekday and time zone, with an in-game warning to players beforehand
   * Platform settings: the Owner configures the mail relay (SMTP), backup and audit retention, and the monitoring heartbeat in the panel; changes take effect immediately and take precedence over the install-time settings
+  * Host operations: the Owner changes the access method, the root domain, upload storage, credentials, the game proxy heap, the database backup schedule, the off-site copy and system server completion in the panel; a root service on the host runs the matching command, with a fresh sign-in proof and an audit record for each (see [operations guide section 9](docs/operations.md#9-running-the-host-from-the-panel-go-tested-sh-tested))
 
 * **Backup & Restore**: Enabled by default; the installer renders the archive PVC and its path.
   * Manual backups: archive a server's entire data volume (`/data`, including worlds, configuration, plugins and mods) to the cluster's archive store, with rollback to any backup point
@@ -44,10 +45,10 @@
   * Daily restore points: every server played that day gets a daily restore point, taken live while it runs; by default 7 are kept for up to 90 days, rotated separately from manual backups
   * Download and export: download a single backup (with sha256 verification), delete a single backup, or export a whole world
   * Off-site copy (optional): backups are encrypted on the host and synced to S3-compatible storage (AWS S3, Cloudflare R2, Backblaze B2, MinIO and others)
-  * Control-plane database: the database holding accounts, server ownership, quotas and the archive index is backed up daily and snapshotted before every upgrade migration; `felis db restore` rolls it back atomically, and the panel's Maintenance & Backups page shows the age of the latest backup (see [troubleshooting §16](docs/troubleshooting.md))
-  * Whole-host rebuild: set `FELIS_RESTORE_FROM_OFFSITE=1` when installing on a new host, or run `sudo felis restore-host -yes` after installing, to restore the database, images, uploads, servers and each server's newest world from the off-site copy; an interrupted run resumes where it stopped (see [troubleshooting §16](docs/troubleshooting.md))
+  * Control-plane database: the database holding accounts, server ownership, quotas and the archive index is backed up daily and snapshotted before every upgrade migration; the Owner backs it up, verifies a backup and rolls it back atomically under Maintenance & Backups → Backups in the panel, or with `felis db restore` (see [troubleshooting §16](docs/troubleshooting.md))
+  * Whole-host rebuild: set `FELIS_RESTORE_FROM_OFFSITE=1` when installing on a new host, or start the rebuild under Maintenance & Backups → Off-site copy in the panel after installing (`sudo felis restore-host -yes` on the command line), to restore the database, images, uploads, servers and each server's newest world from the off-site copy; an interrupted run resumes where it stopped (see [troubleshooting §16](docs/troubleshooting.md))
 
-* **Diagnostics**
+* **Diagnostics**: the panel's Maintenance & Backups page shows host status and open alerts, and runs the health check, the support bundle download and the audit log export; the command-line equivalents are:
   * `sudo felis status`: a summary of the node, control plane, game proxy, each server, backups and open alerts
   * `sudo felis doctor`: runs all health checks and lists problems by area with troubleshooting pointers; sends no email
   * `sudo felis support-bundle`: generates a redacted diagnostics archive to attach to support requests (see [troubleshooting §0](docs/troubleshooting.md))

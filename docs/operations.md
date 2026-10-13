@@ -1,7 +1,8 @@
 # Felis Operations Guide
 
-What a Felis host needs, how big it should be, how to take Felis off it again, and where
-the disaster-recovery procedures live. Fault-finding is in
+What a Felis host needs, how big it should be, how to take Felis off it again, where the
+disaster-recovery procedures live, and which host operations the panel runs
+([section 9](#9-running-the-host-from-the-panel-go-tested-sh-tested)). Fault-finding is in
 [troubleshooting.md](troubleshooting.md); this document refers to its sections as §N.
 
 Evidence tags follow troubleshooting.md: **[VM-VERIFIED]** was run on a real host,
@@ -752,7 +753,10 @@ runs in one command, `felis restore-host`: it brings back the database, the user
 the uploads, the servers and each server's newest world, and resumes where it stopped
 when interrupted. The installer runs it on its own when given `FELIS_RESTORE_FROM_OFFSITE=1`
 with the old install's `FELIS_OFFSITE_*` settings and `FELIS_OFFSITE_KEY`. Moving the
-domain's DNS and the Cloudflare tunnel stay with the operator. For a production install:
+domain's DNS and the Cloudflare tunnel stay with the operator. The off-site copy, the
+database bundles and the rebuild are also available in the panel, under Maintenance &
+Backups ([section 9](#9-running-the-host-from-the-panel-go-tested-sh-tested)).
+For a production install:
 
 - **Configure the off-site copy** (`FELIS_OFFSITE_*`, §16 "Keep a copy somewhere
   else"). Without it the world archives sit on the same disk as the worlds, and the
@@ -839,7 +843,9 @@ the `felis-api-tls` Secret, the proxy's `felis-link.properties`, the login gate'
 and DNS. `felis domain set` moves every one of them that lives on the host, in that
 order, then restarts what reads them; `felis domain check` reports each surface on its
 own line. The installer keeps the installed domain: a rerun with a different
-`FELIS_ROOT_DOMAIN` stops and names this command.
+`FELIS_ROOT_DOMAIN` stops and names this command. The panel runs the same check and move
+under Platform settings → Access and security
+([section 9](#9-running-the-host-from-the-panel-go-tested-sh-tested)).
 
 ```sh
 sudo felis domain set new.example.net        # the plan: every surface, what it moves to, what it costs
@@ -972,3 +978,89 @@ API and game plugins together before using this setting.
 Unused login/lobby spaces can be stopped from **Login & lobby**. Saving a policy
 does not stop them automatically or disconnect existing players. Re-running setup
 preserves the desired state of existing system servers.
+
+## 9. Running the host from the panel [GO-TESTED] [SH-TESTED]
+
+The host operations of day-to-day running are available to the Owner in the panel, on
+**Maintenance & Backups** (`/admin/updates`) and **Platform settings** (`/admin/platform`).
+The panel hands each operation to `felis-node-control.service`, the root service the
+installer sets up for node management (see [distributed.md](distributed.md)), and that
+service runs the same `felis` command or installer function as the command line. The
+API itself stays unprivileged.
+
+A host task runs under these rules:
+
+- One task runs at a time. A second request is refused with `a host task is already
+  running` until the first finishes.
+- The service accepts a fixed list of operations, each with validated parameters. It
+  offers no general command execution.
+- An operation that interrupts players or the panel asks for confirmation. Restoring a
+  database bundle asks for the bundle's name; rebuilding from the off-site copy asks for
+  a typed word.
+- Every task and every download requires a fresh sign-in proof (passkey or email code)
+  and is recorded in the audit log under `platform.host.*`. Node operations keep
+  `platform.node.*`.
+- Keys and tokens entered in the panel (bucket keys, the off-site encryption key, the
+  Cloudflare API token) are passed to the executor only. The task record, the task log
+  and the API's responses never contain them.
+- The stage, log and result of each task remain readable in the panel. Records are kept
+  in `/var/lib/felis/node-control`, as for node operations. Each operation has its own
+  time limit, from one minute (starting the off-site copy) to twelve hours (the rebuild).
+- While a task that takes the control plane away is running (a database restore, the
+  rebuild, a credential rotation, a domain move), the API refuses to start, maintain or
+  migrate servers, as it does during node operations.
+
+| Operation | Panel | Command line |
+| --- | --- | --- |
+| Host status: disks, memory, services and timers, the proxy | Maintenance & Backups → Status | `felis status` |
+| Open watchdog alerts; holding their mail during planned work for 1, 4 or 24 hours | Maintenance & Backups → Status | `/run/felis/watchdog-quiet-until` |
+| Database backup now | Maintenance & Backups → Backups | `felis db backup` |
+| Verifying and restoring a database bundle | Maintenance & Backups → Backups | `felis db verify`, `felis db restore`, `felis migrate up` |
+| Daily database backup time and retention | Maintenance & Backups → Backups | `FELIS_DB_BACKUP_TIME`, `FELIS_DB_BACKUP_KEEP`, installer re-run |
+| World backup now, live or with the servers stopped | Maintenance & Backups → Backups | `felis backup-now` |
+| Configuring, changing or turning off the off-site copy | Maintenance & Backups → Off-site copy | `FELIS_OFFSITE_*`, installer re-run |
+| Copying now; listing the bucket; checking the key; taking over the bucket | Maintenance & Backups → Off-site copy | `systemctl start felis-offsite.service`, `felis offsite list`, `felis offsite check-key`, `felis offsite take-over` |
+| Showing the off-site encryption key | Maintenance & Backups → Off-site copy | `/etc/felis/offsite.env` |
+| Rebuilding this host from the off-site copy | Maintenance & Backups → Off-site copy | `felis restore-host` |
+| Health check | Maintenance & Backups → Diagnostics | `felis doctor` |
+| Support bundle, downloaded through the browser | Maintenance & Backups → Diagnostics | `felis support-bundle` |
+| Audit log export | Maintenance & Backups → Backups | `felis db audit-export` |
+| Access method: direct, own reverse proxy, Cloudflare Tunnel | Platform settings → Access and security | the access step of `felis setup` |
+| Checking and moving the root domain | Platform settings → Access and security | `felis domain check`, `felis domain set` |
+| Upload storage: local disk or an S3-compatible bucket | Platform settings → Access and security | the storage step of `felis setup` |
+| Credential rotation | Platform settings → Access and security | `felis rotate-token` |
+| Game proxy heap ceiling | Platform settings → Access and security | `FELIS_VELOCITY_XMX`, installer re-run |
+| System server completion | Platform settings → Access and security | `felis converge` |
+| Forwarding mode of a server | the server's console page → Forwarding mode | `felis.lolicon.best/forwarding` label |
+| Node operations, including the floating address for controller high availability | Platform settings → Distributed | `felis node …`, `FELIS_HA_VIP*`, installer re-run |
+
+Settings changed in the panel that the installer owns (the backup schedule and
+retention, the proxy heap) are kept in `/etc/felis/host-settings.env`. A later installer
+run or `felis update` reads them as its defaults, so the Owner's choice survives
+upgrades; a variable set for that run still takes precedence. The panel applies such a
+change by running the installer in reconfigure mode (`FELIS_INSTALL_MODE=reconfigure`
+with `FELIS_RECONFIGURE` naming the parts), which rewrites only those units.
+
+The dashboard shows the Owner a status line for the host (open alerts, the newest
+database backup, the off-site copy, the fullest disk), linking to the matching tab.
+
+The following remain on the command line:
+
+- **The installation and its re-runs**, including the first install on a new host and
+  the rebuild of a lost host with `FELIS_RESTORE_FROM_OFFSITE=1`. The panel exists only
+  after the installation.
+- **`felis setup`**, which creates the first Owner. Until then nobody can sign in.
+- **`felis breakGlass`**, which restores access when no Owner can sign in, and therefore
+  cannot depend on the panel.
+- **Version changes**: `felis update --apply` and installer runs for a new release. The
+  **Updates** tab reports available versions and shows the command; applying a version
+  replaces the binaries the panel and the host service run from.
+- **Commands run by units and by the installer**, such as `felis api`, `felis operator`,
+  `felis watchdog`, `felis ha leader` and `felis ha migrate-storage`.
+- **The host service itself.** When `felis-node-control` is down, the panel cannot reach
+  the host: use `systemctl status felis-node-control`, `journalctl -u felis-node-control`
+  and `systemctl restart felis-node-control` on the host.
+
+The executor's commands, the task rules and the API routes are covered by `go test`, the
+reconfigure mode by the shell tests, and the panel by its component and browser tests
+against a simulated host. Running each task against a real host is [CODE-ONLY].
