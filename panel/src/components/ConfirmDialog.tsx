@@ -25,6 +25,8 @@ interface Props {
   onConfirm: () => Promise<void>;
   /** Shown under the description, for what a sentence cannot hold (a list). */
   children?: ReactNode;
+  /** Holds the confirm button until the person has done what children ask (typed a name). */
+  confirmDisabled?: boolean;
 }
 
 // ConfirmDialog asks before an action that cannot be taken back, in the panel's
@@ -41,6 +43,7 @@ export function ConfirmDialog({
   confirmVariant = "destructive",
   onConfirm,
   children,
+  confirmDisabled,
 }: Props) {
   const { t } = useTranslation("common");
   const [busy, setBusy] = useState(false);
@@ -78,6 +81,7 @@ export function ConfirmDialog({
           onCancel={() => setOpen(false)}
           onConfirm={() => void confirm()}
           loading={busy}
+          disabled={confirmDisabled}
           cancelLabel={cancelLabel ?? t("cancel")}
           confirmLabel={confirmLabel}
           confirmVariant={confirmVariant}

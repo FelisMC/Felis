@@ -32,6 +32,9 @@ import type {
   QuotaView,
   QuotaInput,
   SessionView,
+  HostOverview,
+  NodeControlRequest,
+  NodeControlTask,
 } from "../src/lib/types";
 
 type AccountID = string;
@@ -106,8 +109,20 @@ interface MockState {
   heartbeat: HeartbeatSettings;
   failoverPolicy: FailoverPolicySettings;
   entryPolicy: EntryPolicySettings;
+  host: MockHost;
   // Each server's world volume, seeded on first visit.
   files: Record<string, MockTree>;
+}
+
+// MockHost stands in for the controller host's node-control service: its tasks finish at
+// once, and the settings they change show up in the overview.
+interface MockHost {
+  tasks: NodeControlTask[];
+  quietUntil?: string;
+  settings: HostOverview["settings"];
+  offsite: HostOverview["offsite"];
+  connection: HostOverview["connection"];
+  storage: HostOverview["storage"];
 }
 
 // PLAYER_NAME mirrors the backend's mcNameRe (handlers_access.go) so the mock
@@ -476,6 +491,13 @@ function initialState(): MockState {
     archivePolicy: hostArchivePolicy(),
     heartbeat: { set: false, display: "", revision: "" },
     failoverPolicy: { automatic: false, afterMinutes: 15, replicaMinutes: 60, revision: "", managed: false },
+    host: {
+      tasks: [],
+      settings: { dbBackupTime: "03:30", dbBackupKeep: 14, velocityXmx: "1G" },
+      offsite: { configured: false, keyKept: false },
+      connection: { mode: "local", panelHost: `console.${ROOT_DOMAIN}`, adminHost: `op.console.${ROOT_DOMAIN}` },
+      storage: { mode: "local" },
+    },
     authSources: {
       sources: [{ tag: "littleskin", prefix: "LS", url: "https://littleskin.cn/api/yggdrasil/sessionserver/session/minecraft/hasJoined", api_url: "", enabled: true }],
       revision: "installation-defaults",
@@ -1040,12 +1062,151 @@ function hostArchivePolicy(): ArchivePolicySettings {
   return { manualKeep: 5, manualRetentionDays: 30, manualCooldownMinutes: 10, scheduledEveryHours: 24, scheduledKeep: 7, scheduledRetentionDays: 90, releasedRetentionDays: 90, maxStoreGiB: 0, auditRetentionDays: 365, source: "host", revision: "" };
 }
 
-async function handleSession(ctx: SessionContext): Promise<boolean> {
-  switch (route(ctx)) {
+// mockHostOverview is what the host service reports for the mock: one disk, the usual
+// units, the database bundles and whatever the host tasks changed.
+function mockHostOverview(state: MockState): HostOverview {
+  const day = (n: number) => new Date(Date.now() - n * 86_400_000);
+  const stamp = (d: Date) => d.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
+  const h = state.host;
+  return {
+    host: "felis-mock", at: new Date().toISOString(), version: "v0.4.0-dev",
+    disks: [{ path: "/var/lib", total: 120 * 2 ** 30, available: 71 * 2 ** 30 }],
+    memory: { total: 16 * 2 ** 30, available: 9 * 2 ** 30 },
+    units: [
+      { name: "k3s.service", active: "active" },
+      { name: "felis-velocity.service", active: "active" },
+      { name: "felis-node-control.service", active: "active" },
+      { name: "felis-db-backup.timer", active: "active", next: new Date(Date.now() + 6 * 3600_000).toISOString(), last: day(0.4).toISOString() },
+      { name: "felis-watchdog.timer", active: "active", next: new Date(Date.now() + 90_000).toISOString() },
+      ...(h.offsite.configured ? [{ name: "felis-offsite.timer", active: "active", next: new Date(Date.now() + 1800_000).toISOString() }] : []),
+    ],
+    proxy: { address: "127.0.0.1:25565", reachable: true },
+    alerts: [],
+    ...(h.quietUntil && new Date(h.quietUntil) > new Date() ? { quietUntil: h.quietUntil } : {}),
+    databaseBackups: [0.4, 1.4, 2.4].map((n, i) => ({ name: `felis-db-${stamp(day(n))}-${i === 1 ? "manual" : "daily"}.tar`, label: i === 1 ? "manual" : "daily", size: 3_482_112 - i * 4096, created: day(n).toISOString() })),
+    offsite: h.offsite,
+    settings: h.settings,
+    connection: h.connection,
+    storage: h.storage,
+    rootDomain: ROOT_DOMAIN,
+  };
+}
+
+const mockStages: Partial<Record<NodeControlRequest["action"], string[]>> = {
+  "db-backup": ["database_backup"], "db-verify": ["verify"], "db-restore": ["verify", "stop_control_plane", "restore_database", "migrate", "start_control_plane"],
+  "offsite-configure": ["configure", "install_timer", "check_bucket"], "backup-now": ["backup"], "rotate-token": ["rotate"], "domain-set": ["domain"],
+  "connection-configure": ["configure"], "storage-configure": ["configure"], "host-settings": ["configure"], "restore-host": ["rebuild"],
+};
+
+// runMockHostTask finishes a host task at once and applies what it changes.
+function runMockHostTask(state: MockState, request: NodeControlRequest, actor: string): NodeControlTask {
+  const id = createHash("sha256").update(`${Date.now()}-${Math.random()}`).digest("hex").slice(0, 32);
+  const now = new Date().toISOString();
+  const p = request.params ?? {};
+  const h = state.host;
+  const stages = ["preflight", ...(mockStages[request.action] ?? []), "complete"];
+  const task: NodeControlTask = {
+    id, request: { ...request, secrets: undefined }, actor, state: "succeeded", stage: "complete", startedAt: now, finishedAt: now,
+    log: stages.map((s) => `[felis] ${s}`).join("\n") + `\nfelis ${request.action}: done (mock)\n`,
+  };
+  switch (request.action) {
+    case "doctor":
+      task.result = {
+        host: "felis-mock", at: now, source: "checks run as /etc/systemd/system/felis-watchdog.service runs them (config /etc/felis/felis.host.toml)", critical: 0, warning: 1,
+        areas: [
+          { key: "config", title: "configuration", state: "ok" }, { key: "cluster", title: "Kubernetes cluster", state: "ok" }, { key: "postgres", title: "PostgreSQL", state: "ok" },
+          { key: "proxy", title: "game proxy", state: "ok" }, { key: "db-backup", title: "database backups", state: "ok" },
+          { key: "offsite", title: "off-site copy", ...(h.offsite.configured ? { state: "ok" } : { state: "skipped", skipped: "not configured" }) },
+          { key: "disk", title: "disk space", state: "ok" }, { key: "memory", title: "memory", state: "ok" },
+          { key: "alerts", title: "alerting", state: "problem", findings: [{ key: "watchdog/heartbeat", severity: "warning", summary: "未设置外部心跳检查", summary_en: "no heartbeat URL is set: a host that goes down entirely alerts no one", hint: "set one in the panel (Platform settings → Monitoring heartbeat)" }] },
+        ],
+      };
+      break;
+    case "support-bundle":
+      task.artifact = `/var/lib/felis/support/felis-support-${now.replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}.tar.gz`;
+      break;
+    case "host-settings":
+      h.settings = { ...h.settings, ...(p.dbBackupTime ? { dbBackupTime: p.dbBackupTime } : {}), ...(p.dbBackupKeep ? { dbBackupKeep: Number(p.dbBackupKeep) } : {}), ...(p.velocityXmx ? { velocityXmx: p.velocityXmx } : {}) };
+      break;
+    case "offsite-configure":
+      h.offsite = { configured: true, endpoint: p.endpoint, bucket: p.bucket, region: p.region, prefix: p.prefix, dbKeep: p.dbKeep ? Number(p.dbKeep) : 30, keyKept: true, status: { last_attempt: now, last_success: now, bucket: p.bucket, key_id: "mock-key" } };
+      break;
+    case "offsite-disable":
+      h.offsite = { configured: false, keyKept: h.offsite.keyKept };
+      break;
+    case "connection-configure":
+      h.connection = { mode: p.mode as HostOverview["connection"]["mode"], panelHost: p.panelHost || h.connection.panelHost, adminHost: p.adminHost || h.connection.adminHost };
+      break;
+    case "storage-configure":
+      h.storage = p.mode === "s3" ? { mode: "s3", endpoint: p.endpoint, bucket: p.bucket, region: p.region } : { mode: "local" };
+      break;
+  }
+  h.tasks = [task, ...h.tasks].slice(0, 100);
+  return task;
+}
+
+// handleMockHost answers the routes the controller host's service backs: host tasks,
+// the overview, the watchdog hold, the off-site key and the audit export. Owner only.
+async function handleMockHost(ctx: SessionContext): Promise<boolean> {
+  const key = route(ctx);
+  const taskRoute = key.match(/^(GET|POST) settings\/node-control\/tasks\/([a-f0-9]+)(\/retry|\/artifact)?$/);
+  const owned = ["GET settings/node-control", "POST settings/node-control/tasks", "GET platform/host", "POST platform/host/quiet", "POST platform/offsite/key", "GET platform/audit-export"].includes(key);
+  if (!taskRoute && !owned) return false;
+  if (!isOwner(ctx.account.role)) {
+    sendError(ctx.res, 403, "forbidden", "Owner account required");
+    return true;
+  }
+  const h = ctx.state.host;
+  const strip = (t: NodeControlTask) => ({ ...t, log: undefined });
+  if (taskRoute) {
+    const task = h.tasks.find((t) => t.id === taskRoute[2]);
+    if (!task) sendError(ctx.res, 404, "not_found", "node task not found");
+    else if (taskRoute[3] === "/retry") sendJSON(ctx.res, 202, runMockHostTask(ctx.state, task.request, ctx.account.id));
+    else if (taskRoute[3] === "/artifact") {
+      ctx.res.statusCode = 200;
+      ctx.res.setHeader("Content-Type", "application/gzip");
+      ctx.res.setHeader("Content-Disposition", `attachment; filename="${task.artifact?.split("/").pop() ?? "felis-support.tar.gz"}"`);
+      ctx.res.end(gzipSync(Buffer.from("felis support bundle (mock)\n")));
+    } else sendJSON(ctx.res, 200, task);
+    return true;
+  }
+  switch (key) {
     case "GET settings/node-control":
-      if (!isOwner(ctx.account.role)) sendError(ctx.res, 403, "forbidden", "Owner account required");
-      else sendJSON(ctx.res, 200, { available: false, tasks: [] });
+      sendJSON(ctx.res, 200, { available: true, tasks: h.tasks.map(strip) });
       return true;
+    case "POST settings/node-control/tasks": {
+      const body = await readJSON<NodeControlRequest>(ctx.req);
+      if (h.tasks.some((t) => t.state === "running")) sendError(ctx.res, 409, "node_operation_busy", "a host task is already running");
+      else sendJSON(ctx.res, 202, strip(runMockHostTask(ctx.state, body, ctx.account.id)));
+      return true;
+    }
+    case "GET platform/host":
+      sendJSON(ctx.res, 200, mockHostOverview(ctx.state));
+      return true;
+    case "POST platform/host/quiet": {
+      const body = await readJSON<{ until: string | null }>(ctx.req);
+      h.quietUntil = body.until ?? undefined;
+      ctx.res.statusCode = 204;
+      ctx.res.end();
+      return true;
+    }
+    case "POST platform/offsite/key":
+      if (!h.offsite.keyKept) sendError(ctx.res, 404, "not_found", "no off-site key is kept on this host");
+      else sendJSON(ctx.res, 200, { key: "bW9jay1vZmZzaXRlLWtleS1rZXB0LW9uLXRoZS1ob3N0IQ==" });
+      return true;
+    case "GET platform/audit-export":
+      ctx.res.statusCode = 200;
+      ctx.res.setHeader("Content-Type", "application/x-ndjson");
+      ctx.res.setHeader("Content-Disposition", `attachment; filename="felis-audit.jsonl"`);
+      ctx.res.end(`{"action":"server.create","actor":"owner@mock.felis.local"}\n`);
+      return true;
+  }
+  return false;
+}
+
+async function handleSession(ctx: SessionContext): Promise<boolean> {
+  if (await handleMockHost(ctx)) return true;
+  switch (route(ctx)) {
     case "GET settings/entry-policy":
     case "PUT settings/entry-policy": {
       if (!isOwner(ctx.account.role)) sendError(ctx.res, 403, "forbidden", "Owner account required");

@@ -1,5 +1,7 @@
 import { useState, useEffect } from "react";
-import { Clock, Loader2, Calendar, Globe } from "lucide-react";
+import { Activity, Archive, Calendar, Clock, CloudUpload, Globe, Loader2, PackageCheck, RefreshCw, Stethoscope } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
+import { useHostTask } from "@/components/HostTask";
 import { MessageLine } from "@/components/MessageLine";
 import { StatCard } from "@/components/StatCard";
 import { PageHeader } from "@/components/PageHeader";
@@ -11,10 +13,15 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Loading, ErrorState } from "@/components/States";
 import { api, humanizeError } from "@/lib/api";
-import { useAsync } from "@/lib/hooks";
+import { RefreshContext, useAsync, usePageRefresh, useRefreshSignal } from "@/lib/hooks";
 import { formatAbsolute } from "@/lib/format";
 import { DBBackupCard } from "./DBBackupCard";
 import { UpdateReportCard } from "./UpdateReportCard";
+import { HostStatusCard } from "./maintenance/HostStatusCard";
+import { DatabaseBundlesCard } from "./maintenance/DatabaseBundlesCard";
+import { WorldBackupCard } from "./maintenance/WorldBackupCard";
+import { OffsiteCard, RestoreHostCard } from "./maintenance/OffsiteCard";
+import { AuditExportCard, DoctorCard, SupportBundleCard } from "./maintenance/DiagnosticsCards";
 
 function toLocalDatetimeString(dateOrStr: Date | string | null | undefined): string {
   if (!dateOrStr) return "";
@@ -29,12 +36,15 @@ function toLocalDatetimeString(dateOrStr: Date | string | null | undefined): str
   return `${YYYY}-${MM}-${DD}T${hh}:${mm}`;
 }
 
-export function UpdatesPage() {
+// UpdatesSection is the update tab: the versions the host found and the maintenance
+// window `felis update --apply` waits for. Applying stays on the host.
+function UpdatesSection() {
   const { t, i18n } = useTranslation("admin");
   const locale = i18n.language;
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
   const { data, error, loading, reload } = useAsync(() => api.getUpdateWindow(), []);
+  useRefreshSignal(reload);
 
   const [startVal, setStartVal] = useState("");
   const [endVal, setEndVal] = useState("");
@@ -166,11 +176,6 @@ export function UpdatesPage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader icon={Clock} title={t("updates_title")} subtitle={t("updates_subtitle")} />
-
-      {/* Control-plane database backup freshness (read-only, host timer) */}
-      <DBBackupCard />
-
       {/* Installed vs newest upstream versions (read-only, host timer) */}
       <UpdateReportCard />
 
@@ -300,5 +305,65 @@ export function UpdatesPage() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+const tabs = [
+  { key: "status", icon: Activity },
+  { key: "backups", icon: Archive },
+  { key: "offsite", icon: CloudUpload },
+  { key: "diagnostics", icon: Stethoscope },
+  { key: "updates", icon: PackageCheck },
+] as const;
+type Tab = (typeof tabs)[number]["key"];
+
+// UpdatesPage is the Owner's maintenance page: the host's state, backups, the off-site
+// copy, diagnostics and updates, each a tab. Every tab stays mounted, so a draft on one
+// survives a look at another; the header's reload rereads all of them.
+export function UpdatesPage() {
+  const { t } = useTranslation("admin");
+  const [params, setParams] = useSearchParams();
+  const requested = params.get("tab");
+  const tab: Tab = tabs.some((x) => x.key === requested) ? (requested as Tab) : "status";
+  const cards = usePageRefresh();
+  const overview = useAsync(api.hostOverview, []);
+  const db = useHostTask(["db-backup", "db-verify", "db-restore"]);
+  return (
+    <RefreshContext.Provider value={cards.scope}>
+      <div className="space-y-6">
+        <PageHeader icon={Clock} title={t("updates_title")} subtitle={t("updates_subtitle")}
+          actions={<Button variant="outline" size="sm" disabled={cards.dirty || overview.loading} onClick={() => { overview.reload(); cards.refresh(); }}><RefreshCw />{t("platform_reload")}</Button>} />
+        <div className="flex flex-wrap gap-1 rounded-lg bg-muted/60 p-1" role="tablist" aria-label={t("maintenance_tabs")}>
+          {tabs.map(({ key, icon: Icon }) => (
+            <Button key={key} role="tab" id={`maintenance-tab-${key}`} aria-controls={`maintenance-panel-${key}`} aria-selected={tab === key} variant="ghost" size="sm"
+              className={cn("px-3", tab === key ? "bg-card text-primary hover:bg-card" : "text-muted-foreground")}
+              onClick={() => setParams((p) => { p.set("tab", key); return p; }, { replace: true })}>
+              <Icon />{t(`maintenance_tab_${key}`)}
+            </Button>
+          ))}
+        </div>
+        <div role="tabpanel" id="maintenance-panel-status" aria-labelledby="maintenance-tab-status" hidden={tab !== "status"} className="space-y-6">
+          <HostStatusCard overview={overview} />
+        </div>
+        <div role="tabpanel" id="maintenance-panel-backups" aria-labelledby="maintenance-tab-backups" hidden={tab !== "backups"} className="space-y-6">
+          <DBBackupCard offsite={overview.data?.offsite.configured} backupBusy={db.busy}
+            onBackup={db.available ? () => void db.start({ action: "db-backup", confirmMaintenance: false }).then((task) => task && overview.reload()) : undefined} />
+          <DatabaseBundlesCard overview={overview} db={db} />
+          <WorldBackupCard />
+          <AuditExportCard />
+        </div>
+        <div role="tabpanel" id="maintenance-panel-offsite" aria-labelledby="maintenance-tab-offsite" hidden={tab !== "offsite"} className="space-y-6">
+          <OffsiteCard overview={overview} />
+          <RestoreHostCard overview={overview} />
+        </div>
+        <div role="tabpanel" id="maintenance-panel-diagnostics" aria-labelledby="maintenance-tab-diagnostics" hidden={tab !== "diagnostics"} className="space-y-6">
+          <DoctorCard />
+          <SupportBundleCard />
+        </div>
+        <div role="tabpanel" id="maintenance-panel-updates" aria-labelledby="maintenance-tab-updates" hidden={tab !== "updates"} className="space-y-6">
+          <UpdatesSection />
+        </div>
+      </div>
+    </RefreshContext.Provider>
   );
 }

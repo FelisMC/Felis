@@ -1,11 +1,10 @@
-import { AlertTriangle, ArrowUpCircle, CheckCircle2, Loader2, PackageCheck, RefreshCw } from "lucide-react";
+import { AlertTriangle, ArrowUpCircle, CheckCircle2, Loader2, PackageCheck } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { MessageLine } from "@/components/MessageLine";
 import { api, humanizeError } from "@/lib/api";
-import { useAsync } from "@/lib/hooks";
+import { useAsync, useRefreshSignal } from "@/lib/hooks";
 import { formatAbsolute, formatRelative } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { UpdateComponent, UpdateComponentState } from "@/lib/types";
@@ -31,7 +30,8 @@ const GRID = "sm:grid sm:grid-cols-[minmax(0,9rem)_minmax(0,1fr)_minmax(0,1fr)_7
 export function UpdateReportCard() {
   const { t, i18n } = useTranslation("admin");
   const locale = i18n.language;
-  const { data, error, loading, reload } = useAsync(() => api.getUpdateReport(), []);
+  const { data, error, reload } = useAsync(() => api.getUpdateReport(), []);
+  useRefreshSignal(reload);
   const report = data?.report ?? null;
   const maxAgeHours = data ? Math.round(data.max_age_seconds / 3600) : 26;
   const available = report?.components.filter((c) => c.state === "available") ?? [];
@@ -102,18 +102,6 @@ export function UpdateReportCard() {
             <p className="mt-0.5 text-xs text-muted-foreground">{t("versions_subtitle")}</p>
           </div>
         </div>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="h-8 w-8 shrink-0"
-          onClick={reload}
-          disabled={loading}
-          aria-label={t("versions_refresh")}
-          title={t("versions_refresh")}
-        >
-          <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
-        </Button>
       </CardHeader>
 
       <CardContent className="space-y-4 text-sm">

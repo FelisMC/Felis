@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import i18next from "i18next";
 import { DBBackupCard } from "./DBBackupCard";
 import type { DBBackupStatus } from "@/lib/types";
@@ -56,8 +56,7 @@ describe("DBBackupCard", () => {
     expect(screen.getByText("The newest backup lacks the server definitions")).toBeTruthy();
     expect(screen.getByText(/Restoring the database alone cannot recreate servers/)).toBeTruthy();
     expect(screen.getByText(REASON)).toBeTruthy();
-    expect(screen.getByTitle("sudo k3s kubectl get minecraftservers -A")).toBeTruthy();
-    expect(screen.getByTitle("sudo felis db backup")).toBeTruthy();
+    expect(screen.queryByText(/sudo/)).toBeNull();
   });
 
   it("keeps the overdue alarm first and still names the missing servers", async () => {
@@ -74,9 +73,8 @@ describe("DBBackupCard", () => {
     render(<DBBackupCard />);
     expect(await screen.findByText("Overdue")).toBeTruthy();
     expect(screen.getByText("The newest backup is more than 26 hours old")).toBeTruthy();
-    expect(screen.getByText(/inspect the timer logs:$/)).toBeTruthy();
+    expect(screen.getByText(/Back up now, and check the daily timer on the Diagnostics tab.$/)).toBeTruthy();
     expect(screen.getByText("yesterday").className).toBe("text-destructive");
-    expect(screen.getByTitle("sudo systemctl start felis-db-backup.service")).toBeTruthy();
   });
 
   it("names the stopped daily timer under a fresh manual backup", async () => {
@@ -90,7 +88,6 @@ describe("DBBackupCard", () => {
     expect(screen.getByText(/^The newer backup was created manually or by another task and is available for restoration/)).toBeTruthy();
     // The manual bundle itself is fresh: its age stays out of the alarm.
     expect(screen.getByText("3 hours ago").className).toBe("");
-    expect(screen.getByTitle("sudo systemctl start felis-db-backup.service")).toBeTruthy();
   });
 
   it("says the daily timer never completed when only other kinds exist", async () => {
@@ -98,6 +95,20 @@ describe("DBBackupCard", () => {
     render(<DBBackupCard />);
     expect(await screen.findByText("The daily timer has not completed a backup")).toBeTruthy();
     expect(screen.getByText(/^The newer backup was created manually/)).toBeTruthy();
+  });
+
+  it("offers a backup on the host, held while one runs, and says where copies go", async () => {
+    calls.getDBBackup.mockResolvedValue(status({}, true));
+    const backup = vi.fn();
+    const { rerender } = render(<DBBackupCard onBackup={backup} offsite />);
+    fireEvent.click(await screen.findByRole("button", { name: "Back up now" }));
+    expect(backup).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(/copied hourly, encrypted/)).toBeTruthy();
+    rerender(<DBBackupCard onBackup={backup} backupBusy />);
+    expect(screen.getByRole("button", { name: "Back up now" })).toHaveProperty("disabled", true);
+    expect(screen.getByText(/Configure an independent bucket on the Off-site copy tab/)).toBeTruthy();
+    rerender(<DBBackupCard />);
+    expect(screen.queryByRole("button", { name: "Back up now" })).toBeNull();
   });
 
   it("names an off-site copy snapshot by its kind", async () => {

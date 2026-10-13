@@ -1,4 +1,5 @@
 import type {
+  HostOverview,
   NodeControlRequest,
   NodeControlTask,
   AccessResult,
@@ -240,6 +241,16 @@ async function send<T>(path: string, init: RequestInit): Promise<T> {
     };
     throw err;
   }
+}
+
+// downloadBlob reads a 2xx attachment whole, with the file name its Content-Disposition
+// gives. It is for host files that need a fresh reauthentication (a support bundle, the
+// audit export): a plain link could not answer reauth_required with the dialog.
+async function downloadBlob(path: string): Promise<{ blob: Blob; filename: string }> {
+  const res = await fetchOK(path, { method: "GET" });
+  const disposition = res.headers.get("Content-Disposition") ?? "";
+  const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? "felis-download";
+  return { blob: await res.blob(), filename };
 }
 
 function request<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -625,6 +636,17 @@ export const api = rejectingSync({
   nodeTask: (id: string) => request<NodeControlTask>("GET", `/settings/node-control/tasks/${encodeURIComponent(id)}`),
   startNodeTask: (body: NodeControlRequest) => request<NodeControlTask>("POST", "/settings/node-control/tasks", body),
   retryNodeTask: (id: string) => request<NodeControlTask>("POST", `/settings/node-control/tasks/${encodeURIComponent(id)}/retry`),
+  nodeTaskArtifact: (id: string) => downloadBlob(urlPath`/settings/node-control/tasks/${id}/artifact`),
+  hostOverview: () => request<HostOverview>("GET", "/platform/host"),
+  holdAlerts: (until: string | null) => request<null>("POST", "/platform/host/quiet", { until }),
+  revealOffsiteKey: () => request<{ key: string }>("POST", "/platform/offsite/key"),
+  exportAudit: (since: string, until: string) => {
+    const q = new URLSearchParams();
+    if (since) q.set("since", since);
+    if (until) q.set("until", until);
+    const query = q.toString();
+    return downloadBlob(`/platform/audit-export${query ? `?${query}` : ""}`);
+  },
   nodes: () => request<{ nodes: ExecutionNode[] }>("GET", "/nodes").then((r) => r.nodes),
   migration: (name: string) => request<WorldMigration>("GET", `/servers/${encodeURIComponent(name)}/migrations`),
   migrateServer: (name: string, targetNode: string) =>

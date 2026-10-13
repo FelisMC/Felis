@@ -1,19 +1,19 @@
 import { useState } from "react";
-import { AlertTriangle, Check, CheckCircle2, Copy, Database, Loader2, RefreshCw } from "lucide-react";
+import { AlertTriangle, Check, CheckCircle2, Copy, Database, Loader2, Play } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { MessageLine } from "@/components/MessageLine";
 import { api, humanizeError } from "@/lib/api";
-import { useAsync } from "@/lib/hooks";
+import { useAsync, useRefreshSignal } from "@/lib/hooks";
 import { formatAbsolute, formatBytes, formatRelative } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { DBBackupLabel } from "@/lib/types";
 
-// The control-plane database backup is taken on the host (felis-db-backup.timer),
-// never through the API, so the card is read-only: it says how fresh the newest
-// backup is and, when it is not, hands the admin the exact host commands.
+// The control-plane database backup is taken on the host (felis-db-backup.timer); the
+// card says how fresh the newest backup is and, when it is not, offers a backup now, which
+// the host takes through node-control.
 
 const LABEL_KEY: Record<DBBackupLabel, string> = {
   daily: "dbbackup_label_daily",
@@ -22,13 +22,6 @@ const LABEL_KEY: Record<DBBackupLabel, string> = {
   offsite: "dbbackup_label_offsite",
   manual: "dbbackup_label_manual",
 };
-
-// The daily unit itself, run now: its bundle is what clears the alarm, and a
-// failure lands in the log the second command reads.
-const FIX_COMMANDS = ["sudo systemctl start felis-db-backup.service", "journalctl -u felis-db-backup -n 50 --no-pager"];
-// A bundle the cluster did not add its MinecraftServer objects to: see why the
-// cluster did not answer, then take a whole one.
-const SERVERS_COMMANDS = ["sudo k3s kubectl get minecraftservers -A", "sudo felis db backup"];
 
 export function CopyCommand({ command }: { command: string }) {
   const { t } = useTranslation("admin");
@@ -73,10 +66,18 @@ function Field({ label, children, title }: { label: string; children: React.Reac
   );
 }
 
-export function DBBackupCard() {
+/** onBackup starts a backup on the host; offsite says whether the off-site copy runs. */
+export function DBBackupCard({ onBackup, backupBusy = false, offsite }: { onBackup?: () => void; backupBusy?: boolean; offsite?: boolean }) {
   const { t, i18n } = useTranslation("admin");
   const locale = i18n.language;
-  const { data, error, loading, reload } = useAsync(() => api.getDBBackup(), []);
+  const { data, error, reload } = useAsync(() => api.getDBBackup(), []);
+  useRefreshSignal(reload);
+  const backupButton = onBackup && (
+    <Button type="button" size="sm" disabled={backupBusy} onClick={onBackup}>
+      {backupBusy ? <Loader2 className="animate-spin" /> : <Play />}
+      {t("dbbackup_backup_now")}
+    </Button>
+  );
   const last = data?.last ?? null;
   const maxAgeHours = data ? Math.round(data.max_age_seconds / 3600) : 26;
   const serversError = last?.servers_error ?? "";
@@ -164,18 +165,7 @@ export function DBBackupCard() {
             <p className="mt-0.5 text-xs text-muted-foreground">{t("dbbackup_subtitle")}</p>
           </div>
         </div>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="h-8 w-8 shrink-0"
-          onClick={reload}
-          disabled={loading}
-          aria-label={t("dbbackup_refresh")}
-          title={t("dbbackup_refresh")}
-        >
-          <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
-        </Button>
+        {backupButton}
       </CardHeader>
 
       <CardContent className="space-y-4 text-sm">
@@ -227,11 +217,6 @@ export function DBBackupCard() {
                 </p>
               </div>
             </div>
-            <div className="space-y-2">
-              {FIX_COMMANDS.map((c) => (
-                <CopyCommand key={c} command={c} />
-              ))}
-            </div>
           </div>
         )}
 
@@ -245,17 +230,12 @@ export function DBBackupCard() {
                 <p className="break-all font-mono text-[11px] opacity-80">{serversError}</p>
               </div>
             </div>
-            <div className="space-y-2">
-              {SERVERS_COMMANDS.map((c) => (
-                <CopyCommand key={c} command={c} />
-              ))}
-            </div>
           </div>
         )}
 
         {data && (
           <p className="rounded-md border border-border/40 bg-muted/15 p-3 text-[11px] leading-relaxed text-muted-foreground">
-            {t("dbbackup_offsite_note")}
+            {t(offsite ? "dbbackup_offsite_on" : "dbbackup_offsite_note")}
           </p>
         )}
       </CardContent>

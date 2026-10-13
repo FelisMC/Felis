@@ -29,6 +29,13 @@ export async function awaitExport(
  *  hidden <a download> it clicks once. felis-api answers with an attachment, so
  *  the browser's own download manager streams the archive to disk; reading it
  *  into a Blob first would hold a whole world in the tab's memory. */
+/** saveBlob hands a file read into memory to the browser's download manager. */
+export function saveBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  saveDownload(url, filename);
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
 export function saveDownload(url: string, filename: string) {
   const a = document.createElement("a");
   a.href = url;
