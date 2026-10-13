@@ -1458,6 +1458,7 @@ run_bundle_flags() { # backup-pvc worlds-host-path
     K3S_STORAGE_ROOT="${K3S_STORAGE_ROOT_T:-/var/lib/rancher/k3s/storage}"
     node_global_cidrs() { printf "203.0.113.7/32\n2001:db8::7/128\n"; }
     pvc_size() { case "$2" in registry) printf "20Gi\n" ;; esac; }
+    k3s_node_name() { echo ctl-a; }
     run_bundle() {
     '"$mblock"'
     }
@@ -1467,6 +1468,8 @@ run_bundle_flags() { # backup-pvc worlds-host-path
 out="$(run_bundle_flags felis-backups '')"
 expect "a default install asks the renderer for the archive PVC" "--backup-pvc
 felis-backups" "$out"
+expect "the API mounts the node-control socket of the node it is pinned to" "--node-control-node
+ctl-a" "$out"
 # data-durability-17: without a worlds root the reaper still renders, retention-only,
 # so backups past their expiry leave the store; it needs the archive mount for that.
 expect "a default install passes the archive mount so expired backups are deleted" "--archive-local-path
