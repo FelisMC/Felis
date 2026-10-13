@@ -11,11 +11,11 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -49,41 +49,11 @@ type Request struct {
 	ExternalIP         string   `json:"externalIP,omitempty"`
 	Peers              []string `json:"peers,omitempty"`
 	ConfirmMaintenance bool     `json:"confirmMaintenance"`
-}
-
-func (r Request) Validate() error {
-	if !r.ConfirmMaintenance {
-		return errors.New("maintenance impact confirmation is required")
-	}
-	switch r.Action {
-	case "fence", "unfence":
-		if !validNodeName(r.Name) {
-			return errors.New("invalid node name")
-		}
-	case "enable-ha":
-	case "join", "approve", "upgrade", "join-controller":
-		if !validNodeName(r.Name) || !targetPattern.MatchString(r.SSHTarget) {
-			return errors.New("invalid worker name or SSH target")
-		}
-	case "enable":
-	default:
-		return errors.New("unsupported node operation")
-	}
-	if r.Action == "join" || r.Action == "enable" || r.Action == "join-controller" {
-		if a, err := netip.ParseAddr(r.ExternalIP); err != nil || a.IsUnspecified() || a.IsLoopback() || a.IsMulticast() || a.Zone() != "" {
-			return errors.New("a fixed node IP is required")
-		}
-	}
-	for _, peer := range r.Peers {
-		p, err := netip.ParsePrefix(peer)
-		if err != nil || p.Bits() != p.Addr().BitLen() || p.Addr().IsLoopback() || p.Addr().IsMulticast() || p.Addr().IsUnspecified() {
-			return errors.New("peer addresses must use exact /32 or /128 prefixes")
-		}
-	}
-	if len(r.Peers) > 100 {
-		return errors.New("too many peer addresses")
-	}
-	return nil
+	// Params are the action's own inputs (actions.go), kept with the task.
+	Params map[string]string `json:"params,omitempty"`
+	// Secrets reach the executor only: a task never stores or reports them, so a retry
+	// asks for them again.
+	Secrets map[string]string `json:"secrets,omitempty"`
 }
 
 type Task struct {
@@ -96,9 +66,57 @@ type Task struct {
 	FinishedAt *time.Time `json:"finishedAt,omitempty"`
 	Error      string     `json:"error,omitempty"`
 	Log        string     `json:"log,omitempty"`
+	// Result is what the action reports back as data (findings, a check's answer),
+	// set through SetResult; Artifact is a file it produced for download (Artifact).
+	Result   json.RawMessage `json:"result,omitempty"`
+	Artifact string          `json:"artifact,omitempty"`
 }
 
+// MaxResult bounds a task's Result.
+const MaxResult = 256 << 10
+
 type Executor func(context.Context, Request, func(string) error, io.Writer) error
+
+type outcomeKey struct{}
+
+// outcome collects what the executor reports besides its log.
+type outcome struct {
+	mu       sync.Mutex
+	result   json.RawMessage
+	artifact string
+}
+
+// SetResult records v, as JSON, as the running task's Result.
+func SetResult(ctx context.Context, v any) error {
+	o, ok := ctx.Value(outcomeKey{}).(*outcome)
+	if !ok {
+		return errors.New("no host task is running")
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	if len(raw) > MaxResult {
+		return errors.New("the task result is too large")
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.result = raw
+	return nil
+}
+
+// SetArtifact records path, a file under one of the manager's artifact directories,
+// as the running task's download.
+func SetArtifact(ctx context.Context, path string) error {
+	o, ok := ctx.Value(outcomeKey{}).(*outcome)
+	if !ok {
+		return errors.New("no host task is running")
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.artifact = path
+	return nil
+}
 
 type Manager struct {
 	dir     string
@@ -108,6 +126,16 @@ type Manager struct {
 	active  string
 	ctx     context.Context
 	wg      sync.WaitGroup
+	// ArtifactDirs are where a task's download may live; a path elsewhere is not served.
+	ArtifactDirs []string
+	// Host answers GET /host, the platform's state at a glance; Quiet holds the
+	// watchdog's mail until the given time (the zero time lifts the hold). Nil hooks
+	// answer 404.
+	Host  func(context.Context) (any, error)
+	Quiet func(time.Time) error
+	// OffsiteKey reads the key that seals the off-site copies, for the Owner to keep
+	// elsewhere; it is answered, never stored with a task.
+	OffsiteKey func() (string, error)
 }
 
 func Open(ctx context.Context, dir string, execute Executor) (*Manager, error) {
@@ -231,6 +259,8 @@ func (m *Manager) Start(r Request, actor string) (Task, error) {
 	if _, err := rand.Read(id[:]); err != nil {
 		return Task{}, err
 	}
+	secrets := r.Secrets
+	r.Secrets = nil
 	t := Task{ID: hex.EncodeToString(id[:]), Request: r, Actor: actor, State: "running", Stage: "preflight", StartedAt: time.Now().UTC()}
 	if err := m.persist(t); err != nil {
 		return Task{}, err
@@ -238,13 +268,17 @@ func (m *Manager) Start(r Request, actor string) (Task, error) {
 	m.tasks[t.ID] = t
 	m.active = t.ID
 	m.wg.Add(1)
-	go m.run(t)
+	go m.run(t, secrets)
 	return t, nil
 }
-func (m *Manager) run(t Task) {
+func (m *Manager) run(t Task, secrets map[string]string) {
 	defer m.wg.Done()
-	ctx, cancel := context.WithTimeout(m.ctx, 45*time.Minute)
+	limit := timeoutFor(t.Request.Action)
+	o := &outcome{}
+	ctx, cancel := context.WithTimeout(context.WithValue(m.ctx, outcomeKey{}, o), limit)
 	defer cancel()
+	req := t.Request
+	req.Secrets = secrets
 	log, err := os.OpenFile(filepath.Join(m.dir, t.ID+".log"), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0600)
 	if err == nil {
 		stage := func(s string) error {
@@ -258,7 +292,7 @@ func (m *Manager) run(t Task) {
 			_, err := fmt.Fprintln(log, "[felis]", s)
 			return err
 		}
-		err = m.execute(ctx, t.Request, stage, &boundedLog{file: log})
+		err = m.execute(ctx, req, stage, &boundedLog{file: log})
 		if ctx.Err() != nil {
 			err = ctx.Err()
 		}
@@ -271,11 +305,14 @@ func (m *Manager) run(t Task) {
 	now := time.Now().UTC()
 	t.FinishedAt = &now
 	t.State = "succeeded"
+	o.mu.Lock()
+	t.Result, t.Artifact = o.result, o.artifact
+	o.mu.Unlock()
 	if err != nil {
 		t.State = "failed"
 		t.Error = err.Error()
 		if errors.Is(err, context.DeadlineExceeded) {
-			t.Error = "Host operation exceeded the 45-minute execution limit. Verify the host state before retrying."
+			t.Error = fmt.Sprintf("Host operation exceeded the %s execution limit. Verify the host state before retrying.", limitText(limit))
 		}
 		if errors.Is(err, context.Canceled) {
 			t.Error = "Host operation was interrupted. Verify the host state before retrying."
@@ -352,7 +389,95 @@ func (m *Manager) Handler() http.Handler {
 		w.WriteHeader(http.StatusAccepted)
 		json.NewEncoder(w).Encode(t)
 	})
+	mux.HandleFunc("GET /tasks/{id}/artifact", m.serveArtifact)
+	mux.HandleFunc("GET /host", func(w http.ResponseWriter, r *http.Request) {
+		if m.Host == nil {
+			http.Error(w, "no host overview", 404)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+		defer cancel()
+		v, err := m.Host(ctx)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		json.NewEncoder(w).Encode(v)
+	})
+	mux.HandleFunc("GET /host/offsite-key", func(w http.ResponseWriter, r *http.Request) {
+		if m.OffsiteKey == nil {
+			http.Error(w, "no off-site key", 404)
+			return
+		}
+		key, err := m.OffsiteKey()
+		if err != nil {
+			http.Error(w, err.Error(), 404)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		json.NewEncoder(w).Encode(map[string]string{"key": key})
+	})
+	mux.HandleFunc("POST /host/quiet", func(w http.ResponseWriter, r *http.Request) {
+		if m.Quiet == nil {
+			http.Error(w, "no watchdog hold", 404)
+			return
+		}
+		var body struct {
+			Until time.Time `json:"until"`
+		}
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil {
+			http.Error(w, "invalid hold request", 400)
+			return
+		}
+		if !body.Until.IsZero() && (body.Until.Before(time.Now()) || body.Until.After(time.Now().Add(7*24*time.Hour))) {
+			http.Error(w, "a hold ends within the next seven days", 400)
+			return
+		}
+		if err := m.Quiet(body.Until); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 	return mux
+}
+
+// serveArtifact streams a finished task's download. The path comes from the task the
+// executor recorded, and is served only from an artifact directory, as a regular file.
+func (m *Manager) serveArtifact(w http.ResponseWriter, r *http.Request) {
+	m.mu.Lock()
+	t, ok := m.tasks[r.PathValue("id")]
+	m.mu.Unlock()
+	if !ok || t.State != "succeeded" || t.Artifact == "" {
+		http.Error(w, "no download for this task", 404)
+		return
+	}
+	path := filepath.Clean(t.Artifact)
+	inside := false
+	for _, dir := range m.ArtifactDirs {
+		if rel, err := filepath.Rel(filepath.Clean(dir), path); err == nil && rel != "." && !strings.HasPrefix(rel, "..") && !strings.Contains(rel, string(filepath.Separator)) {
+			inside = true
+		}
+	}
+	info, err := os.Lstat(path)
+	if !inside || err != nil || !info.Mode().IsRegular() {
+		http.Error(w, "no download for this task", 404)
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		http.Error(w, "no download for this task", 404)
+		return
+	}
+	defer f.Close()
+	// A large bundle outlasts the server's write timeout on a slow browser.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(30 * time.Minute))
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
+	w.Header().Set("X-Felis-Filename", filepath.Base(path))
+	_, _ = io.Copy(w, f)
 }
 
 type Client struct{ http *http.Client }
@@ -410,6 +535,69 @@ func (c *Client) Start(ctx context.Context, r Request, actor string) (Task, erro
 	return out, err
 }
 
+// Host reads the platform's state at a glance, as the host service reports it.
+func (c *Client) Host(ctx context.Context) (json.RawMessage, error) {
+	var out json.RawMessage
+	err := c.call(ctx, "GET", "/host", nil, &out)
+	return out, err
+}
+
+// OffsiteKey reads the key that seals the off-site copies.
+func (c *Client) OffsiteKey(ctx context.Context) (string, error) {
+	var out struct {
+		Key string `json:"key"`
+	}
+	err := c.call(ctx, "GET", "/host/offsite-key", nil, &out)
+	return out.Key, err
+}
+
+// Quiet holds the watchdog's mail until until; the zero time lifts the hold.
+func (c *Client) Quiet(ctx context.Context, until time.Time) error {
+	raw, err := json.Marshal(map[string]time.Time{"until": until})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", "http://node-control/host/quiet", strings.NewReader(string(raw)))
+	if err != nil {
+		return err
+	}
+	res, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode >= 400 {
+		return fmt.Errorf("host service returned HTTP %d", res.StatusCode)
+	}
+	return nil
+}
+
+// Artifact opens a finished task's download: its body, size and file name. The
+// caller closes the body. It is not bound by the client's request timeout, only ctx.
+func (c *Client) Artifact(ctx context.Context, id string) (io.ReadCloser, int64, string, error) {
+	if !idPattern.MatchString(id) {
+		return nil, 0, "", ErrNotFound
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", "http://node-control/tasks/"+id+"/artifact", nil)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	stream := &http.Client{Transport: c.http.Transport}
+	res, err := stream.Do(req)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	if res.StatusCode == 404 {
+		res.Body.Close()
+		return nil, 0, "", ErrNotFound
+	}
+	if res.StatusCode >= 400 {
+		res.Body.Close()
+		return nil, 0, "", fmt.Errorf("host service returned HTTP %d", res.StatusCode)
+	}
+	return res.Body, res.ContentLength, filepath.Base(res.Header.Get("X-Felis-Filename")), nil
+}
+
 // Bound disk use while retaining the most recent output of long builds.
 type boundedLog struct {
 	file *os.File
@@ -449,4 +637,13 @@ func (w *boundedLog) Write(p []byte) (int, error) {
 		return 0, err
 	}
 	return original, nil
+}
+
+// limitText reads a task's time limit as the error message words it: "45-minute",
+// "12-hour".
+func limitText(d time.Duration) string {
+	if d%time.Hour == 0 {
+		return fmt.Sprintf("%d-hour", d/time.Hour)
+	}
+	return fmt.Sprintf("%d-minute", d/time.Minute)
 }
