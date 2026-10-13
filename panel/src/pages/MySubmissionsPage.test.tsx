@@ -63,18 +63,18 @@ describe("MySubmissionsPage", () => {
       </MemoryRouter>,
     );
     await screen.findByText("Create Above and Beyond");
-    expect(screen.getByRole("button", { name: "All Statuses (14)" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Rejected (3)" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "All Statuses (14)" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "Rejected (3)" })).toBeTruthy();
     expect(screen.getByText("Page 1 of 2")).toBeTruthy();
 
     await userEvent.click(screen.getByRole("button", { name: "Next" }));
     await vi.waitFor(() => expect(calls.listMySubmissions).toHaveBeenLastCalledWith({ limit: 10, offset: 10 }));
-    await userEvent.click(screen.getByRole("button", { name: "Rejected (3)" }));
+    await userEvent.click(screen.getByRole("radio", { name: "Rejected (3)" }));
     await userEvent.type(screen.getByPlaceholderText("Search submissions..."), "create");
     await vi.waitFor(() =>
       expect(calls.listMySubmissions).toHaveBeenLastCalledWith({ status: "rejected", query: "create", limit: 10, offset: 0 }),
     );
-    expect(screen.getByRole("button", { name: "All Statuses (14)" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "All Statuses (14)" })).toBeTruthy();
     await vi.waitFor(() => expect(screen.queryByText(/^Page \d+ of/)).toBeNull());
   });
 
@@ -254,7 +254,7 @@ describe("MySubmissionsPage keeps reading", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     calls.listMySubmissions.mockResolvedValue(waiting);
     renderPage();
-    await screen.findByRole("button", { name: "Pending Review (1)" });
+    await screen.findByRole("radio", { name: "Pending Review (1)" });
     const before = calls.listMySubmissions.mock.calls.length;
 
     calls.listMySubmissions.mockResolvedValue(approved);
@@ -262,7 +262,7 @@ describe("MySubmissionsPage keeps reading", () => {
     expect(calls.listMySubmissions.mock.calls.length).toBe(before);
     await act(() => vi.advanceTimersByTimeAsync(1_000));
     expect(calls.listMySubmissions.mock.calls.length).toBe(before + 1);
-    expect(await screen.findByRole("button", { name: "Approved (1)" })).toBeTruthy();
+    expect(await screen.findByRole("radio", { name: "Approved (1)" })).toBeTruthy();
   });
 
   it.each(["pending", "building"] as const)("rereads fast while a shown build is %s", async (build_status) => {
@@ -279,13 +279,13 @@ describe("MySubmissionsPage keeps reading", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     calls.listMySubmissions.mockResolvedValue(waiting);
     renderPage();
-    await screen.findByRole("button", { name: "Pending Review (1)" });
+    await screen.findByRole("radio", { name: "Pending Review (1)" });
     const outage = { status: 503, code: "unavailable", message: "list unavailable" };
     calls.listMySubmissions.mockRejectedValue(outage);
     await act(() => vi.advanceTimersByTimeAsync(15_000));
     expect((await screen.findByRole("alert")).textContent).toContain(humanizeError(outage));
     expect(screen.getByText("Create Above and Beyond")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Pending Review (1)" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "Pending Review (1)" })).toBeTruthy();
   });
 });
 

@@ -55,10 +55,10 @@ describe("SubmissionsPage", () => {
   it("counts the whole queue from the server's counts, whatever one page holds", async () => {
     renderPage();
     await screen.findByText("Sky Block Pack");
-    expect(screen.getByRole("button", { name: "All (23)" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Pending Review (5)" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Approved (17)" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Rejected (1)" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "All (23)" }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("radio", { name: "Pending Review (5)" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "Approved (17)" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "Rejected (1)" })).toBeTruthy();
     expect(screen.getByText("Page 1 of 3")).toBeTruthy();
   });
 
@@ -70,7 +70,7 @@ describe("SubmissionsPage", () => {
     await userEvent.click(screen.getByRole("button", { name: "Next" }));
     await vi.waitFor(() => expect(calls.listSubmissions).toHaveBeenLastCalledWith({ limit: 10, offset: 10 }));
 
-    await userEvent.click(screen.getByRole("button", { name: "Approved (17)" }));
+    await userEvent.click(screen.getByRole("radio", { name: "Approved (17)" }));
     await vi.waitFor(() =>
       expect(calls.listSubmissions).toHaveBeenLastCalledWith({ status: "approved", limit: 10, offset: 0 }),
     );
@@ -118,7 +118,7 @@ describe("SubmissionsPage", () => {
     renderPage();
     await screen.findByText("Sky Block Pack");
     calls.listSubmissions.mockResolvedValue({ ...PAGE, submissions: [], total: 0 });
-    await userEvent.click(screen.getByRole("button", { name: "Rejected (1)" }));
+    await userEvent.click(screen.getByRole("radio", { name: "Rejected (1)" }));
     expect(await screen.findByText("No matches")).toBeTruthy();
     expect(screen.queryByText(/^Page \d+ of/)).toBeNull();
   });

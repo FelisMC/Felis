@@ -39,6 +39,7 @@ import { InlineError, MessageLine } from "@/components/MessageLine";
 import { PhaseBadge, shownPhase, startFailure } from "@/components/PhaseBadge";
 import { EmptyState, ErrorState, Loading, NotYours, RefreshError } from "@/components/States";
 import { PageHeader } from "@/components/PageHeader";
+import { SegmentedControl } from "@/components/SegmentedControl";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync, usePolling, STATUS_POLL_FAST_MS, STATUS_POLL_SLOW_MS } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
@@ -402,26 +403,8 @@ function ScheduleDialog({
 
           <fieldset className="grid gap-3">
             <legend className="mb-2 text-sm font-medium">{t("field_when")}</legend>
-            <div className="inline-flex w-fit rounded-lg bg-muted p-1">
-              {(["daily", "interval"] as const).map((m) => (
-                <label
-                  key={m}
-                  className={cn(
-                    "cursor-pointer rounded px-3 py-1.5 text-sm font-medium transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring",
-                    form.mode === m ? "bg-card text-primary" : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  <input
-                    type="radio"
-                    className="sr-only"
-                    name={`${id}-mode`}
-                    checked={form.mode === m}
-                    onChange={() => set("mode", m)}
-                  />
-                  {t(`mode_${m}`)}
-                </label>
-              ))}
-            </div>
+            <SegmentedControl label={t("field_when")} value={form.mode} onChange={(m) => set("mode", m)}
+              segments={(["daily", "interval"] as const).map((m) => ({ key: m, label: t(`mode_${m}`) }))} />
             {form.mode === "daily" ? (
               <div className="grid gap-2">
                 <Label htmlFor={`${id}-time`}>{t("field_time")}</Label>

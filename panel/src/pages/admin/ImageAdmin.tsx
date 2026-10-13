@@ -2,6 +2,7 @@ import { useState, useMemo } from "react";
 import { Link } from "react-router-dom";
 import { Boxes, CheckCircle2, CircleSlash, Plus, Trash2, Wrench } from "lucide-react";
 import { SearchInput } from "@/components/SearchInput";
+import { SegmentedControl } from "@/components/SegmentedControl";
 import { StatCard } from "@/components/StatCard";
 import { PageHeader } from "@/components/PageHeader";
 import { useTranslation } from "react-i18next";
@@ -21,7 +22,6 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { cn } from "@/lib/utils";
 import { MessageLine } from "@/components/MessageLine";
 import { Loading, ErrorState, EmptyState } from "@/components/States";
 import { Pagination } from "@/components/Pagination";
@@ -207,53 +207,8 @@ export function ImageAdmin() {
           {/* Filters Bar */}
           <div className="flex flex-col sm:flex-row gap-3 p-4 border-b">
             <SearchInput value={search} onChange={setSearch} placeholder={t("images_search_placeholder")} />
-            <div className="inline-flex h-10 items-center justify-center rounded-lg bg-muted p-1 text-muted-foreground shrink-0 select-none border border-border/40">
-              <Button variant="ghost" size="sm"
-                type="button"
-                onClick={() => {
-                  setStatusFilter("all");
-                  setPage(1);
-                }}
-                className={cn(
-                  "font-medium",
-                  statusFilter === "all"
-                    ? "bg-background text-foreground"
-                    : "text-muted-foreground hover:bg-background/30 hover:text-foreground"
-                )}
-              >
-                {t("filter_all")} ({stats.total})
-              </Button>
-              <Button variant="ghost" size="sm"
-                type="button"
-                onClick={() => {
-                  setStatusFilter("enabled");
-                  setPage(1);
-                }}
-                className={cn(
-                  "font-medium",
-                  statusFilter === "enabled"
-                    ? "bg-background text-primary"
-                    : "text-muted-foreground hover:bg-background/30 hover:text-foreground"
-                )}
-              >
-                {t("filter_enabled")} ({stats.enabled})
-              </Button>
-              <Button variant="ghost" size="sm"
-                type="button"
-                onClick={() => {
-                  setStatusFilter("disabled");
-                  setPage(1);
-                }}
-                className={cn(
-                  "font-medium",
-                  statusFilter === "disabled"
-                    ? "bg-background text-foreground/80"
-                    : "text-muted-foreground hover:bg-background/30 hover:text-foreground"
-                )}
-              >
-                {t("filter_disabled")} ({stats.disabled})
-              </Button>
-            </div>
+            <SegmentedControl label={t("table_status")} value={statusFilter} onChange={(key) => { setStatusFilter(key); setPage(1); }}
+              segments={[{ key: "all", label: t("filter_all"), count: stats.total }, { key: "enabled", label: t("filter_enabled"), count: stats.enabled }, { key: "disabled", label: t("filter_disabled"), count: stats.disabled }]} />
           </div>
 
           {/* List Content */}

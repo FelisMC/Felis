@@ -14,6 +14,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { SearchInput } from "@/components/SearchInput";
+import { SegmentedControl } from "@/components/SegmentedControl";
 import {
   Card,
   CardContent,
@@ -342,68 +343,8 @@ export function MySubmissionsPage() {
           {/* Filters Bar */}
           <div className="flex flex-col sm:flex-row gap-3 p-4 border-b">
             <SearchInput value={search} onChange={setSearch} placeholder={t("search_placeholder")} />
-            <div className="inline-flex h-10 items-center justify-center rounded-lg bg-muted p-1 text-muted-foreground shrink-0 select-none border border-border/40">
-              <Button variant="ghost" size="sm"
-                type="button"
-                onClick={() => {
-                  setStatusFilter("all");
-                  setPage(1);
-                }}
-                className={cn(
-                  "font-medium",
-                  statusFilter === "all"
-                    ? "bg-background text-foreground"
-                    : "text-muted-foreground hover:bg-background/30 hover:text-foreground",
-                )}
-              >
-                {t("filter_all")} ({stats.total})
-              </Button>
-              <Button variant="ghost" size="sm"
-                type="button"
-                onClick={() => {
-                  setStatusFilter("pending_review");
-                  setPage(1);
-                }}
-                className={cn(
-                  "font-medium",
-                  statusFilter === "pending_review"
-                    ? "bg-background text-amber-500"
-                    : "text-muted-foreground hover:bg-background/30 hover:text-foreground",
-                )}
-              >
-                {t("status_pending_review")} ({stats.pending})
-              </Button>
-              <Button variant="ghost" size="sm"
-                type="button"
-                onClick={() => {
-                  setStatusFilter("approved");
-                  setPage(1);
-                }}
-                className={cn(
-                  "font-medium",
-                  statusFilter === "approved"
-                    ? "bg-background text-emerald-500"
-                    : "text-muted-foreground hover:bg-background/30 hover:text-foreground",
-                )}
-              >
-                {t("status_approved")} ({stats.approved})
-              </Button>
-              <Button variant="ghost" size="sm"
-                type="button"
-                onClick={() => {
-                  setStatusFilter("rejected");
-                  setPage(1);
-                }}
-                className={cn(
-                  "font-medium",
-                  statusFilter === "rejected"
-                    ? "bg-background text-rose-500"
-                    : "text-muted-foreground hover:bg-background/30 hover:text-foreground",
-                )}
-              >
-                {t("status_rejected")} ({stats.rejected})
-              </Button>
-            </div>
+            <SegmentedControl label={t("table_status")} value={statusFilter} onChange={(key) => { setStatusFilter(key); setPage(1); }}
+              segments={[{ key: "all", label: t("filter_all"), count: stats.total }, { key: "pending_review", label: t("status_pending_review"), count: stats.pending }, { key: "approved", label: t("status_approved"), count: stats.approved }, { key: "rejected", label: t("status_rejected"), count: stats.rejected }]} />
           </div>
 
           {/* List Content */}
