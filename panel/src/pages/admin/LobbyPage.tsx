@@ -4,6 +4,7 @@ import { BookOpen, ChevronRight, DoorOpen, FolderOpen, Globe, Loader2, Map, Mess
 import { useTranslation } from "react-i18next";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { PageHeader } from "@/components/PageHeader";
+import { PageTabs } from "@/components/PageTabs";
 import { Switch } from "@/components/ui/switch";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -215,7 +216,9 @@ export function LobbyPage() {
     { icon: Shield, title: "backups_title", hint: "backups_hint", to: `/servers/${name}/backups` },
   ];
   return <div className="space-y-6">
-    <PageHeader icon={DoorOpen} title={t("title")} subtitle={t("subtitle")} />
+    <PageHeader icon={DoorOpen} title={t("title")} subtitle={t("subtitle")}
+      tabs={<PageTabs label={t("space_label")} idPrefix="lobby-space" value={name} onChange={selectSpace}
+        tabs={[{ key: "login", icon: BookOpen, label: t("login") }, { key: "lobby", icon: DoorOpen, label: t("lobby") }]} />} />
     <Card><CardContent className="flex flex-wrap items-start justify-between gap-4">
       <div className="flex min-w-0 gap-3">
         <Globe className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
@@ -227,38 +230,33 @@ export function LobbyPage() {
       </div>
       <Link to="/admin/images" className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline">{t("images_link")}<ChevronRight className="h-3.5 w-3.5" /></Link>
     </CardContent></Card>
-    <div className="inline-flex gap-1 rounded-lg bg-muted/60 p-1" role="group" aria-label={t("space_label")}>
-      {(["login", "lobby"] as const).map((space) => (
-        <Button key={space} variant="ghost" aria-pressed={name === space} onClick={() => selectSpace(space)} className={cn("px-4", name === space ? "bg-card text-primary hover:bg-card" : "text-muted-foreground")}>
-          {space === "lobby" ? <DoorOpen /> : <BookOpen />}{t(space)}
-        </Button>
-      ))}
-    </div>
-    <p className="text-sm text-muted-foreground">{t(`${name}_description`)}</p>
-    {status.error != null && <ErrorState error={humanizeError(status.error)} onRetry={status.reload} />}
-    <Card className="flex flex-wrap items-center justify-between gap-3 p-5">
-      <div className="min-w-0 space-y-2"><div className="flex flex-wrap items-center gap-3"><h2 className="text-sm font-semibold">{data?.displayName || t(name)}</h2>{data ? <PhaseBadge phase={shownPhase(data)} /> : status.loading && <span role="status" className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" />{t("common:loading")}</span>}</div><p className="break-all text-xs text-muted-foreground">{data?.image || "\u00a0"}</p></div>
-      {data && <PowerButton name={name} phase={data.phase} desiredState={data.desiredState} failed={startFailure(data) !== null} playersOnline={data.playersOnline} playerCountUnknown={data.playerCountUnknown} onChanged={status.reload} />}
-    </Card>
-    <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-      <ExperienceSettings key={name} name={name} server={data} onDirtyChange={setDirty} onChanged={status.reload} />
-      <div className="space-y-4">
-        <Card className="overflow-hidden">
-          <CardHeader><CardTitle>{t("content_tools")}</CardTitle></CardHeader>
-          <CardContent className="divide-y divide-border/60 p-0">
-            {links.map(({ icon: Icon, title, hint, to }) => (
-              <Link key={title} to={to} className="group flex gap-3 p-4 transition-colors hover:bg-muted/40">
-                <Icon className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
-                <div className="min-w-0 flex-1">
-                  <p className="flex items-center justify-between gap-2 text-sm font-medium">{t(title)}<ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" /></p>
-                  <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{t(hint)}</p>
-                </div>
-              </Link>
-            ))}
-          </CardContent>
-        </Card>
-        {data && <EditServerDialog serverName={name} systemService currentDisplayName={data.displayName} currentPolicy={data.autostartPolicy} currentImage={data.image} currentMemory={data.memory} currentStorage={data.storageSize} currentCpu={data.cpu} currentIdleStopSeconds={0} onUpdated={status.reload} />}
-        {name === "lobby" && <BuilderAccess ready={data?.ready ?? false} />}
+    <div role="tabpanel" id={`lobby-space-panel-${name}`} aria-labelledby={`lobby-space-tab-${name}`} className="space-y-6">
+      <p className="text-sm text-muted-foreground">{t(`${name}_description`)}</p>
+      {status.error != null && <ErrorState error={humanizeError(status.error)} onRetry={status.reload} />}
+      <Card className="flex flex-wrap items-center justify-between gap-3 p-5">
+        <div className="min-w-0 space-y-2"><div className="flex flex-wrap items-center gap-3"><h2 className="text-sm font-semibold">{data?.displayName || t(name)}</h2>{data ? <PhaseBadge phase={shownPhase(data)} /> : status.loading && <span role="status" className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" />{t("common:loading")}</span>}</div><p className="break-all text-xs text-muted-foreground">{data?.image || "\u00a0"}</p></div>
+        {data && <PowerButton name={name} phase={data.phase} desiredState={data.desiredState} failed={startFailure(data) !== null} playersOnline={data.playersOnline} playerCountUnknown={data.playerCountUnknown} onChanged={status.reload} />}
+      </Card>
+      <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+        <ExperienceSettings key={name} name={name} server={data} onDirtyChange={setDirty} onChanged={status.reload} />
+        <div className="space-y-4">
+          <Card className="overflow-hidden">
+            <CardHeader><CardTitle>{t("content_tools")}</CardTitle></CardHeader>
+            <CardContent className="divide-y divide-border/60 p-0">
+              {links.map(({ icon: Icon, title, hint, to }) => (
+                <Link key={title} to={to} className="group flex gap-3 p-4 transition-colors hover:bg-muted/40">
+                  <Icon className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                  <div className="min-w-0 flex-1">
+                    <p className="flex items-center justify-between gap-2 text-sm font-medium">{t(title)}<ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" /></p>
+                    <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{t(hint)}</p>
+                  </div>
+                </Link>
+              ))}
+            </CardContent>
+          </Card>
+          {data && <EditServerDialog serverName={name} systemService currentDisplayName={data.displayName} currentPolicy={data.autostartPolicy} currentImage={data.image} currentMemory={data.memory} currentStorage={data.storageSize} currentCpu={data.cpu} currentIdleStopSeconds={0} onUpdated={status.reload} />}
+          {name === "lobby" && <BuilderAccess ready={data?.ready ?? false} />}
+        </div>
       </div>
     </div>
     <ConfirmDialog open={nextSpace !== null} onOpenChange={(open) => { if (!open) setNextSpace(null); }} title={t("discard_title")} description={t("discard_hint")} confirmLabel={t("discard")} onConfirm={async () => { if (nextSpace) { setParams({ space: nextSpace }); setDirty(false); setNextSpace(null); } }} />

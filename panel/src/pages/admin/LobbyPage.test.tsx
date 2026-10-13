@@ -79,7 +79,7 @@ describe("LobbyPage", () => {
     page("");
     await screen.findByLabelText("Login book title");
     expect(calls.status).toHaveBeenCalledWith("login");
-    expect(screen.getByRole("button", { name: "Login space" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("tab", { name: "Login space" }).getAttribute("aria-selected")).toBe("true");
   });
 
   it("saves while running and restarts only when requested", async () => {
@@ -121,7 +121,7 @@ describe("LobbyPage", () => {
   it("confirms a switch with unsaved edits", async () => {
     page();
     fireEvent.change(await readyField("English menu title"), { target: { value: "My Network" } });
-    await userEvent.click(screen.getByRole("button", { name: "Login space" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Login space" }));
     await screen.findByRole("dialog", { name: "Discard unsaved settings?" });
     expect(calls.status).not.toHaveBeenCalledWith("login");
     await userEvent.click(screen.getByRole("button", { name: "Discard & switch" }));

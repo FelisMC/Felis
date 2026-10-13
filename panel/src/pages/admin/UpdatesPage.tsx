@@ -5,6 +5,7 @@ import { useHostTask } from "@/components/HostTask";
 import { MessageLine } from "@/components/MessageLine";
 import { StatCard } from "@/components/StatCard";
 import { PageHeader } from "@/components/PageHeader";
+import { PageTabs } from "@/components/PageTabs";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -332,16 +333,9 @@ export function UpdatesPage() {
     <RefreshContext.Provider value={cards.scope}>
       <div className="space-y-6">
         <PageHeader icon={Clock} title={t("updates_title")} subtitle={t("updates_subtitle")}
-          actions={<Button variant="outline" size="sm" disabled={cards.dirty || overview.loading} onClick={() => { overview.reload(); cards.refresh(); }}><RefreshCw />{t("platform_reload")}</Button>} />
-        <div className="flex flex-wrap gap-1 rounded-lg bg-muted/60 p-1" role="tablist" aria-label={t("maintenance_tabs")}>
-          {tabs.map(({ key, icon: Icon }) => (
-            <Button key={key} role="tab" id={`maintenance-tab-${key}`} aria-controls={`maintenance-panel-${key}`} aria-selected={tab === key} variant="ghost" size="sm"
-              className={cn("px-3", tab === key ? "bg-card text-primary hover:bg-card" : "text-muted-foreground")}
-              onClick={() => setParams((p) => { p.set("tab", key); return p; }, { replace: true })}>
-              <Icon />{t(`maintenance_tab_${key}`)}
-            </Button>
-          ))}
-        </div>
+          actions={<Button variant="outline" size="sm" disabled={cards.dirty || overview.loading} onClick={() => { overview.reload(); cards.refresh(); }}><RefreshCw />{t("platform_reload")}</Button>}
+          tabs={<PageTabs label={t("maintenance_tabs")} idPrefix="maintenance" value={tab} tabs={tabs.map(({ key, icon }) => ({ key, icon, label: t(`maintenance_tab_${key}`) }))}
+            onChange={(key) => setParams((p) => { p.set("tab", key); return p; }, { replace: true })} />} />
         <div role="tabpanel" id="maintenance-panel-status" aria-labelledby="maintenance-tab-status" hidden={tab !== "status"} className="space-y-6">
           <HostStatusCard overview={overview} />
         </div>

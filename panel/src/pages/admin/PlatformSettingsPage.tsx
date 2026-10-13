@@ -1,7 +1,7 @@
 import { Link, useSearchParams } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { BellRing, Loader2, Network, RefreshCw, Route, Save, Settings, ShieldCheck } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { PageTabs } from "@/components/PageTabs";
 import { AccessCard, ConvergeCard, CredentialsCard, ProxyCard, StorageCard, useOverviewError } from "./platform/HostConfigCards";
 import { useTranslation } from "react-i18next";
 import { PlayerEntrySettings } from "@/components/PlayerEntrySettings";
@@ -72,10 +72,9 @@ export function PlatformSettingsPage() {
     } finally { setSaving(false); }
   }
   return <RefreshContext.Provider value={cards.scope}><div className="space-y-6">
-    <PageHeader icon={Settings} title={t("platform_title")} subtitle={t("platform_subtitle")} actions={<Button variant="outline" size="sm" disabled={dirty || cards.dirty || busy} onClick={() => { query.reload(); overview.reload(); cards.refresh(); }}><RefreshCw />{t("platform_reload")}</Button>} />
-    <div className="flex flex-wrap gap-1 rounded-lg bg-muted/60 p-1" role="tablist" aria-label={t("platform_tabs")}>
-      {platformTabs.map(({ key, icon: Icon }) => <Button key={key} role="tab" id={`platform-tab-${key}`} aria-controls={`platform-panel-${key}`} aria-selected={tab === key} variant="ghost" size="sm" className={cn("px-3", tab === key ? "bg-card text-primary hover:bg-card" : "text-muted-foreground")} onClick={() => setParams((p) => { p.set("tab", key); return p; }, { replace: true })}><Icon />{t(`platform_tab_${key}`)}</Button>)}
-    </div>
+    <PageHeader icon={Settings} title={t("platform_title")} subtitle={t("platform_subtitle")} actions={<Button variant="outline" size="sm" disabled={dirty || cards.dirty || busy} onClick={() => { query.reload(); overview.reload(); cards.refresh(); }}><RefreshCw />{t("platform_reload")}</Button>}
+      tabs={<PageTabs label={t("platform_tabs")} idPrefix="platform" value={tab} tabs={platformTabs.map(({ key, icon }) => ({ key, icon, label: t(`platform_tab_${key}`) }))}
+        onChange={(key) => setParams((p) => { p.set("tab", key); return p; }, { replace: true })} />} />
     <div role="tabpanel" id="platform-panel-entry" aria-labelledby="platform-tab-entry" hidden={tab !== "entry"} className="space-y-6">
     <PlayerEntrySettings />
     <Card><CardHeader><CardTitle>{t("platform_wake_title")}</CardTitle></CardHeader><CardContent className="space-y-6">

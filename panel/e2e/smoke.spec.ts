@@ -78,9 +78,9 @@ test("space settings keep the form visible while reading configuration", async (
 test("login is the default space; live lobby settings save before a confirmed restart", async ({ page, signIn }) => {
   await signIn("owner");
   await page.goto("/admin/lobby");
-  await expect(page.getByRole("button", { name: t("lobby:login"), exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("tab", { name: t("lobby:login"), exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByLabel(t("lobby:bookTitle"))).toBeVisible();
-  await page.getByRole("button", { name: t("lobby:lobby"), exact: true }).click();
+  await page.getByRole("tab", { name: t("lobby:lobby"), exact: true }).click();
   await page.getByLabel(t("lobby:menuTitleEn")).fill("Our Network");
   await expect(page.getByRole("button", { name: t("lobby:restart"), exact: true })).toBeDisabled();
   await page.getByRole("button", { name: t("lobby:save"), exact: true }).click();
