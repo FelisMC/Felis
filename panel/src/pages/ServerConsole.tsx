@@ -17,6 +17,7 @@ import { joinAddress } from "@/lib/config";
 import { CopyAddress } from "@/components/CopyAddress";
 import type { Phase, AutostartPolicy } from "@/lib/types";
 import { EditServerDialog } from "@/components/EditServerDialog";
+import { ForwardingDialog } from "@/components/ForwardingDialog";
 import { PowerButton } from "@/components/PowerButton";
 import { RetireCard, RetireNotice } from "@/components/Retirement";
 import { parseFormatting, type Formatted } from "@/lib/mcformat";
@@ -375,6 +376,7 @@ export function ServerConsole() {
                   onUpdated={reload}
                 />
               )}
+              {isOwner && name !== "login" && name !== "lobby" && <ForwardingDialog serverName={name} legacy={!!data.legacyForwarding} onUpdated={reload} />}
               {owned && (
                 <Link
                   to={`/servers/${name}/luckperms`}

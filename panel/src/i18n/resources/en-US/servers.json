@@ -340,5 +340,13 @@
   "failover_state_switching": "Switching to {{target}}",
   "failover_state_succeeded": "Restored on {{target}}",
   "failover_state_failed": "Failover failed; the server stays stopped",
-  "failover_state_aborted": "Failover abandoned"
+  "failover_state_aborted": "Failover abandoned",
+  "forwarding_title": "Forwarding mode",
+  "forwarding_modern": "Modern forwarding",
+  "forwarding_legacy": "Legacy forwarding (BungeeCord)",
+  "forwarding_description": "How the proxy passes the player's identity to this server. Servers on 1.13 or newer use modern forwarding, signed with the proxy's secret; older backends behind ViaVersion need legacy forwarding.",
+  "forwarding_use_legacy": "Use legacy forwarding",
+  "forwarding_use_legacy_hint": "The proxy applies the change at its next server-list refresh, within 15 seconds.",
+  "forwarding_risk": "A legacy-forwarded server trusts any identity that reaches its port. Felis lets only the proxy reach game servers; do not expose this server's port in any other way.",
+  "forwarding_save": "Save"
 }

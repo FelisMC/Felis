@@ -339,5 +339,13 @@
   "failover_state_switching": "正在切换到 {{target}}",
   "failover_state_succeeded": "已在 {{target}} 上恢复",
   "failover_state_failed": "故障切换失败，服务器保持停止",
-  "failover_state_aborted": "已放弃故障切换"
+  "failover_state_aborted": "已放弃故障切换",
+  "forwarding_title": "转发方式",
+  "forwarding_modern": "现代转发",
+  "forwarding_legacy": "传统转发（BungeeCord）",
+  "forwarding_description": "代理向此服务器传递玩家身份的方式。1.13 及以上版本使用以代理密钥签名的现代转发；通过 ViaVersion 接入的旧版本后端需使用传统转发。",
+  "forwarding_use_legacy": "使用传统转发",
+  "forwarding_use_legacy_hint": "代理在下次刷新服务器列表时生效，约 15 秒内。",
+  "forwarding_risk": "使用传统转发的服务器信任到达其端口的任何身份。Felis 仅允许代理访问游戏服务器，请勿以其他方式暴露该服务器端口。",
+  "forwarding_save": "保存"
 }

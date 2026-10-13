@@ -51,6 +51,32 @@ test("Owner runs backups, diagnostics and the off-site copy from the maintenance
   }
 });
 
+test("Owner changes host settings and a server's forwarding from the panel", async ({ page, signIn }) => {
+  await signIn("owner");
+  await page.goto("/admin/platform?tab=access");
+  await expect(page.getByRole("heading", { name: t("admin:access_title"), exact: true })).toBeVisible();
+  await page.getByLabel(t("admin:proxy_heap"), { exact: true }).fill("2G");
+  await page.getByRole("button", { name: t("admin:proxy_apply"), exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: t("admin:proxy_apply"), exact: true }).click();
+  await expect(page.getByText(t("admin:host_action_host-settings"), { exact: true })).toBeVisible();
+  const credentials = page.getByRole("listitem").filter({ hasText: t("admin:credential_forwarding") });
+  await credentials.getByRole("button", { name: t("admin:credentials_rotate"), exact: true }).click();
+  await expect(page.getByRole("dialog").getByText(t("admin:credential_forwarding_impact"))).toBeVisible();
+  await page.getByRole("dialog").getByRole("button", { name: t("common:cancel"), exact: true }).click();
+  for (const viewport of [{ width: 1440, height: 1050 }, { width: 375, height: 812 }]) {
+    await page.setViewportSize(viewport);
+    await expectFitsScreen(page);
+  }
+  await page.setViewportSize({ width: 1440, height: 1050 });
+
+  await page.goto("/servers/survival");
+  await page.getByRole("button", { name: new RegExp(t("servers:forwarding_title")) }).click();
+  await page.getByRole("switch", { name: t("servers:forwarding_use_legacy") }).click();
+  await expect(page.getByText(t("servers:forwarding_risk"))).toBeVisible();
+  await page.getByRole("button", { name: t("servers:forwarding_save"), exact: true }).click();
+  await expect(page.getByRole("dialog").getByText(t("admin:node_control_state_succeeded"), { exact: true })).toBeVisible();
+});
+
 test("a non-Owner reaches none of the host's routes", async ({ page, signIn }) => {
   await signIn("user");
   for (const [method, path] of [["GET", "platform/host"], ["POST", "platform/host/quiet"], ["POST", "platform/offsite/key"], ["GET", "platform/audit-export"], ["GET", "settings/node-control"]] as const) {

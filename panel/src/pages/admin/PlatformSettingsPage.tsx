@@ -1,6 +1,8 @@
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useEffect, useState } from "react";
-import { Loader2, RefreshCw, Save, Settings } from "lucide-react";
+import { BellRing, Loader2, Network, RefreshCw, Route, Save, Settings, ShieldCheck } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { AccessCard, ConvergeCard, CredentialsCard, ProxyCard, StorageCard, useOverviewError } from "./platform/HostConfigCards";
 import { useTranslation } from "react-i18next";
 import { PlayerEntrySettings } from "@/components/PlayerEntrySettings";
 import { NodeControlPanel } from "@/components/NodeControlPanel";
@@ -21,12 +23,25 @@ import { api, humanizeError } from "@/lib/api";
 import { RefreshContext, useAsync, useConfig, usePageRefresh, useUnsavedGuard } from "@/lib/hooks";
 import type { WakePolicySettings } from "@/lib/types";
 
+const platformTabs = [
+  { key: "entry", icon: Route },
+  { key: "notices", icon: BellRing },
+  { key: "access", icon: ShieldCheck },
+  { key: "nodes", icon: Network },
+] as const;
+type PlatformTab = (typeof platformTabs)[number]["key"];
+
 export function PlatformSettingsPage() {
   const { t } = useTranslation("admin");
   const config = useConfig();
   const query = useAsync(api.getWakePolicy, []);
   const reauth = useReauth();
   const cards = usePageRefresh();
+  const [params, setParams] = useSearchParams();
+  const requested = params.get("tab");
+  const tab: PlatformTab = platformTabs.some((x) => x.key === requested) ? (requested as PlatformTab) : "entry";
+  const overview = useAsync(api.hostOverview, []);
+  const overviewError = useOverviewError(overview);
   const [saved, setSaved] = useState<WakePolicySettings | null>(null);
   const [limit, setLimit] = useState("");
   const [cooldown, setCooldown] = useState("");
@@ -57,7 +72,11 @@ export function PlatformSettingsPage() {
     } finally { setSaving(false); }
   }
   return <RefreshContext.Provider value={cards.scope}><div className="space-y-6">
-    <PageHeader icon={Settings} title={t("platform_title")} subtitle={t("platform_subtitle")} actions={<Button variant="outline" size="sm" disabled={dirty || cards.dirty || busy} onClick={() => { query.reload(); cards.refresh(); }}><RefreshCw />{t("platform_reload")}</Button>} />
+    <PageHeader icon={Settings} title={t("platform_title")} subtitle={t("platform_subtitle")} actions={<Button variant="outline" size="sm" disabled={dirty || cards.dirty || busy} onClick={() => { query.reload(); overview.reload(); cards.refresh(); }}><RefreshCw />{t("platform_reload")}</Button>} />
+    <div className="flex flex-wrap gap-1 rounded-lg bg-muted/60 p-1" role="tablist" aria-label={t("platform_tabs")}>
+      {platformTabs.map(({ key, icon: Icon }) => <Button key={key} role="tab" id={`platform-tab-${key}`} aria-controls={`platform-panel-${key}`} aria-selected={tab === key} variant="ghost" size="sm" className={cn("px-3", tab === key ? "bg-card text-primary hover:bg-card" : "text-muted-foreground")} onClick={() => setParams((p) => { p.set("tab", key); return p; }, { replace: true })}><Icon />{t(`platform_tab_${key}`)}</Button>)}
+    </div>
+    <div role="tabpanel" id="platform-panel-entry" aria-labelledby="platform-tab-entry" hidden={tab !== "entry"} className="space-y-6">
     <PlayerEntrySettings />
     <Card><CardHeader><CardTitle>{t("platform_wake_title")}</CardTitle></CardHeader><CardContent className="space-y-6">
       {query.loading && <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />{t("platform_loading")}</p>}
@@ -76,9 +95,21 @@ export function PlatformSettingsPage() {
         <Button disabled={!dirty || !valid || busy} onClick={() => void save()}>{saving ? <Loader2 className="animate-spin" /> : <Save />}{t("platform_save")}</Button>
       </div>
     </CardFooter></Card>
+    </div>
+    <div role="tabpanel" id="platform-panel-notices" aria-labelledby="platform-tab-notices" hidden={tab !== "notices"} className="space-y-6">
     <MailSettingsCard />
-    <RetentionCard />
     <HeartbeatCard />
+    <RetentionCard />
+    </div>
+    <div role="tabpanel" id="platform-panel-access" aria-labelledby="platform-tab-access" hidden={tab !== "access"} className="space-y-6">
+    {overviewError && <MessageLine kind="error" message={overviewError} />}
+    <AccessCard overview={overview} />
+    <StorageCard overview={overview} />
+    <CredentialsCard />
+    <ProxyCard overview={overview} />
+    <ConvergeCard />
+    </div>
+    <div role="tabpanel" id="platform-panel-nodes" aria-labelledby="platform-tab-nodes" hidden={tab !== "nodes"} className="space-y-6">
     <Card>
       <CardHeader><CardTitle>{t("platform_distribution_title")}</CardTitle></CardHeader>
       <CardContent className="space-y-4">
@@ -96,6 +127,7 @@ export function PlatformSettingsPage() {
     <NodeControlPanel distributed={!config || config.fallback ? null : !!config.distributed} controllerHA={!!config?.controllerHA} />
     {config?.distributed && !config.fallback && <DistributedNodes />}
     {config?.distributed && !config.fallback && <FailoverPolicyCard />}
+    </div>
     {reauth.dialog}
   </div></RefreshContext.Provider>;
 }

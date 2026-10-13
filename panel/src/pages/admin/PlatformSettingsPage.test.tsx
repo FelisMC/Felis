@@ -5,14 +5,16 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { PlatformSettingsPage } from "./PlatformSettingsPage";
 import type { WakePolicySettings } from "@/lib/types";
-const calls = vi.hoisted(() => ({ getEntryPolicy: vi.fn(), setEntryPolicy: vi.fn(), fleet: vi.fn(), getWakePolicy: vi.fn(), setWakePolicy: vi.fn(), nodes: vi.fn(), nodeTasks: vi.fn(), nodeTask: vi.fn(), startNodeTask: vi.fn(), retryNodeTask: vi.fn(), getMailSettings: vi.fn(), getArchivePolicy: vi.fn(), getFailoverPolicy: vi.fn(), getHeartbeat: vi.fn() }));
+const calls = vi.hoisted(() => ({ getEntryPolicy: vi.fn(), setEntryPolicy: vi.fn(), fleet: vi.fn(), getWakePolicy: vi.fn(), setWakePolicy: vi.fn(), nodes: vi.fn(), nodeTasks: vi.fn(), nodeTask: vi.fn(), startNodeTask: vi.fn(), retryNodeTask: vi.fn(), getMailSettings: vi.fn(), getArchivePolicy: vi.fn(), getFailoverPolicy: vi.fn(), getHeartbeat: vi.fn(), hostOverview: vi.fn() }));
 vi.mock("@/lib/api", async (original) => ({ ...await original<typeof import("@/lib/api")>(), api: calls }));
 const runtime = vi.hoisted(() => ({ distributed: false, fallback: false, apiBase: "/api/v1", rootDomain: "example.test" }));
 vi.mock("@/lib/hooks", async (original) => ({ ...await original<typeof import("@/lib/hooks")>(), useConfig: () => runtime }));
 const policy: WakePolicySettings = { maxRunningServers: 0, wakeCooldownSeconds: 0, revision: "initial", managed: false };
 const limit = () => screen.getByRole("spinbutton", { name: "Running server limit (0–10000)" }) as HTMLInputElement;
 const cooldown = () => screen.getByRole("spinbutton", { name: "Wake cooldown (0–3600 seconds)" });
-function page() { render(<MemoryRouter><PlatformSettingsPage /></MemoryRouter>); }
+function page(tab?: string) { render(<MemoryRouter initialEntries={[tab ? `/admin/platform?tab=${tab}` : "/admin/platform"]}><PlatformSettingsPage /></MemoryRouter>); }
+const overview = { host: "ctl-a", at: "2026-10-12T00:00:00Z", version: "v1", disks: [], units: [], proxy: {}, alerts: [], databaseBackups: [], offsite: { configured: false, keyKept: false },
+  settings: { dbBackupTime: "03:30", dbBackupKeep: 14, velocityXmx: "1G" }, connection: { mode: "local", panelHost: "console.example.test", adminHost: "op.console.example.test" }, storage: { mode: "local" }, rootDomain: "example.test" };
 beforeEach(() => {
   vi.clearAllMocks();
   runtime.distributed = false;
@@ -26,6 +28,7 @@ beforeEach(() => {
   calls.getArchivePolicy.mockResolvedValue({ manualKeep: 5, manualRetentionDays: 30, manualCooldownMinutes: 10, scheduledEveryHours: 24, scheduledKeep: 7, scheduledRetentionDays: 90, releasedRetentionDays: 90, maxStoreGiB: 0, auditRetentionDays: 365, source: "host", revision: "" });
   calls.getHeartbeat.mockResolvedValue({ set: false, display: "", revision: "" });
   calls.getFailoverPolicy.mockResolvedValue({ automatic: false, afterMinutes: 15, replicaMinutes: 60, revision: "", managed: false });
+  calls.hostOverview.mockResolvedValue(overview);
   calls.setWakePolicy.mockImplementation(async (body) => ({ ...body, revision: "saved", managed: true }));
 });
 describe("platform policy", () => {
@@ -67,7 +70,7 @@ describe("page reload", () => {
     const lobby = screen.getByRole("radio", { name: /^Lobby/ });
     await waitFor(() => expect(lobby).toHaveProperty("disabled", false));
     const reload = screen.getByRole("button", { name: "Reload" });
-    const reads = [calls.getWakePolicy, calls.getEntryPolicy, calls.fleet, calls.getMailSettings, calls.getArchivePolicy, calls.getHeartbeat, calls.getFailoverPolicy, calls.nodes, calls.nodeTasks];
+    const reads = [calls.getWakePolicy, calls.getEntryPolicy, calls.fleet, calls.getMailSettings, calls.getArchivePolicy, calls.getHeartbeat, calls.getFailoverPolicy, calls.nodes, calls.nodeTasks, calls.hostOverview];
     await waitFor(() => { for (const read of reads) expect(read).toHaveBeenCalled(); });
     const before = reads.map((read) => read.mock.calls.length);
     await userEvent.click(reload);
@@ -85,14 +88,14 @@ describe("distributed deployment entry", () => {
     await waitFor(() => expect(limit().disabled).toBe(false));
     expect(screen.getByText("Single-node mode")).toBeTruthy();
     expect(screen.getByText("Node operations")).toBeTruthy();
-    expect(await screen.findByText(/Host node service is not installed/)).toBeTruthy();
+    expect((await screen.findAllByText(/Host node service is not installed/)).length).toBeGreaterThan(0);
     expect(calls.nodes).not.toHaveBeenCalled();
   });
 
   it("shows existing execution nodes and links to server placement and migration", async () => {
     runtime.distributed = true;
     calls.nodes.mockResolvedValue([{ name: "worker-b", role: "worker", ready: true, approved: false, architecture: "arm64", addresses: ["192.0.2.11"] }]);
-    page();
+    page("nodes");
     expect(await screen.findByText("worker-b")).toBeTruthy();
     expect(screen.getByText("Distributed mode enabled")).toBeTruthy();
     expect(screen.getByText("Pending approval")).toBeTruthy();
