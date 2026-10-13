@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
+  BookOpen,
+  DoorOpen,
   Network,
   Play,
   Terminal,
@@ -436,10 +438,11 @@ export function ServersPage() {
           ) : (
             <>
               {/* Cards until the table fits (two per row from md). The admin
-                  table needs about 1100px of content width for all its columns,
-                  which the page only has from 2xl beside the sidebar; the
-                  player's four columns fit from xl. */}
-              <ul className={cn("grid gap-3 md:grid-cols-2", isAdmin ? "2xl:hidden" : "xl:hidden")}>
+                  table needs about 1400px of content width for its seven columns,
+                  which the page has from a 1700px window beside the sidebar; the
+                  player's five columns fit from xl. A row of actions wraps only
+                  when its column cannot hold it. */}
+              <ul className={cn("grid gap-3 md:grid-cols-2", isAdmin ? "min-[1700px]:hidden" : "xl:hidden")}>
                 {paged.map((s) => (
                   <ServerMobileCard
                     key={s.name}
@@ -453,7 +456,7 @@ export function ServersPage() {
               <Card
                 className={cn(
                   "hidden overflow-hidden border border-border/80",
-                  isAdmin ? "2xl:block" : "xl:block",
+                  isAdmin ? "min-[1700px]:block" : "xl:block",
                 )}
               >
                 <div className="overflow-x-auto">
@@ -461,6 +464,7 @@ export function ServersPage() {
                     <thead>
                       <tr className="whitespace-nowrap border-b border-border bg-muted/40 text-left text-[11px] uppercase tracking-wider text-muted-foreground">
                         <th className="px-4 py-2.5 font-medium">{t("fleet_col_server")}</th>
+                        <th className="px-4 py-2.5 font-medium">{t("fleet_col_status")}</th>
                         {isAdmin && <th className="px-4 py-2.5 font-medium">{t("fleet_col_owner")}</th>}
                         <th className="px-4 py-2.5 font-medium">{t("fleet_col_players")}</th>
                         <th className="px-4 py-2.5 font-medium">{t("fleet_col_policy")}</th>
@@ -535,11 +539,16 @@ function ServerActions({
 
   if (server.system) {
     // Staff customize system services in the dedicated lobby view.
-    if (isAdmin) return <Button asChild variant="outline" size="sm"><Link to={`/admin/lobby?space=${server.name}`}>{ts("system_customize")}</Link></Button>;
     return (
-      <span className="text-xs text-muted-foreground/70" title={ts("system_service_hint")}>
-        {ts("system_service")}
-      </span>
+      <div className={cn("flex justify-end", className)}>
+        {isAdmin ? (
+          <Button asChild variant="outline" size="sm">
+            <Link to={`/admin/lobby?space=${server.name}`}>{server.name === "login" ? <BookOpen /> : <DoorOpen />}{ts(server.name === "login" ? "system_customize_login" : "system_customize")}</Link>
+          </Button>
+        ) : (
+          <span className="text-sm text-muted-foreground" title={ts("system_service_hint")}>{ts("system_service")}</span>
+        )}
+      </div>
     );
   }
 
@@ -550,7 +559,7 @@ function ServerActions({
 
   return (
     <div className={cn("flex flex-col items-end gap-1", className)}>
-      <div className="flex flex-wrap items-start justify-end gap-2 xl:flex-nowrap">
+      <div className="flex flex-wrap items-start justify-end gap-2">
         {isAdmin && cfg?.distributed && <MigrationDialog name={server.name} nodeName={server.nodeName} stopped={server.phase === "Stopped" && !server.ready && server.desiredState === "Stopped" && !server.retiring} onChanged={onChanged} />}
         {claimable && (
           <>
@@ -622,7 +631,7 @@ function OwnerLabel({ server }: { server: UnifiedServer }) {
   const { t: ts } = useTranslation("servers");
   if (server.system) {
     return (
-      <span className="text-xs text-muted-foreground/70" title={ts("system_service_hint")}>
+      <span className="text-muted-foreground" title={ts("system_service_hint")}>
         {ts("system_service")}
       </span>
     );
@@ -644,12 +653,12 @@ function OwnerLabel({ server }: { server: UnifiedServer }) {
   }
   if (server.ownerUnknown) {
     return (
-      <span className="text-xs text-muted-foreground/70" title={t("fleet_owner_unknown_hint")}>
+      <span className="text-muted-foreground" title={t("fleet_owner_unknown_hint")}>
         {t("fleet_owner_unknown")}
       </span>
     );
   }
-  return <span className="text-xs text-muted-foreground/70">{t("fleet_unclaimed")}</span>;
+  return <span className="text-muted-foreground">{t("fleet_unclaimed")}</span>;
 }
 
 function PlayersLabel({ server }: { server: UnifiedServer }) {
@@ -671,7 +680,7 @@ function EndpointAddress({ server }: { server: UnifiedServer }) {
   const { t } = useTranslation("ops");
   const endpoint = server.ready && server.endpointAddress ? server.endpointAddress : null;
   if (!endpoint) {
-    return <span className="text-xs text-muted-foreground/70">{t("fleet_endpoint_idle")}</span>;
+    return <span className="text-muted-foreground">{t("fleet_endpoint_idle")}</span>;
   }
   return (
     <code className="break-all rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground xl:whitespace-nowrap xl:break-normal">
@@ -697,23 +706,25 @@ function ServerRow({
   return (
     <tr className="border-b border-border/50 transition-colors last:border-0 hover:bg-muted/40">
       <td className="px-4 py-3 align-middle text-left">
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 items-baseline gap-2">
           <ServerName server={server} />
-          <PhaseBadge phase={shownPhase(server)} failure={startFailure(server)} autoRestarts={server.autoRestarts} />
         </div>
-        {address && <CopyAddress address={address} className="md:max-w-[16rem]" />}
+        {address && <CopyAddress address={address} className="mt-0.5 flex-nowrap md:max-w-[18rem]" />}
+      </td>
+      <td className="whitespace-nowrap px-4 py-3 align-middle text-left">
+        <PhaseBadge phase={shownPhase(server)} failure={startFailure(server)} autoRestarts={server.autoRestarts} />
       </td>
       {isAdmin && (
-        <td className="px-4 py-3 align-middle text-left">
+        <td className="whitespace-nowrap px-4 py-3 align-middle text-left">
           <OwnerLabel server={server} />
         </td>
       )}
-      <td className="px-4 py-3 align-middle text-left">
+      <td className="whitespace-nowrap px-4 py-3 align-middle text-left">
         <PlayersLabel server={server} />
       </td>
-      <td className="px-4 py-3 align-middle text-left">
+      <td className="whitespace-nowrap px-4 py-3 align-middle text-left">
         {server.autostartPolicy ? (
-          <span className="whitespace-nowrap text-xs text-muted-foreground">
+          <span className="text-foreground">
             {t(POLICY_KEY[server.autostartPolicy])}
           </span>
         ) : (
@@ -721,11 +732,11 @@ function ServerRow({
         )}
       </td>
       {isAdmin && (
-        <td className="px-4 py-3 align-middle text-left">
+        <td className="whitespace-nowrap px-4 py-3 align-middle text-left">
           <EndpointLabel server={server} />
         </td>
       )}
-      <td className="px-4 py-3 align-middle">
+      <td className="whitespace-nowrap px-4 py-3 align-middle">
         <ServerActions server={server} isAdmin={isAdmin} onChanged={onChanged} />
       </td>
     </tr>

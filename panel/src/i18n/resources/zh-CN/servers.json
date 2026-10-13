@@ -274,6 +274,7 @@
   "migration_abort": "放弃迁移",
   "migration_abort_confirm": "放弃后，服务器留在原节点并恢复可用；目标节点上未完成的副本会被删除，迁移前的安全备份保留为恢复点。目标节点无需在线。",
   "system_customize": "自定义大厅",
+  "system_customize_login": "自定义登录空间",
   "edit_system_desc": "调整名称、镜像与资源。更换镜像需保留 Felis 登录或菜单插件，并保持与代理的版本兼容。系统服务不自动休眠。",
   "more_actions": "更多操作",
   "log_starting_wait": "正在等待启动日志，启动期间会自动重试连接。",

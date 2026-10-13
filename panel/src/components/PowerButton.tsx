@@ -145,8 +145,9 @@ export function PowerButton({
   } else if (failed && stopOnly) {
     control = stopButton("outline", () => void run("stop"));
   } else if (failed) {
+    // Retry and stop stay side by side: a row of actions that wraps moves them as one.
     control = (
-      <div className="flex flex-wrap items-center justify-end gap-2">
+      <div className="flex items-center justify-end gap-2">
         <Button size={size} onClick={() => void run("wake")} disabled={busy !== null}>
           {busy === "wake" ? spinner : <RotateCcw />}
           {busy === "wake" ? t("retrying_start") : t("retry_start")}
