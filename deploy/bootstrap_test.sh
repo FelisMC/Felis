@@ -5841,15 +5841,15 @@ printf '%s\t%s\t%s\t%s\n' \
   gradle '<none>' sha256:old ggg \
   gradle 8-jdk17 sha256:mine hhh \
   nginx latest sha256:i9 iii > "$pbdir/images"
-out="$(env IMAGES="$pbdir/images" REGISTRY_URL=registry.felis.svc:5000 REGISTRY_PUSH_HOST=127.0.0.1:5000 \
+out="$(env IMAGES="$pbdir/images" CALLS="$pbdir/calls" REGISTRY_URL=registry.felis.svc:5000 REGISTRY_PUSH_HOST=127.0.0.1:5000 \
   FELIS_IMAGE=registry.felis.svc:5000/felis/felis:v1.2.0 FELIS_LIMBO_IMAGE=registry.felis.svc:5000/felis/limbo:demo \
   FELIS_LOBBY_IMAGE=registry.felis.svc:5000/felis/lobby:demo FELIS_PAPER_IMAGE=registry.felis.svc:5000/felis/paper:demo \
   PLUGIN_BUILD_IMAGE=gradle:9.8.1-jdk25@sha256:new \
   bash -c 'set -Eeuo pipefail
-docker() { if [ "$1" = images ]; then cat "$IMAGES"; else echo "CALL docker $*"; fi; }
+docker() { if [ "$1" = images ]; then cat "$IMAGES"; else echo "CALL docker $*" >> "$CALLS"; fi; }
 '"$(hafn role_image)"'
 '"$pbfn"'
-prune_build_images' 2>&1)"
+prune_build_images; cat "$CALLS"' 2>&1)"
 expect "an earlier control-plane image leaves Docker" "CALL docker rmi registry.felis.svc:5000/felis/felis:v1.1.0" "$out"
 expect "every earlier control-plane image leaves Docker" "CALL docker rmi registry.felis.svc:5000/felis/felis:v1.0.0" "$out"
 expect "a push tag an interrupted run left behind leaves Docker" "CALL docker rmi 127.0.0.1:5000/felis/paper:demo" "$out"
