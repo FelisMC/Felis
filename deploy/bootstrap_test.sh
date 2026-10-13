@@ -5756,6 +5756,73 @@ shlabel="$(sed -n 's/^LONGHORN_DISK_LABEL="\(.*\)"$/\1/p' "$BS")"
 if [ -n "$golabel" ] && [ "$golabel" = "$shlabel" ]; then echo "PASS joined controllers get the installer's Longhorn disk label"; else echo "FAIL Longhorn disk label: felis <$golabel>, installer <$shlabel>"; fails=$((fails + 1)); fi
 rm -rf "$hadir"
 
+# --- reconfigure from the panel ---------------------------------------------------------
+# node-control re-runs the installer with FELIS_INSTALL_MODE=reconfigure to apply what the
+# Owner changed in the panel. The settings it saved come back from host-settings.env, where
+# a variable set for the run still wins and only the panel's own keys are read.
+recall="$(hafn recall_host_settings)"
+reconf="$(hafn main_reconfigure)"
+for body in "$recall" "$reconf"; do
+  [ -n "$body" ] || { echo "FAIL: no recall_host_settings or main_reconfigure found in $BS"; exit 1; }
+  [ "$(printf '%s\n' "$body" | wc -l)" -lt 40 ] || { echo "FAIL: an extracted reconfigure function is not just the function"; exit 1; }
+done
+rcdir="$(mktemp -d)"
+cat > "$rcdir/host-settings.env" <<'EOF'
+FELIS_DB_BACKUP_TIME='*-*-* 04:15:00'
+FELIS_DB_BACKUP_KEEP='21'
+FELIS_VELOCITY_XMX='2G'
+FELIS_K3S_VERSION='v0.0.0'
+EOF
+run_rc() { # script
+  env -u FELIS_DB_BACKUP_TIME -u FELIS_DB_BACKUP_KEEP -u FELIS_VELOCITY_XMX -u FELIS_K3S_VERSION -u FELIS_RECONFIGURE -u FELIS_DISTRIBUTED \
+    HOST_SETTINGS_FILE="$rcdir/host-settings.env" BOOTSTRAP_DONE="$rcdir/done" K3S_KUBECONFIG=/dev/null K3S_CONFIG_DROPIN="$rcdir/none" \
+    bash -c "set -Eeuo pipefail
+die() { printf 'DIE: %s\n' \"\$*\"; exit 1; }
+ok() { printf 'OK: %s\n' \"\$*\"; }
+recall_distributed_settings() { :; }
+recall_ha_settings() { :; }
+install_db_backup_timer() { printf 'CALL db-backup %s %s\n' \"\$FELIS_DB_BACKUP_TIME\" \"\$FELIS_DB_BACKUP_KEEP\"; }
+install_velocity_service() { printf 'CALL velocity %s\n' \"\$FELIS_VELOCITY_XMX\"; }
+configure_offsite() { echo 'CALL configure_offsite'; }
+install_offsite_timer() { echo 'CALL install_offsite_timer'; }
+$recall
+$reconf
+$1" 2>&1
+}
+out="$(run_rc 'recall_host_settings; printf "[%s][%s][%s][%s]\n" "$FELIS_DB_BACKUP_TIME" "$FELIS_DB_BACKUP_KEEP" "$FELIS_VELOCITY_XMX" "${FELIS_K3S_VERSION-unset}"')"
+expect "the panel's saved settings are recalled without their quotes" "[*-*-* 04:15:00][21][2G]" "$out"
+expect "host-settings.env sets only the panel's own variables" "[unset]" "$out"
+out="$(run_rc 'FELIS_VELOCITY_XMX=768M; recall_host_settings; printf "[%s][%s]\n" "$FELIS_VELOCITY_XMX" "$FELIS_DB_BACKUP_KEEP"')"
+expect "a variable set for the run wins over the saved one" "[768M][21]" "$out"
+out="$(run_rc 'HOST_SETTINGS_FILE=/nonexistent/host-settings.env; recall_host_settings; printf "[%s]\n" "${FELIS_DB_BACKUP_TIME-unset}"')"
+expect "a host without saved settings keeps the defaults" "[unset]" "$out"
+expect "reconfigure refuses a host without a full install" "DIE: reconfigure changes an installed host" "$(run_rc 'FELIS_RECONFIGURE=velocity; main_reconfigure')"
+: > "$rcdir/done"
+out="$(run_rc 'FELIS_RECONFIGURE=velocity,db-backup; recall_host_settings; main_reconfigure')"
+expect "reconfigure rewrites the proxy with the saved heap" "CALL velocity 2G" "$out"
+expect "reconfigure rewrites the backup timer with the saved schedule" "CALL db-backup *-*-* 04:15:00 21" "$out"
+expect "reconfigure reports what it rewrote" "OK: reconfigured: velocity,db-backup" "$out"
+case "$out" in *offsite*) echo "FAIL reconfigure touched the off-site copy it was not asked to"; fails=$((fails + 1)) ;; *) echo "PASS reconfigure runs only the targets it is given" ;; esac
+out="$(run_rc 'FELIS_RECONFIGURE=offsite; main_reconfigure')"
+expect "reconfigure offsite rewrites offsite.env" "CALL configure_offsite" "$out"
+expect "reconfigure offsite installs or removes the hourly copy" "CALL install_offsite_timer" "$out"
+expect "an unknown target is refused" "DIE: FELIS_RECONFIGURE: unknown target 'k3s'" "$(run_rc 'FELIS_RECONFIGURE=k3s; main_reconfigure')"
+expect "a reconfigure that names nothing is refused" "DIE: FELIS_RECONFIGURE names nothing to reconfigure" "$(run_rc 'main_reconfigure')"
+case "$(hafn prompt_install_mode)" in *'= reconfigure ]'*) echo "PASS reconfigure is an install mode" ;; *) echo "FAIL prompt_install_mode must accept reconfigure"; fails=$((fails + 1)) ;; esac
+case "$mainbody" in
+  *main_reconfigure*detect_node_ip*) echo "PASS main hands reconfigure off before it touches the host" ;;
+  *) echo "FAIL main must run main_reconfigure before detect_node_ip"; fails=$((fails + 1)) ;;
+esac
+recall_at="$(grep -n '^recall_host_settings$' "$BS" | cut -d: -f1)"
+default_at="$(grep -n '^FELIS_DB_BACKUP_TIME="\${FELIS_DB_BACKUP_TIME:-' "$BS" | cut -d: -f1)"
+xmx_at="$(grep -n '^FELIS_VELOCITY_XMX="\${FELIS_VELOCITY_XMX:-' "$BS" | cut -d: -f1)"
+if [ -n "$recall_at" ] && [ -n "$default_at" ] && [ -n "$xmx_at" ] && [ "$recall_at" -lt "$default_at" ] && [ "$recall_at" -lt "$xmx_at" ]; then
+  echo "PASS the saved settings are recalled before the defaults fill in"
+else
+  echo "FAIL recall_host_settings must run before the FELIS_DB_BACKUP_TIME and FELIS_VELOCITY_XMX defaults (lines <$recall_at> <$default_at> <$xmx_at>)"; fails=$((fails + 1))
+fi
+rm -rf "$rcdir"
+
 
 if [ "$fails" -eq 0 ]; then
   echo "ALL PASS"

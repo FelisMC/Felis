@@ -252,6 +252,27 @@ FELIS_WORLDS_HOST_PATH="${FELIS_WORLDS_HOST_PATH:-}"
 # k3s's local-path provisioner root. It appears with the first volume the provisioner
 # creates, which on a fresh install is after the reaper's PV has been applied.
 K3S_STORAGE_ROOT="/var/lib/rancher/k3s/storage"
+# Host settings changed in the panel (Platform settings → Host) are kept in
+# /etc/felis/host-settings.env, which node-control writes. A run takes them as its
+# defaults, so a re-run or an update keeps what the Owner chose; a variable set for the
+# run still wins. Only the variables the panel owns are read from it.
+HOST_SETTINGS_FILE="/etc/felis/host-settings.env"
+recall_host_settings() {
+  [ -r "$HOST_SETTINGS_FILE" ] || return 0
+  local key value
+  while IFS="=" read -r key value; do
+    case "$key" in
+      FELIS_DB_BACKUP_TIME|FELIS_DB_BACKUP_KEEP|FELIS_VELOCITY_XMX) ;;
+      *) continue ;;
+    esac
+    [ -z "${!key+x}" ] || continue
+    value="${value#\'}"
+    value="${value%\'}"
+    printf -v "$key" "%s" "$value"
+  done < "$HOST_SETTINGS_FILE"
+}
+recall_host_settings
+
 # Control-plane database backups (felis db backup): a daily timer bundles pg_dump with the
 # /etc/felis state a rebuild needs, and every upgrade that has migrations to apply snapshots
 # the database first (felis migrate up). The directory sits outside /var/lib/rancher on
@@ -6107,6 +6128,7 @@ start_setup_console() {
 #     prompt (or FELIS_INSTALL_MODE=nano).
 # ---------------------------------------------------------------------------
 prompt_install_mode() {
+  if [ "$INSTALL_MODE" = reconfigure ]; then log "install mode: reconfigure ${FELIS_RECONFIGURE:-}"; return; fi
   if [ "$INSTALL_MODE" = worker ]; then log "install mode: worker";return; fi
   if [ "$INSTALL_MODE" = worker-upgrade ]; then log "install mode: worker update";return; fi
   if [ "$INSTALL_MODE" = controller-join ]; then log "install mode: controller join";return; fi
@@ -6884,6 +6906,35 @@ main_worker_upgrade() {
   ok "worker $WORKER_NAME updated to the controller's felis build"
 }
 
+# main_reconfigure rewrites, on an installed host, what the panel changed through node-control
+# (FELIS_INSTALL_MODE=reconfigure, FELIS_RECONFIGURE=target,...), from the same functions a
+# full run uses:
+#   db-backup  the database backup timer (FELIS_DB_BACKUP_TIME, FELIS_DB_BACKUP_KEEP)
+#   velocity   the proxy's unit (FELIS_VELOCITY_XMX); it restarts only when the unit changed
+#   offsite    offsite.env from FELIS_OFFSITE_* and the [offsite] already written, and the
+#              hourly copy timer (removed when [offsite] names no bucket)
+# The settings the panel saved come in through recall_host_settings.
+main_reconfigure() {
+  [ -e "$BOOTSTRAP_DONE" ] || die "reconfigure changes an installed host, and this one has no full install"
+  export KUBECONFIG="$K3S_KUBECONFIG"
+  if [ -z "${FELIS_DISTRIBUTED+x}" ] && [ -f "$K3S_CONFIG_DROPIN" ] && grep -q 'flannel-backend: "wireguard-native"' "$K3S_CONFIG_DROPIN"; then DISTRIBUTED=1; fi
+  recall_distributed_settings
+  recall_ha_settings
+  local target
+  local -a targets=()
+  IFS="," read -ra targets <<<"${FELIS_RECONFIGURE:-}"
+  [ "${#targets[@]}" -gt 0 ] || die "FELIS_RECONFIGURE names nothing to reconfigure"
+  for target in "${targets[@]}"; do
+    case "$target" in
+      db-backup) install_db_backup_timer ;;
+      velocity) install_velocity_service ;;
+      offsite) configure_offsite; install_offsite_timer ;;
+      *) die "FELIS_RECONFIGURE: unknown target '${target}' (db-backup, velocity or offsite)" ;;
+    esac
+  done
+  ok "reconfigured: ${FELIS_RECONFIGURE}"
+}
+
 main() {
   acquire_run_lock
   ensure_k3s_on_path
@@ -6895,6 +6946,7 @@ main() {
     main_nano
     return
   fi
+  if [ "$INSTALL_MODE" = reconfigure ]; then main_reconfigure; return; fi
   if [ "$INSTALL_MODE" = worker ]; then main_worker; return; fi
   if [ "$INSTALL_MODE" = worker-upgrade ]; then main_worker_upgrade; return; fi
   if [ "$INSTALL_MODE" = controller-join ]; then main_controller_join; return; fi
