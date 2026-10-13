@@ -428,7 +428,6 @@
   "node_control_stage_wait_ready": "等待节点就绪",
   "node_control_stage_approval": "执行节点验收",
   "node_control_stage_complete": "操作完成",
-  "node_control_reload": "刷新节点任务",
   "node_control_state_unknown": "状态未确认",
   "node_control_started": "开始时间：{{time}}",
   "node_control_timeout": "操作超时上限为 45 分钟",

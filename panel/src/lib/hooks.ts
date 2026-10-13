@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from "react";
 import { loadConfig, type RuntimeConfig } from "./config";
 
 /** useConfig resolves the runtime config (apiBase + rootDomain) once on mount.
@@ -146,4 +146,54 @@ export function usePolling(reload: () => void, ms: number | null): void {
       document.removeEventListener("visibilitychange", tick);
     };
   }, [reload, ms]);
+}
+
+/** A page whose header reload button covers every card on it: the button bumps
+ *  `signal`, each card rereads its own data, and the button waits while any card
+ *  holds unsaved changes, so a reload never overwrites a draft. */
+export interface RefreshScope {
+  signal: number;
+  report: (card: string, dirty: boolean) => void;
+}
+
+export const RefreshContext = createContext<RefreshScope | null>(null);
+
+/** usePageRefresh is the page's side: the scope to provide, the trigger for the
+ *  header button, and whether any card holds unsaved changes. */
+export function usePageRefresh(): { scope: RefreshScope; refresh: () => void; dirty: boolean } {
+  const [signal, setSignal] = useState(0);
+  const [dirtyCards, setDirtyCards] = useState<ReadonlySet<string>>(() => new Set());
+  const report = useCallback((card: string, dirty: boolean) => {
+    setDirtyCards((cards) => {
+      if (cards.has(card) === dirty) return cards;
+      const next = new Set(cards);
+      if (dirty) next.add(card);
+      else next.delete(card);
+      return next;
+    });
+  }, []);
+  const scope = useMemo(() => ({ signal, report }), [signal, report]);
+  const refresh = useCallback(() => setSignal((n) => n + 1), []);
+  return { scope, refresh, dirty: dirtyCards.size > 0 };
+}
+
+/** useRefreshSignal is a card's side: it reruns `reload` on each page refresh
+ *  and tells the page while the card holds unsaved changes. Outside a page
+ *  scope it does nothing. */
+export function useRefreshSignal(reload: () => void, dirty = false): void {
+  const scope = useContext(RefreshContext);
+  const card = useId();
+  const report = scope?.report;
+  useEffect(() => {
+    if (!report) return;
+    report(card, dirty);
+    return () => report(card, false);
+  }, [report, card, dirty]);
+  const signal = scope?.signal;
+  const seen = useRef(signal);
+  useEffect(() => {
+    if (signal === undefined || signal === seen.current) return;
+    seen.current = signal;
+    reload();
+  }, [signal, reload]);
 }

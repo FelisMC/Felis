@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { DistributedNodes, MigrationDialog } from "./DistributedNodes";
+import { RefreshContext, usePageRefresh } from "@/lib/hooks";
 
 const calls = vi.hoisted(() => ({ nodes: vi.fn(), migration: vi.fn(), retryMigration: vi.fn(), migrateServer: vi.fn(), abortMigration: vi.fn() }));
 vi.mock("@/lib/api", async (importActual) => {
@@ -98,13 +99,18 @@ describe("execution node overview", () => {
     expect((await row("stray")).textContent).not.toContain("Update needed");
   });
 
-  it("shows a failed read and reloads without interpreting failure as an empty cluster", async () => {
+  it("shows a failed read and reloads with the page without interpreting failure as an empty cluster", async () => {
     calls.nodes.mockRejectedValueOnce({ status: 503, code: "distributed_unavailable" });
     calls.nodes.mockResolvedValueOnce([]);
-    render(<DistributedNodes />);
+    function Page() {
+      const cards = usePageRefresh();
+      return <RefreshContext.Provider value={cards.scope}><button type="button" onClick={cards.refresh}>Reload</button><DistributedNodes /></RefreshContext.Provider>;
+    }
+    render(<Page />);
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Distributed deployment is not configured. Configure the controller and worker nodes using the deployment runbook first.");
     expect(screen.queryByText(/No execution nodes were found/)).toBeNull();
-    await userEvent.click(screen.getByRole("button", { name: "Reload nodes" }));
+    expect(screen.getAllByRole("button").map((button) => button.textContent)).toEqual(["Reload"]);
+    await userEvent.click(screen.getByRole("button", { name: "Reload" }));
     expect(await screen.findByText(/No execution nodes were found/)).toBeTruthy();
     expect(screen.queryByRole("alert")).toBeNull();
   });

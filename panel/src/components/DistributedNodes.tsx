@@ -1,10 +1,10 @@
-import { RefreshCw, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { api, humanizeError } from "@/lib/api";
-import { useAsync, useConfig, usePolling } from "@/lib/hooks";
+import { useAsync, useConfig, usePolling, useRefreshSignal } from "@/lib/hooks";
 import type { ExecutionNode } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { InlineError } from "@/components/MessageLine";
@@ -22,6 +22,7 @@ export function DistributedNodes() {
   const { isOwner } = useTier();
   const nodes = useAsync(api.nodes, [], { coalesce: true });
   usePolling(nodes.reload, 10_000);
+  useRefreshSignal(nodes.reload);
   const cfg = useConfig();
   const controller = nodes.data?.find((n) => n.role === "controller");
   const controllers = nodes.data?.filter((n) => n.role === "controller").map((n) => n.name) ?? [];
@@ -37,7 +38,7 @@ export function DistributedNodes() {
   }
   return (
     <Card>
-      <CardHeader className="flex-row flex-wrap items-center justify-between gap-3"><CardTitle>{t("nodes")}</CardTitle><Button variant="outline" size="sm" disabled={nodes.loading} onClick={nodes.reload}><RefreshCw />{t("nodes_reload")}</Button></CardHeader>
+      <CardHeader><CardTitle>{t("nodes")}</CardTitle></CardHeader>
       <CardContent className="space-y-3">
       {nodes.loading && <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />{t("nodes_loading")}</p>}
       {!nodes.loading && !nodes.error && nodes.data?.length === 0 && <p className="text-sm text-muted-foreground">{t("nodes_empty")}</p>}

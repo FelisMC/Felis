@@ -1,20 +1,21 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, beforeAll, afterEach } from "vitest";
-import { act, render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import type { FleetServer, MyServerView } from "@/lib/types";
 import { ServersPage } from "./ServersPage";
 
 const tier = vi.hoisted(() => ({ isAdmin: true, identity: { email: "admin@example.test" } }));
-const calls = vi.hoisted(() => ({ fleet: vi.fn(), myServers: vi.fn() }));
+const calls = vi.hoisted(() => ({ fleet: vi.fn(), myServers: vi.fn(), nodes: vi.fn() }));
+const runtime = vi.hoisted(() => ({ distributed: false }));
 
 vi.mock("@/lib/tier", () => ({ useTier: () => tier }));
 vi.mock("@/lib/config", async (importActual) => {
   const actual = await importActual<typeof import("@/lib/config")>();
   return {
     ...actual,
-    loadConfig: () => Promise.resolve({ apiBase: "/api/v1", rootDomain: "example.test", gamePort: 25570 }),
+    loadConfig: () => Promise.resolve({ apiBase: "/api/v1", rootDomain: "example.test", gamePort: 25570, distributed: runtime.distributed }),
   };
 });
 vi.mock("@/lib/api", async (importActual) => {
@@ -78,6 +79,8 @@ async function sortBy(user: ReturnType<typeof userEvent.setup>, option: string) 
 
 beforeEach(() => {
   tier.isAdmin = true;
+  runtime.distributed = false;
+  calls.nodes.mockReset();
   calls.fleet.mockReset();
   calls.myServers.mockReset();
 });
@@ -464,5 +467,18 @@ describe("ServersPage refresh button", () => {
     await act(async () => finish([row("survival", {})]));
     expect(button.disabled).toBe(false);
     expect(spinning()).toBe(false);
+  });
+});
+
+describe("ServersPage refresh", () => {
+  it("rereads the execution nodes with the fleet from the one refresh button", async () => {
+    runtime.distributed = true;
+    calls.fleet.mockResolvedValue([]);
+    calls.nodes.mockResolvedValue([{ name: "ctl-a", role: "controller", ready: true, approved: true, architecture: "amd64", addresses: ["192.0.2.10"] }]);
+    const user = renderPage();
+    expect(await screen.findByText("ctl-a")).toBeTruthy();
+    expect(calls.nodes).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole("button", { name: "Refresh now" }));
+    await waitFor(() => expect(calls.nodes).toHaveBeenCalledTimes(2));
   });
 });

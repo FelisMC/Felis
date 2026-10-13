@@ -307,7 +307,6 @@
   "node_controller": "主控节点",
   "node_worker": "Worker 节点",
   "node_unassigned": "未分配角色",
-  "nodes_reload": "重新读取",
   "node_fenced": "已隔离",
   "node_fenced_hint": "该节点已停止调度并撤销批准，不会再承载世界。Worker 恢复上线后，在“节点操作”中重新批准即可再次使用；主控恢复上线后，可在此处恢复使用。",
   "node_unfence": "恢复使用",

@@ -10,7 +10,7 @@ import { Switch } from "@/components/ui/switch";
 import { MessageLine } from "@/components/MessageLine";
 import { isReauthCancelled, useReauth } from "@/components/ReauthDialog";
 import { api, humanizeError } from "@/lib/api";
-import { useAsync, useUnsavedGuard } from "@/lib/hooks";
+import { useAsync, useRefreshSignal, useUnsavedGuard } from "@/lib/hooks";
 import type { FailoverPolicySettings } from "@/lib/types";
 
 interface Draft {
@@ -51,6 +51,7 @@ export function FailoverPolicyCard() {
   }, [query.data]);
   const dirty = saved !== null && draft !== null && JSON.stringify(draft) !== JSON.stringify(draftOf(saved));
   useUnsavedGuard(dirty);
+  useRefreshSignal(query.reload, dirty);
   const valid = !!draft && validDraft(draft);
 
   function set<K extends keyof Draft>(key: K, value: Draft[K]) {

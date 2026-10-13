@@ -108,7 +108,7 @@ test("Owner executes node management and receives stage, failure logs and retry"
   expect(submitted).toMatchObject({ action: "enable", externalIP: "192.0.2.10", confirmMaintenance: true });
   await expect(page.getByText(t("admin:node_control_stage_database_backup"), { exact: true })).toBeVisible();
   task = { ...task, state: "failed", error: "Database backup failed", log: "[felis] pg_dump failed: connection refused" };
-  await page.getByRole("button", { name: t("admin:node_control_reload"), exact: true }).click();
+  await page.getByRole("button", { name: t("admin:platform_reload"), exact: true }).click();
   await expect(page.getByText("Database backup failed", { exact: true })).toBeVisible();
   await expect(page.getByLabel(t("admin:node_control_log"))).toContainText("pg_dump failed: connection refused");
   await page.getByRole("button", { name: t("admin:node_control_retry"), exact: true }).click();

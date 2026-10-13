@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { MessageLine } from "@/components/MessageLine";
 import { isReauthCancelled, useReauth } from "@/components/ReauthDialog";
 import { api, humanizeError } from "@/lib/api";
-import { useAsync, usePolling } from "@/lib/hooks";
+import { useAsync, usePolling, useRefreshSignal } from "@/lib/hooks";
 import type { NodeControlRequest, NodeControlTask } from "@/lib/types";
 
 // Each operation states its own maintenance impact; joining and approving workers share one.
@@ -44,6 +44,8 @@ export function NodeControlPanel({ distributed, controllerHA = false }: { distri
   useEffect(() => { if (distributed !== null) { setAction(distributed ? "join" : "enable"); setConfirmed(false); } }, [distributed, controllerHA]);
   useEffect(() => { if (!id && tasks.data?.tasks[0]) setId(tasks.data.tasks[0].id); }, [id, tasks.data]);
   usePolling(() => { tasks.reload(); if (id) progress.reload(); }, running || progress.error || tasks.error ? 3000 : 10000);
+  useRefreshSignal(tasks.reload);
+  useRefreshSignal(progress.reload);
   // Enabling and joining fix a node's address; approving and updating act on an enrolled one.
   // Enabling distributed mode or controller high availability acts on this controller and
   // names no other node.
@@ -68,7 +70,7 @@ export function NodeControlPanel({ distributed, controllerHA = false }: { distri
   const showForm = distributed === true || distributed === false && enabling;
   const valid = confirmed && (!needsNode || !!name.trim() && !!ssh.trim()) && (!needsIP || !!ip.trim());
   return <Card>
-    <CardHeader className="flex-row flex-wrap items-center justify-between gap-3"><CardTitle>{t("node_control_title")}</CardTitle><Button variant="outline" size="sm" disabled={tasks.loading} onClick={() => { tasks.reload(); progress.reload(); }}><RefreshCw />{t("node_control_reload")}</Button></CardHeader>
+    <CardHeader><CardTitle>{t("node_control_title")}</CardTitle></CardHeader>
     <CardContent className="space-y-5">
       <p className="text-sm leading-relaxed text-muted-foreground">{t("node_control_description")}</p>
       {tasks.loading && !tasks.data && <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />{t("node_control_loading")}</p>}

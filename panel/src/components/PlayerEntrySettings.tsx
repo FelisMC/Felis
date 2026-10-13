@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowRight, DoorOpen, Globe, Loader2, LogIn, RefreshCw, Route, Save, Server, ShieldCheck } from "lucide-react";
+import { ArrowRight, DoorOpen, Globe, Loader2, LogIn, Route, Save, Server, ShieldCheck } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { MessageLine } from "@/components/MessageLine";
 import { isReauthCancelled, useReauth } from "@/components/ReauthDialog";
 import { api, humanizeError } from "@/lib/api";
-import { useAsync, useUnsavedGuard } from "@/lib/hooks";
+import { useAsync, useRefreshSignal, useUnsavedGuard } from "@/lib/hooks";
 import type { EntryPolicySettings } from "@/lib/types";
 
 const modes = [{ value: "lobby", icon: DoorOpen }, { value: "direct", icon: Server }, { value: "domain", icon: Globe }] as const;
@@ -28,6 +28,8 @@ export function PlayerEntrySettings() {
   const [message, setMessage] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const dirty = saved !== null && JSON.stringify(draft) !== JSON.stringify(saved);
   useUnsavedGuard(dirty);
+  useRefreshSignal(query.reload, dirty);
+  useRefreshSignal(fleet.reload);
   useEffect(() => {
     if (query.data) { setSaved(query.data); setDraft(query.data); }
   }, [query.data]);
@@ -60,7 +62,7 @@ export function PlayerEntrySettings() {
     } finally { setSaving(false); }
   }
   return <Card>
-    <CardHeader className="flex-row flex-wrap items-center justify-between gap-3"><CardTitle className="flex items-center gap-2"><Route className="h-4 w-4 text-primary" aria-hidden="true" />{t("entry_title")}</CardTitle><Button variant="outline" size="sm" disabled={dirty || saving || query.loading} onClick={() => { query.reload(); fleet.reload(); }}><RefreshCw />{t("platform_reload")}</Button></CardHeader>
+    <CardHeader><CardTitle className="flex items-center gap-2"><Route className="h-4 w-4 text-primary" aria-hidden="true" />{t("entry_title")}</CardTitle></CardHeader>
     <CardContent className="space-y-6" aria-busy={query.loading}>
       <p className="text-sm text-muted-foreground">{t("entry_description")}</p>
       {query.loading && <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />{t("platform_loading")}</p>}

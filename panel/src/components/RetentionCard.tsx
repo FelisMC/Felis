@@ -10,7 +10,7 @@ import { InlineConfirm } from "@/components/InlineConfirm";
 import { MessageLine } from "@/components/MessageLine";
 import { isReauthCancelled, useReauth } from "@/components/ReauthDialog";
 import { api, humanizeError } from "@/lib/api";
-import { useAsync, useUnsavedGuard } from "@/lib/hooks";
+import { useAsync, useRefreshSignal, useUnsavedGuard } from "@/lib/hooks";
 import type { ArchivePolicy, ArchivePolicySettings } from "@/lib/types";
 
 type Key = keyof ArchivePolicy;
@@ -75,6 +75,7 @@ export function RetentionCard() {
   }, [query.data]);
   const dirty = saved !== null && draft !== null && JSON.stringify(draft) !== JSON.stringify(draftOf(saved));
   useUnsavedGuard(dirty);
+  useRefreshSignal(query.reload, dirty);
   const invalid = draft ? FIELDS.filter((f) => !fieldValid(f.key, draft[f.key])).map((f) => f.key) : [];
 
   async function run(kind: "save" | "clear") {

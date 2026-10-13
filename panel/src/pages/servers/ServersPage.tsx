@@ -40,7 +40,7 @@ import { StatCard } from "@/components/StatCard";
 import { CopyAddress } from "@/components/CopyAddress";
 import { PageHeader } from "@/components/PageHeader";
 import { api, humanizeError } from "@/lib/api";
-import { useAsync, useConfig, usePolling } from "@/lib/hooks";
+import { RefreshContext, useAsync, useConfig, usePageRefresh, usePolling } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
 import { joinAddress, type RuntimeConfig } from "@/lib/config";
 import { matchScore } from "@/lib/fuzzy";
@@ -155,9 +155,11 @@ export function ServersPage() {
   // each tick read as the page stalling.
   const [refreshing, setRefreshing] = useState(false);
   if (refreshing && !loading) setRefreshing(false);
+  const cards = usePageRefresh();
   const refresh = () => {
     setRefreshing(true);
     reload();
+    cards.refresh();
   };
 
   const servers = useMemo<UnifiedServer[]>(() => {
@@ -279,7 +281,7 @@ export function ServersPage() {
         className="mb-6"
       />
 
-      {isAdmin && cfg?.distributed && <DistributedNodes />}
+      {isAdmin && cfg?.distributed && <RefreshContext.Provider value={cards.scope}><DistributedNodes /></RefreshContext.Provider>}
 
       {showInitialLoading ? (
         <Loading />

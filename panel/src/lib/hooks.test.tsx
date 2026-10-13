@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { act, renderHook } from "@testing-library/react";
-import { useAsync, usePolling, type AsyncOptions } from "./hooks";
+import { act, render, renderHook } from "@testing-library/react";
+import { useState } from "react";
+import { RefreshContext, useAsync, usePageRefresh, usePolling, useRefreshSignal, type AsyncOptions } from "./hooks";
 
 // A request the test settles by hand, one per call, in call order.
 function requests() {
@@ -179,5 +180,58 @@ describe("polling slow or unavailable backends", () => {
       expect(hook.result.current).toMatchObject({ data: "Running", error: null, loading: false });
       expect(hook.result.current.updatedAt).toBeGreaterThan(checked!);
     } finally { hook.unmount(); vi.useRealTimers(); }
+  });
+});
+
+describe("page refresh", () => {
+  // A page with one header reload and two cards, the second one removable.
+  function mountPage() {
+    const reloads = { first: vi.fn(), second: vi.fn() };
+    const view: { refresh?: () => void; dirty?: boolean; setFirstDirty?: (dirty: boolean) => void; setSecondDirty?: (dirty: boolean) => void; dropSecond?: () => void } = {};
+    function Card({ reload, name }: { reload: () => void; name: "first" | "second" }) {
+      const [dirty, setDirty] = useState(false);
+      if (name === "first") view.setFirstDirty = setDirty;
+      else view.setSecondDirty = setDirty;
+      useRefreshSignal(reload, dirty);
+      return null;
+    }
+    function Page() {
+      const cards = usePageRefresh();
+      const [second, setSecond] = useState(true);
+      view.refresh = cards.refresh;
+      view.dirty = cards.dirty;
+      view.dropSecond = () => setSecond(false);
+      return <RefreshContext.Provider value={cards.scope}><Card name="first" reload={reloads.first} />{second && <Card name="second" reload={reloads.second} />}</RefreshContext.Provider>;
+    }
+    render(<Page />);
+    return { reloads, view };
+  }
+
+  it("reloads every card on each page refresh and none on mount", () => {
+    const { reloads, view } = mountPage();
+    expect(reloads.first).not.toHaveBeenCalled();
+    expect(reloads.second).not.toHaveBeenCalled();
+    act(() => view.refresh!());
+    act(() => view.refresh!());
+    expect(reloads.first).toHaveBeenCalledTimes(2);
+    expect(reloads.second).toHaveBeenCalledTimes(2);
+  });
+
+  it("is dirty while any card is, and forgets a card that leaves", () => {
+    const { view } = mountPage();
+    expect(view.dirty).toBe(false);
+    act(() => { view.setFirstDirty!(true); view.setSecondDirty!(true); });
+    expect(view.dirty).toBe(true);
+    act(() => view.setFirstDirty!(false));
+    expect(view.dirty).toBe(true);
+    act(() => view.dropSecond!());
+    expect(view.dirty).toBe(false);
+  });
+
+  it("does nothing for a card outside a page", () => {
+    const reload = vi.fn();
+    const { rerender } = renderHook(({ dirty }) => useRefreshSignal(reload, dirty), { initialProps: { dirty: false } });
+    rerender({ dirty: true });
+    expect(reload).not.toHaveBeenCalled();
   });
 });

@@ -48,7 +48,7 @@ describe("platform policy", () => {
     await userEvent.click(screen.getByRole("button", { name: "Save and apply" }));
     await screen.findByRole("alert");
     expect(limit().value).toBe("2");
-    expect(screen.getAllByRole("button", { name: "Reload" })[0]).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: "Reload" })).toHaveProperty("disabled", true);
     await userEvent.click(screen.getByRole("button", { name: "Save and apply" }));
     await screen.findByText("Saved. The new policy is active without a restart.");
     expect(calls.setWakePolicy).toHaveBeenLastCalledWith({ maxRunningServers: 2, wakeCooldownSeconds: 30, revision: "initial" });
@@ -56,6 +56,26 @@ describe("platform policy", () => {
     expect(screen.getByRole("button", { name: "Save and apply" })).toHaveProperty("disabled", true);
     await userEvent.click(screen.getByRole("button", { name: "Discard changes" }));
     expect(limit().value).toBe("2");
+  });
+});
+
+describe("page reload", () => {
+  it("rereads every card from the header button and waits while a card holds unsaved changes", async () => {
+    runtime.distributed = true;
+    page();
+    await waitFor(() => expect(limit().disabled).toBe(false));
+    const lobby = screen.getByRole("radio", { name: /^Lobby/ });
+    await waitFor(() => expect(lobby).toHaveProperty("disabled", false));
+    const reload = screen.getByRole("button", { name: "Reload" });
+    const reads = [calls.getWakePolicy, calls.getEntryPolicy, calls.fleet, calls.getMailSettings, calls.getArchivePolicy, calls.getHeartbeat, calls.getFailoverPolicy, calls.nodes, calls.nodeTasks];
+    await waitFor(() => { for (const read of reads) expect(read).toHaveBeenCalled(); });
+    const before = reads.map((read) => read.mock.calls.length);
+    await userEvent.click(reload);
+    await waitFor(() => { reads.forEach((read, i) => expect(read.mock.calls.length).toBeGreaterThan(before[i])); });
+    await userEvent.click(lobby);
+    expect(reload).toHaveProperty("disabled", true);
+    await userEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+    expect(reload).toHaveProperty("disabled", false);
   });
 });
 

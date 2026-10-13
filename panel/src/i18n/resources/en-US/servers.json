@@ -308,7 +308,6 @@
   "node_controller": "Controller",
   "node_worker": "Worker",
   "node_unassigned": "Unassigned role",
-  "nodes_reload": "Reload nodes",
   "node_fenced": "Fenced",
   "node_fenced_hint": "This node no longer receives work and its approval is withdrawn, so it holds no worlds. Once a worker is back online, approve it again under Node operations; once a controller is back online, return it to service here.",
   "node_unfence": "Return to service",

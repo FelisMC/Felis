@@ -10,7 +10,7 @@ import { InlineConfirm } from "@/components/InlineConfirm";
 import { MessageLine } from "@/components/MessageLine";
 import { isReauthCancelled, useReauth } from "@/components/ReauthDialog";
 import { api, humanizeError } from "@/lib/api";
-import { useAsync, useUnsavedGuard } from "@/lib/hooks";
+import { useAsync, useRefreshSignal, useUnsavedGuard } from "@/lib/hooks";
 import type { HeartbeatSettings } from "@/lib/types";
 
 /** looksLikeURL mirrors the server's check: an http(s) URL with a host and no spaces. */
@@ -41,6 +41,7 @@ export function HeartbeatCard() {
   }, [query.data]);
   const typed = url.trim();
   useUnsavedGuard(typed !== "");
+  useRefreshSignal(query.reload);
   const valid = looksLikeURL(typed);
 
   async function run(kind: "save" | "clear") {

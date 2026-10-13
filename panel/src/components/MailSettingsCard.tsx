@@ -12,7 +12,7 @@ import { InlineConfirm } from "@/components/InlineConfirm";
 import { MessageLine } from "@/components/MessageLine";
 import { isReauthCancelled, useReauth } from "@/components/ReauthDialog";
 import { api, humanizeError } from "@/lib/api";
-import { useAsync, useUnsavedGuard } from "@/lib/hooks";
+import { useAsync, useRefreshSignal, useUnsavedGuard } from "@/lib/hooks";
 import type { MailSettings, MailSettingsRequest } from "@/lib/types";
 
 const PORTS = [587, 465, 25, 2525] as const;
@@ -61,6 +61,7 @@ export function MailSettingsCard() {
   }, [query.data]);
   const dirty = saved !== null && draft !== null && JSON.stringify(draft) !== JSON.stringify(draftOf(saved));
   useUnsavedGuard(dirty);
+  useRefreshSignal(query.reload, dirty);
 
   const cap = Number(draft?.maxPerHour);
   const valid = !!draft && draft.host.trim() !== "" && /^[^\s@]+@[^\s@]+$/.test(draft.from.trim()) && /^\d+$/.test(draft.maxPerHour) && cap <= 100000;

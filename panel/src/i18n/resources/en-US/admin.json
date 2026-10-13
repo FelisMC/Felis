@@ -432,7 +432,6 @@
   "node_control_stage_wait_ready": "Waiting for node readiness",
   "node_control_stage_approval": "Running node admission checks",
   "node_control_stage_complete": "Operation completed",
-  "node_control_reload": "Refresh node tasks",
   "node_control_state_unknown": "State unconfirmed",
   "node_control_started": "Started: {{time}}",
   "node_control_timeout": "Operation timeout: 45 minutes",

@@ -18,7 +18,7 @@ import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/componen
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api, humanizeError } from "@/lib/api";
-import { useAsync, useConfig, useUnsavedGuard } from "@/lib/hooks";
+import { RefreshContext, useAsync, useConfig, usePageRefresh, useUnsavedGuard } from "@/lib/hooks";
 import type { WakePolicySettings } from "@/lib/types";
 
 export function PlatformSettingsPage() {
@@ -26,6 +26,7 @@ export function PlatformSettingsPage() {
   const config = useConfig();
   const query = useAsync(api.getWakePolicy, []);
   const reauth = useReauth();
+  const cards = usePageRefresh();
   const [saved, setSaved] = useState<WakePolicySettings | null>(null);
   const [limit, setLimit] = useState("");
   const [cooldown, setCooldown] = useState("");
@@ -55,8 +56,8 @@ export function PlatformSettingsPage() {
       if (!isReauthCancelled(error)) setMessage({ kind: "error", text: humanizeError(error) });
     } finally { setSaving(false); }
   }
-  return <div className="space-y-6">
-    <PageHeader icon={Settings} title={t("platform_title")} subtitle={t("platform_subtitle")} actions={<Button variant="outline" size="sm" disabled={dirty || busy} onClick={query.reload}><RefreshCw />{t("platform_reload")}</Button>} />
+  return <RefreshContext.Provider value={cards.scope}><div className="space-y-6">
+    <PageHeader icon={Settings} title={t("platform_title")} subtitle={t("platform_subtitle")} actions={<Button variant="outline" size="sm" disabled={dirty || cards.dirty || busy} onClick={() => { query.reload(); cards.refresh(); }}><RefreshCw />{t("platform_reload")}</Button>} />
     <PlayerEntrySettings />
     <Card><CardHeader><CardTitle>{t("platform_wake_title")}</CardTitle></CardHeader><CardContent className="space-y-6">
       {query.loading && <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />{t("platform_loading")}</p>}
@@ -96,5 +97,5 @@ export function PlatformSettingsPage() {
     {config?.distributed && !config.fallback && <DistributedNodes />}
     {config?.distributed && !config.fallback && <FailoverPolicyCard />}
     {reauth.dialog}
-  </div>;
+  </div></RefreshContext.Provider>;
 }
