@@ -814,5 +814,10 @@
   "node_control_vip": "Floating address (optional)",
   "node_control_vip_interface": "Network interface",
   "node_control_vrid": "VRRP router ID",
-  "node_control_vip_hint": "An unused IPv4 address that follows the active controller, so players and the panel keep one address after a failover. The installer chooses the interface and router ID when they are left empty."
+  "node_control_vip_hint": "An unused IPv4 address that follows the active controller, so players and the panel keep one address after a failover. The installer chooses the interface and router ID when they are left empty.",
+  "health_title": "Platform status",
+  "health_db_newest": "Database backed up {{time}}",
+  "health_disk_free": "{{free}} free on {{path}}",
+  "health_open": "Maintenance & Backups",
+  "health_offsite": "Off-site copy: {{state}}"
 }

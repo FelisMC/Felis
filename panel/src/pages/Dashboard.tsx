@@ -28,6 +28,7 @@ import { FleetGrid } from "@/components/FleetGrid";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync, useConfig, usePolling, type AsyncState } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
+import { PlatformHealthBanner } from "@/components/PlatformHealthBanner";
 import { lazyWithReload } from "@/lib/chunk";
 import { webglAvailable } from "@/lib/webgl";
 import type { Phase, MyServerView, WhitelistImage } from "@/lib/types";
@@ -45,7 +46,7 @@ const SERVERS_POLL_MS = 10_000;
 
 export function Dashboard() {
   const cfg = useConfig();
-  const { isAdmin } = useTier();
+  const { isAdmin, isOwner } = useTier();
   const servers = useAsync(() => api.myServers(), []);
   usePolling(servers.reload, SERVERS_POLL_MS);
   const link = useAsync(() => api.linkStatus(), []);
@@ -80,6 +81,7 @@ export function Dashboard() {
   return (
     <>
       <PageHeader icon={LayoutDashboard} title={t("title")} subtitle={t("subtitle")} />
+      {isOwner && <PlatformHealthBanner />}
 
       {servers.loading && !servers.data ? (
         <Loading />

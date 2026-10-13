@@ -807,5 +807,10 @@
   "node_control_vip": "浮动地址（可选）",
   "node_control_vip_interface": "网卡",
   "node_control_vrid": "VRRP 路由 ID",
-  "node_control_vip_hint": "一个未占用的 IPv4 地址，随活动主控转移，故障切换后玩家与面板仍使用同一地址。网卡和路由 ID 留空时由安装脚本确定。"
+  "node_control_vip_hint": "一个未占用的 IPv4 地址，随活动主控转移，故障切换后玩家与面板仍使用同一地址。网卡和路由 ID 留空时由安装脚本确定。",
+  "health_title": "平台状态",
+  "health_db_newest": "数据库备份于{{time}}",
+  "health_disk_free": "{{path}} 剩余 {{free}}",
+  "health_open": "维护与备份",
+  "health_offsite": "异地副本：{{state}}"
 }
