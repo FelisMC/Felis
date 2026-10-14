@@ -1,5 +1,5 @@
 // Compile-time parity between the hand-written wire types (types.ts) and the
-// schemas in docs/openapi.yaml, via the generated openapi.gen.ts (`npm run
+// schemas in api/openapi.yaml, via the generated openapi.gen.ts (`npm run
 // gen:api`; CI fails when the generated file is stale). The Go side is held to
 // the same schemas by internal/api/openapi_parity_test.go, so a field that
 // changes in one place and not the others breaks a build instead of rendering

@@ -198,7 +198,7 @@ func (a *API) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 	}
 	// decodeJSON enforces only DisallowUnknownFields, which rejects a MISSPELLED
 	// field but not an omitted one — so presence is checked here, exactly as the
-	// required ?path= is checked above and as docs/openapi.yaml already declares.
+	// required ?path= is checked above and as api/openapi.yaml already declares.
 	if body.Content == nil {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
 			"the content field is required"))

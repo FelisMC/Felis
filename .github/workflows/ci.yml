@@ -211,10 +211,10 @@ jobs:
       - run: npm run lint
         working-directory: panel
 
-      # openapi.gen.ts is generated from docs/openapi.yaml and checked in, so the
+      # openapi.gen.ts is generated from api/openapi.yaml and checked in, so the
       # compile-time parity in src/lib/types.parity.ts needs no generator in the build;
       # a schema edit that was not regenerated fails here.
-      - name: openapi.gen.ts matches docs/openapi.yaml
+      - name: openapi.gen.ts matches api/openapi.yaml
         working-directory: panel
         run: |
           npm run gen:api

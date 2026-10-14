@@ -14,7 +14,7 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// TestOpenAPISchemasMatchWireStructs keeps docs/openapi.yaml honest about the
+// TestOpenAPISchemasMatchWireStructs keeps api/openapi.yaml honest about the
 // response bodies. Each named schema is compared with the Go struct the handler
 // actually encodes: the property set must equal the struct's JSON field set, and
 // `required` must list exactly the fields that are always on the wire (no
@@ -22,7 +22,7 @@ import (
 // time (panel/src/lib/types.parity.ts), so a field added here without the docs
 // fails in Go, and one added to the docs without the panel fails in tsc.
 func TestOpenAPISchemasMatchWireStructs(t *testing.T) {
-	raw, err := os.ReadFile("../../docs/openapi.yaml")
+	raw, err := os.ReadFile("../../api/openapi.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}

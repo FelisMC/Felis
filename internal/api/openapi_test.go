@@ -10,7 +10,7 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// This is the §28 #7 OpenAPI parity gate. docs/openapi.yaml is checked against
+// This is the §28 #7 OpenAPI parity gate. api/openapi.yaml is checked against
 // the routes the handlers are actually built from — the same internalAPIRoutes /
 // externalAPIRoutes tables in api.go — in BOTH directions and including each
 // route's Zero-Trust tier. So three things cannot silently drift:
@@ -31,7 +31,7 @@ var oasKnownMethods = map[string]bool{
 	"delete": true, "head": true, "options": true, "trace": true,
 }
 
-// oasDoc is the slice of docs/openapi.yaml this test reads. Body schemas and the
+// oasDoc is the slice of api/openapi.yaml this test reads. Body schemas and the
 // rest of the document are intentionally not modelled — only the surface the
 // handlers must agree with.
 type oasDoc struct {
@@ -65,12 +65,12 @@ func TestOpenAPIMatchesServedRoutes(t *testing.T) {
 	// 1. Exact {method, path} set parity, both directions.
 	for key := range served {
 		if _, ok := documented[key]; !ok {
-			t.Errorf("route SERVED but not documented in docs/openapi.yaml: %s", key)
+			t.Errorf("route SERVED but not documented in api/openapi.yaml: %s", key)
 		}
 	}
 	for key := range documented {
 		if _, ok := served[key]; !ok {
-			t.Errorf("route DOCUMENTED in docs/openapi.yaml but not served: %s", key)
+			t.Errorf("route DOCUMENTED in api/openapi.yaml but not served: %s", key)
 		}
 	}
 
@@ -147,12 +147,12 @@ func oasServedFacets(t *testing.T) map[string]oasFacet {
 	return out
 }
 
-// oasDocumentedFacets parses docs/openapi.yaml into the same shape. An operation
+// oasDocumentedFacets parses api/openapi.yaml into the same shape. An operation
 // missing x-felis-face or x-felis-tier is a failure, not a skip: a new route
 // cannot be documented without classifying its face and tier.
 func oasDocumentedFacets(t *testing.T) map[string]oasFacet {
 	t.Helper()
-	path := filepath.Join("..", "..", "docs", "openapi.yaml")
+	path := filepath.Join("..", "..", "api", "openapi.yaml")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)

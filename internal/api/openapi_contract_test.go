@@ -20,7 +20,7 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// The route-table parity tests (openapi_test.go) prove docs/openapi.yaml names the
+// The route-table parity tests (openapi_test.go) prove api/openapi.yaml names the
 // right {method, path, face, tier, setup}; the struct parity test proves the named
 // schemas match their Go structs. Neither sees what a handler actually answers. This
 // file does: every request a handler test sends through do() is kept, and once the
@@ -93,7 +93,7 @@ type contractRoute struct {
 	literals int
 }
 
-// checkContract returns one line per exchange that disagrees with docs/openapi.yaml.
+// checkContract returns one line per exchange that disagrees with api/openapi.yaml.
 func checkContract(path string, calls []contractCall) ([]string, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -471,7 +471,7 @@ func containsJSON(list []any, v any) bool {
 }
 
 // The checker is itself held to known drifts: each synthetic exchange below either
-// disagrees with docs/openapi.yaml in exactly the way named, or agrees with it.
+// disagrees with api/openapi.yaml in exactly the way named, or agrees with it.
 func TestContractCheckerCatchesDrift(t *testing.T) {
 	jsonCT := "application/json"
 	errBody := func(code, msg string) []byte {
@@ -506,7 +506,7 @@ func TestContractCheckerCatchesDrift(t *testing.T) {
 		{method: "POST", path: "/api/v1/servers", reqBody: []byte(`{"name":"x1","subdomain":"x1","display_name":"X"}`),
 			status: 201, respCT: jsonCT, respBody: []byte(`{"name":"x1","subdomain":"x1","desiredState":"Stopped"}`), at: "k"},
 	}
-	got, err := checkContract("../../docs/openapi.yaml", calls)
+	got, err := checkContract("../../api/openapi.yaml", calls)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -13,11 +13,11 @@ import (
 func TestMain(m *testing.M) {
 	mojangProfileAPI = "http://127.0.0.1:1/"
 	code := m.Run()
-	// Every exchange the handler tests made is then held to docs/openapi.yaml
+	// Every exchange the handler tests made is then held to api/openapi.yaml
 	// (openapi_contract_test.go).
 	if code == 0 {
 		contractCalls.Lock()
-		violations, err := checkContract("../../docs/openapi.yaml", contractCalls.list)
+		violations, err := checkContract("../../api/openapi.yaml", contractCalls.list)
 		contractCalls.Unlock()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "openapi contract:", err)
@@ -27,7 +27,7 @@ func TestMain(m *testing.M) {
 			fmt.Fprintln(os.Stderr, "openapi contract:", v)
 		}
 		if len(violations) > 0 {
-			fmt.Fprintf(os.Stderr, "FAIL: %d exchange(s) disagree with docs/openapi.yaml\n", len(violations))
+			fmt.Fprintf(os.Stderr, "FAIL: %d exchange(s) disagree with api/openapi.yaml\n", len(violations))
 			code = 1
 		}
 	}

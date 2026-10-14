@@ -46,7 +46,7 @@ plugins/*/bin/
 AGENTS.md
 
 # ---- Internal planning & design docs (excluded from the public remote per
-# maintainer; the machine-readable contract docs/openapi.yaml is intentionally
+# maintainer; the machine-readable contract api/openapi.yaml is intentionally
 # NOT ignored. Delete the lines below to publish these.) ----
 docs/Felis-Spec-V4.1.md
 panel/DESIGN.md
