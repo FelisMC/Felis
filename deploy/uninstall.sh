@@ -548,7 +548,7 @@ main() {
     ok "Felis is gone from this host"
   else
     ok "Felis is removed; the data stays in ${STATE_DIR} and ${DATA_DIR}, the ${DB_NAME} database in ${PG_DATA_DIR}"
-    log "reinstalling reuses it: see https://docs.felismc.com/en/operations/#reinstall-on-top-of-kept-data"
+    log "reinstalling reuses it: see https://docs.felismc.com/en/operations/uninstall#reinstall"
   fi
 }
 

@@ -162,7 +162,7 @@ refute "keep-data leaves the database alone" "DROP DATABASE" "$calls"
   || { echo "FAIL the k3s service drop-in is still there: $(ls -R "$root/h/units")"; fails=$((fails + 1)); }
 expect "the timers are disabled" "SYSTEMCTL disable --now felis-db-backup.timer" "$calls"
 expect "the velocity user is removed" "USERDEL felis-velocity" "$calls"
-expect "the run ends pointing at the reinstall steps" "Reinstall on top of kept data" "$out"
+expect "the run ends pointing at the reinstall steps" "https://docs.felismc.com/en/operations/uninstall#reinstall" "$out"
 [ -f "$root/h/data/postgres/18/docker/PG_VERSION" ] && echo "PASS the database's cluster stays for the reinstall" \
   || { echo "FAIL keep-data removed the database's cluster"; fails=$((fails + 1)); }
 stop_at="$(grep -n 'KUBE -n felis scale deployment felis-postgres --replicas=0' "$root/calls" | head -n 1 | cut -d: -f1)"
