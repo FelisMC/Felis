@@ -179,7 +179,7 @@ const (
 // context: long enough for the submitter to read the reason and an admin to look
 // again. ReapRejected then deletes the blob; the row stays as the record.
 // Approved contexts are kept, since they are what rebuilds the image after the
-// registry is lost (https://docs.felismc.com/en/operations/troubleshooting#_9-registry-push-pull-failures-spec-§15).
+// registry is lost (https://docs.felismc.com/en/operations/troubleshooting#registry-errors).
 const RejectedContextRetention = 7 * 24 * time.Hour
 
 // RoomChecker is implemented by a Blobs that writes to a filesystem it shares

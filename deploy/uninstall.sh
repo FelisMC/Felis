@@ -23,10 +23,10 @@
 # registry and upload volumes live under k3s's storage directory, which k3s's uninstaller
 # deletes, so they are moved to /var/lib/felis/retained/k3s-storage-<UTC stamp> first; with
 # --keep-k3s their PersistentVolumes are switched to Retain before the namespaces go.
-# https://docs.felismc.com/en/operations/ walks through reinstalling on top of what is left.
+# https://docs.felismc.com/en/operations/uninstall#reinstall walks through reinstalling on top of what is left.
 #
 # Either mode leaves packages alone (Docker, PostgreSQL, git and the rest), and the swap
-# file a low-memory host got: other software may use them. https://docs.felismc.com/en/operations/ lists the
+# file a low-memory host got: other software may use them. https://docs.felismc.com/en/operations/uninstall#remove-packages lists the
 # package commands for a bare host.
 set -Eeuo pipefail
 
@@ -406,7 +406,7 @@ remove_hba_block() { # file
 
 # check_database_purge runs before anything is removed. DROP ROLE refuses a role that
 # still owns a database or holds anything in one besides felis (the felis_pgint database
-# the contributing guide (https://docs.felismc.com/en/reference/contributing) has developers make for the PG contract tests, a grant made by hand),
+# the contributing guide (https://docs.felismc.com/en/reference/contributing#testing) has developers make for the PG contract tests, a grant made by hand),
 # and by the time purge_database runs the units and k3s are already gone. It lists what
 # holds the role instead, so the purge either runs to the end or not at all.
 check_database_purge() {
@@ -500,7 +500,7 @@ purge_state() {
   [ "$PURGE" = 1 ] || return 0
   # felis setup's tunnel credentials sit beside cloudflared's login (cert.pem, which stays:
   # it is the Cloudflare account's, not Felis's). The tunnel itself lives on in the account
-  # until it is deleted there (https://docs.felismc.com/en/operations/).
+  # until it is deleted there (https://docs.felismc.com/en/operations/uninstall#cloudflare-cleanup).
   local cred=""
   [ -r "$TUNNEL_CONFIG" ] \
     && cred="$(sed -n 's/^credentials-file: *"\{0,1\}\([^"]*\)"\{0,1\} *$/\1/p' "$TUNNEL_CONFIG" | head -n 1)"

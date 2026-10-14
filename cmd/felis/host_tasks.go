@@ -649,7 +649,7 @@ func (e nodeExecutor) hostSettings(ctx context.Context, p map[string]string, sta
 }
 
 // serverForwarding sets or drops the legacy forwarding label on a user server, the
-// switch https://docs.felismc.com/en/operations/ documents with kubectl. The proxy picks it up at its next
+// switch https://docs.felismc.com/en/guide/servers#forwarding-mode documents with kubectl. The proxy picks it up at its next
 // server-list refresh.
 func (e nodeExecutor) serverForwarding(ctx context.Context, server string, legacy bool, out io.Writer) error {
 	role, err := kubectlOutput(ctx, "-n", e.namespace, "get", "minecraftserver", server, "-o", "jsonpath={.metadata.labels.felis\\.lolicon\\.best/system-role}")

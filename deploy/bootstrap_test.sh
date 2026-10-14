@@ -1984,7 +1984,7 @@ esac
 
 # --- installer re-runs keep the operator's [registry] overrides --------------------------
 # §15's upgrade path is re-running the installer, but the build-lane mirrors and the
-# uploads backend live in [registry] as hand-written keys (https://docs.felismc.com/en/operations/troubleshooting#_8e-build-pods-never-start-executor-images-and-the-scan-dbs or
+# uploads backend live in [registry] as hand-written keys (https://docs.felismc.com/en/reference/configuration#felis-toml or
 # the storage wizard) that nothing in this script's inputs derives. A re-run must carry
 # them forward — without letting a stale url/build_namespace survive (installer-owned).
 
@@ -2532,7 +2532,7 @@ leftover="$(find "$tdir" -maxdepth 1 -name 'watchdog-heartbeat-url.*')"
   || { echo "FAIL temporary files left: $leftover"; fails=$((fails + 1)); }
 out="$(SCRIPT=summary_heartbeat run_watchdog_timer 0 "")"
 expect "without a heartbeat the summary says so loudly" "WARN: NO HEARTBEAT: nothing off this machine notices it going down or its watchdog stopping." "$out"
-expect "and says how to add one" "then save its ping URL in the panel (Platform settings → Monitoring heartbeat), or re-run with FELIS_WATCHDOG_HEARTBEAT_URL=<its ping URL> (https://docs.felismc.com/en/operations/troubleshooting#_14-health-alerts-and-metrics-for-diagnosis-spec-§23)." "$out"
+expect "and says how to add one" "then save its ping URL in the panel (Platform settings → Monitoring heartbeat), or re-run with FELIS_WATCHDOG_HEARTBEAT_URL=<its ping URL> (https://docs.felismc.com/en/operations/monitoring#heartbeat)." "$out"
 # A heartbeat saved in the panel wins over the host file, so the summary names it and warns
 # of nothing; felis panel-settings answers for the panel (stubbed here).
 printf '#!/bin/sh\n[ "$1" = panel-settings ] || exit 2\nprintf "relay=%%s\\nheartbeat=%%s\\n" "${STUB_RELAY:-no}" "${STUB_BEAT:-no}"\n' > "$tdir/panel-stub"
@@ -4210,7 +4210,7 @@ expect "an empty data directory starts" "STARTS" "$(run_major "$pmdir")"
 mkdir -p "$pmdir/17/docker"; echo 17 > "$pmdir/17/docker/PG_VERSION"
 out="$(run_major "$pmdir")"
 expect "an older major's cluster stops the install" "DIE: this release runs PostgreSQL 18, but $pmdir holds a PostgreSQL 17 cluster" "$out"
-expect "the refusal names the way forward" "https://docs.felismc.com/en/operations/#_4-upgrading-the-pieces-around-felis" "$out"
+expect "the refusal names the way forward" "https://docs.felismc.com/en/operations/upgrade#postgresql-major" "$out"
 mkdir -p "$pmdir/18/docker"; echo 18 > "$pmdir/18/docker/PG_VERSION"
 expect "the image's own major version starts beside an old one" "STARTS" "$(run_major "$pmdir")"
 rm -rf "$pmdir"

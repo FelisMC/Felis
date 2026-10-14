@@ -12,7 +12,7 @@ import (
 // MinFreeAfter is the share of the archive filesystem an on-demand backup must
 // leave free. The archive store sits on the node's disk beside the worlds and
 // the database; below about a tenth free the kubelet starts evicting pods
-// (https://docs.felismc.com/en/operations/troubleshooting#_13b-node-runs-out-of-disk-what-survives-and-how-to-recover), so a backup that would cross it is refused.
+// (https://docs.felismc.com/en/operations/storage#disk-full), so a backup that would cross it is refused.
 const MinFreeAfter = 0.10
 
 // ErrNoRoom is returned by CheckRoom when the archive would leave too little

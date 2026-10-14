@@ -21,7 +21,7 @@ type Tool struct {
 }
 
 // Tools lists every tool a build needs. Kaniko is archived upstream (June 2025)
-// and v1.24.0 is its final release; https://docs.felismc.com/en/operations/troubleshooting#_8e-build-pods-never-start-executor-images-and-the-scan-dbs covers moving to a
+// and v1.24.0 is its final release; https://docs.felismc.com/en/operations/troubleshooting#build-pods-not-starting covers moving to a
 // maintained fork.
 var Tools = []Tool{
 	{Name: "kaniko", Source: "gcr.io/kaniko-project/executor:v1.24.0@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698", Mirror: "mirror/kaniko-executor:v1.24.0"},

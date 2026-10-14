@@ -44,7 +44,7 @@ var (
 	ErrDisplaced = errors.New("offsite: another host took this bucket over")
 )
 
-const takeOverHint = "sudo felis offsite take-over -yes (https://docs.felismc.com/en/operations/troubleshooting#_16-control-plane-database-backups-and-disaster-recovery)"
+const takeOverHint = "sudo felis offsite take-over -yes (https://docs.felismc.com/en/operations/backup#take-over)"
 
 // Writer is the felis-writer record.
 type Writer struct {

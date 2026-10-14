@@ -62,7 +62,7 @@ func AddressFinding(want string, held []net.IP) *Finding {
 			want, current),
 		SummaryEN: fmt.Sprintf("this host no longer holds %s, the address the install was made on (it has: %s): the k3s node, the network policies and the panel certificate still point at it",
 			want, current),
-		Hint: "give the host its old address back (a DHCP reservation or a static address); https://docs.felismc.com/en/operations/troubleshooting#_13c-the-host-s-address-name-or-clock-changed",
+		Hint: "give the host its old address back (a DHCP reservation or a static address); https://docs.felismc.com/en/operations/troubleshooting#host-address-changed",
 	}
 }
 
@@ -92,7 +92,7 @@ func ClockFinding(status int32, ok bool) *Finding {
 		Key: "clock", Severity: Warning, For: clockFor,
 		Summary:   "系统时钟没有经 NTP 同步：登录验证码与会话的过期、异地备份上传（S3 拒收偏差超过 15 分钟的请求）和证书校验都依赖准确时间",
 		SummaryEN: "the system clock is not synchronized by NTP: sign-in code and session expiry, off-site uploads (S3 refuses requests more than 15 minutes off) and certificate checks all depend on it",
-		Hint:      "timedatectl; sudo timedatectl set-ntp true (https://docs.felismc.com/en/operations/troubleshooting#_13c-the-host-s-address-name-or-clock-changed)",
+		Hint:      "timedatectl; sudo timedatectl set-ntp true (https://docs.felismc.com/en/operations/troubleshooting#clock)",
 	}
 }
 
@@ -173,9 +173,9 @@ func CertFinding(dirs []string, now time.Time) *Finding {
 			file, soonest.Subject.CommonName, when, days)
 	}
 	if soonest.IsCA {
-		f.Hint = "a k3s CA certificate, which no restart renews: rotate it with `k3s certificate rotate-ca` (https://docs.felismc.com/en/operations/troubleshooting#_13d-k3s-certificates-expire-after-a-year)"
+		f.Hint = "a k3s CA certificate, which no restart renews: rotate it with `k3s certificate rotate-ca` (https://docs.felismc.com/en/operations/troubleshooting#k3s-certificates)"
 	} else {
-		f.Hint = "sudo systemctl restart k3s: k3s renews its certificates near expiry as it starts, and running game servers keep running; check with sudo k3s certificate check (https://docs.felismc.com/en/operations/troubleshooting#_13d-k3s-certificates-expire-after-a-year)"
+		f.Hint = "sudo systemctl restart k3s: k3s renews its certificates near expiry as it starts, and running game servers keep running; check with sudo k3s certificate check (https://docs.felismc.com/en/operations/troubleshooting#k3s-certificates)"
 	}
 	return f
 }

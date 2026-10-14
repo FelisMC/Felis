@@ -98,7 +98,7 @@ func (p postgresFeed) latest(ctx context.Context, current updates.Version) (post
 	if !mine.Supported {
 		rel.note = fmt.Sprintf("PostgreSQL %s reached end of life on %s and gets no more fixes", key, mine.EOLDate)
 		if newest != "" {
-			rel.note += fmt.Sprintf("; the current major is %s (a dump and restore, see https://docs.felismc.com/en/operations/#_4-upgrading-the-pieces-around-felis)", newest)
+			rel.note += fmt.Sprintf("; the current major is %s (a dump and restore, see https://docs.felismc.com/en/operations/upgrade#postgresql-major)", newest)
 		}
 	}
 	return rel, nil
