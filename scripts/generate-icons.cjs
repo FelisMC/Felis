@@ -6,7 +6,7 @@ const { execFileSync } = require("node:child_process");
 const sharp = require("sharp");
 
 const root = path.resolve(__dirname, "..");
-const assets = path.join(root, "docs/assets");
+const assets = path.join(root, "assets");
 const kit = path.join(assets, "icons");
 const web = path.join(root, "panel/public");
 const panelAssets = path.join(root, "panel/src/assets");

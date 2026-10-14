@@ -1,6 +1,6 @@
 <div align="center">
   <h1 align="center">
-    <img src="docs/assets/felis-logo.png" alt="Felis logo" width="270"><br>
+    <img src="assets/felis-logo.png" alt="Felis logo" width="270"><br>
     Felis
   </h1>
   <p align="center">
