@@ -25,15 +25,21 @@ All Felis documentation is published at [docs.felismc.com](https://docs.felismc.
 | 简体中文 | English |
 | --- | --- |
 | [认识 Felis](https://docs.felismc.com/) | [Introduction](https://docs.felismc.com/en/) |
-| [安装与部署](https://docs.felismc.com/guide/deployment) | [Installation and deployment](https://docs.felismc.com/en/guide/deployment) |
+| [环境要求](https://docs.felismc.com/guide/requirements) | [Requirements](https://docs.felismc.com/en/guide/requirements) |
+| [安装与部署](https://docs.felismc.com/guide/deployment) | [Installation](https://docs.felismc.com/en/guide/deployment) |
 | [管理服务器](https://docs.felismc.com/guide/servers) | [Managing servers](https://docs.felismc.com/en/guide/servers) |
-| [运维手册](https://docs.felismc.com/operations/) | [Operations guide](https://docs.felismc.com/en/operations/) |
+| [玩家接入](https://docs.felismc.com/guide/players) | [Player access](https://docs.felismc.com/en/guide/players) |
+| [平台管理](https://docs.felismc.com/guide/administration) | [Platform administration](https://docs.felismc.com/en/guide/administration) |
+| [运维概览](https://docs.felismc.com/operations/) | [Operations overview](https://docs.felismc.com/en/operations/) |
 | [备份与恢复](https://docs.felismc.com/operations/backup) | [Backup and restore](https://docs.felismc.com/en/operations/backup) |
+| [升级](https://docs.felismc.com/operations/upgrade) | [Upgrading](https://docs.felismc.com/en/operations/upgrade) |
 | [故障排查](https://docs.felismc.com/operations/troubleshooting) | [Troubleshooting](https://docs.felismc.com/en/operations/troubleshooting) |
-| [多机部署](https://docs.felismc.com/guide/distributed) | [Multi-node deployment](https://docs.felismc.com/en/guide/distributed) |
-| [从源码构建](https://docs.felismc.com/guide/building) | [Build from source](https://docs.felismc.com/en/guide/building) |
+| [多机部署与高可用](https://docs.felismc.com/guide/distributed) | [Multi-node and high availability](https://docs.felismc.com/en/guide/distributed) |
+| [命令行参考](https://docs.felismc.com/reference/cli) | [Command-line reference](https://docs.felismc.com/en/reference/cli) |
+| [配置参考](https://docs.felismc.com/reference/configuration) | [Configuration reference](https://docs.felismc.com/en/reference/configuration) |
+| [API 参考](https://docs.felismc.com/reference/api) | [API reference](https://docs.felismc.com/en/reference/api) |
+| [从源码构建](https://docs.felismc.com/guide/building) | [Building from source](https://docs.felismc.com/en/guide/building) |
 | [贡献指南](https://docs.felismc.com/reference/contributing) | [Contributing](https://docs.felismc.com/en/reference/contributing) |
-| [API 定义](https://docs.felismc.com/reference/api) | [API definition](https://docs.felismc.com/en/reference/api) |
 
 ## 开源协议 License
 
