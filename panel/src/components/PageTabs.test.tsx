@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { PageTabs } from "./PageTabs";
+import { MainScrollContext } from "./MainScroll";
 
 const sections = [
   { key: "status", label: "Status" },
@@ -48,6 +49,26 @@ describe("page tabs", () => {
     expect(document.activeElement).toBe(tab("Status"));
     fireEvent.keyDown(list, { key: "Enter" });
     expect(onChange.mock.calls.map(([key]) => key)).toEqual(["backups", "updates", "status", "updates", "status"]);
+  });
+
+  it("brings the content area back to its top once another section shows, and not before", async () => {
+    const main = { scrollTop: 640 } as unknown as HTMLElement;
+    function Held() {
+      const [value, setValue] = useState<Section>("status");
+      const [held, setHeld] = useState(true);
+      return <MainScrollContext.Provider value={main}>
+        <button type="button" onClick={() => setHeld(false)}>Discard</button>
+        <PageTabs label="Sections" idPrefix="demo" value={value} tabs={sections} onChange={(key) => { if (!held) setValue(key); }} />
+      </MainScrollContext.Provider>;
+    }
+    render(<Held />);
+    expect(main.scrollTop).toBe(640);
+    await userEvent.click(screen.getByRole("tab", { name: "Backups" }));
+    expect(main.scrollTop).toBe(640);
+    await userEvent.click(screen.getByRole("button", { name: "Discard" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Backups" }));
+    expect(screen.getByRole("tab", { name: "Backups" }).getAttribute("aria-selected")).toBe("true");
+    expect(main.scrollTop).toBe(0);
   });
 
   it("chooses a tab on click and leaves a click on the chosen one alone", async () => {

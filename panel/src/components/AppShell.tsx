@@ -17,6 +17,7 @@ import { Loading } from "@/components/States";
 import { ROLE_LABEL_KEY } from "@/components/RoleBadge";
 import { FelisLogo } from "@/components/FelisLogo";
 import { PageHeaderHostContext } from "@/components/PageHeader";
+import { MainScrollContext } from "@/components/MainScroll";
 
 function SectionGroup({
   section,
@@ -244,9 +245,15 @@ function MobileNav({ sections }: { sections: NavSection[] }) {
 
 export function AppShell() {
   const [headerHost, setHeaderHost] = useState<HTMLDivElement | null>(null);
+  const [main, setMain] = useState<HTMLElement | null>(null);
   const { isAdmin, isOwner } = useTier();
   const { pathname } = useLocation();
   const { t, i18n } = useTranslation("navigation");
+  // A new page starts at its top: the content area is one element for every page, so it
+  // would otherwise keep the scroll position the last page left it at.
+  useEffect(() => {
+    if (main) main.scrollTop = 0;
+  }, [main, pathname]);
   // Sections are derived purely from is_admin and is_owner: User-Side always,
   // Admin-Side only for admins, Owner-Side only for the platform owner. Both
   // flags are fail-closed (false while /me loads or on failure), so admin and
@@ -293,37 +300,39 @@ export function AppShell() {
         </div>
       </aside>
 
-      <PageHeaderHostContext.Provider value={headerHost}>
-        <div className="flex min-w-0 flex-1 flex-col h-full">
-          <ConnectionBanner />
-          <ConfigBanner />
-          <header className="flex h-14 shrink-0 items-center justify-between border-b border-border px-4 md:hidden">
-            <div className="flex items-center gap-2">
-              <MobileNav sections={sections} />
-              <FelisLogo />
-              <span className="font-semibold">{t("common:brand_name")}</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <LangToggle />
-              <ThemeToggle />
-            </div>
-          </header>
-          <div ref={setHeaderHost} className="shrink-0 border-b border-border bg-background p-4 empty:hidden md:p-6" />
-          <main className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pt-4 md:px-6 md:pt-6">
-            <div className="mx-auto flex min-h-0 w-full max-w-8xl flex-1 flex-col gap-6 after:h-6 after:shrink-0 after:content-['']">
-              {/* A crash on one page leaves the navigation usable; moving to
-                  another route clears it. Pages load as their own chunks, so the
-                  first visit to one shows a spinner here with the shell in place,
-                  and a chunk gone after a deploy lands in the boundary. */}
-              <ErrorBoundary resetKey={pathname}>
-                <Suspense fallback={<Loading />}>
-                  <Outlet />
-                </Suspense>
-              </ErrorBoundary>
-            </div>
-          </main>
-        </div>
-      </PageHeaderHostContext.Provider>
+      <MainScrollContext.Provider value={main}>
+        <PageHeaderHostContext.Provider value={headerHost}>
+          <div className="flex min-w-0 flex-1 flex-col h-full">
+            <ConnectionBanner />
+            <ConfigBanner />
+            <header className="flex h-14 shrink-0 items-center justify-between border-b border-border px-4 md:hidden">
+              <div className="flex items-center gap-2">
+                <MobileNav sections={sections} />
+                <FelisLogo />
+                <span className="font-semibold">{t("common:brand_name")}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <LangToggle />
+                <ThemeToggle />
+              </div>
+            </header>
+            <div ref={setHeaderHost} className="shrink-0 border-b border-border bg-background p-4 empty:hidden md:p-6" />
+            <main ref={setMain} className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pt-4 md:px-6 md:pt-6">
+              <div className="mx-auto flex min-h-0 w-full max-w-8xl flex-1 flex-col gap-6 after:h-6 after:shrink-0 after:content-['']">
+                {/* A crash on one page leaves the navigation usable; moving to
+                    another route clears it. Pages load as their own chunks, so the
+                    first visit to one shows a spinner here with the shell in place,
+                    and a chunk gone after a deploy lands in the boundary. */}
+                <ErrorBoundary resetKey={pathname}>
+                  <Suspense fallback={<Loading />}>
+                    <Outlet />
+                  </Suspense>
+                </ErrorBoundary>
+              </div>
+            </main>
+          </div>
+        </PageHeaderHostContext.Provider>
+      </MainScrollContext.Provider>
     </div>
   );
 }

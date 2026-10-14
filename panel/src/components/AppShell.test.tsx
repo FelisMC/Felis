@@ -59,6 +59,18 @@ describe("AppShell user card", () => {
     expect(screen.getByRole("main").contains(screen.getByRole("heading", { name: "Second page" }))).toBe(false);
     expect(screen.getByRole("main").textContent).toContain("Second content");
   });
+  // One element scrolls every page, so it would otherwise hold the last page's position.
+  it("opens each page at the top of the scrolling content", async () => {
+    render(<MemoryRouter><Routes><Route element={<AppShell />}>
+      <Route path="/" element={<Link to="/next">Next page</Link>} />
+      <Route path="/next" element={<p>Second content</p>} />
+    </Route></Routes></MemoryRouter>);
+    const writes: number[] = [];
+    Object.defineProperty(screen.getByRole("main"), "scrollTop", { configurable: true, get: () => 0, set: (top: number) => writes.push(top) });
+    await userEvent.click(screen.getByRole("link", { name: "Next page" }));
+    expect(screen.getByRole("main").textContent).toContain("Second content");
+    expect(writes).toEqual([0]);
+  });
   it.each([
     ["en-US", "owner", "Owner"],
     ["en-US", "user", "User"],

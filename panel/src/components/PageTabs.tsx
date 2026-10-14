@@ -1,6 +1,7 @@
 import { useEffect, useRef, type KeyboardEvent } from "react";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useScrollToTop } from "@/components/MainScroll";
 
 export interface PageTab<K extends string> {
   key: K;
@@ -22,9 +23,16 @@ export function PageTabs<K extends string>({ tabs, value, onChange, label, idPre
   idPrefix: string;
 }) {
   const list = useRef<HTMLDivElement>(null);
+  const toTop = useScrollToTop();
+  const shown = useRef(value);
   useEffect(() => {
     list.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
-  }, [value]);
+    // Another section starts at its top, once it is the one shown: a switch the page holds back
+    // (unsaved changes to confirm first) leaves the scroll position alone.
+    if (shown.current === value) return;
+    shown.current = value;
+    toTop();
+  }, [value, toTop]);
 
   function move(event: KeyboardEvent<HTMLDivElement>) {
     const current = tabs.findIndex((tab) => tab.key === value);

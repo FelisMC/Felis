@@ -84,3 +84,19 @@ test("a non-Owner reaches none of the host's routes", async ({ page, signIn }) =
     expect(res.status(), path).toBe(403);
   }
 });
+
+// The content area is one scroll container for every section, so another tab has to bring it
+// back to the top; without that it opens wherever the last one was scrolled to.
+test("another tab opens at its top", async ({ page, signIn }) => {
+  await signIn("owner");
+  await page.setViewportSize({ width: 1280, height: 700 });
+  await page.goto("/admin/platform?tab=notices");
+  await expect(page.getByRole("tab", { name: t("admin:platform_tab_notices") })).toHaveAttribute("aria-selected", "true");
+  const main = page.getByRole("main");
+  const scrolled = async () => main.evaluate((el) => el.scrollTop);
+  await main.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+  expect(await scrolled()).toBeGreaterThan(200);
+  await page.getByRole("tab", { name: t("admin:platform_tab_access") }).click();
+  await expect(page).toHaveURL(/tab=access/);
+  await expect.poll(scrolled).toBe(0);
+});
