@@ -175,7 +175,7 @@ func copyTerminalText(text string) error {
 // alertRoute is where this host's watchdog alerts go, as the summary shows it:
 // by mail through the relay (the panel's, else felis.toml's [smtp]) to the Owners'
 // verified addresses, and the
-// heartbeat that notices the host itself going down (docs/troubleshooting.md
+// heartbeat that notices the host itself going down (https://docs.felismc.com/en/operations/troubleshooting.html
 // §14). Setup runs mail-less by design, so a fresh install has neither; the
 // summary says so where the Owner can press e.
 type alertRoute struct {

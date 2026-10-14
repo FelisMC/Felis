@@ -45,10 +45,10 @@
 #                     identity through the handshake address instead of modern forwarding
 #                     (default: legacy18). A floor: any server whose MinecraftServer CR is
 #                     labelled felis.lolicon.best/forwarding=legacy joins it while the
-#                     proxy runs (docs/operations.md), so a new 1.8 backend needs a label,
+#                     proxy runs (https://docs.felismc.com/en/operations/), so a new 1.8 backend needs a label,
 #                     not a re-run. Changing the floor itself means re-running this script.
 #   FELIS_VELOCITY_XMX maximum heap of the Velocity proxy, as <n>M or <n>G (default: 1G;
-#                     at least 256M). docs/operations.md sizes it by player count.
+#                     at least 256M). https://docs.felismc.com/en/operations/ sizes it by player count.
 #   FELIS_VELOCITY_FORK_JAR path to a Felis-Legacy Velocity fork build to install as the
 #                     proxy instead of the stock download (default: unset, stock).
 #   FELIS_VELOCITY_FORK_JAR_SHA256 expected sha256 of that jar. REQUIRED whenever the jar
@@ -323,7 +323,7 @@ WORKER_PEERS="${FELIS_PEER_CIDRS:-}"
 # `felis node firewall` records the peer list it last installed here, so a rerun or
 # `felis update` on a distributed controller, which passes no FELIS_PEER_CIDRS, keeps it.
 NODE_PEERS_FILE="/etc/felis/node-peers"
-# Controller high availability (see main_controller_join and docs/distributed.md):
+# Controller high availability (see main_controller_join and https://docs.felismc.com/en/guide/distributed.html):
 # FELIS_CONTROLLER_HA=1 on a distributed controller moves k3s onto embedded etcd, installs
 # Longhorn (FELIS_LONGHORN_VERSION) and puts the control plane's volumes on it, so more
 # controllers can join and the control plane moves to another one when its node is lost. A
@@ -1300,7 +1300,7 @@ detect_node_ip() {
   local persisted
   persisted="$(persisted_root_domain)"
   if [ -n "${FELIS_ROOT_DOMAIN:-}" ] && [ -n "$persisted" ] && [ "$FELIS_ROOT_DOMAIN" != "$persisted" ]; then
-    die "FELIS_ROOT_DOMAIN (${FELIS_ROOT_DOMAIN}) differs from the installed ${persisted}. The installer keeps the installed domain; to move the install, rerun it without FELIS_ROOT_DOMAIN, then run: sudo felis domain set ${FELIS_ROOT_DOMAIN} (docs/operations.md, Changing the root domain)"
+    die "FELIS_ROOT_DOMAIN (${FELIS_ROOT_DOMAIN}) differs from the installed ${persisted}. The installer keeps the installed domain; to move the install, rerun it without FELIS_ROOT_DOMAIN, then run: sudo felis domain set ${FELIS_ROOT_DOMAIN} (https://docs.felismc.com/en/operations/#_6-changing-the-root-domain-vm-verified-go-tested-sh-tested)"
   fi
   FELIS_ROOT_DOMAIN="${FELIS_ROOT_DOMAIN:-${persisted:-${NODE_IP}.nip.io}}"
   if [ -n "$persisted" ] && [ "$FELIS_ROOT_DOMAIN" = "$persisted" ]; then
@@ -1319,7 +1319,7 @@ warn_dynamic_node_ip() {
       { split($4, a, "/"); if (a[1] == ip && / dynamic /) found = 1 }
       END { exit !found }'; then
     warn "${NODE_IP} is a DHCP lease, and the install is bound to this address. Give the host a"
-    warn "DHCP reservation or a static address before it changes (docs/operations.md §1)."
+    warn "DHCP reservation or a static address before it changes (https://docs.felismc.com/en/operations/#_1-supported-hosts)."
   fi
 }
 
@@ -1449,7 +1449,7 @@ host_builds_expected() {
 # preflight_disk checks each filesystem the install writes to against what it will
 # write there, in MiB: k3s's images and volumes, the database and its bundles under
 # /var/lib/felis (and a release's image bundles on their way in), the sources, toolchains
-# and proxy under /opt/felis, and Docker's image builds (operations.md §2 has the measured
+# and proxy under /opt/felis, and Docker's image builds (https://docs.felismc.com/en/operations/#_2-sizing has the measured
 # sizes). A directory that already holds something (a rerun, a reused k3s, Docker's cache
 # from an earlier install) needs only the room for what changes.
 preflight_disk() {
@@ -1712,7 +1712,7 @@ pkg_refresh_once() {
     # refresh stays -Syu, with a host PostgreSQL held back once it has a cluster: a new major
     # version cannot open the old data directory. That cluster is the database an earlier
     # release ran on, which migrate_host_postgres reads to move it into felis-postgres, and
-    # afterwards the copy a rollback of that move starts again (docs/operations.md §4).
+    # afterwards the copy a rollback of that move starts again (https://docs.felismc.com/en/operations/#_4-upgrading-the-pieces-around-felis).
     pacman)
       wait_for_pkg_locks
       if [ -f "$(postgres_data_dir)/PG_VERSION" ]; then
@@ -1764,7 +1764,7 @@ ensure_time_sync() {
     return 0
   fi
   if ! command -v timedatectl >/dev/null 2>&1; then
-    warn "timedatectl not found; make sure an NTP client keeps this host's clock (docs/operations.md §1)"
+    warn "timedatectl not found; make sure an NTP client keeps this host's clock (https://docs.felismc.com/en/operations/#_1-supported-hosts)"
     return 0
   fi
   if [ "$(timedatectl show -p NTP --value 2>/dev/null)" != yes ]; then
@@ -1774,7 +1774,7 @@ ensure_time_sync() {
       log "no NTP client to enable; installing chrony"
       pkg_install chrony
       if ! timedatectl set-ntp true; then
-        warn "could not turn NTP on; set up time synchronization by hand (docs/troubleshooting.md §13c)"
+        warn "could not turn NTP on; set up time synchronization by hand (https://docs.felismc.com/en/operations/troubleshooting.html#_13c-the-host-s-address-name-or-clock-changed)"
         return 0
       fi
     fi
@@ -1788,7 +1788,7 @@ ensure_time_sync() {
     fi
     sleep 2
   done
-  warn "the system clock is not synchronized yet; check 'timedatectl' (docs/troubleshooting.md §13c)"
+  warn "the system clock is not synchronized yet; check 'timedatectl' (https://docs.felismc.com/en/operations/troubleshooting.html#_13c-the-host-s-address-name-or-clock-changed)"
 }
 
 # ensure_persistent_journal keeps the system journal across reboots. Rocky's journald
@@ -2402,7 +2402,7 @@ k3s_upgrade_allowed() {
   IFS=. read -r cur_major cur_minor rest <<<"${current#v}"
   IFS=. read -r want_major want_minor rest <<<"${want#v}"
   case "${cur_major}${cur_minor}${want_major}${want_minor}" in
-    ""|*[!0-9]*) die "cannot compare the installed k3s '${current}' with ${want}; upgrade it by hand (docs/operations.md §4)" ;;
+    ""|*[!0-9]*) die "cannot compare the installed k3s '${current}' with ${want}; upgrade it by hand (https://docs.felismc.com/en/operations/#_4-upgrading-the-pieces-around-felis)" ;;
   esac
   if version_newer "$current" "$want"; then
     ok "k3s ${current} is newer than the pinned ${want}; left as it is"
@@ -2514,7 +2514,7 @@ import_platform_images() {
     if k3s_cmd crictl pull "$image" >/dev/null; then
       ok "${image} pulled"
     else
-      warn "could not pull ${image}: its Deployment starts only if the node can pull it from Docker Hub; on an air-gapped box import it by hand (docs/troubleshooting.md §8e)"
+      warn "could not pull ${image}: its Deployment starts only if the node can pull it from Docker Hub; on an air-gapped box import it by hand (https://docs.felismc.com/en/operations/troubleshooting.html#_8e-build-pods-never-start-executor-images-and-the-scan-dbs)"
     fi
   done
 }
@@ -2547,7 +2547,7 @@ pin_platform_images() {
     if k3s_cmd ctr images label "$ref" io.cri-containerd.pinned=pinned >/dev/null 2>&1; then
       ok "pinned ${ref} in containerd (exempt from kubelet image GC)"
     else
-      warn "could not pin ${ref} in containerd: if the kubelet's image GC collects it, its pod cannot restart until it is re-imported (docs/troubleshooting.md §8e)"
+      warn "could not pin ${ref} in containerd: if the kubelet's image GC collects it, its pod cannot restart until it is re-imported (https://docs.felismc.com/en/operations/troubleshooting.html#_8e-build-pods-never-start-executor-images-and-the-scan-dbs)"
     fi
   done
 }
@@ -2569,7 +2569,7 @@ pin_user_server_images() {
       --registry "$REGISTRY_URL" --endpoint "$REGISTRY_PUSH_HOST"; then
     ok "user servers pinned to the builds they run"
   else
-    warn "could not pin every user server listed above to its current build: each one still names a tag this run is about to point at a new build, so its next start may open its world with a newer Minecraft version. Pin it before starting it again: sudo felis pin-images (docs/troubleshooting.md §15b)"
+    warn "could not pin every user server listed above to its current build: each one still names a tag this run is about to point at a new build, so its next start may open its world with a newer Minecraft version. Pin it before starting it again: sudo felis pin-images (https://docs.felismc.com/en/operations/troubleshooting.html#_15b-game-images-pinned-builds-and-moving-a-world-to-a-newer-minecraft)"
   fi
 }
 
@@ -3036,7 +3036,7 @@ resolve_install_ref() {
     release)
       if [ -n "$FELIS_RELEASE" ]; then
         # A named release installs from its own assets, as the newest would: the way back
-        # to an earlier release (docs/troubleshooting.md §16). validate_settings checked
+        # to an earlier release (https://docs.felismc.com/en/operations/troubleshooting.html#_16-control-plane-database-backups-and-disaster-recovery). validate_settings checked
         # the tag's form; this checks it was published.
         load_release_json "$FELIS_RELEASE" || die "could not find the published Felis release ${FELIS_RELEASE}.
   Check the tag against the repository's releases page.$(fork_token_hint)"
@@ -4314,7 +4314,7 @@ check_postgres_major() {
   [ -z "$found" ] && return 0
   die "this release runs PostgreSQL ${want}, but ${PG_DATA_DIR} holds a PostgreSQL ${found} cluster.
   PostgreSQL ${want} would start an empty cluster beside it. A new major version is a dump
-  and restore (docs/operations.md §4): on the release you have now, take a bundle with
+  and restore (https://docs.felismc.com/en/operations/#_4-upgrading-the-pieces-around-felis): on the release you have now, take a bundle with
   sudo felis db backup -label pre-upgrade, then follow that section."
 }
 
@@ -4378,7 +4378,7 @@ deploy_postgres() {
     --postgres-image "$POSTGRES_IMAGE" $(postgres_ha_args) | kube apply -f -
   if ! kube -n "$CONTROL_NS" rollout status "deployment/${PG_DEPLOYMENT}" --timeout=600s; then
     diagnose_rollout "deployment/${PG_DEPLOYMENT}"
-    die "${PG_DEPLOYMENT} did not become ready (docs/troubleshooting.md §16)"
+    die "${PG_DEPLOYMENT} did not become ready (https://docs.felismc.com/en/operations/troubleshooting.html#_16-control-plane-database-backups-and-disaster-recovery)"
   fi
   ensure_postgres_role
   ok "${PG_DEPLOYMENT} ready: pods at ${PG_SERVICE_ADDR}, this host at 127.0.0.1:${PG_HOST_PORT}"
@@ -4487,7 +4487,7 @@ compare_pg_counts() {
 }
 
 # retire_host_postgres stops the host server the move emptied of meaning. It stays
-# installed with its data, for a rollback (docs/operations.md §4), unless it also serves
+# installed with its data, for a rollback (https://docs.felismc.com/en/operations/#_4-upgrading-the-pieces-around-felis), unless it also serves
 # databases that are not the platform's: then it keeps running, with the felis copy locked out.
 retire_host_postgres() {
   local others
@@ -4801,7 +4801,7 @@ persisted_archive_block() {
 # left behind — the build-lane executor mirrors, the resource caps, the uploads
 # backend and its [registry.s3] subtable — so §15's upgrade path (re-run the
 # installer) does not silently revert them. Nothing in this script's inputs
-# derives these: they are hand-written per docs/troubleshooting.md §8e or stamped
+# derives these: they are hand-written per https://docs.felismc.com/en/operations/troubleshooting.html#_8e-build-pods-never-start-executor-images-and-the-scan-dbs or stamped
 # by the storage wizard. url and build_namespace are NOT carried: this script
 # owns them (they must match REGISTRY_URL / BUILD_NS). Same first-readable-file
 # rule as persisted_smtp_block.
@@ -5088,7 +5088,7 @@ EOF
           warn "This host copies nothing into the bucket and, while that host keeps writing it,"
           warn "mails no watchdog alert: a rehearsal leaves that host and its owners alone. When"
           warn "this host replaces it for good, run sudo felis offsite take-over -yes, then"
-          warn "sudo systemctl start felis-offsite.service (docs/troubleshooting.md §16)."
+          warn "sudo systemctl start felis-offsite.service (https://docs.felismc.com/en/operations/troubleshooting.html#_16-control-plane-database-backups-and-disaster-recovery)."
           warn "================================================================================"
           ;;
         5)
@@ -5099,7 +5099,7 @@ EOF
           warn "This host copies nothing into the bucket any more, and its watchdog mails the"
           warn "owners about it. If that host is a rehearsal machine, take the bucket back:"
           warn "sudo felis offsite take-over -yes, then sudo systemctl start felis-offsite.service"
-          warn "(docs/troubleshooting.md §16)."
+          warn "(https://docs.felismc.com/en/operations/troubleshooting.html#_16-control-plane-database-backups-and-disaster-recovery)."
           warn "================================================================================"
           ;;
         *) warn "could not tell which host writes the [offsite] bucket (error above); the first copy started and says what it found: journalctl -u felis-offsite" ;;
@@ -5118,7 +5118,7 @@ EOF
       fi
       warn "Set FELIS_OFFSITE_KEY in ${OFFSITE_ENV} to the key the bucket was written with and run"
       warn "sudo systemctl start felis-offsite.service, or give [offsite] an empty bucket or prefix"
-      warn "and re-run the installer (docs/troubleshooting.md §16)."
+      warn "and re-run the installer (https://docs.felismc.com/en/operations/troubleshooting.html#_16-control-plane-database-backups-and-disaster-recovery)."
       warn "================================================================================"
       ;;
     *)
@@ -5132,7 +5132,7 @@ summary_offsite() {
   if [ "${OFFSITE_ENABLED:-0}" != 1 ]; then
     warn "NO OFF-SITE COPY: every world archive and database backup is on this machine only."
     warn "Losing its disk loses them all. Set FELIS_OFFSITE_BUCKET, FELIS_OFFSITE_ENDPOINT,"
-    warn "FELIS_OFFSITE_ACCESS_KEY and FELIS_OFFSITE_SECRET_KEY and re-run (docs/troubleshooting.md §16)."
+    warn "FELIS_OFFSITE_ACCESS_KEY and FELIS_OFFSITE_SECRET_KEY and re-run (https://docs.felismc.com/en/operations/troubleshooting.html#_16-control-plane-database-backups-and-disaster-recovery)."
     return 0
   fi
   if [ "${OFFSITE_DISPLACED:-0}" = 1 ]; then
@@ -5361,7 +5361,7 @@ summary_heartbeat() {
   fi
   warn "NO HEARTBEAT: nothing off this machine notices it going down or its watchdog stopping."
   warn "Create a check at a monitoring service (Healthchecks.io or alike; period 2 min, grace 10 min),"
-  warn "then save its ping URL in the panel (Platform settings → Monitoring heartbeat), or re-run with FELIS_WATCHDOG_HEARTBEAT_URL=<its ping URL> (docs/troubleshooting.md §14)."
+  warn "then save its ping URL in the panel (Platform settings → Monitoring heartbeat), or re-run with FELIS_WATCHDOG_HEARTBEAT_URL=<its ping URL> (https://docs.felismc.com/en/operations/troubleshooting.html#_14-health-alerts-and-metrics-for-diagnosis-spec-§23)."
 }
 
 # The build lane's tools: kaniko and trivy (pinned by digest in internal/build/tools.go)
@@ -5524,7 +5524,7 @@ configure_offsite() {
   FELIS_OFFSITE_ACCESS_KEY="${env_ak:-$FELIS_OFFSITE_ACCESS_KEY}"
   FELIS_OFFSITE_SECRET_KEY="${env_sk:-$FELIS_OFFSITE_SECRET_KEY}"
   if [ -n "$env_key" ] && [ -n "$file_key" ] && [ "$env_key" != "$file_key" ]; then
-    die "FELIS_OFFSITE_KEY differs from the key in ${OFFSITE_ENV}, which sealed what this host copied to the bucket. Unset FELIS_OFFSITE_KEY to keep it; when felis offsite check-key says the bucket's objects are sealed with another key, set FELIS_OFFSITE_KEY in ${OFFSITE_ENV} by hand instead (docs/troubleshooting.md §16)"
+    die "FELIS_OFFSITE_KEY differs from the key in ${OFFSITE_ENV}, which sealed what this host copied to the bucket. Unset FELIS_OFFSITE_KEY to keep it; when felis offsite check-key says the bucket's objects are sealed with another key, set FELIS_OFFSITE_KEY in ${OFFSITE_ENV} by hand instead (https://docs.felismc.com/en/operations/troubleshooting.html#_16-control-plane-database-backups-and-disaster-recovery)"
   fi
   FELIS_OFFSITE_KEY="${env_key:-$file_key}"
   if [ -z "$FELIS_OFFSITE_ACCESS_KEY" ] || [ -z "$FELIS_OFFSITE_SECRET_KEY" ]; then
@@ -5535,7 +5535,7 @@ configure_offsite() {
     OFFSITE_KEY_NEW=1
   fi
   write_file_atomic "$OFFSITE_ENV" 0600 <<EOF
-# The off-site copy's secrets (felis offsite, docs/troubleshooting.md §16). Keep a copy of
+# The off-site copy's secrets (felis offsite, https://docs.felismc.com/en/operations/troubleshooting.html#_16-control-plane-database-backups-and-disaster-recovery). Keep a copy of
 # FELIS_OFFSITE_KEY somewhere other than this machine: without it the copies in the
 # bucket cannot be read, and this file goes with the machine.
 FELIS_OFFSITE_ACCESS_KEY='${FELIS_OFFSITE_ACCESS_KEY}'
@@ -6074,7 +6074,7 @@ summary() {
     log "The control plane moved from ${PREVIOUS_FELIS_IMAGE} to ${FELIS_IMAGE}"
     log "(also recorded in ${STATE_DIR}/previous-felis-image). To go back to it:"
     log "    kubectl -n ${CONTROL_NS} rollout undo deployment/felis-api deployment/felis-operator"
-    log "The database stays migrated; docs/troubleshooting.md §16 has the full rollback."
+    log "The database stays migrated; https://docs.felismc.com/en/operations/troubleshooting.html#_16-control-plane-database-backups-and-disaster-recovery has the full rollback."
   fi
   echo
   summary_offsite
@@ -6107,7 +6107,7 @@ setup_terminal() { [ -t 1 ] && (: <"$SETUP_TTY") 2>/dev/null; }
 # summary_next is the installer's last word: what the operator does now. It comes after the
 # warnings, so it is what the terminal is left showing. Until a staff account exists that is
 # `felis setup`, which creates the Owner; on a terminal the installer starts it itself
-# (start_setup_console), as the README's install line promises. With an Owner in place it
+# (start_setup_console), as the documented install line promises. With an Owner in place it
 # is the address to sign in at. Under felis setup the console carries on by itself.
 summary_next() {
   local owner rule="================================================================================"
@@ -6502,7 +6502,7 @@ ensure_k3s_on_path() {
 # Worker is a daemon-only branch. It neither generates Felis service credentials nor applies a controller bundle.
 # --- controller high availability -------------------------------------------------------
 #
-# FELIS_CONTROLLER_HA=1 on a distributed controller (docs/distributed.md): k3s moves onto
+# FELIS_CONTROLLER_HA=1 on a distributed controller (https://docs.felismc.com/en/guide/distributed.html): k3s moves onto
 # embedded etcd (cluster-init), Longhorn holds the control plane's volumes with a copy on
 # each controller, and the control plane runs on whichever controller is up. Further
 # controllers join through node-control's join-controller task, which runs this script in

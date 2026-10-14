@@ -5,7 +5,7 @@
 #   bash deploy/e2e_release.sh find                # tag, binary, sums into $GITHUB_OUTPUT
 #   bash deploy/e2e_release.sh check-own LOG       # the release's own installer (upgrade)
 #   bash deploy/e2e_release.sh check-readme LOG    # this commit's installer on its default
-#                                                  # channel, the README's command (readme)
+#                                                  # channel, the documented command (readme)
 #
 # The checks read TAG, BINARY and SUMS from the environment, as find wrote them. The
 # runners are x86_64, so the binary asset is felis-linux-amd64. deploy/e2e_release_test.sh
@@ -93,10 +93,10 @@ check_readme() {
     lacks_re "Docker was left alone" "docker already installed|installing docker|docker running" "$log"
   elif [ "${BINARY:-}" = yes ]; then
     has "the source build says why" "release ${TAG} publishes no SHA256SUMS, so ${ASSET} cannot be verified; building ${TAG} from source on this host instead" "$log"
-    echo "::warning::release ${TAG} publishes no SHA256SUMS, so the README's install builds ${TAG} from source on the host, Docker included; a release cut by release.yml puts it on the assets"
+    echo "::warning::release ${TAG} publishes no SHA256SUMS, so the documented install builds ${TAG} from source on the host, Docker included; a release cut by release.yml puts it on the assets"
   else
     has "the source build says why" "release ${TAG} publishes no usable ${ASSET}; building ${TAG} from source on this host instead" "$log"
-    echo "::warning::release ${TAG} publishes no ${ASSET}, so the README's install builds ${TAG} from source on the host, Docker included; a release cut by release.yml puts it on the assets"
+    echo "::warning::release ${TAG} publishes no ${ASSET}, so the documented install builds ${TAG} from source on the host, Docker included; a release cut by release.yml puts it on the assets"
   fi
 }
 

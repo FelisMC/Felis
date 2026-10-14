@@ -1411,7 +1411,7 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
             { name: "k3s", current: "v1.36.2+k3s1", state: "current", selector: "k3s" },
             { name: "cloudflared", current: "2026.6.1", latest: "2026.9.0", state: "available", selector: "cloudflared" },
             { name: "jre", current: "21.0.8+9", state: "unknown", selector: "jre", error: "adoptium: GET https://api.adoptium.net/v3/assets/latest/21/hotspot: context deadline exceeded" },
-            { name: "postgresql", current: "13.22", state: "current", selector: "postgres", note: "PostgreSQL 13 reached its end of life on 2025-11-13; plan a major upgrade (docs/operations.md §4)" },
+            { name: "postgresql", current: "13.22", state: "current", selector: "postgres", note: "PostgreSQL 13 reached its end of life on 2025-11-13; plan a major upgrade (https://docs.felismc.com/en/operations/#_4-upgrading-the-pieces-around-felis)" },
           ],
         },
         stale: false,

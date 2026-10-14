@@ -7,7 +7,7 @@
 #              ufw enabled, then the same assets again (a rerun must converge without
 #              restarting what did not change, importing or uploading an image again, or
 #              touching Docker)
-#   readme     the README's one-line install as a new host runs it today: this commit's
+#   readme     the documented one-line install as a new host runs it today: this commit's
 #              installer on its default channel, which installs the newest published
 #              release's binary, images and plugin from that release's assets; skipped until
 #              a release exists
@@ -165,7 +165,7 @@ jobs:
           path: '*.log'
           if-no-files-found: ignore
 
-  # The README's command on a fresh host: this commit's installer, as main serves it, on its
+  # The documented install command on a fresh host: this commit's installer, as main serves it, on its
   # default channel with nothing pinned. It resolves the newest release and installs that
   # release's binary, images and plugin from its assets, each checked against its
   # SHA256SUMS. The workflow's token is the only thing added: it lifts GitHub's limit of 60 API
@@ -186,7 +186,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: bash deploy/e2e_release.sh find
 
-      - name: Install as the README does
+      - name: Install as the documentation does
         if: steps.release.outputs.tag != ''
         env:
           TOKEN: ${{ github.token }}

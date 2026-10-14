@@ -4,7 +4,7 @@
 #     bash plugins/test-mods.sh
 #
 # Nothing installs these mods — each module's jar is its own deliverable — so
-# nothing ever compiled them either: no CI job, no install path, and the README's
+# nothing ever compiled them either: no CI job, no install path, and the documentation's
 # one-liners failed on a fresh clone because the vendored gradlew scripts were
 # committed without their exec bit (fixed in the batch that added this script).
 # This is the gate that keeps "the mod still compiles" true.

@@ -28,7 +28,7 @@ import (
 )
 
 // felis restore-host rebuilds an install from its off-site copy on a host where Felis
-// was just installed: the whole of docs/troubleshooting.md "Rebuild on a new host" up to
+// was just installed: the whole of https://docs.felismc.com/en/operations/troubleshooting.html#rebuild-on-a-new-host-the-old-one-is-gone up to
 // taking the bucket over, in one command. The installer runs it on its own with
 // FELIS_RESTORE_FROM_OFFSITE=1.
 //
@@ -449,7 +449,7 @@ func printRestoreSummary(w io.Writer, st *restoreState, rootDomain string, tookO
 			fmt.Fprintf(w, "    %s: not restored yet\n", name)
 		}
 	}
-	fmt.Fprintln(w, "  Left to do by hand (docs/troubleshooting.md, Rebuild on a new host):")
+	fmt.Fprintln(w, "  Left to do by hand (https://docs.felismc.com/en/operations/troubleshooting.html#rebuild-on-a-new-host-the-old-one-is-gone):")
 	fmt.Fprintf(w, "    - the install answers at %s; point your own domain here and run `felis domain set`, or keep this address (passkeys registered on the old address stop working; users sign in with an email code and add a new one)\n", rootDomain)
 	fmt.Fprintln(w, "    - bring back the Cloudflare tunnel with `felis setup` if the old host served the panel through one")
 	if !tookOver {

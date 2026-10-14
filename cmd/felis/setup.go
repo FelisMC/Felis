@@ -48,7 +48,7 @@ func cmdSetup(args []string, stdout, stderr io.Writer) int {
 	// channel means re-running the installer, which is what this points the operator at.
 	if *dev {
 		fmt.Fprintln(stderr, "felis setup: --dev is not supported here; setup re-images this host from the felis binary it is already running.")
-		fmt.Fprintln(stderr, "To install a different channel, re-run the bootstrap installer with FELIS_VERSION_BOOTSTRAP=dev (see CONTRIBUTING.md).")
+		fmt.Fprintln(stderr, "To install a different channel, re-run the bootstrap installer with FELIS_VERSION_BOOTSTRAP=dev (see https://docs.felismc.com/en/reference/contributing.html).")
 		return 2
 	}
 	configFlagSet := false

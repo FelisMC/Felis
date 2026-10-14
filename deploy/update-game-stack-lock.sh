@@ -73,4 +73,4 @@ if [ "$check" = 1 ]; then
   die "upstream has newer builds than game-stack.lock"
 fi
 cp "$tmp" "$LOCK"
-ok "game-stack.lock updated; move plugins/paper's paper-api pin to the new Paper build and regenerate the plugins' gradle/verification-metadata.xml (plugins/README.md \"Dependency verification\"), run go test . and the bootstrap tests, then commit"
+ok "game-stack.lock updated; move plugins/paper's paper-api pin to the new Paper build and regenerate the plugins' gradle/verification-metadata.xml (https://docs.felismc.com/en/reference/plugins.html#dependency-verification), run go test . and the bootstrap tests, then commit"

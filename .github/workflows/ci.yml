@@ -260,7 +260,7 @@ jobs:
       # The three loader mods (Minecraft 1.20.1 / 1.20.4, Java-17 lines) compile
       # through their vendored Gradle wrappers, which fetch their own Gradle. Until
       # this job nothing ever built them: no install path touches them, and their
-      # gradlew scripts were committed without the exec bit, so the README's
+      # gradlew scripts were committed without the exec bit, so the documented
       # one-liners failed on a fresh clone.
       - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:

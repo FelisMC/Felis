@@ -1984,7 +1984,7 @@ esac
 
 # --- installer re-runs keep the operator's [registry] overrides --------------------------
 # §15's upgrade path is re-running the installer, but the build-lane mirrors and the
-# uploads backend live in [registry] as hand-written keys (docs/troubleshooting.md §8e or
+# uploads backend live in [registry] as hand-written keys (https://docs.felismc.com/en/operations/troubleshooting.html#_8e-build-pods-never-start-executor-images-and-the-scan-dbs or
 # the storage wizard) that nothing in this script's inputs derives. A re-run must carry
 # them forward — without letting a stale url/build_namespace survive (installer-owned).
 
@@ -2532,7 +2532,7 @@ leftover="$(find "$tdir" -maxdepth 1 -name 'watchdog-heartbeat-url.*')"
   || { echo "FAIL temporary files left: $leftover"; fails=$((fails + 1)); }
 out="$(SCRIPT=summary_heartbeat run_watchdog_timer 0 "")"
 expect "without a heartbeat the summary says so loudly" "WARN: NO HEARTBEAT: nothing off this machine notices it going down or its watchdog stopping." "$out"
-expect "and says how to add one" "then save its ping URL in the panel (Platform settings → Monitoring heartbeat), or re-run with FELIS_WATCHDOG_HEARTBEAT_URL=<its ping URL> (docs/troubleshooting.md §14)." "$out"
+expect "and says how to add one" "then save its ping URL in the panel (Platform settings → Monitoring heartbeat), or re-run with FELIS_WATCHDOG_HEARTBEAT_URL=<its ping URL> (https://docs.felismc.com/en/operations/troubleshooting.html#_14-health-alerts-and-metrics-for-diagnosis-spec-§23)." "$out"
 # A heartbeat saved in the panel wins over the host file, so the summary names it and warns
 # of nothing; felis panel-settings answers for the panel (stubbed here).
 printf '#!/bin/sh\n[ "$1" = panel-settings ] || exit 2\nprintf "relay=%%s\\nheartbeat=%%s\\n" "${STUB_RELAY:-no}" "${STUB_BEAT:-no}"\n' > "$tdir/panel-stub"
@@ -4135,15 +4135,10 @@ expect "install.sh adds no repository where suse comes second (Tumbleweed)" no "
 expect "nor on Debian with SELinux policies installed" no "$(adds_rpm debian)"
 rm -rf "$selroot"
 
-# docs/operations.md lists the hosts an install from FELIS_ARTIFACT_DIR still downloads from,
-# for a network that admits only those: every host preflight probes there must be in it.
-ops="$(dirname "$BS")/../docs/operations.md"
-artdoc="$(awk '/^`FELIS_ARTIFACT_DIR=<absolute path>` installs/,/^### /' "$ops" 2>/dev/null)"
+# An install from FELIS_ARTIFACT_DIR still probes the hosts it downloads from; the operations
+# guide on the docs site lists them for a network that admits only those.
 hosts="$(PF_HOSTS=1 PF_ARTIFACT_DIR=/srv/felis-release PF_SELINUX_RPM=1 run_pf)"
 expect "an install from FELIS_ARTIFACT_DIR probes GitHub" "github.com required" "$hosts"
-for h in $(printf '%s\n' "$hosts" | awk '{ print $1 }'); do
-  expect "operations.md names ${h} for an install from FELIS_ARTIFACT_DIR" "| \`${h}\`" "$artdoc"
-done
 
 # Three problems, one report, nothing done.
 out="$(PF_MEM_KB=1000000 PF_ARCH=armv7l PF_DOWN=github.com run_pf)"
@@ -4215,7 +4210,7 @@ expect "an empty data directory starts" "STARTS" "$(run_major "$pmdir")"
 mkdir -p "$pmdir/17/docker"; echo 17 > "$pmdir/17/docker/PG_VERSION"
 out="$(run_major "$pmdir")"
 expect "an older major's cluster stops the install" "DIE: this release runs PostgreSQL 18, but $pmdir holds a PostgreSQL 17 cluster" "$out"
-expect "the refusal names the way forward" "docs/operations.md §4" "$out"
+expect "the refusal names the way forward" "https://docs.felismc.com/en/operations/#_4-upgrading-the-pieces-around-felis" "$out"
 mkdir -p "$pmdir/18/docker"; echo 18 > "$pmdir/18/docker/PG_VERSION"
 expect "the image's own major version starts beside an old one" "STARTS" "$(run_major "$pmdir")"
 rm -rf "$pmdir"

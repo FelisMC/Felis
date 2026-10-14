@@ -25,7 +25,9 @@ const confirmKeys: Partial<Record<NodeControlRequest["action"], string>> = {
 };
 
 export function NodeControlPanel({ distributed, controllerHA = false }: { distributed: boolean | null; controllerHA?: boolean }) {
-  const { t } = useTranslation("admin");
+  const { t, i18n } = useTranslation("admin");
+  // The runbook on the docs site, in the panel's language where the site has it.
+  const runbook = `https://docs.felismc.com${i18n.language.startsWith("zh") ? "" : "/en"}/guide/distributed.html`;
   const reauth = useReauth();
   const tasks = useAsync(api.nodeTasks, [], { coalesce: true });
   const [id, setId] = useState<string | null>(null);
@@ -115,7 +117,7 @@ export function NodeControlPanel({ distributed, controllerHA = false }: { distri
       {available && !busy && !valid && <p className="text-sm text-muted-foreground">{t("node_control_incomplete")}</p>}
       <div className="flex flex-wrap gap-3"><Button disabled={!available || busy || !valid} onClick={() => void run()}>{submitting ? <Loader2 className="animate-spin" /> : <Play />}{t(action === "enable" ? "node_control_enable" : action === "enable-ha" ? "node_control_enable-ha" : "node_control_submit")}</Button>{distributed === false && <Button variant="outline" disabled={busy} onClick={() => { setEnabling(false); setConfirmed(false); }}>{t("node_control_back")}</Button>}</div>
       </>}
-      <details className="rounded-lg border border-border p-4"><summary className="cursor-pointer text-sm font-medium">{t("node_control_prerequisites")}</summary><p className="mt-3 text-sm leading-relaxed text-muted-foreground">{t("node_control_prerequisites_body")}</p><Button asChild variant="outline" size="sm" className="mt-3"><a href="https://github.com/FelisMC/Felis/blob/main/docs/distributed.md" target="_blank" rel="noreferrer">{t("platform_distribution_runbook")}</a></Button></details>
+      <details className="rounded-lg border border-border p-4"><summary className="cursor-pointer text-sm font-medium">{t("node_control_prerequisites")}</summary><p className="mt-3 text-sm leading-relaxed text-muted-foreground">{t("node_control_prerequisites_body")}</p><Button asChild variant="outline" size="sm" className="mt-3"><a href={runbook} target="_blank" rel="noreferrer">{t("platform_distribution_runbook")}</a></Button></details>
       {!!nodeTasks.length && <div className="space-y-2"><Label htmlFor="node-task">{t("node_control_history")}</Label><Select value={id ?? undefined} onValueChange={setId}><SelectTrigger id="node-task"><SelectValue /></SelectTrigger><SelectContent>{nodeTasks.map((entry) => <SelectItem key={entry.id} value={entry.id}>{t(`node_control_${entry.request.action}`)} · {entry.request.name || t("node_control_controller")} · {new Date(entry.startedAt).toLocaleString()} · {t(`node_control_state_${entry.state}`)}</SelectItem>)}</SelectContent></Select></div>}
       {progress.error != null && <MessageLine kind="error" message={t("node_control_connection_lost", { error: humanizeError(progress.error) })} />}
       {id && progress.loading && !task && <p role="status" className="text-sm text-muted-foreground">{t("node_control_loading")}</p>}
