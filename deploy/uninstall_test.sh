@@ -73,6 +73,8 @@ run_uninstall() {
   NS="$ns" ROOT="$root" STATE_DIR="$root/h/etc" DATA_DIR="$root/h/data" HOST_BIN="$root/h/bin/felis" \
   OPT_DIR="$root/h/opt" UNIT_DIR="$root/h/units" K3S_BIN_DIR="$root/h/bin" \
   K3S_STORAGE="$root/h/storage" K3S_REGISTRIES="$root/h/registries.yaml" \
+  TMPFILES_DIR="$root/h/tmpfiles.d" NODE_CONTROL_RUN_DIR="$root/h/run/felis-node-control" \
+  KEEPALIVED_CONF="$root/h/keepalived/keepalived.conf" \
   CLOUDFLARED_BIN="$root/h/no-cloudflared" FELIS_UNINSTALL_SOURCED=1 bash -c '
     set -Eeuo pipefail
     . "$0"
@@ -99,6 +101,24 @@ run_uninstall() {
       esac
     }
     nft() { echo "NFT $*" >> "$calls"; return 1; }
+    # NODE_FW=1: the FELIS-* chains of the multi-node host firewall exist, each hooked in once.
+    fw() {
+      echo "FW $*" >> "$calls"
+      case "$*" in
+        *" -S FELIS-"*) [ "${NODE_FW:-}" = 1 ] ;;
+        *" -D "*)
+          [ "${NODE_FW:-}" = 1 ] && ! grep -qxF "HOOK-GONE $*" "$calls" || return 1
+          echo "HOOK-GONE $*" >> "$calls" ;;
+      esac
+    }
+    iptables() { fw iptables "$@"; }
+    ip6tables() { fw ip6tables "$@"; }
+    # SEMODULES: what `semodule -l` lists.
+    semodule() {
+      echo "SEMODULE $*" >> "$calls"
+      [ "$1" = -l ] && printf "%s\n" ${SEMODULES:-}
+      return 0
+    }
     runuser() {
       shift 3
       case "$*" in
@@ -218,6 +238,68 @@ run_uninstall down --yes >/dev/null
   && echo "PASS a drop-in someone else wrote beside it stays, with the directory" \
   || { echo "FAIL the uninstall removed a k3s drop-in it did not write"; fails=$((fails + 1)); }
 
+# --- a controller of a multi-node install with high availability ------------------------
+# What the node service, `felis node firewall` and install_keepalived leave besides /etc/felis.
+node_host() {
+  fresh_host
+  for u in felis-node-control.service felis-node-firewall.service felis-control-firewall.service felis-control-firewall.timer; do
+    printf '[Unit]\n' > "$root/h/units/$u"
+  done
+  mkdir -p "$root/h/tmpfiles.d" "$root/h/run/felis-node-control" "$root/h/keepalived"
+  printf 'd /run/felis-node-control 0750 root 65532 -\n' > "$root/h/tmpfiles.d/felis-node-control.conf"
+  printf 'keep me\n' > "$root/h/tmpfiles.d/other.conf"
+  : > "$root/h/run/felis-node-control/control.sock"
+  printf "# Written by the Felis installer (deploy/bootstrap.sh): the controllers' floating address.\nvrrp_instance FELIS {\n}\n" \
+    > "$root/h/keepalived/keepalived.conf"
+}
+node_host
+out="$(NODE_FW=1 SEMODULES="container felis-node-control" run_uninstall "default kube-system felis minecraft felis-build" --yes)"
+calls="$(cat "$root/calls")"
+expect "the plan names the node firewall's chains" "the FELIS-* iptables chains" "$out"
+expect "and keepalived" "keepalived's configuration for the controllers' floating address" "$out"
+timer_at="$(grep -n 'SYSTEMCTL disable --now felis-control-firewall.timer' "$root/calls" | head -n 1 | cut -d: -f1)"
+svc_at="$(grep -n 'SYSTEMCTL disable --now felis-control-firewall.service' "$root/calls" | head -n 1 | cut -d: -f1)"
+[ -n "$timer_at" ] && [ -n "$svc_at" ] && [ "$timer_at" -lt "$svc_at" ] \
+  && echo "PASS the control firewall's timer stops before its service, so it does not start it again" \
+  || { echo "FAIL the control firewall's timer and service: $calls"; fails=$((fails + 1)); }
+expect "the node service stops" "SYSTEMCTL disable --now felis-node-control.service" "$calls"
+for hook in "-t filter -D INPUT -j FELIS-HOST" "-t filter -D FORWARD -j FELIS-FORWARD" "-t raw -D PREROUTING -j FELIS-NODEPORT"; do
+  expect "the node firewall's hook $hook goes" "HOOK-GONE iptables -w 10 $hook" "$calls"
+done
+for chain in FELIS-HOST FELIS-FORWARD FELIS-NODEPORT FELIS-CONTROL; do
+  expect "the chain $chain is deleted" "FW iptables -w 10 -t filter -X $chain" "$calls"
+done
+expect "and the raw table's FELIS-CONTROL with it" "FW iptables -w 10 -t raw -X FELIS-CONTROL" "$calls"
+flush_at="$(grep -n 'FW iptables -w 10 -t filter -F FELIS-HOST' "$root/calls" | head -n 1 | cut -d: -f1)"
+del_at="$(grep -n 'FW iptables -w 10 -t filter -X FELIS-CONTROL' "$root/calls" | head -n 1 | cut -d: -f1)"
+[ -n "$flush_at" ] && [ -n "$del_at" ] && [ "$flush_at" -lt "$del_at" ] \
+  && echo "PASS FELIS-HOST is flushed before FELIS-CONTROL, which it jumps to, is deleted" \
+  || { echo "FAIL the chains were deleted while still referenced: $calls"; fails=$((fails + 1)); }
+[ ! -e "$root/h/tmpfiles.d/felis-node-control.conf" ] && [ ! -e "$root/h/run/felis-node-control" ] \
+  && echo "PASS the node service's socket directory and its tmpfiles rule go" \
+  || { echo "FAIL the node service left: $(ls -R "$root/h/tmpfiles.d" "$root/h/run" 2>&1)"; fails=$((fails + 1)); }
+[ -f "$root/h/tmpfiles.d/other.conf" ] && echo "PASS another tmpfiles rule stays" \
+  || { echo "FAIL the uninstall removed a tmpfiles rule it did not write"; fails=$((fails + 1)); }
+expect "the node service's SELinux module goes" "SEMODULE -r felis-node-control" "$calls"
+expect "with its file-context rule" "SEMANAGE fcontext -d /var/run/felis-node-control(/.*)?" "$calls"
+expect "keepalived stops" "SYSTEMCTL disable --now keepalived" "$calls"
+[ ! -e "$root/h/keepalived/keepalived.conf" ] && echo "PASS the keepalived configuration the installer wrote goes" \
+  || { echo "FAIL the installer's keepalived configuration is still there"; fails=$((fails + 1)); }
+
+node_host
+printf 'vrrp_instance OFFICE {\n}\n' > "$root/h/keepalived/keepalived.conf"
+run_uninstall "default kube-system felis minecraft felis-build" --yes >/dev/null
+calls="$(cat "$root/calls")"
+refute "a keepalived configuration someone else wrote keeps keepalived running" "keepalived" "$calls"
+[ -f "$root/h/keepalived/keepalived.conf" ] && echo "PASS and the configuration stays" \
+  || { echo "FAIL the uninstall removed a keepalived configuration it did not write"; fails=$((fails + 1)); }
+refute "a host without the SELinux module removes none" "SEMODULE -r" "$calls"
+
+fresh_host
+run_uninstall "default kube-system felis minecraft felis-build" --yes >/dev/null
+calls="$(cat "$root/calls")"
+refute "a single-node host has no node firewall chains to remove" "-X FELIS" "$calls"
+
 # --- purge -------------------------------------------------------------------------------
 fresh_host
 out="$(run_uninstall "default felis minecraft" --purge --yes)"
@@ -334,10 +416,21 @@ expect "a purge wants the word purge" "not confirmed" "$out"
 out="$(CONFIRM_TTY="$root/no-tty/x" FELIS_UNINSTALL_SOURCED=1 bash -c '. "$0"; confirm; echo WENT ON' "$US" 2>&1)"
 expect "with no terminal it asks for --yes" "no terminal to confirm on; re-run with --yes" "$out"
 
-# Every unit the installer writes is one the uninstaller removes: a timer left behind
-# keeps firing a felis binary that is gone.
+# Every unit the installer and the felis binary write is one the uninstaller removes: a
+# timer left behind keeps firing a felis binary that is gone. k3s's own units are k3s's
+# uninstaller's.
 units="$(awk '/^FELIS_UNITS=\(/ { f = 1; next } f && /^\)/ { f = 0 } f' "$US")"
-for u in $(sed -n 's|^[A-Z_]*="/etc/systemd/system/\([^"]*\)"$|\1|p' "$(dirname "$US")/bootstrap.sh"); do
+writers="$(dirname "$US")/bootstrap.sh"
+for f in "$(dirname "$US")"/../cmd/felis/*.go; do
+  case "$f" in *_test.go) ;; *) writers="$writers $f" ;; esac
+done
+# shellcheck disable=SC2086 # one path per word
+written="$(grep -ohE '/etc/systemd/system/[a-z0-9-]+\.(service|timer)' $writers | sed 's|.*/||' | grep -v '^k3s' | sort -u)"
+case "$written" in
+  *felis-node-control.service*felis-velocity.service*) echo "PASS the installer's units are found" ;;
+  *) echo "FAIL the unit scan found only: <$written>"; fails=$((fails + 1)) ;;
+esac
+for u in $written; do
   expect "the uninstaller removes $u" " $u" " $(printf '%s' "$units" | tr '\n' ' ')"
 done
 

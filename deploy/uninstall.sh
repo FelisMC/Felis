@@ -53,6 +53,15 @@ PG_MOVED_MARKER="${DATA_DIR}/postgres-moved"
 POD_CIDR="10.42.0.0/16"
 SERVICE_CIDR="10.43.0.0/16"
 FELIS_PANEL_NODEPORT="${FELIS_PANEL_NODEPORT:-30443}"
+# What the node service (bootstrap.sh install_node_control_service), the multi-node host
+# firewall (`felis node firewall`) and the controllers' floating address (install_keepalived)
+# leave outside the unit files.
+TMPFILES_DIR="${TMPFILES_DIR:-/etc/tmpfiles.d}"
+NODE_CONTROL_RUN_DIR="${NODE_CONTROL_RUN_DIR:-/run/felis-node-control}"
+NODE_CONTROL_SELINUX_MODULE="felis-node-control"
+NODE_FIREWALL_CHAINS=(FELIS-HOST FELIS-FORWARD FELIS-NODEPORT FELIS-CONTROL)
+KEEPALIVED_CONF="${KEEPALIVED_CONF:-/etc/keepalived/keepalived.conf}"
+KEEPALIVED_MARKER="# Written by the Felis installer"
 CONFIRM_TTY="${CONFIRM_TTY:-/dev/tty}"
 FELIS_NAMESPACES=(felis minecraft felis-build)
 FELIS_CRD="minecraftservers.felis.lolicon.best"
@@ -62,7 +71,8 @@ FELIS_UNITS=(
   felis-db-backup.timer felis-watchdog.timer felis-offsite.timer felis-build-tools.timer felis-update-check.timer
   felis-db-backup.service felis-watchdog.service felis-watchdog-failed.service felis-offsite.service felis-build-tools.service felis-update-check.service
   felis-velocity.service felis-nano.service cloudflared-felis.service
-  felis-postgres-firewall.service
+  felis-postgres-firewall.service felis-node-control.service
+  felis-control-firewall.timer felis-control-firewall.service felis-node-firewall.service
 )
 
 PURGE=0
@@ -134,6 +144,12 @@ print_plan() {
   log "this will remove from $(uname -n):"
   log "  the felis-* systemd units, cloudflared-felis.service, the ${VELOCITY_USER} user,"
   log "  ${OPT_DIR}, ${HOST_BIN}, the felis_postgres and felis_edge nftables tables and the firewalld and ufw openings"
+  if [ -f "${UNIT_DIR}/felis-node-firewall.service" ]; then
+    log "  the FELIS-* iptables chains of the multi-node host firewall"
+  fi
+  if felis_keepalived_config; then
+    log "  keepalived's configuration for the controllers' floating address, and keepalived stops"
+  fi
   case "$K3S_MODE" in
     remove) log "  k3s, with everything in it (${K3S_BIN_DIR}/k3s-uninstall.sh)" ;;
     keep) log "  Felis's namespaces (${FELIS_NAMESPACES[*]}) and the ${FELIS_CRD} CRD; k3s stays" ;;
@@ -205,6 +221,70 @@ remove_nft_tables() {
       ok "nftables table inet ${t} removed"
     fi
   done
+}
+
+# remove_node_firewall takes out the chains `felis node firewall` hooks into INPUT, FORWARD
+# and raw PREROUTING on every node of a multi-node install. Its unit is gone by now, so
+# nothing puts them back.
+remove_node_firewall() {
+  local bin hook table parent chain removed=0
+  for bin in iptables ip6tables; do
+    command -v "$bin" >/dev/null 2>&1 || continue
+    "$bin" -w 10 -S FELIS-HOST >/dev/null 2>&1 || "$bin" -w 10 -t raw -S FELIS-NODEPORT >/dev/null 2>&1 || continue
+    for hook in filter:INPUT:FELIS-HOST filter:FORWARD:FELIS-FORWARD raw:PREROUTING:FELIS-NODEPORT; do
+      IFS=: read -r table parent chain <<<"$hook"
+      while "$bin" -w 10 -t "$table" -D "$parent" -j "$chain" >/dev/null 2>&1; do :; done
+    done
+    # FELIS-HOST and FELIS-NODEPORT jump to FELIS-CONTROL: every chain is flushed before
+    # any is deleted.
+    for table in filter raw; do
+      for chain in "${NODE_FIREWALL_CHAINS[@]}"; do
+        "$bin" -w 10 -t "$table" -F "$chain" >/dev/null 2>&1 || true
+      done
+      for chain in "${NODE_FIREWALL_CHAINS[@]}"; do
+        "$bin" -w 10 -t "$table" -X "$chain" >/dev/null 2>&1 || true
+      done
+    done
+    removed=1
+  done
+  [ "$removed" = 0 ] || ok "the node firewall's iptables chains removed"
+}
+
+# remove_node_control_leftovers deletes the socket directory of felis-node-control.service,
+# the tmpfiles rule that recreates it at boot, and on SELinux the policy module and the
+# file-context rule bootstrap gave it.
+remove_node_control_leftovers() {
+  rm -f "${TMPFILES_DIR}/felis-node-control.conf"
+  rm -rf "$NODE_CONTROL_RUN_DIR"
+  command -v semodule >/dev/null 2>&1 || return 0
+  # awk reads the whole list: a grep -q that stops early would fail the pipe under pipefail.
+  semodule -l 2>/dev/null | awk -v m="$NODE_CONTROL_SELINUX_MODULE" '$1 == m { found = 1 } END { exit !found }' || return 0
+  if command -v semanage >/dev/null 2>&1; then
+    semanage fcontext -d '/var/run/felis-node-control(/.*)?' >/dev/null 2>&1 || true
+  fi
+  semodule -r "$NODE_CONTROL_SELINUX_MODULE" >/dev/null 2>&1 \
+    || warn "could not remove the ${NODE_CONTROL_SELINUX_MODULE} SELinux module; remove it with: semodule -r ${NODE_CONTROL_SELINUX_MODULE}"
+  ok "the node service's SELinux policy removed"
+}
+
+# felis_keepalived_config succeeds when keepalived's configuration is the one the installer
+# wrote for a controller with high availability, recognised by its first line.
+felis_keepalived_config() {
+  [ -f "$KEEPALIVED_CONF" ] || return 1
+  case "$(head -n 1 "$KEEPALIVED_CONF")" in
+    "$KEEPALIVED_MARKER"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# remove_keepalived_config stops keepalived and deletes that configuration: without it
+# keepalived would go on holding the floating address for a controller that is gone. The
+# package stays, like the others; a configuration someone else wrote stays too.
+remove_keepalived_config() {
+  felis_keepalived_config || return 0
+  systemctl disable --now keepalived >/dev/null 2>&1 || systemctl stop keepalived >/dev/null 2>&1 || true
+  rm -f "$KEEPALIVED_CONF"
+  ok "keepalived stopped and its Felis configuration removed"
 }
 
 # remove_firewalld_rules takes back what configure_k3s_firewall, configure_velocity_firewall
@@ -537,6 +617,9 @@ main() {
     absent) remove_k3s_service_dropin ;;
   esac
   remove_nft_tables
+  remove_node_firewall
+  remove_node_control_leftovers
+  remove_keepalived_config
   remove_firewalld_rules "$game" "$nano"
   remove_ufw_rules
   remove_host_files
