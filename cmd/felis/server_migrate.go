@@ -38,7 +38,7 @@ func cmdServerMigrate(args []string, stdout, stderr io.Writer) int {
 	id := fs.String("id", "", "operation id (required for retry and abort)")
 	kube := fs.String("kubeconfig", "/etc/rancher/k3s/k3s.yaml", "A's local kubeconfig")
 	ns := fs.String("namespace", platform.DefaultMinecraftNamespace, "world namespace")
-	cfgPath := fs.String("config", "/var/lib/felis/felis.host.toml", "host config used to record the current owner on the safety backup")
+	cfgPath := fs.String("config", hostSetupConfigPath, "host config used to record the current owner on the safety backup")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
