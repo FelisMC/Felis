@@ -27,7 +27,7 @@ const confirmKeys: Partial<Record<NodeControlRequest["action"], string>> = {
 export function NodeControlPanel({ distributed, controllerHA = false }: { distributed: boolean | null; controllerHA?: boolean }) {
   const { t, i18n } = useTranslation("admin");
   // The runbook on the docs site, in the panel's language where the site has it.
-  const runbook = `https://docs.felismc.com${i18n.language.startsWith("zh") ? "" : "/en"}/guide/distributed.html`;
+  const runbook = `https://docs.felismc.com${i18n.language.startsWith("zh") ? "" : "/en"}/guide/distributed`;
   const reauth = useReauth();
   const tasks = useAsync(api.nodeTasks, [], { coalesce: true });
   const [id, setId] = useState<string | null>(null);

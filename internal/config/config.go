@@ -199,7 +199,7 @@ type RegistryConfig struct {
 	// build subsystem's defaults: the kaniko and trivy copies the installer keeps
 	// in this registry under mirror/ (build.Tools), 2 CPU / 4Gi per build
 	// container. Set the images only to run another build of the tools
-	// (https://docs.felismc.com/en/operations/troubleshooting.html#_8e-build-pods-never-start-executor-images-and-the-scan-dbs). Empty keeps the default.
+	// (https://docs.felismc.com/en/operations/troubleshooting#_8e-build-pods-never-start-executor-images-and-the-scan-dbs). Empty keeps the default.
 	KanikoImage   string `toml:"kaniko_image"`
 	TrivyImage    string `toml:"trivy_image"`
 	BuildCPULimit string `toml:"build_cpu_limit"`

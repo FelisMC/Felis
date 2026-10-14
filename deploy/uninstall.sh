@@ -406,7 +406,7 @@ remove_hba_block() { # file
 
 # check_database_purge runs before anything is removed. DROP ROLE refuses a role that
 # still owns a database or holds anything in one besides felis (the felis_pgint database
-# the contributing guide (https://docs.felismc.com/en/reference/contributing.html) has developers make for the PG contract tests, a grant made by hand),
+# the contributing guide (https://docs.felismc.com/en/reference/contributing) has developers make for the PG contract tests, a grant made by hand),
 # and by the time purge_database runs the units and k3s are already gone. It lists what
 # holds the role instead, so the purge either runs to the end or not at all.
 check_database_purge() {

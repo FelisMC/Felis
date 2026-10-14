@@ -25,18 +25,18 @@ All Felis documentation is published at [docs.felismc.com](https://docs.felismc.
 | 简体中文 | English |
 | --- | --- |
 | [认识 Felis](https://docs.felismc.com/) | [Introduction](https://docs.felismc.com/en/) |
-| [安装与部署](https://docs.felismc.com/guide/deployment.html) | [Installation and deployment](https://docs.felismc.com/en/guide/deployment.html) |
-| [管理服务器](https://docs.felismc.com/guide/servers.html) | [Managing servers](https://docs.felismc.com/en/guide/servers.html) |
+| [安装与部署](https://docs.felismc.com/guide/deployment) | [Installation and deployment](https://docs.felismc.com/en/guide/deployment) |
+| [管理服务器](https://docs.felismc.com/guide/servers) | [Managing servers](https://docs.felismc.com/en/guide/servers) |
 | [运维手册](https://docs.felismc.com/operations/) | [Operations guide](https://docs.felismc.com/en/operations/) |
-| [备份与恢复](https://docs.felismc.com/operations/backup.html) | [Backup and restore](https://docs.felismc.com/en/operations/backup.html) |
-| [故障排查](https://docs.felismc.com/operations/troubleshooting.html) | [Troubleshooting](https://docs.felismc.com/en/operations/troubleshooting.html) |
-| [多机部署](https://docs.felismc.com/guide/distributed.html) | [Multi-node deployment](https://docs.felismc.com/en/guide/distributed.html) |
-| [从源码构建](https://docs.felismc.com/guide/building.html) | [Build from source](https://docs.felismc.com/en/guide/building.html) |
-| [贡献指南](https://docs.felismc.com/reference/contributing.html) | [Contributing](https://docs.felismc.com/en/reference/contributing.html) |
-| [API 定义](https://docs.felismc.com/reference/api.html) | [API definition](https://docs.felismc.com/en/reference/api.html) |
+| [备份与恢复](https://docs.felismc.com/operations/backup) | [Backup and restore](https://docs.felismc.com/en/operations/backup) |
+| [故障排查](https://docs.felismc.com/operations/troubleshooting) | [Troubleshooting](https://docs.felismc.com/en/operations/troubleshooting) |
+| [多机部署](https://docs.felismc.com/guide/distributed) | [Multi-node deployment](https://docs.felismc.com/en/guide/distributed) |
+| [从源码构建](https://docs.felismc.com/guide/building) | [Build from source](https://docs.felismc.com/en/guide/building) |
+| [贡献指南](https://docs.felismc.com/reference/contributing) | [Contributing](https://docs.felismc.com/en/reference/contributing) |
+| [API 定义](https://docs.felismc.com/reference/api) | [API definition](https://docs.felismc.com/en/reference/api) |
 
 ## 开源协议 License
 
-本项目采用 [AGPL-3.0-only](LICENSE) 许可证，协议注意事项见[开源协议](https://docs.felismc.com/reference/license.html)。
+本项目采用 [AGPL-3.0-only](LICENSE) 许可证，协议注意事项见[开源协议](https://docs.felismc.com/reference/license)。
 
-Felis is licensed under [AGPL-3.0-only](LICENSE); see the [license notes](https://docs.felismc.com/en/reference/license.html).
+Felis is licensed under [AGPL-3.0-only](LICENSE); see the [license notes](https://docs.felismc.com/en/reference/license).

@@ -238,11 +238,11 @@ func collectDoctor(ctx context.Context, env doctorEnv) doctorReport {
 		report.Findings = append(report.Findings, watchdog.Finding{
 			Key: "watchdog/heartbeat", Severity: watchdog.Warning,
 			SummaryEN: fmt.Sprintf("the heartbeat URL is unusable, so no run pings it: %v", err),
-			Hint:      "set one in the panel (Platform settings → Monitoring heartbeat), or rerun the installer with FELIS_WATCHDOG_HEARTBEAT_URL (https://docs.felismc.com/en/operations/troubleshooting.html#_14-health-alerts-and-metrics-for-diagnosis-spec-§23)",
+			Hint:      "set one in the panel (Platform settings → Monitoring heartbeat), or rerun the installer with FELIS_WATCHDOG_HEARTBEAT_URL (https://docs.felismc.com/en/operations/troubleshooting#_14-health-alerts-and-metrics-for-diagnosis-spec-§23)",
 		})
 	case url == "":
 		notes = append(notes, "no heartbeat URL is set: a host that goes down entirely, or a watchdog that stops running, alerts no one. "+
-			"Set one in the panel (Platform settings → Monitoring heartbeat), or rerun the installer with FELIS_WATCHDOG_HEARTBEAT_URL (https://docs.felismc.com/en/operations/troubleshooting.html#_14-health-alerts-and-metrics-for-diagnosis-spec-§23)")
+			"Set one in the panel (Platform settings → Monitoring heartbeat), or rerun the installer with FELIS_WATCHDOG_HEARTBEAT_URL (https://docs.felismc.com/en/operations/troubleshooting#_14-health-alerts-and-metrics-for-diagnosis-spec-§23)")
 	}
 	if until := watchdog.QuietUntil(w.quietPath); env.now.Before(until) {
 		notes = append(notes, fmt.Sprintf("the watchdog mails nothing until %s (%s): the installer holds it while it restarts things on purpose, "+

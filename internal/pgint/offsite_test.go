@@ -154,7 +154,7 @@ func TestOwnerDeletedBackup(t *testing.T) {
 		t.Fatalf("KeptRefs = %v, want %s and not %s", kept, keepRef, delRef)
 	}
 
-	// The undo https://docs.felismc.com/en/operations/troubleshooting.html#_10-world-reaper-false-deletes-and-skipped-backups-spec-§18 gives, before the reaper has run: the backup
+	// The undo https://docs.felismc.com/en/operations/troubleshooting#_10-world-reaper-false-deletes-and-skipped-backups-spec-§18 gives, before the reaper has run: the backup
 	// is restorable again and the next sync copies it off site anew.
 	mustExec(t, `UPDATE world_backups SET status = 'present', expires_at = now() + interval '30 days', offsite_at = NULL
    WHERE id = '`+del+`' AND status = 'expired'`)

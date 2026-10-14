@@ -1,5 +1,5 @@
 # Felis alert rules — plain Prometheus format (also the promtool-tested source
-# for felis-prometheusrule.yaml). See https://docs.felismc.com/en/operations/troubleshooting.html#_14-health-alerts-and-metrics-for-diagnosis-spec-§23 for scraping
+# for felis-prometheusrule.yaml). See https://docs.felismc.com/en/operations/troubleshooting#_14-health-alerts-and-metrics-for-diagnosis-spec-§23 for scraping
 # and loading instructions. These are for a deployment that brings its own
 # Prometheus; every install already runs `felis watchdog` on the host, which
 # checks the same conditions without one and mails the owners (§14).

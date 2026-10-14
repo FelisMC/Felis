@@ -58,7 +58,7 @@ pod_psql() {
     psql -X -q -At -v ON_ERROR_STOP=1 -U felis -d felis -c "$1"
 }
 
-# restore_drill walks the troubleshooting guide's "Restore on the same host" (https://docs.felismc.com/en/operations/troubleshooting.html#restore-on-the-same-host-undo-a-mistake): refused while the
+# restore_drill walks the troubleshooting guide's "Restore on the same host" (https://docs.felismc.com/en/operations/troubleshooting#restore-on-the-same-host-undo-a-mistake): refused while the
 # control plane is connected; with it scaled to 0 the bundle comes back (a row written after
 # it is gone) and the database it replaced is kept; migrate up runs; the control plane serves
 # again.

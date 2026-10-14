@@ -44,7 +44,7 @@ func RegisterStorePool(db *sql.DB) error {
 // handleMetrics is mounted as a Public route on the internal face (the same
 // stance as the health probes): the internal listener is ClusterIP-only and a
 // Prometheus scrape carries no token. The external face never serves metrics.
-// See https://docs.felismc.com/en/operations/troubleshooting.html#_14-health-alerts-and-metrics-for-diagnosis-spec-§23 for what to scrape and the alert rules that
+// See https://docs.felismc.com/en/operations/troubleshooting#_14-health-alerts-and-metrics-for-diagnosis-spec-§23 for what to scrape and the alert rules that
 // consume these series.
 func (a *API) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	apiMetricsHandler.ServeHTTP(w, r)

@@ -21,7 +21,7 @@ const keyMark = "felis-key-id"
 // ErrKeyMismatch is a bucket whose objects are sealed with another key.
 var ErrKeyMismatch = errors.New("offsite: the bucket's objects are sealed with another key")
 
-const keyMismatchFix = "set FELIS_OFFSITE_KEY in /etc/felis/offsite.env to the key they were sealed with, or point [offsite] at an empty bucket or prefix (https://docs.felismc.com/en/operations/troubleshooting.html#_16-control-plane-database-backups-and-disaster-recovery)"
+const keyMismatchFix = "set FELIS_OFFSITE_KEY in /etc/felis/offsite.env to the key they were sealed with, or point [offsite] at an empty bucket or prefix (https://docs.felismc.com/en/operations/troubleshooting#_16-control-plane-database-backups-and-disaster-recovery)"
 
 var keyIDPattern = regexp.MustCompile(`^[0-9a-f]{16}$`)
 

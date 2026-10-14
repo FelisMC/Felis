@@ -24,7 +24,7 @@ repositories {
 // every other module does — a source include, not a jar dependency — so the
 // account-link client (LinkClient), the internal read/drive client (FelisApiClient)
 // and the env/properties config loader compile straight into this jar with nothing
-// to shade. See https://docs.felismc.com/en/reference/plugins.html#architecture.
+// to shade. See https://docs.felismc.com/en/reference/plugins#architecture.
 sourceSets {
     main {
         java {
@@ -40,7 +40,7 @@ sourceSets {
 // maven-metadata.xml, so a dynamic version cannot resolve, and a guessed one would
 // compile against an API the gate does not run. gradle/verification-metadata.xml holds
 // the checksum of the locked release, so a lock refresh regenerates it (see
-// https://docs.felismc.com/en/reference/plugins.html#dependency-verification).
+// https://docs.felismc.com/en/reference/plugins#dependency-verification).
 def limboVersion = project.findProperty('limboVersion')
 if (!limboVersion) {
     throw new GradleException('pass -PlimboVersion=<LIMBO_VERSION from deploy/game-stack.lock>')

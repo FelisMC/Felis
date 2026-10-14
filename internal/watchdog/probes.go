@@ -184,7 +184,7 @@ func serverFinding(ms *v1alpha1.MinecraftServer, ns string) *Finding {
 			Key: "system-server/" + ms.Name, Severity: Warning, For: systemServerFor,
 			Summary:   fmt.Sprintf("系统服务器 %s 处于 %s（应为 Running）%s", ms.Name, phase, why),
 			SummaryEN: fmt.Sprintf("system server %s is %s, not Running%s", ms.Name, phase, why),
-			Hint:      fmt.Sprintf("kubectl -n %s describe minecraftserver %s; https://docs.felismc.com/en/operations/troubleshooting.html#_1-server-is-stuck-in-starting-and-never-becomes-running (§1–§2)", ns, ms.Name),
+			Hint:      fmt.Sprintf("kubectl -n %s describe minecraftserver %s; https://docs.felismc.com/en/operations/troubleshooting#_1-server-is-stuck-in-starting-and-never-becomes-running (§1–§2)", ns, ms.Name),
 		}
 		if role == naming.SystemLoginServer {
 			f.Severity = Critical
@@ -200,7 +200,7 @@ func serverFinding(ms *v1alpha1.MinecraftServer, ns string) *Finding {
 		Key: "server-failed/" + ms.Name, Severity: Warning, For: failedServerFor,
 		Summary:   fmt.Sprintf("服务器 %s 启动失败（Failed）%s", ms.Name, why),
 		SummaryEN: fmt.Sprintf("server %s is Failed%s", ms.Name, why),
-		Hint:      fmt.Sprintf("kubectl -n %s describe minecraftserver %s; https://docs.felismc.com/en/operations/troubleshooting.html#_2-server-is-in-failed", ns, ms.Name),
+		Hint:      fmt.Sprintf("kubectl -n %s describe minecraftserver %s; https://docs.felismc.com/en/operations/troubleshooting#_2-server-is-in-failed", ns, ms.Name),
 	}
 }
 
@@ -264,7 +264,7 @@ func reaperFinding(cj *batchv1.CronJob, now time.Time) *Finding {
 		Key: "reaper-stale", Severity: Warning,
 		Summary:   fmt.Sprintf("世界回收任务已超过 %s 没有成功运行", roundHours(now.Sub(last))),
 		SummaryEN: fmt.Sprintf("the world reaper has not succeeded for %s", roundHours(now.Sub(last))),
-		Hint:      fmt.Sprintf("kubectl -n %s get jobs; https://docs.felismc.com/en/operations/troubleshooting.html#_10-world-reaper-false-deletes-and-skipped-backups-spec-§18", cj.Namespace),
+		Hint:      fmt.Sprintf("kubectl -n %s get jobs; https://docs.felismc.com/en/operations/troubleshooting#_10-world-reaper-false-deletes-and-skipped-backups-spec-§18", cj.Namespace),
 	}
 }
 
@@ -287,7 +287,7 @@ func nodeFindings(n *corev1.Node) []Finding {
 				Key: "node/" + n.Name + "/" + string(c.Type), Severity: Critical, For: nodePressureFor,
 				Summary:   fmt.Sprintf("节点 %s 报告 %s，kubelet 正在驱逐 Pod", n.Name, c.Type),
 				SummaryEN: fmt.Sprintf("node %s reports %s: the kubelet is evicting pods", n.Name, c.Type),
-				Hint:      "https://docs.felismc.com/en/operations/troubleshooting.html#_13b-node-runs-out-of-disk-what-survives-and-how-to-recover",
+				Hint:      "https://docs.felismc.com/en/operations/troubleshooting#_13b-node-runs-out-of-disk-what-survives-and-how-to-recover",
 			})
 		}
 	}
@@ -303,7 +303,7 @@ func WatchdogFailed(detail string) Finding {
 		Key: "watchdog/run", Severity: Critical, For: watchdogFailedFor,
 		Summary:   "平台巡检本身运行失败，其他检查都没有执行，出了别的问题也不会有告警：" + detail,
 		SummaryEN: "the platform watchdog itself fails, so no other check runs and nothing else is mailed: " + detail,
-		Hint:      "journalctl -u felis-watchdog -n 50; sudo felis watchdog -dry-run (https://docs.felismc.com/en/operations/troubleshooting.html#_14-health-alerts-and-metrics-for-diagnosis-spec-§23)",
+		Hint:      "journalctl -u felis-watchdog -n 50; sudo felis watchdog -dry-run (https://docs.felismc.com/en/operations/troubleshooting#_14-health-alerts-and-metrics-for-diagnosis-spec-§23)",
 	}
 }
 
@@ -354,7 +354,7 @@ func BackupFinding(dir string, now time.Time) *Finding {
 			Key: "db-backup", Severity: Critical, For: backupFor,
 			Summary:   fmt.Sprintf("无法读取数据库备份目录 %s", dir),
 			SummaryEN: fmt.Sprintf("cannot read the database backup directory %s: %v", dir, err),
-			Hint:      "https://docs.felismc.com/en/operations/troubleshooting.html#_16-control-plane-database-backups-and-disaster-recovery",
+			Hint:      "https://docs.felismc.com/en/operations/troubleshooting#_16-control-plane-database-backups-and-disaster-recovery",
 		}
 	}
 	daily, ok := dbbackup.Newest(bundles, dbbackup.LabelDaily)
@@ -365,7 +365,7 @@ func BackupFinding(dir string, now time.Time) *Finding {
 		Key: "db-backup", Severity: Critical, For: backupFor,
 		Summary:   fmt.Sprintf("%s 里没有任何控制面数据库备份", dir),
 		SummaryEN: fmt.Sprintf("no control-plane database backup in %s", dir),
-		Hint:      "journalctl -u felis-db-backup -n 50; once fixed, run it now with `sudo systemctl start felis-db-backup` (https://docs.felismc.com/en/operations/troubleshooting.html#_16-control-plane-database-backups-and-disaster-recovery)",
+		Hint:      "journalctl -u felis-db-backup -n 50; once fixed, run it now with `sudo systemctl start felis-db-backup` (https://docs.felismc.com/en/operations/troubleshooting#_16-control-plane-database-backups-and-disaster-recovery)",
 	}
 	switch {
 	case ok:
@@ -402,7 +402,7 @@ func serversFinding(b dbbackup.Bundle) *Finding {
 		Key: "db-backup-servers", Severity: Warning, For: backupFor,
 		Summary:   fmt.Sprintf("最新的控制面数据库备份 %s 缺少 MinecraftServer 对象（%s）：用它恢复能找回数据库，但集群里不会有任何服务器", b.Name, m.ServersError),
 		SummaryEN: fmt.Sprintf("the newest control-plane database backup %s lacks the MinecraftServer objects (%s): a restore from it brings back the database but no servers", b.Name, m.ServersError),
-		Hint:      "k3s kubectl get minecraftservers -A; once the cluster answers, take one now with `sudo felis db backup` (https://docs.felismc.com/en/operations/troubleshooting.html#_16-control-plane-database-backups-and-disaster-recovery)",
+		Hint:      "k3s kubectl get minecraftservers -A; once the cluster answers, take one now with `sudo felis db backup` (https://docs.felismc.com/en/operations/troubleshooting#_16-control-plane-database-backups-and-disaster-recovery)",
 	}
 }
 
@@ -412,7 +412,7 @@ func serversFinding(b dbbackup.Bundle) *Finding {
 // node would now lose what the bucket lacks, and the reaper keeps idle worlds
 // on disk until their archives reach the bucket.
 func OffsiteFinding(statusFile string, now time.Time) *Finding {
-	const hint = "journalctl -u felis-offsite -n 50; `sudo felis offsite status` (https://docs.felismc.com/en/operations/troubleshooting.html#_16-control-plane-database-backups-and-disaster-recovery)"
+	const hint = "journalctl -u felis-offsite -n 50; `sudo felis offsite status` (https://docs.felismc.com/en/operations/troubleshooting#_16-control-plane-database-backups-and-disaster-recovery)"
 	st, err := offsite.ReadStatus(statusFile)
 	if err != nil {
 		return &Finding{
@@ -427,7 +427,7 @@ func OffsiteFinding(statusFile string, now time.Time) *Finding {
 			Key: "offsite", Severity: Warning, For: backupFor,
 			Summary:   "异地备份已停止：桶里的对象是用另一把密钥加密的，本机不往桶里写入也不清理任何对象（" + st.LastError + "）",
 			SummaryEN: "the off-site copy has stopped: the bucket's objects are sealed with another key, and this host writes and prunes nothing there (" + st.LastError + ")",
-			Hint:      "`sudo felis offsite check-key`; set FELIS_OFFSITE_KEY in /etc/felis/offsite.env to the key the bucket was written with (https://docs.felismc.com/en/operations/troubleshooting.html#_16-control-plane-database-backups-and-disaster-recovery)",
+			Hint:      "`sudo felis offsite check-key`; set FELIS_OFFSITE_KEY in /etc/felis/offsite.env to the key the bucket was written with (https://docs.felismc.com/en/operations/troubleshooting#_16-control-plane-database-backups-and-disaster-recovery)",
 		}
 	}
 	if st != nil && st.Displaced && st.Writer != nil {
@@ -435,7 +435,7 @@ func OffsiteFinding(statusFile string, now time.Time) *Finding {
 			Key: "offsite", Severity: Warning, For: backupFor,
 			Summary:   fmt.Sprintf("异地备份已停止：主机 %s（id %s）接管了异地备份桶，本机不再往桶里写入", st.Writer.Host, st.Writer.HostID),
 			SummaryEN: fmt.Sprintf("the off-site copy has stopped: %s took the bucket over, and this host copies nothing there any more", st.Writer),
-			Hint:      "if that host is a rehearsal machine, take the bucket back with `sudo felis offsite take-over -yes`; `sudo felis offsite status` (https://docs.felismc.com/en/operations/troubleshooting.html#_16-control-plane-database-backups-and-disaster-recovery)",
+			Hint:      "if that host is a rehearsal machine, take the bucket back with `sudo felis offsite take-over -yes`; `sudo felis offsite status` (https://docs.felismc.com/en/operations/troubleshooting#_16-control-plane-database-backups-and-disaster-recovery)",
 		}
 	}
 	if st != nil && st.Standby {
@@ -449,7 +449,7 @@ func OffsiteFinding(statusFile string, now time.Time) *Finding {
 			Key: "offsite", Severity: Warning, For: backupFor,
 			Summary:   "本机是从另一台主机的备份建起来的，不往异地备份桶写入：" + who,
 			SummaryEN: "this host was built from another host's backup and copies nothing into the off-site bucket: " + whoEN,
-			Hint:      "once this host replaces that one for good: `sudo felis offsite take-over -yes` (https://docs.felismc.com/en/operations/troubleshooting.html#_16-control-plane-database-backups-and-disaster-recovery)",
+			Hint:      "once this host replaces that one for good: `sudo felis offsite take-over -yes` (https://docs.felismc.com/en/operations/troubleshooting#_16-control-plane-database-backups-and-disaster-recovery)",
 		}
 	}
 	if st != nil && !st.LastSuccess.IsZero() && now.Sub(st.LastSuccess) <= offsite.StaleAfter {
@@ -478,7 +478,7 @@ func OffsiteFinding(statusFile string, now time.Time) *Finding {
 // `felis mirror-build-tools` leaves in statusFile. A build still runs and its scan
 // still gates, but against an old DB: a warning.
 func ScanDBFinding(statusFile string, now time.Time) *Finding {
-	const hint = "journalctl -u felis-build-tools -n 50; refresh now with `sudo felis mirror-build-tools` (https://docs.felismc.com/en/operations/troubleshooting.html#_8e-build-pods-never-start-executor-images-and-the-scan-dbs)"
+	const hint = "journalctl -u felis-build-tools -n 50; refresh now with `sudo felis mirror-build-tools` (https://docs.felismc.com/en/operations/troubleshooting#_8e-build-pods-never-start-executor-images-and-the-scan-dbs)"
 	st, err := imagepush.ReadMirrorStatus(statusFile)
 	if err != nil {
 		return &Finding{
@@ -538,14 +538,14 @@ func DiskFindings(paths []string) []Finding {
 				Key: "disk/" + p, Severity: Critical, For: diskCriticalFor,
 				Summary:   fmt.Sprintf("%s 所在磁盘只剩 %.1f%%（%s）：kubelet 即将驱逐游戏服务器", p, free*100, avail),
 				SummaryEN: fmt.Sprintf("the filesystem holding %s is %.1f%% free (%s): the kubelet is about to evict game servers", p, free*100, avail),
-				Hint:      "https://docs.felismc.com/en/operations/troubleshooting.html#_13b-node-runs-out-of-disk-what-survives-and-how-to-recover",
+				Hint:      "https://docs.felismc.com/en/operations/troubleshooting#_13b-node-runs-out-of-disk-what-survives-and-how-to-recover",
 			})
 		case free < diskLowRatio:
 			out = append(out, Finding{
 				Key: "disk/" + p, Severity: Warning, For: diskLowFor,
 				Summary:   fmt.Sprintf("%s 所在磁盘只剩 %.1f%%（%s）", p, free*100, avail),
 				SummaryEN: fmt.Sprintf("the filesystem holding %s is %.1f%% free (%s)", p, free*100, avail),
-				Hint:      "https://docs.felismc.com/en/operations/troubleshooting.html#_13b-node-runs-out-of-disk-what-survives-and-how-to-recover",
+				Hint:      "https://docs.felismc.com/en/operations/troubleshooting#_13b-node-runs-out-of-disk-what-survives-and-how-to-recover",
 			})
 		}
 	}

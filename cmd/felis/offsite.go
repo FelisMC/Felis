@@ -64,7 +64,7 @@ const defaultOffsiteEnvFile = "/etc/felis/offsite.env"
 // archives, the database bundles, the registry's user images and the
 // submission uploads (internal/offsite). felis-offsite.timer runs `sync`
 // hourly on the host; the fetch verbs are the way back after the node is lost
-// (https://docs.felismc.com/en/operations/troubleshooting.html#_16-control-plane-database-backups-and-disaster-recovery).
+// (https://docs.felismc.com/en/operations/troubleshooting#_16-control-plane-database-backups-and-disaster-recovery).
 func cmdOffsite(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprint(stderr, offsiteUsage)
@@ -156,7 +156,7 @@ func loadEnvFile(path string) error {
 // resolveOffsite builds the bucket client and parses the key for c.
 func resolveOffsite(c config.OffsiteConfig) (*offsiteEnv, error) {
 	if !c.Enabled() {
-		return nil, errors.New("no [offsite] bucket is configured (https://docs.felismc.com/en/operations/troubleshooting.html#_16-control-plane-database-backups-and-disaster-recovery, \"Keep a copy somewhere else\")")
+		return nil, errors.New("no [offsite] bucket is configured (https://docs.felismc.com/en/operations/troubleshooting#_16-control-plane-database-backups-and-disaster-recovery, \"Keep a copy somewhere else\")")
 	}
 	need := func(ref, what string) (string, error) {
 		v := os.Getenv(ref)
@@ -547,7 +547,7 @@ func offsiteStatus(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) in
 	}
 	if !cfg.Offsite.Enabled() {
 		fmt.Fprintln(stdout, "off-site copy: not configured. World archives, database bundles, user images and uploaded modpacks exist on this machine only.")
-		fmt.Fprintln(stdout, "See https://docs.felismc.com/en/operations/troubleshooting.html#_16-control-plane-database-backups-and-disaster-recovery, \"Keep a copy somewhere else\".")
+		fmt.Fprintln(stdout, "See https://docs.felismc.com/en/operations/troubleshooting#_16-control-plane-database-backups-and-disaster-recovery, \"Keep a copy somewhere else\".")
 		return 1
 	}
 	o := cfg.Offsite
