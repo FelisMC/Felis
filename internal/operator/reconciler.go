@@ -132,6 +132,10 @@ type Reconciler struct {
 	// initContainer injected into user servers. Empty (an operator Deployment
 	// without FELIS_IMAGE) disables that injection rather than failing.
 	FelisImage string
+	// ArtifactCache is the base URL of the server-software download cache
+	// (felis-artifacts) that runtime-image servers install through. Empty makes
+	// them download from upstream directly.
+	ArtifactCache string
 	// Now is injectable for deterministic timestamps in tests; defaults to
 	// metav1.Now.
 	Now func() metav1.Time
@@ -388,7 +392,7 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 	if placed.Spec.NodeName == "" {
 		placed.Spec.NodeName = r.ControllerNode
 	}
-	desired, err := buildStatefulSet(placed, 1, r.FelisImage, r.EgressProbe)
+	desired, err := buildStatefulSetWith(placed, 1, podOptions{FelisImage: r.FelisImage, GateProbe: r.EgressProbe, ArtifactCache: r.ArtifactCache})
 	if err != nil {
 		// A malformed spec (e.g. bad storage quantity) is terminal until edited.
 		r.markFailed(server, "InvalidSpec", err.Error())

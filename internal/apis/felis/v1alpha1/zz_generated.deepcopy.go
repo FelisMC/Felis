@@ -73,6 +73,10 @@ func (in *MinecraftServerList) DeepCopyObject() runtime.Object {
 // DeepCopyInto copies the receiver into out.
 func (in *MinecraftServerSpec) DeepCopyInto(out *MinecraftServerSpec) {
 	*out = *in
+	if in.Software != nil {
+		s := *in.Software
+		out.Software = &s
+	}
 	if in.JavaFlags != nil {
 		l := make([]string, len(in.JavaFlags))
 		copy(l, in.JavaFlags)

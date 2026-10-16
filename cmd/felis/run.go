@@ -31,13 +31,14 @@ Commands:
   fetch-context     Fetch and extract a submission's build context (internal Job entrypoint)
   scan-gate         Apply the scan policy to a build's Trivy report and hand felis-api the report and SBOM (internal Job entrypoint)
   push-image        Push a scanned image tarball to the registry (internal Job entrypoint)
-  mirror-build-tools Copy kaniko, trivy and Trivy's DBs into the registry (run by felis-build-tools.timer)
+  mirror-build-tools Copy kaniko, trivy, Trivy's DBs and the servers' Java runtimes into the registry (run by felis-build-tools.timer)
   server-migrate    Move a stopped world between approved nodes (start|status|retry|abort; requires root)
   node              Join, approve and update trusted daemon nodes (list|token|join|approve|upgrade|firewall; requires root)
   node-control      Run the host node-task service on an API-only Unix socket (requires root)
   node-probe        Verify reachability and observed sources (internal admission probe)
   archive-serve     Serve scoped one-use archive transfers on the controller (internal entrypoint)
   registry-gate     Authorize registry writes in front of registry:2 (internal sidecar entrypoint)
+  artifact-cache    Serve the cluster's server-software download cache (internal Deployment entrypoint)
   manifests         Render the control-plane RBAC + NetworkPolicy install bundle as YAML
   apply             Create a MinecraftServer CRD (direct K8s write; use -f server.json)
   setup             Run host bootstrap + first-run setup console (TUI; requires root/sudo)
@@ -102,6 +103,10 @@ var commands = map[string]func(args []string, stdout, stderr io.Writer) int{
 	"bootstrap-assets":   cmdBootstrapAssets,
 	"init-forwarding":    cmdInitForwarding,
 	"init-volume":        cmdInitVolume,
+	"install-server":     cmdInstallServer,
+	"install-self":       cmdInstallSelf,
+	"launch":             cmdLaunch,
+	"artifact-cache":     cmdArtifactCache,
 	"pin-images":         cmdPinImages,
 	"image-bundle":       cmdImageBundle,
 	"version":            cmdVersion,

@@ -1,6 +1,9 @@
 package build
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // Tool is an image or OCI artifact a build Job runs or reads: where it comes
 // from upstream, and the repository:tag the platform registry keeps its copy
@@ -56,4 +59,29 @@ func toolRef(registry, name string) string {
 func (c Config) ToolRefs() []string {
 	c = c.withDefaults()
 	return []string{c.KanikoImage, c.TrivyImage, c.TrivyDBRepository, c.TrivyJavaDBRepository}
+}
+
+// RuntimeImages are the Java runtimes servers built from server software start
+// on (internal/software, internal/operator applySoftware): the upstream Temurin
+// JRE images, pinned by the digest of their multi-platform index, one per Java
+// major version in software.Runtimes. They are mirrored with the build tools,
+// by the same command and timer, so a node pulls them from the platform
+// registry; the registry pruner never touches the mirror/ repositories.
+var RuntimeImages = []Tool{
+	{Name: "runtime-java8", Source: "docker.io/library/eclipse-temurin:8-jre@sha256:5c9a04052cf8002b19d79c52986e93ec5f5222ecb1cdf87e309d1f96ef712afc", Mirror: "mirror/eclipse-temurin:8-jre"},
+	{Name: "runtime-java17", Source: "docker.io/library/eclipse-temurin:17-jre@sha256:a9b54b51aaa867507be76277a98c6b11b99515cac6330891b534d070f607214c", Mirror: "mirror/eclipse-temurin:17-jre"},
+	{Name: "runtime-java21", Source: "docker.io/library/eclipse-temurin:21-jre@sha256:ccbad9e7cb84c27092b12c40a4143e5733e050db9c3784d84f632dcf423fb2ef", Mirror: "mirror/eclipse-temurin:21-jre"},
+	{Name: "runtime-java25", Source: "docker.io/library/eclipse-temurin:25-jre@sha256:fd4b1c02c64eef378212e23656fc0b0caa41a357876fa0b60e51ceda94a3db64", Mirror: "mirror/eclipse-temurin:25-jre"},
+}
+
+// RuntimeImageRef is the platform registry reference of the runtime image for a
+// Java major version, or "" when the platform ships none for it.
+func RuntimeImageRef(registry string, java int) string {
+	name := "runtime-java" + strconv.Itoa(java)
+	for _, t := range RuntimeImages {
+		if t.Name == name {
+			return strings.TrimSuffix(registry, "/") + "/" + t.Mirror
+		}
+	}
+	return ""
 }

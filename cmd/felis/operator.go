@@ -123,7 +123,10 @@ func cmdOperator(args []string, _, stderr io.Writer) int {
 		// The operator's own image, for the forwarding-config initContainer it
 		// injects into user servers. The Deployment passes it as FELIS_IMAGE (see
 		// platform.OperatorDeployment); absent, that injection is simply skipped.
-		FelisImage:     os.Getenv("FELIS_IMAGE"),
+		FelisImage: os.Getenv("FELIS_IMAGE"),
+		// The server-software download cache runtime-image servers install
+		// through (platform.ArtifactCacheURL); absent, they download directly.
+		ArtifactCache:  os.Getenv("FELIS_ARTIFACT_CACHE"),
 		Nodes:          nil,
 		EgressProbe:    os.Getenv("FELIS_EGRESS_PROBE"),
 		ControllerNode: os.Getenv("FELIS_CONTROLLER_NODE"),

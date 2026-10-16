@@ -70,6 +70,7 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 	registryStorage := fs.String("registry-storage", "", "capacity the registry PVC requests (default 10Gi; k3s local-path does not enforce it)")
 	uploadsStorage := fs.String("uploads-storage", "", "capacity the uploads PVC requests (default 5Gi; k3s local-path does not enforce it)")
 	backupStorage := fs.String("backup-storage", "", "capacity the world-archive PVC requests (default 10Gi; k3s local-path does not enforce it)")
+	artifactsStorage := fs.String("artifacts-storage", "", "capacity the server-software download cache PVC requests (default 10Gi; the cache evicts to stay within 90% of it)")
 	reaperNode := fs.String("reaper-node", "", "node that holds --worlds-host-path: pins the reaper CronJob's pod there via nodeSelector kubernetes.io/hostname (multi-node clusters need this, or the reaper may schedule where the hostPath is empty)")
 	var velocityCIDRs multiFlag
 	fs.Var(&velocityCIDRs, "velocity-cidr", "CIDR of a Velocity proxy host allowed to reach game port 25565 (repeatable, REQUIRED)")
@@ -219,9 +220,10 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 		ServerEgressDenyCIDRs:  []string(serverDenyCIDRs),
 		ServerEgressAllowCIDRs: []string(serverAllowCIDRs),
 
-		RegistryStorage: *registryStorage,
-		UploadsStorage:  *uploadsStorage,
-		BackupStorage:   *backupStorage,
+		RegistryStorage:  *registryStorage,
+		UploadsStorage:   *uploadsStorage,
+		BackupStorage:    *backupStorage,
+		ArtifactsStorage: *artifactsStorage,
 	}
 	if err := params.Validate(); err != nil {
 		fmt.Fprintf(stderr, "felis manifests: %v\n", err)

@@ -21,8 +21,9 @@ import (
 const defaultBuildToolsStatus = "/var/lib/felis/build-tools/status.json"
 
 // cmdMirrorBuildTools copies the build lane's tools (build.Tools: the kaniko and
-// trivy images, Trivy's vulnerability and Java DBs) from upstream into the
-// platform registry, where build Jobs pull them. deploy/bootstrap.sh runs it at
+// trivy images, Trivy's vulnerability and Java DBs) and the servers' Java runtime
+// images (build.RuntimeImages) from upstream into the platform registry, where
+// build Jobs and server pods pull them. deploy/bootstrap.sh runs it at
 // install and from felis-build-tools.timer twice a day, which is what keeps the
 // DBs fresh; a root shell can run it the same way to refresh now.
 //
@@ -87,9 +88,15 @@ func cmdMirrorBuildTools(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// mirroredTools are the build tools and the servers' runtime images, every
+// image this command copies.
+func mirroredTools() []build.Tool {
+	return append(append([]build.Tool{}, build.Tools...), build.RuntimeImages...)
+}
+
 func toolNames() string {
 	var names []string
-	for _, t := range build.Tools {
+	for _, t := range mirroredTools() {
 		names = append(names, t.Name)
 	}
 	return strings.Join(names, ",")
@@ -97,13 +104,13 @@ func toolNames() string {
 
 func selectTools(only string) ([]build.Tool, error) {
 	if only == "" {
-		return build.Tools, nil
+		return mirroredTools(), nil
 	}
 	var out []build.Tool
 	for _, name := range strings.Split(only, ",") {
 		name = strings.TrimSpace(name)
 		found := false
-		for _, t := range build.Tools {
+		for _, t := range mirroredTools() {
 			if t.Name == name {
 				out = append(out, t)
 				found = true

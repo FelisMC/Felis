@@ -183,6 +183,12 @@ type MinecraftServerSpec struct {
 
 	// Image is the fully-qualified container image (loader-agnostic).
 	Image string `json:"image"`
+	// Software, when set, makes Image a runtime image (a plain Java runtime)
+	// and the server software data on the world volume: before every start an
+	// install step brings the volume to what Software names, and the server is
+	// started from there. Without it, Image is a server image that starts the
+	// server itself.
+	Software *SoftwareSpec `json:"software,omitempty"`
 	// Jar is the server jar path/name inside the image, if the entrypoint
 	// needs it explicitly.
 	Jar string `json:"jar,omitempty"`
@@ -214,6 +220,35 @@ type MinecraftServerSpec struct {
 	Startup StartupSpec `json:"startup,omitempty"`
 	// Idle configures empty-server auto-stop (spec §8).
 	Idle IdleSpec `json:"idle,omitempty"`
+}
+
+// SoftwareSpec is the server software of a runtime-image server (see
+// internal/software, whose Spec mirrors it field for field).
+// +kubebuilder:validation:XValidation:rule="self.type == 'custom' ? has(self.jar) && !has(self.minecraftVersion) && !has(self.build) : has(self.minecraftVersion) && !has(self.jar)",message="a custom server names a jar and no version; every other type names a Minecraft version and no jar"
+type SoftwareSpec struct {
+	// Type is the kind of server software.
+	// +kubebuilder:validation:Enum=paper;purpur;fabric;quilt;forge;neoforge;vanilla;custom
+	Type string `json:"type"`
+	// MinecraftVersion is the game version ("1.21.4", "26.3").
+	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:Pattern=`^[0-9A-Za-z][0-9A-Za-z.+_-]*$`
+	MinecraftVersion string `json:"minecraftVersion,omitempty"`
+	// Build is the Paper/Purpur build or the Fabric/Quilt/Forge/NeoForge
+	// loader version.
+	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:Pattern=`^[0-9A-Za-z][0-9A-Za-z.+_-]*$`
+	Build string `json:"build,omitempty"`
+	// Java is the major version of the runtime image the server starts on.
+	// +kubebuilder:validation:Enum=8;17;21;25
+	Java int32 `json:"java"`
+	// Jar is a custom server's jar, relative to the server directory.
+	// +kubebuilder:validation:MaxLength=255
+	Jar string `json:"jar,omitempty"`
+	// Forwarding is how the proxy's player identity reaches the server:
+	// velocity (the installer adds and configures what the software needs) or
+	// none (players join under offline-mode UUIDs).
+	// +kubebuilder:validation:Enum=velocity;none
+	Forwarding string `json:"forwarding,omitempty"`
 }
 
 // EnvVar is a name/value pair injected into the server container. It is a

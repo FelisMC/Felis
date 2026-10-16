@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"felis.lolicon.best/internal/software"
+	"github.com/BurntSushi/toml"
 	"sigs.k8s.io/yaml"
 )
 
@@ -62,6 +64,20 @@ func cmdInitForwarding(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	secret := os.Getenv(forwardingSecretEnv)
+	if os.Getenv(softwareEnv) != "" {
+		spec, err := readSoftwareSpec()
+		if err != nil {
+			fmt.Fprintf(stderr, "felis init-forwarding: %v\n", err)
+			return 2
+		}
+		wrote, err := writeSoftwareForwarding(*dataDir, spec, secret)
+		if err != nil {
+			fmt.Fprintf(stderr, "felis init-forwarding: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "felis init-forwarding: %s\n", wrote)
+		return 0
+	}
 	if err := writePaperForwarding(*dataDir, secret); err != nil {
 		fmt.Fprintf(stderr, "felis init-forwarding: %v\n", err)
 		return 1
@@ -193,4 +209,91 @@ func writeFileMode(path string, data []byte) error {
 		return fmt.Errorf("chmod %s: %w", path, err)
 	}
 	return nil
+}
+
+// writeSoftwareForwarding writes the forwarding config of a runtime-image
+// server, by what it runs (software.ForwardingFor decided whether it can):
+//
+//   - Paper and Purpur: the Velocity block of config/paper-global.yml from 1.19,
+//     of paper.yml's settings.velocity-support before;
+//   - Forge and NeoForge: the [forwarding] table of Proxy Compatible Forge's
+//     config/proxy-compatible-forge.toml;
+//   - Fabric and Quilt: nothing on disk, since FabricProxy-Lite takes the secret
+//     from the environment `felis launch` sets;
+//   - a server without forwarding: nothing.
+//
+// The launcher forces online-mode=false for every one of them.
+func writeSoftwareForwarding(dataDir string, s software.Spec, secret string) (string, error) {
+	if secret == "" {
+		return "no forwarding secret set; leaving config untouched", nil
+	}
+	if s.Forwarding != software.ForwardingVelocity {
+		return "this server takes no forwarding; players join under offline-mode UUIDs", nil
+	}
+	switch s.Type {
+	case software.Paper, software.Purpur:
+		if software.AtLeast(s.MinecraftVersion, "1.19") {
+			return "wrote Velocity modern-forwarding config to config/paper-global.yml", writePaperGlobal(dataDir, secret)
+		}
+		return "wrote Velocity modern-forwarding config to paper.yml", writeLegacyPaperYML(dataDir, secret)
+	case software.Forge, software.NeoForge:
+		return "wrote Velocity modern-forwarding config to config/proxy-compatible-forge.toml", writePCFConfig(dataDir, secret)
+	case software.Fabric, software.Quilt:
+		return "FabricProxy-Lite reads the forwarding secret from the environment", nil
+	}
+	return "this server takes no forwarding", nil
+}
+
+// writeLegacyPaperYML merges settings.velocity-support into paper.yml, where
+// Paper 1.13 to 1.18 keep it.
+func writeLegacyPaperYML(dataDir, secret string) error {
+	path := filepath.Join(dataDir, "paper.yml")
+	root := map[string]any{}
+	if existing, err := os.ReadFile(path); err == nil {
+		if err := yaml.Unmarshal(existing, &root); err != nil {
+			return fmt.Errorf("parse existing %s: %w", path, err)
+		}
+		if root == nil {
+			root = map[string]any{}
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	vs := childMap(childMap(root, "settings"), "velocity-support")
+	vs["enabled"] = true
+	vs["online-mode"] = true
+	vs["secret"] = secret
+	out, err := yaml.Marshal(root)
+	if err != nil {
+		return fmt.Errorf("marshal %s: %w", path, err)
+	}
+	return writeFileMode(path, out)
+}
+
+// writePCFConfig merges the [forwarding] table Proxy Compatible Forge reads.
+// Forge's config loader fills in any key the file leaves out, so a fresh file
+// carrying only these three is complete.
+func writePCFConfig(dataDir, secret string) error {
+	dir := filepath.Join(dataDir, "config")
+	if err := os.MkdirAll(dir, fwdDirMode); err != nil {
+		return fmt.Errorf("create %s: %w", dir, err)
+	}
+	path := filepath.Join(dir, "proxy-compatible-forge.toml")
+	root := map[string]any{}
+	if existing, err := os.ReadFile(path); err == nil {
+		if _, err := toml.Decode(string(existing), &root); err != nil {
+			return fmt.Errorf("parse existing %s: %w", path, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	fwd := childMap(root, "forwarding")
+	fwd["enabled"] = true
+	fwd["mode"] = "MODERN"
+	fwd["secret"] = secret
+	var buf strings.Builder
+	if err := toml.NewEncoder(&buf).Encode(root); err != nil {
+		return fmt.Errorf("encode %s: %w", path, err)
+	}
+	return writeFileMode(path, []byte(buf.String()))
 }

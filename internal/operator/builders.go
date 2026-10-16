@@ -1,14 +1,15 @@
 package operator
 
 import (
-	"time"
-
+	"encoding/json"
 	"fmt"
 	"strconv"
+	"time"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/naming"
 	"felis.lolicon.best/internal/placement"
+	"felis.lolicon.best/internal/software"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -219,6 +220,30 @@ func healthHandler(server *v1alpha1.MinecraftServer) corev1.ProbeHandler {
 // save on SIGTERM; the reconciler flushes the world over RCON before it scales to
 // zero (saveBeforeStop).
 func buildStatefulSet(server *v1alpha1.MinecraftServer, replicas int32, felisImage string, gateProbe ...string) (*appsv1.StatefulSet, error) {
+	o := podOptions{FelisImage: felisImage}
+	if len(gateProbe) > 0 {
+		o.GateProbe = gateProbe[0]
+	}
+	return buildStatefulSetWith(server, replicas, o)
+}
+
+// podOptions are what the operator adds to every server pod beyond its spec.
+type podOptions struct {
+	// FelisImage runs the platform's init steps (see buildStatefulSet).
+	FelisImage string
+	// GateProbe is an extra address the egress gate must find fenced off.
+	GateProbe string
+	// ArtifactCache is the base URL of the server-software download cache a
+	// runtime-image server installs through; empty downloads directly.
+	ArtifactCache string
+}
+
+func buildStatefulSetWith(server *v1alpha1.MinecraftServer, replicas int32, o podOptions) (*appsv1.StatefulSet, error) {
+	felisImage := o.FelisImage
+	var gateProbe []string
+	if o.GateProbe != "" {
+		gateProbe = []string{o.GateProbe}
+	}
 	storageSize := server.Spec.Storage.Size
 	if storageSize == "" {
 		storageSize = defaultStorageSize
@@ -352,7 +377,119 @@ func buildStatefulSet(server *v1alpha1.MinecraftServer, replicas int32, felisIma
 	if server.Spec.NodeName != "" {
 		sts.Spec.Template.Spec.NodeSelector = map[string]string{placement.LabelIdentity: server.Spec.NodeName}
 	}
+	if server.Spec.Software != nil {
+		if err := applySoftware(&sts.Spec.Template.Spec, server, o); err != nil {
+			return nil, err
+		}
+	}
 	return sts, nil
+}
+
+// Paths and volumes of a runtime-image server pod.
+const (
+	felisBinVolume = "felis-bin"
+	felisBinDir    = "/felis/bin"
+	felisBinCopy   = felisBinDir + "/felis"
+	installTmp     = "install-tmp"
+	envSoftware    = "FELIS_SOFTWARE"
+	envArtifacts   = "FELIS_ARTIFACT_CACHE"
+)
+
+// SoftwareJSON renders a SoftwareSpec as the FELIS_SOFTWARE value the
+// install, forwarding and launch steps read (internal/software.Spec).
+func SoftwareJSON(s *v1alpha1.SoftwareSpec) (string, error) {
+	b, err := json.Marshal(software.Spec{
+		Type:             software.Type(s.Type),
+		MinecraftVersion: s.MinecraftVersion,
+		Build:            s.Build,
+		Java:             int(s.Java),
+		Jar:              s.Jar,
+		Forwarding:       s.Forwarding,
+	})
+	return string(b), err
+}
+
+// applySoftware turns a pod built around a server image into one around the
+// runtime image, which carries only Java:
+//
+//  1. install-self (the felis image) copies the felis binary into an emptyDir,
+//     so the runtime image needs nothing of the platform's;
+//  2. prepare-data and the egress gate run as for every server, so nothing is
+//     downloaded before the pod's egress fence stands;
+//  3. install-server (the runtime image, for the Java a Forge installer needs)
+//     brings the world volume to the software the spec names;
+//  4. init-forwarding writes that software's forwarding config;
+//  5. the server container runs `felis launch`, which starts the server the way
+//     the install step recorded.
+//
+// The install step runs as the game uid with no capability and a read-only root
+// filesystem, and gets neither the RCON password nor the forwarding secret. It
+// takes the server's own resources: a Forge installer patching the game needs
+// the memory the server will, and an init container's resources only count
+// while it runs.
+func applySoftware(pod *corev1.PodSpec, server *v1alpha1.MinecraftServer, o podOptions) error {
+	if o.FelisImage == "" {
+		return fmt.Errorf("server %s runs server software from the runtime image, which needs the felis image (FELIS_IMAGE) for its install steps", server.Name)
+	}
+	spec, err := SoftwareJSON(server.Spec.Software)
+	if err != nil {
+		return err
+	}
+	pod.Volumes = append(pod.Volumes,
+		corev1.Volume{Name: felisBinVolume, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: quantityPtr("256Mi")}}},
+		corev1.Volume{Name: installTmp, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: quantityPtr("2Gi")}}},
+	)
+	binRO := corev1.VolumeMount{Name: felisBinVolume, MountPath: felisBinDir, ReadOnly: true}
+	data := corev1.VolumeMount{Name: dataVolumeName, MountPath: dataMountPath}
+
+	installSelf := corev1.Container{
+		Name:            "install-self",
+		Image:           o.FelisImage,
+		Command:         []string{felisBinaryPath, "install-self", "--to", felisBinDir},
+		VolumeMounts:    []corev1.VolumeMount{{Name: felisBinVolume, MountPath: felisBinDir}},
+		Resources:       initContainerResources(),
+		SecurityContext: hardenedContainerSecurityContext(true),
+	}
+	install := corev1.Container{
+		Name:    "install-server",
+		Image:   server.Spec.Image,
+		Command: []string{felisBinCopy, "install-server", "--data", dataMountPath},
+		Env: []corev1.EnvVar{
+			{Name: envSoftware, Value: spec},
+			{Name: envArtifacts, Value: o.ArtifactCache},
+			{Name: "HOME", Value: "/tmp"},
+		},
+		WorkingDir:      dataMountPath,
+		VolumeMounts:    []corev1.VolumeMount{data, binRO, {Name: installTmp, MountPath: "/tmp"}},
+		Resources:       server.Spec.Resources,
+		SecurityContext: hardenedContainerSecurityContext(true),
+	}
+	forwarding := forwardingInitContainer(o.FelisImage)
+	forwarding.Env = append(forwarding.Env, corev1.EnvVar{Name: envSoftware, Value: spec})
+
+	// prepare-data, then the gate, then the steps that fetch and configure.
+	var inits []corev1.Container
+	inits = append(inits, installSelf)
+	for _, c := range pod.InitContainers {
+		switch c.Name {
+		case "prepare-data", "egress-gate":
+			inits = append(inits, c)
+		}
+	}
+	inits = append(inits, install, forwarding)
+	pod.InitContainers = inits
+
+	main := &pod.Containers[0]
+	main.Command = []string{felisBinCopy, "launch", "--data", dataMountPath}
+	main.WorkingDir = dataMountPath
+	main.Env = append(main.Env, corev1.EnvVar{Name: envSoftware, Value: spec})
+	main.VolumeMounts = append(main.VolumeMounts, binRO)
+	return nil
+}
+
+func quantityPtr(s string) *resource.Quantity {
+	q := resource.MustParse(s)
+	return &q
 }
 
 // buildEnv assembles the container environment: heap sizing, user-supplied

@@ -245,6 +245,71 @@ spec:
                       More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                     type: object
                 type: object
+              software:
+                description: |-
+                  Software, when set, makes Image a runtime image (a plain Java runtime)
+                  and the server software data on the world volume: before every start an
+                  install step brings the volume to what Software names, and the server is
+                  started from there. Without it, Image is a server image that starts the
+                  server itself.
+                properties:
+                  build:
+                    description: |-
+                      Build is the Paper/Purpur build or the Fabric/Quilt/Forge/NeoForge
+                      loader version.
+                    maxLength: 64
+                    pattern: ^[0-9A-Za-z][0-9A-Za-z.+_-]*$
+                    type: string
+                  forwarding:
+                    description: |-
+                      Forwarding is how the proxy's player identity reaches the server:
+                      velocity (the installer adds and configures what the software needs) or
+                      none (players join under offline-mode UUIDs).
+                    enum:
+                    - velocity
+                    - none
+                    type: string
+                  jar:
+                    description: Jar is a custom server's jar, relative to the server
+                      directory.
+                    maxLength: 255
+                    type: string
+                  java:
+                    description: Java is the major version of the runtime image the
+                      server starts on.
+                    enum:
+                    - 8
+                    - 17
+                    - 21
+                    - 25
+                    format: int32
+                    type: integer
+                  minecraftVersion:
+                    description: MinecraftVersion is the game version ("1.21.4", "26.3").
+                    maxLength: 64
+                    pattern: ^[0-9A-Za-z][0-9A-Za-z.+_-]*$
+                    type: string
+                  type:
+                    description: Type is the kind of server software.
+                    enum:
+                    - paper
+                    - purpur
+                    - fabric
+                    - quilt
+                    - forge
+                    - neoforge
+                    - vanilla
+                    - custom
+                    type: string
+                required:
+                - java
+                - type
+                type: object
+                x-kubernetes-validations:
+                - message: a custom server names a jar and no version; every other type
+                    names a Minecraft version and no jar
+                  rule: 'self.type == ''custom'' ? has(self.jar) && !has(self.minecraftVersion)
+                    && !has(self.build) : has(self.minecraftVersion) && !has(self.jar)'
               startup:
                 description: Startup bounds how long Starting may last before Failed
                   (spec §5).
