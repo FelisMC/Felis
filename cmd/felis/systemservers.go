@@ -472,7 +472,8 @@ func derivedEnvWanted(desired *v1alpha1.MinecraftServer) map[string]string {
 // setup because some fills need an ordering only the operator knows — enabling
 // RCON or the HTTP readiness gate on a server whose image predates the listener
 // would hold that server in Starting until it was marked Failed. Rebuild (or
-// upgrade) the images first, then run this.
+// upgrade) the images first, then run this. A system server that is missing
+// altogether is created from the desired spec, as setup would create it.
 func convergeSystemServers(ctx context.Context, cl client.Client, namespace, loginImage, lobbyImage, apiBaseURL, rootDomain, panelHostname string) []systemServerOutcome {
 	outcomes := make([]systemServerOutcome, 0, 2)
 	for _, p := range systemServerPlans(loginImage, lobbyImage, apiBaseURL, rootDomain, panelHostname) {
@@ -489,8 +490,13 @@ func convergeSystemServers(ctx context.Context, cl client.Client, namespace, log
 		var existing v1alpha1.MinecraftServer
 		switch err := cl.Get(ctx, client.ObjectKeyFromObject(desired), &existing); {
 		case apierrors.IsNotFound(err):
-			outcomes = append(outcomes, systemServerOutcome{name: p.name,
-				skipped: "not present — run `sudo felis setup` first"})
+			// A login space or lobby that is gone is created again, as setup creates it;
+			// the panel's Login & lobby page offers this pass when one is missing.
+			if err := cl.Create(ctx, desired); err != nil {
+				outcomes = append(outcomes, systemServerOutcome{name: p.name, err: err})
+				continue
+			}
+			outcomes = append(outcomes, systemServerOutcome{name: p.name, created: true, available: true})
 			continue
 		case err != nil:
 			outcomes = append(outcomes, systemServerOutcome{name: p.name, err: err})

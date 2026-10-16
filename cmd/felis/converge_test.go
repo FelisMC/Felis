@@ -139,7 +139,7 @@ func TestConvergeSystemServersLeavesNonZeroFieldsAlone(t *testing.T) {
 	}
 }
 
-// Guards: an absent CR is reported (creation is setup's job), a foreign CR is
+// Guards: an absent CR is created as setup would create it, a foreign CR is
 // refused rather than adopted, and an unset image skips like the provisioner does.
 func TestConvergeSystemServersGuards(t *testing.T) {
 	scheme := newSystemServerScheme(t)
@@ -149,14 +149,28 @@ func TestConvergeSystemServersGuards(t *testing.T) {
 			"http://felis-api.felis.svc.cluster.local:8081", "mc.example.net", "console.mc.example.net")
 	}
 
-	t.Run("absent CRs are reported, not created", func(t *testing.T) {
+	t.Run("absent CRs are created", func(t *testing.T) {
 		cl := fake.NewClientBuilder().WithScheme(scheme).Build()
 		for _, o := range run(cl, "reg/limbo:1", "reg/lobby:1") {
 			if o.err != nil {
 				t.Fatalf("%s: %v", o.name, o.err)
 			}
-			if o.created || !strings.Contains(o.skipped, "not present") {
-				t.Errorf("%s outcome = %+v, want a not-present skip", o.name, o)
+			if !o.created || !o.available {
+				t.Errorf("%s outcome = %+v, want it created", o.name, o)
+			}
+		}
+		for name, image := range map[string]string{naming.SystemLoginServer: "reg/limbo:1", naming.SystemLobbyServer: "reg/lobby:1"} {
+			var got v1alpha1.MinecraftServer
+			if err := cl.Get(ctx, client.ObjectKey{Namespace: "minecraft", Name: name}, &got); err != nil {
+				t.Fatalf("get %s: %v", name, err)
+			}
+			if got.Labels[v1alpha1.LabelSystemRole] != name || got.Spec.Image != image {
+				t.Errorf("%s: role label %q, image %q; want the system role and %s", name, got.Labels[v1alpha1.LabelSystemRole], got.Spec.Image, image)
+			}
+		}
+		for _, o := range run(cl, "reg/limbo:1", "reg/lobby:1") {
+			if o.created || o.err != nil {
+				t.Errorf("a second pass must find %s in place: %+v", o.name, o)
 			}
 		}
 	})

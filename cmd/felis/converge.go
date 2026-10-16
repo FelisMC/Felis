@@ -21,8 +21,9 @@ import (
 // with -user-rcon their RCON block (#3). Provisioning is create-if-absent, so a field the desired spec
 // gained after an install (spec.rcon, spec.startup.healthHTTPPort, a derived env
 // key) never reaches the existing CR — and nothing says so. This command fills
-// exactly those zero-value fields; see convergeSystemServers for the full contract
-// and why it is a separate, operator-timed step rather than part of setup.
+// exactly those zero-value fields, and creates a login space or lobby that is missing;
+// see convergeSystemServers for the full contract and why it is a separate,
+// operator-timed step rather than part of setup.
 //
 // It reads the same host config as setup (the control plane's felis.toml) and
 // talks to the cluster with the local kubeconfig, so it must run as root on the
@@ -56,10 +57,22 @@ func cmdConverge(args []string, stdout, stderr io.Writer) int {
 	}
 
 	controlNS := platform.DefaultControlNamespace
-	outcomes := convergeSystemServers(context.Background(), cl, cfg.K8s.Namespace,
+	buildNS := cfg.Registry.BuildNamespace
+	if buildNS == "" {
+		buildNS = platform.DefaultBuildNamespace
+	}
+	// A system server this pass creates mounts the Secrets setup replicates into the
+	// game namespace; only the replicas that changed or are unusable are reported.
+	var outcomes []systemServerOutcome
+	for _, o := range provisionSecretReplicas(context.Background(), cl, controlNS, cfg.K8s.Namespace, buildNS) {
+		if o.created || o.updated || o.err != nil || !o.available {
+			outcomes = append(outcomes, o)
+		}
+	}
+	outcomes = append(outcomes, convergeSystemServers(context.Background(), cl, cfg.K8s.Namespace,
 		cfg.Velocity.LoginImage, cfg.Velocity.LobbyImage,
 		platform.InternalAPIBaseURL(controlNS), cfg.Server.RootDomain,
-		defaultPanelHostname(cfg.Server.RootDomain, cfg.Auth.PanelHostname))
+		defaultPanelHostname(cfg.Server.RootDomain, cfg.Auth.PanelHostname))...)
 
 	outcomes = append(outcomes, convergeUserServerIdle(context.Background(), cl, cfg.K8s.Namespace)...)
 	outcomes = append(outcomes, convergeUserServerRcon(context.Background(), cl, cfg.K8s.Namespace, *userRcon)...)
@@ -71,6 +84,10 @@ func cmdConverge(args []string, stdout, stderr io.Writer) int {
 		case o.err != nil:
 			fmt.Fprintf(stdout, "  - %s: ERROR %v\n", o.name, o.err)
 			exit = 1
+		case o.created:
+			fmt.Fprintf(stdout, "  - %s: created (it was missing)\n", o.name)
+		case o.updated:
+			fmt.Fprintf(stdout, "  - %s: refreshed from the control namespace\n", o.name)
 		case len(o.changes) > 0:
 			fmt.Fprintf(stdout, "  - %s: updated (%s)\n", o.name, strings.Join(o.changes, ", "))
 		default:
