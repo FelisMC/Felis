@@ -1,13 +1,13 @@
 package main
 
 import (
+	"encoding/base64"
 	"errors"
 	"io"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/x/ansi"
 )
 
 func TestSummaryCopyLink(t *testing.T) {
@@ -71,6 +71,10 @@ func (*fakeTTY) Close() error { return nil }
 // terminal instead of failing on the missing desktop clipboard.
 func TestCopyTerminalText(t *testing.T) {
 	const link = "https://panel.example/setup?token=test-token"
+	// OSC 52 sets the system clipboard ("c") to base64 text, ended by BEL; tmux passes a
+	// sequence through in a DCS "tmux;" string with every ESC doubled.
+	osc52 := "\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(link)) + "\a"
+	tmuxOSC52 := "\x1bPtmux;\x1b" + osc52 + "\x1b\\"
 	noTools := errors.New("No clipboard utilities available")
 	for _, tc := range []struct {
 		name                   string
@@ -80,11 +84,11 @@ func TestCopyTerminalText(t *testing.T) {
 		wantDesktop, wantErr   bool
 		wantSequence           string
 	}{
-		{name: "SSH under sudo, no desktop tools", desktopErr: noTools, wantSequence: ansi.SetSystemClipboard(link)},
-		{name: "X11 desktop", display: ":0", wantDesktop: true, wantSequence: ansi.SetSystemClipboard(link)},
-		{name: "Wayland desktop", wayland: "wayland-0", wantDesktop: true, wantSequence: ansi.SetSystemClipboard(link)},
-		{name: "desktop without tools", display: ":0", desktopErr: noTools, wantSequence: ansi.SetSystemClipboard(link)},
-		{name: "inside tmux", tmux: "/tmp/tmux-0/default,1,0", desktopErr: noTools, wantSequence: ansi.TmuxPassthrough(ansi.SetSystemClipboard(link))},
+		{name: "SSH under sudo, no desktop tools", desktopErr: noTools, wantSequence: osc52},
+		{name: "X11 desktop", display: ":0", wantDesktop: true, wantSequence: osc52},
+		{name: "Wayland desktop", wayland: "wayland-0", wantDesktop: true, wantSequence: osc52},
+		{name: "desktop without tools", display: ":0", desktopErr: noTools, wantSequence: osc52},
+		{name: "inside tmux", tmux: "/tmp/tmux-0/default,1,0", desktopErr: noTools, wantSequence: tmuxOSC52},
 		{name: "no terminal", desktopErr: noTools, noTTY: true, wantErr: true},
 		{name: "no terminal, desktop copied", display: ":0", noTTY: true, wantDesktop: true},
 	} {
