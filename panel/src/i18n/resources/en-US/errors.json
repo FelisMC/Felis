@@ -152,7 +152,7 @@
   "smtp_sender_refused": "The mail server refused to send from this address. Confirm with your mail provider that it is an authorized sending identity.",
   "smtp_recipient_refused": "The mail server refused the recipient address.",
   "smtp_failed": "The mail server did not accept the test message.",
-  "auth_source_tag_locked": "Saved source IDs cannot be renamed or removed. Disable the source instead.",
+  "auth_source_tag_retired": "This ID belongs to a deleted source and can be added again only with its original endpoint. Choose another ID.",
   "distributed_unavailable": "Distributed deployment is not configured. Configure the controller and worker nodes using the deployment runbook first.",
   "node_operation_busy": "Node maintenance is running. Server starts and additional node tasks are temporarily blocked.",
   "node_control_unavailable": "Host node service is unavailable. Inspect felis-node-control.service on the controller.",

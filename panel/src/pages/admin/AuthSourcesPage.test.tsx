@@ -9,7 +9,7 @@ import type { AuthSourceConfig, AuthSourcesSettings } from "@/lib/types";
 const calls = vi.hoisted(() => ({ getAuthSources: vi.fn(), setAuthSources: vi.fn(), testAuthSource: vi.fn() }));
 vi.mock("@/lib/api", async (original) => ({ ...await original<typeof import("@/lib/api")>(), api: calls }));
 const source = (tag = "littleskin", prefix = "LS"): AuthSourceConfig => ({ tag, prefix, url: "https://example.org/sessionserver/session/minecraft/hasJoined", api_url: "", enabled: true });
-const settings = (sources = [source()]): AuthSourcesSettings => ({ sources, revision: "original", managed: false });
+const settings = (sources = [source()], retired: AuthSourcesSettings["retired"] = []): AuthSourcesSettings => ({ sources, retired, revision: "original", managed: false });
 function page() { render(<MemoryRouter><AuthSourcesPage /></MemoryRouter>); }
 const button = (name: string) => screen.getByRole("button", { name });
 const field = (label: string, index = 0) => screen.getAllByLabelText(label)[index] as HTMLInputElement;
@@ -18,7 +18,7 @@ async function ready() { await userEvent.click(await screen.findByRole("button",
 beforeEach(() => {
   vi.clearAllMocks();
   calls.getAuthSources.mockResolvedValue(settings());
-  calls.setAuthSources.mockImplementation(async (sources) => ({ sources, revision: "saved", managed: true }));
+  calls.setAuthSources.mockImplementation(async (sources) => ({ sources, retired: [], revision: "saved", managed: true }));
   calls.testAuthSource.mockResolvedValue({ ok: true, status: 204, elapsed_ms: 18 });
 });
 
@@ -61,6 +61,38 @@ describe("AuthSourcesPage", () => {
     await ready();
     expect(field("Permanent source ID").readOnly).toBe(true);
     expect(screen.queryByRole("button", { name: "Remove unsaved source" })).toBeNull();
+  });
+  it("deletes a saved source only after confirmation, and only when saved", async () => {
+    calls.getAuthSources.mockResolvedValue(settings([source(), source("custom", "CS")]));
+    page(); await ready();
+    await userEvent.click(button("Delete source littleskin"));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toContain("Delete the source \"littleskin\"");
+    expect(dialog.textContent).toContain("can no longer sign in");
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(field("Permanent source ID").value).toBe("littleskin");
+    expect((button("Save & apply") as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(button("Delete source littleskin"));
+    await userEvent.click(await screen.findByRole("button", { name: "Delete" }));
+    expect(screen.queryByRole("button", { name: "Expand littleskin" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Collapse littleskin" })).toBeNull();
+    expect(calls.setAuthSources).not.toHaveBeenCalled();
+    await userEvent.click(button("Save & apply"));
+    await waitFor(() => expect(calls.setAuthSources).toHaveBeenCalledWith([source("custom", "CS")], "original"));
+  });
+  it("keeps a deleted source's ID to its endpoint", async () => {
+    calls.getAuthSources.mockResolvedValue(settings([], [{ tag: "littleskin", url: source().url }]));
+    page(); await screen.findByText("Only official accounts are enabled. Add a source to accept another provider.");
+    await userEvent.click(button("Add source"));
+    fireEvent.change(field("Permanent source ID"), { target: { value: "littleskin" } });
+    fireEvent.change(field("Name collision prefix"), { target: { value: "LS" } });
+    fireEvent.change(field("Authentication endpoint (hasJoined)"), { target: { value: "https://other.example/check" } });
+    expect(screen.getByText(`This ID belongs to a deleted source (${source().url}) and works only with that endpoint. Choose another ID.`)).toBeTruthy();
+    expect((button("Save & apply") as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(field("Authentication endpoint (hasJoined)"), { target: { value: source().url } });
+    expect(screen.getByText("This ID belongs to a deleted source. Saving restores its players' identities.")).toBeTruthy();
+    await userEvent.click(button("Save & apply"));
+    await waitFor(() => expect(calls.setAuthSources).toHaveBeenCalledWith([source()], "original"));
   });
   it("adds a source, fixes a duplicate ID, saves and locks it without sending UI state", async () => {
     page(); await screen.findByRole("button", { name: "Expand littleskin" });

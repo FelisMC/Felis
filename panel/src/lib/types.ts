@@ -397,8 +397,16 @@ export interface MailSettingsRequest {
   revision: string;
 }
 
+/** RetiredAuthSource is a deleted source's tag with the endpoint it pointed at; the tag
+ *  can be added again only with that endpoint. */
+export interface RetiredAuthSource {
+  tag: string;
+  url: string;
+}
+
 export interface AuthSourcesSettings {
   sources: AuthSourceConfig[];
+  retired: RetiredAuthSource[];
   revision: string;
   managed: boolean;
 }

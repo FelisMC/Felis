@@ -1640,6 +1640,7 @@ export function humanizeError(e: unknown): string {
     // The mail relay (internal/api/mail_settings.go): why a relay check failed, in a
     // few words the Owner can act on.
     case "auth_sources_changed":
+    case "auth_source_tag_retired":
     case "mail_settings_changed":
     case "mail_settings_unavailable":
     case "smtp_unreachable":

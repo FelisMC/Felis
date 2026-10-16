@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ArrowDown, ArrowUp, Check, ChevronRight, Loader2, Plus, RefreshCw, Save, ShieldCheck, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { PageHeader } from "@/components/PageHeader";
 import { InlineError, MessageLine } from "@/components/MessageLine";
 import { isReauthCancelled, useReauth } from "@/components/ReauthDialog";
@@ -11,7 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync, useUnsavedGuard } from "@/lib/hooks";
-import type { AuthSourceConfig, AuthSourcesSettings } from "@/lib/types";
+import type { AuthSourceConfig, AuthSourcesSettings, RetiredAuthSource } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const emptySource = (): AuthSourceConfig => ({ tag: "", prefix: "", url: "", api_url: "", enabled: true });
@@ -32,6 +33,10 @@ type Draft = Omit<AuthSourcesSettings, "sources"> & { sources: SourceDraft[]; or
 const wireSources = (sources: SourceDraft[]): AuthSourceConfig[] => sources.map(({ locked: _locked, expanded: _expanded, ...source }) => source);
 const loadedDraft = (settings: AuthSourcesSettings, previous: SourceDraft[] = []): Draft => ({ ...settings, sources: settings.sources.map((source) => ({ ...source, locked: true, expanded: previous.find((s) => s.tag === source.tag)?.expanded ?? false })), original: JSON.stringify(settings.sources) });
 
+/** retiredFor is the deleted source an unsaved row's tag belongs to: its players' UUIDs
+ *  derive from the tag, so the tag comes back only with the same endpoint. */
+const retiredFor = (source: SourceDraft, retired: RetiredAuthSource[]) => source.locked ? undefined : retired.find((r) => r.tag === source.tag);
+
 export function AuthSourcesPage() {
   const { t } = useTranslation("authSources");
   const query = useAsync(api.getAuthSources, []);
@@ -41,6 +46,7 @@ export function AuthSourcesPage() {
   const [testing, setTesting] = useState<number | null>(null);
   const [checks, setChecks] = useState<Record<number, { kind: "success" | "error"; text: string }>>({});
   const [message, setMessage] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+  const [deleting, setDeleting] = useState<number | null>(null);
   useEffect(() => {
     if (query.data) setDraft((current) => current && JSON.stringify(wireSources(current.sources)) !== current.original ? current : loadedDraft(query.data!, current?.sources));
   }, [query.data]);
@@ -48,6 +54,7 @@ export function AuthSourcesPage() {
   useUnsavedGuard(dirty);
   const busy = saving || testing !== null || query.loading;
   const valid = draft !== null && draft.sources.every(validSource) &&
+    draft.sources.every((s) => { const retired = retiredFor(s, draft.retired); return !retired || retired.url === s.url; }) &&
     new Set(draft.sources.map((s) => s.tag)).size === draft.sources.length &&
     new Set(draft.sources.map((s) => s.prefix.toLowerCase())).size === draft.sources.length;
 
@@ -106,6 +113,7 @@ export function AuthSourcesPage() {
     <div aria-busy={query.loading} className="space-y-4">
       {(draft?.sources ?? [emptySource()]).map((source, index) => {
         const locked = "locked" in source && source.locked === true;
+        const retired = draft ? retiredFor(source, draft.retired) : undefined;
         const expanded = "expanded" in source ? source.expanded === true : true;
         const set = (patch: Partial<AuthSourceConfig>) => draft && edit(draft.sources.map((s, i) => i === index ? { ...s, ...patch } : s));
         const move = (offset: number) => {
@@ -127,12 +135,14 @@ export function AuthSourcesPage() {
               <label className="flex cursor-pointer items-center gap-2 text-xs"><Switch checked={draft !== null && source.enabled} onCheckedChange={(enabled) => set({ enabled })} disabled={!draft || busy} />{t("enabled")}</label>
               <Button variant="outline" size="icon" className="h-8 w-8" aria-label={t("move_up")} disabled={!draft || busy || index === 0} onClick={() => move(-1)}><ArrowUp /></Button>
               <Button variant="outline" size="icon" className="h-8 w-8" aria-label={t("move_down")} disabled={!draft || busy || index === draft.sources.length - 1} onClick={() => move(1)}><ArrowDown /></Button>
-              {!locked && <Button variant="outline" size="icon" className="h-8 w-8" aria-label={t("remove")} disabled={!draft || busy} onClick={() => draft && edit(draft.sources.filter((_, i) => i !== index))}><Trash2 /></Button>}
+              {locked
+                ? <Button variant="outline" size="icon" className="h-8 w-8" aria-label={t("delete", { name: source.tag })} disabled={!draft || busy} onClick={() => setDeleting(index)}><Trash2 /></Button>
+                : <Button variant="outline" size="icon" className="h-8 w-8" aria-label={t("remove")} disabled={!draft || busy} onClick={() => draft && edit(draft.sources.filter((_, i) => i !== index))}><Trash2 /></Button>}
             </div>
           </CardHeader>
           <CardContent id={`source-fields-${index}`} hidden={!expanded} className="space-y-4">
             <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2"><Label htmlFor={`source-tag-${index}`}>{t("tag")}</Label><Input id={`source-tag-${index}`} value={source.tag} readOnly={locked} disabled={!draft || busy} placeholder="littleskin" maxLength={128} onChange={(e) => set({ tag: e.target.value })} /><p className="text-xs text-muted-foreground">{t(locked ? "tag_locked" : "tag_hint")}</p></div>
+              <div className="space-y-2"><Label htmlFor={`source-tag-${index}`}>{t("tag")}</Label><Input id={`source-tag-${index}`} value={source.tag} readOnly={locked} disabled={!draft || busy} placeholder="littleskin" maxLength={128} onChange={(e) => set({ tag: e.target.value })} />{retired && retired.url !== source.url ? <InlineError message={t("tag_retired", { url: retired.url })} /> : <p className="text-xs text-muted-foreground">{t(locked ? "tag_locked" : retired ? "tag_restore" : "tag_hint")}</p>}</div>
               <div className="space-y-2"><Label htmlFor={`source-prefix-${index}`}>{t("prefix")}</Label><Input id={`source-prefix-${index}`} value={source.prefix} disabled={!draft || busy} placeholder="LS" maxLength={4} onChange={(e) => set({ prefix: e.target.value })} /><p className="text-xs text-muted-foreground">{t("prefix_hint")}</p></div>
             </div>
             <div className="space-y-2"><Label htmlFor={`source-url-${index}`}>{t("url")}</Label><Input id={`source-url-${index}`} type="url" value={source.url} disabled={!draft || busy} placeholder="https://example.org/api/yggdrasil/sessionserver/session/minecraft/hasJoined" onChange={(e) => set({ url: e.target.value })} /><p className="text-xs text-muted-foreground">{t("url_hint")}</p></div>
@@ -154,6 +164,11 @@ export function AuthSourcesPage() {
         <Button disabled={!dirty || !valid || busy} onClick={() => void save()}>{saving ? <Loader2 className="animate-spin" /> : <Save />}{t(saving ? "saving" : "save")}</Button>
       </div>
     </CardFooter></Card>
+    <ConfirmDialog open={deleting !== null} onOpenChange={(open) => { if (!open) setDeleting(null); }}
+      title={t("delete_title", { name: deleting !== null ? draft?.sources[deleting]?.tag : "" })}
+      description={t("delete_confirm", { name: deleting !== null ? draft?.sources[deleting]?.tag : "" })}
+      confirmLabel={t("delete_action")} confirmVariant="destructive"
+      onConfirm={async () => { if (draft && deleting !== null) edit(draft.sources.filter((_, i) => i !== deleting)); setDeleting(null); }} />
     {reauth.dialog}
   </div>;
 }

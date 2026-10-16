@@ -500,6 +500,7 @@ function initialState(): MockState {
     },
     authSources: {
       sources: [{ tag: "littleskin", prefix: "LS", url: "https://littleskin.cn/api/yggdrasil/sessionserver/session/minecraft/hasJoined", api_url: "", enabled: true }],
+      retired: [],
       revision: "installation-defaults",
       managed: false,
     },
@@ -1351,10 +1352,15 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
         const body = await readJSON<{ sources: AuthSourceConfig[]; revision: string }>(ctx.req);
         if (body.revision !== ctx.state.authSources.revision) {
           sendError(ctx.res, 409, "auth_sources_changed", "authentication sources changed; reload before saving");
-        } else if (ctx.state.authSources.sources.some((source) => !body.sources.some((s) => s.tag === source.tag))) {
-          sendError(ctx.res, 409, "auth_source_tag_locked", "disable saved sources instead of removing or renaming them");
+        } else if (ctx.state.authSources.retired.some((r) => body.sources.some((s) => s.tag === r.tag && s.url !== r.url))) {
+          sendError(ctx.res, 409, "auth_source_tag_retired", "a deleted source's ID can be reused only with its endpoint");
         } else {
-          ctx.state.authSources = { sources: body.sources, revision: createHash("sha256").update(JSON.stringify(body.sources)).digest("hex"), managed: true };
+          // A source left out is deleted and its tag retired with its endpoint; a retired tag
+          // added back with that endpoint is restored (internal/api/handlers_auth_sources.go).
+          const { sources, retired } = ctx.state.authSources;
+          const kept = retired.filter((r) => !body.sources.some((s) => s.tag === r.tag));
+          const deleted = sources.filter((source) => !body.sources.some((s) => s.tag === source.tag)).map(({ tag, url }) => ({ tag, url }));
+          ctx.state.authSources = { sources: body.sources, retired: [...kept, ...deleted], revision: createHash("sha256").update(JSON.stringify(body.sources)).digest("hex"), managed: true };
           sendJSON(ctx.res, 200, ctx.state.authSources);
         }
       } else {
