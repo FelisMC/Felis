@@ -2,15 +2,15 @@ package main
 
 import (
 	"errors"
+	"io"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestSummaryCopyLink(t *testing.T) {
-	t.Setenv("SSH_TTY", "")
-	t.Setenv("SSH_CONNECTION", "")
 	for _, tc := range []struct {
 		name, setup, want string
 	}{
@@ -21,7 +21,7 @@ func TestSummaryCopyLink(t *testing.T) {
 			var copied string
 			m := &summaryModel{
 				panelURL: "https://panel.example", setupTokenURL: tc.setup,
-				copyText: func(text string) error { copied = text; return nil },
+				copyText: func(text string) (bool, error) { copied = text; return true, nil },
 			}
 			_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
 			if cmd == nil {
@@ -43,22 +43,84 @@ func TestSummaryCopyLink(t *testing.T) {
 	}
 }
 
-func TestSummaryCopyFailureAndSSHFeedback(t *testing.T) {
-	t.Setenv("SSH_TTY", "/dev/pts/1")
+func TestSummaryCopyFailureAndTerminalFeedback(t *testing.T) {
 	m := &summaryModel{
 		panelURL: "https://panel.example",
-		copyText: func(string) error { return errors.New("clipboard unavailable") },
+		copyText: func(string) (bool, error) { return false, errors.New("open /dev/tty: no such device") },
 	}
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("C")})
 	m.Update(cmd())
-	if !m.copyFailed || !strings.Contains(m.View(), "clipboard unavailable") {
-		t.Fatal("copy failure must be visible")
+	if !m.copyFailed || !strings.Contains(m.View(), "no such device") || !strings.Contains(m.View(), "Select the link above") {
+		t.Fatal("a copy failure must be visible, with the way to copy by hand")
 	}
 	m.Update(summaryCopiedMsg{})
-	if m.copyFailed || !strings.Contains(m.View(), "Copy sent to terminal") || strings.Contains(m.View(), "Link copied to clipboard") {
+	if m.copyFailed || !strings.Contains(m.View(), "Copy sent to your terminal") || strings.Contains(m.View(), "Link copied to clipboard") {
 		t.Fatal("OSC 52 has no confirmation; do not claim the local clipboard was updated")
 	}
 	if _, cmd := (&summaryModel{}).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")}); cmd != nil {
 		t.Fatal("a missing link must not trigger a clipboard write")
+	}
+}
+
+type fakeTTY struct{ strings.Builder }
+
+func (*fakeTTY) Close() error { return nil }
+
+// TestCopyTerminalText covers the copy under sudo, which drops SSH_TTY and
+// SSH_CONNECTION: a server without xclip or xsel must still send OSC 52 to the
+// terminal instead of failing on the missing desktop clipboard.
+func TestCopyTerminalText(t *testing.T) {
+	const link = "https://panel.example/setup?token=test-token"
+	noTools := errors.New("No clipboard utilities available")
+	for _, tc := range []struct {
+		name                   string
+		display, wayland, tmux string
+		desktopErr             error
+		noTTY                  bool
+		wantDesktop, wantErr   bool
+		wantSequence           string
+	}{
+		{name: "SSH under sudo, no desktop tools", desktopErr: noTools, wantSequence: ansi.SetSystemClipboard(link)},
+		{name: "X11 desktop", display: ":0", wantDesktop: true, wantSequence: ansi.SetSystemClipboard(link)},
+		{name: "Wayland desktop", wayland: "wayland-0", wantDesktop: true, wantSequence: ansi.SetSystemClipboard(link)},
+		{name: "desktop without tools", display: ":0", desktopErr: noTools, wantSequence: ansi.SetSystemClipboard(link)},
+		{name: "inside tmux", tmux: "/tmp/tmux-0/default,1,0", desktopErr: noTools, wantSequence: ansi.TmuxPassthrough(ansi.SetSystemClipboard(link))},
+		{name: "no terminal", desktopErr: noTools, noTTY: true, wantErr: true},
+		{name: "no terminal, desktop copied", display: ":0", noTTY: true, wantDesktop: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("SSH_TTY", "")
+			t.Setenv("SSH_CONNECTION", "")
+			t.Setenv("DISPLAY", tc.display)
+			t.Setenv("WAYLAND_DISPLAY", tc.wayland)
+			t.Setenv("TMUX", tc.tmux)
+			tty := &fakeTTY{}
+			desktopCalls := 0
+			oldTTY, oldDesktop := openTTY, desktopCopy
+			t.Cleanup(func() { openTTY, desktopCopy = oldTTY, oldDesktop })
+			openTTY = func() (io.WriteCloser, error) {
+				if tc.noTTY {
+					return nil, errors.New("open /dev/tty: no such device or address")
+				}
+				return tty, nil
+			}
+			desktopCopy = func(text string) error {
+				desktopCalls++
+				if text != link {
+					t.Errorf("desktop clipboard got %q", text)
+				}
+				return tc.desktopErr
+			}
+			desktop, err := copyTerminalText(link)
+			if desktop != tc.wantDesktop || (err != nil) != tc.wantErr {
+				t.Fatalf("copyTerminalText = %v, %v; want desktop %v, error %v", desktop, err, tc.wantDesktop, tc.wantErr)
+			}
+			if got := tty.String(); got != tc.wantSequence {
+				t.Fatalf("terminal got %q, want %q", got, tc.wantSequence)
+			}
+			if tc.display == "" && tc.wayland == "" && desktopCalls != 0 {
+				t.Fatal("without a graphical session the desktop clipboard must not be tried")
+			}
+		})
 	}
 }

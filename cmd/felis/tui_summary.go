@@ -31,12 +31,17 @@ type summaryModel struct {
 	localHint     bool // show the self-signed-cert note
 	// alerts is where the watchdog's alerts go; nil leaves the rows out.
 	alerts     *alertRoute
-	copyText   func(string) error
+	copyText   func(string) (desktop bool, err error)
 	copyNotice string
 	copyFailed bool
 }
 
-type summaryCopiedMsg struct{ err error }
+// summaryCopiedMsg reports a copy: desktop is set when a desktop clipboard on this
+// machine took the text, which is the only case that can be confirmed.
+type summaryCopiedMsg struct {
+	desktop bool
+	err     error
+}
 
 func (m *summaryModel) Init() tea.Cmd { return nil }
 
@@ -49,11 +54,11 @@ func (m *summaryModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.copyFailed = copied.err != nil
 		switch {
 		case copied.err != nil:
-			m.copyNotice = "Could not copy: " + copied.err.Error()
-		case os.Getenv("SSH_TTY") != "" || os.Getenv("SSH_CONNECTION") != "":
-			m.copyNotice = "Copy sent to terminal. If it does not paste, your terminal needs OSC 52 support."
-		default:
+			m.copyNotice = "Could not copy: " + copied.err.Error() + ". Select the link above to copy it."
+		case copied.desktop:
 			m.copyNotice = "Link copied to clipboard."
+		default:
+			m.copyNotice = "Copy sent to your terminal. If nothing pastes, the terminal lacks OSC 52 support; select the link above to copy it."
 		}
 		return m, nil
 	}
@@ -72,7 +77,10 @@ func (m *summaryModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if copyText == nil {
 				copyText = copyTerminalText
 			}
-			return m, func() tea.Msg { return summaryCopiedMsg{err: copyText(link)} }
+			return m, func() tea.Msg {
+				desktop, err := copyText(link)
+				return summaryCopiedMsg{desktop: desktop, err: err}
+			}
 		case "n", "N":
 			return m, func() tea.Msg { return reconfigureConnectMsg{} }
 		case "s", "S":
@@ -153,13 +161,30 @@ func (m *summaryModel) View() string {
 	return b.String()
 }
 
-// SSH copies through the terminal; the remote host's desktop clipboard is unrelated.
-// /dev/tty keeps the one-time link out of redirected stdout and install logs.
-func copyTerminalText(text string) error {
-	if os.Getenv("SSH_TTY") == "" && os.Getenv("SSH_CONNECTION") == "" {
-		return clipboard.WriteAll(text)
+// openTTY and desktopCopy are where copyTerminalText writes; tests replace them.
+var (
+	openTTY     = func() (io.WriteCloser, error) { return os.OpenFile("/dev/tty", os.O_WRONLY, 0) }
+	desktopCopy = clipboard.WriteAll
+)
+
+// copyTerminalText always sends the text to the terminal as OSC 52, which reaches the
+// operator's own clipboard over SSH. The installer and `felis setup` run under sudo,
+// which drops SSH_TTY and SSH_CONNECTION, so an SSH session cannot be told apart from
+// a console. A graphical session on this machine also gets its desktop clipboard,
+// when xclip, xsel or wl-copy is installed; desktop reports that it did. /dev/tty keeps
+// the one-time link out of redirected stdout and install logs.
+func copyTerminalText(text string) (desktop bool, err error) {
+	if os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != "" {
+		desktop = desktopCopy(text) == nil
 	}
-	tty, err := os.OpenFile("/dev/tty", os.O_WRONLY, 0)
+	if err := writeOSC52(text); err != nil && !desktop {
+		return false, err
+	}
+	return desktop, nil
+}
+
+func writeOSC52(text string) error {
+	tty, err := openTTY()
 	if err != nil {
 		return err
 	}
