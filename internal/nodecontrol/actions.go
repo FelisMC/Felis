@@ -61,6 +61,7 @@ var actions = map[string]action{
 
 	"db-backup": {timeout: 30 * time.Minute},
 	"db-verify": {timeout: 10 * time.Minute, params: []string{"bundle"}, check: needBundle},
+	"db-delete": {timeout: time.Minute, params: []string{"bundle"}, check: needBundle},
 	"db-restore": {blocking: true, confirm: true, timeout: 90 * time.Minute, params: []string{"bundle"},
 		check: needBundle},
 

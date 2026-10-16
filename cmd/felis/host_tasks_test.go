@@ -55,6 +55,7 @@ func TestHostTasksRunTheirCommands(t *testing.T) {
 	for _, r := range []nodecontrol.Request{
 		{Action: "db-backup"},
 		{Action: "db-verify", Params: map[string]string{"bundle": bundle}},
+		{Action: "db-delete", Params: map[string]string{"bundle": bundle}},
 		{Action: "offsite-list"},
 		{Action: "offsite-check-key"},
 		{Action: "restore-host", Params: map[string]string{"bundle": bundle, "takeOver": "true", "force": "false"}},
@@ -72,6 +73,7 @@ func TestHostTasksRunTheirCommands(t *testing.T) {
 	want := []string{
 		"db backup -config /etc/felis/felis.host.toml -dir /var/lib/felis/db-backups -label manual",
 		"db verify -dir /var/lib/felis/db-backups " + bundle,
+		"db delete -dir /var/lib/felis/db-backups " + bundle,
 		"offsite list -config /etc/felis/felis.host.toml",
 		"offsite check-key -config /etc/felis/felis.host.toml",
 		"restore-host -config /etc/felis/felis.host.toml -yes -bundle " + bundle + " -take-over",

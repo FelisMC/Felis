@@ -22,6 +22,7 @@ func TestHostTaskRequests(t *testing.T) {
 	accepted := []Request{
 		{Action: "db-backup"},
 		{Action: "db-verify", Params: map[string]string{"bundle": bundle}},
+		{Action: "db-delete", Params: map[string]string{"bundle": bundle}},
 		{Action: "db-restore", Params: map[string]string{"bundle": bundle}, ConfirmMaintenance: true},
 		{Action: "offsite-sync"},
 		{Action: "offsite-configure", Params: map[string]string{"endpoint": "https://s3.example.com", "bucket": "felis-backup", "region": "auto", "prefix": "host-a/", "dbKeep": "30"},
@@ -53,6 +54,8 @@ func TestHostTaskRequests(t *testing.T) {
 	}
 	refused := []Request{
 		{Action: "db-verify", Params: map[string]string{"bundle": "../../etc/shadow"}},
+		{Action: "db-delete", Params: map[string]string{"bundle": "../felis-db-20261001T033000Z-daily.tar"}},
+		{Action: "db-delete"},
 		{Action: "db-restore", Params: map[string]string{"bundle": bundle}},
 		{Action: "db-backup", Params: map[string]string{"label": "daily"}},
 		{Action: "doctor", Secrets: map[string]string{"apiToken": "x"}},

@@ -56,6 +56,11 @@ func (e nodeExecutor) hostTask(ctx context.Context, r nodecontrol.Request, stage
 			return err
 		}
 		return e.felis(ctx, out, "db", "verify", "-dir", dbbackup.DefaultDir, p["bundle"])
+	case "db-delete":
+		if err := stage("delete"); err != nil {
+			return err
+		}
+		return e.felis(ctx, out, "db", "delete", "-dir", dbbackup.DefaultDir, p["bundle"])
 	case "db-restore":
 		return e.restoreDatabase(ctx, p["bundle"], stage, out)
 	case "offsite-sync":

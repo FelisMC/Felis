@@ -3601,7 +3601,7 @@ export interface components {
              * @description The node lifecycle actions (enable to join-controller) and the platform host tasks the panel runs on the controller host.
              * @enum {string}
              */
-            action: "enable" | "join" | "approve" | "upgrade" | "fence" | "unfence" | "enable-ha" | "join-controller" | "db-backup" | "db-verify" | "db-restore" | "offsite-sync" | "offsite-list" | "offsite-check-key" | "offsite-take-over" | "offsite-configure" | "offsite-disable" | "restore-host" | "backup-now" | "rotate-token" | "domain-check" | "domain-set" | "storage-configure" | "connection-configure" | "converge" | "doctor" | "support-bundle" | "host-settings" | "server-forwarding";
+            action: "enable" | "join" | "approve" | "upgrade" | "fence" | "unfence" | "enable-ha" | "join-controller" | "db-backup" | "db-verify" | "db-delete" | "db-restore" | "offsite-sync" | "offsite-list" | "offsite-check-key" | "offsite-take-over" | "offsite-configure" | "offsite-disable" | "restore-host" | "backup-now" | "rotate-token" | "domain-check" | "domain-set" | "storage-configure" | "connection-configure" | "converge" | "doctor" | "support-bundle" | "host-settings" | "server-forwarding";
             /** @description Stable node name; required for every action except enable and enable-ha. */
             name?: string;
             /** @description Verified root SSH alias or user@host; required for join */
