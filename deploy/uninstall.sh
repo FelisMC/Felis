@@ -180,7 +180,7 @@ final_backup() {
 # game_port reads the proxy's port from velocity.toml before /opt/felis goes.
 game_port() {
   local toml="${OPT_DIR}/velocity/velocity.toml" port=""
-  [ -r "$toml" ] && port="$(sed -n 's/^bind *= *"[^"]*:\([0-9][0-9]*\)".*/\1/p' "$toml" | head -n 1)"
+  [ -r "$toml" ] && port="$(sed -n 's/^bind *= *"[^"]*:\([0-9][0-9]*\)".*/\1/p' "$toml" | sed -n 1p)"
   printf '%s\n' "${FELIS_GAME_PORT:-${port:-25565}}"
 }
 
@@ -188,7 +188,7 @@ game_port() {
 # /etc/felis/cloudflared.yml) before the unit goes.
 tunnel_config() {
   local unit="${UNIT_DIR}/cloudflared-felis.service" path=""
-  [ -r "$unit" ] && path="$(sed -n 's/^ExecStart=.* --config \([^ ]*\) tunnel run$/\1/p' "$unit" | head -n 1)"
+  [ -r "$unit" ] && path="$(sed -n 's/^ExecStart=.* --config \([^ ]*\) tunnel run$/\1/p' "$unit" | sed -n 1p)"
   printf '%s\n' "${path:-${STATE_DIR}/cloudflared.yml}"
 }
 
@@ -196,7 +196,7 @@ tunnel_config() {
 nano_port() {
   local unit="${UNIT_DIR}/felis-nano.service"
   [ -r "$unit" ] || return 0
-  sed -n 's/^ExecStart=.* -listen [^ ]*:\([0-9][0-9]*\).*$/\1/p' "$unit" | head -n 1
+  sed -n 's/^ExecStart=.* -listen [^ ]*:\([0-9][0-9]*\).*$/\1/p' "$unit" | sed -n 1p
 }
 
 remove_units() {
@@ -333,7 +333,7 @@ remove_ufw_rules() {
   command -v ufw >/dev/null 2>&1 || return 0
   local status nums n keep_k3s=1
   status="$(LC_ALL=C ufw status numbered 2>/dev/null)" || return 0
-  [ "$(printf '%s\n' "$status" | head -n 1)" = "Status: active" ] || return 0
+  [ "$(printf '%s\n' "$status" | sed -n 1p)" = "Status: active" ] || return 0
   [ "$K3S_MODE" = keep ] || keep_k3s=""
   nums="$(printf '%s\n' "$status" | awk -v keep_k3s="$keep_k3s" '
     match($0, /# felis-[a-z0-9-]+ *$/) {
@@ -583,7 +583,7 @@ purge_state() {
   # until it is deleted there (https://docs.felismc.com/en/operations/uninstall#cloudflare-cleanup).
   local cred=""
   [ -r "$TUNNEL_CONFIG" ] \
-    && cred="$(sed -n 's/^credentials-file: *"\{0,1\}\([^"]*\)"\{0,1\} *$/\1/p' "$TUNNEL_CONFIG" | head -n 1)"
+    && cred="$(sed -n 's/^credentials-file: *"\{0,1\}\([^"]*\)"\{0,1\} *$/\1/p' "$TUNNEL_CONFIG" | sed -n 1p)"
   if [ -n "$cred" ]; then rm -f "$cred"; fi
   rm -f "$TUNNEL_CONFIG"
   # The file-context rule bootstrap gave the database's cluster directory.

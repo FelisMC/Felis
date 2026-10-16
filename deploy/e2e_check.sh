@@ -29,7 +29,7 @@ check() { # label command...
   if "$@"; then pass "$label"; else fail "$label"; fi
 }
 
-check "felis version runs" sh -c '/usr/local/bin/felis version | grep -q "^felis "'
+check "felis version runs" sh -c '/usr/local/bin/felis version | grep "^felis " >/dev/null'
 
 deploys=(felis-api felis-operator registry)
 # A release may still run the database on the host; the upgrade moves it into felis-postgres.
@@ -42,7 +42,7 @@ done
 
 node_ip="$(ip -4 route get 1.1.1.1 | awk '{for (i = 1; i <= NF; i++) if ($i == "src") { print $(i + 1); exit }}')"
 check "the panel serves its page on the NodePort" \
-  sh -c "curl -skf --retry 10 --retry-delay 3 --retry-all-errors https://${node_ip}:30443/ | grep -qi '<html'"
+  sh -c "curl -skf --retry 10 --retry-delay 3 --retry-all-errors https://${node_ip}:30443/ | grep -i '<html' >/dev/null"
 # Readiness lives on the internal face only; a Service ClusterIP routes from the node.
 internal="$("${KUBECTL[@]}" -n felis get svc felis-api-internal -o jsonpath='{.spec.clusterIP}:{.spec.ports[0].port}')"
 check "felis-api is ready (database and cluster reachable)" \
@@ -92,7 +92,7 @@ restore_drill() { # dir bundle
   check "the restore dropped the row written after the bundle" \
     test "$(pod_psql "SELECT count(*) FROM platform_settings WHERE key = 'e2e_restore_drill'")" = 0
   check "the restore kept the database it replaced in a pre-restore bundle" \
-    sh -c "ls '${dir}' | grep -q -- '-pre-restore\.tar\$'"
+    sh -c "ls '${dir}' | grep -- '-pre-restore\.tar\$' >/dev/null"
   check "felis migrate up runs on the restored database" \
     /usr/local/bin/felis migrate up -config /etc/felis/felis.host.toml
   "${KUBECTL[@]}" -n felis scale deployment felis-api felis-operator --replicas=1 >/dev/null

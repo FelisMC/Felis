@@ -850,7 +850,7 @@ apply_setup_credential_secrets() {
         --from-file=password="$SMTP_PASSWORD_FILE" \
         --dry-run=client -o yaml | kube apply -f -
     done
-  elif persisted_smtp_block | grep -Eq '^[[:space:]]*username[[:space:]]*=[[:space:]]*"[^"]'; then
+  elif persisted_smtp_block | grep -E '^[[:space:]]*username[[:space:]]*=[[:space:]]*"[^"]' >/dev/null; then
     warn "[smtp] signs in with a username, but its password is in neither ${SMTP_PASSWORD_FILE} nor the cluster: sign-in codes and alerts go out without AUTH until it is entered again (sudo felis setup, then e to configure email)"
   fi
   if [ -f "$UPLOADS_S3_ACCESS_KEY_FILE" ] && [ -f "$UPLOADS_S3_SECRET_KEY_FILE" ]; then
@@ -858,7 +858,7 @@ apply_setup_credential_secrets() {
       --from-file=access_key_id="$UPLOADS_S3_ACCESS_KEY_FILE" \
       --from-file=secret_access_key="$UPLOADS_S3_SECRET_KEY_FILE" \
       --dry-run=client -o yaml | kube apply -f -
-  elif persisted_registry_block | grep -Eq '^[[:space:]]*user_uploads_context[[:space:]]*=[[:space:]]*"[sS]3://'; then
+  elif persisted_registry_block | grep -E '^[[:space:]]*user_uploads_context[[:space:]]*=[[:space:]]*"[sS]3://' >/dev/null; then
     warn "uploads go to an S3 bucket, but its keys are in neither ${UPLOADS_S3_ACCESS_KEY_FILE} / ${UPLOADS_S3_SECRET_KEY_FILE} nor the cluster: felis-api refuses modpack uploads until they are entered again (sudo felis setup, then s to change storage)"
   fi
 }
@@ -1893,7 +1893,7 @@ install_cloudflared() {
   fi
   install -m 0755 "$tmp" "$CLOUDFLARED_BIN"
   rm -f "$tmp"
-  ok "cloudflared installed ($(cloudflared --version | head -n 1))"
+  ok "cloudflared installed ($(cloudflared --version | sed -n 1p))"
   # The running tunnel keeps the old binary mapped until it restarts.
   if [ -n "$current" ] && systemctl is-active --quiet cloudflared-felis 2>/dev/null; then
     systemctl restart cloudflared-felis
@@ -2070,7 +2070,7 @@ stop_docker() {
   systemctl stop docker docker.socket 2>/dev/null || true
   local ns
   ns="$(ctr --address /run/containerd/containerd.sock namespaces ls -q 2>/dev/null)" || return 0
-  if ! printf '%s\n' "$ns" | grep -qvE '^(moby.*)?$'; then
+  if ! printf '%s\n' "$ns" | grep -vE '^(moby.*)?$' >/dev/null; then
     systemctl stop containerd 2>/dev/null || true
   fi
 }
@@ -2089,7 +2089,7 @@ stop_docker() {
 # line, hence the C locale.
 ufw_active() {
   command -v ufw >/dev/null 2>&1 || return 1
-  [ "$(LC_ALL=C ufw status 2>/dev/null | head -n 1)" = "Status: active" ]
+  [ "$(LC_ALL=C ufw status 2>/dev/null | sed -n 1p)" = "Status: active" ]
 }
 
 # configure_k3s_firewall opens what k3s needs. For ufw that is what k3s's documentation asks:
@@ -2205,7 +2205,7 @@ k3s_node_name() {
 recall_distributed_settings() {
   [ "${DISTRIBUTED:-0}" = 1 ] || return 0
   if [ -z "$NODE_EXTERNAL_IP" ] && [ -f "$K3S_CONFIG_DROPIN" ]; then
-    NODE_EXTERNAL_IP="$(sed -n 's/^node-external-ip: "\(.*\)"$/\1/p' "$K3S_CONFIG_DROPIN" | head -n 1)"
+    NODE_EXTERNAL_IP="$(sed -n 's/^node-external-ip: "\(.*\)"$/\1/p' "$K3S_CONFIG_DROPIN" | sed -n 1p)"
   fi
   if [ -z "$WORKER_PEERS" ] && [ -s "$NODE_PEERS_FILE" ]; then
     WORKER_PEERS="$(head -n 1 "$NODE_PEERS_FILE")"
@@ -2420,7 +2420,7 @@ k3s_upgrade_allowed() {
 wait_for_node_ready() {
   local _
   for _ in $(seq 1 60); do
-    if kube get nodes 2>/dev/null | grep -q ' Ready '; then
+    if kube get nodes 2>/dev/null | grep ' Ready ' >/dev/null; then
       ok "k3s node Ready"
       return 0
     fi
@@ -2663,7 +2663,7 @@ github_asset_id() {
   load_release_json "$tag" || return 1
   id="$(printf '%s' "$RELEASE_JSON" | tr -d '\n' | tr '{' '\n' \
     | grep "\"name\":[[:space:]]*\"${name}\"" \
-    | grep -o 'releases/assets/[0-9]\{1,\}' | head -1)" || true
+    | grep -o 'releases/assets/[0-9]\{1,\}' | sed -n 1p)" || true
   id="${id##*/}"
   [ -n "$id" ] || return 1
   printf '%s\n' "$id"
@@ -2784,7 +2784,7 @@ download_release_binary() {
 
   # Convergence check, and the cheapest one available: no API call, no download, and it asks
   # the exact question that matters. Reruns are the common case for this installer.
-  if [ "${FELIS_FORCE_UPDATE:-0}" != 1 ] && [ -x "$HOST_BIN" ] && [ "$("$HOST_BIN" version 2>/dev/null | head -n 1)" = "felis ${FELIS_REF}" ]; then
+  if [ "${FELIS_FORCE_UPDATE:-0}" != 1 ] && [ -x "$HOST_BIN" ] && [ "$("$HOST_BIN" version 2>/dev/null | sed -n 1p)" = "felis ${FELIS_REF}" ]; then
     HAVE_PREBUILT_BINARY=1
     ok "host binary is already ${FELIS_REF}; skipping the download"
     return 0
@@ -2823,7 +2823,7 @@ download_release_binary() {
   # so nothing earlier catches it), a wrong-architecture asset fails to exec, and an unstamped
   # or mis-stamped build reports the wrong string here — rather than silently disabling
   # `felis update` for the entire life of the install.
-  got="$("$tmp" version 2>/dev/null | head -n 1 || true)"
+  got="$("$tmp" version 2>/dev/null | sed -n 1p || true)"
   if [ "$got" != "felis ${FELIS_REF}" ]; then
     rm -f "$tmp"
     warn "downloaded ${asset} reports '${got:-nothing}' rather than 'felis ${FELIS_REF}'; building ${FELIS_REF} from source on this host instead"
@@ -2954,7 +2954,7 @@ install_artifact_binary() {
   [ "$(sha256sum <"$tmp" | cut -d' ' -f1)" = "$(artifact_sum "$name")" ] \
     || die "FELIS_ARTIFACT_DIR: ${name} does not match SHA256SUMS"
   chmod 0755 "$tmp"
-  got="$("$tmp" version 2>/dev/null | head -n 1 || true)"
+  got="$("$tmp" version 2>/dev/null | sed -n 1p || true)"
   case "$got" in
     "felis "?*) ;;
     *) die "FELIS_ARTIFACT_DIR: ${name} reports '${got:-nothing}' as its version" ;;
@@ -2982,7 +2982,7 @@ select_release_artifacts() {
   local v
   [ "$ARTIFACT_MODE" != dir ] || return 0
   [ -n "$HAVE_PREBUILT_BINARY" ] || return 0
-  v="$("$HOST_BIN" version 2>/dev/null | head -n 1 || true)"
+  v="$("$HOST_BIN" version 2>/dev/null | sed -n 1p || true)"
   v="${v#felis }"
   # A release's version is its tag; a dev or pinned build's names no release.
   [[ "$v" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || return 0
@@ -3231,7 +3231,7 @@ resolve_felis_image() {
   [ -z "$FELIS_IMAGE" ] || return 0
   v="$FELIS_VERSION"
   if [ -z "$v" ] && [ -n "$HAVE_PREBUILT_BINARY" ]; then
-    v="$("$HOST_BIN" version 2>/dev/null | head -n 1 || true)"
+    v="$("$HOST_BIN" version 2>/dev/null | sed -n 1p || true)"
     v="${v#felis }"
   fi
   FELIS_IMAGE="${REGISTRY_URL}/felis/felis:$(image_tag_for_version "$v")"
@@ -5084,7 +5084,7 @@ EOF
           OFFSITE_STANDBY=1
           warn "================================================================================"
           warn "Another host writes the [offsite] bucket, and this host was built from its backup:"
-          warn "  $(printf '%s\n' "$who" | head -n 1 | sed 's/^felis offsite take-over: //')"
+          warn "  $(printf '%s\n' "$who" | sed -n 1p | sed 's/^felis offsite take-over: //')"
           warn "This host copies nothing into the bucket and, while that host keeps writing it,"
           warn "mails no watchdog alert: a rehearsal leaves that host and its owners alone. When"
           warn "this host replaces it for good, run sudo felis offsite take-over -yes, then"
@@ -5095,7 +5095,7 @@ EOF
           OFFSITE_DISPLACED=1
           warn "================================================================================"
           warn "Another host took the [offsite] bucket over from this host:"
-          warn "  $(printf '%s\n' "$who" | head -n 1 | sed 's/^felis offsite take-over: //')"
+          warn "  $(printf '%s\n' "$who" | sed -n 1p | sed 's/^felis offsite take-over: //')"
           warn "This host copies nothing into the bucket any more, and its watchdog mails the"
           warn "owners about it. If that host is a rehearsal machine, take the bucket back:"
           warn "sudo felis offsite take-over -yes, then sudo systemctl start felis-offsite.service"
@@ -5333,7 +5333,7 @@ summary_alerts() {
     log "Alerts: the watchdog mails the Owner's verified email address through the relay saved in the panel."
     return 0
   fi
-  if persisted_smtp_block | grep -Eq '^[[:space:]]*host[[:space:]]*=[[:space:]]*"[^"]'; then
+  if persisted_smtp_block | grep -E '^[[:space:]]*host[[:space:]]*=[[:space:]]*"[^"]' >/dev/null; then
     log "Alerts: the watchdog mails the Owner's verified email address through the [smtp] relay."
     return 0
   fi
@@ -5345,7 +5345,7 @@ summary_alerts() {
 # it wins over the host's (felis panel-settings): the summary must not warn of a missing
 # relay or heartbeat the panel has. A database it cannot read counts as nothing saved.
 panel_setting() {
-  "${HOST_BIN:-}" panel-settings -config "${STATE_DIR}/felis.host.toml" 2>/dev/null | grep -qx "$1=yes"
+  "${HOST_BIN:-}" panel-settings -config "${STATE_DIR}/felis.host.toml" 2>/dev/null | grep -x "$1=yes" >/dev/null
 }
 
 # summary_heartbeat closes the install on the heartbeat: without one, nothing off this
@@ -5556,7 +5556,7 @@ revoke_worlds_root_grant() {
   local dir
   for dir in "$K3S_STORAGE_ROOT" "$FELIS_WORLDS_HOST_PATH"; do
     [ -n "$dir" ] && [ -d "$dir" ] || continue
-    if command -v getfacl >/dev/null 2>&1 && getfacl -cpn "$dir" 2>/dev/null | grep -q '^user:1000:'; then
+    if command -v getfacl >/dev/null 2>&1 && getfacl -cpn "$dir" 2>/dev/null | grep '^user:1000:' >/dev/null; then
       if setfacl -x u:1000 "$dir"; then
         log "revoked the old uid-1000 traverse grant on ${dir}"
       else
@@ -6059,7 +6059,7 @@ summary() {
   echo
   kube -n "$CONTROL_NS" get pods -o wide || true
   echo
-  systemctl --no-pager --full status felis-velocity 2>/dev/null | head -n 4 || true
+  systemctl --no-pager --full status felis-velocity 2>/dev/null | sed -n 1,4p || true
   echo
   log "Player panel: https://$(auth_hostname panel_hostname "console.${FELIS_ROOT_DOMAIN}") — served on 443 once your edge/Cloudflare Tunnel routes it here."
   log "Operator console (Op/Admin/Owner): https://$(auth_hostname admin_hostname "op.console.${FELIS_ROOT_DOMAIN}") — the Owner runs 'felis setup' and onboards here."
@@ -6210,7 +6210,7 @@ prompt_install_mode() {
 
 install_go_toolchain() {
   local arch tarball url tmp want have
-  if [ -x "${GOROOT_DIR}/bin/go" ] && "${GOROOT_DIR}/bin/go" version | grep -q "go${FELIS_GO_VERSION} "; then
+  if [ -x "${GOROOT_DIR}/bin/go" ] && "${GOROOT_DIR}/bin/go" version | grep "go${FELIS_GO_VERSION} " >/dev/null; then
     ok "go ${FELIS_GO_VERSION} already installed at ${GOROOT_DIR}"
     return 0
   fi
@@ -6253,7 +6253,7 @@ build_nano_binary() {
 
   # The whole point of this path is the nano subcommand; a binary without it would
   # only surface as a crash-looping felis-nano.service, so fail loudly here instead.
-  "$staged" -h 2>&1 | grep -qw nano || die "built binary has no 'nano' subcommand"
+  "$staged" -h 2>&1 | grep -w nano >/dev/null || die "built binary has no 'nano' subcommand"
 
   # Stage-then-install, never `go build -o ${HOST_BIN}` directly: the Go linker renames
   # its output out of $TMPDIR, and a same-filesystem rename CARRIES THE SOURCE SELinux
@@ -6449,7 +6449,7 @@ summary_nano() {
   echo
   ok "Felis-nano deployed."
   echo
-  systemctl --no-pager --full status felis-nano 2>/dev/null | head -n 6 || true
+  systemctl --no-pager --full status felis-nano 2>/dev/null | sed -n 1,6p || true
   echo
   log "hasJoined endpoint: http://${host}:${port}/session/minecraft/hasJoined"
   log "Point Velocity at it — add to the proxy JVM startup flags (between java and -jar):"

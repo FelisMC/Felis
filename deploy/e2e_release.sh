@@ -52,15 +52,15 @@ find_release() {
     return
   fi
   rm -f "$err"
-  tag="$(printf '%s\n' "$lines" | head -n 1)"
+  tag="$(printf '%s\n' "$lines" | sed -n 1p)"
   names="$(printf '%s\n' "$lines" | tail -n +2)"
   if [ -z "$tag" ]; then
     echo "::error::gh release view answered without a tag"
     fails=$((fails + 1))
     return
   fi
-  if printf '%s\n' "$names" | grep -qxF "$ASSET"; then binary=yes; fi
-  if printf '%s\n' "$names" | grep -qxF SHA256SUMS; then sums=yes; fi
+  if printf '%s\n' "$names" | grep -xF "$ASSET" >/dev/null; then binary=yes; fi
+  if printf '%s\n' "$names" | grep -xF SHA256SUMS >/dev/null; then sums=yes; fi
   printf 'tag=%s\nbinary=%s\nsums=%s\n' "$tag" "$binary" "$sums" >> "${GITHUB_OUTPUT:-/dev/stdout}"
 }
 

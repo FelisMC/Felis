@@ -18,7 +18,7 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-major="$(java -version 2>&1 | sed -n 's/.*version "\([0-9]*\).*/\1/p' | head -1)"
+major="$(java -version 2>&1 | sed -n 's/.*version "\([0-9]*\).*/\1/p' | sed -n 1p)"
 [ "$major" = "17" ] || {
   echo "these mods target the Java-17 Minecraft lines and are built with JDK 17 (found java major ${major:-none}); set JAVA_HOME to a JDK 17" >&2
   exit 1

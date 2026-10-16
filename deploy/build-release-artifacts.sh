@@ -111,12 +111,12 @@ for arch in $ARCHES; do
     amd64) want='x86-64' ;;
     arm64) want='ARM aarch64' ;;
   esac
-  file "${OUT}/felis-linux-${arch}" | grep -q "$want" \
+  file "${OUT}/felis-linux-${arch}" | grep "$want" >/dev/null \
     || die "felis-linux-${arch} is not a ${want} ELF: TARGETARCH did not reach the go build"
 done
 HOST_FELIS="${OUT}/felis-linux-$(host_arch)"
 [ -x "$HOST_FELIS" ] || die "no felis binary for the builder's own architecture ($(host_arch)); add it to FELIS_RELEASE_ARCHES"
-got="$("$HOST_FELIS" version | head -n 1)"
+got="$("$HOST_FELIS" version | sed -n 1p)"
 [ "$got" = "felis ${VERSION}" ] || die "felis reports '${got}', want 'felis ${VERSION}': the version stamp did not reach the binary"
 
 # ---- the Velocity plugin -------------------------------------------------------------
