@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Archive, Loader2, RotateCcw, Save, ShieldCheck } from "lucide-react";
+import { Archive, Loader2, RotateCcw, Save, ShieldCheck, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { HostTaskNotice, HostTaskStatus, useHostTask } from "@/components/HostTask";
 import { MessageLine } from "@/components/MessageLine";
+import { Pagination } from "@/components/Pagination";
 import { formatAbsolute, formatBytes } from "@/lib/format";
 import type { AsyncState } from "@/lib/hooks";
 import { useUnsavedGuard } from "@/lib/hooks";
@@ -24,6 +25,9 @@ const LABEL_KEY: Record<string, string> = {
 
 type HostTask = ReturnType<typeof useHostTask>;
 
+/** BUNDLE_PAGE_SIZE keeps the list short: manual backups are never pruned. */
+const BUNDLE_PAGE_SIZE = 10;
+
 /** DatabaseBundlesCard lists the database bundles on the host: each can be verified or
  *  restored, and the daily schedule that writes them can be changed. A restore stops the
  *  panel and the operator while it runs; the host bundles the current database first. */
@@ -34,6 +38,18 @@ export function DatabaseBundlesCard({ overview, db }: { overview: AsyncState<Hos
   const bundles = overview.data?.databaseBackups ?? [];
   const settings = overview.data?.settings;
   const [restore, setRestore] = useState<string | null>(null);
+  const [remove, setRemove] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const pages = Math.max(1, Math.ceil(bundles.length / BUNDLE_PAGE_SIZE));
+  const current = Math.min(page, pages);
+  const shown = bundles.slice((current - 1) * BUNDLE_PAGE_SIZE, current * BUNDLE_PAGE_SIZE);
+  const newest = bundles[0]?.name;
+  // A finished deletion or manual backup changes the list; read it again once.
+  const finished = db.task?.state === "succeeded" && ["db-delete", "db-backup"].includes(db.task.request.action) ? db.task.id : null;
+  useEffect(() => {
+    if (finished) overview.reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [finished]);
   const [typed, setTyped] = useState("");
   const [time, setTime] = useState("");
   const [keep, setKeep] = useState("");
@@ -66,7 +82,7 @@ export function DatabaseBundlesCard({ overview, db }: { overview: AsyncState<Hos
         {overview.data && bundles.length === 0 && <p className="text-sm text-muted-foreground">{t("db_bundles_none")}</p>}
         {bundles.length > 0 && (
           <ul className="divide-y divide-border rounded-lg border border-border">
-            {bundles.map((b) => (
+            {shown.map((b) => (
               <li key={b.name} className="flex flex-wrap items-center justify-between gap-3 p-3">
                 <div className="min-w-0 space-y-1">
                   <div className="flex flex-wrap items-center gap-2">
@@ -83,11 +99,17 @@ export function DatabaseBundlesCard({ overview, db }: { overview: AsyncState<Hos
                   <Button variant="outline" size="sm" disabled={db.busy} onClick={() => { setRestore(b.name); setTyped(""); }}>
                     <RotateCcw />{t("db_bundle_restore")}
                   </Button>
+                  <Button variant="outline" size="icon" className="h-8 w-8" aria-label={t("db_bundle_delete_label", { name: b.name })}
+                    title={b.name === newest ? t("db_bundle_newest") : undefined}
+                    disabled={db.busy || b.name === newest} onClick={() => setRemove(b.name)}>
+                    <Trash2 />
+                  </Button>
                 </div>
               </li>
             ))}
           </ul>
         )}
+        {bundles.length > BUNDLE_PAGE_SIZE && <Pagination page={current} pageSize={BUNDLE_PAGE_SIZE} total={bundles.length} onChange={setPage} />}
         {db.error && <MessageLine kind="error" message={db.error} />}
         {db.task && <HostTaskStatus task={db.task} />}
 
@@ -133,6 +155,17 @@ export function DatabaseBundlesCard({ overview, db }: { overview: AsyncState<Hos
           <Input id="db-restore-confirm" value={typed} autoComplete="off" spellCheck={false} onChange={(e) => setTyped(e.target.value)} placeholder={restore ?? ""} className="font-mono text-xs" />
         </div>
       </ConfirmDialog>
+      <ConfirmDialog
+        open={remove !== null}
+        onOpenChange={(open) => { if (!open) setRemove(null); }}
+        title={t("db_delete_title")}
+        description={t("db_delete_description", { name: remove ?? "" })}
+        confirmLabel={t("db_bundle_delete")}
+        confirmVariant="destructive"
+        onConfirm={async () => {
+          if (remove) await db.start({ action: "db-delete", params: { bundle: remove }, confirmMaintenance: false });
+        }}
+      />
       {db.reauth.dialog}
       {schedule.reauth.dialog}
     </Card>

@@ -86,7 +86,7 @@ describe("host status", () => {
 });
 
 function Bundles({ overview }: { overview: AsyncState<HostOverview> }) {
-  const db = useHostTask(["db-backup", "db-verify", "db-restore"]);
+  const db = useHostTask(["db-backup", "db-verify", "db-delete", "db-restore"]);
   return <DatabaseBundlesCard overview={overview} db={db} />;
 }
 
@@ -105,6 +105,37 @@ describe("database backups", () => {
     fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: "felis-db-20261012T033000Z-daily.tar" } });
     await userEvent.click(confirm);
     await waitFor(() => expect(calls.startNodeTask).toHaveBeenLastCalledWith({ action: "db-restore", params: { bundle: "felis-db-20261012T033000Z-daily.tar" }, confirmMaintenance: true }));
+  });
+
+  it("deletes an older bundle after confirmation, keeps the newest, and reads the list again", async () => {
+    const older = "felis-db-20261011T090000Z-manual.tar";
+    const overview = state({ ...base, databaseBackups: [...base.databaseBackups, { name: older, label: "manual", size: 1024, created: "2026-10-11T09:00:00Z" }] });
+    calls.startNodeTask.mockImplementation(async (r) => ({ ...started(r.action), request: r, state: "succeeded", stage: "complete" }));
+    calls.nodeTask.mockImplementation(async () => ({ ...started("db-delete"), request: { action: "db-delete", params: { bundle: older }, confirmMaintenance: false }, state: "succeeded", stage: "complete" }));
+    render(<Bundles overview={overview} />);
+    expect(screen.getByRole("button", { name: "Delete backup felis-db-20261012T033000Z-daily.tar" })).toHaveProperty("disabled", true);
+    await userEvent.click(await ready(`Delete backup ${older}`));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toContain(`${older} is deleted from this host`);
+    expect(calls.startNodeTask).not.toHaveBeenCalled();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(calls.startNodeTask).toHaveBeenCalledWith({ action: "db-delete", params: { bundle: older }, confirmMaintenance: false }));
+    await waitFor(() => expect(overview.reload).toHaveBeenCalled());
+  });
+
+  it("pages through more bundles than fit on one page", async () => {
+    const day = (n: number) => String(n).padStart(2, "0");
+    const many = Array.from({ length: 23 }, (_, i) => ({ name: `felis-db-202609${day(28 - i)}T033000Z-daily.tar`, label: "daily", size: 2048, created: `2026-09-${day(28 - i)}T03:30:00Z` }));
+    render(<Bundles overview={state({ ...base, databaseBackups: many })} />);
+    expect(screen.getAllByRole("button", { name: /^Delete backup / })).toHaveLength(10);
+    expect(screen.getByText("Page 1 of 3")).toBeTruthy();
+    expect(screen.getByText(many[0].name)).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(screen.getByText("Page 2 of 3")).toBeTruthy();
+    expect(screen.queryByText(many[0].name)).toBeNull();
+    expect(screen.getByText(many[10].name)).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(screen.getAllByRole("button", { name: /^Delete backup / })).toHaveLength(3);
   });
 
   it("saves only the schedule fields that changed", async () => {

@@ -328,7 +328,7 @@ export function UpdatesPage() {
   const tab: Tab = tabs.some((x) => x.key === requested) ? (requested as Tab) : "status";
   const cards = usePageRefresh();
   const overview = useAsync(api.hostOverview, []);
-  const db = useHostTask(["db-backup", "db-verify", "db-restore"]);
+  const db = useHostTask(["db-backup", "db-verify", "db-delete", "db-restore"]);
   return (
     <RefreshContext.Provider value={cards.scope}>
       <div className="space-y-6">
