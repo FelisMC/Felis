@@ -806,7 +806,7 @@
   "proxy_confirm_title": "Restart the game proxy",
   "proxy_confirm": "The proxy restarts with the new memory ceiling, and all players are disconnected.",
   "converge_title": "System server completion",
-  "converge_description": "Adds settings that newer releases introduced to servers created earlier: new fields on the login space and the lobby, and idle auto-stop on older user servers.",
+  "converge_description": "Creates the login space and the lobby again when either is missing, and adds settings that newer releases introduced to servers created earlier: new fields on the login space and the lobby, and idle auto-stop on older user servers.",
   "converge_rcon": "Enable RCON on older user servers",
   "converge_rcon_hint": "Live backups and console commands require RCON. A server whose image has no RCON listener may then fail to start; enable this only for images that support it.",
   "converge_run": "Run completion",

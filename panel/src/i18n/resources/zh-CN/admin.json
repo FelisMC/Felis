@@ -799,7 +799,7 @@
   "proxy_confirm_title": "重启游戏代理",
   "proxy_confirm": "代理将以新的内存上限重启，所有玩家会被断开。",
   "converge_title": "系统服务器补全",
-  "converge_description": "为早期创建的服务器补全新版本引入的设置：登录空间与大厅的新字段，以及旧用户服务器的空闲自动停止。",
+  "converge_description": "重新创建缺失的登录空间与大厅，并为早期创建的服务器补全新版本引入的设置：登录空间与大厅的新字段，以及旧用户服务器的空闲自动停止。",
   "converge_rcon": "为旧用户服务器启用 RCON",
   "converge_rcon_hint": "不停服备份和控制台命令依赖 RCON。若镜像不支持 RCON，服务器可能无法启动，请仅在镜像支持时开启。",
   "converge_run": "执行补全",

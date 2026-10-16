@@ -7,6 +7,12 @@ import { LobbyPage } from "./LobbyPage";
 
 const calls = vi.hoisted(() => ({
   status: vi.fn(), restart: vi.fn(), listImages: vi.fn(), readServerFile: vi.fn(), writeServerFile: vi.fn(), createServerFile: vi.fn(), accessPermission: vi.fn(),
+  nodeTasks: vi.fn(), nodeTask: vi.fn(), startNodeTask: vi.fn(),
+}));
+const tier = vi.hoisted(() => ({ isOwner: true }));
+vi.mock("@/lib/tier", async (original) => ({
+  ...await original<typeof import("@/lib/tier")>(),
+  useTier: () => ({ loading: false, identity: { user_id: "staff-1", role: tier.isOwner ? "owner" : "admin" }, isAdmin: true, isOwner: tier.isOwner }),
 }));
 vi.mock("@/lib/api", async (original) => ({ ...await original<typeof import("@/lib/api")>(), api: calls }));
 vi.mock("@/lib/config", async (original) => ({ ...await original<typeof import("@/lib/config")>(), loadConfig: () => Promise.resolve({ apiBase: "/api/v1", rootDomain: "example.test", gameVersion: "26.3" }) }));
@@ -19,6 +25,8 @@ beforeEach(() => {
   calls.writeServerFile.mockResolvedValue({ sha256: "saved-hash" });
   calls.createServerFile.mockResolvedValue({ sha256: "saved-hash" });
   calls.restart.mockResolvedValue({ name: "lobby", desiredState: "Running" });
+  calls.nodeTasks.mockResolvedValue({ available: true, tasks: [] });
+  tier.isOwner = true;
 });
 
 function page(space = "lobby") {
@@ -153,5 +161,38 @@ describe("LobbyPage", () => {
     await userEvent.click(screen.getByRole("button", { name: "Save settings" }));
     await waitFor(() => expect(calls.writeServerFile).toHaveBeenCalled());
     expect(JSON.parse(atob(calls.writeServerFile.mock.calls[0][2]))).toEqual({ menuTitleEn: "Kept title" });
+  });
+
+  it("offers the Owner to create a missing login space again", async () => {
+    calls.status.mockRejectedValue({ status: 404, code: "not_found", message: "not found" });
+    const task = { id: "task-1", state: "running", stage: "running", startedAt: "2026-10-16T05:00:00Z", request: { action: "converge", params: { userRcon: "false" } }, log: "" };
+    calls.startNodeTask.mockResolvedValue(task);
+    calls.nodeTask.mockResolvedValue(task);
+    page("login");
+    expect(await screen.findByRole("heading", { name: "The login space does not exist" })).toBeTruthy();
+    expect(screen.queryByLabelText("Login book title")).toBeNull();
+    const create = await screen.findByRole("button", { name: "Create again" });
+    await waitFor(() => expect((create as HTMLButtonElement).disabled).toBe(false));
+    await userEvent.click(create);
+    await waitFor(() => expect(calls.startNodeTask).toHaveBeenCalledWith({ action: "converge", params: { userRcon: "false" }, confirmMaintenance: false }));
+    expect(await screen.findByRole("region", { name: "Task progress" })).toBeTruthy();
+  });
+
+  it("tells an Admin who can create a missing lobby", async () => {
+    tier.isOwner = false;
+    calls.status.mockRejectedValue({ status: 404, code: "not_found", message: "not found" });
+    page("lobby");
+    expect(await screen.findByRole("heading", { name: "The lobby does not exist" })).toBeTruthy();
+    expect(screen.getByText(/Ask an Owner to create them again/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Create again" })).toBeNull();
+    expect(calls.nodeTasks).not.toHaveBeenCalled();
+  });
+
+  it("keeps other status failures as an error with a retry", async () => {
+    calls.status.mockRejectedValue({ status: 500, code: "internal", message: "boom" });
+    page("login");
+    expect((await screen.findByRole("alert")).textContent).toBe("The operation failed because of an internal server error. Ask an admin to check the logs.");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "The login space does not exist" })).toBeNull();
   });
 });

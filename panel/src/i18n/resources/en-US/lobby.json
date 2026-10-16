@@ -96,5 +96,10 @@
   "content_tools": "Content & maintenance",
   "unsaved": "You have unsaved changes",
   "apply_on_start": "Save while running; settings take effect on the next start or restart",
-  "loading_settings": "Loading settings. Editing will be available once loaded."
+  "loading_settings": "Loading settings. Editing will be available once loaded.",
+  "login_missing_title": "The login space does not exist",
+  "lobby_missing_title": "The lobby does not exist",
+  "missing_hint_owner": "The setup wizard creates the login space and the lobby. Select Create again to create the missing ones from the images configured at installation; the same pass fills in settings that existing servers lack. You can also run sudo felis converge on the host.",
+  "missing_hint_admin": "The setup wizard creates the login space and the lobby. Ask an Owner to create them again on this page, or run sudo felis converge on the host.",
+  "missing_create": "Create again"
 }

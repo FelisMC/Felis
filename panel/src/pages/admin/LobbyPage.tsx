@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { BookOpen, ChevronRight, DoorOpen, FolderOpen, Globe, Loader2, Map, MessageSquare, Package, RotateCw, Save, Shield, Sun, Terminal, type LucideIcon } from "lucide-react";
+import { AlertTriangle, BookOpen, ChevronRight, DoorOpen, FolderOpen, Globe, Loader2, Map, MessageSquare, Package, RotateCw, Save, Shield, Sun, Terminal, Wrench, type LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { PageHeader } from "@/components/PageHeader";
@@ -17,11 +17,13 @@ import { PowerButton, SUBMITTED_HOLD_MS } from "@/components/PowerButton";
 import { CopyAddress } from "@/components/CopyAddress";
 import { EditServerDialog } from "@/components/EditServerDialog";
 import { ErrorState } from "@/components/States";
+import { HostTaskNotice, HostTaskStatus, useHostTask } from "@/components/HostTask";
 import { InlineError, MessageLine } from "@/components/MessageLine";
 import { api, humanizeError } from "@/lib/api";
 import { joinAddress } from "@/lib/config";
 import { cn } from "@/lib/utils";
-import type { ServerStatus } from "@/lib/types";
+import type { ApiError, ServerStatus } from "@/lib/types";
+import { useTier } from "@/lib/tier";
 import { STATUS_POLL_FAST_MS, useAsync, useConfig, usePolling, useUnsavedGuard } from "@/lib/hooks";
 import { experienceValid, LOGIN_GROUPS, LOBBY_GROUPS, readExperience, writeExperience, type Experience } from "@/lib/experience";
 
@@ -193,6 +195,35 @@ function BuilderAccess({ ready }: { ready: boolean }) {
   </Card>;
 }
 
+/** MissingSpace stands in for the page when the login space or the lobby does not exist.
+ *  Setup creates both; the system-server pass creates a missing one again. */
+function MissingSpace({ name }: { name: "login" | "lobby" }) {
+  const { t } = useTranslation("lobby");
+  const { isOwner } = useTier();
+  return <Card><CardContent className="space-y-4">
+    <div className="flex gap-3">
+      <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden="true" />
+      <div className="space-y-1">
+        <h2 className="text-sm font-semibold">{t(`${name}_missing_title`)}</h2>
+        <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">{t(isOwner ? "missing_hint_owner" : "missing_hint_admin")}</p>
+      </div>
+    </div>
+    {isOwner && <CreateSystemServers />}
+  </CardContent></Card>;
+}
+
+function CreateSystemServers() {
+  const { t } = useTranslation("lobby");
+  const host = useHostTask(["converge"]);
+  return <div className="space-y-3 pl-8">
+    <HostTaskNotice otherRunning={host.otherRunning} available={host.available} loading={host.loading} />
+    <Button disabled={!host.available || host.busy} onClick={() => void host.start({ action: "converge", params: { userRcon: "false" }, confirmMaintenance: false })}>{host.starting || host.running ? <Loader2 className="animate-spin" /> : <Wrench />}{t("missing_create")}</Button>
+    {host.error && <MessageLine kind="error" message={host.error} />}
+    {host.task && <HostTaskStatus task={host.task} />}
+    {host.reauth.dialog}
+  </div>;
+}
+
 export function LobbyPage() {
   const { t } = useTranslation("lobby");
   const [params, setParams] = useSearchParams();
@@ -203,6 +234,7 @@ export function LobbyPage() {
   const status = useAsync(() => api.status(name), [name]);
   usePolling(status.reload, STATUS_POLL_FAST_MS);
   const data = status.data;
+  const missing = (status.error as Partial<ApiError> | null | undefined)?.status === 404;
   function selectSpace(space: string) {
     if (space === name) return;
     if (dirty) setNextSpace(space);
@@ -232,7 +264,8 @@ export function LobbyPage() {
     </CardContent></Card>
     <div role="tabpanel" id={`lobby-space-panel-${name}`} aria-labelledby={`lobby-space-tab-${name}`} className="space-y-6">
       <p className="text-sm text-muted-foreground">{t(`${name}_description`)}</p>
-      {status.error != null && <ErrorState error={humanizeError(status.error)} onRetry={status.reload} />}
+      {missing ? <MissingSpace name={name} /> : <>
+      {status.error != null && <ErrorState error={status.error} onRetry={status.reload} />}
       <Card className="flex flex-wrap items-center justify-between gap-3 p-5">
         <div className="min-w-0 space-y-2"><div className="flex flex-wrap items-center gap-3"><h2 className="text-sm font-semibold">{data?.displayName || t(name)}</h2>{data ? <PhaseBadge phase={shownPhase(data)} /> : status.loading && <span role="status" className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" />{t("common:loading")}</span>}</div><p className="break-all text-xs text-muted-foreground">{data?.image || "\u00a0"}</p></div>
         {data && <PowerButton name={name} phase={data.phase} desiredState={data.desiredState} failed={startFailure(data) !== null} playersOnline={data.playersOnline} playerCountUnknown={data.playerCountUnknown} onChanged={status.reload} />}
@@ -258,6 +291,7 @@ export function LobbyPage() {
           {name === "lobby" && <BuilderAccess ready={data?.ready ?? false} />}
         </div>
       </div>
+      </>}
     </div>
     <ConfirmDialog open={nextSpace !== null} onOpenChange={(open) => { if (!open) setNextSpace(null); }} title={t("discard_title")} description={t("discard_hint")} confirmLabel={t("discard")} onConfirm={async () => { if (nextSpace) { setParams({ space: nextSpace }); setDirty(false); setNextSpace(null); } }} />
   </div>;

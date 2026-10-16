@@ -96,5 +96,10 @@
   "content_tools": "内容与维护",
   "unsaved": "有未保存的更改",
   "apply_on_start": "可以在运行中保存；设置将在下次启动或重启后生效",
-  "loading_settings": "正在加载配置，读取完成后即可编辑。"
+  "loading_settings": "正在加载配置，读取完成后即可编辑。",
+  "login_missing_title": "登录空间尚未创建",
+  "lobby_missing_title": "正式大厅尚未创建",
+  "missing_hint_owner": "登录空间与正式大厅由安装向导创建。选择「重新创建」，平台将按安装时配置的镜像创建缺失的登录空间与大厅，并为已有服务器补全缺少的设置；也可以在主机上执行 sudo felis converge。",
+  "missing_hint_admin": "登录空间与正式大厅由安装向导创建。请联系所有者在此页重新创建，或在主机上执行 sudo felis converge。",
+  "missing_create": "重新创建"
 }
