@@ -144,7 +144,8 @@ var (
 // felis-api's internal face, PostgreSQL on the node, or the kube API. Now:
 //
 //   - every server may resolve names and reach the public internet (plugin
-//     updates, resource packs, web maps) and nothing private;
+//     updates, resource packs, web maps), and of everything private only the
+//     server-software download cache's port (artifacts.go);
 //   - the login system server additionally reaches felis-api's internal face,
 //     the one platform service it is built to call.
 //
@@ -193,6 +194,9 @@ func serverEgress(p Params) *networkingv1.NetworkPolicy {
 					Ports: []networkingv1.NetworkPolicyPort{{Protocol: &udp, Port: &dns}, {Protocol: &tcp, Port: &dns}},
 				},
 				{To: peers},
+				// The server-software download cache (artifacts.go), which the
+				// install step of a runtime-image server fetches through.
+				serverToArtifacts(p),
 			},
 		},
 	}

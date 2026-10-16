@@ -270,6 +270,9 @@ func Workloads(p Params) []Object {
 		registryService(p),
 		registryPVC(p),
 		uploadsPVC(p),
+		artifactsDeployment(p),
+		artifactsService(p),
+		artifactsPVC(p),
 	}
 	if p.BackupPVC != "" {
 		objs = append(objs, backupPVC(p))
@@ -603,6 +606,7 @@ func OperatorDeployment(p Params) *appsv1.Deployment {
 		// name an image to run, and its own is the one image guaranteed present).
 		Env: []corev1.EnvVar{
 			{Name: "FELIS_IMAGE", Value: p.FelisImage},
+			{Name: "FELIS_ARTIFACT_CACHE", Value: ArtifactCacheURL(p.ControlNamespace)},
 		},
 		Ports: []corev1.ContainerPort{
 			{Name: "metrics", ContainerPort: operatorMetricsPort, Protocol: corev1.ProtocolTCP},

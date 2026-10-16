@@ -115,6 +115,9 @@ func Objects(p Params) []Object {
 		objs = append(objs, np)
 	}
 	objs = append(objs, RegistryIngressPolicy(p))
+	for _, np := range ArtifactsNetworkPolicies(p) {
+		objs = append(objs, np)
+	}
 
 	// The database's pg_hba.conf and ingress fence. deploy/bootstrap.sh applies
 	// the database alone first (PostgresObjects); rendering it here as well keeps

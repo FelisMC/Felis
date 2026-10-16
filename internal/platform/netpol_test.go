@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"strings"
 	"testing"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
@@ -194,7 +195,9 @@ func assertSinglePort(t *testing.T, ports []networkingv1.NetworkPolicyPort, want
 
 // TestServerEgress_OnlyDNSAndPublicInternet pins the egress fence on game server
 // pods: DNS by port, the public internet by address, and every private range
-// carved out of it — the pod and Service CIDRs, the node's LAN, metadata.
+// carved out of it — the pod and Service CIDRs, the node's LAN, metadata — with
+// one private destination let back in: the server-software cache's pods, on its
+// port only.
 func TestServerEgress_OnlyDNSAndPublicInternet(t *testing.T) {
 	p := testParams()
 	p.ServerEgressDenyCIDRs = []string{"203.0.113.7/32", "2001:db8::1/128"}
@@ -207,9 +210,16 @@ func TestServerEgress_OnlyDNSAndPublicInternet(t *testing.T) {
 	if !selectorEquals(eg.Spec.PodSelector, serverPodSelector()) {
 		t.Errorf("server egress selects %v, want every server pod", eg.Spec.PodSelector)
 	}
-	if len(eg.Spec.Egress) != 2 {
-		t.Fatalf("egress rules = %d, want DNS + internet", len(eg.Spec.Egress))
+	if len(eg.Spec.Egress) != 3 {
+		t.Fatalf("egress rules = %d, want DNS + internet + the artifact cache", len(eg.Spec.Egress))
 	}
+	cache := eg.Spec.Egress[2]
+	if len(cache.To) != 1 || cache.To[0].IPBlock != nil ||
+		cache.To[0].NamespaceSelector == nil || cache.To[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != p.withDefaults().ControlNamespace ||
+		cache.To[0].PodSelector == nil || cache.To[0].PodSelector.MatchLabels[LabelComponent] != ComponentArtifacts {
+		t.Errorf("cache rule = %+v, want only the artifact cache's pods in the control namespace", cache)
+	}
+	assertSinglePort(t, cache.Ports, int(ArtifactsPort))
 	dns := eg.Spec.Egress[0]
 	if len(dns.To) != 1 || dns.To[0].PodSelector == nil || dns.To[0].PodSelector.MatchLabels["k8s-app"] != "kube-dns" || len(dns.Ports) != 2 {
 		t.Errorf("DNS rule = %+v, want port 53 udp+tcp to the cluster DNS pods", dns)
@@ -353,4 +363,43 @@ func selectorEquals(a, b metav1.LabelSelector) bool {
 		}
 	}
 	return true
+}
+
+// The cache takes requests from game server pods only, and reaches out only to
+// DNS and the public internet: a server pod hands it the URL to fetch, so the
+// cache must not be a way into the cluster or the node's network either.
+func TestArtifactsNetworkPolicies(t *testing.T) {
+	p := testParams()
+	pols := ArtifactsNetworkPolicies(p)
+	in := npByName(t, pols, "felis-artifacts-ingress")
+	if !hasPolicyType(in, networkingv1.PolicyTypeIngress) || len(in.Spec.Ingress) != 1 || len(in.Spec.Ingress[0].From) != 1 {
+		t.Fatalf("ingress = %+v", in.Spec)
+	}
+	from := in.Spec.Ingress[0].From[0]
+	if from.NamespaceSelector == nil || from.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != p.withDefaults().MinecraftNamespace ||
+		from.PodSelector == nil || !selectorEquals(*from.PodSelector, serverPodSelector()) {
+		t.Errorf("ingress peer = %+v, want game server pods in the minecraft namespace", from)
+	}
+	assertSinglePort(t, in.Spec.Ingress[0].Ports, int(ArtifactsPort))
+
+	eg := npByName(t, pols, "felis-artifacts-egress")
+	if !hasPolicyType(eg, networkingv1.PolicyTypeEgress) || len(eg.Spec.Egress) != 2 {
+		t.Fatalf("egress = %+v, want DNS + internet", eg.Spec)
+	}
+	for _, peer := range eg.Spec.Egress[1].To {
+		if peer.IPBlock == nil {
+			t.Fatalf("internet peer %+v is not an ipBlock", peer)
+		}
+		for _, private := range []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "127.0.0.0/8", "fc00::/7"} {
+			if strings.Contains(private, ":") != strings.Contains(peer.IPBlock.CIDR, ":") {
+				continue
+			}
+			if !contains(peer.IPBlock.Except, private) {
+				t.Errorf("%s except = %v, missing %s", peer.IPBlock.CIDR, peer.IPBlock.Except, private)
+			}
+		}
+	}
+	if ArtifactCacheURL("felis") != "http://felis-artifacts.felis.svc:8090" {
+		t.Errorf("cache URL = %s", ArtifactCacheURL("felis"))
+	}
 }

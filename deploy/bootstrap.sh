@@ -122,10 +122,12 @@
 #                     their expiry and leaves every world); the reaper reads that
 #                     root as root, so it keeps k3s's own 0700 root:root
 #                     (default: unset = worlds are never reaped)
-#   FELIS_REGISTRY_STORAGE / FELIS_UPLOADS_STORAGE / FELIS_BACKUP_STORAGE capacity the
-#                     registry, uploads and world-archive PVCs request on first install
-#                     (defaults: 10Gi, 5Gi, 10Gi). An existing claim keeps its size; on
-#                     k3s local-path the number is not enforced, see troubleshooting §9
+#   FELIS_REGISTRY_STORAGE / FELIS_UPLOADS_STORAGE / FELIS_BACKUP_STORAGE / FELIS_ARTIFACTS_STORAGE
+#                     capacity the registry, uploads, world-archive and server-software
+#                     download cache PVCs request on first install (defaults: 10Gi, 5Gi,
+#                     10Gi, 10Gi). An existing claim keeps its size; on k3s local-path the
+#                     number is not enforced (the cache evicts to stay within 90% of its
+#                     own), see troubleshooting §9
 #   FELIS_MANAGE_TIME_SYNC 0 leaves the host's clock alone; by default the installer
 #                     turns NTP on (installing chrony when nothing can) and waits for it
 #                     to synchronize (default: 1)
@@ -243,6 +245,7 @@ FELIS_ARCHIVE_LOCAL_PATH="${FELIS_ARCHIVE_LOCAL_PATH:-/var/lib/felis/archives}"
 FELIS_REGISTRY_STORAGE="${FELIS_REGISTRY_STORAGE:-}"
 FELIS_UPLOADS_STORAGE="${FELIS_UPLOADS_STORAGE:-}"
 FELIS_BACKUP_STORAGE="${FELIS_BACKUP_STORAGE:-}"
+FELIS_ARTIFACTS_STORAGE="${FELIS_ARTIFACTS_STORAGE:-}"
 # Retention is opt-in because it DELETES worlds (after a verified archive): point this at the
 # node directory the world volumes live under. On the k3s this installer provisions that is
 # /var/lib/rancher/k3s/storage — the reaper resolves each PVC's local-path directory exactly
@@ -5716,6 +5719,8 @@ deploy_bundle() {
   if [ -n "$size" ]; then manifest_args+=(--registry-storage "$size"); fi
   size="$(pvc_size "$CONTROL_NS" felis-uploads "$FELIS_UPLOADS_STORAGE" FELIS_UPLOADS_STORAGE)"
   if [ -n "$size" ]; then manifest_args+=(--uploads-storage "$size"); fi
+  size="$(pvc_size "$CONTROL_NS" felis-artifacts "$FELIS_ARTIFACTS_STORAGE" FELIS_ARTIFACTS_STORAGE)"
+  if [ -n "$size" ]; then manifest_args+=(--artifacts-storage "$size"); fi
   if [ -n "$FELIS_BACKUP_PVC" ]; then
     size="$(pvc_size "$MINECRAFT_NS" "$FELIS_BACKUP_PVC" "$FELIS_BACKUP_STORAGE" FELIS_BACKUP_STORAGE)"
     if [ -n "$size" ]; then manifest_args+=(--backup-storage "$size"); fi

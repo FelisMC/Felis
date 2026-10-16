@@ -242,9 +242,9 @@ func TestObjects_EveryPodRunsAsARenderedServiceAccount(t *testing.T) {
 		p    Params
 		pods int
 	}{
-		{"no archive store", testParams(), 4},
-		{"retention only", retention, 5},
-		{"reaping", reaping, 5},
+		{"no archive store", testParams(), 5},
+		{"retention only", retention, 6},
+		{"reaping", reaping, 6},
 	} {
 		objs := Objects(c.p)
 		sas := map[string]bool{}

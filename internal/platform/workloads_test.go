@@ -466,16 +466,21 @@ func TestOperatorDeployment_Wiring(t *testing.T) {
 			t.Errorf("operator must mount NO Secret volume, found %q", v.Name)
 		}
 	}
-	// It carries exactly one plain env — FELIS_IMAGE, for the forwarding-config
-	// initContainer it injects into user servers — and NO credential env: nothing
-	// sourced from a Secret (valueFrom), since it holds no DB URL or token.
+	// It carries exactly two plain envs — FELIS_IMAGE, for the initContainers it
+	// injects into user servers, and FELIS_ARTIFACT_CACHE, the download cache their
+	// install step uses — and NO credential env: nothing sourced from a Secret
+	// (valueFrom), since it holds no DB URL or token.
 	for _, e := range c.Env {
 		if e.ValueFrom != nil {
 			t.Errorf("operator must carry no credential env, found %q with valueFrom", e.Name)
 		}
 	}
-	if len(c.Env) != 1 || c.Env[0].Name != "FELIS_IMAGE" || c.Env[0].Value != p.FelisImage {
-		t.Errorf("operator env = %v, want exactly FELIS_IMAGE=%q", c.Env, p.FelisImage)
+	want := []corev1.EnvVar{
+		{Name: "FELIS_IMAGE", Value: p.FelisImage},
+		{Name: "FELIS_ARTIFACT_CACHE", Value: "http://felis-artifacts." + p.ControlNamespace + ".svc:8090"},
+	}
+	if !reflect.DeepEqual(c.Env, want) {
+		t.Errorf("operator env = %v, want exactly %v", c.Env, want)
 	}
 }
 
@@ -718,13 +723,14 @@ func TestWorkloads_DeploymentsCarryProbes(t *testing.T) {
 
 // TestWorkloads_BundleContents sanity-checks the slice Workloads returns: the
 // database Deployment/Service, the two control-plane Deployments, the api
-// external+internal Services, the operator metrics Service, and the registry
+// external+internal Services, the operator metrics Service, the registry
+// Deployment/Service/PVC, the uploads PVC and the server-software cache's
 // Deployment/Service/PVC, every one with TypeMeta (so its YAML header renders). The
 // internal Service must be present or the login pod's felis-api:8081 path is dead.
 func TestWorkloads_BundleContents(t *testing.T) {
 	objs := Workloads(testParams())
-	if len(objs) != 11 {
-		t.Fatalf("Workloads returned %d objects, want 11", len(objs))
+	if len(objs) != 14 {
+		t.Fatalf("Workloads returned %d objects, want 14", len(objs))
 	}
 	var haveInternalSvc bool
 	for _, o := range objs {
@@ -742,7 +748,7 @@ func TestWorkloads_BundleContents(t *testing.T) {
 }
 
 // TestControlPlanePriorityClass pins the node-pressure eviction shield: every
-// control-plane pod template (postgres/api/operator/reaper/registry) runs under the
+// control-plane pod template (postgres/api/operator/reaper/registry/artifacts) runs under the
 // BUILT-IN system-cluster-critical class (value 2e9), at which kubelet's
 // eviction manager refuses to evict the pod. A live drill showed the whole
 // cascade with plain ordering: disk pressure evicted the game pods and then the
@@ -768,8 +774,8 @@ func TestControlPlanePriorityClass(t *testing.T) {
 			}
 		}
 	}
-	if deployments != 4 || cronJobs != 1 {
-		t.Errorf("scanned %d deployments / %d cronjobs, want 4 / 1 — a pod template escaped the class check", deployments, cronJobs)
+	if deployments != 5 || cronJobs != 1 {
+		t.Errorf("scanned %d deployments / %d cronjobs, want 5 / 1 — a pod template escaped the class check", deployments, cronJobs)
 	}
 	// The name must be the built-in critical class: any custom class is capped at
 	// 1e9 by the API server and would be evictable.

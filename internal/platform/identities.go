@@ -222,6 +222,10 @@ type Params struct {
 	RegistryStorage string
 	UploadsStorage  string
 	BackupStorage   string
+	// ArtifactsStorage is the server-software download cache's volume (default
+	// 10Gi); the cache evicts the least recently used files to stay within 90%
+	// of it.
+	ArtifactsStorage string
 }
 
 // Validate reports a Params the renderer cannot turn into objects.
@@ -252,6 +256,7 @@ func (p Params) Validate() error {
 		{"registry storage", p.RegistryStorage},
 		{"uploads storage", p.UploadsStorage},
 		{"backup storage", p.BackupStorage},
+		{"artifact cache storage", p.ArtifactsStorage},
 	} {
 		if q.v == "" {
 			continue
@@ -300,6 +305,9 @@ func (p Params) withDefaults() Params {
 	}
 	if p.BackupStorage == "" {
 		p.BackupStorage = backupStorageSize
+	}
+	if p.ArtifactsStorage == "" {
+		p.ArtifactsStorage = artifactsStorageSize
 	}
 	if p.ControllerHA && p.ReplicatedStorageClass == "" {
 		p.ReplicatedStorageClass = DefaultReplicatedStorageClass
