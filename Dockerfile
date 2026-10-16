@@ -25,7 +25,7 @@
 # Every base image here and in deploy/{limbo,lobby,paper} is pinned by digest, so a rebuild
 # of one release uses the same bytes; .github/dependabot.yml proposes the bumps (tag and
 # digest together).
-FROM --platform=$BUILDPLATFORM node:22-bookworm@sha256:363e1587494626837fa7f9a23bdb453d13b0ff3c67c705c2805cfc69c2d2fad7 AS panel
+FROM --platform=$BUILDPLATFORM node:22-bookworm@sha256:0e5f906573693feaa1e21057ebdcfdb5bd5021f050b2dc7c9deceb629c7da2a8 AS panel
 WORKDIR /panel
 COPY panel/package*.json ./
 RUN npm ci
