@@ -783,3 +783,40 @@ func TestAge(t *testing.T) {
 		}
 	}
 }
+
+// Delete removes an older bundle with its checksum, and refuses the newest bundle, a
+// name outside the directory and a file that is not there.
+func TestDelete(t *testing.T) {
+	dir := t.TempDir()
+	newest := BundleName(t0.Add(48*time.Hour), LabelDaily)
+	older := BundleName(t0, LabelManual)
+	for _, name := range []string{newest, older} {
+		for _, path := range []string{name, name + sumExt} {
+			if err := os.WriteFile(filepath.Join(dir, path), []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := Delete(dir, newest); !errors.Is(err, ErrNewestBundle) {
+		t.Fatalf("delete newest = %v, want ErrNewestBundle", err)
+	}
+	for _, bad := range []string{"../" + older, "felis-db-oops.tar", "secrets.env"} {
+		if err := Delete(dir, bad); err == nil {
+			t.Fatalf("delete %q succeeded", bad)
+		}
+	}
+	if err := Delete(dir, BundleName(t0.Add(time.Hour), LabelManual)); err == nil {
+		t.Fatal("deleting a missing bundle succeeded")
+	}
+	if err := Delete(dir, older); err != nil {
+		t.Fatalf("delete older: %v", err)
+	}
+	for _, path := range []string{older, older + sumExt} {
+		if _, err := os.Stat(filepath.Join(dir, path)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s still there: %v", path, err)
+		}
+	}
+	if all, err := List(dir); err != nil || len(all) != 1 || all[0].Name != newest {
+		t.Fatalf("after delete: %+v %v", all, err)
+	}
+}

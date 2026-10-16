@@ -25,6 +25,7 @@ const dbUsage = `usage:
                    [-no-servers] [-metrics-file path]
   felis db restore [-config path] [-dir dir] [-yes] [-force] [-no-safety-backup] <bundle>
   felis db verify  [-dir dir] <bundle>
+  felis db delete  [-dir dir] <bundle>
   felis db list    [-dir dir]
   felis db check   [-dir dir] [-max-age 26h]
   felis db audit-export [-config path] [-since date] [-until date] [-out file]
@@ -59,6 +60,8 @@ func cmdDB(args []string, stdout, stderr io.Writer) int {
 		return dbRestore(fs, dir, rest, stdout, stderr)
 	case "verify":
 		return dbVerify(fs, dir, rest, stdout, stderr)
+	case "delete":
+		return dbDelete(fs, dir, rest, stdout, stderr)
 	case "list":
 		return dbList(fs, dir, rest, stdout, stderr)
 	case "check":
@@ -498,4 +501,23 @@ func cleanServerList(raw []byte) ([]byte, error) {
 		list.Items = []map[string]any{}
 	}
 	return json.MarshalIndent(map[string]any{"apiVersion": "v1", "kind": "List", "items": list.Items}, "", "  ")
+}
+
+// dbDelete removes one bundle and its checksum from the bundle directory. The newest
+// bundle stays: it is the latest restore point.
+func dbDelete(fs *flag.FlagSet, dir *string, args []string, stdout, stderr io.Writer) int {
+	arg, ok := parseWithArg(fs, args)
+	if !ok {
+		return 2
+	}
+	if arg == "" {
+		fmt.Fprint(stderr, dbUsage)
+		return 2
+	}
+	if err := dbbackup.Delete(*dir, arg); err != nil {
+		fmt.Fprintf(stderr, "felis db delete: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "deleted %s from %s\n", arg, *dir)
+	return 0
 }

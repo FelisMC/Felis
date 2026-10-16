@@ -447,6 +447,40 @@ func Prune(dir, label string, keep int) ([]string, error) {
 	return removed, nil
 }
 
+// ErrNewestBundle refuses deleting the newest bundle: it is the latest restore point.
+var ErrNewestBundle = errors.New("the newest database backup is the latest restore point and cannot be deleted; take a new one first")
+
+// Delete removes the bundle named name from dir, with its checksum sidecar. It takes
+// the directory lock, so it never races a writer, and refuses the newest bundle.
+func Delete(dir, name string) error {
+	if _, _, ok := ParseBundleName(name); !ok || filepath.Base(name) != name {
+		return fmt.Errorf("%q is not a database backup name", name)
+	}
+	unlock, err := lockDir(dir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	all, err := List(dir)
+	if err != nil {
+		return err
+	}
+	for i, b := range all {
+		if b.Name != name {
+			continue
+		}
+		if i == 0 {
+			return ErrNewestBundle
+		}
+		if err := os.Remove(b.Path); err != nil {
+			return err
+		}
+		_ = os.Remove(b.Path + sumExt)
+		return nil
+	}
+	return fmt.Errorf("no database backup %s in %s", name, dir)
+}
+
 // lockDir serializes bundle writers (the nightly timer, a pre-migrate snapshot
 // and an operator's manual run) on dir/.lock.
 func lockDir(dir string) (func(), error) {
