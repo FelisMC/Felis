@@ -819,5 +819,22 @@
   "health_db_newest": "数据库备份于{{time}}",
   "health_disk_free": "{{path}} 剩余 {{free}}",
   "health_open": "维护与备份",
-  "health_offsite": "异地副本：{{state}}"
+  "health_offsite": "异地副本：{{state}}",
+  "self_service_title": "自助建服",
+  "self_service_on": "已开启",
+  "self_service_off": "已关闭",
+  "self_service_description": "开启后，未单独设置配额的用户可在以下默认配额内创建服务器，认领与调整资源同样受此配额限制。已单独设置配额的用户以其自身配额为准。",
+  "self_service_loading": "正在读取默认配额…",
+  "self_service_enabled": "开启自助建服",
+  "self_service_enabled_hint": "关闭时，未单独设置配额的用户无法创建服务器，认领不受限制。",
+  "self_service_servers": "服务器数量",
+  "self_service_memory": "内存（GB）",
+  "self_service_cpu": "CPU（核）",
+  "self_service_storage": "存储（GB）",
+  "self_service_unlimited": "不限",
+  "self_service_caps_hint": "留空表示不限，填写 0 表示不分配该项资源。",
+  "self_service_invalid": "请填写非负数；服务器数量须为整数。",
+  "self_service_save": "保存默认配额",
+  "self_service_saved": "默认配额已保存。"
+
 }

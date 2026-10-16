@@ -17,6 +17,7 @@ import { joinAddress } from "@/lib/config";
 import { CopyAddress } from "@/components/CopyAddress";
 import type { Phase, AutostartPolicy } from "@/lib/types";
 import { EditServerDialog } from "@/components/EditServerDialog";
+import { SoftwareCard } from "@/components/SoftwareCard";
 import { ForwardingDialog } from "@/components/ForwardingDialog";
 import { PowerButton } from "@/components/PowerButton";
 import { RetireCard, RetireNotice } from "@/components/Retirement";
@@ -361,9 +362,11 @@ export function ServerConsole() {
 
              {/* Right/Sidebar column: Navigation */}
             <div className="flex flex-col gap-4 lg:col-span-1 lg:min-h-0 lg:overflow-y-auto shrink-0">
-              {isAdmin && (
+              {data.software && <SoftwareCard software={data.software} />}
+              {(isAdmin || owned) && (
                 <EditServerDialog
                   serverName={name}
+                  mode={isAdmin ? "admin" : "owner"}
                   systemService={name === "login" || name === "lobby"}
                   currentDisplayName={data.displayName}
                   currentPolicy={data.autostartPolicy as AutostartPolicy}
@@ -373,6 +376,7 @@ export function ServerConsole() {
                   currentCpu={data.cpu}
                   currentIdleStopSeconds={data.idleStopSeconds}
                   playerCountUnknown={data.playerCountUnknown}
+                  currentSoftware={data.software}
                   onUpdated={reload}
                 />
               )}

@@ -182,7 +182,7 @@ export interface paths {
         put?: never;
         /**
          * Create a server (admin).
-         * @description Requires a staff session on the operator console host; the image must be whitelisted. An image in the platform registry is stored pinned to the digest its tag names at creation (name:tag@sha256:…), so a later push over the tag never moves the server; 400 image_not_in_registry when the registry lacks the tag, 503 registry_unavailable when it cannot be asked.
+         * @description Requires a staff session on the operator console host. The server runs either a whitelisted server image or server software on the runtime image, never both. An image in the platform registry is stored pinned to the digest its tag names at creation (name:tag@sha256:…), so a later push over the tag never moves the server; 400 image_not_in_registry when the registry lacks the tag, 503 registry_unavailable when it cannot be asked. Server software needs acceptEula (400 eula_required); 502 software_metadata_unavailable when its download site cannot be reached, 503 runtime_unavailable while its Java runtime is not yet in the platform registry.
          */
         post: operations["createServer"];
         delete?: never;
@@ -1320,6 +1320,104 @@ export interface paths {
         /** List the servers the caller owns or may claim. */
         get: operations["myServers"];
         put?: never;
+        /**
+         * Create a server of your own, within your quota.
+         * @description Creates a server owned by the caller, running server software on the runtime image, within the quota in force for them: their own, else the Owner's default quota (403 self_service_disabled when neither applies, 403 quota_exceeded when the server does not fit). Needs a linked Minecraft account (412 not_linked) and acceptEula (400 eula_required). In distributed mode the server goes to the admitted node with the fewest user servers.
+         */
+        post: operations["createMyServer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/servers/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Change a server you own.
+         * @description The owner's spec change: display name, who may wake it, idle stop, memory and CPU (growth is held to the owner's quota, 403 quota_exceeded), and its server software, under the same rules as the admin patch.
+         */
+        patch: operations["patchMyServer"];
+        trace?: never;
+    };
+    "/api/v1/me/server-quota": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Whether you can create a server, and your quota. */
+        get: operations["myServerQuota"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/software": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The server software types and Java runtimes on offer. */
+        get: operations["softwareCatalog"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/software/{type}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The Minecraft versions a server software type runs, newest first.
+         * @description Read from the software's own metadata through felis-api, cached for ten minutes.
+         */
+        get: operations["softwareVersions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/software/{type}/versions/{version}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What one version needs and offers.
+         * @description The Java the version needs (requiredJava) and the runtime it gets by default (java), its builds newest first, and whether the proxy's player identity can reach a server running it (forwarding).
+         */
+        get: operations["softwareVersion"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -1597,6 +1695,24 @@ export interface paths {
         get: operations["getFailoverPolicy"];
         /** Save the failover setting (Owner, fresh reauthentication). */
         put: operations["setFailoverPolicy"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settings/self-service": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the default quota (Owner). */
+        get: operations["getSelfServiceQuota"];
+        /** Save the default quota (Owner, fresh reauthentication). */
+        put: operations["setSelfServiceQuota"];
         post?: never;
         delete?: never;
         options?: never;
@@ -3835,6 +3951,8 @@ export interface components {
             startGaveUp?: boolean;
             /** @description Present and true for a system server the reaper never touches; it cannot be given up or deleted. */
             reaperExempt?: boolean;
+            /** @description Present for a server built from server software on the runtime image; absent for a server image. */
+            software?: components["schemas"]["ServerSoftware"];
             /** @description Owner and staff only. Present while the owner has given the server up or an admin is deleting it; the reaper carries that out on its next run. */
             retiring?: components["schemas"]["RetireState"];
         };
@@ -4303,6 +4421,75 @@ export interface components {
             max_memory_mb?: number | null;
             max_storage_gb?: number | null;
         };
+        /** @description The caps of a quota (internal/api/repo.go QuotaInput). An absent field is unlimited; 0 grants none of that resource. */
+        QuotaLimits: {
+            max_servers?: number;
+            max_cpu_milli?: number;
+            max_memory_mb?: number;
+            max_storage_gb?: number;
+        };
+        /** @description The quota in force for the caller and what their servers use of it (internal/api/selfservice.go serverQuotaView). source is user for their own quota, default for the Owner's default quota, and empty when neither applies: claims are then unlimited and the caller cannot create servers. */
+        ServerQuota: {
+            /** @enum {string} */
+            source: "" | "user" | "default";
+            limits: components["schemas"]["QuotaLimits"] | null;
+            usage: {
+                servers: number;
+                cpu_milli: number;
+                memory_mb: number;
+                storage_mb: number;
+            };
+            canCreate: boolean;
+            /**
+             * @description Present when canCreate is false; what stops the caller.
+             * @enum {string}
+             */
+            reason?: "not_linked" | "self_service_disabled" | "software_unavailable" | "quota_full";
+        };
+        /** @description The Owner's default quota (internal/api/selfservice.go selfServiceQuota): once enabled, the caps of every user without a quota of their own, for creating, claiming and resizing servers. A null cap is unlimited; 0 grants none. Off, users without their own quota cannot create servers and their claims stay unlimited. */
+        SelfServiceQuotaSettings: {
+            enabled: boolean;
+            max_servers: number | null;
+            max_cpu_milli: number | null;
+            max_memory_mb: number | null;
+            max_storage_gb: number | null;
+            revision: string;
+        };
+        /** @description The server software of a runtime-image server (internal/api/cluster.go ServerSoftware). forwarding is velocity when the server takes the proxy's player identity, none when players join it under offline-mode UUIDs. */
+        ServerSoftware: {
+            /** @enum {string} */
+            type: "paper" | "purpur" | "fabric" | "quilt" | "forge" | "neoforge" | "vanilla" | "custom";
+            minecraftVersion?: string;
+            /** @description The Paper/Purpur build or the loader version. */
+            build?: string;
+            /** @enum {integer} */
+            java: 8 | 17 | 21 | 25;
+            /** @description A custom server's jar */
+            jar?: string;
+            /** @enum {string} */
+            forwarding: "velocity" | "none";
+        };
+        /** @description Server software to build a server from (internal/api/software.go softwareRequest). Every type but custom names a Minecraft version the upstream offers; build defaults to the recommended one, java to the runtime the version needs (a lower one is refused with 400 java_too_old). custom names a jar already in the server's files, relative to its directory. */
+        SoftwareRequest: {
+            /** @enum {string} */
+            type: "paper" | "purpur" | "fabric" | "quilt" | "forge" | "neoforge" | "vanilla" | "custom";
+            minecraftVersion?: string;
+            build?: string;
+            /** @enum {integer} */
+            java?: 8 | 17 | 21 | 25;
+            jar?: string;
+        };
+        SoftwareVersion: {
+            id: string;
+            /** @description False for pre-releases */
+            stable: boolean;
+        };
+        SoftwareBuild: {
+            id: string;
+            stable: boolean;
+            /** @description Present and true for the build preselected when none is picked. */
+            recommended?: boolean;
+        };
         /** @description One live session, as the account holder and an admin see it (internal/api/repo.go SessionView). */
         SessionView: {
             /** @description The sha-256 of the session cookie; the id the revoke routes take. */
@@ -4393,6 +4580,15 @@ export interface components {
         };
         /** @description The store this writes to is full — the backup archive (backup_store_full), the world volume (volume_full) or the upload area (uploads_full). */
         InsufficientStorage: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+        /** @description The server software's download site could not be reached or answered with something unusable (software_metadata_unavailable). */
+        SoftwareUpstream: {
             headers: {
                 [name: string]: unknown;
             };
@@ -4881,6 +5077,9 @@ export interface operations {
                     /** @description Trimmed; at most 64 characters, all visible ones or spaces (400 bad_display_name otherwise). */
                     displayName?: string;
                     image?: string;
+                    software?: components["schemas"]["SoftwareRequest"];
+                    /** @description Accepts the Minecraft EULA, which server software runs under; required with software. */
+                    acceptEula?: boolean;
                     memory?: string;
                     storage?: string;
                     autostartPolicy?: string;
@@ -4912,6 +5111,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
+            502: components["responses"]["SoftwareUpstream"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -7633,6 +7833,217 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
         };
     };
+    createMyServer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    name: string;
+                    subdomain: string;
+                    displayName?: string;
+                    software: components["schemas"]["SoftwareRequest"];
+                    /** @description The memory limit */
+                    memory: string;
+                    /** @description Optional CPU limit */
+                    cpu?: string;
+                    storage: string;
+                    /** @enum {string} */
+                    autostartPolicy?: "ownerOnly" | "public" | "allowlist";
+                    acceptEula: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Created; starts Stopped and owned by the caller. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        name: string;
+                        subdomain: string;
+                        /** @constant */
+                        desiredState: "Stopped";
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            412: components["responses"]["PreconditionFailed"];
+            502: components["responses"]["SoftwareUpstream"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    patchMyServer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    displayName?: string;
+                    /** @enum {string} */
+                    autostartPolicy?: "ownerOnly" | "public" | "allowlist";
+                    /** Format: int32 */
+                    idleStopSeconds?: number;
+                    memory?: string;
+                    /** @description The CPU limit; empty removes it. */
+                    cpu?: string;
+                    software?: components["schemas"]["SoftwareRequest"];
+                    confirmSoftwareChange?: boolean;
+                    acceptEula?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Patched. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        name: string;
+                        patched: string[];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            502: components["responses"]["SoftwareUpstream"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    myServerQuota: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The quota in force for the caller and their usage of it. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServerQuota"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    softwareCatalog: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The catalog. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        types: {
+                            /** @enum {string} */
+                            type: "paper" | "purpur" | "fabric" | "quilt" | "forge" | "neoforge" | "vanilla" | "custom";
+                            /** @description True when the type picks a build or loader version. */
+                            builds: boolean;
+                        }[];
+                        runtimes: number[];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    softwareVersions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                type: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The versions. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        versions: components["schemas"]["SoftwareVersion"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            502: components["responses"]["SoftwareUpstream"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    softwareVersion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                type: string;
+                version: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The version. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        version: string;
+                        requiredJava: number;
+                        /** @description Absent when the platform ships no runtime new enough. */
+                        java?: number;
+                        builds: components["schemas"]["SoftwareBuild"][];
+                        /** @enum {string} */
+                        forwarding: "velocity" | "none";
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            502: components["responses"]["SoftwareUpstream"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
     nodeTasks: {
         parameters: {
             query?: never;
@@ -8357,6 +8768,71 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             /** @description The setting changed; reload before saving. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getSelfServiceQuota: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The default quota and its revision. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SelfServiceQuotaSettings"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    setSelfServiceQuota: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    enabled: boolean;
+                    max_servers?: number | null;
+                    max_cpu_milli?: number | null;
+                    max_memory_mb?: number | null;
+                    max_storage_gb?: number | null;
+                    revision: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The saved default quota and its new revision. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SelfServiceQuotaSettings"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description The default quota changed; reload before saving. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -12563,6 +13039,10 @@ export interface operations {
                      * @description Idle auto-stop. 0 turns it off; otherwise the server stops after this many seconds with nobody online (60–86400, else 400 bad_idle_stop).
                      */
                     idleStopSeconds?: number;
+                    /** @description Moves the server onto server software, or to other server software, on the runtime image of its Java. Not together with image. Another type or Minecraft version, or leaving a server image, needs confirmSoftwareChange (409 software_change_unconfirmed otherwise); leaving a server image also needs acceptEula. */
+                    software?: components["schemas"]["SoftwareRequest"];
+                    confirmSoftwareChange?: boolean;
+                    acceptEula?: boolean;
                 };
             };
         };
@@ -12584,6 +13064,7 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            502: components["responses"]["SoftwareUpstream"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };

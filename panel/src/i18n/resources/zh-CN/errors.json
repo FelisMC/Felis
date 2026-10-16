@@ -5,7 +5,7 @@
   "invalid_code": "绑定码无效或已过期，请重新获取。",
   "already_linked": "该 Minecraft 账户已关联至其他用户。",
   "bad_mc_uuid": "Minecraft UUID 格式无效。示例：069a79f4-44e9-4726-a5be-fca90e38aaf5，可省略连字符。",
-  "quota_exceeded": "服务器数量已达配额上限。",
+  "quota_exceeded": "超出配额上限（服务器数量、CPU、内存或存储）。",
   "already_claimed": "该服务器已被其他账户认领。",
   "image_not_whitelisted": "该镜像未在白名单中。",
   "image_not_in_registry": "内部镜像仓库不存在此镜像标签，可能尚未推送或已被删除。请重新构建或推送镜像后重试。",
@@ -158,5 +158,17 @@
   "node_control_unavailable": "主机节点执行服务不可用。请检查主控上的 felis-node-control.service。",
   "node_not_lost": "该节点仍然在线，或者它不是 Worker 节点。只有失联的 Worker 节点可以故障切换。",
   "confirm_mismatch": "请输入节点名称以确认故障切换。",
-  "bad_heartbeat_url": "心跳地址须为以 http:// 或 https:// 开头的完整网址。"
+  "bad_heartbeat_url": "心跳地址须为以 http:// 或 https:// 开头的完整网址。",
+  "eula_required": "使用服务端软件的服务器须先同意 Minecraft 最终用户许可协议（EULA）。",
+  "software_unavailable": "当前平台未启用服务端软件。",
+  "software_not_found": "所选服务端软件不提供该版本或构建。请重新选择。",
+  "bad_software": "服务端软件配置无效。请检查类型、版本与 jar 路径。",
+  "java_too_old": "所选 Java 版本低于该游戏版本的最低要求。",
+  "java_unavailable": "平台未提供该游戏版本所需的 Java 运行时。",
+  "runtime_unavailable": "所需的 Java 运行时尚未同步至平台镜像仓库。请联系管理员在主机上执行 felis mirror-build-tools，或等待下一次定时同步。",
+  "software_metadata_unavailable": "无法连接服务端软件的官方下载站，暂时无法读取版本信息。请稍后重试。",
+  "software_change_unconfirmed": "更换核心或游戏版本后，世界将在下次启动时由新版本打开，升级后的区块不支持旧版本。请先备份世界并勾选确认，再保存配置。",
+  "self_service_disabled": "当前账户没有建服配额。请联系平台所有者分配配额。",
+  "no_node": "当前没有可承载新服务器的节点。请联系管理员。"
+
 }

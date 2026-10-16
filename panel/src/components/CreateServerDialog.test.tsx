@@ -42,6 +42,9 @@ async function openDialog() {
   render(<CreateServerDialog cfg={cfg} onCreated={onCreated} />);
   await user.click(screen.getByRole("button", { name: "New server" }));
   await screen.findByRole("dialog");
+  // These cases cover a server built from a whitelisted image (softwareCreate.test.tsx
+  // covers server software).
+  await user.click(screen.getByRole("radio", { name: "Whitelisted image" }));
   return user;
 }
 
@@ -270,6 +273,7 @@ describe("distributed placement", () => {
     const user = userEvent.setup();
     render(<CreateServerDialog cfg={{...cfg,distributed:true}} onCreated={onCreated} />);
     await user.click(screen.getByRole("button",{name:"New server"}));
+    await user.click(screen.getByRole("radio", { name: "Whitelisted image" }));
     await fillValid(user);
     expect(create().disabled).toBe(true);
     await user.click(screen.getByRole("combobox",{name:"Execution node"}));

@@ -5,7 +5,7 @@
   "invalid_code": "The binding code is invalid or expired. Obtain a new code.",
   "already_linked": "That Minecraft account is already linked to another user.",
   "bad_mc_uuid": "Invalid Minecraft UUID format. Example: 069a79f4-44e9-4726-a5be-fca90e38aaf5. Hyphens are optional.",
-  "quota_exceeded": "You have reached your server quota.",
+  "quota_exceeded": "This exceeds the quota (servers, CPU, memory or storage).",
   "already_claimed": "This server has been claimed by another account.",
   "image_not_whitelisted": "That image is not on the whitelist.",
   "image_not_in_registry": "The image tag is absent from the internal registry. It may not have been pushed or may have been deleted. Rebuild or push the image before retrying.",
@@ -158,5 +158,17 @@
   "node_control_unavailable": "Host node service is unavailable. Inspect felis-node-control.service on the controller.",
   "node_not_lost": "The node is online or is not a worker. Only a lost worker can be failed over.",
   "confirm_mismatch": "Type the node name to confirm the failover.",
-  "bad_heartbeat_url": "The heartbeat URL must be a full address starting with http:// or https://."
+  "bad_heartbeat_url": "The heartbeat URL must be a full address starting with http:// or https://.",
+  "eula_required": "A server that runs server software requires accepting the Minecraft End User License Agreement (EULA).",
+  "software_unavailable": "Server software is not enabled on this platform.",
+  "software_not_found": "The selected server software does not offer this version or build. Select another.",
+  "bad_software": "The server software configuration is invalid. Check the type, version and jar path.",
+  "java_too_old": "The selected Java version is below the minimum this game version requires.",
+  "java_unavailable": "The platform does not provide the Java runtime this game version requires.",
+  "runtime_unavailable": "The required Java runtime has not been copied to the platform registry yet. Ask an administrator to run felis mirror-build-tools on the host, or wait for the next scheduled copy.",
+  "software_metadata_unavailable": "The server software's official download site could not be reached, so version information is unavailable. Try again later.",
+  "software_change_unconfirmed": "After a software or game version change, the next startup opens the world with the new version. Upgraded chunks are not compatible with older versions. Back up the world and select the confirmation before saving.",
+  "self_service_disabled": "This account has no server quota. Ask the platform owner to assign one.",
+  "no_node": "No node can take a new server at the moment. Contact an administrator."
+
 }

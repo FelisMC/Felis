@@ -35,6 +35,13 @@ import type {
   HostOverview,
   NodeControlRequest,
   NodeControlTask,
+  SelfCreateRequest,
+  SelfServiceQuotaSettings,
+  ServerQuota,
+  ServerSoftware,
+  SoftwareBuild,
+  SoftwareRequest,
+  SoftwareType,
 } from "../src/lib/types";
 
 type AccountID = string;
@@ -44,7 +51,9 @@ type CreateError =
   | "bad_request"
   | "already_exists"
   | "subdomain_taken"
-  | "image_not_whitelisted";
+  | "image_not_whitelisted"
+  | "eula_required"
+  | SoftwareError;
 
 function isAdmin(role: Role): boolean {
   return role === "admin" || role === "owner";
@@ -109,6 +118,8 @@ interface MockState {
   heartbeat: HeartbeatSettings;
   failoverPolicy: FailoverPolicySettings;
   entryPolicy: EntryPolicySettings;
+  // The Owner's default quota (settings/self-service); off, as on a new install.
+  selfService: SelfServiceQuotaSettings;
   host: MockHost;
   // Each server's world volume, seeded on first visit.
   files: Record<string, MockTree>;
@@ -302,6 +313,12 @@ function initialState(): MockState {
         playersOnline: 28,
         playersMax: 60,
         autostartPolicy: "public",
+        memory: "2Gi",
+        javaMemory: "1536M",
+        storageSize: "10Gi",
+        // Server software on the Java 21 runtime, as a self-created server runs.
+        image: runtimeImage(21),
+        software: { type: "paper", minecraftVersion: "1.21.4", build: "232", java: 21, forwarding: "velocity" },
       }),
       server("creative", "Creative Lab", "Stopped", "user", {
         autostartPolicy: "public",
@@ -491,6 +508,7 @@ function initialState(): MockState {
     archivePolicy: hostArchivePolicy(),
     heartbeat: { set: false, display: "", revision: "" },
     failoverPolicy: { automatic: false, afterMinutes: 15, replicaMinutes: 60, revision: "", managed: false },
+    selfService: { enabled: false, max_servers: null, max_cpu_milli: null, max_memory_mb: null, max_storage_gb: null, revision: "" },
     host: {
       tasks: [],
       settings: { dbBackupTime: "03:30", dbBackupKeep: 14, velocityXmx: "1G" },
@@ -884,10 +902,18 @@ function createServer(
 ): MockServer | CreateError {
   const name = req.name?.trim();
   const subdomain = req.subdomain?.trim();
-  if (!name || !subdomain || !req.image) return "bad_request";
+  if (!name || !subdomain || !req.image === !req.software) return "bad_request";
   if (findServer(state, name)) return "already_exists";
   if (state.servers.some((s) => s.subdomain === subdomain)) return "subdomain_taken";
-  if (!state.images.some((i) => i.enabled && i.image_ref === req.image)) {
+  let image = req.image;
+  let software: ServerSoftware | undefined;
+  if (req.software) {
+    if (!req.acceptEula) return "eula_required";
+    const resolved = resolveSoftware(req.software);
+    if (typeof resolved === "string") return resolved;
+    software = resolved;
+    image = runtimeImage(resolved.java);
+  } else if (!state.images.some((i) => i.enabled && i.image_ref === req.image)) {
     return "image_not_whitelisted";
   }
 
@@ -896,6 +922,10 @@ function createServer(
     playersOnline: 0,
     playersMax: 20,
     autostartPolicy: policy(req.autostartPolicy),
+    image,
+    software,
+    memory: req.memory,
+    storageSize: req.storage,
   });
   state.servers.unshift(created);
   return created;
@@ -904,6 +934,345 @@ function createServer(
 function sendCreateError(res: ServerResponse, code: CreateError): void {
   const status = code === "already_exists" || code === "subdomain_taken" ? 409 : 400;
   sendError(res, status, code, code);
+}
+
+// ---- server software (internal/api/software.go) ----
+
+// MOCK_SOFTWARE is a slice of what upstream offers, taken from the metadata the
+// software package's tests capture: each type's versions newest first, the Java
+// each needs, whether identity forwarding reaches it (a forwarding mod published
+// for it on Modrinth, or Paper's own config from 1.13), and its builds with the
+// one felis-api preselects.
+type MockSoftwareVersion = { id: string; stable: boolean; java: number; forwarding: boolean; builds?: SoftwareBuild[] };
+const FABRIC_LOADERS: SoftwareBuild[] = [
+  { id: "0.19.5", stable: true, recommended: true },
+  { id: "0.19.4", stable: true },
+];
+const QUILT_LOADERS: SoftwareBuild[] = [
+  { id: "0.31.0-beta.4", stable: false },
+  { id: "0.30.1", stable: true, recommended: true },
+];
+const MOCK_SOFTWARE: Record<Exclude<SoftwareType, "custom">, MockSoftwareVersion[]> = {
+  paper: [
+    { id: "1.21.4", stable: true, java: 21, forwarding: true, builds: [
+      { id: "232", stable: true, recommended: true }, { id: "231", stable: true }, { id: "230", stable: true }] },
+    { id: "1.20.1", stable: true, java: 17, forwarding: true, builds: [{ id: "196", stable: true, recommended: true }] },
+    { id: "1.16.5", stable: true, java: 8, forwarding: true, builds: [{ id: "794", stable: true, recommended: true }] },
+    { id: "1.12.2", stable: true, java: 8, forwarding: false, builds: [{ id: "1620", stable: true, recommended: true }] },
+  ],
+  purpur: [
+    { id: "1.21.4", stable: true, java: 21, forwarding: true, builds: [
+      { id: "2416", stable: true, recommended: true }, { id: "2415", stable: true }] },
+    { id: "1.20.1", stable: true, java: 17, forwarding: true, builds: [{ id: "2062", stable: true, recommended: true }] },
+  ],
+  fabric: [
+    { id: "26.3", stable: true, java: 25, forwarding: true, builds: FABRIC_LOADERS },
+    { id: "1.21.4", stable: true, java: 21, forwarding: true, builds: FABRIC_LOADERS },
+    { id: "1.20.1", stable: true, java: 17, forwarding: true, builds: FABRIC_LOADERS },
+  ],
+  quilt: [
+    { id: "1.21.4", stable: true, java: 21, forwarding: false, builds: QUILT_LOADERS },
+    { id: "1.20.1", stable: true, java: 17, forwarding: true, builds: QUILT_LOADERS },
+  ],
+  forge: [
+    { id: "26.3", stable: true, java: 25, forwarding: false, builds: [{ id: "66.0.12", stable: true, recommended: true }] },
+    { id: "1.20.1", stable: true, java: 17, forwarding: true, builds: [
+      { id: "47.4.10", stable: true, recommended: true }, { id: "47.4.9", stable: true }] },
+    { id: "1.15.2", stable: true, java: 8, forwarding: true, builds: [
+      { id: "31.2.62", stable: true }, { id: "31.2.57", stable: true, recommended: true }] },
+    { id: "1.12.2", stable: true, java: 8, forwarding: false, builds: [
+      { id: "14.23.5.2860", stable: true }, { id: "14.23.5.2859", stable: true, recommended: true }] },
+  ],
+  neoforge: [
+    { id: "26.3", stable: true, java: 25, forwarding: false, builds: [{ id: "26.3.0.85", stable: true, recommended: true }] },
+    { id: "1.21.4", stable: true, java: 21, forwarding: true, builds: [{ id: "21.4.150", stable: true, recommended: true }] },
+  ],
+  vanilla: [
+    { id: "26.4-snapshot-4", stable: false, java: 25, forwarding: false },
+    { id: "26.3", stable: true, java: 25, forwarding: false },
+    { id: "1.21.4", stable: true, java: 21, forwarding: false },
+    { id: "1.20.1", stable: true, java: 17, forwarding: false },
+    { id: "1.16.5", stable: true, java: 8, forwarding: false },
+    { id: "1.12.2", stable: true, java: 8, forwarding: false },
+    { id: "1.7.10", stable: true, java: 8, forwarding: false },
+  ],
+};
+const SOFTWARE_TYPES: SoftwareType[] = ["paper", "purpur", "fabric", "quilt", "forge", "neoforge", "vanilla", "custom"];
+const RUNTIMES = [8, 17, 21, 25] as const;
+type Runtime = (typeof RUNTIMES)[number];
+type SoftwareError = "bad_software" | "software_not_found" | "java_too_old" | "java_unavailable";
+
+function softwareVersion(type: string, mc: string | undefined): MockSoftwareVersion | undefined {
+  return Object.hasOwn(MOCK_SOFTWARE, type) ? MOCK_SOFTWARE[type as Exclude<SoftwareType, "custom">].find((v) => v.id === mc) : undefined;
+}
+
+// jarPathOK is software.ValidateJarPath: relative, inside the server directory,
+// a .jar, and outside the .felis directory the platform manages.
+function jarPathOK(p: string | undefined): boolean {
+  if (!p || p.startsWith("/") || !p.endsWith(".jar")) return false;
+  const parts = p.split("/");
+  return parts.every((s) => s !== "" && s !== "." && s !== "..") && parts[0] !== ".felis";
+}
+
+// resolveSoftware is the API's resolveSoftware: the recommended build when none
+// is picked, the earliest runtime the version needs unless a newer one is, and
+// forwarding as upstream allows.
+function resolveSoftware(req: SoftwareRequest): ServerSoftware | SoftwareError {
+  if (!SOFTWARE_TYPES.includes(req.type)) return "bad_software";
+  if (req.java !== undefined && !RUNTIMES.includes(req.java)) return "bad_software";
+  if (req.type === "custom") {
+    if (!jarPathOK(req.jar)) return "bad_software";
+    return { type: "custom", jar: req.jar, java: req.java ?? 21, forwarding: "none" };
+  }
+  const v = softwareVersion(req.type, req.minecraftVersion);
+  if (!v) return "software_not_found";
+  let build: string | undefined;
+  if (v.builds) {
+    build = req.build || (v.builds.find((b) => b.recommended) ?? v.builds[0]).id;
+    if (!v.builds.some((b) => b.id === build)) return "software_not_found";
+  }
+  const runtime = RUNTIMES.find((r) => r >= v.java);
+  if (!runtime) return "java_unavailable";
+  if (req.java !== undefined && req.java < v.java) return "java_too_old";
+  return { type: req.type, minecraftVersion: v.id, build, java: (req.java ?? runtime) as Runtime, forwarding: v.forwarding ? "velocity" : "none" };
+}
+
+// runtimeImage is the Temurin runtime pinned the way felis-api stores it.
+function runtimeImage(java: number): string {
+  const ref = `registry.felis.svc:5000/mirror/eclipse-temurin:${java}-jre`;
+  return `${ref}@sha256:${createHash("sha256").update(ref).digest("hex")}`;
+}
+
+// ---- self-service (internal/api/selfservice.go) ----
+
+function quantityMB(q: string | undefined): number {
+  const m = /^(\d+(?:\.\d+)?)(Gi|Mi)$/.exec(q ?? "");
+  if (!m) return 0;
+  return Math.round(Number(m[1]) * (m[2] === "Gi" ? 1024 : 1));
+}
+
+function cpuMilli(q: string | undefined): number {
+  if (!q) return 0;
+  return q.endsWith("m") ? Number(q.slice(0, -1)) || 0 : Math.round((Number(q) || 0) * 1000);
+}
+
+// quotaState is SelfServiceState: the caller's own quota, else the default one
+// when the Owner has turned it on, else none; and what their servers use.
+function quotaState(state: MockState, acc: MockAccount): Omit<ServerQuota, "canCreate" | "reason"> {
+  const owned = state.servers.filter((s) => s.owner === acc.id);
+  const usage = {
+    servers: owned.length,
+    cpu_milli: owned.reduce((n, s) => n + cpuMilli(s.cpu), 0),
+    memory_mb: owned.reduce((n, s) => n + quantityMB(s.memory), 0),
+    storage_mb: owned.reduce((n, s) => n + quantityMB(s.storageSize), 0),
+  };
+  const caps = (q: { max_servers?: number | null; max_cpu_milli?: number | null; max_memory_mb?: number | null; max_storage_gb?: number | null }) => ({
+    ...(q.max_servers != null && { max_servers: q.max_servers }),
+    ...(q.max_cpu_milli != null && { max_cpu_milli: q.max_cpu_milli }),
+    ...(q.max_memory_mb != null && { max_memory_mb: q.max_memory_mb }),
+    ...(q.max_storage_gb != null && { max_storage_gb: q.max_storage_gb }),
+  });
+  if (acc.quota) return { source: "user", limits: caps(acc.quota), usage };
+  if (state.selfService.enabled) return { source: "default", limits: caps(state.selfService), usage };
+  return { source: "", limits: null, usage };
+}
+
+// fitsQuota is quotaAllows: each capped total, with what is being added, stays
+// within its cap.
+function fitsQuota(q: Omit<ServerQuota, "canCreate" | "reason">, add: { servers: number; cpu_milli: number; memory_mb: number; storage_mb: number }): boolean {
+  const l = q.limits ?? {};
+  const u = q.usage;
+  return (l.max_servers == null || u.servers + add.servers <= l.max_servers) &&
+    (l.max_cpu_milli == null || u.cpu_milli + add.cpu_milli <= l.max_cpu_milli) &&
+    (l.max_memory_mb == null || u.memory_mb + add.memory_mb <= l.max_memory_mb) &&
+    (l.max_storage_gb == null || u.storage_mb + add.storage_mb <= l.max_storage_gb * 1024);
+}
+
+// patchMockServer is patchServer for the fields the edit dialog sends, for an
+// admin (PATCH /servers/{name}) and for the owner (PATCH /me/servers/{name}).
+async function patchMockServer(ctx: SessionContext, serverInfo: MockServer, ownerPatch: boolean): Promise<void> {
+  const body = await readJSON<{
+    displayName?: string; autostartPolicy?: AutostartPolicy; idleStopSeconds?: number; memory?: string;
+    cpu?: string; image?: string; confirmImageChange?: boolean; resources?: { cpu?: string };
+    software?: SoftwareRequest; confirmSoftwareChange?: boolean; acceptEula?: boolean;
+  }>(ctx.req);
+  const changed: string[] = [];
+  const next: Partial<MockServer> = {};
+  if (body.image !== undefined && body.software) {
+    sendError(ctx.res, 400, "bad_request", "give either an image or server software, not both");
+    return;
+  }
+  if (body.image !== undefined && !ownerPatch) {
+    if (!ctx.state.images.some((i) => i.enabled && i.image_ref === body.image)) {
+      sendError(ctx.res, 400, "image_not_whitelisted", "image is not whitelisted");
+      return;
+    }
+    if (body.image !== serverInfo.image) {
+      if (!body.confirmImageChange) {
+        sendError(ctx.res, 409, "image_change_unconfirmed", "changing the image opens this world with the new image's Minecraft version; back the world up first, then resend with confirmImageChange");
+        return;
+      }
+      Object.assign(next, { image: body.image, software: undefined });
+      changed.push("image");
+    }
+  }
+  if (body.software) {
+    const cur = serverInfo.software;
+    if (!cur && !body.acceptEula) {
+      sendError(ctx.res, 400, "eula_required", "accept the Minecraft EULA (acceptEula) to run server software");
+      return;
+    }
+    const sw = resolveSoftware(body.software);
+    if (typeof sw === "string") {
+      sendError(ctx.res, 400, sw, sw);
+      return;
+    }
+    const moves = !cur || cur.type !== sw.type || cur.minecraftVersion !== sw.minecraftVersion;
+    if (moves && !body.confirmSoftwareChange) {
+      sendError(ctx.res, 409, "software_change_unconfirmed", `moving this server to ${sw.type} ${sw.minecraftVersion ?? ""} opens its world with that software and version; back the world up first, then resend with confirmSoftwareChange`);
+      return;
+    }
+    Object.assign(next, { software: sw, image: runtimeImage(sw.java) });
+    changed.push("software");
+  }
+  const cpu = ownerPatch ? body.cpu : body.resources?.cpu;
+  if (body.memory !== undefined || cpu !== undefined) {
+    if (ownerPatch && serverInfo.owner) {
+      const q = quotaState(ctx.state, ctx.account);
+      const add = {
+        servers: 0, storage_mb: 0,
+        memory_mb: body.memory !== undefined ? quantityMB(body.memory) - quantityMB(serverInfo.memory) : 0,
+        cpu_milli: cpu !== undefined ? cpuMilli(cpu) - cpuMilli(serverInfo.cpu) : 0,
+      };
+      if (q.source && !fitsQuota(q, add)) {
+        sendError(ctx.res, 403, "quota_exceeded", "this change does not fit in your quota");
+        return;
+      }
+    }
+    if (body.memory !== undefined) {
+      next.memory = body.memory;
+      next.javaMemory = `${Math.floor(quantityMB(body.memory) * 0.75)}M`;
+      changed.push("memory");
+    }
+    if (cpu !== undefined) {
+      next.cpu = cpu || undefined;
+      changed.push("resources");
+    }
+  }
+  if (body.displayName !== undefined) {
+    next.displayName = body.displayName.trim() || serverInfo.name;
+    changed.push("displayName");
+  }
+  if (body.autostartPolicy !== undefined) {
+    next.autostartPolicy = policy(body.autostartPolicy);
+    changed.push("autostartPolicy");
+  }
+  if (body.idleStopSeconds !== undefined) {
+    if (body.idleStopSeconds !== 0 && (body.idleStopSeconds < 60 || body.idleStopSeconds > 86400)) {
+      sendError(ctx.res, 400, "bad_request", "idleStopSeconds must be 0 or 60-86400");
+      return;
+    }
+    next.idleStopSeconds = body.idleStopSeconds;
+    changed.push("idleStopSeconds");
+  }
+  Object.assign(serverInfo, next);
+  if (ownerPatch) sendJSON(ctx.res, 200, { name: serverInfo.name, patched: changed });
+  else sendJSON(ctx.res, 200, { name: serverInfo.name, desiredState: serverInfo.desiredState });
+}
+
+// handleMockSoftware answers the server software catalog, the caller's quota,
+// creating and changing a server of their own, and the Owner's default quota.
+async function handleMockSoftware(ctx: SessionContext): Promise<boolean> {
+  const key = route(ctx);
+  const [, type, , version] = ctx.parts.slice(2).map(decodeURIComponent);
+  if (key === "GET software") {
+    sendJSON(ctx.res, 200, { types: SOFTWARE_TYPES.map((t) => ({ type: t, builds: t !== "vanilla" && t !== "custom" })), runtimes: RUNTIMES });
+    return true;
+  }
+  if (/^GET software\/[^/]+\/versions(\/[^/]+)?$/.test(key)) {
+    const versions = Object.hasOwn(MOCK_SOFTWARE, type ?? "") ? MOCK_SOFTWARE[type as Exclude<SoftwareType, "custom">] : undefined;
+    if (!versions) {
+      sendError(ctx.res, 404, "not_found", `no versions for "${type}"`);
+    } else if (version === undefined) {
+      sendJSON(ctx.res, 200, { versions: versions.map(({ id, stable }) => ({ id, stable })) });
+    } else {
+      const v = versions.find((x) => x.id === version);
+      if (!v) sendError(ctx.res, 404, "software_not_found", `${type} does not offer Minecraft "${version}"`);
+      else sendJSON(ctx.res, 200, { version: v.id, requiredJava: v.java, java: RUNTIMES.find((r) => r >= v.java), builds: v.builds ?? [], forwarding: v.forwarding ? "velocity" : "none" });
+    }
+    return true;
+  }
+  if (key === "GET me/server-quota") {
+    const q = quotaState(ctx.state, ctx.account);
+    const full = q.limits?.max_servers != null && q.usage.servers >= q.limits.max_servers;
+    const reason = !ctx.account.linked ? "not_linked" : !q.source ? "self_service_disabled" : full ? "quota_full" : undefined;
+    sendJSON(ctx.res, 200, { ...q, canCreate: !reason, ...(reason && { reason }) });
+    return true;
+  }
+  if (key === "POST me/servers") {
+    const body = await readJSON<Partial<SelfCreateRequest>>(ctx.req);
+    const name = body.name?.trim() ?? "";
+    const subdomain = body.subdomain?.trim() ?? "";
+    if (!ctx.account.linked) {
+      sendError(ctx.res, 412, "not_linked", "link your Minecraft account before creating a server");
+    } else if (!/^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$/.test(name)) {
+      sendError(ctx.res, 400, "bad_name", "invalid server name");
+    } else if (!/^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$/.test(subdomain)) {
+      sendError(ctx.res, 400, "bad_subdomain", "invalid subdomain");
+    } else if (!body.acceptEula) {
+      sendError(ctx.res, 400, "eula_required", "accept the Minecraft EULA (acceptEula) to run server software");
+    } else {
+      const sw = body.software ? resolveSoftware(body.software) : "bad_software";
+      const memory = quantityMB(body.memory);
+      const storage = quantityMB(body.storage);
+      const q = quotaState(ctx.state, ctx.account);
+      if (typeof sw === "string") sendError(ctx.res, 400, sw, sw);
+      else if (!memory || !storage) sendError(ctx.res, 400, "bad_request", "memory and storage are required, e.g. 2Gi and 10Gi");
+      else if (!q.source) sendError(ctx.res, 403, "self_service_disabled", "creating servers is not open to your account");
+      else if (!fitsQuota(q, { servers: 1, cpu_milli: cpuMilli(body.cpu), memory_mb: memory, storage_mb: storage })) sendError(ctx.res, 403, "quota_exceeded", "this server does not fit in your quota");
+      else if (ctx.state.servers.some((s) => s.subdomain === subdomain)) sendError(ctx.res, 409, "subdomain_taken", `subdomain "${subdomain}" is already in use`);
+      else if (findServer(ctx.state, name)) sendError(ctx.res, 409, "already_exists", `a server named "${name}" already exists`);
+      else {
+        const created = server(name, body.displayName?.trim() || name, "Stopped", ctx.account.id, {
+          subdomain, playersOnline: 0, playersMax: 20, autostartPolicy: policy(body.autostartPolicy),
+          image: runtimeImage(sw.java), software: sw, memory: body.memory, cpu: body.cpu, storageSize: body.storage,
+          javaMemory: `${Math.floor(memory * 0.75)}M`,
+        });
+        ctx.state.servers.unshift(created);
+        sendJSON(ctx.res, 201, { name, subdomain, desiredState: created.desiredState });
+      }
+    }
+    return true;
+  }
+  const own = key.match(/^PATCH me\/servers\/([^/]+)$/);
+  if (own) {
+    const serverInfo = findServer(ctx.state, decodeURIComponent(own[1]));
+    if (!serverInfo) sendError(ctx.res, 404, "not_found", "server not found");
+    else if (!serverInfo.owner || serverInfo.owner !== ctx.account.id) sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
+    else await patchMockServer(ctx, serverInfo, true);
+    return true;
+  }
+  if (key === "GET settings/self-service" || key === "PUT settings/self-service") {
+    if (!isOwner(ctx.account.role)) {
+      sendError(ctx.res, 403, "forbidden", "Owner account required");
+    } else if (is("GET", ctx)) {
+      sendJSON(ctx.res, 200, ctx.state.selfService);
+    } else {
+      const body = await readJSON<SelfServiceQuotaSettings>(ctx.req);
+      const cap = (v: unknown) => v === null || (Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 2147483647);
+      if (body.revision !== ctx.state.selfService.revision) {
+        sendError(ctx.res, 409, "conflict", "the default quota changed; reload before saving");
+      } else if (typeof body.enabled !== "boolean" || ![body.max_servers, body.max_cpu_milli, body.max_memory_mb, body.max_storage_gb].every(cap)) {
+        sendError(ctx.res, 400, "invalid_quota", "each cap must be a whole number from 0 to 2147483647, or null for unlimited");
+      } else {
+        const { revision: _revision, ...quota } = body;
+        ctx.state.selfService = { ...quota, revision: createHash("sha256").update(JSON.stringify(quota)).digest("hex") };
+        sendJSON(ctx.res, 200, ctx.state.selfService);
+      }
+    }
+    return true;
+  }
+  return false;
 }
 
 // Op-login requests the mock has handed out. Nobody is in-game to vouch, so each
@@ -1207,6 +1576,7 @@ async function handleMockHost(ctx: SessionContext): Promise<boolean> {
 
 async function handleSession(ctx: SessionContext): Promise<boolean> {
   if (await handleMockHost(ctx)) return true;
+  if (await handleMockSoftware(ctx)) return true;
   switch (route(ctx)) {
     case "GET settings/entry-policy":
     case "PUT settings/entry-policy": {
@@ -2625,6 +2995,11 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
 
   if (is("GET", ctx) && ctx.parts[4] === "status") {
     sendJSON(ctx.res, 200, statusView(serverInfo, ctx.account));
+    return true;
+  }
+  if (is("PATCH", ctx) && !ctx.parts[4]) {
+    if (!isAdmin(ctx.account.role)) sendError(ctx.res, 403, "forbidden", "admin account required");
+    else await patchMockServer(ctx, serverInfo, false);
     return true;
   }
   if (is("GET", ctx) && ctx.parts[4] === "console") {

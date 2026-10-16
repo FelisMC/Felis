@@ -14,6 +14,13 @@ import type {
   BuildScan,
   ContextUploadProgress,
   CreateServerRequest,
+  SelfCreateRequest,
+  SelfServiceQuotaSettings,
+  ServerQuota,
+  SoftwareRequest,
+  SoftwareType,
+  SoftwareVersion,
+  SoftwareVersionInfo,
   CreateUserRequest,
   ExportStatus,
   ExportTicket,
@@ -669,6 +676,37 @@ export const api = rejectingSync({
       req,
     ),
 
+  // Server software (internal/api/software.go): the catalog, a type's Minecraft
+  // versions newest first, and what one version needs and offers. felis-api
+  // reads them from upstream and caches them for ten minutes.
+  softwareCatalog: () =>
+    request<{ types: { type: SoftwareType; builds: boolean }[]; runtimes: number[] }>("GET", "/software"),
+  softwareVersions: (type: SoftwareType) =>
+    request<{ versions: SoftwareVersion[] }>("GET", urlPath`/software/${type}/versions`).then((r) => r.versions ?? []),
+  softwareVersion: (type: SoftwareType, version: string) =>
+    request<SoftwareVersionInfo>("GET", urlPath`/software/${type}/versions/${version}`),
+
+  // Self-service (internal/api/selfservice.go): the caller's quota, a server of
+  // their own, and the changes an owner may make to one.
+  myServerQuota: () => request<ServerQuota>("GET", "/me/server-quota"),
+  createMyServer: (req: SelfCreateRequest) =>
+    request<{ name: string; subdomain: string; desiredState: string }>("POST", "/me/servers", req),
+  patchMyServer: (name: string, req: {
+    displayName?: string;
+    autostartPolicy?: AutostartPolicy;
+    idleStopSeconds?: number;
+    memory?: string;
+    cpu?: string;
+    software?: SoftwareRequest;
+    confirmSoftwareChange?: boolean;
+    acceptEula?: boolean;
+  }) => request<{ name: string; patched: string[] }>("PATCH", urlPath`/me/servers/${name}`, req),
+
+  // The Owner's default quota: the caps of every user without one of their own.
+  getSelfServiceQuota: () => request<SelfServiceQuotaSettings>("GET", "/settings/self-service"),
+  setSelfServiceQuota: (body: Omit<SelfServiceQuotaSettings, "revision"> & { revision: string }) =>
+    request<SelfServiceQuotaSettings>("PUT", "/settings/self-service", body),
+
   patchServer: (name: string, req: {
     /** Trimmed server-side; an empty one clears it. */
     displayName?: string;
@@ -680,6 +718,12 @@ export const api = rejectingSync({
     memory?: string;
     /** Idle auto-stop: 0 turns it off, else seconds empty before the stop (60–86400). */
     idleStopSeconds?: number;
+    /** Moves the server onto (other) server software; not together with image. */
+    software?: SoftwareRequest;
+    /** Required for another type or Minecraft version, or leaving a server image. */
+    confirmSoftwareChange?: boolean;
+    /** Required when leaving a server image for server software. */
+    acceptEula?: boolean;
     /** Single fields laid over the server's pod block: a field left out keeps its
      *  value, and an empty cpu or cpuRequest removes that limit or request. */
     resources?: {
@@ -1382,6 +1426,21 @@ export function humanizeError(e: unknown): string {
       return t("registry_unavailable");
     case "image_change_unconfirmed":
       return t("image_change_unconfirmed");
+    // Server software (internal/api/software.go, selfservice.go): what upstream
+    // offers is checked when a server is created or changed, the runtime image
+    // must be in the registry, and creating a server needs a quota.
+    case "eula_required":
+    case "software_unavailable":
+    case "software_not_found":
+    case "bad_software":
+    case "java_too_old":
+    case "java_unavailable":
+    case "runtime_unavailable":
+    case "software_metadata_unavailable":
+    case "software_change_unconfirmed":
+    case "self_service_disabled":
+    case "no_node":
+      return t(err.code);
     case "subdomain_taken":
       return t("subdomain_taken");
     case "already_exists":

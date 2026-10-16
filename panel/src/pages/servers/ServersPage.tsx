@@ -144,6 +144,11 @@ export function ServersPage() {
     [isAdmin],
   );
   const { data, error, loading, reload } = useAsync(fetchFn, [fetchFn]);
+  // A player with a quota (their own, or the Owner's default) creates servers of
+  // their own here; the read also says why not when they cannot.
+  const quota = useAsync(() => (isAdmin ? Promise.resolve(null) : api.myServerQuota()), [isAdmin]);
+  const selfCreate =
+    !isAdmin && quota.data && (quota.data.canCreate || quota.data.reason === "quota_full") ? quota.data : null;
 
   const [query, setQuery] = useState("");
   const [phaseFilter, setPhaseFilter] = useState<Phase | "all">("all");
@@ -278,6 +283,9 @@ export function ServersPage() {
               <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} />
             </Button>
             {isAdmin && cfg && <CreateServerDialog cfg={cfg} onCreated={reload} />}
+            {selfCreate && cfg && (
+              <CreateServerDialog cfg={cfg} self={{ quota: selfCreate }} onCreated={() => { reload(); quota.reload(); }} />
+            )}
           </div>
         }
         className="mb-6"

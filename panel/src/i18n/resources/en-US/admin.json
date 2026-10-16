@@ -826,5 +826,22 @@
   "health_db_newest": "Database backed up {{time}}",
   "health_disk_free": "{{free}} free on {{path}}",
   "health_open": "Maintenance & Backups",
-  "health_offsite": "Off-site copy: {{state}}"
+  "health_offsite": "Off-site copy: {{state}}",
+  "self_service_title": "Self-service servers",
+  "self_service_on": "On",
+  "self_service_off": "Off",
+  "self_service_description": "When on, users without a quota of their own can create servers within the default quota below, and their claims and resource changes are held to it as well. Users with their own quota keep it.",
+  "self_service_loading": "Loading the default quota…",
+  "self_service_enabled": "Enable self-service servers",
+  "self_service_enabled_hint": "When off, users without their own quota cannot create servers, and their claims are not limited.",
+  "self_service_servers": "Servers",
+  "self_service_memory": "Memory (GB)",
+  "self_service_cpu": "CPU (cores)",
+  "self_service_storage": "Storage (GB)",
+  "self_service_unlimited": "Unlimited",
+  "self_service_caps_hint": "Leave a field empty for no limit; enter 0 to grant none of that resource.",
+  "self_service_invalid": "Enter non-negative numbers; the server count must be a whole number.",
+  "self_service_save": "Save default quota",
+  "self_service_saved": "The default quota has been saved."
+
 }

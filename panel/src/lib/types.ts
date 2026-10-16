@@ -94,8 +94,89 @@ export interface ServerStatus {
   /** A platform system server the reaper never touches, so it cannot be given
    *  up or deleted. Owner and admin view only. */
   reaperExempt?: boolean;
+  /** The server software of a runtime-image server; absent for a server image.
+   *  Owner and admin view only. */
+  software?: ServerSoftware;
   /** A pending retirement. Owner and admin view only. */
   retiring?: RetireState;
+}
+
+/** The kinds of server software a server can run from the runtime image. */
+export type SoftwareType = "paper" | "purpur" | "fabric" | "quilt" | "forge" | "neoforge" | "vanilla" | "custom";
+
+/** ServerSoftware is what a runtime-image server runs (Go ServerSoftware).
+ *  forwarding is velocity when the server takes the proxy's player identity,
+ *  none when players join it under offline-mode UUIDs. */
+export interface ServerSoftware {
+  type: SoftwareType;
+  minecraftVersion?: string;
+  /** The Paper/Purpur build or the loader version. */
+  build?: string;
+  java: 8 | 17 | 21 | 25;
+  /** A custom server's jar, relative to the server directory. */
+  jar?: string;
+  forwarding: "velocity" | "none";
+}
+
+/** SoftwareRequest picks server software for a create or patch: build defaults
+ *  to the recommended one, java to the runtime the version needs. */
+export interface SoftwareRequest {
+  type: SoftwareType;
+  minecraftVersion?: string;
+  build?: string;
+  java?: 8 | 17 | 21 | 25;
+  jar?: string;
+}
+
+export interface SoftwareVersion {
+  id: string;
+  /** False for pre-releases, release candidates and snapshots. */
+  stable: boolean;
+}
+
+export interface SoftwareBuild {
+  id: string;
+  stable: boolean;
+  /** The build preselected when none is picked. */
+  recommended?: boolean;
+}
+
+/** SoftwareVersionInfo is GET /software/{type}/versions/{version}. */
+export interface SoftwareVersionInfo {
+  version: string;
+  requiredJava: number;
+  /** The runtime the version gets by default; absent when none is new enough. */
+  java?: number;
+  builds: SoftwareBuild[];
+  forwarding: "velocity" | "none";
+}
+
+/** QuotaLimits are a quota's caps: an absent cap is unlimited, 0 grants none. */
+export interface QuotaLimits {
+  max_servers?: number;
+  max_cpu_milli?: number;
+  max_memory_mb?: number;
+  max_storage_gb?: number;
+}
+
+/** ServerQuota is GET /me/server-quota: the quota in force for the caller and
+ *  whether they can create a server under it. */
+export interface ServerQuota {
+  source: "" | "user" | "default";
+  limits: QuotaLimits | null;
+  usage: { servers: number; cpu_milli: number; memory_mb: number; storage_mb: number };
+  canCreate: boolean;
+  reason?: "not_linked" | "self_service_disabled" | "software_unavailable" | "quota_full";
+}
+
+/** SelfServiceQuotaSettings is the Owner's default quota (GET /settings/self-service). */
+export interface SelfServiceQuotaSettings {
+  enabled: boolean;
+  max_servers: number | null;
+  max_cpu_milli: number | null;
+  max_memory_mb: number | null;
+  max_storage_gb: number | null;
+  revision: string;
 }
 
 /** WhitelistResult projects GET /servers/{name}/access/whitelist (spec §7 access).
@@ -346,7 +427,11 @@ export interface CreateServerRequest {
   name: string;
   subdomain: string;
   displayName?: string;
-  image: string;
+  /** A whitelisted server image, or else software; never both. */
+  image?: string;
+  software?: SoftwareRequest;
+  /** Required with software: the Minecraft EULA it runs under. */
+  acceptEula?: boolean;
   memory: string;
   storage: string;
   autostartPolicy?: AutostartPolicy;
@@ -356,6 +441,20 @@ export interface CreateServerRequest {
     memory?: string;
     memoryRequest?: string;
   };
+}
+
+/** SelfCreateRequest is POST /me/servers: a server of the caller's own, always
+ *  server software, within their quota. */
+export interface SelfCreateRequest {
+  name: string;
+  subdomain: string;
+  displayName?: string;
+  software: SoftwareRequest;
+  memory: string;
+  cpu?: string;
+  storage: string;
+  autostartPolicy?: AutostartPolicy;
+  acceptEula: boolean;
 }
 
 export interface MinecraftAuthSource {

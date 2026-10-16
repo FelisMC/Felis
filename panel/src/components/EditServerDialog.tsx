@@ -18,14 +18,24 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api, humanizeError } from "@/lib/api";
 import { splitImageRef } from "@/lib/format";
 import { DISPLAY_NAME_MAX } from "@/lib/naming";
 import { useAsync } from "@/lib/hooks";
-import type { AutostartPolicy } from "@/lib/types";
+import type { AutostartPolicy, ServerSoftware } from "@/lib/types";
 import { InlineError } from "@/components/MessageLine";
+import { SegmentedControl } from "@/components/SegmentedControl";
+import {
+  EMPTY_SOFTWARE,
+  EulaCheckbox,
+  SoftwarePicker,
+  softwareReady,
+  softwareRequest,
+  type SoftwareChoice,
+} from "@/components/SoftwarePicker";
 
 const MEMORY_OPTIONS = ["2Gi", "4Gi", "6Gi", "8Gi"];
 
@@ -94,7 +104,25 @@ interface Props {
   currentIdleStopSeconds?: number;
   /** The operator cannot read the player count, so idle stop is paused. */
   playerCountUnknown?: boolean;
+  /** What the server runs from the runtime image; absent for a server image. */
+  currentSoftware?: ServerSoftware;
+  /** owner edits a server the caller owns (PATCH /me/servers/{name}): no image,
+   *  memory and CPU within their quota. admin is the staff patch. */
+  mode?: "admin" | "owner";
   onUpdated: () => void;
+}
+
+/** choiceOf turns a server's software into the picker's value. */
+function choiceOf(s?: ServerSoftware): SoftwareChoice {
+  if (!s) return EMPTY_SOFTWARE;
+  return { type: s.type, minecraftVersion: s.minecraftVersion ?? "", build: s.build ?? "", java: s.java, jar: s.jar ?? "" };
+}
+
+/** softwareSummary names a server's software the way the panel lists it. */
+export function softwareSummary(t: (key: string, opts?: Record<string, unknown>) => string, s: ServerSoftware): string {
+  const name = t(`software_type_${s.type}`);
+  if (s.type === "custom") return `${name} · ${s.jar ?? ""}`;
+  return [name, s.minecraftVersion, s.build].filter(Boolean).join(" ");
 }
 
 export function EditServerDialog({
@@ -108,12 +136,23 @@ export function EditServerDialog({
   currentCpu = "",
   currentIdleStopSeconds = 0,
   playerCountUnknown = false,
+  currentSoftware,
+  mode = "admin",
   onUpdated,
 }: Props) {
   const currentIdleStop = String(currentIdleStopSeconds);
   const { t } = useTranslation("servers");
   const [open, setOpen] = useState(false);
-  const images = useAsync(() => api.listImages(), []);
+  const admin = mode === "admin";
+  const images = useAsync(() => (admin ? api.listImages() : Promise.resolve([])), [admin]);
+  // What runs the server: server software on the runtime image, or a whitelisted
+  // server image (staff only). Changing software is opened on purpose, so a
+  // plain settings edit never sends one.
+  const [source, setSource] = useState<"software" | "image">(currentSoftware ? "software" : "image");
+  const [changingSoftware, setChangingSoftware] = useState(false);
+  const [software, setSoftware] = useState<SoftwareChoice>(choiceOf(currentSoftware));
+  const [softwareConfirmed, setSoftwareConfirmed] = useState(false);
+  const [eula, setEula] = useState(false);
 
   const [form, setForm] = useState<EditServerForm>({
     displayName: currentDisplayName,
@@ -130,6 +169,11 @@ export function EditServerDialog({
   // for this acknowledgement (the API refuses it with image_change_unconfirmed).
   const [imageConfirmed, setImageConfirmed] = useState(false);
 
+  // The console polls the status and hands a new software object each time, so
+  // the form follows what the server runs by value: a poll alone never clears
+  // a choice being made.
+  const softwareKey = currentSoftware ? JSON.stringify(choiceOf(currentSoftware)) : "";
+
   // Sync form state when dialog opens or current values change from server status
   useEffect(() => {
     if (open) {
@@ -143,8 +187,13 @@ export function EditServerDialog({
       });
       setError(null);
       setImageConfirmed(false);
+      setSource(softwareKey ? "software" : "image");
+      setChangingSoftware(false);
+      setSoftware(softwareKey ? (JSON.parse(softwareKey) as SoftwareChoice) : EMPTY_SOFTWARE);
+      setSoftwareConfirmed(false);
+      setEula(false);
     }
-  }, [open, currentDisplayName, currentPolicy, currentImage, currentMemory, currentCpu, currentIdleStop]);
+  }, [open, currentDisplayName, currentPolicy, currentImage, currentMemory, currentCpu, currentIdleStop, softwareKey]);
 
   function set<K extends keyof EditServerForm>(k: K, v: EditServerForm[K]) {
     setForm((f) => ({ ...f, [k]: v }));
@@ -158,17 +207,40 @@ export function EditServerDialog({
   const displayName = form.displayName.trim();
   const cpu = form.cpu.trim();
   const cpuOk = cpuValid(cpu);
+
+  // The software is sent when the picker is open on a choice that differs from
+  // what the server runs. Another type or game version, or leaving a server
+  // image, opens the world with other software for good, so it waits for the
+  // same kind of acknowledgement as an image change; leaving a server image also
+  // takes the EULA.
+  const pickingSoftware = source === "software" && (changingSoftware || !currentSoftware);
+  const cur = choiceOf(currentSoftware);
+  const softwareChanged =
+    pickingSoftware &&
+    softwareReady(software) &&
+    (software.type !== cur.type || software.minecraftVersion !== cur.minecraftVersion || software.build !== cur.build ||
+      software.java !== cur.java || software.jar.trim() !== cur.jar);
+  const softwareMoves =
+    softwareChanged && (!currentSoftware || software.type !== cur.type || software.minecraftVersion !== cur.minecraftVersion);
+  const imageChanged = admin && source === "image" && form.image !== currentImage;
+
   const hasChanges =
     displayName !== currentDisplayName ||
     form.autostartPolicy !== currentPolicy ||
-    form.image !== currentImage ||
+    imageChanged ||
+    softwareChanged ||
     form.memory !== currentMemory ||
     cpu !== currentCpu ||
     form.idleStop !== currentIdleStop;
 
-  const imageChanged = form.image !== currentImage;
   const pinnedBuild = splitImageRef(currentImage).short;
-  const canSubmit = hasChanges && cpuOk && !submitting && (!imageChanged || imageConfirmed);
+  const canSubmit =
+    hasChanges &&
+    cpuOk &&
+    !submitting &&
+    (!imageChanged || imageConfirmed) &&
+    (!softwareMoves || softwareConfirmed) &&
+    (!softwareChanged || !!currentSoftware || eula);
 
   async function submit() {
     setSubmitting(true);
@@ -186,6 +258,11 @@ export function EditServerDialog({
         payload.image = form.image;
         payload.confirmImageChange = imageConfirmed;
       }
+      if (softwareChanged) {
+        payload.software = softwareRequest(software);
+        if (softwareMoves) payload.confirmSoftwareChange = true;
+        if (!currentSoftware) payload.acceptEula = eula;
+      }
       // Memory and CPU each go alone; the API keeps whatever is not sent.
       if (form.memory !== currentMemory) {
         payload.memory = form.memory;
@@ -197,7 +274,12 @@ export function EditServerDialog({
         payload.idleStopSeconds = Number(form.idleStop);
       }
 
-      await api.patchServer(serverName, payload);
+      if (admin) {
+        await api.patchServer(serverName, payload);
+      } else {
+        const { resources, ...rest } = payload;
+        await api.patchMyServer(serverName, { ...rest, ...(resources ? { cpu: resources.cpu } : {}) });
+      }
       setOpen(false);
       onUpdated();
     } catch (e) {
@@ -221,13 +303,13 @@ export function EditServerDialog({
           <div className="min-w-0 flex-1 text-left">
             <p className="text-sm font-medium">{t("edit_server_title")}</p>
             <p className="text-xs text-muted-foreground mt-0.5">
-              {t(systemService ? "edit_system_desc" : "edit_server_desc")}
+              {t(systemService ? "edit_system_desc" : admin ? "edit_server_desc" : "edit_owner_desc")}
             </p>
           </div>
           <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
         </button>
       </DialogTrigger>
-      <DialogContent>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{t("edit_server_title")}</DialogTitle>
           <DialogDescription>
@@ -247,6 +329,66 @@ export function EditServerDialog({
             />
           </div>
 
+          {admin && !systemService && (
+            <SegmentedControl
+              label={t("create_server_source")}
+              value={source}
+              onChange={(k) => { setSource(k); setChangingSoftware(false); setSoftware(choiceOf(currentSoftware)); }}
+              segments={[
+                { key: "software", label: t("software_source_software") },
+                { key: "image", label: t("software_source_image") },
+              ]}
+            />
+          )}
+
+          {source === "software" || !admin ? (
+            <div className="grid gap-2">
+              <Label>{t("edit_server_software")}</Label>
+              {!pickingSoftware ? (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border p-2.5 text-sm">
+                  <span>
+                    {currentSoftware
+                      ? t("edit_server_software_current", { summary: softwareSummary(t, currentSoftware), java: currentSoftware.java })
+                      : t("edit_server_software_image", { image: splitImageRef(currentImage).tag || currentImage })}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => { setSource("software"); setChangingSoftware(true); }}
+                  >
+                    {t(currentSoftware ? "edit_server_software_change" : "edit_server_software_switch")}
+                  </Button>
+                </div>
+              ) : (
+                <div className="grid gap-3 rounded-md border border-border p-3">
+                  <SoftwarePicker idPrefix="es-sw" value={software} onChange={setSoftware} />
+                  {softwareMoves && (
+                    <div className="grid gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs">
+                      <p className="flex items-start gap-1.5 text-amber-700 dark:text-amber-300">
+                        <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" />
+                        {t("edit_server_software_warning")}
+                      </p>
+                      <label className="flex cursor-pointer items-center gap-2 font-medium text-foreground">
+                        <Checkbox className="mt-0.5" checked={softwareConfirmed} onChange={(e) => setSoftwareConfirmed(e.target.checked)} />
+                        {t("edit_server_software_confirm")}
+                      </label>
+                    </div>
+                  )}
+                  {!currentSoftware && <EulaCheckbox checked={eula} onChange={setEula} />}
+                  {(currentSoftware || !admin) && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="justify-self-start"
+                      onClick={() => { setChangingSoftware(false); setSoftware(choiceOf(currentSoftware)); if (!currentSoftware) setSource("image"); }}
+                    >
+                      {t("edit_server_software_cancel")}
+                    </Button>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : (
           <div className="grid gap-2">
             <Label htmlFor="edit-server-image">{t("create_server_image")}</Label>
             <Select value={form.image} onValueChange={(v) => set("image", v)}>
@@ -304,6 +446,7 @@ export function EditServerDialog({
               </div>
             )}
           </div>
+          )}
 
           <div className="grid grid-cols-2 gap-4">
             <div className="grid gap-2">

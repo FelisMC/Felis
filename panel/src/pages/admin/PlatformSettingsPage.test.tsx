@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { PlatformSettingsPage } from "./PlatformSettingsPage";
 import type { WakePolicySettings } from "@/lib/types";
-const calls = vi.hoisted(() => ({ getEntryPolicy: vi.fn(), setEntryPolicy: vi.fn(), fleet: vi.fn(), getWakePolicy: vi.fn(), setWakePolicy: vi.fn(), nodes: vi.fn(), nodeTasks: vi.fn(), nodeTask: vi.fn(), startNodeTask: vi.fn(), retryNodeTask: vi.fn(), getMailSettings: vi.fn(), getArchivePolicy: vi.fn(), getFailoverPolicy: vi.fn(), getHeartbeat: vi.fn(), hostOverview: vi.fn() }));
+const calls = vi.hoisted(() => ({ getEntryPolicy: vi.fn(), setEntryPolicy: vi.fn(), fleet: vi.fn(), getWakePolicy: vi.fn(), setWakePolicy: vi.fn(), nodes: vi.fn(), nodeTasks: vi.fn(), nodeTask: vi.fn(), startNodeTask: vi.fn(), retryNodeTask: vi.fn(), getMailSettings: vi.fn(), getArchivePolicy: vi.fn(), getFailoverPolicy: vi.fn(), getHeartbeat: vi.fn(), hostOverview: vi.fn(), getSelfServiceQuota: vi.fn(), setSelfServiceQuota: vi.fn() }));
 vi.mock("@/lib/api", async (original) => ({ ...await original<typeof import("@/lib/api")>(), api: calls }));
 const runtime = vi.hoisted(() => ({ distributed: false, fallback: false, apiBase: "/api/v1", rootDomain: "example.test" }));
 vi.mock("@/lib/hooks", async (original) => ({ ...await original<typeof import("@/lib/hooks")>(), useConfig: () => runtime }));
@@ -29,6 +29,7 @@ beforeEach(() => {
   calls.getHeartbeat.mockResolvedValue({ set: false, display: "", revision: "" });
   calls.getFailoverPolicy.mockResolvedValue({ automatic: false, afterMinutes: 15, replicaMinutes: 60, revision: "", managed: false });
   calls.hostOverview.mockResolvedValue(overview);
+  calls.getSelfServiceQuota.mockResolvedValue({ enabled: false, max_servers: null, max_cpu_milli: null, max_memory_mb: null, max_storage_gb: null, revision: "" });
   calls.setWakePolicy.mockImplementation(async (body) => ({ ...body, revision: "saved", managed: true }));
 });
 describe("platform policy", () => {
@@ -70,7 +71,7 @@ describe("page reload", () => {
     const lobby = screen.getByRole("radio", { name: /^Lobby/ });
     await waitFor(() => expect(lobby).toHaveProperty("disabled", false));
     const reload = screen.getByRole("button", { name: "Reload" });
-    const reads = [calls.getWakePolicy, calls.getEntryPolicy, calls.fleet, calls.getMailSettings, calls.getArchivePolicy, calls.getHeartbeat, calls.getFailoverPolicy, calls.nodes, calls.nodeTasks, calls.hostOverview];
+    const reads = [calls.getWakePolicy, calls.getEntryPolicy, calls.fleet, calls.getMailSettings, calls.getArchivePolicy, calls.getHeartbeat, calls.getFailoverPolicy, calls.nodes, calls.nodeTasks, calls.hostOverview, calls.getSelfServiceQuota];
     await waitFor(() => { for (const read of reads) expect(read).toHaveBeenCalled(); });
     const before = reads.map((read) => read.mock.calls.length);
     await userEvent.click(reload);
