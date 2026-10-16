@@ -150,6 +150,17 @@ jobs:
         run: |
           if git grep -nE 'exit +"?\$\{?[a-z_]*fail[a-z_]*\}?"?[[:space:]]*$' -- '*.sh'; then exit 1; fi
 
+      # Under pipefail, `cmd | grep -q` and `cmd | head` stop reading early: cmd then dies of
+      # SIGPIPE whenever it writes after that, and the pipeline fails at random with 141 (or a
+      # condition reads a match as none). The test suites run under sh without pipefail.
+      - name: No reader that stops early after a pipe
+        run: |
+          if git grep -nE '\|[[:space:]]*(head([[:space:]]|$)|grep[[:space:]]+-[A-Za-z]*[qm])' -- '*.sh' '.github/workflows/*.yml' ':!*_test.sh' \
+              | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#'; then
+            echo "read the whole input instead: grep ... >/dev/null, sed -n 1p"
+            exit 1
+          fi
+
       - run: sh deploy/bootstrap_test.sh
       - run: sh deploy/uninstall_test.sh
       - run: bash deploy/e2e_release_test.sh
@@ -186,7 +197,7 @@ jobs:
       - name: Read the panel's Node version from the Dockerfile
         id: node
         run: |
-          version="$(sed -n 's/^FROM.*node:\([0-9][0-9]*\)-.*/\1/p' Dockerfile | head -1)"
+          version="$(sed -n 's/^FROM.*node:\([0-9][0-9]*\)-.*/\1/p' Dockerfile | sed -n 1p)"
           [ -n "$version" ] || { echo "Dockerfile has no 'FROM ... node:<major>' line"; exit 1; }
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
