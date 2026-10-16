@@ -318,7 +318,7 @@ components:
       properties:
         tag:
           type: string
-          description: Permanent UUID namespace; saved tags cannot be renamed or removed. mojang is reserved.
+          description: Permanent UUID namespace. A deleted tag stays reserved for its endpoint (see retired). mojang is reserved.
         prefix:
           type: string
           pattern: '^[A-Za-z0-9]{1,4}$'
@@ -437,13 +437,23 @@ components:
         revision: { type: string }
     AuthSourcesSettings:
       type: object
-      required: [sources, revision, managed]
+      required: [sources, retired, revision, managed]
       properties:
         sources:
           type: array
           maxItems: 32
           description: Third-party sources in priority order; built-in Mojang always precedes them and is immutable.
           items: { $ref: '#/components/schemas/AuthSourceConfig' }
+        retired:
+          type: array
+          description: Tags of deleted sources with the endpoint each pointed at. Player UUIDs derive from the tag, so a retired tag can be added again only with the same url; any other url returns 409 auth_source_tag_retired.
+          items:
+            type: object
+            additionalProperties: false
+            required: [tag, url]
+            properties:
+              tag: { type: string }
+              url: { type: string }
         revision:
           type: string
           description: Opaque revision to send unchanged when saving; stale or concurrent writes return 409.
@@ -5397,8 +5407,8 @@ paths:
       description: >-
         Atomically persists an override in platform_settings. It applies to the next
         login and role lookup on every API replica without restarting; existing
-        players stay online. Tags identify permanent UUID namespaces; retain every
-        saved tag and disable unwanted sources. Mojang remains built-in and trusted,
+        players stay online. Tags identify permanent UUID namespaces: a source left out of
+        sources is deleted and its tag retired, reusable only with the same url. Mojang remains built-in and trusted,
         while configured sources always remain third-party. Nano remains TOML-only.
       x-felis-face: [external]
       x-felis-tier: owner
@@ -5427,7 +5437,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409':
-          description: auth_sources_changed or auth_source_tag_locked; reload instead of overwriting another Owner's changes.
+          description: auth_sources_changed (reload instead of overwriting another Owner's changes) or auth_source_tag_retired (a deleted source's tag added with another url).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

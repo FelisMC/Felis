@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -21,10 +22,27 @@ type authSourceEntry struct {
 	Enabled bool `json:"enabled"`
 }
 
+// retiredAuthSource is a deleted source's tag, kept with the endpoint it pointed at.
+// Player UUIDs derive from the tag, so the tag comes back only for that endpoint: under
+// another Yggdrasil the same tag would hand those players' links, bans and data to
+// whoever holds their native IDs there.
+type retiredAuthSource struct {
+	Tag string `json:"tag"`
+	URL string `json:"url"`
+}
+
 type authSourcesView struct {
-	Sources  []authSourceEntry `json:"sources"`
-	Revision string            `json:"revision"`
-	Managed  bool              `json:"managed"`
+	Sources  []authSourceEntry   `json:"sources"`
+	Retired  []retiredAuthSource `json:"retired"`
+	Revision string              `json:"revision"`
+	Managed  bool                `json:"managed"`
+}
+
+// storedAuthSources is the platform_settings value. Earlier releases stored the bare
+// sources array, which still reads.
+type storedAuthSources struct {
+	Sources []authSourceEntry   `json:"sources"`
+	Retired []retiredAuthSource `json:"retired"`
 }
 
 // AuthSourceSettings reuses platform_settings for the full control plane. Nano
@@ -47,7 +65,7 @@ func validateAuthSourceEntries(entries []authSourceEntry) error {
 }
 
 func (s *AuthSourceSettings) read(ctx context.Context) (authSourcesView, []byte, error) {
-	view := authSourcesView{Sources: []authSourceEntry{}}
+	view := authSourcesView{Sources: []authSourceEntry{}, Retired: []retiredAuthSource{}}
 	raw, err := s.Repo.GetSetting(ctx, authSourcesKey)
 	switch {
 	case errors.Is(err, ErrNotFound):
@@ -62,18 +80,63 @@ func (s *AuthSourceSettings) read(ctx context.Context) (authSourcesView, []byte,
 	case err != nil:
 		return view, nil, err
 	default:
-		if err := json.Unmarshal(raw, &view.Sources); err != nil {
+		var stored storedAuthSources
+		var err error
+		if trimmed := bytes.TrimSpace(raw); len(trimmed) > 0 && trimmed[0] == '[' {
+			err = json.Unmarshal(raw, &stored.Sources)
+		} else {
+			err = json.Unmarshal(raw, &stored)
+		}
+		if err != nil {
 			return view, nil, fmt.Errorf("auth sources: invalid stored configuration: %w", err)
 		}
-		view.Managed = true
+		view.Sources, view.Managed = stored.Sources, true
+		if stored.Retired != nil {
+			view.Retired = stored.Retired
+		}
 	}
 	if err := validateAuthSourceEntries(view.Sources); err != nil {
 		return view, nil, err
 	}
-	canonical, _ := json.Marshal(view.Sources)
-	sum := sha256.Sum256(canonical)
-	view.Revision = hex.EncodeToString(sum[:])
+	view.Revision = authSourcesRevision(view.Sources)
 	return view, raw, nil
+}
+
+// authSourcesRevision is the opaque revision of a source list, the same however the
+// list was stored.
+func authSourcesRevision(sources []authSourceEntry) string {
+	canonical, _ := json.Marshal(sources)
+	sum := sha256.Sum256(canonical)
+	return hex.EncodeToString(sum[:])
+}
+
+// retireAuthSources returns the retired tags after saving next over view: a saved tag
+// missing from next is retired with its endpoint, and a retired tag that comes back with
+// that same endpoint is restored. A retired tag that comes back with another endpoint is
+// refused.
+func retireAuthSources(view authSourcesView, next []authSourceEntry) ([]retiredAuthSource, error) {
+	byTag := make(map[string]authSourceEntry, len(next))
+	for _, source := range next {
+		byTag[source.Tag] = source
+	}
+	retired := make([]retiredAuthSource, 0, len(view.Retired)+len(view.Sources))
+	for _, old := range view.Retired {
+		source, back := byTag[old.Tag]
+		if !back {
+			retired = append(retired, old)
+			continue
+		}
+		if source.URL != old.URL {
+			return nil, newError(http.StatusConflict, "auth_source_tag_retired",
+				"the ID %q belonged to a deleted source at %s; reuse it only with that address, or choose another ID", old.Tag, old.URL)
+		}
+	}
+	for _, existing := range view.Sources {
+		if _, kept := byTag[existing.Tag]; !kept {
+			retired = append(retired, retiredAuthSource{Tag: existing.Tag, URL: existing.URL})
+		}
+	}
+	return retired, nil
 }
 
 func (a *API) currentAuthSources(ctx context.Context) ([]AuthSource, error) {
@@ -144,17 +207,12 @@ func (a *API) handleSetAuthSources(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, newError(http.StatusConflict, "auth_sources_changed", "authentication sources changed; reload before saving"))
 		return
 	}
-	tags := make(map[string]bool, len(body.Sources))
-	for _, source := range body.Sources {
-		tags[source.Tag] = true
+	retired, err := retireAuthSources(view, body.Sources)
+	if err != nil {
+		writeError(w, r, err)
+		return
 	}
-	for _, existing := range view.Sources {
-		if !tags[existing.Tag] {
-			writeError(w, r, newError(http.StatusConflict, "auth_source_tag_locked", "saved source tags are permanent; disable the source instead of removing or renaming it"))
-			return
-		}
-	}
-	value, _ := json.Marshal(body.Sources)
+	value, _ := json.Marshal(storedAuthSources{Sources: body.Sources, Retired: retired})
 	err = a.AuthSourceSettings.Repo.CompareAndSetSetting(r.Context(), authSourcesKey, expected, value)
 	if errors.Is(err, ErrConflict) {
 		writeError(w, r, newError(http.StatusConflict, "auth_sources_changed", "authentication sources changed; reload before saving"))
@@ -164,9 +222,8 @@ func (a *API) handleSetAuthSources(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	view.Sources, view.Managed = body.Sources, true
-	sum := sha256.Sum256(value)
-	view.Revision = hex.EncodeToString(sum[:])
+	view.Sources, view.Retired, view.Managed = body.Sources, retired, true
+	view.Revision = authSourcesRevision(body.Sources)
 	a.audit(r, "auth_sources.updated", "")
 	writeJSON(w, http.StatusOK, view)
 }

@@ -1660,7 +1660,7 @@ export interface paths {
         get: operations["getAuthSources"];
         /**
          * Save authentication sources (Owner, fresh reauthentication).
-         * @description Atomically persists an override in platform_settings. It applies to the next login and role lookup on every API replica without restarting; existing players stay online. Tags identify permanent UUID namespaces; retain every saved tag and disable unwanted sources. Mojang remains built-in and trusted, while configured sources always remain third-party. Nano remains TOML-only.
+         * @description Atomically persists an override in platform_settings. It applies to the next login and role lookup on every API replica without restarting; existing players stay online. Tags identify permanent UUID namespaces: a source left out of sources is deleted and its tag retired, reusable only with the same url. Mojang remains built-in and trusted, while configured sources always remain third-party. Nano remains TOML-only.
          */
         put: operations["setAuthSources"];
         post?: never;
@@ -3311,7 +3311,7 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         AuthSourceConfig: {
-            /** @description Permanent UUID namespace; saved tags cannot be renamed or removed. mojang is reserved. */
+            /** @description Permanent UUID namespace. A deleted tag stays reserved for its endpoint (see retired). mojang is reserved. */
             tag: string;
             /** @description Unique case-insensitive display prefix. */
             prefix: string;
@@ -3419,6 +3419,11 @@ export interface components {
         AuthSourcesSettings: {
             /** @description Third-party sources in priority order; built-in Mojang always precedes them and is immutable. */
             sources: components["schemas"]["AuthSourceConfig"][];
+            /** @description Tags of deleted sources with the endpoint each pointed at. Player UUIDs derive from the tag, so a retired tag can be added again only with the same url; any other url returns 409 auth_source_tag_retired. */
+            retired: {
+                tag: string;
+                url: string;
+            }[];
             /** @description Opaque revision to send unchanged when saving; stale or concurrent writes return 409. */
             revision: string;
             /** @description True when stored in platform_settings; false while using installation TOML defaults. */
@@ -8522,7 +8527,7 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
-            /** @description auth_sources_changed or auth_source_tag_locked; reload instead of overwriting another Owner's changes. */
+            /** @description auth_sources_changed (reload instead of overwriting another Owner's changes) or auth_source_tag_retired (a deleted source's tag added with another url). */
             409: {
                 headers: {
                     [name: string]: unknown;

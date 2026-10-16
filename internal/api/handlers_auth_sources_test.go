@@ -125,21 +125,60 @@ func TestAuthSourcesSaveAndRuntime(t *testing.T) {
 	}
 }
 
+// A deleted source keeps its tag reserved for the endpoint it pointed at: the tag is the
+// players' UUID namespace, so it comes back for that endpoint and for no other.
+func TestAuthSourcesDeleteRetiresTheTag(t *testing.T) {
+	a, repo := seedAuthSourcesAPI()
+	v := readAuthSources(t, a)
+	if v.Managed || len(v.Sources) != 1 || len(v.Retired) != 0 {
+		t.Fatalf("installation defaults = %+v", v)
+	}
+	littleskin := v.Sources[0]
+	// Deleting a source that only the installation config lists works.
+	v.Sources = []authSourceEntry{}
+	w := saveAuthSources(a, v)
+	if w.Code != 200 {
+		t.Fatalf("delete = %d %s", w.Code, w.Body.String())
+	}
+	v = readAuthSources(t, a)
+	if !v.Managed || len(v.Sources) != 0 || !reflect.DeepEqual(v.Retired, []retiredAuthSource{{Tag: "littleskin", URL: littleskin.URL}}) {
+		t.Fatalf("after delete = %+v", v)
+	}
+	if sources, err := a.currentAuthSources(context.Background()); err != nil || len(sources) != 1 || sources[0].Tag != "mojang" {
+		t.Fatalf("a deleted source still signs players in: %+v %v", sources, err)
+	}
+	// The tag cannot point at another Yggdrasil.
+	other := sourceEntry("littleskin", "LS", "https://other.example/api/yggdrasil/sessionserver/session/minecraft/hasJoined")
+	v.Sources = []authSourceEntry{other}
+	if w := saveAuthSources(a, v); w.Code != 409 || decodeErr(t, w) != "auth_source_tag_retired" || !strings.Contains(w.Body.String(), littleskin.URL) {
+		t.Fatalf("reuse under another endpoint = %d %s", w.Code, w.Body.String())
+	}
+	// A new tag is fine, and so is the old tag with its old endpoint.
+	v.Sources = []authSourceEntry{sourceEntry("other", "OT", other.URL), littleskin}
+	if w := saveAuthSources(a, v); w.Code != 200 {
+		t.Fatalf("restore = %d %s", w.Code, w.Body.String())
+	}
+	if v = readAuthSources(t, a); len(v.Sources) != 2 || len(v.Retired) != 0 {
+		t.Fatalf("after restore = %+v", v)
+	}
+	// Changing a tag in place retires the old one, as deleting it does.
+	v.Sources[0].Tag = "renamed"
+	if w := saveAuthSources(a, v); w.Code != 200 {
+		t.Fatalf("rename = %d %s", w.Code, w.Body.String())
+	}
+	if v = readAuthSources(t, a); !reflect.DeepEqual(v.Retired, []retiredAuthSource{{Tag: "other", URL: other.URL}}) {
+		t.Fatalf("after rename = %+v", v.Retired)
+	}
+	// The bare array earlier releases stored still reads, with nothing retired.
+	repo.settings[authSourcesKey] = []byte(`[{"tag":"littleskin","prefix":"LS","url":"` + littleskin.URL + `","api_url":"","enabled":true}]`)
+	if v = readAuthSources(t, a); len(v.Sources) != 1 || v.Sources[0].Tag != "littleskin" || v.Retired == nil || len(v.Retired) != 0 {
+		t.Fatalf("legacy storage = %+v", v)
+	}
+}
+
 func TestAuthSourcesProtectNamespacesAndRevision(t *testing.T) {
 	a, repo := seedAuthSourcesAPI()
 	initial := readAuthSources(t, a)
-	for _, rename := range []bool{false, true} {
-		v := readAuthSources(t, a)
-		if rename {
-			v.Sources[0].Tag = "renamed"
-		} else {
-			v.Sources = []authSourceEntry{}
-		}
-		w := saveAuthSources(a, v)
-		if w.Code != 409 || decodeErr(t, w) != "auth_source_tag_locked" {
-			t.Fatalf("namespace change = %d %s", w.Code, w.Body.String())
-		}
-	}
 	initial.Sources[0].Enabled = false
 	if w := saveAuthSources(a, initial); w.Code != 200 {
 		t.Fatalf("save = %d %s", w.Code, w.Body.String())
