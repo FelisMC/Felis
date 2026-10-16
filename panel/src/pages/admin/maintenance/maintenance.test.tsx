@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { useState } from "react";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -107,20 +108,35 @@ describe("database backups", () => {
     await waitFor(() => expect(calls.startNodeTask).toHaveBeenLastCalledWith({ action: "db-restore", params: { bundle: "felis-db-20261012T033000Z-daily.tar" }, confirmMaintenance: true }));
   });
 
-  it("deletes an older bundle after confirmation, keeps the newest, and reads the list again", async () => {
+  it("deletes an older bundle after confirmation, and the list no longer shows it", async () => {
+    // A stand-in for the host: it holds the bundles, and only a db-delete task removes one.
     const older = "felis-db-20261011T090000Z-manual.tar";
-    const overview = state({ ...base, databaseBackups: [...base.databaseBackups, { name: older, label: "manual", size: 1024, created: "2026-10-11T09:00:00Z" }] });
-    calls.startNodeTask.mockImplementation(async (r) => ({ ...started(r.action), request: r, state: "succeeded", stage: "complete" }));
-    calls.nodeTask.mockImplementation(async () => ({ ...started("db-delete"), request: { action: "db-delete", params: { bundle: older }, confirmMaintenance: false }, state: "succeeded", stage: "complete" }));
-    render(<Bundles overview={overview} />);
+    const host = { bundles: [...base.databaseBackups, { name: older, label: "manual", size: 1024, created: "2026-10-11T09:00:00Z" }] };
+    let pending: string | null = null;
+    calls.startNodeTask.mockImplementation(async (r: NodeControlTask["request"]) => {
+      if (r.action === "db-delete") pending = r.params?.bundle ?? null;
+      return { ...started(r.action), request: r };
+    });
+    calls.nodeTask.mockImplementation(async () => {
+      host.bundles = host.bundles.filter((b) => b.name !== pending);
+      return { ...started("db-delete"), state: "succeeded", stage: "complete" };
+    });
+    function Live() {
+      const [data, setData] = useState<HostOverview>({ ...base, databaseBackups: host.bundles });
+      const overview: AsyncState<HostOverview> = { data, error: null, loading: false, updatedAt: 0, reload: () => setData({ ...base, databaseBackups: [...host.bundles] }) };
+      return <Bundles overview={overview} />;
+    }
+    render(<Live />);
     expect(screen.getByRole("button", { name: "Delete backup felis-db-20261012T033000Z-daily.tar" })).toHaveProperty("disabled", true);
     await userEvent.click(await ready(`Delete backup ${older}`));
     const dialog = await screen.findByRole("dialog");
     expect(dialog.textContent).toContain(`${older} is deleted from this host`);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(calls.startNodeTask).not.toHaveBeenCalled();
-    await userEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
-    await waitFor(() => expect(calls.startNodeTask).toHaveBeenCalledWith({ action: "db-delete", params: { bundle: older }, confirmMaintenance: false }));
-    await waitFor(() => expect(overview.reload).toHaveBeenCalled());
+    await userEvent.click(await ready(`Delete backup ${older}`));
+    await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(screen.queryByText(older)).toBeNull());
+    expect(screen.getByText("felis-db-20261012T033000Z-daily.tar")).toBeTruthy();
   });
 
   it("pages through more bundles than fit on one page", async () => {
