@@ -163,19 +163,26 @@ describe("LobbyPage", () => {
     expect(JSON.parse(atob(calls.writeServerFile.mock.calls[0][2]))).toEqual({ menuTitleEn: "Kept title" });
   });
 
-  it("offers the Owner to create a missing login space again", async () => {
-    calls.status.mockRejectedValue({ status: 404, code: "not_found", message: "not found" });
-    const task = { id: "task-1", state: "running", stage: "running", startedAt: "2026-10-16T05:00:00Z", request: { action: "converge", params: { userRcon: "false" } }, log: "" };
-    calls.startNodeTask.mockResolvedValue(task);
-    calls.nodeTask.mockResolvedValue(task);
+  it("lets the Owner create a missing login space, then shows it", async () => {
+    // Like the host: only the system-server pass (converge) creates the space, and it
+    // exists once that task has finished.
+    let converging = false;
+    let created = false;
+    calls.status.mockImplementation(async (name: string) => {
+      if (!created) throw { status: 404, code: "not_found", message: "not found" };
+      return { name, subdomain: name, phase: "Running", desiredState: "Running", ready: true, reaperExempt: true, playersOnline: 0, playersMax: 200 };
+    });
+    const task = (state: string) => ({ id: "task-1", state, stage: state === "running" ? "running" : "complete", startedAt: "2026-10-16T05:00:00Z", request: { action: "converge", params: { userRcon: "false" } }, log: "" });
+    calls.startNodeTask.mockImplementation(async (r: { action: string }) => { converging = r.action === "converge"; return task("running"); });
+    calls.nodeTask.mockImplementation(async () => { created = converging; return task("succeeded"); });
     page("login");
     expect(await screen.findByRole("heading", { name: "The login space does not exist" })).toBeTruthy();
     expect(screen.queryByLabelText("Login book title")).toBeNull();
     const create = await screen.findByRole("button", { name: "Create again" });
     await waitFor(() => expect((create as HTMLButtonElement).disabled).toBe(false));
     await userEvent.click(create);
-    await waitFor(() => expect(calls.startNodeTask).toHaveBeenCalledWith({ action: "converge", params: { userRcon: "false" }, confirmMaintenance: false }));
-    expect(await screen.findByRole("region", { name: "Task progress" })).toBeTruthy();
+    expect(await screen.findByLabelText("Login book title")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "The login space does not exist" })).toBeNull();
   });
 
   it("tells an Admin who can create a missing lobby", async () => {

@@ -197,7 +197,7 @@ function BuilderAccess({ ready }: { ready: boolean }) {
 
 /** MissingSpace stands in for the page when the login space or the lobby does not exist.
  *  Setup creates both; the system-server pass creates a missing one again. */
-function MissingSpace({ name }: { name: "login" | "lobby" }) {
+function MissingSpace({ name, onCreated }: { name: "login" | "lobby"; onCreated: () => void }) {
   const { t } = useTranslation("lobby");
   const { isOwner } = useTier();
   return <Card><CardContent className="space-y-4">
@@ -208,13 +208,19 @@ function MissingSpace({ name }: { name: "login" | "lobby" }) {
         <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">{t(isOwner ? "missing_hint_owner" : "missing_hint_admin")}</p>
       </div>
     </div>
-    {isOwner && <CreateSystemServers />}
+    {isOwner && <CreateSystemServers onCreated={onCreated} />}
   </CardContent></Card>;
 }
 
-function CreateSystemServers() {
+function CreateSystemServers({ onCreated }: { onCreated: () => void }) {
   const { t } = useTranslation("lobby");
   const host = useHostTask(["converge"]);
+  // The page reads the space again as soon as the pass has created it.
+  const done = host.task?.state === "succeeded" ? host.task.id : null;
+  useEffect(() => {
+    if (done) onCreated();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [done]);
   return <div className="space-y-3 pl-8">
     <HostTaskNotice otherRunning={host.otherRunning} available={host.available} loading={host.loading} />
     <Button disabled={!host.available || host.busy} onClick={() => void host.start({ action: "converge", params: { userRcon: "false" }, confirmMaintenance: false })}>{host.starting || host.running ? <Loader2 className="animate-spin" /> : <Wrench />}{t("missing_create")}</Button>
@@ -264,7 +270,7 @@ export function LobbyPage() {
     </CardContent></Card>
     <div role="tabpanel" id={`lobby-space-panel-${name}`} aria-labelledby={`lobby-space-tab-${name}`} className="space-y-6">
       <p className="text-sm text-muted-foreground">{t(`${name}_description`)}</p>
-      {missing ? <MissingSpace name={name} /> : <>
+      {missing ? <MissingSpace name={name} onCreated={status.reload} /> : <>
       {status.error != null && <ErrorState error={status.error} onRetry={status.reload} />}
       <Card className="flex flex-wrap items-center justify-between gap-3 p-5">
         <div className="min-w-0 space-y-2"><div className="flex flex-wrap items-center gap-3"><h2 className="text-sm font-semibold">{data?.displayName || t(name)}</h2>{data ? <PhaseBadge phase={shownPhase(data)} /> : status.loading && <span role="status" className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" />{t("common:loading")}</span>}</div><p className="break-all text-xs text-muted-foreground">{data?.image || "\u00a0"}</p></div>
