@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -99,7 +100,18 @@ func cmdSetup(args []string, stdout, stderr io.Writer) int {
 	}
 	defer setup.drv.Close()
 
+	// Game services are provisioned independently, before the wizard opens: the Owner
+	// follows the setup link into the panel while the wizard is still on screen, and the
+	// login space and lobby must already exist there. The wizard owns the terminal, so
+	// the report is printed once it closes. A failed login/lobby must not stop the host
+	// administrator from opening the panel to diagnose it.
+	var games bytes.Buffer
+	if err := provisionSystemServers(ctx, setup.cfg, &games); err != nil {
+		fmt.Fprintf(&games, "felis setup: Minecraft services need attention: %v\n", err)
+	}
+
 	res, err := runSetupTUI(ctx, setup.repo, setup.cfg.Database, setup.cfg.Server.RootDomain, setup.cfg.Auth.AdminHostname, setup.cfg.Auth.PanelHostname, setup.cfg.Auth.AccessJWTAud, setup.cfg.K8s.Namespace, accountableOSUser(), setup.adminExists)
+	stdout.Write(games.Bytes())
 	if err != nil {
 		fmt.Fprintf(stderr, "felis setup: %v\n", err)
 		return 1
@@ -107,11 +119,6 @@ func cmdSetup(args []string, stdout, stderr io.Writer) int {
 	panelURL := res.panelURL
 	if panelURL == "" {
 		panelURL = localPanelURL(setup.cfg.Server.RootDomain, setup.cfg.Auth.AdminHostname)
-	}
-	// Game services are provisioned independently. A failed login/lobby must not
-	// stop the host administrator from opening the panel to diagnose it.
-	if err := provisionSystemServers(ctx, setup.cfg, stdout); err != nil {
-		fmt.Fprintf(stdout, "felis setup: Minecraft services need attention: %v\n", err)
 	}
 
 	reportSetupResult(stdout, res, bootstrapped, setup.adminExists, panelURL)
