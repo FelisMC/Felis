@@ -1,0 +1,7 @@
+#Default Paperclip launch values. Can be overridden by placing a paperclip.properties file in the server directory.
+#Sat Dec 18 08:25:37 UTC 2021
+patch=paperMC.patch
+sourceUrl=https\://launcher.mojang.com/v1/objects/1b557e7b033b583cd9f66746b7a9ab1ec1673ced/server.jar
+originalHash=58F329C7D2696526F948470AA6FD0B45545039B64CB75015E64C12194B373DA6
+patchedHash=5F42C4C19163269519B92A0D1BB0A5E68DE6AC0E3AC896A574BAC95FFE4E214E
+version=1.16.5

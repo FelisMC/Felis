@@ -1,0 +1,34 @@
+[
+  {
+    "version_type": "release",
+    "date_published": "2025-08-08T13:22:14.841585Z",
+    "files": [
+      {
+        "url": "https://cdn.modrinth.com/data/P7dR8mSH/versions/p96k10UR/fabric-api-0.119.4%2B1.21.4.jar",
+        "filename": "fabric-api-0.119.4+1.21.4.jar",
+        "primary": true,
+        "size": 2149128,
+        "hashes": {
+          "sha512": "16b679f6a42549ca3b6bc147de710b2c8ba2d5e4661ed88df22782c05a4a5f6c1163d7b13867687ed91acde0fdfe5a5037d05662431c946865b58396284e7ee7",
+          "sha1": "1c7871b6af04edc8b8f0dbad12606d67f6118a11"
+        }
+      }
+    ]
+  },
+  {
+    "version_type": "release",
+    "date_published": "2025-05-31T14:24:41.593661Z",
+    "files": [
+      {
+        "url": "https://cdn.modrinth.com/data/P7dR8mSH/versions/sVqpGIb1/fabric-api-0.119.3%2B1.21.4.jar",
+        "filename": "fabric-api-0.119.3+1.21.4.jar",
+        "primary": true,
+        "size": 2148367,
+        "hashes": {
+          "sha512": "a1927d45902c766b8d21f93cddc36991045eeb1adca5dfeea1c3b6378ce6aa66ae99cf2322ca6e337c58352c4d55fd5226655bc8886080fa864c27f83b18c1d9",
+          "sha1": "286516c48a4d822cd3f34aafd157fc8702490b58"
+        }
+      }
+    ]
+  }
+]

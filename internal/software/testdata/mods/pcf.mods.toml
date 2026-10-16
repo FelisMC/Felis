@@ -1,0 +1,43 @@
+modLoader = "javafml"
+loaderVersion = "[1,)"
+license = "LGPL-2.1"
+issueTrackerURL = "https://github.com/adde0109/Proxy-Compatible-Forge/issues"
+
+[[mods]]
+modId = "pcf"
+version = "1.3.1"
+displayName = "ProxyCompatibleForge"
+updateJSONURL = "https://api.modrinth.com/updates/proxy-compatible-forge/forge_updates.json"
+displayURL = "https://github.com/adde0109/Proxy-Compatible-Forge#readme"
+logoFile = "ProxyCompatibleForge.png"
+credits = "adde0109,JT122406,p0t4t0sandwich"
+authors = "adde0109,JT122406,p0t4t0sandwich"
+displayTest = "IGNORE_SERVER_VERSION"
+description = '''Bring modern forwarding to Neo/Forge servers, requires the Ambassador plugin on Velocity for 1.13-1.20.1, should work standalone on 1.20.2+'''
+
+# Forge Dependency
+[[dependencies.pcf]]
+modId = "forge"
+mandatory = false
+type="optional"
+versionRange = "[10,)"
+ordering = "NONE"
+side = "BOTH"
+
+# NeoForge Dependency
+[[dependencies.pcf]]
+modId = "neoforge"
+mandatory = false
+type="optional"
+versionRange = "[20.2,)"
+ordering = "NONE"
+side = "BOTH"
+
+# Minecraft Dependency
+[[dependencies.pcf]]
+modId = "minecraft"
+mandatory = true
+type="required"
+versionRange = "[1.7.2,)"
+ordering = "NONE"
+side = "BOTH"

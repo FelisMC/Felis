@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "id": "fabricproxy-lite",
+  "version": "2.10.1",
+  "name": "FabricProxy Lite",
+  "description": "Support forward player data from proxy",
+  "authors": [
+    "james58899"
+  ],
+  "contact": {
+    "homepage": "https://github.com/OKTW-Network/FabricProxy-Lite",
+    "sources": "https://github.com/OKTW-Network/FabricProxy-Lite"
+  },
+  "license": "MIT",
+  "environment": "server",
+  "entrypoints": {
+    "server": [
+      "one.oktw.FabricProxyLite"
+    ]
+  },
+  "mixins": [
+    "core.mixins.json",
+    "hack.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": "\u003e\u003d0.16.14",
+    "fabric-networking-api-v1": "*",
+    "fabric-api": "\u003e\u003d0.100.1",
+    "minecraft": "\u003e\u003d1.21",
+    "java": "\u003e\u003d21"
+  },
+  "jars": [
+    {
+      "file": "META-INF/jars/toml4j-0.7.2.jar"
+    }
+  ]
+}

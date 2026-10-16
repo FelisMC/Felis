@@ -1,0 +1,34 @@
+[
+  {
+    "version_type": "release",
+    "date_published": "2024-12-02T04:00:32.214009Z",
+    "files": [
+      {
+        "url": "https://cdn.modrinth.com/data/qvIfYCYJ/versions/s8dfz9Xa/qfapi-7.7.0_qsl-6.3.0_fapi-0.92.2_mc-1.20.1.jar",
+        "filename": "qfapi-7.7.0_qsl-6.3.0_fapi-0.92.2_mc-1.20.1.jar",
+        "primary": true,
+        "size": 2755789,
+        "hashes": {
+          "sha512": "d7bb384b961088ae6fe1e0baef9895cd495a515d8337664bb534c36ae17e48188fc1c50cd9a06e3e53898870ada73e737f63853adf43e744fee11a64bad1059a",
+          "sha1": "fa2868388b175e32e4d3310a5bf065593837bc5c"
+        }
+      }
+    ]
+  },
+  {
+    "version_type": "release",
+    "date_published": "2024-07-10T03:30:50.044736Z",
+    "files": [
+      {
+        "url": "https://cdn.modrinth.com/data/qvIfYCYJ/versions/zEhzQDsY/qfapi-7.6.0_qsl-6.2.0_fapi-0.92.2_mc-1.20.1.jar",
+        "filename": "qfapi-7.6.0_qsl-6.2.0_fapi-0.92.2_mc-1.20.1.jar",
+        "primary": true,
+        "size": 2754598,
+        "hashes": {
+          "sha1": "7cf55b386c622364e348518d345d014ec51ccad5",
+          "sha512": "9cb907b94648efb566a96486244d41b58073a2cdba9e74bba44cf1341cc8c6bc0c448f998acc3f981403abfd2eb082b95596471a91b1933d55a4f98fc72d47ba"
+        }
+      }
+    ]
+  }
+]

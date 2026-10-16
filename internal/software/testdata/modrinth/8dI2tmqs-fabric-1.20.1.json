@@ -1,0 +1,18 @@
+[
+  {
+    "version_type": "release",
+    "date_published": "2023-06-21T11:35:48.989127Z",
+    "files": [
+      {
+        "url": "https://cdn.modrinth.com/data/8dI2tmqs/versions/XJmDAnj5/FabricProxy-Lite-2.6.0.jar",
+        "filename": "FabricProxy-Lite-2.6.0.jar",
+        "primary": true,
+        "size": 209342,
+        "hashes": {
+          "sha1": "4953b0c78fb6556b537f5bad93099c212b5e9f18",
+          "sha512": "365d29ebaeca55ffdaa4d066141559b00e3177437b0d9fabee3996fcdbd8e2fb8ae45c0c600cb357a042efe750caa2b6efaaffa439f5710cbb04deeae994b7dd"
+        }
+      }
+    ]
+  }
+]

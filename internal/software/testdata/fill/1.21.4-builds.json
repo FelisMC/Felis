@@ -1,0 +1,62 @@
+[
+  {
+    "id": 232,
+    "time": "2025-06-09T10:18:55.778Z",
+    "channel": "STABLE",
+    "downloads": {
+      "server:default": {
+        "name": "paper-1.21.4-232.jar",
+        "checksums": {
+          "sha256": "5ee4f542f628a14c644410b08c94ea42e772ef4d29fe92973636b6813d4eaffc"
+        },
+        "size": 51437498,
+        "url": "https://fill-data.papermc.io/v1/objects/5ee4f542f628a14c644410b08c94ea42e772ef4d29fe92973636b6813d4eaffc/paper-1.21.4-232.jar"
+      }
+    }
+  },
+  {
+    "id": 231,
+    "time": "2025-05-19T18:02:12.861Z",
+    "channel": "STABLE",
+    "downloads": {
+      "server:default": {
+        "name": "paper-1.21.4-231.jar",
+        "checksums": {
+          "sha256": "608cba072c0fe0c4d8aa8279125eb79e9513037e2074e838304cb662d835bdef"
+        },
+        "size": 51442161,
+        "url": "https://fill-data.papermc.io/v1/objects/608cba072c0fe0c4d8aa8279125eb79e9513037e2074e838304cb662d835bdef/paper-1.21.4-231.jar"
+      }
+    }
+  },
+  {
+    "id": 230,
+    "time": "2025-05-11T20:57:58.640Z",
+    "channel": "STABLE",
+    "downloads": {
+      "server:default": {
+        "name": "paper-1.21.4-230.jar",
+        "checksums": {
+          "sha256": "ea38c61a9e68c74f7219dfd4ad7b9588a685ebad9b85cfad2074ed21a6dae523"
+        },
+        "size": 51441115,
+        "url": "https://fill-data.papermc.io/v1/objects/ea38c61a9e68c74f7219dfd4ad7b9588a685ebad9b85cfad2074ed21a6dae523/paper-1.21.4-230.jar"
+      }
+    }
+  },
+  {
+    "id": 1,
+    "time": "2024-12-05T16:48:57.969Z",
+    "channel": "ALPHA",
+    "downloads": {
+      "server:default": {
+        "name": "paper-1.21.4-1.jar",
+        "checksums": {
+          "sha256": "05209ac5a423bf98136dd775a87d4324955d2c865f887b20edd6b43a59cb36c4"
+        },
+        "size": 52673513,
+        "url": "https://fill-data.papermc.io/v1/objects/05209ac5a423bf98136dd775a87d4324955d2c865f887b20edd6b43a59cb36c4/paper-1.21.4-1.jar"
+      }
+    }
+  }
+]

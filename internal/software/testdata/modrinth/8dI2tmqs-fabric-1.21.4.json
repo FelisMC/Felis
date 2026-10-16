@@ -1,0 +1,34 @@
+[
+  {
+    "version_type": "release",
+    "date_published": "2025-09-12T17:23:46.512985Z",
+    "files": [
+      {
+        "url": "https://cdn.modrinth.com/data/8dI2tmqs/versions/KqB3UA0q/FabricProxy-Lite-2.10.1.jar",
+        "filename": "FabricProxy-Lite-2.10.1.jar",
+        "primary": true,
+        "size": 74135,
+        "hashes": {
+          "sha512": "9c0c1d44ba27ed3483bb607f95441bea9fb1c65be26aa5dc0af743167fb7933623ba6129344738b084056aef7cb5a7db0db477348d07672d5c67a2e1204e9c94",
+          "sha1": "22d2df1447e28a5ac23f3805836c640cdeef7c22"
+        }
+      }
+    ]
+  },
+  {
+    "version_type": "release",
+    "date_published": "2025-08-27T10:23:37.612674Z",
+    "files": [
+      {
+        "url": "https://cdn.modrinth.com/data/8dI2tmqs/versions/7Juknjr6/FabricProxy-Lite-2.10.0.jar",
+        "filename": "FabricProxy-Lite-2.10.0.jar",
+        "primary": true,
+        "size": 74130,
+        "hashes": {
+          "sha512": "17a46cf558a6df63ab795a45041d04de40a2cbba74e90fec8f5c827cbf3299e5e3232778a9a8478c8ed67783a6d033fae08a63b60318da2871edabcc063d9d5b",
+          "sha1": "709e75175b665a4d0a19884b565ff3c518c7617f"
+        }
+      }
+    ]
+  }
+]
