@@ -263,18 +263,34 @@ svc_at="$(grep -n 'SYSTEMCTL disable --now felis-control-firewall.service' "$roo
   && echo "PASS the control firewall's timer stops before its service, so it does not start it again" \
   || { echo "FAIL the control firewall's timer and service: $calls"; fails=$((fails + 1)); }
 expect "the node service stops" "SYSTEMCTL disable --now felis-node-control.service" "$calls"
-for hook in "-t filter -D INPUT -j FELIS-HOST" "-t filter -D FORWARD -j FELIS-FORWARD" "-t raw -D PREROUTING -j FELIS-NODEPORT"; do
-  expect "the node firewall's hook $hook goes" "HOOK-GONE iptables -w 10 $hook" "$calls"
+# What the uninstall must take out comes from the code that puts it in
+# (cmd/felis/node_firewall.go): the chains it creates and the built-in chains it hooks
+# them into. A chain added there and not removed here fails below.
+fwsrc="$(dirname "$US")/../cmd/felis/node_firewall.go"
+hooks="$(grep -oE '\{"(filter|raw)", "[A-Z]+", "FELIS-[A-Z]+"\}' "$fwsrc" | tr -d '{}",')"
+chains="$(grep -oE '(-t raw )?-N FELIS-[A-Z]+' "$fwsrc" | sed 's/^-t raw -N /raw /; s/^-N /filter /' | sort -u)"
+[ "$(printf '%s\n' "$hooks" | grep -c .)" -ge 3 ] && [ "$(printf '%s\n' "$chains" | grep -c .)" -ge 4 ] \
+  && echo "PASS the node firewall's chains and hooks are read from its source" \
+  || { echo "FAIL $fwsrc gave hooks <$hooks> and chains <$chains>"; fails=$((fails + 1)); }
+while read -r table parent chain; do
+  expect "the hook from $table $parent into $chain goes" "HOOK-GONE iptables -w 10 -t $table -D $parent -j $chain" "$calls"
+done <<HOOKS
+$hooks
+HOOKS
+while read -r table chain; do
+  expect "the $table chain $chain is deleted" "FW iptables -w 10 -t $table -X $chain" "$calls"
+done <<CHAINS
+$chains
+CHAINS
+# iptables refuses to delete a chain another one still jumps to (FELIS-HOST and
+# FELIS-NODEPORT jump to FELIS-CONTROL), so in each table every flush comes first.
+for table in filter raw; do
+  last_flush="$(grep -n "^FW iptables -w 10 -t $table -F " "$root/calls" | tail -n 1 | cut -d: -f1)"
+  first_delete="$(grep -n "^FW iptables -w 10 -t $table -X " "$root/calls" | sed -n 1p | cut -d: -f1)"
+  [ -n "$last_flush" ] && [ -n "$first_delete" ] && [ "$last_flush" -lt "$first_delete" ] \
+    && echo "PASS every $table chain is flushed before any is deleted" \
+    || { echo "FAIL a $table chain was deleted while another could still jump to it: $calls"; fails=$((fails + 1)); }
 done
-for chain in FELIS-HOST FELIS-FORWARD FELIS-NODEPORT FELIS-CONTROL; do
-  expect "the chain $chain is deleted" "FW iptables -w 10 -t filter -X $chain" "$calls"
-done
-expect "and the raw table's FELIS-CONTROL with it" "FW iptables -w 10 -t raw -X FELIS-CONTROL" "$calls"
-flush_at="$(grep -n 'FW iptables -w 10 -t filter -F FELIS-HOST' "$root/calls" | head -n 1 | cut -d: -f1)"
-del_at="$(grep -n 'FW iptables -w 10 -t filter -X FELIS-CONTROL' "$root/calls" | head -n 1 | cut -d: -f1)"
-[ -n "$flush_at" ] && [ -n "$del_at" ] && [ "$flush_at" -lt "$del_at" ] \
-  && echo "PASS FELIS-HOST is flushed before FELIS-CONTROL, which it jumps to, is deleted" \
-  || { echo "FAIL the chains were deleted while still referenced: $calls"; fails=$((fails + 1)); }
 [ ! -e "$root/h/tmpfiles.d/felis-node-control.conf" ] && [ ! -e "$root/h/run/felis-node-control" ] \
   && echo "PASS the node service's socket directory and its tmpfiles rule go" \
   || { echo "FAIL the node service left: $(ls -R "$root/h/tmpfiles.d" "$root/h/run" 2>&1)"; fails=$((fails + 1)); }
