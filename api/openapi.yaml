@@ -205,6 +205,11 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
+    SoftwareUpstream:
+      description: The server software's download site could not be reached or answered with something unusable (software_metadata_unavailable).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
     BadRequest:
       description: Malformed or invalid request (validation, bad body, unknown field).
       content:
@@ -917,6 +922,9 @@ components:
         reaperExempt:
           type: boolean
           description: Present and true for a system server the reaper never touches; it cannot be given up or deleted.
+        software:
+          allOf: [{ $ref: '#/components/schemas/ServerSoftware' }]
+          description: Present for a server built from server software on the runtime image; absent for a server image.
         retiring:
           allOf: [{ $ref: '#/components/schemas/RetireState' }]
           description: >-
@@ -1462,6 +1470,105 @@ components:
         max_memory_mb: { type: integer, nullable: true }
         max_storage_gb: { type: integer, nullable: true }
 
+    QuotaLimits:
+      type: object
+      description: The caps of a quota (internal/api/repo.go QuotaInput). An absent field is unlimited; 0 grants none of that resource.
+      properties:
+        max_servers: { type: integer }
+        max_cpu_milli: { type: integer }
+        max_memory_mb: { type: integer }
+        max_storage_gb: { type: integer }
+
+    ServerQuota:
+      type: object
+      description: >-
+        The quota in force for the caller and what their servers use of it
+        (internal/api/selfservice.go serverQuotaView). source is user for their own
+        quota, default for the Owner's default quota, and empty when neither applies:
+        claims are then unlimited and the caller cannot create servers.
+      required: [source, limits, usage, canCreate]
+      properties:
+        source: { type: string, enum: ['', user, default] }
+        limits:
+          allOf: [{ $ref: '#/components/schemas/QuotaLimits' }]
+          nullable: true
+        usage:
+          type: object
+          required: [servers, cpu_milli, memory_mb, storage_mb]
+          properties:
+            servers: { type: integer }
+            cpu_milli: { type: integer }
+            memory_mb: { type: integer }
+            storage_mb: { type: integer }
+        canCreate: { type: boolean }
+        reason:
+          type: string
+          enum: [not_linked, self_service_disabled, software_unavailable, quota_full]
+          description: Present when canCreate is false; what stops the caller.
+
+    SelfServiceQuotaSettings:
+      type: object
+      description: >-
+        The Owner's default quota (internal/api/selfservice.go selfServiceQuota): once
+        enabled, the caps of every user without a quota of their own, for creating,
+        claiming and resizing servers. A null cap is unlimited; 0 grants none. Off,
+        users without their own quota cannot create servers and their claims stay
+        unlimited.
+      required: [enabled, max_servers, max_cpu_milli, max_memory_mb, max_storage_gb, revision]
+      properties:
+        enabled: { type: boolean }
+        max_servers: { type: integer, nullable: true, minimum: 0 }
+        max_cpu_milli: { type: integer, nullable: true, minimum: 0 }
+        max_memory_mb: { type: integer, nullable: true, minimum: 0 }
+        max_storage_gb: { type: integer, nullable: true, minimum: 0 }
+        revision: { type: string }
+
+    ServerSoftware:
+      type: object
+      description: >-
+        The server software of a runtime-image server (internal/api/cluster.go
+        ServerSoftware). forwarding is velocity when the server takes the proxy's
+        player identity, none when players join it under offline-mode UUIDs.
+      required: [type, java, forwarding]
+      properties:
+        type: { type: string, enum: [paper, purpur, fabric, quilt, forge, neoforge, vanilla, custom] }
+        minecraftVersion: { type: string }
+        build: { type: string, description: The Paper/Purpur build or the loader version. }
+        java: { type: integer, enum: [8, 17, 21, 25] }
+        jar: { type: string, description: A custom server's jar, relative to the server directory. }
+        forwarding: { type: string, enum: [velocity, none] }
+
+    SoftwareRequest:
+      type: object
+      description: >-
+        Server software to build a server from (internal/api/software.go
+        softwareRequest). Every type but custom names a Minecraft version the
+        upstream offers; build defaults to the recommended one, java to the runtime
+        the version needs (a lower one is refused with 400 java_too_old). custom
+        names a jar already in the server's files, relative to its directory.
+      required: [type]
+      properties:
+        type: { type: string, enum: [paper, purpur, fabric, quilt, forge, neoforge, vanilla, custom] }
+        minecraftVersion: { type: string }
+        build: { type: string }
+        java: { type: integer, enum: [8, 17, 21, 25] }
+        jar: { type: string }
+
+    SoftwareVersion:
+      type: object
+      required: [id, stable]
+      properties:
+        id: { type: string }
+        stable: { type: boolean, description: False for pre-releases, release candidates and snapshots. }
+
+    SoftwareBuild:
+      type: object
+      required: [id, stable]
+      properties:
+        id: { type: string }
+        stable: { type: boolean }
+        recommended: { type: boolean, description: Present and true for the build preselected when none is picked. }
+
     SessionView:
       type: object
       description: >-
@@ -1844,11 +1951,15 @@ paths:
       operationId: createServer
       summary: Create a server (admin).
       description: >-
-        Requires a staff session on the operator console host; the image must be whitelisted. An image in the
-        platform registry is stored pinned to the digest its tag names at creation
-        (name:tag@sha256:…), so a later push over the tag never moves the server;
-        400 image_not_in_registry when the registry lacks the tag, 503
-        registry_unavailable when it cannot be asked.
+        Requires a staff session on the operator console host. The server runs either
+        a whitelisted server image or server software on the runtime image, never
+        both. An image in the platform registry is stored pinned to the digest its
+        tag names at creation (name:tag@sha256:…), so a later push over the tag never
+        moves the server; 400 image_not_in_registry when the registry lacks the tag,
+        503 registry_unavailable when it cannot be asked. Server software needs
+        acceptEula (400 eula_required); 502 software_metadata_unavailable when its
+        download site cannot be reached, 503 runtime_unavailable while its Java
+        runtime is not yet in the platform registry.
       x-felis-face: [external]
       x-felis-tier: admin
       security: [{ sessionCookie: [] }]
@@ -1868,6 +1979,10 @@ paths:
                   maxLength: 64
                   description: Trimmed; at most 64 characters, all visible ones or spaces (400 bad_display_name otherwise).
                 image: { type: string }
+                software: { $ref: '#/components/schemas/SoftwareRequest' }
+                acceptEula:
+                  type: boolean
+                  description: Accepts the Minecraft EULA, which server software runs under; required with software.
                 memory: { type: string }
                 storage: { type: string }
                 autostartPolicy: { type: string }
@@ -1898,6 +2013,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '409':
           $ref: '#/components/responses/Conflict'
+        '502':
+          $ref: '#/components/responses/SoftwareUpstream'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
@@ -4771,6 +4888,218 @@ paths:
                     items: { $ref: '#/components/schemas/MyServerView' }
         '401':
           $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [servers]
+      operationId: createMyServer
+      summary: Create a server of your own, within your quota.
+      description: >-
+        Creates a server owned by the caller, running server software on the runtime
+        image, within the quota in force for them: their own, else the Owner's default
+        quota (403 self_service_disabled when neither applies, 403 quota_exceeded when
+        the server does not fit). Needs a linked Minecraft account (412 not_linked)
+        and acceptEula (400 eula_required). In distributed mode the server goes to the
+        admitted node with the fewest user servers.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, subdomain, software, memory, storage, acceptEula]
+              properties:
+                name: { type: string }
+                subdomain: { type: string }
+                displayName: { type: string, maxLength: 64 }
+                software: { $ref: '#/components/schemas/SoftwareRequest' }
+                memory: { type: string, description: The memory limit, a Kubernetes quantity such as 4Gi. }
+                cpu: { type: string, description: Optional CPU limit, a Kubernetes quantity such as 2. }
+                storage: { type: string }
+                autostartPolicy: { type: string, enum: [ownerOnly, public, allowlist] }
+                acceptEula: { type: boolean }
+      responses:
+        '201':
+          description: Created; starts Stopped and owned by the caller.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, subdomain, desiredState]
+                properties:
+                  name: { type: string }
+                  subdomain: { type: string }
+                  desiredState: { type: string, const: Stopped }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '502': { $ref: '#/components/responses/SoftwareUpstream' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/v1/me/servers/{name}:
+    patch:
+      tags: [servers]
+      operationId: patchMyServer
+      summary: Change a server you own.
+      description: >-
+        The owner's spec change: display name, who may wake it, idle stop, memory and
+        CPU (growth is held to the owner's quota, 403 quota_exceeded), and its server
+        software, under the same rules as the admin patch.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Only the supplied fields are patched; an empty patch is rejected.
+              properties:
+                displayName: { type: string, maxLength: 64 }
+                autostartPolicy: { type: string, enum: [ownerOnly, public, allowlist] }
+                idleStopSeconds: { type: integer, format: int32 }
+                memory: { type: string }
+                cpu: { type: string, description: The CPU limit; empty removes it. }
+                software: { $ref: '#/components/schemas/SoftwareRequest' }
+                confirmSoftwareChange: { type: boolean }
+                acceptEula: { type: boolean }
+      responses:
+        '200':
+          description: Patched.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, patched]
+                properties:
+                  name: { type: string }
+                  patched:
+                    type: array
+                    items: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '502': { $ref: '#/components/responses/SoftwareUpstream' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/v1/me/server-quota:
+    get:
+      tags: [servers]
+      operationId: myServerQuota
+      summary: Whether you can create a server, and your quota.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: The quota in force for the caller and their usage of it.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerQuota' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/software:
+    get:
+      tags: [servers]
+      operationId: softwareCatalog
+      summary: The server software types and Java runtimes on offer.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: The catalog.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [types, runtimes]
+                properties:
+                  types:
+                    type: array
+                    items:
+                      type: object
+                      required: [type, builds]
+                      properties:
+                        type: { type: string, enum: [paper, purpur, fabric, quilt, forge, neoforge, vanilla, custom] }
+                        builds: { type: boolean, description: True when the type picks a build or loader version. }
+                  runtimes:
+                    type: array
+                    items: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/v1/software/{type}/versions:
+    get:
+      tags: [servers]
+      operationId: softwareVersions
+      summary: The Minecraft versions a server software type runs, newest first.
+      description: Read from the software's own metadata through felis-api, cached for ten minutes.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: type, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The versions.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [versions]
+                properties:
+                  versions:
+                    type: array
+                    items: { $ref: '#/components/schemas/SoftwareVersion' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '502': { $ref: '#/components/responses/SoftwareUpstream' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/v1/software/{type}/versions/{version}:
+    get:
+      tags: [servers]
+      operationId: softwareVersion
+      summary: What one version needs and offers.
+      description: >-
+        The Java the version needs (requiredJava) and the runtime it gets by default
+        (java), its builds newest first, and whether the proxy's player identity can
+        reach a server running it (forwarding).
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: type, in: path, required: true, schema: { type: string } }
+        - { name: version, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The version.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [version, requiredJava, builds, forwarding]
+                properties:
+                  version: { type: string }
+                  requiredJava: { type: integer }
+                  java: { type: integer, description: Absent when the platform ships no runtime new enough. }
+                  builds:
+                    type: array
+                    items: { $ref: '#/components/schemas/SoftwareBuild' }
+                  forwarding: { type: string, enum: [velocity, none] }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '502': { $ref: '#/components/responses/SoftwareUpstream' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
   /api/v1/settings/node-control:
     get:
@@ -5277,6 +5606,58 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '409':
           description: The setting changed; reload before saving.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/settings/self-service:
+    get:
+      tags: [account]
+      operationId: getSelfServiceQuota
+      summary: Read the default quota (Owner).
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: The default quota and its revision.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SelfServiceQuotaSettings' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    put:
+      tags: [account]
+      operationId: setSelfServiceQuota
+      summary: Save the default quota (Owner, fresh reauthentication).
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled, revision]
+              properties:
+                enabled: { type: boolean }
+                max_servers: { type: integer, nullable: true, minimum: 0 }
+                max_cpu_milli: { type: integer, nullable: true, minimum: 0 }
+                max_memory_mb: { type: integer, nullable: true, minimum: 0 }
+                max_storage_gb: { type: integer, nullable: true, minimum: 0 }
+                revision: { type: string }
+      responses:
+        '200':
+          description: The saved default quota and its new revision.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SelfServiceQuotaSettings' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: The default quota changed; reload before saving.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -9374,6 +9755,16 @@ paths:
                   type: integer
                   format: int32
                   description: Idle auto-stop. 0 turns it off; otherwise the server stops after this many seconds with nobody online (60–86400, else 400 bad_idle_stop).
+                software:
+                  allOf: [{ $ref: '#/components/schemas/SoftwareRequest' }]
+                  description: >-
+                    Moves the server onto server software, or to other server software, on
+                    the runtime image of its Java. Not together with image. Another type or
+                    Minecraft version, or leaving a server image, needs
+                    confirmSoftwareChange (409 software_change_unconfirmed otherwise);
+                    leaving a server image also needs acceptEula.
+                confirmSoftwareChange: { type: boolean }
+                acceptEula: { type: boolean }
       responses:
         '200':
           description: Patched.
@@ -9397,6 +9788,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+        '502':
+          $ref: '#/components/responses/SoftwareUpstream'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 

@@ -443,6 +443,13 @@ type createServerRequest struct {
 	Storage         string           `json:"storage"`
 	AutostartPolicy string           `json:"autostartPolicy,omitempty"`
 	Resources       *resourceRequest `json:"resources,omitempty"`
+	// Software builds the server from the runtime image with server software on
+	// its volume, instead of a whitelisted server image; exactly one of the two.
+	Software *softwareRequest `json:"software,omitempty"`
+	// AcceptEULA records that the creator accepts the Minecraft EULA, which a
+	// server built from server software needs: the platform writes eula=true
+	// into it on every start.
+	AcceptEULA bool `json:"acceptEula,omitempty"`
 }
 
 // resourceRequest is the optional override block. The required top-level memory
@@ -461,13 +468,6 @@ type resourceRequest struct {
 // rows, then create the MinecraftServer CRD cold (DesiredState=Stopped) and
 // unowned. There is no free-YAML path — the request is a typed form.
 func (a *API) handleCreateServer(w http.ResponseWriter, r *http.Request) {
-	// The image whitelist lives in the build subsystem; with no Builder there is
-	// no admission source, so create cannot run safely.
-	if a.Builder == nil {
-		writeError(w, r, errBuildUnavailable)
-		return
-	}
-
 	var body createServerRequest
 	if err := decodeJSON(w, r, &body); err != nil {
 		writeError(w, r, err)
@@ -520,25 +520,24 @@ func (a *API) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Image admission is data-driven (the whitelist), never a free image string.
-	if strings.TrimSpace(body.Image) == "" {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "image is required"))
-		return
-	}
-	admitted, err := a.Builder.ImageAdmitted(r.Context(), body.Image)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	if !admitted {
-		writeError(w, r, newError(http.StatusBadRequest, "image_not_whitelisted",
-			"image %q is not on the whitelist", body.Image))
-		return
-	}
-	// The spec keeps the digest the tag names now, not the tag: the world is
-	// created on this build and stays on it until an admin changes the image.
-	image, err := a.pinImage(r.Context(), body.Image)
-	if err != nil {
+	var (
+		image string
+		sw    *v1alpha1.SoftwareSpec
+	)
+	if body.Software != nil {
+		if strings.TrimSpace(body.Image) != "" {
+			writeError(w, r, newError(http.StatusBadRequest, "bad_request", "give either an image or server software, not both"))
+			return
+		}
+		if !body.AcceptEULA {
+			writeError(w, r, errEULARequired)
+			return
+		}
+		if sw, image, err = a.resolveSoftware(r.Context(), *body.Software); err != nil {
+			writeError(w, r, err)
+			return
+		}
+	} else if image, err = a.admitImage(r.Context(), body.Image); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -547,46 +546,8 @@ func (a *API) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 	// (owner_id NULL); the per-user quota is charged at claim time (spec §9.3 /
 	// §22). The create path is quota-free by design, not by oversight.
 
-	// Reject a duplicate subdomain before any write. The CRD list is the
-	// lifecycle source; SeedServer re-checks the PG alias atomically below.
-	switch _, err := a.Cluster.GetBySubdomain(r.Context(), body.Subdomain); {
-	case err == nil:
-		writeError(w, r, newError(http.StatusConflict, "subdomain_taken",
-			"subdomain %q is already in use", body.Subdomain))
-		return
-	case !errors.Is(err, ErrNotFound):
+	if err := a.checkNewServerName(r.Context(), body.Name, body.Subdomain); err != nil {
 		writeError(w, r, err)
-		return
-	}
-
-	// Reject a duplicate server NAME before any write too. Without this, a
-	// dup-name create (fresh subdomain) would reach SeedServer, which would bind
-	// the new alias onto the PRE-EXISTING server and commit it — then CreateServer
-	// fails 409 but the stray alias persists. Checking the CRD here keeps the
-	// failed create side-effect-free. The narrow concurrent same-name race stays
-	// inside the documented non-transactional tradeoff, backstopped by
-	// CreateServer's AlreadyExists→409 below.
-	switch _, err := a.Cluster.GetServer(r.Context(), body.Name); {
-	case err == nil:
-		writeError(w, r, newError(http.StatusConflict, "already_exists",
-			"a server named %q already exists", body.Name))
-		return
-	case !errors.Is(err, ErrNotFound):
-		writeError(w, r, err)
-		return
-	}
-
-	// A server deleted outside the reaper (kubectl delete) leaves its world
-	// volume behind: the StatefulSet retains claims on delete. A new server of
-	// the same name would mount that claim and hand the old world to its new
-	// owner, so the name stays taken until an operator removes the volume.
-	switch exists, err := a.Cluster.WorldVolumeExists(r.Context(), body.Name); {
-	case err != nil:
-		writeError(w, r, err)
-		return
-	case exists:
-		writeError(w, r, newError(http.StatusConflict, "world_volume_exists",
-			"the world volume of an earlier server named %q still exists; delete it or choose another name", body.Name))
 		return
 	}
 
@@ -619,6 +580,7 @@ func (a *API) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 		StorageSize:     storage,
 		AutostartPolicy: policy,
 		Resources:       resources,
+		Software:        sw,
 	}
 	if err := a.Cluster.CreateServer(r.Context(), in); err != nil {
 		if errors.Is(err, ErrConflict) {
@@ -905,6 +867,14 @@ type patchServerRequest struct {
 	// IdleStopSeconds sets idle auto-stop: 0 turns it off, otherwise the server
 	// stops after that many seconds with nobody online (60 to 86400).
 	IdleStopSeconds *int32 `json:"idleStopSeconds,omitempty"`
+	// Software moves the server onto server software, or to other server
+	// software, on the runtime image of its Java. Moving to another type or
+	// Minecraft version, or off a server image, needs ConfirmSoftwareChange for
+	// the same reason an image change needs ConfirmImageChange; moving off a
+	// server image also needs AcceptEULA.
+	Software              *softwareRequest `json:"software,omitempty"`
+	ConfirmSoftwareChange bool             `json:"confirmSoftwareChange,omitempty"`
+	AcceptEULA            bool             `json:"acceptEula,omitempty"`
 	// Storage is recognized only so the endpoint can reject it with a precise
 	// reason rather than an opaque "unknown field": a StatefulSet's PVC capacity
 	// is immutable except for storage-class-gated expansion, which this build does
@@ -937,7 +907,13 @@ func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	a.patchServer(w, r, name, body)
+}
 
+// patchServer validates and applies one spec patch, for an admin
+// (handlePatchServer) or a server's owner (handleOwnerPatchServer, which never
+// sets the admin-only fields).
+func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, body patchServerRequest) {
 	if naming.IsSystemServer(name) &&
 		((body.AutostartPolicy != nil && *body.AutostartPolicy != string(v1alpha1.AutostartPublic)) ||
 			(body.IdleStopSeconds != nil && *body.IdleStopSeconds != 0)) {
@@ -947,7 +923,8 @@ func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
 
 	// An empty patch is a client mistake, not a no-op success.
 	if body.DisplayName == nil && body.AutostartPolicy == nil && body.Image == nil &&
-		body.Memory == nil && body.Resources == nil && body.Storage == nil && body.IdleStopSeconds == nil {
+		body.Memory == nil && body.Resources == nil && body.Storage == nil && body.IdleStopSeconds == nil &&
+		body.Software == nil {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
 			"patch must set at least one field"))
 		return
@@ -1066,7 +1043,48 @@ func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
 			patch.Image = &image
 			changed = append(changed, "image")
 			imageFrom = info.Image
+			// A server image starts the server itself: whatever software the
+			// server ran from the runtime image goes.
+			patch.ClearSoftware = info.Software != nil
 		}
+	}
+
+	if body.Software != nil {
+		if body.Image != nil {
+			writeError(w, r, newError(http.StatusBadRequest, "bad_request", "give either an image or server software, not both"))
+			return
+		}
+		info, err := current()
+		if err != nil {
+			a.writeLookupError(w, r, err)
+			return
+		}
+		if info.Software == nil && !body.AcceptEULA {
+			writeError(w, r, errEULARequired)
+			return
+		}
+		sw, image, err := a.resolveSoftware(r.Context(), *body.Software)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		// Another type or Minecraft version opens the world with it, and chunks
+		// a newer version upgrades cannot be opened by the old one again: the
+		// same one-way step as an image change. A new build or Java of the same
+		// version is not.
+		moves := info.Software == nil || info.Software.Type != sw.Type || info.Software.MinecraftVersion != sw.MinecraftVersion
+		if moves && !body.ConfirmSoftwareChange {
+			writeError(w, r, newError(http.StatusConflict, "software_change_unconfirmed",
+				"moving this server to %s %s opens its world with that software and version, and chunks it upgrades "+
+					"cannot be opened by an older version again; back the world up first, then resend with confirmSoftwareChange",
+				sw.Type, sw.MinecraftVersion))
+			return
+		}
+		patch.Software = sw
+		if image != info.Image {
+			patch.Image = &image
+		}
+		changed = append(changed, "software")
 	}
 
 	// Memory and the resource overrides are laid over the server's current pod
@@ -1143,9 +1161,12 @@ func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if patch.Image != nil {
+	switch {
+	case patch.Software != nil:
+		a.audit(r, "server.software", name)
+	case patch.Image != nil:
 		a.auditImageChange(r, name, imageFrom, *patch.Image)
-	} else {
+	default:
 		a.audit(r, "server.patch", name)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

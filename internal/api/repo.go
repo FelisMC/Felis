@@ -442,6 +442,19 @@ type Repo interface {
 	// ErrConflict, and changes nothing, if the subdomain is already bound to a
 	// different server.
 	SeedServer(ctx context.Context, name, subdomain string, cpuMilli, memoryMB, storageMB int) error
+	// SeedOwnedServer is SeedServer for a server a user creates for themselves:
+	// the row is written owned by userID, in the user's claim lane, and only if
+	// it fits the quota in force (their own, else the Owner's default).
+	// ErrSelfServiceDisabled when the user has no quota at all, ErrQuotaExceeded
+	// when it does not fit, ErrConflict when the subdomain is bound elsewhere.
+	SeedOwnedServer(ctx context.Context, name, subdomain, userID string, res ResourceSpec) error
+	// DiscardSeededServer undoes SeedOwnedServer after the cluster refused the
+	// server, so the failed create neither counts against a quota nor holds the
+	// subdomain.
+	DiscardSeededServer(ctx context.Context, name string) error
+	// SelfServiceState reads the quota in force for a user and what their
+	// servers use of it.
+	SelfServiceState(ctx context.Context, userID string) (QuotaState, error)
 	// UpdateServerResources overwrites a server's resource cache with the size the
 	// cluster holds (a claim writes it through; a resize the cluster refused is put
 	// back with it), so the per-owner aggregate stays in sync.
@@ -941,6 +954,24 @@ type QuotaInput struct {
 	MaxCPUMilli  *int `json:"max_cpu_milli,omitempty"`
 	MaxMemoryMB  *int `json:"max_memory_mb,omitempty"`
 	MaxStorageGB *int `json:"max_storage_gb,omitempty"`
+}
+
+// QuotaState is the quota in force for one user and their usage of it. Source is
+// "user" (their own quotas row), "default" (the Owner's default quota) or ""
+// (none: claims are unlimited and the user cannot create servers); Limits is nil
+// when Source is "", and a nil cap inside it is unlimited.
+type QuotaState struct {
+	Source string      `json:"source"`
+	Limits *QuotaInput `json:"limits"`
+	Usage  QuotaUsage  `json:"usage"`
+}
+
+// QuotaUsage is what a user's servers hold, in the quota units.
+type QuotaUsage struct {
+	Servers   int `json:"servers"`
+	CPUMilli  int `json:"cpu_milli"`
+	MemoryMB  int `json:"memory_mb"`
+	StorageMB int `json:"storage_mb"`
 }
 
 // ResourceSpec is the resource footprint of one server, in the units that the

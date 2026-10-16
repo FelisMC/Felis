@@ -48,6 +48,13 @@ type API struct {
 	// created or its image is changed (internal/imagepin), so a later push over
 	// the same tag never reaches an existing world. Nil stores refs as given.
 	Images ImagePinner
+	// Software reads upstream server-software metadata (internal/software) for the
+	// version pickers and for what a server created or changed onto server software
+	// runs. Nil turns server software off: those routes answer 503.
+	Software SoftwareCatalog
+	// RuntimeRegistry is the registry host[:port] the Java runtime images are
+	// mirrored into ([registry] url); build.RuntimeImageRef names them there.
+	RuntimeRegistry string
 
 	// Console is the synchronous RCON write channel (spec §8 写=RCON). It is
 	// wired in production (cmd/felis); a nil Console makes the command route report
@@ -598,6 +605,16 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		// identity (including email_verified) to drive the setup flow.
 		{Method: "GET", Pattern: "/api/v1/me", SetupAllowed: true, h: a.handleMe},
 		{Method: "GET", Pattern: "/api/v1/me/servers", SetupAllowed: true, h: a.handleMyServers},
+		// Server software (software.go, selfservice.go): the version pickers read
+		// upstream metadata through felis-api; a user creates and changes their own
+		// servers within the quota in force for them. App-tier, owner-gated inside
+		// the handlers.
+		{Method: "GET", Pattern: "/api/v1/software", h: a.handleSoftwareCatalog},
+		{Method: "GET", Pattern: "/api/v1/software/{type}/versions", h: a.handleSoftwareVersions},
+		{Method: "GET", Pattern: "/api/v1/software/{type}/versions/{version}", h: a.handleSoftwareVersion},
+		{Method: "GET", Pattern: "/api/v1/me/server-quota", h: a.handleMyServerQuota},
+		{Method: "POST", Pattern: "/api/v1/me/servers", h: a.handleSelfCreateServer},
+		{Method: "PATCH", Pattern: "/api/v1/me/servers/{name}", h: a.handleOwnerPatchServer},
 		// World backups (spec §7, §466). All are app-tier: GET /backups is scoped
 		// inside the handler (admin sees all; a user sees only worlds they formerly
 		// owned), DELETE takes the same scope, and restore is gated by owner-or-admin
@@ -794,6 +811,10 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "POST", Pattern: "/api/v1/nodes/{node}/failover", Owner: true, Admin: true, h: a.handleFailover},
 		{Method: "GET", Pattern: "/api/v1/settings/failover", Owner: true, Admin: true, h: a.handleGetFailoverPolicy},
 		{Method: "PUT", Pattern: "/api/v1/settings/failover", Owner: true, Admin: true, h: a.handleSetFailoverPolicy},
+		// The default quota of users without one of their own (selfservice.go):
+		// turning it on opens self-service server creation to them.
+		{Method: "GET", Pattern: "/api/v1/settings/self-service", Owner: true, Admin: true, h: a.handleGetSelfServiceQuota},
+		{Method: "PUT", Pattern: "/api/v1/settings/self-service", Owner: true, Admin: true, h: a.handleSetSelfServiceQuota},
 		{Method: "GET", Pattern: "/api/v1/fleet", Admin: true, h: a.handleFleet},
 		// Image build + whitelist (spec §16, §15). Every route is admin-tier: a build
 		// is build-time RCE against the cluster, so submission requires the admin

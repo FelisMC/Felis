@@ -69,6 +69,8 @@ type fakeRepo struct {
 	seeded  map[string]bool   // name -> servers row exists
 	aliases map[string]string // subdomain -> bound server name
 	seedErr error
+	// owned holds the servers SeedOwnedServer wrote, by name (selfservice_test.go).
+	owned map[string]fakeOwned
 	// account linking (spec §10)
 	linkCodes map[string]fakeLinkCode // code -> pending binding
 	links     map[string]string       // mc_uuid -> user_id (mirrors UNIQUE(mc_uuid))
@@ -304,6 +306,7 @@ func newFakeRepo() *fakeRepo {
 		claimOK:      map[string]bool{}, claimQuotaRefuse: map[string]bool{},
 		serverResources: map[string]ResourceSpec{}, resourceUpdates: map[string]ResourceSpec{},
 		seeded: map[string]bool{}, aliases: map[string]string{},
+		owned:     map[string]fakeOwned{},
 		linkCodes: map[string]fakeLinkCode{}, links: map[string]string{},
 		linkAuthSource:    map[string]string{},
 		staff:             map[string]*StaffUser{},
@@ -2004,7 +2007,8 @@ func (c *fakeCluster) CreateServer(_ context.Context, in CreateServerInput) erro
 	c.created[in.Name] = in
 	info := &ServerInfo{Name: in.Name, Subdomain: in.Subdomain,
 		AutostartPolicy: string(in.AutostartPolicy),
-		DesiredState:    string(v1alpha1.DesiredStopped), Phase: string(v1alpha1.PhaseStopped)}
+		DesiredState:    string(v1alpha1.DesiredStopped), Phase: string(v1alpha1.PhaseStopped),
+		Image: in.Image, Software: serverSoftware(in.Software), Resources: *in.Resources.DeepCopy()}
 	c.byName[in.Name] = info
 	c.bySub[in.Subdomain] = info
 	return nil
@@ -2032,6 +2036,14 @@ func (c *fakeCluster) PatchServerSpec(_ context.Context, n string, p ServerSpecP
 	}
 	if p.DisplayName != nil {
 		info.DisplayName = *p.DisplayName
+	}
+	if p.Image != nil {
+		info.Image = *p.Image
+	}
+	if p.Software != nil {
+		info.Software = serverSoftware(p.Software)
+	} else if p.ClearSoftware {
+		info.Software = nil
 	}
 	if p.JavaMemory != nil {
 		info.JavaMemory = *p.JavaMemory

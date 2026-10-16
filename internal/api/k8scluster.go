@@ -243,6 +243,7 @@ func (k *K8sCluster) CreateServer(ctx context.Context, in CreateServerInput) err
 			FallbackServer:  naming.SystemLoginServer,
 			Storage:         v1alpha1.StorageSpec{Size: in.StorageSize},
 			Resources:       in.Resources,
+			Software:        in.Software,
 			// A server nobody plays on stops itself; the next join wakes it.
 			Idle: v1alpha1.DefaultIdle(),
 			// RCON is what makes a server manageable at all: the operator gates
@@ -513,6 +514,12 @@ func (k *K8sCluster) PatchServerSpec(ctx context.Context, name string, p ServerS
 	if p.Image != nil {
 		ms.Spec.Image = *p.Image
 	}
+	if p.Software != nil {
+		s := *p.Software
+		ms.Spec.Software = &s
+	} else if p.ClearSoftware {
+		ms.Spec.Software = nil
+	}
 	if p.JavaMemory != nil {
 		ms.Spec.JavaMemory = *p.JavaMemory
 	}
@@ -574,6 +581,7 @@ func serverInfo(ms *v1alpha1.MinecraftServer) *ServerInfo {
 		StartGaveUp:      v1alpha1.StartGaveUp(&ms.Status),
 		ReaperExempt:     ms.Spec.ReaperExempt,
 		Resources:        *ms.Spec.Resources.DeepCopy(),
+		Software:         serverSoftware(ms.Spec.Software),
 	}
 }
 

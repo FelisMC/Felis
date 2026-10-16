@@ -57,6 +57,8 @@ type ServerInfo struct {
 	// Resources is the spec's pod resource block. It stays off the wire; a spec
 	// patch reads it so the fields the admin left out keep their values.
 	Resources corev1.ResourceRequirements `json:"-"`
+	// Software is what a runtime-image server runs; nil for a server image.
+	Software *ServerSoftware `json:"software,omitempty"`
 	// Startup explains scheduling and container state independently of the CR phase.
 	Startup *StartupStatus `json:"startup,omitempty"`
 }
@@ -79,6 +81,9 @@ type CreateServerInput struct {
 	// §22 ceiling — felis-api guarantees it is non-zero (the operator does not
 	// derive a cgroup limit from JavaMemory).
 	Resources corev1.ResourceRequirements
+	// Software, when set, makes Image the runtime image for its Java and the server
+	// software data on the world volume (internal/software).
+	Software *v1alpha1.SoftwareSpec
 }
 
 // ServerSpecPatch is the resolved, validated set of admin-tier mutations applied
@@ -103,6 +108,10 @@ type ServerSpecPatch struct {
 	// IdleStopSeconds sets idle auto-stop: 0 turns it off, anything else is the
 	// empty duration before the stop (already range-checked).
 	IdleStopSeconds *int32
+	// Software replaces the server software (with Image set to its runtime image);
+	// ClearSoftware drops it, for an admin moving the server onto a server image.
+	Software      *v1alpha1.SoftwareSpec
+	ClearSoftware bool
 }
 
 // Cluster is the lifecycle-layer access the API depends on: reads of the
@@ -161,4 +170,27 @@ type Cluster interface {
 	// merge patch so a concurrent operator status write is never clobbered. It
 	// returns ErrNotFound if no server of that name exists.
 	PatchServerSpec(ctx context.Context, name string, patch ServerSpecPatch) error
+}
+
+// ServerSoftware is the panel's view of a runtime-image server's software.
+type ServerSoftware struct {
+	Type             string `json:"type"`
+	MinecraftVersion string `json:"minecraftVersion,omitempty"`
+	Build            string `json:"build,omitempty"`
+	Java             int32  `json:"java"`
+	Jar              string `json:"jar,omitempty"`
+	// Forwarding is velocity when the server takes the proxy's player identity,
+	// none when players join it under offline-mode UUIDs.
+	Forwarding string `json:"forwarding"`
+}
+
+func serverSoftware(s *v1alpha1.SoftwareSpec) *ServerSoftware {
+	if s == nil {
+		return nil
+	}
+	fwd := s.Forwarding
+	if fwd == "" {
+		fwd = "none"
+	}
+	return &ServerSoftware{Type: s.Type, MinecraftVersion: s.MinecraftVersion, Build: s.Build, Java: s.Java, Jar: s.Jar, Forwarding: fwd}
 }

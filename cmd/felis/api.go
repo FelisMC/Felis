@@ -36,6 +36,7 @@ import (
 	"felis.lolicon.best/internal/registryprune"
 	"felis.lolicon.best/internal/restore"
 	"felis.lolicon.best/internal/retention"
+	"felis.lolicon.best/internal/software"
 	"felis.lolicon.best/internal/submit"
 	"felis.lolicon.best/internal/worldexport"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -420,9 +421,14 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		Internal:  internalAuth,
 		Builder:   builder,
 		Images:    imagePinner(cfg.Registry.URL),
-		Restorer:  restorer,
-		Backuper:  backuper,
-		JobStatus: jobStatus,
+		// Server software: upstream metadata for the version pickers, cached so a
+		// picker does not reach upstream on every open, and the Java runtimes
+		// mirrored into the platform registry (felis mirror-build-tools).
+		Software:        &software.Resolver{CacheTTL: 10 * time.Minute},
+		RuntimeRegistry: cfg.Registry.URL,
+		Restorer:        restorer,
+		Backuper:        backuper,
+		JobStatus:       jobStatus,
 		// A restore starts with a safety snapshot; settleRestoreChains starts the
 		// restore behind each one.
 		RestoreChains: jobStatus,

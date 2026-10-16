@@ -335,16 +335,14 @@ func (p *PGRepo) QuotaCheck(ctx context.Context, userID string, excludeName stri
 
 // quotaFits is QuotaCheck over either the pool or a transaction.
 func quotaFits(ctx context.Context, q rowQuerier, userID, excludeName string, incoming ResourceSpec) (bool, error) {
-	var maxServers, maxCPU, maxMem, maxStor sql.NullInt64
-	switch err := q.QueryRowContext(ctx,
-		`SELECT max_servers, max_cpu_milli, max_memory_mb, max_storage_gb
-		 FROM quotas WHERE user_id = $1`, userID).Scan(
-		&maxServers, &maxCPU, &maxMem, &maxStor); {
-	case errors.Is(err, sql.ErrNoRows):
-		return true, nil // no quota row → unlimited
-	case err != nil:
+	caps, err := readQuota(ctx, q, userID)
+	if err != nil {
 		return false, err
 	}
+	if caps.Source == "" {
+		return true, nil // no quota of any kind → unlimited
+	}
+	maxServers, maxCPU, maxMem, maxStor := caps.MaxServers, caps.MaxCPU, caps.MaxMem, caps.MaxStor
 
 	var count, cpuSum, memSum, storSum int64
 	if err := q.QueryRowContext(ctx,
@@ -496,16 +494,14 @@ func (p *PGRepo) ClaimServer(ctx context.Context, name, userID string) (bool, er
 		return false, nil
 	}
 
-	// The four-dimension gate, re-run inside the transaction. A missing quota
-	// row leaves every NullInt64 invalid → quotaAllows treats each dimension as
+	// The four-dimension gate, re-run inside the transaction. No quota of any
+	// kind leaves every NullInt64 invalid → quotaAllows treats each dimension as
 	// unlimited, matching QuotaCheck.
-	var maxServers, maxCPU, maxMem, maxStor sql.NullInt64
-	if err := tx.QueryRowContext(ctx,
-		`SELECT max_servers, max_cpu_milli, max_memory_mb, max_storage_gb
-		 FROM quotas WHERE user_id = $1`, userID).Scan(
-		&maxServers, &maxCPU, &maxMem, &maxStor); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	caps, err := readQuota(ctx, tx, userID)
+	if err != nil {
 		return false, err
 	}
+	maxServers, maxCPU, maxMem, maxStor := caps.MaxServers, caps.MaxCPU, caps.MaxMem, caps.MaxStor
 	var count, cpuSum, memSum, storSum int64
 	if err := tx.QueryRowContext(ctx,
 		`SELECT COUNT(*), COALESCE(SUM(cached_cpu_milli), 0), COALESCE(SUM(cached_memory_mb), 0), COALESCE(SUM(cached_storage_mb), 0)
@@ -2588,13 +2584,11 @@ func (p *PGRepo) RedeemMigration(ctx context.Context, targetUserID, codeHash str
 		return "", nil, err
 	}
 	if n > 0 {
-		var maxServers, maxCPU, maxMem, maxStor sql.NullInt64
-		if err := tx.QueryRowContext(ctx,
-			`SELECT max_servers, max_cpu_milli, max_memory_mb, max_storage_gb
-			 FROM quotas WHERE user_id = $1`, targetUserID).Scan(
-			&maxServers, &maxCPU, &maxMem, &maxStor); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		caps, err := readQuota(ctx, tx, targetUserID)
+		if err != nil {
 			return "", nil, err
 		}
+		maxServers, maxCPU, maxMem, maxStor := caps.MaxServers, caps.MaxCPU, caps.MaxMem, caps.MaxStor
 		var count, cpuSum, memSum, storSum int64
 		if err := tx.QueryRowContext(ctx,
 			`SELECT COUNT(*), COALESCE(SUM(cached_cpu_milli), 0), COALESCE(SUM(cached_memory_mb), 0), COALESCE(SUM(cached_storage_mb), 0)
