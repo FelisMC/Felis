@@ -599,6 +599,7 @@ var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 //	   Only the system plugin's startup-only config may be read and saved live;
 //	   its Job mounts the RWO volume on the same node as the game pod.
 //	⑤ the FileEditor must be wired, else 503
+//	⑥ a server with no world volume yet gets one (EnsureWorldVolume)
 //
 // All file routes share this gate so the live-config exception stays narrow.
 //
@@ -621,19 +622,6 @@ func (a *API) authorizeFileOp(w http.ResponseWriter, r *http.Request) (string, b
 		return "", false
 	}
 
-	// World-volume gate, matching the backup/restore faces: the Job mounts the
-	// world PVC by claim name, so a server that has never started (or was already
-	// reaped) has no claim to mount and its Pod sits Pending until the executor's
-	// wait expires — a knowably impossible request answered by a 90s hang and a
-	// misleading 504. Refuse up front with the same specific 409.
-	if exists, err := a.Cluster.WorldVolumeExists(r.Context(), name); err != nil {
-		writeError(w, r, err)
-		return "", false
-	} else if !exists {
-		writeError(w, r, errNoWorldVolume())
-		return "", false
-	}
-
 	// Files is optional: when unwired the endpoints report 503 rather than
 	// panicking, so the authorization boundary above is exercised even before the
 	// file-Job executor is wired (see FileEditor).
@@ -641,6 +629,22 @@ func (a *API) authorizeFileOp(w http.ResponseWriter, r *http.Request) (string, b
 		writeError(w, r, newError(http.StatusServiceUnavailable, "files_unavailable",
 			"the file editor is not configured"))
 		return "", false
+	}
+
+	// The Job mounts the world PVC by claim name. A server that has never
+	// started (or whose world the reaper archived) has none yet, so it is created
+	// here under the name and size the StatefulSet asks for, which adopts it on
+	// the first start: an owner puts a custom jar, a world or a modpack in place
+	// before that start, the way they would on a server that has run. Backups and
+	// exports keep refusing a missing volume, having nothing to read.
+	if exists, err := a.Cluster.WorldVolumeExists(r.Context(), name); err != nil {
+		writeError(w, r, err)
+		return "", false
+	} else if !exists {
+		if err := a.Cluster.EnsureWorldVolume(r.Context(), name); err != nil {
+			a.writeLookupError(w, r, err)
+			return "", false
+		}
 	}
 	return name, true
 }

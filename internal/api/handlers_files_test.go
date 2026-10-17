@@ -287,7 +287,7 @@ func TestFileEditorStoppedGate(t *testing.T) {
 // and a misleading 504 files_timeout for a request that is knowably impossible.
 // Every route must refuse BEFORE creating a Job, with the same specific 409
 // the backup/restore faces use.
-func TestFileEditorWorldVolumeGate(t *testing.T) {
+func TestFileOpsBeforeTheFirstStart(t *testing.T) {
 	owner := &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
 
 	routes := []struct {
@@ -305,21 +305,42 @@ func TestFileEditorWorldVolumeGate(t *testing.T) {
 		{"upload", "PUT", "/api/v1/servers/survival/files/upload?path=plugins/x.jar", "PK-jar-bytes"},
 	}
 
+	// A server created but never started has no world claim yet. Its owner can
+	// still put files in place before the first start (a custom jar, a world):
+	// the claim the StatefulSet would make is created first, then the Job runs.
 	for _, rt := range routes {
-		t.Run(rt.name+" without a world volume -> 409 no_world_volume", func(t *testing.T) {
+		t.Run(rt.name+" before the first start creates the world volume", func(t *testing.T) {
 			api, _, cl, files := mkFiles(t)
 			cl.noWorld["survival"] = true
 			api.External = staticExternal{p: owner}
 
 			w := do(api.ExternalHandler(), rt.method, rt.path, rt.body, fileRouteHeader(rt.name, rt.body))
-			if w.Code != http.StatusConflict || decodeErr(t, w) != "no_world_volume" {
+			if w.Code >= 400 {
 				t.Fatalf("code = %d body %s", w.Code, w.Body.String())
 			}
-			if files.calls != 0 {
-				t.Fatal("no claim to mount — the file Job must never be created")
+			if len(cl.ensured) != 1 || cl.ensured[0] != "survival" {
+				t.Fatalf("ensured = %v, want the survival claim created", cl.ensured)
+			}
+			if files.calls != 1 {
+				t.Fatalf("file Job calls = %d, want 1", files.calls)
 			}
 		})
 	}
+
+	// The stopped gate comes first: a running server is refused without a claim.
+	t.Run("a running server without a world volume is refused untouched", func(t *testing.T) {
+		api, _, cl, files := mkFiles(t)
+		cl.noWorld["survival"] = true
+		cl.byName["survival"].DesiredState = string(v1alpha1.DesiredRunning)
+		api.External = staticExternal{p: owner}
+		w := do(api.ExternalHandler(), "GET", "/api/v1/servers/survival/files?path=config", "", nil)
+		if w.Code != http.StatusConflict || decodeErr(t, w) != "not_stopped" {
+			t.Fatalf("code = %d body %s", w.Code, w.Body.String())
+		}
+		if len(cl.ensured) != 0 || files.calls != 0 {
+			t.Fatalf("ensured %v, calls %d: nothing may be created for a refused request", cl.ensured, files.calls)
+		}
+	})
 }
 
 // TestFileEditorAuthorization pins who may touch a world's files. It is the same

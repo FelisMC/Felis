@@ -606,7 +606,6 @@ func TestFileOpsWorldGates(t *testing.T) {
 		{"starting", "not_stopped", func(c *fakeCluster) {
 			c.byName["survival"].DesiredState = string(v1alpha1.DesiredRunning)
 		}},
-		{"no world volume", "no_world_volume", func(c *fakeCluster) { c.noWorld["survival"] = true }},
 	}
 	for _, rt := range routes {
 		for _, g := range gates {

@@ -938,6 +938,17 @@ func TestFileDownloadGate(t *testing.T) {
 		}
 	})
 
+	// Like every file route, a server that has never started gets its world
+	// volume first rather than a refusal.
+	t.Run("before the first start", func(t *testing.T) {
+		a, _, cl, ex := fileDownloadFixture()
+		cl.noWorld["survival"] = true
+		beginExport(t, a.ExternalHandler(), fileDownloadPath+"server.jar", "owner1")
+		if strings.Join(cl.ensured, ",") != "survival" || len(ex.reqs) != 1 {
+			t.Fatalf("ensured %v, exporter Jobs %d; want the claim created and one Job", cl.ensured, len(ex.reqs))
+		}
+	})
+
 	busy := func(_ *API, c *fakeCluster) {
 		c.maintErr["survival"] = &MaintenanceBusyError{Kind: maintenance.KindFileWrite}
 	}
@@ -953,8 +964,6 @@ func TestFileDownloadGate(t *testing.T) {
 		{name: "principal without an account", user: "nouser", query: "a.yml", code: http.StatusForbidden, errCode: "forbidden"},
 		{name: "running", user: "owner1", query: "a.yml", edit: func(_ *API, c *fakeCluster) { c.byName["survival"].Ready = true },
 			code: http.StatusConflict, errCode: "not_stopped", msg: "stop the server before working with its files"},
-		{name: "no world volume", user: "owner1", query: "a.yml", edit: func(_ *API, c *fakeCluster) { c.noWorld["survival"] = true },
-			code: http.StatusConflict, errCode: "no_world_volume"},
 		{name: "no file editor", user: "owner1", query: "a.yml", edit: func(a *API, _ *fakeCluster) { a.Files = nil },
 			code: http.StatusServiceUnavailable, errCode: "files_unavailable"},
 		{name: "no path", user: "owner1", query: "", code: http.StatusBadRequest, errCode: "bad_request"},
