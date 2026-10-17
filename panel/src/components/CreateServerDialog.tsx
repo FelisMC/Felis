@@ -29,7 +29,9 @@ import {
   softwareRequest,
   type SoftwareChoice,
 } from "@/components/SoftwarePicker";
+import { uploadFile } from "@/components/files/uploadFile";
 import { api, humanizeError } from "@/lib/api";
+import { formatBytes } from "@/lib/format";
 import { useAsync } from "@/lib/hooks";
 import { hostFor, type RuntimeConfig } from "@/lib/config";
 import { DISPLAY_NAME_MAX, serverNameIssue, type ServerNameIssue } from "@/lib/naming";
@@ -104,6 +106,12 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
   const [eula, setEula] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // A custom jar chosen here goes into the new server's files once it exists.
+  // created names that server while its jar is still to land: a failed upload
+  // is retried alone, the server is not created again.
+  const [jarFile, setJarFile] = useState<File | null>(null);
+  const [created, setCreated] = useState<string | null>(null);
+  const [uploaded, setUploaded] = useState<number | null>(null);
 
   // A refusal answers the form as it was sent; any edit, or opening the dialog
   // again, starts past it.
@@ -116,9 +124,22 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
     setError(null);
   }
 
+  // reset empties the form for the next server.
+  function reset() {
+    setForm((f) => ({ ...f, name: "", subdomain: "", displayName: "" }));
+    setSoftware(EMPTY_SOFTWARE);
+    setEula(false);
+    setJarFile(null);
+    setCreated(null);
+  }
+
   function openChange(next: boolean) {
+    // An upload in flight finishes before the dialog goes.
+    if (!next && submitting) return;
     setOpen(next);
     if (next) setError(null);
+    // Closed with the jar still to upload: the server stays, the form starts over.
+    else if (created) reset();
   }
 
   const useSoftware = !staff || source === "software";
@@ -137,8 +158,8 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
   const memoryFits = (m: string) => gibToMB(m) <= memoryLeft;
   const storageFits = (s: string) => gibToMB(s) <= storageLeft;
 
-  const canSubmit =
-    nameIssue === null &&
+  const uploadJar = useSoftware && software.type === "custom" && !!jarFile;
+  const canSubmit = created ? !submitting : nameIssue === null &&
     subdomainIssue === null &&
     (useSoftware ? softwareReady(software) && eula : !!image) &&
     (!staff || !cfg.distributed || workers.some((n) => n.name === form.nodeName)) &&
@@ -150,40 +171,53 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
   async function submit() {
     setSubmitting(true);
     setError(null);
+    let name = created;
     try {
-      const displayName = form.displayName.trim() || undefined;
-      if (self) {
-        await api.createMyServer({
-          name: form.name,
-          subdomain: form.subdomain,
-          displayName,
-          software: softwareRequest(software),
-          memory: form.memory,
-          storage: form.storage,
-          autostartPolicy: form.autostartPolicy,
-          acceptEula: eula,
-        });
-      } else {
-        await api.createServer({
-          name: form.name,
-          subdomain: form.subdomain,
-          displayName,
-          ...(cfg.distributed ? { nodeName: form.nodeName } : {}),
-          memory: form.memory,
-          storage: form.storage,
-          autostartPolicy: form.autostartPolicy,
-          ...(useSoftware ? { software: softwareRequest(software), acceptEula: eula } : { image }),
-        });
+      if (!name) {
+        await createServer();
+        name = form.name;
+        onCreated();
+      }
+      if (uploadJar && jarFile) {
+        setCreated(name);
+        setUploaded(0);
+        await uploadFile(name, software.jar.trim(), jarFile, { onProgress: setUploaded });
       }
       setOpen(false);
-      onCreated();
-      setForm((f) => ({ ...f, name: "", subdomain: "", displayName: "" }));
-      setSoftware(EMPTY_SOFTWARE);
-      setEula(false);
+      reset();
     } catch (e) {
-      setError(humanizeError(e));
+      setError(name ? t("create_server_upload_failed", { error: humanizeError(e) }) : humanizeError(e));
     } finally {
       setSubmitting(false);
+      setUploaded(null);
+    }
+  }
+
+  // createServer sends the form to the API: the caller's own server, or staff's.
+  async function createServer() {
+    const displayName = form.displayName.trim() || undefined;
+    if (self) {
+      await api.createMyServer({
+        name: form.name,
+        subdomain: form.subdomain,
+        displayName,
+        software: softwareRequest(software),
+        memory: form.memory,
+        storage: form.storage,
+        autostartPolicy: form.autostartPolicy,
+        acceptEula: eula,
+      });
+    } else {
+      await api.createServer({
+        name: form.name,
+        subdomain: form.subdomain,
+        displayName,
+        ...(cfg.distributed ? { nodeName: form.nodeName } : {}),
+        memory: form.memory,
+        storage: form.storage,
+        autostartPolicy: form.autostartPolicy,
+        ...(useSoftware ? { software: softwareRequest(software), acceptEula: eula } : { image }),
+      });
     }
   }
 
@@ -210,7 +244,8 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
           <DialogDescription>{t(self ? "self_create_desc" : "create_server_desc")}</DialogDescription>
         </DialogHeader>
 
-        <div className="grid gap-4">
+        {/* Once the server exists only its jar upload is left, so the form is held. */}
+        <fieldset disabled={!!created} className="grid min-w-0 gap-4">
           {self && limits && usage && (
             <p className="rounded-md border border-border bg-muted/40 p-2.5 text-xs text-muted-foreground">
               {t("self_create_quota", {
@@ -233,7 +268,14 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
           )}
 
           {useSoftware ? (
-            <SoftwarePicker idPrefix="cs-sw" value={software} onChange={changeSoftware} />
+            <SoftwarePicker
+              idPrefix="cs-sw"
+              value={software}
+              onChange={changeSoftware}
+              disabled={!!created}
+              jarFile={jarFile}
+              onJarFile={(file) => { setJarFile(file); setError(null); }}
+            />
           ) : (
             <div className="grid gap-2">
               <Label htmlFor="create-server-image">{t("create_server_image")}</Label>
@@ -384,16 +426,21 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
 
           {useSoftware && <EulaCheckbox checked={eula} onChange={(v) => { setEula(v); setError(null); }} />}
 
+          {uploaded !== null && jarFile && (
+            <p role="status" className="text-xs text-muted-foreground">
+              {t("create_server_uploading", { sent: formatBytes(uploaded), total: formatBytes(jarFile.size) })}
+            </p>
+          )}
           <InlineError message={error} />
-        </div>
+        </fieldset>
 
         <ConfirmFooter
-          onCancel={() => setOpen(false)}
+          onCancel={() => openChange(false)}
           onConfirm={submit}
           disabled={!canSubmit}
           loading={submitting}
-          cancelLabel={t("create_server_cancel")}
-          confirmLabel={t("create_server_submit")}
+          cancelLabel={t(created ? "create_server_close" : "create_server_cancel")}
+          confirmLabel={t(created ? "create_server_retry_upload" : "create_server_submit")}
           confirmVariant="default"
         />
       </DialogContent>

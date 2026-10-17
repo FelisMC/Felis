@@ -928,6 +928,7 @@ function createServer(
     storageSize: req.storage,
   });
   state.servers.unshift(created);
+  state.files[name] = emptyVolume();
   return created;
 }
 
@@ -1239,6 +1240,7 @@ async function handleMockSoftware(ctx: SessionContext): Promise<boolean> {
           javaMemory: `${Math.floor(memory * 0.75)}M`,
         });
         ctx.state.servers.unshift(created);
+        ctx.state.files[name] = emptyVolume();
         sendJSON(ctx.res, 201, { name, subdomain, desiredState: created.desiredState });
       }
     }
@@ -3148,6 +3150,12 @@ function seedFiles(serverName: string): MockTree {
   dir("logs", 2);
   file("logs/latest.log", `[12:00:00] [Server thread/INFO]: Starting minecraft server version 1.21.1\n[12:00:04] [Server thread/INFO]: Done (3.912s)! For help, type "help"\n`, 2);
   return tree;
+}
+
+// emptyVolume is a new server's world volume: nothing in it until its first start
+// or an upload.
+function emptyVolume(): MockTree {
+  return new Map([["", { is_dir: true, data: Buffer.alloc(0), mod_time: new Date().toISOString() }]]);
 }
 
 function filesOf(state: MockState, serverName: string): MockTree {

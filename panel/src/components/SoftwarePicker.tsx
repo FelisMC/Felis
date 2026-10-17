@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ShieldCheck } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, ShieldCheck, Upload } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { api, humanizeError } from "@/lib/api";
+import { formatBytes } from "@/lib/format";
 import { useAsync } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import type { SoftwareRequest, SoftwareType, SoftwareVersionInfo } from "@/lib/types";
@@ -57,6 +58,10 @@ interface Props {
   onChange: (next: SoftwareChoice) => void;
   idPrefix: string;
   disabled?: boolean;
+  /** A custom jar to upload once the server exists (the create dialog): the
+   *  picker offers a file chooser, and the jar path follows the file's name. */
+  jarFile?: File | null;
+  onJarFile?: (file: File | null) => void;
 }
 
 /** SoftwarePicker chooses the server software a runtime-image server runs: the
@@ -64,9 +69,17 @@ interface Props {
  *  loader version (the recommended one preselected), and the Java runtime (the
  *  one the version needs preselected, older ones not offered). It says whether
  *  the proxy's player identity reaches a server running the choice. */
-export function SoftwarePicker({ value, onChange, idPrefix, disabled = false }: Props) {
+export function SoftwarePicker({ value, onChange, idPrefix, disabled = false, jarFile = null, onJarFile }: Props) {
   const { t } = useTranslation("servers");
   const [unstable, setUnstable] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
+
+  // A chosen jar names the path, unless the owner typed one of their own.
+  function chooseJar(file: File | null) {
+    if (!onJarFile) return;
+    onJarFile(file);
+    if (file && (!value.jar.trim() || value.jar === jarFile?.name)) onChange({ ...value, jar: file.name });
+  }
   const type = value.type;
   const versioned = !!type && type !== "custom";
 
@@ -188,6 +201,39 @@ export function SoftwarePicker({ value, onChange, idPrefix, disabled = false }: 
         </div>
       )}
 
+      {type === "custom" && onJarFile && (
+        <div className="grid gap-2">
+          <Label htmlFor={`${idPrefix}-jar-file`}>{t("software_jar_file")}</Label>
+          <input
+            id={`${idPrefix}-jar-file`}
+            ref={fileInput}
+            type="file"
+            accept=".jar,application/java-archive"
+            className="sr-only"
+            disabled={disabled}
+            onChange={(e) => {
+              const file = e.target.files?.[0] ?? null;
+              e.target.value = "";
+              if (file) chooseJar(file);
+            }}
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <Button type="button" variant="outline" size="sm" className="gap-1.5" disabled={disabled} onClick={() => fileInput.current?.click()}>
+              <Upload className="h-4 w-4" />
+              {t(jarFile ? "software_jar_file_change" : "software_jar_file_choose")}
+            </Button>
+            {jarFile && (
+              <>
+                <span className="min-w-0 truncate text-sm">{jarFile.name} · {formatBytes(jarFile.size)}</span>
+                <Button type="button" variant="ghost" size="sm" disabled={disabled} onClick={() => chooseJar(null)}>
+                  {t("software_jar_file_clear")}
+                </Button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       {type === "custom" && (
         <div className="grid gap-2">
           <Label htmlFor={`${idPrefix}-jar`}>{t("software_jar")}</Label>
@@ -200,7 +246,9 @@ export function SoftwarePicker({ value, onChange, idPrefix, disabled = false }: 
             aria-invalid={!!value.jar && !jarPathValid(value.jar.trim())}
           />
           <p className={cn("text-xs", value.jar && !jarPathValid(value.jar.trim()) ? "text-destructive" : "text-muted-foreground")}>
-            {value.jar && !jarPathValid(value.jar.trim()) ? t("software_jar_invalid") : t("software_jar_hint")}
+            {value.jar && !jarPathValid(value.jar.trim())
+              ? t("software_jar_invalid")
+              : t(onJarFile ? "software_jar_hint_upload" : "software_jar_hint")}
           </p>
         </div>
       )}

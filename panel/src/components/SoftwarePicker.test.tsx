@@ -24,7 +24,14 @@ const backend = vi.hoisted(() => {
   };
   const forwarding = (type: string, mc: string) =>
     type === "vanilla" || (type === "paper" && mc === "1.12.2") ? "none" : "velocity";
-  const state = { servers: {} as Record<string, Server>, quota: null as ServerQuota | null };
+  // The world volume as the file routes see it: folders made and files landed by
+  // path, a server's own only once it exists; failUploads refuses that many first.
+  const state = {
+    servers: {} as Record<string, Server>,
+    quota: null as ServerQuota | null,
+    volume: {} as Record<string, { dirs: string[]; files: Record<string, number> }>,
+    failUploads: 0,
+  };
   const err = (code: string) => Promise.reject({ status: 400, code, message: code });
   function resolve(req: SoftwareRequest): ServerSoftware | string {
     if (req.type === "custom") return { type: "custom", jar: req.jar, java: req.java ?? 21, forwarding: "none" };
@@ -44,6 +51,27 @@ const backend = vi.hoisted(() => {
         const need = java[mc];
         return { version: mc, requiredJava: need, java: [8, 17, 21, 25].find((r) => r >= need), builds: builds[type] ?? [], forwarding: forwarding(type, mc) };
       }),
+      mkdirServerFolder: vi.fn(async (name: string, path: string) => {
+        const v = state.volume[name];
+        if (!v) return Promise.reject({ status: 404, code: "not_found", message: "server not found" });
+        const parent = path.split("/").slice(0, -1).join("/");
+        if (parent && !v.dirs.includes(parent)) return Promise.reject({ status: 404, code: "not_found", message: `folder ${parent} does not exist` });
+        if (v.dirs.includes(path)) return Promise.reject({ status: 409, code: "file_exists", message: `${path} already exists` });
+        v.dirs.push(path);
+        return { path, status: "created" };
+      }),
+      uploadServerFile: vi.fn(async (name: string, path: string, file: Blob) => {
+        const v = state.volume[name];
+        if (!v) return Promise.reject({ status: 404, code: "not_found", message: "server not found" });
+        if (state.failUploads > 0) {
+          state.failUploads--;
+          return Promise.reject({ status: 507, code: "no_space", message: "the world volume is full" });
+        }
+        const parent = path.split("/").slice(0, -1).join("/");
+        if (parent && !v.dirs.includes(parent)) return Promise.reject({ status: 404, code: "not_found", message: `folder ${parent} does not exist` });
+        v.files[path] = file.size;
+        return { path, status: "uploaded", sha256: "", size: file.size };
+      }),
       listImages: vi.fn(async () => []),
       nodes: vi.fn(async () => []),
       createServer: vi.fn(async (req: CreateServerRequest) => {
@@ -51,6 +79,7 @@ const backend = vi.hoisted(() => {
         const sw = req.software ? resolve(req.software) : undefined;
         if (typeof sw === "string") return err(sw);
         state.servers[req.name] = { software: sw, image: req.image, memory: req.memory };
+        state.volume[req.name] = { dirs: [], files: {} };
         return { name: req.name, subdomain: req.subdomain, desiredState: "Stopped" };
       }),
       createMyServer: vi.fn(async (req: SelfCreateRequest) => {
@@ -61,6 +90,7 @@ const backend = vi.hoisted(() => {
         const sw = resolve(req.software);
         if (typeof sw === "string") return err(sw);
         state.servers[req.name] = { software: sw, memory: req.memory, owner: "me" };
+        state.volume[req.name] = { dirs: [], files: {} };
         return { name: req.name, subdomain: req.subdomain, desiredState: "Stopped" };
       }),
       patchMyServer: vi.fn(async (name: string, req: { software?: SoftwareRequest; confirmSoftwareChange?: boolean }) => {
@@ -93,6 +123,8 @@ const cfg = { apiBase: "/api/v1", rootDomain: "example.test", gamePort: 25570 };
 beforeEach(() => {
   backend.state.servers = {};
   backend.state.quota = null;
+  backend.state.volume = {};
+  backend.state.failUploads = 0;
 });
 
 type User = ReturnType<typeof userEvent.setup>;
@@ -188,6 +220,57 @@ describe("choosing server software", () => {
     await user.type(screen.getByLabelText("Jar path"), "pack/start.jar");
     await user.click(create());
     await waitFor(() => expect(backend.state.servers.mine?.software).toEqual({ type: "custom", jar: "pack/start.jar", java: 21, forwarding: "none" }));
+  });
+
+  const jar = (name: string, bytes = 2048) => new File([new Uint8Array(bytes)], name, { type: "application/java-archive" });
+
+  it("uploads a chosen jar into the new server under the path it names", async () => {
+    const { user, onCreated } = await openStaff();
+    await user.type(screen.getByLabelText("Name"), "mine");
+    await user.type(screen.getByLabelText("Subdomain"), "mine");
+    await user.click(screen.getByRole("radio", { name: "Custom jar" }));
+    await user.upload(screen.getByLabelText("Jar file"), jar("mohist-1.20.1.jar"));
+    expect((screen.getByLabelText("Jar path") as HTMLInputElement).value).toBe("mohist-1.20.1.jar");
+    expect(screen.getByText("mohist-1.20.1.jar · 2.0 KiB")).toBeTruthy();
+    await user.click(eula());
+    await user.click(create());
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(backend.state.servers.mine?.software).toMatchObject({ type: "custom", jar: "mohist-1.20.1.jar" });
+    expect(backend.state.volume.mine.files).toEqual({ "mohist-1.20.1.jar": 2048 });
+    expect(onCreated).toHaveBeenCalledTimes(1);
+  });
+
+  it("makes the folders a typed path names before the upload", async () => {
+    const { user } = await openStaff();
+    await user.type(screen.getByLabelText("Name"), "mine");
+    await user.type(screen.getByLabelText("Subdomain"), "mine");
+    await user.click(screen.getByRole("radio", { name: "Custom jar" }));
+    await user.upload(screen.getByLabelText("Jar file"), jar("server.jar"));
+    await user.clear(screen.getByLabelText("Jar path"));
+    await user.type(screen.getByLabelText("Jar path"), "pack/core/server.jar");
+    await user.click(eula());
+    await user.click(create());
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(backend.state.volume.mine).toEqual({ dirs: ["pack", "pack/core"], files: { "pack/core/server.jar": 2048 } });
+  });
+
+  it("retries only the upload when it fails after the server was created", async () => {
+    backend.state.failUploads = 1;
+    const creates = backend.api.createServer.mock.calls.length;
+    const { user, onCreated } = await openStaff();
+    await user.type(screen.getByLabelText("Name"), "mine");
+    await user.type(screen.getByLabelText("Subdomain"), "mine");
+    await user.click(screen.getByRole("radio", { name: "Custom jar" }));
+    await user.upload(screen.getByLabelText("Jar file"), jar("server.jar"));
+    await user.click(eula());
+    await user.click(create());
+    expect(await screen.findByText(/The server has been created, but the jar could not be uploaded/)).toBeTruthy();
+    expect(onCreated).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText("Name").matches(":disabled")).toBe(true);
+    await user.click(screen.getByRole("button", { name: "Retry upload" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(backend.api.createServer.mock.calls.length - creates).toBe(1);
+    expect(backend.state.volume.mine.files).toEqual({ "server.jar": 2048 });
   });
 });
 

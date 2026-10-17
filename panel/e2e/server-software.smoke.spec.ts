@@ -72,3 +72,23 @@ test("an owner moves their server to another version only after acknowledging a 
   await expect(page.getByText(/Paper 1\.12\.2 1620/)).toBeVisible();
   await expect(page.getByText(t("servers:software_identity_none_badge"))).toBeVisible();
 });
+
+test("a custom jar chosen while creating a server is in its files before the first start", async ({ page, signIn }) => {
+  await signIn("owner");
+  await page.goto("/servers");
+  await page.getByRole("button", { name: t("servers:create_server_btn") }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("radio", { name: t("servers:software_type_custom"), exact: true }).click();
+  await dialog.getByLabel(t("servers:software_jar_file"), { exact: true }).setInputFiles({
+    name: "server.jar", mimeType: "application/java-archive", buffer: Buffer.alloc(4096),
+  });
+  await expect(dialog.getByLabel(t("servers:software_jar"), { exact: true })).toHaveValue("server.jar");
+  await dialog.getByLabel(t("servers:create_server_name"), { exact: true }).fill("hybrid");
+  await dialog.getByLabel(t("servers:create_server_subdomain"), { exact: true }).fill("hybrid");
+  await dialog.getByRole("checkbox", { name: t("servers:software_eula") }).check();
+  await dialog.getByRole("button", { name: t("servers:create_server_submit"), exact: true }).click();
+  await expect(dialog).toBeHidden({ timeout: 15_000 });
+
+  await page.goto("/servers/hybrid/files");
+  await expect(page.getByText("server.jar", { exact: true })).toBeVisible();
+});
