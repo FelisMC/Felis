@@ -6,15 +6,16 @@ import { ONE_REQUEST_BYTES } from "./useUploads";
 /** uploadFile lands one file at path in a server's world volume, the way the
  *  files page sends it: in one request up to ONE_REQUEST_BYTES, in parts above,
  *  following the op that lands the parts to its end. The folders on the way are
- *  made first, since an upload into a missing folder is refused. It settles once
- *  the file is on the volume; a refusal or a failed op rejects with an error
- *  humanizeError can word. */
+ *  made first, since an upload into a missing folder is refused; overwrite
+ *  replaces a file already at path. It settles once the file is on the volume;
+ *  a refusal or a failed op rejects with an error humanizeError can word. */
 export async function uploadFile(
   server: string,
   path: string,
   file: File,
-  opts: { onProgress?: (sent: number) => void; signal?: AbortSignal } = {},
+  opts: { onProgress?: (sent: number) => void; signal?: AbortSignal; overwrite?: boolean } = {},
 ): Promise<void> {
+  const { overwrite = false, ...send } = opts;
   const dirs = path.split("/").slice(0, -1);
   for (let i = 1; i <= dirs.length; i++) {
     try {
@@ -25,11 +26,11 @@ export async function uploadFile(
     }
   }
   if (file.size <= ONE_REQUEST_BYTES) {
-    await api.uploadServerFile(server, path, file, false, opts);
+    await api.uploadServerFile(server, path, file, overwrite, send);
     return;
   }
-  const op = await sendInParts(server, path, file, { overwrite: false, ...opts });
-  const end = op.state === "running" ? await watchOp(server, op.id, { signal: opts.signal }) : op;
+  const op = await sendInParts(server, path, file, { overwrite, ...send });
+  const end = op.state === "running" ? await watchOp(server, op.id, { signal: send.signal }) : op;
   if (end.state === "failed") {
     const e = end.error ?? { code: "job_failed", message: "" };
     throw { status: 0, code: e.code, message: opErrorText("upload", e) };

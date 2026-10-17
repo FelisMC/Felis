@@ -24,6 +24,7 @@ import { Loading, ErrorState, EmptyState } from "@/components/States";
 import { PageHeader } from "@/components/PageHeader";
 import { Pagination } from "@/components/Pagination";
 import { CreateUserDialog } from "@/components/CreateUserDialog";
+import { SelfServiceQuotaCard } from "@/components/SelfServiceQuotaCard";
 import { api } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
 import { formatAbsolute } from "@/lib/format";
@@ -88,6 +89,8 @@ export function UsersPage() {
   return (
     <div className="space-y-6">
       <PageHeader icon={Users} title={t("users_title")} subtitle={t("users_subtitle")} actions={<CreateUserDialog onCreated={(id) => { reload(); navigate(`/admin/users/${id}`); }} />} />
+
+      <SelfServiceQuotaCard />
 
       {/* Filters */}
       <Card>

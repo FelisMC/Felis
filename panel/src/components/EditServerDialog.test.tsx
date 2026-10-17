@@ -64,11 +64,24 @@ describe("EditServerDialog request body", () => {
 
   it("sends the memory alone when only the memory changed", async () => {
     const user = await openDialog();
-    await user.click(screen.getByRole("combobox", { name: "Memory" }));
-    await user.click(await screen.findByRole("option", { name: "8Gi" }));
+    await user.clear(screen.getByLabelText("Memory"));
+    await user.type(screen.getByLabelText("Memory"), "8");
     await user.click(save());
 
     expect(calls.patchServer).toHaveBeenCalledWith("survival", { memory: "8Gi" });
+  });
+
+  it("takes a memory between whole GiB in MiB, and refuses one below 1 GiB", async () => {
+    const user = await openDialog();
+    await user.clear(screen.getByLabelText("Memory"));
+    await user.type(screen.getByLabelText("Memory"), "0.5");
+    expect(screen.getByText("Enter a number of at least 1, in GiB.")).toBeTruthy();
+    expect(save().disabled).toBe(true);
+    await user.clear(screen.getByLabelText("Memory"));
+    await user.type(screen.getByLabelText("Memory"), "1.5");
+    await user.click(save());
+
+    expect(calls.patchServer).toHaveBeenCalledWith("survival", { memory: "1536Mi" });
   });
 
   it("clears the display name with an empty one", async () => {

@@ -844,6 +844,9 @@ export interface PatchUserRequest {
 
 export interface QuotaView {
   user_id: string;
+  /** True when the user has a quota of their own; otherwise every cap is
+   *  absent and the default quota (when on) applies to them. */
+  custom: boolean;
   max_servers?: number | null;
   max_cpu_milli?: number | null;
   max_memory_mb?: number | null;

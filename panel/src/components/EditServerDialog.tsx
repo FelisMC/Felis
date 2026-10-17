@@ -22,12 +22,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api, humanizeError } from "@/lib/api";
-import { splitImageRef } from "@/lib/format";
+import { formatBytes, splitImageRef } from "@/lib/format";
 import { DISPLAY_NAME_MAX } from "@/lib/naming";
 import { useAsync } from "@/lib/hooks";
 import type { AutostartPolicy, ServerSoftware } from "@/lib/types";
 import { InlineError } from "@/components/MessageLine";
+import { uploadFile } from "@/components/files/uploadFile";
 import { SegmentedControl } from "@/components/SegmentedControl";
+import { GiBInput, gibQuantity, parseGiB, quantityGiB } from "@/components/GiBInput";
 import {
   EMPTY_SOFTWARE,
   EulaCheckbox,
@@ -36,8 +38,6 @@ import {
   softwareRequest,
   type SoftwareChoice,
 } from "@/components/SoftwarePicker";
-
-const MEMORY_OPTIONS = ["2Gi", "4Gi", "6Gi", "8Gi"];
 
 /** cpuValid accepts what the API takes as a CPU limit: a positive number of
  *  cores ("2", "1.5") or millicores ("500m"). Empty is valid too: no limit. */
@@ -153,12 +153,18 @@ export function EditServerDialog({
   const [software, setSoftware] = useState<SoftwareChoice>(choiceOf(currentSoftware));
   const [softwareConfirmed, setSoftwareConfirmed] = useState(false);
   const [eula, setEula] = useState(false);
+  // A custom jar chosen here is uploaded into the server's files on save,
+  // replacing one of the same name.
+  const [jarFile, setJarFile] = useState<File | null>(null);
+  const [uploaded, setUploaded] = useState<number | null>(null);
 
+  // Memory is edited in GiB, as typed text.
+  const currentMemoryGiB = quantityGiB(currentMemory);
   const [form, setForm] = useState<EditServerForm>({
     displayName: currentDisplayName,
     autostartPolicy: currentPolicy,
     image: currentImage,
-    memory: currentMemory,
+    memory: currentMemoryGiB,
     cpu: currentCpu,
     idleStop: currentIdleStop,
   });
@@ -181,7 +187,7 @@ export function EditServerDialog({
         displayName: currentDisplayName,
         autostartPolicy: currentPolicy,
         image: currentImage,
-        memory: currentMemory,
+        memory: currentMemoryGiB,
         cpu: currentCpu,
         idleStop: currentIdleStop,
       });
@@ -192,8 +198,9 @@ export function EditServerDialog({
       setSoftware(softwareKey ? (JSON.parse(softwareKey) as SoftwareChoice) : EMPTY_SOFTWARE);
       setSoftwareConfirmed(false);
       setEula(false);
+      setJarFile(null);
     }
-  }, [open, currentDisplayName, currentPolicy, currentImage, currentMemory, currentCpu, currentIdleStop, softwareKey]);
+  }, [open, currentDisplayName, currentPolicy, currentImage, currentMemoryGiB, currentCpu, currentIdleStop, softwareKey]);
 
   function set<K extends keyof EditServerForm>(k: K, v: EditServerForm[K]) {
     setForm((f) => ({ ...f, [k]: v }));
@@ -214,6 +221,7 @@ export function EditServerDialog({
   // same kind of acknowledgement as an image change; leaving a server image also
   // takes the EULA.
   const pickingSoftware = source === "software" && (changingSoftware || !currentSoftware);
+  const jarUpload = pickingSoftware && software.type === "custom" ? jarFile : null;
   const cur = choiceOf(currentSoftware);
   const softwareChanged =
     pickingSoftware &&
@@ -224,12 +232,17 @@ export function EditServerDialog({
     softwareChanged && (!currentSoftware || software.type !== cur.type || software.minecraftVersion !== cur.minecraftVersion);
   const imageChanged = admin && source === "image" && form.image !== currentImage;
 
+  const memoryGiB = parseGiB(form.memory);
+  const memoryOk = memoryGiB !== null && memoryGiB >= 1;
+  const memoryChanged = memoryGiB === null ? form.memory.trim() !== currentMemoryGiB : memoryGiB !== parseGiB(currentMemoryGiB);
+
   const hasChanges =
     displayName !== currentDisplayName ||
     form.autostartPolicy !== currentPolicy ||
     imageChanged ||
     softwareChanged ||
-    form.memory !== currentMemory ||
+    !!jarUpload ||
+    memoryChanged ||
     cpu !== currentCpu ||
     form.idleStop !== currentIdleStop;
 
@@ -237,6 +250,7 @@ export function EditServerDialog({
   const canSubmit =
     hasChanges &&
     cpuOk &&
+    (!memoryChanged || memoryOk) &&
     !submitting &&
     (!imageChanged || imageConfirmed) &&
     (!softwareMoves || softwareConfirmed) &&
@@ -264,8 +278,8 @@ export function EditServerDialog({
         if (!currentSoftware) payload.acceptEula = eula;
       }
       // Memory and CPU each go alone; the API keeps whatever is not sent.
-      if (form.memory !== currentMemory) {
-        payload.memory = form.memory;
+      if (memoryChanged && memoryGiB !== null) {
+        payload.memory = gibQuantity(memoryGiB);
       }
       if (cpu !== currentCpu) {
         payload.resources = { cpu };
@@ -274,11 +288,18 @@ export function EditServerDialog({
         payload.idleStopSeconds = Number(form.idleStop);
       }
 
-      if (admin) {
-        await api.patchServer(serverName, payload);
-      } else {
-        const { resources, ...rest } = payload;
-        await api.patchMyServer(serverName, { ...rest, ...(resources ? { cpu: resources.cpu } : {}) });
+      // The jar goes first: the software then names a file that is there.
+      if (jarUpload) {
+        setUploaded(0);
+        await uploadFile(serverName, software.jar.trim(), jarUpload, { overwrite: true, onProgress: setUploaded });
+      }
+      if (Object.keys(payload).length > 0) {
+        if (admin) {
+          await api.patchServer(serverName, payload);
+        } else {
+          const { resources, ...rest } = payload;
+          await api.patchMyServer(serverName, { ...rest, ...(resources ? { cpu: resources.cpu } : {}) });
+        }
       }
       setOpen(false);
       onUpdated();
@@ -286,6 +307,7 @@ export function EditServerDialog({
       setError(humanizeError(e));
     } finally {
       setSubmitting(false);
+      setUploaded(null);
     }
   }
 
@@ -361,7 +383,11 @@ export function EditServerDialog({
                 </div>
               ) : (
                 <div className="grid gap-3 rounded-md border border-border p-3">
-                  <SoftwarePicker idPrefix="es-sw" value={software} onChange={setSoftware} />
+                  <SoftwarePicker idPrefix="es-sw" value={software} onChange={setSoftware}
+                    jarFile={jarFile}
+                    onJarFile={(file) => { setJarFile(file); setError(null); }}
+                    jarServer={serverName}
+                  />
                   {softwareMoves && (
                     <div className="grid gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs">
                       <p className="flex items-start gap-1.5 text-amber-700 dark:text-amber-300">
@@ -448,30 +474,25 @@ export function EditServerDialog({
           </div>
           )}
 
-          <div className="grid grid-cols-2 gap-4">
-            <div className="grid gap-2">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid content-start gap-2">
               <Label htmlFor="edit-server-memory">{t("create_server_memory")}</Label>
-              <Select value={form.memory} onValueChange={(v) => set("memory", v)}>
-                <SelectTrigger id="edit-server-memory">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {/* Prepend current memory if not present in options */}
-                  {form.memory && !MEMORY_OPTIONS.includes(form.memory) && (
-                    <SelectItem value={form.memory}>{form.memory}</SelectItem>
-                  )}
-                  {MEMORY_OPTIONS.map((m) => (
-                    <SelectItem key={m} value={m}>
-                      {m}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <GiBInput
+                id="edit-server-memory"
+                value={form.memory}
+                onChange={(v) => set("memory", v)}
+                invalid={memoryChanged && !memoryOk}
+                describedBy="edit-server-memory-hint"
+              />
+              <p id="edit-server-memory-hint" className={memoryChanged && !memoryOk ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>
+                {memoryChanged && !memoryOk ? t("create_server_memory_invalid") : t("create_server_memory_hint")}
+              </p>
             </div>
-            <div className="grid gap-2">
-              {/* Storage is immutable but displayed to maintain visual consistency */}
+            <div className="grid content-start gap-2">
+              {/* A volume keeps the size it was created with. */}
               <Label htmlFor="edit-server-storage">{t("create_server_storage")}</Label>
-              <Input id="edit-server-storage" value={currentStorage} disabled className="select-none bg-muted" />
+              <GiBInput id="edit-server-storage" value={quantityGiB(currentStorage) || currentStorage} onChange={() => {}} disabled describedBy="edit-server-storage-hint" />
+              <p id="edit-server-storage-hint" className="text-xs text-muted-foreground">{t("edit_server_storage_fixed")}</p>
             </div>
           </div>
 
@@ -540,6 +561,11 @@ export function EditServerDialog({
             )}
           </div>
 
+          {uploaded !== null && jarUpload && (
+            <p role="status" className="text-xs text-muted-foreground">
+              {t("create_server_uploading", { sent: formatBytes(uploaded), total: formatBytes(jarUpload.size) })}
+            </p>
+          )}
           <InlineError message={error} />
         </div>
 

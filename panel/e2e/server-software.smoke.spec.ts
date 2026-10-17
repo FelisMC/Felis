@@ -17,7 +17,8 @@ test("a player creates a server of their own once the Owner opens self-service",
 
   // Room for exactly one more server.
   await signIn("owner");
-  await page.goto("/admin/platform");
+  await page.goto("/admin/users");
+  await expect(page.getByText(t("admin:self_service_title"), { exact: true })).toBeVisible();
   await page.getByRole("switch", { name: new RegExp(escape(t("admin:self_service_enabled"))) }).click();
   await page.getByLabel(t("admin:self_service_servers"), { exact: true }).fill(String(mine0 + 1));
   await page.getByLabel(t("admin:self_service_memory"), { exact: true }).fill("8");
@@ -82,7 +83,7 @@ test("a custom jar chosen while creating a server is in its files before the fir
   await dialog.getByLabel(t("servers:software_jar_file"), { exact: true }).setInputFiles({
     name: "server.jar", mimeType: "application/java-archive", buffer: Buffer.alloc(4096),
   });
-  await expect(dialog.getByLabel(t("servers:software_jar"), { exact: true })).toHaveValue("server.jar");
+  await expect(dialog.getByText(t("servers:software_jar_upload_to", { path: "server.jar" }))).toBeVisible();
   await dialog.getByLabel(t("servers:create_server_name"), { exact: true }).fill("hybrid");
   await dialog.getByLabel(t("servers:create_server_subdomain"), { exact: true }).fill("hybrid");
   await dialog.getByRole("checkbox", { name: t("servers:software_eula") }).check();
@@ -91,4 +92,28 @@ test("a custom jar chosen while creating a server is in its files before the fir
 
   await page.goto("/servers/hybrid/files");
   await expect(page.getByText("server.jar", { exact: true })).toBeVisible();
+});
+
+test("a user is held to the default quota until given one of their own, and back", async ({ page, signIn }) => {
+  await signIn("owner");
+  await page.goto("/admin/users/linked");
+  const own = page.getByRole("radio", { name: t("admin:user_quota_mode_custom") });
+  const byDefault = page.getByRole("radio", { name: t("admin:user_quota_mode_default") });
+  await expect(byDefault).toHaveAttribute("aria-checked", "true");
+  await expect(page.getByText(t("admin:user_quota_default_off"))).toBeVisible();
+
+  await own.click();
+  await page.getByLabel(t("admin:self_service_servers"), { exact: true }).fill("4");
+  await page.getByLabel(t("admin:self_service_memory"), { exact: true }).fill("12");
+  await page.getByRole("button", { name: t("admin:user_quota_save") }).click();
+  await expect(page.getByText(t("admin:user_quota_saved"), { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(own).toHaveAttribute("aria-checked", "true");
+  await expect(page.getByLabel(t("admin:self_service_memory"), { exact: true })).toHaveValue("12");
+
+  await byDefault.click();
+  await page.getByRole("button", { name: t("admin:user_quota_save") }).click();
+  await expect(page.getByText(t("admin:user_quota_cleared"), { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(byDefault).toHaveAttribute("aria-checked", "true");
 });

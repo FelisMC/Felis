@@ -107,8 +107,8 @@ describe("ServerConsole edit dialog", () => {
     renderConsole();
 
     await userEvent.setup().click(await screen.findByRole("button", { name: /Edit Server Config/ }));
-    const memory = await screen.findByRole("combobox", { name: "Memory" });
-    expect(within(memory).getByText("4Gi")).toBeTruthy();
+    const memory = (await screen.findByLabelText("Memory")) as HTMLInputElement;
+    expect(memory.value).toBe("4");
     expect(screen.queryByText("3072M")).toBeNull();
     expect((screen.getByLabelText("CPU Limit") as HTMLInputElement).value).toBe("2");
   });

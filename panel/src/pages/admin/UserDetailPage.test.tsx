@@ -11,6 +11,8 @@ const calls = vi.hoisted(() => ({
   getUser: vi.fn(),
   getUserQuotas: vi.fn(),
   setUserQuotas: vi.fn(),
+  clearUserQuotas: vi.fn(),
+  getSelfServiceQuota: vi.fn(),
   listUserSessions: vi.fn(),
   revokeUserSession: vi.fn(),
   revokeUserSessions: vi.fn(),
@@ -51,7 +53,8 @@ function renderPage(id = "u-1") {
 
 beforeEach(() => {
   for (const fn of Object.values(calls)) fn.mockReset();
-  calls.getUserQuotas.mockResolvedValue({ user_id: "u-1" });
+  calls.getUserQuotas.mockResolvedValue({ user_id: "u-1", custom: false });
+  calls.getSelfServiceQuota.mockResolvedValue({ enabled: false, max_servers: null, max_cpu_milli: null, max_memory_mb: null, max_storage_gb: null, revision: "" });
   calls.listUserSessions.mockResolvedValue([]);
 });
 afterEach(() => i18next.changeLanguage("en-US"));
@@ -243,55 +246,70 @@ describe("UserDetailPage", () => {
 });
 
 describe("UserDetailPage quotas", () => {
-  function quotaBox(label: string) {
-    return screen.getByLabelText(i18next.t(`admin:${label}`)) as HTMLInputElement;
-  }
-  function quotaCard() {
-    return quotaBox("users_quota_servers").closest(".space-y-4") as HTMLElement;
-  }
+  const saveQuota = () => screen.getByRole("button", { name: "Save quota" }) as HTMLButtonElement;
+  const DEFAULTS = { enabled: true, max_servers: 2, max_cpu_milli: null, max_memory_mb: 8192, max_storage_gb: 30, revision: "r1" };
 
-  it("sends every box, an emptied one as unlimited and 0 as none", async () => {
+  it("tells a user on the default quota what it allows, and gives them caps of their own in GB and cores", async () => {
     calls.getUser.mockResolvedValue(USER);
-    calls.getUserQuotas.mockResolvedValue({ user_id: "u-1", max_servers: 3, max_cpu_milli: 2000 });
-    calls.setUserQuotas.mockResolvedValue({ user_id: "u-1", max_cpu_milli: 2000, max_storage_gb: 0 });
+    calls.getSelfServiceQuota.mockResolvedValue(DEFAULTS);
+    calls.setUserQuotas.mockResolvedValue({ user_id: "u-1", custom: true, max_servers: 3, max_memory_mb: 4096 });
     renderPage();
     const user = userEvent.setup();
 
-    await waitFor(() => expect(quotaBox("users_quota_servers").value).toBe("3"));
-    expect(within(quotaCard()).getByText(i18next.t("admin:users_quota_hint"))).toBeTruthy();
-    await user.clear(quotaBox("users_quota_servers"));
-    await user.type(quotaBox("users_quota_storage"), "0");
-    await user.click(within(quotaCard()).getByRole("button", { name: i18next.t("admin:users_save_btn") }));
+    expect(await screen.findByText("This user is held to the default quota: servers 2, memory 8 GB, CPU Unlimited, storage 30 GB.")).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "Default quota" }).getAttribute("aria-checked")).toBe("true");
+    expect(saveQuota().disabled).toBe(true);
+
+    await user.click(screen.getByRole("radio", { name: "Own quota" }));
+    await user.type(screen.getByLabelText("Servers"), "3");
+    await user.type(screen.getByLabelText("Memory (GB)"), "4");
+    await user.type(screen.getByLabelText("CPU (cores)"), "1.5");
+    await user.click(saveQuota());
 
     await waitFor(() => expect(calls.setUserQuotas).toHaveBeenCalledTimes(1));
-    expect(calls.setUserQuotas).toHaveBeenCalledWith("u-1", {
-      max_servers: null,
-      max_cpu_milli: 2000,
-      max_memory_mb: null,
-      max_storage_gb: 0,
-    });
+    expect(calls.setUserQuotas).toHaveBeenCalledWith("u-1", { max_servers: 3, max_memory_mb: 4096, max_cpu_milli: 1500, max_storage_gb: null });
+    expect(calls.clearUserQuotas).not.toHaveBeenCalled();
   });
 
-  it("refuses a box that is not a whole number the server can store, and sends nothing", async () => {
+  it("returns a user with an own quota to the default by removing it", async () => {
     calls.getUser.mockResolvedValue(USER);
+    calls.getSelfServiceQuota.mockResolvedValue(DEFAULTS);
+    calls.getUserQuotas.mockResolvedValue({ user_id: "u-1", custom: true, max_servers: 5, max_memory_mb: 16384 });
+    calls.clearUserQuotas.mockResolvedValue({ user_id: "u-1", custom: false });
     renderPage();
     const user = userEvent.setup();
-    await waitFor(() => expect(quotaBox("users_quota_servers")).toBeTruthy());
 
-    for (const bad of ["-1", "1.5", "2abc", "2147483648"]) {
-      await user.clear(quotaBox("users_quota_memory"));
-      await user.type(quotaBox("users_quota_memory"), bad);
-      await user.click(within(quotaCard()).getByRole("button", { name: i18next.t("admin:users_save_btn") }));
-      expect(await within(quotaCard()).findByText(i18next.t("errors:invalid_quota"))).toBeTruthy();
-      expect(quotaBox("users_quota_memory").value).toBe(bad);
+    await waitFor(() => expect((screen.getByLabelText("Memory (GB)") as HTMLInputElement).value).toBe("16"));
+    expect((screen.getByLabelText("Servers") as HTMLInputElement).value).toBe("5");
+    await user.click(screen.getByRole("radio", { name: "Default quota" }));
+    await user.click(saveQuota());
+
+    await waitFor(() => expect(calls.clearUserQuotas).toHaveBeenCalledWith("u-1"));
+    expect(calls.setUserQuotas).not.toHaveBeenCalled();
+    expect(await screen.findByText("This user is now held to the default quota.")).toBeTruthy();
+  });
+
+  it("says what a user without a quota may do while self-service is off", async () => {
+    calls.getUser.mockResolvedValue(USER);
+    calls.getSelfServiceQuota.mockResolvedValue({ ...DEFAULTS, enabled: false });
+    renderPage();
+    expect(await screen.findByText(/Self-service servers are off: this user cannot create servers/)).toBeTruthy();
+  });
+
+  it("refuses caps that are not non-negative numbers, and sends nothing", async () => {
+    calls.getUser.mockResolvedValue(USER);
+    calls.getSelfServiceQuota.mockResolvedValue(DEFAULTS);
+    renderPage();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("radio", { name: "Own quota" }));
+
+    for (const [field, bad] of [["Memory (GB)", "-1"], ["Memory (GB)", "2abc"], ["Servers", "1.5"]] as const) {
+      await user.clear(screen.getByLabelText(field));
+      await user.type(screen.getByLabelText(field), bad);
+      expect(screen.getByText("Enter non-negative numbers; the server count must be a whole number.")).toBeTruthy();
+      expect(saveQuota().disabled).toBe(true);
+      await user.clear(screen.getByLabelText(field));
     }
     expect(calls.setUserQuotas).not.toHaveBeenCalled();
-
-    await user.clear(quotaBox("users_quota_memory"));
-    await user.type(quotaBox("users_quota_memory"), " 2147483647 ");
-    calls.setUserQuotas.mockResolvedValue({ user_id: "u-1", max_memory_mb: 2147483647 });
-    await user.click(within(quotaCard()).getByRole("button", { name: i18next.t("admin:users_save_btn") }));
-    await waitFor(() => expect(calls.setUserQuotas).toHaveBeenCalledTimes(1));
-    expect(calls.setUserQuotas.mock.calls[0][1].max_memory_mb).toBe(2147483647);
   });
 });

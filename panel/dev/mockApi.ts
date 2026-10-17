@@ -72,7 +72,8 @@ interface MockAccount {
   disabled?: boolean;
   created_at?: string;
   updated_at?: string;
-  quota?: QuotaView;
+  // The user's own quota row; without one the default quota applies.
+  quota?: Omit<QuotaView, "custom">;
   sessions?: SessionView[];
   // Until when this browser's session counts as re-authenticated (ms epoch),
   // and the address an email-change code was last sent to.
@@ -2152,13 +2153,6 @@ async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
       disabled: false,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
-      quota: {
-        user_id: `mock-${username}`,
-        max_servers: 3,
-        max_cpu_milli: 4000,
-        max_memory_mb: 8192,
-        max_storage_gb: 50,
-      },
       sessions: [],
     };
 
@@ -2309,33 +2303,38 @@ async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
       return true;
     }
 
-    // GET /api/v1/users/{id}/quotas
+    // GET /api/v1/users/{id}/quotas: the user's own quota (custom), or none, which
+    // leaves them to the default quota.
     if (is("GET", ctx) && subAction === "quotas") {
-      if (!acc.quota) {
-        acc.quota = {
-          user_id: `mock-${acc.id}`,
-          max_servers: 3,
-          max_cpu_milli: 4000,
-          max_memory_mb: 8192,
-          max_storage_gb: 50,
-        };
-      }
-      sendJSON(ctx.res, 200, acc.quota);
+      sendJSON(ctx.res, 200, acc.quota ? { ...acc.quota, custom: true } : { user_id: acc.id, custom: false });
       return true;
     }
 
     // PUT /api/v1/users/{id}/quotas
     if (is("PUT", ctx) && subAction === "quotas") {
       const body = await readJSON<QuotaInput>(ctx.req);
+      const caps = [body.max_servers, body.max_cpu_milli, body.max_memory_mb, body.max_storage_gb];
+      if (!caps.every((v) => v == null || (Number.isInteger(v) && v >= 0 && v <= 2147483647))) {
+        sendError(ctx.res, 400, "invalid_quota", "each cap must be a whole number from 0 to 2147483647, or null for unlimited");
+        return true;
+      }
       acc.quota = {
-        user_id: `mock-${acc.id}`,
-        max_servers: body.max_servers,
-        max_cpu_milli: body.max_cpu_milli,
-        max_memory_mb: body.max_memory_mb,
-        max_storage_gb: body.max_storage_gb,
+        user_id: acc.id,
+        ...(body.max_servers != null && { max_servers: body.max_servers }),
+        ...(body.max_cpu_milli != null && { max_cpu_milli: body.max_cpu_milli }),
+        ...(body.max_memory_mb != null && { max_memory_mb: body.max_memory_mb }),
+        ...(body.max_storage_gb != null && { max_storage_gb: body.max_storage_gb }),
       };
       acc.updated_at = new Date().toISOString();
-      sendJSON(ctx.res, 200, acc.quota);
+      sendJSON(ctx.res, 200, { ...acc.quota, custom: true });
+      return true;
+    }
+
+    // DELETE /api/v1/users/{id}/quotas: back to the default quota.
+    if (is("DELETE", ctx) && subAction === "quotas") {
+      acc.quota = undefined;
+      acc.updated_at = new Date().toISOString();
+      sendJSON(ctx.res, 200, { user_id: acc.id, custom: false });
       return true;
     }
 

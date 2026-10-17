@@ -1,4 +1,4 @@
-import { useState, useEffect, useId } from "react";
+import { useState, useId } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { MessageLine, InlineError } from "@/components/MessageLine";
 import { RoleBadge } from "@/components/RoleBadge";
@@ -45,6 +45,7 @@ import {
 } from "@/components/ui/dialog";
 import { Loading, ErrorState, NotFound } from "@/components/States";
 import { PageHeader } from "@/components/PageHeader";
+import { UserQuotaCard } from "@/components/UserQuotaCard";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
@@ -130,7 +131,7 @@ export function UserDetailPage() {
         {/* Linked accounts */}
         <LinkedAccountsCard user={user} onChanged={reload} />
         {/* Quotas */}
-        <QuotasCard userId={user.id} />
+        <UserQuotaCard userId={user.id} />
         {/* Sessions */}
         <SessionsCard userId={user.id} onChanged={reload} />
       </div>
@@ -397,148 +398,6 @@ function LinkedAccountsCard({ user, onChanged }: { user: UserDetail; onChanged: 
       </DialogContent>
     </Dialog>
     </>
-  );
-}
-
-function QuotasCard({ userId }: { userId: string }) {
-  const { t } = useTranslation("admin");
-  const { data: quotas, error, loading, reload } = useAsync(
-    () => api.getUserQuotas(userId),
-    [userId],
-  );
-
-  const [maxServers, setMaxServers] = useState<string>("");
-  const [maxCpu, setMaxCpu] = useState<string>("");
-  const [maxMem, setMaxMem] = useState<string>("");
-  const [maxStorage, setMaxStorage] = useState<string>("");
-  const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [ok, setOk] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (quotas) {
-      setMaxServers(quotas.max_servers != null ? String(quotas.max_servers) : "");
-      setMaxCpu(quotas.max_cpu_milli != null ? String(quotas.max_cpu_milli) : "");
-      setMaxMem(quotas.max_memory_mb != null ? String(quotas.max_memory_mb) : "");
-      setMaxStorage(quotas.max_storage_gb != null ? String(quotas.max_storage_gb) : "");
-    }
-  }, [quotas]);
-
-  async function handleSave() {
-    setSaving(true);
-    setErr(null);
-    setOk(null);
-    // The form replaces all four caps: an empty box is unlimited, 0 grants none.
-    // Anything else must be a whole number the server's 32-bit columns hold; the
-    // boxes are text so a stray letter stays visible and is refused here instead
-    // of turning into an empty (unlimited) number field.
-    const parse = (s: string): number | null | undefined => {
-      const v = s.trim();
-      if (v === "") return null;
-      return /^\d+$/.test(v) && Number(v) <= 2147483647 ? Number(v) : undefined;
-    };
-    const [servers, cpu, mem, storage] = [maxServers, maxCpu, maxMem, maxStorage].map(parse);
-    if (servers === undefined || cpu === undefined || mem === undefined || storage === undefined) {
-      setErr(t("errors:invalid_quota"));
-      setSaving(false);
-      return;
-    }
-    try {
-      await api.setUserQuotas(userId, {
-        max_servers: servers,
-        max_cpu_milli: cpu,
-        max_memory_mb: mem,
-        max_storage_gb: storage,
-      });
-      setOk(t("users_save_ok"));
-      reload();
-    } catch (e) {
-      setErr(humanizeError(e));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  if (loading && !quotas) return <Loading label={t("common:loading")} />;
-  if (error) return (
-    <Card>
-      <CardHeader><CardTitle>{t("users_quotas")}</CardTitle></CardHeader>
-      <CardContent><ErrorState error={error} onRetry={reload} /></CardContent>
-    </Card>
-  );
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{t("users_quotas")}</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="grid grid-cols-2 gap-3">
-          <div className="space-y-2">
-            <Label htmlFor="user-detail-quota-servers">{t("users_quota_servers")}</Label>
-            <Input
-              id="user-detail-quota-servers"
-              type="text"
-              inputMode="numeric"
-              value={maxServers}
-              onChange={(e) => setMaxServers(e.target.value)}
-              placeholder={t("users_quota_unlimited")}
-              className="text-sm"
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="user-detail-quota-cpu">{t("users_quota_cpu")}</Label>
-            <Input
-              id="user-detail-quota-cpu"
-              type="text"
-              inputMode="numeric"
-              value={maxCpu}
-              onChange={(e) => setMaxCpu(e.target.value)}
-              placeholder={t("users_quota_unlimited")}
-              className="text-sm"
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="user-detail-quota-memory">{t("users_quota_memory")}</Label>
-            <Input
-              id="user-detail-quota-memory"
-              type="text"
-              inputMode="numeric"
-              value={maxMem}
-              onChange={(e) => setMaxMem(e.target.value)}
-              placeholder={t("users_quota_unlimited")}
-              className="text-sm"
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="user-detail-quota-storage">{t("users_quota_storage")}</Label>
-            <Input
-              id="user-detail-quota-storage"
-              type="text"
-              inputMode="numeric"
-              value={maxStorage}
-              onChange={(e) => setMaxStorage(e.target.value)}
-              placeholder={t("users_quota_unlimited")}
-              className="text-sm"
-            />
-          </div>
-        </div>
-
-        <p className="text-xs text-muted-foreground">{t("users_quota_hint")}</p>
-
-        {err && (
-          <MessageLine kind="error" message={err} />
-        )}
-        {ok && (
-          <MessageLine kind="success" message={ok} />
-        )}
-
-        <Button onClick={handleSave} disabled={saving} size="sm" className="gap-1.5">
-          {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-          {t("users_save_btn")}
-        </Button>
-      </CardContent>
-    </Card>
   );
 }
 

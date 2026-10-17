@@ -30,6 +30,7 @@ import {
   type SoftwareChoice,
 } from "@/components/SoftwarePicker";
 import { uploadFile } from "@/components/files/uploadFile";
+import { GiBInput, gibQuantity, parseGiB } from "@/components/GiBInput";
 import { api, humanizeError } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
 import { useAsync } from "@/lib/hooks";
@@ -45,8 +46,6 @@ import { InlineError } from "@/components/MessageLine";
 // server-side whitelist (GET /images); memory/storage are constrained choices
 // the API re-validates. Nothing here can express a privileged pod.
 
-const MEMORY_OPTIONS = ["2Gi", "4Gi", "6Gi", "8Gi"];
-const STORAGE_OPTIONS = ["5Gi", "10Gi", "20Gi", "50Gi"];
 
 function policyOptions(t: (key: string) => string): { value: AutostartPolicy; label: string }[] {
   return [
@@ -54,11 +53,6 @@ function policyOptions(t: (key: string) => string): { value: AutostartPolicy; la
     { value: "public", label: t("create_server_policy_public") },
     { value: "allowlist", label: t("create_server_policy_allowlist") },
   ];
-}
-
-/** gibToMB converts the "<n>Gi" options to the quota's MB. */
-function gibToMB(q: string): number {
-  return Number(q.replace(/Gi$/, "")) * 1024;
 }
 
 interface Props {
@@ -98,8 +92,8 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
     displayName: "",
     nodeName: "",
     image: "",
-    memory: "4Gi",
-    storage: "10Gi",
+    memory: "4",
+    storage: "10",
     autostartPolicy: "ownerOnly",
   });
   const [software, setSoftware] = useState<SoftwareChoice>(EMPTY_SOFTWARE);
@@ -155,17 +149,23 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
   const usage = self?.quota.usage;
   const memoryLeft = limits?.max_memory_mb != null && usage ? limits.max_memory_mb - usage.memory_mb : Infinity;
   const storageLeft = limits?.max_storage_gb != null && usage ? limits.max_storage_gb * 1024 - usage.storage_mb : Infinity;
-  const memoryFits = (m: string) => gibToMB(m) <= memoryLeft;
-  const storageFits = (s: string) => gibToMB(s) <= storageLeft;
+  // Memory and storage are typed in GiB: memory from 1, in steps as fine as the
+  // user likes; storage in whole GiB, as a volume is sized.
+  const memoryGiB = parseGiB(form.memory);
+  const storageGiB = parseGiB(form.storage);
+  const memoryIssue =
+    memoryGiB === null || memoryGiB < 1 ? "invalid" : memoryGiB * 1024 > memoryLeft ? "quota" : null;
+  const storageIssue =
+    storageGiB === null || storageGiB < 1 || !Number.isInteger(storageGiB) ? "invalid" : storageGiB * 1024 > storageLeft ? "quota" : null;
+  const left = (mb: number) => String(Math.max(0, Math.floor((mb / 1024) * 10) / 10));
 
   const uploadJar = useSoftware && software.type === "custom" && !!jarFile;
   const canSubmit = created ? !submitting : nameIssue === null &&
     subdomainIssue === null &&
     (useSoftware ? softwareReady(software) && eula : !!image) &&
     (!staff || !cfg.distributed || workers.some((n) => n.name === form.nodeName)) &&
-    !!form.memory &&
-    !!form.storage &&
-    (staff || (memoryFits(form.memory) && storageFits(form.storage))) &&
+    memoryIssue === null &&
+    storageIssue === null &&
     !submitting;
 
   async function submit() {
@@ -202,8 +202,8 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
         subdomain: form.subdomain,
         displayName,
         software: softwareRequest(software),
-        memory: form.memory,
-        storage: form.storage,
+        memory: gibQuantity(memoryGiB!),
+        storage: gibQuantity(storageGiB!),
         autostartPolicy: form.autostartPolicy,
         acceptEula: eula,
       });
@@ -213,8 +213,8 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
         subdomain: form.subdomain,
         displayName,
         ...(cfg.distributed ? { nodeName: form.nodeName } : {}),
-        memory: form.memory,
-        storage: form.storage,
+        memory: gibQuantity(memoryGiB!),
+        storage: gibQuantity(storageGiB!),
         autostartPolicy: form.autostartPolicy,
         ...(useSoftware ? { software: softwareRequest(software), acceptEula: eula } : { image }),
       });
@@ -369,41 +369,46 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
             </div>
           )}
 
-          <div className="grid grid-cols-2 gap-4">
-            <div className="grid gap-2">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid content-start gap-2">
               <Label htmlFor="create-server-memory">{t("create_server_memory")}</Label>
-              <Select value={form.memory} onValueChange={(v) => set("memory", v)}>
-                <SelectTrigger id="create-server-memory">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {MEMORY_OPTIONS.map((m) => (
-                    <SelectItem key={m} value={m} disabled={!staff && !memoryFits(m)}>
-                      {!staff && !memoryFits(m) ? t("self_create_over_quota", { value: m }) : m}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <GiBInput
+                id="create-server-memory"
+                value={form.memory}
+                onChange={(v) => set("memory", v)}
+                invalid={!!form.memory && memoryIssue !== null}
+                describedBy="create-server-memory-hint"
+              />
+              <p id="create-server-memory-hint" className={memoryIssue ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>
+                {memoryIssue === "invalid"
+                  ? t("create_server_memory_invalid")
+                  : memoryIssue === "quota"
+                    ? t("create_server_over_quota", { left: left(memoryLeft) })
+                    : memoryLeft !== Infinity
+                      ? t("create_server_memory_hint_left", { left: left(memoryLeft) })
+                      : t("create_server_memory_hint")}
+              </p>
             </div>
-            <div className="grid gap-2">
+            <div className="grid content-start gap-2">
               <Label htmlFor="create-server-storage">{t("create_server_storage")}</Label>
-              <Select value={form.storage} onValueChange={(v) => set("storage", v)}>
-                <SelectTrigger id="create-server-storage">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {STORAGE_OPTIONS.map((s) => (
-                    <SelectItem key={s} value={s} disabled={!staff && !storageFits(s)}>
-                      {!staff && !storageFits(s) ? t("self_create_over_quota", { value: s }) : s}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <GiBInput
+                id="create-server-storage"
+                value={form.storage}
+                onChange={(v) => set("storage", v)}
+                invalid={!!form.storage && storageIssue !== null}
+                describedBy="create-server-storage-hint"
+              />
+              <p id="create-server-storage-hint" className={storageIssue ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>
+                {storageIssue === "invalid"
+                  ? t("create_server_storage_invalid")
+                  : storageIssue === "quota"
+                    ? t("create_server_over_quota", { left: left(storageLeft) })
+                    : storageLeft !== Infinity
+                      ? t("create_server_storage_hint_left", { left: left(storageLeft) })
+                      : t("create_server_storage_hint")}
+              </p>
             </div>
           </div>
-          {!staff && (!memoryFits(form.memory) || !storageFits(form.storage)) && (
-            <p className="text-xs text-destructive">{t("self_create_over_quota_hint")}</p>
-          )}
 
           <div className="grid gap-2">
             <Label htmlFor="create-server-policy">{t("create_server_policy")}</Label>

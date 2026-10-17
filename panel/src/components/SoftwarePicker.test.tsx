@@ -31,6 +31,7 @@ const backend = vi.hoisted(() => {
     quota: null as ServerQuota | null,
     volume: {} as Record<string, { dirs: string[]; files: Record<string, number> }>,
     failUploads: 0,
+    running: [] as string[],
   };
   const err = (code: string) => Promise.reject({ status: 400, code, message: code });
   function resolve(req: SoftwareRequest): ServerSoftware | string {
@@ -71,6 +72,17 @@ const backend = vi.hoisted(() => {
         if (parent && !v.dirs.includes(parent)) return Promise.reject({ status: 404, code: "not_found", message: `folder ${parent} does not exist` });
         v.files[path] = file.size;
         return { path, status: "uploaded", sha256: "", size: file.size };
+      }),
+      // The file routes refuse a running server (409 not_stopped).
+      listServerFiles: vi.fn(async (name: string, path: string) => {
+        const v = state.volume[name];
+        if (!v) return Promise.reject({ status: 404, code: "not_found", message: "server not found" });
+        if (state.running.includes(name)) return Promise.reject({ status: 409, code: "not_stopped", message: "stop the server first" });
+        const entries = [
+          ...v.dirs.filter((d) => !d.includes("/")).map((d) => ({ name: d, size: 0, is_dir: true, mod_time: "" })),
+          ...Object.entries(v.files).filter(([p]) => !p.includes("/")).map(([p, size]) => ({ name: p, size, is_dir: false, mod_time: "" })),
+        ];
+        return { path, entries, truncated: false, free_bytes: null };
       }),
       listImages: vi.fn(async () => []),
       nodes: vi.fn(async () => []),
@@ -125,6 +137,7 @@ beforeEach(() => {
   backend.state.quota = null;
   backend.state.volume = {};
   backend.state.failUploads = 0;
+  backend.state.running = [];
 });
 
 type User = ReturnType<typeof userEvent.setup>;
@@ -208,6 +221,7 @@ describe("choosing server software", () => {
     await user.type(screen.getByLabelText("Subdomain"), "mine");
     await user.click(screen.getByRole("radio", { name: "Custom jar" }));
     await user.click(eula());
+    await user.click(screen.getByRole("radio", { name: "Enter a path" }));
     await user.type(screen.getByLabelText("Jar path"), "../server.jar");
     expect(screen.getByText(/relative path inside the server directory/)).toBeTruthy();
     expect(create().disabled).toBe(true);
@@ -230,8 +244,10 @@ describe("choosing server software", () => {
     await user.type(screen.getByLabelText("Subdomain"), "mine");
     await user.click(screen.getByRole("radio", { name: "Custom jar" }));
     await user.upload(screen.getByLabelText("Jar file"), jar("mohist-1.20.1.jar"));
-    expect((screen.getByLabelText("Jar path") as HTMLInputElement).value).toBe("mohist-1.20.1.jar");
-    expect(screen.getByText("mohist-1.20.1.jar · 2.0 KiB")).toBeTruthy();
+    // The jar lands in the server's root under its own name.
+    expect(screen.getByText("mohist-1.20.1.jar")).toBeTruthy();
+    expect(screen.getByText("2.0 KiB · Uploads to mohist-1.20.1.jar")).toBeTruthy();
+    expect(screen.queryByLabelText("Jar path")).toBeNull();
     await user.click(eula());
     await user.click(create());
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
@@ -246,6 +262,7 @@ describe("choosing server software", () => {
     await user.type(screen.getByLabelText("Subdomain"), "mine");
     await user.click(screen.getByRole("radio", { name: "Custom jar" }));
     await user.upload(screen.getByLabelText("Jar file"), jar("server.jar"));
+    await user.click(screen.getByRole("button", { name: "Put it elsewhere" }));
     await user.clear(screen.getByLabelText("Jar path"));
     await user.type(screen.getByLabelText("Jar path"), "pack/core/server.jar");
     await user.click(eula());
@@ -286,10 +303,15 @@ describe("a player creating their own server", () => {
     await user.click(screen.getByRole("button", { name: "New server" }));
     expect(await screen.findByText("Quota usage: servers 1 / 2, memory 2048 / 6144 MB")).toBeTruthy();
     expect(screen.queryByRole("radio", { name: "Whitelisted image" })).toBeNull();
-    await user.click(screen.getByRole("combobox", { name: "Memory" }));
-    const six = await screen.findByRole("option", { name: "6Gi (exceeds the remaining quota)" });
-    expect(six.getAttribute("aria-disabled")).toBe("true");
-    expect(screen.getByRole("option", { name: "4Gi" }).getAttribute("aria-disabled")).not.toBe("true");
+    // 6144 MB of memory with 2048 in use leaves 4 GiB.
+    expect(screen.getByText("In GiB; decimals are allowed. 4 GiB of the quota is left.")).toBeTruthy();
+    await user.clear(screen.getByLabelText("Memory"));
+    await user.type(screen.getByLabelText("Memory"), "6");
+    expect(screen.getByText("This exceeds the quota; 4 GiB of it is left.")).toBeTruthy();
+    expect(create().disabled).toBe(true);
+    await user.clear(screen.getByLabelText("Memory"));
+    await user.type(screen.getByLabelText("Memory"), "3.5");
+    expect(screen.queryByText(/This exceeds the quota/)).toBeNull();
   });
 
   it("creates a server the player then owns", async () => {
@@ -337,6 +359,49 @@ describe("an owner changing their server's software", () => {
     await openOwner();
     expect(screen.queryByRole("combobox", { name: "Image" })).toBeNull();
     expect(screen.getByText("Current: Paper 1.21.4 232, Java 21")).toBeTruthy();
+  });
+
+  // A stopped server's root is listed, so the owner points at a jar that is
+  // there instead of typing where it is.
+  it("moves to a custom jar picked from the server's files", async () => {
+    backend.state.volume.mine = { dirs: ["plugins"], files: { "mohist-1.20.1.jar": 61_000_000, "server.properties": 900 } };
+    const { user, onUpdated } = await openOwner();
+    await user.click(screen.getByRole("button", { name: "Change server software" }));
+    await user.click(screen.getByRole("radio", { name: "Custom jar" }));
+    const listed = await screen.findByRole("radiogroup", { name: "In the server" });
+    expect(within(listed).getAllByRole("radio").map((r) => r.textContent)).toEqual(["mohist-1.20.1.jar58 MiB"]);
+    // The only jar there is the one meant, so it comes chosen.
+    await waitFor(() => expect(within(listed).getByRole("radio", { name: /mohist-1\.20\.1\.jar/ }).getAttribute("aria-checked")).toBe("true"));
+    await user.click(screen.getByRole("checkbox", { name: "I've backed up the world — change the software" }));
+    await user.click(save());
+    await waitFor(() => expect(onUpdated).toHaveBeenCalled());
+    expect(backend.state.servers.mine.software).toMatchObject({ type: "custom", jar: "mohist-1.20.1.jar" });
+  });
+
+  it("uploads a jar on save, before the software names it", async () => {
+    backend.state.volume.mine = { dirs: [], files: {} };
+    const { user, onUpdated } = await openOwner();
+    await user.click(screen.getByRole("button", { name: "Change server software" }));
+    await user.click(screen.getByRole("radio", { name: "Custom jar" }));
+    expect(await screen.findByText(/There is no jar in the server's root folder/)).toBeTruthy();
+    await user.click(screen.getByRole("radio", { name: "Upload" }));
+    await user.upload(screen.getByLabelText("Jar file"), new File([new Uint8Array(4096)], "arclight.jar"));
+    await user.click(screen.getByRole("checkbox", { name: "I've backed up the world — change the software" }));
+    await user.click(save());
+    await waitFor(() => expect(onUpdated).toHaveBeenCalled());
+    expect(backend.state.volume.mine.files).toEqual({ "arclight.jar": 4096 });
+    expect(backend.state.servers.mine.software).toMatchObject({ type: "custom", jar: "arclight.jar" });
+  });
+
+  it("asks for a stopped server before reading or uploading its files", async () => {
+    backend.state.volume.mine = { dirs: [], files: { "server.jar": 1 } };
+    backend.state.running = ["mine"];
+    const { user } = await openOwner();
+    await user.click(screen.getByRole("button", { name: "Change server software" }));
+    await user.click(screen.getByRole("radio", { name: "Custom jar" }));
+    expect(await screen.findByText(/The server is running, so its files cannot be read or uploaded to/)).toBeTruthy();
+    expect(screen.queryByRole("radio", { name: "Upload" })).toBeNull();
+    expect(screen.getByLabelText("Jar path")).toBeTruthy();
   });
 
   it("asks for a backup acknowledgement before moving the world to another version", async () => {

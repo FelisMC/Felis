@@ -2443,7 +2443,11 @@ export interface paths {
          */
         put: operations["setQuotas"];
         post?: never;
-        delete?: never;
+        /**
+         * Return a user to the default quota (admin only).
+         * @description Removes the user's own quotas row, so the default quota applies to them (custom false in the answer). A user without one is left as they are.
+         */
+        delete: operations["clearQuotas"];
         options?: never;
         head?: never;
         patch?: never;
@@ -4413,9 +4417,10 @@ export interface components {
                 verified_at: string;
             }[];
         };
-        /** @description A user's quotas row (internal/api/repo.go QuotaView). An absent or null field is unlimited; 0 grants none of that resource. */
+        /** @description A user's quotas row (internal/api/repo.go QuotaView). custom is true when the user has a row of their own: an absent or null field in it is unlimited, and 0 grants none of that resource. Without one (custom false) every cap is absent and the user is held to the default quota (GET /settings/self-service) when it is on, and unlimited otherwise. */
         QuotaView: {
             user_id: string;
+            custom: boolean;
             max_servers?: number | null;
             max_cpu_milli?: number | null;
             max_memory_mb?: number | null;
@@ -11194,7 +11199,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The user's current quotas (null=unlimited). */
+            /** @description The user's quotas, their own row (custom) or none. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -11252,6 +11257,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Unknown user. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    clearQuotas: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The user's quotas, now without a row of their own. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuotaView"];
                 };
             };
             401: components["responses"]["Unauthorized"];

@@ -71,7 +71,7 @@ describe("page reload", () => {
     const lobby = screen.getByRole("radio", { name: /^Lobby/ });
     await waitFor(() => expect(lobby).toHaveProperty("disabled", false));
     const reload = screen.getByRole("button", { name: "Reload" });
-    const reads = [calls.getWakePolicy, calls.getEntryPolicy, calls.fleet, calls.getMailSettings, calls.getArchivePolicy, calls.getHeartbeat, calls.getFailoverPolicy, calls.nodes, calls.nodeTasks, calls.hostOverview, calls.getSelfServiceQuota];
+    const reads = [calls.getWakePolicy, calls.getEntryPolicy, calls.fleet, calls.getMailSettings, calls.getArchivePolicy, calls.getHeartbeat, calls.getFailoverPolicy, calls.nodes, calls.nodeTasks, calls.hostOverview];
     await waitFor(() => { for (const read of reads) expect(read).toHaveBeenCalled(); });
     const before = reads.map((read) => read.mock.calls.length);
     await userEvent.click(reload);

@@ -77,8 +77,10 @@ describe("CreateServerDialog request body", () => {
     await user.type(subdomainBox(), "SMP");
     await user.type(screen.getByLabelText("Display name (optional)"), "  Survival World  ");
     await pick(user, "Image", PAPER);
-    await pick(user, "Memory", "8Gi");
-    await pick(user, "Storage", "20Gi");
+    await user.clear(screen.getByLabelText("Memory"));
+    await user.type(screen.getByLabelText("Memory"), "8");
+    await user.clear(screen.getByLabelText("Storage"));
+    await user.type(screen.getByLabelText("Storage"), "120");
     await pick(user, "Autostart policy", "Public — any player join wakes it");
     await user.click(create());
 
@@ -88,11 +90,31 @@ describe("CreateServerDialog request body", () => {
       displayName: "Survival World",
       image: PAPER,
       memory: "8Gi",
-      storage: "20Gi",
+      storage: "120Gi",
       autostartPolicy: "public",
     });
     expect(onCreated).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  // A server below 1 GiB cannot start Minecraft, and a volume is sized in whole GiB.
+  it("refuses a memory below 1 GiB and a storage that is not whole GiB", async () => {
+    const user = await openDialog();
+    await fillValid(user);
+    await user.clear(screen.getByLabelText("Memory"));
+    await user.type(screen.getByLabelText("Memory"), "0.5");
+    expect(screen.getByText("Enter a number of at least 1, in GiB.")).toBeTruthy();
+    expect(create().disabled).toBe(true);
+    await user.clear(screen.getByLabelText("Memory"));
+    await user.type(screen.getByLabelText("Memory"), "1.5");
+    await user.clear(screen.getByLabelText("Storage"));
+    await user.type(screen.getByLabelText("Storage"), "7.5");
+    expect(screen.getByText("Enter a whole number of at least 1, in GiB.")).toBeTruthy();
+    expect(create().disabled).toBe(true);
+    await user.clear(screen.getByLabelText("Storage"));
+    await user.type(screen.getByLabelText("Storage"), "7");
+    await user.click(create());
+    expect(sent()).toMatchObject({ memory: "1536Mi", storage: "7Gi" });
   });
 
   it("stops the display name at the length the API takes", async () => {

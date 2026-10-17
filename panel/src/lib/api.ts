@@ -1284,6 +1284,8 @@ export const api = rejectingSync({
 
   setUserQuotas: (id: string, quotas: QuotaInput) =>
     request<QuotaView>("PUT", urlPath`/users/${id}/quotas`, quotas),
+  // clearUserQuotas removes the user's own quota, returning them to the default.
+  clearUserQuotas: (id: string) => request<QuotaView>("DELETE", urlPath`/users/${id}/quotas`),
 
   listUserSessions: (id: string) =>
     request<{ sessions: SessionView[] }>("GET", urlPath`/users/${id}/sessions`).then((r) => r.sessions ?? []),

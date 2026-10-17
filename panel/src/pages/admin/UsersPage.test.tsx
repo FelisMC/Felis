@@ -6,7 +6,10 @@ import i18next from "i18next";
 import { UsersPage } from "./UsersPage";
 import type { UserView } from "@/lib/types";
 
-const calls = vi.hoisted(() => ({ listUsers: vi.fn() }));
+const calls = vi.hoisted(() => ({
+  listUsers: vi.fn(),
+  getSelfServiceQuota: vi.fn(async () => ({ enabled: false, max_servers: null, max_cpu_milli: null, max_memory_mb: null, max_storage_gb: null, revision: "" })),
+}));
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
   return { ...actual, api: { ...actual.api, ...calls } };

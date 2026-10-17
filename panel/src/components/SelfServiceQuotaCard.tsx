@@ -23,21 +23,22 @@ interface Draft {
   storageGB: string;
 }
 
-const show = (v: number | null, per = 1) => (v == null ? "" : String(v / per));
+/** showCap is a cap as the box shows it: empty for unlimited, else in units of per. */
+export const showCap = (v: number | null | undefined, per = 1) => (v == null ? "" : String(v / per));
 
 function draftOf(q: SelfServiceQuotaSettings): Draft {
   return {
     enabled: q.enabled,
-    servers: show(q.max_servers),
-    memoryGB: show(q.max_memory_mb, 1024),
-    cpuCores: show(q.max_cpu_milli, 1000),
-    storageGB: show(q.max_storage_gb),
+    servers: showCap(q.max_servers),
+    memoryGB: showCap(q.max_memory_mb, 1024),
+    cpuCores: showCap(q.max_cpu_milli, 1000),
+    storageGB: showCap(q.max_storage_gb),
   };
 }
 
-/** parse reads one cap: empty is unlimited (null); otherwise a non-negative
+/** parseCap reads one cap: empty is unlimited (null); otherwise a non-negative
  *  number, in whole units of the cap's own unit after scaling. */
-function parse(v: string, scale = 1): number | null | undefined {
+export function parseCap(v: string, scale = 1): number | null | undefined {
   const s = v.trim();
   if (s === "") return null;
   if (!/^\d+(\.\d+)?$/.test(s)) return undefined;
@@ -67,10 +68,10 @@ export function SelfServiceQuotaCard() {
   useRefreshSignal(query.reload, dirty);
 
   const caps = draft && {
-    max_servers: parse(draft.servers),
-    max_memory_mb: parse(draft.memoryGB, 1024),
-    max_cpu_milli: parse(draft.cpuCores, 1000),
-    max_storage_gb: parse(draft.storageGB),
+    max_servers: parseCap(draft.servers),
+    max_memory_mb: parseCap(draft.memoryGB, 1024),
+    max_cpu_milli: parseCap(draft.cpuCores, 1000),
+    max_storage_gb: parseCap(draft.storageGB),
   };
   const valid = !!caps && Object.values(caps).every((v) => v !== undefined) && (draft?.servers.trim() === "" || /^\d+$/.test(draft!.servers.trim()));
 
