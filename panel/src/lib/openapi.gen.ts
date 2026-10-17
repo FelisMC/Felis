@@ -2079,7 +2079,7 @@ export interface paths {
         };
         /**
          * List a directory in a server's world volume (owner-or-admin; server must be stopped).
-         * @description Lists one directory inside the server's world volume — the repair lever for a server that will not boot because a config file is wrong. The world PVC is RWO and held by a running server, so the server must be fully stopped first (409 not_stopped otherwise). The listing runs as a one-shot Job whose output is read back through pods/log, so the call is synchronous but takes seconds rather than milliseconds. Paths are resolved inside the world root by os.Root, so "..", an absolute path, and a symlink leaving the root are all refused with 400 bad_path. Listings are capped; truncated reports that the cap was hit.
+         * @description Lists one directory inside the server's world volume — the repair lever for a server that will not boot because a config file is wrong. A server that has never started gets its world volume here, the one its first start then mounts, so files can be put in place before that start. The world PVC is RWO and held by a running server, so the server must be fully stopped first (409 not_stopped otherwise). The listing runs as a one-shot Job whose output is read back through pods/log, so the call is synchronous but takes seconds rather than milliseconds. Paths are resolved inside the world root by os.Root, so "..", an absolute path, and a symlink leaving the root are all refused with 400 bad_path. Listings are capped; truncated reports that the cap was hit.
          */
         get: operations["listServerFiles"];
         put?: never;
@@ -10187,7 +10187,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Server is not stopped (not_stopped), has no world volume yet (no_world_volume), or a restore, backup, file change or another export already holds its world volume (maintenance_in_progress). */
+            /** @description Server is not stopped (not_stopped), or a restore, backup, file change or another export already holds its world volume (maintenance_in_progress). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -10373,7 +10373,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Server is not stopped (not_stopped) or has no world volume yet (no_world_volume). */
+            /** @description Server is not stopped (not_stopped). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -10635,7 +10635,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Not every byte has arrived (upload_incomplete; the world lock is not asked for), a part is still arriving (upload_busy), the server is not stopped (not_stopped) or has no world volume yet (no_world_volume), or a restore, backup, file change or export already holds its world volume, this session's earlier commit included (maintenance_in_progress). */
+            /** @description Not every byte has arrived (upload_incomplete; the world lock is not asked for), a part is still arriving (upload_busy), the server is not stopped (not_stopped), or a restore, backup, file change or export already holds its world volume, this session's earlier commit included (maintenance_in_progress). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -10696,7 +10696,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Server is not stopped (not_stopped), has no world volume yet (no_world_volume), or a restore, backup, file change or export already holds its world volume (maintenance_in_progress). */
+            /** @description Server is not stopped (not_stopped), or a restore, backup, file change or export already holds its world volume (maintenance_in_progress). */
             409: {
                 headers: {
                     [name: string]: unknown;
