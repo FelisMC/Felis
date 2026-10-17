@@ -798,12 +798,16 @@ type Repo interface {
 
 	// ---- quota admin (spec §6 quotas, admin-only) ----
 
-	// GetQuotas returns the quotas row for a user, or a zero-value view when no
-	// row exists (which means unlimited per spec §9.3).
+	// GetQuotas returns the quotas row for a user (Custom set), or a zero-value
+	// view when no row exists: the user is then held to the default quota when
+	// the Owner has turned it on, and is unlimited otherwise (readQuota).
 	GetQuotas(ctx context.Context, userID string) (*QuotaView, error)
 	// SetQuotas replaces the quotas row for userID with q: a nil field is stored as
 	// NULL (unlimited), any other value is the cap, 0 included.
 	SetQuotas(ctx context.Context, userID string, q QuotaInput, setBy string) (*QuotaView, error)
+	// ClearQuotas removes the quotas row for userID, returning them to the
+	// default quota. A user without one is left as they are.
+	ClearQuotas(ctx context.Context, userID string) (*QuotaView, error)
 
 	// ---- session admin (admin-only) ----
 
@@ -937,9 +941,12 @@ type UpdateUserInput struct {
 	Role     *string `json:"role,omitempty"`
 }
 
-// QuotaView is the admin-visible quotas row (spec §6).
+// QuotaView is the admin-visible quotas row (spec §6). Custom is true when the
+// user has a row of their own; without one every cap reads as absent and the
+// default quota applies, which a row of absent caps (unlimited) does not.
 type QuotaView struct {
 	UserID       string `json:"user_id"`
+	Custom       bool   `json:"custom"`
 	MaxServers   *int   `json:"max_servers,omitempty"`
 	MaxCPUMilli  *int   `json:"max_cpu_milli,omitempty"`
 	MaxMemoryMB  *int   `json:"max_memory_mb,omitempty"`

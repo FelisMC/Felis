@@ -141,4 +141,24 @@ func TestSeedOwnedServerUnderTheUsersOwnQuota(t *testing.T) {
 		st.Limits == nil || st.Limits.MaxServers == nil || *st.Limits.MaxServers != 0 {
 		t.Errorf("state without a row = %+v, %v; want the default quota", st, err)
 	}
+
+	if v, err := repo.GetQuotas(ctx, u.ID); err != nil || !v.Custom || v.MaxServers == nil || *v.MaxServers != 2 {
+		t.Fatalf("GetQuotas with an own row = %+v, %v; want custom with two servers", v, err)
+	}
+
+	// Removing the user's own row hands them back to the default, which grants
+	// no servers: the next create is refused, and the read reports no own row.
+	if v, err := repo.ClearQuotas(ctx, u.ID); err != nil || v.Custom {
+		t.Fatalf("ClearQuotas = %+v, %v", v, err)
+	}
+	if v, err := repo.GetQuotas(ctx, u.ID); err != nil || v.Custom || v.MaxServers != nil {
+		t.Fatalf("GetQuotas after clearing = %+v, %v; want no own row", v, err)
+	}
+	n = "own-" + suffix(t)
+	if err := repo.SeedOwnedServer(ctx, n, n, u.ID, res); !errors.Is(err, api.ErrQuotaExceeded) {
+		t.Fatalf("create under the default after clearing = %v, want ErrQuotaExceeded", err)
+	}
+	if _, err := repo.ClearQuotas(ctx, "no-such-user"); !errors.Is(err, api.ErrNotFound) {
+		t.Fatalf("ClearQuotas for an unknown user = %v, want ErrNotFound", err)
+	}
 }

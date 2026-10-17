@@ -356,6 +356,27 @@ func (a *API) handleSetQuotas(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, v)
 }
 
+// handleClearQuotas returns a user to the default quota (DELETE
+// /users/{id}/quotas) by removing their own quotas row.
+func (a *API) handleClearQuotas(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, r, errBadRequest)
+		return
+	}
+	v, err := a.Repo.ClearQuotas(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, r, newError(http.StatusNotFound, "not_found", "user not found"))
+			return
+		}
+		writeError(w, r, err)
+		return
+	}
+	a.audit(r, "user.clear_quotas", id)
+	writeJSON(w, http.StatusOK, v)
+}
+
 // ---- session admin ----
 
 // handleListUserSessions lists every live session for a user (GET /users/{id}/sessions).

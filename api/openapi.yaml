@@ -1461,10 +1461,16 @@ components:
 
     QuotaView:
       type: object
-      description: A user's quotas row (internal/api/repo.go QuotaView). An absent or null field is unlimited; 0 grants none of that resource.
-      required: [user_id]
+      description: >-
+        A user's quotas row (internal/api/repo.go QuotaView). custom is true when
+        the user has a row of their own: an absent or null field in it is unlimited,
+        and 0 grants none of that resource. Without one (custom false) every cap is
+        absent and the user is held to the default quota (GET /settings/self-service)
+        when it is on, and unlimited otherwise.
+      required: [user_id, custom]
       properties:
         user_id: { type: string }
+        custom: { type: boolean }
         max_servers: { type: integer, nullable: true }
         max_cpu_milli: { type: integer, nullable: true }
         max_memory_mb: { type: integer, nullable: true }
@@ -7921,7 +7927,7 @@ paths:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
         '200':
-          description: The user's current quotas (null=unlimited).
+          description: The user's quotas, their own row (custom) or none.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/QuotaView' }
@@ -7972,6 +7978,33 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Unknown user.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [users]
+      operationId: clearQuotas
+      summary: Return a user to the default quota (admin only).
+      description: >-
+        Removes the user's own quotas row, so the default quota applies to them
+        (custom false in the answer). A user without one is left as they are.
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The user's quotas, now without a row of their own.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QuotaView' }
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':

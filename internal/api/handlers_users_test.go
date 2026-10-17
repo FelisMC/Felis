@@ -232,16 +232,16 @@ func TestSetQuotasReplacesAllCaps(t *testing.T) {
 	}
 
 	put(`{"max_servers":0,"max_cpu_milli":2000,"max_memory_mb":4096,"max_storage_gb":20}`, http.StatusOK)
-	if got, want := caps(), `{"user_id":"u2","max_servers":0,"max_cpu_milli":2000,"max_memory_mb":4096,"max_storage_gb":20}`; got != want {
+	if got, want := caps(), `{"user_id":"u2","custom":true,"max_servers":0,"max_cpu_milli":2000,"max_memory_mb":4096,"max_storage_gb":20}`; got != want {
 		t.Fatalf("after setting every cap: %s, want %s", got, want)
 	}
 	// What the panel sends after the owner empties two boxes.
 	put(`{"max_servers":null,"max_cpu_milli":1000,"max_memory_mb":null,"max_storage_gb":20}`, http.StatusOK)
-	if got, want := caps(), `{"user_id":"u2","max_cpu_milli":1000,"max_storage_gb":20}`; got != want {
+	if got, want := caps(), `{"user_id":"u2","custom":true,"max_cpu_milli":1000,"max_storage_gb":20}`; got != want {
 		t.Fatalf("after emptying two boxes: %s, want %s", got, want)
 	}
 	put(`{}`, http.StatusOK)
-	if got, want := caps(), `{"user_id":"u2"}`; got != want {
+	if got, want := caps(), `{"user_id":"u2","custom":true}`; got != want {
 		t.Fatalf("after lifting every cap: %s, want %s", got, want)
 	}
 
@@ -254,7 +254,7 @@ func TestSetQuotasReplacesAllCaps(t *testing.T) {
 	} {
 		put(body, http.StatusBadRequest)
 	}
-	if got, want := caps(), `{"user_id":"u2","max_servers":3}`; got != want {
+	if got, want := caps(), `{"user_id":"u2","custom":true,"max_servers":3}`; got != want {
 		t.Fatalf("a refused write changed the caps: %s, want %s", got, want)
 	}
 	w := do(eh, "PUT", "/api/v1/users/u2/quotas", `{"max_storage_gb":-5}`, jsonHeader)
@@ -262,4 +262,38 @@ func TestSetQuotasReplacesAllCaps(t *testing.T) {
 		t.Fatalf("a negative cap should name the field: %s", w.Body.String())
 	}
 	put(`{"max_memory_mb":2147483647}`, http.StatusOK)
+}
+
+// A user's own quota of empty caps is unlimited, and wins over the default
+// quota; the Owner returns them to the default by removing it, which the read
+// then tells apart from an own row.
+func TestClearQuotasReturnsTheUserToTheDefault(t *testing.T) {
+	owner := &Principal{UserID: "usr-root", Role: "owner", ViaAdminAccess: true}
+	repo := newFakeRepo()
+	repo.seedUser(UserView{ID: "usr-root", Username: "root", Role: "owner"})
+	repo.seedUser(UserView{ID: "u2", Username: "alice", Role: "user"})
+	enableDefaultQuota(repo, 1, 4096)
+	api := newTestAPI(repo, newFakeCluster())
+	api.External = staticExternal{p: owner}
+	eh := api.ExternalHandler()
+
+	if w := do(eh, "PUT", "/api/v1/users/u2/quotas", `{}`, jsonHeader); w.Code != http.StatusOK {
+		t.Fatalf("set an own quota: %d %s", w.Code, w.Body.String())
+	}
+	if st, _ := repo.SelfServiceState(context.Background(), "u2"); st.Source != "user" {
+		t.Fatalf("with an own row the source is %q, want user", st.Source)
+	}
+	w := do(eh, "DELETE", "/api/v1/users/u2/quotas", "", nil)
+	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != `{"user_id":"u2","custom":false}` {
+		t.Fatalf("clear: %d %s", w.Code, w.Body.String())
+	}
+	if st, _ := repo.SelfServiceState(context.Background(), "u2"); st.Source != "default" || st.Limits.MaxServers == nil || *st.Limits.MaxServers != 1 {
+		t.Fatalf("after clearing the source is %q with %+v, want the default quota", st.Source, st.Limits)
+	}
+	if got := strings.TrimSpace(do(eh, "GET", "/api/v1/users/u2/quotas", "", nil).Body.String()); got != `{"user_id":"u2","custom":false}` {
+		t.Fatalf("read after clearing: %s", got)
+	}
+	if w := do(eh, "DELETE", "/api/v1/users/nobody/quotas", "", nil); w.Code != http.StatusNotFound {
+		t.Fatalf("clear for an unknown user = %d, want 404", w.Code)
+	}
 }

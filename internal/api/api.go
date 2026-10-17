@@ -867,6 +867,7 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "POST", Pattern: "/api/v1/users/{id}/disable", Owner: true, h: a.handleDisableUser},
 		{Method: "GET", Pattern: "/api/v1/users/{id}/quotas", Owner: true, h: a.handleGetQuotas},
 		{Method: "PUT", Pattern: "/api/v1/users/{id}/quotas", Owner: true, h: a.handleSetQuotas},
+		{Method: "DELETE", Pattern: "/api/v1/users/{id}/quotas", Owner: true, h: a.handleClearQuotas},
 		{Method: "GET", Pattern: "/api/v1/users/{id}/sessions", Owner: true, h: a.handleListUserSessions},
 		{Method: "DELETE", Pattern: "/api/v1/users/{id}/sessions", Owner: true, h: a.handleRevokeUserSessions},
 		{Method: "DELETE", Pattern: "/api/v1/users/{id}/sessions/{hash}", Owner: true, h: a.handleRevokeUserSession},

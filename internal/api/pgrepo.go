@@ -2225,10 +2225,10 @@ func (p *PGRepo) SetUserDisabled(ctx context.Context, userID string, disabled bo
 
 // ---- quota admin ----
 
-// GetQuotas returns the quotas row for a user, or a zero-value view when no
-// row exists (meaning unlimited). An unknown or soft-deleted user id is
-// ErrNotFound, never a zero-value "unlimited" answer — the admin sub-resource
-// routes all 404 on a user that has no live row.
+// GetQuotas returns the quotas row for a user (Custom), or a zero-value view
+// when no row exists, which leaves them to the default quota. An unknown or
+// soft-deleted user id is ErrNotFound, never a zero-value answer: the admin
+// sub-resource routes all 404 on a user that has no live row.
 func (p *PGRepo) GetQuotas(ctx context.Context, userID string) (*QuotaView, error) {
 	if err := p.requireLiveUser(ctx, userID); err != nil {
 		return nil, err
@@ -2243,6 +2243,7 @@ func (p *PGRepo) GetQuotas(ctx context.Context, userID string) (*QuotaView, erro
 	case err != nil:
 		return nil, err
 	}
+	v.Custom = true
 	return &v, nil
 }
 
@@ -2282,7 +2283,20 @@ func (p *PGRepo) SetQuotas(ctx context.Context, userID string, qi QuotaInput, se
 		&v.UserID, &v.MaxServers, &v.MaxCPUMilli, &v.MaxMemoryMB, &v.MaxStorageGB); err != nil {
 		return nil, err
 	}
+	v.Custom = true
 	return &v, nil
+}
+
+// ClearQuotas removes a user's own quotas row, leaving them to the default
+// quota (readQuota). A user without one is left as they are.
+func (p *PGRepo) ClearQuotas(ctx context.Context, userID string) (*QuotaView, error) {
+	if err := p.requireLiveUser(ctx, userID); err != nil {
+		return nil, err
+	}
+	if _, err := p.db.ExecContext(ctx, `DELETE FROM quotas WHERE user_id = $1`, userID); err != nil {
+		return nil, err
+	}
+	return &QuotaView{UserID: userID}, nil
 }
 
 // ---- session admin ----

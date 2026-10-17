@@ -1621,12 +1621,21 @@ func (f *fakeRepo) GetQuotas(_ context.Context, userID string) (*QuotaView, erro
 		return v, nil
 	}
 	if qv, ok := f.fakeQuotas[userID]; ok {
+		v.Custom = true
 		v.MaxServers = qv.MaxServers
 		v.MaxCPUMilli = qv.MaxCPUMilli
 		v.MaxMemoryMB = qv.MaxMemoryMB
 		v.MaxStorageGB = qv.MaxStorageGB
 	}
 	return v, nil
+}
+
+func (f *fakeRepo) ClearQuotas(_ context.Context, userID string) (*QuotaView, error) {
+	if !f.liveUserExists(userID) {
+		return nil, ErrNotFound
+	}
+	delete(f.fakeQuotas, userID)
+	return &QuotaView{UserID: userID}, nil
 }
 
 func (f *fakeRepo) SetQuotas(_ context.Context, userID string, qi QuotaInput, _ string) (*QuotaView, error) {
@@ -1637,7 +1646,7 @@ func (f *fakeRepo) SetQuotas(_ context.Context, userID string, qi QuotaInput, _ 
 		f.fakeQuotas = map[string]*QuotaView{}
 	}
 	// A full replacement, like the SQL upsert: nil is unlimited.
-	f.fakeQuotas[userID] = &QuotaView{UserID: userID, MaxServers: qi.MaxServers,
+	f.fakeQuotas[userID] = &QuotaView{UserID: userID, Custom: true, MaxServers: qi.MaxServers,
 		MaxCPUMilli: qi.MaxCPUMilli, MaxMemoryMB: qi.MaxMemoryMB, MaxStorageGB: qi.MaxStorageGB}
 	return f.fakeQuotas[userID], nil
 }
