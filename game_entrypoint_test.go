@@ -8,14 +8,8 @@ import (
 	"testing"
 )
 
-// The lobby and login gate take their player cap from server.properties, which the
-// login gate rewrites on every boot; the lobby seeds it only when absent. These run
-// the shipped entrypoints the way a pod does (image and volume paths pointed into temp
-// dirs, java replaced by a stub that exits) and read the file the server would start on.
+// Login rewrites its player cap every boot; lobby seeds it only when absent.
 
-// runEntrypoint runs the embedded entrypoint with its runtime dir holding the given
-// files and server.properties seeded with props ("" for a first boot), and returns
-// server.properties afterwards.
 func runEntrypoint(t *testing.T, name, runtimeVar string, files []string, props string, env ...string) string {
 	t.Helper()
 	root := t.TempDir()
@@ -105,8 +99,6 @@ func TestLobbyEntrypointSeedsAndPreservesThePlayerCap(t *testing.T) {
 	})
 }
 
-// The RCON password is arbitrary bytes from a Secret; each of sed's special characters
-// has to land in the file as itself when an earlier boot's line is replaced.
 func TestLobbyEntrypointWritesTheRconPasswordVerbatim(t *testing.T) {
 	const password = `a|b\c&d/e`
 	props := runEntrypoint(t, "deploy/lobby/entrypoint.sh", `RUNTIME_DIR="/paper"`, lobbyImage,

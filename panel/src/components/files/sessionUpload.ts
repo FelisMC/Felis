@@ -3,33 +3,13 @@ import { sha256Of } from "@/lib/digest";
 import { MAX_ATTEMPTS, isTransient, retryDelay, wait } from "@/lib/contextUpload";
 import type { FileOp, FileUploadSession } from "@/lib/types";
 
-// A file bigger than one request carries goes up as a session (api
-// beginServerFileUpload): parts of at most part_max_bytes, each at the byte
-// offset the session has reached, so a dropped connection resumes where the
-// server says it stands rather than starting over. The commit answers at once
-// with the op landing the file, and watchOp follows that op to its end.
-//
-// The session is also remembered in this browser, under the server and path it
-// lands at, with the file's size and modification time. Choosing the same file
-// again after a reload, a closed tab or a lost connection carries on from the
-// bytes already sent, once those have been hashed again against the file: the
-// session lists each part it holds with its SHA-256, and a session holding
-// anything else (another file of the same name, size and time) is given back
-// and the file starts over. A remembered session no page has touched for a
-// while is what a refusal for too many sessions gives back first.
-//
-// Every part goes with its SHA-256, and one the server hashes differently
-// (digest_mismatch: changed on the way) is sent again.
+// Remember per-path upload sessions; resume matching files from digest-verified staged offsets.
 
 type Sleep = (ms: number, signal?: AbortSignal) => Promise<void>;
 
-/** How often a running op is read. */
 export const OP_POLL_MS = 2000;
-/** Reads of the ops list that may miss an op before it counts as lost. */
-export const MAX_OP_MISSES = 5;
-/** How long a remembered session must sit untouched before it is given back
- *  to make room for a new one; one another tab is still sending is younger. */
-export const STALE_SESSION_MS = 5 * 60 * 1000;
+export const MAX_OP_MISSES = 5; // missed reads of the ops list before an op counts as lost
+export const STALE_SESSION_MS = 5 * 60 * 1000; // idle time before a remembered session may be given back; younger ones may still be sending
 
 const KEY_PREFIX = "felis-file-upload:";
 
@@ -44,8 +24,7 @@ interface Remembered {
 
 const code = (e: unknown) => (e as { code?: unknown } | null)?.code;
 
-// Browser storage can be missing or refuse (a private window, blocked site
-// data); a session is then simply not remembered.
+// Storage can be missing or refuse (private window).
 function storage(): Storage | null {
   try {
     return window.localStorage;
@@ -60,7 +39,7 @@ function remember(r: Remembered) {
   try {
     storage()?.setItem(keyOf(r.server, r.path), JSON.stringify(r));
   } catch {
-    /* not remembered: a reload starts this file over */
+    /* not remembered */
   }
 }
 
@@ -85,13 +64,11 @@ function rememberedAll(): Remembered[] {
       if (r?.id && r.server && typeof r.path === "string") out.push(r);
     }
   } catch {
-    /* whatever was read so far */
+    /* keep what was read */
   }
   return out;
 }
 
-/** forgetSession stops remembering the session for path on server, once its
- *  file has landed. */
 export function forgetSession(server: string, path: string) {
   try {
     storage()?.removeItem(keyOf(server, path));
@@ -100,9 +77,7 @@ export function forgetSession(server: string, path: string) {
   }
 }
 
-/** discardSession cancels a session and forgets it. A part still arriving holds
- *  it briefly (upload_busy), so that is waited out a few times; whatever still
- *  fails is left for the server to drop after 6 idle hours. */
+/** Cancels and forgets a session; a busy part is waited out, and an undeletable session is dropped by the server after 6 idle hours. */
 export async function discardSession(server: string, path: string, id: string, sleep: Sleep = wait) {
   forgetSession(server, path);
   for (let n = 1; n <= 3; n++) {
@@ -116,8 +91,7 @@ export async function discardSession(server: string, path: string, id: string, s
   }
 }
 
-// dropStale cancels the remembered sessions nothing has sent a part to lately
-// and reports whether any of them was still held.
+// Cancels remembered sessions that have not sent a part lately; reports whether any was still held.
 async function dropStale(now: number): Promise<boolean> {
   let freed = false;
   for (const r of rememberedAll()) {
@@ -127,7 +101,7 @@ async function dropStale(now: number): Promise<boolean> {
       await api.deleteServerFileUpload(r.server, r.id);
       freed = true;
     } catch {
-      /* gone already, or someone else's */
+      /* gone already */
     }
   }
   return freed;
@@ -135,20 +109,17 @@ async function dropStale(now: number): Promise<boolean> {
 
 export interface SendOptions {
   overwrite: boolean;
-  /** Bytes of the file the server holds so far, plus the part in flight. */
+  /** Bytes the server holds plus the part in flight. */
   onProgress?: (sent: number) => void;
-  /** The session the file goes up in, once there is one. */
   onSession?: (id: string) => void;
-  /** Stops sending; the session stays, remembered, for a later resume. */
+  /** Stops sending; the session stays remembered for a later resume. */
   signal?: AbortSignal;
-  /** Test seam for the pause between attempts. */
+  /** Test seam. */
   sleep?: Sleep;
-  /** Test seam for the clock the remembered sessions are aged by. */
+  /** Test seam: the clock remembered sessions are aged by. */
   now?: () => number;
 }
 
-/** sendInParts sends file to path on server as an upload session, commits it,
- *  and answers the op landing it. */
 export async function sendInParts(server: string, path: string, file: File, opts: SendOptions): Promise<FileOp> {
   const { signal, onProgress } = opts;
   const sleep = opts.sleep ?? wait;
@@ -156,14 +127,11 @@ export async function sendInParts(server: string, path: string, file: File, opts
   const size = file.size;
 
   let id: string | null = recalled(server, path, file)?.id ?? null;
-  // offset is where the next part starts; null means "ask the server first".
+  // null means "ask the server first"
   let offset: number | null = null;
   let partMax = 0;
   let failures = 0;
-  // known is how many bytes at the head of the session this run has seen to be
-  // the file's own: parts it sent, or held parts it hashed again. A session
-  // begun during the run holds only parts the run sent, so a new one needs no
-  // reset.
+  // Bytes at the head of the session known to be the file's own (sent, or held parts hashed again).
   let known = 0;
   for (;;) {
     try {
@@ -194,9 +162,7 @@ export async function sendInParts(server: string, path: string, file: File, opts
       remember({ server, path, id: id!, size, modified: file.lastModified, touched: now() });
       onProgress?.(offset);
     } catch (e) {
-      // The session went away under the upload (felis-api restarted, or it sat
-      // idle too long): the next pass begins a new one. A part changed on the
-      // way was not kept, so the next pass sends it again (isTransient).
+      // upload_not_found (server restarted or session idle): begin a new session on the next pass.
       if (code(e) === "upload_not_found") {
         id = null;
       } else if (!isTransient(e)) {
@@ -210,10 +176,7 @@ export async function sendInParts(server: string, path: string, file: File, opts
   return commit(server, path, id!, opts.overwrite, sleep, signal);
 }
 
-// standing answers the session to carry on with: id's when it still stands for
-// this file, else a new one. Four sessions per account is the server's bound;
-// when that refuses, the sessions this browser left behind are given back
-// first.
+// Four sessions per account is the server's bound; on too_many_uploads this browser's stale sessions are given back first.
 async function standing(
   server: string,
   path: string,
@@ -240,9 +203,7 @@ async function standing(
   return at;
 }
 
-// holdsTheFile hashes the parts session at holds past the first known bytes
-// against the same ranges of file, and answers whether all of them match.
-// onProgress walks up through the parts as they check out.
+// Hashes the session's held parts past `known` against the same ranges of file; true when all match.
 async function holdsTheFile(
   file: File,
   at: FileUploadSession,
@@ -263,11 +224,7 @@ async function holdsTheFile(
   return start === at.received;
 }
 
-// commit lands the session. A commit whose answer was lost may still have
-// started the Job, so asking again is read in that light: the world held
-// (maintenance_in_progress) by an upload of this path running now, or the
-// session gone because that Job reported the file landed, means the first
-// commit went through, and its op is the answer.
+// After a lost commit response, maintenance_in_progress or upload_not_found can identify the already-created operation.
 async function commit(
   server: string,
   path: string,
@@ -303,13 +260,10 @@ async function commit(
 export interface WatchOptions {
   signal?: AbortSignal;
   sleep?: Sleep;
-  /** Each read of the op while it runs. */
   onProgress?: (op: FileOp) => void;
 }
 
-/** watchOp reads server's ops until the op id has ended, and answers it. A read
- *  that did not get through is tried again, backing off; an op missing from
- *  MAX_OP_MISSES reads in a row is reported as op_lost. */
+/** An op missing from MAX_OP_MISSES reads in a row is reported as op_lost. */
 export async function watchOp(server: string, id: string, opts: WatchOptions = {}): Promise<FileOp> {
   const sleep = opts.sleep ?? wait;
   let failures = 0;

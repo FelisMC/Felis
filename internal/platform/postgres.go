@@ -12,71 +12,32 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
-// The control-plane database. It used to be the host's own PostgreSQL, which the
-// installer had to find in the distro's repositories, initialise, open a hole in
-// the firewall for and keep in step with the distro's major version — the part of
-// an install that broke first whenever a host differed from the ones it was tried
-// on. It is now the official image, pinned by digest (Params.PostgresImage), run
-// by k3s beside the rest of the control plane.
 const (
-	// PostgresName names the Deployment, the Service, the NetworkPolicy and the
-	// Secret. deploy/bootstrap.sh and `felis db` reach the pod as
-	// deploy/<PostgresName> in the control namespace.
-	PostgresName = "felis-postgres"
-	// PostgresContainer is the database container `kubectl exec -c` targets.
-	PostgresContainer = "postgres"
-	// PostgresPort is the port the server listens on, in the pod and on the
-	// Service.
-	PostgresPort int32 = 5432
-	// PostgresHostPort is the node-loopback port the host's own tools reach the
-	// database on (`felis migrate`, the watchdog, off-site backups): a hostPort
-	// bound to 127.0.0.1 only, the path the registry's node-side pulls already
-	// take (registryLoopbackHost). It sits clear of 5432 so a host PostgreSQL
-	// left running from an older install does not collide with it.
+	PostgresName            = "felis-postgres"
+	PostgresContainer       = "postgres"
+	PostgresPort      int32 = 5432
+	// PostgresHostPort binds loopback for host tools and avoids collision with a host database on 5432.
 	PostgresHostPort int32 = 15432
-	// PostgresDataHostPath is the node directory the cluster lives under,
-	// mounted at postgresDataMount. deploy/bootstrap.sh creates it owned by
-	// postgresUID, mode 0700, before the first apply; `felis uninstall` keeps
-	// it unless --purge. A hostPath instead of a local-path PVC so the data sits
-	// at a fixed, documented place under /var/lib/felis that survives the
-	// Deployment, the namespace and k3s itself being deleted.
+	// PostgresDataHostPath survives workload and namespace deletion; bootstrap creates it with the database UID and mode 0700.
 	PostgresDataHostPath = "/var/lib/felis/postgres"
-	// PostgresSuperuserSecret holds the postgres role's password, which the
-	// image's entrypoint needs only to initialise an empty data directory.
-	// deploy/bootstrap.sh creates it once with a random value and nothing reads
-	// it back: pg_hba.conf (postgresHBA) refuses the postgres role over TCP, and
-	// the socket inside the container trusts local connections.
-	PostgresSuperuserSecret = "felis-postgres"
-	// PostgresSuperuserSecretKey is the key in PostgresSuperuserSecret.
+	// PostgresSuperuserSecret initializes empty data only; TCP superuser access is denied and container-local sockets are trusted.
+	PostgresSuperuserSecret    = "felis-postgres"
 	PostgresSuperuserSecretKey = "superuser-password"
-	// PostgresSocketDir is the image's socket directory, which `felis db` and
-	// deploy/bootstrap.sh connect through under kubectl exec.
-	PostgresSocketDir = "/var/run/postgresql"
+	PostgresSocketDir          = "/var/run/postgresql"
 
 	postgresHBAConfigMap = "felis-postgres-hba"
 	postgresHBAMount     = "/etc/felis-postgres"
-	// postgresDataMount is the image's VOLUME. The image's PGDATA is
-	// <mount>/<major>/docker, so a new major starts beside the old one's data
-	// instead of on top of it; deploy/bootstrap.sh refuses to run an image whose
-	// major finds only another major's cluster there.
+	// Postgres data lives under a major-specific subdirectory; bootstrap refuses to start a new major over another major's data.
 	postgresDataMount = "/var/lib/postgresql"
 	postgresDataVol   = "data"
 	postgresSocketVol = "socket"
 	postgresShmVol    = "shm"
 	postgresHBAVol    = "hba"
-	// postgresUID is the postgres account the official Debian image creates.
-	// Running as it (instead of root) skips the entrypoint's chown pass, which
-	// is why the installer owns the data directory to it up front.
+	// postgresUID must match the image account and installer-created data directory ownership to avoid an entrypoint chown pass.
 	postgresUID int64 = 999
 )
 
-// postgresHBA is the pg_hba.conf the server runs under, from a ConfigMap
-// (hba_file) instead of the one initdb writes into the data directory, so the
-// rules are the rendered ones on every start, whatever the cluster was
-// initialised with. The container's socket trusts every role: only something
-// that can already exec into the pod reaches it. Over TCP the postgres
-// superuser is refused outright and every other role needs its password; which
-// pods may open a TCP connection at all is postgresIngressPolicy's business.
+// postgresHBA trusts local sockets, rejects TCP superusers and requires other TCP roles to authenticate.
 const postgresHBA = `# Rendered by felis (internal/platform/postgres.go); edits are overwritten.
 local all all                trust
 host  all postgres 0.0.0.0/0 reject
@@ -85,15 +46,8 @@ host  all all      0.0.0.0/0 scram-sha-256
 host  all all      ::/0      scram-sha-256
 `
 
-// postgresPingCommand answers only once the server that takes connections is
-// up: the entrypoint's initialisation server listens on no TCP address.
 var postgresPingCommand = []string{"pg_isready", "-q", "-h", "127.0.0.1", "-p", fmt.Sprint(PostgresPort)}
 
-// PostgresObjects renders the database: its control namespace, pg_hba.conf, the
-// ingress fence, the Deployment and the Service. deploy/bootstrap.sh applies
-// exactly these (`felis manifests --only postgres`) before it runs migrations,
-// which is before the rest of the bundle can render; Objects includes them
-// again so a full apply never prunes or drifts them.
 func PostgresObjects(p Params) []Object {
 	p = p.withDefaults()
 	objs := []Object{namespaceObject(p.ControlNamespace)}
@@ -108,8 +62,7 @@ func PostgresObjects(p Params) []Object {
 	)
 }
 
-// postgresLabels are the database's labels. Like the registry it is not
-// part-of=felis-control-plane, which keeps it out of the RCON peer.
+// Database labels omit part-of=felis-control-plane to exclude it from control-plane network peers.
 func postgresLabels() map[string]string {
 	return map[string]string{
 		LabelName:      appName,
@@ -125,21 +78,7 @@ func postgresHBAConfig(p Params) *corev1.ConfigMap {
 	}
 }
 
-// postgresDeployment renders the single database pod.
-//
-// Recreate, one replica: two servers on one data directory corrupt it, and a
-// rolling update would start the second before stopping the first. The pod
-// runs as the image's postgres account under the control plane's hardening
-// (read-only root, no capabilities); everything the server writes lands on the
-// data hostPath, the socket emptyDir or the /dev/shm emptyDir (dynamic shared
-// memory, which the runtime's 64Mi default would cap).
-//
-// Stopping: the image's STOPSIGNAL is SIGINT (fast shutdown: roll back open
-// transactions, checkpoint, exit), which containerd sends in place of SIGTERM;
-// SIGTERM would wait for felis-api's pooled connections to leave and run into
-// the kill at the end of the grace period. The preStop hook asks for the same
-// fast shutdown explicitly so the stop does not rest on the runtime honouring
-// the image's signal.
+// Use one replica with Recreate to prevent shared-directory corruption; preStop requests fast shutdown before grace expires.
 func postgresDeployment(p Params) *appsv1.Deployment {
 	labels := postgresLabels()
 	probe := func(period, timeout, failures int32) *corev1.Probe {
@@ -153,16 +92,13 @@ func postgresDeployment(p Params) *appsv1.Deployment {
 	container := corev1.Container{
 		Name:  PostgresContainer,
 		Image: p.PostgresImage,
-		// The image's entrypoint initialises an empty data directory, then execs
-		// these arguments.
-		Args: []string{"postgres", "-c", "hba_file=" + postgresHBAMount + "/pg_hba.conf"},
+		Args:  []string{"postgres", "-c", "hba_file=" + postgresHBAMount + "/pg_hba.conf"},
 		Env: []corev1.EnvVar{{
 			Name: "POSTGRES_PASSWORD",
 			ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
 				LocalObjectReference: corev1.LocalObjectReference{Name: PostgresSuperuserSecret},
 				Key:                  PostgresSuperuserSecretKey,
-				// Only initdb reads it: a cluster that already exists starts
-				// without the Secret.
+				// The initialization password is not required to start an existing cluster.
 				Optional: boolPtr(true),
 			}},
 		}},
@@ -177,8 +113,7 @@ func postgresDeployment(p Params) *appsv1.Deployment {
 			{Name: postgresShmVol, MountPath: "/dev/shm"},
 			{Name: postgresHBAVol, MountPath: postgresHBAMount, ReadOnly: true},
 		},
-		// Crash recovery after an unclean stop, or initdb on a slow disk, can
-		// take minutes; liveness waits for the startup probe.
+		// Wait for startup before liveness checks so initdb and crash recovery can finish on slow disks.
 		StartupProbe:   probe(5, 5, 120),
 		ReadinessProbe: probe(10, 5, 3),
 		LivenessProbe:  probe(30, 10, 6),
@@ -208,12 +143,11 @@ func postgresDeployment(p Params) *appsv1.Deployment {
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
-					NodeSelector:                 controllerSelector(p),
-					AutomountServiceAccountToken: boolPtr(false),
-					EnableServiceLinks:           boolPtr(false),
-					Tolerations:                  haTolerations(p),
-					PriorityClassName:            controlPlanePriorityName,
-					// pg_ctl's -t 50 in the preStop hook fits inside it.
+					NodeSelector:                  controllerSelector(p),
+					AutomountServiceAccountToken:  boolPtr(false),
+					EnableServiceLinks:            boolPtr(false),
+					Tolerations:                   haTolerations(p),
+					PriorityClassName:             controlPlanePriorityName,
 					TerminationGracePeriodSeconds: int64Ptr(60),
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot:   boolPtr(true),
@@ -240,8 +174,7 @@ func postgresDeployment(p Params) *appsv1.Deployment {
 	}
 }
 
-// postgresDataVolume is the database's data: PostgresDataHostPath, or the replicated
-// volume in ControllerHA mode, which follows the pod to any controller.
+// postgresDataVolume uses replicated storage under controller HA and the fixed hostPath otherwise.
 func postgresDataVolume(p Params) corev1.Volume {
 	if p.ControllerHA {
 		return corev1.Volume{Name: postgresDataVol, VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: PostgresHAClaim}}}
@@ -251,15 +184,12 @@ func postgresDataVolume(p Params) corev1.Volume {
 		Name: postgresDataVol,
 		VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{
 			Path: PostgresDataHostPath,
-			// Directory, not DirectoryOrCreate: a directory kubelet made would belong
-			// to root, and a missing one means the installer did not run.
+			// Require an installer-created directory; DirectoryOrCreate would silently create root-owned database storage.
 			Type: &hostPathDir,
 		}},
 	}
 }
 
-// postgresService is the name the pods reach the database by:
-// felis-postgres.<control-ns>.svc:5432 (the pod config's [database] url).
 func postgresService(p Params) *corev1.Service {
 	labels := postgresLabels()
 	return &corev1.Service{
@@ -278,12 +208,7 @@ func postgresService(p Params) *corev1.Service {
 	}
 }
 
-// PostgresIngressPolicy admits TCP to the database from the pods that open it
-// and nothing else in the cluster: felis-api, the reaper (which records what it
-// archives) and the world-backup Jobs (which record each backup). The operator,
-// restore and file Jobs and every game server hold no database credential and
-// get no route. The node itself is always admitted by the policy controller,
-// which is how the host's tools reach PostgresHostPort.
+// PostgresIngressPolicy admits credential-bearing API, reaper and backup Pods; resident-node traffic remains outside policy blocking.
 func PostgresIngressPolicy(p Params) *networkingv1.NetworkPolicy {
 	p = p.withDefaults()
 	tcp := corev1.ProtocolTCP

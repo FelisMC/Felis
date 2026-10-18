@@ -14,11 +14,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// summaryModel is the terminal screen of the setup wizard. On a first run it
-// confirms what was just configured and points the operator at the panel for
-// everything else. On a re-run (an Owner already exists) it doubles as a thin
-// status landing screen — the whole point of the redesign is that setup runs
-// once and the rest of administration happens in the panel.
 type summaryModel struct {
 	panelURL      string
 	ownerUsername string
@@ -167,12 +162,8 @@ var (
 	desktopCopy = clipboard.WriteAll
 )
 
-// copyTerminalText always sends the text to the terminal as OSC 52, which reaches the
-// operator's own clipboard over SSH. The installer and `felis setup` run under sudo,
-// which drops SSH_TTY and SSH_CONNECTION, so an SSH session cannot be told apart from
-// a console. A graphical session on this machine also gets its desktop clipboard,
-// when xclip, xsel or wl-copy is installed; desktop reports that it did. /dev/tty keeps
-// the one-time link out of redirected stdout and install logs.
+// OSC 52 reaches SSH clients; graphical sessions also use the local clipboard.
+// /dev/tty keeps the one-time link out of redirected stdout and install logs.
 func copyTerminalText(text string) (desktop bool, err error) {
 	if os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != "" {
 		desktop = desktopCopy(text) == nil
@@ -197,11 +188,6 @@ func writeOSC52(text string) error {
 	return err
 }
 
-// alertRoute is where this host's watchdog alerts go, as the summary shows it:
-// by mail through the relay (the panel's, else felis.toml's [smtp]) to the Owners'
-// verified addresses, and the heartbeat that notices the host itself going down
-// (https://docs.felismc.com/en/operations/monitoring#heartbeat). Setup runs mail-less by
-// design, so a fresh install has neither; the summary says so where the Owner can press e.
 type alertRoute struct {
 	relay        string   // "host:port", "" with no relay
 	recipients   []string // enabled Owners' verified addresses
@@ -214,10 +200,7 @@ type alertRoute struct {
 // replace it.
 var readPanelSettings = panelSettings
 
-// hostAlertRoute reads the route from the host config at cfgPath, the database
-// at dbURL and the heartbeat file at heartbeatPath: what the next watchdog run
-// uses. A relay or heartbeat saved in the panel wins over the host's, as it does
-// in the watchdog.
+// Panel relay and heartbeat settings override host configuration.
 func hostAlertRoute(ctx context.Context, cfgPath, dbURL, heartbeatPath string) alertRoute {
 	var r alertRoute
 	if in := smtpInputsFrom(cfgPath); in.host != "" {

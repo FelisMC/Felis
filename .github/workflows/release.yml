@@ -1,32 +1,4 @@
-# Publishes a Felis release when a vX.Y.Z tag is pushed.
-#
-# Two things depend on this job. /repos/{repo}/releases/latest must ANSWER — that endpoint is
-# what `felis update` polls (internal/updater/github.go) and what deploy/bootstrap.sh's default
-# "release" channel resolves its ref from. And the assets below are what that channel then
-# INSTALLS: bootstrap downloads the felis binary, the image tars, their listing and the Velocity
-# plugin instead of building anything on the target host, so these are the shipped artifact,
-# not a convenience. A host installing a release needs neither Docker, Gradle, Go nor Docker Hub.
-#
-# deploy/build-release-artifacts.sh builds every asset in one run and documents each name; the
-# names are a contract with deploy/bootstrap.sh. They are plain literals on both sides: a YAML
-# workflow and a go:embed'ed shell script have no honest way to share a constant, and the
-# failure mode is benign — bootstrap warns and falls back to building on the host.
-#
-# The binary is built through the repo Dockerfile rather than a plain `go build`.
-# internal/panel/static holds a tracked PLACEHOLDER index.html so the //go:embed
-# compiles in a checkout without node; a direct `go build` therefore succeeds and
-# quietly ships a release whose panel is that placeholder. The Dockerfile runs the npm
-# build first, and is the same recipe bootstrap uses, so there is one way to build felis
-# rather than two that can drift.
-#
-# SHA256SUMS is a contract with bootstrap too: it refuses any asset whose hash is not listed
-# there, BEFORE it runs or imports it.
-#
-# The write token never meets the test suite: `gates` (ci.yml) and `build` run the tests,
-# Gradle and the Docker builds (each of which executes third-party code) with a read-only
-# token, and `build` hands the assets over as a workflow artifact; `publish` holds contents:write and runs only
-# pinned actions and gh. Every action is pinned to a commit SHA (the tag in the trailing
-# comment is for humans); .github/dependabot.yml proposes the bumps.
+# Build tagged release artifacts through Dockerfile so binaries embed the real panel rather than its source placeholder.
 name: release
 
 on:
@@ -37,12 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  # A tag that ships red is worse than a tag that fails to ship. These are ci.yml's gates,
-  # called rather than copied: Go (race, vet, staticcheck), govulncheck, the PostgreSQL
-  # contract suite, shellcheck and the bootstrap tests, promtool on the alert rules, the
-  # panel, and the Java layer the binary EMBEDS (bootstrap_asset.go ships the plugin
-  # sources, so a tag whose plugins do not compile turns every install of that release into
-  # a failed bootstrap).
+  # Reuse ci.yml gates before building or publishing release assets.
   gates:
     uses: ./.github/workflows/ci.yml
 
@@ -52,11 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      # Both architectures, because bootstrap's default release channel DOWNLOADS these
-      # rather than building on the target host — an arm64 host with no asset falls back to
-      # a slow on-host build. The felis binary and the plugin jars cross-compile on the
-      # runner (their build stages are pinned to $BUILDPLATFORM); the game images' runtime
-      # stages run apt-get for the target platform, which for arm64 takes QEMU.
+      # Cross-build amd64/arm64 artifacts; target-runtime package installation requires QEMU.
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
@@ -65,16 +28,12 @@ jobs:
       - name: Free disk space
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
 
-      # The script checks what the old inline steps did: the host binary reports exactly
-      # "felis <tag>" (unstamped, `felis update` refuses to compare), and the other one is an
-      # ELF of its architecture, read with file(1) — binfmt would run a misnamed binary happily.
+      # Check the native version stamp and cross-architecture ELF identity rather than relying on binfmt execution.
       - name: Build the release assets
         run: deploy/build-release-artifacts.sh "${GITHUB_REF_NAME}" dist
 
-      # A CycloneDX SBOM per binary: the Go modules (and versions) linked into it, read
-      # from the build info the linker embeds. Written after SHA256SUMS, so beside it in the
-      # release but outside it: that lists what bootstrap installs. Straight into dist/,
-      # because the action does not create a missing output directory.
+      # A CycloneDX SBOM per binary, listing the Go modules linked into it from the build info.
+      # Write release metadata after checksums so bootstrap's asset list excludes it.
       - uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           file: dist/felis-linux-amd64
@@ -112,11 +71,7 @@ jobs:
       # The artifact store sits between the two jobs, so check the handover too.
       - run: sha256sum -c SHA256SUMS
 
-      # Signed SLSA provenance: which workflow run, commit and repository produced each
-      # asset. Check one with `gh attestation verify felis-linux-amd64 --repo FelisMC/Felis`.
-      # GitHub only stores attestations for private repositories on Enterprise Cloud, and a
-      # failure here would block the release, so a private repository skips the step and
-      # relies on SHA256SUMS alone.
+      # Publish verifiable workflow provenance where supported; private non-Enterprise repositories retain checksum verification.
       - name: Attest build provenance
         if: ${{ !github.event.repository.private }}
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
@@ -126,19 +81,7 @@ jobs:
             felis-image-*.tar
             felis-velocity.jar
 
-      # --verify-tag refuses to invent a release for a tag that is not pushed.
-      #
-      # The prerelease flag has to be passed explicitly: the trigger glob is v*, so v1.2.3-rc1
-      # lands here too, and gh does not read semver out of the tag name. Published as a full
-      # release an RC becomes /releases/latest — the single endpoint bootstrap's default
-      # channel installs from and `felis update` polls — so every fresh install would get the
-      # RC binary and every deployed felis-api would error on the felis component until a
-      # stable tag was cut. Flagged, GitHub keeps latest pointing at the last stable release.
-      #
-      # A re-run (the release already exists) uploads only what is missing and never
-      # replaces a published asset: hosts may already have installed it, and their
-      # SHA256SUMS check would start failing against a swapped file. An asset that is
-      # there with different bytes stops the job; cut a new tag instead.
+      # Verify pushed tags, mark prereleases explicitly, and reject replacing published assets with different bytes.
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}

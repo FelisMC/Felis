@@ -1,9 +1,6 @@
 #!/bin/sh
-# Checks for deploy/uninstall.sh. Run it as: sh deploy/uninstall_test.sh
-#
-# The script is sourced with FELIS_UNINSTALL_SOURCED=1, every host path pointed into a
-# scratch directory, and the commands that would change the host (systemctl, k3s, nft,
-# firewall-cmd, runuser, docker, userdel) replaced by stubs that log their arguments.
+# Checks for deploy/uninstall.sh. Run it as: sh deploy/uninstall_test.sh.
+# Redirect host paths to scratch space and replace mutating commands with recording stubs.
 set -u
 
 US="${1:-$(dirname "$0")/uninstall.sh}"
@@ -150,7 +147,6 @@ run_uninstall() {
     main "$@"' "$US" "$@" 2>&1
 }
 
-# --- keep-data, a cluster that runs only Felis -------------------------------------------
 fresh_host
 out="$(run_uninstall "default kube-system felis minecraft felis-build" --yes)"
 calls="$(cat "$root/calls")"
@@ -193,7 +189,6 @@ kill_at="$(grep -n 'RUN k3s-killall.sh' "$root/calls" | head -n 1 | cut -d: -f1)
 expect "and the uninstall waits for it to stop" "KUBE -n felis wait --for=delete pod -l app.kubernetes.io/name=felis,app.kubernetes.io/component=postgres" "$calls"
 refute "keep-data keeps the cluster directory's SELinux rule" "SEMANAGE" "$calls"
 
-# --- a failed final bundle stops everything ------------------------------------------------
 fresh_host
 printf '#!/bin/sh\necho "RUN felis $*" >> "%s"\nexit 1\n' "$root/calls" > "$root/h/bin/felis"
 out="$(run_uninstall "default felis minecraft" --yes)"
@@ -205,7 +200,6 @@ run_uninstall "default felis minecraft" --yes --no-backup >/dev/null
 [ ! -d "$root/h/opt" ] && echo "PASS --no-backup goes on without one" \
   || { echo "FAIL --no-backup did not remove anything"; fails=$((fails + 1)); }
 
-# --- a shared cluster --------------------------------------------------------------------
 fresh_host
 out="$(run_uninstall "default kube-system felis minecraft felis-build shop" --yes)"
 calls="$(cat "$root/calls")"
@@ -226,7 +220,6 @@ run_uninstall down --yes --keep-k3s >/dev/null
 calls="$(cat "$root/calls")"
 refute "--keep-k3s never runs k3s's uninstaller" "RUN k3s-uninstall.sh" "$calls"
 
-# --- k3s already gone ----------------------------------------------------------------------
 fresh_host
 rm -f "$root/h/bin/k3s"
 printf '[Service]\nLimitNOFILE=4096\n' > "$root/h/units/k3s.service.d/90-admin.conf"
@@ -238,7 +231,6 @@ run_uninstall down --yes >/dev/null
   && echo "PASS a drop-in someone else wrote beside it stays, with the directory" \
   || { echo "FAIL the uninstall removed a k3s drop-in it did not write"; fails=$((fails + 1)); }
 
-# --- a controller of a multi-node install with high availability ------------------------
 # What the node service, `felis node firewall` and install_keepalived leave besides /etc/felis.
 node_host() {
   fresh_host
@@ -263,9 +255,7 @@ svc_at="$(grep -n 'SYSTEMCTL disable --now felis-control-firewall.service' "$roo
   && echo "PASS the control firewall's timer stops before its service, so it does not start it again" \
   || { echo "FAIL the control firewall's timer and service: $calls"; fails=$((fails + 1)); }
 expect "the node service stops" "SYSTEMCTL disable --now felis-node-control.service" "$calls"
-# What the uninstall must take out comes from the code that puts it in
-# (cmd/felis/node_firewall.go): the chains it creates and the built-in chains it hooks
-# them into. A chain added there and not removed here fails below.
+# Derive expected firewall cleanup from the creating code so newly added chains cannot leak on uninstall.
 fwsrc="$(dirname "$US")/../cmd/felis/node_firewall.go"
 hooks="$(grep -oE '\{"(filter|raw)", "[A-Z]+", "FELIS-[A-Z]+"\}' "$fwsrc" | tr -d '{}",')"
 chains="$(grep -oE '(-t raw )?-N FELIS-[A-Z]+' "$fwsrc" | sed 's/^-t raw -N /raw /; s/^-N /filter /' | sort -u)"
@@ -316,7 +306,6 @@ run_uninstall "default kube-system felis minecraft felis-build" --yes >/dev/null
 calls="$(cat "$root/calls")"
 refute "a single-node host has no node firewall chains to remove" "-X FELIS" "$calls"
 
-# --- purge -------------------------------------------------------------------------------
 fresh_host
 out="$(run_uninstall "default felis minecraft" --purge --yes)"
 calls="$(cat "$root/calls")"
@@ -342,8 +331,6 @@ expect "purge cleans Docker's build cache" "DOCKER builder prune -af" "$calls"
 expect "purge drops the cluster directory's SELinux rule" "SEMANAGE fcontext -d $root/h/data/postgres(/.*)?" "$calls"
 refute "purge leaves k3s's pods to k3s-uninstall.sh" "scale deployment felis-postgres" "$calls"
 
-# --- purge after the move into felis-postgres ---------------------------------------------
-# The move stopped the host server with the felis database left in it for a rollback.
 moved_host() { fresh_host; printf 'moved\n' > "$root/h/data/postgres-moved"; printf 'saved\n' > "$root/h/hba.conf.pre-pg-move"; }
 moved_host
 out="$(PG_HOST=stopped run_uninstall "default felis minecraft" --purge --yes)"
@@ -376,9 +363,7 @@ moved_host
 (PG_HOST=none run_uninstall "default felis minecraft" --purge --yes >/dev/null)  # a subshell: sh keeps a prefix assignment to a function
 refute "a host server removed since the move is not started" "SYSTEMCTL start postgresql" "$(cat "$root/calls")"
 
-# --- a purge DROP ROLE would refuse -------------------------------------------------------
-# The VM drill: the PG contract tests' felis_pgint was owned by felis, the purge removed the
-# units and k3s, then stopped at DROP ROLE with half the host gone.
+# Check role dependencies before removing services so a refused DROP ROLE cannot leave a partial uninstall.
 untouched() { # label
   [ -d "$root/h/opt" ] && [ -f "$root/h/units/felis-velocity.service" ] && [ -d "$root/h/etc" ] \
     && ! grep -q "k3s-uninstall.sh\|DROP DATABASE\|SYSTEMCTL disable" "$root/calls" \
@@ -405,7 +390,6 @@ calls="$(cat "$root/calls")"
 refute "keep-data drops no role, so it asks nothing" "PSQL-CHECK" "$calls"
 expect "and goes on" "RUN k3s-uninstall.sh" "$calls"
 
-# --- the pieces read before they are removed ---------------------------------------------
 fresh_host
 lib() { STATE_DIR="$root/h/etc" OPT_DIR="$root/h/opt" UNIT_DIR="$root/h/units" FELIS_UNINSTALL_SOURCED=1 \
   bash -c '. "$0"; '"$1" "$US"; }
@@ -450,10 +434,7 @@ for u in $written; do
   expect "the uninstaller removes $u" " $u" " $(printf '%s' "$units" | tr '\n' ' ')"
 done
 
-# --- ufw: the rules bootstrap added, by the comments bootstrap gives them ------------------
-# The listing is what `ufw status numbered` prints once bootstrap has run: a rule of the
-# operator's own first (commented, as an operator may), then each felis- rule bootstrap.sh can
-# add and its IPv6 twin.
+# Include operator-owned rules and IPv6 twins when testing numbered ufw cleanup.
 tags="$(grep -o 'comment felis-[a-z0-9-]*' "$(dirname "$US")/bootstrap.sh" | awk '{ print $2 }' | sort -u)"
 case " $(printf '%s ' $tags)" in
   *" felis-k3s-pods "*" felis-proxy "*) echo "PASS bootstrap tags its ufw rules" ;;

@@ -19,18 +19,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
-// cmdBackup is the in-Pod entrypoint the on-demand backup Job runs. internal/backupjob
-// renders a Pod whose command is `/usr/local/bin/felis backup`. It tars the mounted
-// world into the archive store AND records the world_backups row, then exits — it is
-// NOT a user-facing command and is never invoked by hand.
-//
-// Unlike `felis restore`, this command DOES hold database credentials (via the mounted
-// config Secret) and calls config.Load: a backup must record its row atomically with
-// the archive, exactly like the reaper — otherwise a completed archive would leak as an
-// orphan file the retention pass never expires. The security review for that departure
-// lives in internal/backupjob/jobspec.go. The world is mounted directly at --worlds-root
-// (single-PVC mount, like restore), so the archiver's resolver returns that root for any
-// PVC; the archive is written into the backup PVC at cfg.Archive.LocalPath.
+// Backup Jobs hold database credentials to record their archive row.
 func cmdBackup(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("backup", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -61,18 +50,14 @@ func cmdBackup(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "felis backup: archive store %q is not implemented in this build (only tarLocal)\n", cfg.Archive.Store)
 		return 1
 	}
-	// The [archive] parse the reaper uses: it holds each reason's keep and
-	// retention. The Owner's retention policy, read once the database is open,
-	// overrides it.
+	// The Owner's retention policy, read once the database is open, overrides this [archive] parse.
 	rcfg, err := reaperConfig(cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis backup: %v\n", err)
 		return 1
 	}
 
-	// The world PVC is mounted directly at worldsRoot; the resolver returns it for
-	// any target, exactly as in cmdRestore. This is the same TarLocal the reaper
-	// writes archives with.
+	// The world PVC is mounted at worldsRoot, so the resolver returns it for any target.
 	archiver := &backup.TarLocal{
 		BackupRoot: cfg.Archive.LocalPath,
 		Resolve: func(string) (string, error) {
@@ -82,8 +67,7 @@ func cmdBackup(args []string, stdout, stderr io.Writer) int {
 
 	ctx := ctrl.SetupSignalHandler()
 
-	// The archive store shares the node's disk with every world and the
-	// database: an owner's backup must not be what tips it into eviction.
+	// The archive store shares the node's disk, so a backup must not push it into eviction.
 	if err := backup.CheckRoom(cfg.Archive.LocalPath, *worldsRoot, backup.MinFreeAfter); err != nil {
 		fmt.Fprintf(stderr, "felis backup: %v\n", err)
 		return 1
@@ -126,9 +110,7 @@ func cmdBackup(args []string, stdout, stderr io.Writer) int {
 	}
 	st := reaper.NewPGStore(drv.DB())
 	if err := st.InsertBackup(ctx, rec); err != nil {
-		// The archive is written but unrecorded — an orphan the retention pass would
-		// never expire. Delete it so a failed backup leaves no leaked bytes, mirroring
-		// the reaper's archive-then-record atomicity.
+		// An unrecorded archive would never be expired by retention, so remove it.
 		if delErr := archiver.Delete(ctx, ref); delErr != nil {
 			fmt.Fprintf(stderr, "felis backup: record failed (%v) AND orphan archive %s could not be removed: %v\n", err, ref, delErr)
 			return 1
@@ -143,24 +125,14 @@ func cmdBackup(args []string, stdout, stderr io.Writer) int {
 }
 
 const (
-	reasonManual = "manual"
-	// preRestoreKeep is how many safety snapshots a server keeps: enough to walk
-	// back a couple of restores in a row, without every restore adding a world's
-	// worth of bytes for the full manual retention.
-	preRestoreKeep = 3
-	// replicaKeep and replicaRetention bound the frequent copies of a world running on a
-	// worker: only the newest matter to a failover, and an hourly copy kept for long would
-	// fill the archive store.
+	reasonManual   = "manual"
+	preRestoreKeep = 3 // safety snapshots kept per server
+	// replicaKeep and replicaRetention bound a worker's frequent world copies; only the newest matter to a failover.
 	replicaKeep      = 2
 	replicaRetention = 48 * time.Hour
 )
 
-// backupPolicy is how many backups of one reason a server keeps and how long
-// each lives: an owner's own backups and the safety snapshots in front of a
-// restore by [archive] manual_keep / manual_retention (the snapshots capped at
-// preRestoreKeep), felis-api's daily restore points by scheduled_keep /
-// scheduled_retention, and a worker's replicas by replicaKeep / replicaRetention, so no
-// kind crowds out another. ok is false for a reason this command does not record.
+// backupPolicy returns the keep count and retention for a backup reason; ok is false for a reason this command does not record.
 func backupPolicy(reason string, rcfg reaper.Config) (keep int, retention time.Duration, ok bool) {
 	switch reason {
 	case reasonManual:
@@ -175,12 +147,8 @@ func backupPolicy(reason string, rcfg reaper.Config) (keep int, retention time.D
 	return 0, 0, false
 }
 
-// pruneBackups keeps the newest keep backups of this reason that owner holds of
-// server and removes the rest, oldest first, so repeated backups of one world
-// cannot fill the shared archive store and a new owner's backups never remove a
-// previous owner's. protect is never removed: it is the backup a chained restore
-// is about to extract. The new backup is already recorded; a removal that fails
-// is reported and retried after the next backup.
+// pruneBackups removes the oldest backups of this reason beyond keep for one owner and server; protect is never removed.
+// A failed removal is reported and retried after the next backup.
 func pruneBackups(ctx context.Context, st *reaper.PGStore, archiver interface {
 	Delete(context.Context, backup.ArchiveRef) error
 }, server, owner, reason string, keep int, protect string, stdout, stderr io.Writer) {
@@ -202,13 +170,9 @@ func pruneBackups(ctx context.Context, st *reaper.PGStore, archiver interface {
 	}
 }
 
-// newBackupID mints a world_backups primary key, matching the reaper's "bk-"+hex
-// scheme so a manual and an inactivity backup are indistinguishable downstream.
 func newBackupID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		// crypto/rand failure is fatal and unrecoverable; a time-based fallback would
-		// be a weaker ID for no benefit. A panic is the honest failure here.
 		panic("felis backup: crypto/rand: " + err.Error())
 	}
 	return "bk-" + hex.EncodeToString(b[:])

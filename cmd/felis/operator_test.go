@@ -15,8 +15,6 @@ func (f fakeCache) WaitForCacheSync(ctx context.Context) bool {
 	return bool(f)
 }
 
-// TestCacheSynced: the operator reports ready only once its informers synced,
-// and a check against caches that never sync returns within its own deadline.
 func TestCacheSynced(t *testing.T) {
 	req := httptest.NewRequest("GET", "/readyz", nil)
 	if err := cacheSynced(fakeCache(true))(req); err != nil {

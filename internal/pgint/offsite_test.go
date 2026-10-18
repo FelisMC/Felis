@@ -14,10 +14,6 @@ import (
 	"felis.lolicon.best/internal/reaper"
 )
 
-// TestOffsiteCatalogNewestCopyAndKeptRefs: the two reads behind the off-site
-// copy's snapshot and sweep. NewestOffsite is the latest copy of any row;
-// KeptRefs keeps a present archive past its expiry (the reaper expires it, not
-// the sweep) and a deleted one until its expires_at, and nothing after.
 func TestOffsiteCatalogNewestCopyAndKeptRefs(t *testing.T) {
 	ctx := context.Background()
 	cat := offsite.PGCatalog{DB: db}
@@ -61,10 +57,6 @@ func TestOffsiteCatalogNewestCopyAndKeptRefs(t *testing.T) {
 	}
 }
 
-// TestOwnerDeletedBackup: ExpireBackup turns one present backup expired with
-// expires_at pulled to the delete (never pushed later), after which no read
-// finds it, the backup budget drops its bytes, the reaper's retention pass
-// lists it whatever its expires_at, and the off-site sweep drops its copy.
 func TestOwnerDeletedBackup(t *testing.T) {
 	ctx := context.Background()
 	sfx := suffix(t)

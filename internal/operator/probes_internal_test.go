@@ -55,7 +55,6 @@ func TestGameContainerProbes(t *testing.T) {
 	}
 }
 
-// Deleting a server's StatefulSet, or scaling it to zero, keeps the world claim.
 func TestWorldClaimOutlivesTheStatefulSet(t *testing.T) {
 	srv := &v1alpha1.MinecraftServer{ObjectMeta: metav1.ObjectMeta{Name: "survival", Namespace: "minecraft"}}
 	srv.Spec.Image = "itzg/minecraft-server:java21"

@@ -34,9 +34,6 @@ func decodeWindow(t *testing.T, w interface{ Bytes() []byte }) (start, end any) 
 	return body["start"], body["end"]
 }
 
-// TestUpdateWindowUnsetReturnsNulls: a never-set window reads back as {null,null}
-// (ErrNotFound → 200 nulls), so the client has one shape whether or not a window
-// was ever configured.
 func TestUpdateWindowUnsetReturnsNulls(t *testing.T) {
 	api, _ := seedUpdatesAPI(t)
 	w := do(api.ExternalHandler(), "GET", "/api/v1/updates/window", "", nil)
@@ -48,7 +45,6 @@ func TestUpdateWindowUnsetReturnsNulls(t *testing.T) {
 	}
 }
 
-// TestUpdateWindowSetThenGet: a valid window is persisted and read back verbatim.
 func TestUpdateWindowSetThenGet(t *testing.T) {
 	api, repo := seedUpdatesAPI(t)
 	const startISO, endISO = "2026-08-01T02:00:00Z", "2026-08-01T04:00:00Z"
@@ -61,7 +57,6 @@ func TestUpdateWindowSetThenGet(t *testing.T) {
 	if start, end := decodeWindow(t, put.Body); start != startISO || end != endISO {
 		t.Fatalf("PUT echo = {%v,%v}, want {%s,%s}", start, end, startISO, endISO)
 	}
-	// It was actually persisted (not merely echoed).
 	if _, ok := repo.settings[updateWindowKey]; !ok {
 		t.Fatalf("window was not written to platform_settings[%q]", updateWindowKey)
 	}
@@ -75,9 +70,6 @@ func TestUpdateWindowSetThenGet(t *testing.T) {
 	}
 }
 
-// TestUpdateWindowClearRoundtrips: PUT {null,null} clears a previously set window,
-// and the cleared window reads back as {null,null} — the SAME shape as never-set,
-// exercising the second code path that yields nulls.
 func TestUpdateWindowClearRoundtrips(t *testing.T) {
 	api, _ := seedUpdatesAPI(t)
 	set := do(api.ExternalHandler(), "PUT", "/api/v1/updates/window",
@@ -100,10 +92,6 @@ func TestUpdateWindowClearRoundtrips(t *testing.T) {
 	}
 }
 
-// TestUpdateWindowRejectsMalformed: a half-set (exactly one end) or inverted/empty
-// (end not after start) window is 400 and is NEVER written — the store can only
-// ever hold a fully-valid or a fully-cleared window, mirroring the core's
-// fail-closed Window.
 func TestUpdateWindowRejectsMalformed(t *testing.T) {
 	for _, tc := range []struct{ name, body string }{
 		{"start without end", `{"start":"2026-08-01T02:00:00Z","end":null}`},
@@ -127,8 +115,6 @@ func TestUpdateWindowRejectsMalformed(t *testing.T) {
 	}
 }
 
-// TestUpdateWindowContentTypeGuard pins the cross-site-forgery guard on the mutating
-// PUT: a body an HTML form could emit is rejected 415 before any write.
 func TestUpdateWindowContentTypeGuard(t *testing.T) {
 	api, repo := seedUpdatesAPI(t)
 	w := do(api.ExternalHandler(), "PUT", "/api/v1/updates/window",
@@ -142,7 +128,6 @@ func TestUpdateWindowContentTypeGuard(t *testing.T) {
 	}
 }
 
-// Verify the Owner and operator-host boundaries for reads and writes.
 func TestUpdateWindowOwnerGating(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -166,8 +151,6 @@ func TestUpdateWindowOwnerGating(t *testing.T) {
 					t.Fatalf("GET %s code = %d, want %d (%s)", path, get.Code, tc.want, get.Body.String())
 				}
 			}
-			// A valid PUT by an Owner is 200; other identities are rejected
-			// before the handler), so the wanted PUT code is the same as the GET's.
 			put := do(api.ExternalHandler(), "PUT", "/api/v1/updates/window",
 				`{"start":"2026-08-01T02:00:00Z","end":"2026-08-01T04:00:00Z"}`, jsonHeader)
 			if put.Code != tc.want {

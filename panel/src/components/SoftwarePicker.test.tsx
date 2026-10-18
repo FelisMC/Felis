@@ -6,10 +6,6 @@ import { CreateServerDialog } from "./CreateServerDialog";
 import { EditServerDialog } from "./EditServerDialog";
 import type { CreateServerRequest, SelfCreateRequest, ServerQuota, ServerSoftware, SoftwareRequest, SoftwareType } from "@/lib/types";
 
-// A stand-in for felis-api's software routes and create/patch, answering the way
-// the real ones do: versions newest first with pre-releases marked, a version's
-// builds with the recommended one flagged and the Java it needs, refusals for an
-// older Java, a missing EULA, an unconfirmed version move or a full quota.
 const backend = vi.hoisted(() => {
   type Server = { software?: ServerSoftware; image?: string; memory: string; owner?: string };
   const versions: Record<string, { id: string; stable: boolean }[]> = {

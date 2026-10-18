@@ -14,8 +14,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
-// ---- policy parsing ----
-
 func TestParseApplyAutostartPolicy(t *testing.T) {
 	tests := []struct {
 		input string
@@ -45,8 +43,6 @@ func TestParseApplyAutostartPolicy(t *testing.T) {
 		}
 	}
 }
-
-// ---- quantity parsing ----
 
 func TestParseApplyPositiveQuantity(t *testing.T) {
 	tests := []struct {
@@ -83,8 +79,6 @@ func TestParseApplyPositiveQuantity(t *testing.T) {
 	}
 }
 
-// ---- resource ceiling validation ----
-
 func TestValidateResourceCeilings(t *testing.T) {
 	tests := []struct {
 		desc     string
@@ -110,22 +104,20 @@ func TestValidateResourceCeilings(t *testing.T) {
 	}
 }
 
-// ---- JVM heap derivation ----
-
 func TestDeriveApplyJavaHeap(t *testing.T) {
 	// reserve = max(bytes*0.25, 512MiB), capped at bytes*0.5
 	tests := []struct {
 		limit string
 		want  string
 	}{
-		{"1Gi", "512M"},   // 1Gi: reserve=512Mi (floor) → heap=512Mi
-		{"2Gi", "1536M"},  // 2Gi: reserve=512Mi (floor,25%=512M=floor) → heap=1536Mi
-		{"4Gi", "3072M"},  // 4Gi: reserve=1024Mi (25%) → heap=3072Mi
-		{"8Gi", "6144M"},  // 8Gi: reserve=2048Mi (25%) → heap=6144Mi
-		{"3Gi", "2304M"},  // 3Gi: reserve=768Mi (25%) → heap=2304Mi
-		{"512Mi", "256M"}, // 512Mi: reserve=128Mi (25%) < floor=512Mi → reserve=256Mi (half cap) → heap=256Mi
-		{"768Mi", "384M"}, // 768Mi: reserve=192Mi (25%) < floor=512Mi → reserve=384Mi (half cap) → heap=384Mi
-		{"256Mi", "128M"}, // 256Mi: reserve=64Mi (25%) < floor=512Mi → capped at half 128Mi → heap=128Mi
+		{"1Gi", "512M"},
+		{"2Gi", "1536M"},
+		{"4Gi", "3072M"},
+		{"8Gi", "6144M"},
+		{"3Gi", "2304M"},
+		{"512Mi", "256M"},
+		{"768Mi", "384M"},
+		{"256Mi", "128M"},
 	}
 	for _, tc := range tests {
 		limit := resource.MustParse(tc.limit)
@@ -135,8 +127,6 @@ func TestDeriveApplyJavaHeap(t *testing.T) {
 		}
 	}
 }
-
-// ---- CRD builder ----
 
 func TestBuildMinecraftServerFromApplyRequest_Valid(t *testing.T) {
 	req := applyRequest{
@@ -175,9 +165,6 @@ func TestBuildMinecraftServerFromApplyRequest_Valid(t *testing.T) {
 	if ms.Spec.Storage.Size != "20Gi" {
 		t.Errorf("Storage.Size = %q, want 20Gi", ms.Spec.Storage.Size)
 	}
-	// Same operational defaults as the API create path: without RCON the server
-	// never reports players and the console answers 503; without spec.idle it
-	// never stops on its own.
 	if !ms.Spec.Rcon.Enabled || ms.Spec.Rcon.SecretRef.Name != naming.RconSecretName("test-server") {
 		t.Errorf("Rcon = %+v, want enabled with the operator-minted secret", ms.Spec.Rcon)
 	}
@@ -257,8 +244,6 @@ func TestBuildMinecraftServerFromApplyRequest_Resources(t *testing.T) {
 		t.Errorf("cpu request = %q, want 1", cpu.String())
 	}
 }
-
-// ---- error cases ----
 
 func TestBuildMinecraftServerFromApplyRequest_Errors(t *testing.T) {
 	const ok = "srv" // valid name to isolate the field under test
@@ -353,8 +338,6 @@ func TestBuildMinecraftServerFromApplyRequest_Errors(t *testing.T) {
 	}
 }
 
-// ---- JSON unknown-field rejection ----
-
 func TestApplyRequestRejectsUnknownFields(t *testing.T) {
 	raw := `{"name":"srv","subdomain":"srv","image":"x","memory":"1Gi","storage":"1Gi","bogusField":true}`
 	dec := json.NewDecoder(strings.NewReader(raw))
@@ -369,8 +352,6 @@ func TestApplyRequestRejectsUnknownFields(t *testing.T) {
 	}
 }
 
-// ---- helpers ----
-
 func resList(specs ...string) corev1.ResourceList {
 	rl := corev1.ResourceList{}
 	for _, s := range specs {
@@ -383,9 +364,6 @@ func resList(specs ...string) corev1.ResourceList {
 	return rl
 }
 
-// TestApplyReportsAMissingKubeconfig pins the node-side failure: with no kubeconfig to
-// find, apply says which ones it tried and exits 1. It used to call
-// ctrl.GetConfigOrDie, which ended the process with exit 1 and nothing printed.
 func TestApplyReportsAMissingKubeconfig(t *testing.T) {
 	if _, err := os.Stat(hostBootstrapKubeconfigPath); err == nil {
 		t.Skipf("%s exists on this machine", hostBootstrapKubeconfigPath)

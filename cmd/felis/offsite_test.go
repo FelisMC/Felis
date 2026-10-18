@@ -415,9 +415,6 @@ func TestRecordRun(t *testing.T) {
 	}
 }
 
-// A refused run has copied nothing and listed nothing: its zero counts would
-// tell the journal the bucket is empty. A pass that ran and failed a step
-// shows what it did get to.
 func TestReportRun(t *testing.T) {
 	w := &offsite.Writer{HostID: "bbbbbbbbbbbbbbbb", Host: "prod-1", At: time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)}
 	for _, tc := range []struct {
@@ -652,10 +649,6 @@ func TestPrintDBBundlesSaysWhatEachHolds(t *testing.T) {
 	}
 }
 
-// TestRestoredHostKeepsStandingBy walks the status file across runs: a host
-// restored from the writer's backup stands by on its first run and on every
-// run after it, a host an older release left copying claims the bucket once,
-// and a failed first run after the upgrade keeps that claim.
 func TestRestoredHostKeepsStandingBy(t *testing.T) {
 	rawKey, _ := offsite.NewKey()
 	key, _ := offsite.ParseKey(rawKey)
@@ -698,10 +691,6 @@ func TestRestoredHostKeepsStandingBy(t *testing.T) {
 	}
 }
 
-// TestOffsiteSyncerSnapshotsAndSweeps: the pass `offsite sync` runs takes its
-// snapshot the way `felis db backup` does, in the database pod, into the
-// bundle directory, keeping the newest one there; and it sweeps unrecorded
-// world objects only past the longest retention [archive] gives any backup.
 func TestOffsiteSyncerSnapshotsAndSweeps(t *testing.T) {
 	dir := newPodRig(t)
 	bundles := filepath.Join(dir, "bundles")

@@ -12,10 +12,6 @@ import (
 	"felis.lolicon.best/internal/store"
 )
 
-// The schema guard the api, reaper and offsite copy open the database through: the
-// migrated test database passes, a never-migrated one reads as behind (the missing
-// schema_migrations table is an empty set, not an error), and one that records a
-// version this build does not embed reads as newer.
 func TestSchemaGuard(t *testing.T) {
 	ctx := context.Background()
 	main, err := store.Open(ctx, os.Getenv("FELIS_TEST_PG_URL"))

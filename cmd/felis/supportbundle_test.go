@@ -54,9 +54,6 @@ var plantedSecrets = map[string]string{
 	"journal quoting a password":    "journal-pw-planted-1e2f",
 }
 
-// bundleHost is a Felis host for felis support-bundle: its secret files, its
-// watchdog unit and state, a cluster with a control-plane pod that restarted
-// and a game server, and logs and a journal that name secrets.
 func bundleHost(t *testing.T) *supportBundle {
 	t.Helper()
 	p := plantedSecrets
@@ -337,7 +334,6 @@ func TestSupportBundle(t *testing.T) {
 	}
 }
 
-// -server-logs adds the game servers' own logs, and says so.
 func TestSupportBundleServerLogs(t *testing.T) {
 	b := bundleHost(t)
 	b.serverLogs = true
@@ -354,8 +350,6 @@ func TestSupportBundleServerLogs(t *testing.T) {
 	}
 }
 
-// With the cluster and the configuration gone the bundle still holds what the
-// host shows, and MANIFEST says what it could not collect.
 func TestSupportBundleWithTheClusterDown(t *testing.T) {
 	b := bundleHost(t)
 	b.cl, b.clErr = nil, errors.New("connection refused")

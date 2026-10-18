@@ -47,8 +47,6 @@ func bootstrapWatchdogExecStart(t *testing.T, vars map[string]string) string {
 	return line
 }
 
-// felis doctor reads the watchdog's settings from the unit the installer
-// writes, so it checks the paths the timer's runs check.
 func TestWatchdogUnitFlagsReadsTheInstallersUnit(t *testing.T) {
 	dir := t.TempDir()
 	exec := bootstrapWatchdogExecStart(t, map[string]string{
@@ -288,8 +286,6 @@ func TestDoctorReportsByArea(t *testing.T) {
 	}
 }
 
-// A doctor run is only a look: whatever is due to be mailed stays due, no
-// heartbeat is pinged, and the watchdog's state is left as it was.
 func TestDoctorMailsPingsAndSavesNothing(t *testing.T) {
 	cfg := testWatchdogConfig + "[smtp]\nhost = \"smtp.example.com\"\nport = 587\nfrom = \"felis@example.com\"\n"
 	env, h := doctorHost(t, cfg, "")
@@ -348,9 +344,6 @@ func TestDoctorNotes(t *testing.T) {
 	}
 }
 
-// A relay and a heartbeat the Owner saved in the panel count: the doctor reports neither
-// missing, nor an unusable heartbeat file the watchdog then never reads. When the database
-// cannot be read, felis.toml and the file are judged as before.
 func TestDoctorCountsPanelSettings(t *testing.T) {
 	env, h := doctorHost(t, testWatchdogConfig, "")
 	writeTestFile(t, filepath.Join(h.dir, "watchdog-heartbeat-url"), "not a url\n", 0o600)
@@ -377,9 +370,6 @@ func TestDoctorCountsPanelSettings(t *testing.T) {
 	}
 }
 
-// Without the watchdog's unit the doctor still checks, with the watchdog's
-// defaults, and says the host has no watchdog; a configuration that does not
-// load leaves the checks that need it unchecked and the host's own checks on.
 func TestDoctorWithoutUnitOrConfig(t *testing.T) {
 	env, _ := doctorHost(t, testWatchdogConfig, "")
 	if err := os.Remove(filepath.Join(env.unitDir, "felis-watchdog.service")); err != nil {

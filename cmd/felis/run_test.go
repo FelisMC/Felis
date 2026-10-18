@@ -56,27 +56,13 @@ func TestRunUnknownCommand(t *testing.T) {
 	}
 }
 
-// undocumentedCommands are routable on purpose but kept out of the usage text: they
-// are called by deploy/bootstrap.sh or the operator's initContainers, not by a human
-// at a prompt. Listing them here is what makes their absence from usage a deliberate
-// decision rather than an oversight.
+// Internal deployment commands are intentionally omitted from human-facing usage.
 var undocumentedCommands = map[string]bool{
 	"bootstrap-assets": true, "init-forwarding": true, "init-volume": true,
 	"pin-images": true, "image-bundle": true,
 	"install-server": true, "install-self": true, "launch": true,
 }
 
-// The usage text and the dispatch table must describe the same set of commands.
-//
-// This exists because the failure it catches already happened: `version` shipped
-// implemented but unreachable — cmdVersion existed with nothing routing to it and no
-// usage line — so `felis version` fell through to "unknown command", and no test
-// noticed. Comparing the two lists is only possible because the router is a map; a
-// switch cannot be enumerated.
-//
-// It compares names WITHOUT invoking anything. Running each command to see whether it
-// is routed would start servers, dial clusters, and (for `update`) hit the network —
-// a slow, flaky test of the wrong thing.
 func TestUsageAndDispatchTableAgree(t *testing.T) {
 	documented := map[string]bool{}
 	var inCommands bool
@@ -113,9 +99,6 @@ func TestUsageAndDispatchTableAgree(t *testing.T) {
 }
 
 func TestRunApplyRequiresFileFlag(t *testing.T) {
-	// Without -f the command must fail with usage (2), not try to contact a
-	// cluster. It can't return 0 because no CRD was created, and it can't return 1
-	// because that would be ambiguous with a real server-side failure.
 	var out, errBuf bytes.Buffer
 	code := run([]string{"apply"}, &out, &errBuf)
 	if code != 2 {

@@ -22,13 +22,7 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// ---- Email (SMTP) relay: the post-install "configure email" screen ----
-//
-// Bootstrap deliberately has no SMTP (the Owner's address is recorded
-// unverified and the passkey is the only pre-SMTP credential), so this screen
-// is where a deployment gains real mail: email verification, email-OTP login
-// and the op-login mailbox factor all start working once it applies. It is
-// reached from the summary/status screen ("e"), mirroring "change storage".
+// It is reached from the summary ("e"), mirroring "change storage".
 
 // smtpInputs is the operator-entered relay coordinates. Only host/port/from/
 // username reach felis.toml; the password goes into the felis-smtp Secret.
@@ -40,9 +34,6 @@ type smtpInputs struct {
 	password string
 }
 
-// reconfigureSMTPMsg is sent from the summary/status screen to open the email
-// relay form — the supported way to configure or fix SMTP after install,
-// without hand-editing felis.toml and the Secret.
 type reconfigureSMTPMsg struct{}
 
 // smtpResultMsg returns control to the root once the screen is done: applied
@@ -278,10 +269,7 @@ func validateSMTPFrom(s string) error {
 	return nil
 }
 
-// currentSMTPInputs reads the relay already recorded in felis.toml so the form
-// pre-fills the non-secret fields. The password (the felis-smtp Secret and its
-// host copy) is deliberately never read back — it must be re-entered to change.
-// Any read error falls back to a blank form rather than blocking reconfig.
+// Prefill non-secret SMTP fields only; unreadable config yields a blank form.
 func currentSMTPInputs() smtpInputs { return smtpInputsFrom(hostSetupConfigPath) }
 
 // smtpInputsFrom is currentSMTPInputs for the config at path.
@@ -298,20 +286,7 @@ func smtpInputsFrom(path string) smtpInputs {
 	}
 }
 
-// applySMTPConfig proves the relay works, then persists it and rolls felis-api:
-// Ping (a full transaction — connect/STARTTLS/AUTH/MAIL FROM/RCPT/DATA, which
-// delivers one self-test message to the From address) → [smtp] into both config
-// files → the password into /etc/felis/smtp-password (hostcreds.go) → the
-// felis-smtp Secret → the config Secret → rollout. A failed Ping
-// leaves the install untouched, so a bad relay dies at the keyboard, not at a
-// player's OTP.
-//
-// Ping really sends, because a cheaper probe cannot answer the question this
-// screen exists to answer. Relays that validate sender identity — Fastmail, and
-// it is not alone — return an unconditional 250 to MAIL FROM and only refuse at
-// end-of-DATA. The earlier connect/AUTH/NOOP check therefore accepted a From on
-// a domain the account could not send as, wrote the config, and left every OTP
-// failing afterwards with this screen reporting success.
+// Complete a real SMTP message before persisting credentials, configuration, and Secrets or restarting consumers.
 func applySMTPConfig(ctx context.Context, in smtpInputs) error {
 	port, err := strconv.Atoi(in.port)
 	if err != nil {
@@ -365,10 +340,7 @@ func applySMTPConfig(ctx context.Context, in smtpInputs) error {
 	return kubectl(ctx, "-n", "felis", "rollout", "status", "deployment/felis-api", "--timeout=180s")
 }
 
-// setupSMTPConfig is the [smtp] block this screen writes: the relay it just
-// proved, plus the keys only an operator sets by hand (require_tls,
-// max_per_hour), carried over from the block it replaces so reconfiguring the
-// relay does not quietly reset them.
+// Preserve hand-configured require_tls and max_per_hour when replacing relay settings.
 func setupSMTPConfig(in smtpInputs, port int, prev config.SMTPConfig) config.SMTPConfig {
 	return config.SMTPConfig{
 		Host:        in.host,
@@ -381,14 +353,7 @@ func setupSMTPConfig(in smtpInputs, port int, prev config.SMTPConfig) config.SMT
 	}
 }
 
-// smtpSecretManifest renders the felis-smtp Secret for the given namespace, the
-// one the receiving Deployment/CronJob resolves its secretKeyRef against (felis
-// for felis-api, the workload namespace for the reaper's mirror). The namespace
-// must be IN the manifest: kubectl rejects a manifest whose namespace conflicts
-// with -n, so leaving the control namespace hardcoded made every workload-ns
-// replica fail before it started. Rendered in-process and piped to
-// `kubectl apply` — the password is never a command-line arg, so it never
-// appears in the host process table.
+// Render the receiving namespace and pipe Secret contents to kubectl rather than exposing credentials in argv.
 func smtpSecretManifest(password, namespace string) ([]byte, error) {
 	secret := &corev1.Secret{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
@@ -413,14 +378,7 @@ func applySMTPSecret(ctx context.Context, password string) error {
 	return kubectlWithInput(ctx, manifest, "apply", "-f", "-")
 }
 
-// replicateSMTPToWorkloadNamespace refreshes the workload-namespace (minecraft)
-// copy of felis-smtp after email is reconfigured. The reaper's CronJob runs
-// there and resolves the password by local reference — a secretKeyRef is
-// namespace-local — so without this refresh a later SMTP change would never
-// reach the pre-reap warning emails. Deliberately OVERWRITES: this is a mirror
-// of the control-namespace source, and a stale mirror is exactly the failure
-// this closes. The felis-config mirror rides along in applyFelisConfigSecret,
-// which every apply path refreshes.
+// Replace workload SMTP replicas so reaper notices cannot retain a stale relay password.
 func replicateSMTPToWorkloadNamespace(ctx context.Context, password string) error {
 	cfg, err := config.Load(hostSetupConfigPath)
 	if err != nil {

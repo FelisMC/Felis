@@ -41,9 +41,7 @@ func namedContainer(t *testing.T, d *appsv1.Deployment, name string) (corev1.Pod
 	return ps, corev1.Container{}
 }
 
-// rconPeerSelector returns the podSelector of the allow-rcon NetworkPolicy peer,
-// compiled into the same labels.Selector K8s evaluates at runtime. This is the
-// real gate: a pod reaches server RCON iff its labels Match this selector.
+// rconPeerSelector is the podSelector of the allow-rcon peer; K8s evaluates it at runtime, so it is the real gate.
 func rconPeerSelector(t *testing.T, p Params) labels.Selector {
 	t.Helper()
 	rcon := npByName(t, MinecraftNetworkPolicies(p), "felis-allow-rcon-from-control-plane")
@@ -71,10 +69,6 @@ func mapSelectorMatches(selector, podLabels map[string]string) bool {
 	return true
 }
 
-// TestControlPlaneDeployments_RunAsMatchingSA is the SA↔workload binding: the
-// namespaced Roles only mean something if a workload actually runs as each SA.
-// The Deployment is also NAMED for its SA (the tree convention), so a rename
-// can't silently detach the labels from the identity.
 func TestControlPlaneDeployments_RunAsMatchingSA(t *testing.T) {
 	p := testParams()
 	cases := []struct {
@@ -104,11 +98,6 @@ func TestControlPlaneDeployments_RunAsMatchingSA(t *testing.T) {
 	}
 }
 
-// TestControlPlanePods_SatisfyRConPeer is the second correspondence: the api and
-// operator pods (which legitimately open RCON — console writes, readiness probes)
-// carry labels that SATISFY the allow-rcon peer, while the registry and the reaper
-// do NOT. Evaluated with the live selector, so it proves the labels and the policy
-// agree rather than re-asserting the policy's shape.
 func TestControlPlanePods_SatisfyRConPeer(t *testing.T) {
 	p := testParams()
 	sel := rconPeerSelector(t, p)
@@ -132,10 +121,6 @@ func TestControlPlanePods_SatisfyRConPeer(t *testing.T) {
 	}
 }
 
-// TestControlPlanePods_Hardened asserts the pod/container SecurityContext on every
-// workload here mirrors the build/restore Job hardening: non-root, no privilege,
-// no escalation, read-only root fs, all caps dropped. (Shape-asserted: no cluster
-// proves the images actually start under these constraints.)
 func TestControlPlanePods_Hardened(t *testing.T) {
 	p := testParams()
 	for _, d := range []*appsv1.Deployment{APIDeployment(p), OperatorDeployment(p), registryDeployment(p)} {
@@ -168,9 +153,6 @@ func TestControlPlanePods_Hardened(t *testing.T) {
 	}
 }
 
-// TestVolumeBinderPod pins the pod `felis offsite fetch-worlds` runs to get the
-// archive volume provisioned: hardened like the control plane (it runs in the
-// Minecraft namespace under PSA), mounting the named claim, gone once it exits.
 func TestVolumeBinderPod(t *testing.T) {
 	pod := VolumeBinderPod("minecraft", "felis-backups", "registry.example/felis:1")
 	ps := pod.Spec
@@ -197,8 +179,6 @@ func TestVolumeBinderPod(t *testing.T) {
 	}
 }
 
-// TestAPIDeployment_Wiring pins the api entrypoint, the credential plumbing, and
-// the FELIS_IMAGE passthrough.
 func TestAPIDeployment_Wiring(t *testing.T) {
 	p := testParams()
 	d := APIDeployment(p)
@@ -224,7 +204,7 @@ func TestAPIDeployment_Wiring(t *testing.T) {
 		t.Errorf("api image = %q, want FelisImage %q", c.Image, p.FelisImage)
 	}
 
-	// FELIS_IMAGE passthrough (used to launch the restore Job with the same image).
+	// FELIS_IMAGE passes through to the restore Job, which uses the same image.
 	if v := envValue(c.Env, "FELIS_IMAGE"); v != p.FelisImage {
 		t.Errorf("FELIS_IMAGE = %q, want %q", v, p.FelisImage)
 	}
@@ -257,8 +237,7 @@ func TestAPIDeployment_Wiring(t *testing.T) {
 		}
 	}
 
-	// felis.toml carries the DB URL, so its volume must be a Secret (NOT a
-	// ConfigMap), mounted read-only.
+	// felis.toml carries the DB URL, so it is a read-only Secret volume, not a ConfigMap.
 	cfgVol := volumeByName(ps.Volumes, configVolume)
 	if cfgVol == nil || cfgVol.Secret == nil {
 		t.Fatal("config volume must be sourced from a Secret")
@@ -286,9 +265,6 @@ func TestAPIDeployment_Wiring(t *testing.T) {
 	}
 }
 
-// TestAPIDeployment_UploadsStorage pins both storage backends' wiring: the local
-// uploads PVC mounted read-write, and the two S3 credential env vars sourced
-// optionally from the felis-uploads-s3 Secret (so a local install still starts).
 func TestAPIDeployment_UploadsStorage(t *testing.T) {
 	ps, c := podSpec(t, APIDeployment(testParams()))
 
@@ -359,12 +335,6 @@ func TestAPIService_NodePort(t *testing.T) {
 	}
 }
 
-// TestAPIInternalService_ClusterIP pins the separate internal-face Service: it must
-// be ClusterIP (never NodePort — the internal face is service-token-only and must not
-// be published on a node's external IP), expose 8081 -> the api pod's "internal"
-// port, carry NO nodePort, and select the same api pods as the external Service. It
-// is what makes the felis-api DNS name actually answer on 8081 (the login pod path)
-// and gives the on-node console a ClusterIP to dial.
 func TestAPIInternalService_ClusterIP(t *testing.T) {
 	p := testParams()
 	svc := apiInternalService(p)
@@ -391,8 +361,6 @@ func TestAPIInternalService_ClusterIP(t *testing.T) {
 	}
 }
 
-// TestAPIDeployment_BackupPVC proves the FELIS_BACKUP_PVC env appears only when a
-// backup PVC is named.
 func TestAPIDeployment_BackupPVC(t *testing.T) {
 	p := testParams()
 	p.BackupPVC = "felis-backups"
@@ -402,13 +370,6 @@ func TestAPIDeployment_BackupPVC(t *testing.T) {
 	}
 }
 
-// TestBackupPVC_RendersWithTheStore proves the world-archive PVC is part of the
-// bundle exactly when a backup PVC is named, and that it lands in the Minecraft
-// namespace where every pod mounting it runs (the backup/restore Jobs and the
-// reaper CronJob) — the one property that made the reaper's first placement
-// unschedulable. Without a name the bundle must NOT create one: the api env is
-// gated on the same value, so the endpoints answer 503 instead of pointing a Job
-// at a claim nobody provisioned.
 func TestBackupPVC_RendersWithTheStore(t *testing.T) {
 	p := testParams()
 	p.BackupPVC = "felis-backups"
@@ -441,8 +402,6 @@ func TestBackupPVC_RendersWithTheStore(t *testing.T) {
 	}
 }
 
-// TestOperatorDeployment_Wiring pins the operator entrypoint, its namespace split,
-// and its deliberately smaller surface (NO config Secret — it holds no DB URL).
 func TestOperatorDeployment_Wiring(t *testing.T) {
 	p := testParams()
 	d := OperatorDeployment(p)
@@ -466,10 +425,7 @@ func TestOperatorDeployment_Wiring(t *testing.T) {
 			t.Errorf("operator must mount NO Secret volume, found %q", v.Name)
 		}
 	}
-	// It carries exactly two plain envs — FELIS_IMAGE, for the initContainers it
-	// injects into user servers, and FELIS_ARTIFACT_CACHE, the download cache their
-	// install step uses — and NO credential env: nothing sourced from a Secret
-	// (valueFrom), since it holds no DB URL or token.
+	// Only two plain envs: FELIS_IMAGE and FELIS_ARTIFACT_CACHE; no Secret-backed env, since it holds no DB URL or token.
 	for _, e := range c.Env {
 		if e.ValueFrom != nil {
 			t.Errorf("operator must carry no credential env, found %q with valueFrom", e.Name)
@@ -484,9 +440,6 @@ func TestOperatorDeployment_Wiring(t *testing.T) {
 	}
 }
 
-// TestRegistry_DeploymentServicePVC pins the in-cluster registry: its pinned
-// listen port, token-mount hygiene, the Service that gives it its DNS name, and
-// the backing PVC — the trio the build egress policy targets.
 func TestRegistry_DeploymentServicePVC(t *testing.T) {
 	// testParams leaves RegistryNamespace/RegistryPort zero; the renderers fill them
 	// via withDefaults, so compare against the defaulted Params.
@@ -518,8 +471,7 @@ func TestRegistry_DeploymentServicePVC(t *testing.T) {
 	if v := envValue(c.Env, "REGISTRY_STORAGE_CACHE_BLOBDESCRIPTOR"); v == "inmemory" || v == "redis" || v == "" {
 		t.Errorf("REGISTRY_STORAGE_CACHE_BLOBDESCRIPTOR = %q, want the cache disabled", v)
 	}
-	// The registry's limits are deliberately NOT the control-plane template's: audit
-	// #46 caught the registry OOM-killed mid-upload at 256Mi on a real 475MB-layer push.
+	// Registry limits differ from the control plane: a 256Mi limit OOM-killed large layer pushes.
 	if mem := c.Resources.Limits[corev1.ResourceMemory]; mem.Value() < 2*1024*1024*1024 {
 		t.Errorf("registry memory limit = %s, want >= 2Gi (audit #46: 256Mi OOM-killed on a 475MB-layer push)", mem.String())
 	}
@@ -547,9 +499,7 @@ func TestRegistry_DeploymentServicePVC(t *testing.T) {
 		}
 	}
 
-	// The GC sidecar: the registry image on the same data volume, hardened like
-	// the rest, pointed at the gate's maintenance port, never --delete-untagged
-	// (digest-pinned servers may boot an untagged manifest).
+	// GC sidecar: never --delete-untagged, because digest-pinned servers may boot untagged manifests.
 	_, gc := namedContainer(t, dep, registryGCName)
 	if gc.Image != p.RegistryImage {
 		t.Errorf("gc image = %q, want the registry image %q", gc.Image, p.RegistryImage)
@@ -579,10 +529,7 @@ func TestRegistry_DeploymentServicePVC(t *testing.T) {
 	if gc.SecurityContext == nil || gc.SecurityContext.ReadOnlyRootFilesystem == nil || !*gc.SecurityContext.ReadOnlyRootFilesystem {
 		t.Error("gc sidecar must run with a read-only root filesystem")
 	}
-	// The node-side pull path: exactly one container port, mirrored by a LOOPBACK
-	// hostPort. Node containerd cannot dial the Service VIP, so its registries.yaml
-	// mirror rewrites the Service name onto 127.0.0.1:<port>; nothing else may be
-	// exposed (the registry serves plain HTTP).
+	// Node pulls use a loopback hostPort: containerd cannot dial the Service VIP, and the registry serves plain HTTP.
 	if len(gate.Ports) != 1 {
 		t.Fatalf("gate ports = %+v, want exactly 1", gate.Ports)
 	}
@@ -639,7 +586,7 @@ func TestRegistry_DeploymentServicePVC(t *testing.T) {
 	if !mapSelectorMatches(svc.Spec.Selector, dep.Spec.Template.Labels) {
 		t.Errorf("registry Service selector %v does not select registry pod labels %v", svc.Spec.Selector, dep.Spec.Template.Labels)
 	}
-	// ...and must NOT select the api pods (distinct component).
+	// Must not select the api pods.
 	if mapSelectorMatches(svc.Spec.Selector, APIDeployment(p).Spec.Template.Labels) {
 		t.Error("registry Service selector must not select the api pod")
 	}
@@ -656,11 +603,6 @@ func TestRegistry_DeploymentServicePVC(t *testing.T) {
 	}
 }
 
-// TestWorkloads_DeploymentsCarryProbes pins probes on ALL three rendered
-// Deployments (api, operator, registry): an unprobed control plane cannot be
-// told apart from a wedged one, and every probe must target a port the container
-// actually declares — a probe pointed at a dead port would leave the pod
-// NotReady forever and surface only as a mysteriously empty Service.
 func TestWorkloads_DeploymentsCarryProbes(t *testing.T) {
 	p := testParams().withDefaults()
 	cases := []struct {
@@ -721,12 +663,6 @@ func TestWorkloads_DeploymentsCarryProbes(t *testing.T) {
 	}
 }
 
-// TestWorkloads_BundleContents sanity-checks the slice Workloads returns: the
-// database Deployment/Service, the two control-plane Deployments, the api
-// external+internal Services, the operator metrics Service, the registry
-// Deployment/Service/PVC, the uploads PVC and the server-software cache's
-// Deployment/Service/PVC, every one with TypeMeta (so its YAML header renders). The
-// internal Service must be present or the login pod's felis-api:8081 path is dead.
 func TestWorkloads_BundleContents(t *testing.T) {
 	objs := Workloads(testParams())
 	if len(objs) != 14 {
@@ -747,15 +683,6 @@ func TestWorkloads_BundleContents(t *testing.T) {
 	}
 }
 
-// TestControlPlanePriorityClass pins the node-pressure eviction shield: every
-// control-plane pod template (postgres/api/operator/reaper/registry/artifacts) runs under the
-// BUILT-IN system-cluster-critical class (value 2e9), at which kubelet's
-// eviction manager refuses to evict the pod. A live drill showed the whole
-// cascade with plain ordering: disk pressure evicted the game pods and then the
-// control plane, whose images (air-gapped, containerd-only) were GC'd →
-// ImagePullBackOff plus a manual re-import. User-defined classes are capped at
-// 1e9 (API-enforced), so the built-in class is the only way to reach the
-// critical threshold.
 func TestControlPlanePriorityClass(t *testing.T) {
 	objs := Workloads(reaperParams()) // include the reaper CronJob's pod template
 
@@ -795,8 +722,7 @@ func cronPodSpec(t *testing.T, cj *batchv1.CronJob) (corev1.PodSpec, corev1.Cont
 	return ps, ps.Containers[0]
 }
 
-// findCronJob returns the first CronJob in objs, or nil — used to assert the
-// reaper's presence/absence in the rendered Workloads slice.
+// findCronJob returns the first CronJob in objs, or nil.
 func findCronJob(objs []Object) *batchv1.CronJob {
 	for _, o := range objs {
 		if cj, ok := o.(*batchv1.CronJob); ok {
@@ -816,12 +742,6 @@ func reaperParams() Params {
 	return p
 }
 
-// TestReaperCronJob_Gating proves the reaper reaps iff all three storage
-// coordinates are present, and that the archive store alone (backup PVC + its
-// mount path) still renders the CronJob in its retention-only shape, with no
-// worlds-root pair: backups must expire on an install that never reaps worlds.
-// Anything less renders none (the partial-flag mistake is rejected at the CLI;
-// here the renderer fails safe).
 func TestReaperCronJob_Gating(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -866,9 +786,6 @@ func TestReaperCronJob_Gating(t *testing.T) {
 	}
 }
 
-// TestReaperCronJob_RetentionOnlyShape pins what the store-only run is left
-// with: the config and the archive store, and nothing that reaches a world or
-// the API — no worlds mount, no SMTP password, no service account token.
 func TestReaperCronJob_RetentionOnlyShape(t *testing.T) {
 	p := reaperParams()
 	p.WorldsHostPath = ""
@@ -896,9 +813,6 @@ func TestReaperCronJob_RetentionOnlyShape(t *testing.T) {
 	}
 }
 
-// TestReaperCronJob_NodePin proves the optional multi-node pin: no selector by
-// default (the single-node starter), and exactly the kubernetes.io/hostname
-// selector when ReaperNode names the node holding the worlds hostPath.
 func TestReaperCronJob_NodePin(t *testing.T) {
 	ps, _ := cronPodSpec(t, reaperCronJob(reaperParams()))
 	if ps.NodeSelector != nil {
@@ -912,11 +826,6 @@ func TestReaperCronJob_NodePin(t *testing.T) {
 	}
 }
 
-// TestReaperCronJob_Shape pins the rendered CronJob: its scheduling guards, its
-// run-as identity (felis-reaper WITH an auto-mounted token, because it legitimately
-// calls the K8s API — unlike the weak Job/registry pods), the hardening, the
-// entrypoint, and the three-mount storage crux (config RO, worlds hostPath RO at
-// /worlds, backup PVC RW at ArchiveLocalPath). Shape-asserted, runtime-unverified.
 func TestReaperCronJob_Shape(t *testing.T) {
 	p := reaperParams()
 	cj := reaperCronJob(p)
@@ -927,9 +836,7 @@ func TestReaperCronJob_Shape(t *testing.T) {
 	if cj.Name != SAReaper {
 		t.Errorf("CronJob name = %q, want %q", cj.Name, SAReaper)
 	}
-	// The CronJob must sit where its PVC lives: a Pod cannot mount a PVC across
-	// namespaces, and the backup PVC is provisioned in the Minecraft namespace.
-	// (Rendered under ControlNamespace it failed to schedule on a live cluster.)
+	// The CronJob runs in the Minecraft namespace with its backup PVC: a pod cannot mount a PVC across namespaces.
 	if cj.Namespace != p.MinecraftNamespace {
 		t.Errorf("CronJob namespace = %q, want minecraft ns %q (its backup PVC's namespace)", cj.Namespace, p.MinecraftNamespace)
 	}
@@ -962,16 +869,12 @@ func TestReaperCronJob_Shape(t *testing.T) {
 	if ps.ServiceAccountName != SAReaper {
 		t.Errorf("pod serviceAccountName = %q, want %q (it patches MinecraftServers and deletes PVCs)", ps.ServiceAccountName, SAReaper)
 	}
-	// The reaper LEGITIMATELY calls the K8s API, so — unlike the build/restore/
-	// registry pods — it must NOT disable the SA-token auto-mount.
+	// The reaper calls the K8s API, so it keeps the SA token auto-mount.
 	if ps.AutomountServiceAccountToken != nil {
 		t.Errorf("reaper pod must auto-mount its SA token (got AutomountServiceAccountToken=%v); it needs the API", *ps.AutomountServiceAccountToken)
 	}
 
-	// The reaper is the one world-touching workload, so its identity is ROOT, not
-	// the control-plane's non-root uid: the worlds it archives and deletes sit in a
-	// root-owned storage root and hold Paper's mode-0600 files, whichever uid (the
-	// game uid, or root for a world an older release wrote) owns them.
+	// The reaper runs as root: it archives and deletes worlds whose files may be owned by the game uid or root.
 	if ps.SecurityContext == nil || ps.SecurityContext.RunAsNonRoot == nil || *ps.SecurityContext.RunAsNonRoot {
 		t.Error("reaper pod must NOT require non-root: root is the owner-matching identity for game-image worlds")
 	}
@@ -1002,9 +905,7 @@ func TestReaperCronJob_Shape(t *testing.T) {
 		t.Errorf("reaper image = %q, want FelisImage %q", c.Image, p.FelisImage)
 	}
 
-	// The relay password for pre-reap warning emails: same optional Secret as
-	// felis-api, resolved against the minecraft-ns mirror. Optional so an install
-	// without SMTP still starts (the reaper then logs suppressed warnings).
+	// Relay password for pre-reap warning mail; optional so installs without SMTP still start.
 	smtpEnv := envVar(c.Env, SMTPPasswordEnv)
 	if smtpEnv == nil || smtpEnv.ValueFrom == nil || smtpEnv.ValueFrom.SecretKeyRef == nil {
 		t.Fatalf("reaper must wire %s from a secretKeyRef", SMTPPasswordEnv)
@@ -1024,9 +925,7 @@ func TestReaperCronJob_Shape(t *testing.T) {
 		t.Error("config must be mounted read-only")
 	}
 
-	// worlds: the static worlds-root claim (never an inline hostPath, which the
-	// namespace's PodSecurity baseline refuses), mounted READ-ONLY at /worlds — the
-	// reaper only reads worlds to tar them (deletion is a PVC API call).
+	// worlds: read-only mount of the worlds-root claim; the reaper only reads worlds to archive them.
 	wVol := volumeByName(ps.Volumes, worldsVolume)
 	if wVol == nil || wVol.HostPath != nil || wVol.PersistentVolumeClaim == nil ||
 		wVol.PersistentVolumeClaim.ClaimName != worldsRootName(p) || !wVol.PersistentVolumeClaim.ReadOnly {
@@ -1046,13 +945,11 @@ func TestReaperCronJob_Shape(t *testing.T) {
 		t.Errorf("backup must be mounted read-write at ArchiveLocalPath %q, got %+v", p.ArchiveLocalPath, m)
 	}
 
-	// The reaper never opens RCON, so its pod labels must NOT satisfy the RCON peer.
+	// The reaper never opens RCON, so its labels must not match the RCON peer.
 	if sel := rconPeerSelector(t, p); sel.Matches(labels.Set(cj.Spec.JobTemplate.Spec.Template.Labels)) {
 		t.Error("reaper pod labels must NOT satisfy the rcon peer (component not in {api,operator})")
 	}
 }
-
-// --- small env/volume helpers (test-local) ---
 
 func envVar(env []corev1.EnvVar, name string) *corev1.EnvVar {
 	for i := range env {
@@ -1096,8 +993,7 @@ func accessModeStrings(modes []corev1.PersistentVolumeAccessMode) []string {
 	return out
 }
 
-// containsSeq reports whether sub appears as a contiguous prefix-anchored run at
-// the START of seq (command then args), which is what we want for an entrypoint.
+// containsSeq reports whether sub is a contiguous run at the start of seq (command, then args).
 func containsSeq(seq, sub []string) bool {
 	if len(sub) > len(seq) {
 		return false
@@ -1110,10 +1006,6 @@ func containsSeq(seq, sub []string) bool {
 	return true
 }
 
-// TestWorldsRootStaticPV pins the pair that replaced the reaper's inline hostPath:
-// the PV names the node directory (type Directory, so a missing root fails loud),
-// is kept by Retain, sits outside every StorageClass and is reserved for exactly
-// its PVC, which in turn names it back. Both render only alongside the reaper.
 func TestWorldsRootStaticPV(t *testing.T) {
 	p := reaperParams()
 	var pv *corev1.PersistentVolume
@@ -1177,9 +1069,6 @@ func TestWorldsRootStaticPV(t *testing.T) {
 	}
 }
 
-// TestOperatorMetricsService: the operator's /metrics has a ClusterIP scrape
-// target selecting the operator pods on their "metrics" port, marked for
-// prometheus.io discovery like the api's internal face.
 func TestOperatorMetricsService(t *testing.T) {
 	p := testParams()
 	svc := operatorMetricsService(p)
@@ -1209,8 +1098,6 @@ func TestOperatorMetricsService(t *testing.T) {
 	}
 }
 
-// TestPVCSizes proves the three claim sizes follow Params and default when unset,
-// and that Validate refuses a size the API server would reject.
 func TestPVCSizes(t *testing.T) {
 	sizes := func(p Params) map[string]string {
 		got := map[string]string{}

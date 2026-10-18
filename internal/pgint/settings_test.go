@@ -63,9 +63,6 @@ func TestSettingsCompareAndSet(t *testing.T) {
 	}
 }
 
-// TestMailSettingsRow pins the platform_settings row the panel's mail relay lives in as the
-// senders outside felis-api read it: a saved relay comes back with its password, and a
-// row cleared to JSON null reads as no relay.
 func TestMailSettingsRow(t *testing.T) {
 	ctx := context.Background()
 	defer db.ExecContext(ctx, "DELETE FROM platform_settings WHERE key=$1", mailsettings.Key)
@@ -104,9 +101,6 @@ func TestMailSettingsRow(t *testing.T) {
 	}
 }
 
-// TestArchivePolicyRow pins the retention policy's round trip through jsonb: what the
-// panel saves is what the backup Job and the reaper apply, and JSON null hands retention
-// back to felis.toml.
 func TestArchivePolicyRow(t *testing.T) {
 	ctx := context.Background()
 	defer db.ExecContext(ctx, "DELETE FROM platform_settings WHERE key=$1", archivepolicy.Key)

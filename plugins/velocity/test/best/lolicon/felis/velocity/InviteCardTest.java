@@ -8,24 +8,7 @@ import net.kyori.adventure.text.format.TextColor;
 
 import java.util.List;
 
-/**
- * InviteCardTest checks the one thing the /invite feature was actually asked for: a chat
- * prompt naming who invites you where, a GREEN clickable Accept and a RED clickable Deny.
- * Colour and click target are the requirement, so they are asserted rather than eyeballed
- * — a proxy console cannot render either, and a screenshot is not a check.
- *
- * <p>Hermetic and framework-free like {@link InviteBookTest}: it lives outside
- * {@code src/main/java} so it never ships in the plugin jar, needs only the Kyori jars
- * on the classpath, and a failed assertion throws so the process exits non-zero.
- *
- * <p>Run (all three jars on both classpaths — adventure-api's Component signatures
- * reference Examinable, so javac needs examination-api too, not just the runtime):
- * {@code javac -cp <adventure-api.jar>:<adventure-key.jar>:<examination-api.jar> -d <out>
- * velocity/src/main/java/best/lolicon/felis/velocity/InviteCard.java
- * velocity/test/best/lolicon/felis/velocity/InviteCardTest.java && java -cp
- * <out>:<adventure-api.jar>:<adventure-key.jar>:<examination-api.jar>
- * best.lolicon.felis.velocity.InviteCardTest}.
- */
+// Run through plugins/test.sh with the Adventure API dependencies.
 public final class InviteCardTest {
 
     private static int checks;
@@ -52,8 +35,7 @@ public final class InviteCardTest {
         assertEq("headline colour", NamedTextColor.AQUA, card.get(0).color());
     }
 
-    // Green, clickable, and pointed at the command that actually accepts. A button of the
-    // right colour wired to the wrong command is the failure this catches.
+    // Green, clickable, and pointed at the command that accepts: a button of the right colour wired to the wrong command is the failure this catches.
     private static void acceptIsGreenAndRunsAccept() {
         Component accept = button(InviteCard.lines("Steve", "survival", true, 120), 0);
         assertEq("accept is green", NamedTextColor.GREEN, accept.color());
@@ -109,10 +91,7 @@ public final class InviteCardTest {
         assertTrue("footer states the ttl", plain(card.get(2)).contains("90"));
     }
 
-    // Chat scrollback keeps every card clickable forever while only the newest invite is
-    // live, so two cards MUST NOT click to the same command — otherwise last week's button
-    // silently answers today's invite and sends the player to a server they never agreed
-    // to. Different server in, different click target out.
+    // Different advertised servers must produce distinct commands even when old cards remain clickable.
     private static void buttonsArePinnedToTheirOwnServer() {
         List<Component> old = InviteCard.lines("Steve", "survival", true, 120);
         List<Component> fresh = InviteCard.lines("Alex", "creative", true, 120);
@@ -124,7 +103,6 @@ public final class InviteCardTest {
                 ClickEvent.runCommand("/invite accept survival"), button(old, 0).clickEvent());
     }
 
-    // ---- harness ----
 
     /** button pulls the nth child off the button row: 0 = Accept, 1 = spacer, 2 = Deny. */
     private static Component button(List<Component> card, int index) {

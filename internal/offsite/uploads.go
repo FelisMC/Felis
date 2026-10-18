@@ -1,17 +1,6 @@
 package offsite
 
-// Submission build contexts: the modpacks users uploaded, kept on the uploads
-// volume as <id>/context.tar.gz (internal/submit.LocalContextStore). A reviewer
-// downloads one to inspect it, and building the submission again needs it; the
-// image already built from it is in the registry copy (images.go).
-//
-// The copy is content-addressed like the images: uploads/blobs/<sha256>.fenc
-// holds each context once, and uploads/index/<stamp>.json.fenc versions which
-// submission holds which. A context deleted here (a withdrawn submission, a
-// rejected one reaped) leaves the newest version but stays in the versions
-// before it for UploadHistory. A volume that comes back empty, as it does on a
-// rebuilt host before its restore, therefore takes nothing out of the bucket
-// for two weeks.
+// Upload contexts are content-addressed and retained with historical indexes so an empty rebuilt volume cannot immediately prune recovery copies.
 
 import (
 	"context"
@@ -37,35 +26,24 @@ const (
 	uploadIndexDir      = uploadsDir + "index/"
 	maxUploadIndexBytes = 16 << 20
 
-	// UploadContextFile is the one file of a submission's directory on the
-	// uploads volume (internal/submit's contextBlobName).
 	UploadContextFile = "context.tar.gz"
 )
 
-// UploadHistory is how long an uploads index version is kept after a newer one
-// replaced it, with the contexts only it names.
 const UploadHistory = ImageHistory
 
-// uploadIDRE is internal/submit's idRE: a submission id can hold no path
-// separator and no "..".
 var uploadIDRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,127}$`)
 
-// UploadIndex is one version of the uploads copy: which submission holds which
-// context.
 type UploadIndex struct {
 	Created  time.Time                `json:"created"`
 	Contexts map[string]UploadContext `json:"contexts"`
 }
 
-// UploadContext is one submission's context as the sync last saw it. Size and
-// ModTime let the next pass skip hashing a file that has not changed.
 type UploadContext struct {
 	Digest  string    `json:"digest"`
 	Size    int64     `json:"size"`
 	ModTime time.Time `json:"mtime"`
 }
 
-// Bytes is the total size of the contexts x names.
 func (x *UploadIndex) Bytes() int64 {
 	var n int64
 	for _, c := range x.Contexts {
@@ -107,8 +85,7 @@ func (s *Syncer) syncUploads(ctx context.Context, res *Result, fail func(string,
 		return
 	}
 	next := newUploadIndex(s.now().UTC())
-	// failed is set by anything that leaves next short of the volume, which
-	// rules out pruning in this pass.
+	// failed prevents pruning when the next index could omit unread or failed contexts.
 	failed := false
 	for _, e := range entries {
 		id := e.Name()
@@ -127,8 +104,6 @@ func (s *Syncer) syncUploads(ctx context.Context, res *Result, fail func(string,
 		c, err := s.copyUpload(ctx, id, old, had, remote, res)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
-			// A directory without its context: an upload still being written,
-			// or one reaped between the listing and here.
 		case err != nil:
 			fail("copy the upload of %s: %v", id, err)
 			failed = true
@@ -171,9 +146,7 @@ func (s *Syncer) syncUploads(ctx context.Context, res *Result, fail func(string,
 	}
 }
 
-// copyUpload makes sure the bucket holds the context of submission id and
-// returns what the index records for it. A file whose size and modification
-// time match the previous index is not read again.
+// copyUpload skips rehashing when size and modification time match the previous index.
 func (s *Syncer) copyUpload(ctx context.Context, id string, old UploadContext, had bool, remote map[string]int64, res *Result) (UploadContext, error) {
 	p := filepath.Join(s.UploadsDir, id, UploadContextFile)
 	fi, err := os.Lstat(p)
@@ -199,8 +172,7 @@ func (s *Syncer) copyUpload(ctx context.Context, id string, old UploadContext, h
 		return UploadContext{}, err
 	}
 	defer f.Close()
-	// Checked again on the way up: a context replaced between the hash and
-	// the upload fails instead of being stored under the old digest.
+	// Verify again while uploading to detect a context replaced after its digest was computed.
 	if err := s.putStream(ctx, key, newDigestReader(f, c.Digest, c.Size), c.Size); err != nil {
 		return UploadContext{}, err
 	}
@@ -228,8 +200,6 @@ func hashFile(p string) (string, error) {
 	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// pruneUploads drops the index versions replaced more than UploadHistory ago,
-// then every context no remaining version names.
 func (s *Syncer) pruneUploads(ctx context.Context, versions []string, newest *UploadIndex, remote map[string]int64, res *Result, fail func(string, ...any)) {
 	keep, drop := retire(versions, s.now().Add(-UploadHistory))
 	live := map[string]bool{}
@@ -268,7 +238,6 @@ func (s *Syncer) pruneUploads(ctx context.Context, versions []string, newest *Up
 	}
 }
 
-// UploadIndexes lists the uploads index versions in the bucket, oldest first.
 func UploadIndexes(ctx context.Context, b Bucket) ([]string, error) {
 	objs, err := b.List(ctx, uploadIndexDir)
 	if err != nil {
@@ -281,7 +250,6 @@ func UploadIndexes(ctx context.Context, b Bucket) ([]string, error) {
 	return indexStamps(keys, uploadIndexDir), nil
 }
 
-// LoadUploadIndex reads one uploads index version.
 func LoadUploadIndex(ctx context.Context, b Bucket, key []byte, stamp string) (*UploadIndex, error) {
 	raw, err := getSealed(ctx, b, key, uploadIndexKey(stamp), maxUploadIndexBytes)
 	if err != nil {
@@ -297,10 +265,7 @@ func LoadUploadIndex(ctx context.Context, b Bucket, key []byte, stamp string) (*
 	return x, nil
 }
 
-// ChooseUploadIndex picks the version a restore uses: at when given, otherwise
-// the newest. An empty newest version while an older one names contexts is
-// what a rebuilt host's first sync records, so it is refused with the versions
-// worth choosing instead.
+// ChooseUploadIndex refuses an empty newest version when older versions retain data, protecting pre-restore rebuilt hosts.
 func ChooseUploadIndex(ctx context.Context, b Bucket, key []byte, at string) (string, *UploadIndex, error) {
 	versions, err := UploadIndexes(ctx, b)
 	if err != nil {
@@ -338,7 +303,6 @@ func ChooseUploadIndex(ctx context.Context, b Bucket, key []byte, at string) (st
 		newest, strings.Join(older, ", "))
 }
 
-// FetchUploadsResult counts what FetchUploads wrote.
 type FetchUploadsResult struct {
 	Written  int
 	Present  int
@@ -346,11 +310,7 @@ type FetchUploadsResult struct {
 	Failures []string
 }
 
-// FetchUploads writes every context x names into dir as <id>/context.tar.gz,
-// skipping one already there with the same content. Each is written to a
-// temporary file beside its place, checked against its digest, and renamed
-// into place, so a failure leaves no partial context. uid and gid own what it
-// creates (-1 leaves the caller's).
+// FetchUploads verifies temporary files before rename; uid or gid -1 preserves caller ownership.
 func FetchUploads(ctx context.Context, b Bucket, key []byte, x *UploadIndex, dir string, uid, gid int, log io.Writer) (FetchUploadsResult, error) {
 	var res FetchUploadsResult
 	for _, id := range slices.Sorted(maps.Keys(x.Contexts)) {

@@ -16,24 +16,18 @@ import (
 	"felis.lolicon.best/internal/software"
 )
 
-// DefaultMaxDirectBytes caps a download whose size upstream did not publish.
+// DefaultMaxDirectBytes caps downloads without a published size.
 const DefaultMaxDirectBytes = 2 << 30
 
-// Client is the installer's Fetcher: it asks the cache first and goes to the
-// upstream URL itself when the cache is not configured, unreachable, or answers
-// with anything but the file. Either way the bytes are hashed here and must
-// match the digest, so what reaches the volume never depends on trusting the
-// cache.
+// Client falls back to upstream on cache failure and always verifies the downloaded digest.
 type Client struct {
-	// CacheURL is the cache's base URL; empty downloads directly.
+	// Empty CacheURL downloads directly.
 	CacheURL string
-	// HTTP talks to the cache; Direct to upstream. Nil uses a client with
-	// DefaultTimeout.
+	// Nil HTTP or Direct clients use DefaultTimeout.
 	HTTP      *http.Client
 	Direct    *http.Client
 	UserAgent string
-	// IdleTimeout aborts a transfer that receives nothing for this long
-	// (default DefaultIdleTimeout).
+	// IdleTimeout defaults to DefaultIdleTimeout.
 	IdleTimeout time.Duration
 	Log         io.Writer
 }
@@ -44,7 +38,6 @@ func (c *Client) logf(format string, a ...any) {
 	}
 }
 
-// Fetch implements software.Fetcher.
 func (c *Client) Fetch(ctx context.Context, f software.File, dest string) error {
 	if !f.Digest.Valid() {
 		return fmt.Errorf("artifactcache: %s has no valid digest", f.Path)
@@ -55,17 +48,14 @@ func (c *Client) Fetch(ctx context.Context, f software.File, dest string) error 
 		q.Set("algo", f.Digest.Algo)
 		q.Set("digest", f.Digest.Hex)
 		via := strings.TrimRight(c.CacheURL, "/") + "/v1/fetch?" + q.Encode()
-		// A miss makes the cache download the whole file before it answers,
-		// so no byte arrives here until it has; the cache watches its own
-		// upstream for stalls, and this request waits out its overall timeout.
+		// Cache misses buffer the upstream file before responding, so only the overall timeout applies here.
 		err := c.get(ctx, c.HTTP, via, f, dest, DefaultTimeout)
 		if err == nil {
 			return nil
 		}
 		c.logf("felis install-server: the cache could not serve %s (%v); downloading it directly", f.Path, err)
 	}
-	// One retry: a dropped or stalled connection is the usual failure, and the
-	// next attempt usually lands on a healthy edge.
+	// Retry once for transient connection failures.
 	err := c.get(ctx, c.Direct, f.URL, f, dest, c.IdleTimeout)
 	if err == nil || errors.Is(err, software.ErrDigestMismatch) || ctx.Err() != nil {
 		return err

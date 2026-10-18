@@ -10,37 +10,18 @@ import (
 	"os"
 )
 
-// Filter decides, for one regular file on its way out of a world into an
-// export, whether it is left out (withhold) or has its bytes replaced (rewrite
-// non-nil). name is the archive path; info is the file's, or nil when the file
-// is an entry of a stored archive, which has only names. A backup is not
-// filtered: it stays on the platform, and a restore must bring the world back
-// whole.
+// Filter runs on exported data only; info=nil means an archive entry without live file identity, and backups remain complete on-platform copies.
 type Filter func(name string, info fs.FileInfo) (withhold bool, rewrite func([]byte) []byte)
 
-// maxRewrite bounds a file a Filter rewrites, which is read whole into memory.
-// The files it rewrites are small configs; one larger than this is withheld
-// rather than sent unrewritten.
+// Files exceeding maxRewrite are withheld rather than emitted without secret redaction.
 const maxRewrite = 1 << 20
 
-// WriteTarGz archives srcDir into w laid out exactly as Archive lays out a
-// backup, so an exported world restores like any other archive. It returns the
-// entries a tar cannot hold and the files filter withheld. The world export Job
-// streams it straight into its upload.
 func WriteTarGz(ctx context.Context, w io.Writer, srcDir string, filter Filter) (skipped, withheld []string, err error) {
 	st, err := writeTarGz(ctx, w, srcDir, filter)
 	return st.skipped, st.withheld, err
 }
 
-// FilterTarGz copies the gzip+tar archive read from r into w, passing every
-// regular file through filter by name. It is how a stored backup leaves the
-// platform: the archive is the world as it was, secrets included, so it is
-// re-written on the way out rather than handed over as stored.
-//
-// r is read to its very end, past the tar trailer, before w's archive is
-// closed. A reader that checks a digest when it reaches EOF therefore fails the
-// copy while w still lacks the end of its archive, and a receiver never holds a
-// complete-looking copy of a corrupt backup.
+// FilterTarGz consumes through source EOF before closing output so digest or trailer failures leave an incomplete download.
 func FilterTarGz(ctx context.Context, w io.Writer, r io.Reader, filter Filter) (withheld []string, err error) {
 	zr, err := gzip.NewReader(r)
 	if err != nil {
@@ -97,7 +78,6 @@ func FilterTarGz(ctx context.Context, w io.Writer, r io.Reader, filter Filter) (
 			return withheld, err
 		}
 	}
-	// Through the gzip trailer to r's EOF (see above).
 	if _, err := io.Copy(io.Discard, zr); err != nil {
 		return withheld, fmt.Errorf("backup: read archive: %w", err)
 	}
@@ -110,8 +90,6 @@ func FilterTarGz(ctx context.Context, w io.Writer, r io.Reader, filter Filter) (
 	return withheld, nil
 }
 
-// readRewritable reads a file a Filter rewrites, reporting false when it is
-// larger than maxRewrite.
 func readRewritable(path string) ([]byte, bool, error) {
 	f, err := os.Open(path)
 	if err != nil {

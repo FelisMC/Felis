@@ -9,28 +9,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
-/**
- * LinkClient calls the felis-api internal face to mint an account-link code for
- * an already-authenticated Minecraft player (spec §10). It is platform-agnostic —
- * Velocity (proxy) and the Fabric/Forge/NeoForge server mods all drive the same
- * client — and depends only on the JDK, so this single source file compiles
- * straight into each plugin jar with nothing to shade.
- *
- * <p>Contract (authoritative, mirrored from {@code internal/api}):
- * <ul>
- *   <li>{@code POST {apiBaseUrl}/api/v1/internal/account/link/code}</li>
- *   <li>header {@code Authorization: Bearer <serviceToken>} (constant-time
- *       compared server-side; an empty token fails closed)</li>
- *   <li>request body {@code {"mc_uuid":"<uuid>"}}</li>
- *   <li>success: HTTP 201 with {@code {"code","expires_at","panel_url"?}}
- *       ({@code panel_url} present only when a panel hostname is configured)</li>
- *   <li>failure: the {@code {"error":{"code","message"}}} envelope</li>
- * </ul>
- *
- * <p>The UUID must come from the platform's authenticated player identity, never
- * from user input — the whole security model of the flow is that the in-game side
- * proves the UUID before a code is ever minted.
- */
+// The UUID must come from the platform's authenticated player identity, never from user input: the in-game side proves the UUID before a code is ever minted.
 public final class LinkClient {
     private static final String PATH = "/api/v1/internal/account/link/code";
 

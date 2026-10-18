@@ -15,8 +15,6 @@ import (
 	"felis.lolicon.best/internal/mailsettings"
 )
 
-// TestAlertRouteLines: the summary's alert rows say where the watchdog's
-// alerts go, and flag every route that reaches no one.
 func TestAlertRouteLines(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -68,8 +66,6 @@ func TestAlertRouteLines(t *testing.T) {
 	}
 }
 
-// TestSummaryAlertRows: the rows show on the card, a route that needs action
-// marked so it reads without colour, and stay off a summary with no route.
 func TestSummaryAlertRows(t *testing.T) {
 	m := &summaryModel{ownerUsername: "owner", alerts: &alertRoute{relay: "smtp.example.com:587", recipients: []string{"owner@example.com"}}}
 	v := m.View()
@@ -94,9 +90,6 @@ func TestSummaryAlertRows(t *testing.T) {
 	}
 }
 
-// TestRootSummaryReadsAlertRoute: the summary and the re-run status screen
-// read the route each time they open, so a relay configured with e shows at
-// once.
 func TestRootSummaryReadsAlertRoute(t *testing.T) {
 	m := newTestRoot(false, consoleModeSetup, "")
 	reads := 0
@@ -129,9 +122,6 @@ func TestRootSummaryReadsAlertRoute(t *testing.T) {
 	}
 }
 
-// TestHostAlertRoute reads the relay from the host config and the heartbeat
-// file, shows the heartbeat by its host only, and reports a database it cannot
-// reach.
 func TestHostAlertRoute(t *testing.T) {
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "felis.host.toml")
@@ -181,8 +171,6 @@ func TestHostAlertRoute(t *testing.T) {
 	}
 }
 
-// TestSummaryWithAlertsFitsTerminal: the two rows keep the summary inside the
-// terminal, with the longest route lines.
 func TestSummaryWithAlertsFitsTerminal(t *testing.T) {
 	for _, w := range []int{60, 80, 90} {
 		for _, h := range []int{24, 30, 45} {
@@ -205,8 +193,6 @@ func TestSummaryWithAlertsFitsTerminal(t *testing.T) {
 	}
 }
 
-// TestConsoleRootReadsHostAlertRoute: the console the host runs gives its
-// summary this host's route, read against its database.
 func TestConsoleRootReadsHostAlertRoute(t *testing.T) {
 	db := config.DatabaseConfig{URL: "postgres://felis:pw@127.0.0.1:1/felis?sslmode=disable&connect_timeout=2"}
 	rm := newConsoleRoot(context.Background(), &fakeOwnerStore{}, db, "felis.example.com", "admin.felis.example.com", "panel.felis.example.com", "", "minecraft", "root", false, consoleModeSetup, recoveryConfig{})

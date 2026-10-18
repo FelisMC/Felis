@@ -6,8 +6,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
-// Sizes reach the quota sums in whole MiB, rounded up: a part-MiB used to be
-// dropped, so a server sized in decimal units counted for less than it holds.
 func TestQuantityToMB(t *testing.T) {
 	for _, c := range []struct {
 		in   string

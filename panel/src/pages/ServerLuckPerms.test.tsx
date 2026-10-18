@@ -57,9 +57,7 @@ function renderPage() {
   );
 }
 
-// A server without LuckPerms (#4): the read of a player says why it came back
-// empty, and a write is refused with the same cause and never lands in the
-// history as a success.
+// A server without LuckPerms: the read of a player says why it came back empty, and a write is refused with the same cause and never lands in the history as a success.
 describe("ServerLuckPerms without LuckPerms", () => {
   it("says LuckPerms is missing on the read and on a refused write", async () => {
     renderPage();
@@ -110,10 +108,7 @@ describe("ServerLuckPerms on a server that is down", () => {
   });
 });
 
-// LuckPerms 5.5 answers every `lp` command over RCON with an empty body, so the
-// read of a player comes back with no output and no entries. The lists must not
-// claim the player has nothing, and whatever was granted must still be removable
-// by name, since no read row ever appears to hang a remove button on.
+// LuckPerms may return empty RCON output; unknown entries must remain removable by name.
 describe("ServerLuckPerms when LuckPerms does not answer", () => {
   const silent = { player: "Alex", groups: [], permissions: [], output: "" };
 
@@ -183,9 +178,6 @@ describe("ServerLuckPerms when LuckPerms does not answer", () => {
   });
 });
 
-// A revert puts a permission back as it was. A removed deny comes back as a deny
-// (it used to come back as a grant), a set that replaced a value restores that
-// value, and a removal whose earlier value was never read offers no revert.
 describe("ServerLuckPerms reverting a permission change", () => {
   const read = {
     player: "Alex",

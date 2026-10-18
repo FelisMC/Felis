@@ -609,9 +609,7 @@ function DangerZone({
   const [dlg, setDlg] = useState<"disable" | "delete" | "passkeys" | null>(null);
   const reasonId = useId();
 
-  // The server refuses to disable or delete the caller's own account
-  // (self_protected) and the owner account (owner_protected); re-enabling a
-  // disabled owner is allowed. Say so before the confirm dialog, not after it.
+  // Explain self/owner protection before confirmation; re-enabling a disabled owner remains permitted.
   const reason = isSelf
     ? t("users_protected_self")
     : user.role === "owner"

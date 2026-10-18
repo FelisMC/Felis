@@ -143,9 +143,7 @@ describe("ServerBackups", () => {
     expect(screen.queryByText(/^Page \d+ of/)).toBeNull();
   });
 
-  // Restoring a running server stops it first and restores only once it is down.
-  // With players online the operator warns them for 30 s before the stop, and the
-  // saves follow, so the wait must outlast that.
+  // Allow enough time for the player warning and graceful stop before restoration starts.
   async function restoreRunningServer(stopsAfterMs: number) {
     let stoppedAt = Infinity;
     calls.status.mockImplementation(async () => {

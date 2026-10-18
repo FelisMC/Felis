@@ -43,23 +43,8 @@ function isUp(phase: Phase): boolean {
   return phase === "Running" || phase === "Starting";
 }
 
-// PowerButton starts or stops one server. It is busy while the call runs (no
-// double send), shows why a call was refused (quota, cooldown, a phase that
-// moved on), and asks before a stop that would disconnect players: the count
-// is in the question, and an unreadable count asks too. A server whose start
-// failed gets both ways out: retry (the wake, which felis-api turns into a fresh
-// start) and stop. Nobody is on a server that never came up, so that stop does
-// not ask.
-//
-// An accepted call keeps its spinner, and keeps asking the parent to reread,
-// until the parent's view shows the server asked to move (the list and the
-// console read a cache that lags the write by a moment), so nobody presses Wake
-// again into a 429. A server on its way down offers nothing until it is down;
-// one asked to run with no pod yet offers Stop, which is the way out when it
-// never comes up.
-// A server given up or being deleted offers nothing to press, only why.
-// The file editor passes stopOnly: it needs the server down, so it offers Stop
-// alone, with the same question before disconnecting players.
+// Confirm stops when players may be disconnected, including when the count is unknown.
+// Keep accepted actions pending until polling sees the state change or the hold expires.
 export function PowerButton({
   name,
   phase,
@@ -86,9 +71,6 @@ export function PowerButton({
   const pending = pendingPower({ phase, desiredState });
   const on = desiredState ? desiredState === "Running" : isUp(phase);
 
-  // A sent call is done once the view shows the lever moved: a wake when the
-  // server is meant to run (a retry once it is no longer Failed), a stop when it
-  // is meant to stop. The hold ends it anyway if the view never gets there.
   const caughtUp = submitted === "wake" ? on && !failed : submitted === "stop" ? !on : true;
   useEffect(() => {
     if (submitted === null) return;

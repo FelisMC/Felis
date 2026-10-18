@@ -26,10 +26,7 @@ func (f fakeCmd) output(_ context.Context, name string, _ ...string) ([]byte, er
 	return b, nil
 }
 
-// Real `--version` banners (captured from the tools' known output shape). The k3s
-// banner is the important one: the binary prints the '+k3s1' build form, which must
-// parse STABLE — contrast versionFromImageRef, which has to repair the '-k3s1' the
-// registry forces.
+// Treat +k3s1 as stable build metadata; repair the registry's -k3s1 spelling before comparison.
 const (
 	k3sVersionBanner         = "k3s version v1.36.2+k3s1 (a1b2c3d4)\ngo version go1.24.0\n"
 	cloudflaredVersionBanner = "cloudflared version 2026.6.1 (built 2026-06-20-1057 UTC)\n"
@@ -150,9 +147,6 @@ func fullFakeGatherer() sysGatherer {
 	}
 }
 
-// TestSysGathererCurrentDispatch drives Current() for every component the real Topology
-// tracks, proving each name routes to the right seam+extractor and the discovered
-// current version (including the raw tag a report needs) comes back correctly.
 func TestSysGathererCurrentDispatch(t *testing.T) {
 	g := fullFakeGatherer()
 	want := map[string]struct {
@@ -192,9 +186,6 @@ func TestSysGathererCurrentDispatch(t *testing.T) {
 	}
 }
 
-// TestSysGathererFailsClosed covers every way a gather can fail: a runner error, a seam
-// that is not wired (the production default for felis-api/velocity), and an unknown
-// component. None returns a usable zero version.
 func TestSysGathererFailsClosed(t *testing.T) {
 	k3s := Spec{Name: "k3s"}
 	felis := Spec{Name: "felis-api"}

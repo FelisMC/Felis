@@ -1,264 +1,67 @@
 #!/usr/bin/env bash
-#
-# Felis one-line bootstrap installer.
-#
-#   curl -fsSL <raw-url>/deploy/bootstrap.sh | sudo bash
-#
-# Brings a fresh single-node Linux host from nothing to a running Felis control
-# plane: it installs whatever is missing (picking apt/dnf/yum/zypper/pacman by OS), provisions a
-# swap file on tiny hosts, then configures Docker and k3s, starts PostgreSQL in k3s,
-# builds and imports the felis image, runs database migrations and applies the rendered
-# install bundle (CRD + namespaces + RBAC + NetworkPolicies + control-plane
-# Deployments + in-cluster registry).
-#
-# The recommended entrypoint is now `sudo felis setup`, which wraps this
-# bootstrap in a TUI and then continues to the Owner/edge setup. This script
-# remains usable directly for raw host provisioning.
-#
-# At the start it asks what to install:
-#   [1] Felis       — the full control plane described above.
-#   [2] Felis-nano  — ONLY the Yggdrasil hasJoined multiplexer (`felis nano`) as a
-#                     systemd service: no k3s, no Postgres, no bundle. For a
-#                     third-party server operator who just wants multi-Yggdrasil
-#                     auth federation. Preselect non-interactively with
-#                     FELIS_INSTALL_MODE=nano.
-#
-# The script is idempotent: re-running it converges rather than duplicating, and
-# generated secrets are persisted to /etc/felis/secrets.env so reruns reuse them.
-#
-# Tunables override the demo defaults. sudo resets the environment, so a variable exported
-# before `curl ... | sudo bash` never arrives. Name it on the sudo line, or keep it with -E:
-#   curl -fsSL <raw-url>/deploy/bootstrap.sh | sudo FELIS_INSTALL_MODE=nano FELIS_NANO_LISTEN=10.0.0.5:8081 bash
-#   export FELIS_INSTALL_MODE=nano; curl -fsSL <raw-url>/deploy/bootstrap.sh | sudo -E bash
-#   FELIS_INSTALL_MODE full|nano — skip the prompt (default: ask on a tty, else full; nano
-#                     instead on a host that runs felis-nano and no full install)
-#   FELIS_NO_SETUP    1 ends a full install at its summary. By default an install that
-#                     leaves no Owner account goes on into `felis setup` when it runs on
-#                     a terminal
-#   FELIS_NANO_LISTEN listen addr for `felis nano` (default: the address an installed
-#                     felis-nano already uses, else 127.0.0.1:8081 — loopback only; set a
-#                     private-network IP to serve an off-host proxy)
-#   FELIS_NANO_PROXY_CIDR the proxy allowed to reach a non-loopback nano bind, as an address
-#                     with a prefix length (for example 10.0.0.7/32). firewalld opens the
-#                     port to that source only; unset, it opens nothing
-#   FELIS_LEGACY_FORWARDING_SERVERS comma-separated backends that always receive their
-#                     identity through the handshake address instead of modern forwarding
-#                     (default: legacy18). A floor: any server whose MinecraftServer CR is
-#                     labelled felis.lolicon.best/forwarding=legacy joins it while the
-#                     proxy runs (https://docs.felismc.com/en/guide/servers#forwarding-mode), so a new 1.8 backend needs a label,
-#                     not a re-run. Changing the floor itself means re-running this script.
-#   FELIS_VELOCITY_XMX maximum heap of the Velocity proxy, as <n>M or <n>G (default: 1G;
-#                     at least 256M). https://docs.felismc.com/en/guide/requirements#proxy-heap sizes it by player count.
-#   FELIS_VELOCITY_FORK_JAR path to a Felis-Legacy Velocity fork build to install as the
-#                     proxy instead of the stock download (default: unset, stock).
-#   FELIS_VELOCITY_FORK_JAR_SHA256 expected sha256 of that jar. REQUIRED whenever the jar
-#                     above is set; the install refuses on a mismatch.
-#   FELIS_GAME_STACK  pinned|latest — which Limbo, Paper, LuckPerms and Velocity builds to
-#                     install (default: pinned, the builds deploy/game-stack.lock names,
-#                     each checked against its sha256). latest resolves upstream's newest
-#                     builds on every run; the Minecraft version then follows Limbo's CI.
-#   FELIS_JRE_VERSION Temurin feature version for the proxy (default: 25, whose build and
-#                     digests are pinned; a rerun moves an installer-managed JRE to the
-#                     pinned build). Another feature version is checked against the
-#                     digest Adoptium's API publishes for it.
-#   FELIS_GO_VERSION  Go toolchain used to build the nano binary (default: 1.27.2)
-#   FELIS_GO_SHA256   sha256 of that version's linux tarball for this host's architecture.
-#                     REQUIRED for a non-default FELIS_GO_VERSION; the default's is pinned.
-#   FELIS_K3S_VERSION k3s release a fresh install gets (default: v1.36.4+k3s1). An
-#                     installed k3s is left alone unless FELIS_UPGRADE_DEPS=1.
-#   FELIS_CLOUDFLARED_VERSION / FELIS_CLOUDFLARED_SHA256 cloudflared release installed
-#                     when none is present (default: 2026.9.1, digests pinned); the
-#                     sha256 is REQUIRED for any other version
-#   FELIS_FORCE_UPDATE=1 reinstalls the binary even when its version already matches.
-#   FELIS_UPGRADE_DEPS 1 moves an installed k3s and cloudflared to the versions above
-#                     (k3s one minor version at a time; neither is ever downgraded) and
-#                     restarts cloudflared-felis onto the new binary (default: 0)
-#   FELIS_REPO_URL    git URL to build from   (raw script mode only)
-#   FELIS_VERSION_BOOTSTRAP release|dev — which version to install (default: release).
-#                     release DOWNLOADS what the newest tag publishes: the felis binary
-#                     (panel included — it is go:embed'ed into that same binary), every
-#                     image and the Velocity plugin, each checked against the release's
-#                     SHA256SUMS before it is used, so the host needs neither Docker nor
-#                     Docker Hub; dev clones and compiles. If an asset is missing or this
-#                     architecture has none, release warns and builds that piece of the
-#                     SAME tag here instead (with Docker); a release without SHA256SUMS
-#                     is compiled from source whole.
-#   FELIS_ARTIFACT_DIR a directory holding a release's assets as release.yml publishes them
-#                     (felis-linux-<arch>, felis-image-*-linux-<arch>.tar, their listing
-#                     felis-images-linux-<arch>.txt, felis-velocity.jar, SHA256SUMS; see
-#                     deploy/build-release-artifacts.sh): the binary, images and plugin are
-#                     installed from there and nothing is fetched from api.github.com or
-#                     Docker Hub, nor built (FELIS_GAME_STACK=latest aside: no release
-#                     ships that stack, so its game images are built here). A file missing
-#                     from it or not matching its SHA256SUMS stops the install.
-#   FELIS_GITHUB_TOKEN GitHub token; needed only when installing from a private fork
-#   FELIS_REF         branch/tag/sha — pins the build, overrides the channel, and forces a
-#                     source build (naming a ref asks for that tree, not a published asset)
-#   FELIS_RELEASE     a published release tag (v1.2.3) the release channel installs, from
-#                     its assets, instead of the newest: the way back to an earlier release.
-#                     Read this script at the same tag. Installers older than this variable
-#                     ignore it and install the newest; for those, FELIS_REF=<tag> builds
-#                     that tag from source
-#   FELIS_IMAGE       control-plane image ref (default:
-#                     registry.felis.svc:5000/felis/felis:<the felis version>, so each
-#                     release has its own tag and `kubectl rollout undo` returns to the
-#                     previous one; :demo when the version is unknown — never :latest;
-#                     anything not under the registry is used as-is but is NOT
-#                     mirrored into it, so it has no pull source after an image GC)
-#   FELIS_ROOT_DOMAIN deployment root domain  (default: <node-ip>.nip.io; first install
-#                     only -- a rerun keeps the installed one, and sudo felis domain set
-#                     moves it)
-#   FELIS_PANEL_NODEPORT local HTTPS panel/API NodePort (default: 30443)
-#   FELIS_EGRESS_MODE loadbalancer|nodeport   (default: nodeport — no MetalLB on a demo box)
-#   FELIS_BACKUP_PVC  world-archive PVC the installer renders and felis-api hands to its
-#                     backup/restore Jobs (default: felis-backups; empty string disables
-#                     backups — the endpoints answer 503)
-#   FELIS_ARCHIVE_LOCAL_PATH path that PVC is mounted at inside those Jobs; written into
-#                     felis.toml [archive] local_path (default: /var/lib/felis/archives)
-#   FELIS_WORLDS_HOST_PATH node directory holding the world volumes (on the k3s this
-#                     installer provisions: /var/lib/rancher/k3s/storage). Setting it
-#                     lets the daily reaper also archive and then delete worlds idle
-#                     for 15 days (without it the reaper only deletes backups past
-#                     their expiry and leaves every world); the reaper reads that
-#                     root as root, so it keeps k3s's own 0700 root:root
-#                     (default: unset = worlds are never reaped)
-#   FELIS_REGISTRY_STORAGE / FELIS_UPLOADS_STORAGE / FELIS_BACKUP_STORAGE / FELIS_ARTIFACTS_STORAGE
-#                     capacity the registry, uploads, world-archive and server-software
-#                     download cache PVCs request on first install (defaults: 10Gi, 5Gi,
-#                     10Gi, 10Gi). An existing claim keeps its size; on k3s local-path the
-#                     number is not enforced (the cache evicts to stay within 90% of its
-#                     own), see troubleshooting §9
-#   FELIS_MANAGE_TIME_SYNC 0 leaves the host's clock alone; by default the installer
-#                     turns NTP on (installing chrony when nothing can) and waits for it
-#                     to synchronize (default: 1)
-#   FELIS_MANAGE_JOURNAL 0 leaves journald alone; by default the installer makes the
-#                     system journal persistent so logs survive a reboot (default: 1)
-#   FELIS_JOURNAL_MAX_USE the persistent journal's size cap, journald's SystemMaxUse
-#                     written <n>K|M|G (default: 1G)
-#   FELIS_PREFLIGHT   strict|warn — before touching the host the installer checks RAM,
-#                     disk, ports, other Kubernetes, the pod network ranges and the hosts it
-#                     downloads from, and stops on any problem with the full list (default:
-#                     strict). warn reports them and installs anyway.
-#   FELIS_RESTORE_FROM_OFFSITE 1 rebuilds this fresh host from the old install's off-site
-#                     copy once it is installed (felis restore-host): database, images,
-#                     uploads, servers and each server's newest world. It needs the old
-#                     bucket in FELIS_OFFSITE_* with its credentials and FELIS_OFFSITE_KEY.
-#   FELIS_RESTORE_BUNDLE a bundle name from `felis offsite list` to rebuild from instead of
-#                     the newest
-#   FELIS_RESTORE_TAKE_OVER 1 makes this host the one that writes the bucket once rebuilt
-#                     (leave it unset on a rehearsal machine)
-#   PKG_LOCK_TIMEOUT seconds to wait for package-manager locks (default: 900)
-#   APT_LOCK_TIMEOUT legacy alias for PKG_LOCK_TIMEOUT
+# Usage: curl -fsSL <raw-url>/deploy/bootstrap.sh | sudo [VAR=value ...] bash
+
 set -Eeuo pipefail
 
-# ---------------------------------------------------------------------------
-# Configuration & constants
-# ---------------------------------------------------------------------------
 FELIS_REPO_URL="${FELIS_REPO_URL:-https://github.com/FelisMC/Felis.git}"
-# Which version to install. "release" builds the newest published GitHub release;
-# "dev" builds the tip of main. Release is the default because an installer that
-# tracks a moving branch by default hands every new host a different, untested
-# commit — the version an operator reports in a bug is then meaningless.
 FELIS_VERSION_BOOTSTRAP="${FELIS_VERSION_BOOTSTRAP:-release}"
-# Empty by default and resolved from the channel below. Setting it explicitly pins the
-# build to that ref and skips resolution entirely: naming a ref IS asking for a
-# development build, so it takes the dev-FORM stamp regardless of the channel. Skipping
-# resolution also skips the tag lookup, so the base stays v0.0.0 and the stamp is
-# v0.0.0+g<sha> rather than <latest-tag>+g<sha> — deliberate, so pinning a ref costs no
-# network call the operator did not ask for.
+# A set ref skips channel resolution and the tag lookup, so the stamp is v0.0.0+g<sha>.
 FELIS_REF="${FELIS_REF:-}"
-# Recorded HERE because resolve_install_ref overwrites FELIS_REF on both channels — after it
-# runs, "did the operator pin a ref?" is unanswerable. Naming a ref asks for THAT tree to be
-# built, so it takes the source path even on the release channel.
+# Recorded before resolve_install_ref overwrites FELIS_REF; a pinned ref forces the source build.
 FELIS_REF_PINNED=""
 if [ -n "$FELIS_REF" ]; then FELIS_REF_PINNED=1; fi
-# A published release tag the release channel installs instead of the newest (header).
 FELIS_RELEASE="${FELIS_RELEASE:-}"
-# The directory of release assets to install from (header); empty installs as the channel says.
 FELIS_ARTIFACT_DIR="${FELIS_ARTIFACT_DIR:-}"
-# Set once a prebuilt felis binary is installed at HOST_BIN, by the TUI hand-off, a release
-# download or FELIS_ARTIFACT_DIR. It is what the image build, the CRD apply and the game stack
-# key off: all three only need "is there a binary and no checkout", never "which route got us
-# here".
+# Set once a prebuilt felis binary is installed at HOST_BIN (TUI hand-off, release download or FELIS_ARTIFACT_DIR).
 HAVE_PREBUILT_BINARY=""
-# The image the control plane ran before this run moved it (deploy_bundle), for the rollback
-# hint in summary.
+# Control-plane image before this run moved it (deploy_bundle); used for the rollback hint.
 PREVIOUS_FELIS_IMAGE=""
-# Where the images and the Velocity plugin come from, decided by select_release_artifacts once
-# the binary is on the host: "dir" (FELIS_ARTIFACT_DIR), "release" (the assets of release
-# ARTIFACT_TAG, downloaded into ARTIFACT_CACHE), or empty, when everything is built here.
+# Set by select_release_artifacts: "dir" (FELIS_ARTIFACT_DIR), "release" (ARTIFACT_TAG assets cached
+# in ARTIFACT_CACHE) or empty (everything is built here).
 ARTIFACT_MODE=""
 ARTIFACT_TAG=""
-# Root-only, and outside /tmp: an image bundle waits here from its import to its push, and a
-# run that failed in between finds it again. push_images_to_registry empties it.
+# Root-only and outside /tmp: an image bundle waits here between import and push, so a failed run can resume.
 ARTIFACT_CACHE="/var/lib/felis/artifacts"
-# The SHA256SUMS every artifact is checked against (load_artifact_sums), and the verified local
-# copy artifact_fetch last pointed at.
+# SHA256SUMS every artifact is checked against, and the verified local copy artifact_fetch last returned.
 ARTIFACT_SUMS=""
 ARTIFACT_FILE=""
-# The validated lines of the image listing ("bundle role name manifest-digest config-digest"),
-# and whether it was read yet: "", "ok", or "bad" (the listing could not be used).
+# Validated image-listing lines ("bundle role name manifest-digest config-digest"); state is "", "ok" or "bad".
 RELEASE_LISTING=""
 RELEASE_LISTING_STATE=""
-# One "role bundle name target manifest-digest config-digest" line per image this run took from
-# a bundle (import_release_images), and those roles; every other image is built here.
+# "role bundle name target manifest-digest config-digest" per image taken from a bundle; other images are built.
 RELEASE_IMAGES=""
 PREBUILT_ROLES=" "
-# Docker is installed and started only for what has to be built on this host (ensure_docker).
 DOCKER_INSTALLED=""
-# The release JSON every asset lookup reads, fetched once per tag (load_release_json): an install
-# downloads up to a dozen assets, and GitHub allows an address without a token 60 API calls an
-# hour.
+# Release JSON cached per tag: unauthenticated GitHub API calls are limited to 60 an hour.
 RELEASE_JSON_TAG=""
 RELEASE_JSON=""
-# Optional GitHub credential, needed only for a private fork: GitHub answers
-# 404 (not 403) for a repo the caller cannot see, so without it both the release lookup
-# and the clone fail as "not found". Exported because git's credential helper below runs
-# as a child process and reads it from the environment — which is also why it is never
-# interpolated into the clone URL. A token in the URL is written verbatim into
-# .git/config and survives the install; an environment variable does not.
+# Exported for git's credential helper; never put it in the clone URL, where it would persist in .git/config.
 FELIS_GITHUB_TOKEN="${FELIS_GITHUB_TOKEN:-}"
 export FELIS_GITHUB_TOKEN
 # Set by resolve_install_ref/stamp_version and linked into the binary as main.version.
 FELIS_VERSION=""
 FELIS_VERSION_BASE=""
-# Where the installer parks every image it builds, so kubelet can re-pull one the
-# image GC has collected (the disk-pressure drill's dead end: ImagePullBackOff with
-# nothing to pull from). The node pulls through the loopback hostPort the registry
-# Deployment binds (configure_registry_mirror below); pushes go through
-# REGISTRY_PUSH_HOST — docker treats 127.0.0.1 as insecure by default, so the
-# daemon needs no insecure-registries entry for it.
+# Registry that holds every built image so kubelet can re-pull after image GC; pushes use the loopback
+# REGISTRY_PUSH_HOST (docker treats 127.0.0.1 as insecure, so no insecure-registries entry).
 REGISTRY_URL="registry.felis.svc:5000"
 REGISTRY_PUSH_HOST="127.0.0.1:${REGISTRY_URL##*:}"
-# Empty unless the operator names one: resolve_felis_image derives the tag from the version
-# this run installs, which is only known once the binary or the checkout is.
+# Empty unless set: resolve_felis_image derives the tag from the installed version.
 FELIS_IMAGE="${FELIS_IMAGE:-}"
 FELIS_EGRESS_MODE="${FELIS_EGRESS_MODE:-nodeport}"
 FELIS_PANEL_NODEPORT="${FELIS_PANEL_NODEPORT:-30443}"
-# World-archive storage. The installer renders this PVC (minecraft namespace) and felis-api
-# advertises it to its backup/restore Jobs; emptying it disables backups (503). The archive
-# path is written into felis.toml so the Jobs' mount and [archive] local_path agree by
-# construction — a mismatch would leave tarLocal's absolute archive refs unresolvable.
+# The archive path goes into felis.toml and must equal the Jobs' mount path, or archive refs do not resolve.
 FELIS_BACKUP_PVC="${FELIS_BACKUP_PVC:-felis-backups}"
 FELIS_ARCHIVE_LOCAL_PATH="${FELIS_ARCHIVE_LOCAL_PATH:-/var/lib/felis/archives}"
-# PVC capacities; empty keeps `felis manifests`' defaults.
+# Empty keeps the `felis manifests` defaults.
 FELIS_REGISTRY_STORAGE="${FELIS_REGISTRY_STORAGE:-}"
 FELIS_UPLOADS_STORAGE="${FELIS_UPLOADS_STORAGE:-}"
 FELIS_BACKUP_STORAGE="${FELIS_BACKUP_STORAGE:-}"
 FELIS_ARTIFACTS_STORAGE="${FELIS_ARTIFACTS_STORAGE:-}"
-# Retention is opt-in because it DELETES worlds (after a verified archive): point this at the
-# node directory the world volumes live under. On the k3s this installer provisions that is
-# /var/lib/rancher/k3s/storage — the reaper resolves each PVC's local-path directory exactly
-# from its volumeName. Left unset, the reaper CronJob renders retention-only: backups past
-# their expiry are still deleted daily, and no world is ever archived or deleted.
+# Opt-in because the reaper then deletes worlds after a verified archive; unset renders it retention-only (expired backups).
 FELIS_WORLDS_HOST_PATH="${FELIS_WORLDS_HOST_PATH:-}"
-# k3s's local-path provisioner root. It appears with the first volume the provisioner
-# creates, which on a fresh install is after the reaper's PV has been applied.
+# k3s local-path provisioner root; it appears with the first volume, after the reaper's PV is applied.
 K3S_STORAGE_ROOT="/var/lib/rancher/k3s/storage"
-# Host settings changed in the panel (Platform settings → Host) are kept in
-# /etc/felis/host-settings.env, which node-control writes. A run takes them as its
-# defaults, so a re-run or an update keeps what the Owner chose; a variable set for the
-# run still wins. Only the variables the panel owns are read from it.
+# Panel-owned settings (written by node-control) become defaults; a variable set for the run wins.
 HOST_SETTINGS_FILE="/etc/felis/host-settings.env"
 recall_host_settings() {
   [ -r "$HOST_SETTINGS_FILE" ] || return 0
@@ -276,44 +79,26 @@ recall_host_settings() {
 }
 recall_host_settings
 
-# Control-plane database backups (felis db backup): a daily timer bundles pg_dump with the
-# /etc/felis state a rebuild needs, and every upgrade that has migrations to apply snapshots
-# the database first (felis migrate up). The directory sits outside /var/lib/rancher on
-# purpose: reinstalling k3s must not take the database backups with it. Copy it off the
-# host for anything beyond "undo a bad upgrade or a mistaken delete" (troubleshooting §16).
+# Daily db backups and pre-migration snapshots (felis db backup); outside /var/lib/rancher so a k3s reinstall keeps them.
 FELIS_DB_BACKUP_DIR="${FELIS_DB_BACKUP_DIR:-/var/lib/felis/db-backups}"
 FELIS_DB_BACKUP_KEEP="${FELIS_DB_BACKUP_KEEP:-14}"
 FELIS_DB_BACKUP_TIME="${FELIS_DB_BACKUP_TIME:-*-*-* 03:30:00}"
 # node-exporter textfile collector target; FelisDBBackupStale (deploy/alerts) reads it.
 FELIS_DB_BACKUP_METRICS="${FELIS_DB_BACKUP_METRICS:-/var/lib/node_exporter/textfile_collector/felis_db_backup.prom}"
-# 0 migrates without the pre-migration snapshot. The upgrade stops if the snapshot fails
-# and this is not set.
+# 0 skips the pre-migration snapshot; otherwise a failed snapshot stops the upgrade.
 FELIS_PRE_MIGRATE_BACKUP="${FELIS_PRE_MIGRATE_BACKUP:-1}"
-# The off-site copy (felis offsite, troubleshooting §16). Every hour the host encrypts each
-# world archive and the newest database bundles and copies them to an S3-compatible bucket,
-# and the reaper deletes an idle world only once its archive is there. Without a bucket
-# every backup lives on this one machine, and losing its disk loses them all. Set the
-# bucket and its endpoint to turn it on; FELIS_OFFSITE_ACCESS_KEY / FELIS_OFFSITE_SECRET_KEY
-# (and optionally a FELIS_OFFSITE_KEY from `felis offsite keygen`) go into
-# /etc/felis/offsite.env, mode 0600, with the encryption key generated when there is none.
-# A re-run without these keeps the [offsite] felis.host.toml already has.
+# Off-site S3 copy (felis offsite); credentials and key go to /etc/felis/offsite.env (0600).
+# A rerun without these keeps the [offsite] already in felis.host.toml.
 FELIS_OFFSITE_ENDPOINT="${FELIS_OFFSITE_ENDPOINT:-}"
 FELIS_OFFSITE_BUCKET="${FELIS_OFFSITE_BUCKET:-}"
-# FELIS_RESTORE_FROM_OFFSITE=1 rebuilds the install from the FELIS_OFFSITE_* bucket once it
-# is installed (felis restore-host); FELIS_RESTORE_BUNDLE names an older bundle than the
-# newest, and FELIS_RESTORE_TAKE_OVER=1 makes this host the one that writes the bucket.
 RESTORE_FROM_OFFSITE="${FELIS_RESTORE_FROM_OFFSITE:-0}"
 RESTORE_BUNDLE="${FELIS_RESTORE_BUNDLE:-}"
 RESTORE_TAKE_OVER="${FELIS_RESTORE_TAKE_OVER:-0}"
 FELIS_OFFSITE_REGION="${FELIS_OFFSITE_REGION:-}"
 FELIS_OFFSITE_PREFIX="${FELIS_OFFSITE_PREFIX:-}"
 FELIS_OFFSITE_DB_KEEP="${FELIS_OFFSITE_DB_KEEP:-}"
-# The watchdog's heartbeat (troubleshooting §14): the ping URL of a check at a monitoring
-# service such as Healthchecks.io, a dead man's switch. Every watchdog run pings it, and
-# the service mails its own users when the pings stop or report failure: the host down,
-# the watchdog broken, alerts that reach no one. Nothing on this host can report its own
-# death. The URL is kept in /etc/felis/watchdog-heartbeat-url, mode 0600, as its path is
-# the key that pings the check; off removes it, and a re-run without it keeps it.
+# Dead man's switch ping URL, kept in /etc/felis/watchdog-heartbeat-url (0600; its path is the secret).
+# "off" removes it; a rerun without it keeps it.
 FELIS_WATCHDOG_HEARTBEAT_URL="${FELIS_WATCHDOG_HEARTBEAT_URL:-}"
 INSTALL_MODE="${FELIS_INSTALL_MODE:-}"
 DISTRIBUTED="${FELIS_DISTRIBUTED:-0}"
@@ -323,17 +108,9 @@ WORKER_TOKEN_FILE="${FELIS_BOOTSTRAP_TOKEN_FILE:-}"
 WORKER_REGISTRY_IP="${FELIS_REGISTRY_CLUSTER_IP:-}"
 NODE_EXTERNAL_IP="${FELIS_NODE_EXTERNAL_IP:-}"
 WORKER_PEERS="${FELIS_PEER_CIDRS:-}"
-# `felis node firewall` records the peer list it last installed here, so a rerun or
-# `felis update` on a distributed controller, which passes no FELIS_PEER_CIDRS, keeps it.
+# Peer list last installed by `felis node firewall`; a rerun passing no FELIS_PEER_CIDRS keeps it.
 NODE_PEERS_FILE="/etc/felis/node-peers"
-# Controller high availability (see main_controller_join and https://docs.felismc.com/en/guide/distributed#controller-ha):
-# FELIS_CONTROLLER_HA=1 on a distributed controller moves k3s onto embedded etcd, installs
-# Longhorn (FELIS_LONGHORN_VERSION) and puts the control plane's volumes on it, so more
-# controllers can join and the control plane moves to another one when its node is lost. A
-# rerun keeps it on (HA_ENV). FELIS_HA_VIP=<address>/<prefix> floats a VRRP address over the
-# controllers on FELIS_HA_VIP_INTERFACE (default: the interface of the node's address); the
-# controllers must share that network, elsewhere point DNS or the provider's floating
-# address at them.
+# HA persists across reruns; the optional VRRP address requires controllers on one shared network.
 CONTROLLER_HA="${FELIS_CONTROLLER_HA:-}"
 HA_ENV="/etc/felis/ha.env"
 HA_HOME=""
@@ -346,41 +123,27 @@ REPLICATED_CLASS="felis-replicated"
 FELIS_HA_VIP="${FELIS_HA_VIP:-}"
 FELIS_HA_VIP_INTERFACE="${FELIS_HA_VIP_INTERFACE:-}"
 FELIS_HA_VRID="${FELIS_HA_VRID:-51}"
-# controller-join's inputs, which felis node join-controller sets.
+# Inputs set by felis node join-controller.
 SERVER_TOKEN_FILE="${FELIS_SERVER_TOKEN_FILE:-}"
 AGENT_TOKEN_FILE="${FELIS_AGENT_TOKEN_FILE:-}"
 ETC_BUNDLE="${FELIS_ETC_BUNDLE:-}"
 CONTROLLER_PEERS="${FELIS_CONTROLLER_PEERS:-}"
-# strict stops the install on any preflight problem (preflight below); warn reports them
-# and goes on, for a host the checks misjudge.
 FELIS_PREFLIGHT="${FELIS_PREFLIGHT:-strict}"
-# Loopback by default: hasJoined is an unauthenticated endpoint by protocol (Velocity
-# sends no token), so a public bind is a free auth relay — anyone can point their own
-# proxy at it and spend YOUR egress IP on Mojang, until Mojang rate-limits you and your
-# own players stop getting in. Same-host Velocity reaches 127.0.0.1 fine; a proxy on
-# another machine must opt in explicitly with FELIS_NANO_LISTEN=<private-ip>:8081.
-# Left empty here: resolve_nano_listen applies that default only after an existing unit's
-# address has had its say.
+# hasJoined is unauthenticated, so a public bind is a free auth relay: loopback is the default.
+# Left empty here; resolve_nano_listen applies the default after an installed unit's address.
 FELIS_NANO_LISTEN="${FELIS_NANO_LISTEN:-}"
 FELIS_NANO_PROXY_CIDR="${FELIS_NANO_PROXY_CIDR:-}"
-# Backends that take their forwarded identity through the handshake address instead of
-# proxy-wide modern forwarding. See write_velocity_service for why a protocol-47 backend
-# needs this. Overridable because adding a second 1.8 backend otherwise means editing this
-# script; it is still a restart-time list, not one that follows the CRs.
+# Backends that get their identity through the handshake address (see write_velocity_service);
+# read at proxy restart, not live from the CRs.
 FELIS_LEGACY_FORWARDING_SERVERS="${FELIS_LEGACY_FORWARDING_SERVERS:-legacy18}"
 FELIS_VELOCITY_XMX="${FELIS_VELOCITY_XMX:-1G}"
-# The Go tarball is unpacked and run as root, so the default version is pinned by the sha256
-# go.dev/dl publishes for each architecture install_go_toolchain handles. Move all three
-# together; any other FELIS_GO_VERSION has to bring its own FELIS_GO_SHA256.
+# Pinned go.dev sha256 per architecture; move the version and both digests together.
 GO_PINNED_VERSION="1.27.2"
 GO_PINNED_SHA256_AMD64="ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5"
 GO_PINNED_SHA256_ARM64="94f3e30b8e374bc285e7dadc11e0865726b9bc6e85b841ccceaabc0214c6b7c8"
 FELIS_GO_VERSION="${FELIS_GO_VERSION:-$GO_PINNED_VERSION}"
 FELIS_GO_SHA256="${FELIS_GO_SHA256:-}"
-# cloudflared runs as root on the edge, so it gets the same treatment: a pinned release and
-# the sha256 GitHub lists for each asset. A different FELIS_CLOUDFLARED_VERSION has to bring
-# its own FELIS_CLOUDFLARED_SHA256. An installed binary is replaced only under
-# FELIS_UPGRADE_DEPS=1; `felis update --cloudflared` reports when that would change it.
+# Pinned release and the sha256 GitHub lists per asset; an installed binary is replaced only under FELIS_UPGRADE_DEPS=1.
 CLOUDFLARED_PINNED_VERSION="2026.9.1"
 CLOUDFLARED_PINNED_SHA256_AMD64="03f1f25d1cc93b9ad6c60569d44060bc4f17ed97075760ed8cfca4b12dcd68cc"
 CLOUDFLARED_PINNED_SHA256_ARM64="3d97437c71848bd8df68041e12436b484a661d95073ea1937f01a845ce88faa3"
@@ -388,87 +151,40 @@ CLOUDFLARED_PINNED_SHA256_ARM="093ffa3638ab2b636de63c43a8c68f96a69cf71f9699dd827
 FELIS_CLOUDFLARED_VERSION="${FELIS_CLOUDFLARED_VERSION:-$CLOUDFLARED_PINNED_VERSION}"
 FELIS_CLOUDFLARED_SHA256="${FELIS_CLOUDFLARED_SHA256:-}"
 CLOUDFLARED_BIN=/usr/local/bin/cloudflared
-# The k3s release a fresh install gets, and the tag its install script is read from. The
-# script checks the k3s binary against that release's sha256sum file, so pinning the tag
-# pins both. An installed k3s moves only under FELIS_UPGRADE_DEPS=1.
+# Also the tag the k3s install script is read from; that script checks the binary against the release's sha256sum file.
 FELIS_K3S_VERSION="${FELIS_K3S_VERSION:-v1.36.4+k3s1}"
 FELIS_UPGRADE_DEPS="${FELIS_UPGRADE_DEPS:-0}"
 FELIS_MANAGE_TIME_SYNC="${FELIS_MANAGE_TIME_SYNC:-1}"
 FELIS_MANAGE_JOURNAL="${FELIS_MANAGE_JOURNAL:-1}"
 FELIS_JOURNAL_MAX_USE="${FELIS_JOURNAL_MAX_USE:-1G}"
-# The in-cluster registry's image, by digest. It must equal platform.defaultRegistryImage
-# (internal/platform/identities.go, TestBootstrapPinsTheRegistryImage): the renderer puts
-# that ref in the Deployment, and this script caches and pins the same ref in containerd.
+# Must equal platform.defaultRegistryImage (TestBootstrapPinsTheRegistryImage); containerd caches the same ref.
 REGISTRY_IMAGE="docker.io/library/registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"
-# The control-plane database's image, by digest; it must equal platform.defaultPostgresImage
-# (TestBootstrapPinsThePostgresImage). Its major version names the cluster directory
-# under PG_DATA_DIR, so moving to a new major is a dump and restore (check_postgres_major).
+# Must equal platform.defaultPostgresImage (TestBootstrapPinsThePostgresImage); a new major needs a dump and restore (check_postgres_major).
 POSTGRES_IMAGE="docker.io/library/postgres:18.6-trixie@sha256:5a5a84b19854a9ffaa54082c166ff4ec27473a361e496e5ea167f298f2da9722"
 PKG_LOCK_TIMEOUT="${PKG_LOCK_TIMEOUT:-${APT_LOCK_TIMEOUT:-900}}"
 APT_LOCK_TIMEOUT="${APT_LOCK_TIMEOUT:-$PKG_LOCK_TIMEOUT}"
 
-# --- the game stack: proxy on the host, the two always-on backends in k3s ---
 FELIS_LIMBO_IMAGE="${FELIS_LIMBO_IMAGE:-${REGISTRY_URL}/felis/limbo:demo}"
 FELIS_LOBBY_IMAGE="${FELIS_LOBBY_IMAGE:-${REGISTRY_URL}/felis/lobby:demo}"
-# Plain Paper base recommended for a user's own server (deploy/paper). Not a system
-# server — forwarding is applied by the operator's init-forwarding initContainer, so it
-# needs no secret. Seeded recommended in 0019_recommended_paper.sql.
+# Plain Paper base for user servers (seeded in 0019_recommended_paper.sql); needs no secret.
 FELIS_PAPER_IMAGE="${FELIS_PAPER_IMAGE:-${REGISTRY_URL}/felis/paper:demo}"
-# The Velocity build comes from deploy/game-stack.lock (VELOCITY_VERSION and its jar digest).
-# Setting FELIS_VELOCITY_VERSION to another version, or FELIS_GAME_STACK=latest, installs
-# the newest BUILD of that minor instead. The minor itself is never discovered: PaperMC's
-# Fill v3 groups velocity builds by version group, and "newest across all groups" can mean
-# an unreleased 4.x SNAPSHOT that needs another runtime. Crossing a major is a deliberate
-# code change.
+# Resolve builds within the selected minor line to avoid adopting an incompatible unreleased protocol.
 FELIS_VELOCITY_VERSION="${FELIS_VELOCITY_VERSION:-}"
 VELOCITY_LATEST_MINOR="3.5.1"
-# pinned installs the builds deploy/game-stack.lock names (resolve_game_jars); latest asks
-# upstream for its newest ones, which is how that lock file gets refreshed.
 FELIS_GAME_STACK="${FELIS_GAME_STACK:-pinned}"
-# Path to a Felis-Legacy Velocity fork build, installed as the proxy in place of the
-# stock download. Unset — the default — changes nothing.
-#
-# Stock Velocity will not offer the login-plugin-message exchange below 1.13, so a 1.8
-# client reaching a modern-forwarding backend today is a side effect of Via replacing
-# the channel initializers before that check runs. It works, and nobody designed it.
-# The fork registers the login packets on 1.7.2 and drops the gate, which makes the
-# same outcome deliberate.
-#
-# Opt-in because it is unmeasured where it counts: FL-008's probe runs offline-mode
-# against a stub, and this jar would carry every real Mojang session on the server.
+# Opt-in: the fork is unmeasured against real Mojang sessions, which it would carry.
 FELIS_VELOCITY_FORK_JAR="${FELIS_VELOCITY_FORK_JAR:-}"
-# Expected sha256 of that jar, REQUIRED whenever it is set. Case and internal spaces are
-# ignored, so whatever sha256sum, Get-FileHash or certutil printed can be pasted as-is.
-# No digest is hardcoded here:
-# the build lives in Felis-Legacy and has never been reproduced on a second machine, so
-# any constant this script carried would pin one machine's output rather than the fork.
-#
-# So this is not a supply-chain signature and does not pretend to be one — an operator
-# who can write the jar can write this value too. What it does buy: a path is not an
-# identity, and every re-run of this script re-checks it. A truncated copy, a stale build
-# left at the same path, or the two-patch jar where the three-patch one was meant all
-# change the digest and stop the install. Naming the digest once is what turns "whatever
-# is at that path today" into one specific build.
+# Required with the jar; case and spaces ignored. Not a signature: it pins the path to one build and is re-checked every run.
 FELIS_VELOCITY_FORK_JAR_SHA256="${FELIS_VELOCITY_FORK_JAR_SHA256:-}"
-# Temurin 25: Velocity 3.5 needs 21+, and 25 is also what a future Velocity 4 requires,
-# so the runtime does not have to move again when the pin does. Distro JDK packaging is
-# a lottery across four package managers — a tarball is one code path everywhere (same
-# reasoning as install_go_toolchain).
 FELIS_JRE_VERSION="${FELIS_JRE_VERSION:-25}"
-# The JRE the proxy runs on is unpacked as root and carries every player session, so the
-# default feature version is pinned to one build and the sha256 Adoptium publishes for each
-# architecture. Move the three together (the Adoptium API lists them:
-# /v3/assets/latest/25/hotspot?image_type=jre&os=linux).
+# Pinned build and Adoptium sha256 per architecture (/v3/assets/latest/25/hotspot?image_type=jre&os=linux); move together.
 JRE_PINNED_FEATURE="25"
 JRE_PINNED_RELEASE="25.0.4.1+1"
 JRE_PINNED_SHA256_X64="1731a34baadec5479258ea0202e4d5d865d2efeee60cb0c7d7eb056fe96ca219"
 JRE_PINNED_SHA256_AARCH64="34828cbb93ed31c281c84ecb31ddab655d11a802f263c1fc019d42e9e0230fed"
-# The port the proxy listens on: the ONLY Minecraft port players ever touch. Backends
-# are ClusterIP-only, verify the modern-forwarding HMAC, and use NetworkPolicy to limit
-# non-node ingress to the declared proxy CIDRs.
+# The only Minecraft port players reach; backends are ClusterIP-only and verify the modern-forwarding HMAC.
 FELIS_GAME_PORT="${FELIS_GAME_PORT:-25565}"
-# Velocity server names — must match internal/naming (SystemLoginServer/SystemLobbyServer);
-# felis-api hands the proxy backends under exactly these names.
+# Must match internal/naming SystemLoginServer/SystemLobbyServer.
 LOGIN_SERVER="login"
 LOBBY_SERVER="lobby"
 
@@ -483,20 +199,17 @@ DB_USER="felis"
 STATE_DIR="/etc/felis"
 SECRETS_ENV="${STATE_DIR}/secrets.env"
 BOOTSTRAP_DONE="${STATE_DIR}/bootstrap.done"
-# felis restore-host keeps the bundle it fetched and its progress here.
 RESTORE_STATE_DIR="/var/lib/felis/restore-host"
 PANEL_TLS_CERT="${STATE_DIR}/panel-tls.crt"
 PANEL_TLS_KEY="${STATE_DIR}/panel-tls.key"
 SRC_DIR="/opt/felis/src"
 HOST_BIN="/usr/local/bin/felis"
-# The binary this run replaced (keep_previous_host_binary), and whether the new one has
-# been put to use: once migrations start, or the nano service restarts onto it, the old
-# one no longer matches what is running and a failed run keeps the new one.
+# Binary this run replaced (keep_previous_host_binary); once migrations start or nano restarts
+# onto the new one, a failed run keeps the new binary.
 HOST_BIN_PREV=""
 HOST_BIN_KEPT=0
 HOST_BIN_IN_USE=0
-# Felis's own build toolchain, not /usr/local/go: install_go_toolchain replaces whatever
-# version sits here, and an operator's Go at the conventional path is not ours to swap.
+# Felis's own toolchain, not /usr/local/go: install_go_toolchain replaces whatever is here.
 GOROOT_DIR="/opt/felis/go"
 NANO_SERVICE="/etc/systemd/system/felis-nano.service"
 DB_BACKUP_SERVICE="/etc/systemd/system/felis-db-backup.service"
@@ -509,16 +222,11 @@ UPDATE_CHECK_SERVICE="/etc/systemd/system/felis-update-check.service"
 UPDATE_CHECK_TIMER="/etc/systemd/system/felis-update-check.timer"
 WATCHDOG_STATE="/var/lib/felis/watchdog/state.json"
 OFFSITE_ENV="${STATE_DIR}/offsite.env"
-# Where summary_offsite shows a newly generated off-site key: the operator's terminal alone.
-# stdout and stderr are what `2>&1 | tee install.log`, cloud-init and CI keep on disk.
+# summary_offsite shows a new off-site key on the terminal only; stdout and stderr end up in install logs.
 OFFSITE_KEY_TTY=/dev/tty
-# Where the setup console the installer starts at the end reads its keys (setup_terminal).
 SETUP_TTY=/dev/tty
-# Set by summary_next when the installer goes on into the setup console.
 SETUP_CONSOLE=0
-# Host copies of the credentials `felis setup` takes at the keyboard, one bare value per
-# file, mode 0600 (cmd/felis/hostcreds.go); apply_setup_credential_secrets applies their
-# Secrets from them on every run.
+# Host copies of `felis setup` credentials, one bare value per file, 0600 (cmd/felis/hostcreds.go); applied as Secrets every run.
 SMTP_PASSWORD_FILE="${STATE_DIR}/smtp-password"
 UPLOADS_S3_ACCESS_KEY_FILE="${STATE_DIR}/uploads-s3-access-key"
 UPLOADS_S3_SECRET_KEY_FILE="${STATE_DIR}/uploads-s3-secret-key"
@@ -527,22 +235,16 @@ OFFSITE_TIMER="/etc/systemd/system/felis-offsite.timer"
 BUILD_TOOLS_SERVICE="/etc/systemd/system/felis-build-tools.service"
 BUILD_TOOLS_TIMER="/etc/systemd/system/felis-build-tools.timer"
 BUILD_TOOLS_STATUS="/var/lib/felis/build-tools/status.json"
-# While this marker holds a future Unix time, felis watchdog mails nothing: an install
-# restarts the control plane and the system servers on purpose. cleanup removes it; the
-# time in it is the backstop for an installer killed before its EXIT trap runs.
+# While this holds a future Unix time felis watchdog mails nothing; cleanup removes it, the time covers a killed installer.
 WATCHDOG_QUIET_FILE="/run/felis/watchdog-quiet-until"
-# FELIS_WATCHDOG_HEARTBEAT_URL, where felis watchdog reads it by default.
 WATCHDOG_HEARTBEAT_FILE="${STATE_DIR}/watchdog-heartbeat-url"
 VELOCITY_DIR="/opt/felis/velocity"
 VELOCITY_USER="felis-velocity"
 VELOCITY_SERVICE="/etc/systemd/system/felis-velocity.service"
-# What the running proxy was last started from (velocity_fingerprint), and the builds the
-# login and lobby pods were last started on: a rerun restarts only what actually changed,
-# since each of those restarts disconnects every player online.
+# Last-started proxy fingerprint and login/lobby images; a rerun restarts only what changed, as each restart disconnects players.
 VELOCITY_FINGERPRINT="${STATE_DIR}/velocity.fingerprint"
 SYSTEM_SERVER_IMAGES="${STATE_DIR}/system-server-images"
-# The control-plane database, felis-postgres (internal/platform/postgres.go); these must
-# equal the platform's constants (TestBootstrapAgreesWithThePostgresConstants).
+# felis-postgres constants; must equal internal/platform's (TestBootstrapAgreesWithThePostgresConstants).
 PG_DEPLOYMENT="felis-postgres"
 PG_CONTAINER="postgres"
 PG_SECRET="felis-postgres"
@@ -551,56 +253,42 @@ PG_DATA_DIR="/var/lib/felis/postgres"
 PG_UID=999
 PG_HOST_PORT=15432
 PG_SERVICE_ADDR="${PG_DEPLOYMENT}.${CONTROL_NS}.svc:5432"
-# Written once a host PostgreSQL's database has been moved into felis-postgres
-# (migrate_host_postgres); the move never runs again after it.
+# Written once a host PostgreSQL database is moved into felis-postgres (migrate_host_postgres); the move never reruns.
 PG_MOVED_MARKER="/var/lib/felis/postgres-moved"
 PG_LOCKOUT_LINE="# The felis database moved into k3s (felis-postgres); nothing else may reach this copy."
-# The units that write to the database from the host; the move stops them and starts
-# again the ones that were running.
+# Host units that write to the database; the move stops them and restarts the ones that were running.
 PG_MOVE_TIMERS=(felis-db-backup felis-offsite felis-update-check felis-watchdog)
-# Each public table with its exact row count, one per line, in byte order of the table names
-# whatever the servers' collations (relname is a name, which sorts in collation "C" since
-# PostgreSQL 12), so the two servers' answers compare byte for byte. internal/pgint runs it
-# on the oldest and newest server the installer meets; the shell tests stub psql.
+# Exact per-table row counts in collation "C" byte order, so two servers' answers compare byte for byte
+# (internal/pgint runs it; shell tests stub psql).
 PG_TABLE_COUNTS="SELECT c.relname || ' ' || (xpath('/row/n/text()', query_to_xml(format('SELECT count(*) AS n FROM public.%I', c.relname), false, true, '')))[1]::text FROM pg_class c JOIN pg_namespace s ON s.oid = c.relnamespace WHERE s.nspname = 'public' AND c.relkind IN ('r', 'p') ORDER BY c.relname"
 PG_MOVE_STAGE=""
 PG_MOVE_HBA=""
 PG_MOVE_UNITS=()
-# The nftables rules an earlier release kept a host PostgreSQL's port behind; the move
-# retires them with the server.
+# nftables rules that guarded a host PostgreSQL's port; the move retires them.
 PG_FIREWALL_RULES="${STATE_DIR}/postgres-firewall.nft"
 PG_FIREWALL_SERVICE="/etc/systemd/system/felis-postgres-firewall.service"
 JRE_DIR="/opt/felis/jre"
-# The gradle image the lobby and limbo Dockerfiles build their plugins in, digest
-# included; build_velocity_plugin runs the same one.
+# Digest-pinned gradle image shared by the lobby and limbo Dockerfiles and build_velocity_plugin.
 PLUGIN_BUILD_IMAGE="gradle:9.8.1-jdk25@sha256:e4f9e3d037cc0c7d8fc42cd97edb976dfd19a5b7314212b88b6de3807d13cd47"
 K3S_BIN_DIR="${K3S_BIN_DIR:-/usr/local/bin}"
 K3S_BIN="${K3S_BIN_DIR}/k3s"
-# k3s's containerd mirror config, written by configure_registry_mirror. A variable
-# (not just the literal path) so bootstrap_test.sh can point the writer at a
-# scratch file.
+# k3s containerd mirror config (configure_registry_mirror); these paths are variables so bootstrap_test.sh can use scratch files.
 K3S_REGISTRIES_FILE="/etc/rancher/k3s/registries.yaml"
-# The installer's k3s settings (write_k3s_config), a drop-in k3s reads after any
-# config.yaml the operator keeps. The unit, the admin kubeconfig and the kubelet's
-# client certificate are variables for the same reason as the file above.
+# Drop-in written by write_k3s_config; k3s reads it after the operator's config.yaml.
 K3S_CONFIG_DROPIN="/etc/rancher/k3s/config.yaml.d/50-felis.yaml"
 K3S_UNIT_FILE="/etc/systemd/system/k3s.service"
-# The installer's environment for the k3s service (write_k3s_service_dropin); k3s's own
-# installer rewrites the unit and its .env file, never this.
+# Service environment drop-in (write_k3s_service_dropin); k3s's own installer rewrites the unit and .env, not this.
 K3S_SERVICE_DROPIN="/etc/systemd/system/k3s.service.d/50-felis.conf"
 K3S_KUBECONFIG="/etc/rancher/k3s/k3s.yaml"
 K3S_KUBELET_CERT="/var/lib/rancher/k3s/agent/client-kubelet.crt"
-# Where k3s imports image tarballs from as it starts (stage_k3s_airgap_images).
+# k3s imports image tarballs from here at start (stage_k3s_airgap_images).
 K3S_IMAGES_DIR="/var/lib/rancher/k3s/agent/images"
-# ensure_persistent_journal's drop-in, and the directory journald creates once it
-# stores the journal persistently.
+# ensure_persistent_journal drop-in, and the directory journald creates once the journal is persistent.
 JOURNALD_DROPIN="/etc/systemd/journald.conf.d/50-felis.conf"
 JOURNAL_DIR="/var/log/journal"
-# dpkg's journal of a run in progress: not empty after a dpkg run was cut off
-# (finish_interrupted_dpkg).
+# Non-empty after a cut-off dpkg run (finish_interrupted_dpkg).
 DPKG_UPDATES_DIR="/var/lib/dpkg/updates"
-# Held for the whole run (acquire_run_lock), so a second installer started while one is
-# still going stops at once instead of working the same files and cluster beside it.
+# Held for the whole run (acquire_run_lock) so a second installer stops at once.
 RUN_LOCK_FILE="/run/felis-bootstrap.lock"
 APT_LOCK_FILES=(
   /var/lib/dpkg/lock-frontend
@@ -638,22 +326,12 @@ ZYPPER_BACKGROUND_SERVICES=(
   packagekit.service
 )
 
-# ---------------------------------------------------------------------------
-# Clean PATH (sudo may strip /usr/local/bin)
-# ---------------------------------------------------------------------------
 PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 export PATH
 
-# BuildKit attaches a provenance attestation to every build by default, and it records the
-# build's start time. On Docker's containerd image store the image id is the digest of the
-# index that carries it, so an unchanged rebuild would get a new id each run: the login and
-# lobby pods would restart on every rerun, and each run would push another versioned tag.
-# Without it the id is the manifest digest, which an all-cached build reproduces.
+# Disable provenance timestamps for deterministic cached image IDs and unchanged system-server Pods.
 export BUILDX_NO_DEFAULT_ATTESTATIONS=1
 
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
 log()  { printf '\033[1;36m[felis]\033[0m %s\n' "$*"; }
 ok()   { printf '\033[1;32m[ ok ]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
@@ -687,11 +365,7 @@ cleanup() {
   rm -f -- "$WATCHDOG_QUIET_FILE" 2>/dev/null || true
 }
 
-# keep_previous_host_binary copies the felis binary this run is about to replace, once. A
-# run that fails before the new binary is in use puts it back (restore_previous_host_binary):
-# until then the old binary, the old cluster and the unmigrated database still agree, while
-# a new binary left behind runs the host timers against a schema it was not built for, and
-# `felis setup` with it would migrate the database under the old control plane.
+# Preserve the previous binary until migration so host timers cannot run against an incompatible schema.
 keep_previous_host_binary() {
   [ "$HOST_BIN_KEPT" = 0 ] || return 0
   HOST_BIN_KEPT=1
@@ -724,9 +398,7 @@ restore_previous_host_binary() { # exit-status
 
 remember_temp() { TEMP_PATHS+=("$1"); }
 remember_container() { DOCKER_CONTAINERS+=("$1"); }
-# Gives a file the SELinux label its path calls for, on hosts that have SELinux. It
-# repairs files earlier installers wrote under /tmp and moved into place, which kept
-# user_tmp_t (a confined daemon is then denied them).
+# Restore SELinux path labels after installation rather than retaining temporary-file labels.
 restore_label() { if command -v restorecon >/dev/null 2>&1; then restorecon "$1" || true; fi; }
 
 trap 'on_error "$LINENO" "$?"' ERR
@@ -734,10 +406,8 @@ trap cleanup EXIT
 
 k3s_cmd() { [ -x "$K3S_BIN" ] || die "k3s binary not found at ${K3S_BIN}"; "$K3S_BIN" "$@"; }
 
-# acquire_run_lock takes RUN_LOCK_FILE for the rest of the run. A rerun started while an
-# earlier one still runs (in tmux after the SSH session dropped, in a second terminal)
-# would otherwise install the same packages, rewrite the same files and apply the same
-# cluster objects beside it. The lock goes with the process, however it ends.
+# Hold the run lock until exit to prevent concurrent installer mutations.
+# The lock goes with the process, however it ends.
 acquire_run_lock() {
   if ! command -v flock >/dev/null 2>&1; then
     warn "flock not found; nothing stops a second installer run beside this one"
@@ -761,12 +431,8 @@ apply_literal_secret() {
   rm -f "$tmp"
 }
 
-# The control plane mounts felis-config from its own namespace; the workload
-# namespace's backup/restore/fileedit Jobs and the reaper mount a local copy (a
-# secretKeyRef is namespace-local). The installer owns the rendered config, so both
-# copies are (re)applied on every run — unlike the create-if-absent credential
-# replicas `felis setup` makes, because a stale config copy keeps an old database URL
-# or archive policy after an upgrade or a credential rotation.
+# Workload Jobs need namespace-local replicas of configuration Secrets.
+# Refresh both configuration replicas on every run; stale values could retain obsolete credentials or policy.
 apply_felis_config_secrets() {
   kube -n "$CONTROL_NS" create secret generic felis-config \
     --from-file=felis.toml="${STATE_DIR}/felis.pod.toml" \
@@ -776,10 +442,8 @@ apply_felis_config_secrets() {
     --dry-run=client -o yaml | kube apply -f -
 }
 
-# The registry gate reads one token file per principal from felis-registry-auth
-# (registry namespace = control namespace); a build Job's push container reads the
-# build principal's username/password from felis-registry-push in the build
-# namespace. Values go through 0600 temp files, never kubectl's argv.
+# Separate registry gate credentials from build-only push credentials in their respective namespaces.
+# Values go through 0600 temp files, never kubectl's argv.
 apply_registry_secrets() {
   local dir
   dir="$(umask 077; mktemp -d)"
@@ -800,11 +464,8 @@ apply_registry_secrets() {
   rm -rf -- "$dir"
 }
 
-# secret_key_to_file keeps one key of a Secret in path, mode 0600, when path does not
-# exist yet. An install from before the host copies had the setup screens' credentials
-# only in the cluster; this is the run that moves them onto the host. A missing Secret
-# leaves path missing. The value goes from kubectl into the file, never into argv or
-# the log.
+# Create missing host credential copies with mode 0600; an absent Secret leaves no file.
+# The value goes from kubectl into the file, never into argv or the log.
 secret_key_to_file() {
   local namespace="$1" name="$2" key="$3" path="$4" encoded tmp
   [ -e "$path" ] && return 0
@@ -815,14 +476,7 @@ secret_key_to_file() {
   mv -f -- "$tmp" "$path"
 }
 
-# write_file_atomic path mode < content: path ends up holding all of content, or is
-# left as it was. A crash or a full disk halfway through a plain `cat >` leaves a
-# truncated file that the next run takes as the truth: a secrets.env cut short mints
-# passwords the database does not know, an offsite.env cut short a key that cannot
-# read the bucket. The temp file sits beside path, so mv is a rename on one
-# filesystem; mktemp makes it 0600 before anything is in it, it is on the disk
-# before the rename, and the directory is synced after it, so the new name survives
-# a power cut too.
+# Stage and sync replacements beside their targets for atomic, durable credential writes.
 write_file_atomic() {
   local path="$1" mode="$2" tmp
   tmp="$(mktemp "${path}.XXXXXX")" || die "could not create a temporary file beside ${path}"
@@ -833,15 +487,7 @@ write_file_atomic() {
   sync -- "$(dirname -- "$path")" 2>/dev/null || true
 }
 
-# apply_setup_credential_secrets applies the Secrets behind `felis setup`'s email and
-# uploads-bucket screens from their host copies: felis-smtp in the control namespace and
-# in the workload one (the reaper's warning mails read that copy), felis-uploads-s3 in the
-# control namespace. A reinstall that kept /etc/felis, or a host rebuilt from a bundle's
-# state/, starts k3s with no Secrets at all; without this, every sign-in code and alert
-# would go out without AUTH and the relay would turn it away. The host copy wins over the
-# cluster's: `felis setup` writes both, so they differ only after a hand edit of the
-# Secret. A relay or bucket whose credentials are on neither side is reported, so the
-# operator enters them again before the first code fails.
+# Prefer host credential copies during recovery; report credentials absent from both host and cluster.
 apply_setup_credential_secrets() {
   local ns
   secret_key_to_file "$CONTROL_NS" felis-smtp password "$SMTP_PASSWORD_FILE"
@@ -866,10 +512,7 @@ apply_setup_credential_secrets() {
   fi
 }
 
-# node_global_cidrs prints one host-length CIDR per global address on this node.
-# Game server egress already excludes every private range; this adds the node's
-# public addresses, which would otherwise let a server dial the panel NodePort,
-# SSH, or anything else the host serves on them.
+# Exclude public node addresses from game egress to block access to host services.
 node_global_cidrs() {
   command -v ip >/dev/null 2>&1 || return 0
   ip -o addr show scope global 2>/dev/null | awk '
@@ -1013,10 +656,7 @@ wait_for_pkg_locks() {
   done
 }
 
-# NEEDRESTART_SUSPEND keeps Ubuntu's needrestart hook from restarting services after
-# the install's own apt runs. It would restart felis-velocity whenever a rerun
-# happens to install or upgrade a package (the running JVM maps files the rerun
-# replaces), dropping every player on a rerun that changed nothing the proxy runs.
+# Suppress needrestart so unrelated package changes do not restart the game proxy.
 # The installer restarts what it changes itself.
 apt_get() {
   wait_for_pkg_locks
@@ -1042,9 +682,7 @@ validate_nodeport() {
   fi
 }
 
-# A value without a usable port would reach the firewall and the summary as-is: 8081 opens
-# port 8081 while nano binds nothing, 127.0.0.1 prints http://127.0.0.1:127.0.0.1/..., and
-# the unit crash-loops either way.
+# Validate a usable listen port before rendering firewall rules, URLs, or the service unit.
 validate_listen() {
   local name="$1" value="$2" port="${2##*:}" host="${2%:*}"
   case "$value" in *:*) ;; *) port="" ;; esac
@@ -1154,9 +792,7 @@ heap_megabytes() {
   esac
 }
 
-# validate_offsite_settings checks the FELIS_OFFSITE_* inputs before anything is
-# installed. They are written into felis.toml as TOML strings and the secrets into a
-# single-quoted env file, so a quote, a backslash or a line break is refused outright.
+# Reject quotes, backslashes, and newlines that cannot be safely represented in generated TOML or env files.
 validate_offsite_settings() {
   local name value
   for name in FELIS_OFFSITE_ENDPOINT FELIS_OFFSITE_BUCKET FELIS_OFFSITE_REGION FELIS_OFFSITE_PREFIX \
@@ -1181,9 +817,7 @@ validate_offsite_settings() {
   fi
 }
 
-# validate_restore_settings checks a rebuild request before anything is installed: it
-# needs the old install's bucket with its credentials and key, and a host Felis is not
-# installed on yet. A rerun of a rebuild cut short (its progress record exists) carries on.
+# Require bucket credentials, encryption key, and a fresh host; resume only from an existing restore progress record.
 validate_restore_settings() {
   case "$RESTORE_FROM_OFFSITE" in
     0) return 0 ;;
@@ -1203,9 +837,7 @@ validate_restore_settings() {
   esac
 }
 
-# restore_from_offsite runs the rebuild once the install is complete: the database,
-# the servers and their worlds come back from the bucket (felis restore-host). It runs
-# before the setup console, so the console finds the old install's Owner.
+# Restore offsite state before setup so the wizard finds the recovered owner.
 restore_from_offsite() {
   [ "$RESTORE_FROM_OFFSITE" = 1 ] || return 0
   local args=(restore-host -yes)
@@ -1217,9 +849,7 @@ restore_from_offsite() {
   ok "rebuilt from the off-site copy"
 }
 
-# validate_heartbeat_url checks FELIS_WATCHDOG_HEARTBEAT_URL before anything is
-# installed: a check's http(s) ping URL, or off. The messages leave the URL out: its path
-# is the key that pings the check.
+# Exclude heartbeat URLs from errors because the path contains the monitoring secret.
 validate_heartbeat_url() {
   case "$FELIS_WATCHDOG_HEARTBEAT_URL" in
     "" | off) ;;
@@ -1229,9 +859,7 @@ validate_heartbeat_url() {
   esac
 }
 
-# ---------------------------------------------------------------------------
 # 0. Privilege & host facts
-# ---------------------------------------------------------------------------
 if [ "$(id -u)" -ne 0 ]; then
   if [ -r "$0" ]; then
     log "re-executing under sudo"
@@ -1264,9 +892,7 @@ detect_os() {
   log "host: ${PRETTY_NAME:-$OS_ID $OS_VERSION}  (package manager: ${PKG})"
 }
 
-# persisted_root_domain echoes the root_domain an earlier run wrote, or nothing. The
-# generated toml is the only durable record of it: nothing else on the host stores the
-# domain, and it is written on every successful install.
+# Read the persisted root domain from generated TOML before choosing defaults.
 persisted_root_domain() {
   local f="${STATE_DIR}/felis.host.toml"
   [ -r "$f" ] || return 0
@@ -1276,9 +902,7 @@ persisted_root_domain() {
 detect_node_ip() {
   NODE_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')"
   if [ -z "${NODE_IP:-}" ]; then
-    # No IPv4 default route. hostname -I lists the IPv6 addresses too, in interface
-    # order, and an IPv6 one would end up in the nip.io name, the /32 policies and the
-    # certificate's IP entry: take the first IPv4 one.
+    # Require an IPv4 default route; IPv6 cannot supply nip.io names or /32 policy addresses.
     local a
     for a in $(hostname -I 2>/dev/null); do
       if ipv4_to_int "$a" >/dev/null; then NODE_IP="$a"; break; fi
@@ -1286,20 +910,7 @@ detect_node_ip() {
   fi
   [ -n "${NODE_IP:-}" ] || die "could not determine this host's primary IPv4 address"
 
-  # Precedence: an explicit FELIS_ROOT_DOMAIN, then whatever the last run persisted, then
-  # the nip.io default. The middle step is what makes a re-run idempotent. Without it this
-  # installer re-derived the domain from scratch every time and defaulted to nip.io, so
-  # re-running it on a live install -- the only way to move felis-api to a newer release,
-  # and what `felis update` points operators at -- rewrote root_domain, panel_hostname and
-  # admin_hostname to nip.io names while the write-once panel certificate kept the old
-  # ones. Secrets never had this problem: load_or_make_secrets has always sourced
-  # secrets.env before generating anything.
-  #
-  # A different FELIS_ROOT_DOMAIN on an installed host is refused. The name is on more
-  # surfaces than this script rewrites -- the panel certificate, the felis-api-tls and
-  # felis-config Secrets, the proxy's felis-link.properties, the login gate's CR env, the
-  # Cloudflare tunnel -- and a half-moved install serves a certificate for the old names.
-  # `felis domain set` moves all of them and `felis domain check` proves each one.
+  # Preserve installed domains on reruns; use felis domain set to update all dependent surfaces.
   local persisted
   persisted="$(persisted_root_domain)"
   if [ -n "${FELIS_ROOT_DOMAIN:-}" ] && [ -n "$persisted" ] && [ "$FELIS_ROOT_DOMAIN" != "$persisted" ]; then
@@ -1313,10 +924,8 @@ detect_node_ip() {
   fi
 }
 
-# warn_dynamic_node_ip warns when NODE_IP is a DHCP lease. The address is the k3s node's
-# and is written into the network policies, the panel certificate and the default nip.io
-# domain, and nothing re-addresses a live install, so a lease that later comes back
-# different takes the platform down (the watchdog then reports host-address). `ip -o addr` marks a leased address "dynamic".
+# Warn about DHCP addresses because policies, certificates, and default domains require a stable node IP.
+# ip -o addr marks a leased address 'dynamic'.
 warn_dynamic_node_ip() {
   if ip -4 -o addr show 2>/dev/null | awk -v ip="$NODE_IP" '
       { split($4, a, "/"); if (a[1] == ip && / dynamic /) found = 1 }
@@ -1326,19 +935,12 @@ warn_dynamic_node_ip() {
   fi
 }
 
-# ---------------------------------------------------------------------------
-# Preflight: what would stop the install halfway, checked before the host is touched.
-# Every problem is collected and reported together, so a host that needs three fixes
-# costs one rerun rather than three; warnings print as they are found and never stop
-# the run. FELIS_PREFLIGHT=warn turns the problems into warnings too.
-# ---------------------------------------------------------------------------
+# Collect all preflight failures before mutating the host.
+# Warnings print as they are found and never stop the run; FELIS_PREFLIGHT=warn turns problems into warnings too.
 PREFLIGHT_PROBLEMS=()
 preflight_fail() { PREFLIGHT_PROBLEMS+=("$*"); }
 
-# The smallest host the full stack runs on: k3s, PostgreSQL, the control plane, the
-# registry, the proxy (1G heap by default) and the login and lobby servers. A "2 GB"
-# VPS reports ~1.9 GiB once the kernel has taken its share; ensure_swap adds swap below
-# 2 GiB. Below the recommendation it runs, with little room for players' own servers.
+# Allow for kernel-reserved memory when evaluating the minimum full-stack host size.
 PREFLIGHT_MIN_RAM_KB=1835008      # 1.75 GiB
 PREFLIGHT_RECOMMENDED_RAM_KB=3670016  # 3.5 GiB
 
@@ -1379,11 +981,8 @@ systemd_is_init() { [ -d /run/systemd/system ]; }
 
 mem_total_kb() { awk '/^MemTotal:/ { print $2 }' /proc/meminfo; }
 
-# k3s_adds_selinux_rpm reports whether k3s's install.sh will install k3s-selinux from
-# Rancher's RPM repository (rpm.rancher.io), mirroring its setup_selinux and
-# install_selinux_rpm: on a host with an SELinux policy directory that is Red Hat-like (one
-# of these release files) or names suse first in ID_LIKE. dnf or zypper failing to reach the
-# repository fails the k3s install. $1 is a root to read under, for the tests.
+# Detect distributions whose k3s installation fetches k3s-selinux from Rancher's RPM repository.
+# $1 is a root to read under, for the tests.
 k3s_adds_selinux_rpm() {
   local root="${1:-}" f
   [ -d "${root}/usr/share/selinux" ] || return 1
@@ -1430,31 +1029,19 @@ existing_ancestor() {
 # path_populated reports whether directory $1 exists with something in it.
 path_populated() { [ -n "$(ls -A "$1" 2>/dev/null)" ]; }
 
-# release_assets_expected reports whether this run expects to download a release's images and
-# Velocity plugin (select_release_artifacts): on the release channel, and from the setup
-# console, whose binary is a release's.
 release_assets_expected() {
   [ -z "$FELIS_ARTIFACT_DIR" ] || return 1
   bootstrap_from_tui || use_release_binary
 }
 
-# host_builds_expected reports whether this run expects to build images here, and so to install
-# Docker: a source build does, an install from a release's assets does not, and the game images
-# under FELIS_GAME_STACK=latest are always built here, since no release ships that stack. What
-# preflight cannot see coming is a release that turns out to carry no usable images (one cut
-# before they were published, or still uploading); that one is built here after all.
+# Preflight anticipates local builds, but missing or unusable release images can require source fallback.
 host_builds_expected() {
   [ "$FELIS_GAME_STACK" != latest ] || return 0
   [ -z "$FELIS_ARTIFACT_DIR" ] || return 1
   ! release_assets_expected
 }
 
-# preflight_disk checks each filesystem the install writes to against what it will
-# write there, in MiB: k3s's images and volumes, the database and its bundles under
-# /var/lib/felis (and a release's image bundles on their way in), the sources, toolchains
-# and proxy under /opt/felis, and Docker's image builds (https://docs.felismc.com/en/guide/requirements#disk has the measured
-# sizes). A directory that already holds something (a rerun, a reused k3s, Docker's cache
-# from an earlier install) needs only the room for what changes.
+# Check every target filesystem; populated locations need room for changes rather than a full fresh installation.
 preflight_disk() {
   local spec path need_empty need_populated need line rows="" mount size used avail
   local felis_spec="/var/lib/felis 2048 1024" docker_spec=""
@@ -1555,10 +1142,7 @@ preflight_cluster() {
   fi
 }
 
-# preflight_networks refuses addresses k3s's pod and service ranges would shadow: the
-# node's own address, or a network (a Docker bridge, a LAN, a VPN) routed inside them.
-# A wider route that merely contains them, a 10.0.0.0/8 VPN say, keeps working for
-# everything outside the two ranges, so it is a warning.
+# Reject node or routed networks shadowed by pod/service CIDRs; warn for broader overlapping routes.
 preflight_networks() {
   local cidr routes line dst rest dev len
   for cidr in "$POD_CIDR" "$SERVICE_CIDR"; do
@@ -1588,10 +1172,7 @@ preflight_networks() {
   done <<<"$routes"
 }
 
-# preflight_hosts prints the hosts this run downloads from, one "host required|optional" line
-# each. An optional host is one the install only falls back to: Docker Hub when the images are
-# expected from a release, and, from the setup console, the release lookup (without it every
-# image is built here). Package mirrors are left out: the package manager names its own.
+# Distinguish required download hosts from optional source fallbacks; package mirrors belong to the package manager.
 preflight_hosts() {
   printf '%s\n' "github.com required"
   if [ -z "$FELIS_ARTIFACT_DIR" ] && [ -z "${FELIS_SKIP_FETCH:-}" ] && [ -z "$FELIS_REF_PINNED" ]; then
@@ -1615,12 +1196,7 @@ preflight_hosts() {
   fi
 }
 
-# host_reachable reports whether an HTTPS connection to $1 can be made: a TLS handshake that
-# completes, which any answer (a 404 included) comes after, and which a server that then sits
-# on the request has made too. It tries three times, two seconds apart, as the downloads it
-# stands for retry: one dropped probe must not stop an install. Without curl (a minimal
-# image, before install_base) a bare TCP connect stands in, unless a proxy is configured,
-# which only curl would use.
+# Retry HTTPS reachability three times; use TCP only without curl and without an HTTP proxy.
 host_reachable() {
   local try tls
   for try in 1 2 3; do
@@ -1692,10 +1268,7 @@ pkg_install() {
   esac
 }
 
-# finish_interrupted_dpkg completes a dpkg run that was cut off: an earlier install killed
-# halfway through a package, a reboot during unattended-upgrades. Until then apt-get refuses
-# everything with "dpkg was interrupted, you must manually run 'dpkg --configure -a'", so
-# each rerun failed exactly as the run before it.
+# Complete interrupted dpkg configuration before retrying package installation.
 finish_interrupted_dpkg() {
   [ -n "$(ls -A "$DPKG_UPDATES_DIR" 2>/dev/null)" ] || [ -n "$(dpkg --audit 2>/dev/null)" ] || return 0
   warn "an earlier dpkg run was cut off; finishing it (dpkg --configure -a)"
@@ -1711,11 +1284,7 @@ pkg_refresh_once() {
     apt) finish_interrupted_dpkg; apt_get update -y ;;
     dnf|yum) : ;;   # dnf/yum refresh metadata on demand
     zypper) wait_for_pkg_locks; zypper --non-interactive refresh ;;
-    # Arch supports only whole-system upgrades (-Sy alone leaves a partial upgrade), so the
-    # refresh stays -Syu, with a host PostgreSQL held back once it has a cluster: a new major
-    # version cannot open the old data directory. That cluster is the database an earlier
-    # release ran on, which migrate_host_postgres reads to move it into felis-postgres, and
-    # afterwards the copy a rollback of that move starts again (https://docs.felismc.com/en/operations/upgrade#database-move).
+    # Use Arch whole-system upgrades while holding PostgreSQL at its existing major to preserve migration and rollback data.
     pacman)
       wait_for_pkg_locks
       if [ -f "$(postgres_data_dir)/PG_VERSION" ]; then
@@ -1728,9 +1297,6 @@ pkg_refresh_once() {
   _PKG_REFRESHED=1
 }
 
-# ---------------------------------------------------------------------------
-# 1. Swap — k3s + Postgres + a Go build will OOM on a <2 GiB box without it
-# ---------------------------------------------------------------------------
 ensure_swap() {
   local mem_kb swap_kb
   mem_kb="$(awk '/^MemTotal:/{print $2}' /proc/meminfo)"
@@ -1754,13 +1320,7 @@ ensure_swap() {
   ok "2 GiB swap active"
 }
 
-# ensure_time_sync turns NTP on. A drifting clock breaks things far from their cause:
-# sign-in codes and sessions expire early or late, S3 refuses off-site uploads signed
-# more than 15 minutes off, and certificate checks fail. Rocky's minimal image ships
-# chronyd disabled (the test host reported NTP=no), so the installer enables whatever
-# timedatectl manages and installs chrony only when there is nothing to enable. It
-# waits half a minute for the first synchronization and then carries on: the watchdog
-# keeps reporting an unsynchronized clock.
+# Enable NTP and allow initial synchronization; the watchdog reports clocks still unsynchronized after the wait.
 ensure_time_sync() {
   if [ "$FELIS_MANAGE_TIME_SYNC" = 0 ]; then
     log "FELIS_MANAGE_TIME_SYNC=0: leaving time synchronization to the operator"
@@ -1794,13 +1354,7 @@ ensure_time_sync() {
   warn "the system clock is not synchronized yet; check 'timedatectl' (https://docs.felismc.com/en/operations/troubleshooting#clock)"
 }
 
-# ensure_persistent_journal keeps the system journal across reboots. Rocky's journald
-# stores it under /run unless /var/log/journal exists, and its minimal image does not
-# create that directory, so a reboot (the moment an operator most needs to know what
-# came before it) erased every log. journald creates JOURNAL_DIR itself once it runs
-# with Storage=persistent, so the directory is the proof the drop-in took: journald is
-# restarted when the drop-in changed, or when it is current and the directory is still
-# missing.
+# Restart journald when configuration changes or its persistent directory is still missing.
 ensure_persistent_journal() {
   if [ "$FELIS_MANAGE_JOURNAL" = 0 ]; then
     log "FELIS_MANAGE_JOURNAL=0: leaving journald as it is"
@@ -1808,10 +1362,7 @@ ensure_persistent_journal() {
   fi
   local file="$JOURNALD_DROPIN" tmp
   mkdir -p "$(dirname "$file")"
-  # Made beside its destination so the file is born with that directory's SELinux
-  # label. A file made under /tmp keeps user_tmp_t through the mv, and journald was
-  # denied it on the test host ("Failed to open configuration file ... Permission
-  # denied"). journald reads only *.conf, so the temporary name is never loaded.
+  # Create temporary drop-ins beside the target to inherit its SELinux label; journald ignores non-.conf names.
   tmp="$(mktemp "${file}.XXXXXX")"
   remember_temp "$tmp"
   printf '[Journal]\nStorage=persistent\nSystemMaxUse=%s\n' "$FELIS_JOURNAL_MAX_USE" > "$tmp"
@@ -1836,9 +1387,7 @@ ensure_persistent_journal() {
   fi
 }
 
-# ---------------------------------------------------------------------------
 # 2. Base packages
-# ---------------------------------------------------------------------------
 install_base() {
   local packages=(ca-certificates openssl)
 
@@ -1904,9 +1453,7 @@ install_cloudflared() {
   fi
 }
 
-# ---------------------------------------------------------------------------
 # 3. Docker (used only to build & export the felis image; k3s uses containerd)
-# ---------------------------------------------------------------------------
 docker_apt_repo_os() {
   case "$OS_ID" in
     debian|ubuntu)
@@ -2020,9 +1567,7 @@ install_docker() {
       pacman) install_docker_pacman ;;
       *) die "Docker installation is not supported with package manager: ${PKG}" ;;
     esac
-    # Docker serves this installer's builds and nothing at runtime, so the one it installed
-    # does not come up at boot to hold ~200 MiB until the next run; a run that builds starts
-    # it (ensure_docker). Some packages enable it, and its containerd, as they install.
+    # Keep installer-managed Docker and containerd disabled at boot; start them only when building.
     systemctl disable docker.service docker.socket 2>/dev/null || true
     [ -n "$had_containerd" ] || systemctl disable containerd.service 2>/dev/null || true
   fi
@@ -2030,9 +1575,7 @@ install_docker() {
   ok "docker running"
 }
 
-# ensure_docker installs and starts Docker the first time this run has something to build, and
-# starts it again after an earlier step stopped it. Only what a release did not ship prebuilt
-# is built here, so an install from a release's assets never installs Docker at all.
+# Start Docker lazily for source builds; complete release artifacts require no local Docker installation.
 ensure_docker() {
   if [ -z "$DOCKER_INSTALLED" ]; then
     host_builds_expected || unplanned_build_room
@@ -2043,12 +1586,8 @@ ensure_docker() {
   fi
 }
 
-# unplanned_build_room runs before the first build of a run whose preflight counted on none:
-# a release asset that could not be downloaded or checked (the warnings before it name
-# which) is built here instead, with Docker's images and build cache under
-# /var/lib/containerd. When that filesystem lacks preflight_disk's room for them the install
-# stops here, before Docker is installed, instead of filling the disk halfway through a
-# build; FELIS_PREFLIGHT=warn goes on, as it does past preflight's own problems.
+# Recheck build space before falling back from release assets to local compilation.
+# Stop before installing Docker if fallback builds lack space; warn mode permits continuation.
 unplanned_build_room() {
   local path=/var/lib/containerd need=8192 line mount avail problem
   path_populated "$path" && need=2048
@@ -2063,11 +1602,7 @@ unplanned_build_room() {
   die "${problem}; nothing has been built. Rerun the installer once the release's assets download, free space on ${mount}, or set FELIS_PREFLIGHT=warn to build anyway"
 }
 
-# stop_docker hands back what Docker holds once a step is done with it, ~150 MiB for the daemon
-# and ~45 MiB for its containerd; the next step that builds starts both again. A Docker this run
-# never started is left alone, and so is a containerd holding any namespace besides Docker's own
-# (moby, moby_history): something else on the host runs on it. k3s's containerd listens on a
-# socket of its own and is never the one asked here.
+# Stop only runtimes started by this installer and preserve containerd with non-Docker namespaces.
 stop_docker() {
   [ -n "$DOCKER_INSTALLED" ] || return 0
   systemctl stop docker docker.socket 2>/dev/null || true
@@ -2078,28 +1613,15 @@ stop_docker() {
   fi
 }
 
-# ---------------------------------------------------------------------------
-# 4. k3s — single node, trimmed for RAM. NetworkPolicy stays ENABLED on purpose:
-#    Felis's minecraft fence (default-deny + allow-rcon/allow-game) is a core
-#    security claim, so we must NOT pass --disable-network-policy.
-#    On SUSE-family hosts firewalld ships active by default, and Ubuntu and Debian
-#    hosts often enable ufw; open the required rules rather than disabling either.
-# ---------------------------------------------------------------------------
+# Keep NetworkPolicy and host firewalls enabled, adding required rules explicitly.
 
-# ufw_active reports whether ufw is enabled. Enabled, it drops every inbound packet no rule
-# admits, the pods' traffic to the API server among them, so an install that left it alone
-# waited out its first rollout and died with "did not complete". ufw translates its status
-# line, hence the C locale.
+# Use the C locale because ufw translates its status output.
 ufw_active() {
   command -v ufw >/dev/null 2>&1 || return 1
   [ "$(LC_ALL=C ufw status 2>/dev/null | sed -n 1p)" = "Status: active" ]
 }
 
-# configure_k3s_firewall opens what k3s needs. For ufw that is what k3s's documentation asks:
-# the pod and service ranges, plus the panel's NodePort as firewalld gets it. The API
-# server's 6443 stays closed to the network, since pods reach it from POD_CIDR. Each ufw rule
-# carries a felis- comment, which is how deploy/uninstall.sh finds it again; `ufw allow`
-# skips a rule it already has, so a rerun adds nothing.
+# Tag idempotent ufw rules with felis- comments so uninstall can identify them.
 configure_k3s_firewall() {
   if ufw_active; then
     log "configuring ufw for k3s"
@@ -2127,10 +1649,7 @@ install_k3s() {
 
   local installer_ran=0
   if [ -x "$K3S_BIN" ] && [ ! -f "$K3S_UNIT_FILE" ]; then
-    # k3s's installer moves the binary into place before it writes k3s.service, so a run
-    # cut short between the two left a k3s nothing starts, and every rerun stopped at
-    # `systemctl enable`. Its installer run again around the binary in place finishes the
-    # job: no download, no version change, the cluster's data untouched.
+    # Rerun the k3s installer if the binary exists without its service, preserving version and cluster data.
     "$K3S_BIN" --version >/dev/null 2>&1 \
       || die "${K3S_BIN} does not run and k3s.service is missing: an earlier k3s install was cut short. Remove ${K3S_BIN} and rerun to install k3s ${FELIS_K3S_VERSION}"
     log "k3s.service is missing beside ${K3S_BIN}: an earlier k3s install was cut short; finishing it around the binary in place"
@@ -2174,14 +1693,8 @@ install_k3s() {
   chmod 0600 "$K3S_KUBECONFIG"
 }
 
-# k3s_node_name prints the name this node must keep. Every local-path volume (worlds,
-# registry, uploads, backups) is bound to its node by name, and k3s takes the name from
-# the hostname on every start, so a renamed host came back as a second, empty node with
-# every volume stuck Pending on the old one. Precedence: the name already pinned; else
-# the name the node registered under, which its kubelet client certificate carries as
-# system:node:<name> and which is readable with k3s stopped; else, where k3s has never
-# run, the lowercased hostname k3s itself would pick. It prints nothing when k3s has run
-# but neither source can be read: pinning a guess there would rename the node.
+# Keep the node name stable because local-path volumes bind to it.
+# Prefer pinned name, then kubelet certificate identity; never guess a name for an existing installation.
 k3s_node_name() {
   local name=""
   if [ -f "$K3S_CONFIG_DROPIN" ]; then
@@ -2198,13 +1711,7 @@ k3s_node_name() {
   printf '%s' "$name"
 }
 
-# recall_distributed_settings carries a distributed controller's fixed public address and
-# peer list across a rerun or `felis update`, neither of which passes them. Without this the
-# rerun would rewrite k3s's node-external-ip to the detected address (moving the WireGuard
-# endpoint every worker dials) and shrink the host firewall's peers to the controller
-# alone, cutting every worker off its 6443 and WireGuard ports. What the operator passes
-# still wins; a host installed before the peer list was recorded falls back to the
-# cluster's own node addresses.
+# Preserve distributed addresses and peer lists on reruns unless explicitly overridden.
 recall_distributed_settings() {
   [ "${DISTRIBUTED:-0}" = 1 ] || return 0
   if [ -z "$NODE_EXTERNAL_IP" ] && [ -f "$K3S_CONFIG_DROPIN" ]; then
@@ -2224,11 +1731,7 @@ cluster_node_peers() {
     | awk 'NF { print (index($0, ":") ? $0 "/128" : $0 "/32") }' | sort -u | paste -sd, -
 }
 
-# write_k3s_config writes the installer's k3s settings to K3S_CONFIG_DROPIN and sets
-# K3S_RESTART_NEEDED when they changed, since k3s reads the file only as it starts.
-# write-kubeconfig-mode keeps the admin kubeconfig root-only: it is cluster-admin, and
-# installs before this passed 644, which let every local account read it, felis-velocity
-# (the account the internet-facing proxy runs as) included.
+# Keep kubeconfig root-only and restart k3s only after changed configuration.
 write_k3s_config() {
   local file="$K3S_CONFIG_DROPIN" name tmp
   name="$(k3s_node_name)"
@@ -2286,12 +1789,7 @@ write_k3s_config() {
   log "wrote ${file}${name:+ (node name pinned to ${name})}"
 }
 
-# write_k3s_service_dropin runs k3s, and the containerd it starts with its own environment,
-# with the Go collector at half the default heap growth (GOGC=50). An idle k3s holds about
-# 150 MiB live and by default lets its heap reach twice that before collecting; at 50 it
-# collects at one and a half times. Measured on the verification host: k3s 430 -> 370 MiB and
-# its containerd 114 -> 104 MiB, for about 2% of one core more while idle. It sets
-# K3S_RESTART_NEEDED when the file changed, since k3s reads its environment only as it starts.
+# Use GOGC=50 to reduce memory growth; changed environment requires a k3s restart.
 write_k3s_service_dropin() {
   local file="$K3S_SERVICE_DROPIN" tmp
   mkdir -p "$(dirname "$file")"
@@ -2317,11 +1815,7 @@ write_k3s_service_dropin() {
   log "wrote ${file} (GOGC=50)"
 }
 
-# A command-line flag outranks every config file, and k3s's installer writes
-# INSTALL_K3S_EXEC into the unit's ExecStart one quoted word per line, so installs from
-# before the drop-in keep "'--write-kubeconfig-mode' \" followed by "'644' \" there.
-# This drops both lines (or the single --write-kubeconfig-mode=<mode> spelling). An
-# upgrade through run_k3s_installer rewrites the unit without them anyway.
+# Remove legacy command-line kubeconfig permissions because flags override config files.
 strip_k3s_kubeconfig_mode_flag() {
   local unit="$K3S_UNIT_FILE" tmp
   [ -f "$unit" ] && grep -q -- '--write-kubeconfig-mode' "$unit" || return 0
@@ -2340,11 +1834,7 @@ strip_k3s_kubeconfig_mode_flag() {
   log "dropped --write-kubeconfig-mode from ${unit}; the admin kubeconfig becomes root-only"
 }
 
-# The script from the release's own tag rather than get.k3s.io, which serves whatever
-# master holds today. '+' is literal in a URL path, so the tag needs no escaping. On an
-# installed k3s the same script replaces the binary in place and restarts the service.
-# --keep-binary keeps the k3s already at K3S_BIN (INSTALL_K3S_SKIP_DOWNLOAD=binary) and
-# still does everything after it, the SELinux policy included.
+# Use the selected release installer; --keep-binary skips replacement while retaining policy and service setup.
 run_k3s_installer() { # [--keep-binary]
   local skip=""
   [ "${1:-}" != --keep-binary ] || skip=binary
@@ -2356,12 +1846,7 @@ run_k3s_installer() { # [--keep-binary]
     sh -
 }
 
-# stage_k3s_airgap_images puts the image tarball of the k3s release about to be installed where
-# k3s imports images from as it starts, so k3s's own images (pause, CoreDNS, the local-path
-# provisioner) come from that GitHub release, checked against its sha256sum file, instead of
-# from Docker Hub, whose anonymous pull limit (10 an hour per address) a shared VPS address may
-# have spent already. Best-effort: without the file k3s pulls them as it always has. k3s only
-# reads names ending in a tarball extension, so the download's dotted temp name is never read.
+# Verify airgap checksums and stage under non-tarball temporary names so k3s cannot import partial downloads.
 stage_k3s_airgap_images() {
   local arch base file sums want have tmp
   arch="$(felis_asset_arch)" || return 0
@@ -2397,9 +1882,7 @@ stage_k3s_airgap_images() {
   ok "staged k3s ${FELIS_K3S_VERSION}'s images for its first start"
 }
 
-# k3s_upgrade_allowed decides whether an installed k3s ($1) may move to $2. Kubernetes
-# supports upgrading one minor version at a time, so a larger jump stops the install
-# before anything changed; a newer installed k3s is left as it is.
+# Permit k3s upgrades one minor at a time; preserve newer installed versions.
 k3s_upgrade_allowed() {
   local current="$1" want="$2" cur_major cur_minor want_major want_minor rest
   IFS=. read -r cur_major cur_minor rest <<<"${current#v}"
@@ -2417,9 +1900,7 @@ k3s_upgrade_allowed() {
   return 0
 }
 
-# Waits for the (single) node to report Ready. Shared by the k3s install and the
-# registry-mirror restart below: both restart the agent, and a bootstrap that
-# proceeds early fails later with a misleading "not found"/timeout instead.
+# Wait for node readiness after installation or registry-mirror restarts before applying dependent resources.
 wait_for_node_ready() {
   local _
   for _ in $(seq 1 60); do
@@ -2433,32 +1914,10 @@ wait_for_node_ready() {
   die "k3s node did not become Ready in time"
 }
 
-# ---------------------------------------------------------------------------
-# 4b. The in-cluster registry: the node-side pull path, the registry's own
-#     image, and the hosting of every image this installer builds.
-#
-#     Kubelet's image GC collects an unused image under disk pressure (drilled:
-#     the game images were collected and ImagePullBackOff had nothing to pull
-#     from). The fix is a pull source that is always there — the registry the
-#     bundle already renders. Two node-level facts make that work:
-#       * kubelet cannot reach the registry Service VIP (the live stack answered
-#         "Empty reply"), so containerd is told to go through the loopback
-#         hostPort the registry Deployment binds (the Deployment renders it) —
-#         that is configure_registry_mirror below;
-#       * the registry's own image (REGISTRY_IMAGE) must already be in containerd
-#         before the registry Deployment can start at all —
-#         import_platform_images below caches it.
-#     After deploy_bundle, push_images_to_registry mirrors the built images into
-#     the registry, so containerd's imported copies are a first-boot cache
-#     rather than the only copy.
-# ---------------------------------------------------------------------------
+# Seed the registry image first, then mirror built images so containerd imports are only a first-boot cache.
 
-# The node's containerd cannot dial the registry Service VIP, so pulls arrive
-# over the loopback hostPort the registry Deployment binds. k3s reads this file
-# when the agent starts and regenerates containerd's certs.d from it — no
-# restart, no effect — so a CONTENT change restarts k3s; an identical file
-# (every re-run) restarts nothing. K3S_REGISTRIES_FILE is a variable so
-# bootstrap_test.sh can point the function at a scratch file.
+# Restart k3s only when registry mirror configuration changes.
+# K3S_REGISTRIES_FILE is a variable so bootstrap_test.sh can point the function at a scratch file.
 configure_registry_mirror() {
   local file="$K3S_REGISTRIES_FILE" tmp endpoints registry_ip=""
   tmp="$(mktemp)"
@@ -2491,18 +1950,7 @@ EOF
   wait_for_node_ready
 }
 
-# Two platform images come from Docker Hub by digest, never from the platform's own
-# registry: REGISTRY_IMAGE, which is that registry, and POSTGRES_IMAGE, the database
-# everything else waits for. They must equal the renderer's defaults
-# (platform.defaultRegistryImage / defaultPostgresImage). On a box that cannot reach
-# Docker Hub neither Deployment can ever start without a local copy, so the installer
-# caches one whenever it can. Best-effort by design: if a pull fails the rollout still
-# fails loudly, with the regular diagnostics, but for every box that CAN pull, each
-# image is fetched exactly once, here, instead of at first pod start.
-#
-# crictl pulls through CRI, the same call kubelet makes, so containerd records the
-# digest ref the Deployment names and kubelet finds it. A docker save/import round
-# trip rewrites the manifest and would leave a copy the digest ref never matches.
+# Use CRI pulls for renderer-pinned registry/PostgreSQL images to preserve their digest references.
 import_platform_images() {
   local image images
   # Read the list whole before matching: `ctr images ls | grep -q` dies of SIGPIPE under
@@ -2528,13 +1976,8 @@ pinned_image_ref() {
   printf '%s@%s\n' "${1%%:*}" "${1#*@}"
 }
 
-# The registry pod runs REGISTRY_IMAGE and, as its registry-gate sidecar, the felis
-# image — neither of which can be pulled from the registry they make up — and the
-# database pod runs POSTGRES_IMAGE. A kubelet image GC that collected any of them
-# would leave that pod dead until someone re-imported by hand. containerd reports an
-# image labelled io.cri-containerd.pinned=pinned as pinned over CRI, and kubelet's
-# image GC never removes a pinned image. Older felis/felis tags and older registry and
-# postgres images are unpinned first, so upgrades do not pile up pinned images forever.
+# Pin registry, sidecar, and database images locally to avoid a bootstrap dependency after kubelet GC.
+# Use the CRI pinned label, unpinning obsolete versions before upgrades.
 pin_platform_images() {
   local ref registry_ref postgres_ref
   registry_ref="$(pinned_image_ref "$REGISTRY_IMAGE")"
@@ -2555,14 +1998,8 @@ pin_platform_images() {
   done
 }
 
-# pin_user_server_images fixes every user server still naming a tag in the platform
-# registry (felis/paper:demo) to the digest that tag names now. It has to run before
-# build_game_stack and push_images_to_registry put new builds under those tags: a
-# server left on the bare tag would boot the new build on its next wake and open its
-# world with a newer Minecraft version, and chunk upgrades cannot be undone. felis-api
-# pins every server it creates; this catches the ones created before it did. A fresh
-# install has no CRD, so nothing to pin; a running server restarts once onto the
-# build it already runs.
+# Pin user image digests before overwriting tags; otherwise sleeping worlds could upgrade irreversibly.
+# A fresh install has no servers to pin; running servers may roll once onto their current build.
 pin_user_server_images() {
   kube get crd minecraftservers.felis.lolicon.best >/dev/null 2>&1 || return 0
   # The registry answers the lookups, and a k3s restart above may have left its pod
@@ -2576,28 +2013,18 @@ pin_user_server_images() {
   fi
 }
 
-# ---------------------------------------------------------------------------
-# 5. Source/binary + image build + containerd import
-# ---------------------------------------------------------------------------
-# repo_slug prints the "owner/name" of FELIS_REPO_URL, for the REST API.
+# repo_slug prints the owner/name of FELIS_REPO_URL, for the REST API.
 repo_slug() {
   printf '%s\n' "$FELIS_REPO_URL" | sed -e 's#^.*github\.com[:/]##' -e 's#\.git$##'
 }
 
-# fork_token_hint is what a failed GitHub fetch says about FELIS_GITHUB_TOKEN. The official
-# repository is public and needs none, so the sentence appears only for a fork, where GitHub
-# answers a private repository the caller cannot see with 404, as it does a missing one.
+# Show token guidance only for forks because inaccessible private repositories also return 404.
 fork_token_hint() {
   [ "$(repo_slug | tr '[:upper:]' '[:lower:]')" != "felismc/felis" ] || return 0
   printf ' If %s is a private fork, set FELIS_GITHUB_TOKEN to a token with read access to it.' "$FELIS_REPO_URL"
 }
 
-# github_api GETs a REST path and prints the body.
-#
-# The token goes in through `curl --config -` rather than `-H "Authorization: ..."`
-# because argv is world-readable via /proc while this runs. Same reason git_auth uses a
-# credential helper instead of a URL: a bootstrap that leaks its own credential to any
-# local user has not really installed anything privately.
+# Pass GitHub tokens through stdin or credential helpers, never process arguments or URLs.
 github_api() {
   local url="https://api.github.com/$1"
   local ua="felis-bootstrap (+${FELIS_REPO_URL})"
@@ -2611,9 +2038,7 @@ github_api() {
   fi
 }
 
-# github_latest_tag prints the tag of the newest published stable release, or fails.
-# Same endpoint internal/updater/github.go polls, so `felis update` and the installer
-# can never disagree about what "latest" means.
+# Resolve latest through the same stable-release endpoint as felis update.
 github_latest_tag() {
   local json tag
   # Fetch first, filter second — the SIGPIPE reason documented on resolve_latest_game_jars.
@@ -2627,10 +2052,7 @@ github_latest_tag() {
   printf '%s\n' "$tag"
 }
 
-# felis_asset_arch prints the release-asset suffix for this host, or fails. Unlike the
-# cloudflared/JRE/Go mappers just below, this one does NOT die on an unmapped architecture:
-# those have no local alternative, whereas a missing prebuilt binary only means we compile
-# the same tag on this host — slower, byte-for-byte the same result.
+# Unsupported prebuilt architectures fall back to compiling the selected tag.
 felis_asset_arch() {
   case "$(uname -m)" in
     x86_64|amd64) printf 'amd64\n' ;;
@@ -2647,19 +2069,7 @@ load_release_json() {
   RELEASE_JSON_TAG="$1"
 }
 
-# github_asset_id prints the numeric id of the asset named $2 on release tag $1.
-#
-# Two details here are load-bearing and both are wrong in the obvious version. The newline
-# flatten comes FIRST: api.github.com pretty-prints, so "name" and "url" land on different
-# lines and splitting on "{" alone matches nothing at all. And the id is read out of the
-# asset's own url, never from a bare "id" key — the payload carries a release id, an author
-# id, one id per asset AND one per nested uploader, so matching "id" silently resolves the
-# wrong file. Anchoring on the CLOSING quote keeps felis-linux-amd64 from also matching a
-# sibling like felis-linux-amd64.sha256.
-#
-# The segment this greps ends at the nested "uploader" object, which is fine because "url"
-# precedes it. Anything published after uploader (size, digest, browser_download_url) is NOT
-# reachable this way — fetch releases/assets/<id> with the JSON Accept if that is ever needed.
+# Match exact asset names and their own URLs after flattening JSON; nested uploader IDs are unrelated.
 github_asset_id() {
   local tag="$1" name="$2" id
   # Fetch first, filter second — the SIGPIPE reason documented on resolve_latest_game_jars.
@@ -2672,31 +2082,7 @@ github_asset_id() {
   printf '%s\n' "$id"
 }
 
-# download_release_asset fetches ONE asset of a published release into $3.
-#
-# It RETURNS non-zero rather than dying: every caller falls back to building the same tag
-# from source, so a tag whose release workflow has not finished uploading yet — a real window,
-# since that job runs vet, tests and a full image build first — still installs.
-#
-# This cannot ride the github_api helper above. That helper sends
-# Accept: application/vnd.github+json, and with it this endpoint returns the asset's METADATA
-# as JSON under HTTP 200: a "successful" download of a text blob that passes every check and
-# only surfaces much later, inside docker build, as an exec format error.
-#
-# Plain -L, never --location-trusted. GitHub 302s to a DIFFERENT host whose signed URL carries
-# its own credentials in the query string; curl drops Authorization across that hop, and the
-# drop is REQUIRED — forwarding the token makes the storage backend reject the request with
-# 400 while leaking the credential to a third host for nothing.
-#
-# -f is not cosmetic: without it curl writes GitHub's error JSON into the output file and
-# still exits 0.
-#
-# curl's --retry covers transient HTTP statuses and timeouts, and --speed-limit makes a
-# transfer stalled under 1 KiB/s for a minute one of those. A connection reset mid-stream
-# is outside its retry set, and on an image bundle of several hundred MiB it is the likely
-# failure, so the outer loop tries the whole download twice more (meta_get's reasoning):
-# what the caller falls back to is a build on this host that preflight may not have
-# counted on (ensure_docker checks the room for it).
+# Download binary assets without forwarding Authorization across redirects; return failures for same-tag source fallback.
 download_release_asset() {
   local tag="$1" name="$2" dest="$3" id ua url rc attempt
   ua="felis-bootstrap (+${FELIS_REPO_URL})"
@@ -2727,10 +2113,7 @@ download_release_asset() {
   return 1
 }
 
-# verify_release_checksum checks the downloaded asset $2 (at $3) against the SHA256SUMS
-# file release.yml publishes next to it on tag $1. It returns non-zero, with a warning,
-# when the release has no SHA256SUMS (a tag cut before release.yml wrote one, or a release
-# still uploading), when the file does not list the asset, or when the hash differs.
+# Reject release assets missing from SHA256SUMS or whose checksum differs.
 verify_release_checksum() {
   local tag="$1" name="$2" file="$3" sums want have
   sums="$(mktemp)"
@@ -2756,27 +2139,14 @@ verify_release_checksum() {
   ok "${name} matches release ${tag}'s SHA256SUMS"
 }
 
-# use_release_binary reports whether this run should install a prebuilt binary instead of
-# compiling one. Only the plain release channel qualifies: FELIS_SKIP_FETCH means "build
-# exactly what I staged" and a pinned FELIS_REF means "build that tree", both of which are
-# explicit requests for a source build, and the dev channel has no release to download.
+# Use prebuilt binaries only for unpinned release installs; explicit refs, staged trees, and dev build from source.
 use_release_binary() {
   [ -z "${FELIS_SKIP_FETCH:-}" ] || return 1
   [ -z "$FELIS_REF_PINNED" ] || return 1
   [ "$FELIS_VERSION_BOOTSTRAP" = "release" ]
 }
 
-# download_release_binary installs the prebuilt felis binary for $FELIS_REF onto the host and
-# sets HAVE_PREBUILT_BINARY. It leaves HAVE_PREBUILT_BINARY empty, and returns 0, to ask the
-# caller to build that same tag from source instead: a release without a usable asset is no
-# reason to abort an install. Callers run it as a plain command, so errexit covers the steps
-# that replace HOST_BIN. Bash turns errexit off inside a function run as an if or && condition,
-# and there an install(1) that failed after the rm below left no binary at all while the
-# install went on as if it had one.
-#
-# One asset covers the panel too: internal/panel/panel.go go:embeds internal/panel/static, and
-# release.yml builds through the repo Dockerfile so that tree holds the real npm output rather
-# than the tracked placeholder. There is nothing else to fetch.
+# Call binary installation outside conditionals to preserve errexit; unavailable assets fall back to same-tag compilation.
 download_release_binary() {
   local arch asset tmp got
   if ! arch="$(felis_asset_arch)"; then
@@ -2793,39 +2163,26 @@ download_release_binary() {
     return 0
   fi
 
-  # Staged next to HOST_BIN rather than in TMPDIR, because the validation below EXECUTES it
-  # and /tmp is mounted noexec on CIS-hardened images. There the exec dies 126, the check
-  # reads it as a bad asset, and every such host silently falls back to the full on-host
-  # compile this path exists to avoid. /usr/local/bin has to be exec for felis to run at
-  # all, so validating there tests the binary instead of the mount — and it keeps the
-  # private-repo artifact out of a world-readable 1777 directory on the way in.
+  # Validate beside HOST_BIN because hardened hosts may mount /tmp noexec.
+  # Keep private assets out of world-readable temporary directories.
   mkdir -p "$(dirname "$HOST_BIN")"
   tmp="$(mktemp "$(dirname "$HOST_BIN")/.felis-download.XXXXXX")"
   remember_temp "$tmp"
   if ! download_release_asset "$FELIS_REF" "$asset" "$tmp"; then
     rm -f "$tmp"
-    # Deliberately NOT "set FELIS_VERSION_BOOTSTRAP=dev": that channel builds main, a
-    # different commit than the tag the operator asked for. Falling back keeps the tag and
-    # changes only how it is obtained, so no operator action is needed at all.
+    # Fallback must compile the selected tag, never switch to dev/main.
     warn "release ${FELIS_REF} publishes no usable ${asset}; building ${FELIS_REF} from source on this host instead"
     return 0
   fi
 
-  # The hash comes BEFORE the exec below: until the file matches the release's SHA256SUMS it
-  # is unverified bytes, and running it as root to ask its version would hand root to
-  # whoever could swap the asset or sit on the download path. Missing or unmatched both
-  # fall back to the source build of the same tag, which trusts only the git fetch.
+  # Verify SHA256SUMS before executing the downloaded binary as root.
   if ! verify_release_checksum "$FELIS_REF" "$asset" "$tmp"; then
     rm -f "$tmp"
     return 0
   fi
   chmod 0755 "$tmp"
 
-  # Run it once. This single exec subsumes three checks that would otherwise each need their
-  # own code: a truncated download segfaults (curl reports success for an EOF-delimited body,
-  # so nothing earlier catches it), a wrong-architecture asset fails to exec, and an unstamped
-  # or mis-stamped build reports the wrong string here — rather than silently disabling
-  # `felis update` for the entire life of the install.
+  # Execute once to validate architecture, integrity, and build stamp.
   got="$("$tmp" version 2>/dev/null | sed -n 1p || true)"
   if [ "$got" != "felis ${FELIS_REF}" ]; then
     rm -f "$tmp"
@@ -2833,10 +2190,7 @@ download_release_binary() {
     return 0
   fi
 
-  # install(1) onto a freshly created destination, matching install_embedded_binary. A rename
-  # would carry the source SELinux label instead of type-transitioning to bin_t — see
-  # build_nano_binary for the 203/EXEC this shape avoids. Same-directory staging does not
-  # change that: install(1) still creates the destination and copies.
+  # Use install rather than rename so SELinux applies the destination executable label.
   keep_previous_host_binary
   rm -f "$HOST_BIN"
   install -m 0755 "$tmp" "$HOST_BIN"
@@ -2847,11 +2201,7 @@ download_release_binary() {
   ok "installed ${asset} ${FELIS_REF} at ${HOST_BIN}"
 }
 
-# ---------------------------------------------------------------------------
-# 5a. A release's prebuilt assets: every image and the Velocity plugin, next to the binary
-#     (deploy/build-release-artifacts.sh writes them, release.yml publishes them). Each file
-#     is used only once its sha256 matches the release's SHA256SUMS.
-# ---------------------------------------------------------------------------
+# Use release images and plugins only after verifying SHA256SUMS.
 
 # load_artifact_sums reads the SHA256SUMS the artifacts are checked against: the directory's,
 # or release ARTIFACT_TAG's. It fails when there is none.
@@ -2871,18 +2221,13 @@ load_artifact_sums() {
   [ -n "$ARTIFACT_SUMS" ]
 }
 
-# artifact_sum <name> prints the sha256 SHA256SUMS lists for <name>, or nothing. sha256sum's
-# text-mode line is "<hash>  <name>", binary mode "<hash> *<name>". No regex interval here:
-# Debian's mawk does not take one.
+# Accept SHA256SUMS text/binary formats without regex intervals unsupported by mawk.
 artifact_sum() {
   awk -v n="$1" '($2 == n || $2 == "*" n) && length($1) == 64 && $1 !~ /[^0-9a-f]/ { print $1; exit }' <<<"$ARTIFACT_SUMS"
 }
 
-# artifact_fetch <name> points ARTIFACT_FILE at a local copy of artifact <name> whose sha256 is
-# the one SHA256SUMS lists: the directory's own file, or a download kept in ARTIFACT_CACHE (a
-# copy already there that still matches is used as it is, so a rerun after a failure fetches
-# nothing twice). It warns and fails, leaving nothing half-written behind, when SHA256SUMS
-# does not list the name, the file is missing, or its bytes differ.
+# Reuse checksum-matching local assets or cached downloads.
+# It warns and fails, leaving nothing half-written, when SHA256SUMS does not list the name, the file is missing, or its bytes differ.
 artifact_fetch() {
   local name="$1" want have file partial
   ARTIFACT_FILE=""
@@ -2929,20 +2274,13 @@ artifact_fetch() {
   ARTIFACT_FILE="$file"
 }
 
-# artifact_unusable <problem> <fallback> handles an asset this run cannot use. With
-# FELIS_ARTIFACT_DIR it stops the install: the operator named the directory so that nothing
-# would be built or pulled here. For a downloaded release it warns, and <fallback> (that piece
-# built on this host, or pulled) takes its place.
+# Explicit offline artifact directories fail on unusable assets; downloaded releases may fall back to local builds.
 artifact_unusable() {
   [ "$ARTIFACT_MODE" != dir ] || die "FELIS_ARTIFACT_DIR: $1"
   warn "$1; $2"
 }
 
-# install_artifact_binary installs FELIS_ARTIFACT_DIR's felis binary, and never falls back to a
-# build: a missing or mismatched file is for the operator to fix. The copy is staged next to
-# HOST_BIN for download_release_binary's reason (the directory, like /tmp, may be mounted
-# noexec), and hashed there, after the copy, so the bytes checked are the bytes run. Its
-# version names the control-plane image and the release the rest of the directory must be.
+# Stage and verify explicit artifact binaries beside HOST_BIN; never fall back to compilation.
 install_artifact_binary() {
   local arch name tmp got
   ARTIFACT_MODE=dir
@@ -2976,11 +2314,7 @@ install_artifact_binary() {
   HAVE_PREBUILT_BINARY=1
 }
 
-# select_release_artifacts decides, once the felis binary is on the host, where this run's
-# images and Velocity plugin come from: FELIS_ARTIFACT_DIR, else the assets of the release the
-# binary is (the one just downloaded, or the one the setup console runs). A source build
-# builds them too, and so does a release without SHA256SUMS (cut before release.yml wrote
-# one, or still uploading), since nothing of it could be checked.
+# Select assets for the installed binary's release; source builds or releases without checksums build locally.
 select_release_artifacts() {
   local v
   [ "$ARTIFACT_MODE" != dir ] || return 0
@@ -3000,21 +2334,7 @@ select_release_artifacts() {
   warn "release ${v} publishes no SHA256SUMS, so none of its images can be checked; building them on this host instead (this installs Docker and needs about 8 GiB more under /var/lib/containerd)"
 }
 
-# git_auth runs git with the token supplied by an inline credential helper. The helper
-# is a shell snippet that READS the exported variable when git asks; the token is never
-# in argv and never reaches .git/config, so it does not outlive the process.
-#
-# The EMPTY credential.helper in front is load-bearing, not a typo. credential.helper is a
-# MULTI-valued config: a bare `-c credential.helper=...` APPENDS to whatever the host has
-# configured, it does not replace it. On a host with `credential.helper=store` git then runs
-# both — ours answers the prompt, and store writes the token to ~/.git-credentials on the
-# approve that follows a successful auth, so it outlives the install after all. An empty
-# value is git's documented list reset. Verified on Fedora: with store configured the single
-# -c form persists the token to disk, the reset form writes nothing.
-#
-# GIT_TERMINAL_PROMPT=0 on both arms: GitHub answers a private repo with no or a bad token
-# by asking for credentials, and git would put that prompt on /dev/tty, where a piped
-# install sits waiting instead of failing with the FELIS_GITHUB_TOKEN hint.
+# Reset host Git helpers and provide tokens through an inline helper; disable prompts and never persist credentials.
 git_auth() {
   if [ -n "$FELIS_GITHUB_TOKEN" ]; then
     GIT_TERMINAL_PROMPT=0 git -c 'credential.helper=' \
@@ -3038,9 +2358,7 @@ resolve_install_ref() {
   case "$FELIS_VERSION_BOOTSTRAP" in
     release)
       if [ -n "$FELIS_RELEASE" ]; then
-        # A named release installs from its own assets, as the newest would: the way back
-        # to an earlier release (https://docs.felismc.com/en/operations/upgrade#rollback). validate_settings checked
-        # the tag's form; this checks it was published.
+        # Require an explicitly requested release to exist and install its matching assets.
         load_release_json "$FELIS_RELEASE" || die "could not find the published Felis release ${FELIS_RELEASE}.
   Check the tag against the repository's releases page.$(fork_token_hint)"
         FELIS_REF="$FELIS_RELEASE"
@@ -3049,15 +2367,13 @@ resolve_install_ref() {
         FELIS_REF="$(github_latest_tag)" || die "could not resolve the newest Felis release from api.github.com.$(fork_token_hint)
   If no release has been published yet, set FELIS_VERSION_BOOTSTRAP=dev to build main instead."
       fi
-      # A release IS its tag, so the stamp is final here and stamp_version leaves it be.
+      # A release is its tag, so its stamp is final and stamp_version leaves it alone.
       FELIS_VERSION="$FELIS_REF"
       ok "release channel: ${FELIS_REF}"
       ;;
     dev)
       FELIS_REF="main"
-      # Best effort: the tag only names what this build is AHEAD of, and a repo with no
-      # release yet is exactly when someone reaches for the dev channel. v0.0.0 keeps the
-      # stamp parseable so `felis update` still compares rather than refusing.
+      # Use v0.0.0 when development builds have no release tag so version comparison remains parseable.
       FELIS_VERSION_BASE="$(github_latest_tag 2>/dev/null || true)"
       [ -n "$FELIS_VERSION_BASE" ] || FELIS_VERSION_BASE="v0.0.0"
       ok "dev channel: main (ahead of ${FELIS_VERSION_BASE})"
@@ -3068,21 +2384,7 @@ resolve_install_ref() {
   esac
 }
 
-# stamp_version finalises the dev/pinned stamp once a checkout exists to read the SHA
-# from. Release builds are already stamped and return untouched.
-#
-# The form is "<tag>+g<sha>", NOT `git describe`'s "<tag>-<n>-g<sha>", and the difference
-# is load-bearing. updates.Parse reads a "-" tail as a PRERELEASE, which sorts BELOW the
-# plain tag: a dev build 14 commits past v1.2.3 would compare as older than v1.2.3, and
-# `felis update` would propose "upgrading" onto the release it already contains. After
-# "+" the tail is build metadata, ignored for ordering, so the build reads as current
-# against v1.2.3 and as behind against v1.3.0 — both correct.
-#
-# `git describe` is also unreliable here: the primary fetch is --depth 1 and carries no
-# tags, so describe falls back to a bare SHA, which updates.Parse rejects outright (it
-# fails closed on a non-numeric core). checkout_ref does fall back to the whole history
-# when the shallow fetch fails, which WOULD carry tags — that is exactly the point: the
-# stamp must not depend on which arm happened to win. rev-parse needs no history at all.
+# Stamp checkout SHAs as build metadata; preserve release stamps and avoid shallow-clone git-describe fallbacks.
 stamp_version() {
   local sha
   [ -n "$FELIS_VERSION" ] && return 0
@@ -3109,13 +2411,10 @@ fetch_source() {
     log "updating source in ${SRC_DIR}"
     checkout_ref "$SRC_DIR" || die "$failed"
   else
-    # Whatever sits at SRC_DIR without a .git (a tree staged for FELIS_SKIP_FETCH, the
-    # remains of an interrupted clone) is replaced, and only once the new checkout is
-    # whole: git clone refuses a non-empty destination, which stopped the rerun outright.
+    # Replace stale non-Git source directories only after a complete fresh checkout exists.
     log "cloning ${FELIS_REPO_URL} (${FELIS_REF})"
     mkdir -p "$(dirname "$SRC_DIR")"
-    # A run killed outright (no EXIT trap) leaves its half-made checkout; the run lock
-    # means none of these belongs to a run still going.
+    # A run killed outright (no EXIT trap) leaves its half-made checkout behind. The run lock means none of these belongs to a run still going.
     rm -rf -- "${SRC_DIR}".new.*
     work="$(mktemp -d "${SRC_DIR}.new.XXXXXX")"
     chmod 755 "$work"
@@ -3131,12 +2430,7 @@ fetch_source() {
   ok "source ready at ${SRC_DIR}"
 }
 
-# checkout_ref checks FELIS_REF out in the repository at $1, whose origin is FELIS_REPO_URL.
-# A branch, a tag or a full commit id comes down at depth 1. An abbreviated commit id is no
-# ref a server answers for, so it falls back to the whole history and is resolved there,
-# with origin's branch ahead of a local one an earlier clone left behind. The ref is always
-# checked out explicitly: a build stamped v1.2.3 that actually holds main is worse than a
-# failed install.
+# Explicitly check out the requested ref; abbreviated SHAs may require full history.
 checkout_ref() {
   local commit
   if git_auth -C "$1" fetch -q --depth 1 origin "$FELIS_REF" 2>/dev/null; then
@@ -3175,13 +2469,7 @@ build_image_from_binary() {
   tmp="$(mktemp -d)"
   remember_temp "$tmp"
   cp "$HOST_BIN" "${tmp}/felis"
-  # static-debian12, matching the repo Dockerfile's final stage. Every binary that can reach
-  # HOST_BIN traces back to that Dockerfile's CGO_ENABLED=0 build: the downloaded CI asset,
-  # the binary the TUI is already running, and the one build_image_from_source docker-cp's
-  # out of the image it just built. None of them link glibc, so the larger base-debian12
-  # bought nothing and only widened the runtime surface. It mattered little while this was
-  # the rare fallback; now that the release channel downloads a binary and wraps it here,
-  # this is the image most installs actually run, and it should be the one CI publishes.
+  # Wrap the same static binary as CI, including downloaded releases.
   cat > "${tmp}/Dockerfile" <<'EOF'
 FROM gcr.io/distroless/static-debian12:nonroot
 ENV PATH=/usr/local/bin:/usr/bin:/bin
@@ -3203,9 +2491,7 @@ verify_image_starts() {
 
 build_image_from_source() {
   log "building ${FELIS_IMAGE} ${FELIS_VERSION:+(${FELIS_VERSION}) }(this compiles the Go binary; first run is slow)"
-  # Without the stamp main.version stays "dev", and `felis update` refuses to compare a
-  # "dev" build against upstream rather than treating it as 0.0.0. So an unstamped image
-  # is not a cosmetic problem: it silently disables update reporting for the install.
+  # Require a build stamp because an unstamped dev binary cannot participate in update comparison.
   docker build --progress=plain -t "$FELIS_IMAGE" \
     --build-arg FELIS_VERSION="${FELIS_VERSION:-dev}" "$SRC_DIR"
 
@@ -3219,16 +2505,8 @@ build_image_from_source() {
   chmod 0755 "$HOST_BIN"
 }
 
-# resolve_felis_image names the control-plane image after the release it carries
-# (registry.felis.svc:5000/felis/felis:v1.2.3) unless FELIS_IMAGE was given. One tag per
-# release is what makes `kubectl rollout undo` a rollback: the previous ReplicaSet names the
-# previous tag, and the registry keeps the newest five of them (its pruner, §9). Under one
-# mutable tag the undo re-created the pods on the image the upgrade had just written over it.
-#
-# The version is the release tag on the download path, the stamp on a source build
-# (v1.2.3+gabc1234 becomes the tag v1.2.3-gabc1234: '+' is not allowed in a tag), and the
-# binary's own report on the setup-console path, which skips both. A rerun of the same version
-# reuses its tag; deploy_bundle restarts the pods onto the rebuilt image then.
+# Use release-specific image tags so rollout undo can recover the previous build.
+# Replace '+' with '-' for image tags; reruns of one version reuse its tag and restart rebuilt Pods.
 resolve_felis_image() {
   local v
   [ -z "$FELIS_IMAGE" ] || return 0
@@ -3258,9 +2536,7 @@ build_image() {
     return 0
   fi
   ensure_docker
-  # Keyed on the binary, not on the route that produced it: the TUI hand-off and a release
-  # download both land on exactly the same state (a felis binary at HOST_BIN, no checkout),
-  # and a release download that fell back to source has cleared this so the source build runs.
+  # Use HAVE_PREBUILT_BINARY across TUI and download paths; source fallback clears it.
   if [ -n "$HAVE_PREBUILT_BINARY" ]; then
     build_image_from_binary
   else
@@ -3319,10 +2595,7 @@ image_repo() {
   printf '%s\n' "$r"
 }
 
-# image_present <ctr-images-ls> <ref> <manifest-digest> reports whether the listing holds <ref>
-# (its header row starts with REF, which no image is named). A tag has to name
-# <manifest-digest> too, since a tag moves; a digest name is the content it names, whether a
-# bundle imported the platform manifest under it or CRI pulled the whole index.
+# Tagged entries must match the expected manifest digest; digest references are already immutable.
 image_present() {
   case "$2" in
     *@*) awk -v r="$2" '$1 == r { f = 1 } END { exit !f }' <<<"$1" ;;
@@ -3330,10 +2603,7 @@ image_present() {
   esac
 }
 
-# load_release_listing <file> <arch> keeps the image listing's lines in RELEASE_LISTING once every
-# line is one bundle of this architecture, a role Felis knows once, two sha256 digests and a
-# name made of image-reference characters. A single line that is not is reason enough to trust
-# none: the listing is what decides which tar each image is read from.
+# Reject the entire image listing if any role, architecture, digest, or reference is invalid.
 load_release_listing() {
   local file="$1" arch="$2" bundle role name digest config rest out="" seen=" "
   while read -r bundle role name digest config rest; do
@@ -3373,14 +2643,8 @@ release_listing() {
   RELEASE_LISTING_STATE=ok
 }
 
-# import_release_images <role>... puts each role's image into k3s containerd from the release's
-# bundles, and records it as prebuilt: build_image and build_game_stack skip it, and
-# push_images_to_registry pushes it from its bundle. Only the bundles holding an image
-# containerd lacks are fetched and imported, so a rerun, or an upgrade that changed only the
-# control plane, downloads just that. A bundle names each image by the name the installer
-# runs it under by default; a FELIS_*_IMAGE set to another name gets that name as a second tag
-# on the same image. A role the release cannot supply falls back to role_fallback, one image
-# at a time: the rest still install as published.
+# Fetch and import only bundles containing images absent from containerd.
+# Retag operator-overridden image names; unsupported release roles fall back independently.
 import_release_images() {
   local role line bundle name digest config target images todo="" needed="" b
   [ -n "$ARTIFACT_MODE" ] || return 0
@@ -3438,31 +2702,9 @@ import_release_images() {
   done <<<"$todo"
 }
 
-# ---------------------------------------------------------------------------
-# 5b. The game stack: the login limbo + lobby images, and the Velocity proxy.
-#
-#     Without this, `felis setup` asks the Owner to bind by joining Minecraft while
-#     no Minecraft server exists — the whole point of installing is a joinable,
-#     Mojang-authenticating server, so the installer produces one.
-#
-#     The trust chain, end to end:
-#       player --(Mojang auth)--> Velocity --(modern forwarding, HMAC)--> login limbo
-#     Velocity is the ONLY thing that talks to Mojang; the backends run offline-mode and
-#     trust the forwarded profile, which is exactly why the forwarding secret is the
-#     identity boundary. NetworkPolicy narrows reachability but cannot block the node
-#     hosting a pod, so it is defense in depth rather than a substitute for the HMAC.
-# ---------------------------------------------------------------------------
+# Authenticate proxy identities with HMAC; NetworkPolicy cannot block the hosting node and is only defense in depth.
 
-# game_stack_source sets GAME_STACK_DIR to a docker build context holding
-# deploy/{limbo,lobby} and plugins/. The TUI path pipes this script in over stdin and
-# has no checkout on disk, so there the sources come out of the felis binary itself.
-#
-# Keyed on HAVE_PREBUILT_BINARY, the same flag build_image uses, because the question is
-# identical: a prebuilt binary means fetch_source never ran, so SRC_DIR is whatever an
-# EARLIER install left behind. Trusting it there would build felis-paper and the Velocity
-# plugin from the old commit while the control plane is the freshly downloaded release —
-# a silent version skew across the plugin/API boundary. The embedded tar always matches
-# the binary it came out of, so it is the correct source on every prebuilt path.
+# Prebuilt installs use matching embedded sources instead of possibly stale checkout contents.
 game_stack_source() {
   if [ -z "$HAVE_PREBUILT_BINARY" ] && [ -f "${SRC_DIR}/deploy/limbo/Dockerfile" ]; then
     GAME_STACK_DIR="$SRC_DIR"
@@ -3479,10 +2721,7 @@ game_stack_source() {
   ok "game-stack sources unpacked to ${GAME_STACK_DIR}"
 }
 
-# meta_get prints a small metadata document. curl's --retry covers transient HTTP
-# statuses and timeouts; a TLS handshake cut mid-way (exit 35, seen against Fill over
-# a flaky IPv6 path) is outside its retry set, so the outer loop retries every failure
-# twice more. --retry-all-errors would say the same but needs curl 7.71+.
+# Retry all metadata failures externally, including TLS errors unsupported by older curl retry flags.
 meta_get() {
   local url="$1" out attempt
   for attempt in 1 2 3; do
@@ -3499,12 +2738,7 @@ meta_get() {
   return 1
 }
 
-# resolve_game_jars sets the artifacts the three game images and the proxy are built from:
-# the builds deploy/game-stack.lock names (FELIS_GAME_STACK=pinned, the default), or
-# upstream's newest ones (latest). Pinned is what makes an install reproducible: every host
-# installing one release gets the same login gate, lobby and proxy, each download is
-# checked against the lock's sha256, and a rerun's docker builds hit their cache, so
-# restart_existing_system_servers leaves the login and lobby pods running.
+# Pinned stacks verify lock-file checksums and reuse unchanged builds on reruns.
 resolve_game_jars() {
   if [ "$FELIS_GAME_STACK" = "latest" ]; then
     resolve_latest_game_jars
@@ -3516,10 +2750,7 @@ resolve_game_jars() {
 
 GAME_STACK_LOCK_KEYS="MC_VERSION LIMBO_VERSION LIMBO_JAR_URL LIMBO_JAR_SHA256 LIMBO_SCHEM_URL LIMBO_SCHEM_SHA256 PAPER_JAR_URL PAPER_JAR_SHA256 LUCKPERMS_JAR_URL LUCKPERMS_JAR_SHA256 VELOCITY_VERSION VELOCITY_JAR_URL VELOCITY_JAR_SHA256"
 
-# load_game_stack_lock reads the lock's KEY=value lines into the globals of the same names.
-# It never sources the file: only the keys above are accepted, every one has to be set, the
-# values are limited to URL and version characters (they reach docker build-args), and each
-# *_SHA256 has to be a sha256.
+# Parse only approved lock keys and validated values; never source the lock file.
 load_game_stack_lock() {
   local file="$1" line key value
   [ -f "$file" ] || die "no game-stack lock at ${file}; FELIS_GAME_STACK=latest resolves upstream's newest builds instead"
@@ -3553,15 +2784,8 @@ url_sha256() {
   printf '%s\n' "${sum%% *}"
 }
 
-# resolve_latest_game_jars pins Limbo and Paper to the SAME Minecraft version. LOOHP/Limbo
-# speaks exactly one protocol per build, so the login gate dictates the version and Paper
-# follows — a client that can pass the gate must also be able to reach the lobby.
-# MC_VERSION is read off Limbo's CI artifact name (Limbo-<limbo-ver>-<mc-ver>.jar), which
-# is the only place the pairing is published.
-#
-# Limbo's CI and LuckPerms publish no digest, so latest hashes their downloads as it finds
-# them: the image builds still check that they receive those bytes, but nothing vouches for
-# the bytes themselves. That is what the lock file adds.
+# Derive the protocol version from Limbo's artifact name and match Paper to it.
+# Latest downloads without published digests provide byte consistency, not independent provenance.
 resolve_latest_game_jars() {
   local ci="https://ci.loohpjames.com/job/Limbo/lastSuccessfulBuild" meta build file base rest paper
   log "resolving the newest LOOHP/Limbo CI build"
@@ -3613,12 +2837,7 @@ resolve_latest_game_jars() {
   warn "FELIS_GAME_STACK=latest: these are upstream's builds as of now, not the ones this release pins"
 }
 
-# luckperms_latest_jar prints the download URL of the current LuckPerms Bukkit build.
-# Bukkit, not bukkit-legacy: legacy targets Minecraft 1.8-1.12, and Paper 26.2 is far
-# past that. The same fetch-then-grep shape (and --retry rationale) as
-# papermc_latest_jar; the metadata endpoint hands back every platform's URL at once, so
-# the grep has to pin the /bukkit/ path segment or it would just as happily return the
-# Fabric or Velocity jar, neither of which Paper can load.
+# Select LuckPerms' /bukkit/ artifact, excluding legacy and other loaders.
 luckperms_latest_jar() {
   local json url
   json="$(meta_get "https://metadata.luckperms.net/data/all")" || return 1
@@ -3629,16 +2848,7 @@ luckperms_latest_jar() {
   printf '%s\n' "$url"
 }
 
-# papermc_latest_jar prints "<url> <sha256>" for the newest build of <project> <version>.
-# --retry rides out Fill's transient gateway errors (502/503/504 are in curl's retry
-# set): a single blip must not abort the whole bootstrap claiming the build is missing.
-# Plain --retry only, deliberately: --retry-connrefused needs curl 7.52+, which the yum
-# (el7) path does not have, and it would only add ECONNREFUSED to an already-covered set.
-# The digest is not fished out of the JSON separately: Fill's download URLs are
-# content-addressed (/v1/objects/<sha256>/<name>.jar), so the path segment names the
-# bytes the URL serves and both halves come from the same grep of the same response. A
-# URL without that shape fails the resolve rather than waving the download through
-# unchecked.
+# Retry transient metadata failures and extract URL plus checksum from the same content-addressed response match.
 papermc_latest_jar() {
   local project="$1" version="$2" json urls url sha
   json="$(meta_get "https://fill.papermc.io/v3/projects/${project}/versions/${version}/builds/latest")" || return 1
@@ -3657,7 +2867,7 @@ build_game_stack() {
   game_stack_source
   resolve_game_jars
   # A release's game images are built from its game-stack.lock, the pinned stack. The latest
-  # stack is resolved on this host at install time, so it is built here.
+  # The stack is resolved on this host at install time, so it is built here.
   if [ "$FELIS_GAME_STACK" = pinned ]; then
     import_release_images limbo lobby paper
   fi
@@ -3709,9 +2919,7 @@ build_game_image() {
       ;;
   esac
 
-  # The builds the system servers run, for restart_existing_system_servers. Docker's layer
-  # cache gives an unchanged build the same id, so a rerun that rebuilt nothing leaves the
-  # login and lobby pods (and every player on them) alone.
+  # Compare deterministic game image IDs so unchanged rebuilds do not restart occupied system servers.
   case "$1" in
     limbo) LIMBO_IMAGE_ID="$(docker image inspect -f '{{.Id}}' "$img")" ;;
     lobby) LOBBY_IMAGE_ID="$(docker image inspect -f '{{.Id}}' "$img")" ;;
@@ -3749,11 +2957,7 @@ ensure_velocity_directory() {
   install -d -o "$owner" -g "$group" -m "$mode" "$path"
 }
 
-# Velocity manages its own working directory: on startup it migrates velocity.toml to
-# the running config-version, extracts localizations, and creates plugins/bStats — all
-# fatal or noisy if it cannot write. So the service owns the tree and velocity.toml. The
-# immutable artifacts (velocity.jar, felis-velocity.jar) and the forwarding secret stay
-# root-owned and read-only to the proxy; ProtectSystem=strict confines writes to VELOCITY_DIR.
+# Allow proxy-owned mutable config while keeping JARs and forwarding secrets root-owned and read-only.
 prepare_velocity_layout() {
   id -u "$VELOCITY_USER" >/dev/null 2>&1 \
     || useradd --system --home-dir "$VELOCITY_DIR" --shell /usr/sbin/nologin "$VELOCITY_USER"
@@ -3780,14 +2984,8 @@ atomic_install_file() {
   mv -fT "$staged" "$target"
 }
 
-# install_if_changed is atomic_install_file that leaves the target alone when it already
-# has the same bytes, owner and mode, so its mtime keeps meaning "the content changed".
-# felis domain check reads a proxy started before felis-link.properties' mtime as one
-# still on the old names, and a re-run that rewrote the same bytes made every install look
-# behind (and `felis domain set` restart the proxy for nothing).
-# It never fixes a target in place: the proxy's account owns these directories and can
-# swap the file for a symlink after the checks, and a chown or chmod by path would follow
-# it to, say, k3s.yaml. Owner and group compare by name, as the callers pass them.
+# Preserve mtime for identical content because domain checks use it to detect unapplied changes.
+# Replace files atomically; path-based chmod/chown could follow a proxy-planted symlink.
 install_if_changed() {
   local source="$1" target="$2" mode="$3" owner="$4" group="$5"
   if [ -f "$target" ] && [ ! -L "$target" ] && cmp -s "$source" "$target" \
@@ -3797,10 +2995,7 @@ install_if_changed() {
   atomic_install_file "$@"
 }
 
-# build_velocity_plugin compiles plugins/velocity in the same gradle image the two
-# Dockerfiles use, and drops the jar where Velocity will look for it. Docker is the
-# toolchain here on purpose: the host needs no JDK and no gradle, only a JRE. Gradle
-# checks every dependency against plugins/velocity/gradle/verification-metadata.xml.
+# Build plugins in the verified Gradle image so the host needs only a JRE.
 build_velocity_plugin() {
   log "building felis-velocity.jar (gradle in a container; the host gets no JDK)"
   prepare_velocity_layout
@@ -3816,30 +3011,7 @@ build_velocity_plugin() {
   atomic_install_file "${jars[0]}" "${VELOCITY_DIR}/plugins/felis-velocity.jar" 0644 root root
 }
 
-# install_via_plugins stages ViaVersion + ViaBackwards + ViaRewind so players on clients
-# older than the proxy can still join.
-#
-# Modern forwarding nominally refuses anything below 1.13: HandshakeSessionHandler#handleLogin
-# reads the handshake protocol version and disconnects with
-# velocity.error.modern-forwarding-needs-new-client. That gate stops firing once Via is
-# present — it logs "Replacing channel initializers" during startup, so the version reaching
-# the check is plausibly already the rewritten one. The 1.13 floor is a property of the
-# UNASSISTED proxy pipeline, not of the forwarding protocol, so nothing here changes
-# player-info-forwarding-mode and no backend is patched or downgraded.
-#
-# Measured end to end rather than assumed (Felis-Legacy FL-007, cell modern-via121): a
-# protocol-47 client joined a stock Paper 1.21.11 backend through a modern-forwarding proxy.
-# The proof is the join itself, not the log line — that backend ran velocity.enabled=true with
-# a shared secret, and Paper in that state rejects any login not carrying forwarding data
-# signed with a matching HMAC. Only protocol 47 was measured; the rest of Via's 1.7-1.12 range
-# is its own documented support.
-#
-# Pin the three jars as one compatible set. ViaVersion/ViaBackwards 5.12.0 add
-# the 26.3 protocol used by game-stack.lock; ViaRewind 4.2.0 explicitly supports
-# that pair. The earlier FL-007 join measured 1.8 against Paper 1.21.11, not every
-# client on 26.3. Release notes:
-# https://github.com/ViaVersion/ViaBackwards/releases/tag/5.12.0
-# https://github.com/ViaVersion/ViaRewind/releases/tag/4.2.0
+# Pin Via plugins as a compatible set supporting the locked game protocol.
 install_via_plugins() {
   prepare_velocity_layout
   local name version want target url tmp have
@@ -3873,24 +3045,7 @@ EOF
   ok "Via staged with 26.3 support; verify client versions against your chosen backend images"
 }
 
-# pin_via_block_connections turns ViaVersion's serverside block-connection tracking off.
-#
-# ConnectionData.init() only builds its block-connection provider when Via's lowest supported
-# protocol is below 1.13. Under modern forwarding the Velocity injector reports 393 (1.13), so
-# init() returns early, blockConnectionProvider stays null, and the first 1.12.2->1.13 chunk
-# rewrite dereferences it. A 1.8 client on a protocol-47 backend takes an NPE on the first chunk
-# it is sent and never finishes joining. Every call site in protocols/v1_12_2to1_13 is behind
-# isServersideBlockConnections(), so switching the option off skips all of them. The cost is
-# cosmetic and pre-1.13 only: fences and glass panes stop being drawn connected.
-#
-# ViaVersion's default is true, so a fresh install ships that NPE unless it is corrected here.
-# Seeding a file with this one key is enough: Config#loadConfig parses the bundled
-# assets/viaversion/config.yml as the base map and merges the on-disk file over it, so every
-# other option still comes from the shipped default and stays current across version bumps.
-#
-# Do not read the absence of "Loading block connection mappings" from the log as proof this
-# worked. init() gates on the protocol version as well, and under modern forwarding that half
-# fails on its own — the line is missing either way. The config value is the only evidence.
+# Disable Via block tracking to avoid missing-provider failures; old-client block connections may be cosmetic approximations.
 pin_via_block_connections() {
   local dir="${VELOCITY_DIR}/plugins/viaversion" config tmp
   config="${dir}/config.yml"
@@ -3950,10 +3105,7 @@ install_jre() {
       || die "the Adoptium API lists no Temurin ${FELIS_JRE_VERSION} JRE for linux/${arch}"
   fi
 
-  # A rerun moves the installer's own JRE to the pinned build, which is how a JRE security
-  # release reaches the proxy: bump the pin, rerun, and install_velocity_service restarts
-  # the proxy because the JRE's release file changed. A JRE someone else put here (another
-  # vendor, or pre-staged for an architecture Temurin does not build) is left alone.
+  # Update installer-managed JRE pins while preserving externally supplied runtimes.
   if [ -x "${JRE_DIR}/bin/java" ]; then
     if grep -qxF "IMPLEMENTOR_VERSION=\"Temurin-${release}\"" "${JRE_DIR}/release" 2>/dev/null; then
       ok "Temurin ${release} JRE already installed at ${JRE_DIR}"
@@ -3996,22 +3148,15 @@ install_velocity() {
   if [ -n "$FELIS_VELOCITY_FORK_JAR" ]; then
     [ -f "$FELIS_VELOCITY_FORK_JAR" ] \
       || die "FELIS_VELOCITY_FORK_JAR is not a readable file: ${FELIS_VELOCITY_FORK_JAR}"
-    # Hash stdin, never the path — same reason as install_via_plugins: sha256sum escapes its
-    # output line for a filename carrying a backslash or a newline, and the leading "\" that
-    # adds would fail every comparison below.
+    # Hash stdin so escaped filenames cannot alter sha256sum's output prefix.
     have="$(sha256sum <"$FELIS_VELOCITY_FORK_JAR" | cut -d' ' -f1)"
-    # Refuse rather than warn. This jar is the proxy every player connects through, and a
-    # warning in an install log is not a gate. The digest is printed so the first run after
-    # a deliberate rebuild is one copy-paste, not an investigation.
+    # Reject proxy JAR checksum mismatches and print the computed digest for explicit rebuild updates.
     [ -n "$FELIS_VELOCITY_FORK_JAR_SHA256" ] || die \
       "FELIS_VELOCITY_FORK_JAR_SHA256 is required whenever FELIS_VELOCITY_FORK_JAR is set.
    The jar at that path hashes to ${have}.
    Check that against the build you meant to install, then re-run with
    FELIS_VELOCITY_FORK_JAR_SHA256=${have}"
-    # Normalise the operator's digest before comparing. sha256sum prints lowercase, but the
-    # build host is often Windows, where Get-FileHash prints uppercase and certutil has
-    # shipped both with and without spaces between the bytes. All three name the same jar,
-    # so comparing raw would refuse two of the three spellings and word it as tampering.
+    # Normalize case and spacing in supplied SHA-256 values before comparison.
     want="$(printf '%s' "$FELIS_VELOCITY_FORK_JAR_SHA256" | tr -d '[:space:]' | tr 'A-Z' 'a-z')"
     [ "$have" = "$want" ] || die \
       "FELIS_VELOCITY_FORK_JAR checksum mismatch: got ${have}, expected ${want}"
@@ -4051,22 +3196,15 @@ stage_velocity_jar() {
   tmp="$(mktemp "${VELOCITY_DIR}/.velocity.jar.XXXXXX")"
   remember_temp "$tmp"
   curl -fsSL --retry 5 --retry-delay 2 "$url" -o "$tmp" || die "failed to download Velocity: ${url}"
-  # The same gate the Via plugins and the fork jar pass: this jar is the proxy every
-  # player connects through, and the lock file (or Fill's content-addressed URL) names its
-  # digest — a truncated or tampered download becomes a refusal here, not a proxy that
-  # won't boot.
+  # Verify proxy downloads against the lock or content-addressed digest before installation.
   have="$(sha256sum <"$tmp" | cut -d' ' -f1)"
   [ "$have" = "$want" ] \
     || die "Velocity ${version} checksum mismatch: got ${have}, expected ${want}"
   atomic_install_file "$tmp" "${VELOCITY_DIR}/velocity.jar" 0644 root root
 }
 
-# felis_internal_ip echoes the felis-api-internal Service ClusterIP. Cluster DNS does not
-# resolve from the host, but a Service ClusterIP DOES route from the node (kube-proxy programs
-# the host netns) — the same trick the on-node break-glass console uses. The internal face is
-# deliberately ClusterIP-only: it is service-token authenticated and must never be published on
-# a node's external IP. Both the felis-link plugin config and the Velocity sessionserver
-# override (install_velocity_service) point at it, so the lookup lives here once.
+# Host processes use the internal Service ClusterIP because cluster DNS is unavailable on the node.
+# The token-authenticated internal API must remain ClusterIP-only.
 felis_internal_ip() {
   local ip
   ip="$(kube -n "$CONTROL_NS" get svc felis-api-internal -o jsonpath='{.spec.clusterIP}')" \
@@ -4085,8 +3223,7 @@ write_velocity_config() {
   tmp="$(mktemp -d)"
   remember_temp "$tmp"
 
-  # The forwarding key. Velocity refuses to start on an empty one ("The forwarding-secret
-  # file must not be empty."), which is the failure mode we want if this ever goes wrong.
+  # Reject empty forwarding secrets rather than starting an unauthenticated proxy.
   (umask 077; printf '%s' "$FORWARDING_SECRET" > "${tmp}/forwarding.secret")
 
   cat > "${tmp}/velocity.toml" <<EOF
@@ -4164,40 +3301,11 @@ EOF
 
 install_velocity_service() {
   local api_ip
-  # Point Velocity (-Dmojang.sessionserver) at the felis-api hasJoined multiplexer so a
-  # full install federates Mojang + the configured [[auth_source]] set (LittleSkin by default)
-  # out of the box — not just the standalone `felis nano`. felis-api enforces the reclaim
-  # blacklist on this route; a loopback nano would bypass it.
+  # Route hasJoined through felis-api so federation also enforces the reclaim blacklist.
   api_ip="$(felis_internal_ip)"
-  # Servers that receive their forwarded identity through the handshake address (BungeeCord/legacy
-  # style) instead of the proxy-wide modern+secret forwarding. A protocol-47 (1.8.x) backend sits
-  # behind ViaVersion, which strips modern forwarding's login-plugin-message when it down-translates
-  # the proxy->backend pipeline to protocol 47; only the handshake field survives Via. The Felis
-  # fork reads this list from -Dfelis.legacy-forwarding.servers and forwards those servers legacy;
-  # every other backend keeps modern+secret untouched.
-  #
-  # This value is the floor of the list. The felis-velocity plugin adds every server whose
-  # MinecraftServer CR is labelled felis.lolicon.best/forwarding=legacy by rewriting the same
-  # property on each server-list refresh (LegacyForwarding.java), and drops it again when the
-  # label goes; the floor always stays in. A fork carrying patch 0004 re-reads the property on
-  # every backend connection, so a label applies from the next connection. A fork with 0003
-  # alone reads it once, after the plugin's first refresh, so a label applies at the next proxy
-  # restart. Stock Velocity ignores it, and the plugin logs a warning for a labelled server.
-  #
-  # The -D below is double-quoted in ExecStart on purpose. The fork trims each element, so it
-  # accepts "legacy18, legacy112", but systemd splits ExecStart on whitespace before java ever
-  # sees it -- unquoted, that spelling would hand java a stray "legacy112" argument and the unit
-  # would not start. Quoting keeps the whole property one argv item.
+  # Protocol-47 backends need quoted legacy-server properties; keep other backends on signed modern forwarding.
   local legacy_forwarding_servers="${FELIS_LEGACY_FORWARDING_SERVERS}"
-  # The heap starts small and is not pre-touched: the proxy with its Via plugins holds about 50M
-  # live, and a pre-touched 512M start kept ~0.7 GB resident on an idle network. Up to a 1G
-  # ceiling (the default, sized for about 100 players) it runs the serial collector and only the
-  # C1 compiler, 173 MiB idle against 267 MiB under G1 (both measured on the verification host);
-  # with that little live, a young collection takes milliseconds, and the proxy's compression
-  # and encryption run in Velocity's native library whichever compiler is on. A larger ceiling
-  # is for a network where a serial full collection over a big heap would stall every player at
-  # once, so it keeps G1, whose periodic collection hands the growth back once players have left.
-  # FELIS_VELOCITY_XMX is at least 256M, so the start never exceeds the ceiling.
+  # Start with a small heap and no pre-touch; use G1 for larger ceilings and require at least 256M.
   local xmx="$FELIS_VELOCITY_XMX" jvm
   if [ "$(heap_megabytes "$xmx")" -le 1024 ]; then
     jvm="-Xms16M -Xmx${xmx} -XX:+UseSerialGC -XX:TieredStopAtLevel=1"
@@ -4229,11 +3337,7 @@ WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
   systemctl enable felis-velocity
-  # A restart disconnects every player on the network, so a rerun that changed nothing the
-  # proxy runs leaves it up. Otherwise restart, not `enable --now`: on a re-run the old proxy
-  # is already up and --now would leave it running against the new config. The fingerprint is
-  # recorded only after the restart, so a run that died between writing and restarting still
-  # restarts next time.
+  # Restart only on changed runtime fingerprints and record the fingerprint only after restart succeeds.
   local fp
   fp="$(velocity_fingerprint)"
   if systemctl is-active --quiet felis-velocity \
@@ -4246,12 +3350,8 @@ EOF
   ok "felis-velocity.service enabled and started (0.0.0.0:${FELIS_GAME_PORT})"
 }
 
-# velocity_fingerprint hashes what the proxy process runs: its unit (JVM flags and system
-# properties), the JRE, the jars and the files the installer writes for it. The Via config
-# and whatever else plugins write at runtime stay out; Via rewrites its config on every load.
-# So does the service-token line of felis-link.properties: the plugin re-reads it on its own
-# (`felis rotate-token velocity` counts on that), and a restart for it would only disconnect
-# every player.
+# Fingerprint the unit, JRE, JARs, and installer-owned files; exclude plugin-generated runtime configuration.
+# Exclude the hot-reloaded service token from restart fingerprints.
 velocity_fingerprint() {
   local f sum
   for f in "$VELOCITY_SERVICE" "${JRE_DIR}/release" "${VELOCITY_DIR}/velocity.jar" \
@@ -4278,18 +3378,9 @@ configure_velocity_firewall() {
   firewall-cmd --reload
 }
 
-# ---------------------------------------------------------------------------
-# 6. PostgreSQL: the felis-postgres Deployment in k3s (internal/platform/postgres.go),
-#    from the official image pinned by digest (POSTGRES_IMAGE), its cluster on the
-#    PG_DATA_DIR hostPath. Pods reach it at its Service; the host's own tools and the
-#    migrations at 127.0.0.1:PG_HOST_PORT, a hostPort bound to loopback only. A host
-#    PostgreSQL an earlier release installed is moved into it once (migrate_host_postgres)
-#    and then left installed and stopped, so the move can be rolled back.
-# ---------------------------------------------------------------------------
+# Use loopback PostgreSQL for host tools and retain migrated host data for rollback.
 
-# Commands in the database container. pg_exec never attaches stdin: under
-# `curl ... | sudo bash` stdin is the rest of this script, and kubectl exec -i would
-# swallow it. pg_sql feeds the SQL on its stdin, so a password in it stays out of argv.
+# Do not attach stdin to pg_exec during piped installs; pg_sql deliberately receives SQL through stdin.
 pg_exec() { kube -n "$CONTROL_NS" exec "deploy/${PG_DEPLOYMENT}" -c "$PG_CONTAINER" -- "$@" </dev/null; }
 pg_sql() { # database; SQL on stdin
   kube -n "$CONTROL_NS" exec -i "deploy/${PG_DEPLOYMENT}" -c "$PG_CONTAINER" -- \
@@ -4303,10 +3394,7 @@ postgres_image_major() {
   printf '%s\n' "${tag##*:}" | sed -nE 's/^([0-9]+).*/\1/p'
 }
 
-# check_postgres_major stops before a new major version meets an old cluster. The image
-# keeps each major's cluster in its own directory (PGDATA /var/lib/postgresql/<major>/docker),
-# so a new major would not fail on the old one: it would initialise an empty cluster beside
-# it and the platform would come up with no users, no servers and no backups.
+# Reject PostgreSQL major mismatches before the image can initialize an empty sibling cluster.
 check_postgres_major() {
   local want found
   want="$(postgres_image_major)"
@@ -4321,10 +3409,7 @@ check_postgres_major() {
   sudo felis db backup -label pre-upgrade, then follow that section."
 }
 
-# prepare_postgres_data_dir makes the hostPath the pod needs (hostPath type Directory, so a
-# missing one is a pod that never starts). The cluster directory belongs to the image's
-# postgres account, uid 999, which on the host is some unrelated account (systemd-coredump
-# on EL); the root-only parent keeps that account out of it.
+# Keep a root-only parent above the PostgreSQL-owned data directory.
 prepare_postgres_data_dir() {
   install -d -m 0700 -o root -g root "$(dirname "$PG_DATA_DIR")"
   install -d -m 0700 -o "$PG_UID" -g "$PG_UID" "$PG_DATA_DIR"
@@ -4333,9 +3418,7 @@ prepare_postgres_data_dir() {
   label_postgres_data_dir
 }
 
-# label_postgres_data_dir gives the cluster directory the label containers may write, on a
-# host with SELinux enabled. The file-context rule makes it survive a relabel; chcon is the
-# fallback where semanage is not installed.
+# Persist SELinux file-context rules for database volumes; use chcon only when semanage is unavailable.
 label_postgres_data_dir() {
   command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled || return 0
   if command -v semanage >/dev/null 2>&1; then
@@ -4347,9 +3430,7 @@ label_postgres_data_dir() {
     || warn "could not label ${PG_DATA_DIR} container_file_t; if felis-postgres cannot write its cluster, label it by hand"
 }
 
-# ensure_postgres_superuser_secret creates the postgres role's password once. The image
-# reads it only when it initialises the cluster, so replacing it later would change
-# nothing but make the Secret lie about the cluster's password.
+# Create the PostgreSQL superuser secret once because existing clusters do not reread it.
 ensure_postgres_superuser_secret() {
   kube -n "$CONTROL_NS" get secret "$PG_SECRET" >/dev/null 2>&1 && return 0
   apply_literal_secret "$CONTROL_NS" "$PG_SECRET" "$PG_SECRET_KEY" "$(openssl rand -hex 32)"
@@ -4387,7 +3468,6 @@ deploy_postgres() {
   ok "${PG_DEPLOYMENT} ready: pods at ${PG_SERVICE_ADDR}, this host at 127.0.0.1:${PG_HOST_PORT}"
 }
 
-# --- moving a host PostgreSQL into felis-postgres -----------------------------------------
 
 # postgres_data_dir is where the distribution keeps a host PostgreSQL's cluster.
 postgres_data_dir() {
@@ -4415,9 +3495,7 @@ host_postgres_other_databases() {
 host_pg_counts() { as_postgres psql -XtA -v ON_ERROR_STOP=1 -d "$DB_NAME" -c "$PG_TABLE_COUNTS"; }
 pod_pg_counts() { pg_exec psql -XtA -v ON_ERROR_STOP=1 -U postgres -d "$DB_NAME" -c "$PG_TABLE_COUNTS"; }
 
-# write_pg_hba_lockout heads the host's pg_hba.conf with a block that refuses every TCP
-# connection to the felis database but the move's own dump over loopback. pg_hba.conf is
-# first-match, so it overrides the rules earlier installers wrote, which it also removes.
+# Prepend pg_hba rules so migration access overrides older rules while excluding other writers.
 write_pg_hba_lockout() {
   local hba="$1" tmp
   tmp="$(mktemp)"
@@ -4444,9 +3522,7 @@ write_pg_hba_lockout() {
   rm -f "$tmp"
 }
 
-# quiesce_host_postgres leaves the felis database on the host with no writer: the control
-# plane at zero replicas, the host timers stopped, and pg_hba.conf refusing everyone else,
-# including pods of a release older than this one that still hold its old address.
+# Stop control-plane replicas and host timers, then block other database clients before migration.
 quiesce_host_postgres() {
   local unit hba left
   hba="$(as_postgres psql -XtA -c 'SHOW hba_file' 2>/dev/null)"
@@ -4489,9 +3565,7 @@ compare_pg_counts() {
   fi
 }
 
-# retire_host_postgres stops the host server the move emptied of meaning. It stays
-# installed with its data, for a rollback (https://docs.felismc.com/en/operations/upgrade#database-move), unless it also serves
-# databases that are not the platform's: then it keeps running, with the felis copy locked out.
+# Retain host PostgreSQL data for rollback; keep the server running only if it serves unrelated databases.
 retire_host_postgres() {
   local others
   others="$(host_postgres_other_databases)"
@@ -4507,12 +3581,7 @@ retire_host_postgres() {
   fi
 }
 
-# migrate_host_postgres moves the platform's database from the host PostgreSQL an earlier
-# release installed into felis-postgres, once. The copy goes through the same bundle
-# format as every backup: felis db backup against the host server, felis db restore into
-# the pod, then every table's row count compared. Whatever felis-postgres held before is
-# replaced: until the move it served nobody. Any failure before the host server is stopped
-# puts the host back as it was (undo_postgres_move); the bundle stays in FELIS_DB_BACKUP_DIR.
+# Verify every table count after migration; failures before host retirement restore the original access state.
 migrate_host_postgres() {
   local legacy fresh out bundle
   [ -e "$PG_MOVED_MARKER" ] && return 0
@@ -4540,10 +3609,7 @@ migrate_host_postgres() {
   ok "the felis database now lives in ${PG_DEPLOYMENT} (bundle ${bundle}); the host PostgreSQL is stopped and kept for a rollback"
 }
 
-# undo_postgres_move runs from cleanup when the install fails. Before the host server was
-# retired it opens pg_hba.conf again and brings the control plane back, so the platform
-# runs on the host database exactly as before the run. After it, the database lives in
-# felis-postgres and a rerun finishes pointing everything at it.
+# Rollback reopens the host database only before retirement; afterward reruns finish the pod migration.
 undo_postgres_move() {
   local unit
   case "${PG_MOVE_STAGE:-}" in
@@ -4569,10 +3635,7 @@ undo_postgres_move() {
   done
 }
 
-# ---------------------------------------------------------------------------
-# 7. Secrets + felis.toml (the pod copy reaches felis-postgres at its Service; the
-#    host copy at its loopback hostPort, and names the pod felis db runs its tools in)
-# ---------------------------------------------------------------------------
+# Secrets and felis.toml. The pod copy reaches felis-postgres at its Service; the host copy uses its loopback hostPort, and names the pod that felis db runs its tools in.
 load_or_make_secrets() {
   mkdir -p "$STATE_DIR"
   chmod 0700 "$STATE_DIR"
@@ -4582,28 +3645,14 @@ load_or_make_secrets() {
     ok "reusing persisted secrets from ${SECRETS_ENV}"
   fi
   DB_PASSWORD="${DB_PASSWORD:-$(openssl rand -hex 24)}"
-  # One felis-api internal token per caller (naming.CallerTokens), so each is scoped
-  # to its own routes and a leak is contained to that caller: SERVICE_TOKEN is the
-  # proxy's (felis-link.properties), LIMBO_TOKEN the login gate's, BUILD_TOKEN what a
-  # build Job fetches its context with, OPS_TOKEN what `felis backup-now` presents.
-  # `felis rotate-token <caller>` replaces one of them, and `felis rotate-token
-  # registry|forwarding|db` the other values persisted below: every line of secrets.env
-  # has a rotation that rewrites it (cmd/felis TestInstallerSecretsAreAllRotatable).
+  # Use distinct internal tokens per caller to contain credential leaks.
   SERVICE_TOKEN="${SERVICE_TOKEN:-$(openssl rand -hex 32)}"
   LIMBO_TOKEN="${LIMBO_TOKEN:-$(openssl rand -hex 32)}"
   BUILD_TOKEN="${BUILD_TOKEN:-$(openssl rand -hex 32)}"
   OPS_TOKEN="${OPS_TOKEN:-$(openssl rand -hex 32)}"
-  # The Velocity modern-forwarding key. It is what makes a backend's UUID trustworthy:
-  # the proxy does the Mojang handshake and HMACs the resulting profile with this key,
-  # and a backend that cannot verify it would fall back to an offline UUID derived from
-  # the username — i.e. anyone could join as anyone, the Owner included. Same value on
-  # the proxy (forwarding.secret) and in every backend pod (felis-forwarding-secret).
+  # Share the modern-forwarding HMAC key between proxy and backends to authenticate player UUIDs.
   FORWARDING_SECRET="${FORWARDING_SECRET:-$(openssl rand -hex 32)}"
-  # Registry write credentials, one per principal the registry gate knows
-  # (internal/registrygate): platform pushes the installer's own images and the
-  # Trivy DB mirrors, build is what a build Job's push container presents and may
-  # never write under felis/ or mirror/, prune is felis-api deleting manifests
-  # nothing references (internal/registryprune). Reads stay anonymous.
+  # Separate registry write credentials by platform, build, and prune role; reads stay anonymous.
   REGISTRY_PLATFORM_TOKEN="${REGISTRY_PLATFORM_TOKEN:-$(openssl rand -hex 32)}"
   REGISTRY_BUILD_TOKEN="${REGISTRY_BUILD_TOKEN:-$(openssl rand -hex 32)}"
   REGISTRY_PRUNE_TOKEN="${REGISTRY_PRUNE_TOKEN:-$(openssl rand -hex 32)}"
@@ -4665,23 +3714,7 @@ EOF
   ok "panel TLS certificate ready (${PANEL_TLS_CERT})"
 }
 
-# persisted_smtp_block echoes the [smtp] section an earlier run left behind, or
-# nothing. Unlike every other value in the generated toml, [smtp] is not derived
-# from this script's inputs -- `felis setup`'s SMTP screen writes it, after
-# proving the relay works. A wholesale `cat >` therefore erases it on every
-# re-run, and since re-running the installer is the documented way to update
-# felis-api, an operator who updates loses mail: OTP delivery silently reverts
-# to the no-Mailer path and every code is logged instead of sent. Same defect
-# family as the root_domain loss fixed in ecbeb20 -- generated file, hand-set
-# value, no carry-forward.
-#
-# The carry is the section's header and key lines only. Printing every line up to
-# the next section header hoarded the generated [[auth_source]] comment block
-# that sits below [smtp] into this carry: each re-run then re-emitted the hoard
-# plus a fresh template copy, growing both config files by one comment block per
-# run (audit #50). The extraction is idempotent, which is also why re-reading the
-# freshly rewritten host file on the pod pass is safe. The pod toml remains the
-# fallback for a host file with no [smtp] section at all.
+# Preserve SMTP headers and keys without adjacent generated comments; use Pod settings if host settings are absent.
 persisted_smtp_block() {
   local f out
   for f in "${STATE_DIR}/felis.host.toml" "${STATE_DIR}/felis.pod.toml"; do
@@ -4701,14 +3734,8 @@ persisted_smtp_block() {
   done
 }
 
-# persisted_auth_lines echoes the key lines of the [auth] section an earlier run left
-# behind, or nothing. Two writers own keys there that nothing in this script's inputs
-# derives: the Cloudflare edge setup (access_jwt_aud, client_ip_header -- the header the
-# sign-in rate limit keys on) and an operator who serves the panel or the admin console
-# on a name other than console.<root> / op.console.<root>. A wholesale rewrite dropped
-# all of them on every re-run: behind Cloudflare the rate limit fell back to the tunnel's
-# address, one bucket for everyone. Header-and-keys only, like persisted_smtp_block, and
-# the same first-readable-file rule.
+# Preserve setup-owned Access/IP headers and operator-owned auth hostnames on reruns.
+# Header and keys only, like persisted_smtp_block, under the same first-readable-file rule.
 persisted_auth_lines() {
   local f out
   for f in "${STATE_DIR}/felis.host.toml" "${STATE_DIR}/felis.pod.toml"; do
@@ -4727,9 +3754,7 @@ persisted_auth_lines() {
   done
 }
 
-# auth_hostname echoes the installed value of an [auth] hostname key, or the default
-# derived from the root domain: `auth_hostname panel_hostname "console.${FELIS_ROOT_DOMAIN}"`.
-# The lines are read into a variable before matching, as in auth_lines.
+# Read configured auth hostnames before deriving defaults from the root domain.
 auth_hostname() {
   local lines v
   lines="$(persisted_auth_lines)"
@@ -4737,11 +3762,7 @@ auth_hostname() {
   printf '%s' "${v:-$2}"
 }
 
-# auth_lines is the body of the [auth] section this run writes: the carried keys, after
-# the two hostnames derived from the root domain when the carry lacks them. A first
-# install gets exactly the two derived lines; a re-run reproduces the carried section.
-# The keys are matched in a here-string, never `printf | grep -q` (see offsite_enabled):
-# a lost race there wrote a second admin_hostname, and the duplicate key broke the file.
+# Preserve carried auth keys and derive only absent hostnames; avoid early-closing pipelines under pipefail.
 auth_lines() {
   local carried
   carried="$(persisted_auth_lines)"
@@ -4752,20 +3773,12 @@ auth_lines() {
   if [ -n "$carried" ]; then printf '%s\n' "$carried"; fi
 }
 
-# persisted_auth_source_blocks echoes the [[auth_source]] tables an earlier run left
-# behind, or the LittleSkin default when there is no earlier felis.toml at all. The
-# list is the operator's: it is the only way to add or drop a Yggdrasil root on a full
-# install, and nothing in this script's inputs derives it. Without the carry-forward a
-# re-run would put LittleSkin back after the operator removed it and silently drop any
-# root they added. An earlier file with no tables stays that way — that is a Mojang-only
-# server, not a missing value. Same first-readable-file rule as persisted_smtp_block.
+# Preserve explicit auth-source tables, including a deliberately empty Mojang-only configuration.
 persisted_auth_source_blocks() {
   local f
   for f in "${STATE_DIR}/felis.host.toml" "${STATE_DIR}/felis.pod.toml"; do
     [ -r "$f" ] || continue
-    # Every [[auth_source]] table, up to (not including) the next other section header.
-    # TOML also accepts [[ auth_source ]] and a quoted key; a header this does not
-    # recognise would silently drop that table.
+    # Accept whitespace and quoted TOML table headers without including the next unrelated section.
     awk '/^[[:space:]]*\[/ { f = /^[[:space:]]*\[\[[[:space:]]*["\047]?auth_source["\047]?[[:space:]]*\]\]/ }
          f { print }' "$f"
     return 0
@@ -4774,17 +3787,7 @@ persisted_auth_source_blocks() {
     'url = "https://littleskin.cn/api/yggdrasil/sessionserver/session/minecraft/hasJoined"'
 }
 
-# persisted_archive_block echoes the operator-owned [archive] keys an earlier run
-# left behind — the retention window, the pre-reap warn offsets, the local cap,
-# the on-demand backup retention/count/cooldown, the scheduled backup
-# period/count/retention — so a re-run does not silently revert them to the
-# built-ins (felis reaper, felis backup and felis api read these from the config
-# Secret; defaults: 90d retention, 3d/1d warnings, no cap, manual backups kept
-# 30d, 5 per server, one per 10m, a scheduled backup a day kept 7 per server for
-# 90d). store and local_path are NOT carried: this script owns them
-# (FELIS_ARCHIVE_LOCAL_PATH must equal the mount). Same first-readable-file rule
-# as persisted_smtp_block; warn_before must be a single-line TOML array (the
-# shape every writer here emits).
+# Preserve operator retention settings; installer-owned store/path stay derived and warn_before must be single-line.
 persisted_archive_block() {
   local f out
   for f in "${STATE_DIR}/felis.host.toml" "${STATE_DIR}/felis.pod.toml"; do
@@ -4800,14 +3803,7 @@ persisted_archive_block() {
   done
 }
 
-# persisted_registry_block echoes the operator-owned [registry] keys an earlier run
-# left behind — the build-lane executor mirrors, the resource caps, the uploads
-# backend and its [registry.s3] subtable — so §15's upgrade path (re-run the
-# installer) does not silently revert them. Nothing in this script's inputs
-# derives these: they are hand-written per https://docs.felismc.com/en/reference/configuration#felis-toml or stamped
-# by the storage wizard. url and build_namespace are NOT carried: this script
-# owns them (they must match REGISTRY_URL / BUILD_NS). Same first-readable-file
-# rule as persisted_smtp_block.
+# Preserve registry overrides and S3 settings, excluding installer-owned url and build_namespace.
 persisted_registry_block() {
   local f out
   for f in "${STATE_DIR}/felis.host.toml" "${STATE_DIR}/felis.pod.toml"; do
@@ -4827,11 +3823,7 @@ persisted_registry_block() {
   done
 }
 
-# persisted_offsite_block echoes the [offsite] section an earlier run (or the operator)
-# left behind: after the first install the bucket is configured by editing felis.host.toml
-# or by re-running with FELIS_OFFSITE_*, and a plain re-run must keep it. Deleting the
-# section and re-running is how the off-site copy is turned off. Same first-readable-file
-# rule as persisted_smtp_block.
+# Preserve the first readable offsite block; deleting it explicitly disables offsite storage.
 persisted_offsite_block() {
   local f out
   for f in "${STATE_DIR}/felis.host.toml" "${STATE_DIR}/felis.pod.toml"; do
@@ -4866,21 +3858,14 @@ offsite_block() {
   if [ -n "$FELIS_OFFSITE_DB_KEEP" ]; then printf 'db_keep = %s\n' "$FELIS_OFFSITE_DB_KEEP"; fi
 }
 
-# offsite_enabled: the [offsite] section this run writes names a bucket. The section is
-# read into a variable before matching (as in import_platform_images): in `offsite_block |
-# grep -q` grep exits at the bucket line, the lines after it then kill offsite_block with
-# SIGPIPE, and pipefail made that "no bucket". A re-run that lost the race removed the
-# off-site timer and ended with NO OFF-SITE COPY on a host that has one.
+# Capture output before grep -q so pipefail cannot mistake SIGPIPE for disabled offsite storage.
 offsite_enabled() {
   local block
   block="$(offsite_block)"
   grep -Eq '^[[:space:]]*bucket[[:space:]]*=[[:space:]]*"[^"]+"' <<<"$block"
 }
 
-# write_felis_toml target host:port [namespace/deployment]: the deployment is the
-# database's pod, where `felis db` runs pg_dump, pg_restore and psql (the host has no
-# PostgreSQL client); only the host copy names it. The file is 0600: its url holds the
-# database password.
+# Only host config names the database Deployment; mode 0600 protects the URL password.
 write_felis_toml() {
   local target="$1" db_addr="$2" deployment="${3:-}" deployment_line="" smtp_block auth_body auth_source_blocks registry_block archive_block offsite_section
   local config_keys game_version_line=""
@@ -4994,9 +3979,7 @@ ensure_default_config() {
   ok "default host config: ${target} -> ${STATE_DIR}/felis.host.toml"
 }
 
-# ---------------------------------------------------------------------------
 # 8. Migrate + deploy bundle
-# ---------------------------------------------------------------------------
 run_migrations() {
   local backup_flags=(-backup-dir "$FELIS_DB_BACKUP_DIR")
   write_felis_toml "${STATE_DIR}/felis.host.toml" "127.0.0.1:${PG_HOST_PORT}" "${CONTROL_NS}/${PG_DEPLOYMENT}"
@@ -5005,9 +3988,7 @@ run_migrations() {
     warn "FELIS_PRE_MIGRATE_BACKUP=0: pending migrations run without a database snapshot"
     backup_flags=(-no-backup)
   fi
-  # Migrations only roll forward. On an existing database with migrations pending, the
-  # binary bundles the database into FELIS_DB_BACKUP_DIR first and refuses to migrate
-  # if that fails; a fresh database has nothing to protect and is migrated directly.
+  # Back up initialized databases before pending migrations; refuse migration if the backup fails.
   log "running database migrations (host binary -> ${PG_DEPLOYMENT} at 127.0.0.1:${PG_HOST_PORT})"
   # From here the database may move forward, and the binary that moved it stays.
   HOST_BIN_IN_USE=1
@@ -5022,12 +4003,7 @@ quiet_watchdog() {
   printf '%s\n' "$(( $(date +%s) + 7200 ))" > "$WATCHDOG_QUIET_FILE"
 }
 
-# The hourly off-site copy. The bucket is checked now, in the install, so wrong
-# credentials, an unreachable endpoint, a key other than the one its objects are sealed
-# with, or another host writing it show up here; the first copy itself runs in the
-# background, since a host with many archives can take a long while to upload them.
-# With no bucket configured the timer is removed (the operator deleted [offsite]) and the
-# install says loudly that every backup is on this machine only.
+# Validate offsite credentials and writer state before syncing; no configured bucket removes the timer.
 install_offsite_timer() {
   if [ "${OFFSITE_ENABLED:-0}" != 1 ]; then
     if [ -e "$OFFSITE_TIMER" ] || [ -e "$OFFSITE_SERVICE" ]; then
@@ -5073,11 +4049,7 @@ EOF
   "$HOST_BIN" offsite check-key -config "${STATE_DIR}/felis.host.toml" -env-file "$OFFSITE_ENV" >/dev/null || rc=$?
   case "$rc" in
     0)
-      # A host built from another host's backup (a rehearsal on a spare machine, or a
-      # rebuild) finds that host named as the bucket's writer and stands by: its copy
-      # writes nothing there and its watchdog mails nobody while that host keeps writing.
-      # A host another one took the bucket over from (5) stops copying and mails its
-      # owners. The first copy still runs, to record either for the watchdog.
+      # Standby hosts neither upload nor notify another writer's owners; record that state for the watchdog.
       local who wrc=0
       who="$("$HOST_BIN" offsite take-over -config "${STATE_DIR}/felis.host.toml" -env-file "$OFFSITE_ENV")" || wrc=$?
       systemctl start --no-block felis-offsite.service
@@ -5185,12 +4157,7 @@ summary_offsite() {
   fi
 }
 
-# The daily version check. Felis applies no update on its own; `felis update --record`
-# compares what this host runs with the newest upstream releases and stores the result,
-# which the panel's Updates page shows with the command that applies each update. It runs
-# on the host because that is where the installed versions are readable. The first check
-# runs in the background: it waits on the release feeds, and nothing in the install
-# depends on it.
+# Record host update availability for the panel; installation never applies updates automatically.
 install_update_check_timer() {
   cat > "$UPDATE_CHECK_SERVICE" <<EOF
 [Unit]
@@ -5226,17 +4193,7 @@ EOF
   ok "version check: daily; the panel's Updates page shows what has a newer release (journalctl -u felis-update-check)"
 }
 
-# The platform watchdog: every two minutes it checks the control plane, the login gate,
-# the fleet, PostgreSQL, the game proxy, the database backups and the host's disks and
-# memory, and mails the owners (their verified addresses, over the [smtp] relay) what
-# has stayed wrong long enough to matter. It runs on the host so a k3s that is down is
-# still reported. The first run happens now, so a broken unit shows up in this install.
-# A run that fails starts felis-watchdog-failed.service (OnFailure=), which mails the
-# failure once five runs in a row failed, through the relay the last good run cached, and
-# pings the heartbeat's failure endpoint. The heartbeat (FELIS_WATCHDOG_HEARTBEAT_URL) is
-# what notices a host that is down or a watchdog that no longer runs at all. The units
-# name no heartbeat flag: felis watchdog reads WATCHDOG_HEARTBEAT_FILE by default, so an
-# older binary put back under these units still runs.
+# Run host watchdog probes with cached failure notifications; omit heartbeat flags for binary compatibility.
 install_watchdog_timer() {
   local disks="/,/var/lib/rancher/k3s,/var/lib/felis" path
   for path in "$FELIS_WORLDS_HOST_PATH" "$FELIS_ARCHIVE_LOCAL_PATH" "$FELIS_DB_BACKUP_DIR"; do
@@ -5327,10 +4284,7 @@ heartbeat_host() {
   printf '%s://%s/...' "${url%%://*}" "$host"
 }
 
-# summary_alerts says where the watchdog's alerts go. They go by mail only: through the
-# [smtp] relay `felis setup` configures (e, configure email), to every enabled Owner's
-# verified address. With no relay each alert, like each sign-in code, is only written to
-# the journal. Without this line the operator learns that from an outage no one heard of.
+# Report the actual owner alert route, including missing SMTP delivery.
 summary_alerts() {
   if panel_setting relay; then
     log "Alerts: the watchdog mails the Owner's verified email address through the relay saved in the panel."
@@ -5344,9 +4298,7 @@ summary_alerts() {
   warn "Configure one in the panel (Platform settings → Mail delivery) or in 'sudo felis setup' (e: configure email), and verify the Owner's email in the panel; alerts go to that address."
 }
 
-# panel_setting succeeds when the Owner saved $1 (relay or heartbeat) in the panel, where
-# it wins over the host's (felis panel-settings): the summary must not warn of a missing
-# relay or heartbeat the panel has. A database it cannot read counts as nothing saved.
+# Panel relay/heartbeat settings override host values; unavailable database reads cannot confirm those overrides.
 panel_setting() {
   "${HOST_BIN:-}" panel-settings -config "${STATE_DIR}/felis.host.toml" 2>/dev/null | grep -x "$1=yes" >/dev/null
 }
@@ -5367,12 +4319,7 @@ summary_heartbeat() {
   warn "then save its ping URL in the panel (Platform settings → Monitoring heartbeat), or re-run with FELIS_WATCHDOG_HEARTBEAT_URL=<its ping URL> (https://docs.felismc.com/en/operations/monitoring#heartbeat)."
 }
 
-# The build lane's tools: kaniko and trivy (pinned by digest in internal/build/tools.go)
-# and Trivy's vulnerability and Java DBs, copied into the registry's mirror/ where build
-# Jobs pull them; the build namespace has no internet egress. The timer refreshes the DBs
-# twice a day (upstream publishes every six hours) and the watchdog warns when three days
-# pass without a clean run. The first copy starts now in the background: the Java DB
-# alone is several hundred MB.
+# Mirror build tools and vulnerability databases because build Jobs have no internet egress.
 install_build_tools_timer() {
   install -d -m 0755 "$(dirname "$BUILD_TOOLS_STATUS")"
   cat > "$BUILD_TOOLS_SERVICE" <<EOF
@@ -5409,9 +4356,7 @@ EOF
   ok "build tools: kaniko, trivy and the Trivy DBs are being copied into the registry (journalctl -u felis-build-tools); refreshed twice a day"
 }
 
-# The daily database backup. The first run happens now, so a broken pipeline (pg_dump
-# missing, directory unwritable) shows up in this install rather than in the first
-# restore someone needs.
+# Run the first database backup immediately to expose pipeline failures during installation.
 # The API mounts only this Unix socket, never the host kubeconfig or SSH keys.
 install_node_control_service() {
   local selinux_environment=""
@@ -5501,13 +4446,8 @@ EOF
   fi
 }
 
-# configure_offsite writes OFFSITE_ENV, the secrets behind [offsite]: the bucket's access
-# keys and the key every off-site object is sealed with. Values in this run's environment
-# replace the file's (rotating the bucket credentials is a re-run); the encryption key is
-# generated when neither has one. A different key than the file's is refused: every object
-# already in the bucket is sealed with the old one, and swapping it would make them
-# unreadable without a word. Whether the bucket's objects agree with the key is checked once
-# the binary is installed (install_offsite_timer).
+# Environment credentials override host copies; generate the encryption key only if neither supplies one.
+# Reject changes to the persisted encryption key because existing bucket objects require it.
 configure_offsite() {
   OFFSITE_ENABLED=0
   OFFSITE_KEY_NEW=0
@@ -5548,13 +4488,8 @@ EOF
   ok "off-site copy: secrets in ${OFFSITE_ENV}"
 }
 
-# Releases before the reaper ran as root granted uid 1000 traverse on the worlds root: an
-# ACL entry, or o+x where the host had no setfacl. uid 1000 is now the game servers' uid,
-# and the per-volume directories below that root are 0777, so the grant let a game process
-# (and, for o+x, every local account) reach any world by its directory name. Every run
-# takes it back: the ACL entry from any worlds root, the other-bits only from k3s's storage
-# root, which k3s ships 0700 root:root. A custom root keeps its mode, which may be the
-# operator's own.
+# Remove legacy traversal grants from the world root to prevent cross-world access.
+# Remove other traversal bits only from k3s's root; preserve custom-root modes.
 revoke_worlds_root_grant() {
   local dir
   for dir in "$K3S_STORAGE_ROOT" "$FELIS_WORLDS_HOST_PATH"; do
@@ -5589,9 +4524,7 @@ deploy_bundle() {
     printf '%s\n' "$prev_api" > "${STATE_DIR}/previous-felis-image"
   fi
 
-  # Always the embedded copy. It is byte-identical to deploy/crd/ (bootstrap_asset.go embeds
-  # that very file), it needs no checkout — which the release-download path does not have —
-  # and one source beats a branch whose two arms have to be kept in agreement by hand.
+  # Use the embedded CRD so checkout availability cannot change installation behavior.
   log "applying MinecraftServer CRD"
   "$HOST_BIN" bootstrap-assets crd | kube apply -f -
 
@@ -5603,22 +4536,14 @@ deploy_bundle() {
 
   log "provisioning felis-config + internal caller tokens + felis-forwarding-secret + registry credentials + mail relay and uploads bucket credentials + panel TLS secrets (out-of-band, never in the bundle)"
   apply_felis_config_secrets
-  # felis-api mounts all four caller tokens from the control namespace. The login
-  # gate's and the build Job's are also applied into the namespace their pods run in
-  # (a secretKeyRef is namespace-local); applying them here rather than leaving it to
-  # `felis setup` means an upgrade has them in place before the new operator points
-  # the login pod at felis-limbo-token. The proxy's and the ops token stay here only.
+  # Replicate scoped caller tokens before upgraded workloads begin referencing them.
   apply_literal_secret "$CONTROL_NS" felis-service-token token "$SERVICE_TOKEN"
   apply_literal_secret "$CONTROL_NS" felis-limbo-token token "$LIMBO_TOKEN"
   apply_literal_secret "$MINECRAFT_NS" felis-limbo-token token "$LIMBO_TOKEN"
   apply_literal_secret "$CONTROL_NS" felis-build-token token "$BUILD_TOKEN"
   apply_literal_secret "$BUILD_NS" felis-build-token token "$BUILD_TOKEN"
   apply_literal_secret "$CONTROL_NS" felis-ops-token token "$OPS_TOKEN"
-  # The forwarding key every backend verifies the proxy's handshake with. `felis setup`
-  # replicates it into the minecraft namespace (ensureSecretReplica) before it creates
-  # the pods that mount it; the operator injects it into EVERY backend, because Velocity's
-  # forwarding mode is one proxy-wide setting — a backend that does not speak it is not
-  # "less secure", it is unjoinable.
+  # Replicate the forwarding key before creating backends; modern forwarding requires every backend to verify it.
   apply_literal_secret "$CONTROL_NS" felis-forwarding-secret secret "$FORWARDING_SECRET"
   apply_registry_secrets
   apply_setup_credential_secrets
@@ -5681,17 +4606,13 @@ deploy_bundle() {
   while read -r cidr; do
     [ -n "$cidr" ] && manifest_args+=(--server-egress-deny-cidr "$cidr")
   done < <(node_global_cidrs)
-  # Backups are on by default (the renderer's own default names felis-backups); an emptied
-  # FELIS_BACKUP_PVC asks for the no-backup shape explicitly, and a custom name must be
-  # passed through or the api would advertise a PVC the bundle never created.
+  # An empty backup-PVC value explicitly disables archives; forward custom names to every renderer.
   if [ -n "$FELIS_BACKUP_PVC" ]; then
     manifest_args+=(--backup-pvc "$FELIS_BACKUP_PVC")
   else
     manifest_args+=(--backup-pvc=)
   fi
-  # With an archive store the reaper always renders, since backups past their expiry have
-  # to leave it; it reaps idle worlds only when the operator names where the worlds live.
-  # The archive path must equal the [archive] local_path written above.
+  # Archive retention always needs the reaper; world deletion additionally requires an explicit worlds root.
   if [ -n "$FELIS_BACKUP_PVC" ]; then
     manifest_args+=(--archive-local-path "$FELIS_ARCHIVE_LOCAL_PATH")
     if [ -z "$FELIS_WORLDS_HOST_PATH" ]; then
@@ -5700,9 +4621,7 @@ deploy_bundle() {
   fi
   if [ -n "$FELIS_WORLDS_HOST_PATH" ]; then
     log "retention enabled: the daily reaper will read worlds from ${FELIS_WORLDS_HOST_PATH}"
-    # The reaper reads this root as root with DAC_OVERRIDE (platform.reaperPodSecurityContext)
-    # through a static hostPath PV, so the host directory keeps k3s's own 0700 root:root and
-    # needs no extra grant. It must exist, though: the PV declares type Directory.
+    # Create the hostPath directory with root-only access; the root reaper requires no extra traversal grants.
     if [ ! -d "$FELIS_WORLDS_HOST_PATH" ]; then
       if [ "$FELIS_WORLDS_HOST_PATH" = "$K3S_STORAGE_ROOT" ]; then
         # The provisioner would create it moments later with this same 0700 root:root;
@@ -5726,9 +4645,7 @@ deploy_bundle() {
     if [ -n "$size" ]; then manifest_args+=(--backup-storage "$size"); fi
   fi
   "$HOST_BIN" manifests "${manifest_args[@]}" | kube apply -f -
-  # A client-side apply leaves a replica count the manifest did not change alone, so the
-  # zero a database move (or an operator's `felis db restore`) scaled the control plane
-  # to would outlive this install.
+  # Explicitly restore replica counts because unchanged client-side apply preserves a previous zero scale.
   kube -n "$CONTROL_NS" scale deployment felis-api felis-operator --replicas=1
   restart_existing_control_plane "$prev_api" "$prev_operator" "$prev_gate"
 
@@ -5740,19 +4657,12 @@ deploy_bundle() {
       die "control-plane rollout did not complete: ${d}"
     fi
   done
-  # Before per-caller tokens the proxy's token was replicated into the workload
-  # namespaces for the login gate and the build Jobs. The new operator and api no
-  # longer reference those copies; leaving them would keep the proxy's credential
-  # readable from namespaces that have no business with it.
+  # Remove obsolete proxy-token replicas from workload namespaces that now use scoped credentials.
   kube -n "$MINECRAFT_NS" delete secret felis-service-token --ignore-not-found
   kube -n "$BUILD_NS" delete secret felis-service-token --ignore-not-found
 }
 
-# pvc_size <namespace> <claim> <wanted> <env name> prints the size to render the claim
-# with: its current request when it exists, else the wanted size (empty = the renderer's
-# default). A claim's request can only grow, and only on a storage class that allows
-# expansion (k3s local-path does not), so re-applying a different size would fail the
-# whole apply; a mismatch is reported and left to the operator.
+# Preserve existing PVC capacity because storage classes may reject resize; report mismatches for manual action.
 pvc_size() {
   local ns="$1" claim="$2" want="$3" env="$4" have
   have="$(kube -n "$ns" get pvc "$claim" -o jsonpath='{.spec.resources.requests.storage}' 2>/dev/null || true)"
@@ -5773,20 +4683,10 @@ deployment_image() {
     -o "jsonpath={.spec.template.spec.containers[?(@.name==\"$2\")].image}" 2>/dev/null || true
 }
 
-# restart_existing_control_plane restarts the Deployments the bundle apply left as they were:
-# those that already ran FELIS_IMAGE, whose tag now names a rebuilt image (a rerun of the same
-# version, or a FELIS_IMAGE the operator reuses). A Deployment whose image changed is rolling
-# from the apply already, and must not be restarted on top: the restart is a second template
-# change, so `rollout undo` would step back to the new image instead of the previous release.
-#
-# The registry pod runs the same binary in its registry-gate and registry-gc containers, so it
-# follows the same rule; the rollout wait below covers it before anything is pushed.
+# Restart API, operator, and registry only for rebuilt unchanged tags, preserving rollout-undo history.
 restart_existing_control_plane() {
   local prev_api="$1" prev_operator="$2" prev_gate="${3:-}"
-  # `if`, not `[ test ] && cmd`: as the LAST command of the function the and-list returns 1
-  # when the test is false, which becomes the function's exit status and kills the whole
-  # install under `set -Eeuo pipefail` — right after the bundle is applied and before the
-  # rollout wait.
+  # Use if so an unmatched final condition does not return failure under errexit.
   if [ "$prev_api" = "$FELIS_IMAGE" ]; then
     log "restarting felis-api onto the rebuilt ${FELIS_IMAGE}"
     kube -n "$CONTROL_NS" rollout restart deployment/felis-api
@@ -5801,13 +4701,7 @@ restart_existing_control_plane() {
   fi
 }
 
-# push_image_to_registry <ref> re-tags a locally built image for the node's
-# loopback push endpoint and uploads it. The registry keys a repository by the
-# path AFTER the host, so pushing 127.0.0.1:5000/felis/felis:demo lands exactly
-# where a later kubelet pull of registry.felis.svc:5000/felis/felis:demo (the
-# mirror rewrites the host) will look. A ref not under REGISTRY_URL is not
-# mirrored — warn, don't fail: the install is still self-consistent, that image
-# just has no pull source once GC collects its containerd copy.
+# Push local repositories through loopback; external image references remain outside this mirror.
 push_image_to_registry() {
   local ref="$1" push_ref
   case "$ref" in
@@ -5842,10 +4736,7 @@ registry_read_only() {
     wget -q -O /dev/null "http://127.0.0.1:$((${REGISTRY_URL##*:} + 2))/readonly" >/dev/null 2>&1
 }
 
-# registry_docker_login logs a throwaway docker config into the registry gate as
-# the platform principal: writes are refused anonymously, and this identity is
-# the only one allowed under felis/. The config lives in a 0700 temp dir that the
-# EXIT trap removes, so the token never lands in root's ~/.docker.
+# Use a temporary mode-0700 Docker config for platform credentials and remove it on exit.
 registry_docker_login() {
   REGISTRY_DOCKER_CONFIG="$(umask 077; mktemp -d)"
   remember_temp "$REGISTRY_DOCKER_CONFIG"
@@ -5854,19 +4745,7 @@ registry_docker_login() {
     || die "could not log in to the internal registry at ${REGISTRY_PUSH_HOST} as platform — check the registry-gate container's log and the felis-registry-auth Secret"
 }
 
-# Every image this installer builds is hosted in the registry, so the copies it
-# imported into containerd are a first-boot cache, not the only copy: kubelet
-# re-pulls from the registry after any image GC. Runs AFTER deploy_bundle — the
-# registry it pushes into does not exist before that.
-#
-# Docker is started once for the whole batch and stopped once at the end. A
-# start/stop pair per image trips systemd's start rate limit — observed live on
-# a re-run: three fast pushes, then "Start request repeated too quickly /
-# start-limit-hit" and the fourth image never got mirrored. docker.service is
-# socket-triggered, so each cycle counts twice against the burst limit.
-#
-# An image the release shipped (import_release_images) is pushed from its bundle by felis
-# push-image, and needs no Docker at all; only the images built here go through docker push.
+# Deploy the registry before publishing; push release bundles directly and start Docker once for locally built images.
 push_images_to_registry() {
   local role img docker_used=""
   for role in felis limbo lobby paper; do
@@ -5893,15 +4772,8 @@ push_images_to_registry() {
   fi
 }
 
-# prune_build_images keeps one copy in Docker of each image this host builds. Every update
-# builds the control-plane image under a new tag, and a bump of the gradle pin pulls a new
-# gradle image, so without this the store gained an image per update until the disk filled.
-# Once the images are in k3s and the platform registry (which keeps the newest five
-# control-plane tags for rollbacks), Docker needs only what this run built and the gradle image
-# it builds with. It removes the other tags in Felis's own repositories and the untagged gradle
-# images an earlier pin pulled (Felis pulls gradle by digest, so a tagged one is someone
-# else's), then runs Docker's own housekeeping: dangling images and build cache unused for a
-# week. docker rmi refuses an image a container uses, and that refusal stands.
+# After publishing, retain only current Docker images and remove obsolete installer-owned tags.
+# Prune unused build cache older than a week; retain images used by containers.
 prune_build_images() {
   local keep=" " role repo tag digest id ref
   local gradle="${PLUGIN_BUILD_IMAGE%%[:@]*}" pinned="${PLUGIN_BUILD_IMAGE##*@}"
@@ -5938,10 +4810,7 @@ registry_manifest_digest() {
     | tr -d '\r' | awk 'tolower($1) == "docker-content-digest:" { print $2 }' || true
 }
 
-# push_release_image <role> mirrors a release image into the platform registry under its tag
-# and, for a game image, under push_version_tag's <Minecraft version>-<12 hex of its id> as
-# well, the id being the image's config digest here as it is docker's image id there. A tag
-# already naming the image's digest is left as it is, so a rerun uploads nothing.
+# Skip unchanged release image digests; also publish stable game-version tags.
 push_release_image() {
   local role="$1" bundle name target digest config refs ref push_ref
   read -r _ bundle name target digest config <<<"$(awk -v r="$role" '$1 == r' <<<"$RELEASE_IMAGES")"
@@ -5970,12 +4839,7 @@ push_release_image() {
   done
 }
 
-# push_version_tag mirrors a game image a second time under a tag no later run
-# rewrites: <Minecraft version>-<first 12 hex of the image id>, e.g.
-# felis/paper:26.2-3f9c0a1b2c4d. The :demo tag moves with every run, and servers are
-# pinned to the digest it named when they were created, so this is the readable name
-# for each build: an admin can whitelist it to create servers on that exact
-# Minecraft version long after :demo has moved on.
+# Add immutable <Minecraft version>-<12 hex image ID> tags alongside mutable :demo.
 push_version_tag() {
   local ref="$1" id versioned
   [ -n "${MC_VERSION:-}" ] || return 0
@@ -5987,17 +4851,7 @@ push_version_tag() {
   docker rmi "$versioned" >/dev/null 2>&1 || true
 }
 
-# The login/lobby images are built under mutable :demo tags, and an existing
-# StatefulSet whose template still names that tag will not roll onto a new build by
-# itself. When a build changed, each system server is pinned to the digest its tag
-# names now (felis pin-images --system, after push_images_to_registry): the new ref
-# changes the template, the operator rolls the pod onto it, and the build each one
-# runs is written in its spec. A pin that fails (registry down) falls back to
-# recreating the pod, which picks the build up only while the spec names the bare
-# tag. Only a changed build does either: every player online is on one of these
-# two, and a rerun that rebuilt nothing has nothing to start. SYSTEM_SERVER_IMAGES
-# records the build each was last moved to; it is written after the loop, so a run
-# that died in between moves them next time.
+# Record changed system-image IDs only after repinning/restart so interrupted runs retry safely.
 restart_existing_system_servers() {
   local name id pods next=""
   while read -r name id; do
@@ -6054,9 +4908,7 @@ mark_bootstrap_done() {
   chmod 0644 "$BOOTSTRAP_DONE"
 }
 
-# ---------------------------------------------------------------------------
 # 9. Summary
-# ---------------------------------------------------------------------------
 summary() {
   export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
   echo
@@ -6090,9 +4942,7 @@ summary() {
   echo
 }
 
-# owner_state: whether the database holds a staff account (an Owner or an Admin), the test
-# `felis setup` makes to choose between the Owner wizard and its status screen (AdminExists
-# in internal/api/pgrepo.go). "unknown" when the database does not answer.
+# Staff existence determines setup versus status mode; database failure leaves owner state unknown.
 owner_state() {
   local out
   out="$(pg_exec psql -XtA -U postgres -d "$DB_NAME" -c "SELECT EXISTS (SELECT 1 FROM users WHERE role IN ('admin', 'owner'))" 2>/dev/null || true)"
@@ -6103,17 +4953,9 @@ owner_state() {
   esac
 }
 
-# setup_terminal: whether the full-screen setup console has a terminal to draw on and to
-# read keys from. Under `curl | sudo bash` stdin is the script, so the console reads
-# SETUP_TTY; stdout must be the terminal itself, which `| tee install.log`, cloud-init and
-# CI are not. /dev/tty is mode 0666 everywhere, so only opening it tells.
+# Open the controlling terminal explicitly; piped stdin contains the installer and mode 0666 does not prove a TTY exists.
 setup_terminal() { [ -t 1 ] && (: <"$SETUP_TTY") 2>/dev/null; }
 
-# summary_next is the installer's last word: what the operator does now. It comes after the
-# warnings, so it is what the terminal is left showing. Until a staff account exists that is
-# `felis setup`, which creates the Owner; on a terminal the installer starts it itself
-# (start_setup_console), as the documented install line promises. With an Owner in place it
-# is the address to sign in at. Under felis setup the console carries on by itself.
 summary_next() {
   local owner rule="================================================================================"
   if bootstrap_from_tui; then
@@ -6143,9 +4985,7 @@ summary_next() {
   log "$rule"
 }
 
-# start_setup_console runs `felis setup` when summary_next said it would. The install has
-# succeeded by then, so the console's own failure never fails the run: the EXIT cleanup
-# would take that for a failed install and undo the database move.
+# Setup-console failure must not trigger installer rollback after installation has already succeeded.
 start_setup_console() {
   [ "$SETUP_CONSOLE" = 1 ] || return 0
   resume_package_background_timers
@@ -6156,12 +4996,6 @@ start_setup_console() {
     || warn "the setup console exited with status $?; run 'sudo felis setup' to come back to it"
 }
 
-# ---------------------------------------------------------------------------
-# 10. Felis-nano install path — the auth multiplexer only: felis binary + a
-#     minimal [[auth_source]] config + a systemd unit running `felis nano`.
-#     No k3s, no Postgres, no control-plane bundle. Chosen at the top-of-run
-#     prompt (or FELIS_INSTALL_MODE=nano).
-# ---------------------------------------------------------------------------
 prompt_install_mode() {
   if [ "$INSTALL_MODE" = reconfigure ]; then log "install mode: reconfigure ${FELIS_RECONFIGURE:-}"; return; fi
   if [ "$INSTALL_MODE" = worker ]; then log "install mode: worker";return; fi
@@ -6186,10 +5020,7 @@ prompt_install_mode() {
   local def=full n=1 reply
   if [ -e "$NANO_SERVICE" ] && [ ! -e "$BOOTSTRAP_DONE" ]; then def=nano n=2; fi
 
-  # No override: ask on the controlling terminal. Under `curl | sudo bash` stdin
-  # is the script, so we must read /dev/tty, not stdin. No tty (CI/cloud-init) →
-  # take the default. Open it to find out: /dev/tty is mode 0666 on every Linux host, so
-  # `-r` passes even when there is no controlling terminal and only the open fails.
+  # Prompt through /dev/tty, never piped script stdin; absent controlling terminals use defaults.
   if ! (: </dev/tty) 2>/dev/null; then
     INSTALL_MODE="$def"
     log "no terminal for a prompt; defaulting to a ${def} install (set FELIS_INSTALL_MODE=full or nano to override)"
@@ -6249,8 +5080,7 @@ build_nano_binary() {
   local staged="${SRC_DIR}/.felis-nano-build"
 
   log "building felis from source (${SRC_DIR})${FELIS_VERSION:+ — ${FELIS_VERSION}}"
-  # Stamped for the same reason the image build is: a nano host runs `felis version` and
-  # `felis update` too, and this path used to pass no ldflags at all.
+  # Stamped the same way as the image build: a nano host runs felis version and felis update too.
   ( cd "$SRC_DIR" \
     && PATH="${GOROOT_DIR}/bin:${PATH}" CGO_ENABLED=0 go build -trimpath \
         -ldflags "-X main.version=${FELIS_VERSION:-dev}" -o "$staged" ./cmd/felis ) \
@@ -6260,12 +5090,7 @@ build_nano_binary() {
   # only surface as a crash-looping felis-nano.service, so fail loudly here instead.
   "$staged" -h 2>&1 | grep -w nano >/dev/null || die "built binary has no 'nano' subcommand"
 
-  # Stage-then-install, never `go build -o ${HOST_BIN}` directly: the Go linker renames
-  # its output out of $TMPDIR, and a same-filesystem rename CARRIES THE SOURCE SELinux
-  # label — the binary lands in /usr/local/bin still labelled user_tmp_t. Root (being
-  # unconfined) can still run it, so it looks fine by hand, but the DynamicUser service
-  # cannot exec it and felis-nano dies with 203/EXEC. Creating the file fresh at the
-  # destination lets the policy's type transition label it bin_t; restorecon is the belt.
+  # Install a fresh executable at the destination so SELinux assigns bin_t instead of retaining a temporary label.
   mkdir -p "$(dirname "$HOST_BIN")"
   keep_previous_host_binary
   rm -f "$HOST_BIN"
@@ -6276,11 +5101,7 @@ build_nano_binary() {
   ok "felis binary on host at ${HOST_BIN}"
 }
 
-# acquire_felis_binary is the full install's four ways to a felis binary, in preference
-# order. FELIS_ARTIFACT_DIR and the release download skip compiling: each is the CI artifact
-# for its tag, panel included. The other arms leave HAVE_PREBUILT_BINARY unset where a source
-# build is what actually happens, which is what routes build_image. Neither the download nor
-# fetch_source is an if condition or a command before && or ||: errexit is off inside those.
+# Neither the download nor fetch_source is an if condition or a command before && or ||, since errexit is off inside those.
 acquire_felis_binary() {
   if [ -n "$FELIS_ARTIFACT_DIR" ]; then
     install_artifact_binary
@@ -6295,19 +5116,13 @@ acquire_felis_binary() {
 }
 
 acquire_nano_binary() {
-  # The release channel takes the same prebuilt binary the control plane does. This is the
-  # biggest win on this path: a host that only wants the auth multiplexer stops needing a Go
-  # toolchain and a checkout at all.
+  # Reuse release binaries for nano to avoid requiring a local Go toolchain or checkout.
   if use_release_binary; then
     resolve_install_ref
     download_release_binary
     [ -z "$HAVE_PREBUILT_BINARY" ] || return 0
   fi
-  # Raw curl|bash with no usable release: build it straight from source with a pinned Go
-  # toolchain — nano needs one static binary, not an image, so dragging in docker
-  # (as the full control-plane path does) buys nothing and costs a daemon that must
-  # start. It does not start on EL10: the docker-ce el10 rpms install but dockerd
-  # fails, which used to kill the whole nano install at `systemctl enable --now docker`.
+  # Build nano directly with the pinned Go toolchain; it needs no Docker daemon.
   fetch_source
   install_go_toolchain
   build_nano_binary
@@ -6315,11 +5130,7 @@ acquire_nano_binary() {
 
 write_nano_config() {
   local target="${STATE_DIR}/felis.toml"
-  # The unit is a DynamicUser, so it can read felis.toml only if it can search this
-  # directory. The mode is explicit because a hardened root umask (027) would leave it 0750,
-  # which is what older installers did to nano-only hosts. Only the full install keeps its
-  # own 0700: that directory holds secrets, and install_nano_service reports the lockout
-  # rather than this widening it.
+  # Nano's DynamicUser needs directory traversal; do not widen full-install directories containing secrets.
   if [ ! -d "$STATE_DIR" ]; then
     mkdir -p "$STATE_DIR"
     chmod 0755 "$STATE_DIR"
@@ -6356,10 +5167,7 @@ EOF
   ok "wrote nano config template ${target} (edit it to add your Yggdrasil sources)"
 }
 
-# resolve_nano_listen settles FELIS_NANO_LISTEN: the operator's value, else the address the
-# installed felis-nano unit listens on, else loopback. Re-running this script is how a nano
-# host updates, and without the middle step that re-run moved an off-host proxy's endpoint
-# back to 127.0.0.1, so every login through it failed.
+# Preserve the installed nano listen address unless an explicit override is supplied.
 resolve_nano_listen() {
   if [ -z "$FELIS_NANO_LISTEN" ] && [ -r "$NANO_SERVICE" ]; then
     FELIS_NANO_LISTEN="$(sed -n 's/^ExecStart=.* -listen \([^ ]*\).*$/\1/p' "$NANO_SERVICE")"
@@ -6392,9 +5200,7 @@ configure_nano_firewall() {
   fi
   command -v firewall-cmd >/dev/null 2>&1 || return 0
   systemctl is-active --quiet firewalld || return 0
-  # hasJoined takes no token, so the port is opened to the proxy alone. Earlier installers
-  # opened it to every source, and a re-run must not leave that behind. A rule for a previous
-  # FELIS_NANO_PROXY_CIDR is not tracked; it stays until removed by hand.
+  # Restrict unauthenticated nano access to the proxy; obsolete proxy-CIDR rules require manual removal.
   if firewall-cmd --permanent --query-port="${port}/tcp" >/dev/null 2>&1; then
     log "closing firewalld port ${port}/tcp, which an earlier install opened to every source"
     firewall-cmd --permanent --remove-port="${port}/tcp"
@@ -6504,15 +5310,7 @@ ensure_k3s_on_path() {
   esac
 }
 
-# Worker is a daemon-only branch. It neither generates Felis service credentials nor applies a controller bundle.
-# --- controller high availability -------------------------------------------------------
-#
-# FELIS_CONTROLLER_HA=1 on a distributed controller (https://docs.felismc.com/en/guide/distributed#controller-ha): k3s moves onto
-# embedded etcd (cluster-init), Longhorn holds the control plane's volumes with a copy on
-# each controller, and the control plane runs on whichever controller is up. Further
-# controllers join through node-control's join-controller task, which runs this script in
-# controller-join mode on them. ha.env keeps the choice, the home controller (where worlds
-# without a node of their own live) and the floating address across reruns.
+# Workers install no controller credentials; ha.env preserves controller mode, home, and floating address.
 
 validate_ha_settings() {
   case "${CONTROLLER_HA:-}" in
@@ -6570,10 +5368,7 @@ write_ha_env() {
   )
 }
 
-# ha_exec_condition prints the ExecCondition= line of a timer service that does
-# cluster-wide work: with HA it runs only on the host leader (felis ha leader), the
-# controller running the database; extra flags pass through (-or-unreachable for the
-# watchdog). Without HA it prints nothing and every run goes ahead.
+# Run cluster-wide timers only on the host leader; watchdog may use the unreachable exception.
 ha_exec_condition() {
   [ "${CONTROLLER_HA:-0}" = 1 ] || return 0
   printf 'ExecCondition=%s ha leader -q%s\n' "$HOST_BIN" "${1:+ $1}"
@@ -6586,9 +5381,7 @@ controller_cidrs() {
     | awk 'NF { print (index($0, ":") ? $0 "/128" : $0 "/32") }' | sort -u | paste -sd, -
 }
 
-# configure_ha_host_firewall lets the controllers reach each other's etcd, supervisor and
-# kubelet, and the WireGuard overlay, through ufw or firewalld when either is on (the
-# installer's own chain, felis node firewall, opens them first).
+# Admit etcd, supervisor, kubelet, and WireGuard traffic between controllers without disabling host firewalls.
 configure_ha_host_firewall() {
   [ "${CONTROLLER_HA:-0}" = 1 ] || return 0
   local peers="$1" peer
@@ -6619,10 +5412,7 @@ install_iscsi() {
     || die "the iSCSI initiator (iscsid) does not start; Longhorn needs it"
 }
 
-# longhorn_default_settings writes Felis's Longhorn defaults into the release manifest's
-# default-setting.yaml, read once as Longhorn first starts: replicas only on the nodes
-# labelled for them (the controllers), Longhorn's own components only on controllers, and
-# the pods of a node that went down deleted so their volumes can attach elsewhere.
+# Constrain Longhorn replicas and components to controllers and release Pods after node loss.
 longhorn_default_settings() {
   local manifest="$1" tmp
   tmp="$(mktemp)"
@@ -6677,10 +5467,7 @@ install_longhorn() {
   ok "Longhorn ready; control-plane volumes use the ${REPLICATED_CLASS} class"
 }
 
-# ha_migrate_storage moves the control plane's volumes onto Longhorn the first time HA is
-# on (felis ha migrate-storage): it stops the control plane, copies each volume, and
-# leaves the originals; the HA bundle applied next starts everything on the copies. A
-# rerun finds the copies done and moves nothing.
+# Copy control-plane volumes to Longhorn once, retaining originals for recovery.
 ha_migrate_storage() {
   [ "${CONTROLLER_HA:-0}" = 1 ] || return 0
   HOST_BIN_IN_USE=1
@@ -6699,9 +5486,7 @@ ha_vip_interface() {
   ip -o -4 addr show | awk -v ip="$NODE_IP" '{ split($4, a, "/"); if (a[1] == ip) { print $2; exit } }'
 }
 
-# install_keepalived floats FELIS_HA_VIP over the controllers (VRRP): players and the
-# panel reach whichever controller holds it, and it prefers the host leader, where the
-# control plane runs. The controllers must share the address's network.
+# Float the shared-network VRRP address toward the host leader running the control plane.
 install_keepalived() {
   [ "${CONTROLLER_HA:-0}" = 1 ] && [ -n "$FELIS_HA_VIP" ] || return 0
   local iface pass
@@ -6753,14 +5538,7 @@ install_keepalived() {
   ok "floating address ${FELIS_HA_VIP} on ${iface} (VRRP router ${FELIS_HA_VRID})"
 }
 
-# main_controller_join adds this host to an HA cluster as a controller. node-control on an
-# existing controller sends it here (felis node join-controller) with the cluster's server
-# and agent tokens, a copy of that controller's /etc/felis and the felis binary; it joins
-# k3s to etcd and installs what every controller runs on its host: the node-control
-# service, the Velocity proxy, the timers (cluster-wide ones only act on the host leader)
-# and the floating address.
-# postgres_ha_args are the database render's extra flags with HA: its replicated volume,
-# on any controller.
+# HA database rendering selects replicated storage and permits scheduling on any controller.
 postgres_ha_args() {
   [ "${CONTROLLER_HA:-0}" = 1 ] || return 0
   printf -- '--distributed --controller-node %s --controller-ha --replicated-class %s\n' "$HA_HOME" "$REPLICATED_CLASS"
@@ -6907,12 +5685,7 @@ EOF_MIRROR
   ok "worker $WORKER_NAME joined under quarantine; run felis node approve on A"
 }
 
-# main_worker_upgrade moves an enrolled worker to the controller's felis build and k3s
-# version and reinstalls its host firewall with the current peers. The controller's
-# node-control sends it here (felis node upgrade) after checking the worker's servers are
-# stopped. It keeps the worker's identity: the node name and the controller it belongs to
-# must match what is installed, and no bootstrap token is needed, since the agent already
-# holds its node credentials.
+# Worker upgrades preserve node and controller identity and require stopped servers.
 main_worker_upgrade() {
   [ -n "$WORKER_NAME" ] && [[ "$WORKER_NAME" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || die "FELIS_NODE_NAME is required and must be a DNS node name"
   [[ "$WORKER_SERVER" =~ ^https://([a-zA-Z0-9.:-]+|\[[0-9a-fA-F:]+\]):6443$ ]] || die "FELIS_SERVER_URL must be an HTTPS k3s endpoint on port 6443"
@@ -6941,13 +5714,6 @@ main_worker_upgrade() {
   ok "worker $WORKER_NAME updated to the controller's felis build"
 }
 
-# main_reconfigure rewrites, on an installed host, what the panel changed through node-control
-# (FELIS_INSTALL_MODE=reconfigure, FELIS_RECONFIGURE=target,...), from the same functions a
-# full run uses:
-#   db-backup  the database backup timer (FELIS_DB_BACKUP_TIME, FELIS_DB_BACKUP_KEEP)
-#   velocity   the proxy's unit (FELIS_VELOCITY_XMX); it restarts only when the unit changed
-#   offsite    offsite.env from FELIS_OFFSITE_* and the [offsite] already written, and the
-#              hourly copy timer (removed when [offsite] names no bucket)
 # The settings the panel saved come in through recall_host_settings.
 main_reconfigure() {
   [ -e "$BOOTSTRAP_DONE" ] || die "reconfigure changes an installed host, and this one has no full install"
@@ -6999,15 +5765,7 @@ main() {
   install_base
   ensure_time_sync
   ensure_persistent_journal
-  # Right after install_base because it is the first point curl exists, and well before
-  # docker and k3s: a missing FELIS_GITHUB_TOKEN or an unpublished release should cost
-  # the operator seconds, not a k3s install they then have to unwind. This is purely
-  # fail-fast — fetch_source resolves again itself — so it must skip on exactly the paths
-  # that never consume the result, or it invents a network dependency and a version they
-  # do not have: the TUI rebuilds the binary it is already running, and FELIS_SKIP_FETCH
-  # builds whatever is staged, which stamp_version reads the SHA off. Resolving anyway
-  # would set FELIS_VERSION to the newest tag and stamp a staged tree as that release.
-  # FELIS_ARTIFACT_DIR is its own release: its binary names the version.
+  # Resolve releases early except when staged, explicit artifact, or running-binary inputs already determine the version.
   bootstrap_from_tui || [ -n "${FELIS_SKIP_FETCH:-}" ] || [ -n "$FELIS_ARTIFACT_DIR" ] || resolve_install_ref
   install_cloudflared
   load_or_make_secrets
@@ -7062,7 +5820,7 @@ main() {
   run_migrations
   install_node_control_service
   deploy_bundle
-  # AFTER deploy_bundle: the registry the built images are mirrored into is part
+  # After deploy_bundle: the registry the built images are mirrored into is part
   # of that bundle.
   push_images_to_registry
   # After deploy_bundle, like the pushes: it writes into the registry.

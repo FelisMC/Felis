@@ -12,8 +12,6 @@ import (
 	"felis.lolicon.best/internal/api"
 )
 
-// ---- login codes and ceremonies that coexist (migration 0029) --------------------
-
 func liveLoginCodes(t *testing.T, userID, purpose string, now time.Time) int {
 	t.Helper()
 	var n int
@@ -25,8 +23,6 @@ func liveLoginCodes(t *testing.T, userID, purpose string, now time.Time) int {
 	return n
 }
 
-// A login start keeps the three newest live codes: a fourth drops the oldest, and
-// redeeming any live one spends its siblings too.
 func TestAddLoginEmailOTPKeepsNewestThree(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "otp-keep")
@@ -80,9 +76,6 @@ func TestAddLoginEmailOTPKeepsNewestThree(t *testing.T) {
 	}
 }
 
-// A wrong guess with several live codes costs each open code one attempt and the
-// account one failure; when every live code is spent the door answers ErrOTPLocked,
-// and a newer code still signs in.
 func TestConsumeLoginEmailOTPAcrossLiveCodes(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "otp-multi")
@@ -156,8 +149,6 @@ func TestConsumeLoginEmailOTPAcrossLiveCodes(t *testing.T) {
 	}
 }
 
-// Email-first passkey ceremonies of one account coexist and are redeemed by the
-// challenge the browser signed; one network holds at most 32 live ones.
 func TestPasskeyLoginChallengesCoexist(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "pk-login")
@@ -242,8 +233,6 @@ func TestPasskeyLoginChallengesCoexist(t *testing.T) {
 	}
 }
 
-// The usernameless store holds each source to 32 live challenges and the whole
-// table to 16384.
 func TestDiscoverableChallengeBounds(t *testing.T) {
 	ctx := context.Background()
 	now := mustNow()
@@ -287,8 +276,6 @@ func TestDiscoverableChallengeBounds(t *testing.T) {
 	}
 }
 
-// ---- enrollment and step-up ceremonies (migration 0007) ---------------------------
-
 func challengeRows(t *testing.T, userID, purpose string) int {
 	t.Helper()
 	var n int
@@ -299,9 +286,6 @@ func challengeRows(t *testing.T, userID, purpose string) int {
 	return n
 }
 
-// An enrollment begin supersedes the account's earlier one for the same purpose and
-// sweeps the row its last finish spent, so (user, purpose) holds one row; finish is
-// single-use, dies at expires_at, and never crosses purposes or accounts.
 func TestPasskeyChallengeByUserContract(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "pk-reg")
@@ -365,8 +349,6 @@ func TestPasskeyChallengeByUserContract(t *testing.T) {
 	}
 }
 
-// Begins that race for one (user, purpose) leave exactly one row, and finishes that
-// race for one ceremony redeem it once.
 func TestPasskeyChallengeByUserUnderConcurrency(t *testing.T) {
 	ctx := context.Background()
 	const reg = "passkey_register"
@@ -417,8 +399,6 @@ func TestPasskeyChallengeByUserUnderConcurrency(t *testing.T) {
 	}
 }
 
-// Racing begins from one source still stop at 32 live challenges, in both login
-// stores: the count and the insert are one decision.
 func TestLoginChallengeSourceBoundUnderConcurrency(t *testing.T) {
 	ctx := context.Background()
 	now := mustNow()

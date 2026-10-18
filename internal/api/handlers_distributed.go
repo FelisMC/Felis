@@ -20,7 +20,6 @@ type Distribution interface {
 	Migration(context.Context, string, string) (distributed.Operation, error)
 	RetryMigration(context.Context, string, string) (distributed.Operation, error)
 	AbortMigration(context.Context, string, string) (distributed.Operation, error)
-	// Failover (distributed failover.go).
 	LostNode(context.Context, string) (*corev1.Node, error)
 	ServersOn(context.Context, string) ([]distributed.PlacedServer, error)
 	BeginFailover(ctx context.Context, server, target, owner string, backup archivetransfer.Receipt) (distributed.Operation, error)
@@ -134,8 +133,6 @@ func (a *API) handleMigrationRetry(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, op)
 }
 
-// handleMigrationAbort gives up a failed migration: the server stays on its source world and
-// node and can start again (distributed.Manager.AbortMigration).
 func (a *API) handleMigrationAbort(w http.ResponseWriter, r *http.Request) {
 	if a.NodeControl != nil {
 		if err := NodeMaintenanceGuard(a.NodeControl)(r.Context()); err != nil {

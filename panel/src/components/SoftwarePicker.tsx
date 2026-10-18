@@ -59,11 +59,6 @@ interface Props {
   jarServer?: string;
 }
 
-/** SoftwarePicker chooses the server software a runtime-image server runs: the
- *  type, the game version (newest first; pre-releases on request), the build or
- *  loader version (the recommended one preselected), and the Java runtime (the
- *  one the version needs preselected, older ones not offered). It says whether
- *  the proxy's player identity reaches a server running the choice. */
 export function SoftwarePicker({ value, onChange, idPrefix, disabled = false, jarFile = null, onJarFile, jarServer }: Props) {
   const { t } = useTranslation("servers");
   const [unstable, setUnstable] = useState(false);

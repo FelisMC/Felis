@@ -14,11 +14,7 @@ import (
 	"testing"
 )
 
-// worldRoot builds a throwaway world directory with a couple of files and returns
-// its path, plus the path of a sibling directory OUTSIDE it holding a secret. The
-// sibling stands in for /etc — anything the editor must never reach — so an escape
-// that succeeds is observable as the secret's contents coming back, not merely as
-// a missing error.
+// worldRoot builds a world with a file and a sibling directory outside it holding a secret; an escape shows up as the secret's contents.
 func worldRoot(t *testing.T) (root, outside string) {
 	t.Helper()
 	base := t.TempDir()
@@ -60,22 +56,10 @@ func TestExperienceConfigCannotWriteThroughSymlink(t *testing.T) {
 	}
 }
 
-// TestExecuteContainment is the security test of this package. The world directory
-// holds attacker-influenced content (players and plugins create files in it), so
-// each vector below is a path a caller could genuinely supply to try to leave the
-// world mount. Every one MUST be refused — a refusal is CodeBadPath (or, where the
-// kernel resolves it to nothing at all, CodeNotFound), never a successful read.
-//
-// The assertion is deliberately doubled: the Result must carry a failure Code AND
-// the secret's contents must not appear in it. Checking only the code would pass a
-// hypothetical future regression that returned a code alongside populated content.
 func TestExecuteContainment(t *testing.T) {
 	root, outside := worldRoot(t)
 
-	// A symlink INSIDE the world pointing OUTSIDE it — the vector a string-prefix
-	// check cannot stop and the reason this package uses os.Root. The link is a
-	// perfectly ordinary file to a prefix test ("world/escape-link" is under
-	// "world/"), yet opening it lands on the secret.
+	// A symlink inside the world pointing outside it: a string-prefix check would allow it, os.Root does not.
 	if err := os.Symlink(outside, filepath.Join(root, "escape-link")); err != nil {
 		t.Skipf("symlinks unavailable on this platform: %v", err)
 	}
@@ -156,9 +140,6 @@ func TestExecuteContainment(t *testing.T) {
 	})
 }
 
-// TestExecuteHappyPath proves the three ops actually work inside the root, so the
-// containment test above cannot be trivially satisfied by a function that refuses
-// everything.
 func TestExecuteHappyPath(t *testing.T) {
 	root, _ := worldRoot(t)
 
@@ -315,10 +296,6 @@ func TestExecuteHappyPath(t *testing.T) {
 	})
 }
 
-// TestReadIsBinarySafe proves the []byte/base64 round-trip preserves bytes that a
-// string round-trip would destroy. A config file with a stray non-UTF-8 byte must
-// come back byte-identical, or "read, edit one line, write" would silently corrupt
-// the rest of the file.
 func TestReadIsBinarySafe(t *testing.T) {
 	root, _ := worldRoot(t)
 	raw := []byte{0xff, 0xfe, 'o', 'k', 0x00, 0x80}
@@ -331,7 +308,7 @@ func TestReadIsBinarySafe(t *testing.T) {
 		t.Fatalf("read failed: %v / %+v", err, res)
 	}
 
-	// Round-trip through the wire encoding, which is how felis-api actually receives it.
+	// Round-trips through the wire encoding that felis-api receives.
 	var buf bytes.Buffer
 	if err := Print(&buf, res); err != nil {
 		t.Fatalf("Print: %v", err)
@@ -346,9 +323,6 @@ func TestReadIsBinarySafe(t *testing.T) {
 	}
 }
 
-// TestPrintIsOneMarkedLine pins the transport contract: felis-api finds the payload
-// by scanning merged stdout+stderr for ResultPrefix, so the payload must be exactly
-// one line and must carry the marker. An indented encoder would break the reader.
 func TestPrintIsOneMarkedLine(t *testing.T) {
 	var buf bytes.Buffer
 	if err := Print(&buf, Result{Entries: []Entry{{Name: "a"}, {Name: "b"}}}); err != nil {
@@ -363,15 +337,6 @@ func TestPrintIsOneMarkedLine(t *testing.T) {
 	}
 }
 
-// TestReadRefusesTheForwardingSecret pins the one path denial in this package. The
-// value in config/paper-global.yml is the SAME on every backend in the cluster, so
-// a read here is not a caller reading their own data — it is the Velocity handshake
-// key for everyone else's servers.
-//
-// The equivalent-spelling cases are the substance of this test. A bare string
-// compare against the constant would pass the first case and wave through all the
-// rest, which is exactly the bug this guards; each alternative below names the same
-// file to the kernel, so each must be refused identically.
 func TestReadRefusesTheForwardingSecret(t *testing.T) {
 	root, _ := worldRoot(t)
 	const secret = "secret: aVeryRealForwardingKey"
@@ -421,19 +386,13 @@ func TestReadRefusesTheForwardingSecret(t *testing.T) {
 	}
 }
 
-// TestReadRedactsRconPassword pins spec §286 (RCON 密码绝不下发前端) on the one
-// path that could leak it: server.properties is the file owners edit most, so it
-// is readable — but the RCON password in it is the control plane's command
-// credential for that server, and the editor must not hand it back.
 func TestReadRedactsRconPassword(t *testing.T) {
 	root := t.TempDir()
 	props := "motd=hello\nrcon.password=hunter2\nrcon.port=25575\nenable-rcon=true\n"
 	if err := os.WriteFile(filepath.Join(root, "server.properties"), []byte(props), 0o644); err != nil {
 		t.Fatalf("write server.properties: %v", err)
 	}
-	// A same-named file in a subdirectory must NOT be treated as the real one: the
-	// redaction keys off the cleaned path, and a plugin is free to keep its own
-	// server.properties anywhere in the volume.
+	// A same-named file in a subdirectory is not the real one: redaction keys off the cleaned path, and a plugin may keep its own server.properties anywhere in the volume.
 	if err := os.MkdirAll(filepath.Join(root, "plugins"), 0o755); err != nil {
 		t.Fatalf("mkdir plugins: %v", err)
 	}
@@ -479,10 +438,6 @@ func TestReadRedactsRconPassword(t *testing.T) {
 	}
 }
 
-// TestReadGuardsLinksToGuardedFiles: a plugin runs as the game uid and can leave
-// a link to either guarded file anywhere in the world. Read under the link's
-// name, the forwarding secret is still refused and the RCON password still
-// redacted, whether the link is symbolic, a hard link, or a linked folder.
 func TestReadGuardsLinksToGuardedFiles(t *testing.T) {
 	root, _ := worldRoot(t)
 	const secret = "secret: aVeryRealForwardingKey"
@@ -524,9 +479,6 @@ func TestReadGuardsLinksToGuardedFiles(t *testing.T) {
 	}
 }
 
-// TestWriteIsAtomic is the durability contract: a write that fails part-way leaves
-// the original file byte-for-byte intact and no stray sibling behind, and a write
-// that succeeds keeps the file's mode.
 func TestWriteIsAtomic(t *testing.T) {
 	root, _ := worldRoot(t)
 	props := filepath.Join(root, "server.properties")
@@ -600,8 +552,6 @@ func TestWriteIsAtomic(t *testing.T) {
 	})
 }
 
-// TestWriteDetectsConcurrentChange: a save carrying the hash its read returned
-// lands only while the file is still what was read.
 func TestWriteDetectsConcurrentChange(t *testing.T) {
 	root, _ := worldRoot(t)
 	props := filepath.Join(root, "server.properties")
@@ -653,8 +603,6 @@ func TestWriteDetectsConcurrentChange(t *testing.T) {
 	}
 }
 
-// TestWriteChecksTheContentDigest: a write lands only bytes that hash to the
-// SHA-256 felis-api sent with them; bytes changed on the way touch nothing.
 func TestWriteChecksTheContentDigest(t *testing.T) {
 	root, _ := worldRoot(t)
 	props := filepath.Join(root, "server.properties")

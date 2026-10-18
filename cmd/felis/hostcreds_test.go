@@ -93,8 +93,6 @@ func TestRelayPassword(t *testing.T) {
 	}
 }
 
-// The watchdog mails the most while the cluster is down: the host copy must
-// reach it then, and without one the password the last good run cached stays.
 func TestRefreshSMTPPassword(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -151,9 +149,6 @@ func TestHostRecoveryMailerHostCopy(t *testing.T) {
 	}
 }
 
-// A whole watchdog run with the API server and PostgreSQL both down still
-// takes the relay password from the host copy, so the outage mail can
-// authenticate even when no earlier run cached it.
 func TestWatchdogReadsHostCopyWhileClusterDown(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("KUBECONFIG", filepath.Join(dir, "no-kubeconfig"))

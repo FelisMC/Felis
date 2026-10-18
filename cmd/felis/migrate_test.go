@@ -12,8 +12,6 @@ import (
 	"time"
 )
 
-// openPodStore retries a refused first dial for podDBWindow, saying so on stderr
-// under the calling command's name each time.
 func TestOpenPodStoreRetriesARefusedDial(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

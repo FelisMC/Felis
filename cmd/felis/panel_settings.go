@@ -11,10 +11,7 @@ import (
 	"felis.lolicon.best/internal/config"
 )
 
-// felis panel-settings says which host settings the Owner has saved in the panel, where
-// they win over the host's own: the installer's closing summary asks it before warning
-// that the host has no mail relay or heartbeat. It prints relay=yes|no and
-// heartbeat=yes|no, never a value, and exits 1 when the database cannot be read.
+// Report only whether panel relay/heartbeat overrides exist, never their values.
 func cmdPanelSettings(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("panel-settings", flag.ContinueOnError)
 	fs.SetOutput(stderr)

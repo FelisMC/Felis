@@ -2,24 +2,6 @@ package best.lolicon.felis.velocity;
 
 import java.util.UUID;
 
-/**
- * InviteBookTest is a hermetic, dependency-free check of the {@code /invite} prompt
- * store. It lives outside {@code src/main/java} so it never ships in the plugin jar, and
- * it has no test framework: a failed assertion throws and the process exits non-zero.
- *
- * <p>{@link InviteBook} is the one piece of {@code /invite} that can be checked above
- * "compiles" without a live proxy — everything else is Velocity guards and chat text.
- * What it asserts is what a wrong answer would cost a player: a lapsed prompt must not
- * move anybody, one answer must consume the prompt so a double-click cannot queue two
- * transfers, a second invite must supersede the first rather than leave two live, and
- * lapsed entries for other players must not accumulate forever. The send cooldown is here
- * too — it is the only limit on making a chat card appear on an arbitrary online player,
- * so its boundary is checked rather than eyeballed.
- *
- * <p>Run: {@code javac -d <out> velocity/src/main/java/best/lolicon/felis/velocity/InviteBook.java
- * velocity/test/best/lolicon/felis/velocity/InviteBookTest.java && java -cp <out>
- * best.lolicon.felis.velocity.InviteBookTest}.
- */
 public final class InviteBookTest {
 
     private static final long TTL = 120_000L;
@@ -117,9 +99,7 @@ public final class InviteBookTest {
         assertNull("never invited", book.take(UUID.randomUUID(), 0L));
     }
 
-    // A click off a superseded card is checked against what is pending before it is spent,
-    // so peek must report the live invite without consuming it — spending it there would
-    // leave the player holding a card they can no longer answer. Expiry still applies.
+    // Superseded cards must not consume the current invite; expiration still applies.
     private static void peekLooksWithoutSpending() {
         InviteBook book = new InviteBook(TTL, COOLDOWN);
         UUID invitee = UUID.randomUUID();
@@ -134,9 +114,7 @@ public final class InviteBookTest {
         assertNull("stranger has nothing to peek at", book.peek(UUID.randomUUID(), 0L));
     }
 
-    // The cooldown is the only thing standing between /invite and "make a chat card appear
-    // on any player, repeatedly", so the boundary is asserted rather than assumed: it must
-    // be charged by the send, must actually expire, and must not fire one tick early.
+    // The cooldown is the only limit on making a chat card appear on any player, so its boundary is asserted: it must be charged by the send, expire, and not fire one tick early.
     private static void cooldownStartsOnSendAndRunsOut() {
         InviteBook book = new InviteBook(TTL, COOLDOWN);
         UUID from = UUID.randomUUID();
@@ -153,9 +131,7 @@ public final class InviteBookTest {
         assertEq("re-armed by the next send", COOLDOWN, book.cooldownRemaining(from, COOLDOWN));
     }
 
-    // Deliberately global per sender: the abuse being stopped is one player papering the
-    // whole proxy, which a per-(sender, invitee) key would wave straight through. One
-    // sender's cooldown must not touch anybody else's.
+    // Cooldown spans all recipients for one sender without affecting other senders.
     private static void cooldownIsPerSenderNotPerInvitee() {
         InviteBook book = new InviteBook(TTL, COOLDOWN);
         UUID alex = UUID.randomUUID();
@@ -179,7 +155,6 @@ public final class InviteBookTest {
         assertEq("and it is the live one", COOLDOWN, book.cooldownRemaining(fresh, COOLDOWN));
     }
 
-    // ---- harness ----
 
     private static void assertEq(String what, Object want, Object got) {
         if (want == null ? got != null : !want.equals(got)) {

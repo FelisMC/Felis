@@ -24,9 +24,6 @@ func ownerBoundOf(t *testing.T, w *httptest.ResponseRecorder) bool {
 	return *v.OwnerBound
 }
 
-// TestOwnerStatusReportsAnUnclaimedInstall pins what the sign-in page reads: false before
-// any staff account exists, true once one does, and a player account alone is not an
-// Owner. It answers with local auth still off, which is the state it exists to explain.
 func TestOwnerStatusReportsAnUnclaimedInstall(t *testing.T) {
 	repo := newFakeRepo()
 	api := newTestAPI(repo, newFakeCluster())
@@ -48,8 +45,6 @@ func TestOwnerStatusReportsAnUnclaimedInstall(t *testing.T) {
 	}
 }
 
-// TestOwnerStatusCachesTheBoundAnswer pins that once an Owner is seen the probe stops
-// querying: a store that then fails still gets the cached true.
 func TestOwnerStatusCachesTheBoundAnswer(t *testing.T) {
 	repo := newFakeRepo()
 	repo.staff["boss"] = &StaffUser{ID: "o1", Username: "boss", Role: "owner"}
@@ -63,9 +58,6 @@ func TestOwnerStatusCachesTheBoundAnswer(t *testing.T) {
 	}
 }
 
-// TestOwnerStatusStoreFailure pins that an outage is a 503, never a false "no Owner":
-// the page must fall back to its doors rather than tell a claimed install to run setup.
-// An unbound answer is not cached either, so the next call reads the store again.
 func TestOwnerStatusStoreFailure(t *testing.T) {
 	repo := newFakeRepo()
 	api := newTestAPI(repo, newFakeCluster())

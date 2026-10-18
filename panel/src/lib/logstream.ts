@@ -1,32 +1,11 @@
-// Read-side console core (spec §8 读=pods/log follow). The felis-api endpoint
-// `GET /servers/{name}/console` relays the running pod's log as Server-Sent
-// Events — one `data: <line>` per log line — authenticated by the same
-// Cloudflare Access cookie the rest of api.ts rides on (credentials:"include").
-// A native browser EventSource with { withCredentials: true } therefore attaches
-// directly; no Authorization header is needed (EventSource cannot set one).
-//
-// This module is deliberately framework-agnostic: the EventSource is injected
-// (see EventSourceFactory) so the lifecycle — status transitions, the bounded
-// ring buffer, frame batching, reconnect, teardown — is unit-tested under Node
-// against a fake, not left to a "tsc + build" green that only proves it
-// compiles. The thin React binding lives in useLogStream.ts; the viewport in
-// components/LogConsole.tsx.
+// Use credentialed EventSource for authenticated console SSE; it cannot set Authorization headers.
 
 import { parseFormatting, type Segment } from "./mcformat";
 
 /** LogLevel is the coarse severity used only for tinting a line. */
 export type LogLevel = "error" | "warn" | "info" | "debug" | "plain";
 
-/**
- * StreamStatus models the EventSource lifecycle as the UI cares about it:
- *  - connecting:   the initial dial (or a manual reconnect) is in flight
- *  - open:         the stream is live and delivering lines
- *  - reconnecting: a transient drop; native EventSource is auto-retrying
- *                  (readyState returned to CONNECTING after onerror)
- *  - ended:        a fatal close — a non-200 response (e.g. the 409 a stopped
- *                  server returns, or wrong content-type) makes EventSource go
- *                  CLOSED with no auto-retry; the user may reconnect manually
- */
+// Native transient retries use reconnecting; fatal closure requires manual reconnection.
 export type StreamStatus = "connecting" | "open" | "reconnecting" | "ended";
 
 /** A single rendered log line. seq is a monotonic id for stable React keys. */
@@ -46,20 +25,11 @@ export interface LogStreamSnapshot {
   retryable: boolean;
 }
 
-// EventSource readyState constants. We avoid referencing the DOM EventSource
-// global here so the module loads under Node (tests) where it is undefined.
+// EventSource readyState constants, defined locally so the module loads under Node, where the DOM EventSource is undefined.
 const ES_CLOSED = 2;
 
-/**
- * EventSourceLike is the minimal slice of the DOM EventSource the controller
- * depends on, so a fake can drive it in tests. The handler params are `any`
- * rather than a precise event type on purpose: under strictFunctionTypes a real
- * browser EventSource (handlers typed `(ev: Event)` / `(ev: MessageEvent)`) is
- * only assignable to this shim if the shim's params are at least as wide as the
- * DOM's — `any` is bivariant, so a browser EventSource satisfies it structurally
- * while a stricter test fake (e.g. `(ev: { data: string })`) still implements
- * it. We never inspect the event beyond `.data`, so the looseness costs nothing.
- */
+// Handler parameters must remain compatible with the DOM EventSource interface.
+// Only .data is read, so the looseness costs nothing.
 export interface EventSourceLike {
   onopen: ((ev: any) => void) | null;
   onmessage: ((ev: any) => void) | null;
@@ -95,22 +65,8 @@ export interface LogStreamOptions {
 
 const DEFAULT_MAX_LINES = 2000;
 
-/**
- * classifyLogLine maps a Minecraft log line to a coarse level for tinting.
- *
- * Minecraft and its proxies/loaders (vanilla, Paper, Fabric, Forge, NeoForge,
- * Velocity) all log via log4j2, whose default pattern carries the level as a
- * `thread/LEVEL]` marker, e.g.
- *
- *   [12:30:01] [Server thread/INFO]: Done (5.123s)! For help, type "help"
- *   [12:30:02] [Server thread/WARN]: Can't keep up! Is the server overloaded?
- *   [12:30:03] [Server thread/ERROR]: Encountered an unexpected exception
- *
- * We match that marker (and the bracketed `[LEVEL]` variant) rather than scanning
- * the whole line, so a chat message that merely mentions "error" is not tinted
- * red. Anything unrecognized — stack-trace continuations, plain output — is
- * "plain" and renders in the default colour.
- */
+// Read levels from log4j's thread/LEVEL marker.
+// Do not infer severity from chat text; unrecognized continuations remain plain.
 export function classifyLogLine(line: string): LogLevel {
   const m = line.match(/(?:[/[]|^\[\d{2}:\d{2}:\d{2} )(SEVERE|FATAL|ERROR|WARNING|WARN|INFO|DEBUG|TRACE)\]/);
   if (!m) return "plain";
@@ -129,19 +85,7 @@ export function classifyLogLine(line: string): LogLevel {
   }
 }
 
-/**
- * LogStreamController owns one EventSource and exposes a useSyncExternalStore
- * surface (subscribe + cached getSnapshot). It is the single place that handles:
- *
- *  - status transitions driven by EventSource events,
- *  - the bounded ring buffer (memory stays capped under a long live follow),
- *  - frame batching: a modpack boot logs hundreds of lines a second, so lines
- *    queue up and reach subscribers at most once per frame, one copy of the
- *    buffer per frame instead of one per line,
- *  - reconnect (manual, after a fatal `ended`),
- *  - teardown (close()) — the linchpin that the React effect's cleanup calls so
- *    a StrictMode dev double-mount, or a route change, never leaks a stream.
- */
+// Bound buffering and frame notifications; close streams during effect cleanup to prevent duplicate mounts leaking connections.
 export class LogStreamController {
   private es: EventSourceLike | null = null;
   private lines: LogLine[] = [];
@@ -209,9 +153,7 @@ export class LogStreamController {
     this.es = es;
     es.onopen = () => this.setStatus("open");
     es.onmessage = (ev) => this.pushLine(ev.data);
-    // The server re-checks a running stream's grant (session still live, caller
-    // still owns the server) and sends "revoked" before it closes. That close is
-    // final: an auto-retry would only be refused again.
+    // Treat the server's revoked event as final instead of retrying an expired or unauthorized stream.
     es.addEventListener("revoked", () => {
       if (this.es !== es) return;
       this.disconnect();
@@ -219,10 +161,7 @@ export class LogStreamController {
       this.setStatus("ended");
     });
     es.onerror = () => {
-      // Native EventSource auto-reconnects on a transient drop (readyState
-      // returns to CONNECTING); only a fatal response — non-200 / wrong
-      // content-type, e.g. the 409 a stopped server returns — goes CLOSED, with
-      // no further retry. Distinguish so the UI shows "reconnecting" vs "ended".
+      // Native EventSource retries transient drops but closes permanently on invalid status or content type.
       if (this.es && this.es.readyState === ES_CLOSED) {
         this.setStatus("ended");
       } else {
@@ -257,9 +196,7 @@ export class LogStreamController {
     });
   }
 
-  // flushPending moves the queued lines into the buffer and reports whether
-  // there were any. It also forgets the scheduled frame, whether it is the one
-  // running now or one a status change got ahead of.
+  // Clear any scheduled frame when flushing pending lines, including flushes triggered by status changes.
   private flushPending(): boolean {
     this.cancelFrame?.();
     this.cancelFrame = null;

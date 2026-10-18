@@ -15,30 +15,19 @@ import (
 	"strings"
 )
 
-// An object in the bucket is its file encrypted with AES-256-GCM in fixed
-// segments, so a multi-gigabyte world streams through in constant memory:
-//
-//	magic "FELISOS1" | 7-byte random nonce prefix | segment 0 | segment 1 | ...
-//
-// Segment i seals up to segmentSize bytes under the nonce
-// prefix || uint32(i) || last, where last is 1 on the final segment only. The
-// counter stops segments being reordered or dropped, and the last flag stops
-// the object being cut short at a segment boundary: either change fails to
-// authenticate.
+// Wire format: FELISOS1, 7-byte nonce prefix, then AES-256-GCM segments using prefix||uint32(index)||last to detect reordering and truncation.
 const (
 	magic       = "FELISOS1"
 	prefixSize  = 7
 	segmentSize = 64 << 10
 	headerSize  = len(magic) + prefixSize
-	// KeySize is the key length: AES-256.
+	// AES-256 key length
 	KeySize = 32
 )
 
-// ErrAuth is a segment that does not authenticate: the wrong key, or an object
-// damaged in the bucket or on the way.
+// ErrAuth covers incorrect keys and corrupted encrypted segments.
 var ErrAuth = errors.New("offsite: object does not decrypt with this key (wrong key, or the object is damaged)")
 
-// NewKey returns a fresh random key in the text form ParseKey reads.
 func NewKey() (string, error) {
 	k := make([]byte, KeySize)
 	if _, err := rand.Read(k); err != nil {
@@ -47,7 +36,7 @@ func NewKey() (string, error) {
 	return base64.StdEncoding.EncodeToString(k), nil
 }
 
-// ParseKey decodes a key written by NewKey (standard base64 of 32 bytes).
+// ParseKey accepts standard base64 of exactly 32 bytes.
 func ParseKey(s string) ([]byte, error) {
 	k, err := base64.StdEncoding.DecodeString(strings.TrimSpace(s))
 	if err != nil || len(k) != KeySize {
@@ -56,15 +45,13 @@ func ParseKey(s string) ([]byte, error) {
 	return k, nil
 }
 
-// KeyID names a key without revealing it, so status output and logs can say
-// which key a bucket's objects were written with.
+// KeyID identifies encryption keys in status and logs without revealing key material.
 func KeyID(key []byte) string {
 	h := sha256.Sum256(append([]byte("felis-offsite-key-id\x00"), key...))
 	return hex.EncodeToString(h[:8])
 }
 
-// SealedSize is the size of the object Encrypt makes from n plaintext bytes.
-// Uploads need it up front: an S3 upload of unknown length buffers far more.
+// SealedSize enables known-length S3 uploads that avoid oversized unknown-length buffers.
 func SealedSize(n int64) int64 {
 	segs := (n + segmentSize - 1) / segmentSize
 	if segs == 0 {
@@ -94,7 +81,6 @@ func segmentNonce(prefix []byte, i uint32, last bool) []byte {
 	return n
 }
 
-// Encrypt writes src to dst in the segmented format.
 func Encrypt(dst io.Writer, src io.Reader, key []byte) error {
 	aead, err := newAEAD(key)
 	if err != nil {
@@ -142,10 +128,7 @@ func Encrypt(dst io.Writer, src io.Reader, key []byte) error {
 	}
 }
 
-// Decrypt reverses Encrypt. Nothing unauthenticated is written: each segment
-// is checked before its plaintext reaches dst, and a missing tail is an error.
-// A caller writing to a file still has to discard it on error, since earlier
-// segments were already written.
+// Decrypt authenticates before each segment write; callers must discard partial output on any later segment failure.
 func Decrypt(dst io.Writer, src io.Reader, key []byte) error {
 	aead, err := newAEAD(key)
 	if err != nil {

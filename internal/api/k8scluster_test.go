@@ -54,14 +54,6 @@ func TestPersistentMigrationBlocksWakeAndWorldOperations(t *testing.T) {
 	}
 }
 
-// K8sCluster is documented as integration-tested against a live cluster rather
-// than covered by the hermetic suite, and for most of it that is the right call —
-// merge-patch semantics are not worth faking. This one test departs from it
-// deliberately: "CreateServer forgot to set spec.rcon" is precisely the kind of
-// defect a live-cluster test catches only if someone runs it, and it shipped. It
-// produced servers that reported Running, listed nobody online, and answered the
-// console with 503, and the cause was a struct literal missing a field. A fake
-// client is enough to pin a struct literal.
 func TestCreateServerEnablesRcon(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
@@ -91,25 +83,17 @@ func TestCreateServerEnablesRcon(t *testing.T) {
 		t.Fatal("spec.rcon.enabled is false: the operator will skip the readiness probe and " +
 			"never sample a player count, and every console write will fail with 503")
 	}
-	// The name is the contract with internal/operator.ensureRconSecret, which
-	// provisions the password against exactly this key. A mismatch leaves the pod
-	// stuck on a secretKeyRef that nothing ever creates.
 	if got, want := ms.Spec.Rcon.SecretRef.Name, naming.RconSecretName("survival"); got != want {
 		t.Fatalf("rcon secretRef name = %q, want %q", got, want)
 	}
 	if got, want := ms.Spec.Rcon.SecretRef.Key, naming.RconSecretKey; got != want {
 		t.Fatalf("rcon secretRef key = %q, want %q", got, want)
 	}
-	// felis-api holds secrets:get, not create — it must never try to mint the
-	// password itself, and nothing here should carry one.
 	if ms.Spec.Rcon.Port != 0 {
 		t.Fatalf("rcon port = %d, want 0 so the operator default is the only copy", ms.Spec.Rcon.Port)
 	}
 }
 
-// TestCreateServerDefaultsIdleStop pins the other half of "a server nobody plays
-// on stops itself": the operator only idles out a server whose spec asks for
-// it, so a create that leaves spec.idle empty ships a server that runs forever.
 func TestCreateServerDefaultsIdleStop(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
@@ -133,9 +117,6 @@ func TestCreateServerDefaultsIdleStop(t *testing.T) {
 	}
 }
 
-// TestPatchIdleStopKeepsTheChoiceVisible: turning idle stop off must leave a
-// duration on the spec, because a spec with none at all is what converge fills
-// with the default. Off followed by a converge must stay off.
 func TestPatchIdleStopKeepsTheChoiceVisible(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
@@ -198,9 +179,6 @@ func testServer(name, subdomain string) *v1alpha1.MinecraftServer {
 	}
 }
 
-// The fleet reads come from the informer cache, the subdomain lookup through its
-// index, and everything that reads one server to act on it from the apiserver. The
-// two fakes hold different fleets so each read shows which one it asked.
 func TestFleetReadsComeFromTheServerCache(t *testing.T) {
 	ctx := context.Background()
 	scheme := runtime.NewScheme()
@@ -267,8 +245,6 @@ func TestFleetReadsComeFromTheServerCache(t *testing.T) {
 	}
 }
 
-// Without a cache the subdomain lookup lists the namespace: the apiserver serves no
-// field selector on a CRD, and the fake refuses one it has no index for.
 func TestGetBySubdomainWithoutCache(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
@@ -294,9 +270,6 @@ func TestSubdomainOf(t *testing.T) {
 	}
 }
 
-// The forwarding=legacy label reaches the proxy as legacyForwarding on the server
-// list (#15); any other value, and no label, leaves the server on modern
-// forwarding and keeps the key out of the JSON.
 func TestServerListCarriesLegacyForwarding(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
@@ -330,9 +303,6 @@ func TestServerListCarriesLegacyForwarding(t *testing.T) {
 	}
 }
 
-// A Failed server reaches the proxy and the panel with whether the operator will
-// still retry it: the proxy keeps a waiting player through the restart backoff and
-// lets them go once the retries are spent.
 func TestServerInfoCarriesStartGaveUp(t *testing.T) {
 	failed := func(name string, restarts int32) *v1alpha1.MinecraftServer {
 		ms := testServer(name, name)
@@ -360,8 +330,6 @@ func TestServerInfoCarriesStartGaveUp(t *testing.T) {
 	}
 }
 
-// A system server reaches the panel marked, so the console offers no give-up or
-// delete the API would refuse; every other server leaves the field out.
 func TestServerInfoCarriesReaperExempt(t *testing.T) {
 	lobby := testServer("lobby", "lobby")
 	lobby.Spec.ReaperExempt = true
@@ -381,10 +349,6 @@ func TestServerInfoCarriesReaperExempt(t *testing.T) {
 	}
 }
 
-// An admin edits one resource at a time. The view hands the handler the whole
-// pod block, the handler lays the change over it, and the merge patch keeps
-// everything the admin left alone: memory-only keeps the CPU limit, CPU-only
-// keeps the memory, and an emptied CPU field really drops the limit.
 func TestResourcePatchesKeepWhatTheyLeaveOut(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
@@ -400,7 +364,6 @@ func TestResourcePatchesKeepWhatTheyLeaveOut(t *testing.T) {
 	k := NewK8sCluster(c, "minecraft")
 	ctx := context.Background()
 	str := func(s string) *string { return &s }
-	// edit is one PATCH /servers/survival: read the view, merge, write.
 	edit := func(memory *string, rr *patchResourceRequest) *ServerInfo {
 		t.Helper()
 		info, err := k.GetServer(ctx, "survival")

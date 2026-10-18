@@ -5,16 +5,8 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.LongSupplier;
 
-/**
- * FrameBudget is a per-player token bucket over the {@code felis:control} frames the
- * proxy turns into felis-api calls. A menu page costs one ListRequest plus one
- * StatusQuery per tile, so the bucket holds a couple of full pages; what it stops is
- * a client macro (or a modified lobby) replaying frames in a loop, each of which
- * would otherwise be a blocking internal API request.
- *
- * <p>Refill is continuous at {@code refillPerSecond}; the clock is injected so the
- * arithmetic is testable (FrameBudgetTest).
- */
+// Budget menu frames per player because each may consume a blocking API call.
+// Refill is continuous at refillPerSecond; the clock is injected so the arithmetic is testable (FrameBudgetTest).
 final class FrameBudget {
     private final double capacity;
     private final double refillPerMilli;

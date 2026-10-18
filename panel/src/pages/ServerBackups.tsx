@@ -48,15 +48,7 @@ const BACKUP_PAGE_SIZE = 20;
 
 const CELL = "whitespace-nowrap md:px-4 md:py-3.5";
 
-/** BackupRow is one backup in the table, with its own restore, download and delete
- *  actions. `isLatest` marks the row a restore with no pick recovers: the newest
- *  one that is not corrupt, which is what the backend's LatestBackup selects.
- *  Under the reason it shows what the reaper's read-back found — corrupt (restore
- *  refused), verified, or entries the archive could not hold. `showOwner`
- *  surfaces the former owner (admins list every world's backups; a user only
- *  ever sees their own). `only` says this is the one backup the server has,
- *  which the delete confirm names. `exporting` is the download the page is
- *  preparing, if any. */
+/** `isLatest` marks the backup a restore with no pick recovers: the newest non-corrupt one. */
 function BackupRow({
   b,
   isLatest,
@@ -99,9 +91,6 @@ function BackupRow({
       ? t("reason_scheduled")
       : t("reason_label", { reason: b.reason });
 
-  // Below md the row stops being a table row: the when/why block takes the full
-  // width, size and expiry follow on one line and the restore button sits at the
-  // right, so a phone never has to scroll sideways to reach it.
   return (
     <tr className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 transition-colors hover:bg-muted/30 md:table-row md:p-0">
       <td className="w-full md:w-auto md:px-4 md:py-3 md:whitespace-nowrap">
@@ -186,9 +175,7 @@ function BackupRow({
   );
 }
 
-/** restoreMayRead mirrors the backend's delete gate: a restore Job still running on
- *  the server (which archive it extracts is not on the Job), or a safety snapshot
- *  whose restore of this backup has yet to start, may be reading the archive. */
+/** Mirrors the backend delete gate: a running restore Job, or a safety snapshot whose restore has not started, may be reading the archive. */
 function restoreMayRead(jobs: ServerJob[], id: string): boolean {
   return jobs.some(
     (j) =>
@@ -197,13 +184,9 @@ function restoreMayRead(jobs: ServerJob[], id: string): boolean {
   );
 }
 
-/** ExportTarget is what a download copies: the server's current world, or one of
- *  its backups. */
 type ExportTarget = { kind: "world" } | { kind: "backup"; id: string };
 
-/** DownloadBackupButton asks for a copy of one backup. The page prepares the
- *  download (one at a time, as felis-api allows one per person), so the button
- *  spins while it is this backup's and waits while it is another's. */
+/** The page prepares one download at a time (felis-api allows one per person). */
 function DownloadBackupButton({
   id,
   exporting,
@@ -233,13 +216,7 @@ function DownloadBackupButton({
   );
 }
 
-/** DeleteBackupButton deletes one backup behind a confirm that says what goes: the
- *  row leaves the list at once and can no longer be restored, and the archive and
- *  its off-site copy follow at the next cleanup and sync. A reclaimed or released
- *  world's archive may be the only copy of that world, and the server's only backup
- *  is the last way back, so the dialog says either before it asks. While a restore
- *  may be reading the archive the button waits, since the API would refuse (409);
- *  a backup someone else deleted meanwhile just refreshes the list. */
+/** Waits while a restore may be reading the archive (the API would refuse with 409). */
 function DeleteBackupButton({
   backup,
   now,
@@ -319,10 +296,6 @@ function DeleteBackupButton({
   );
 }
 
-/** IntegrityNote is what the reaper's read-back says about one archive: corrupt
- *  (it no longer matches what was written, so it cannot be restored), when it
- *  was last read back intact, and how many entries of the world it could not
- *  hold. A backup not read back yet shows nothing, as before. */
 function IntegrityNote({ b, now, locale }: { b: BackupView; now: number; locale: string }) {
   const { t } = useTranslation("backups");
   const skipped = b.skipped_entries ?? 0;
@@ -361,9 +334,7 @@ function IntegrityNote({ b, now, locale }: { b: BackupView; now: number; locale:
   );
 }
 
-/** JobStateBadge renders one async Job's state (backup/restore Job history). The
- *  state vocabulary is the API's ("running" | "succeeded" | "failed"); anything
- *  unknown is shown verbatim rather than hidden. */
+/** States are "running" | "succeeded" | "failed"; an unknown state is shown verbatim. */
 function JobStateBadge({ state }: { state: string }) {
   const { t } = useTranslation("backups");
   if (state === "running") {
@@ -393,9 +364,7 @@ function JobStateBadge({ state }: { state: string }) {
   return <span className="text-[10px] font-medium text-muted-foreground">{state}</span>;
 }
 
-/** ChainNote says what became of the restore behind a safety snapshot (a backup
- *  job carrying then_restore). A snapshot that failed already reads as a failed
- *  job with its error, so this only covers the chain itself. */
+/** Outcome of the restore chained behind a safety snapshot (a backup job carrying then_restore). */
 function ChainNote({ job }: { job: ServerJob }) {
   const { t } = useTranslation("backups");
   if (job.state === "failed") return null;
@@ -410,8 +379,6 @@ function ChainNote({ job }: { job: ServerJob }) {
     return <span className="text-xs text-muted-foreground">{t("chain_started")}</span>;
   }
   if (job.then_restore === "abandoned") {
-    // Known codes get their own wording; one this panel predates falls back to
-    // the backend's English.
     const known = ["snapshot_failed", "not_configured", "server_gone", "server_started", "restore_busy"];
     const reason = job.then_restore_reason;
     const text =
@@ -432,31 +399,9 @@ function ChainNote({ job }: { job: ServerJob }) {
   return null;
 }
 
-/** RestoreControls is the restore button on each backup row that can still be
- *  restored (the row renders a note in its place for a corrupt or expired one), and
- *  any of them may be picked, not only the newest. Restore overwrites the world, so
- *  the button opens a confirm dialog that states the full cost up front: the server is
- *  stopped (online players drop) and the current world is overwritten by THIS exact
- *  backup. It offers a safety snapshot, on by default: the backend first backs up the
- *  world as it is and restores only once that succeeded, which makes a wrong pick
- *  undoable. Turning it off brings back the irreversible wording. On confirm it runs
- *  the whole chain itself: stop → wait for Stopped → restore.
- *  The backend refuses a restore unless the world volume is free (409 not_stopped), so
- *  stopping here means the user never has to detour to the console and come back. There
- *  is deliberately no type-the-name step: the friction that matters is owning the
- *  server plus consciously confirming a player-kicking, world-overwriting act.
- *
- *  The stop-and-wait is a bounded async loop (not an effect): after api.stop it polls
- *  status until Stopped is observed, giving up after ~2 min with a retryable timeout — so
- *  restore only fires once the volume is provably free. While the chain runs the dialog
- *  is locked (no ✕, no dismiss) so a mid-flight close can't strand it. A 202 is
- *  terminal: the dialog closes and the row shows a "restore started" note in place of
- *  the button, so a second restore Job can't race the first. */
+/** Restore confirm: stops the server, waits for Stopped, then restores (the backend refuses with 409 not_stopped otherwise). */
 const POLL_MS = 2500;
-// ~2 min before we stop waiting for Stopped: with players online the operator warns
-// them in game and holds the stop 30 s, then the pre-stop save and the pod's own
-// shutdown save follow.
-const MAX_POLLS = 48;
+const MAX_POLLS = 48; // ~2 min: the operator holds a stop 30 s with players online, then saves twice
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function RestoreControls({
@@ -476,12 +421,10 @@ function RestoreControls({
 }) {
   const { t } = useTranslation("backups");
   const [open, setOpen] = useState(false);
-  // submitting flips synchronously on click (before the first await) so a double-click
-  // on this destructive confirm can't launch two concurrent restore chains; step only
-  // drives which progress label shows once the chain reaches a concrete stage.
+  // submitting is set before the first await so a double-click cannot launch two restore chains
   const [submitting, setSubmitting] = useState(false);
   const [step, setStep] = useState<"stopping" | "restoring" | null>(null);
-  // restore enqueued — terminal; "snapshot" when the backend backs the world up first
+  // set once the restore is enqueued; "snapshot" when a safety snapshot runs first
   const [done, setDone] = useState<"snapshot" | "direct" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [safety, setSafety] = useState(true);
@@ -495,8 +438,7 @@ function RestoreControls({
     );
   }
 
-  // Poll until the world volume is provably free. Returns true once Stopped is
-  // observed, false after the ceiling — restore MUST NOT proceed on a false.
+  // Returns false after MAX_POLLS; restore must not proceed then.
   async function waitForStopped(): Promise<boolean> {
     for (let i = 0; i < MAX_POLLS; i++) {
       await sleep(POLL_MS);
@@ -506,10 +448,9 @@ function RestoreControls({
     return false;
   }
 
-  // The whole irreversible chain behind the one confirm. Re-checks live status first
-  // (a public server may have autowoken), stops + waits only if needed, then restores.
+  // Re-checks live status first: a public server may have auto-woken.
   async function confirmRestore() {
-    setSubmitting(true); // first + synchronous: disables the confirm before any await
+    setSubmitting(true);
     setError(null);
     try {
       const s0 = await api.status(serverName);
@@ -530,7 +471,7 @@ function RestoreControls({
     } finally {
       setSubmitting(false);
       setStep(null);
-      onReloadStatus(); // resync the header phase badge after stop/restore
+      onReloadStatus();
     }
   }
 
@@ -601,8 +542,8 @@ function RestoreControls({
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        if (submitting) return; // locked while the stop→restore chain runs
-        if (next) setError(null); // fresh each open
+        if (submitting) return;
+        if (next) setError(null);
         setOpen(next);
       }}
     >
@@ -612,21 +553,12 @@ function RestoreControls({
   );
 }
 
-/** ServerBackups is the per-server backup surface (/servers/:name/backups): view the
- *  world archives kept for this server and (B2) roll the world back to any of them
- *  that has not expired, or download one, or the stopped world itself, as a
- *  .tar.gz. It owns its own gating — ownership from /me/servers, since GET status
- *  never carries `owned` — but deliberately does NOT gate on readiness the way
- *  ServerPlayers does: backups are read from Postgres, not RCON, and a restore in
- *  fact requires the server to be STOPPED, so this page must work while it is asleep. */
+/** Does not gate on readiness: backups are read from Postgres, and a restore requires a stopped server. */
 export function ServerBackups() {
   const { name = "" } = useParams();
   const { t, i18n } = useTranslation("backups");
   const { isAdmin, loading: tierLoading } = useTier();
   const statusQ = useAsync(() => api.status(name), [name]);
-  // "Back up now" and the badge follow the server, so a wake from the lobby or an
-  // idle stop shows here without a reload: reread fast while it is on its way
-  // somewhere, slow while nothing is due.
   const moving =
     !!statusQ.data &&
     (statusQ.data.phase === "Starting" ||
@@ -638,7 +570,6 @@ export function ServerBackups() {
     () => (isAdmin ? Promise.resolve([]) : api.myServers()),
     [isAdmin, name],
   );
-  // Only this server's backups, a page at a time; the API sorts them newest first.
   const [page, setPage] = useState(1);
   useEffect(() => setPage(1), [name]);
   const backupsQ = useAsync(
@@ -646,25 +577,17 @@ export function ServerBackups() {
     [name, page],
     { keepPrevious: true },
   );
-  // Deleting the last row of a later page leaves it empty: step back, one settled
-  // read at a time, to a page that still has backups.
+  // Deleting the last row of a later page steps back to a page that still has backups.
   const pageEmpty = !backupsQ.loading && !!backupsQ.data && backupsQ.data.backups.length === 0 && page > 1;
   useEffect(() => {
     if (pageEmpty) setPage((p) => Math.max(1, p - 1));
   }, [pageEmpty]);
 
-  // Ownership resolves from /me/servers for a non-admin (status carries no `owned`).
-  // While it is pending show the header with a spinner rather than flashing the list
-  // at someone who may not own it; if that read itself failed, break to a retry so a
-  // real owner never fails closed to NotYours on a transient blip.
+  // Ownership comes from /me/servers (status carries no `owned`); a failed read shows a retry, not NotYours.
   const pending = ownershipPending(tierLoading, isAdmin, mineQ.data, mineQ.error);
   const owned = canManage(isAdmin, mineQ.data, name);
 
-  // The async world-operation history (the backup/restore Jobs behind every 202).
-  // Read only once the viewer is resolved as owner-or-admin (the route 403s
-  // otherwise); while anything is still running — or a safety snapshot still has
-  // its restore to start — it re-reads on an interval so the enqueue converges to
-  // succeeded/failed here instead of only in kubectl.
+  // Job history is read only for an owner or admin (the route 403s otherwise).
   const jobsQ = useAsync(
     () => (owned ? api.serverJobs(name) : Promise.resolve([])),
     [name, owned],
@@ -674,8 +597,6 @@ export function ServerBackups() {
     const id = setInterval(jobsQ.reload, 5000);
     return () => clearInterval(id);
   }, [jobsQ.data, jobsQ.reload]);
-  // A backup job that stops running has just added (or failed to add) a row, so
-  // the list is re-read then rather than only on the next visit.
   const runningBackups = useRef<Set<string>>(new Set());
   const reloadBackups = backupsQ.reload;
   useEffect(() => {
@@ -690,9 +611,7 @@ export function ServerBackups() {
   const [backingUp, setBackingUp] = useState(false);
   const [backupMsg, setBackupMsg] = useState<{ kind: "success" | "error"; text: string } | null>(null);
 
-  // Manual backup (POST /backup): a stopped world is archived as it is, a running one
-  // live (its saving pauses while the world is copied). One starting or stopping waits,
-  // so the button enables on Stopped or a ready Running, and a raced 409 says why.
+  // A stopped world is archived as is, a running one live; a starting or stopping server waits.
   async function handleBackupNow() {
     if (backingUp) return;
     setBackingUp(true);
@@ -711,15 +630,12 @@ export function ServerBackups() {
     }
   }
 
-  // A deleted backup (or one already gone when asked) leaves the list, reread now.
   function handleDeleted(gone: boolean) {
     setBackupMsg({ kind: "success", text: t(gone ? "delete_gone" : "deleted") });
     backupsQ.reload();
   }
 
-  // The download being prepared. The ref guards a second click landing before
-  // the render that disables the buttons; alive stops the wait once the page
-  // is left (the export is then abandoned: nobody fetches it).
+  // The ref guards a second click landing before the render that disables the buttons.
   const [exporting, setExporting] = useState<ExportTarget | null>(null);
   const exportRun = useRef(false);
   const alive = useRef(true);
@@ -730,10 +646,7 @@ export function ServerBackups() {
     };
   }, []);
 
-  // A download is prepared before it starts: the POST answers a one-time ticket,
-  // an export Job hands the archive to felis-api, and awaitExport reads the
-  // ticket until felis-api holds it. Only then does the browser fetch it, as a
-  // link, so any size of world streams straight to disk.
+  // The POST answers a one-time ticket; awaitExport polls until felis-api holds the archive, then the browser fetches it as a link.
   async function runExport(target: ExportTarget) {
     if (exportRun.current) return;
     exportRun.current = true;
@@ -742,7 +655,7 @@ export function ServerBackups() {
     try {
       const tk =
         target.kind === "world" ? await api.startWorldExport(name) : await api.startBackupExport(name, target.id);
-      jobsQ.reload(); // a world export now holds the world
+      jobsQ.reload();
       const s = await awaitExport(tk.ticket, () => alive.current);
       if (s === null) return;
       if (s.state === "failed") {
@@ -797,20 +710,12 @@ export function ServerBackups() {
 
   const now = Date.now();
   const locale = i18n.language;
-  // This page of the server's backups. Already created_at-descending from the API,
-  // but re-sorted defensively; the newest backup that is not corrupt is the one a
-  // restore with no pick recovers, and it sits on the first page.
   const all = [...(backupsQ.data?.backups ?? [])]
     .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
   const total = backupsQ.data?.total ?? 0;
   const latestID = page === 1 ? all.find((b) => !b.corrupt)?.id : undefined;
-  // A server just woken still reads Stopped until its pod starts, so the gate is
-  // where it is heading. A backup, restore or world export already under way
-  // holds the world (the API would answer 409), so the buttons wait for it too;
-  // a backup download only reads the backup store and holds nothing.
+  // Gate by desired state as well as phase and world holders; backup downloads do not hold the world.
   const phase = shownPhase(statusQ.data);
-  // A backup takes a stopped world as it is and a ready running one live; a server on
-  // its way up or down waits.
   const backupReady = phase === "Stopped" || (phase === "Running" && !!statusQ.data?.ready);
   const worldBusy = (jobsQ.data ?? []).some(
     (j) => (j.state === "running" && j.kind !== "export_backup") || j.then_restore === "pending",
@@ -962,8 +867,7 @@ export function ServerBackups() {
             </>
           )}
 
-          {/* Async world-operation history: every backup/restore/export 202 lands here,
-              so a Job that later failed stays visible (with its message) without kubectl. */}
+          {/* Job history: failed jobs stay visible with their message. */}
           {jobsQ.error ? (
             <ErrorState error={jobsQ.error} onRetry={jobsQ.reload} />
           ) : (

@@ -1,31 +1,4 @@
-// Package dbbackup takes and restores logical backups of the control-plane
-// PostgreSQL: users, passkeys, account links, server ownership, quotas, audit
-// logs and the world_backups index that maps a world archive back to its owner.
-// World archives live on their own volume (internal/archive); without this
-// database they are files nobody can be matched to.
-//
-// A backup is one bundle, felis-db-<UTC stamp>-<label>.tar, holding
-//
-//	MANIFEST.json                   what is in the bundle and each member's sha256
-//	db.dump                         pg_dump --format=custom of the felis database
-//	state/etc/felis/...             the host state a rebuild needs: secrets.env
-//	                                (the DB password, session and forwarding
-//	                                secrets, registry tokens), felis.{host,pod}.toml,
-//	                                the panel TLS pair
-//	k8s/minecraftservers.json       the MinecraftServer objects, when the cluster
-//	                                answered (best effort)
-//
-// plus a felis-db-....tar.sha256 sidecar in sha256sum format, so a copy shipped
-// off the host can be checked with `sha256sum -c` before anyone relies on it.
-//
-// Bundles are written as a hidden .partial and renamed into place after an
-// fsync, so a crash or a full disk leaves either a complete bundle or none.
-// The dump is proven readable (pg_restore --list) before the bundle counts.
-//
-// Restore is all-or-nothing: the dump is replayed through psql in a single
-// transaction that first drops everything the felis role owns, so a failure
-// anywhere leaves the database exactly as it was, and objects a newer schema
-// added do not survive to collide with the next `felis migrate up`.
+// Package dbbackup takes and restores logical backups of the control-plane PostgreSQL as tar bundles.
 package dbbackup
 
 import (
@@ -51,21 +24,14 @@ import (
 )
 
 const (
-	// DefaultDir is where the host keeps its bundles. It is deliberately off the
-	// k3s storage tree: `rm -rf /var/lib/rancher` (a k3s reinstall) must not take
-	// the database backups with it.
-	DefaultDir = "/var/lib/felis/db-backups"
-	// DefaultStateDir is the host state directory bootstrap writes.
+	DefaultDir      = "/var/lib/felis/db-backups" // kept off the k3s storage tree so a k3s reinstall does not delete it
 	DefaultStateDir = "/etc/felis"
 
 	LabelDaily      = "daily"
 	LabelPreMigrate = "pre-migrate"
 	LabelPreRestore = "pre-restore"
 	LabelManual     = "manual"
-	// LabelOffsite is the bundle an off-site copy takes after copying world
-	// archives (internal/offsite), so the newest bundle off the machine lists
-	// them.
-	LabelOffsite = "offsite"
+	LabelOffsite    = "offsite"
 
 	manifestEntry = "MANIFEST.json"
 	dumpEntry     = "db.dump"
@@ -79,28 +45,17 @@ const (
 	formatV1     = 1
 )
 
-// stateSkip are files in the state directory a bundle leaves out:
-// bootstrap.done marks THIS host as installed, and carrying it to a fresh host
-// would make the installer treat a first install as an upgrade.
+// stateSkip lists state files left out of a bundle; bootstrap.done would make a fresh host look installed.
 var stateSkip = map[string]bool{"bootstrap.done": true}
 
 var labelRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 
-// Tools names the PostgreSQL client binaries. Empty fields take the names on
-// PATH; tests point them at fakes.
+// Tools names the PostgreSQL client binaries; empty fields use the names on PATH.
 type Tools struct {
 	PGDump, PGRestore, PSQL string
-	// Exec, when set, is the argv prefix every tool runs under. The installer's
-	// database is a k3s Deployment and the host carries no PostgreSQL client, so
-	// the tools run in the database's own container:
-	// `k3s kubectl exec -i -n felis deploy/felis-postgres -c postgres --`.
-	// kubectl exec carries neither the environment nor files across: the dump
-	// comes back on stdout and archives go in on stdin, and the tools connect as
-	// Conn instead of the database URL.
+	// Exec is the argv prefix every tool runs under (kubectl exec into the database container); dumps and archives travel over stdout/stdin.
 	Exec []string
-	// Conn is the libpq connection string the tools use under Exec: the
-	// container's own socket, which trusts local connections, so no password
-	// has to cross into it.
+	// Conn is the libpq connection string used under Exec; the container socket trusts local connections.
 	Conn string
 }
 
@@ -115,55 +70,34 @@ func orDefault(s, d string) string {
 	return s
 }
 
-// BackupOptions configures one backup.
 type BackupOptions struct {
 	DatabaseURL string
-	Dir         string // bundle directory; created 0700
+	Dir         string // Created with mode 0700.
 	Label       string // daily | pre-migrate | pre-restore | manual | any [a-z0-9-]
-	// Keep is how many bundles of this label survive the post-backup prune;
-	// zero or less prunes nothing.
-	Keep     int
-	StateDir string // host state to bundle; "" bundles none
-	Version  string // felis build stamp, recorded in the manifest
-	Tools    Tools
-	// ExportServers returns the cluster's MinecraftServer objects as JSON.
-	// When it fails the bundle is still written, with the reason in its
-	// manifest and in the Record, and Backup returns its path with
-	// ErrServersMissing: the database is what must not be lost, and a nightly
-	// run cannot hang on a cluster that happens to be down. A restore from
-	// such a bundle brings back no servers, so the caller has to make that
-	// heard.
+	Keep        int    // bundles of this label kept after the prune; <= 0 prunes nothing
+	StateDir    string // host state to bundle; "" bundles none
+	Version     string
+	Tools       Tools
+	// ExportServers failure still writes a bundle and returns its path with ErrServersMissing.
 	ExportServers func(ctx context.Context) ([]byte, error)
-	// RequireServers makes an ExportServers failure fail the backup before a
-	// bundle is written, for a caller that can simply try again later.
+	// RequireServers fails the backup before writing a bundle when ExportServers fails.
 	RequireServers bool
-	// MetricsFile, when set, is rewritten after a successful backup with
-	// node-exporter textfile metrics (felis_db_backup_last_success_timestamp_seconds
-	// and felis_db_backup_last_size_bytes), which FelisDBBackupStale alerts on.
+	// MetricsFile, when set, is rewritten after a successful backup with node-exporter textfile metrics.
 	MetricsFile string
-	// Record stores a summary of the backup in platform_settings under
-	// StatusKey, which the admin panel reads to show how fresh the newest
-	// backup is. A failure to record is logged, not fatal.
+	// Record stores a summary under StatusKey in platform_settings; a failure to record is logged, not fatal.
 	Record bool
 	Now    func() time.Time
 	Log    io.Writer
 }
 
-// StatusKey is the platform_settings key Record writes; internal/api reads it.
 const StatusKey = "db_backup_last"
 
-// ErrServersMissing comes back from Backup, together with the path of the
-// bundle it wrote, when the bundle holds the database but ExportServers
-// failed every try: a restore from it brings back no servers.
+// ErrServersMissing is returned with the bundle path when ExportServers failed every try.
 var ErrServersMissing = errors.New("the bundle holds the database but not the MinecraftServer objects")
 
-// StaleAfter is how old the newest daily backup may get before it counts as
-// missed: a day plus the timer's randomized delay and a slow dump. `felis db
-// check`, the watchdog, the admin panel and the FelisDBBackupStale alert
-// (deploy/alerts) share it.
+// StaleAfter is the age after which the newest daily backup counts as missed; keep in sync with the FelisDBBackupStale alert.
 const StaleAfter = 26 * time.Hour
 
-// Status is the value stored under StatusKey.
 type Status struct {
 	At            time.Time `json:"at"`
 	Name          string    `json:"name"`
@@ -172,17 +106,10 @@ type Status struct {
 	FelisVersion  string    `json:"felis_version,omitempty"`
 	SchemaVersion int       `json:"schema_version,omitempty"`
 	Dir           string    `json:"dir"`
-	// ServersError is why the bundle lacks the MinecraftServer objects, when
-	// it does.
-	ServersError string `json:"servers_error,omitempty"`
-	// DailyAt is when the newest daily bundle in Dir was written, as of this
-	// record: the timer's own freshness, which a manual, pre-migrate or
-	// off-site bundle taken since leaves as it was. Zero when Dir held none,
-	// and in records written before the field existed.
-	DailyAt time.Time `json:"daily_at,omitzero"`
+	ServersError  string    `json:"servers_error,omitempty"`
+	DailyAt       time.Time `json:"daily_at,omitzero"` // newest daily bundle in Dir; zero when none
 }
 
-// Manifest describes a bundle.
 type Manifest struct {
 	Format        int             `json:"format"`
 	CreatedAt     time.Time       `json:"created_at"`
@@ -192,27 +119,18 @@ type Manifest struct {
 	SchemaVersion int             `json:"schema_version,omitempty"`
 	PGDumpVersion string          `json:"pg_dump_version,omitempty"`
 	Files         []ManifestEntry `json:"files"`
-	// Counts is nil in bundles taken before it was recorded, or when the
-	// database did not answer the count.
-	Counts *Counts `json:"counts,omitempty"`
-	// ServersError is why k8s/minecraftservers.json is absent, when it is.
-	ServersError string `json:"servers_error,omitempty"`
+	Counts        *Counts         `json:"counts,omitempty"` // nil when not recorded
+	ServersError  string          `json:"servers_error,omitempty"`
 }
 
-// Counts is how much the database held when the bundle was taken: accounts
-// and servers, deleted ones left out.
 type Counts struct {
 	Users   int `json:"users"`
 	Servers int `json:"servers"`
 }
 
-// Fresh is whether the database looks like a new install's: no servers and
-// at most the owner the first-run setup creates. A host rebuilt after a loss
-// backs up (and syncs off-site) such a database before anyone restores onto
-// it, so a restore that picks bundles by date alone would pick it.
+// Fresh reports whether the database looks like a new install: no servers and at most the first-run owner.
 func (c *Counts) Fresh() bool { return c != nil && c.Servers == 0 && c.Users <= 1 }
 
-// String is what the CLI prints for the counts.
 func (c *Counts) String() string {
 	if c == nil {
 		return "not recorded"
@@ -226,7 +144,6 @@ func (c *Counts) String() string {
 	return count(c.Users, "account") + ", " + count(c.Servers, "server")
 }
 
-// DatabaseInfo is the connection a bundle was taken from, password excluded.
 type DatabaseInfo struct {
 	Host string `json:"host"`
 	Port string `json:"port,omitempty"`
@@ -234,7 +151,6 @@ type DatabaseInfo struct {
 	User string `json:"user"`
 }
 
-// ManifestEntry is one bundle member.
 type ManifestEntry struct {
 	Name   string `json:"name"`
 	Size   int64  `json:"size"`
@@ -243,7 +159,6 @@ type ManifestEntry struct {
 	Link   string `json:"link,omitempty"`
 }
 
-// Bundle is one bundle on disk.
 type Bundle struct {
 	Name    string
 	Path    string
@@ -252,9 +167,7 @@ type Bundle struct {
 	Size    int64
 }
 
-// conn splits a postgres:// URL into the URL libpq should see (password
-// removed) and the password, which goes to the child through PGPASSWORD so it
-// never shows up in ps.
+// conn is a postgres:// URL split into a password-free URL and the password, which goes to the child via PGPASSWORD to stay out of ps.
 type conn struct {
 	uri      string
 	password string
@@ -284,18 +197,15 @@ func (c conn) env() []string {
 	if c.password != "" {
 		env = append(env, "PGPASSWORD="+c.password)
 	}
-	// Never prompt: a timer-driven run with a wrong password must fail, not hang.
+	// A wrong password must fail, not prompt and hang.
 	return append(env, "PGCONNECT_TIMEOUT=15")
 }
 
-// toolCmd is one run of a client tool, named for errors by the tool itself:
-// under Tools.Exec the process is kubectl, which says nothing.
 type toolCmd struct {
 	*exec.Cmd
 	name string
 }
 
-// command runs tool with args, directly or under t.Exec.
 func (t Tools) command(ctx context.Context, c conn, tool string, args ...string) toolCmd {
 	if len(t.Exec) > 0 {
 		argv := append(append(append([]string{}, t.Exec[1:]...), tool), args...)
@@ -306,7 +216,6 @@ func (t Tools) command(ctx context.Context, c conn, tool string, args ...string)
 	return toolCmd{cmd, filepath.Base(tool)}
 }
 
-// dsn is what the tools pass as --dbname / -d.
 func (t Tools) dsn(c conn) string {
 	if len(t.Exec) > 0 {
 		return t.Conn
@@ -314,7 +223,6 @@ func (t Tools) dsn(c conn) string {
 	return c.uri
 }
 
-// run executes cmd and folds its stderr into the error.
 func run(cmd toolCmd) ([]byte, error) {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -329,20 +237,13 @@ func run(cmd toolCmd) ([]byte, error) {
 	return out, nil
 }
 
-// foreignObjectRe finds the object pg_dump could not read, and its kind.
 var foreignObjectRe = regexp.MustCompile(`permission denied for (table|sequence|schema|view|materialized view) ([^\s]+)`)
 
-// dumpHint explains the one pg_dump failure an operator causes without noticing:
-// an object created in the felis database by another role (typically postgres,
-// from a manual psql session). The dump runs as the felis role and must read
-// everything; leaving the object out would make the bundle an incomplete restore.
 func dumpHint(err error, db DatabaseInfo, t Tools) string {
 	m := foreignObjectRe.FindStringSubmatch(err.Error())
 	if m == nil {
 		return ""
 	}
-	// The superuser's psql: the host's postgres account, or the image's
-	// postgres role over the container's socket.
 	su := "sudo -u postgres psql"
 	if len(t.Exec) > 0 {
 		su = "sudo " + strings.Join(t.Exec, " ") + " psql -U postgres"
@@ -353,12 +254,10 @@ func dumpHint(err error, db DatabaseInfo, t Tools) string {
 		"  or drop it if it is a leftover.", strings.ToLower(kind), name, db.User, su, db.Name, kind, name, db.User)
 }
 
-// BundleName is the file name of a bundle taken at t with label.
 func BundleName(t time.Time, label string) string {
 	return bundlePrefix + t.UTC().Format(stampLayout) + "-" + label + bundleExt
 }
 
-// ParseBundleName reverses BundleName: the stamp and label of a bundle file name.
 func ParseBundleName(name string) (time.Time, string, bool) {
 	if !strings.HasPrefix(name, bundlePrefix) || !strings.HasSuffix(name, bundleExt) {
 		return time.Time{}, "", false
@@ -375,7 +274,6 @@ func ParseBundleName(name string) (time.Time, string, bool) {
 	return t, label, true
 }
 
-// List returns the bundles in dir, newest first. A missing dir is no bundles.
 func List(dir string) ([]Bundle, error) {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
@@ -408,8 +306,7 @@ func List(dir string) ([]Bundle, error) {
 	return out, nil
 }
 
-// Newest is the first bundle of label in bundles, which List orders newest
-// first.
+// Newest returns the first bundle of label; bundles must be ordered newest first, as List returns them.
 func Newest(bundles []Bundle, label string) (Bundle, bool) {
 	for _, b := range bundles {
 		if b.Label == label {
@@ -419,8 +316,7 @@ func Newest(bundles []Bundle, label string) (Bundle, bool) {
 	return Bundle{}, false
 }
 
-// Prune deletes all but the newest keep bundles of label (and their sidecars)
-// and returns what it removed. keep <= 0 removes nothing.
+// Prune deletes all but the newest keep bundles of label, with their sidecars.
 func Prune(dir, label string, keep int) ([]string, error) {
 	if keep <= 0 {
 		return nil, nil
@@ -447,11 +343,9 @@ func Prune(dir, label string, keep int) ([]string, error) {
 	return removed, nil
 }
 
-// ErrNewestBundle refuses deleting the newest bundle: it is the latest restore point.
 var ErrNewestBundle = errors.New("the newest database backup is the latest restore point and cannot be deleted; take a new one first")
 
-// Delete removes the bundle named name from dir, with its checksum sidecar. It takes
-// the directory lock, so it never races a writer, and refuses the newest bundle.
+// Delete removes a bundle and its sidecar under the directory lock; it refuses the newest bundle.
 func Delete(dir, name string) error {
 	if _, _, ok := ParseBundleName(name); !ok || filepath.Base(name) != name {
 		return fmt.Errorf("%q is not a database backup name", name)
@@ -481,8 +375,6 @@ func Delete(dir, name string) error {
 	return fmt.Errorf("no database backup %s in %s", name, dir)
 }
 
-// lockDir serializes bundle writers (the nightly timer, a pre-migrate snapshot
-// and an operator's manual run) on dir/.lock.
 func lockDir(dir string) (func(), error) {
 	f, err := os.OpenFile(filepath.Join(dir, ".lock"), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
@@ -498,8 +390,7 @@ func lockDir(dir string) (func(), error) {
 	}, nil
 }
 
-// removeStalePartials drops leftovers of a writer that died mid-bundle. Only
-// called under the directory lock, so no live writer owns them.
+// removeStalePartials drops leftovers of a writer that died mid-bundle; call it under the directory lock.
 func removeStalePartials(dir string) {
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
@@ -509,9 +400,7 @@ func removeStalePartials(dir string) {
 	}
 }
 
-// Backup writes one bundle and returns its path. With ErrServersMissing the
-// bundle is written and holds the database, but not the MinecraftServer
-// objects.
+// Backup writes one bundle and returns its path; with ErrServersMissing the bundle lacks the MinecraftServer objects.
 func Backup(ctx context.Context, o BackupOptions) (string, error) {
 	if !labelRe.MatchString(o.Label) {
 		return "", fmt.Errorf("invalid label %q (want [a-z0-9-], e.g. daily or manual)", o.Label)
@@ -541,10 +430,7 @@ func Backup(ctx context.Context, o BackupOptions) (string, error) {
 	defer unlock()
 	removeStalePartials(o.Dir)
 
-	// Names have one-second resolution. A second bundle of the same label within
-	// that second (a restore retried right after a failed one takes two
-	// pre-restore snapshots) moves to the next free second; the lock makes the
-	// probe race-free.
+	// Names have one-second resolution; a second bundle of the same label within that second moves to the next free one.
 	created := now().UTC().Truncate(time.Second)
 	name := BundleName(created, o.Label)
 	for i := 0; ; i++ {
@@ -566,8 +452,6 @@ func Backup(ctx context.Context, o BackupOptions) (string, error) {
 	if err := dumpTo(ctx, c, o.Tools, dump); err != nil {
 		return "", err
 	}
-	// A dump pg_restore cannot read is not a backup; find out now, not on the
-	// day it is needed.
 	if err := listArchive(ctx, c, o.Tools, dump); err != nil {
 		return "", fmt.Errorf("the dump does not read back: %w", err)
 	}
@@ -639,9 +523,7 @@ func Backup(ctx context.Context, o BackupOptions) (string, error) {
 	return final, nil
 }
 
-// dumpTo writes pg_dump's custom-format archive of the database to path,
-// created 0600. The archive travels on stdout, the one channel that reaches
-// the host from a tool running under Tools.Exec.
+// dumpTo writes pg_dump's custom-format archive to path (0600) via stdout, the only channel out of Tools.Exec.
 func dumpTo(ctx context.Context, c conn, t Tools, path string) error {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
@@ -664,7 +546,6 @@ func dumpTo(ctx context.Context, c conn, t Tools, path string) error {
 	return nil
 }
 
-// listArchive proves pg_restore can read the archive at path, fed on stdin.
 func listArchive(ctx context.Context, c conn, t Tools, path string) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -677,9 +558,7 @@ func listArchive(ctx context.Context, c conn, t Tools, path string) error {
 	return err
 }
 
-// record upserts st into platform_settings, with DailyAt read off st.Dir. The
-// JSON travels as a psql variable, quoted by psql itself, over stdin (-c does
-// not interpolate).
+// record upserts st into platform_settings, setting DailyAt from st.Dir; the JSON goes in as a psql variable over stdin because -c does not interpolate.
 func record(ctx context.Context, c conn, t Tools, st Status) error {
 	if all, err := List(st.Dir); err == nil {
 		if d, ok := Newest(all, LabelDaily); ok {
@@ -697,7 +576,6 @@ func record(ctx context.Context, c conn, t Tools, st Status) error {
 	return err
 }
 
-// writeMetrics rewrites a node-exporter textfile-collector file for st.
 func writeMetrics(path string, st Status) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -712,11 +590,10 @@ felis_db_backup_last_size_bytes{label=%q} %d
 	if err := writeFileAtomic(path, []byte(body)); err != nil {
 		return err
 	}
-	// Read by node-exporter, which usually runs unprivileged.
+	// node-exporter usually runs unprivileged.
 	return os.Chmod(path, 0o644)
 }
 
-// schemaVersion reads the newest applied migration, or 0 when it cannot.
 func schemaVersion(ctx context.Context, c conn, t Tools) int {
 	out, err := run(t.command(ctx, c, t.psql(), "-X", "-q", "-t", "-A", "-w", "-d", t.dsn(c),
 		"-c", "SELECT coalesce(max(version), 0) FROM schema_migrations"))
@@ -727,7 +604,6 @@ func schemaVersion(ctx context.Context, c conn, t Tools) int {
 	return v
 }
 
-// counts reads the database's Counts, or nil when it does not answer.
 func counts(ctx context.Context, c conn, t Tools) *Counts {
 	out, err := run(t.command(ctx, c, t.psql(), "-X", "-q", "-t", "-A", "-w", "-d", t.dsn(c),
 		"-c", "SELECT (SELECT count(*) FROM users WHERE deleted_at IS NULL), (SELECT count(*) FROM servers WHERE deleted_at IS NULL)"))
@@ -743,7 +619,6 @@ func counts(ctx context.Context, c conn, t Tools) *Counts {
 	return &Counts{Users: u, Servers: s}
 }
 
-// member is one bundle entry: a file on disk, bytes, or a symlink.
 type member struct {
 	entry ManifestEntry
 	path  string
@@ -773,8 +648,7 @@ func bytesMember(name string, data []byte) member {
 	return member{entry: ManifestEntry{Name: name, Size: int64(len(data)), SHA256: hex.EncodeToString(s[:]), Mode: 0o600}, data: data}
 }
 
-// stateMembers bundles the regular files and symlinks directly in dir, under
-// state/<absolute dir>/. Subdirectories are not state bootstrap writes.
+// stateMembers bundles the regular files and symlinks directly in dir under state/<absolute dir>/.
 func stateMembers(dir string) ([]member, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
@@ -809,8 +683,6 @@ func stateMembers(dir string) ([]member, error) {
 	return out, nil
 }
 
-// writeBundle writes MANIFEST.json and the members to final via a .partial and
-// returns the bundle's sha256.
 func writeBundle(dir, final string, m Manifest, members []member) (string, error) {
 	manifest, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
@@ -877,8 +749,6 @@ func syncDir(dir string) error {
 	return d.Sync()
 }
 
-// Age renders a bundle's age for a human: seconds under a minute, then
-// minutes, then days and hours past two days.
 func Age(d time.Duration) string {
 	switch {
 	case d < 0:
@@ -892,10 +762,7 @@ func Age(d time.Duration) string {
 	}
 }
 
-// Check reports the newest daily bundle in dir and an error when there is none
-// or it is older than maxAge. The daily timer is what keeps the backups
-// current, so a manual, pre-migrate or off-site bundle taken since is left out:
-// it would hide a timer that has stopped.
+// Check uses only daily bundles so manual backups cannot hide a stopped timer.
 func Check(dir string, maxAge time.Duration, now time.Time) (*Bundle, error) {
 	all, err := List(dir)
 	if err != nil {

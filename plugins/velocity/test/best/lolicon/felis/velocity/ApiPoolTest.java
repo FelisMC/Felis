@@ -6,17 +6,6 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/**
- * ApiPoolTest covers the two guards around the proxy's felis-api calls:
- * {@link BoundedExecutor} (a fixed number of calls in flight, a bounded queue, refusal
- * past it, a throwing task logged and survived) and {@link SkipIfRunning} (a repeating
- * task never overlaps itself, and a run that throws does not block later runs).
- * Framework free: a failed assertion throws and the process exits non-zero.
- *
- * <p>Run: {@code javac -d <out> velocity/src/main/java/best/lolicon/felis/velocity/{BoundedExecutor,SkipIfRunning}.java
- * velocity/test/best/lolicon/felis/velocity/ApiPoolTest.java && java -cp <out>
- * best.lolicon.felis.velocity.ApiPoolTest}.
- */
 public final class ApiPoolTest {
 
     private static int checks;
@@ -130,7 +119,6 @@ public final class ApiPoolTest {
         assertEq("runs after a throw", 2, calls.get());
     }
 
-    // ---- harness ----
 
     interface Cond {
         boolean ok();

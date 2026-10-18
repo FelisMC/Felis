@@ -39,9 +39,6 @@ func TestValidateServerName(t *testing.T) {
 	}
 }
 
-// ValidateSystemServerName keeps the format rule but drops the reservation
-// check, so the platform can provision the reserved system names (login, lobby)
-// that ValidateServerName correctly refuses to hand to users.
 func TestIsSystemServer(t *testing.T) {
 	// Exactly the platform's two system services answer true; a user server that
 	// merely sounds systemic does not.
@@ -81,8 +78,7 @@ func TestValidateSystemServerName(t *testing.T) {
 		}
 	}
 
-	// The two paths must genuinely differ on system names: the user path
-	// refuses them while the system path accepts them.
+	// The user path refuses system names while the system path accepts them.
 	for _, name := range []string{"login", "lobby"} {
 		if naming.ValidateServerName(name) == nil {
 			t.Errorf("ValidateServerName(%s) accepted; reserved name must be refused for users", name)

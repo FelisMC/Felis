@@ -101,7 +101,7 @@ describe("SubmissionsPage", () => {
   });
 
   it("steps back to the last page that still has rows when its own page comes back empty", async () => {
-    // Reviews elsewhere shrank the queue to 20 rows: page 3 no longer exists.
+    // Reviews elsewhere shrank the queue to 20 rows, so page 3 is gone.
     calls.listSubmissions.mockImplementation(async ({ offset }: { offset: number }) =>
       offset === 20 ? { ...PAGE, submissions: [], total: 20 } : PAGE,
     );

@@ -6,8 +6,7 @@ plugins {
 group = 'best.lolicon.felis'
 version = '0.1.0'
 
-// NeoForge 20.4 (MC 1.20.4) is a Java-17 line. The Gradle daemon runs on JDK 17,
-// so toolchain 17 resolves to the running JVM with no auto-provisioning.
+// NeoForge 20.4 (MC 1.20.4) is a Java 17 line; toolchain 17 resolves to the running JDK 17.
 java {
     toolchain.languageVersion = JavaLanguageVersion.of(17)
 }
@@ -21,13 +20,10 @@ repositories {
 }
 
 dependencies {
-    // NeoForge bundles MC at Mojang mappings — same MC class/method names as the
-    // Fabric and Forge modules, so the command handler below is uniform with them.
     implementation 'net.neoforged:neoforge:20.4.251'
 }
 
-// The zero-dependency link core is compiled in. NeoForge runs Mojang mappings at
-// runtime, so there is no reobf step — the jar straight out of `build` is the deliverable.
+// The shared link core is compiled in; no reobf step, the jar from `build` is the deliverable.
 sourceSets {
     main {
         java {

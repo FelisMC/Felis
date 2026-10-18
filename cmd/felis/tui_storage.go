@@ -14,8 +14,6 @@ import (
 	"github.com/charmbracelet/huh"
 )
 
-// ---- Storage backends ----
-
 type storageMethod int
 
 const (
@@ -40,11 +38,6 @@ type s3Inputs struct {
 	secretKey string
 }
 
-// storageChooserModel presents the two build-context storage backends as peer
-// choices. "Local" persists uploaded modpacks on a node-local PVC (nothing else to
-// configure); "S3" points them at an S3-compatible bucket. Both are functional; S3
-// suits external object storage. It mirrors connectChooserModel's shape so the two
-// mid-wizard forks read identically.
 type storageChooserModel struct {
 	rootDomain string
 
@@ -54,12 +47,7 @@ type storageChooserModel struct {
 	width, height int
 }
 
-// newStorageChooserModel opens the storage picker pre-selected on method and, for
-// S3, carrying prefill's non-secret fields (endpoint/bucket/region) into the detail
-// form. First-run callers pass (storageLocal, s3Inputs{}); the reconfigure path
-// passes the backend already in felis.toml so an operator fixing a typo doesn't
-// retype everything (credentials still must be re-entered — they live only in the
-// Secret).
+// Prefill backend selection and non-secret fields; credentials must be reentered.
 func newStorageChooserModel(rootDomain string, method storageMethod, prefill s3Inputs) *storageChooserModel {
 	m := &storageChooserModel{rootDomain: rootDomain, choice: method, prefill: prefill}
 	m.form = m.build()
@@ -129,8 +117,6 @@ func (m *storageChooserModel) View() string { return m.form.View() }
 // ↑/↓, so the horizontal arrows are free.
 func (m *storageChooserModel) arrowNavOK() bool { return true }
 
-// ---- Storage apply: local applies immediately, S3 collects then applies ----
-
 type storageStep int
 
 const (
@@ -154,9 +140,6 @@ type storageBackMsg struct{}
 
 func goBackStorage() tea.Cmd { return func() tea.Msg { return storageBackMsg{} } }
 
-// storageModel drives applying the chosen backend. Local has no form and applies
-// straight away; S3 first collects its coordinates. Both share the working → done /
-// error machine, mirroring reverseProxyModel.
 type storageModel struct {
 	method storageMethod
 	step   storageStep
@@ -390,9 +373,7 @@ func requiredStorageField(name string) func(string) error {
 	}
 }
 
-// bucketNameRE is a pragmatic S3 bucket-name check: 3–63 chars, lowercase
-// letters/digits/dots/hyphens, starting and ending alphanumeric. It catches typos
-// without trying to encode every provider's exact rules.
+// Check basic S3 bucket syntax without imposing provider-specific naming rules.
 var bucketNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9.\-]{1,61}[a-z0-9]$`)
 
 func validateBucketName(s string) error {

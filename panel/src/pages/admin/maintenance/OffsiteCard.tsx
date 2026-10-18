@@ -19,11 +19,6 @@ import type { HostOverview, OffsiteStatus } from "@/lib/types";
 
 const blank = { endpoint: "", bucket: "", region: "", prefix: "", dbKeep: "", accessKey: "", secretKey: "", key: "" };
 
-/** OffsiteCard runs the off-site copy: the hourly encrypted copy of world archives,
- *  database bundles, user images and uploads to an S3-compatible bucket. The Owner points
- *  it at a bucket, copies now, checks that the bucket's objects are sealed with this
- *  host's key, reads that key to keep it elsewhere, and takes the bucket over when this
- *  host replaces the one that wrote it. */
 export function OffsiteCard({ overview }: { overview: AsyncState<HostOverview> }) {
   const { t, i18n } = useTranslation("admin");
   const locale = i18n.language;
@@ -172,9 +167,7 @@ export function OffsiteCard({ overview }: { overview: AsyncState<HostOverview> }
   );
 }
 
-/** RestoreHostCard rebuilds this host from the off-site copy: the database, the user
- *  images, the uploads, the servers and their worlds. It is meant for a freshly installed
- *  host that replaces a lost one; over an install that holds servers it asks to overwrite. */
+// Restoring over existing servers requires overwrite confirmation.
 export function RestoreHostCard({ overview }: { overview: AsyncState<HostOverview> }) {
   const { t } = useTranslation("admin");
   const host = useHostTask(["restore-host"]);

@@ -19,44 +19,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// Failover brings the worlds of a lost worker back on another node from their newest
-// backups. It is a migration whose source can no longer be read:
-//
-//  1. The Owner asks for it in the panel, or felis-api does once the node has been gone
-//     for the configured time when automatic failover is on. BeginFailover records an
-//     Operation of KindFailover on each server whose world is on the lost node, takes the
-//     world lock, and sets the server's desired state to Stopped, remembering whether it
-//     was running.
-//  2. node-control fences the node (its fence task): cordoned, its approval removed and
-//     the out-of-service taint added, so Kubernetes releases its pods and volumes without
-//     waiting for its kubelet, and the node takes no world again until the Owner approves
-//     it again. A worker that only lost its network finds its pods gone when it comes back
-//     and stops them.
-//  3. fencing: the server's unfinished maintenance Jobs, all pinned to the lost node, are
-//     deleted; once the node is fenced and nothing of the server is left on it, the
-//     failover goes on.
-//  4. restoring and switching are the migration's own: a new claim on the target node,
-//     the backup restored and read back into it, then one write that points the server at
-//     its new node and claim and gives it its desired state back.
-//
-// It costs whatever the world gained since that backup, which the panel shows before the
-// Owner confirms. The old world stays on the lost node's disk under its old claim.
+// Failover restores a lost node's worlds from backups after fencing, retaining the old claims.
 
 const (
-	// KindFailover marks a failover Operation.
 	KindFailover = "failover"
-	// TaintOutOfService is Kubernetes' non-graceful node shutdown taint: the pods on the
-	// node are deleted and their volumes detached without waiting for its kubelet.
+	// TaintOutOfService permits Pod deletion and volume detachment without waiting for the lost kubelet.
 	TaintOutOfService = "node.kubernetes.io/out-of-service"
-	// AnnotationFenced records when node-control fenced the node.
-	AnnotationFenced = "felis.lolicon.best/fenced"
+	AnnotationFenced  = "felis.lolicon.best/fenced"
 )
 
-// ErrNodeNotLost refuses a failover off a node that is online, or is not a worker.
 var ErrNodeNotLost = errors.New("only an offline worker can be failed over")
 
-// Fenced reports whether a node is out of service for a failover: cordoned, no longer
-// approved, and tainted out of service.
 func Fenced(n *corev1.Node) bool {
 	if !n.Spec.Unschedulable || n.Labels[placement.LabelApproved] == "true" {
 		return false
@@ -69,7 +42,6 @@ func Fenced(n *corev1.Node) bool {
 	return false
 }
 
-// lostSince is when an offline node stopped reporting ready.
 func lostSince(n *corev1.Node) *time.Time {
 	for _, c := range n.Status.Conditions {
 		if c.Type == corev1.NodeReady && c.Status != corev1.ConditionTrue && !c.LastTransitionTime.IsZero() {
@@ -80,7 +52,6 @@ func lostSince(n *corev1.Node) *time.Time {
 	return nil
 }
 
-// placedOn is the node a server's world lives on.
 func (m *Manager) placedOn(s *v1alpha1.MinecraftServer) string {
 	switch {
 	case s.Spec.NodeName != "":
@@ -91,9 +62,7 @@ func (m *Manager) placedOn(s *v1alpha1.MinecraftServer) string {
 	return m.Controller
 }
 
-// LostNode returns the named node when it is offline and may be failed over: a worker, or,
-// with controller high availability, a controller while another one carries on. Anything
-// else is ErrNodeNotLost.
+// LostNode accepts offline workers, or controllers when HA leaves another controller online.
 func (m *Manager) LostNode(ctx context.Context, name string) (*corev1.Node, error) {
 	var nodes corev1.NodeList
 	if err := m.Client.List(ctx, &nodes); err != nil {
@@ -126,15 +95,12 @@ func (m *Manager) LostNode(ctx context.Context, name string) (*corev1.Node, erro
 	return nil, ErrNodeNotLost
 }
 
-// PlacedServer is a user server whose world is on a node, with the operation it has
-// underway, if any.
 type PlacedServer struct {
 	Name         string
 	DesiredState string
 	Operation    *Operation
 }
 
-// ServersOn lists the user servers whose world lives on node, by name.
 func (m *Manager) ServersOn(ctx context.Context, node string) ([]PlacedServer, error) {
 	var list v1alpha1.MinecraftServerList
 	if err := m.Client.List(ctx, &list, client.InNamespace(m.Namespace)); err != nil {
@@ -156,10 +122,7 @@ func (m *Manager) ServersOn(ctx context.Context, node string) ([]PlacedServer, e
 	return out, nil
 }
 
-// BeginFailover starts the failover of one server off its lost node onto target, from the
-// backup archive given (its Ref, and its digest when one was recorded). Asking again for
-// the same target returns the failover already underway. A migration the lost node holds
-// up is given up first; a failover that failed may be started again towards another node.
+// BeginFailover is idempotent for the same target; failed operations may retry on another target.
 func (m *Manager) BeginFailover(ctx context.Context, server, target, owner string, backup archivetransfer.Receipt) (Operation, error) {
 	if backup.Ref == "" {
 		return Operation{}, errors.New("a failover needs a backup to restore")
@@ -190,8 +153,7 @@ func (m *Manager) BeginFailover(ctx context.Context, server, target, owner strin
 			if previous.Kind == KindFailover && previous.State != "failed" {
 				return ErrBusy
 			}
-			// A migration cannot finish without its lost node, nor can a failed failover
-			// towards another target: drop what either made.
+			// Discard unfinished work that depends on the lost source or a failed target.
 			if err := m.discard(ctx, previous); err != nil {
 				return err
 			}
@@ -213,10 +175,7 @@ func (m *Manager) BeginFailover(ctx context.Context, server, target, owner strin
 	return op, err
 }
 
-// fence is a failover's first stage: it waits for node-control to fence the lost node and
-// for the server to have nothing left on it, deleting the server's unfinished maintenance
-// Jobs meanwhile (they are pinned to the lost node and would keep its pods pending). Not
-// yet done is not an error: the stage simply runs again on the next pass.
+// fence removes unfinished maintenance Jobs and waits for node fencing and Pod removal.
 func (m *Manager) fence(ctx context.Context, s *v1alpha1.MinecraftServer, op *Operation) error {
 	if s.Annotations[maintenance.Annotation] != maintenance.LockValue(maintenance.KindMigration, op.Started) {
 		return errors.New("persistent migration lock was changed")
@@ -257,9 +216,7 @@ func (m *Manager) fence(ctx context.Context, s *v1alpha1.MinecraftServer, op *Op
 	return m.save(ctx, s, *op, true)
 }
 
-// FencePending lists the lost nodes failovers are waiting on, by name: not fenced yet, or
-// fenced but still holding a pod of a server failing over (one a Job made after the
-// fence). felis-api asks node-control to fence each of them (again).
+// FencePending includes nodes with remaining server Pods even if they are already fenced.
 func (m *Manager) FencePending(ctx context.Context) ([]string, error) {
 	var servers v1alpha1.MinecraftServerList
 	if err := m.Client.List(ctx, &servers, client.InNamespace(m.Namespace)); err != nil {
@@ -275,7 +232,7 @@ func (m *Manager) FencePending(ctx context.Context) ([]string, error) {
 		if err := m.Client.Get(ctx, types.NamespacedName{Name: op.SourceNode}, &node); client.IgnoreNotFound(err) != nil {
 			return nil, err
 		} else if err != nil {
-			continue // a deleted node holds nothing
+			continue
 		}
 		if !Fenced(&node) {
 			pending[op.SourceNode] = true
@@ -300,12 +257,9 @@ func (m *Manager) FencePending(ctx context.Context) ([]string, error) {
 	return out, nil
 }
 
-// errFailoverTarget is returned when no node can take the worlds of a lost one.
 var errFailoverTarget = errors.New("no online node can take the worlds")
 
-// FailoverTarget picks the node an automatic failover moves worlds to: of the online,
-// schedulable nodes that may hold worlds (approved workers and the controller), the one
-// holding the fewest user worlds; on a tie the controller, then the first by name.
+// FailoverTarget prefers the fewest user worlds, breaking ties by controller role then name.
 func (m *Manager) FailoverTarget(ctx context.Context) (string, error) {
 	var nodes corev1.NodeList
 	if err := m.Client.List(ctx, &nodes); err != nil {
@@ -344,10 +298,6 @@ func (m *Manager) FailoverTarget(ctx context.Context) (string, error) {
 	return candidates[0], nil
 }
 
-// LostNodes lists the nodes that are offline and not fenced yet, workers and (with
-// controller high availability) controllers, with when each was lost, and whether a
-// controller is online. The automatic failover acts only when exactly one node is lost and
-// a controller is up; a fenced node has been dealt with.
 func (m *Manager) LostNodes(ctx context.Context) (lost map[string]time.Time, controllerOnline bool, err error) {
 	var nodes corev1.NodeList
 	if err := m.Client.List(ctx, &nodes); err != nil {
@@ -373,10 +323,6 @@ func (m *Manager) LostNodes(ctx context.Context) (lost map[string]time.Time, con
 	return lost, controllerOnline, nil
 }
 
-// ReplicaCandidates lists, by name, the user servers running on a worker (or, with
-// controller high availability, on any node, the controllers being losable too) with
-// nothing underway on their world: the ones felis-api keeps a recent replica of, so a
-// failover off that node loses little.
 func (m *Manager) ReplicaCandidates(ctx context.Context) ([]string, error) {
 	var list v1alpha1.MinecraftServerList
 	if err := m.Client.List(ctx, &list, client.InNamespace(m.Namespace)); err != nil {

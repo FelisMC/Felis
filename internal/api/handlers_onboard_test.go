@@ -8,19 +8,9 @@ import (
 	"time"
 )
 
-// Player-console onboarding bootstrap tests (console-tier access model). The load-
-// bearing cases: a Bind Code alone bootstraps a role=user player + session on the
-// public console door (no prior principal, no Zero Trust); a code whose UUID belongs
-// to staff is refused so the public door never mints an admin session; and — the
-// invariant that keeps "op.console 必须得 Auth" true after making console.<root> public —
-// a redeemed player session is rejected on every Admin route and carries
-// ViaAdminAccess=false.
-
 const bindTestUUID = "11111111-1111-1111-1111-111111111111"
 
-// seedBindAPI returns an API with local sessions enabled and its external face wired
-// to the real SessionAuth, so a cookie minted by /auth/bind is actually honored on
-// the follow-up authenticated requests (the whole point of the bootstrap).
+// seedBindAPI uses real SessionAuth so minted cookies can authenticate subsequent requests.
 func seedBindAPI(t *testing.T) (*API, *fakeRepo) {
 	t.Helper()
 	repo := newFakeRepo()
@@ -51,9 +41,6 @@ func sessionCookieValue(t *testing.T, w *httptest.ResponseRecorder) string {
 	return ""
 }
 
-// TestBindRedeemBootstrapsPlayer is the happy path: an account-less player redeems a
-// Bind Code and, in one step, gets a role=user account, an account_links binding, and
-// a live session — which then resolves through the external face on /me.
 func TestBindRedeemBootstrapsPlayer(t *testing.T) {
 	api, repo := seedBindAPI(t)
 	mintBindCode(t, api, repo, "ABCD2345", bindTestUUID, authSourceMojang)
@@ -100,9 +87,6 @@ func TestBindRedeemBootstrapsPlayer(t *testing.T) {
 	}
 }
 
-// TestBindRedeemIdempotentReturningPlayer proves a second redemption of the SAME UUID
-// logs the same player back in (idempotent "log in via the game") rather than forking
-// a duplicate account.
 func TestBindRedeemIdempotentReturningPlayer(t *testing.T) {
 	api, repo := seedBindAPI(t)
 
@@ -127,10 +111,6 @@ func TestBindRedeemIdempotentReturningPlayer(t *testing.T) {
 	}
 }
 
-// TestBindRedeemRefusesStaffAccount is the op.console red line at the data layer: a
-// Bind Code whose UUID belongs to a STAFF account (role=admin) is refused 403, and the
-// code is NOT consumed and no session is minted. The public console door therefore can
-// never yield a session for an admin identity.
 func TestBindRedeemRefusesStaffAccount(t *testing.T) {
 	api, repo := seedBindAPI(t)
 	// An admin already linked to this UUID (e.g. an Operator on the thirdparty Yggdrasil).
@@ -153,10 +133,6 @@ func TestBindRedeemRefusesStaffAccount(t *testing.T) {
 	}
 }
 
-// TestPlayerSessionRejectedOnAdminRoutes is the invariant that lets console.<root> be
-// public without weakening op.console: a session minted by the public bootstrap is a
-// role=user session, so every Admin route rejects it (403) and it carries
-// ViaAdminAccess=false even on the operator host.
 func TestPlayerSessionRejectedOnAdminRoutes(t *testing.T) {
 	api, repo := seedBindAPI(t)
 	mintBindCode(t, api, repo, "PLAYER34", bindTestUUID, authSourceMojang)
@@ -166,18 +142,12 @@ func TestPlayerSessionRejectedOnAdminRoutes(t *testing.T) {
 	}
 	token := sessionCookieValue(t, w)
 
-	// An Admin route (POST /api/v1/servers), requested on the OPERATOR host with the
-	// player cookie, is rejected before the handler: the player is role=user, so
-	// IsAdmin() is false regardless of host.
 	adm := do(api.ExternalHandler(), "POST", "https://op.console.mc.example.net/api/v1/servers", `{}`,
 		map[string]string{"Cookie": sessionCookieName + "=" + token})
 	if adm.Code != http.StatusForbidden {
 		t.Fatalf("player on Admin route: code = %d, want 403 (%s)", adm.Code, adm.Body.String())
 	}
 
-	// Directly: SessionAuth resolves the player on the operator host WITHOUT admin
-	// access. A role=user can never satisfy ViaAdminAccess (it is admin-AND-host), so
-	// the public bootstrap provably yields no admin principal.
 	auth := SessionAuth{Repo: repo, RootDomain: testRoot, Now: api.now}
 	r := httptest.NewRequest("GET", "https://op.console.mc.example.net/api/v1/me", nil)
 	r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
@@ -208,8 +178,6 @@ func TestBindRedeemInvalidCode(t *testing.T) {
 	}
 }
 
-// TestBindRedeemExpiredCode proves expiry is enforced against the API clock: a code
-// past its TTL is invalid_code, never a silent bootstrap.
 func TestBindRedeemExpiredCode(t *testing.T) {
 	api, repo := seedBindAPI(t)
 	repo.linkCodes["OLD23456"] = fakeLinkCode{
@@ -225,9 +193,6 @@ func TestBindRedeemExpiredCode(t *testing.T) {
 	}
 }
 
-// TestBindRedeemLocalAuthDisabled proves the bootstrap refuses to mint a session that
-// SessionAuth would not honor: with local sessions off it returns 403, never a dead
-// cookie, mirroring the email-OTP login door.
 func TestBindRedeemLocalAuthDisabled(t *testing.T) {
 	repo := newFakeRepo() // local_auth_enabled never set → fail closed
 	api := newTestAPI(repo, newFakeCluster())
@@ -244,9 +209,6 @@ func TestBindRedeemLocalAuthDisabled(t *testing.T) {
 	}
 }
 
-// TestBindRedeemContentTypeGuard pins the cross-site-forgery guard: a body whose
-// Content-Type an HTML form could emit is rejected 415 before any redemption, so a
-// forged off-origin POST cannot bootstrap an account.
 func TestBindRedeemContentTypeGuard(t *testing.T) {
 	api, repo := seedBindAPI(t)
 	mintBindCode(t, api, repo, "FORM2345", bindTestUUID, authSourceMojang)

@@ -79,9 +79,7 @@ function UploadRow({
 }) {
   const { t } = useTranslation("files");
   const { file, state } = item;
-  // The body is all sent and the Job is landing it. A file sent in one request
-  // lands in seconds, with no bytes left to count; one sent in parts is fetched
-  // by its Job afresh, which reports how far it has got.
+  // The body is all sent and the Job is landing it. A file sent in one request lands in seconds; one sent in parts is fetched by its Job afresh, which reports how far it has got.
   const landing = state === "uploading" && item.sent >= file.size;
   const written = landing && item.landing !== null && item.landing.total > 0 ? item.landing : null;
   const percent = written

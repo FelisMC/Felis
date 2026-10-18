@@ -9,17 +9,8 @@ import (
 	"testing"
 )
 
-// These exercise ExecRunner.VerifyAPIToken directly against an httptest server.
-// This is the load-bearing coverage for "is the CF path usable": Setup only runs
-// the pre-flight token check when the runner satisfies apiTokenVerifier, and the
-// existing TestSetupVerifiesAPITokenBeforeCloudflareMutations only proves a *fake*
-// runner is consulted — it says nothing about whether the production ExecRunner
-// actually verifies anything. Without these, the token never gets checked before
-// the tunnel and DNS are created on a real account.
+// Exercises ExecRunner.VerifyAPIToken against an httptest server.
 
-// TestExecRunnerVerifyAPITokenHitsAccessApps confirms the happy path probes the
-// exact account + Access-read permission Setup needs, with the Bearer token, and
-// returns nil when Cloudflare answers success.
 func TestExecRunnerVerifyAPITokenHitsAccessApps(t *testing.T) {
 	const account = "0123456789abcdef0123456789abcdef"
 	var gotPath, gotAuth, gotQuery string
@@ -47,9 +38,6 @@ func TestExecRunnerVerifyAPITokenHitsAccessApps(t *testing.T) {
 	}
 }
 
-// TestExecRunnerVerifyAPITokenSurfaces401 locks that an invalid/expired token is
-// reported with the actionable permission checklist apiGet renders — this is the
-// message the operator sees BEFORE anything is created, which is the whole point.
 func TestExecRunnerVerifyAPITokenSurfaces401(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -67,8 +55,6 @@ func TestExecRunnerVerifyAPITokenSurfaces401(t *testing.T) {
 	}
 }
 
-// TestExecRunnerVerifyAPITokenSurfaces403 locks that a wrong-account or
-// under-permissioned token names the account in the guidance.
 func TestExecRunnerVerifyAPITokenSurfaces403(t *testing.T) {
 	const account = "ffffffffffffffffffffffffffffffff"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -87,8 +73,6 @@ func TestExecRunnerVerifyAPITokenSurfaces403(t *testing.T) {
 	}
 }
 
-// TestExecRunnerVerifyAPITokenPreflight confirms empty credentials fail without a
-// network call — the http handler would panic the test if it were reached.
 func TestExecRunnerVerifyAPITokenPreflight(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("VerifyAPIToken must not hit the wire when credentials are empty")
@@ -107,10 +91,6 @@ func TestExecRunnerVerifyAPITokenPreflight(t *testing.T) {
 	}
 }
 
-// TestExecRunnerSatisfiesAPITokenVerifier is a compile-time-ish guard that the
-// production runner actually implements the seam Setup probes for. If someone
-// renames or changes the method signature, Setup would silently skip the check
-// again (the bug this whole effort fixes); this fails loudly instead.
 func TestExecRunnerSatisfiesAPITokenVerifier(t *testing.T) {
 	var r Runner = &ExecRunner{}
 	if _, ok := r.(apiTokenVerifier); !ok {
@@ -127,12 +107,6 @@ func recommendedPolicy(t *testing.T) AccessPolicy {
 	return p
 }
 
-// TestExecRunnerCreateAccessPolicyUpdatesExisting is the regression for the
-// fail-open swap: an Access app that already carries a policy of this name must
-// be OVERWRITTEN with the guarded body. The old behavior swallowed
-// "already exists" as success, so a re-run with a changed identity (or a
-// hand-made broader policy) silently kept the old rule set while reporting a
-// completed setup.
 func TestExecRunnerCreateAccessPolicyUpdatesExisting(t *testing.T) {
 	var methods []string
 	var putBody string
@@ -163,8 +137,6 @@ func TestExecRunnerCreateAccessPolicyUpdatesExisting(t *testing.T) {
 	}
 }
 
-// TestExecRunnerCreateAccessPolicyCreatesWhenAbsent: the happy path still POSTs
-// when no policy of this name exists.
 func TestExecRunnerCreateAccessPolicyCreatesWhenAbsent(t *testing.T) {
 	var methods []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -189,8 +161,6 @@ func TestExecRunnerCreateAccessPolicyCreatesWhenAbsent(t *testing.T) {
 	}
 }
 
-// TestExecRunnerCreateAccessPolicyRaceFallsBackToUpdate: a POST losing to a
-// concurrent creator ("already exists") must re-lookup and PUT, never swallow.
 func TestExecRunnerCreateAccessPolicyRaceFallsBackToUpdate(t *testing.T) {
 	var methods []string
 	getCount := 0

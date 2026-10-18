@@ -13,10 +13,6 @@ import (
 	"testing"
 )
 
-// The row-count query deploy/bootstrap.sh runs on the host PostgreSQL and on felis-postgres
-// when it moves the database into k3s, comparing the two answers byte for byte: every public
-// table with its exact row count, one per line, in byte order of the table names. The shell
-// tests stub psql, so this is the only place the SQL itself runs before a real host does.
 func TestInstallerTableCounts(t *testing.T) {
 	// bash reads the assignment the way the installer does, quoting and escapes included.
 	out, err := exec.Command("bash", "-c", `eval "$(grep '^PG_TABLE_COUNTS=' "$1")" && printf %s "$PG_TABLE_COUNTS"`,
@@ -25,9 +21,7 @@ func TestInstallerTableCounts(t *testing.T) {
 		t.Fatalf("reading PG_TABLE_COUNTS from deploy/bootstrap.sh: %v (%q)", err, out)
 	}
 	ctx := context.Background()
-	// Tables the schema does not have yet but a migration may add: a name needing quotes,
-	// which byte order puts before every lowercase one and a locale's order does not, and a
-	// partitioned table.
+	// Tables the schema lacks yet: a name needing quotes, one sorting before lowercase names in byte order, and a partitioned table.
 	for _, stmt := range []string{
 		`CREATE TABLE public."Pgint_Counts" (id int)`,
 		`INSERT INTO public."Pgint_Counts" VALUES (1), (2), (3)`,

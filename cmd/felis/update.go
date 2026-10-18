@@ -22,9 +22,7 @@ import (
 	"felis.lolicon.best/internal/updates"
 )
 
-// updateTimeout bounds the whole discovery pass. Each release source already caps
-// its own HTTP client, but a hung DNS or a stalled TLS handshake would otherwise
-// leave the operator staring at a silent terminal.
+// Bound overall update discovery in addition to individual HTTP requests.
 const updateTimeout = 60 * time.Second
 
 // updateTarget maps report selectors onto the components tracked by the planner.
@@ -36,10 +34,7 @@ type updateTarget struct {
 	note      string // explanation for the untracked Minecraft selector
 }
 
-// updateTargets is the selector table. panel and plugins both resolve to felis-api
-// because they are not separately versioned: the panel is compiled into the felis
-// binary with //go:embed, and the plugin jars are built from this same repo in the
-// same bootstrap run, so all three move together and carry one version.
+// Panel and plugin selectors resolve to felis-api because the installer builds and ships them together.
 var updateTargets = []updateTarget{
 	{
 		selector:  "panel",
@@ -224,11 +219,7 @@ func checkUpdates(ctx context.Context, opts updateOptions, velocityJar string, r
 	return 0
 }
 
-// buildStatusReport turns one run into the record the panel shows: every planned
-// component in plan order, then each component whose installed version could not
-// be read, by name. A component the feed could not answer for is StateUnknown with
-// the reason, never StateCurrent: the panel must not call a component current when
-// nobody could check.
+// Preserve unreadable or unavailable components as unknown rather than current.
 func buildStatusReport(res updater.Result, notes map[string]string, felis string, now time.Time) updates.StatusReport {
 	selectorOf := map[string]string{}
 	for _, t := range updateTargets {
@@ -298,12 +289,6 @@ func recordUpdateStatus(ctx context.Context, cfgPath string, rep updates.StatusR
 	return err
 }
 
-// renderUpdateReport renders the component status table. With no selectors it shows
-// every tracked component; with selectors it shows only the components those
-// selectors name, so `felis update --velocity` is a focused answer rather than the
-// whole platform. Components whose current version could not be read are listed
-// separately rather than silently dropped — a component missing from the table with
-// no explanation reads as "fine", which is the one thing it is not.
 func renderUpdateReport(res updater.Result, selected map[string]bool) string {
 	plan := res.RunResult.Plan
 	if len(selected) > 0 {
@@ -327,19 +312,11 @@ func renderUpdateReport(res updater.Result, selected map[string]bool) string {
 		b.WriteString(updates.Report(plan))
 	}
 
-	// Two different failures both end up as a component the report cannot speak to,
-	// and both are printed rather than swallowed. A component that simply vanishes
-	// from the table reads as "fine", and a bare "latest unknown" line reads as "there
-	// is nothing newer" — when the truth may be that the release feed was unreachable.
-	// Naming the cause is the difference between a report and a guess.
+	// Report both discovery and installed-version failures rather than hiding missing components.
 	writeErrs(&b, "current version unreadable", res.GatherErrors, selected)
 	writeErrs(&b, "latest version undiscoverable", res.RunResult.SourceErrors, selected)
 
-	// With selectors active an empty table is not a surprise — `--mc` names a component
-	// the planner deliberately does not track — and the guidance below already explains
-	// it, so stay quiet rather than printing a bare "nothing matched" that reads as an
-	// error. Without selectors an empty table means nothing is tracked at all, which
-	// does need saying.
+	// An empty filtered result is expected; an empty unfiltered result means nothing is tracked.
 	if b.Len() == 0 && len(selected) == 0 {
 		return "No components tracked.\n"
 	}
@@ -393,10 +370,7 @@ func selectedCovers(selected map[string]bool, component string) bool {
 // database costs the report a line and never the report itself.
 const updateWindowTimeout = 3 * time.Second
 
-// readUpdateWindow reads the maintenance window the panel stores
-// (platform_settings "update_window"). Felis applies nothing on its own: this
-// command consumes it for both reporting and admission to an explicit apply.
-// A missing row is an unset window.
+// Maintenance windows gate explicit applies; they never schedule automatic updates.
 func readUpdateWindow(ctx context.Context, cfgPath string) (updates.Window, error) {
 	cfg, err := config.Load(cfgPath)
 	if err != nil {

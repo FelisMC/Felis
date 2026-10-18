@@ -20,7 +20,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-// fakeSnapshotter is a Backuper that can also chain a restore.
 type fakeSnapshotter struct {
 	fakeBackuper
 	err     error
@@ -54,8 +53,6 @@ func (f *fakeChains) SettleRestoreChain(_ context.Context, job, state, note stri
 	return nil
 }
 
-// otherRestore mirrors the executor's conflict error, which api only knows by
-// its method.
 type otherRestore struct{}
 
 func (otherRestore) Error() string           { return "another restore" }
@@ -72,9 +69,6 @@ func TestIsRestoreInProgressMatchesTheExecutor(t *testing.T) {
 	}
 }
 
-// With the chain wired, a restore starts with a safety snapshot of the world as
-// it is: the Backuper gets the restore to carry, the Restorer is not called
-// yet, and the 202 says so. safety_snapshot:false restores straight away.
 func TestRestoreStartsWithSafetySnapshot(t *testing.T) {
 	owner := &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
 	mk := func() (*API, *fakeSnapshotter, *fakeRestorer) {
@@ -233,9 +227,6 @@ func TestSettleRestoreChains(t *testing.T) {
 	})
 }
 
-// The cluster side: the chain the backupjob executor renders is found by the
-// label selector, its snapshot outcome read from the Job conditions, and
-// settling it releases the world volume.
 func TestK8sRestoreChains(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {

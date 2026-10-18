@@ -20,15 +20,7 @@ import (
 	"time"
 )
 
-// Mirroring copies one image or OCI artifact from a public registry into the
-// platform registry: the build tools (kaniko, trivy) and Trivy's vulnerability
-// DBs, which a build Job cannot fetch itself because its namespace has no
-// internet egress. Blobs stream from the source straight into the upload, and
-// the destination registry checks each against its digest.
-//
-// An image index is narrowed to the one platform the node runs: the copy is a
-// single-platform manifest under the destination tag. A source pinned by digest
-// is checked against it before anything is copied.
+// Mirroring streams verified artifacts into the platform registry, selecting one platform from indices.
 
 const (
 	mediaOCIIndex        = "application/vnd.oci.image.index.v1+json"
@@ -38,7 +30,6 @@ const (
 	sourceRequestTimeout = 2 * time.Minute
 )
 
-// SourceRef is host/repository[:tag][@digest].
 type SourceRef struct {
 	Host, Repo, Tag, Digest string
 }
@@ -54,7 +45,6 @@ func (r SourceRef) String() string {
 	return s
 }
 
-// reference is what the manifest endpoint is asked for: the digest when pinned.
 func (r SourceRef) reference() string {
 	if r.Digest != "" {
 		return r.Digest
@@ -64,8 +54,7 @@ func (r SourceRef) reference() string {
 
 var sha256DigestRE = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
-// ParseSourceRef parses a fully qualified reference. docker.io is served from
-// registry-1.docker.io, and its single-component names live under library/.
+// ParseSourceRef maps docker.io to registry-1.docker.io and single-component repositories to library/.
 func ParseSourceRef(ref string) (SourceRef, error) {
 	name, digest, _ := strings.Cut(ref, "@")
 	if digest != "" && !sha256DigestRE.MatchString(digest) {
@@ -94,23 +83,17 @@ func ParseSourceRef(ref string) (SourceRef, error) {
 	return SourceRef{Host: host, Repo: repo, Tag: tag, Digest: digest}, nil
 }
 
-// Source reads manifests and blobs anonymously from public registries, answering
-// their bearer-token challenges (ghcr.io, gcr.io, mirror.gcr.io, Docker Hub).
+// Source handles anonymous bearer-token challenges from public registries.
 type Source struct {
-	// Client performs the requests; nil uses one with response-header timeouts.
 	Client *http.Client
-	// Platform selects the manifest of an index, as "os/arch" or
-	// "os/arch/variant". Empty means linux and this binary's architecture.
+	// Platform defaults to linux and this binary's architecture; optional variants use os/arch/variant.
 	Platform string
-	// Scheme is "https" unless a test serves plain HTTP.
-	Scheme string
+	Scheme   string
 
 	mu     sync.Mutex
-	tokens map[string]string // host/repo → bearer token
+	tokens map[string]string
 }
 
-// sourceClient is shared by every Source without its own Client, so reads
-// reuse keep-alive connections instead of opening one per request.
 var sourceClient = &http.Client{Transport: &http.Transport{Proxy: http.ProxyFromEnvironment, ResponseHeaderTimeout: sourceRequestTimeout}}
 
 func (s *Source) client() *http.Client {
@@ -128,7 +111,6 @@ func (s *Source) url(r SourceRef, tail string) string {
 	return (&url.URL{Scheme: scheme, Host: r.Host, Path: "/v2/" + r.Repo + "/" + tail}).String()
 }
 
-// get issues a GET, fetching a bearer token once when the registry challenges.
 func (s *Source) get(ctx context.Context, r SourceRef, target, accept string) (*http.Response, error) {
 	key := r.Host + "/" + r.Repo
 	for attempt := 0; ; attempt++ {
@@ -167,7 +149,6 @@ func (s *Source) get(ctx context.Context, r SourceRef, target, accept string) (*
 	}
 }
 
-// token answers a Bearer challenge anonymously.
 func (s *Source) token(ctx context.Context, challenge string) (string, error) {
 	scheme, params, _ := strings.Cut(challenge, " ")
 	if !strings.EqualFold(scheme, "Bearer") {
@@ -216,7 +197,6 @@ func (s *Source) token(ctx context.Context, challenge string) (string, error) {
 	return "", errors.New("token endpoint returned no token")
 }
 
-// parseChallenge splits key="value",key="value".
 func parseChallenge(s string) map[string]string {
 	out := map[string]string{}
 	for s != "" {
@@ -240,8 +220,7 @@ func parseChallenge(s string) map[string]string {
 	return out
 }
 
-// manifest fetches one manifest by tag or digest and returns its bytes and
-// media type. A digest reference is verified against the bytes.
+// manifest verifies response bytes against digest-pinned references.
 func (s *Source) manifest(ctx context.Context, r SourceRef, reference string) ([]byte, string, error) {
 	resp, err := s.get(ctx, r, s.url(r, "manifests/"+reference), manifestAccept)
 	if err != nil {
@@ -311,7 +290,6 @@ type indexEntry struct {
 	} `json:"platform"`
 }
 
-// pick returns the digest of the index entry for the wanted platform.
 func (s *Source) pick(body []byte) (string, error) {
 	var idx struct {
 		Manifests []indexEntry `json:"manifests"`
@@ -338,8 +316,6 @@ func (s *Source) pick(body []byte) (string, error) {
 	return "", fmt.Errorf("the index has no %s/%s manifest", wantOS, wantArch)
 }
 
-// Mirror copies src (a SourceRef string) to dst (host/repository:tag on p's
-// registry) and returns the digest of the manifest it wrote.
 func (p *Pusher) Mirror(ctx context.Context, s *Source, src, dst string) (string, error) {
 	sr, err := ParseSourceRef(src)
 	if err != nil {
@@ -413,15 +389,13 @@ func digestOf(b []byte) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// MirrorStatus is what `felis mirror-build-tools --status` records, and the
-// watchdog reads to tell a stale vulnerability DB.
 type MirrorStatus struct {
 	LastAttempt time.Time `json:"last_attempt"`
 	LastSuccess time.Time `json:"last_success,omitzero"`
 	LastError   string    `json:"last_error,omitempty"`
 }
 
-// ReadMirrorStatus reads a status file; a missing one is (nil, nil).
+// ReadMirrorStatus returns nil for a missing file.
 func ReadMirrorStatus(path string) (*MirrorStatus, error) {
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -437,7 +411,6 @@ func ReadMirrorStatus(path string) (*MirrorStatus, error) {
 	return &st, nil
 }
 
-// WriteMirrorStatus replaces the status file atomically.
 func WriteMirrorStatus(path string, st MirrorStatus) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -453,13 +426,11 @@ func WriteMirrorStatus(path string, st MirrorStatus) error {
 	return os.Rename(tmp, path)
 }
 
-// Manifest fetches one manifest of host/repo by tag or digest and returns its
-// bytes and media type; a digest reference is checked against the bytes.
 func (s *Source) Manifest(ctx context.Context, host, repo, reference string) ([]byte, string, error) {
 	return s.manifest(ctx, SourceRef{Host: host, Repo: repo}, reference)
 }
 
-// Blob opens one blob of host/repo. The caller checks the bytes against digest.
+// Blob returns a body whose digest the caller must verify.
 func (s *Source) Blob(ctx context.Context, host, repo, digest string) (io.ReadCloser, error) {
 	return s.blob(ctx, SourceRef{Host: host, Repo: repo}, digest)
 }

@@ -14,11 +14,6 @@ import (
 	"felis.lolicon.best/internal/reaper"
 )
 
-// The wake allowlist: the owner reads it with each player's live account name, a
-// revoked entry stops both wake checks and stays revoked through the player's next
-// join, and every change of owner (claim, reaper release, account deletion) empties
-// the list of that server alone. The list used to only grow: nothing could read or
-// revoke it, and a reclaimed server handed the old owner's players to the new one.
 func TestWakeAllowlistLifecycle(t *testing.T) {
 	ctx := context.Background()
 	exec := func(q string, args ...any) {
@@ -125,7 +120,7 @@ func TestWakeAllowlistLifecycle(t *testing.T) {
 		}
 	}
 
-	// An account that is gone no longer names its entry.
+	// A deleted account leaves its entry unnamed.
 	exec(`UPDATE users SET deleted_at = now() WHERE id = $1`, friend.ID)
 	if got, want := list(name), "linked::true,stray::true"; got != want {
 		t.Fatalf("list after the account closed = %s, want %s", got, want)

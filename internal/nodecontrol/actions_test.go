@@ -15,8 +15,6 @@ import (
 	"time"
 )
 
-// TestHostTaskRequests pins what each host task takes: its parameters, its secrets, and
-// the confirmation for the ones that disconnect players, restart the panel or replace data.
 func TestHostTaskRequests(t *testing.T) {
 	bundle := "felis-db-20261001T033000Z-daily.tar"
 	accepted := []Request{
@@ -92,8 +90,6 @@ func TestHostTaskRequests(t *testing.T) {
 	}
 }
 
-// TestBlockingAndNodeActions pins which tasks hold the maintenance gate and which audit as
-// node lifecycle actions; an action this release does not know holds the gate.
 func TestBlockingAndNodeActions(t *testing.T) {
 	for action, blocking := range map[string]bool{"approve": true, "db-restore": true, "restore-host": true, "rotate-token": true, "domain-set": true,
 		"doctor": false, "db-backup": false, "backup-now": false, "offsite-sync": false, "support-bundle": false, "a-newer-action": true} {
@@ -112,8 +108,6 @@ func TestBlockingAndNodeActions(t *testing.T) {
 	}
 }
 
-// TestSecretsReachOnlyTheExecutor pins that a task's secrets are handed to the executor
-// and are neither kept on disk nor reported back.
 func TestSecretsReachOnlyTheExecutor(t *testing.T) {
 	dir := t.TempDir()
 	seen := make(chan map[string]string, 1)
@@ -171,8 +165,6 @@ func socketServer(t *testing.T, m *Manager) *Client {
 	return NewClient(path)
 }
 
-// TestTaskResultAndArtifact pins that a task's result is kept with it and its file is
-// served only from an artifact directory, as a regular file, once the task succeeded.
 func TestTaskResultAndArtifact(t *testing.T) {
 	artifacts := t.TempDir()
 	outside := t.TempDir()
@@ -242,7 +234,6 @@ func TestTaskResultAndArtifact(t *testing.T) {
 	}
 }
 
-// TestHostHooksOverTheSocket pins the overview, the watchdog hold and the off-site key.
 func TestHostHooksOverTheSocket(t *testing.T) {
 	manager, err := Open(context.Background(), t.TempDir(), nil)
 	if err != nil {

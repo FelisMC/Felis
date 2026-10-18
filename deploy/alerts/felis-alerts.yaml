@@ -1,22 +1,4 @@
-# Felis alert rules — plain Prometheus format (also the promtool-tested source
-# for felis-prometheusrule.yaml). See https://docs.felismc.com/en/operations/monitoring#metrics for scraping
-# and loading instructions. These are for a deployment that brings its own
-# Prometheus; every install already runs `felis watchdog` on the host, which
-# checks the same conditions without one and mails the owners (§14).
-#
-# felis_* series come from these processes:
-#   - felis-operator-metrics Service :8080  → felis_servers_total, felis_server_phase,
-#                                             felis_start_duration_seconds,
-#                                             felis_build_info{component="operator"},
-#                                             controller_runtime_*, workqueue_*
-#   - felis-api-internal Service :8081      → felis_image_build_failures_total,
-#                                             felis_mail_total, felis_rate_limited_total,
-#                                             felis_auth_otp_lockouts_total,
-#                                             felis_auth_failures_total,
-#                                             felis_audit_write_failures_total,
-#                                             felis_build_info{component="api"}
-#   - node-exporter textfile collector      → felis_db_backup_* (felis-db-backup.timer)
-# node_* / kube_* series come from node-exporter / kube-state-metrics.
+# Prometheus rules supplement the host watchdog; collect operator/API metrics plus node-exporter and kube-state-metrics.
 groups:
   - name: felis.rules
     rules:

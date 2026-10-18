@@ -8,33 +8,17 @@ import (
 	"felis.lolicon.best/internal/naming"
 )
 
-// A server leaves its owner, or the platform, through a retirement: the owner
-// gives it up, or an admin asks for it to be deleted. felis-api only records the
-// request and stops the server; the reaper, the one component that deletes a
-// world, carries it out on its next daily run. It archives the world (a
-// "released" backup kept for the reaper's retention, recorded against the owner),
-// deletes the world volume and releases the server for someone else to claim, and
-// for a deletion also removes the MinecraftServer and marks the servers row
-// deleted, which frees the name and subdomain. Until the reaper gets to it the
-// owner or an admin can cancel it; the server cannot be woken or claimed in the
-// meantime, so the world the reaper archives is the one the owner left.
+// Retirement records intent and stops the server; the reaper later archives and releases or deletes it.
 
-// retireRequest is the PUT /servers/{name}/retirement body. Confirm must repeat
-// the server's name, the same typed confirmation the panel asks for, so a stray
-// or replayed call cannot give a world away.
+// retireRequest requires the server name as typed confirmation.
 type retireRequest struct {
 	Confirm string `json:"confirm"`
 	Delete  bool   `json:"delete"`
 }
 
-// errServerRetiring refuses a wake or claim of a server with a pending
-// retirement.
 var errServerRetiring = newError(http.StatusConflict, "server_retiring",
 	"this server is being given up or deleted; cancel that first")
 
-// retireServer resolves {name} for the retirement routes and applies their gate:
-// 400 for a malformed name, 404 for a server that does not exist, 403 for a caller
-// who neither owns it nor is an admin.
 func (a *API) retireServer(w http.ResponseWriter, r *http.Request) (*ServerRecord, bool) {
 	name := r.PathValue("name")
 	if err := naming.ValidateServerName(name); err != nil {
@@ -53,11 +37,7 @@ func (a *API) retireServer(w http.ResponseWriter, r *http.Request) (*ServerRecor
 	return rec, true
 }
 
-// handleRetire records a retirement and stops the server. The owner may give the
-// server up; deleting it is an admin's call. A system server (reaperExempt, the
-// lobby) is never retired: the reaper would not touch it and the request would
-// sit forever. A deletion of a server whose MinecraftServer is already gone (one
-// removed with kubectl) is accepted, and the reaper then only marks its row.
+// handleRetire refuses reaper-exempt system servers because the reaper cannot complete their retirement.
 func (a *API) handleRetire(w http.ResponseWriter, r *http.Request) {
 	rec, ok := a.retireServer(w, r)
 	if !ok {
@@ -82,9 +62,7 @@ func (a *API) handleRetire(w http.ResponseWriter, r *http.Request) {
 	info, err := a.Cluster.GetServer(r.Context(), rec.Name)
 	switch {
 	case errors.Is(err, ErrNotFound) && req.Delete:
-		// The StatefulSet retains its claim, so a MinecraftServer removed by hand
-		// can leave the world volume behind, and the reaper deletes no world it
-		// cannot hold still to archive. That one is an operator's to deal with.
+		// A manually deleted CR can leave its PVC behind; archiving that unguarded volume requires operator intervention.
 		switch exists, err := a.Cluster.WorldVolumeExists(r.Context(), rec.Name); {
 		case err != nil:
 			writeError(w, r, err)
@@ -103,9 +81,7 @@ func (a *API) handleRetire(w http.ResponseWriter, r *http.Request) {
 			"a system server cannot be given up or deleted"))
 		return
 	}
-	// Stop first: a failed stop leaves nothing recorded, and a wake that lands
-	// after the request is refused. The reaper stops the server again before it
-	// touches the world, so one that slips in between costs only time.
+	// Stop before recording retirement so failed stops leave no pending request; the reaper repeats the stop before archival.
 	if info != nil && info.DesiredState != string(v1alpha1.DesiredStopped) {
 		if err := a.Cluster.SetDesiredState(r.Context(), rec.Name, v1alpha1.DesiredStopped); err != nil {
 			a.writeLookupError(w, r, err)
@@ -132,9 +108,7 @@ func (a *API) handleRetire(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]any{"name": rec.Name, "retiring": st})
 }
 
-// handleCancelRetire drops a pending retirement. The owner may take back giving
-// the server up, but a deletion an admin asked for is the admin's to cancel. The
-// server stays stopped; its owner starts it again when they want it.
+// handleCancelRetire leaves the server stopped; only staff can cancel a deletion request.
 func (a *API) handleCancelRetire(w http.ResponseWriter, r *http.Request) {
 	rec, ok := a.retireServer(w, r)
 	if !ok {

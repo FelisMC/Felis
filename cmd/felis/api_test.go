@@ -20,9 +20,6 @@ import (
 	"felis.lolicon.best/internal/fileedit"
 )
 
-// The passkey relying party follows the panel host the SPA is served on: an install
-// that names only its root domain still gets passkeys, on console.<root>, with the
-// operator host as the second origin; only an install with no panel host goes without.
 func TestPasskeyRelyingParty(t *testing.T) {
 	t.Setenv("FELIS_PANEL_NODEPORT", "")
 	for _, tc := range []struct {
@@ -66,11 +63,6 @@ func TestPasskeyRelyingPartyIncludesConfiguredNodePort(t *testing.T) {
 	}
 }
 
-// TestAuthSourcesFromConfig pins the one place the hasJoined identity anchor is decided:
-// Mojang is prepended in code, first, and is the only source whose UUIDs are trusted as-is.
-// The empty case matters on its own — both `felis api` and `felis nano` call this with a
-// config that has no [[auth_source]] at all, and that has to be a Mojang-only relay rather
-// than an empty list that rejects every login.
 func TestAuthSourcesFromConfig(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -103,10 +95,6 @@ func TestAuthSourcesFromConfig(t *testing.T) {
 	}
 }
 
-// TestBuildConfig_ProjectsOverrides pins the [registry] overrides reaching the
-// build subsystem: unset fields must stay EMPTY (the build package's compiled-in
-// defaults apply there, not here), and set fields must pass through verbatim —
-// an air-gapped install points these at its imported mirrors.
 func TestBuildConfig_ProjectsOverrides(t *testing.T) {
 	empty := buildConfig(&config.Config{})
 	if empty.KanikoImage != "" || empty.TrivyImage != "" || empty.CPULimit != "" || empty.MemLimit != "" {
@@ -129,11 +117,6 @@ func TestBuildConfig_ProjectsOverrides(t *testing.T) {
 	}
 }
 
-// TestNewAPIServerSetsHardenedTimeouts pins the gosec-G112 hardening on every
-// felis-api listener: the shared factory must bound the header and idle phases
-// (Slowloris + idle-connection exhaustion) while leaving WriteTimeout UNSET, because
-// the external and https faces stream Server-Sent Events for the life of a client's
-// console/build-log attachment and a WriteTimeout would sever a healthy long stream.
 func TestNewAPIServerSetsHardenedTimeouts(t *testing.T) {
 	srv := newAPIServer(":0", http.NewServeMux())
 
@@ -151,9 +134,6 @@ func TestNewAPIServerSetsHardenedTimeouts(t *testing.T) {
 	}
 }
 
-// Every listener drains at once, and the shutdown hook (API.CloseStreams in
-// cmdAPI) runs on each: two listeners each holding a request that ends when
-// the hook fires take one hook's worth of time, well inside the deadline.
 func TestShutdownServersDrainsListenersTogether(t *testing.T) {
 	release := make(chan struct{})
 	var hooks int32
@@ -215,8 +195,6 @@ type fakeServers struct {
 func (f fakeServers) ListServers(context.Context) ([]api.ServerInfo, error) { return f.list, nil }
 func (f fakeServers) PodImages(context.Context) ([]string, error)           { return f.pods, f.podsErr }
 
-// The registry pruner deletes whatever this list does not name, so every source of
-// a reference has to be in it, and a failing source must fail the list.
 func TestInUseImageRefsCoversEverySource(t *testing.T) {
 	const reg = "registry.felis.svc:5000/"
 	store := fakeRefStore{
@@ -254,9 +232,6 @@ func TestInUseImageRefsCoversEverySource(t *testing.T) {
 	}
 }
 
-// TestExpireFileSessions runs the loop against a stage whose clock the test
-// holds: the session idle past fileedit.SessionIdle goes, the one touched since
-// stays, and the drop is said once.
 func TestExpireFileSessions(t *testing.T) {
 	var mu sync.Mutex
 	now := time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC)
@@ -306,8 +281,6 @@ type sweepCount struct{ n atomic.Int32 }
 
 func (s *sweepCount) ExpireExports() { s.n.Add(1) }
 
-// TestExpireExports: the loop sweeps on each tick, and returns once felis-api
-// shuts down.
 func TestExpireExports(t *testing.T) {
 	var s sweepCount
 	ctx, cancel := context.WithCancel(context.Background())

@@ -1,8 +1,6 @@
 import type { MyServerView } from "./types";
 
-// Owner-tier pages (console extras, players, files, backups, LuckPerms) decide
-// who may act from GET /me/servers: the status projection never carries
-// `owned`, so reading it there hides owner tools from every non-admin owner.
+// Read ownership from /me/servers; public status never includes owned.
 
 /** canManage reports whether the caller may use a server's owner-tier tools. */
 export function canManage(

@@ -18,9 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
-// racingClient lands one concurrent write (race) on the stored object just before
-// setup's first write of it goes out, the way the operator's status update or
-// felis-api's idle patch can, and counts setup's writes.
+// Inject a concurrent object write before setup's first update to exercise conflict handling.
 func racingClient(t *testing.T, race func(ctx context.Context, c client.WithWatch), objs ...client.Object) (client.Client, *int) {
 	t.Helper()
 	writes := 0
@@ -72,8 +70,6 @@ func envMap(ms *v1alpha1.MinecraftServer) map[string]string {
 	return m
 }
 
-// A hand edit that lands while setup refreshes the console hostnames costs setup a
-// re-read and a second write; both the edit and the refresh survive.
 func TestRefreshDerivedEnvRetriesAConcurrentEdit(t *testing.T) {
 	ctx := context.Background()
 	cl, writes := racingClient(t, func(ctx context.Context, c client.WithWatch) {
@@ -105,7 +101,6 @@ func TestRefreshDerivedEnvRetriesAConcurrentEdit(t *testing.T) {
 	}
 }
 
-// converge reports each fill once even when a status write forced a retry.
 func TestConvergeRetriesAConcurrentStatusWrite(t *testing.T) {
 	ctx := context.Background()
 	lobby, err := lobbySystemServer("reg/lobby:1", "minecraft")
@@ -146,7 +141,6 @@ func TestConvergeRetriesAConcurrentStatusWrite(t *testing.T) {
 	}
 }
 
-// A replica refresh racing another writer keeps that writer's key.
 func TestSecretReplicaRefreshRetriesAConcurrentWrite(t *testing.T) {
 	secret := func(ns, body string) *corev1.Secret {
 		return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "felis-config", Namespace: ns},
@@ -207,8 +201,6 @@ func systemServer(name, image string) *v1alpha1.MinecraftServer {
 	return ms
 }
 
-// The installer's --system pin moves a system server onto the build its tag names
-// now, from the bare tag or from an earlier digest, and is a no-op the second time.
 func TestPinSystemServerImage(t *testing.T) {
 	ctx := context.Background()
 	res := systemPinRegistry(t)
@@ -314,8 +306,6 @@ func TestPinSystemServerImageLeavesOthersAlone(t *testing.T) {
 	})
 }
 
-// --system names one of the two system servers; anything else is a usage error
-// before any cluster is touched.
 func TestPinImagesSystemFlagTakesOnlySystemServers(t *testing.T) {
 	var stdout, stderr strings.Builder
 	if code := cmdPinImages([]string{"--system", "survival"}, &stdout, &stderr); code != 2 {
@@ -326,7 +316,6 @@ func TestPinImagesSystemFlagTakesOnlySystemServers(t *testing.T) {
 	}
 }
 
-// An idle setting the panel saves while converge fills the default is kept.
 func TestConvergeIdleKeepsAConcurrentPanelEdit(t *testing.T) {
 	ctx := context.Background()
 	srv := &v1alpha1.MinecraftServer{}

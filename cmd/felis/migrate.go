@@ -13,25 +13,14 @@ import (
 	"felis.lolicon.best/internal/store"
 )
 
-// cmdMigrate implements `felis migrate up`: load config, open the database, and
-// apply every pending embedded migration under the advisory lock (spec §6).
-//
-// Migrations only roll forward, and some drop data (0017_drop_password), so a
-// database that already holds a schema and has migrations pending is bundled
-// first (internal/dbbackup, label pre-migrate). A failed snapshot stops the
-// upgrade; -no-backup is the explicit way past it, e.g. for an external
-// database (no [database] deployment, so the host's own pg_dump runs) whose
-// server is newer than that pg_dump.
+// Take a pre-migration bundle unless -no-backup explicitly overrides the safety check.
 func cmdMigrate(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("migrate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", "/etc/felis/felis.toml", "path to felis.toml")
 	backupDir := fs.String("backup-dir", dbbackup.DefaultDir, "where the pre-migration snapshot goes")
 	noBackup := fs.Bool("no-backup", false, "apply pending migrations without snapshotting the database first")
-	// The "up" verb precedes any flags (felis migrate up -config path). Go's
-	// flag.Parse stops at the first non-flag token and would never see a flag
-	// placed after "up", silently falling back to the default -config. Pull the
-	// verb off the front, then parse the remaining flags.
+	// The "up" verb precedes any flags: Go's flag.Parse stops at the first non-flag token, so the verb is pulled off the front before the rest is parsed.
 	if len(args) == 0 || args[0] != "up" {
 		fmt.Fprintln(stderr, "usage: felis migrate up [-config path]")
 		return 2
@@ -89,9 +78,7 @@ func cmdMigrate(args []string, stdout, stderr io.Writer) int {
 // point it at a directory of their own.
 var preMigrateStateDir = dbbackup.DefaultStateDir
 
-// preMigrateBackup bundles the database when it already carries a schema and
-// some of migrations are not applied yet, and returns the bundle's path ("" when
-// there was nothing to protect: a fresh database, or nothing pending).
+// Back up initialized databases with pending migrations; otherwise return no bundle path.
 func preMigrateBackup(ctx context.Context, drv store.Driver, migrations []store.Migration, db config.DatabaseConfig, dir string, log io.Writer) (string, error) {
 	if err := drv.EnsureVersionTable(ctx); err != nil {
 		return "", fmt.Errorf("ensure version table: %w", err)
@@ -130,10 +117,7 @@ func hasPending(done map[int]struct{}, migrations []store.Migration) bool {
 	return false
 }
 
-// openStore opens the business database for a command that reads and writes its
-// tables, and refuses one whose schema this build was not written against: a newer
-// Felis migrated it (a rolled-back binary), or, unless allowPending, migrations this
-// build embeds have not run yet (a binary swapped in ahead of `felis migrate up`).
+// Reject unknown applied migrations and, unless allowPending, pending embedded migrations.
 func openStore(ctx context.Context, url string, allowPending bool) (*store.PostgresDriver, error) {
 	drv, err := store.Open(ctx, url)
 	if err != nil {
@@ -142,10 +126,7 @@ func openStore(ctx context.Context, url string, allowPending bool) (*store.Postg
 	return checkSchema(ctx, drv, allowPending)
 }
 
-// podDBWindow and podDBInterval bound how long a pod that has just started retries its
-// first database dial while the network policy has yet to admit it
-// (store.OpenRetrying). A minute is far past the sync lag and far inside every Job's
-// deadline. Vars so a test can shrink them.
+// Retry initial database dials while startup NetworkPolicy rules converge.
 var (
 	podDBWindow   = time.Minute
 	podDBInterval = time.Second

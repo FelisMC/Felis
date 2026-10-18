@@ -18,12 +18,7 @@ import {
 
 type RowAction = "kick" | "ban";
 
-/** OnlineSection is the live roster: who is on the server right now, each with a
- *  one-click kick or ban (both two-step confirmed, since both are disruptive). It
- *  is the ONLY place the panel learns WHO is online — status carries the count
- *  alone — so it reads the RCON "list" reply on demand. Refresh is MANUAL (a button
- *  + a last-updated stamp), never a timer: auto-polling would fire an RCON command
- *  per viewer forever, and the roster does not move fast enough to justify it. */
+// Refresh rosters manually to avoid issuing repeated RCON commands per viewer.
 export function OnlineSection({ name, defaultOpen = true }: { name: string; defaultOpen?: boolean }) {
   const { t } = useTranslation("servers");
   const { data, error, loading, reload } = useAsync(() => api.accessPlayers(name), [name]);
@@ -32,8 +27,7 @@ export function OnlineSection({ name, defaultOpen = true }: { name: string; defa
   const [pending, setPending] = useState<{ player: string; action: RowAction } | null>(null);
   const [fb, setFb] = useState<Feedback>(null);
 
-  // Stamp the last successful read so the roster's freshness is always visible —
-  // the honest counterpart to not auto-refreshing.
+  // Stamps the last successful read, so the roster's freshness stays visible.
   useEffect(() => {
     if (data) setUpdatedAt(new Date());
   }, [data]);
@@ -42,8 +36,7 @@ export function OnlineSection({ name, defaultOpen = true }: { name: string; defa
   const max = data?.max ?? 0;
   const players = useMemo(() => data?.players ?? [], [data]);
   const raw = data?.output?.trim() ?? "";
-  // The tally says someone is on but no names parsed (a non-vanilla "list" format):
-  // report the count honestly and point at the raw reply rather than a false empty.
+  // The tally says someone is on but no names parsed (a non-vanilla list format): report the count and point at the raw reply rather than show a false empty.
   const namesUnavailable = online > 0 && players.length === 0;
 
   const { query, onQuery, q, shown, showSearch, pageItems, pageCount, clampedPage, needFooter, setPage } =

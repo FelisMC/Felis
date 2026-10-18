@@ -20,8 +20,6 @@ const hostOverviewFixture = `{"host":"ctl-a","at":"2026-10-12T00:00:00Z","versio
 	`"offsite":{"configured":false,"keyKept":false},"settings":{"dbBackupTime":"03:30","dbBackupKeep":14,"velocityXmx":"1G"},` +
 	`"connection":{"mode":"local","panelHost":"console.example.com","adminHost":"op.console.example.com"},"storage":{"mode":"local"},"rootDomain":"example.com"}`
 
-// TestHostRoutesAreOwnerOnly pins that the host overview, the alert hold, task downloads,
-// the off-site key and the audit export answer the Owner alone.
 func TestHostRoutesAreOwnerOnly(t *testing.T) {
 	for _, role := range []string{"user", "admin"} {
 		a := newTestAPI(newFakeRepo(), newFakeCluster())
@@ -46,8 +44,6 @@ func TestHostRoutesAreOwnerOnly(t *testing.T) {
 	}
 }
 
-// TestHostRoutesAskForAFreshProof pins that the hold, a download, the key and the export
-// need a recent reauthentication, and the overview does not.
 func TestHostRoutesAskForAFreshProof(t *testing.T) {
 	repo := newFakeRepo()
 	a := newTestAPI(repo, newFakeCluster())
@@ -88,8 +84,6 @@ func ownerAPI() (*API, *fakeRepo, *fakeNodeControl) {
 	return a, repo, control
 }
 
-// TestHostQuietTakesAHoldWithinAWeek pins the bounds of the hold: it ends within the next
-// seven days, and null lifts it.
 func TestHostQuietTakesAHoldWithinAWeek(t *testing.T) {
 	a, repo, control := ownerAPI()
 	post := func(body string) int {
@@ -121,7 +115,6 @@ func TestHostQuietTakesAHoldWithinAWeek(t *testing.T) {
 	}
 }
 
-// TestNodeTaskArtifactDownloads pins that a task's file comes as a named attachment.
 func TestNodeTaskArtifactDownloads(t *testing.T) {
 	a, repo, control := ownerAPI()
 	if w := do(a.ExternalHandler(), "GET", "/api/v1/settings/node-control/tasks/task/artifact", "", nil); w.Code != http.StatusNotFound {
@@ -143,7 +136,6 @@ func TestNodeTaskArtifactDownloads(t *testing.T) {
 	}
 }
 
-// TestAuditExportReadsAPeriod pins the export's bounds and its attachment.
 func TestAuditExportReadsAPeriod(t *testing.T) {
 	a, _, _ := ownerAPI()
 	if w := do(a.ExternalHandler(), "GET", "/api/v1/platform/audit-export", "", nil); w.Code != http.StatusServiceUnavailable {
@@ -175,8 +167,6 @@ func TestAuditExportReadsAPeriod(t *testing.T) {
 	}
 }
 
-// TestMaintenanceGuardHoldsOnlyForBlockingTasks pins that a health check or a database
-// backup leaves server starts alone, while a restore holds them.
 func TestMaintenanceGuardHoldsOnlyForBlockingTasks(t *testing.T) {
 	guard := NodeMaintenanceGuard(&fakeNodeControl{tasks: []nodecontrol.Task{
 		{ID: "a", State: "running", Request: nodecontrol.Request{Action: "doctor"}},
@@ -192,8 +182,6 @@ func TestMaintenanceGuardHoldsOnlyForBlockingTasks(t *testing.T) {
 	}
 }
 
-// TestHostTasksAuditUnderTheirScope pins the audit names: node lifecycle actions under
-// platform.node, the other host tasks under platform.host.
 func TestHostTasksAuditUnderTheirScope(t *testing.T) {
 	a, repo, control := ownerAPI()
 	if w := do(a.ExternalHandler(), "POST", nodeTaskPath, `{"action":"doctor","confirmMaintenance":false}`, jsonHeader); w.Code != http.StatusAccepted {

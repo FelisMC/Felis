@@ -20,10 +20,6 @@ function failingOver(s: FailoverServer): boolean {
   return s.operation?.kind === "failover" && s.operation.state !== "failed" && s.operation.state !== "aborted";
 }
 
-// FailoverDialog is the Owner's failover of a lost worker: the servers whose worlds are on
-// it, each with the backup it would come back from (so what it loses), the node to bring
-// them up on, and a typed confirmation. Once started it follows each server's failover
-// until the dialog is closed.
 export function FailoverDialog({ node, controllers = [], onChanged }: { node: string; controllers?: string[]; onChanged: () => void }) {
   const { t, i18n } = useTranslation("servers");
   const [open, setOpen] = useState(false);

@@ -11,26 +11,7 @@ import java.util.Locale;
 import java.util.Properties;
 import java.util.function.Consumer;
 
-/**
- * FelisVelocityConfig extends the shared link config with the inputs only the full
- * proxy needs: the {@code root-domain} the deployment serves (the zone subdomains
- * are carved from), the {@code login-server} every fresh connection must pass
- * through, and the post-auth {@code lobby-server} waiters are parked in while their
- * backend wakes. It reuses {@link LinkConfigLoader} for the API base
- * URL + service token (and its first-run template), so {@code /link} keeps working
- * exactly as before; these extra keys are read from the same properties file (or
- * {@code FELIS_ROOT_DOMAIN} / {@code FELIS_LOGIN_SERVER} /
- * {@code FELIS_LOBBY_SERVER} / {@code FELIS_PANEL_HOSTNAME} /
- * {@code FELIS_ADMIN_HOSTNAME}).
- *
- * <p>The routing extras are optional at load time and the routing layer degrades rather
- * than crashing: a missing {@code root-domain} disables routing (with a clear log
- * line) while {@code /link} still runs. The two server names default to the system
- * names ({@code login}/{@code lobby}) but must remain distinct: collapsing them
- * would put the waiting area on the unauthenticated side of the gate. The root
- * domain is the only place the deployment zone enters the proxy — it is never
- * compiled in (CI red line).
- */
+// Keep login and lobby distinct; missing root-domain disables routing without disabling account linking.
 final class FelisVelocityConfig {
     static final String ENV_ROOT_DOMAIN = "FELIS_ROOT_DOMAIN";
     static final String ENV_LOGIN = "FELIS_LOGIN_SERVER";
@@ -111,10 +92,8 @@ final class FelisVelocityConfig {
         return lobbyServer;
     }
 
-    /**
-     * panelHostname is the player web-panel host, falling back to
-     * {@code console.<root-domain>}; null when neither is configured.
-     */
+    // panelHostname is the player web-panel host, falling back to console.<root-domain>;
+    // null when neither is configured.
     String panelHostname() {
         if (panelHostname != null) {
             return panelHostname;
@@ -122,10 +101,8 @@ final class FelisVelocityConfig {
         return rootDomain == null ? null : "console." + rootDomain;
     }
 
-    /**
-     * adminHostname is the staff op.console host, falling back to
-     * {@code op.console.<root-domain>}; null when neither is configured.
-     */
+    // adminHostname is the staff op.console host, falling back to op.console.<root-domain>;
+    // null when neither is configured.
     String adminHostname() {
         if (adminHostname != null) {
             return adminHostname;

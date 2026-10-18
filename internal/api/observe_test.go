@@ -40,9 +40,6 @@ func accessLines(t *testing.T, buf *bytes.Buffer) []map[string]any {
 	return out
 }
 
-// TestObserveLabelsByRoutePattern pins the access log and the request series to
-// the matched route pattern: a server name never becomes a label, a path no route
-// matched is "unmatched", the caller is named, and the probes stay out of the log.
 func TestObserveLabelsByRoutePattern(t *testing.T) {
 	repo := newFakeRepo()
 	repo.byName["survival"] = &ServerRecord{Name: "survival", OwnerID: "owner1"}
@@ -95,8 +92,6 @@ func TestObserveLabelsByRoutePattern(t *testing.T) {
 	}
 }
 
-// TestNoRouteEnvelopes: a path no route serves is a 404 envelope, and a known path
-// asked with the wrong method is a 405 that names the methods it does take.
 func TestNoRouteEnvelopes(t *testing.T) {
 	a := newTestAPI(newFakeRepo(), newFakeCluster())
 	a.External = staticExternal{p: &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}}
@@ -125,8 +120,6 @@ func TestNoRouteEnvelopes(t *testing.T) {
 	}
 }
 
-// TestOversizedJSONBodyIs413: a JSON body past maxBodyBytes is refused as too
-// large, where it used to read as a malformed one.
 func TestOversizedJSONBodyIs413(t *testing.T) {
 	r := httptest.NewRequest("POST", "/x", strings.NewReader(`{"name":"`+strings.Repeat("a", maxBodyBytes)+`"}`))
 	w := httptest.NewRecorder()
@@ -138,8 +131,6 @@ func TestOversizedJSONBodyIs413(t *testing.T) {
 	}
 }
 
-// TestSecurityHeaders: every API answer forbids sniffing, framing and referrers,
-// and HSTS goes out on what the edge served over HTTPS.
 func TestSecurityHeaders(t *testing.T) {
 	h := newTestAPI(newFakeRepo(), newFakeCluster()).ExternalHandler()
 
@@ -168,9 +159,6 @@ func TestSecurityHeaders(t *testing.T) {
 	}
 }
 
-// TestCrossSiteWritesRefused: a browser write from another site (a sibling
-// subdomain included) is refused before auth; reads, same-origin writes and
-// non-browser callers pass.
 func TestCrossSiteWritesRefused(t *testing.T) {
 	a := newTestAPI(newFakeRepo(), newFakeCluster())
 	a.External = staticExternal{p: &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}}
@@ -222,9 +210,6 @@ func TestCrossSiteWritesRefused(t *testing.T) {
 	}
 }
 
-// TestBodyDeadlineCutsATrickle runs a real server: a body that stops arriving is
-// cut off at the grace period, and a body that did arrive clears the deadline so
-// the request context outlives it while the handler keeps working.
 func TestBodyDeadlineCutsATrickle(t *testing.T) {
 	oldGrace, oldRate := bodyGrace, bodyMinRate
 	bodyGrace, bodyMinRate = 150*time.Millisecond, 1<<20
@@ -274,8 +259,6 @@ func TestBodyDeadlineCutsATrickle(t *testing.T) {
 	}
 }
 
-// TestStatusTrimmedForOthers: GET /servers/{name}/status gives the owner the whole
-// record and any other signed-in user what the game's server list shows.
 func TestStatusTrimmedForOthers(t *testing.T) {
 	repo := newFakeRepo()
 	repo.byName["survival"] = &ServerRecord{Name: "survival", OwnerID: "owner1"}

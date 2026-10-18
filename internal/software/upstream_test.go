@@ -13,11 +13,7 @@ import (
 	"testing"
 )
 
-// fakeUpstream answers the resolver's requests with responses captured from
-// the real hosts (testdata/, fetched 2026-10-16), keyed by host and path, so
-// every value a test expects is one the upstream itself published. A request
-// it has no capture for is a 404, which is how the real hosts answer a version
-// or build they do not have.
+// Serve captured upstream responses by host/path; uncaptured requests return 404.
 type fakeUpstream struct {
 	t      *testing.T
 	routes map[string]string // "host/path" -> testdata file

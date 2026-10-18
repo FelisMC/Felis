@@ -11,12 +11,6 @@ import (
 	"felis.lolicon.best/internal/metrics"
 )
 
-// The per-code attempt cap resets on every resend; these pin the account-level
-// budget that does not. The public login door must stay uniform (a locked
-// account reads like a wrong code and mails nothing), tell the owner by mail
-// once, and reopen when the window ends. The signed-in onboarding door answers
-// 429 with Retry-After instead.
-
 type noticeMailer struct {
 	captureMailer
 	notices []string // "to|subject|body"
@@ -53,7 +47,6 @@ func TestLoginDoorLocksAfterDailyWrongCodeBudget(t *testing.T) {
 		return w.Code
 	}
 
-	// Ten wrong codes over three sends; no single code reaches its own cap.
 	for i := 0; i < otpFailureBudget; i++ {
 		if i%4 == 0 {
 			start()
@@ -137,7 +130,6 @@ func TestOnboardDoorLockAnswers429(t *testing.T) {
 	if last != http.StatusTooManyRequests {
 		t.Fatalf("last = %d", last)
 	}
-	// The signed-in owner sees the 429; no notice mail is needed.
 	if len(mailer.notices) != 0 {
 		t.Fatalf("onboarding lock mailed a notice: %q", mailer.notices)
 	}
@@ -185,7 +177,6 @@ func TestOTPLockNoticeNamesDoorAndTime(t *testing.T) {
 	}
 }
 
-// The lockout alert sees a purpose only if metrics pre-creates its series.
 func TestOTPPurposesMatchMetricLabels(t *testing.T) {
 	got := []string{otpPurposeOnboard, otpPurposeLogin, otpPurposeOpLogin, otpPurposeMigrate}
 	want := slices.Clone(metrics.OTPPurposes)

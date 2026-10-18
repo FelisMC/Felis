@@ -17,20 +17,14 @@ import (
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 )
 
-// The lease timings of felis-api's background loops: a successor takes over at most
-// apiLeaseDuration after the holder stopped renewing; a clean stop releases the lease at
-// once. Variables so the tests can shorten them.
+// Lease expiry bounds takeover latency; clean shutdown releases immediately.
 var (
 	apiLeaseDuration = 15 * time.Second
 	apiLeaseRenew    = 10 * time.Second
 	apiLeaseRetry    = 2 * time.Second
 )
 
-// leadLoops runs loops whenever this felis-api holds the background-loop lease
-// (platform.LeaseAPILoops) and stops them, by cancelling their context, when it loses it.
-// With one replica it holds the lease from a few seconds after it starts; with controller
-// high availability a replacement on another controller takes over only once the old one
-// has stopped renewing, so the loops never run twice. It returns when ctx ends.
+// leadLoops stops background work when its leadership lease is lost.
 func leadLoops(ctx context.Context, cs kubernetes.Interface, namespace string, loops func(context.Context), stderr io.Writer) {
 	identity := leaseIdentity()
 	lock := &resourcelock.LeaseLock{

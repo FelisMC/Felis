@@ -11,25 +11,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.List;
 
-/**
- * ServerListSource decides what the registry reconciles against on each refresh, and
- * keeps the last list felis-api answered with on disk.
- *
- * <p>A fetch that succeeds always wins, and its list is saved when it differs from the
- * one saved last. A fetch that fails keeps the current registrations — except before
- * the first success since the proxy started. The registry is empty then (velocity.toml
- * holds only a dead login placeholder), so a proxy restarted while felis-api is down —
- * an upgrade window, a crashed API pod — would refuse every player until the API came
- * back. In that one case the saved list is handed out once instead: the login gate,
- * the lobby and the user backends go back to the addresses they last had. Those are
- * Service ClusterIPs, which outlive pod restarts, and game servers keep running while
- * the API is down, so a saved address is usually still the live one; the next
- * successful fetch replaces the whole list either way.
- *
- * <p>The file is written next to felis-link.properties and replaced by rename, so a
- * crash mid-write leaves the previous list. An unreadable or malformed file counts as
- * no saved list.
- */
+// Retain registrations on fetch failure; use the atomic disk snapshot once before the first successful refresh.
 final class ServerListSource {
 
     /** Fetch is the one felis-api call the source wraps (FelisApiClient::listServers). */

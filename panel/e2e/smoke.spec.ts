@@ -206,9 +206,7 @@ test("an unlinked Owner can manage the panel, then preview and confirm a game ro
   await expectFitsScreen(page);
 });
 
-// Admin pages are chunks of their own, so a player never downloads them: every
-// page module is fetched by its name (/src/pages/admin/UsersPage.tsx under the
-// dev server, /assets/UsersPage-<hash>.js in a build).
+// Assert administrator page chunks are never fetched by player navigation.
 const ADMIN_PAGE = /\/(UsersPage|UserDetailPage|LobbyPage|ImageAdmin|ImageBuildPage|SubmissionsPage|UpdatesPage)[.-]/;
 const ACCOUNT_PAGE = /\/Account[.-]/;
 

@@ -42,23 +42,8 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// felis domain moves an installed platform to a new root domain (#12). The domain
-// is rendered into places nothing re-renders afterwards, and a surface left behind
-// breaks one feature rather than the whole install:
-//
-//   - the toml configs (felis.host.toml, felis.pod.toml, and felis.toml when it is
-//     a file of its own rather than the link to the host copy);
-//   - the panel certificate, which the installer writes once;
-//   - the felis-config Secret (and its workload-namespace mirror) and the
-//     felis-api-tls Secret, which felis-api mounts;
-//   - the proxy's felis-link.properties;
-//   - the login gate's MinecraftServer env.
-//
-// `set` rewrites each of them in place and keeps every other value; `check` reads
-// each back, including what the running felis-api, proxy and login pod serve, so a
-// half-moved install says which surface is behind. Re-running the installer is not
-// the way: it regenerates files an operator has tuned, and it keeps the old panel
-// certificate.
+// Domain changes update persisted config, certificates, Secrets, plugin properties, and login environment.
+// Verify persisted values and what running API, proxy, and login processes serve.
 
 const (
 	domainUsage = "Usage: felis domain set [-yes] <new-root-domain> | felis domain check"
@@ -141,13 +126,7 @@ var (
 	tomlKeyLineRE     = regexp.MustCompile(`^\s*([A-Za-z0-9_-]+)\s*=`)
 )
 
-// editTOMLStrings sets string keys in named tables by editing lines, so the
-// comments the installer writes to explain the file, every other key and the
-// layout stay as they were (a decode/encode round trip drops the comments). A key
-// that is missing goes after the last key of its table, and a missing table goes
-// at the end. The result is decoded and compared with the original plus the
-// intended edits: a file this editor reads differently from the TOML decoder (a
-// multi-line value, a quoted or dotted key) is refused rather than half-edited.
+// Preserve unrelated TOML text and reject syntax whose decoded meaning would change unexpectedly.
 func editTOMLStrings(raw []byte, edits []tomlStringEdit) ([]byte, error) {
 	var lines []string
 	if len(raw) > 0 {
@@ -273,9 +252,7 @@ func tomlDomainNames(raw []byte) (domainNames, error) {
 	return effectiveDomainNames(doc.Server.RootDomain, doc.Auth.PanelHostname, doc.Auth.AdminHostname), nil
 }
 
-// felisIssuedCert reports whether c is a panel certificate Felis made for itself:
-// self-signed, and carrying the localhost names the installer always adds. One an
-// operator installed (from a CA, or their own) is theirs to replace.
+// Replace only self-signed Felis certificates carrying installer localhost names; operator certificates remain untouched.
 func felisIssuedCert(c *x509.Certificate) bool {
 	if !bytes.Equal(c.RawIssuer, c.RawSubject) || c.CheckSignature(c.SignatureAlgorithm, c.RawTBSCertificate, c.Signature) != nil {
 		return false
@@ -317,9 +294,6 @@ func readCertFile(path string) (*x509.Certificate, error) {
 	}
 }
 
-// issuePanelCert makes the certificate the installer would have made for these
-// names (ensure_panel_tls_cert): self-signed RSA 2048 for 825 days, naming the
-// admin console, the panel and localhost, and the addresses the old one named.
 func issuePanelCert(n domainNames, ips []net.IP, now time.Time) (certPEM, keyPEM []byte, err error) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -550,9 +524,7 @@ func parseUnitShow(out string) unitStatus {
 	return st
 }
 
-// fetchLiveAPI reads what felis-api serves on the panel port. The panel
-// certificate is self-signed, so verification is skipped: this reads the
-// certificate to check its names, it does not trust it.
+// Inspect the self-signed certificate's names without trusting it for authentication.
 func fetchLiveAPI(ctx context.Context, url, serverName string) (liveAPIView, error) {
 	c := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true, ServerName: serverName}, // #nosec G402 -- inspected, not trusted

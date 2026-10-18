@@ -14,21 +14,12 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// applyStorageConfig persists the operator's storage choice and rolls felis-api so
-// it picks up the new backend. For local it stamps user_uploads_context at the
-// uploads PVC mount; for S3 it stamps the s3:// base + the [registry.s3] endpoint
-// and credential refs, and creates the felis-uploads-s3 Secret the deployment reads
-// the keys from. It mirrors applyReverseProxy — the same write-config →
-// apply-secret → roll chain, hardcoding the default "felis" namespace as the rest
-// of the wizard does.
+// It follows applyReverseProxy's write-config, apply-secret, roll chain, with the default "felis" namespace hardcoded as the rest of the wizard does.
 func applyStorageConfig(ctx context.Context, method storageMethod, in s3Inputs) error {
 	var uploadsCtx string
 	var s3cfg config.RegistryS3Config
 	if method == storageS3 {
-		// Preflight the coordinates BEFORE touching config, the Secret, or the
-		// deployment: a mistyped key, wrong endpoint, or missing bucket fails here at
-		// the keyboard instead of silently at the first real upload. Nothing has been
-		// written yet, so a failed check leaves the install untouched.
+		// Validate bucket access before changing config, Secrets, or deployments.
 		if err := submit.CheckS3Access(ctx, submit.S3StoreConfig{
 			Base:      "s3://" + in.bucket,
 			Endpoint:  in.endpoint,
@@ -52,9 +43,7 @@ func applyStorageConfig(ctx context.Context, method storageMethod, in s3Inputs) 
 	if err := writeStorageConfig(uploadsCtx, s3cfg); err != nil {
 		return err
 	}
-	// S3: land the credentials in their own Secret BEFORE the roll, so the optional
-	// env refs resolve on the fresh pod, and on the host before that, so the next
-	// installer run can apply the Secret again (hostcreds.go). Local needs no Secret.
+	// Persist host credentials and create the S3 Secret before restarting its consumers.
 	if method == storageS3 {
 		for _, c := range []struct{ path, value string }{
 			{hostUploadsS3AccessKeyPath, in.accessKey},
@@ -77,12 +66,6 @@ func applyStorageConfig(ctx context.Context, method storageMethod, in s3Inputs) 
 	return kubectl(ctx, "-n", "felis", "rollout", "status", "deployment/felis-api", "--timeout=180s")
 }
 
-// currentStorageInputs reads the storage backend already recorded in felis.toml so
-// the reconfigure flow can pre-select the method and pre-fill the non-secret S3
-// fields (endpoint/bucket/region). The credentials (the felis-uploads-s3 Secret
-// and its host copies) are deliberately never read back — they must be re-entered
-// to change.
-// Any read error falls back to a blank local default rather than blocking reconfig.
 func currentStorageInputs() (storageMethod, s3Inputs) {
 	cfg, err := config.Load(hostSetupConfigPath)
 	if err != nil {
@@ -103,9 +86,7 @@ func currentStorageInputs() (storageMethod, s3Inputs) {
 	}
 }
 
-// writeStorageConfig stamps the uploads backend into both the host and pod config
-// files. The S3 subtable is set for S3 and cleared (zero value) for local, so
-// switching backends never leaves stale coordinates behind.
+// Clear the S3 subtable when switching to local uploads so no stale coordinates remain.
 func writeStorageConfig(uploadsCtx string, s3cfg config.RegistryS3Config) error {
 	for _, path := range []string{hostSetupConfigPath, podSetupConfigPath} {
 		cfg, err := config.Load(path)
@@ -121,10 +102,7 @@ func writeStorageConfig(uploadsCtx string, s3cfg config.RegistryS3Config) error 
 	return nil
 }
 
-// applyUploadsS3Secret creates (or replaces) the felis-uploads-s3 Secret the
-// felis-api Deployment mounts the S3 credentials from. The Secret is rendered
-// in-process and piped to `kubectl apply` — the keys are NEVER passed as
-// command-line args, so they never appear in the host process table.
+// Pipe rendered credentials to kubectl instead of exposing them in argv.
 func applyUploadsS3Secret(ctx context.Context, accessKey, secretKey string) error {
 	secret := &corev1.Secret{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},

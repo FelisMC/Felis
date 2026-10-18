@@ -57,10 +57,6 @@ func (l *pingLog) got() ([]string, []string) {
 	return append([]string(nil), l.pings...), append([]string(nil), l.bodies...)
 }
 
-// TestHeartbeatSend: a run whose alerts reach the owners GETs the URL, one
-// whose alerts reach no one POSTs its report to /fail, and a standby host, a
-// failure in the installer's quiet window and a query URL that has no /fail
-// send nothing.
 func TestHeartbeatSend(t *testing.T) {
 	const key = "/ping/5f1e0c2a-check-key"
 	for _, tc := range []struct {
@@ -101,8 +97,6 @@ func TestHeartbeatSend(t *testing.T) {
 	}
 }
 
-// TestHeartbeatErrors: a ping the service refuses or that cannot connect is
-// logged without the URL's path, the check's key.
 func TestHeartbeatErrors(t *testing.T) {
 	const key = "5f1e0c2a-check-key"
 	log, srv := newPingServer(t)
@@ -123,8 +117,6 @@ func TestHeartbeatErrors(t *testing.T) {
 	}
 }
 
-// TestHeartbeatReportClipped: a long report is cut to what the service keeps,
-// on a character boundary.
 func TestHeartbeatReportClipped(t *testing.T) {
 	log, srv := newPingServer(t)
 	report := strings.Repeat("磁盘", heartbeatReportMax)
@@ -172,8 +164,6 @@ func TestRedactURL(t *testing.T) {
 	}
 }
 
-// TestStandsBy: a standby record keeps the host from pinging however old it
-// is; a displaced host, the writer, or a host without [offsite] pings.
 func TestStandsBy(t *testing.T) {
 	status := filepath.Join(t.TempDir(), "status.json")
 	if standsBy(true, status) {
@@ -241,9 +231,6 @@ func (f *alertRecorder) sender(relay *mail.SMTP) alertSender {
 	}
 }
 
-// TestMailerDeliver: a plan goes out and is committed; held, it waits
-// uncommitted; with no relay or recipient it is logged and committed; a mail
-// no recipient got is left uncommitted to come due again.
 func TestMailerDeliver(t *testing.T) {
 	now := time.Now()
 	relay := &watchdog.Relay{Host: "smtp.example.com", Port: 587, From: "felis@example.com", Username: "felis"}
@@ -289,8 +276,6 @@ func TestMailerDeliver(t *testing.T) {
 	}
 }
 
-// TestCachedRelay: the cache keeps the relay's coordinates and its TLS rule,
-// and nothing when no relay is configured.
 func TestCachedRelay(t *testing.T) {
 	if r := cachedRelay(testSMTPConfig("")); r != nil {
 		t.Fatalf("no relay cached %+v", r)
@@ -311,8 +296,6 @@ func testSMTPConfig(host string) config.SMTPConfig {
 	return config.SMTPConfig{Host: host, Port: 2525, From: "felis@example.com", Username: "felis"}
 }
 
-// TestSMTPPassword: the env var password_ref names wins over the cache once
-// it is set.
 func TestSMTPPassword(t *testing.T) {
 	c := testSMTPConfig("smtp.example.com")
 	c.PasswordRef = "FELIS_TEST_WATCHDOG_RELAY_PW"
@@ -373,10 +356,6 @@ func unitFailedFixture(t *testing.T, cfg string) (unitFailedRun, *alertRecorder,
 	}, f, log
 }
 
-// TestWatchdogUnitFailedBrokenConfig: failed runs of a watchdog whose
-// felis.toml no longer loads are mailed through the relay the last good run
-// cached, after five in a row; every one pings /fail; the open alert keeps
-// its state.
 func TestWatchdogUnitFailedBrokenConfig(t *testing.T) {
 	r, f, log := unitFailedFixture(t, "[database\n")
 	start := r.now
@@ -412,9 +391,6 @@ func TestWatchdogUnitFailedBrokenConfig(t *testing.T) {
 	}
 }
 
-// TestWatchdogUnitFailedStateThatDoesNotSave: with the state file read-only,
-// each report keeps the state in the fallback and the next one reads it, so
-// the failure is mailed once, after five in a row, and never again.
 func TestWatchdogUnitFailedStateThatDoesNotSave(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root writes into a read-only directory")
@@ -438,8 +414,6 @@ func TestWatchdogUnitFailedStateThatDoesNotSave(t *testing.T) {
 	}
 }
 
-// TestWatchdogUnitFailedConfigRelay: with felis.toml loading, the relay is
-// the configured one and signs in with the env var password_ref names.
 func TestWatchdogUnitFailedConfigRelay(t *testing.T) {
 	r, f, _ := unitFailedFixture(t, testWatchdogConfig+testWatchdogSMTP)
 	t.Setenv("FELIS_TEST_WATCHDOG_RELAY_PW", "env-pw")
@@ -456,9 +430,6 @@ func TestWatchdogUnitFailedConfigRelay(t *testing.T) {
 	}
 }
 
-// TestWatchdogUnitFailedHeld: in the installer's quiet window the alert waits
-// and no failure is pinged; a host standing by for the off-site bucket pings
-// nothing either.
 func TestWatchdogUnitFailedHeld(t *testing.T) {
 	r, f, log := unitFailedFixture(t, "[database\n")
 	writeTestFile(t, r.quietPath, fmt.Sprintf("%d\n", r.now.Add(time.Hour).Unix()), 0o644)
@@ -483,8 +454,6 @@ func TestWatchdogUnitFailedHeld(t *testing.T) {
 	}
 }
 
-// TestWatchdogUnitFailedStateUnreadable: with no state to mail from, the
-// failure still reaches the heartbeat.
 func TestWatchdogUnitFailedStateUnreadable(t *testing.T) {
 	r, f, log := unitFailedFixture(t, "[database\n")
 	writeTestFile(t, r.statePath, "{", 0o600)
@@ -509,12 +478,6 @@ func TestFailureDetail(t *testing.T) {
 	}
 }
 
-// TestWatchdogRunHeartbeat runs whole watchdog passes with the API server and
-// PostgreSQL down and the relay a recorder: a pass whose alerts reach the
-// owners pings success; one whose mail fails, or that has no relay while an
-// alert is open, posts its report to /fail; a host standing by for the
-// off-site bucket pings nothing; a state file that does not parse is moved
-// aside and reported.
 func TestWatchdogRunHeartbeat(t *testing.T) {
 	due := func(statePath string) {
 		// PostgreSQL has been down for an hour and nobody was told yet.
@@ -617,9 +580,6 @@ func TestWatchdogRunHeartbeat(t *testing.T) {
 	}
 }
 
-// TestRelayForPrefersThePanelRelay pins the relay an alert goes through: the Owner's panel
-// relay wins over felis.toml's; with the database out the last run's relay stands, so an
-// outage is still mailed through the relay the Owner chose.
 func TestRelayForPrefersThePanelRelay(t *testing.T) {
 	host := config.SMTPConfig{Host: "host.example.com", Port: 587, From: "felis@example.com", Username: "felis"}
 	panel := &mailsettings.Settings{Host: "panel.example.com", Port: 465, From: "alerts@example.com", Username: "alerts", Password: "panel-pw", RequireTLS: true}
@@ -649,9 +609,6 @@ func TestRelayForPrefersThePanelRelay(t *testing.T) {
 	}
 }
 
-// TestHeartbeatForPrefersThePanelURL pins which URL a run pings: the Owner's panel URL
-// over the host file, the cached panel URL while the database is unreadable, and the host
-// file again once the panel no longer has one.
 func TestHeartbeatForPrefersThePanelURL(t *testing.T) {
 	state := &watchdog.State{}
 	const file = "https://file.example/key"
@@ -673,8 +630,6 @@ func TestHeartbeatForPrefersThePanelURL(t *testing.T) {
 	}
 }
 
-// TestWatchdogUnitFailedPingsThePanelHeartbeat pins that a failed run pings the panel URL
-// the last good run cached, not the host file's.
 func TestWatchdogUnitFailedPingsThePanelHeartbeat(t *testing.T) {
 	r, _, fileLog := unitFailedFixture(t, "[database\n")
 	panelLog, panelSrv := newPingServer(t)

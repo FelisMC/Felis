@@ -1,15 +1,3 @@
-// Package imagepush uploads an image tarball — the docker-save layout Kaniko writes
-// with --tar-path — to a registry over the distribution v2 API.
-//
-// It exists so a build Job can split "build" from "publish": Kaniko runs the
-// untrusted Dockerfile with --no-push and no credential, Trivy scans the tarball,
-// and only then does a separate container holding the registry credential push it.
-// Before, Kaniko pushed straight to the final tag, so a scan failure left the
-// unscanned image already published, and the push credential (had there been one)
-// would have lived in the same container as the Dockerfile's RUN steps.
-//
-// The protocol subset is deliberately small: HEAD to skip blobs the repository
-// already holds, POST + monolithic PUT to upload the rest, PUT for the manifest.
 package imagepush
 
 import (
@@ -30,9 +18,7 @@ import (
 	"time"
 )
 
-// Media types the pushed manifest uses. Gzip layers keep the Docker schema-2 shape
-// every runtime pulls; any other layer compression switches the whole manifest to
-// OCI, the only format that can describe it.
+// Non-gzip layer compression requires OCI manifests rather than Docker schema 2.
 const (
 	mediaDockerManifest = "application/vnd.docker.distribution.manifest.v2+json"
 	mediaDockerConfig   = "application/vnd.docker.container.image.v1+json"
@@ -45,37 +31,27 @@ const (
 	mediaOCILayerTar  = "application/vnd.oci.image.layer.v1.tar"
 )
 
-// Pusher uploads tarballs to one registry.
 type Pusher struct {
-	// Client performs the requests; nil uses a client with sane timeouts.
-	Client *http.Client
-	// Scheme is "http" for the in-cluster registry (never a public ingress) or
-	// "https".
-	Scheme string
-	// Username/Password are sent as basic auth on every request.
+	// Nil Client uses the shared push client.
+	Client             *http.Client
+	Scheme             string
 	Username, Password string
-	// Log receives progress lines. Nil discards.
-	Log io.Writer
-	// Attempts bounds retries of one blob upload or the manifest PUT. Zero means 3.
+	Log                io.Writer
+	// Attempts defaults to 3.
 	Attempts int
-	// MaxWait bounds the total time a push waits out 503 answers that carry
-	// Retry-After — the gate's read-only window while garbage collection runs.
-	// Those waits do not use up Attempts. Zero means 20 minutes.
+	// MaxWait bounds Retry-After waits independently of Attempts; zero defaults to 20 minutes.
 	MaxWait time.Duration
 
-	// after is time.After, replaced in tests.
 	after func(time.Duration) <-chan time.Time
 }
 
-// Ref is a parsed host/repository:tag reference.
 type Ref struct {
 	Host, Repo, Tag string
 }
 
 func (r Ref) String() string { return r.Host + "/" + r.Repo + ":" + r.Tag }
 
-// ParseRef splits host/repo:tag. The host must look like a registry host (contain
-// a '.' or ':'), and a digest reference is refused: a push names a tag.
+// ParseRef requires a registry host and tag; digest-only references cannot be push targets.
 func ParseRef(ref string) (Ref, error) {
 	if strings.Contains(ref, "@") {
 		return Ref{}, fmt.Errorf("imagepush: %q is a digest reference; push needs a tag", ref)
@@ -94,13 +70,12 @@ func ParseRef(ref string) (Ref, error) {
 	return Ref{Host: host, Repo: repo, Tag: tag}, nil
 }
 
-// descriptor is one blob of the image as the manifest records it.
 type descriptor struct {
 	MediaType string `json:"mediaType"`
 	Size      int64  `json:"size"`
 	Digest    string `json:"digest"`
 
-	file string // entry name inside the tarball
+	file string
 }
 
 type manifest struct {
@@ -110,15 +85,13 @@ type manifest struct {
 	Layers        []descriptor `json:"layers"`
 }
 
-// tarManifest is one entry of the tarball's manifest.json.
 type tarManifest struct {
 	Config   string
 	RepoTags []string
 	Layers   []string
 }
 
-// Push uploads the image in tarPath as ref and returns the manifest digest the
-// registry recorded.
+// Push returns the manifest digest recorded by the registry.
 func (p *Pusher) Push(ctx context.Context, tarPath, ref string) (string, error) {
 	r, err := ParseRef(ref)
 	if err != nil {
@@ -151,7 +124,6 @@ func (p *Pusher) Push(ctx context.Context, tarPath, ref string) (string, error) 
 	return digest, nil
 }
 
-// describe reads the tarball's manifest.json and digests every blob it names.
 func (p *Pusher) describe(tarPath string) (*manifest, error) {
 	raw, err := readEntry(tarPath, "manifest.json", 1<<20)
 	if err != nil {
@@ -173,8 +145,6 @@ func (p *Pusher) describe(tarPath string) (*manifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Kaniko names the config after its own digest; a mismatch means the tarball
-	// is not what it claims to be.
 	if strings.HasPrefix(e.Config, "sha256:") && e.Config != cfg.Digest {
 		return nil, fmt.Errorf("imagepush: config %s hashes to %s", e.Config, cfg.Digest)
 	}
@@ -223,8 +193,7 @@ func (p *Pusher) pushBlob(ctx context.Context, r Ref, tarPath string, b descript
 	})
 }
 
-// uploadBlob uploads the blob open returns, unless r's repository already holds
-// digest. The registry checks the bytes against digest.
+// uploadBlob skips blobs already present and relies on registry digest validation.
 func (p *Pusher) uploadBlob(ctx context.Context, r Ref, digest string, size int64, open func() (io.ReadCloser, error)) error {
 	head, err := p.do(ctx, http.MethodHead, p.url(r, "blobs/"+digest), nil, 0, "")
 	if err != nil {
@@ -318,16 +287,10 @@ func (p *Pusher) do(ctx context.Context, method, target string, body io.Reader, 
 	return c.Do(req)
 }
 
-// pushClient is shared by every Pusher without its own Client, so a restore of
-// many images reuses keep-alive connections instead of opening one per
-// request. No overall timeout: a modpack layer can take minutes on a slow disk,
-// and the caller's deadline is the real bound.
+// Share keep-alive connections; caller deadlines bound large uploads without an overall client timeout.
 var pushClient = &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: 2 * time.Minute}}
 
-// retry runs fn up to Attempts times, backing off between tries. A refusal the
-// registry will repeat (401/403/4xx other than 408/429) is returned at once. A 503
-// with Retry-After is waited out without using up an attempt, for as long as
-// MaxWait allows.
+// retry fails immediately on permanent 4xx errors and handles Retry-After without spending Attempts.
 func (p *Pusher) retry(ctx context.Context, fn func() error) error {
 	attempts := p.Attempts
 	if attempts <= 0 {
@@ -387,12 +350,10 @@ func (p *Pusher) logf(format string, args ...any) {
 	}
 }
 
-// StatusError is a registry answer the push could not proceed past.
 type StatusError struct {
-	Op   string
-	Code int
-	Body string
-	// RetryAfter is the registry's Retry-After, when it sent one in seconds.
+	Op         string
+	Code       int
+	Body       string
 	RetryAfter time.Duration
 }
 
@@ -400,8 +361,6 @@ func (e *StatusError) Error() string {
 	return fmt.Sprintf("%s: registry answered %d: %s", e.Op, e.Code, e.Body)
 }
 
-// drainClose reads what is left of a small response body so its connection
-// goes back to the pool.
 func drainClose(resp *http.Response) {
 	io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 	resp.Body.Close()
@@ -416,9 +375,7 @@ func statusError(op string, resp *http.Response) error {
 	return se
 }
 
-// openEntry returns a reader positioned at the named tar entry. The caller closes
-// the returned file. archive/tar seeks past the entries it skips, so reopening per
-// blob costs no extra reads of the layers in between.
+// openEntry returns an open file positioned at the entry; the caller must close it.
 func openEntry(tarPath, name string) (*os.File, io.Reader, error) {
 	f, err := os.Open(tarPath)
 	if err != nil {
@@ -461,8 +418,6 @@ func readEntry(tarPath, name string, limit int64) ([]byte, error) {
 	return b, nil
 }
 
-// digestEntry hashes one entry and returns its descriptor plus its first bytes,
-// from which the caller infers the compression.
 func digestEntry(tarPath, name string) (descriptor, []byte, error) {
 	f, r, err := openEntry(tarPath, name)
 	if err != nil {
@@ -478,7 +433,6 @@ func digestEntry(tarPath, name string) (descriptor, []byte, error) {
 	return descriptor{Size: n, Digest: "sha256:" + hex.EncodeToString(h.Sum(nil)), file: name}, magic.Bytes(), nil
 }
 
-// prefixWriter keeps the first max bytes written to it.
 type prefixWriter struct {
 	buf *bytes.Buffer
 	max int
@@ -494,15 +448,12 @@ func (w *prefixWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// UploadBlob uploads the blob open returns into host/repo unless the repository
-// already holds digest, retrying like Push. open is called once per attempt.
+// UploadBlob calls open again for each upload attempt.
 func (p *Pusher) UploadBlob(ctx context.Context, host, repo, digest string, size int64, open func() (io.ReadCloser, error)) error {
 	r := Ref{Host: host, Repo: repo}
 	return p.retry(ctx, func() error { return p.uploadBlob(ctx, r, digest, size, open) })
 }
 
-// PutManifest stores body in host/repo under reference, a tag or the digest body
-// hashes to, retrying like Push, and returns that digest.
 func (p *Pusher) PutManifest(ctx context.Context, host, repo, reference, mediaType string, body []byte) (string, error) {
 	r := Ref{Host: host, Repo: repo, Tag: reference}
 	var digest string

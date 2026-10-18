@@ -12,10 +12,6 @@ import (
 	"time"
 )
 
-// TestMessageShape pins the one mail Felis sends: CRLF line endings throughout
-// (RFC 5322 — a bare LF is how relays mangle or reject a message), the code in
-// the body, a Q-encoded subject (it carries non-ASCII), and a blank line
-// separating headers from body.
 func TestMessageShape(t *testing.T) {
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	msg := string(message("felis@example.net", "player@example.org", "042137", now))
@@ -37,7 +33,7 @@ func TestMessageShape(t *testing.T) {
 			t.Errorf("headers missing %q:\n%s", want, headers)
 		}
 	}
-	// The subject carries 验证码, so it must be MIME-encoded, never raw UTF-8.
+	// The subject carries a non-ASCII word, so it must be MIME-encoded.
 	if !strings.Contains(headers, "Subject: =?utf-8?") {
 		t.Errorf("subject must be Q-encoded, got headers:\n%s", headers)
 	}
@@ -46,9 +42,6 @@ func TestMessageShape(t *testing.T) {
 	}
 }
 
-// TestSelfTestCarriesNoCode keeps Ping's message distinguishable from a real
-// OTP: an operator finding it in the inbox must read it as the wizard's proof
-// of delivery, not as a code someone requested on their account.
 func TestSelfTestCarriesNoCode(t *testing.T) {
 	msg := string(selfTest("felis@example.net", time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)))
 	if strings.Contains(msg, "verification code") {
@@ -59,10 +52,6 @@ func TestSelfTestCarriesNoCode(t *testing.T) {
 	}
 }
 
-// TestNoticeShape pins the second message shape — the reaper's pre-deletion
-// warning: CRLF throughout even when the caller's body used bare LFs, a
-// Q-encoded subject when it carries non-ASCII, and the caller's text rendered
-// verbatim between the header block and the wire.
 func TestNoticeShape(t *testing.T) {
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	msg := string(notice("felis@example.net", "player@example.org",
@@ -86,11 +75,7 @@ func TestNoticeShape(t *testing.T) {
 	}
 }
 
-// fakeRelay speaks just enough SMTP for net/smtp, answering 250 to MAIL FROM
-// and RCPT TO but dataVerdict at end-of-DATA. That split is the entire point:
-// relays which validate sender identity (Fastmail among them) accept MAIL FROM
-// unconditionally and only render their verdict after the message body, so a
-// probe stopping short of end-of-DATA reports a green relay that cannot send.
+// Decide sender acceptance at end-of-DATA so SMTP probes must complete the transaction.
 func fakeRelay(t *testing.T, dataVerdict string) (string, int) {
 	t.Helper()
 	return startRelay(t, &relayOpts{dataVerdict: dataVerdict})
@@ -191,11 +176,6 @@ func serveFakeRelay(conn net.Conn, opts *relayOpts) {
 	}
 }
 
-// TestPingRejectsRelayThatRefusesAtEndOfData is the regression this whole
-// change exists for. A live install passed the wizard with a From on a domain
-// the relay would not send as, then failed every OTP: the old Ping stopped at
-// NOOP, and even a MAIL FROM probe would have been waved through with a 250.
-// Only a full transaction sees the refusal.
 func TestPingRejectsRelayThatRefusesAtEndOfData(t *testing.T) {
 	host, port := fakeRelay(t, "550 5.7.1 sender identity not allowed")
 	s := &SMTP{Host: host, Port: port, From: "noreply@example.net"}
@@ -214,7 +194,6 @@ func TestPingRejectsRelayThatRefusesAtEndOfData(t *testing.T) {
 	}
 }
 
-// The counterpart: a relay that accepts the message must leave the wizard happy.
 func TestPingAcceptsDeliverableRelay(t *testing.T) {
 	host, port := fakeRelay(t, "250 2.0.0 Ok")
 	s := &SMTP{Host: host, Port: port, From: "noreply@example.net"}
@@ -224,8 +203,6 @@ func TestPingAcceptsDeliverableRelay(t *testing.T) {
 	}
 }
 
-// SendOTP must fail on the same relay Ping rejects — they share deliver(), and
-// that shared path is what makes the wizard's check meaningful.
 func TestSendOTPSurfacesEndOfDataRefusal(t *testing.T) {
 	host, port := fakeRelay(t, "550 5.7.1 sender identity not allowed")
 	s := &SMTP{Host: host, Port: port, From: "noreply@example.net"}
@@ -239,9 +216,6 @@ func TestSendOTPSurfacesEndOfDataRefusal(t *testing.T) {
 	}
 }
 
-// TestRequireTLSRefusesPlaintextRelay: with RequireTLS a relay that offers no
-// STARTTLS gets nothing past EHLO — no sender, no recipient, no code — and the
-// operator is told which relay and which knob.
 func TestRequireTLSRefusesPlaintextRelay(t *testing.T) {
 	relay := &relayOpts{dataVerdict: "250 2.0.0 Ok"}
 	host, port := startRelay(t, relay)
@@ -270,8 +244,6 @@ func TestRequireTLSRefusesPlaintextRelay(t *testing.T) {
 	}
 }
 
-// TestPlaintextRelayAllowedWithoutRequireTLS: require_tls = false (or a relay
-// on this host) keeps the old opportunistic posture and the code is delivered.
 func TestPlaintextRelayAllowedWithoutRequireTLS(t *testing.T) {
 	relay := &relayOpts{dataVerdict: "250 2.0.0 Ok"}
 	host, port := startRelay(t, relay)
@@ -285,9 +257,6 @@ func TestPlaintextRelayAllowedWithoutRequireTLS(t *testing.T) {
 	}
 }
 
-// TestRequireTLSTakesAnOfferedStartTLS: when the relay does offer STARTTLS the
-// client goes for it rather than refusing; this fake then hangs up mid-upgrade,
-// so the failure is the upgrade's own.
 func TestRequireTLSTakesAnOfferedStartTLS(t *testing.T) {
 	relay := &relayOpts{dataVerdict: "250 2.0.0 Ok", starttls: true}
 	host, port := startRelay(t, relay)

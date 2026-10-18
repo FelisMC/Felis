@@ -29,9 +29,6 @@ func containerNamed(cs []corev1.Container, name string) *corev1.Container {
 	return nil
 }
 
-// A runtime-image server installs its software after the egress gate (nothing
-// is downloaded before the pod's fence stands), writes its forwarding config
-// for what it installed, and starts through `felis launch`.
 func TestSoftwareServerPodOrder(t *testing.T) {
 	sts, err := buildStatefulSetWith(softwareServer(), 1, podOptions{FelisImage: "felis:test", ArtifactCache: "http://felis-artifacts.felis.svc:8090"})
 	if err != nil {
@@ -68,9 +65,6 @@ func TestSoftwareServerPodOrder(t *testing.T) {
 	}
 }
 
-// The install step runs the owner's choice of upstream software, Forge
-// installers included: it gets the game uid and no capability like the server,
-// and neither of the secrets the server holds.
 func TestSoftwareInstallStepHoldsNoSecret(t *testing.T) {
 	sts, err := buildStatefulSetWith(softwareServer(), 1, podOptions{FelisImage: "felis:test"})
 	if err != nil {

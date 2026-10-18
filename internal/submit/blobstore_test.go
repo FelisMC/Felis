@@ -57,8 +57,6 @@ func TestLocalContextStorePutAndExists(t *testing.T) {
 	}
 }
 
-// Open is the internal context-fetch route's read path: it serves exactly the
-// stored bytes, and a missing blob is ErrBlobNotFound (404), never a bare os error.
 func TestLocalContextStoreOpen(t *testing.T) {
 	base := t.TempDir()
 	s := &LocalContextStore{Base: base}
@@ -110,10 +108,6 @@ func TestLocalContextStorePutOverwrites(t *testing.T) {
 	}
 }
 
-// Put flushes the new bytes to disk before the rename publishes them, then the
-// directory entries the rename and a first upload's mkdir wrote. A crash at any
-// point leaves the previous blob or the whole new one, never an empty file behind
-// a digest the database already recorded.
 func TestLocalContextStorePutFlushesAroundTheRename(t *testing.T) {
 	base := t.TempDir()
 	s := &LocalContextStore{Base: base}
@@ -145,10 +139,6 @@ func TestLocalContextStorePutFlushesAroundTheRename(t *testing.T) {
 	}
 }
 
-// A flush that fails refuses the upload. Before the rename the previous context
-// stays in place and no temp file is left; after it the new bytes are in place
-// but not promised, so the error still reaches the caller. A filesystem that
-// cannot sync a directory at all has no stronger promise to give.
 func TestLocalContextStorePutFlushFailures(t *testing.T) {
 	boom := errors.New("disk said no")
 	for _, tc := range []struct {
@@ -205,8 +195,6 @@ func TestLocalContextStorePutFlushFailures(t *testing.T) {
 	}
 }
 
-// Delete removes the blob and its id-namespaced directory, and is idempotent —
-// the retry-safety the withdraw/delete cleanup depends on.
 func TestLocalContextStoreDelete(t *testing.T) {
 	base := t.TempDir()
 	s := &LocalContextStore{Base: base}

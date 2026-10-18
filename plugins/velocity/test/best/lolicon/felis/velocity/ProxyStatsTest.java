@@ -10,16 +10,6 @@ import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.util.UUID;
 
-/**
- * ProxyStatsTest checks the proxy's failure counters: windows never overlap, totals
- * keep growing, and the periodic line names every counter with its window value and
- * stays silent for an idle window. Framework free: a failed assertion throws.
- *
- * <p>Run: {@code javac -d <out> shared/src/main/java/best/lolicon/felis/link/*.java
- * velocity/src/main/java/best/lolicon/felis/velocity/ProxyStats.java
- * velocity/test/best/lolicon/felis/velocity/ProxyStatsTest.java && java -cp <out>
- * best.lolicon.felis.velocity.ProxyStatsTest}.
- */
 public final class ProxyStatsTest {
 
     private static int checks;
@@ -74,7 +64,7 @@ public final class ProxyStatsTest {
             api.reportJoin("lobby", UUID.fromString("00000000-0000-0000-0000-000000000001"));
             throw new AssertionError("reportJoin to a closed port succeeded");
         } catch (LinkException expected) {
-            // the call failed without an answer, which is what we want counted
+            // A call that failed without an answer is counted.
         }
         String one = ProxyStats.line(10, api.stats().window(), s.window(), 0);
         assertEq("one call alone is worth a line", true, one != null && one.startsWith(

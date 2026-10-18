@@ -10,30 +10,11 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// This is the §28 #7 OpenAPI parity gate. api/openapi.yaml is checked against
-// the routes the handlers are actually built from — the same internalAPIRoutes /
-// externalAPIRoutes tables in api.go — in BOTH directions and including each
-// route's Zero-Trust tier. So three things cannot silently drift:
-//
-//   - a route served but undocumented (or documented but unserved) fails the build;
-//   - a route whose documented face set disagrees with where it is mounted fails;
-//   - a route whose documented tier disagrees with its computed tier fails — this
-//     is the §14 four-power guard: an admin route quietly demoted to app, or an
-//     internal service route re-faced as external, breaks `go test ./...`.
-//
-// http.ServeMux exposes no way to enumerate its patterns, so a doc-vs-mux probe is
-// impossible; reading the shared route table is the only exact check (api.go).
-
-// oasKnownMethods is the set of OpenAPI path-item keys that denote operations.
-// Any other key (summary, parameters, description, servers, ...) is ignored.
 var oasKnownMethods = map[string]bool{
 	"get": true, "post": true, "put": true, "patch": true,
 	"delete": true, "head": true, "options": true, "trace": true,
 }
 
-// oasDoc is the slice of api/openapi.yaml this test reads. Body schemas and the
-// rest of the document are intentionally not modelled — only the surface the
-// handlers must agree with.
 type oasDoc struct {
 	OpenAPI string                      `json:"openapi"`
 	Paths   map[string]map[string]oasOp `json:"paths"`
@@ -47,22 +28,17 @@ type oasOp struct {
 	Setup bool `json:"x-felis-setup-allowed"`
 }
 
-// oasFacet is the classification of one {method, path}: which face(s) serve it
-// and at which Zero-Trust tier.
 type oasFacet struct {
-	faces map[string]bool
-	tier  string
-	// callers is the internal route's caller set, empty elsewhere.
+	faces   map[string]bool
+	tier    string
 	callers map[string]bool
-	// setup is the route's SetupAllowed: reachable during the setup lockdown.
-	setup bool
+	setup   bool
 }
 
 func TestOpenAPIMatchesServedRoutes(t *testing.T) {
 	served := oasServedFacets(t)
 	documented := oasDocumentedFacets(t)
 
-	// 1. Exact {method, path} set parity, both directions.
 	for key := range served {
 		if _, ok := documented[key]; !ok {
 			t.Errorf("route SERVED but not documented in api/openapi.yaml: %s", key)
@@ -74,7 +50,6 @@ func TestOpenAPIMatchesServedRoutes(t *testing.T) {
 		}
 	}
 
-	// 2. For every shared route, face set and tier must agree exactly.
 	for key, s := range served {
 		d, ok := documented[key]
 		if !ok {
@@ -97,11 +72,6 @@ func TestOpenAPIMatchesServedRoutes(t *testing.T) {
 	}
 }
 
-// oasServedFacets derives the live route surface from the route tables the
-// handlers are built from, keyed by "METHOD /path". The tier is computed the same
-// way buildFace treats the route: Public -> public; internal-face -> service;
-// external-face Admin -> admin; otherwise app. /healthz is added by both tables,
-// so its face set merges to {internal, external} and its tier must agree (public).
 func oasServedFacets(t *testing.T) map[string]oasFacet {
 	t.Helper()
 	a := &API{}
@@ -147,9 +117,6 @@ func oasServedFacets(t *testing.T) map[string]oasFacet {
 	return out
 }
 
-// oasDocumentedFacets parses api/openapi.yaml into the same shape. An operation
-// missing x-felis-face or x-felis-tier is a failure, not a skip: a new route
-// cannot be documented without classifying its face and tier.
 func oasDocumentedFacets(t *testing.T) map[string]oasFacet {
 	t.Helper()
 	path := filepath.Join("..", "..", "api", "openapi.yaml")

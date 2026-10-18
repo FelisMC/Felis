@@ -6,10 +6,7 @@ import (
 	"testing"
 )
 
-// uvCases are the ways an assertion can lack user verification (#9): the credential
-// was bound presence-only (a pre-0009 row, or a future UV=preferred enrollment), this
-// assertion itself did not verify the user, or it names a credential the account does
-// not hold. Each must be refused at every door that grants or confirms a session.
+// uvCases covers missing enrollment verification, missing assertion verification and credentials not held by the account.
 var uvCases = []struct {
 	name       string
 	storedUV   bool
@@ -93,9 +90,6 @@ func TestReauthByPasskeyRefusesUnverifiedUser(t *testing.T) {
 	}
 }
 
-// assertUVRefused checks a sign-in door's refusal: the opaque envelope every finish
-// failure shares, no session, the stored credential untouched, and one distinct audit
-// under the account.
 func assertUVRefused(t *testing.T, rec *httptest.ResponseRecorder, repo *fakeRepo, actor string) {
 	t.Helper()
 	if rec.Code != http.StatusBadRequest || decodeErr(t, rec) != "passkey_login_invalid" {

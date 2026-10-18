@@ -9,40 +9,13 @@ import (
 	"strings"
 )
 
-// Access / permissions domain (spec §7). These endpoints let an owner manage
-// who may join and what they may do on their OWN claimed node, and let an admin
-// do the same on ANY node, by translating a small set of STRUCTURED fields into
-// the live server's runtime authority — vanilla's whitelist/ban and the
-// LuckPerms plugin — over the exact same owner-gated RCON path as POST
-// /servers/{name}/command (handleCommand).
-//
-// Source-of-truth note (spec §1): the live MC server + LuckPerms is a THIRD
-// authority, neither the CRD (lifecycle) nor Postgres (business). felis-api is
-// only a command-issuer and read-projector here; it stores none of this state.
-//
-// The security difference from handleCommand is the whole point of this file.
-// handleCommand validates ONE free-form line and forbids control characters so a
-// newline cannot smuggle a second command. Here the command is ASSEMBLED from
-// structured fields (player, node, world, group); a space or newline in any
-// field would splice a second RCON command just the same. So every field is
-// validated against a strict allow-list charset BEFORE it is ever concatenated
-// into a command, and there is NO free-text field anywhere (a ban carries no
-// reason string — that would be the one free-text injection vector). The
-// anchored allow-list regexes are strictly stronger than handleCommand's
-// control-character scan: Go's `$` is `\z` (absolute end, not `\Z`), so a
-// trailing newline cannot sit before it and "player\n…" is rejected outright.
+// Access state belongs to Minecraft and LuckPerms; validate every structured field before assembling RCON commands.
 var (
-	// mcNameRe matches a Java-edition username: 1–16 of [A-Za-z0-9_]. No space,
-	// separator, or control character can appear, so a validated name is safe to
-	// concatenate directly into an RCON command word.
+	// mcNameRe restricts usernames to one RCON command token.
 	mcNameRe = regexp.MustCompile(`^[A-Za-z0-9_]{1,16}$`)
-	// lpNodeRe matches a LuckPerms permission node: dotted segments with the
-	// wildcard, e.g. "essentials.fly" or "worldedit.*". Deliberately excludes
-	// space/`=`/`/` so a node can never carry a second token or a `world=` context.
+	// lpNodeRe excludes separators and context syntax to prevent extra RCON arguments.
 	lpNodeRe = regexp.MustCompile(`^[A-Za-z0-9_.*-]{1,64}$`)
-	// lpCtxRe matches a world name or a LuckPerms group: [A-Za-z0-9_-], 1–48. Used
-	// for both the optional `world=` context and a parent group.
-	lpCtxRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,48}$`)
+	lpCtxRe  = regexp.MustCompile(`^[A-Za-z0-9_-]{1,48}$`)
 )
 
 var (
@@ -60,18 +33,10 @@ var (
 			"the lobby gets it back by re-running the installer, another server needs the LuckPerms plugin added")
 )
 
-// unknownCommandRe matches the server's reply to a command no plugin registered,
-// after color stripping. Brigadier servers (Paper, vanilla 1.13+) answer
-// "Unknown or incomplete command. See below for error" (older builds: ", see
-// below"), Spigot and legacy Bukkit "Unknown command. Type "/help" for help.".
-// With LuckPerms installed an lp command never gets this: LuckPerms answers
-// asynchronously, after RCON has flushed the reply, so the body is empty.
+// unknownCommandRe detects missing plugins; installed LuckPerms may return an empty asynchronous RCON reply.
 var unknownCommandRe = regexp.MustCompile(`(?i)^\s*unknown (or incomplete )?command\b`)
 
-// issueLuckPermsCommand runs an lp command through issueAccessCommand and turns
-// the reply of a server without LuckPerms into 409 luckperms_missing (#4). Without
-// it that reply went back as a success whose output nobody reads, and the change
-// silently did nothing.
+// issueLuckPermsCommand maps unregistered commands to luckperms_missing instead of reporting a successful no-op.
 func (a *API) issueLuckPermsCommand(w http.ResponseWriter, r *http.Request, name, command string) (string, bool) {
 	out, ok := a.issueAccessCommand(w, r, name, command)
 	if ok && unknownCommandRe.MatchString(lpColorRe.ReplaceAllString(out, "")) {
@@ -81,22 +46,7 @@ func (a *API) issueLuckPermsCommand(w http.ResponseWriter, r *http.Request, name
 	return out, ok
 }
 
-// issueAccessCommand is the shared spine of every §7 access mutation: resolve the
-// named server, enforce owner-or-admin, require readiness, and run ONE
-// already-validated RCON command, returning its reply. It centralises the
-// gate / readiness / console-failure surface in exactly one reviewed place,
-// mirroring handleCommand step-for-step, so each handler's only job is to
-// validate its structured fields and assemble the command string.
-//
-// It writes the HTTP error and returns ok=false on any failure, so a caller just
-// `return`s. It does NOT audit — the caller audits with a structured action
-// label (e.g. "access.whitelist.add") so the trail records intent, not a raw
-// "console.command". The RCON password is resolved inside the Console
-// implementation and never appears in `command`, the reply, or any log (§286).
-//
-// command MUST be assembled only from charset-validated fields; a space or
-// newline in it would splice a second RCON command. `name` (the one field from
-// the path, not the body) is validated here.
+// issueAccessCommand requires charset-validated command fields; it writes errors but leaves auditing to the caller.
 func (a *API) issueAccessCommand(w http.ResponseWriter, r *http.Request, name, command string) (string, bool) {
 	p := principalFromContext(r.Context())
 	if err := validateManagedServerName(r, name); err != nil {
@@ -114,10 +64,7 @@ func (a *API) issueAccessCommand(w http.ResponseWriter, r *http.Request, name, c
 		return "", false
 	}
 
-	// Readiness pre-check: RCON cannot reach a stopped server (§141 Ready ⟺ RCON
-	// reachable), so changing access requires a Running node. This is a specific
-	// 409 rather than a blind dial; the RunCommand below still maps an unreachable
-	// channel to 503 because the invariant can drop between here and the dial.
+	// Readiness may change after this check; the RCON call still maps connection failures to 503.
 	info, err := a.Cluster.GetServer(r.Context(), name)
 	if err != nil {
 		a.writeLookupError(w, r, err)
@@ -148,17 +95,11 @@ func (a *API) issueAccessCommand(w http.ResponseWriter, r *http.Request, name, c
 	return out, true
 }
 
-// whitelistRequest is the body of POST .../access/whitelist (allow / disallow a
-// player to join, spec §7). decodeJSON rejects unknown fields so no extra knob
-// can smuggle in.
 type whitelistRequest struct {
-	Action string `json:"action"` // add | remove
+	Action string `json:"action"`
 	Player string `json:"player"`
 }
 
-// handleAccessWhitelist adds or removes a player from the live whitelist via
-// "whitelist add|remove <player>". App-tier, owner/admin-gated inside
-// issueAccessCommand.
 func (a *API) handleAccessWhitelist(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	var body whitelistRequest
@@ -187,10 +128,7 @@ func (a *API) handleAccessWhitelist(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleAccessWhitelistList is the read projector for the whitelist: it runs
-// "whitelist list" and returns a best-effort parse PLUS the raw reply. The parse
-// is vanilla-specific (INTEGRATION-ONLY against a real server); the raw output is
-// always returned so the client has ground truth when the format differs.
+// handleAccessWhitelistList returns raw output alongside the best-effort vanilla parse.
 func (a *API) handleAccessWhitelistList(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	out, ok := a.issueAccessCommand(w, r, name, "whitelist list")
@@ -202,13 +140,7 @@ func (a *API) handleAccessWhitelistList(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// handleAccessPlayers is the read projector for the online roster: it runs the
-// vanilla "list" command and returns the online/max tally, a best-effort parse of
-// the online player names, and the raw reply. Like the whitelist read, the parse
-// is vanilla-specific (the names arrive after the count line's colon) and the raw
-// output is always returned so a differing format never loses information. This is
-// the only place the panel can learn WHO is online — Status.Players carries the
-// count alone (§141), so this reuses the same RCON reply the prober already sees.
+// handleAccessPlayers returns raw output alongside best-effort counts and player names.
 func (a *API) handleAccessPlayers(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	out, ok := a.issueAccessCommand(w, r, name, "list")
@@ -221,13 +153,7 @@ func (a *API) handleAccessPlayers(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleAccessBanList is the read projector for the ban list: it runs "banlist"
-// and returns a best-effort parse of the banned names PLUS the raw reply, like the
-// whitelist / players reads. Unlike them the parse cannot key on a colon tail — a
-// ban entry reads "<name> was banned by <source>: <reason>" and the reason carries
-// its own colon — so parseBanlistOutput anchors on the ban marker + name charset
-// instead. The raw reply is always returned so a plugin or localised format never
-// loses information. No audit (a read).
+// handleAccessBanList returns raw output because plugins and localized servers may use other formats.
 func (a *API) handleAccessBanList(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	out, ok := a.issueAccessCommand(w, r, name, "banlist")
@@ -239,16 +165,12 @@ func (a *API) handleAccessBanList(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// banRequest is the body of POST .../access/ban (deny / restore a player's
-// ability to join, spec §7). It carries NO reason field on purpose: a free-text
-// reason would be the one place a structured request could splice a second RCON
-// command, and it buys nothing the audit log does not already record.
+// banRequest omits free-text reasons to prevent RCON argument injection.
 type banRequest struct {
-	Action string `json:"action"` // ban | pardon
+	Action string `json:"action"`
 	Player string `json:"player"`
 }
 
-// handleAccessBan bans or pardons a player via "ban|pardon <player>".
 func (a *API) handleAccessBan(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	var body banRequest
@@ -277,17 +199,11 @@ func (a *API) handleAccessBan(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// kickRequest is the body of POST .../access/kick (remove a player from the
-// server right now, spec §7). Like ban it carries NO reason field — a free-text
-// reason is the one place a structured request could splice a second RCON command,
-// and it buys nothing the audit log does not already record.
+// kickRequest omits free-text reasons to prevent RCON argument injection.
 type kickRequest struct {
 	Player string `json:"player"`
 }
 
-// handleAccessKick kicks a player off the running server via "kick <player>".
-// Unlike ban it does not block rejoining; it is the immediate "get out now" that
-// pairs with the online roster. Single-action, so the body carries only a player.
 func (a *API) handleAccessKick(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	var body kickRequest
@@ -310,28 +226,14 @@ func (a *API) handleAccessKick(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// permissionRequest is the body of POST .../access/permission: a fine-grained
-// LuckPerms permission grant/deny on a single node, optionally scoped to a world
-// (spec §7 细致的权限调整 + world 范围).
-//
-// Value is a *bool, NOT a bool, and this matters: a plain bool's zero value is
-// false, so an OMITTED value would silently mean "permission set <node> false",
-// which is an explicit LuckPerms DENY — the exact opposite of the grant a caller
-// who omits the field intends. nil therefore means "default to true (grant)";
-// an explicit false is a deliberate deny.
 type permissionRequest struct {
-	Action string `json:"action"` // set | unset
+	Action string `json:"action"`
 	Player string `json:"player"`
 	Node   string `json:"node"`
-	Value  *bool  `json:"value,omitempty"` // set only; nil => true (grant)
-	World  string `json:"world,omitempty"` // optional context; "" => global
+	Value  *bool  `json:"value,omitempty"` // nil grants; false explicitly denies
+	World  string `json:"world,omitempty"` // empty means global
 }
 
-// handleAccessPermission sets or unsets a LuckPerms permission node for a player,
-// optionally within a world context:
-//
-//	set:   lp user <player> permission set <node> <true|false> [world=<world>]
-//	unset: lp user <player> permission unset <node> [world=<world>]
 func (a *API) handleAccessPermission(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	var body permissionRequest
@@ -347,8 +249,6 @@ func (a *API) handleAccessPermission(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, errInvalidNode)
 		return
 	}
-	// World is optional: validate ONLY when present, else an omitted world would
-	// fail the charset check and the optional field would become mandatory.
 	if body.World != "" && !lpCtxRe.MatchString(body.World) {
 		writeError(w, r, errInvalidWorld)
 		return
@@ -357,7 +257,7 @@ func (a *API) handleAccessPermission(w http.ResponseWriter, r *http.Request) {
 	var cmd string
 	switch body.Action {
 	case "set":
-		value := true // nil => grant; see permissionRequest.Value.
+		value := true
 		if body.Value != nil {
 			value = *body.Value
 		}
@@ -383,16 +283,12 @@ func (a *API) handleAccessPermission(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// groupRequest is the body of POST .../access/group: add or remove a LuckPerms
-// parent group for a player (spec §7 给其他玩家权限的管理 via group membership).
 type groupRequest struct {
-	Action string `json:"action"` // add | remove
+	Action string `json:"action"`
 	Player string `json:"player"`
 	Group  string `json:"group"`
 }
 
-// handleAccessGroup adds or removes a player's LuckPerms parent group via
-// "lp user <player> parent add|remove <group>".
 func (a *API) handleAccessGroup(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	var body groupRequest
@@ -425,30 +321,17 @@ func (a *API) handleAccessGroup(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// lpPermissionView is one parsed LuckPerms permission entry returned by the
-// luckperms read projector. World is surfaced only when the entry carries a
-// world= context (the one context the panel renders); Value comes from the
-// entry's color code (LuckPerms renders granted nodes green, negated red).
+// lpPermissionView derives permission values from color codes and exposes only the world context.
 type lpPermissionView struct {
 	Node  string `json:"node"`
 	Value bool   `json:"value"`
 	World string `json:"world,omitempty"`
 }
 
-// maxLPInfoPages bounds how many "permission info" pages the read projector
-// chases per request. LuckPerms paginates its reply, so one command shows only
-// the first page; we follow the header's page count up to this cap.
-// 10 pages ≈ 150 entries — raise if a real user outgrows it.
+// maxLPInfoPages bounds pagination to roughly 150 permission entries per request.
 const maxLPInfoPages = 10
 
-// handleAccessLuckPermsInfo is the read projector for a player's LuckPerms
-// state: it runs "lp user <player> permission info" over the same owner-gated
-// RCON spine as every access mutation and returns a best-effort parse — parent
-// groups split out from plain permission nodes — PLUS the raw reply, like the
-// whitelist/players/banlist reads. Page 1 goes through issueAccessCommand (the
-// gate); further pages are fetched best-effort directly, so a mid-fetch failure
-// keeps what was already read instead of erroring a half-served response.
-// No audit (a read).
+// handleAccessLuckPermsInfo preserves earlier pages if a later fetch fails.
 func (a *API) handleAccessLuckPermsInfo(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	player := r.PathValue("player")
@@ -467,16 +350,14 @@ func (a *API) handleAccessLuckPermsInfo(w http.ResponseWriter, r *http.Request) 
 		more, err := a.Console.RunCommand(r.Context(), name,
 			fmt.Sprintf("lp user %s permission info %d", player, page))
 		if err != nil {
-			break // best-effort: keep the pages we have
+			break
 		}
 		raw += "\n" + more
 		e, _ := parseLuckPermsInfo(more)
 		entries = append(entries, e...)
 	}
 
-	// Split parent groups ("group.<name>", granted, no context) from plain
-	// permission nodes. A negated or world-scoped group.* entry stays in
-	// permissions — folding it into groups would lose the negation/scope.
+	// Keep negated or world-scoped group entries in permissions so their value and scope are preserved.
 	groups := []string{}
 	permissions := []lpPermissionView{}
 	for _, e := range entries {
@@ -492,33 +373,19 @@ func (a *API) handleAccessLuckPermsInfo(w http.ResponseWriter, r *http.Request) 
 }
 
 var (
-	// lpEntryRe matches one "permission info" entry: the "> " marker, then any
-	// legacy color codes, then the node (lpNodeRe's charset). Anchoring on the
-	// marker rather than lines follows banEntryRe's rationale: RCON concatenates
-	// multi-message replies with a server-dependent separator, so a line split is
-	// unreliable. Group 1 keeps the color codes so the entry's value survives the
-	// later color strip (§a = granted, §c = negated).
+	// lpEntryRe anchors on entry markers because RCON message separators vary; retain colors to distinguish grants and denials.
 	lpEntryRe = regexp.MustCompile(`>\s*((?:§[0-9a-fk-or])*)([A-Za-z0-9_.*-]{1,64})`)
-	// lpPageRe reads the pagination header ("page 1 of 3") AFTER color stripping.
-	lpPageRe = regexp.MustCompile(`page\s+(\d+)\s+of\s+(\d+)`)
-	// lpColorRe strips legacy §-color codes.
+	lpPageRe  = regexp.MustCompile(`page\s+(\d+)\s+of\s+(\d+)`)
 	lpColorRe = regexp.MustCompile(`§[0-9a-fk-or]`)
-	// lpWorldRe reads a world= context from an entry's color-stripped tail.
 	lpWorldRe = regexp.MustCompile(`world=([A-Za-z0-9_-]{1,48})`)
 )
 
-// parseLuckPermsInfo extracts permission entries and the total page count from
-// one "lp user <player> permission info" reply. Best-effort and
-// LuckPerms-specific (INTEGRATION-ONLY against a real server) — the caller
-// always returns the raw reply alongside, so an unrecognised format loses
-// nothing. An entry's value defaults to granted when no color code precedes the
-// node (a color-stripping RCON transport); pages is 0 when no header parses.
+// parseLuckPermsInfo defaults uncolored entries to granted and unparsed page counts to zero.
 func parseLuckPermsInfo(out string) (entries []lpPermissionView, pages int) {
 	matches := lpEntryRe.FindAllStringSubmatchIndex(out, -1)
 	for i, m := range matches {
 		colors := out[m[2]:m[3]]
 		node := out[m[4]:m[5]]
-		// The entry's tail (up to the next marker) carries its contexts.
 		tailEnd := len(out)
 		if i+1 < len(matches) {
 			tailEnd = matches[i+1][0]
@@ -536,12 +403,7 @@ func parseLuckPermsInfo(out string) (entries []lpPermissionView, pages int) {
 	return entries, pages
 }
 
-// parseWhitelistOutput extracts player names from vanilla's "whitelist list"
-// reply, whose format is "There are N whitelisted player(s): a, b, c" (and "There
-// are no whitelisted players" / a trailing colon for the empty case). The parse
-// is best-effort and vanilla-specific — the raw reply is always returned
-// alongside, so a different format (a plugin, a localised or future server) never
-// loses information. Returns a non-nil empty slice so the JSON renders [] not null.
+// parseWhitelistOutput returns an empty slice for unrecognized replies; callers also return the raw output.
 func parseWhitelistOutput(out string) []string {
 	players := []string{}
 	i := strings.LastIndex(out, ":")
@@ -556,19 +418,9 @@ func parseWhitelistOutput(out string) []string {
 	return players
 }
 
-// listCountRe matches the count line of vanilla's "list" reply, e.g.
-// "There are 3 of a max of 20 players online: alice, bob, carol". It mirrors the
-// operator prober's listReplyPattern; kept local so the api package does not
-// depend on operator internals for a read it already has the reply for.
 var listCountRe = regexp.MustCompile(`There are (\d+) of a max of (\d+) players online`)
 
-// parseListOutput extracts (online, max, names) from vanilla's "list" reply. The
-// count comes from the "N of a max of M" line; the names come from the tail after
-// the colon, comma-separated (each name is [A-Za-z0-9_], so it never contains a
-// colon or comma of its own). Best-effort and vanilla-specific — the raw reply is
-// always returned alongside — so a plugin or localised format loses nothing. names
-// is non-nil so the JSON renders [] not null; online/max are 0 when the count line
-// does not match (e.g. an empty or unrecognised reply).
+// parseListOutput returns zero counts and an empty slice for unrecognized replies; callers also return raw output.
 func parseListOutput(out string) (online, max int, players []string) {
 	players = []string{}
 	if i := strings.Index(out, ":"); i >= 0 {
@@ -585,28 +437,10 @@ func parseListOutput(out string) (online, max int, players []string) {
 	return online, max, players
 }
 
-// banEntryRe matches one player-ban entry in vanilla's "banlist" reply, anchored on
-// the "<name> was banned by" marker with the name pinned to mcNameRe's charset. The
-// anchoring is deliberate and NOT interchangeable with the whitelist/list tail
-// parse: "banlist" emits one command-feedback message PER ban, and RCON concatenates
-// them with a separator that is server/version-dependent (newline, space, or none),
-// so a line- or colon-split parser could run the "There are N ban(s):" header into
-// the first entry and emit a non-name. Keying only on the marker + name charset
-// yields the SAME names under every separator and structurally cannot return a
-// non-name (group 1 IS the charset), so a corrupt entry can never reach the one-tap
-// pardon button. It also sidesteps the reason's own colon, which the tail parse can't.
-//
-// We issue plain "banlist", which in vanilla lists PLAYER bans only (IP bans are the
-// separate "banlist ips", which nothing here ever issues), so a "1.2.3.4 was banned
-// by ..." line — whose trailing octet the charset would otherwise capture as a bogus
-// short name — never reaches this parser.
+// banEntryRe uses name markers because RCON separators and reason colons make line or colon splitting unreliable.
 var banEntryRe = regexp.MustCompile(`([A-Za-z0-9_]{1,16}) was banned by`)
 
-// parseBanlistOutput extracts banned player names from vanilla's "banlist" reply,
-// whose entries read "<name> was banned by <source>: <reason>". Best-effort and
-// vanilla-specific — the raw reply is always returned alongside — so a plugin or
-// localised format loses nothing; the "There are no ban(s)." / header lines carry no
-// marker and are skipped. Returns a non-nil empty slice so the JSON renders [] not null.
+// parseBanlistOutput parses player bans, not IP bans, and returns an empty slice for unrecognized replies.
 func parseBanlistOutput(out string) []string {
 	players := []string{}
 	for _, m := range banEntryRe.FindAllStringSubmatch(out, -1) {

@@ -1,9 +1,6 @@
 import { lazy, type ComponentType } from "react";
 
-// A deploy replaces the hashed chunks, so a tab opened before it asks for files
-// that no longer exist (panel.go answers index.html and the dynamic import
-// fails). One full reload picks up the new index and its chunk names; the
-// sessionStorage stamp keeps a real outage from turning into a reload loop.
+// Reload once after a missing chunk; sessionStorage prevents loops during an outage.
 
 const RELOAD_KEY = "felis:chunk-reload-at";
 const RELOAD_WINDOW_MS = 30_000;

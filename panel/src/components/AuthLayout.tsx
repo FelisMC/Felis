@@ -3,9 +3,7 @@ import { useTranslation } from "react-i18next";
 import { ConfigBanner } from "@/components/RuntimeStatus";
 import { FelisLogo } from "@/components/FelisLogo";
 
-// AuthLayout is the chrome for the pre-app auth surfaces (login, forced change).
-// These live OUTSIDE AppShell — there is no nav, no tier context to honor yet —
-// so they get their own centered, branded frame rather than the sidebar layout.
+// AuthLayout is the chrome for the pre-app auth surfaces (login, forced change). They live outside AppShell, with no nav or tier context yet, so they get their own centered frame.
 export function AuthLayout({
   title,
   subtitle,

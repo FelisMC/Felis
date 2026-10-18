@@ -22,10 +22,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// stubMojangNames points the premium-name lookup at a fake api.mojang.com that reports the
-// given names as registered and every other name as free, and clears the process-wide cache
-// so no subtest can see another's answers. Without it these tests would query the real
-// Mojang over the network — and get a different answer on the day someone buys the name.
+// stubMojangNames replaces external lookups and clears the shared cache to isolate subtests.
 func stubMojangNames(t *testing.T, taken ...string) {
 	t.Helper()
 	registered := make(map[string]bool, len(taken))
@@ -58,9 +55,7 @@ func resetPremiumCache() {
 	premiumNames.Unlock()
 }
 
-// fakeYgg stands in for one upstream Yggdrasil root. It answers hasJoined with the
-// given profile, or 204 when id == "" ("not my player") or a query field is missing —
-// the same contract Mojang's real sessionserver honors.
+// fakeYgg returns 204 for an empty ID or incomplete query, otherwise the supplied profile.
 func fakeYgg(t *testing.T, id, name string) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -122,11 +117,6 @@ func TestHasJoined(t *testing.T) {
 		}
 	})
 
-	// THE security invariant: a self-asserted source claiming a Mojang-space UUID must
-	// NOT be emitted as-is — it is rewritten into the per-source namespace. Without this,
-	// a malicious third-party could impersonate any Mojang player with full UUID fidelity
-	// and the reclaim/blacklist layer (keyed on "genuine Mojang has a different UUID")
-	// could never catch it.
 	t.Run("thirdparty UUID rewritten, never emitted as-is", func(t *testing.T) {
 		stubMojangNames(t)
 		evil := fakeYgg(t, notchMojangID, "Notch") // lies: returns real Notch's Mojang UUID
@@ -145,9 +135,7 @@ func TestHasJoined(t *testing.T) {
 		if got != want {
 			t.Fatalf("rewrite = %q, want deterministic UUIDv3 %q", got, want)
 		}
-		// Also pinned as literals: every third-party player's UUID, and every ban and account
-		// link keyed on one, depends on these exact bytes, and a change to the namespace seed
-		// moves both sides of the derived comparison above at once.
+		// Pin literal UUIDs so changing the namespace seed cannot make both sides of a derived comparison drift together.
 		if ns := felisAuthNS.String(); ns != "07228eae-77f6-500e-9dc0-436afbc87c27" || got != "b63bcc1c611432eeb7b3af3a15012e48" {
 			t.Fatalf("namespace %s / rewrite %s changed; every existing third-party player would get a new UUID", ns, got)
 		}
@@ -167,8 +155,7 @@ func TestHasJoined(t *testing.T) {
 		if p.ID != notchMojangID {
 			t.Fatalf("id = %q, want mojang %q (priority)", p.ID, notchMojangID)
 		}
-		// The player who OWNS the name is never the one who gets renamed, even though the
-		// name is (of course) a registered Mojang name.
+
 		if p.Name != "Notch" {
 			t.Fatalf("mojang name = %q, want unchanged %q", p.Name, "Notch")
 		}
@@ -230,9 +217,6 @@ func TestHasJoined(t *testing.T) {
 		}
 	})
 
-	// A skinless player's profile may come back with properties [], null or absent. The
-	// relay must still send an array: Velocity's GameProfile parser throws on a missing or
-	// null key and the login hangs, where the same answer sent straight to Velocity works.
 	t.Run("properties always emitted as an array", func(t *testing.T) {
 		for _, upstream := range []string{
 			`{"id":"` + notchMojangID + `","name":"Notch","properties":[]}`,
@@ -257,9 +241,6 @@ func TestHasJoined(t *testing.T) {
 		}
 	})
 
-	// A root that answers with a redirect is skipped, not followed: following it lets that
-	// root aim this host at arbitrary URLs, including its own hasJoined route, which re-enters
-	// the scan and multiplies the upstream traffic one login causes.
 	t.Run("redirecting source is skipped, not followed", func(t *testing.T) {
 		stubMojangNames(t)
 		var followed atomic.Bool
@@ -311,9 +292,6 @@ func TestHasJoined(t *testing.T) {
 		}
 	})
 
-	// The reused bar gate: a barred CANONICAL UUID is rejected at the resolver, so a
-	// reclaimed squatter stays out even on a consumer with no limbo plugin. Keyed on the
-	// dashed canonical (post-rewrite), the same form Repo.ReclaimUsername stores.
 	t.Run("barred canonical UUID -> 204", func(t *testing.T) {
 		stubMojangNames(t)
 		third := fakeYgg(t, notchMojangID, "Notch")
@@ -339,10 +317,6 @@ func TestHasJoined(t *testing.T) {
 		}
 	})
 
-	// Mojang is trusted for its UUIDs, which is exactly why one that does not parse must
-	// not be emitted as some default: every such login would share the nil UUID. The
-	// unusable 200 is surfaced like every other bad answer — skipped, logged, and 503 when
-	// nothing else validates — instead of reading as "no such session".
 	t.Run("identity source with an unparseable id -> skipped and surfaced", func(t *testing.T) {
 		mojang := fakeYgg(t, "not-a-uuid", "Notch")
 		api := newTestAPI(newFakeRepo(), newFakeCluster())
@@ -452,8 +426,6 @@ func seedPremium(name string, taken bool, age time.Duration) {
 	premiumNames.Unlock()
 }
 
-// The premium-name cache decides on each third-party login whether the player keeps their
-// name. Each case pins one rule that an innocent-looking edit would break unnoticed.
 func TestPremiumNameCache(t *testing.T) {
 	ctx := context.Background()
 
@@ -517,11 +489,6 @@ func TestPremiumNameCache(t *testing.T) {
 	})
 }
 
-// The username namespace is the proxy's, not ours: Velocity keys its player registry on the
-// NAME, so a third-party player holding a Mojang player's name locks the owner out of their
-// own proxy ("You are already connected to this proxy!") even though the UUID rewrite makes
-// them different players. These cover both branches of the rename — the rename itself, and
-// the far more common case of leaving an ordinary player's name alone.
 func TestHasJoinedPremiumNameRename(t *testing.T) {
 	thirdPartyLogin := func(t *testing.T, name string) sessionProfile {
 		t.Helper()
@@ -573,9 +540,6 @@ func TestHasJoinedPremiumNameRename(t *testing.T) {
 		}
 	})
 
-	// A third-party root is untrusted input, its name field included. An unusable name is
-	// refused AND surfaced: skipped like every other bad answer (logged, counted as
-	// failed), so it can never be relayed and can never be mistaken for "no such player".
 	t.Run("hostile upstream name is skipped, logged and surfaced", func(t *testing.T) {
 		stubMojangNames(t)
 		for _, bad := range []string{"§4admin", "not a name", "ab", strings.Repeat("x", 17), ""} {
@@ -598,10 +562,6 @@ func TestHasJoinedPremiumNameRename(t *testing.T) {
 		}
 	})
 
-	// The reason the skip must CONTINUE the ladder rather than stop it: a broken root early
-	// in the list would otherwise silently block a login its later source would have
-	// validated (live on the audit box, the bad name produced a silent 204 and the valid
-	// source was never asked).
 	t.Run("hostile name cannot block a later source", func(t *testing.T) {
 		stubMojangNames(t)
 		bad := fakeYgg(t, notchMojangID, "§4admin")

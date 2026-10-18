@@ -351,10 +351,6 @@ func TestBackupResolvesActiveClaimAndPreservesConflictContract(t *testing.T) {
 	}
 }
 
-// TestAbortReleasesAFailedMigrationWhoseTargetIsGone pins the way out of a failed migration
-// when the target node will never come back: the server keeps its source world and node,
-// the lock is released, the partial target world and the Jobs are removed, the safety
-// archive becomes an ordinary restore point, and a new migration can begin.
 func TestAbortReleasesAFailedMigrationWhoseTargetIsGone(t *testing.T) {
 	m, ctx := fixture(t)
 	op, err := m.BeginMigration(ctx, "alice", "c", "owner")
@@ -429,8 +425,6 @@ func TestAbortReleasesAFailedMigrationWhoseTargetIsGone(t *testing.T) {
 	}
 }
 
-// TestLiveBackupCopiesOnTheWorldsNode pins that a live backup of a world on a worker copies
-// it there before uploading, and still runs on the world's node.
 func TestLiveBackupCopiesOnTheWorldsNode(t *testing.T) {
 	m, ctx := fixture(t)
 	p := backupjob.JobParams{Server: "alice", JobName: "live-backup", Live: true, StageLimit: "4Gi"}
@@ -455,8 +449,6 @@ func TestLiveBackupCopiesOnTheWorldsNode(t *testing.T) {
 	}
 }
 
-// TestBackupReasonTravelsWithTheUpload pins the reason recorded when the upload settles:
-// manual by default, scheduled or replica when asked.
 func TestBackupReasonTravelsWithTheUpload(t *testing.T) {
 	m, ctx := fixture(t)
 	for name, tc := range map[string]struct {

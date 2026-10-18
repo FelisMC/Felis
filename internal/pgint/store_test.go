@@ -17,8 +17,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// Every pooled connection starts with the server-side limits, so a runaway
-// statement or an abandoned transaction cannot hold a connection forever.
 func TestPoolSessionsCarryTheTimeouts(t *testing.T) {
 	ctx := context.Background()
 	for setting, want := range map[string]string{
@@ -35,8 +33,6 @@ func TestPoolSessionsCarryTheTimeouts(t *testing.T) {
 	}
 }
 
-// The limit is enforced by the server: a DSN that tightens it gets its
-// statements cancelled at that bound.
 func TestStatementTimeoutCancelsARunawayStatement(t *testing.T) {
 	ctx := context.Background()
 	dsn := os.Getenv("FELIS_TEST_PG_URL")
@@ -56,8 +52,6 @@ func TestStatementTimeoutCancelsARunawayStatement(t *testing.T) {
 	}
 }
 
-// Unlock releases the lock on the connection that took it, even when the pool
-// would hand that connection to someone else: another migrator can take it next.
 func TestMigrationLockIsReleasedOnItsOwnConnection(t *testing.T) {
 	ctx := context.Background()
 	dsn := os.Getenv("FELIS_TEST_PG_URL")
@@ -110,7 +104,6 @@ func TestMigrationLockIsReleasedOnItsOwnConnection(t *testing.T) {
 	}
 }
 
-// A migration body runs without the request-sized statement limit.
 func TestMigrationBodyHasNoStatementLimit(t *testing.T) {
 	ctx := context.Background()
 	drv, err := store.Open(ctx, os.Getenv("FELIS_TEST_PG_URL"))
@@ -137,8 +130,6 @@ func TestMigrationBodyHasNoStatementLimit(t *testing.T) {
 	}
 }
 
-// Two assertions verified against the same stored counter can land in either
-// order; the lower one never pulls the counter back, and both stamp the use.
 func TestSignCountNeverMovesBack(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "signcount")
@@ -169,8 +160,6 @@ func TestSignCountNeverMovesBack(t *testing.T) {
 	}
 }
 
-// Disabling revokes the sessions in the same transaction: when the revocation
-// fails, the flag is not left set, and the caller hears about it.
 func TestSetUserDisabledIsAtomic(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "disable")

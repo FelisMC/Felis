@@ -10,8 +10,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// Label keys applied to backup objects, mirroring internal/restore so the two
-// executors are observable the same way.
 const (
 	LabelManagedBy = "app.kubernetes.io/managed-by"
 	LabelComponent = "app.kubernetes.io/component"
@@ -20,29 +18,17 @@ const (
 	managedByValue = "felis-backup"
 	componentValue = "world-backup"
 
-	// The restore chain a safety snapshot carries (internal/maintenance keeps the
-	// canonical copies; maintenance_test pins these against them).
 	labelThenRestore          = "felis.lolicon.best/then-restore"
 	thenRestorePending        = "pending"
 	annotationRestoreRef      = "felis.lolicon.best/restore-ref"
 	annotationRestoreBackupID = "felis.lolicon.best/restore-backup-id"
 
-	// ReasonPreRestore is the world_backups reason of a safety snapshot.
 	ReasonPreRestore = "pre_restore"
-	// ReasonScheduled is the world_backups reason of the daily restore point
-	// felis-api takes of a world played since its last one.
-	ReasonScheduled = "scheduled"
-	// ReasonReplica is the world_backups reason of the frequent live copy felis-api
-	// takes of a world running on a worker, so a failover off that worker loses little;
-	// a server keeps only its newest few.
-	ReasonReplica = "replica"
-	// LabelReason marks a scheduled backup Job, so the jobs route can tell it
-	// from one somebody asked for.
-	LabelReason = "felis.lolicon.best/backup-reason"
-	// LabelLive marks a live backup's Job and pod: felis-api watches its init container
-	// to know when the copy is done and the game may save again.
-	LabelLive = "felis.lolicon.best/live-backup"
-	// StageContainer is the live backup's copying init container.
+	ReasonScheduled  = "scheduled"
+	ReasonReplica    = "replica"
+	LabelReason      = "felis.lolicon.best/backup-reason"
+	// LabelLive lets recovery observe copy completion and restore game saving.
+	LabelLive      = "felis.lolicon.best/live-backup"
 	StageContainer = "stage"
 
 	worldVolume     = "world"
@@ -54,25 +40,18 @@ const (
 	felisBinaryPath = "/usr/local/bin/felis"
 )
 
-// JobParams are the rendered inputs to a backup Job, derived from a server +
-// former owner + Config by the Backuper. jobspec is a pure function of them so
-// the security-critical Job shape is unit-tested without a cluster.
 type JobParams struct {
 	Server string
-	// JobName is the unique Job object name for this invocation. The Backuper sets a
-	// fresh per-call name (BackupJobName(server) + random suffix) so every on-demand
-	// request produces its own archive — a deterministic name would collide with a
-	// just-finished Job still inside its TTL window and silently no-op the retry.
-	// Empty falls back to the deterministic BackupJobName (tests, and any direct call).
+	// JobName empty uses the deterministic base; Backuper normally supplies a fresh suffix to avoid completed-Job collisions.
 	JobName        string
-	FormerOwner    string // recorded on the world_backups row so the owner can later restore it
+	FormerOwner    string
 	WorldPVC       string
 	BackupPVC      string
 	Namespace      string
 	ServiceAccount string
 	Image          string
-	ConfigSecret   string // the felis config Secret mounted for the DB URL (self-recording)
-	ConfigMount    string // where the config Secret is mounted (holds felis.toml)
+	ConfigSecret   string
+	ConfigMount    string
 	BackupRoot     string
 	WorldsRoot     string
 	Deadline       time.Duration
@@ -82,38 +61,23 @@ type JobParams struct {
 	RunAsGroup     int64
 	FSGroup        int64
 
-	// RestoreRef / RestoreBackupID make this backup the safety snapshot in front
-	// of a restore: the Job is labelled as a pending chain and names the backup
-	// felis-api restores once the snapshot succeeds (internal/maintenance). The
-	// snapshot is recorded as ReasonPreRestore, and its prune spares the backup
-	// the restore will extract.
+	// RestoreRef and RestoreBackupID mark a pending safety-snapshot chain and protect the archive needed by its follow-up restore.
 	RestoreRef      string
 	RestoreBackupID string
-	// Live backs up a running server (api livebackup.go): an init container copies the
-	// world, mounted read-only, into a scratch volume while felis-api holds the game's
-	// saving off, and the archive step reads that copy instead of the volume. StageLimit
-	// caps the scratch volume (a resource quantity; empty means no cap).
+	// Live copies a read-only world to scratch before archival; StageLimit empty leaves scratch capacity uncapped.
 	Live       bool
 	StageLimit string
 
-	// Scheduled records the backup as ReasonScheduled, pruned to its own
-	// [archive] scheduled_keep, and labels the Job LabelReason. It never carries
-	// a restore.
+	// Scheduled uses independent retention and cannot carry a restore.
 	Scheduled bool
-	// Replica records the backup as ReasonReplica. It never carries a restore.
+	// Replica cannot carry a restore.
 	Replica bool
 
 	TTLAfterFinished time.Duration
 }
 
-// BackupJobName is the base Job name for a server's on-demand backup — the prefix
-// the Backuper extends with a per-invocation random suffix (JobParams.JobName) so
-// repeat backups do not collide. It is distinct from the restore Job name so a
-// backup and a restore of the same server never collide.
 func BackupJobName(server string) string { return "backup-" + server }
 
-// PodSelector matches every world-backup Job pod, whichever server it backs up:
-// the peer the database's ingress fence admits (internal/platform/postgres.go).
 func PodSelector() map[string]string {
 	return map[string]string{
 		LabelManagedBy: managedByValue,
@@ -127,30 +91,7 @@ func backupLabels(p JobParams) map[string]string {
 	return labels
 }
 
-// BackupJob renders the on-demand world-backup Job (spec §18/§19 WorldArchiver,
-// run on demand rather than on the reaper's daily schedule). Its isolation mirrors
-// the restore Job (weak SA, non-root, read-only root fs, drop ALL, one-shot with a
-// deadline) with ONE deliberate, security-reviewed departure asserted by
-// jobspec_test.go:
-//
-//   - It DOES mount the felis config Secret (read-only), because a backup must
-//     self-record its world_backups row — archive-then-insert atomically, exactly
-//     like the reaper, which is the only other component holding both a world mount
-//     and the database. A restore Pod must never touch the DB because it processes a
-//     potentially poisoned archive; a backup Pod only READS a world the operator
-//     already owns and tars it (bytes, never executed), so the poisoned-input threat
-//     that forbids restore's DB access does not apply. Its blast radius is the DB
-//     plus the two PVCs, matching the reaper's trust for a strict subset of the
-//     reaper's operations (it never deletes a PVC and never calls the K8s API — its
-//     SA token stays un-mounted).
-//   - The world PVC is mounted READ-ONLY (backup only reads it; the RWO volume must
-//     be free, which the handler's stopped-gate guarantees), and the backup PVC
-//     READ-WRITE (the archive is written into it) — the mirror image of restore.
-//
-// The container runs `/usr/local/bin/felis backup` (cmd/felis), which tars the
-// world at WorldsRoot into BackupRoot and inserts the world_backups row. BackupRoot
-// MUST equal the reaper's [archive] local_path so the recorded absolute ref
-// resolves the same way a later restore Job mounts it.
+// Backup Jobs mount database config to record archives; restore Jobs remain credential-blind because they extract untrusted archives.
 func BackupJob(p JobParams) (*batchv1.Job, error) {
 	if p.Image == "" {
 		return nil, fmt.Errorf("backup: image is empty")
@@ -185,8 +126,6 @@ func BackupJob(p JobParams) (*batchv1.Job, error) {
 		"--server", p.Server,
 		"--worlds-root", p.WorldsRoot,
 	}
-	// FormerOwner is optional: an admin backing up an unowned (released) server
-	// records an empty former_owner, exactly as the reaper does for an unowned reap.
 	if p.FormerOwner != "" {
 		args = append(args, "--former-owner", p.FormerOwner)
 	}
@@ -206,8 +145,7 @@ func BackupJob(p JobParams) (*batchv1.Job, error) {
 		Command: []string{felisBinaryPath, "backup"},
 		Args:    args,
 		VolumeMounts: []corev1.VolumeMount{
-			// The world is only read to tar it; mounting it read-only means the
-			// backup process can never mutate the world it snapshots.
+			// Read-only world mounts prevent backup processes from modifying the source.
 			{Name: worldVolume, MountPath: p.WorldsRoot, ReadOnly: true},
 			{Name: backupVolume, MountPath: p.BackupRoot},
 			{Name: configVolume, MountPath: p.ConfigMount, ReadOnly: true},
@@ -218,10 +156,7 @@ func BackupJob(p JobParams) (*batchv1.Job, error) {
 			Privileged:               boolPtr(false),
 			AllowPrivilegeEscalation: boolPtr(false),
 			ReadOnlyRootFilesystem:   boolPtr(true),
-			// DAC_OVERRIDE is granted on top of dropping ALL: the pod runs as root,
-			// but the world may have been written by a game image whose UID is
-			// neither root nor ours, and Paper's own files are mode 0600. It is the
-			// minimal extra power that makes the archive read every world shape.
+			// DAC_OVERRIDE permits reading mode-0600 world files regardless of the game UID.
 			Capabilities: &corev1.Capabilities{
 				Drop: []corev1.Capability{"ALL"},
 				Add:  []corev1.Capability{"DAC_OVERRIDE"},
@@ -229,8 +164,6 @@ func BackupJob(p JobParams) (*batchv1.Job, error) {
 		},
 	}
 
-	// The exit error reaches GET /servers/{name}/jobs through the terminated
-	// state (api.K8sJobStatus), in place of the Job's generic backoff text.
 	container.TerminationMessagePolicy = corev1.TerminationMessageFallbackToLogsOnError
 
 	name := p.JobName
@@ -243,8 +176,7 @@ func BackupJob(p JobParams) (*batchv1.Job, error) {
 		Labels:    backupLabels(p),
 	}
 	if p.RestoreRef != "" {
-		// On the Job only: felis-api settles the chain by patching this label, and
-		// the pods never need it.
+		// Only the Job needs the chain label because the API patches it after settlement.
 		meta.Labels[labelThenRestore] = thenRestorePending
 		meta.Annotations = map[string]string{
 			annotationRestoreRef:      p.RestoreRef,
@@ -284,9 +216,6 @@ func BackupJob(p JobParams) (*batchv1.Job, error) {
 	job := &batchv1.Job{
 		ObjectMeta: meta,
 		Spec: batchv1.JobSpec{
-			// One shot: a wedged archive must not loop. The TTL GCs the finished Job
-			// so a later backup of the same server is not blocked forever by a stale
-			// completed Job.
 			BackoffLimit:            int32Ptr(0),
 			ActiveDeadlineSeconds:   int64Ptr(deadline),
 			TTLSecondsAfterFinished: int32Ptr(ttl),
@@ -296,13 +225,9 @@ func BackupJob(p JobParams) (*batchv1.Job, error) {
 					RestartPolicy:                corev1.RestartPolicyNever,
 					ServiceAccountName:           p.ServiceAccount,
 					AutomountServiceAccountToken: boolPtr(false),
-					// Root by default (see Config.RunAsUser): the world volume's
-					// owner is the game uid, so only an owner-matching or
-					// DAC-overriding uid can read it. FSGroup is omitted when unset
-					// so a root pod never triggers a volume chgrp.
-					SecurityContext: backupPodSecurityContext(p),
-					Containers:      []corev1.Container{container},
-					Volumes:         volumes,
+					SecurityContext:              backupPodSecurityContext(p),
+					Containers:                   []corev1.Container{container},
+					Volumes:                      volumes,
 				},
 			},
 		},
@@ -315,7 +240,6 @@ func BackupJob(p JobParams) (*batchv1.Job, error) {
 	return job, nil
 }
 
-// resourceLimits parses the CPU/memory limits into a ResourceList.
 func resourceLimits(cpu, mem string) (corev1.ResourceList, error) {
 	if cpu == "" {
 		cpu = defaultCPULimit
@@ -341,11 +265,7 @@ func boolPtr(b bool) *bool    { return &b }
 func int32Ptr(i int32) *int32 { return &i }
 func int64Ptr(i int64) *int64 { return &i }
 
-// backupPodSecurityContext pins the Pod identity. RunAsNonRoot is false because
-// the default identity is root: worlds are owned by the game uid (or root, for a
-// world an older release wrote), and Paper writes mode-0600 files any other
-// non-root reader cannot open. FSGroup stays unset unless configured — a root executor must not
-// needlessly chgrp the world volume.
+// backupPodSecurityContext defaults to root and omits FSGroup unless configured to avoid a volume-wide ownership change.
 func backupPodSecurityContext(p JobParams) *corev1.PodSecurityContext {
 	sc := &corev1.PodSecurityContext{
 		RunAsNonRoot: boolPtr(false),
@@ -358,13 +278,7 @@ func backupPodSecurityContext(p JobParams) *corev1.PodSecurityContext {
 	return sc
 }
 
-// MakeLive turns a Job whose first container reads the world volume (worldVol, mounted
-// at worldsRoot) into a live backup of a running server: an init container with the
-// first container's security context and limits copies the world, mounted read-only,
-// into a scratch volume capped at stageLimit (empty: no cap), and the first container
-// then reads that copy at worldsRoot instead of the volume the game writes. The Job and
-// its pod are labelled LabelLive so felis-api knows to turn saving back on once the copy
-// step exits. Both the backup Job and the distributed upload Job go through it.
+// MakeLive replaces archival input with a staged copy and marks the Job so recovery knows when game saving can resume.
 func MakeLive(job *batchv1.Job, worldVol, worldsRoot, image, stageLimit string) error {
 	spec := &job.Spec.Template.Spec
 	if len(spec.Containers) == 0 {
@@ -374,7 +288,6 @@ func MakeLive(job *batchv1.Job, worldVol, worldsRoot, image, stageLimit string) 
 	found := false
 	for i, m := range archive.VolumeMounts {
 		if m.Name == worldVol {
-			// The archive step reads the frozen copy, never the volume the game writes.
 			archive.VolumeMounts[i] = corev1.VolumeMount{Name: stageVolume, MountPath: worldsRoot, ReadOnly: true}
 			found = true
 		}

@@ -29,8 +29,6 @@ type recorder struct{ events []string }
 
 func (r *recorder) add(e string) { r.events = append(r.events, e) }
 
-// ---- fake backup.WorldArchiver -------------------------------------------
-
 type fakeArchiver struct {
 	rec        *recorder
 	onArchive  func()
@@ -59,7 +57,7 @@ func (f *fakeArchiver) Archive(_ context.Context, server, _ string) (backup.Arch
 // (backup.Verifier) and sweeps its store (backup.Sweeper).
 type checkingArchiver struct {
 	*fakeArchiver
-	corrupt   map[string]bool // refs that no longer read back
+	corrupt   map[string]bool // Refs that fail to read back.
 	verifyErr error           // every read-back fails with this
 	verified  []string
 
@@ -98,8 +96,6 @@ func (f *fakeArchiver) Delete(_ context.Context, ref backup.ArchiveRef) error {
 	f.rec.add("delete")
 	return nil
 }
-
-// ---- fake Cluster ---------------------------------------------------------
 
 type fakeCluster struct {
 	rec            *recorder
@@ -182,8 +178,6 @@ func (c *fakeCluster) DeleteServer(ctx context.Context, name, uid string) error 
 	c.rec.add("deleteServer")
 	return nil
 }
-
-// ---- fake Store -----------------------------------------------------------
 
 type fakeBackup struct {
 	id, server, ref    string
@@ -433,8 +427,6 @@ func (s *fakeStore) Audit(_ context.Context, rec AuditRecord) error {
 	return nil
 }
 
-// ---- fixture --------------------------------------------------------------
-
 func newReaper(cfg Config, cands ...Candidate) (*Reaper, *fakeStore, *fakeCluster, *fakeArchiver) {
 	rec := &recorder{}
 	st := &fakeStore{rec: rec, clock: testNow, byName: map[string]*Candidate{}}
@@ -464,10 +456,6 @@ func mustRun(t *testing.T, r *Reaper) Summary {
 	return sum
 }
 
-// ---- tests ----------------------------------------------------------------
-
-// Red line ①: a reaperExempt server is never archived, deleted, or warned no
-// matter how idle it is — losing the lobby would be total ingress loss.
 func TestReapExemptServerNeverTouched(t *testing.T) {
 	r, st, cl, ar := newReaper(DefaultConfig(),
 		Candidate{Name: "lobby", OwnerID: "", LastActiveAt: idleBy(100 * Day)})
@@ -482,8 +470,6 @@ func TestReapExemptServerNeverTouched(t *testing.T) {
 	}
 }
 
-// The happy path, asserting the strict ordering of red line ④ and that the
-// reap audit carries former_owner (spec §18 audit(reap_world, s, former_owner)).
 func TestReapIdleWorldFullSequence(t *testing.T) {
 	r, st, cl, _ := newReaper(DefaultConfig(),
 		Candidate{Name: "alpha", OwnerID: "user-7", LastActiveAt: idleBy(20 * Day)})
@@ -517,17 +503,13 @@ func TestReapIdleWorldFullSequence(t *testing.T) {
 	}
 }
 
-// §23 instrumentation: felis_reaper_worlds_deleted_total advances by exactly one
-// per world whose PVC is actually deleted — in lockstep with Summary.WorldsReaped,
-// and never for a skipped/preserved world. Asserted as a delta because the counter
-// is a process-global singleton other tests in this package also advance.
 func TestReapIncrementsDeletedWorldsMetric(t *testing.T) {
 	before := testutil.ToFloat64(metrics.ReaperWorldsDeletedTotal)
 
 	r, _, cl, _ := newReaper(DefaultConfig(),
 		Candidate{Name: "metric-a", OwnerID: "user-9", LastActiveAt: idleBy(20 * Day)},
 		Candidate{Name: "metric-b", OwnerID: "user-9", LastActiveAt: idleBy(20 * Day)},
-		// Fresh server: under the deadline, must NOT be reaped or counted.
+		// Fresh server: under the deadline, not reaped or counted.
 		Candidate{Name: "metric-fresh", OwnerID: "user-9", LastActiveAt: idleBy(2 * Day)},
 	)
 
@@ -545,9 +527,6 @@ func TestReapIncrementsDeletedWorldsMetric(t *testing.T) {
 	}
 }
 
-// CENTERPIECE — red line ④: when the archive fails, the PVC is never deleted,
-// ownership is untouched, no backup row is written, and the same server is
-// retried (state unchanged) on the next run.
 func TestReapArchiveFailurePreservesWorld(t *testing.T) {
 	r, st, cl, ar := newReaper(DefaultConfig(),
 		Candidate{Name: "beta", OwnerID: "user-1", LastActiveAt: idleBy(20 * Day)})
@@ -580,8 +559,6 @@ func TestReapArchiveFailurePreservesWorld(t *testing.T) {
 	}
 }
 
-// Red line ④ (recording arm): if the archive succeeds but recording it fails,
-// the orphan archive is cleaned up and the PVC is still never deleted.
 func TestReapInsertBackupFailurePreservesWorld(t *testing.T) {
 	r, st, cl, ar := newReaper(DefaultConfig(),
 		Candidate{Name: "gamma", OwnerID: "user-2", LastActiveAt: idleBy(20 * Day)})
@@ -603,9 +580,6 @@ func TestReapInsertBackupFailurePreservesWorld(t *testing.T) {
 	}
 }
 
-// Idempotency (the deliberate disk-growth choice): a DeletePVC failure leaves a
-// recorded backup; the retry reuses it via FreshBackup instead of writing a
-// duplicate archive.
 func TestReapDeletePVCFailureIsIdempotent(t *testing.T) {
 	r, st, cl, ar := newReaper(DefaultConfig(),
 		Candidate{Name: "delta", OwnerID: "user-3", LastActiveAt: idleBy(20 * Day)})
@@ -619,7 +593,7 @@ func TestReapDeletePVCFailureIsIdempotent(t *testing.T) {
 		t.Fatalf("run1: archives=%d backups=%d, want 1/1", ar.archives, len(st.backups))
 	}
 
-	// apiserver recovers; the retry must NOT re-archive.
+	// apiserver recovers; the retry must not re-archive.
 	cl.deletePVCErr = nil
 	sum2 := mustRun(t, r)
 	if sum2.WorldsReaped != 1 {
@@ -633,9 +607,6 @@ func TestReapDeletePVCFailureIsIdempotent(t *testing.T) {
 	}
 }
 
-// A manual backup taken after the last join is not the reaper's archive: the
-// owner may have edited the world from the panel since, which does not move
-// last_active_at. The reap writes its own archive.
 func TestReapDoesNotReuseManualBackup(t *testing.T) {
 	r, st, _, ar := newReaper(DefaultConfig(),
 		Candidate{Name: "eta", OwnerID: "user-7", LastActiveAt: idleBy(20 * Day)})
@@ -648,9 +619,6 @@ func TestReapDoesNotReuseManualBackup(t *testing.T) {
 	}
 }
 
-// With an off-site bucket configured the reaper archives an idle world but
-// keeps it until the archive's copy is confirmed; the next run reuses that
-// archive and deletes the world, without archiving it again.
 func TestReapWaitsForOffsiteCopy(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.RequireOffsite = true
@@ -680,8 +648,6 @@ func TestReapWaitsForOffsiteCopy(t *testing.T) {
 	}
 }
 
-// Red line ⑤ (reap arm): an unowned server is still reaped on time; the audit
-// records an empty former_owner.
 func TestReapUnownedServerStillReaped(t *testing.T) {
 	r, st, cl, _ := newReaper(DefaultConfig(),
 		Candidate{Name: "orphan", OwnerID: "", LastActiveAt: idleBy(20 * Day)})
@@ -705,9 +671,6 @@ func TestNoReapBeforeDeadline(t *testing.T) {
 	}
 }
 
-// Warning thresholds are DERIVED from the deadline, not hardcoded. Using a
-// non-default 10d deadline, warnings must fire at 10d-3d=7d and 10d-1d=9d, in
-// elif precedence, deduped per tier, and never for an unowned server.
 func TestWarningsDerivedFromNonDefaultDeadline(t *testing.T) {
 	cfg := Config{
 		IdleBeforeReap: 10 * Day,
@@ -753,10 +716,6 @@ func TestWarningsDerivedFromNonDefaultDeadline(t *testing.T) {
 	}
 }
 
-// Red line ⑤ (best-effort) with delivery honesty: a Warner failure does not
-// abort the run, and it does NOT stamp — the stamp records a DELIVERED notice,
-// so the next daily run retries (the warning window bounds the retries, and the
-// reap clears the candidate either way).
 func TestWarningDeliveryRetriedAfterFailure(t *testing.T) {
 	r, st, _, _ := newReaper(DefaultConfig(),
 		Candidate{Name: "h", OwnerID: "u-h", LastActiveAt: idleBy(13 * Day)})
@@ -770,7 +729,7 @@ func TestWarningDeliveryRetriedAfterFailure(t *testing.T) {
 		t.Fatal("a failed delivery must not stamp warned_3d_at")
 	}
 
-	// Next run with a working channel: the SAME warning goes out and stamps.
+	// Next run with a working channel: the same warning is sent and stamped.
 	rw := &recordingWarner{}
 	r.Warner = rw
 	sum = mustRun(t, r)
@@ -782,9 +741,6 @@ func TestWarningDeliveryRetriedAfterFailure(t *testing.T) {
 	}
 }
 
-// A nil Warner suppresses the warning WITHOUT stamping it: nothing was sent, so
-// nothing is recorded as sent — and the day a channel is wired, the owner can
-// still be warned.
 func TestWarningSuppressedWithoutWarner(t *testing.T) {
 	r, st, _, _ := newReaper(DefaultConfig(),
 		Candidate{Name: "n", OwnerID: "u-n", LastActiveAt: idleBy(13 * Day)})
@@ -813,8 +769,6 @@ func (w *recordingWarner) Warn(_ context.Context, ownerID, server, remaining str
 	return nil
 }
 
-// §26 capacity: when the store is over its cap, the oldest backup is evicted
-// early (destructive — audited) to make room, then the reap proceeds.
 func TestCapacityEvictsOldestThenReaps(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.MaxLocalBytes = 100
@@ -860,8 +814,6 @@ func TestCapacityEvictsOldestThenReaps(t *testing.T) {
 	}
 }
 
-// §26 capacity + red line ④: if eviction cannot free enough space, the reap is
-// skipped and the world is preserved rather than deleted unbacked.
 func TestCapacityStillFullSkipsReap(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.MaxLocalBytes = 100
@@ -888,9 +840,6 @@ func TestCapacityStillFullSkipsReap(t *testing.T) {
 	}
 }
 
-// Eviction order: on-demand backups go first, then reaper archives that have an
-// off-site copy; the only copy of a reaped world is never evicted early, even
-// when that leaves the store full and the idle world waits.
 func TestCapacityEvictionOrderSparesSoleCopies(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.MaxLocalBytes = 100
@@ -932,9 +881,6 @@ func TestCapacityEvictionOrderSparesSoleCopies(t *testing.T) {
 	}
 }
 
-// Retention pass: backups past expires_at, and any its owner deleted (status
-// expired) whatever its expires_at, are deleted from the backend and marked
-// deleted; unexpired backups are untouched.
 func TestExpiredBackupsDeleted(t *testing.T) {
 	r, st, _, ar := newReaper(DefaultConfig())
 	st.backups = []*fakeBackup{
@@ -959,8 +905,6 @@ func TestExpiredBackupsDeleted(t *testing.T) {
 	}
 }
 
-// An expired backup the backend cannot delete stays present and marks the run
-// failed, so the Job reports it instead of succeeding every day.
 func TestExpiryFailureFailsTheRun(t *testing.T) {
 	r, st, _, _ := newReaper(DefaultConfig())
 	st.backups = []*fakeBackup{
@@ -977,8 +921,6 @@ func TestExpiryFailureFailsTheRun(t *testing.T) {
 	}
 }
 
-// A servers row whose CRD has been deleted is skipped (not a failure) — the
-// reaper never deletes world data it cannot first inspect for the exemption.
 func TestMissingCRDSkipped(t *testing.T) {
 	r, st, cl, ar := newReaper(DefaultConfig(),
 		Candidate{Name: "ghost", OwnerID: "u", LastActiveAt: idleBy(20 * Day)})
@@ -996,7 +938,6 @@ func TestMissingCRDSkipped(t *testing.T) {
 	}
 }
 
-// A failure to list servers is the one hard error that aborts the batch.
 func TestListErrorAbortsBatch(t *testing.T) {
 	r, st, _, _ := newReaper(DefaultConfig())
 	st.listErr = errors.New("db unreachable")
@@ -1013,8 +954,6 @@ func checking(r *Reaper, ar *fakeArchiver) *checkingArchiver {
 	return c
 }
 
-// An archive left from an earlier run is read back before the world it holds is
-// deleted, and the read-back is recorded.
 func TestReapReadsBackReusedArchive(t *testing.T) {
 	r, st, cl, ar := newReaper(DefaultConfig(),
 		Candidate{Name: "kilo", OwnerID: "user-1", LastActiveAt: idleBy(20 * Day)})
@@ -1034,8 +973,6 @@ func TestReapReadsBackReusedArchive(t *testing.T) {
 	}
 }
 
-// A reused archive that no longer reads back is marked corrupt and the world,
-// still there, is archived afresh before it is deleted. The run reports it.
 func TestReapReplacesCorruptArchive(t *testing.T) {
 	r, st, cl, ar := newReaper(DefaultConfig(),
 		Candidate{Name: "lima", OwnerID: "user-1", LastActiveAt: idleBy(20 * Day)})
@@ -1060,8 +997,6 @@ func TestReapReplacesCorruptArchive(t *testing.T) {
 	}
 }
 
-// When the archive cannot be read back at all (the store is not mounted), the
-// world is kept and nothing is marked: the error says nothing about the archive.
 func TestReapKeepsWorldWhenReadBackFails(t *testing.T) {
 	r, st, cl, ar := newReaper(DefaultConfig(),
 		Candidate{Name: "mike", OwnerID: "user-1", LastActiveAt: idleBy(20 * Day)})
@@ -1079,8 +1014,6 @@ func TestReapKeepsWorldWhenReadBackFails(t *testing.T) {
 	}
 }
 
-// The read-back pass takes VerifyPerRun archives, never-checked ones first, and
-// records what it finds; a corrupt one is marked and fails the run once.
 func TestVerifyPassSamplesArchives(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.VerifyPerRun = 2
@@ -1117,9 +1050,6 @@ func TestVerifyPassSamplesArchives(t *testing.T) {
 	}
 }
 
-// The sweep claims every archive a backup records, removes leftovers past
-// PartialAfter and orphans past the retention, and never runs without the list
-// of recorded archives.
 func TestSweepPass(t *testing.T) {
 	r, st, _, ar := newReaper(DefaultConfig())
 	ca := checking(r, ar)
@@ -1148,9 +1078,6 @@ func TestSweepPass(t *testing.T) {
 	}
 }
 
-// data-durability-8: a server still up when its world goes idle is told to stop
-// and left for the next run, never archived while it may be writing; once it is
-// down the next run reaps it.
 func TestReapWaitsForServerToStop(t *testing.T) {
 	r, st, cl, ar := newReaper(DefaultConfig(),
 		Candidate{Name: "busy", OwnerID: "user-1", LastActiveAt: idleBy(20 * Day)})
@@ -1170,7 +1097,6 @@ func TestReapWaitsForServerToStop(t *testing.T) {
 	}
 }
 
-// A hold that cannot be taken for any other reason is a failure of the run.
 func TestReapHoldErrorSkips(t *testing.T) {
 	r, _, cl, ar := newReaper(DefaultConfig(),
 		Candidate{Name: "flaky", OwnerID: "user-1", LastActiveAt: idleBy(20 * Day)})
@@ -1182,8 +1108,6 @@ func TestReapHoldErrorSkips(t *testing.T) {
 	}
 }
 
-// The world is held from before the archive until after the reap is recorded,
-// and let go on every path, a failed archive included.
 func TestReapReleasesHoldOnEveryPath(t *testing.T) {
 	r, st, cl, ar := newReaper(DefaultConfig(),
 		Candidate{Name: "hotel", OwnerID: "user-1", LastActiveAt: idleBy(20 * Day)})
@@ -1195,8 +1119,6 @@ func TestReapReleasesHoldOnEveryPath(t *testing.T) {
 	}
 }
 
-// A lock lost while the archive is written (felis-api could then start the
-// server) keeps the PVC; the archive is recorded and reused next run.
 func TestReapLostHoldKeepsWorld(t *testing.T) {
 	r, st, cl, ar := newReaper(DefaultConfig(),
 		Candidate{Name: "india", OwnerID: "user-1", LastActiveAt: idleBy(20 * Day)})
@@ -1216,9 +1138,6 @@ func TestReapLostHoldKeepsWorld(t *testing.T) {
 	}
 }
 
-// data-durability-19: an unowned server with no world (reaped before) is not
-// reaped again when its clock runs out; the clock restarts, with no audit and
-// no count.
 func TestReapUnownedWithoutWorldRestartsClock(t *testing.T) {
 	r, st, cl, ar := newReaper(DefaultConfig(),
 		Candidate{Name: "juliet", LastActiveAt: idleBy(16 * Day)})
@@ -1237,8 +1156,6 @@ func TestReapUnownedWithoutWorldRestartsClock(t *testing.T) {
 	}
 }
 
-// An owner who never started the server gives it up at the deadline like any
-// other; there is nothing to archive, and no world was deleted to count.
 func TestReapOwnedWithoutWorldReleases(t *testing.T) {
 	r, st, cl, ar := newReaper(DefaultConfig(),
 		Candidate{Name: "kappa", OwnerID: "user-4", LastActiveAt: idleBy(16 * Day)})
@@ -1253,8 +1170,6 @@ func TestReapOwnedWithoutWorldReleases(t *testing.T) {
 	}
 }
 
-// A run that deleted the PVC and failed before releasing the world is finished
-// by the next: released, audited and counted once, without a new archive.
 func TestReapFinishesInterruptedReap(t *testing.T) {
 	r, st, cl, ar := newReaper(DefaultConfig(),
 		Candidate{Name: "lambda", OwnerID: "user-5", LastActiveAt: idleBy(20 * Day)})
@@ -1271,9 +1186,6 @@ func TestReapFinishesInterruptedReap(t *testing.T) {
 	}
 }
 
-// data-durability-17: with no worlds root the store is still looked after.
-// RunRetention expires, reads back and sweeps without listing a server or
-// reaching the cluster (nil here, so any call would panic).
 func TestRunRetentionTouchesNoWorld(t *testing.T) {
 	r, st, _, ar := newReaper(DefaultConfig(),
 		Candidate{Name: "idle", OwnerID: "user-1", LastActiveAt: idleBy(40 * Day)})

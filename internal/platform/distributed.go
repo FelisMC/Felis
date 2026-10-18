@@ -36,7 +36,6 @@ func ArchiveService(p Params) *corev1.Service {
 	return &corev1.Service{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Service"}, ObjectMeta: metav1.ObjectMeta{Name: ArchiveName, Namespace: p.MinecraftNamespace}, Spec: corev1.ServiceSpec{Selector: map[string]string{"app.kubernetes.io/name": ArchiveName}, Ports: []corev1.ServicePort{{Name: "archive", Port: ArchivePort, TargetPort: intstr.FromInt32(ArchivePort)}}}}
 }
 
-// Cluster grants are read-only and bound only to A's API/operator/reaper identities.
 func DistributedRBAC(p Params) []Object {
 	var out []Object
 	for _, entry := range []struct {
@@ -65,8 +64,7 @@ func ArchiveNetworkPolicies(p Params) []Object {
 		{To: []networkingv1.NetworkPolicyPeer{{PodSelector: &archive}}, Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: portPtr(ArchivePort)}}},
 		{To: []networkingv1.NetworkPolicyPeer{{NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "kube-system"}}, PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"k8s-app": "kube-dns"}}}}, Ports: []networkingv1.NetworkPolicyPort{{Protocol: &udp, Port: portPtr(53)}, {Protocol: &tcp, Port: portPtr(53)}}},
 	}}}
-	// Files/export maintenance Pods may send results only to A's existing upload receiver.
-	// Transfer Pods are excluded so grants remain limited to the archive service.
+	// File and export Pods may reach only the controller's result receiver; transfer Pods retain their separate archive-service grants.
 	maintenance := &networkingv1.NetworkPolicy{TypeMeta: metav1.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "NetworkPolicy"}, ObjectMeta: metav1.ObjectMeta{Name: "felis-maintenance-egress", Namespace: p.MinecraftNamespace}, Spec: networkingv1.NetworkPolicySpec{
 		PodSelector: metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
 			{Key: "app.kubernetes.io/managed-by", Operator: metav1.LabelSelectorOpIn, Values: []string{"felis-files", "felis-export", "felis-restore", "felis-backup"}},

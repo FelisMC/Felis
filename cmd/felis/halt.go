@@ -14,20 +14,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// halt is the break-glass "stop a running server now" op (#31). Its authority is
-// the same as the rest of the console: local root holding the cluster kubeconfig.
-// The console does not stop the pod itself — it flips the MinecraftServer's desired
-// state to Stopped and lets the operator reconcile that into a graceful shutdown, so
-// a halt is exactly the CRD write the operator already knows how to honour.
-//
-// This file is the pure core — no bubbletea, no huh — so the whole thing is unit
-// tested against a controller-runtime fake client. The TUI shell lives in
-// tui_halt.go and only calls into here.
+// The file is the pure core, with no bubbletea, so it is unit tested against a controller-runtime fake client; tui_halt.go only calls into it.
 
-// haltableServer is a MinecraftServer projected down to what the halt picker shows:
-// its name, its observed phase (or desired state before the operator has reconciled
-// it), and whether it is a platform system server whose halt takes the front door
-// down.
 type haltableServer struct {
 	name   string
 	phase  string
@@ -44,9 +32,7 @@ type haltOutcome struct {
 	auditErr       error // non-nil if the accountability row could not be written
 }
 
-// listServersForHalt lists the MinecraftServers an operator may halt in the given
-// namespace, projecting only what the picker renders. The phase falls back to the
-// desired state for a server the operator has not yet reconciled (empty status).
+// Before initial reconciliation, use desiredState when lifecycle phase is absent.
 func listServersForHalt(ctx context.Context, cl client.Client, namespace string) ([]haltableServer, error) {
 	var list v1alpha1.MinecraftServerList
 	if err := cl.List(ctx, &list, client.InNamespace(namespace)); err != nil {
@@ -68,12 +54,7 @@ func listServersForHalt(ctx context.Context, cl client.Client, namespace string)
 	return out, nil
 }
 
-// haltServer flips one MinecraftServer's desiredState to Stopped with a spec-only
-// merge patch. MergeFrom (not Update) is deliberate: the operator writes status on
-// the same object continuously, and a full-object Update would race and clobber it,
-// whereas a merge patch of spec.desiredState touches a disjoint field. Halting a
-// server already Stopped is a no-op, reported via alreadyStopped so the console can
-// say "already stopped" instead of claiming it just stopped it.
+// Patch spec only; stopping an already stopped server reports a no-op.
 func haltServer(ctx context.Context, cl client.Client, namespace, name string) (haltOutcome, error) {
 	var ms v1alpha1.MinecraftServer
 	if err := cl.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &ms); err != nil {
@@ -95,19 +76,13 @@ func haltServer(ctx context.Context, cl client.Client, namespace, name string) (
 	return out, nil
 }
 
-// isSystemServer reports whether name is a platform-provisioned system server. The
-// login gate has no fallback (systemservers.go), so halting it locks every player
-// out of the whole proxy — the console warns when the target is one rather than
-// forbidding it, since break-glass is deliberately full power.
+// Warn before stopping system servers; recovery access still permits the operation.
 func isSystemServer(name string) bool {
 	return name == naming.SystemLoginServer || name == naming.SystemLobbyServer
 }
 
-// performHalt runs haltServer and records a best-effort accountability audit row. It
-// mirrors performBreakGlass: the halt succeeds even when the audit sink is unhappy
-// (break-glass must work with logging down), and any audit error rides back in the
-// outcome for the console to surface. accountable is the OS user who escalated to
-// root — attribution, not proof (the root gate is the real authority).
+// Audit failures do not block recovery halts; return them for display.
+// accountable is the OS user who escalated to root: attribution, not proof.
 func performHalt(ctx context.Context, cl client.Client, s ownerStore, namespace, name, accountable string) (haltOutcome, error) {
 	out, err := haltServer(ctx, cl, namespace, name)
 	if err != nil {

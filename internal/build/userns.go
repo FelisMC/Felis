@@ -15,19 +15,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// Vars so tests can shrink them. The probe pod's image is the api's own, so it is
-// already on the node; the timeout covers a slow pod start, and a runtime that
-// cannot do user namespaces fails the pod well within it.
+// Vars so tests can shrink them.
 var (
 	usernsProbeTimeout = 3 * time.Minute
 	usernsProbePoll    = 2 * time.Second
 )
 
-// UsernsProbeJob renders the one-shot Job that asks the cluster whether a build
-// pod can run with hostUsers: false. The pod has the parts of a build pod that
-// need idmapped mounts and namespaced capabilities: root with kaniko's three
-// capabilities, the RuntimeDefault seccomp profile and an emptyDir. It runs
-// `felis version`, which touches nothing.
+// UsernsProbeJob renders a one-shot Job that runs `felis version` with the parts of a build pod needing hostUsers: false.
 func UsernsProbeJob(namespace, serviceAccount, image, name string) *batchv1.Job {
 	labels := map[string]string{LabelManagedBy: managedByValue, LabelComponent: "userns-probe"}
 	small := corev1.ResourceRequirements{
@@ -85,8 +79,7 @@ func UsernsProbeJob(namespace, serviceAccount, image, name string) *batchv1.Job 
 }
 
 // ProbeUserNamespaces runs UsernsProbeJob and reports whether its pod succeeded.
-// A pod that fails, or never starts before the timeout, answers false; err is set
-// only when the Job could not be created or read. The Job is deleted afterwards.
+// A failed or never-started pod answers false; err is set only when the Job could not be created or read.
 func (k *K8sJobs) ProbeUserNamespaces(ctx context.Context, image string) (bool, error) {
 	name := "userns-probe-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	job := UsernsProbeJob(k.cfg.Namespace, k.cfg.ServiceAccount, image, name)

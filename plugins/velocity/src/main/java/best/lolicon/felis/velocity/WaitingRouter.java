@@ -31,60 +31,15 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.LongSupplier;
 
-/**
- * WaitingRouter implements the §11 domain-autostart routing loop and its waiting
- * queue. It resolves the virtual host a player connected with to a felis server
- * and remembers the requested backend while the player passes the login gate:
- *
- * <pre>
- *   fresh connection                  → login (always; never a user backend)
- *   login says linked + target ready  → requested backend
- *   login says linked + target asleep → post-auth lobby, wake, queued transfer
- *   login requests any other target   → deny (fail closed)
- * </pre>
- *
- * <p>The queue is drained by {@link #tick()}, scheduled by the plugin on the async
- * pool. Each tick polls felis-api once per distinct waited-on server and, when one
- * reports ready, transfers everyone waiting on it. A waiter stays as long as its
- * server is on the way up, through the operator's restart backoff, and drops out on a
- * successful transfer, when the player leaves the proxy, when the start is given up or
- * the server stopped, or when felis-api stops answering for the wait window. A transfer
- * that fails without the backend saying why queues the player again for another dial.
- *
- * <p>Every transition out of login is checked against felis-api's link status, and
- * command/menu queue entries are checked the same way. The wake is then gated
- * server-side by autostartPolicy keyed on the player's online-mode UUID: a 403 means
- * this player may not start the server (we tell them and stop), a 429 means a wake is
- * already in flight (we keep waiting), and a 503 means the cluster is at capacity
- * (we tell them to try later — nothing is coming up, so we do not enqueue). Real
- * user-backend joins are reported back so the reaper sees activity and the player is
- * auto-added to the allowlist.
- *
- * <p>Link checks go through {@link LinkGate}, which rides out a short felis-api
- * outage on a recent positive answer for the same UUID and otherwise fails closed.
- */
+/** Host-based routing and the waiting queue: login first, then the requested backend, or the lobby while it wakes. */
 public final class WaitingRouter {
-    // A waiter stays while its server is on the way up — starting, or Failed inside the
-    // operator's restart backoff — and every poll that says so renews this window. It
-    // runs out only when felis-api stops answering or the server stops heading for
-    // Running. A modpack's cold start (a 300 s budget, then up to three recreated pods
-    // with a 1, 2, 4 min backoff) outlasts any fixed wait, and a waiter dropped early
-    // was never moved in when the server did come up.
-    private static final long WAIT_TIMEOUT_MILLIS = 120_000L;
-    // The backstop for a start whose status never moves (an operator that is down):
-    // twice the default budget, 4 × 300 s plus 7 min of backoff.
-    private static final long MAX_WAIT_MILLIS = 60 * 60_000L;
-    // A long wait tells the player how it is going this often, so it is not silence.
+    private static final long WAIT_TIMEOUT_MILLIS = 120_000L; // renewed by each poll that shows the server still coming up
+    private static final long MAX_WAIT_MILLIS = 60 * 60_000L; // backstop for a start whose status never moves
     private static final long PROGRESS_NOTICE_MILLIS = 60_000L;
     private static final String DESIRED_STOPPED = "Stopped";
-    // How long a positive link answer can stand in for felis-api while it is down.
-    private static final long LINK_GRACE_MILLIS = 10 * 60_000L;
-    // The login gate re-sends its release with backoff (and during a felis-api outage
-    // on every retry), so a denial line is shown at most once per this interval.
-    private static final long GATE_NOTICE_INTERVAL_MILLIS = 15_000L;
-    // How many times a player is dialled into a server that fails the connect without
-    // saying why. The retries ride the queue, a tick apart, each after a fresh ready poll.
-    private static final int TRANSFER_ATTEMPTS = 3;
+    private static final long LINK_GRACE_MILLIS = 10 * 60_000L; // a positive link answer may stand in for felis-api this long
+    private static final long GATE_NOTICE_INTERVAL_MILLIS = 15_000L; // the gate retries its release; show a denial once per interval
+    private static final int TRANSFER_ATTEMPTS = 3; // dials into a server that fails the connect without a reason
 
     private final ProxyServer proxy;
     private final Logger log;
@@ -103,22 +58,11 @@ public final class WaitingRouter {
     private final Map<UUID, Waiter> waiting = new ConcurrentHashMap<>();
     private final Map<UUID, String> pendingTargets = new ConcurrentHashMap<>();
     private final Map<UUID, Long> lastGateNotice = new ConcurrentHashMap<>();
-    // Players whose login release or queue entry is being authorized right now. The
-    // gate re-sends its release every 1 to 8 s and a player can click a tile again;
-    // while felis-api was slow each of those ran its own link check and wake, so one
-    // player woke the server, and was told it was starting, several times over.
-    private final Set<UUID> authorizing = ConcurrentHashMap.newKeySet();
-    // tick is scheduled at a fixed rate and makes blocking calls; when felis-api is
-    // slow a run can outlast the interval, and overlapping runs would multiply the
-    // load on the thing that is already slow.
-    private final AtomicBoolean ticking = new AtomicBoolean(false);
+    private final Set<UUID> authorizing = ConcurrentHashMap.newKeySet(); // login releases and queue entries mid-authorization; drops the gate's repeated sends
+    private final AtomicBoolean ticking = new AtomicBoolean(false); // overlapping ticks would add load while felis-api is slow
 
-    // Notified just before a menu-originated waiter is transferred, so the lobby's
-    // felis:control face can tell the player's GUI the backend is ready. Null until
-    // the ControlChannel is wired in at proxy init; set once, read on the tick pool.
-    private volatile MenuTransferListener menuListener;
-    // The waiting queue's clock; tests move it to walk a long start.
-    private volatile LongSupplier clock = System::currentTimeMillis;
+    private volatile MenuTransferListener menuListener; // null until ControlChannel is wired in at init; read on the tick pool
+    private volatile LongSupplier clock = System::currentTimeMillis; // tests move it to walk a long start
 
     WaitingRouter(ProxyServer proxy, Logger log, FelisApiClient api, ServerRegistry registry,
                   FelisVelocityPlugin plugin, String loginServer, String lobbyServer) {
@@ -136,18 +80,11 @@ public final class WaitingRouter {
         this.clock = clock;
     }
 
-    /** pruneLinks bounds the LinkGate's fallback records; called on the refresh loop. */
     void pruneLinks() {
         links.prune();
     }
 
-    /**
-     * releaseFromLogin is the proxy end of the login gate's {@code LoginRelease}: ask
-     * Velocity to move the player to the lobby. The move is authorized where every
-     * login exit is, in {@link #onServerPreConnect}, so a gate that sends this early
-     * gets a denial and nothing else. ControlChannel has already checked the frame
-     * came from the login server, so the player is standing on it.
-     */
+    /** Moves the player to the lobby; {@link #onServerPreConnect} authorizes it, so an early release is only denied. */
     void releaseFromLogin(Player player) {
         Optional<RegisteredServer> lobby = proxy.getServer(lobbyServer);
         if (lobby.isEmpty()) {
@@ -166,14 +103,7 @@ public final class WaitingRouter {
         });
     }
 
-    /**
-     * releaseRefused handles a login release that did not land. When the pre-connect
-     * check had redirected it to the player's requested server and that server turned
-     * them away — banned, not whitelisted, full, the wrong mods — the remembered target
-     * would send every retry of the gate into the same refusal, silently, until the gate
-     * gave up two minutes later with "couldn't enter the lobby". Forget the target, show
-     * the server's own reason, and release the player to the lobby at once.
-     */
+    /** Drops a refused redirect target (gate retries would hit the same refusal), shows its reason, then releases to the lobby. */
     private void releaseRefused(Player player, ConnectionRequestBuilder.Result result) {
         UUID id = player.getUniqueId();
         RegisteredServer attempted = result.getAttemptedConnection();
@@ -198,8 +128,6 @@ public final class WaitingRouter {
         releaseFromLogin(player);
     }
 
-    // linked runs the link check through the gate and notes when the answer came from
-    // the outage fallback rather than felis-api.
     private boolean linked(UUID id) throws LinkException {
         EntryPolicy policy = entrySessions.get(id);
         if (policy != null && !policy.requireAccountLink()) {
@@ -213,45 +141,21 @@ public final class WaitingRouter {
         return r.linked;
     }
 
-    /**
-     * setMenuTransferListener wires the felis:control face so a menu-driven wait can
-     * notify the lobby when its backend is ready. Called once at proxy init.
-     */
     void setMenuTransferListener(MenuTransferListener listener) {
         this.menuListener = listener;
     }
 
-    /**
-     * enqueueFromMenu moves a player who is already on the proxy (sitting in the
-     * lobby) to a server they asked for through the felis-paper {@code /menu}: straight
-     * in when it is running, otherwise woken and transferred by {@link #tick()} once
-     * ready — the same shared waiting queue used by host-based autostart routing (spec
-     * §12, §27 scenario 10). It differs from initial-server routing only in origin: the
-     * player drove it from a GUI button rather than a connecting virtual host, so the
-     * move fires {@link MenuTransferListener}.
-     */
+    /** Moves a player already on the proxy to the server picked in the lobby menu; fires {@link MenuTransferListener} on transfer. */
     void enqueueFromMenu(Player player, String serverName) {
         authorizeAndWait(player, serverName, true);
     }
 
-    /**
-     * enqueueFromCommand is {@link #enqueueFromMenu} for {@code /felis go <server>} typed
-     * in chat, differing only in that it is NOT flagged {@code fromMenu}: a command has no
-     * felis-paper GUI tile to notify, so no {@code TransferReady} frame is emitted. A wake
-     * stays autostartPolicy-gated on the verified UUID exactly as for the other origins,
-     * so this adds a new entry point, not a new authority.
-     */
+    /** Like {@link #enqueueFromMenu} for /felis go: no menu notification; a wake stays policy-gated on the verified UUID. */
     void enqueueFromCommand(Player player, String serverName) {
         authorizeAndWait(player, serverName, false);
     }
 
-    /**
-     * toLobby moves a player who is already past the login gate back to the lobby, for
-     * {@code /felis lobby} and {@code /felis go <lobby>}. The lobby is always up, so there
-     * is nothing to wake and no queue to join; a failed connect is reported like any other
-     * transfer. A wait the player joined earlier stays: the lobby is where the queue parks
-     * players anyway, and it still moves them when their server is ready.
-     */
+    /** Moves a player past the login gate back to the lobby; nothing to wake, and a wait already joined stays. */
     void toLobby(Player player) {
         boolean zh = FelisVelocityPlugin.zh(player);
         if (player.getCurrentServer()
@@ -269,23 +173,11 @@ public final class WaitingRouter {
                     NamedTextColor.RED));
             return;
         }
-        // One dial: the lobby is no queue target, and the player can simply ask again.
+        // single dial: the lobby is not a queue target
         transfer(player, lobbyServer, lobby.get(), false, TRANSFER_ATTEMPTS);
     }
 
-    /**
-     * enqueueFromInvite is {@link #enqueueFromCommand} for an accepted invite. An invite can
-     * only name the server its sender is standing on, so the target is running by
-     * construction and the invitee is joined straight onto it.
-     *
-     * <p>It does leave a mark, though, and one that outlives the invite: landing there fires
-     * {@link #onServerConnected}, whose join-event appends the player to the server's
-     * allowlist. On an autostartPolicy=allowlist server that row is the wake permission, so
-     * an accepted invite ends in the invitee being able to start the server later. That is
-     * the same row they would have earned by walking in unaided — the invite shortened the
-     * walk, it did not widen the door — but it is a consequence the INVITER is warned about
-     * up front (FelisVelocityPlugin#accessNotice), because they are the one causing it.
-     */
+    /** Like {@link #enqueueFromCommand} for an accepted invite; the target is already running. */
     void enqueueFromInvite(Player player, String serverName) {
         authorizeAndWait(player, serverName, false);
     }
@@ -317,9 +209,7 @@ public final class WaitingRouter {
                     NamedTextColor.RED));
             return null;
         }
-        // login.<root-domain> is a valid system hostname, but it is the gate rather
-        // than a post-auth destination. Remembering it would redirect the successful
-        // lobby release straight back into login and loop forever.
+        // login is the gate, not a destination: remembering it would loop the lobby release back into login
         if (!target.name().equalsIgnoreCase(loginServer)) {
             pendingTargets.put(id, target.name());
         }
@@ -397,11 +287,7 @@ public final class WaitingRouter {
         player.disconnect(Component.text(FelisVelocityPlugin.zh(player) ? zh : en, NamedTextColor.RED));
     }
 
-    /**
-     * The login backend requests the configured lobby only after its own link poll
-     * succeeds. Re-check that state on the trusted proxy boundary, then either route
-     * the remembered virtual-host target or admit the player to the post-auth lobby.
-     */
+    // Recheck linking at the proxy boundary before honoring login's release request.
     @Subscribe
     public EventTask onServerPreConnect(ServerPreConnectEvent event) {
         EntryPolicy session = entrySessions.get(event.getPlayer().getUniqueId());
@@ -478,8 +364,7 @@ public final class WaitingRouter {
         }
         Optional<RegisteredServer> backend = registry.registered(targetName);
         if (target.ready() && backend.isPresent()) {
-            // Keep pendingTargets until ServerConnectedEvent confirms the redirect.
-            // If the connect fails, Limbo retries its lobby release and we retry too.
+            // Keep pendingTargets until ServerConnectedEvent confirms the redirect. If the connect fails, Limbo retries its lobby release and so does this router.
             event.setResult(ServerPreConnectEvent.ServerResult.allowed(backend.get()));
             return;
         }
@@ -651,8 +536,7 @@ public final class WaitingRouter {
             player.sendMessage(Component.text(
                     zh ? "「" + w.serverName + "」已就绪——正在把你传送过去……"
                        : "« " + w.serverName + " » is ready — moving you in…", NamedTextColor.GREEN));
-            // Tell a menu-driven lobby its tile is live before we pull the player off
-            // it; the proxy still performs the actual Connect just below.
+            // Tell a menu-driven lobby its tile is live before the player is pulled off it; the proxy still performs the actual Connect just below.
             MenuTransferListener listener = menuListener;
             if (w.fromMenu && listener != null) {
                 listener.onReady(player, w.serverName);
@@ -693,10 +577,7 @@ public final class WaitingRouter {
         }
     }
 
-    // stillComing reads a not-ready poll for one waiter. While the server is heading
-    // for Running it renews the waiter's window, and now and then tells the player how
-    // the start is going. When nothing is coming — the retries are spent, or somebody
-    // stopped the server — it says so and returns false.
+    // Renew waits while startup progresses; stop waiting after cancellation or exhausted retries.
     private boolean stillComing(Player player, boolean zh, Waiter w, ServerView status, long now) {
         if (status.startGaveUp()) {
             tellStartFailed(player, zh, w.serverName);
@@ -740,13 +621,7 @@ public final class WaitingRouter {
     private void authorizeAndWait(Player player, String serverName, boolean fromMenu) {
         UUID id = player.getUniqueId();
         boolean zh = FelisVelocityPlugin.zh(player);
-        // Asking for the server you are standing on is a no-op, and it has to be caught
-        // here rather than at each entry point: the menu tile, /felis go and an accepted
-        // invite all funnel through this method. Without the guard the request runs the
-        // whole wake-and-queue path and ends in a Connect to the current server, which
-        // Velocity answers ALREADY_CONNECTED — the player sees a failure for something
-        // that was never a real move. Cheapest for the lobby, where the tile for the
-        // lobby itself sits in front of every player who is already in it.
+        // Joining the current server is a no-op across menu, command, and invite paths.
         if (player.getCurrentServer()
                 .map(sc -> sc.getServerInfo().getName().equalsIgnoreCase(serverName))
                 .orElse(false)) {
@@ -807,19 +682,7 @@ public final class WaitingRouter {
         wakeAndWaitLinked(player, serverName, fromMenu);
     }
 
-    /**
-     * joinIfRunning is the ready-or-wake split of the host path, for the entries that
-     * start from inside the proxy: a server a fresh status poll reports up is joined
-     * directly, at the address the poll carries.
-     *
-     * <p>A running felis server is already reachable by any linked player through
-     * {@code <name>.<root-domain>}, which {@link #onServerPreConnect} admits on the link
-     * check alone, so joining one grants nothing. Waking it instead asks the API to
-     * start a server that needs no starting, and autostartPolicy defaults to ownerOnly:
-     * a friend's green "join" tile answered "you're not allowed to start it". WAKING a
-     * stopped server is still a start, and still policy-gated. A poll that fails falls
-     * through to the wake, which reports the failure its own way.
-     */
+    // Join running servers directly; stopped servers still require policy-gated wake admission.
     private boolean joinIfRunning(Player player, String serverName, boolean fromMenu) {
         ServerView status;
         try {
@@ -843,9 +706,7 @@ public final class WaitingRouter {
         return true;
     }
 
-    // Caller already ran the authoritative link-status check and is off the event
-    // thread. Keep the wake and queue mutation together so every entry has passed
-    // both the account gate and the server-side autostart policy.
+    // Keep wake admission and queue insertion together after the authoritative link check.
     private void wakeAndWaitLinked(Player player, String serverName, boolean fromMenu) {
         UUID id = player.getUniqueId();
         boolean zh = FelisVelocityPlugin.zh(player);
@@ -907,8 +768,7 @@ public final class WaitingRouter {
                     break; // a wake is already in flight → join the existing wait
                 case 503:
                     if ("at_capacity".equals(e.errorCode())) {
-                        // at_capacity: nothing is coming up, so enqueueing would only strand
-                        // the player until the timeout. Be honest and let them retry later.
+                        // at_capacity: nothing is coming up, so enqueueing would only strand the player until the timeout. Tell them to retry later.
                         player.sendMessage(Component.text(
                                 zh ? "集群当前已满——「" + serverName + "」暂时无法启动。请稍后再试。"
                                    : "The cluster is at capacity right now — « " + serverName
@@ -952,16 +812,7 @@ public final class WaitingRouter {
                 NamedTextColor.RED));
     }
 
-    /**
-     * transfer dials a player into a server; attempt numbers this dial among the ones
-     * made for the same move. A connect that fails without the backend saying why — the
-     * server went away between the ready poll and the dial, its port is not listening
-     * yet, the network dropped — puts the player back in the queue until
-     * {@link #TRANSFER_ATTEMPTS} dials are spent: a later tick polls the server again,
-     * registers the address it reports and dials once more. A refusal that carries a
-     * reason (ban, whitelist, full, mods) is final at once, and so is a dial another
-     * connection or a pre-connect listener pre-empted.
-     */
+    // Retry unexplained connection failures only; explicit refusal or preemption terminates transfer immediately.
     private void transfer(Player player, String serverName, RegisteredServer backend,
                           boolean fromMenu, int attempt) {
         player.createConnectionRequest(backend).connect().whenComplete((result, err) -> {
@@ -1037,13 +888,6 @@ public final class WaitingRouter {
         }
     }
 
-    /**
-     * MenuTransferListener bridges the shared waiting queue to the felis:control face
-     * without {@link WaitingRouter} depending on the wire codec: it is told a
-     * menu-originated player's backend is ready, and the implementation owns encoding
-     * and sending the {@code TransferReady} frame. The proxy still performs the
-     * Connect itself ({@link #transfer}); this is only the lobby-UI notification.
-     */
     interface MenuTransferListener {
         void onReady(Player player, String serverName);
     }

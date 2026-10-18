@@ -30,10 +30,6 @@ func sampleJobParams() JobParams {
 	}
 }
 
-// The restore Pod must run under the weak felis-restore SA — never the
-// felis-api identity — with its token un-mounted, so it cannot reach the K8s
-// API. This is the §16/§22 red line asserted on the rendered spec because no
-// cluster runs here.
 func TestRestoreJobRunsUnderWeakSA(t *testing.T) {
 	job, err := RestoreJob(sampleJobParams())
 	if err != nil {
@@ -51,10 +47,6 @@ func TestRestoreJobRunsUnderWeakSA(t *testing.T) {
 	}
 }
 
-// The four-power red line: a restore Pod handles a (potentially poisoned)
-// archive, so it must mount EXACTLY the two PVCs — world read-write, backup
-// read-only — and NO Secret or ConfigMap, so it can never reach the felis
-// database or any credential.
 func TestRestoreJobMountsOnlyTheTwoPVCsAndNoSecrets(t *testing.T) {
 	job, err := RestoreJob(sampleJobParams())
 	if err != nil {
@@ -128,10 +120,7 @@ func TestRestoreJobMountsOnlyTheTwoPVCsAndNoSecrets(t *testing.T) {
 		t.Errorf("backup mount path = %q, want /backups (absolute refs resolve here)", backupMount.MountPath)
 	}
 
-	// Volumes are only half the red line: a single Env var (e.g. a DATABASE_URL)
-	// or an EnvFrom pulling a whole Secret/ConfigMap into the environment would
-	// hand the restore Pod a credential without ever mounting one. The container
-	// gets ALL of its input from the command flags, so both must be empty.
+	// Require empty Env and EnvFrom: restore inputs come only from flags, without credentials.
 	if len(c.Env) != 0 {
 		t.Errorf("restore container must carry no env vars, got %+v", c.Env)
 	}
@@ -140,8 +129,6 @@ func TestRestoreJobMountsOnlyTheTwoPVCsAndNoSecrets(t *testing.T) {
 	}
 }
 
-// A poisoned archive must terminate and not loop or run unbounded; the finished
-// Job must self-GC.
 func TestRestoreJobIsBoundedOneShotAndSelfCleaning(t *testing.T) {
 	job, err := RestoreJob(sampleJobParams())
 	if err != nil {
@@ -161,10 +148,6 @@ func TestRestoreJobIsBoundedOneShotAndSelfCleaning(t *testing.T) {
 	}
 }
 
-// The Pod runs as root (the world volume belongs to the game uid — see
-// restore.Config.RunAsUser), and the container stays non-privileged,
-// escalation-proof, read-only root, ALL caps dropped except DAC_OVERRIDE, with
-// resource limits.
 func TestRestoreJobContainerIsHardened(t *testing.T) {
 	job, err := RestoreJob(sampleJobParams())
 	if err != nil {
@@ -205,9 +188,6 @@ func TestRestoreJobContainerIsHardened(t *testing.T) {
 	}
 }
 
-// The container must invoke the felis restore binary by absolute path with the
-// archive parameters as plain flags — and crucially the world PVC name the
-// operator/reaper agree on.
 func TestRestoreJobInvokesFelisRestoreWithParams(t *testing.T) {
 	p := sampleJobParams()
 	job, err := RestoreJob(p)
@@ -241,8 +221,6 @@ func TestRestoreJobInvokesFelisRestoreWithParams(t *testing.T) {
 	}
 }
 
-// An empty image must be rejected rather than render an unrunnable Job; this is
-// what lets cmd/felis fall back to a 503 instead of enqueuing junk.
 func TestRestoreJobRequiresImage(t *testing.T) {
 	p := sampleJobParams()
 	p.Image = ""
@@ -259,7 +237,6 @@ func TestRestoreJobRejectsBadResourceLimit(t *testing.T) {
 	}
 }
 
-// The restore SA must be bare: no secrets, token automount disabled.
 func TestRestoreServiceAccountIsBare(t *testing.T) {
 	sa := RestoreServiceAccount(defaultNamespace, defaultServiceAccount)
 	if sa.AutomountServiceAccountToken == nil || *sa.AutomountServiceAccountToken {
@@ -272,8 +249,6 @@ func TestRestoreServiceAccountIsBare(t *testing.T) {
 		t.Errorf("SA must carry no image-pull secrets, got %d", len(sa.ImagePullSecrets))
 	}
 }
-
-// ---- helpers ----
 
 func singleContainer(t *testing.T, job *batchv1.Job) corev1.Container {
 	t.Helper()

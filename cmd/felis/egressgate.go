@@ -17,22 +17,8 @@ var (
 	egressPollInterval = 200 * time.Millisecond
 )
 
-// cmdEgressGate is the first initContainer of every build pod and the last of
-// every game server pod. A pod's NetworkPolicy is programmed asynchronously after
-// the pod starts (live on k3s: a build-labelled pod reached the internet and the
-// Kubernetes API for its first ~0.7 s, a server-labelled one felis-api's internal
-// face on its first request), so the gate dials a destination the policy denies
-// until it stops answering, and only then lets the pod's next container, the
-// untrusted Dockerfile or server image, start.
-//
-// The default probe is the Kubernetes API Service, which the kubelet names in
-// every pod's environment and neither policy admits. A probe that still answers
-// after --wait means the policy is not enforced at all (a CNI without
-// NetworkPolicy support, or k3s run with --disable-network-policy), and the
-// build fails closed. A server passes --fail-open: an operator's
-// --server-egress-allow-cidr may cover the node the API Service leads to, so a
-// probe that keeps answering does not prove the fence is missing, and by then
-// the policy has had --wait to land.
+// Wait for NetworkPolicy enforcement before starting untrusted workloads.
+// Builds fail closed; servers allow the probe because configured CIDRs may permit the same node.
 func cmdEgressGate(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("egress-gate", flag.ContinueOnError)
 	fs.SetOutput(stderr)

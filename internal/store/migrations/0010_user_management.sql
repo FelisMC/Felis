@@ -1,7 +1,4 @@
--- User management hardening: production-grade admin CRUD (spec §7 user admin).
--- Adds soft delete, disable toggle, audit timestamps, and an auto-updating
--- timestamp trigger so the admin user list reflects the last mutation without
--- every query re-deriving it from audit_logs.
+-- Admin user management: soft delete, disable toggle, audit timestamps and an updated_at trigger.
 
 -- Per-row lifecycle markers on the users table.
 ALTER TABLE users

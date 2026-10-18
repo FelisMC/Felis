@@ -2,16 +2,6 @@ package best.lolicon.felis.link;
 
 import java.util.concurrent.atomic.AtomicLong;
 
-/**
- * OutageTrackerTest walks an {@link OutageTracker} through an outage on an injected
- * clock: one DOWN on the first failure, STILL_DOWN no more than once per repeat
- * interval, RECOVERED once with the outage's length and failure count, and silence
- * while all is well.
- *
- * <p>Run: {@code javac -d <out> shared/src/main/java/best/lolicon/felis/link/*.java
- * shared/test/best/lolicon/felis/link/OutageTrackerTest.java && java -cp <out>
- * best.lolicon.felis.link.OutageTrackerTest}.
- */
 public final class OutageTrackerTest {
 
     private static int checks;

@@ -10,12 +10,6 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// TestSMTPSecretManifestCarriesTargetNamespace pins the fix for the
-// workload-namespace replica: kubectl refuses a manifest whose namespace
-// conflicts with -n ("the namespace from the provided object ... does not
-// match"), so the mirror must render felis-smtp with the TARGET namespace —
-// otherwise the "configure email" refresh fails on the first apply and the
-// felis-config mirror never runs at all.
 func TestSMTPSecretManifestCarriesTargetNamespace(t *testing.T) {
 	for _, ns := range []string{"felis", "minecraft"} {
 		b, err := smtpSecretManifest("pw", ns)
@@ -39,9 +33,6 @@ func TestSMTPSecretManifestCarriesTargetNamespace(t *testing.T) {
 	}
 }
 
-// TestSMTPRelayCarriesTLSPosture: the relay felis api, the reaper and the
-// watchdog send through refuses plaintext for a remote host and allows it for
-// one on this host, as [smtp] says.
 func TestSMTPRelayCarriesTLSPosture(t *testing.T) {
 	remote := smtpRelay(config.SMTPConfig{Host: "smtp.example.net", Port: 587, From: "felis@example.net", Username: "felis"}, "pw")
 	want := &mail.SMTP{Host: "smtp.example.net", Port: 587, From: "felis@example.net", Username: "felis", Password: "pw", RequireTLS: true}
@@ -53,8 +44,6 @@ func TestSMTPRelayCarriesTLSPosture(t *testing.T) {
 	}
 }
 
-// TestSetupSMTPConfigKeepsHandSetKeys: re-running the email screen replaces the
-// relay but keeps require_tls and max_per_hour, which only an operator sets.
 func TestSetupSMTPConfigKeepsHandSetKeys(t *testing.T) {
 	off := false
 	prev := config.SMTPConfig{Host: "old.example.net", Port: 25, From: "old@example.net", MaxPerHour: 500, RequireTLS: &off}

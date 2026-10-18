@@ -42,18 +42,14 @@ func TestRestoreReplacesTheDatabase(t *testing.T) {
 	if got := pg.db(t); got != "alice\n" {
 		t.Fatalf("db after restore = %q", got)
 	}
-	// The replay dropped what the role owns inside the same transaction.
 	stdin, _ := os.ReadFile(filepath.Join(pg.dir, "psql.stdin"))
 	if !strings.HasPrefix(string(stdin), "BEGIN;\n"+dropOwned) || !strings.HasSuffix(string(stdin), "COMMIT;\n") {
 		t.Fatalf("psql input = %q", stdin)
 	}
 
-	// The safety bundle holds what was replaced, and restores it.
 	if filepath.Base(safety) != "felis-db-20260924T043000Z-pre-restore.tar" {
 		t.Fatalf("safety = %s", safety)
 	}
-	// The dump brought back its own, older freshness record; the restore
-	// points it at the newest bundle on disk again.
 	if st := pg.recorded(t); st.Name != filepath.Base(safety) || st.Label != LabelPreRestore || st.SchemaVersion != 21 || st.Dir != dir {
 		t.Fatalf("recorded after restore = %+v", st)
 	}
@@ -90,10 +86,7 @@ func TestRestoreFailureLeavesTheDatabaseAlone(t *testing.T) {
 	for _, tc := range []struct {
 		flag, want string
 	}{
-		// The replay fails in the server: psql stops, the transaction dies with it.
 		{"psql_fail", "already exists"},
-		// The dump reader dies after streaming everything: psql never gets the
-		// COMMIT that only a clean pg_restore exit releases.
 		{"restore_fail", "could not read input"},
 	} {
 		t.Run(tc.flag, func(t *testing.T) {
@@ -138,9 +131,6 @@ func TestRestoreRefusesACorruptBundle(t *testing.T) {
 	}
 }
 
-// TestRestoreKeepsASafetyBundleWithoutServers: the restore replaces only the
-// database, so a cluster that is away does not stop it, and the record the
-// restore leaves says the newest bundle restores no servers.
 func TestRestoreKeepsASafetyBundleWithoutServers(t *testing.T) {
 	pg := newFakePG(t, "alice\n")
 	dir := t.TempDir()

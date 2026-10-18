@@ -126,9 +126,7 @@ func cmdServerMigrate(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// nodeMaintenanceBusy refuses while a host node operation runs, read from the node-control
-// service the API consults too (api.NodeMaintenanceGuard). A host without that service has
-// no node operations to wait for; one whose service does not answer is refused.
+// Absent node-control permits migration; an unreachable configured service refuses admission.
 func nodeMaintenanceBusy(ctx context.Context, socket string) error {
 	if _, err := os.Stat(socket); errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -145,9 +143,7 @@ func nodeMaintenanceBusy(ctx context.Context, socket string) error {
 	return nil
 }
 
-// homeController is the controller worlds without a node of their own live on: the one the
-// operator is configured with (FELIS_CONTROLLER_NODE), which with controller high
-// availability is one of several; else the only node labelled a controller.
+// Prefer FELIS_CONTROLLER_NODE for legacy worlds; otherwise require the sole labelled controller.
 func homeController(ctx context.Context, cl client.Reader, controlNS string, nodes []corev1.Node) string {
 	var op appsv1.Deployment
 	if err := cl.Get(ctx, types.NamespacedName{Namespace: controlNS, Name: platform.SAOperator}, &op); err == nil {

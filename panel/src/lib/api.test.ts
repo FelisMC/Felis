@@ -4,12 +4,7 @@ import { createHash } from "node:crypto";
 const hexOf = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-// Pin the GET /me wire shape. is_admin crosses an untyped fetch().json() boundary
-// (request() does `return parsed as T`), so nothing but a test pins the snake_case
-// keys to the Go handler. If the handler's JSON ever drifts to camelCase — or the
-// client starts transforming keys — `identity.is_admin` becomes undefined, which is
-// falsy, and EVERY admin silently renders as a non-admin while typecheck/build stay
-// green. This fixture is the canonical mirror of handlers_user.go handleMe.
+// This fixture is the canonical mirror of handlers_user.go handleMe.
 
 // apiBase stays "" (paths read bare) unless a test that builds a whole URL sets it.
 const cfg = vi.hoisted(() => ({ apiBase: "" }));
@@ -35,7 +30,7 @@ describe("api.me wire shape", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it("surfaces snake_case is_admin from GET /me verbatim (admin)", async () => {
-    // EXACTLY the JSON handlers_user.go handleMe emits.
+    // The JSON that handlers_user.go handleMe emits, key for key.
     const body = { user_id: "u1", email: "a@b.c", role: "admin", is_admin: true };
     vi.stubGlobal("fetch", fakeFetch(body));
     const id = await api.me();
@@ -118,9 +113,6 @@ describe("session auth wire shapes", () => {
     expect(humanizeError({ code: "staff_account" })).toMatch(/operator/i);
   });
 
-  // Op-login (the staff door): start hands back the approval handle the panel shows
-  // as `/felis web op approve <id>`; status is polled; finish spends the mailed code.
-  // EXACTLY handlers_op_login.go's request/response keys.
   it("opLoginStart POSTs {email} and surfaces {request_id, expires_at}", async () => {
     const fetchSpy = fakeFetch({
       request_id: "req-1",
@@ -168,10 +160,6 @@ describe("session auth wire shapes", () => {
   });
 });
 
-// Pin the §B3 migration wire shapes (handlers_account_migrate.go). The status union
-// ({active:false} | {active:true, state, ...}) and the issue/redeem bodies cross the
-// untyped fetch().json() boundary, so a key drift leaves the Account migration card
-// inert while typecheck/build stay green.
 describe("account migration wire shapes", () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => vi.unstubAllGlobals());
@@ -232,12 +220,6 @@ describe("account migration wire shapes", () => {
   });
 });
 
-// Pin the GET /fleet wire shape (the SysAdmin cockpit's read). It is the ONLY
-// place the panel asserts the fleetServerView fields: the cockpit consumes the raw
-// CRD names (playersOnline/playersMax, not players/maxPlayers) plus the joined
-// `owner`, all crossing the untyped fetch().json() boundary. If the Go handler's
-// JSON ever drifts to the /me/servers shape — or drops owner — typecheck/build stay
-// green while the table silently renders blank players and "unclaimed" everywhere.
 describe("api.fleet wire shape", () => {
   beforeEach(() => vi.clearAllMocks());
   afterEach(() => vi.unstubAllGlobals());
@@ -276,11 +258,6 @@ describe("api.fleet wire shape", () => {
   });
 });
 
-// Pin the §access wire shapes (handlers_access.go). The panel translates structured
-// fields into the request body — the backend re-validates and concatenates the RCON
-// command, so the {action, player} keys and the GET-vs-POST split on the same path
-// are the contract. A method/path/key drift here is invisible to typecheck (the body
-// is `unknown`), so only these assertions catch it.
 describe("api access-control wire shapes", () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => vi.unstubAllGlobals());
@@ -914,11 +891,7 @@ describe("image whitelist and builds wire shapes", () => {
     });
   });
 
-  // #8: a locked session gets `403 setup_required` on every protected route. The
-  // panel must not render that as a permission error — it announces the code so
-  // App.tsx can route the person to /setup. These tests pin the announcement
-  // (fire on the exact code, stay silent on any other 403) because a regression
-  // here reappears as the confusing "无权执行此操作" report, with nothing failing.
+  // Only setup_required triggers onboarding; other 403 responses retain their own meaning.
   describe("setup_required routing signal", () => {
     it("emits SETUP_REQUIRED_EVENT for a 403 setup_required", async () => {
       const target = new EventTarget();

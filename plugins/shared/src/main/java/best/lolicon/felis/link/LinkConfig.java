@@ -4,20 +4,7 @@ import java.time.Duration;
 import java.util.Objects;
 import java.util.function.Supplier;
 
-/**
- * LinkConfig is the configuration a {@link LinkClient} needs to reach the
- * felis-api internal face. It is fixed once built, except for a service token
- * read from felis-link.properties, which follows that file ({@link FileToken}).
- * Both the base URL and the service token are deployment inputs — operator config
- * or a Secret-injected environment variable — and are <em>never</em> compiled in.
- * Keeping them out of source is what lets the tree stay domain- and
- * credential-free; each platform's config loader is responsible for sourcing them.
- *
- * <p>Two timeouts bound each call: {@code connectTimeout} for opening the TCP
- * connection and {@code requestTimeout} for the whole exchange once it is open. A
- * felis-api that is gone fails fast on the first; one that is slow is cut off by the
- * second, so a blocked call cannot hold a plugin thread indefinitely.
- */
+// Deployment supplies credentials and endpoint; separate connect/request deadlines bound blocking calls.
 public final class LinkConfig {
     private final String apiBaseUrl;
     private final Supplier<String> serviceToken;

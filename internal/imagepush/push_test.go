@@ -24,9 +24,7 @@ import (
 	"felis.lolicon.best/internal/registrygate"
 )
 
-// fakeRegistry is the distribution v2 subset the pusher speaks, backed by maps. It
-// checks what a real registry checks: an upload's bytes hash to the digest the
-// client claims, and a manifest references only blobs the repository holds.
+// The fake registry verifies blob digests and requires manifest blobs to exist in the repository.
 type fakeRegistry struct {
 	mu        sync.Mutex
 	blobs     map[string][]byte // repo@digest -> bytes
@@ -97,9 +95,6 @@ func (f *fakeRegistry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// writeTarball writes the layout Kaniko's --tar-path produces (go-containerregistry
-// tarball.Write): the config under its digest, gzip layers as <hex>.tar.gz, and a
-// manifest.json tying them to the destination tag.
 func writeTarball(t *testing.T, ref string, layers ...[]byte) string {
 	t.Helper()
 	cfg := []byte(`{"architecture":"arm64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}`)
@@ -192,9 +187,6 @@ func TestPushThroughTheGate(t *testing.T) {
 	}
 }
 
-// TestPushWaitsOutTheGCWindow: while the gate holds the registry read-only for
-// garbage collection, a push waits on Retry-After (without spending its attempts)
-// and completes once the window closes; past MaxWait it gives up with the 503.
 func TestPushWaitsOutTheGCWindow(t *testing.T) {
 	reg := newFakeRegistry()
 	upstream := httptest.NewServer(reg)
@@ -207,11 +199,7 @@ func TestPushWaitsOutTheGCWindow(t *testing.T) {
 	maint := httptest.NewServer(g.MaintHandler())
 	t.Cleanup(maint.Close)
 	host := strings.TrimPrefix(gate.URL, "http://")
-	// The gate counts a write as finished only after its handler returns, which
-	// is just after the client already has the response, so a window opened
-	// right behind the last push can see it in flight for a moment and answer
-	// 409. The registry GC Job retries until it gets 200 (platform/workloads.go); so
-	// does this helper.
+	// Retry 409 until the last write handler exits and the gate grants the GC window.
 	setReadOnly := func(on bool) {
 		t.Helper()
 		path := "/readwrite"

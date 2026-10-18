@@ -1,11 +1,5 @@
-// Small pure formatters for human-facing sizes and times. Kept dependency-free and
-// injectable (the caller passes `now` / `locale`) so they are deterministic under
-// test rather than reading the wall clock or ambient locale themselves.
 
-/** formatBytes renders a byte count in binary units (B / KiB / MiB / GiB…), the
- *  unit world archives are sized in. One decimal below 10 (1.4 GiB) and none above
- *  (140 MiB) — enough to tell backups apart without noise. A negative or non-finite
- *  input renders as an em dash rather than "NaN". */
+// Use binary units; invalid byte counts display an em dash.
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return "—";
   if (bytes < 1024) return `${Math.round(bytes)} B`;
@@ -30,11 +24,7 @@ const DIVISIONS: { limit: number; div: number; unit: Intl.RelativeTimeFormatUnit
   { limit: Infinity, div: 31536000, unit: "year" },
 ];
 
-/** formatRelative renders an ISO timestamp relative to `now` (ms epoch) — "3 days
- *  ago", "in 30 days" — localized via Intl.RelativeTimeFormat, so zh-CN reads
- *  "30 天后" / "3 天前" for free. `now` and `locale` are injected so the result is
- *  deterministic in tests. Returns "" for an unparseable input so a caller can fall
- *  back to nothing rather than surfacing "Invalid Date". */
+// Inject time and locale for deterministic formatting; invalid timestamps return an empty string.
 export function formatRelative(iso: string, now: number, locale: string): string {
   const then = new Date(iso).getTime();
   if (!Number.isFinite(then)) return "";
@@ -55,19 +45,12 @@ export function formatAbsolute(iso: string, locale: string): string {
   return d.toLocaleString(locale);
 }
 
-/** isExpired reports whether an ISO retention deadline is at or before `now`. A
- *  present backup is normally still within retention (the reaper deletes expired
- *  ones), but the panel guards the edge so a just-expired row reads honestly rather
- *  than offering a restore that would 404. */
 export function isExpired(iso: string, now: number): boolean {
   const t = new Date(iso).getTime();
   return Number.isFinite(t) && t <= now;
 }
 
-/** splitImageRef separates a server's image into the tag it was chosen by and the
- *  build it is pinned to. felis-api stores `name:tag@sha256:<hex>`; the digest is
- *  64 hex characters no one reads, so `short` keeps the first 12, the length
- *  `docker images` shows. A ref without a digest comes back with `short` empty. */
+// Separate tag and pinned digest; unpinned references have no short digest.
 export function splitImageRef(ref: string): { tag: string; digest: string; short: string } {
   const at = ref.indexOf("@");
   if (at < 0) return { tag: ref, digest: "", short: "" };

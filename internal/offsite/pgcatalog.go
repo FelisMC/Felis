@@ -6,7 +6,6 @@ import (
 	"time"
 )
 
-// PGCatalog is the Catalog on the felis database.
 type PGCatalog struct{ DB *sql.DB }
 
 func (c PGCatalog) PendingWorlds(ctx context.Context) ([]WorldBackup, error) {
@@ -74,8 +73,6 @@ func (c PGCatalog) KeptRefs(ctx context.Context, now time.Time) ([]string, error
 	return c.refs(ctx, `SELECT backup_ref FROM world_backups WHERE status = 'present' OR expires_at >= $1`, now)
 }
 
-// PendingCount is how many present archives wait for their copy, and since
-// when the oldest has waited.
 func (c PGCatalog) PendingCount(ctx context.Context) (int, time.Time, error) {
 	var (
 		n      int

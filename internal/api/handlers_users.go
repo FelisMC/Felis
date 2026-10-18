@@ -10,10 +10,6 @@ import (
 	"felis.lolicon.best/internal/metrics"
 )
 
-// ---- user CRUD ----
-
-// handleListUsers is the admin-tier user list (GET /users). It gates on
-// adminOnly, so the caller is already a verified admin principal.
 func (a *API) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	q := r.URL.Query()
@@ -38,11 +34,10 @@ func (a *API) handleListUsers(w http.ResponseWriter, r *http.Request) {
 		users = []UserView{}
 	}
 
-	_ = p // admin check done by adminOnly middleware
+	_ = p
 	writeJSON(w, http.StatusOK, map[string]any{"users": users, "total": total})
 }
 
-// handleGetUser is the admin-tier user detail (GET /users/{id}).
 func (a *API) handleGetUser(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
@@ -61,14 +56,12 @@ func (a *API) handleGetUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, d)
 }
 
-// createUserRequest is the admin create-user form.
 type createUserRequest struct {
 	Username string `json:"username"`
 	Email    string `json:"email,omitempty"`
 	Role     string `json:"role"`
 }
 
-// handleCreateUser is the admin-tier create-user endpoint (POST /users).
 func (a *API) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 
@@ -78,13 +71,11 @@ func (a *API) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate username: 1–32 alphanumeric + limited symbols, no whitespace.
 	if err := validateUsername(body.Username); err != nil {
 		writeError(w, r, err)
 		return
 	}
 
-	// Validate role.
 	if body.Role != "admin" && body.Role != "user" {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
 			"role must be 'admin' or 'user', got %q", body.Role))
@@ -106,19 +97,13 @@ func (a *API) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, u)
 }
 
-// patchUserRequest is the admin patch-user form. Every field is a pointer so
-// "absent" is distinguishable from "set to empty".
+// patchUserRequest uses nil for absent fields and pointers to empty values for explicit clearing.
 type patchUserRequest struct {
 	Username *string `json:"username,omitempty"`
 	Email    *string `json:"email,omitempty"`
 	Role     *string `json:"role,omitempty"`
 }
 
-// handlePatchUser is the admin-tier patch-user endpoint (PATCH /users/{id}).
-// The two refusals an admin meets on the user page get codes of their own, so
-// the panel can say why instead of a bare "not allowed": acting on your own
-// account (a slip that would lock you out), and changing the owner account,
-// which only the local break-glass console (sudo felis breakGlass) may do.
 const (
 	codeSelfProtected  = "self_protected"
 	codeOwnerProtected = "owner_protected"
@@ -144,18 +129,14 @@ func (a *API) handlePatchUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Self-demotion guard: an admin/owner may edit their own email or username,
-	// but must never downgrade themselves to a lower role.
+	// Prevent self-demotion while allowing username and email edits.
 	if body.Role != nil && id == p.UserID && *body.Role != p.Role {
 		writeError(w, r, newError(http.StatusForbidden, codeSelfProtected,
 			"cannot change your own role"))
 		return
 	}
 
-	// Owner protection (migration 0011): the owner row is the one identity the
-	// panel may never demote — only the local break-glass console resets it.
-	// Username/email edits on it stay allowed. A failed detail read falls through;
-	// UpdateUser then answers the real 404.
+	// Only local break-glass recovery may demote the owner; profile edits remain allowed.
 	if body.Role != nil && *body.Role != "owner" {
 		if d, err := a.Repo.UserDetail(r.Context(), id); err == nil && d.Role == "owner" {
 			writeError(w, r, newError(http.StatusForbidden, codeOwnerProtected,
@@ -175,8 +156,7 @@ func (a *API) handlePatchUser(w http.ResponseWriter, r *http.Request) {
 			"role must be 'admin' or 'user', got %q", *body.Role))
 		return
 	}
-	// A new address unverifies the old one, and with it the email factor that
-	// guards adding a passkey: your own takes the same reauth as /account/email.
+	// Changing the caller's email removes an account factor and requires reauth.
 	if body.Email != nil && id == p.UserID && !a.requireReauth(w, r, p) {
 		return
 	}
@@ -200,7 +180,6 @@ func (a *API) handlePatchUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, u)
 }
 
-// handleDeleteUser is the admin-tier soft-delete endpoint (DELETE /users/{id}).
 func (a *API) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	id := r.PathValue("id")
@@ -215,8 +194,7 @@ func (a *API) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Same owner protection as the role guard above: only break-glass retires the
-	// owner identity. A failed detail read falls through to the real 404.
+	// Only local break-glass recovery may retire the owner identity.
 	if d, err := a.Repo.UserDetail(r.Context(), id); err == nil && d.Role == "owner" {
 		writeError(w, r, newError(http.StatusForbidden, codeOwnerProtected,
 			"the owner account cannot be deleted from the panel"))
@@ -236,7 +214,6 @@ func (a *API) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
 }
 
-// handleDisableUser is the admin-tier disable/enable toggle (POST /users/{id}/disable).
 func (a *API) handleDisableUser(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	id := r.PathValue("id")
@@ -259,9 +236,7 @@ func (a *API) handleDisableUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Owner protection (migration 0011): disabling locks the owner out and revokes
-	// its sessions — effectively a demotion, so the panel refuses it; only
-	// break-glass touches the owner identity. Re-enabling stays allowed.
+	// Disabling the owner revokes its sessions, so the panel permits only re-enabling it.
 	if body.Disabled {
 		if d, err := a.Repo.UserDetail(r.Context(), id); err == nil && d.Role == "owner" {
 			writeError(w, r, newError(http.StatusForbidden, codeOwnerProtected,
@@ -287,9 +262,6 @@ func (a *API) handleDisableUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "disabled": body.Disabled})
 }
 
-// ---- quota admin ----
-
-// handleGetQuotas is the admin-tier quotas read (GET /users/{id}/quotas).
 func (a *API) handleGetQuotas(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
@@ -308,7 +280,6 @@ func (a *API) handleGetQuotas(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, v)
 }
 
-// handleSetQuotas is the admin-tier quotas write (PUT /users/{id}/quotas).
 func (a *API) handleSetQuotas(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	id := r.PathValue("id")
@@ -323,9 +294,7 @@ func (a *API) handleSetQuotas(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The body replaces all four caps; an empty one lifts every cap. A negative cap
-	// would refuse every claim the way 0 does while reading like a mistake, and the
-	// columns are 32-bit.
+	// Quota writes replace all four caps; an empty body clears them all.
 	for _, f := range []struct {
 		name string
 		v    *int
@@ -356,8 +325,6 @@ func (a *API) handleSetQuotas(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, v)
 }
 
-// handleClearQuotas returns a user to the default quota (DELETE
-// /users/{id}/quotas) by removing their own quotas row.
 func (a *API) handleClearQuotas(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
@@ -377,9 +344,6 @@ func (a *API) handleClearQuotas(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, v)
 }
 
-// ---- session admin ----
-
-// handleListUserSessions lists every live session for a user (GET /users/{id}/sessions).
 func (a *API) handleListUserSessions(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
@@ -397,8 +361,6 @@ func (a *API) handleListUserSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"sessions": sessions})
 }
 
-// handleRevokeUserSessions revokes every live session of a user
-// (DELETE /users/{id}/sessions).
 func (a *API) handleRevokeUserSessions(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
@@ -416,8 +378,6 @@ func (a *API) handleRevokeUserSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// handleRevokeUserSession revokes a single session of a user
-// (DELETE /users/{id}/sessions/{hash}).
 func (a *API) handleRevokeUserSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tokenHash := r.PathValue("hash")
@@ -441,24 +401,14 @@ func (a *API) handleRevokeUserSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// handleUnbindUserPasskeys unbinds every passkey a user holds
-// (DELETE /users/{id}/passkeys). It is the admin account-remediation for a
-// compromised authenticator: a passkey planted (or retained) via a transiently
-// hijacked session is a standing login foothold that outlives a mere session
-// revoke, so severing it needs its own owner-tier action. It is deliberately NOT a
-// lockout — the account keeps every other way back in: a player re-enters through
-// the email-OTP door and re-enrolls, an operator through op-login's in-game
-// approval — so an owner can cut a bad credential without stranding the account.
-// DeleteAllPasskeyCredentialsForUser treats removing zero rows as success, so
-// unbinding an account that holds no passkeys is a 200 no-op, not a 404.
+// handleUnbindUserPasskeys is idempotent and preserves other login methods; session revocation alone cannot remove compromised passkeys.
 func (a *API) handleUnbindUserPasskeys(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
 		writeError(w, r, errBadRequest)
 		return
 	}
-	// Your own passkeys are a factor that guards adding one: severing them takes
-	// the same reauth as removing one under /account/passkey.
+	// Removing the caller's passkeys requires the same reauth as self-service removal.
 	if p := principalFromContext(r.Context()); id == p.UserID && !a.requireReauth(w, r, p) {
 		return
 	}
@@ -472,10 +422,6 @@ func (a *API) handleUnbindUserPasskeys(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// ---- account-link admin ----
-
-// handleUnlinkAccount removes a single (user_id, mc_uuid) binding
-// (DELETE /users/{id}/links/{mc_uuid}).
 func (a *API) handleUnlinkAccount(w http.ResponseWriter, r *http.Request) {
 	userID := r.PathValue("id")
 	if userID == "" {
@@ -502,8 +448,6 @@ func (a *API) handleUnlinkAccount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "mc_uuid": mcUUID})
 }
 
-// handleLinkAccount force-binds a UUID to a user
-// (POST /users/{id}/links).
 func (a *API) handleLinkAccount(w http.ResponseWriter, r *http.Request) {
 	userID := r.PathValue("id")
 	if userID == "" {
@@ -525,9 +469,7 @@ func (a *API) handleLinkAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.AuthSource == "" {
-		// Same version-nibble inference as the mint path (handlers_account.go):
-		// defaulting to mojang here would leave a force-linked thirdparty UUID
-		// outside the reclaim guard.
+		// Infer third-party UUID sources as on code minting so force-linked accounts retain reclaim protection.
 		body.AuthSource = deriveAuthSource(mcUUID)
 	}
 	if !validAuthSource(body.AuthSource) {
@@ -558,11 +500,6 @@ func (a *API) handleLinkAccount(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ---- validation ----
-
-// validateUsername checks that name is a non-empty string of 1–32 characters
-// consisting only of lowercase alphanumerics, hyphens, underscores, and dots,
-// and without leading/trailing hyphens or consecutive dots.
 func validateUsername(name string) error {
 	if len(name) == 0 || len(name) > 32 {
 		return newError(http.StatusBadRequest, "bad_request",

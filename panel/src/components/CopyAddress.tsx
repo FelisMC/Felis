@@ -5,10 +5,7 @@ import { cn } from "@/lib/utils";
 
 const FEEDBACK_MS = 2000;
 
-// CopyAddress shows the address a Minecraft client joins and copies it with one
-// tap. Minecraft is not a web page, so the address is never a link. When the
-// clipboard is refused (an insecure origin, an embedded browser) the text is
-// selected instead, ready for the system copy menu.
+// Minecraft addresses are plain text; select them when clipboard access fails.
 export function CopyAddress({ address, className }: { address: string; className?: string }) {
   const { t } = useTranslation("common");
   const [state, setState] = useState<"idle" | "copied" | "failed">("idle");

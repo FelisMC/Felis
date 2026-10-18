@@ -2,9 +2,6 @@ import { describe, it, expect } from "vitest";
 import { canManage, ownershipPending } from "./ownership";
 import type { MyServerView } from "./types";
 
-// The owner-tier gate once read `owned` off /servers/{name}/status, which never
-// sends it, so owners lost the LuckPerms entry. These cases pin that ownership
-// comes only from the /me/servers row for this exact server.
 
 const row = (name: string, owned = false): MyServerView => ({
   name,

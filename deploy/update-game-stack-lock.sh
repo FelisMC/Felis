@@ -1,19 +1,5 @@
 #!/usr/bin/env bash
-# Refreshes deploy/game-stack.lock to upstream's newest builds, hashed.
-#
-#   bash deploy/update-game-stack-lock.sh            # rewrite the lock in place
-#   bash deploy/update-game-stack-lock.sh --check    # exit 1 if upstream moved on
-#
-# It runs the same resolver bootstrap.sh uses for FELIS_GAME_STACK=latest (the functions are
-# lifted out of bootstrap.sh, so the two cannot drift), then pins Velocity's newest build of
-# VELOCITY_LATEST_MINOR. Limbo and LuckPerms publish no digest, so their jars are downloaded
-# and hashed here; Paper and Velocity come from Fill's content-addressed URLs.
-#
-# Review the diff before committing: MC_VERSION moves the login gate's protocol, and the
-# lobby, plain-Paper image and every client follow it. The plugins compile against these
-# same builds (paper-api, the Limbo API, velocity-api) with their checksums pinned in
-# plugins/*/gradle/verification-metadata.xml, so a moved build also moves those; go test .
-# names what is left to bring along.
+# Reuse bootstrap's resolver when refreshing the lock; synchronize protocol builds and plugin verification metadata.
 set -Eeuo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

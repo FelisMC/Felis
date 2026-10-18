@@ -56,9 +56,7 @@ export function NodeControlPanel({ distributed, controllerHA = false }: { distri
   usePolling(() => { tasks.reload(); if (id) progress.reload(); }, running || progress.error || tasks.error ? 3000 : 10000);
   useRefreshSignal(tasks.reload);
   useRefreshSignal(progress.reload);
-  // Enabling and joining fix a node's address; approving and updating act on an enrolled one.
-  // Enabling distributed mode or controller high availability acts on this controller and
-  // names no other node.
+  // Distributed/HA enablement acts locally; node join fixes addresses and approval/upgrade use enrolled identities.
   const needsNode = action !== "enable" && action !== "enable-ha";
   const needsIP = action === "enable" || action === "join" || action === "join-controller";
   const ha = action === "enable-ha" || action === "join-controller";

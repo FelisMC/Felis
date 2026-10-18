@@ -98,8 +98,6 @@ func TestRunDiscoversPlansNotifiesApplies(t *testing.T) {
 	}
 }
 
-// TestRunToleratesSourceFailure proves one component's discovery failure neither
-// sinks the cycle nor blocks the others.
 func TestRunToleratesSourceFailure(t *testing.T) {
 	now := time.Date(2026, 7, 1, 3, 30, 0, 0, time.UTC)
 	comps := []Component{
@@ -125,8 +123,6 @@ func TestRunToleratesSourceFailure(t *testing.T) {
 	}
 }
 
-// TestRunRecordsMissingApplier proves an apply with no applier wired is a recorded
-// error, not a silent success — the plan wanted to apply but nothing could.
 func TestRunRecordsMissingApplier(t *testing.T) {
 	now := time.Date(2026, 7, 1, 3, 30, 0, 0, time.UTC)
 	win := Window{
@@ -150,8 +146,6 @@ func TestRunRecordsMissingApplier(t *testing.T) {
 	}
 }
 
-// TestRunNotifyFailureDoesNotBlockApply proves a dead mailer is surfaced but the
-// scheduled apply still runs (the SysAdmin can still see state in the Panel).
 func TestRunNotifyFailureDoesNotBlockApply(t *testing.T) {
 	now := time.Date(2026, 7, 1, 3, 30, 0, 0, time.UTC)
 	win := Window{

@@ -1,27 +1,6 @@
--- Phase 6 passkey/WebAuthn bind (spec §14 WebAuthn, §B2 onboarding "link + email-OTP
--- + passkey"). This is the ENROLLMENT data layer only: an already-authenticated
--- principal binds a passkey to their account (the credential-creation ceremony),
--- and manages the credentials they have bound. Email-OTP remains the fallback
--- factor (migration 0004), so a player with no passkey is never locked out.
---
--- Scope boundary (deliberate): this slice covers ENROLLMENT only. Assertion
--- verification for LOGIN — proving a passkey to mint/elevate a session from an
--- unauthenticated state — is out of scope here and deferred. The spec keeps the two
--- passkey surfaces distinct (§14: admin.* rides "Tunnel+Access，WebAuthn/posture",
--- panel.* is "app 登录"; §B2 lists passkey among the player onboarding factors), so
--- where the panel.* passkey relying-party boundary ultimately lands (felis-api vs.
--- the Access edge) is a later decision, not settled by this migration. Accordingly
--- this migration models only the authenticated enrollment ceremony: every challenge
--- is bound to a known user_id, and there is no usernameless (pre-session) login
--- lookup column. Adding a login path later would also need the felis_session
--- honoring model in session.go extended.
+-- Passkey (WebAuthn) enrollment only; email-OTP stays the fallback factor, so no player is locked out.
 
--- webauthn_credentials stores one bound passkey per row. The public key and the
--- signature counter are attestation outputs captured at registration; only public,
--- non-secret material is held (a WebAuthn public key is meant to be public, unlike
--- the RCON password or a session token). credential_id is the authenticator's
--- globally-unique handle, base64url-encoded; UNIQUE guards the (astronomically
--- unlikely) cross-account collision and is the key a future login path would match.
+-- One bound passkey per row. The public key and signature counter are attestation outputs; credential_id is the authenticator's globally unique handle.
 CREATE TABLE webauthn_credentials (
   id            text PRIMARY KEY,                      -- opaque row id (crypto-random hex)
   user_id       text NOT NULL REFERENCES users(id),
@@ -37,13 +16,7 @@ CREATE TABLE webauthn_credentials (
 -- The credential-management views list a user's bound passkeys, so index that lookup.
 CREATE INDEX webauthn_credentials_user_id_idx ON webauthn_credentials (user_id);
 
--- webauthn_challenges holds the server-side ceremony state between begin and finish.
--- The full go-webauthn SessionData blob (challenge, allowed credentials, expiry) is
--- stashed here and reloaded at finish, so the client never echoes — and so cannot
--- forge — the challenge it must answer (the same principle as email_otps.code_hash).
--- Every row is bound to a known user_id (NOT NULL): enrollment always rides on an
--- authenticated principal, so there is no usernameless consume-by-hash path. consumed_at
--- enforces single-use; a fresh begin supersedes the prior live row for (user, purpose).
+-- Persist ceremony state server-side; consume once and supersede previous begins for the same user and purpose.
 CREATE TABLE webauthn_challenges (
   id           text PRIMARY KEY,                       -- opaque row id (crypto-random hex)
   user_id      text NOT NULL REFERENCES users(id),

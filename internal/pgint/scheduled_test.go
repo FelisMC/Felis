@@ -11,12 +11,6 @@ import (
 	"felis.lolicon.best/internal/reaper"
 )
 
-// TestScheduledBackupCandidates pins the SQL behind felis-api's scheduled
-// backups: an owned world joined since its owner's newest intact scheduled
-// backup is due once that backup is older than the period, worlds without one
-// first. A previous owner's, a corrupt, a deleted, a pre-claim or a manual
-// backup is no restore point of the current owner's world. A world being given
-// up is never due: the reaper archives it anyway.
 func TestScheduledBackupCandidates(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "sched")
@@ -100,9 +94,6 @@ func TestScheduledBackupCandidates(t *testing.T) {
 	}
 }
 
-// TestExcessBackupsPerOwner pins that the backup Job's keep-N prune counts only
-// the new backup's owner's backups: the ones a previous owner took of the same
-// world stay theirs to restore until their own retention runs out.
 func TestExcessBackupsPerOwner(t *testing.T) {
 	ctx := context.Background()
 	st := reaper.NewPGStore(db)

@@ -9,12 +9,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/**
- * Readiness is the gate's {@code GET /healthz}: 503 "starting" until {@link #markReady},
- * 200 "ok" after. Limbo has no RCON, so this is the signal the MinecraftServer CRD's
- * HTTP readinessProbe follows instead of a bare TCP check that would pass the moment
- * the socket binds.
- */
+/** The gate's {@code GET /healthz}: 503 until {@link #markReady}, then 200; Limbo has no RCON for the readiness probe. */
 final class Readiness {
 
     static final String PATH = "/healthz";
@@ -26,16 +21,12 @@ final class Readiness {
         this.http = http;
     }
 
-    /**
-     * start serves the endpoint on port (0 picks a free one). It throws when the port
-     * cannot be bound; the caller then leaves the gate NotReady rather than advertising
-     * an unstarted auth gate.
-     */
+    /** Serves the endpoint on port (0 picks a free one); throws when the port cannot be bound. */
     static Readiness start(int port) throws IOException {
         HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
         Readiness r = new Readiness(server);
         server.createContext(PATH, r::handle);
-        server.setExecutor(null); // default executor: this endpoint is trivial
+        server.setExecutor(null);
         server.start();
         return r;
     }
@@ -44,7 +35,7 @@ final class Readiness {
         return http.getAddress().getPort();
     }
 
-    /** markReady flips the endpoint to 200 and reports whether this call did it. */
+    /** Flips the endpoint to 200 and reports whether this call did it. */
     boolean markReady() {
         return ready.compareAndSet(false, true);
     }

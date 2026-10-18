@@ -12,10 +12,7 @@ import (
 	"felis.lolicon.best/internal/heartbeatsettings"
 )
 
-// HeartbeatView is GET /settings/heartbeat: whether the Owner set a heartbeat URL in the
-// panel, the URL as it may be shown (scheme and host: the path is the check's key, which
-// anyone holding it can ping in this host's name), and the revision a change must name.
-// With none set here, the watchdog pings the host file's URL, if the installer wrote one.
+// HeartbeatView redacts the URL path because it contains the key that authorizes heartbeat updates.
 type HeartbeatView struct {
 	Set      bool   `json:"set"`
 	Display  string `json:"display"`
@@ -38,8 +35,7 @@ func (a *API) heartbeatView(ctx context.Context) (HeartbeatView, []byte, error) 
 	if s != nil {
 		v.Set, v.Display = true, heartbeatsettings.Redact(s.URL)
 	}
-	// The revision hashes the URL itself, so a change made elsewhere is caught even when the
-	// shown part stays the same.
+	// Hash the complete URL so changes to the hidden path still invalidate the revision.
 	canonical, _ := json.Marshal(s)
 	sum := sha256.Sum256(canonical)
 	v.Revision = hex.EncodeToString(sum[:])

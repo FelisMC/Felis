@@ -7,11 +7,6 @@ import (
 	"testing"
 )
 
-// TestConsoleCommand exercises the §8 RCON write handler end-to-end through the
-// external app-tier router: ownership (owner/admin), the readiness gate, input
-// validation (single line, bounded, no control chars), and the failure surface
-// (unreachable console → 503). The real RCON dial is integration-only; this
-// drives the handler against a fakeConsole.
 func TestConsoleCommand(t *testing.T) {
 	owner := &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
 

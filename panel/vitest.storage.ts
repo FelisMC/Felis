@@ -1,10 +1,6 @@
 import { beforeEach } from "vitest";
 
-// Node 26 puts its own localStorage on globalThis, undefined unless node runs
-// with --localstorage-file, and it shadows jsdom's. Component tests get an
-// in-memory one so code that remembers things (the language, console history)
-// runs as in a browser. This file runs before the i18n boot in vitest.setup.ts,
-// because the language detector decides once whether storage works.
+// Install in-memory storage before i18n detects availability; Node's global storage can shadow jsdom's.
 class MemoryStorage implements Storage {
   #data = new Map<string, string>();
   get length() {

@@ -1,9 +1,6 @@
 #!/bin/bash
-# Checks for deploy/e2e_release.sh. Run it as: bash deploy/e2e_release_test.sh
-#
-# The installer logs it reads are built from bootstrap.sh's own ok/warn messages, expanded
-# with a release's values, so rewording one of them there fails here rather than in a
-# two-hour e2e run. gh is a stub that prints what a release listing would.
+# Checks for deploy/e2e_release.sh. Run it as: bash deploy/e2e_release_test.sh.
+# Use installer-generated log wording so fixture drift fails locally; stub only GitHub release lookup.
 set -u
 
 here="$(dirname "$0")"

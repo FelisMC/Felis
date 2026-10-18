@@ -1,20 +1,4 @@
-// Package artifactcache is the cluster's download cache for server software.
-//
-// A server built from the runtime image installs its software on every start
-// that finds it missing (internal/software). Without a cache, ten Paper 1.21.4
-// servers download the same 50 MB jar ten times, and every one of them depends
-// on PaperMC being reachable at that moment. The cache keeps one copy of each
-// file, filed under its sha256, and serves it to every server that asks for it
-// by digest.
-//
-// Server pods are untrusted: they run their owners' plugins. So the cache takes
-// nothing from them but a URL and a digest. It downloads the URL itself, only
-// from the official hosts in AllowedHosts, and keeps the content only if it
-// hashes to the digest asked for. A pod can make the cache fetch a file that
-// some official host serves and that it already knows the hash of; it cannot
-// place content of its own, and no request can make the cache answer one digest
-// with a file of another. The client checks every byte again regardless (see
-// Client), so a compromised cache can stall an install but never change one.
+// Package artifactcache caches verified software downloads by digest from approved upstream hosts.
 package artifactcache
 
 import (
@@ -44,9 +28,7 @@ import (
 	"felis.lolicon.best/internal/software"
 )
 
-// AllowedHosts are the hosts the cache downloads from: the download and Maven
-// hosts the software resolver's metadata points at, and nothing else. Each
-// redirect hop is held to the same list.
+// AllowedHosts restricts both initial downloads and every redirect.
 var AllowedHosts = []string{
 	"piston-data.mojang.com",
 	"piston-meta.mojang.com",
@@ -63,7 +45,6 @@ var AllowedHosts = []string{
 	"repo.maven.apache.org",
 }
 
-// HostAllowed reports whether host is one of AllowedHosts.
 func HostAllowed(host string) bool {
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
 	for _, h := range AllowedHosts {
@@ -74,29 +55,24 @@ func HostAllowed(host string) bool {
 	return false
 }
 
-// Defaults.
 const (
 	DefaultMaxFileBytes = 1 << 30
 	DefaultParallel     = 4
 	DefaultTimeout      = 15 * time.Minute
 )
 
-// Cache is the store plus the HTTP handler in front of it.
 type Cache struct {
 	Dir      string
 	MaxBytes int64
-	// MaxFileBytes refuses a single download larger than this (default 1 GiB).
+	// MaxFileBytes defaults to 1 GiB.
 	MaxFileBytes int64
-	// Upstream downloads files; its redirect policy is replaced by one that
-	// holds every hop to AllowedHosts. Nil uses a client with DefaultTimeout.
+	// Upstream redirects are restricted to AllowedHosts; nil uses DefaultTimeout.
 	Upstream  *http.Client
 	UserAgent string
-	// IdleTimeout aborts a download that receives nothing for this long
-	// (default DefaultIdleTimeout).
+	// IdleTimeout defaults to DefaultIdleTimeout.
 	IdleTimeout time.Duration
 	Log         *slog.Logger
-	// Allow overrides HostAllowed (tests point it at an httptest host). It is
-	// given the URL's host with its port, if it names one.
+	// Allow overrides host validation and receives the host including any port.
 	Allow func(host string) bool
 
 	initOnce sync.Once
@@ -113,7 +89,6 @@ type call struct {
 	err  error
 }
 
-// Init prepares the directory layout and measures what is stored.
 func (c *Cache) Init() error {
 	c.initOnce.Do(func() {
 		for _, d := range []string{"blobs", "index", "tmp"} {
@@ -167,8 +142,6 @@ func (c *Cache) indexPath(algo, digest string) string {
 	return filepath.Join(c.Dir, "index", algo, digest[:2], digest)
 }
 
-// lookup returns the sha256 of the blob holding digest d, or "" when the cache
-// has none.
 func (c *Cache) lookup(d software.Digest) string {
 	sum := d.Hex
 	if d.Algo != software.SHA256 {
@@ -187,9 +160,7 @@ func (c *Cache) lookup(d software.Digest) string {
 	return sum
 }
 
-// ServeHTTP answers GET /v1/fetch?url=<https url>&algo=<algo>&digest=<hex> with
-// the file of that digest, downloading it from the URL first when the cache does
-// not hold it, and GET /healthz.
+// ServeHTTP handles /healthz and digest-verified GET /v1/fetch downloads.
 func (c *Cache) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/healthz":
@@ -254,7 +225,7 @@ func (c *Cache) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now()
-	_ = os.Chtimes(c.blobPath(sum), now, now) // recency for eviction
+	_ = os.Chtimes(c.blobPath(sum), now, now)
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
 	w.Header().Set("X-Content-SHA256", sum)
@@ -271,7 +242,7 @@ func (c *Cache) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 var errTooLarge = errors.New("the file is larger than the cache accepts")
 
-// download fetches src once per digest however many requests ask for it.
+// Deduplicate concurrent downloads for the same digest.
 func (c *Cache) download(ctx context.Context, src string, d software.Digest) (string, error) {
 	key := d.String()
 	c.mu.Lock()
@@ -288,8 +259,7 @@ func (c *Cache) download(ctx context.Context, src string, d software.Digest) (st
 	c.calls[key] = cl
 	c.mu.Unlock()
 
-	// The download outlives the request that started it: others may be
-	// waiting on it, and a finished file is worth keeping either way.
+	// Finish downloads independently of the initiating request because other callers may be waiting.
 	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), DefaultTimeout)
 	cl.sum, cl.err = c.fetch(dctx, src, d)
 	cancel()
@@ -413,8 +383,7 @@ func (c *Cache) fetch(ctx context.Context, src string, d software.Digest) (strin
 	return sum, nil
 }
 
-// reserve accounts n new bytes, evicting the least recently served blobs until
-// the store fits under MaxBytes again.
+// reserve evicts least recently served blobs until n new bytes fit.
 func (c *Cache) reserve(n int64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()

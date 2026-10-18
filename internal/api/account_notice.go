@@ -10,15 +10,8 @@ import (
 	"felis.lolicon.best/internal/metrics"
 )
 
-// Account change notices tell the owner of an account, at the verified address,
-// that a way into it, or what it owns, was just added, removed or moved: a passkey
-// registered or removed, the email replaced (that notice goes to the OLD address,
-// which is the one the owner still reads if someone else made the change), a
-// migration code issued against it or redeemed. They carry the time and the source
-// address and say what to do if the change was not theirs.
-// Best effort, like the lock notice: the change already happened.
+// Account-change notices are best effort after the change; email-change notices go to the previous verified address.
 
-// notifyAccountChange mails one notice to the given address.
 func (a *API) notifyAccountChange(r *http.Request, to, subject, body string) {
 	if to == "" {
 		return
@@ -43,8 +36,6 @@ func (a *API) notifyAccountChange(r *http.Request, to, subject, body string) {
 	metrics.MailTotal.WithLabelValues("notice", "sent").Inc()
 }
 
-// verifiedEmail is where a notice about p's account goes: the address it proved,
-// or nothing.
 func verifiedEmail(p *Principal) string {
 	if !p.EmailVerified {
 		return ""
@@ -71,9 +62,7 @@ func (a *API) notifyPasskeyRemoved(r *http.Request, p *Principal) {
 	a.notifyAccountChange(r, verifiedEmail(p), subject, body)
 }
 
-// notifyEmailChanged tells the previous verified address where the account's
-// mail now goes, masked so the notice does not hand the new address to whoever
-// reads the old mailbox.
+// notifyEmailChanged masks the new address from readers of the previous mailbox.
 func (a *API) notifyEmailChanged(r *http.Request, oldEmail, newEmail string) {
 	masked := maskEmail(newEmail)
 	subject, body := accountChangeNotice(
@@ -92,9 +81,7 @@ func (a *API) noticeIP(r *http.Request) string {
 	return ""
 }
 
-// notifyMigrateCodeIssued tells the source account's owner that a code now stands to
-// hand its servers to target. A code the owner did not issue still has to be redeemed,
-// and running /felis migrate again voids it.
+// notifyMigrateCodeIssued explains that restarting migration invalidates an unredeemed code.
 func (a *API) notifyMigrateCodeIssued(r *http.Request, to, target string, expires time.Time) {
 	exp := expires.UTC().Format("2006-01-02 15:04 MST")
 	subject, body := renderNotice(
@@ -107,8 +94,6 @@ func (a *API) notifyMigrateCodeIssued(r *http.Request, to, target string, expire
 	a.notifyAccountChange(r, to, subject, body)
 }
 
-// notifyMigrateRedeemed tells the retired source account where its servers went. The
-// account can no longer sign in, so the notice goes to the address it had proved.
 func (a *API) notifyMigrateRedeemed(r *http.Request, sourceUserID string, target *Principal, moved []string) {
 	src, err := a.Repo.UserDetail(r.Context(), sourceUserID)
 	if err != nil {
@@ -132,8 +117,6 @@ func (a *API) notifyMigrateRedeemed(r *http.Request, sourceUserID string, target
 	a.notifyAccountChange(r, src.Email, subject, body)
 }
 
-// accountChangeNotice renders a bilingual notice. zhUndo/enUndo name the step
-// that reverses the change, for the "if this wasn't you" line.
 func accountChangeNotice(zhTitle, enTitle, zhWhat, enWhat, zhUndo, enUndo string, at time.Time, ip string) (subject, body string) {
 	return renderNotice(zhTitle, enTitle, zhWhat, enWhat,
 		"请立即登录 Felis，在账户页"+zhUndo+"并退出其它设备，然后联系服务器管理员。",
@@ -141,8 +124,6 @@ func accountChangeNotice(zhTitle, enTitle, zhWhat, enWhat, zhUndo, enUndo string
 		at, ip)
 }
 
-// renderNotice lays out a bilingual notice; zhIfNot/enIfNot finish the "if this
-// wasn't you" line.
 func renderNotice(zhTitle, enTitle, zhWhat, enWhat, zhIfNot, enIfNot string, at time.Time, ip string) (subject, body string) {
 	when := at.UTC().Format("2006-01-02 15:04 MST")
 	zhIP, enIP := ip, ip
@@ -163,8 +144,6 @@ If this wasn't you, %s
 	return subject, body
 }
 
-// maskEmail keeps the first character of the local part and the domain:
-// alice@example.com → a***@example.com.
 func maskEmail(email string) string {
 	at := strings.LastIndexByte(email, '@')
 	if at <= 0 {

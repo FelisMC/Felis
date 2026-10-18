@@ -7,23 +7,8 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.LongSupplier;
 
-/**
- * LinkGate answers "is this verified UUID linked to a Felis account?" for every
- * routing decision, and keeps answering during a short felis-api outage.
- *
- * <p>felis-api is asked every time; its answer always wins when it gives one, so an
- * unlink or a disabled account takes effect on the next check. Only when the call
- * fails in a way that says nothing about the account — a transport error or a 5xx —
- * does the gate fall back to a positive answer it received for the same UUID within
- * {@code graceMillis}. Without that fallback every felis-api restart turned into
- * "login verification is temporarily unavailable" for everyone leaving the login gate
- * at that moment. A UUID never seen linked, a 4xx, or a positive answer older than
- * the grace still fails closed.
- *
- * <p>Records outlive a disconnect on purpose: a player who drops during an outage and
- * reconnects is exactly the case the grace exists for. {@link #prune} bounds the map
- * to the UUIDs seen linked within the grace.
- */
+// Fresh API answers always override cached link status, including unlinking.
+// Use recent positive cache entries only for transport/5xx failures; unknown UUIDs and 4xx fail closed.
 final class LinkGate {
 
     /** LinkCheck is the one felis-api call the gate wraps (FelisApiClient::linkStatus). */
@@ -53,11 +38,7 @@ final class LinkGate {
         this.clock = clock;
     }
 
-    /**
-     * check asks felis-api and records a positive answer. It rethrows the
-     * LinkException when the fallback does not apply, so callers keep their existing
-     * fail-closed branch for that case.
-     */
+    /** check asks felis-api and records a positive answer. It rethrows the LinkException when the fallback does not apply, so callers keep their fail-closed branch. */
     Result check(UUID id) throws LinkException {
         try {
             boolean linked = api.linkStatus(id);

@@ -36,11 +36,7 @@ func filesResult(t *testing.T, stdout string) fileedit.Result {
 	return res
 }
 
-// stagedSource is felis-api's internal face for one staged upload. It serves
-// body to a GET carrying Bearer token and 404 to any other, and answers the
-// DELETE that reports the file landed with landedCode (204 when unset),
-// redirecting to landedTo when that is a redirect. reports counts those
-// DELETEs, each with the token and at the path the bytes came from.
+// The fixture controls upload GET and landing DELETE responses and records DELETE counts.
 type stagedSource struct {
 	*httptest.Server
 	reports, strays atomic.Int32
@@ -300,8 +296,6 @@ func TestCmdFilesWrite(t *testing.T) {
 	})
 }
 
-// A caller-fault outcome is a successful run carrying a code, so felis-api can
-// answer the precise 4xx instead of a 500.
 func TestCmdFilesCallerFaultIsAResult(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
@@ -317,8 +311,6 @@ func TestCmdFilesCallerFaultIsAResult(t *testing.T) {
 	}
 }
 
-// TestCmdFilesUnzip checks an unzip extracts next to the archive and reports its
-// progress before its result, the same way an upload does.
 func TestCmdFilesUnzip(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, "maps"), 0o755); err != nil {

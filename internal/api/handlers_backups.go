@@ -14,33 +14,18 @@ import (
 	"felis.lolicon.best/internal/naming"
 )
 
-// errNoWorldVolume is the shared 409 for backup and restore when the server's
-// world PVC does not exist: the Job would only hang Pending on the missing
-// claim — invisible to the caller and to the backups list — so the handlers
-// refuse up front. Starting the server once (which creates the claim via the
-// StatefulSet volumeClaimTemplate) unlocks both ops.
+// errNoWorldVolume rejects missing PVCs before a backup or restore Job would hang Pending.
 func errNoWorldVolume() error {
 	return newError(http.StatusConflict, "no_world_volume",
 		"this server has no world volume yet — start it once to create it, then retry")
 }
 
-// handleListBackups lists the world backups visible to the caller (spec §7 GET
-// /api/v1/backups; world_backups in §22). It is app-tier: an admin sees every
-// present backup; a regular user sees only the backups of worlds they formerly
-// owned. The scope is decided here from the Principal and enforced by which Repo
-// query runs (AllBackups vs BackupsForUser) — there is no client-supplied filter
-// a user could widen, so "a user cannot see another's backups" is a property of
-// the query, not of request parsing.
-//
-// What the request may choose is the page: ?server= narrows the list to one
-// server (inside the caller's scope, never beyond it), ?limit= and ?offset= page
-// it, and the answer carries how many match in all.
+// handleListBackups scopes non-staff queries to former ownership; request filters can only narrow that scope.
 func (a *API) handleListBackups(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	q := r.URL.Query()
 	opts := BackupListOpts{Server: q.Get("server")}
-	// Format only: a system server's reserved name is still a server whose
-	// backups an admin may list.
+	// Reserved system-server names remain valid backup-list filters for staff.
 	if opts.Server != "" {
 		if err := naming.ValidateSystemServerName(opts.Server); err != nil {
 			writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
@@ -75,20 +60,7 @@ func (a *API) handleListBackups(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"backups": backups, "total": total})
 }
 
-// handleDeleteBackup deletes one world backup (DELETE /api/v1/backups/{id}). An
-// admin may delete any; a user only one of a world they owned, the scope that
-// lists and restores it, and any other id reads as unknown (404), as it does in
-// their list. The row turns expired at once, so no list, restore or backup
-// budget counts it again; the reaper's next retention pass deletes the archive
-// and the off-site copy's next sync the bucket's copy. A reaped world's backup
-// is that world's only copy, which the panel says before it asks.
-//
-// A restore running on the backup's server may be reading the archive, so the
-// delete waits for it: a restore Job still running, or a safety snapshot whose
-// restore of this backup has yet to start, is 409 restore_in_progress. Without
-// a JobStatus reader there is nothing to ask and the delete goes ahead: the
-// reaper removes the archive at its next daily run, long after any restore
-// admitted before the delete has read it.
+// handleDeleteBackup expires the row immediately; running restores block deletion, and retention later removes the archive.
 func (a *API) handleDeleteBackup(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	backup, err := a.Repo.BackupByID(r.Context(), r.PathValue("id"))
@@ -129,9 +101,7 @@ func (a *API) handleDeleteBackup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"id": backup.ID, "status": "expired"})
 }
 
-// restoreMayRead reports whether one of a server's Jobs may still read backup
-// id's archive: any restore Job not yet finished (which archive it extracts is
-// not on the Job), or a safety snapshot whose restore of id has not started.
+// restoreMayRead includes unfinished restores and safety snapshots awaiting restoration of this backup.
 func restoreMayRead(jobs []AsyncJob, id string) bool {
 	for _, j := range jobs {
 		if j.Kind == "restore" && j.State == "running" {
@@ -144,43 +114,7 @@ func restoreMayRead(jobs []AsyncJob, id string) bool {
 	return false
 }
 
-// handleRestoreBackup starts restoring a server's world from a backup (spec §7
-// POST /servers/{name}/restore-backup; spec §466). It accepts an optional JSON
-// body with a backup_id; when absent it restores the latest backup for the server
-// (backward-compatible default). The authorization is deliberately stricter than
-// ordinary owner-or-admin, in this order:
-//
-//	① name validation
-//	② ServerByName — an unknown server is 404
-//	③ owner-or-admin, else 403. A released world's server row is unowned
-//	   (owner_id NULL → OwnerID ""), so this also enforces "重新 claim": a former
-//	   owner must re-claim the server before they can restore into it.
-//	④ if the optional backup_id is supplied the handler resolves the specific
-//	   backup; otherwise it picks the most recent present backup, else
-//	   404 no_backup
-//	⑤ cross-server guard: a backup requested by id must belong to the server in
-//	   the path — restoring server A's backup onto server B would be a data leak
-//	⑥ former-owner match: a non-admin may restore ONLY a world they formerly
-//	   owned. The current-owner gate in ③ is not enough — user B who
-//	   re-claims a released server could otherwise resurrect user A's world (the
-//	   backup still carries former_owner=A), a data leak. Admin skips this check.
-//	⑦ stopped gate: the world PVC must be free, so restore is refused unless the
-//	   server is fully stopped. The world-volume lock (internal/maintenance) then
-//	   makes that atomic against a wake and refuses a second restore, backup or
-//	   file write on the same world with 409 maintenance_in_progress until the
-//	   restore Job finishes.
-//	⑧ hand off. By default the restore starts with a safety snapshot of the world
-//	   as it is (restorechain.go): a pre_restore backup Job that the restore Job
-//	   follows once it succeeds, so a wrong pick can be walked back from the
-//	   backup list. "safety_snapshot": false in the body restores straight away.
-//	   Either way the work is asynchronous (Jobs, like an image build), so
-//	   success means "enqueued" and the handler answers 202, saying in
-//	   safety_snapshot which of the two it did. A restore of another backup still
-//	   running on the world is 409 restore_in_progress.
-//
-// The opaque backup_ref is resolved server-side from the backup and handed to the
-// Restorer directly; the client never names a backup by handle (spec §286
-// principle).
+// handleRestoreBackup defaults to the latest backup and a safety snapshot; clients never supply storage references.
 func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	name := r.PathValue("name")
@@ -189,9 +123,6 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Ownership: owner or admin, mirroring handleStop. An unknown server is 404; an
-	// unowned (released) server fails the owner check for everyone but admin, which
-	// is exactly the "must re-claim first" rule.
 	rec, err := a.managedServerRecord(r.Context(), name)
 	if err != nil {
 		a.writeLookupError(w, r, err)
@@ -202,8 +133,6 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Optional backup_id in the JSON body; absent → LatestBackup (backward compat).
-	// safety_snapshot defaults to true.
 	var body struct {
 		BackupID       string `json:"backup_id"`
 		SafetySnapshot *bool  `json:"safety_snapshot"`
@@ -215,8 +144,6 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Resolve the backup record. When backup_id is specified the handler resolves
-	// that exact backup; otherwise it picks the most recent present one.
 	var backup *BackupRecord
 	if body.BackupID != "" {
 		backup, err = a.Repo.BackupByID(r.Context(), body.BackupID)
@@ -229,13 +156,11 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, err)
 			return
 		}
-		// Cross-server guard: the backup must belong to the server named in the path.
 		if backup.ServerName != name {
 			writeError(w, r, errForbidden)
 			return
 		}
-		// The reaper found this archive damaged when it read it back; the restore
-		// Job would refuse it too, but only after the world was locked for it.
+		// Reject known-corrupt archives before acquiring the world-volume lock.
 		if backup.Corrupt {
 			writeError(w, r, newError(http.StatusConflict, "backup_corrupt",
 				"this backup did not read back intact and cannot be restored; pick another"))
@@ -254,21 +179,13 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// A non-admin may restore only a world they formerly owned (spec §466). Without
-	// this a fresh claimant of a released server could resurrect the previous
-	// owner's world data.
+	// A new claimant must not gain access to a previous owner's backup.
 	if !p.IsAdmin() && backup.FormerOwner != p.UserID {
 		writeError(w, r, errForbidden)
 		return
 	}
 
-	// Stopped gate: the world PVC must be free for the restore to write into it.
-	// Refuse unless the server is fully stopped — Ready means it is up, and any
-	// desiredState other than Stopped means it is up or coming up and still owns the
-	// RWO volume (spec §141 readiness is an RCON probe; DesiredStopped is the
-	// intent). This is the early, readable refusal from a snapshot; acquireWorld
-	// below is the atomic one (RWO is per node, so on a single node a restore Job
-	// WOULD mount beside a running server).
+	// The Job can mount beside a live server on the same node; acquireWorld makes the stopped check atomic.
 	info, err := a.Cluster.GetServer(r.Context(), name)
 	if err != nil {
 		a.writeLookupError(w, r, err)
@@ -280,11 +197,6 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// World-volume gate: the restore Job mounts the world PVC read-write to unpack
-	// the archive into it, so a missing claim means a Pod stuck Pending — a 202
-	// "restoring" with nothing ever written. Same refusal as the backup face
-	// (shared errNoWorldVolume): the operator starts the server once to create the
-	// claim, then restores into it.
 	if exists, err := a.Cluster.WorldVolumeExists(r.Context(), name); err != nil {
 		writeError(w, r, err)
 		return
@@ -293,19 +205,13 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Restorer is optional: when unwired the endpoint reports 503 rather than
-	// panicking, so the authorization boundary above is exercised even before the
-	// restore-Job executor is wired (see Restorer).
 	if a.Restorer == nil {
 		writeError(w, r, newError(http.StatusServiceUnavailable, "restore_unavailable",
 			"restore subsystem is not configured"))
 		return
 	}
 
-	// World-volume lock (internal/maintenance). The stopped gate above reads a
-	// snapshot; this is the atomic check, and it keeps a wake — the owner's, or a
-	// player's join through velocity — from booting the server on a half-extracted
-	// world until the restore Job has finished.
+	// Hold the world-volume lock until restoration finishes to prevent startup on a partially extracted world.
 	release, ok := a.acquireWorld(w, r, name, maintenance.KindRestore, "stop the server before restoring a backup")
 	if !ok {
 		return
@@ -317,8 +223,6 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 		snapshot = false
 	}
 	if snapshot {
-		// The snapshot records the current owner, like an on-demand backup, so
-		// the way back is theirs to take.
 		err = snapshotter.BackupThenRestore(r.Context(), name, rec.OwnerID, backup.ID, backup.BackupRef)
 	} else {
 		err = a.Restorer.Restore(r.Context(), name, backup.BackupRef)
@@ -329,7 +233,6 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 				"a restore of another backup is still running on this server's world; retry once it finishes"))
 			return
 		}
-		// ErrNotFound (server vanished from the execution backend) → 404; else 500.
 		a.writeLookupError(w, r, err)
 		return
 	}
@@ -343,28 +246,6 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleBackupNow starts an on-demand backup of a server's world (POST
-// /api/v1/servers/{name}/backup; spec §18/§19 WorldArchiver, run on demand). It is
-// the "back up before I touch it" lever the break-glass console and the owner both
-// reach for. Authorization mirrors handleRestoreBackup's front half — the shared
-// "who may act on this server's world" gate — but stops short of restore's backup
-// resolution and former-owner-match, because a backup is initiated by the CURRENT
-// owner and records their ownership; there is no prior owner's data to leak:
-//
-//	① name validation
-//	② ServerByName — an unknown server is 404
-//	③ owner-or-admin, else 403 (an unowned server passes only for admin, so a
-//	   released world can still be snapshotted by an operator before disposal)
-//	④ stopped gate: refuse unless the server is fully stopped, so the archive is
-//	   quiescent and non-torn. The world-volume lock (internal/maintenance) keeps it
-//	   that way until the backup Job finishes: a wake meanwhile, or a second
-//	   restore/backup/file write, gets 409 maintenance_in_progress.
-//	⑤ hand off to the Backuper. Backup is asynchronous (a backup Job), so success
-//	   means "enqueued" and the handler answers 202.
-//
-// The former owner recorded on the backup is the server's current OwnerID (empty for
-// an unowned server backed up by an admin), so the resulting world_backups row is
-// restorable by that owner exactly like an inactivity backup.
 func (a *API) handleBackupNow(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	name := r.PathValue("name")
@@ -392,10 +273,7 @@ func (a *API) handleBackupNow(w http.ResponseWriter, r *http.Request) {
 	a.enqueueBackup(w, r, name, rec, auditActor(p), "external")
 }
 
-// backupAllowance rations an owner's on-demand backups (data-durability-9):
-// one per BackupCooldown per server, and none while the present backups fill
-// BackupStoreCap. The owner's older backups are pruned by the Job itself
-// ([archive] manual_keep), so these two gates bound the rate and the total.
+// backupAllowance bounds manual backups by per-server cooldown and the owner's total stored backup size.
 func (a *API) backupAllowance(ctx context.Context, name string) error {
 	if cooldown := a.backupCooldown(ctx); cooldown > 0 {
 		now := a.now()
@@ -425,22 +303,7 @@ func (a *API) backupAllowance(ctx context.Context, name string) error {
 	return nil
 }
 
-// handleInternalBackup is the internal-face backup trigger. The break-glass console
-// (root on the node, holding the service token) POSTs here to snapshot a stopped
-// world while felis-api is alive — it goes through the API rather than direct-to-CRD
-// like halt does, because rendering the backup Job needs deployment coordinates
-// (FELIS_IMAGE, FELIS_BACKUP_PVC) that only felis-api holds.
-//
-// There is no Principal: the service token is a trusted machine caller (auth.go), so
-// the requireInternal middleware IS the authorization — the operator already has root
-// on the node. It audits the action to "break-glass" so a console-initiated backup is
-// distinguishable from an owner's self-service one.
-//
-// The console passes the OS user at the keyboard in an optional {"os_user":"..."} body,
-// which becomes the audit actor (parity with the halt peer's accountability). The body
-// is decoded whenever one is present — not gated on Content-Type — so a console that
-// forgets the header still records the operator rather than silently attributing to the
-// generic "break-glass". Absent/blank falls back to "break-glass".
+// handleInternalBackup uses service-token authorization and attributes auditing to os_user or break-glass.
 func (a *API) handleInternalBackup(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if err := naming.ValidateServerName(name); err != nil {
@@ -471,25 +334,15 @@ func (a *API) handleInternalBackup(w http.ResponseWriter, r *http.Request) {
 	a.enqueueBackup(w, r, name, rec, actor, internalSource(r))
 }
 
-// enqueueBackup is the shared tail of both backup faces: the RWO stopped-gate, the
-// optional-Backuper 503, the async hand-off, and the audit + 202. Both faces validate
-// the name and resolve rec themselves and differ only in how the caller is authorized
-// (Principal vs trusted service token) and the audit actor/source — keeping the
-// security-critical stopped-gate single-sourced so the two faces cannot diverge.
+// enqueueBackup shares volume gating and asynchronous handoff between user and internal backup routes.
 func (a *API) enqueueBackup(w http.ResponseWriter, r *http.Request, name string, rec *ServerRecord, actor, source string) {
-	// Stopped gate (mirrors the restore gate): Ready means it is up; any
-	// desiredState other than Stopped means it is up or coming up. RWO is per node,
-	// so on a single node the Job WOULD mount beside a live server and archive a
-	// torn world; acquireWorld below makes this check atomic.
 	info, err := a.Cluster.GetServer(r.Context(), name)
 	if err != nil {
 		a.writeLookupError(w, r, err)
 		return
 	}
 	if info.Ready || info.DesiredState != string(v1alpha1.DesiredStopped) {
-		// A running server is backed up live (livebackup.go): its saving pauses only
-		// while the world is copied. One starting or stopping is neither frozen nor
-		// down, so it waits.
+		// Use live backup only for running servers; transitional states cannot provide a consistent world.
 		if !info.Ready || info.DesiredState != string(v1alpha1.DesiredRunning) || a.Backuper == nil {
 			writeError(w, r, newError(http.StatusConflict, "not_stopped",
 				"the server is starting or stopping; back it up once it is running or stopped"))
@@ -511,10 +364,6 @@ func (a *API) enqueueBackup(w http.ResponseWriter, r *http.Request, name string,
 		return
 	}
 
-	// World-volume gate: the Job mounts the world PVC by claim name, and a missing
-	// claim would leave its Pod Pending — a 202 "backing_up" with nothing ever
-	// recorded anywhere. A never-started or already-reaped server is refused with
-	// the same specificity as the stopped gate.
 	if exists, err := a.Cluster.WorldVolumeExists(r.Context(), name); err != nil {
 		writeError(w, r, err)
 		return
@@ -523,17 +372,13 @@ func (a *API) enqueueBackup(w http.ResponseWriter, r *http.Request, name string,
 		return
 	}
 
-	// Backuper is optional: when unwired the endpoint reports 503 rather than
-	// panicking, so the authorization boundary above is exercised even before the
-	// backup-Job executor is wired (see Backuper).
 	if a.Backuper == nil {
 		writeError(w, r, newError(http.StatusServiceUnavailable, "backup_unavailable",
 			"backup subsystem is not configured"))
 		return
 	}
 
-	// World-volume lock (internal/maintenance): a server woken mid-backup would
-	// leave a torn archive that a later restore makes permanent.
+	// Hold the world-volume lock to prevent startup during archival.
 	release, ok := a.acquireWorld(w, r, name, maintenance.KindBackup, "stop the server before backing up its world")
 	if !ok {
 		return
@@ -556,11 +401,7 @@ func (a *API) enqueueBackup(w http.ResponseWriter, r *http.Request, name string,
 	})
 }
 
-// handleInternalRestore restores a server's newest intact backup for the host console
-// rebuilding an install from its off-site copy (felis restore-host). Service-token auth
-// with no Principal, like the break-glass backup; no safety snapshot, since a rebuilt
-// host has nothing of the world to keep; and the world volume is created first when the
-// server has never started on this host. The server must be stopped.
+// handleInternalRestore creates the PVC and restores without a safety snapshot on a rebuilt host; the server must be stopped.
 func (a *API) handleInternalRestore(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if err := naming.ValidateServerName(name); err != nil {

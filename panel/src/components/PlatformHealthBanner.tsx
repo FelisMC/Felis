@@ -7,9 +7,7 @@ import { useAsync, usePolling } from "@/lib/hooks";
 import type { OffsiteStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-/** PlatformHealthBanner is the Owner's line on the dashboard about the host: open alerts,
- *  the newest database backup, the off-site copy and the fullest disk, linking to the
- *  maintenance page. It stays out of the way when the host cannot be read. */
+// Hide host-health summaries when host state cannot be read.
 export function PlatformHealthBanner() {
   const { t, i18n } = useTranslation("admin");
   const overview = useAsync(api.hostOverview, []);

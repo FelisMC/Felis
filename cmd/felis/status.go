@@ -31,13 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// cmdStatus prints the platform at a glance: the release and the node, the
-// control plane's workloads, the game proxy, every server with its players
-// and newest world backup, the database backups and the off-site copy, the
-// host's disks and memory, and what the watchdog has open. It changes
-// nothing, and a part that is down (the cluster, PostgreSQL) reads as such
-// while the rest still prints. felis doctor says what is wrong and where to
-// look.
+// It changes nothing; a part that is down (the cluster, PostgreSQL) reads as such while the rest still prints. felis doctor says what is wrong and where to look.
 func cmdStatus(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	fs.SetOutput(stderr)

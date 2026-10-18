@@ -19,17 +19,7 @@ import {
   type Feedback,
 } from "./shared";
 
-/** BansSection is the ban roster: view who is blocked from the server, pardon any
- *  of them in one tap, and ban an arbitrary player by ID (the one player action
- *  whose target is NOT already on screen). Built to stay usable at a few hundred
- *  names — a live count, filter + paging (via usePagedNames), and a manual refresh.
- *
- *  Two deliberately DIFFERENT confirmations, weighted by consequence:
- *  - Banning a typed-in name is the most surprising/destructive action here (the
- *    target isn't in front of you), so it arms a FULL-SENTENCE confirm that names
- *    the consequence — and Enter only ARMS it, never fires the ban.
- *  - Pardoning is recoverable (re-ban is one tap) but still security-relevant (it
- *    lets someone back in), so it gets a lighter one-step inline confirm per row. */
+// Typed bans require an armed confirmation; row pardons use a lighter confirmation.
 export function BansSection({ name }: { name: string }) {
   const { t } = useTranslation("servers");
   const { data, error, loading, reload } = useAsync(() => api.accessBanList(name), [name]);
@@ -46,9 +36,7 @@ export function BansSection({ name }: { name: string }) {
   const invalid = touched && player.length > 0 && !valid;
 
   const players = useMemo(() => data?.players ?? [], [data]);
-  // Raw RCON reply is ground truth: the vanilla-only parse can come back empty on a
-  // plugin or localized "banlist" format while `output` still names the bans, so it
-  // stays available as a low-key disclosure rather than showing a false "no bans".
+  // Retain raw RCON output when custom formats prevent parsing bans.
   const raw = data?.output?.trim() ?? "";
 
   const { query, onQuery, q, shown, showSearch, pageItems, pageCount, clampedPage, needFooter, setPage } =
@@ -133,7 +121,7 @@ export function BansSection({ name }: { name: string }) {
                 value={value}
                 onChange={(v) => {
                   setValue(v);
-                  setArmed(false); // editing the name re-disarms; confirm what you see
+                  setArmed(false); // editing the name disarms the confirm; confirm what is shown.
                 }}
                 onEnter={arm}
                 invalid={invalid}

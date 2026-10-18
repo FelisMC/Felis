@@ -15,9 +15,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
-// TestReconcileWatchCheck: an idle or busy operator is healthy; one pass running
-// past the limit fails the check and names the server; the check recovers once
-// that pass returns.
 func TestReconcileWatchCheck(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	w := &ReconcileWatch{StuckAfter: 10 * time.Minute, Now: func() time.Time { return now }}
@@ -45,8 +42,6 @@ func TestReconcileWatchCheck(t *testing.T) {
 	endNew()
 }
 
-// TestReconcileBoundedAndWatched: Reconcile hands the pass a deadline and holds
-// an in-flight entry exactly while it runs.
 func TestReconcileBoundedAndWatched(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := v1alpha1.AddToScheme(scheme); err != nil {

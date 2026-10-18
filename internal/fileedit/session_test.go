@@ -52,9 +52,6 @@ func readStaged(t *testing.T, s *Stage, id, token string) string {
 	return string(b)
 }
 
-// TestSessionArrivesInParts: parts land in order and are listed with their
-// digests, Seal hands the Job a token for exactly those bytes, and they stay
-// until that Job reports them landed.
 func TestSessionArrivesInParts(t *testing.T) {
 	s := roomyStage(t)
 	const whole = "PK\x03\x04 first part, second part"
@@ -120,7 +117,6 @@ func TestSessionArrivesInParts(t *testing.T) {
 	}
 }
 
-// A session answers only the user and the server it was begun for.
 func TestSessionAnswersItsOwnerOnly(t *testing.T) {
 	s := roomyStage(t)
 	sess, err := s.Begin("u1", "survival", "a.zip", 4)
@@ -188,9 +184,6 @@ func TestSessionRefusesAPartThatDoesNotFit(t *testing.T) {
 	}
 }
 
-// A part that breaks, runs long or does not match its digest leaves the session
-// as it was: the file is cut back and the digest forgets it, so the resent part
-// makes the right file.
 func TestSessionRollsBackAFailedPart(t *testing.T) {
 	for name, tc := range map[string]struct {
 		body io.Reader
@@ -237,8 +230,6 @@ func TestSessionRollsBackAFailedPart(t *testing.T) {
 	}
 }
 
-// While a part is arriving nothing else may touch the session, and it is never
-// idle.
 func TestSessionIsBusyWhileAPartArrives(t *testing.T) {
 	s := roomyStage(t)
 	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
@@ -282,8 +273,6 @@ func TestSessionIsBusyWhileAPartArrives(t *testing.T) {
 	}
 }
 
-// Each Seal arms one fetch with a fresh token, so a Job that failed can be
-// started again on the same bytes.
 func TestSessionSealArmsOneFetch(t *testing.T) {
 	s := roomyStage(t)
 	sess, err := s.Begin("u1", "survival", "a.zip", 4)
@@ -339,9 +328,6 @@ func TestSessionSealArmsOneFetch(t *testing.T) {
 	}
 }
 
-// Only the token the latest Seal minted reports a session landed: a Job an
-// earlier commit started changes nothing, and neither does anyone before the
-// first Seal.
 func TestLandedTakesTheLatestToken(t *testing.T) {
 	s := roomyStage(t)
 	sess, err := s.Begin("u1", "survival", "a.zip", 4)
@@ -379,8 +365,6 @@ func TestLandedTakesTheLatestToken(t *testing.T) {
 	}
 }
 
-// An upload staged by Put answers Landed to its own token and is left to the
-// release func Put returned.
 func TestLandedLeavesPutAlone(t *testing.T) {
 	s := roomyStage(t)
 	st, release, err := s.Put(strings.NewReader("abc"), 3, sumOf("abc"))
@@ -399,8 +383,6 @@ func TestLandedLeavesPutAlone(t *testing.T) {
 	}
 }
 
-// A session reserves its whole size when it begins, and gives back what it has
-// not yet received when it is dropped or expires.
 func TestSessionReservesItsSize(t *testing.T) {
 	t.Run("begin reserves the whole size", func(t *testing.T) {
 		s := diskStage(t, 1000, 1200, 0.5) // room for 400
@@ -510,8 +492,6 @@ func TestSessionsPerUserAreBounded(t *testing.T) {
 	}
 }
 
-// Expire drops what has sat untouched for longer than SessionIdle, sealed or
-// not, and a part keeps a session alive.
 func TestSessionExpiry(t *testing.T) {
 	s := roomyStage(t)
 	start := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)

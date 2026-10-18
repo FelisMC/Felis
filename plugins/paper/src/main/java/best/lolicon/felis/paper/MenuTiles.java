@@ -6,33 +6,16 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * MenuTiles decides what a {@code /menu} tile says and what clicking it does, from the
- * server's live status ({@code StatusUpdate}) and felis-api's verdict for this player
- * (the {@code ListUpdate}'s access list). It is the whole of the menu's judgement, kept
- * free of Bukkit so it can be tested as plain values; {@link FelisPaperPlugin} only
- * turns a {@link Tile} into an item.
- *
- * <p>The order follows the proxy's wake. A server that is up is open to every linked
- * player, so it is Join whatever the verdict. An ownerless one is Claim &amp; Start:
- * claiming makes the player its owner before the wake. Past those, a verdict that
- * refuses the wake locks the tile and names the reason, so nobody queues for a start
- * that cannot happen. Everything else is Wake, including a tile with no verdict (the
- * proxy could not ask felis-api), which the wake then judges as before.
- */
 final class MenuTiles {
 
-    /** Kind is what a click on the tile does. */
+    /** What a click on the tile does. */
     enum Kind { CLAIM, JOIN, WAKE, LOCKED }
 
-    /**
-     * Tile is one tile's content: its kind, the action word in its title, whether it is
-     * the player's own server, and for a locked tile the reason, one lore line each.
-     */
+    /** One tile's content; {@code reason} holds one lore line each for a locked tile. */
     record Tile(Kind kind, String action, boolean mine, List<String> reason) {
     }
 
-    // The verdicts felis-api's menu-access answers (handleInternalMenuAccess).
+    // Verdicts returned by felis-api menu-access.
     static final String OWNER = "owner";
     static final String RETIRING = "retiring";
     static final String START_FAILED = "start_failed";
@@ -57,10 +40,7 @@ final class MenuTiles {
         return new Tile(Kind.WAKE, zh ? "启动" : "Start", mine, List.of());
     }
 
-    /**
-     * click is the frame a click on the tile sends, or null for a locked tile, which
-     * sends nothing and tells the player why ({@link #chatReason}).
-     */
+    /** Returns the frame a click sends, or null for a locked tile (see {@link #chatReason}). */
     static ControlFrame click(Tile tile, String player, String server) {
         switch (tile.kind()) {
             case CLAIM:
@@ -73,12 +53,12 @@ final class MenuTiles {
         }
     }
 
-    /** chatReason is a locked tile's reason as one sentence. */
+    /** Returns a locked tile's reason as one sentence. */
     static String chatReason(Tile tile, boolean zh) {
         return zh ? String.join("，", tile.reason()) + "。" : String.join(". ", tile.reason()) + ".";
     }
 
-    // lockReason is why a verdict refuses the wake, or empty when it does not.
+    // Empty when the verdict does not refuse the wake.
     private static List<String> lockReason(String verdict, boolean zh) {
         if (verdict == null) {
             return List.of();
@@ -101,7 +81,7 @@ final class MenuTiles {
         }
     }
 
-    /** phase is the tile's status line: the lifecycle phase in the player's language. */
+    /** Returns the lifecycle phase in the player's language. */
     static String phase(String phase, boolean zh) {
         if (phase == null) {
             return zh ? "未知" : "Unknown";
@@ -122,10 +102,7 @@ final class MenuTiles {
         }
     }
 
-    /**
-     * accessByName reads a {@code ListUpdate}'s verdicts into server → verdict, leaving
-     * out the servers it gave none for (and every server when the proxy sent names only).
-     */
+    /** Maps a ListUpdate's verdicts to server → verdict, skipping servers with none. */
     static Map<String, String> accessByName(ControlFrame list) {
         Map<String, String> out = new HashMap<>();
         List<String> names = list.servers();

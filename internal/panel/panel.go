@@ -20,63 +20,34 @@ import (
 var static embed.FS
 
 type runtimeConfig struct {
-	Distributed bool `json:"distributed,omitempty"`
-	// ControllerHA: several controllers share the control plane (internal/platform ha.go).
+	Distributed   bool   `json:"distributed,omitempty"`
 	ControllerHA  bool   `json:"controllerHA,omitempty"`
 	APIBase       string `json:"apiBase"`
 	RootDomain    string `json:"rootDomain"`
 	PanelHostname string `json:"panelHostname,omitempty"`
 	AdminHostname string `json:"adminHostname,omitempty"`
-	// GamePort is the public Minecraft port, absent when it is the default 25565.
+	// GamePort is omitted for the default port 25565.
 	GamePort    int       `json:"gamePort,omitempty"`
 	GameVersion string    `json:"gameVersion,omitempty"`
 	Build       buildInfo `json:"build"`
 }
 
-// buildInfo is the resolved build stamp the panel renders in its version badge.
-// It is derived once, server-side, from the binary's `main.version` — the stamp
-// deploy/bootstrap.sh links in per install channel — so the panel needs no brittle
-// string parsing — it just renders `Release`, appending `+Commit` when `Dev`.
 type buildInfo struct {
-	// Version is the raw resolved stamp (e.g. "v1.0.0-earlyAccess+g1a2b3c4").
 	Version string `json:"version"`
-	// Release is the "big version" — the newest tag with any commit suffix
-	// stripped (e.g. "v1.0.0-earlyAccess"). It is what the release channel shows.
 	Release string `json:"release"`
-	// Commit is the short commit the dev channel was built from (e.g. "1a2b3c4"),
-	// empty for a clean release build.
+	// Commit is empty for a clean release build.
 	Commit string `json:"commit,omitempty"`
-	// Dev is true for a non-release build — the dev channel (main past the tag), an
-	// untagged/bare-SHA build, a dirty tree, or an un-stamped local `go build`.
-	Dev bool `json:"dev"`
+	Dev    bool   `json:"dev"`
 }
 
-// devSuffix matches the trailing "+g<sha>" that deploy/bootstrap.sh's dev channel
-// appends to the newest tag — the shape a dev build actually carries. The "+" is
-// deliberate and load-bearing: it is semver BUILD METADATA, ignored for ordering,
-// so a dev build ahead of v1.2.3 still compares as newer than v1.2.3. The
-// git-describe form below puts that distance in the PRERELEASE field instead,
-// which sorts BELOW the bare tag.
+// Development stamps use build metadata (+gSHA), which does not lower semver precedence below the release.
 var devSuffix = regexp.MustCompile(`\+g([0-9a-f]+)$`)
 
-// describeSuffix matches the trailing "-<commits>-g<sha>" that `git describe`
-// appends to the newest tag once HEAD is past it. bootstrap.sh no longer produces
-// this form, but a hand-rolled `go build -ldflags "-X main.version=$(git describe)"`
-// still does, and parsing it costs one case. Match is anchored at end so a tag whose
-// prerelease part itself contains hyphens (v1.0.0-earlyAccess) keeps that part in
-// Release.
+// Accept git-describe suffixes while preserving hyphens in prerelease tags.
 var describeSuffix = regexp.MustCompile(`-([0-9]+)-g([0-9a-f]+)$`)
 
-// releaseTag matches a clean released semantic-version tag (vMAJOR.MINOR.PATCH
-// with an optional -prerelease), i.e. the name the release channel builds. It is
-// permissive on the prerelease so tags like v1.0.0-earlyAccess qualify.
 var releaseTag = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$`)
 
-// parseBuildVersion splits a build stamp into the fields the panel version badge
-// renders. Cases: a dev stamp "<tag>+gSHA" (or the git-describe "<tag>-N-gSHA") →
-// Release=<tag>, Commit=SHA, Dev=true; a clean release tag "vX.Y.Z[-pre]" →
-// Release=tag, Dev=false; anything else ("dev", "unknown", a bare short SHA, a
-// dirty tree) → best-effort Release with Dev=true.
 func parseBuildVersion(raw string) buildInfo {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -107,15 +78,7 @@ func parseBuildVersion(raw string) buildInfo {
 	return bi
 }
 
-// Handler wraps the external API handler with the panel SPA. version is the
-// binary's resolved build stamp (cmd/felis resolvedVersion()); it is surfaced to
-// the SPA via /config.json for the version badge. panelHost and adminHost are the
-// configured console.<root_domain> and op.console.<root_domain> hostnames (either
-// may be empty when that face is not deployed); they let the SPA detect which home
-// it is being served from by comparing location.host, so one bundle can render the
-// right surface (player console vs SysAdmin console) without a rebuild. gamePort
-// is the public Minecraft port ([velocity] game_port), which the SPA appends to
-// the server addresses players copy; 0 or 25565 leaves them bare.
+// Handler serves the SPA and exposes build, host, and game-port configuration through /config.json.
 func Handler(api http.Handler, rootDomain, panelHost, adminHost string, gamePort int, gameVersion, version string, topology ...Topology) http.Handler {
 	files, err := fs.Sub(static, "static")
 	if err != nil {
@@ -140,11 +103,8 @@ func Handler(api http.Handler, rootDomain, panelHost, adminHost string, gamePort
 	}
 }
 
-// defaultGamePort is the port a Minecraft client dials when the address has none.
 const defaultGamePort = 25565
 
-// publicGamePort is the port the SPA should print, or 0 when a bare hostname
-// already reaches the proxy.
 func publicGamePort(p int) int {
 	if p == defaultGamePort {
 		return 0
@@ -152,7 +112,6 @@ func publicGamePort(p int) int {
 	return p
 }
 
-// Topology is the deployment shape the SPA adapts its node management to.
 type Topology struct {
 	Distributed  bool
 	ControllerHA bool
@@ -172,16 +131,9 @@ type handler struct {
 	csp           string
 }
 
-// inlineScript matches a <script> with no attributes: the pre-paint theme switch
-// in index.html, the one script the page runs inline.
 var inlineScript = regexp.MustCompile(`(?s)<script>(.*?)</script>`)
 
-// contentSecurityPolicy is the policy the console's pages are served under. The
-// bundle is same-origin, so scripts run only from 'self' plus, by hash, the inline
-// scripts index.html carries as built (hashed here, at start, so a rebuilt page
-// cannot drift from its policy). Styles allow inline: the UI library sets style
-// attributes and injects style tags. Images take data: and blob: for rendered
-// QR codes and downloads; every request the page makes goes to its own origin.
+// Hash built inline scripts for CSP; inline styles support the UI library, and data/blob images support QR codes.
 func contentSecurityPolicy(files fs.FS) string {
 	scripts := "'self'"
 	if index, err := fs.ReadFile(files, "index.html"); err == nil {
@@ -204,10 +156,7 @@ func contentSecurityPolicy(files fs.FS) string {
 	}, "; ")
 }
 
-// setPageHeaders marks every response the console serves: no framing (the
-// passkey and approval buttons must not sit under someone else's page), no
-// sniffing, no referrer carrying a setup token off the site, and HSTS when the
-// request came through a TLS edge. The API sets its own, stricter set on /api/.
+// setPageHeaders prevents framing, MIME sniffing, and setup-token referrer leaks.
 func (h *handler) setPageHeaders(w http.ResponseWriter, r *http.Request) {
 	hdr := w.Header()
 	hdr.Set("Content-Security-Policy", h.csp)
@@ -215,9 +164,7 @@ func (h *handler) setPageHeaders(w http.ResponseWriter, r *http.Request) {
 	hdr.Set("X-Frame-Options", "DENY")
 	hdr.Set("Referrer-Policy", "no-referrer")
 	hdr.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
-	// The tunnel reaches this listener over TLS too, so what the browser saw is
-	// the edge's X-Forwarded-Proto. A browser straight on the self-signed listener
-	// sends none, and HSTS over a certificate error is ignored (RFC 6797 §8.1).
+	// Trust the edge scheme; direct self-signed connections cannot establish HSTS (RFC 6797).
 	if strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
 		hdr.Set("Strict-Transport-Security", "max-age=31536000")
 	}
@@ -229,9 +176,6 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.setPageHeaders(w, r)
-	// WeChat/QQ in-app browsers cannot run WebAuthn, so steer their document
-	// navigations to a "open in your system browser" interstitial before the SPA
-	// (which is built around passkey enrollment) ever loads. See webview.go.
 	if guardInAppWebView(w, r) {
 		return
 	}
@@ -251,8 +195,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Build:         h.build,
 		})
 	case h.hasStaticFile(r.URL.Path):
-		// Vite names every file under assets/ by its content hash, so a cached
-		// copy can never go stale; everything else revalidates.
+		// Content-hashed assets are immutable; other responses revalidate.
 		if strings.HasPrefix(r.URL.Path, "/assets/") {
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		} else {

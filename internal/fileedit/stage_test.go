@@ -49,8 +49,6 @@ func sumOf(s string) []byte {
 var hexID = regexp.MustCompile(`^[0-9a-f]{32}$`)
 var hexToken = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// TestStageOpensOnce: a staged upload opens once, for the token minted with it,
-// and a wrong token does not spend it.
 func TestStageOpensOnce(t *testing.T) {
 	s := roomyStage(t)
 	const body = "PK\x03\x04 staged"
@@ -107,8 +105,6 @@ func TestStageOpensOnce(t *testing.T) {
 	}
 }
 
-// Staged uploads are other people's files, so neither the folder nor the file
-// is readable by anyone but felis-api's own uid.
 func TestStageIsPrivate(t *testing.T) {
 	s := roomyStage(t)
 	_, release, err := s.Put(strings.NewReader("x"), 1, sumOf("x"))
@@ -142,9 +138,6 @@ func (e *eofReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// Put reads the body to its end: net/http's body deadline is lifted only then
-// (withBodyDeadline), and a request whose body was not finished would otherwise
-// be cut off under the handler still landing it.
 func TestStagePutReadsToTheEnd(t *testing.T) {
 	s := roomyStage(t)
 	body := &eofReader{r: strings.NewReader("abc")}
@@ -158,9 +151,6 @@ func TestStagePutReadsToTheEnd(t *testing.T) {
 	}
 }
 
-// Bytes that do not hash to the digest they came with were changed on the way:
-// nothing is staged and their room is given back. Without a digest the body is
-// not read at all.
 func TestStageChecksTheDigest(t *testing.T) {
 	stubStatfs(t, 1000, 1200) // floor 600 at MinFree 0.5: room for 400
 	s := &Stage{Dir: t.TempDir(), MinFree: 0.5}
@@ -221,8 +211,6 @@ func TestStageRefusesABodyOfTheWrongLength(t *testing.T) {
 	}
 }
 
-// TestStageKeepsItsFloor: an upload is refused if it would leave less than
-// MinFree of the disk free, counting uploads still arriving.
 func TestStageKeepsItsFloor(t *testing.T) {
 	put := func(s *Stage, size int64) error {
 		_, release, err := s.Put(strings.NewReader(strings.Repeat("x", int(size))), size, sumOf(strings.Repeat("x", int(size))))

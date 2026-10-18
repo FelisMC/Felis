@@ -1,20 +1,6 @@
 //go:build pgint
 
-// Package pgint holds the Postgres-level contract tests for the business stores
-// (api.PGRepo, submit.PGStore, build.PGStore). They exist because pure unit suites
-// run against fakes that encode the CONTRACT — and PGRepo drifted behind that
-// contract three times (attempt accounting, a missing JOIN, a missing FOR UPDATE)
-// while every unit test stayed green.
-// dbrestore_test.go does the same for `felis db backup` and `restore`, whose
-// fakes stand in for pg_dump, pg_restore, psql and the server.
-//
-// They run ONLY against a throwaway database whose name contains "pgint": the
-// harness drops and recreates the public schema and replays the real embedded
-// migrations, so the schema under test is exactly what `felis migrate up`
-// produces. Point it at the test database, never at a live one:
-//
-//	FELIS_TEST_PG_URL='postgres://felis:***@127.0.0.1:15432/felis_pgint?sslmode=disable' \
-//	  go test -tags pgint ./internal/pgint/ -v
+// Package pgint holds Postgres contract tests; it drops the public schema of the database named by FELIS_TEST_PG_URL (name must contain "pgint").
 package pgint
 
 import (
@@ -48,9 +34,6 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, `pgint: FELIS_TEST_PG_URL must name a throwaway test database (its name must contain "pgint")`)
 		os.Exit(1)
 	}
-	// The harness drops the public schema; refuse anything that does not look
-	// like a dedicated test database, so a copy-paste of the production DSN
-	// cannot wipe a live install.
 	u, err := url.Parse(dsn)
 	if err != nil || !strings.Contains(strings.TrimPrefix(u.Path, "/"), "pgint") {
 		fmt.Fprintf(os.Stderr, "pgint: refusing %q: the database name must contain \"pgint\"\n", dsn)
@@ -63,8 +46,6 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	defer drv.Close()
-	// Fresh schema + the real migrations: violations of the schema contract
-	// (bad enum, missing column) fail here, not mid-suite.
 	for _, stmt := range []string{"DROP SCHEMA IF EXISTS public CASCADE", "CREATE SCHEMA public"} {
 		if _, err := drv.DB().ExecContext(ctx, stmt); err != nil {
 			fmt.Fprintf(os.Stderr, "pgint: reset schema: %v\n", err)
@@ -85,8 +66,6 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// suffix returns a short unique hex string for per-test identifiers, so the
-// suites can share one schema without interfering.
 func suffix(t *testing.T) string {
 	t.Helper()
 	var b [6]byte
@@ -96,8 +75,6 @@ func suffix(t *testing.T) string {
 	return hex.EncodeToString(b[:])
 }
 
-// testUUID formats random bytes as a UUID string (the version nibble does not
-// matter to Postgres's uuid type).
 func testUUID(t *testing.T) string {
 	t.Helper()
 	var b [16]byte
@@ -119,8 +96,6 @@ func newUser(t *testing.T, role, prefix string) *api.UserView {
 
 func mustNow() time.Time { return time.Now().UTC() }
 
-// ---- sessions -----------------------------------------------------------------
-
 func TestSessionLifecycle(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "sess")
@@ -138,12 +113,10 @@ func TestSessionLifecycle(t *testing.T) {
 		t.Fatalf("SessionedUser = %+v, want id=%s role=user verified=false", su, u.ID)
 	}
 
-	// Expiry is evaluated against the supplied clock, not wall time.
 	if _, err := repo.SessionUser(ctx, hash, expires.Add(time.Second)); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("expired session = %v, want ErrNotFound", err)
 	}
 
-	// Revoke is idempotent and kills the session even before expiry.
 	if err := repo.RevokeSession(ctx, hash); err != nil {
 		t.Fatalf("RevokeSession: %v", err)
 	}
@@ -158,8 +131,6 @@ func TestSessionLifecycle(t *testing.T) {
 	}
 }
 
-// ---- email OTP: onboarding primitive ------------------------------------------
-
 func TestOnboardingEmailOTPContract(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "otp")
@@ -167,7 +138,6 @@ func TestOnboardingEmailOTPContract(t *testing.T) {
 	addr := "otp-" + suffix(t) + "@example.net"
 	now := mustNow()
 
-	// No live code at all.
 	if _, err := repo.VerifyEmailOTP(ctx, u.ID, purpose, "h1", now); !errors.Is(err, api.ErrOTPInvalid) {
 		t.Fatalf("verify without code = %v, want ErrOTPInvalid", err)
 	}
@@ -175,23 +145,19 @@ func TestOnboardingEmailOTPContract(t *testing.T) {
 	if err := repo.CreateEmailOTP(ctx, "otp-"+suffix(t), u.ID, addr, "h-good", purpose, now.Add(5*time.Minute)); err != nil {
 		t.Fatalf("CreateEmailOTP: %v", err)
 	}
-	// A mismatch charges one attempt and does NOT consume the code.
 	if _, err := repo.VerifyEmailOTP(ctx, u.ID, purpose, "h-bad", now); !errors.Is(err, api.ErrOTPInvalid) {
 		t.Fatalf("wrong code = %v, want ErrOTPInvalid", err)
 	}
 	assertAttempts(t, u.ID, purpose, 1)
-	// The right code still redeems after a typo, and proves the address.
 	got, err := repo.VerifyEmailOTP(ctx, u.ID, purpose, "h-good", now)
 	if err != nil || got != addr {
 		t.Fatalf("verify = (%q, %v), want (%q, nil)", got, err, addr)
 	}
 	assertEmailProven(t, u.ID, addr, true)
-	// Replay: consumed codes stay dead.
 	if _, err := repo.VerifyEmailOTP(ctx, u.ID, purpose, "h-good", now); !errors.Is(err, api.ErrOTPInvalid) {
 		t.Fatalf("replay = %v, want ErrOTPInvalid", err)
 	}
 
-	// A new code supersedes the previous live one (at most one outstanding).
 	if err := repo.CreateEmailOTP(ctx, "otp2-"+suffix(t), u.ID, addr, "h-new", purpose, now.Add(5*time.Minute)); err != nil {
 		t.Fatalf("CreateEmailOTP (second): %v", err)
 	}
@@ -202,7 +168,6 @@ func TestOnboardingEmailOTPContract(t *testing.T) {
 		t.Fatalf("newest code must redeem: %v", err)
 	}
 
-	// Expiry: a past expires_at is invalid, never a success.
 	if err := repo.CreateEmailOTP(ctx, "otp3-"+suffix(t), u.ID, addr, "h-exp", purpose, now.Add(-time.Minute)); err != nil {
 		t.Fatalf("CreateEmailOTP (expired): %v", err)
 	}
@@ -210,7 +175,6 @@ func TestOnboardingEmailOTPContract(t *testing.T) {
 		t.Fatalf("expired code = %v, want ErrOTPInvalid", err)
 	}
 
-	// Lockout: otpMaxAttempts wrong guesses retire the code (correct hash or not).
 	if err := repo.CreateEmailOTP(ctx, "otp4-"+suffix(t), u.ID, addr, "h-lock", purpose, now.Add(5*time.Minute)); err != nil {
 		t.Fatalf("CreateEmailOTP (lock): %v", err)
 	}
@@ -234,10 +198,6 @@ func TestOnboardingEmailOTPContract(t *testing.T) {
 	assertConsumed(t, u.ID, purpose, false)
 }
 
-// The verified-email uniqueness guard: two accounts cannot prove the same
-// address (the login door resolves accounts BY verified email, so a duplicate
-// would make identity ambiguous). This is the guard ConsumeLoginEmailOTP
-// deliberately skips.
 func TestOnboardingEmailOTPRejectsTakenEmail(t *testing.T) {
 	ctx := context.Background()
 	a, b := newUser(t, "user", "take-a"), newUser(t, "user", "take-b")
@@ -257,16 +217,12 @@ func TestOnboardingEmailOTPRejectsTakenEmail(t *testing.T) {
 	if _, err := repo.VerifyEmailOTP(ctx, b.ID, purpose, "h-b", now); !errors.Is(err, api.ErrEmailTaken) {
 		t.Fatalf("second account proving a taken email = %v, want ErrEmailTaken", err)
 	}
-	// The address, not the code, was the problem: b's code stays live.
 	assertConsumed(t, b.ID, purpose, false)
-	// The invariant is also enforced by the database, not only the app guard: a
-	// direct write that bypasses VerifyEmailOTP still loses (uppercased to prove
-	// the index keys on lower(email)).
+	// Uppercased: the unique index keys on lower(email).
 	if _, err := db.ExecContext(ctx,
 		`UPDATE users SET email = $2, email_verified = true WHERE id = $1`, b.ID, strings.ToUpper(addr)); err == nil {
 		t.Fatal("a direct duplicate verified-email write succeeded; users_verified_email_unique is missing")
 	}
-	// And the refusal does not wedge b: its OWN address still verifies fine.
 	own := "own-" + suffix(t) + "@example.net"
 	if err := repo.CreateEmailOTP(ctx, "tkb2-"+suffix(t), b.ID, own, "h-b2", purpose, now.Add(5*time.Minute)); err != nil {
 		t.Fatalf("CreateEmailOTP(b, own): %v", err)
@@ -275,8 +231,6 @@ func TestOnboardingEmailOTPRejectsTakenEmail(t *testing.T) {
 		t.Fatalf("b must still be able to prove its own address: %v", err)
 	}
 }
-
-// ---- email OTP: pre-session login primitive (regression: the #16 drift) --------
 
 func TestConsumeLoginEmailOTPContract(t *testing.T) {
 	ctx := context.Background()
@@ -288,23 +242,18 @@ func TestConsumeLoginEmailOTPContract(t *testing.T) {
 	if err := repo.CreateEmailOTP(ctx, "lotp-"+suffix(t), u.ID, addr, "h-good", purpose, now.Add(5*time.Minute)); err != nil {
 		t.Fatalf("CreateEmailOTP: %v", err)
 	}
-	// Wrong guesses must ACCUMULATE (the drift left attempts at zero) and must
-	// not consume the code.
 	if err := repo.ConsumeLoginEmailOTP(ctx, u.ID, purpose, "h-bad", now); !errors.Is(err, api.ErrOTPInvalid) {
 		t.Fatalf("wrong code = %v, want ErrOTPInvalid", err)
 	}
 	assertAttempts(t, u.ID, purpose, 1)
-	// Redemption succeeds and is single-use.
 	if err := repo.ConsumeLoginEmailOTP(ctx, u.ID, purpose, "h-good", now); err != nil {
 		t.Fatalf("correct code = %v, want nil", err)
 	}
 	if err := repo.ConsumeLoginEmailOTP(ctx, u.ID, purpose, "h-good", now); !errors.Is(err, api.ErrOTPInvalid) {
 		t.Fatalf("replay = %v, want ErrOTPInvalid", err)
 	}
-	// The login primitive writes NO identity state: the user's email stays empty.
 	assertEmailProven(t, u.ID, "", false)
 
-	// Lockout parity with the onboarding primitive.
 	if err := repo.CreateEmailOTP(ctx, "lotp2-"+suffix(t), u.ID, addr, "h-lock", purpose, now.Add(5*time.Minute)); err != nil {
 		t.Fatalf("CreateEmailOTP (lock): %v", err)
 	}
@@ -326,12 +275,6 @@ func TestConsumeLoginEmailOTPContract(t *testing.T) {
 	}
 }
 
-// The account-level wrong-code budget must survive supersede: minting a fresh
-// code resets the per-code attempts, and the public login door can mint one a
-// minute, so only a counter outside email_otps bounds guessing per account.
-// TestAuditAttributionContract pins migration 0023: actor_user_id is filled
-// from a real account id and falls to NULL (never a failed insert) for an id
-// with no users row; client_ip and user_agent land when given.
 func TestAuditAttributionContract(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "audit")
@@ -369,7 +312,6 @@ func TestAuditAttributionContract(t *testing.T) {
 		t.Fatalf("audit rows:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 
-	// The session principal carries the username the rows are signed with.
 	hash := "audit-sess-" + suffix(t)
 	if err := repo.CreateSession(ctx, api.NewSession{TokenHash: hash, UserID: u.ID, CreatedAt: mustNow(), ExpiresAt: mustNow().Add(time.Hour)}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -415,7 +357,6 @@ func TestOTPFailureBudgetContract(t *testing.T) {
 		t.Fatalf("lock until %v, want %v (window opened by the first wrong guess)", tripped.Until, want)
 	}
 
-	// The right code on a live, barely-used code is refused while locked.
 	at := start.Add(10 * time.Minute)
 	var lock *api.OTPAccountLockedError
 	if err := repo.ConsumeLoginEmailOTP(ctx, u.ID, purpose, "h-good", at); !errors.As(err, &lock) || lock.JustLocked {
@@ -424,12 +365,10 @@ func TestOTPFailureBudgetContract(t *testing.T) {
 	if until, err := repo.OTPLockedUntil(ctx, u.ID, purpose, at); err != nil || until.IsZero() {
 		t.Fatalf("OTPLockedUntil during lock = %v, %v", until, err)
 	}
-	// Other purposes of the same account are separate doors.
 	if until, err := repo.OTPLockedUntil(ctx, u.ID, "onboard_email", at); err != nil || !until.IsZero() {
 		t.Fatalf("onboard door locked too: %v, %v", until, err)
 	}
 
-	// After the window the door reopens and the count starts over.
 	later := start.Add(25 * time.Hour)
 	if until, err := repo.OTPLockedUntil(ctx, u.ID, purpose, later); err != nil || !until.IsZero() {
 		t.Fatalf("OTPLockedUntil after window = %v, %v", until, err)
@@ -450,7 +389,6 @@ func TestOTPFailureBudgetContract(t *testing.T) {
 		t.Fatalf("right code after the window = %v, want nil", err)
 	}
 
-	// The onboarding primitive shares the rule.
 	onboard := "onboard_email"
 	for i := 0; i < 10; i++ {
 		at := start.Add(time.Duration(i) * time.Minute)
@@ -470,13 +408,6 @@ func TestOTPFailureBudgetContract(t *testing.T) {
 	assertEmailProven(t, u.ID, "", false)
 }
 
-// ---- user admin (spec §7) -------------------------------------------------------
-
-// The claim gate must hold under concurrency (audit #4): two simultaneous claims
-// by one user for two different ownerless servers must not both pass a
-// max_servers=1 cap. ClaimServer now owns the gate (advisory lock + four-dimension
-// re-check in the same transaction as the ownership write), so this drives real
-// goroutines against real Postgres.
 func TestClaimServerQuotaAtomicGate(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "quota")
@@ -531,14 +462,12 @@ func TestClaimServerQuotaAtomicGate(t *testing.T) {
 		t.Fatalf("owned servers = %d, want exactly 1 (no over-provision)", owned)
 	}
 
-	// Sequential, the gate answers identically: a third claim meets the same 403.
 	s3 := "qc-" + suffix(t)
 	seed(s3)
 	if _, err := repo.ClaimServer(ctx, s3, u.ID); !errors.Is(err, api.ErrQuotaExceeded) {
 		t.Fatalf("third claim = %v, want ErrQuotaExceeded", err)
 	}
 
-	// No quota row → unlimited: a fresh user claims both remaining ownerless rows.
 	otherUser := newUser(t, "user", "quota-free")
 	var free1 string
 	if err := db.QueryRow(
@@ -553,9 +482,6 @@ func TestClaimServerQuotaAtomicGate(t *testing.T) {
 	}
 }
 
-// The quotas form replaces every cap at once: a nil field lifts that cap and 0 grants
-// none of it. SetQuotas used to skip nil fields, so a cap once set could be moved but
-// never removed, and the panel's emptied box changed nothing.
 func TestSetQuotasReplacesEveryCap(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "qrepl")
@@ -620,12 +546,6 @@ func TestSetQuotasReplacesEveryCap(t *testing.T) {
 	}
 }
 
-// A server removed with kubectl leaves its servers row, aliases and allowlist
-// behind, and the create handler lets its name be reused once the world volume is
-// gone too. SeedServer used to refresh only the resource cache, so the new server
-// came up owned by the earlier owner (and charged to their quota), reachable at
-// the earlier subdomain, with the earlier allowlist, reaper warnings and even the
-// earlier deleted_at. The new server must start clean.
 func TestSeedServerReusedNameStartsClean(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "seedold")
@@ -673,7 +593,6 @@ func TestSeedServerReusedNameStartsClean(t *testing.T) {
 		t.Fatalf("setup: %s, want %s", got, earlier)
 	}
 
-	// The new subdomain is bound to another server: the seed changes nothing.
 	other, otherSub := "sdz-"+suffix(t), "sdzs-"+suffix(t)
 	if err := repo.SeedServer(ctx, other, otherSub, 100, 128, 1024); err != nil {
 		t.Fatalf("seed the other server: %v", err)
@@ -705,7 +624,6 @@ func TestSeedServerReusedNameStartsClean(t *testing.T) {
 		}
 	}
 
-	// The earlier server's own subdomain may come back with it.
 	if err := repo.SeedServer(ctx, name, oldSub, 2000, 4096, 20480); err != nil {
 		t.Fatalf("seed at the earlier subdomain: %v", err)
 	}
@@ -714,10 +632,6 @@ func TestSeedServerReusedNameStartsClean(t *testing.T) {
 	}
 }
 
-// The fleet read needs every live server's claim state: the owner's id to tell
-// the caller's own servers apart, the display name (email, else username), and
-// the unclaimed rows too, since only those may be claimed. A soft-deleted row is
-// gone.
 func TestServerOwnersJoin(t *testing.T) {
 	ctx := context.Background()
 	sfx := suffix(t)
@@ -762,10 +676,6 @@ func TestServerOwnersJoin(t *testing.T) {
 	}
 }
 
-// An admin email edit must not carry a verification over to an address nobody
-// proved: the verified flag is exactly what the pre-session login resolves on
-// (UserByEmail), and only VerifyEmailOTP may assert it — the same rationale as
-// SetUserEmail. A no-op edit that passes the same value keeps the proof.
 func TestUserAdminEmailEditClearsVerification(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "admin-edit")
@@ -794,11 +704,6 @@ func TestUserAdminEmailEditClearsVerification(t *testing.T) {
 	assertEmailProven(t, u.ID, next, false)
 }
 
-// The user-scoped admin sub-resources must refuse an id that has no live users
-// row with ErrNotFound (→ the API's 404). The quota upsert and the account-link
-// insert touch user_id foreign keys, so before the requireLiveUser guard the
-// live drill returned a 500 on both (audit #30); the quotas read answered a
-// zero-value "unlimited" view for an id that never existed.
 func TestAdminSubresourcesRequireLiveUser(t *testing.T) {
 	ctx := context.Background()
 	ghost := "usr-ghost-" + suffix(t)
@@ -814,7 +719,6 @@ func TestAdminSubresourcesRequireLiveUser(t *testing.T) {
 		t.Fatalf("LinkAccount(ghost) = %v, want ErrNotFound", err)
 	}
 
-	// Control: the same calls land for a live user.
 	u := newUser(t, "user", "subres")
 	if _, err := repo.SetQuotas(ctx, u.ID, api.QuotaInput{MaxServers: &three}, "pgint"); err != nil {
 		t.Fatalf("SetQuotas(live): %v", err)
@@ -827,7 +731,6 @@ func TestAdminSubresourcesRequireLiveUser(t *testing.T) {
 		t.Fatalf("LinkAccount(live): %v", err)
 	}
 
-	// A soft-deleted user is no longer a live target either.
 	if err := repo.DeleteUser(ctx, u.ID, "pgint"); err != nil {
 		t.Fatalf("DeleteUser: %v", err)
 	}
@@ -836,12 +739,6 @@ func TestAdminSubresourcesRequireLiveUser(t *testing.T) {
 	}
 }
 
-// A disabled or soft-deleted account must be dead in the real database: login
-// resolution (UserByEmail) refuses it, session validation (SessionUser) refuses
-// even a freshly inserted session, and DeleteUser severs the account's passkeys
-// and Minecraft links so the closed account keeps neither a standing credential
-// nor the UNIQUE(mc_uuid) claim. Live audit #33: a deleted user re-logged-in via
-// the email door and held a working session.
 func TestDeadAccountsAreLockedOutInPG(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "dead")
@@ -855,7 +752,6 @@ func TestDeadAccountsAreLockedOutInPG(t *testing.T) {
 		t.Fatalf("VerifyEmailOTP: %v", err)
 	}
 
-	// Alive: the login door resolves the account and a session validates.
 	if _, err := repo.UserByEmail(ctx, addr); err != nil {
 		t.Fatalf("alive UserByEmail: %v", err)
 	}
@@ -867,7 +763,6 @@ func TestDeadAccountsAreLockedOutInPG(t *testing.T) {
 		t.Fatalf("alive SessionUser: %v", err)
 	}
 
-	// Disabled: invisible to the door, session stops authenticating.
 	if err := repo.SetUserDisabled(ctx, u.ID, true); err != nil {
 		t.Fatalf("SetUserDisabled: %v", err)
 	}
@@ -881,14 +776,10 @@ func TestDeadAccountsAreLockedOutInPG(t *testing.T) {
 		t.Fatalf("re-enable: %v", err)
 	}
 
-	// Deleted: same refusals, a fresh session cannot authenticate, and the
-	// identity assets are gone from the tables.
 	mc := testUUID(t)
 	if err := repo.LinkAccount(ctx, u.ID, mc, "mojang"); err != nil {
 		t.Fatalf("LinkAccount: %v", err)
 	}
-	// A disabled account's intact link carries no in-game standing (the doors read
-	// it like an unlinked UUID), and resolves again once re-enabled.
 	if err := repo.SetUserDisabled(ctx, u.ID, true); err != nil {
 		t.Fatalf("disable with link: %v", err)
 	}
@@ -933,10 +824,6 @@ func TestDeadAccountsAreLockedOutInPG(t *testing.T) {
 	}
 }
 
-// DeletePasskeyCredential keeps the last passkey of an account whose email is
-// unverified: removing it would leave no durable way in. The guard reads the count
-// under the user-row lock, so two concurrent deletes of an account's last two
-// passkeys resolve to exactly one delete and one ErrLastPasskey, never zero left.
 func TestLastPasskeyGuardInPG(t *testing.T) {
 	ctx := context.Background()
 	seed := func(t *testing.T, userID string) string {
@@ -1001,7 +888,6 @@ func TestLastPasskeyGuardInPG(t *testing.T) {
 		t.Fatalf("another user's passkey: %v, want ErrNotFound", err)
 	}
 
-	// A verified email is another door, so the last passkey may go.
 	now := mustNow()
 	if err := repo.CreateEmailOTP(ctx, "lp-"+suffix(t), u.ID, "lastpk-"+suffix(t)+"@example.net", "h", "onboard_email", now.Add(5*time.Minute)); err != nil {
 		t.Fatalf("CreateEmailOTP: %v", err)
@@ -1017,16 +903,10 @@ func TestLastPasskeyGuardInPG(t *testing.T) {
 	}
 }
 
-// VerifyLinkCode's takeover rule: a fresh in-game code (proof the caller holds the
-// UUID) lets a live account take over a link whose account was SOFT-DELETED — the
-// migrated-source case, whose retire keeps the link but kills the account — while a
-// merely DISABLED holder keeps its identity (takeover there would bypass the
-// lockout) and the refused code survives.
 func TestVerifyLinkCodeTakesOverDeletedLink(t *testing.T) {
 	ctx := context.Background()
 	now := mustNow()
 
-	// The retired source: linked, then retired the way RedeemMigration retires one.
 	src := newUser(t, "user", "retire-src")
 	mc := testUUID(t)
 	if err := repo.LinkAccount(ctx, src.ID, mc, "mojang"); err != nil {
@@ -1049,8 +929,6 @@ func TestVerifyLinkCodeTakesOverDeletedLink(t *testing.T) {
 		t.Fatalf("after takeover UserByMCUUID = %q, %v; want %q", id, err, taker.ID)
 	}
 
-	// A disabled (not deleted) holder keeps the identity; the conflict arm must not
-	// consume the code and must leave the link where it was.
 	locked := newUser(t, "user", "locked")
 	mc2 := testUUID(t)
 	if err := repo.LinkAccount(ctx, locked.ID, mc2, "mojang"); err != nil {
@@ -1076,9 +954,6 @@ func TestVerifyLinkCodeTakesOverDeletedLink(t *testing.T) {
 	}
 }
 
-// The owner tier the panel gates on must actually be WRITTEN: until this
-// contract had a test, every provisioning path wrote 'admin', so the whole
-// owner surface (user administration) was unreachable in a fresh install.
 func TestOwnerProvisioningWritesOwnerRole(t *testing.T) {
 	ctx := context.Background()
 	name := "owner-" + suffix(t)
@@ -1089,8 +964,6 @@ func TestOwnerProvisioningWritesOwnerRole(t *testing.T) {
 	if role := userRole(t, id); role != "owner" {
 		t.Fatalf("UpsertOwner role = %q, want owner", role)
 	}
-	// Re-running the break-glass path resets (email) and PROMOTES (role) in
-	// place — the documented upgrade for a pre-0011 'admin' Owner row.
 	if err := repo.UpsertOwner(ctx, "usr-other-"+suffix(t), name, "reset@example.net"); err != nil {
 		t.Fatalf("UpsertOwner (reset): %v", err)
 	}
@@ -1105,9 +978,7 @@ func TestOwnerProvisioningWritesOwnerRole(t *testing.T) {
 	if ok, err := repo.AdminExists(ctx); err != nil || !ok {
 		t.Fatalf("AdminExists = (%v, %v), want true (the owner counts as staff)", ok, err)
 	}
-	// OwnerUsername names the seat the console guard protects. The shared test
-	// database may hold owner rows from earlier tests, so assert the returned name
-	// IS an active owner rather than one specific row.
+	// The shared database may hold owner rows from earlier tests, so assert an active owner, not a specific row.
 	seat, err := repo.OwnerUsername(ctx)
 	if err != nil {
 		t.Fatalf("OwnerUsername: %v", err)
@@ -1121,7 +992,6 @@ func TestOwnerProvisioningWritesOwnerRole(t *testing.T) {
 		Scan(&active); err != nil || active != 1 {
 		t.Fatalf("OwnerUsername returned %q, not an active owner row (count=%d err=%v)", seat, active, err)
 	}
-	// Operators stay plain admins: the owner tier stays singular.
 	opID := "usr-op-" + suffix(t)
 	opName := "op-" + suffix(t)
 	if err := repo.InsertOperator(ctx, opID, opName, ""); err != nil {
@@ -1130,17 +1000,11 @@ func TestOwnerProvisioningWritesOwnerRole(t *testing.T) {
 	if role := userRole(t, opID); role != "admin" {
 		t.Fatalf("InsertOperator role = %q, want admin", role)
 	}
-	// A taken username must surface as api.ErrConflict: the console routes its
-	// rename prompt off that sentinel (the cmd fake encoded the contract; PGRepo
-	// returned the raw driver error until this arm was mapped).
 	if err := repo.InsertOperator(ctx, "usr-op2-"+suffix(t), opName, ""); !errors.Is(err, api.ErrConflict) {
 		t.Fatalf("InsertOperator on a taken username = %v, want ErrConflict", err)
 	}
 }
 
-// First-owner initialization needs an empty installation, rather than the
-// accounts left by other contract tests. Migrate an isolated schema using the
-// same database and real migration files.
 func setupRepository(t *testing.T) (*api.PGRepo, *sql.DB) {
 	t.Helper()
 	schema := "setup_" + suffix(t)
@@ -1185,11 +1049,9 @@ func TestCompleteOwnerSetupContract(t *testing.T) {
 	} else if linked {
 		t.Fatal("first panel login must not create a game binding")
 	}
-	// Deliberately fail token insertion. Auth/account state and the old link survive.
 	if err := r.CreateSetupToken(ctx, "collision", id, now.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	// Reusing an existing token hash for a different user forces the insert to fail.
 	_, err = setupDB.Exec(`INSERT INTO users (id, username, role) VALUES ('other-user', 'other', 'user')`)
 	if err != nil {
 		t.Fatal(err)
@@ -1258,8 +1120,6 @@ func TestCompleteOwnerSetupSerializesFirstOwner(t *testing.T) {
 func TestCompleteOwnerSetupCreationRollsBack(t *testing.T) {
 	r, setupDB := setupRepository(t)
 	now := mustNow()
-	// Failing the final insert must undo the new Owner and
-	// local-auth setting as well, not strand an account without a usable link.
 	if _, err := setupDB.Exec(`ALTER TABLE setup_tokens ADD CONSTRAINT reject_setup_token CHECK (token_hash <> 'rejected')`); err != nil {
 		t.Fatal(err)
 	}
@@ -1297,9 +1157,6 @@ func TestCompleteOwnerSetupPreservesPasskey(t *testing.T) {
 	}
 }
 
-// IsProtectedAdminLink is one of the staff predicates the owner role must flow
-// through: the Owner logging in via the third-party Yggdrasil must never be
-// barred by a Mojang-priority reclaim, exactly like an Operator.
 func TestIsProtectedAdminLinkStaffRoles(t *testing.T) {
 	ctx := context.Background()
 	now := mustNow()
@@ -1340,8 +1197,6 @@ func TestIsProtectedAdminLinkStaffRoles(t *testing.T) {
 	}
 }
 
-// ---- op.console staff login state machine --------------------------------------
-
 func TestOpLoginStateMachine(t *testing.T) {
 	ctx := context.Background()
 	staff := newUser(t, "admin", "staff")
@@ -1362,14 +1217,11 @@ func TestOpLoginStateMachine(t *testing.T) {
 	if req.Status != "pending" || req.Consumed {
 		t.Fatalf("fresh request = %+v, want pending+unconsumed", req)
 	}
-	// The in-game approval card reads all of this off ByID.
 	if req.Username != staff.Username || req.Email != "staff@example.net" ||
 		req.ClientIP != "203.0.113.9" || req.UserAgent != "Mozilla/5.0 Firefox/140.0" || req.CreatedAt.IsZero() {
 		t.Errorf("ByID = %+v, want username %q, the snapshot email, the start origin and a created_at", req, staff.Username)
 	}
 
-	// The pending list is what the in-game admin sees: it must name the staff
-	// user and carry a real created_at (the #17 drift left both empty).
 	pending, err := repo.ListPendingOpLogins(ctx, now)
 	if err != nil {
 		t.Fatalf("ListPendingOpLogins: %v", err)
@@ -1391,8 +1243,6 @@ func TestOpLoginStateMachine(t *testing.T) {
 		t.Fatal("fresh pending request missing from the list")
 	}
 
-	// A pending request is not a ticket: the store refuses to consume it on its own,
-	// whatever the caller checked, and the refusal leaves it pending and unconsumed.
 	if err := repo.ConsumeOpLoginRequest(ctx, id, now); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("consume pending = %v, want ErrNotFound", err)
 	}
@@ -1400,7 +1250,6 @@ func TestOpLoginStateMachine(t *testing.T) {
 		t.Fatalf("after refused consume = %+v, %v; want pending+unconsumed", req, err)
 	}
 
-	// Approve -> consume -> single use; second approve/consume are ErrNotFound.
 	if err := repo.ApproveOpLogin(ctx, id, approver.ID, now); err != nil {
 		t.Fatalf("ApproveOpLogin: %v", err)
 	}
@@ -1414,7 +1263,6 @@ func TestOpLoginStateMachine(t *testing.T) {
 		t.Fatalf("double consume = %v, want ErrNotFound", err)
 	}
 
-	// An expired request is dead on every path.
 	oldID := "opl-old-" + suffix(t)
 	if err := repo.CreateOpLoginRequest(ctx, api.NewOpLoginRequest{
 		ID: oldID, UserID: staff.ID, Email: "staff@example.net", ExpiresAt: now.Add(-time.Minute),
@@ -1438,8 +1286,6 @@ func TestOpLoginStateMachine(t *testing.T) {
 	}
 }
 
-// ---- account links -------------------------------------------------------------
-
 func TestVerifyLinkCodeContract(t *testing.T) {
 	ctx := context.Background()
 	u1, u2 := newUser(t, "user", "link-a"), newUser(t, "user", "link-b")
@@ -1457,12 +1303,10 @@ func TestVerifyLinkCodeContract(t *testing.T) {
 	if ok, err := repo.IsLinked(ctx, u1.ID); err != nil || !ok {
 		t.Fatalf("IsLinked after verify = (%v, %v), want (true, nil)", ok, err)
 	}
-	// Single use.
 	if _, _, err := repo.VerifyLinkCode(ctx, u1.ID, code, now); !errors.Is(err, api.ErrLinkCodeInvalid) {
 		t.Fatalf("replay = %v, want ErrLinkCodeInvalid", err)
 	}
 
-	// A uuid already linked to ANOTHER user is a conflict, not a silent takeover.
 	code2 := "lc2-" + suffix(t)
 	if err := repo.CreateLinkCode(ctx, code2, mc, "mojang", now.Add(10*time.Minute)); err != nil {
 		t.Fatalf("CreateLinkCode (2): %v", err)
@@ -1471,7 +1315,6 @@ func TestVerifyLinkCodeContract(t *testing.T) {
 		t.Fatalf("cross-user link = %v, want ErrConflict", err)
 	}
 
-	// Re-verifying the same (user, uuid) is idempotent and refreshes authSource.
 	code3 := "lc3-" + suffix(t)
 	if err := repo.CreateLinkCode(ctx, code3, mc, "thirdparty", now.Add(10*time.Minute)); err != nil {
 		t.Fatalf("CreateLinkCode (3): %v", err)
@@ -1481,7 +1324,6 @@ func TestVerifyLinkCodeContract(t *testing.T) {
 	}
 	assertLinkAuthSource(t, u1.ID, mc, "thirdparty")
 
-	// Expired code: invalid, never usable.
 	expired := "lc4-" + suffix(t)
 	if err := repo.CreateLinkCode(ctx, expired, testUUID(t), "mojang", now.Add(-time.Minute)); err != nil {
 		t.Fatalf("CreateLinkCode (expired): %v", err)
@@ -1491,14 +1333,10 @@ func TestVerifyLinkCodeContract(t *testing.T) {
 	}
 }
 
-// RedeemPlayerBindCode is the account-less console bootstrap (regression: the #18
-// concurrency drift). Its documented outcomes are exercised here, including the
-// one that must NOT consume the code.
 func TestRedeemPlayerBindCodeContract(t *testing.T) {
 	ctx := context.Background()
 	now := mustNow()
 
-	// New uuid: creates a user + link, consumes the code.
 	mcNew := testUUID(t)
 	codeNew := "bc-" + suffix(t)
 	if err := repo.CreateLinkCode(ctx, codeNew, mcNew, "mojang", now.Add(10*time.Minute)); err != nil {
@@ -1516,7 +1354,6 @@ func TestRedeemPlayerBindCodeContract(t *testing.T) {
 		t.Fatalf("consumed code = %v, want ErrLinkCodeInvalid", err)
 	}
 
-	// Same uuid again: returns the EXISTING player, even when asked for a new id.
 	codeAgain := "bc2-" + suffix(t)
 	if err := repo.CreateLinkCode(ctx, codeAgain, mcNew, "mojang", now.Add(10*time.Minute)); err != nil {
 		t.Fatalf("CreateLinkCode (again): %v", err)
@@ -1525,7 +1362,6 @@ func TestRedeemPlayerBindCodeContract(t *testing.T) {
 		t.Fatalf("second redeem = (%s, %v), want the same user %s", userID, err, newID)
 	}
 
-	// Staff uuid: forbidden, and the code is deliberately NOT consumed.
 	staff := newUser(t, "admin", "bound-staff")
 	mcStaff := testUUID(t)
 	staffCode := "bc3-" + suffix(t)
@@ -1544,7 +1380,6 @@ func TestRedeemPlayerBindCodeContract(t *testing.T) {
 	}
 	assertLinkCodeUnconsumed(t, staffRedeem)
 
-	// Expired: invalid, unconsumed.
 	expCode := "bc5-" + suffix(t)
 	if err := repo.CreateLinkCode(ctx, expCode, testUUID(t), "mojang", now.Add(-time.Minute)); err != nil {
 		t.Fatalf("CreateLinkCode (expired): %v", err)
@@ -1555,11 +1390,6 @@ func TestRedeemPlayerBindCodeContract(t *testing.T) {
 	assertLinkCodeUnconsumed(t, expCode)
 }
 
-// ---- submissions ---------------------------------------------------------------
-
-// TestSubmitPendingCapHoldsUnderConcurrency: parallel creates by one user,
-// through separate connections as separate replicas would make them, admit
-// exactly the cap (build-supply-chain-16).
 func TestSubmitPendingCapHoldsUnderConcurrency(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "subcap")
@@ -1613,8 +1443,6 @@ func TestSubmitStoreContract(t *testing.T) {
 	if _, err := s.CreateSubmission(ctx, sub, 5); err != nil {
 		t.Fatalf("CreateSubmission: %v", err)
 	}
-	// The pending-queue count is the read behind the per-user pending cap: a
-	// fresh user starts at zero and a pending row counts.
 	if n, err := s.CountPendingSubmissionsBy(ctx, u.ID); err != nil || n != 1 {
 		t.Fatalf("CountPendingSubmissionsBy after create = (%d, %v), want (1, nil)", n, err)
 	}
@@ -1650,8 +1478,6 @@ func TestSubmitStoreContract(t *testing.T) {
 		t.Fatalf("ListSubmissions: (%v, %v), want the submission present", all, err)
 	}
 
-	// The upload records its digest; the approval CAS names it, so an approval of
-	// a replaced context loses while the row stays pending.
 	reviewed, swapped := strings.Repeat("a", 64), strings.Repeat("b", 64)
 	if ok, err := s.SetContextDigest(ctx, id, reviewed); err != nil || !ok {
 		t.Fatalf("SetContextDigest = (%v, %v), want (true, nil)", ok, err)
@@ -1663,7 +1489,6 @@ func TestSubmitStoreContract(t *testing.T) {
 		t.Fatalf("approve naming another digest = (%v, %v), want (false, nil)", ok, err)
 	}
 
-	// The approval CAS: exactly one winner, and only from pending_review.
 	ok, err := s.ApproveSubmission(ctx, id, "reviewer@example.net", "registry.felis.svc:5000/user-uploads/"+id+":latest", reviewed, now)
 	if err != nil || !ok {
 		t.Fatalf("ApproveSubmission = (%v, %v), want (true, nil)", ok, err)
@@ -1671,14 +1496,12 @@ func TestSubmitStoreContract(t *testing.T) {
 	if ok, err := s.ApproveSubmission(ctx, id, "reviewer@example.net", "registry/x:1", reviewed, now); err != nil || ok {
 		t.Fatalf("second approve = (%v, %v), want (false, nil)", ok, err)
 	}
-	// A reviewed row's digest is frozen: a late upload cannot rewrite it.
 	if ok, err := s.SetContextDigest(ctx, id, swapped); err != nil || ok {
 		t.Fatalf("SetContextDigest after approve = (%v, %v), want (false, nil)", ok, err)
 	}
 	if ok, err := s.RejectSubmission(ctx, id, "reviewer@example.net", "no", now); err != nil || ok {
 		t.Fatalf("reject after approve = (%v, %v), want (false, nil)", ok, err)
 	}
-	// A reviewed row leaves the pending queue.
 	if n, err := s.CountPendingSubmissionsBy(ctx, u.ID); err != nil || n != 0 {
 		t.Fatalf("CountPendingSubmissionsBy after approve = (%d, %v), want (0, nil)", n, err)
 	}
@@ -1693,9 +1516,6 @@ func TestSubmitStoreContract(t *testing.T) {
 		t.Fatal("LinkBuild must persist build_id")
 	}
 
-	// Lifecycle: the withdraw CAS deletes ONLY the owner's still-pending row — a
-	// wrong owner or a reviewed row can never delete through it — and the admin
-	// path deletes any status, exactly once.
 	id2 := "sub-w-" + suffix(t)
 	if _, err := s.CreateSubmission(ctx, &submit.Submission{
 		ID: id2, SubmittedBy: u.ID, DisplayName: "withdraw me",
@@ -1723,8 +1543,6 @@ func TestSubmitStoreContract(t *testing.T) {
 		t.Fatalf("second admin delete = (%v, %v), want (false, nil)", ok, err)
 	}
 }
-
-// ---- builds --------------------------------------------------------------------
 
 func TestBuildStoreContract(t *testing.T) {
 	ctx := context.Background()
@@ -1781,7 +1599,6 @@ func TestBuildStoreContract(t *testing.T) {
 		t.Fatalf("ListUnfinishedBuilds: running=%v finished=%v, want true/false", sawRunning, sawDone)
 	}
 
-	// Image admission round trip (the scan-gate success path + external admit).
 	builtRef := "registry.felis.svc:5000/user-uploads/" + running + ":latest"
 	if err := s.AdmitBuiltImage(ctx, build.Image{ImageRef: builtRef, BuildID: running, AddedBy: "felis-api"}); err != nil {
 		t.Fatalf("AdmitBuiltImage: %v", err)
@@ -1811,9 +1628,6 @@ func TestBuildStoreContract(t *testing.T) {
 	}
 }
 
-// A build's scan round-trips whole (the summary as jsonb, the documents as
-// bytea, a missing SBOM as NULL), a rescan replaces it, it cannot exist without
-// its build, and it goes when the build row does.
 func TestBuildStoreScans(t *testing.T) {
 	ctx := context.Background()
 	s := build.NewPGStore(db)
@@ -1879,8 +1693,6 @@ func TestBuildStoreScans(t *testing.T) {
 	}
 }
 
-// ListBuilds pages newest first across every requester, finds a build by part of
-// its ref (any case), its id or its status, and leaves the Dockerfile out.
 func TestBuildStoreListBuilds(t *testing.T) {
 	ctx := context.Background()
 	s := build.NewPGStore(db)
@@ -1943,8 +1755,6 @@ func TestBuildStoreListBuilds(t *testing.T) {
 	}
 }
 
-// ---- helpers -------------------------------------------------------------------
-
 func assertAttempts(t *testing.T, userID, purpose string, want int) {
 	t.Helper()
 	var got int
@@ -2003,10 +1813,7 @@ func assertLinkAuthSource(t *testing.T, userID, mcUUID, want string) {
 	}
 }
 
-// assertLinkCodeUnconsumed fails when the code row is gone. Consumption is a
-// DELETE of the row (there is no consumed flag on account_link_codes), so mere
-// row presence IS the "still redeemable" observable — the staff-redeem path
-// must leave a pending code untouched.
+// assertLinkCodeUnconsumed fails when the code row is gone; consumption deletes the row.
 func assertLinkCodeUnconsumed(t *testing.T, code string) {
 	t.Helper()
 	var exists bool

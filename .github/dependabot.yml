@@ -1,7 +1,4 @@
-# The workflows pin every action to a commit SHA, and every Dockerfile pins its base images
-# by digest. This keeps those pins moving: Dependabot reads the "# vX.Y.Z" comment next to
-# each action SHA, and the tag in front of each image digest, and opens a PR that bumps both
-# together.
+# Keep version comments beside pinned action SHAs and tags beside image digests so Dependabot can update both.
 version: 2
 updates:
   - package-ecosystem: github-actions

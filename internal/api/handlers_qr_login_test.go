@@ -10,14 +10,6 @@ func statusPath(mcUUID string) string {
 	return "/api/v1/internal/account/link/status/" + mcUUID
 }
 
-// TestQRLoginCompletionPollVertical walks the QR scan-to-login flow end to end and
-// proves its load-bearing invariant: the internal completion poll reports the link
-// only after the WEB verify writes it. velocity mints and polls on the internal
-// face (it holds no web Principal); the durable bind is born on the external face
-// from a logged-in user. That split is the whole security model of the scan, so
-// the test drives both faces of one API. The poll carries ONLY the boolean — the
-// plugin keys everything on the UUID it already holds, so no identity detail
-// (user_id) ever crosses back, in either state.
 func TestQRLoginCompletionPollVertical(t *testing.T) {
 	const mcUUID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 	user := &Principal{UserID: "u-scan", Email: "scan@example.net", Role: "user"}
@@ -28,9 +20,6 @@ func TestQRLoginCompletionPollVertical(t *testing.T) {
 	ih := api.InternalHandler()
 	eh := api.ExternalHandler()
 
-	// Before the player scans, velocity is already polling the UUID it minted
-	// against. The link does not exist yet, so the poll says "keep waiting" — a
-	// plain 200 linked:false, NOT an error, and with no user_id to leak.
 	w := do(ih, "GET", statusPath(mcUUID), "", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("pre-scan poll: code = %d, want 200 (%s)", w.Code, w.Body.String())
@@ -70,10 +59,6 @@ func TestQRLoginCompletionPollVertical(t *testing.T) {
 	}
 }
 
-// TestQRLoginStatusUnknownUUID pins that a UUID the platform has never linked is
-// reported as not-linked, not as an error. velocity polls public online-mode UUIDs;
-// an unknown one means "do not admit yet", indistinguishable by design from a code
-// that has simply not been scanned.
 func TestQRLoginStatusUnknownUUID(t *testing.T) {
 	api := newTestAPI(newFakeRepo(), newFakeCluster())
 	w := do(api.InternalHandler(), "GET", statusPath("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"), "", nil)
@@ -85,9 +70,6 @@ func TestQRLoginStatusUnknownUUID(t *testing.T) {
 	}
 }
 
-// TestQRLoginStatusIdempotent re-polls a linked UUID and expects the identical
-// answer: the poll is a pure read of the durable link, so a velocity that restarts
-// mid-handshake and re-polls must never get a different verdict or consume the link.
 func TestQRLoginStatusIdempotent(t *testing.T) {
 	const mcUUID = "cccccccc-cccc-cccc-cccc-cccccccccccc"
 	repo := newFakeRepo()
@@ -111,9 +93,6 @@ func TestQRLoginStatusIdempotent(t *testing.T) {
 	}
 }
 
-// TestQRLoginStatusFaceSeparation enforces that the poll is internal-only. It
-// reads whether a UUID is linked — a fact the public web face must not be able
-// to fish out by UUID — so crossing onto the external face must 404, not answer.
 func TestQRLoginStatusFaceSeparation(t *testing.T) {
 	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
 	api := newTestAPI(newFakeRepo(), newFakeCluster())

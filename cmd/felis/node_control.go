@@ -169,10 +169,7 @@ func (e nodeExecutor) selfName() string {
 }
 
 func (e nodeExecutor) run(ctx context.Context, r nodecontrol.Request, stage func(string) error, out io.Writer) (resultErr error) {
-	// Host-wide changes and cache-removing admission probes are serialized by the manager.
-	// admitting is set once the admission itself runs: a quarantine this task added is kept
-	// only when that fails, and lifted again when a check before it refuses (servers still
-	// on the node, SSH unreachable), so a refused approval leaves the node as it found it.
+	// Retain task-added quarantine only after admission failure; earlier refusal restores the prior node state.
 	if !nodecontrol.NodeAction(r.Action) {
 		return e.hostTask(ctx, r, stage, out)
 	}
@@ -398,9 +395,7 @@ func (e nodeExecutor) requireStopped(ctx context.Context, r nodecontrol.Request)
 	return nil
 }
 
-// nodeController picks the controller a node task acts from, with every node's address as
-// a peer: the one this host is (node-control runs on each controller), else the first one
-// online by name. With controller high availability there are several; without it, one.
+// Prefer this controller for node tasks, otherwise the first online controller by name.
 func nodeController(nodes []corev1.Node, ip string, extra []string, self string) (*corev1.Node, []string, error) {
 	var controller *corev1.Node
 	peers := append([]string{}, extra...)
@@ -550,9 +545,7 @@ func (e nodeExecutor) recordFelisVersion(ctx context.Context, name string) error
 	return err
 }
 
-// upgrade brings an enrolled worker to this controller's felis build and k3s version and
-// reinstalls its host firewall with the current peers. Its servers must be stopped (the
-// caller checked), so a k3s-agent restart interrupts nothing.
+// Require stopped worker servers before upgrading k3s and rebuilding peer firewall rules.
 func (e nodeExecutor) upgrade(ctx context.Context, r nodecontrol.Request, nodes []corev1.Node, controller *corev1.Node, peers []string, stage func(string) error, out io.Writer) error {
 	found := false
 	for _, n := range nodes {
@@ -713,13 +706,7 @@ func (e nodeExecutor) backupCluster(ctx context.Context, label string, out io.Wr
 	return nil
 }
 
-// fence takes a lost worker out of service for a failover (distributed.Fenced): cordoned,
-// its approval removed, and Kubernetes' out-of-service taint added, so the pods and
-// volumes recorded on it are released without waiting for its kubelet; then the pods still
-// recorded there are deleted outright. A node that is online is refused (its worlds can
-// still be stopped and moved instead), and so is a controller unless another one carries
-// on (controller high availability). Running it again is harmless, and is how pods a Job
-// made on the node after the fence are released.
+// Fence only lost nodes; controller fencing requires a surviving peer and repeated calls clean up remaining Pods.
 func (e nodeExecutor) fence(ctx context.Context, name string, stage func(string) error, out io.Writer) error {
 	if err := stage("fence"); err != nil {
 		return err
@@ -796,9 +783,7 @@ func (e nodeExecutor) fence(ctx context.Context, name string, stage func(string)
 	return stage("complete")
 }
 
-// liftFence takes the out-of-service taint and the fence mark off a fenced worker that is
-// online again, as part of approving it back: Kubernetes leaves that taint for an
-// administrator to remove. The cordon and the approval are the approval's own business.
+// Remove Kubernetes' persistent out-of-service taint when readmitting a worker.
 func (e nodeExecutor) liftFence(ctx context.Context, name string, out io.Writer) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		node, err := e.cs.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
@@ -822,10 +807,7 @@ func (e nodeExecutor) liftFence(ctx context.Context, name string, out io.Writer)
 	})
 }
 
-// unfence puts a fenced controller that is online again back in service: the fence lifted
-// and scheduling on again. A controller is a host the cluster already trusts with its
-// secrets, and it joins etcd again by itself, so there is nothing to admit; a worker
-// returns through approval instead, which checks it again before it runs worlds.
+// Controllers rejoin through unfence; workers require approval.
 func (e nodeExecutor) unfence(ctx context.Context, name string, stage func(string) error, out io.Writer) error {
 	if err := stage("unfence"); err != nil {
 		return err

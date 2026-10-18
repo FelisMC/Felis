@@ -9,9 +9,9 @@ describe("opLoginDeadline", () => {
   });
 
   it("falls back to the TTL from now when the clocks disagree", () => {
-    // The browser runs 20 minutes fast: taken literally the request died before it was shown.
+    // A browser clock running 20 minutes fast makes the request look dead before it is shown.
     expect(opLoginDeadline("2026-09-25T11:50:00Z", NOW)).toBe(NOW + OP_LOGIN_TTL_MS);
-    // The browser runs an hour slow: no request lives that long.
+    // A browser clock an hour slow would make any request look like it lives longer than it can.
     expect(opLoginDeadline("2026-09-25T13:10:00Z", NOW)).toBe(NOW + OP_LOGIN_TTL_MS);
     expect(opLoginDeadline("not a time", NOW)).toBe(NOW + OP_LOGIN_TTL_MS);
   });

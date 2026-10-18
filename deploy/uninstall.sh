@@ -1,33 +1,5 @@
 #!/usr/bin/env bash
-# Removes what deploy/bootstrap.sh installed on this host.
-#
-#   sudo bash deploy/uninstall.sh                 # remove Felis, keep the data
-#   sudo bash deploy/uninstall.sh --purge         # remove the data too
-#   curl -fsSL <raw-url>/deploy/uninstall.sh | sudo bash -s -- --yes
-#
-# Options:
-#   --purge       also delete /etc/felis and /var/lib/felis (the database's cluster, the
-#                 database bundles, and anything an earlier keep-data run set aside), and
-#                 drop the felis database and role from a host PostgreSQL an earlier
-#                 release installed. Asks for the word "purge" unless --yes is given.
-#   --keep-k3s    leave k3s installed and remove only Felis's namespaces and CRD.
-#   --remove-k3s  run k3s's own uninstaller even when other workloads live in the cluster.
-#   --no-backup   skip the final database bundle keep-data mode takes first.
-#   --yes         do not ask.
-#
-# Keep-data mode (the default) first takes a database bundle (`felis db backup -label
-# manual`) and stops if that fails. It leaves /etc/felis (the secrets, felis.toml,
-# offsite.env) and /var/lib/felis in place, and with it the felis database: felis-postgres
-# keeps its cluster in /var/lib/felis/postgres, stopped cleanly before k3s goes, and a
-# host PostgreSQL an earlier release installed keeps its copy. The world, archive,
-# registry and upload volumes live under k3s's storage directory, which k3s's uninstaller
-# deletes, so they are moved to /var/lib/felis/retained/k3s-storage-<UTC stamp> first; with
-# --keep-k3s their PersistentVolumes are switched to Retain before the namespaces go.
-# https://docs.felismc.com/en/operations/uninstall#reinstall walks through reinstalling on top of what is left.
-#
-# Either mode leaves packages alone (Docker, PostgreSQL, git and the rest), and the swap
-# file a low-memory host got: other software may use them. https://docs.felismc.com/en/operations/uninstall#remove-packages lists the
-# package commands for a bare host.
+# Default uninstall backs up and retains data; explicit purge deletes state while packages and swap remain.
 set -Eeuo pipefail
 
 STATE_DIR="${STATE_DIR:-/etc/felis}"
@@ -53,9 +25,7 @@ PG_MOVED_MARKER="${DATA_DIR}/postgres-moved"
 POD_CIDR="10.42.0.0/16"
 SERVICE_CIDR="10.43.0.0/16"
 FELIS_PANEL_NODEPORT="${FELIS_PANEL_NODEPORT:-30443}"
-# What the node service (bootstrap.sh install_node_control_service), the multi-node host
-# firewall (`felis node firewall`) and the controllers' floating address (install_keepalived)
-# leave outside the unit files.
+# Remove host firewall, node socket, and floating-address artifacts outside systemd unit files.
 TMPFILES_DIR="${TMPFILES_DIR:-/etc/tmpfiles.d}"
 NODE_CONTROL_RUN_DIR="${NODE_CONTROL_RUN_DIR:-/run/felis-node-control}"
 NODE_CONTROL_SELINUX_MODULE="felis-node-control"
@@ -223,9 +193,7 @@ remove_nft_tables() {
   done
 }
 
-# remove_node_firewall takes out the chains `felis node firewall` hooks into INPUT, FORWARD
-# and raw PREROUTING on every node of a multi-node install. Its unit is gone by now, so
-# nothing puts them back.
+# Delete node firewall hooks after removing the unit that recreates them.
 remove_node_firewall() {
   local bin hook table parent chain removed=0
   for bin in iptables ip6tables; do
@@ -250,9 +218,7 @@ remove_node_firewall() {
   [ "$removed" = 0 ] || ok "the node firewall's iptables chains removed"
 }
 
-# remove_node_control_leftovers deletes the socket directory of felis-node-control.service,
-# the tmpfiles rule that recreates it at boot, and on SELinux the policy module and the
-# file-context rule bootstrap gave it.
+# Remove the node-control socket, tmpfiles rule, and SELinux policy/file-context entries.
 remove_node_control_leftovers() {
   rm -f "${TMPFILES_DIR}/felis-node-control.conf"
   rm -rf "$NODE_CONTROL_RUN_DIR"
@@ -277,9 +243,7 @@ felis_keepalived_config() {
   esac
 }
 
-# remove_keepalived_config stops keepalived and deletes that configuration: without it
-# keepalived would go on holding the floating address for a controller that is gone. The
-# package stays, like the others; a configuration someone else wrote stays too.
+# Stop and remove only Felis-owned keepalived configuration, preserving external configuration and packages.
 remove_keepalived_config() {
   felis_keepalived_config || return 0
   systemctl disable --now keepalived >/dev/null 2>&1 || systemctl stop keepalived >/dev/null 2>&1 || true
@@ -324,11 +288,7 @@ remove_firewalld_rules() { # game-port nano-port
   fi
 }
 
-# remove_ufw_rules takes back the ufw rules the installer added, found by their felis-
-# comments (configure_k3s_firewall and its neighbours in bootstrap.sh). The k3s ranges stay
-# when k3s does, and go with it or when it is already gone. ufw lists a rule's IPv6 twin
-# under its own number, and each delete renumbers the rules after it, so they go from the
-# highest number down.
+# Delete numbered ufw rules from highest to lowest, including IPv6 twins, because deletion renumbers later rules.
 remove_ufw_rules() {
   command -v ufw >/dev/null 2>&1 || return 0
   local status nums n keep_k3s=1
@@ -401,9 +361,7 @@ stop_database_pod() {
     || warn "${PG_DEPLOYMENT} did not stop within 2 minutes; its cluster recovers from its WAL on the next start"
 }
 
-# remove_k3s_service_dropin deletes the environment the installer gives the k3s service
-# (bootstrap.sh, write_k3s_service_dropin). k3s-uninstall.sh removes the unit and its .env
-# file and leaves the unit's drop-in directory.
+# Remove k3s environment drop-ins separately because k3s-uninstall leaves their directory behind.
 remove_k3s_service_dropin() {
   [ -f "${UNIT_DIR}/k3s.service.d/50-felis.conf" ] || return 0
   rm -f "${UNIT_DIR}/k3s.service.d/50-felis.conf"
@@ -484,11 +442,7 @@ remove_hba_block() { # file
   rm -f "$tmp"
 }
 
-# check_database_purge runs before anything is removed. DROP ROLE refuses a role that
-# still owns a database or holds anything in one besides felis (the felis_pgint database
-# the contributing guide (https://docs.felismc.com/en/reference/contributing#testing) has developers make for the PG contract tests, a grant made by hand),
-# and by the time purge_database runs the units and k3s are already gone. It lists what
-# holds the role instead, so the purge either runs to the end or not at all.
+# Check database/role dependencies before any destructive uninstall steps.
 check_database_purge() {
   [ "$PURGE" = 1 ] || return 0
   systemctl is-active --quiet postgresql 2>/dev/null || return 0
@@ -518,12 +472,7 @@ SQL
   die "the ${DB_USER} role still holds $(printf '%s' "$held" | paste -sd ';' - | sed 's/;/; /g'), so DROP ROLE would fail halfway through the purge; nothing was removed. Hand them to postgres first (sudo -u postgres psql -c 'ALTER DATABASE <name> OWNER TO postgres', or REASSIGN OWNED BY ${DB_USER} TO postgres; DROP OWNED BY ${DB_USER}; inside that database), or rerun without --purge"
 }
 
-# purge_database drops the felis database and role from a host PostgreSQL an earlier
-# release installed; the cluster felis-postgres runs goes with DATA_DIR (purge_state). That
-# host server either still serves the platform, or the move into felis-postgres stopped it
-# with the pre-move copy left in it for a rollback: a purge takes that copy too and leaves
-# the server stopped. The units and k3s are gone by now, so a failure here is a warning
-# with the commands to finish by hand, and the purge goes on.
+# Purge retained host PostgreSQL data as well as cluster data; report late failures with manual recovery guidance.
 purge_database() {
   [ "$PURGE" = 1 ] || return 0
   local hba started=0
@@ -578,9 +527,7 @@ purge_images() {
 
 purge_state() {
   [ "$PURGE" = 1 ] || return 0
-  # felis setup's tunnel credentials sit beside cloudflared's login (cert.pem, which stays:
-  # it is the Cloudflare account's, not Felis's). The tunnel itself lives on in the account
-  # until it is deleted there (https://docs.felismc.com/en/operations/uninstall#cloudflare-cleanup).
+  # Remove tunnel credentials but retain account-wide cert.pem; delete the Cloudflare tunnel separately in the account.
   local cred=""
   [ -r "$TUNNEL_CONFIG" ] \
     && cred="$(sed -n 's/^credentials-file: *"\{0,1\}\([^"]*\)"\{0,1\} *$/\1/p' "$TUNNEL_CONFIG" | sed -n 1p)"

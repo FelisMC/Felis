@@ -102,9 +102,6 @@ func cond(typ batchv1.JobConditionType, status corev1.ConditionStatus, reason st
 	return batchv1.JobCondition{Type: typ, Status: status, Reason: reason, LastTransitionTime: metav1.NewTime(opEnded)}
 }
 
-// TestOpState pins how a background Job and the tail of its log read as an
-// OpState: the printed result decides the outcome whatever the Job's condition
-// says, and a Job that ended without one failed for the condition's reason.
 func TestOpState(t *testing.T) {
 	progress := ProgressPrefix + `{"done":10,"total":100}` + "\n" +
 		"a stderr line\n" +
@@ -202,9 +199,6 @@ func TestOpState(t *testing.T) {
 	}
 }
 
-// TestK8sRunnerOps checks what Ops lists: this server's background Jobs only,
-// newest first and at most maxOps of them, with a log read for each started Pod
-// and none for a Pod still waiting to run.
 func TestK8sRunnerOps(t *testing.T) {
 	job := func(server, id string, age time.Duration, async bool) *batchv1.Job {
 		p := testParams(OpUnzip)
@@ -272,8 +266,6 @@ func TestK8sRunnerOps(t *testing.T) {
 	}
 }
 
-// TestK8sRunnerOpsReadsAMemoryKill checks Ops hands each Job's Pod to opState: a
-// Pod the kernel killed for memory is what names an op's reason OOMKilled.
 func TestK8sRunnerOpsReadsAMemoryKill(t *testing.T) {
 	p := testParams(OpUnzip)
 	p.Server, p.OpID, p.Path, p.Async = "survival", "oom", "maps/tiles.zip", true
@@ -294,8 +286,6 @@ func TestK8sRunnerOpsReadsAMemoryKill(t *testing.T) {
 	}
 }
 
-// TestK8sRunnerOpsFailsLoudly checks a listing the cluster refused is an error,
-// never an empty list that would read as nothing running.
 func TestK8sRunnerOpsFailsLoudly(t *testing.T) {
 	for _, resource := range []string{"jobs", "pods"} {
 		t.Run(resource, func(t *testing.T) {
@@ -311,8 +301,6 @@ func TestK8sRunnerOpsFailsLoudly(t *testing.T) {
 	}
 }
 
-// TestK8sRunnerStart checks Start creates the rendered Job and nothing else,
-// and refuses params the renderer refuses without touching the cluster.
 func TestK8sRunnerStart(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	p := testParams(OpUnzip)

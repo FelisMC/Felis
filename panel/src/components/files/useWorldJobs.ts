@@ -4,10 +4,7 @@ import { usePolling } from "@/lib/hooks";
 import type { ServerJob } from "@/lib/types";
 import { OP_POLL_MS } from "./sessionUpload";
 
-/** holdsWorld says whether a Job keeps the world from being changed, as the
- *  server counts it (maintenance.JobKind): a running backup, restore, world
- *  export or file download. A backup export reads only the backup store. A
- *  safety snapshot whose restore has yet to start holds it for that restore. */
+// Safety snapshots hold the world until restore starts; backup exports hold only the archive store.
 export function holdsWorld(j: ServerJob): boolean {
   return j.then_restore === "pending" || (j.state === "running" && j.kind !== "export_backup");
 }
@@ -32,9 +29,7 @@ export function holderText(j: ServerJob): string {
   }
 }
 
-// useWorldJobs follows the Jobs that hold a server's world besides the file
-// manager's own ops (useFileOps): read once when `enabled` turns on, then every
-// OP_POLL_MS while one holds it. onRestored runs when a restore seen here ends.
+// Poll other world holders and invoke onRestored when an observed restore finishes.
 export function useWorldJobs(server: string, enabled: boolean, onRestored: () => void) {
   const [holder, setHolder] = useState<ServerJob | null>(null);
   const restoring = useRef(false);

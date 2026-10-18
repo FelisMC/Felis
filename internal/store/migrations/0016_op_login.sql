@@ -1,15 +1,4 @@
--- op.console staff sign-in (spec §B op-login): a staff account signs in at
--- op.console with an email-OTP (minted under purpose 'op_login', stored in
--- player_email_otp) PLUS an in-game admin vouching for the attempt via
--- /felis web op approve <request_id>. A row here is the vouch half of that
--- pair: it exists from the moment the OTP checks out until the approved
--- request is exchanged for a session (consumed_at) or expires.
---
--- Lifecycle (derived, no state column): pending while approved_at IS NULL,
--- approved once ApproveOpLogin stamps approved_at/approved_by, dead once
--- consumed_at is set or expires_at passes. Both the approve and the consume
--- UPDATE re-check the full liveness predicate, so a double approval or a
--- replayed finish is a no-op.
+-- Staff sign-in requires an email OTP and an in-game administrator approval.
 CREATE TABLE op_login_requests (
   id          text PRIMARY KEY,                       -- opaque handle shown to the staff member and typed in-game
   user_id     text NOT NULL REFERENCES users(id),     -- the staff account signing in

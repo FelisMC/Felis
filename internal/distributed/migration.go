@@ -37,14 +37,11 @@ type Node struct {
 	Approved     bool     `json:"approved"`
 	Addresses    []string `json:"addresses"`
 	Architecture string   `json:"architecture"`
-	// K3sVersion and FelisVersion let the panel point out a worker behind its controller;
-	// FelisVersion is empty for a node enrolled before it was recorded.
-	K3sVersion   string `json:"k3sVersion"`
-	FelisVersion string `json:"felisVersion,omitempty"`
-	// Fenced marks a lost worker taken out of service for a failover (Fenced); LostSince is
-	// when an offline node stopped reporting ready.
-	Fenced    bool       `json:"fenced"`
-	LostSince *time.Time `json:"lostSince,omitempty"`
+	// FelisVersion is empty for nodes enrolled before version recording was introduced.
+	K3sVersion   string     `json:"k3sVersion"`
+	FelisVersion string     `json:"felisVersion,omitempty"`
+	Fenced       bool       `json:"fenced"`
+	LostSince    *time.Time `json:"lostSince,omitempty"`
 }
 
 func (m *Manager) Nodes(ctx context.Context) ([]Node, error) {
@@ -70,8 +67,7 @@ func (m *Manager) Nodes(ctx context.Context) ([]Node, error) {
 	return out, nil
 }
 
-// ValidateNode accepts a node a world may move to: an online, approved, schedulable worker,
-// or an online, schedulable controller (several with controller high availability).
+// ValidateNode requires an online, schedulable controller or approved worker.
 func (m *Manager) ValidateNode(ctx context.Context, name string) error {
 	var n corev1.Node
 	if err := m.Client.Get(ctx, types.NamespacedName{Name: name}, &n); err == nil && (name == m.Controller || n.Labels[placement.LabelRole] == placement.RoleController) {
@@ -83,8 +79,7 @@ func (m *Manager) ValidateNode(ctx context.Context, name string) error {
 	return placement.Worker(ctx, m.Client, name)
 }
 
-// Operation is persisted on the CR together with its non-expiring maintenance lock.
-// SourcePVC is retained even after success, and retry never changes the committed active world.
+// Operation persists with a non-expiring lock; retries preserve the committed world and retain SourcePVC.
 type Operation struct {
 	ID         string                  `json:"id"`
 	Server     string                  `json:"server"`
@@ -101,20 +96,16 @@ type Operation struct {
 	Error      string                  `json:"error,omitempty"`
 	Switched   bool                    `json:"switched"`
 	Attempt    int                     `json:"attempt"`
-	// Kind is KindFailover for a failover (failover.go) and empty for a migration. Resume
-	// is the desired state a failover gives the server back once it has switched.
-	Kind   string `json:"kind,omitempty"`
-	Resume string `json:"resume,omitempty"`
+	Kind       string                  `json:"kind,omitempty"`
+	Resume     string                  `json:"resume,omitempty"`
 }
 
-// owner travels in persistence, but never on the public operation view.
+// Persist owner without exposing it in the public operation view.
 type persistedOperation struct {
 	Operation
 	OwnerID string `json:"ownerId"`
 }
 
-// Settled reports whether the operation is over and no longer holds the server: it either
-// switched (succeeded) or was given up before switching (aborted).
 func (o Operation) Settled() bool {
 	return o.State == "succeeded" || o.State == "aborted"
 }
@@ -267,7 +258,6 @@ func (m *Manager) save(ctx context.Context, s *v1alpha1.MinecraftServer, op Oper
 	return m.saveFrom(ctx, s.DeepCopy(), s, op, lock)
 }
 
-// saveFrom is save for a caller that changed s itself since before.
 func (m *Manager) saveFrom(ctx context.Context, before, s *v1alpha1.MinecraftServer, op Operation, lock bool) error {
 	op.Updated = time.Now().UTC()
 	raw, _ := json.Marshal(persistedOperation{Operation: op, OwnerID: op.Owner})
@@ -315,12 +305,7 @@ func (m *Manager) RetryMigration(ctx context.Context, server, id string) (Operat
 	return op, err
 }
 
-// AbortMigration gives up a failed migration that never switched. The server keeps its
-// source world and node; the migration's Jobs and its partial target world are removed and
-// the maintenance lock is released, so the server can start where it was. The safety
-// backup stays as an ordinary restore point. It is the way out when the target node is gone
-// for good, so nothing here needs the target online: deleting a PVC whose node is dead only
-// removes the claim, and nothing will mount it again.
+// AbortMigration removes an uncommitted target and releases its lock without requiring the target node online.
 func (m *Manager) AbortMigration(ctx context.Context, server, id string) (Operation, error) {
 	var op Operation
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -352,8 +337,6 @@ func (m *Manager) AbortMigration(ctx context.Context, server, id string) (Operat
 	return op, err
 }
 
-// discard removes what a migration made: its Jobs (their pods with them) and its target
-// PVC, which only ever holds the copy being restored.
 func (m *Manager) discard(ctx context.Context, op Operation) error {
 	var jobs batchv1.JobList
 	if err := m.Client.List(ctx, &jobs, client.InNamespace(m.Namespace), client.MatchingLabels{MigrationAnnotation: op.ID}); err != nil {
@@ -502,9 +485,7 @@ func (m *Manager) advance(ctx context.Context, s *v1alpha1.MinecraftServer, op *
 			if err != nil {
 				return err
 			}
-			// A failover may restore an archive recorded before digests were kept: the
-			// archive store's own digest is recorded first, and every attempt verifies
-			// against it.
+			// Record missing legacy digests from the archive store before verifying the restore.
 			if op.Kind == KindFailover && op.Backup.SHA256 == "" {
 				op.Backup.SHA256 = p.SHA256
 				return m.save(ctx, s, *op, true)
@@ -601,8 +582,7 @@ func (m *Manager) ensureTarget(ctx context.Context, s *v1alpha1.MinecraftServer,
 	if !apierrors.IsNotFound(err) {
 		return err
 	}
-	// The new claim matches the source's size and class; a failover whose source claim is
-	// gone falls back to the server's own storage spec.
+	// Use the source claim size and class, falling back to the server spec if the claim is gone.
 	var source corev1.PersistentVolumeClaim
 	err = m.Client.Get(ctx, types.NamespacedName{Namespace: m.Namespace, Name: op.SourcePVC}, &source)
 	if apierrors.IsNotFound(err) && op.Kind == KindFailover {

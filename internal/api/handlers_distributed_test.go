@@ -15,9 +15,7 @@ type fakeDistribution struct {
 	calls         int
 	target, owner string
 
-	// Failover: nodes replaces the default node list; targets are the extra names
-	// ValidateNode accepts; lostErr is LostNode's answer; placed lists each node's servers;
-	// begun records BeginFailover, beginErr fails it per server.
+	// Failover fixtures override nodes, accepted targets, lost-node errors, placements and recorded operations.
 	nodes        []distributed.Node
 	targets      map[string]bool
 	lostErr      error

@@ -1,25 +1,7 @@
-# Runs the checks on pull requests and on main.
-#
-# release.yml already runs `go vet` and `go test`, but only once a vX.Y.Z tag exists — by then
-# a red change is on the release path and the only remedy is a new tag. This is the same gate
-# moved to where it can still stop something, plus the panel suite, which nothing ran at all:
-# the release goes through the Dockerfile, and the Dockerfile runs `npm run build`, never
-# `npm test`.
-#
-# The push trigger is limited to main rather than every branch, for the reason release.yml is
-# not repeated here: a branch with an open PR would otherwise run the whole suite twice per
-# push, once for refs/heads/<branch> and once for refs/pull/N/merge. Those are different
-# concurrency groups, so neither cancels the other, and both would occupy runners for the
-# same commit. A branch with no PR open yet is the one case that loses coverage, and opening the
-# PR is what asks for the answer.
+# Run CI on pull requests and main, including panel tests omitted from the image build.
 name: ci
 
-#
-# release.yml calls this workflow (workflow_call) before it builds anything, so a tag passes
-# exactly these gates and there is one list of them.
-#
-# workflow_dispatch reruns the suite on a commit whose push produced no run, such as one
-# pushed while Actions was unavailable.
+# Release tags reuse these gates through workflow_call; workflow_dispatch supports manual reruns.
 on:
   push:
     branches: [main]
@@ -54,16 +36,12 @@ jobs:
       # -race: felis-api and the operator are mostly goroutines (watchers, the
       # registry pruner, the backup scheduler, the rate limiters).
       - run: go test -race ./...
-      # The version is pinned here and bumped by hand; Dependabot does not read `go run`.
-      # 2026.2.1 cannot read Go 1.27.2's export data (dominikh/go-tools#1832); this master
-      # commit carries the fix. Return to a release tag once 2026.2.2 is published.
+      # Pinned by hand: Dependabot does not read go run. 2026.2.1 cannot read Go 1.27.2's export data; this master commit includes the change.
+      # Return to a release tag once 2026.2.2 is published.
       - name: staticcheck
         run: go run honnef.co/go/tools/cmd/staticcheck@v0.7.0-0.dev.0.20261009230814-452d5bb86b45 ./...
 
-  # Separate from the go job so a newly published advisory reads as what it is. govulncheck
-  # exits non-zero only for vulnerable code this module can actually reach, standard
-  # library included: setup-go installs the newest patch of go.mod's Go line, so a finding
-  # there means the Dockerfile's golang digest (which ships the release) needs a bump too.
+  # Check reachable vulnerabilities separately; standard-library fixes also require updating the Dockerfile toolchain.
   vuln:
     runs-on: ubuntu-latest
     steps:
@@ -75,12 +53,7 @@ jobs:
 
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
-  # The business stores' SQL against a real PostgreSQL (internal/pgint): the unit suites run
-  # on fakes, and PGRepo drifted from them three times while those stayed green. 13 is the
-  # oldest server a supported distribution installs (EL9), 18 the newest (Arch).
-  # `felis db backup` and `restore` run there too, with the tools inside the service
-  # container, as production runs them inside felis-postgres: the runner's own client is one
-  # major version, and pg_dump refuses a newer server.
+  # Test real PostgreSQL contracts across supported majors using matching container-side client tools.
   pgint:
     runs-on: ubuntu-latest
     strategy:
@@ -118,13 +91,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      # bootstrap.sh is the only thing that ever runs on a fresh host, and nothing here can
-      # run it — it wants root, a package manager and k3s. Syntax plus the extracted-block
-      # checks in bootstrap_test.sh is the coverage that is reachable without a machine.
-      # Each file is parsed by the interpreter its own shebang names. A blanket `sh -n` is
-      # wrong and not obviously so: on a developer machine `sh` is usually bash and passes
-      # everything, while the runner's `sh` is dash and rejects bootstrap.sh at the first of
-      # its arrays. Honouring the shebang is what makes local and CI agree.
+      # Parse each script with its shebang interpreter; the raw installer itself requires a fresh privileged host.
       - name: Check shell syntax
         run: |
           for f in $(git ls-files '*.sh'); do
@@ -150,9 +117,7 @@ jobs:
         run: |
           if git grep -nE 'exit +"?\$\{?[a-z_]*fail[a-z_]*\}?"?[[:space:]]*$' -- '*.sh'; then exit 1; fi
 
-      # Under pipefail, `cmd | grep -q` and `cmd | head` stop reading early: cmd then dies of
-      # SIGPIPE whenever it writes after that, and the pipeline fails at random with 141 (or a
-      # condition reads a match as none). The test suites run under sh without pipefail.
+      # Avoid early-closing grep/head pipelines under pipefail because producer SIGPIPE can cause false failures.
       - name: No reader that stops early after a pipe
         run: |
           if git grep -nE '\|[[:space:]]*(head([[:space:]]|$)|grep[[:space:]]+-[A-Za-z]*[qm])' -- '*.sh' '.github/workflows/*.yml' ':!*_test.sh' \
@@ -166,10 +131,7 @@ jobs:
       - run: bash deploy/e2e_release_test.sh
       - run: bash deploy/e2e_upstream_test.sh
 
-  # The shipped alert rules (deploy/alerts): promtool parses them and runs their unit tests,
-  # which pin when each alert fires and that it stays quiet before. internal/metrics'
-  # alerts_test.go pins what promtool cannot see from there: the PrometheusRule twin and the
-  # metric names the rules read.
+  # Use promtool for alert behavior and Go tests for rule parity and metric-name contracts.
   alerts:
     runs-on: ubuntu-latest
     steps:
@@ -190,10 +152,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      # The Dockerfile's `FROM node:<major>` is the only place the panel's Node version is
-      # declared — there is no .nvmrc and no engines field. Reading it here rather than
-      # repeating the number keeps CI testing the version a release is actually built on;
-      # a second copy would drift silently the first time the image is bumped.
+      # Read Node's major from Dockerfile so CI and release builds use the same runtime.
       - name: Read the panel's Node version from the Dockerfile
         id: node
         run: |
@@ -250,10 +209,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      # The other jobs never touch the Java layer: the plugin jars were only ever
-      # compiled by bootstrap on a live host, and the test mains under plugins/*/test
-      # were run by hand. JDK 25 is what the plugin build image runs (paper-api 26.x
-      # needs it); each module's wrapper brings the Gradle the image pins.
+      # The other jobs never touch the Java layer. JDK 25 is what the plugin build image runs (paper-api 26.x needs it), and each module's wrapper brings the Gradle the image pins.
       - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: temurin
@@ -268,11 +224,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      # The three loader mods (Minecraft 1.20.1 / 1.20.4, Java-17 lines) compile
-      # through their vendored Gradle wrappers, which fetch their own Gradle. Until
-      # this job nothing ever built them: no install path touches them, and their
-      # gradlew scripts were committed without the exec bit, so the documented
-      # one-liners failed on a fresh clone.
+      # Keep loader Gradle wrappers executable because their documented commands invoke them directly.
       - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: temurin

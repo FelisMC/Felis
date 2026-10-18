@@ -1,9 +1,5 @@
 #!/bin/bash
-# Checks for deploy/e2e_upstream.sh. Run it as: bash deploy/e2e_upstream_test.sh
-#
-# The trap line in the logs is bootstrap.sh's own on_error message, printed the way its warn
-# prints it, so rewording it there fails here rather than turning every refused download
-# back into a red e2e run. The curl lines are curl's own wording.
+# Checks for deploy/e2e_upstream.sh. Run it as: bash deploy/e2e_upstream_test.sh.
 set -u
 
 here="$(dirname "$0")"

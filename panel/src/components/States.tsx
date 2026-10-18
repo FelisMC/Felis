@@ -97,9 +97,7 @@ export function NotAuthorized() {
   );
 }
 
-// AccessUnknown stands in for an admin or owner page while /me has failed with
-// anything but a 401: whether this account may see the page is unknown, so it
-// says the check failed and why, and retries in place (the app stays mounted).
+// Keep the app mounted and offer retry when a non-401 identity failure leaves access unknown.
 export function AccessUnknown({ error }: { error: unknown }) {
   const { t } = useTranslation("common");
   const { revalidate } = useTier();
@@ -155,13 +153,7 @@ export function NotFound({ title, body, linkTo = "/", linkLabel }: NotFoundProps
   );
 }
 
-/**
- * PendingBackend is an HONEST placeholder for a surface whose backend read does
- * not exist yet (DESIGN-WEB-3SIDES non-goal #3: "a page with no real backend
- * source is an honest placeholder, never a mock chart presented as live"). It
- * names the missing endpoint so the gap is visible, not papered over with fake
- * data.
- */
+/** PendingBackend is a placeholder for a surface whose backend read does not exist yet. It names the missing endpoint so the gap is visible, not papered over with fake data. */
 export function PendingBackend({ endpoint, note }: { endpoint: string; note: string }) {
   const { t } = useTranslation("common");
   return (
@@ -218,10 +210,6 @@ export interface NotRunningProps {
   onWoken: () => void;
 }
 
-// NotRunning stands in for a page that needs the server up. It follows where the
-// server is heading, so a wake from here reads as starting until the page's poll
-// finds it running and switches over, a server going down says so, and a failed
-// start offers the retry.
 export function NotRunning({
   title,
   body,

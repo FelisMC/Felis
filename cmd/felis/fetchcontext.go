@@ -21,25 +21,7 @@ import (
 	"felis.lolicon.best/internal/build"
 )
 
-// cmdFetchContext is the in-Pod entrypoint the build Job's context-fetch
-// initContainer runs. It reads the blob the platform stored for a submission
-// from the felis-api INTERNAL face (with a bounded retry — see
-// fetchContextWithRetry) and extracts it into the shared emptyDir the Kaniko
-// container then builds from.
-//
-// Why this exists: the build Pod runs in the build namespace, where it can neither
-// mount the control-plane uploads PVC (a PVC does not cross namespaces) nor hold
-// object-store credentials, so the API that WROTE the blob is the transport. The
-// route is service-token-gated; the token arrives through a namespace-local Secret
-// mounted only into this initContainer, never into Kaniko's — so the untrusted
-// Dockerfile's build steps have no credential to read (their containers share no
-// environment, no PID namespace, and Kaniko itself mounts the context read-only).
-//
-// The extraction is deliberately paranoid: the tarball is attacker-controlled
-// input, so absolute paths, ".." escapes, links, and special files are refused
-// rather than sanitized. Kaniko treats the extracted tree as hostile regardless
-// (spec §16), but the pod's own filesystem still must not be written outside the
-// context directory it was given.
+// Restrict fetch credentials to the init container and reject unsafe archive entries before extraction.
 func cmdFetchContext(args []string, _, stderr io.Writer) int {
 	fs := flag.NewFlagSet("fetch-context", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -72,11 +54,7 @@ func cmdFetchContext(args []string, _, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "felis fetch-context: bad --url: %v\n", err)
 		return 2
 	}
-	// No overall client timeout: a legitimate modpack context can be large and the
-	// Job's activeDeadlineSeconds is the real bound. The header timeout catches a
-	// wedged endpoint without capping a healthy download.
-	// Redirects are refused: the request carries the service token, and the
-	// internal face never redirects, so a 3xx is someone steering the token.
+	// The Job deadline bounds the transfer; reject redirects to avoid leaking the token.
 	client := &http.Client{
 		Transport:     &http.Transport{ResponseHeaderTimeout: time.Minute},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -97,9 +75,7 @@ func cmdFetchContext(args []string, _, stderr io.Writer) int {
 	if *want == "" {
 		return 0
 	}
-	// The tar end marker comes before the gzip trailer and whatever follows it,
-	// so read to EOF: the digest must cover every byte the blob holds. The blob
-	// itself is size-capped at upload, which bounds this read.
+	// Read through gzip EOF because the digest includes trailers and all remaining uploaded bytes.
 	if _, err := io.Copy(io.Discard, io.LimitReader(body, maxContextBytes)); err != nil {
 		fmt.Fprintf(stderr, "felis fetch-context: %v\n", err)
 		return 1
@@ -113,25 +89,12 @@ func cmdFetchContext(args []string, _, stderr io.Writer) int {
 	return 0
 }
 
-// fetchRetryInterval/fetchRetryWindow bound how long the fetch waits out a
-// control-plane blip before giving up. The api pod being replaced is a normal
-// event (rollout, eviction, a chaos drill), and without a retry one refused
-// dial turns it into a failed build: BackoffLimit=0 gives the Job no second
-// Pod, so the terminal verdict costs a manual re-approval — the live drill hit
-// exactly this (context-fetch exit 1 on `connect: connection refused` while
-// the api pod rolled; the new pod was serving 11 seconds later and the same
-// 198-byte blob). The window is tiny next to the Job's 30-minute
-// activeDeadline; a 4xx (missing blob, rejected token) still fails fast.
-//
-// Vars, not consts, so tests can shrink the window.
+// Retry startup failures within the Job deadline; permanent 4xx responses fail immediately.
 var (
 	fetchRetryInterval = 3 * time.Second
 	fetchRetryWindow   = 45 * time.Second
 )
 
-// fetchContextWithRetry GETs the context tarball, retrying transport failures
-// and 5xx responses until fetchRetryWindow runs out. A 4xx is an answer, not a
-// blip — retrying it only delays the honest error.
 func fetchContextWithRetry(ctx context.Context, client *http.Client, url, token string, stderr io.Writer) (*http.Response, error) {
 	deadline := time.Now().Add(fetchRetryWindow)
 	for {
@@ -168,27 +131,15 @@ func fetchContextWithRetry(ctx context.Context, client *http.Client, url, token 
 	}
 }
 
-// maxContextBytes / maxContextEntries bound what one context may expand to. The
-// compressed upload is capped at 1 GiB, but gzip turns that into hundreds of GiB
-// or millions of empty files, and the emptyDir's 4 GiB sizeLimit is only
-// enforced by the kubelet's periodic sweep, after the disk has filled. The byte
-// cap matches that sizeLimit; the entry cap is far above any real modpack (a
-// large one is a few thousand files) and far below an inode exhaustion.
-//
-// Vars, not consts, so tests can shrink them.
+// Bound extracted bytes and entries before kubelet enforces emptyDir limits.
+// The entry cap sits far above a real modpack and far below inode exhaustion. Vars, not consts, so tests can shrink them.
 var (
 	maxContextBytes   int64 = 4 << 30
 	maxContextEntries       = 200_000
 )
 
-// extractTarGz streams a gzip'd tarball into root, creating directories as
-// needed. Every entry is vetted BEFORE anything is written: a path that is
-// absolute or escapes root (via ".."), a link (symlink or hardlink), or any
-// special file kind aborts the whole extraction. Refusing rather than skipping is
-// deliberate — a context that needs one of those constructs is not a context this
-// transport carries, and silently dropping entries would build from a corpus the
-// submitter did not upload. The whole extraction is also bounded by
-// maxContextBytes and maxContextEntries.
+// Reject absolute paths, parent escapes, links, and special files before extraction.
+// Reject invalid archives rather than building from silently omitted entries.
 func extractTarGz(r io.Reader, root string) error {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return fmt.Errorf("create context dir: %w", err)

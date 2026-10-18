@@ -8,22 +8,15 @@ import (
 	"fmt"
 )
 
-// ErrSelfServiceDisabled means a user asked to create a server with neither a
-// quota of their own nor a default quota the Owner has turned on.
 var ErrSelfServiceDisabled = errors.New("self-service server creation is not enabled for this user")
 
-// quotaCaps is the quota in force for one user, and where it comes from: "user"
-// for their own quotas row, "default" for the Owner's default quota, "" for
-// none (unlimited for a claim; no self-service creation).
+// quotaCaps with no source permits unlimited claims but disables self-service creation.
 type quotaCaps struct {
 	MaxServers, MaxCPU, MaxMem, MaxStor sql.NullInt64
 	Source                              string
 }
 
-// readQuota reads the quota in force for userID: their row in quotas, else the
-// default quota when the Owner has turned it on. The default covers every user
-// without a row of their own, for claims and resizes as much as for creation,
-// so a user who created a server under it cannot grow past it afterwards.
+// readQuota applies the enabled default to claims and resizes as well as creation when the user has no quota row.
 func readQuota(ctx context.Context, q rowQuerier, userID string) (quotaCaps, error) {
 	var c quotaCaps
 	switch err := q.QueryRowContext(ctx,
@@ -61,8 +54,6 @@ func readQuota(ctx context.Context, q rowQuerier, userID string) (quotaCaps, err
 	return c, nil
 }
 
-// SelfServiceState reads the quota in force for userID and what their servers
-// use of it.
 func (p *PGRepo) SelfServiceState(ctx context.Context, userID string) (QuotaState, error) {
 	caps, err := readQuota(ctx, p.db, userID)
 	if err != nil {
@@ -90,13 +81,7 @@ func nullToPtr(v sql.NullInt64) *int {
 	return &n
 }
 
-// SeedOwnedServer is SeedServer for a server a user creates for themselves: in
-// the same transaction it takes the user's claim lane (the advisory lock
-// ClaimServer and ResizeServer take), checks the new server against the quota in
-// force, and writes the row already owned by them. Two creates by one user
-// therefore serialize, and both cannot pass a cap only one of them fits under.
-// ErrSelfServiceDisabled when the user has no quota at all, ErrQuotaExceeded when
-// the server does not fit, ErrConflict when the subdomain is bound elsewhere.
+// SeedOwnedServer locks the user's claim lane and atomically checks quota and inserts ownership.
 func (p *PGRepo) SeedOwnedServer(ctx context.Context, name, subdomain, userID string, res ResourceSpec) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -160,9 +145,7 @@ func (p *PGRepo) SeedOwnedServer(ctx context.Context, name, subdomain, userID st
 	return tx.Commit()
 }
 
-// DiscardSeededServer undoes SeedOwnedServer when the cluster then refused the
-// server: the row is marked deleted and its alias released, so the failed create
-// neither counts against the user's quota nor holds the subdomain.
+// DiscardSeededServer marks the row deleted and releases its alias after cluster creation fails.
 func (p *PGRepo) DiscardSeededServer(ctx context.Context, name string) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {

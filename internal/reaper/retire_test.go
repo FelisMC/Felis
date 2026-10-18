@@ -14,9 +14,6 @@ func retiring(name, owner string, del bool) Candidate {
 		RetireRequestedAt: idleBy(time.Hour), RetireDelete: del}
 }
 
-// A server its owner gave up goes on the next run however recently it was
-// played: archived as a "released" backup under the owner, volume deleted, and
-// released for someone else to claim, with the request done with.
 func TestRetireReleaseArchivesThenReleases(t *testing.T) {
 	r, st, cl, _ := newReaper(DefaultConfig(), retiring("alpha", "user-7", false))
 
@@ -47,8 +44,6 @@ func TestRetireReleaseArchivesThenReleases(t *testing.T) {
 	}
 }
 
-// An admin's deletion archives the world the same way, then removes the
-// MinecraftServer that was inspected (by uid) and only after it the row.
 func TestRetireDeleteRemovesServerThenRow(t *testing.T) {
 	r, st, cl, _ := newReaper(DefaultConfig(), retiring("beta", "user-2", true))
 
@@ -72,9 +67,6 @@ func TestRetireDeleteRemovesServerThenRow(t *testing.T) {
 	}
 }
 
-// The archive a retirement leaves must be of the world as its owner left it: one
-// taken before the request (a reap waiting for its off-site copy, say) is not
-// reused, one taken after it is.
 func TestRetireReusesOnlyAnArchiveTakenAfterTheRequest(t *testing.T) {
 	c := retiring("gamma", "user-3", false)
 
@@ -95,9 +87,6 @@ func TestRetireReusesOnlyAnArchiveTakenAfterTheRequest(t *testing.T) {
 	}
 }
 
-// A retired server that never had a world has nothing to archive: it is
-// released (an unowned one too, where an idle one only restarts its clock), or
-// deleted.
 func TestRetireWithNoWorld(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -142,10 +131,6 @@ func TestRetireWithNoWorld(t *testing.T) {
 	}
 }
 
-// A deletion interrupted after the MinecraftServer went (or one removed by hand)
-// is finished from the row alone, unless a world volume is still there: that is
-// never deleted unarchived, and the run reports it. A release request with no
-// MinecraftServer is left alone as before.
 func TestRetireDeleteWithTheServerGone(t *testing.T) {
 	r, st, cl, _ := newReaper(DefaultConfig(), retiring("gone", "user-4", true))
 	delete(cl.crds, "gone")
@@ -170,8 +155,6 @@ func TestRetireDeleteWithTheServerGone(t *testing.T) {
 	}
 }
 
-// A failed MinecraftServer delete keeps the row asking for its deletion, and the
-// next run finishes it from the archive the first one left.
 func TestRetireDeleteServerFailureIsRetried(t *testing.T) {
 	r, st, cl, ar := newReaper(DefaultConfig(), retiring("delta", "user-5", true))
 	cl.deleteServerErr = errors.New("apiserver down")
@@ -189,7 +172,6 @@ func TestRetireDeleteServerFailureIsRetried(t *testing.T) {
 	}
 }
 
-// A system server is never given up, whatever its row says.
 func TestRetireExemptServerIgnored(t *testing.T) {
 	r, st, cl, ar := newReaper(DefaultConfig(), retiring("lobby", "", true))
 	cl.crds["lobby"] = ServerCRD{Exempt: true, PVC: "world-lobby-0", UID: "uid-lobby"}
@@ -199,7 +181,6 @@ func TestRetireExemptServerIgnored(t *testing.T) {
 	}
 }
 
-// With the off-site copy required, a retirement waits for it like an idle reap.
 func TestRetireWaitsForTheOffsiteCopy(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.RequireOffsite = true

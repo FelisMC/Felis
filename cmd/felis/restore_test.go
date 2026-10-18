@@ -11,10 +11,6 @@ import (
 	"felis.lolicon.best/internal/backup"
 )
 
-// archiveTempWorld tars a freshly populated world directory with the real
-// TarLocal and returns the absolute archive ref plus the backup root it lives
-// under, so the restore round-trip below exercises production code end to end
-// without a cluster.
 func archiveTempWorld(t *testing.T, files map[string]string) (ref string, backupRoot string) {
 	t.Helper()
 	srcDir := t.TempDir()
@@ -39,8 +35,6 @@ func archiveTempWorld(t *testing.T, files map[string]string) (ref string, backup
 	return string(got.Ref), backupRoot
 }
 
-// The restore subcommand must extract the archived world into the target world
-// mount — the real reverse of what the reaper wrote.
 func TestRestoreSubcommandRoundTrips(t *testing.T) {
 	files := map[string]string{
 		"level.dat":            "world-seed",
@@ -49,9 +43,7 @@ func TestRestoreSubcommandRoundTrips(t *testing.T) {
 	}
 	ref, backupRoot := archiveTempWorld(t, files)
 
-	// Seed the target with a stale file the archive does not contain: the restore
-	// must prune it (replace semantics), not leave it behind. This is the path the
-	// admin/owner rollback-onto-a-stopped-populated-PVC case actually takes.
+	// Seed the target with a stale file the archive lacks: the restore must prune it (replace semantics). This is the rollback path onto a stopped, populated PVC.
 	targetDir := t.TempDir()
 	stale := filepath.Join(targetDir, "region", "r.9.9.mca")
 	if err := os.MkdirAll(filepath.Dir(stale), 0o750); err != nil {
@@ -91,8 +83,6 @@ func TestRestoreSubcommandRoundTrips(t *testing.T) {
 	}
 }
 
-// A ref outside the backup mount must be rejected before any file is opened —
-// the restore Pod must never read an arbitrary host path.
 func TestRestoreSubcommandRejectsRefOutsideBackupRoot(t *testing.T) {
 	backupRoot := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "evil.tar.gz")
@@ -113,7 +103,6 @@ func TestRestoreSubcommandRejectsRefOutsideBackupRoot(t *testing.T) {
 	}
 }
 
-// An unimplemented archive store must fail loudly, not silently no-op.
 func TestRestoreSubcommandRejectsUnknownStore(t *testing.T) {
 	var out, errBuf bytes.Buffer
 	code := run([]string{
@@ -130,7 +119,6 @@ func TestRestoreSubcommandRejectsUnknownStore(t *testing.T) {
 	}
 }
 
-// --ref is mandatory: a missing ref is a usage error, not a panic.
 func TestRestoreSubcommandRequiresRef(t *testing.T) {
 	var out, errBuf bytes.Buffer
 	code := run([]string{"restore", "--backup-root", "/backups"}, &out, &errBuf)

@@ -14,17 +14,13 @@ import (
 	"time"
 )
 
-// Fetcher downloads one File to dest and checks it against its digest; a
-// returned nil error means dest holds exactly that content.
+// Fetcher succeeds only when dest matches the requested digest.
 type Fetcher interface {
 	Fetch(ctx context.Context, f File, dest string) error
 }
 
-// RecordPath is the installation record, relative to the data directory.
 const RecordPath = ManagedDir + "/installed.json"
 
-// Record is what the installer leaves on the volume: the plan it carried out
-// and how to launch the result. `felis launch` reads Launch from it.
 type Record struct {
 	Format      int       `json:"format"`
 	Plan        Plan      `json:"plan"`
@@ -32,17 +28,12 @@ type Record struct {
 	InstalledAt time.Time `json:"installedAt"`
 }
 
-// Installer installs server software into a data directory.
 type Installer struct {
-	DataDir  string
-	Resolver *Resolver
-	Fetch    Fetcher
-	// Java is the java binary that runs a Forge or NeoForge installer.
-	Java string
-	Log  io.Writer
-	// InstallerTimeout bounds a Forge or NeoForge installer run (default 20
-	// minutes; it downloads and patches several hundred megabytes on a slow
-	// line).
+	DataDir          string
+	Resolver         *Resolver
+	Fetch            Fetcher
+	Java             string
+	Log              io.Writer
 	InstallerTimeout time.Duration
 }
 
@@ -56,7 +47,7 @@ func (in *Installer) abs(rel string) string {
 	return filepath.Join(in.DataDir, filepath.FromSlash(rel))
 }
 
-// ReadRecord reads the installation record; a missing one is (nil, nil).
+// ReadRecord returns (nil,nil) when no installation record exists.
 func ReadRecord(dataDir string) (*Record, error) {
 	b, err := os.ReadFile(filepath.Join(dataDir, filepath.FromSlash(RecordPath)))
 	if errors.Is(err, os.ErrNotExist) {
@@ -72,12 +63,7 @@ func ReadRecord(dataDir string) (*Record, error) {
 	return &rec, nil
 }
 
-// Install brings the data directory to spec s and returns how to launch it. A
-// record of the same spec is carried out again without reading any metadata:
-// every file is re-checked against its digest and fetched only when missing or
-// changed, so a server whose volume is intact starts while upstream is down. A
-// changed spec is planned afresh, and the files the old plan placed that the new
-// one does not use are removed.
+// Install reuses same-spec plans without metadata lookups, rechecking file digests and fetching only missing or changed content.
 func (in *Installer) Install(ctx context.Context, s Spec) (*Launch, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
@@ -156,7 +142,6 @@ func (in *Installer) installCustom(s Spec) (*Launch, error) {
 	return &launch, nil
 }
 
-// ensure makes f present at its path with its digest.
 func (in *Installer) ensure(ctx context.Context, f File) error {
 	if err := safeRel(f.Path); err != nil {
 		return err
@@ -179,7 +164,6 @@ func (in *Installer) ensure(ctx context.Context, f File) error {
 	return nil
 }
 
-// safeRel refuses a path that leaves the data directory.
 func safeRel(p string) error {
 	clean := path.Clean(p)
 	if p == "" || strings.HasPrefix(p, "/") || clean == ".." || strings.HasPrefix(clean, "../") || clean != p {
@@ -198,15 +182,11 @@ func (in *Installer) prefetchPaperclip(ctx context.Context, jar File) {
 		return
 	}
 	if err := in.ensure(ctx, *f); err != nil {
-		// Paperclip downloads it itself on first start; the cache only saves
-		// the trip.
 		in.logf("felis install-server: the vanilla jar could not be prefetched (the server will download it): %v", err)
 	}
 }
 
-// runForgeInstaller places the installer, the libraries it lists and the
-// vanilla jar, then runs it unless an earlier run for the same spec left a
-// launch whose files are all still there.
+// runForgeInstaller reuses a previous same-spec launch only while all referenced files remain present.
 func (in *Installer) runForgeInstaller(ctx context.Context, plan *Plan, installed *Launch) (Launch, error) {
 	inst := plan.Installer
 	if err := in.ensure(ctx, inst.Jar); err != nil {
@@ -258,7 +238,6 @@ func (in *Installer) runForgeInstaller(ctx context.Context, plan *Plan, installe
 	return l, nil
 }
 
-// launchPresent reports whether every file a launch names is still on disk.
 func (in *Installer) launchPresent(l Launch) bool {
 	var need []string
 	if l.Jar != "" {
@@ -285,9 +264,7 @@ func (in *Installer) launchPresent(l Launch) bool {
 	return true
 }
 
-// placeMods installs the forwarding mods, each skipped when one of the owner's
-// own jars already declares its mod id, and removes managed copies the plan no
-// longer names or the owner now provides.
+// placeMods skips forwarding mods already supplied by owner jars with matching mod IDs and removes stale managed copies.
 func (in *Installer) placeMods(ctx context.Context, mods []Mod) error {
 	dir := in.abs(ModsDir)
 	entries, err := os.ReadDir(dir)
@@ -327,10 +304,7 @@ func (in *Installer) placeMods(ctx context.Context, mods []Mod) error {
 	return nil
 }
 
-// removeStale deletes the files the old plan placed that the new one does not
-// use. Only paths the platform manages are touched: a file the old plan put in
-// libraries/ is removed, a world or a config never is, because no plan lists
-// one.
+// removeStale deletes only files named by the old managed plan, never unrelated worlds or config.
 func (in *Installer) removeStale(old, cur Plan) {
 	keep := map[string]bool{}
 	for _, f := range cur.Files {

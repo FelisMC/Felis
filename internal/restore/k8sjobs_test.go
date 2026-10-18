@@ -33,9 +33,6 @@ func testParams() JobParams {
 	}
 }
 
-// A finished Job still holding the deterministic name must be replaced, not
-// treated as an in-flight coalesce — otherwise the retry after a failed restore
-// is answered 202 while nothing runs (found by an E2E audit).
 func TestCreateRestoreJobReplacesFinishedJob(t *testing.T) {
 	finished := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{Name: "restore-survival", Namespace: "minecraft"},
@@ -58,8 +55,6 @@ func TestCreateRestoreJobReplacesFinishedJob(t *testing.T) {
 	}
 }
 
-// An in-flight Job keeps the idempotent coalesce: a duplicate enqueue during a
-// running restore is absorbed, and the running Job is left untouched.
 func TestCreateRestoreJobCoalescesInFlightJob(t *testing.T) {
 	inFlight := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{Name: "restore-survival", Namespace: "minecraft"},
@@ -80,11 +75,6 @@ func TestCreateRestoreJobCoalescesInFlightJob(t *testing.T) {
 	}
 }
 
-// restoreJobFinished decides whether a name collision is a genuine in-flight
-// coalesce (ErrAlreadyExists) or a finished Job whose deterministic name must be
-// replaced so a retry enqueues for real. Regression: a FAILED restore used to
-// absorb every retry for the rest of its ten-minute TTL — the API answered 202
-// "restoring" while nothing ran (found by an E2E audit against a live cluster).
 func TestRestoreJobFinished(t *testing.T) {
 	completion := metav1.NewTime(time.Now())
 	cases := []struct {
@@ -117,9 +107,6 @@ func TestRestoreJobFinished(t *testing.T) {
 	}
 }
 
-// A running restore of a different archive refuses the request instead of
-// absorbing it: the caller would otherwise get a 202 naming the backup it chose
-// while another one is extracted.
 func TestCreateRestoreJobRefusesAnotherArchiveInFlight(t *testing.T) {
 	inFlight := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{

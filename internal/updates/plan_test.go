@@ -48,8 +48,6 @@ func TestWindowContains(t *testing.T) {
 	}
 }
 
-// The load-bearing invariants live here. Each row is a single component evaluated
-// against a latest map, at a fixed `now`, asserting the Kind the plan must yield.
 func TestPlanUpdatesInvariants(t *testing.T) {
 	now := time.Date(2026, 7, 1, 3, 30, 0, 0, time.UTC) // inside the window below
 	openWin := Window{
@@ -153,8 +151,6 @@ func TestPlanUpdatesInvariants(t *testing.T) {
 	}
 }
 
-// TestPlanUpdatesPreservesOrderAndPending runs a realistic fleet through the engine
-// in one call and checks both output ordering and the Pending filter.
 func TestPlanUpdatesPreservesOrderAndPending(t *testing.T) {
 	now := time.Date(2026, 7, 1, 3, 30, 0, 0, time.UTC)
 	win := Window{

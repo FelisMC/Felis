@@ -26,20 +26,8 @@ import (
 	"felis.lolicon.best/internal/store"
 )
 
-// ---- felis db backup / restore against the real tools and server ----------------
-//
-// internal/dbbackup's suite fakes pg_dump, pg_restore and psql with scripts that
-// encode what the server is assumed to do: DROP OWNED clears the role's objects,
-// and a transaction psql leaves open at EOF is rolled back. These tests run the
-// real tools against a real server, as the role production uses (a plain LOGIN
-// role owning its database; the superuser is someone else), on a database of
-// their own so the rest of the suite is untouched.
-//
-// FELIS_TEST_PG_EXEC, when set, is the argv prefix the tools run under, the way
-// production runs them under `k3s kubectl exec ... --`: CI sets
-// `docker exec -i <service container>`, which also keeps the tools at the
-// server's major version. Unset, the tools come from PATH and connect over the
-// URL, so they must match the server.
+// Runs felis db backup and restore with the real pg_dump, pg_restore and psql against a real server.
+// FELIS_TEST_PG_EXEC, when set, is an argv prefix the tools run under, as production does.
 
 const (
 	restoreRole = "felis_restore_pgint"
@@ -166,9 +154,7 @@ func (r *restoreRig) seed(t *testing.T) {
 	})
 }
 
-// fingerprint is every table's rows and every sequence's position, read as the
-// superuser so objects of any owner count. The freshness record a restore
-// rewrites is left out.
+// fingerprint covers every table's rows and sequence position, read as superuser; the freshness record is excluded.
 func (r *restoreRig) fingerprint(t *testing.T) map[string]string {
 	t.Helper()
 	fp := map[string]string{}
@@ -263,9 +249,6 @@ func (r *restoreRig) restore(bundle string, mut func(*dbbackup.RestoreOptions)) 
 	return safety, err
 }
 
-// A bundle taken of a live schema restores it exactly, over rows and objects
-// changed since, refuses to while a client is connected, and leaves a safety
-// bundle that undoes the restore.
 func TestDBRestoreRoundTrip(t *testing.T) {
 	r := newRestoreRig(t)
 	r.seed(t)
@@ -340,8 +323,6 @@ func TestDBRestoreRoundTrip(t *testing.T) {
 	}
 }
 
-// A replay that fails part way, in the server or in pg_restore, leaves the
-// database as it was: DROP OWNED and every statement after it roll back.
 func TestDBRestoreFailureRollsBack(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -350,9 +331,7 @@ func TestDBRestoreFailureRollsBack(t *testing.T) {
 		want    string
 	}{
 		{"the server refuses a statement", func(t *testing.T, r *restoreRig, bundle string) string {
-			// Another role's table where the dump creates the role's own: DROP
-			// OWNED leaves it, and the dump's CREATE TABLE fails after every
-			// type, function and earlier table was already made again.
+			// Another role's table: DROP OWNED leaves it, so the dump's CREATE TABLE fails on restore.
 			r.exec(t, r.suURL, `CREATE TABLE zz_pgint_bulk (id int)`)
 			return bundle
 		}, `ERROR:  relation "zz_pgint_bulk" already exists`},
@@ -360,10 +339,7 @@ func TestDBRestoreFailureRollsBack(t *testing.T) {
 			return truncatedDump(t, bundle)
 		}, "pg_restore: "},
 		{"pg_restore dies between statements", func(t *testing.T, r *restoreRig, bundle string) string {
-			// Cut in the data, psql is inside a COPY and fails the stream itself.
-			// Killed (a timeout, the OOM killer) while psql works through the
-			// indexes, pg_restore leaves whole statements behind, and only the
-			// COMMIT it never earned keeps them out.
+			// Killed mid-replay, the uncommitted transaction must roll back, leaving no partial data.
 			r.tools = killedBeforeIndexes(t, r)
 			return bundle
 		}, "exit status 1"},
@@ -387,9 +363,7 @@ func TestDBRestoreFailureRollsBack(t *testing.T) {
 	}
 }
 
-// killedBeforeIndexes wraps the tools so the replay's pg_restore streams its
-// script up to the first CREATE INDEX and then exits 1. Everything else is the
-// real tools and server.
+// killedBeforeIndexes makes the replay's pg_restore exit 1 at the first CREATE INDEX; everything else is real.
 func killedBeforeIndexes(t *testing.T, r *restoreRig) dbbackup.Tools {
 	t.Helper()
 	wrapper := filepath.Join(t.TempDir(), "killed")
@@ -410,10 +384,7 @@ exec "$@"
 	return tools
 }
 
-// truncatedDump copies bundle with db.dump cut to three quarters, inside the
-// rows of the last table, and a manifest that vouches for the cut dump: the
-// bundle verifies and pg_restore reads its table of contents, then dies part
-// way through the data.
+// truncatedDump cuts db.dump to three quarters inside the last table's rows, under a manifest that still vouches for it.
 func truncatedDump(t *testing.T, bundle string) string {
 	t.Helper()
 	f, err := os.Open(bundle)

@@ -12,15 +12,10 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-// maxScanLogBytes bounds the scan-gate log Outcome reads: the envelope (at most
-// MaxEnvelopeBytes of gzip, a third larger in base64) plus the verdict lines.
+// maxScanLogBytes bounds the scan-gate log read: the base64 envelope plus the verdict lines.
 const maxScanLogBytes = MaxEnvelopeBytes/3*4 + 1<<20
 
-// K8sOutcomes is the production JobOutcomes. It reads the build pod's container
-// statuses and scan-gate's log through the typed client, uncached: felis-api
-// holds pods list and pods/log get in the build namespace for the log stream
-// already, and a controller-runtime read would start a cluster-wide pod
-// informer.
+// K8sOutcomes reads pod statuses and scan-gate logs through the typed client, uncached, to avoid a cluster-wide pod informer.
 type K8sOutcomes struct {
 	cs        kubernetes.Interface
 	namespace string
@@ -31,11 +26,7 @@ func NewK8sOutcomes(cs kubernetes.Interface, cfg Config) *K8sOutcomes {
 	return &K8sOutcomes{cs: cs, namespace: cfg.withDefaults().Namespace}
 }
 
-// Outcome reports what the finished build pod of buildID left: the Job's
-// deadline verdict, the first container that exited non-zero, and scan-gate's
-// envelope. A pod already gone yields what the Job still says. Only API reads
-// that may succeed on a retry return an error; an unreadable scan log becomes
-// Outcome.ScanErr, so a build never stays unfinished over it.
+// Return retryable API errors only; unreadable scan logs become ScanErr without preventing settlement.
 func (k *K8sOutcomes) Outcome(ctx context.Context, buildID string) (Outcome, error) {
 	var out Outcome
 	job, err := k.cs.BatchV1().Jobs(k.namespace).Get(ctx, BuildJobName(buildID), metav1.GetOptions{})
@@ -92,8 +83,7 @@ func (k *K8sOutcomes) Outcome(ctx context.Context, buildID string) (Outcome, err
 	return out, nil
 }
 
-// jobDeadlineExceeded reports a Job the controller failed for running past
-// activeDeadlineSeconds; it deletes the pod, so the Job is all that says so.
+// jobDeadlineExceeded reports a Job failed for exceeding activeDeadlineSeconds; the pod is deleted, so only the Job says so.
 func jobDeadlineExceeded(job *batchv1.Job) bool {
 	for _, c := range job.Status.Conditions {
 		if c.Type == batchv1.JobFailed && c.Status == corev1.ConditionTrue && c.Reason == batchv1.JobReasonDeadlineExceeded {

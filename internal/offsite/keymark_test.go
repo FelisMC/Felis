@@ -195,9 +195,6 @@ func TestClaim(t *testing.T) {
 	}
 }
 
-// TestSyncRefusesAnotherKeysBucket: a host whose key does not match the
-// bucket's objects neither copies into it nor prunes what only the right key
-// opens.
 func TestSyncRefusesAnotherKeysBucket(t *testing.T) {
 	for _, marked := range []bool{true, false} {
 		t.Run(fmt.Sprintf("marked=%v", marked), func(t *testing.T) {
@@ -237,8 +234,6 @@ func TestSyncRefusesAnotherKeysBucket(t *testing.T) {
 	}
 }
 
-// TestSyncRecordsTheKey: the first run into a bucket records its key before
-// the first upload.
 func TestSyncRecordsTheKey(t *testing.T) {
 	s, b := newSyncer(t, &fakeCatalog{})
 	delete(b.objs, keyMark)

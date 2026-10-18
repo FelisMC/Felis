@@ -73,7 +73,6 @@ func TestStaffProfileDesignation(t *testing.T) {
 	if w.Code != http.StatusOK || repo.links[canonical.String()] != "owner" {
 		t.Fatalf("bind = %d %s links = %v", w.Code, w.Body.String(), repo.links)
 	}
-	// Server-side designation is idempotent and never consumes game link codes.
 	w = do(h, "POST", "/api/v1/account/link/profile", body, jsonHeader)
 	if w.Code != http.StatusOK || len(repo.links) != 1 {
 		t.Fatalf("repeat = %d %s", w.Code, w.Body.String())
@@ -96,7 +95,6 @@ func TestStaffProfileDesignation(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatal("caller can select another account")
 	}
-	// A local staff session must prove its factor before designating a role.
 	p.ViaSession = true
 	repo.passkeyCreds["owner-key"] = PasskeyCredential{ID: "owner-key", UserID: p.UserID, UserVerified: true}
 	before = upstreamCalls
@@ -110,7 +108,6 @@ func TestStaffProfileDesignation(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("proven staff session = %d %s", w.Code, w.Body.String())
 	}
-	// A player's session never reaches either lookup or designation.
 	p.Role = "user"
 	before = upstreamCalls
 	for _, w := range []*httptest.ResponseRecorder{lookup("littleskin", "LemonMiaow"), do(h, "POST", "/api/v1/account/link/profile", body, jsonHeader)} {

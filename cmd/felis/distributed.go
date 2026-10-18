@@ -44,9 +44,6 @@ func reconcileDistribution(ctx context.Context, m *distributed.Manager, stderr i
 	}
 }
 
-// runFailover drives the background half of failover (api.API.FailoverTick) every half
-// minute: the fences failovers wait on, the automatic failover when the Owner turned it
-// on, and the replicas of the worlds running on workers.
 func runFailover(ctx context.Context, a *api.API, stderr io.Writer) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()

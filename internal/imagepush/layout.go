@@ -9,13 +9,7 @@ import (
 	"strings"
 )
 
-// An OCI image layout tar is what a release ships its images in: oci-layout,
-// blobs/sha256/<hex> and an index.json whose entries each name one image through
-// the io.containerd.image.name annotation. `ctr images import` reads that
-// annotation, so a host imports the images straight into k3s's containerd under
-// the names the pods use, and PushLayout pushes the same bytes into the platform
-// registry: the manifest goes up verbatim, so the registry and containerd agree on
-// every digest.
+// OCI layout names use io.containerd.image.name; push manifests verbatim to preserve imported digests.
 
 const (
 	annotationImageName = "io.containerd.image.name"
@@ -25,7 +19,6 @@ const (
 	layoutMarkerContent = `{"imageLayoutVersion":"1.0.0"}`
 )
 
-// layoutDescriptor is one entry of an index: index.json's or a nested index's.
 type layoutDescriptor struct {
 	MediaType   string            `json:"mediaType"`
 	Digest      string            `json:"digest"`
@@ -46,7 +39,6 @@ type layoutIndex struct {
 	Manifests     []layoutDescriptor `json:"manifests"`
 }
 
-// blobPath is where a layout keeps the blob with this digest.
 func blobPath(digest string) string {
 	return "blobs/sha256/" + strings.TrimPrefix(digest, "sha256:")
 }
@@ -54,7 +46,6 @@ func blobPath(digest string) string {
 func isManifestType(mt string) bool { return mt == mediaOCIManifest || mt == mediaDockerManifest }
 func isIndexType(mt string) bool    { return mt == mediaOCIIndex || mt == mediaDockerList }
 
-// readLayoutIndex reads a layout tar's index.json.
 func readLayoutIndex(tarPath string) (*layoutIndex, error) {
 	raw, err := readEntry(tarPath, layoutIndexFile, maxManifestBytes)
 	if err != nil {
@@ -67,8 +58,7 @@ func readLayoutIndex(tarPath string) (*layoutIndex, error) {
 	return &idx, nil
 }
 
-// readLayoutBlob reads a small blob (a manifest, an index, a config) out of a layout
-// tar and checks it against its descriptor.
+// readLayoutBlob verifies the blob against its descriptor.
 func readLayoutBlob(tarPath string, d layoutDescriptor) ([]byte, error) {
 	if !sha256DigestRE.MatchString(d.Digest) {
 		return nil, fmt.Errorf("imagepush: %s: bad digest %q", tarPath, d.Digest)
@@ -86,9 +76,7 @@ func readLayoutBlob(tarPath string, d layoutDescriptor) ([]byte, error) {
 	return body, nil
 }
 
-// PushLayout uploads the image the OCI layout tar at tarPath names name (its
-// io.containerd.image.name) as ref, and returns the manifest digest the registry
-// recorded: the digest of the manifest in the tar, since it is pushed byte for byte.
+// PushLayout preserves the named OCI manifest bytes and digest.
 func (p *Pusher) PushLayout(ctx context.Context, tarPath, name, ref string) (string, error) {
 	r, err := ParseRef(ref)
 	if err != nil {
@@ -118,8 +106,6 @@ func (p *Pusher) PushLayout(ctx context.Context, tarPath, name, ref string) (str
 	case found > 1:
 		return "", fmt.Errorf("imagepush: %s names %d images %s", tarPath, found, name)
 	}
-	// A bundle entry points straight at one platform's manifest: that is what makes
-	// the pushed digest the one containerd imported.
 	if !isManifestType(desc.MediaType) {
 		return "", fmt.Errorf("imagepush: %s: %s is a %q, want an image manifest", tarPath, name, desc.MediaType)
 	}
@@ -162,8 +148,7 @@ func (p *Pusher) PushLayout(ctx context.Context, tarPath, name, ref string) (str
 	return digest, nil
 }
 
-// parseManifest reads an image manifest's config and layers and checks each is a
-// well-formed descriptor. A mediaType field in the body must agree with mt.
+// parseManifest rejects malformed descriptors and mismatched media types.
 func parseManifest(body []byte, mt string) (*manifest, error) {
 	var m manifest
 	if err := json.Unmarshal(body, &m); err != nil {

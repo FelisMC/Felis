@@ -9,15 +9,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * MenuTilesTest checks the menu's judgement: which tile a server gets from its live
- * status and felis-api's verdict for the player, what a click on it sends, the reason
- * a grey tile gives, the phase in each language, and that the verdicts survive the
- * wire and the paging. Framework free: a failed assertion throws.
- *
- * <p>Run: {@code ./gradlew menuTilesTest} (or {@code lobbyTest}, which runs both mains)
- * in plugins/paper.
- */
+// Framework free: a failed assertion throws. Run: ./gradlew menuTilesTest (or lobbyTest, which runs both mains) in plugins/paper.
 public final class MenuTilesTest {
 
     private static int checks;

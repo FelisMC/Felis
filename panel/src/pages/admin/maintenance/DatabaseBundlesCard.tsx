@@ -28,9 +28,7 @@ type HostTask = ReturnType<typeof useHostTask>;
 /** BUNDLE_PAGE_SIZE keeps the list short: manual backups are never pruned. */
 const BUNDLE_PAGE_SIZE = 10;
 
-/** DatabaseBundlesCard lists the database bundles on the host: each can be verified or
- *  restored, and the daily schedule that writes them can be changed. A restore stops the
- *  panel and the operator while it runs; the host bundles the current database first. */
+// Restoration stops API/operator and first creates a safety bundle.
 export function DatabaseBundlesCard({ overview, db }: { overview: AsyncState<HostOverview>; db: HostTask }) {
   const { t, i18n } = useTranslation("admin");
   const locale = i18n.language;

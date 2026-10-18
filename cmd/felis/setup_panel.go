@@ -54,10 +54,7 @@ func rootDomainEmbeddedIP(rootDomain string) string {
 	return ""
 }
 
-// setupGameAddress is where players join Minecraft: the
-// IP a nip.io or sslip.io root domain spells out (nothing to resolve), otherwise the
-// root domain, with the port when it is not Minecraft's default. The proxy lands
-// every fresh connection on the login server whatever name it was dialled by.
+// Use literal IPs for nip.io/sslip.io and omit the default game port.
 func setupGameAddress(rootDomain string, gamePort int) string {
 	host := rootDomainEmbeddedIP(rootDomain)
 	if host == "" {

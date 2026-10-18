@@ -21,10 +21,7 @@ import (
 	"felis.lolicon.best/internal/registryprune"
 )
 
-// registryImages is the platform registry as the off-site copy sees it: read
-// anonymously through the gate (the catalog, its manifest index, manifests and
-// blobs) and, for a restore, written as the platform principal. Both go through
-// the node's loopback hostPort, the way the installer pushes.
+// Read registry data anonymously and restore with platform credentials over loopback.
 type registryImages struct {
 	host   string
 	index  *registryprune.Client
@@ -75,9 +72,7 @@ func (r *registryImages) PutManifest(ctx context.Context, repo, reference, media
 	return err
 }
 
-// imagePins lists, per repository of the registry refs spell as host, the
-// digests the MinecraftServers' specs and the image whitelist pin: what a
-// restored database and its servers will ask the registry for.
+// Collect server-spec and whitelist digest pins needed when restoring registry images.
 func imagePins(db *sql.DB, host string) func(ctx context.Context) (map[string][]string, error) {
 	return func(ctx context.Context) (map[string][]string, error) {
 		cl, err := buildSystemServerClient()
@@ -118,7 +113,7 @@ func imagePins(db *sql.DB, host string) func(ctx context.Context) (map[string][]
 	}
 }
 
-// registryGone marks a 404 as a manifest or blob the registry no longer holds.
+// registryGone marks a 404 as a manifest or blob the registry does not hold.
 func registryGone(err error) error {
 	var se *imagepush.StatusError
 	if errors.As(err, &se) && se.Code == http.StatusNotFound {
@@ -127,10 +122,7 @@ func registryGone(err error) error {
 	return err
 }
 
-// offsiteRegistryEndpoint is where the host reaches the registry whose images
-// the off-site copy covers: flag when given ("off" for none), otherwise the
-// loopback hostPort of the in-cluster registry [registry] url names. A
-// registry outside the cluster is not this install's to copy.
+// Use the flag or local registry port; off disables registry copies.
 func offsiteRegistryEndpoint(flag string, reg config.RegistryConfig) string {
 	switch flag {
 	case "off":
@@ -147,9 +139,7 @@ func offsiteRegistryEndpoint(flag string, reg config.RegistryConfig) string {
 	return ""
 }
 
-// registryWriteCredential is the credential a host-side push uses:
-// FELIS_REGISTRY_USERNAME/PASSWORD when set, otherwise the platform principal
-// with REGISTRY_PLATFORM_TOKEN from the installer's secrets file.
+// Explicit registry credentials override the installer's platform token.
 func registryWriteCredential(secrets string) (string, string, error) {
 	if err := loadEnvFile(secrets); err != nil {
 		return "", "", fmt.Errorf("read %s: %w", secrets, err)

@@ -8,8 +8,6 @@ import (
 	"felis.lolicon.best/internal/api"
 )
 
-// felis-api maps each env var onto the caller the Deployment feeds it for, so the
-// build Job's token (FELIS_BUILD_TOKEN) authenticates as build and only as build.
 func TestInternalCallerTokensReadEachCallersEnv(t *testing.T) {
 	env := map[string]string{
 		"FELIS_SERVICE_TOKEN": "v-tok",

@@ -28,15 +28,7 @@ import (
 // default pod network, which an ipBlock peer has to exclude to keep them out.
 var podAddr = netip.MustParseAddr("10.42.0.17")
 
-// admits reports whether np lets a pod with podLabels in namespace ns, dialing
-// from podAddr, open a TCP connection to port on the pods np selects. It follows
-// the NetworkPolicy rules rather than the shapes this package happens to render:
-// a policy that does not govern ingress restricts nothing; a rule with no ports
-// covers every port and one with no peers every source; a port without a number
-// covers every port of its protocol; a peer's selectors are full label selectors,
-// matched against the pod and against its namespace's labels as Objects renders
-// them (the name label only); an ipBlock admits the pod by its address. A named
-// port fails the test: it resolves against a container spec this does not see.
+// admits reports whether np lets a pod open a TCP connection to port, following NetworkPolicy rules rather than the rendered shape.
 func admits(t *testing.T, np *networkingv1.NetworkPolicy, ns string, podLabels map[string]string, port int32) bool {
 	t.Helper()
 	if len(np.Spec.PolicyTypes) > 0 && !slices.Contains(np.Spec.PolicyTypes, networkingv1.PolicyTypeIngress) {
@@ -101,8 +93,6 @@ func admits(t *testing.T, np *networkingv1.NetworkPolicy, ns string, podLabels m
 	return false
 }
 
-// The evaluator itself, against the NetworkPolicy rules it claims to follow: the
-// fence checks below mean nothing if it waves through a shape it does not read.
 func TestAdmits_FollowsTheNetworkPolicyRules(t *testing.T) {
 	tcp, udp := corev1.ProtocolTCP, corev1.ProtocolUDP
 	port := func(n int32) *intstr.IntOrString { p := intstr.FromInt32(n); return &p }
@@ -186,11 +176,6 @@ func podTemplateOf(t *testing.T, objs []Object, kind, name string) corev1.PodTem
 	return corev1.PodTemplateSpec{}
 }
 
-// TestPostgresIngress_AdmitsExactlyTheDatabaseClients checks the fence against
-// the labels the pods actually carry: the three workloads that open the
-// database must get through and every other pod the platform runs must not.
-// A selector typo would either cut felis-api off from its database or leave a
-// game server able to try passwords against it.
 func TestPostgresIngress_AdmitsExactlyTheDatabaseClients(t *testing.T) {
 	p := reaperParams().withDefaults()
 	objs := Objects(p)
@@ -287,10 +272,6 @@ func hbaMethod(t *testing.T, hba, connType, user, addr string) string {
 	return "(no line: rejected)"
 }
 
-// TestPostgresHBA_SuperuserOnlyOverTheSocket walks the rendered pg_hba.conf the
-// way the server does. The superuser's password is a random value nobody keeps,
-// so TCP must refuse the role outright; a felis role must be asked for its
-// password from every address family, never trusted.
 func TestPostgresHBA_SuperuserOnlyOverTheSocket(t *testing.T) {
 	hba := postgresHBAConfig(testParams().withDefaults()).Data["pg_hba.conf"]
 	for _, c := range []struct{ connType, user, addr, want string }{
@@ -309,9 +290,6 @@ func TestPostgresHBA_SuperuserOnlyOverTheSocket(t *testing.T) {
 	}
 }
 
-// TestPostgresDeployment_RunsTheImageSafely pins what keeps the data directory
-// intact and the database off the network, against the official image's own
-// layout (VOLUME /var/lib/postgresql, the postgres account uid 999).
 func TestPostgresDeployment_RunsTheImageSafely(t *testing.T) {
 	p := testParams().withDefaults()
 	objs := PostgresObjects(p)
@@ -376,7 +354,7 @@ func TestPostgresDeployment_RunsTheImageSafely(t *testing.T) {
 		}
 	}
 
-	// hba_file must name a file the ConfigMap mount actually provides.
+	// hba_file must name a file the ConfigMap mount provides.
 	var hbaFile string
 	for i, a := range c.Args {
 		if a == "-c" && i+1 < len(c.Args) && strings.HasPrefix(c.Args[i+1], "hba_file=") {
@@ -453,10 +431,6 @@ func TestPostgresDeployment_RunsTheImageSafely(t *testing.T) {
 	}
 }
 
-// TestObjects_CarryThePostgresObjectsUnchanged: bootstrap applies
-// PostgresObjects first and the full bundle afterwards. An object that renders
-// differently in the two would flip back and forth on every install, and the
-// Deployment would restart the database each time.
 func TestObjects_CarryThePostgresObjectsUnchanged(t *testing.T) {
 	p := reaperParams()
 	full := map[string]Object{}

@@ -27,9 +27,6 @@ func (f *fakeJobStatus) LatestJobs(_ context.Context, server string) ([]AsyncJob
 	return f.jobs, f.err
 }
 
-// TestServerJobsHandler covers GET /api/v1/servers/{name}/jobs: the owner sees the
-// recorded outcomes, strangers are refused, a nil reader is an honest 503, and a
-// reader error surfaces as 500.
 func TestServerJobsHandler(t *testing.T) {
 	owner := &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
 	stranger := &Principal{UserID: "other", Email: "other@example.net", Role: "user"}
@@ -103,8 +100,6 @@ func TestServerJobsHandler(t *testing.T) {
 	})
 }
 
-// TestJobToAsyncJob pins the Job→AsyncJob projection: kinds come from managed-by,
-// terminal conditions decide state, and unknown owners are dropped.
 func TestJobToAsyncJob(t *testing.T) {
 	start := metav1.NewTime(time.Date(2026, 9, 22, 10, 0, 0, 0, time.UTC))
 	done := metav1.NewTime(time.Date(2026, 9, 22, 10, 5, 0, 0, time.UTC))
@@ -149,9 +144,6 @@ func TestJobToAsyncJob(t *testing.T) {
 	}
 }
 
-// TestLatestJobsExplainsFailures: a failed Job reports the error its container
-// exited on (the last line of the terminated message), newest pod first, and
-// keeps the condition text when no pod explains it.
 func TestLatestJobsExplainsFailures(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {

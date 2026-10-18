@@ -2,13 +2,7 @@ import { describe, it, expect } from "vitest";
 import { PHASE_COLOR, pendingPower, phaseColor, phaseVariant, shownPhase, startFailure } from "@/components/PhaseBadge";
 import type { Phase } from "@/lib/types";
 
-// The closed lifecycle set felis-api can emit — the Go source of truth is
-// internal/apis/felis/v1alpha1 MinecraftServerPhase (Unknown/Stopped/Starting/
-// Running/Stopping/Failed), passed through verbatim by the status projection
-// (internal/api/k8scluster.go). `satisfies readonly Phase[]` is the real guard:
-// it fails the build if any of these strings drops out of the TS Phase union, the
-// exact desync that left a "Stopping" server rendering with no variant/colour.
-// tsc enforces map↔union agreement, but ONLY this pins union↔backend agreement.
+// Pin the frontend phase union against the backend's closed lifecycle set.
 const BACKEND_PHASES = [
   "Unknown",
   "Stopped",
@@ -33,10 +27,7 @@ describe("phase palette parity", () => {
 });
 
 describe("unmodelled phase fallback", () => {
-  // `phase` crosses an unvalidated JSON boundary (api.status() is parsed, never
-  // schema-checked), so the backend emitting a phase the panel predates must NOT
-  // produce an undefined variant/colour — it degrades to the neutral Unknown
-  // styling. Casting simulates that out-of-union runtime value.
+  // Simulate an unknown phase crossing the unvalidated JSON boundary.
   const future = "Hibernating" as Phase;
 
   it("degrades an out-of-union phase to the Unknown colour", () => {

@@ -11,8 +11,6 @@ import (
 
 var ctx = context.Background()
 
-// The Paper plan downloads exactly the file Fill publishes for the build, by
-// the sha256 Fill gives for it, and starts it with paperclip's prefetch on.
 func TestPlanPaperTakesFillsDownload(t *testing.T) {
 	up := newFakeUpstream(t)
 	var fill struct {
@@ -59,9 +57,6 @@ func TestPlanPurpurTakesItsMD5(t *testing.T) {
 	}
 }
 
-// The vanilla jar comes from the version JSON the manifest names, and that
-// JSON must hash to the sha1 the manifest gives for it: a swapped version file
-// could otherwise point at any jar with a matching digest of its own.
 func TestPlanVanillaChecksTheVersionJSONAgainstTheManifest(t *testing.T) {
 	up := newFakeUpstream(t)
 	var v struct {
@@ -94,8 +89,6 @@ func TestPlanVanillaChecksTheVersionJSONAgainstTheManifest(t *testing.T) {
 	}
 }
 
-// Mojang's javaVersion decides the runtime, except Paper, whose own published
-// minimum wins.
 func TestRequiredJava(t *testing.T) {
 	r := newFakeUpstream(t).resolver()
 	for _, tc := range []struct {
@@ -124,10 +117,6 @@ func TestRuntimeFor(t *testing.T) {
 	}
 }
 
-// A Fabric server is laid out like Fabric's installer lays it out: every
-// library of the loader's server profile, checked against the hash meta gives,
-// or the .sha256 its Maven serves where meta gives none, and Knot pointed at
-// the vanilla jar.
 func TestPlanFabricFollowsTheServerProfile(t *testing.T) {
 	up := newFakeUpstream(t)
 	var prof struct {
@@ -191,8 +180,6 @@ func TestPlanForgeNamesTheInstallerAndTheVanillaJar(t *testing.T) {
 	}
 }
 
-// Quilt's meta lists a game version's loaders in no order; the build offered
-// by default must still be the newest stable loader, 0.30.1 when captured.
 func TestQuiltBuildsNewestFirst(t *testing.T) {
 	r := newFakeUpstream(t).resolver()
 	b, err := r.RecommendedBuild(ctx, Quilt, "1.20.1")
@@ -205,7 +192,6 @@ func TestQuiltBuildsNewestFirst(t *testing.T) {
 	}
 }
 
-// Forge names its own recommended build per version; the newest comes first.
 func TestForgeBuildsMarkForgesRecommendation(t *testing.T) {
 	builds, err := newFakeUpstream(t).resolver().Builds(ctx, Forge, "1.20.1")
 	if err != nil {
@@ -221,8 +207,6 @@ func TestForgeBuildsMarkForgesRecommendation(t *testing.T) {
 	}
 }
 
-// NeoForge numbers itself after the game version: 21.4.x is 1.21.4, and from
-// 26.x on the version is carried whole.
 func TestNeoForgeVersionsMapToMinecraft(t *testing.T) {
 	r := newFakeUpstream(t).resolver()
 	vs, err := r.Versions(ctx, NeoForge)
@@ -253,10 +237,6 @@ func TestNeoForgeVersionsMapToMinecraft(t *testing.T) {
 	}
 }
 
-// Whether the proxy's player identity reaches a server: the Paper family from
-// 1.13 by config, the modded loaders by a forwarding mod published for the exact
-// version on Modrinth (none for Quilt 1.21.4, which has no Quilted Fabric API,
-// or Forge 26.3 when captured), never vanilla.
 func TestForwardingFor(t *testing.T) {
 	r := newFakeUpstream(t).resolver()
 	for _, tc := range []struct {
@@ -287,8 +267,6 @@ func TestForwardingFor(t *testing.T) {
 	}
 }
 
-// With forwarding on, the plan carries the mods Modrinth publishes for the
-// version, by their sha512, each under the managed prefix.
 func TestPlanAddsTheForwardingMods(t *testing.T) {
 	up := newFakeUpstream(t)
 	p, err := up.resolver().Plan(ctx, Spec{Type: Fabric, MinecraftVersion: "1.21.4", Build: "0.19.5", Java: 21, Forwarding: ForwardingVelocity})
@@ -317,9 +295,6 @@ func TestPlanAddsTheForwardingMods(t *testing.T) {
 	}
 }
 
-// Mojang's Log4Shell advisory (2021-12-10): 1.18 and 1.17 take
-// formatMsgNoLookups, 1.12-1.16.5 and 1.7-1.11.2 run under the logging
-// configuration Mojang published for each range; 1.18.1 is fixed.
 func TestLog4jMitigationFollowsMojangsAdvisory(t *testing.T) {
 	for _, tc := range []struct {
 		s       Spec

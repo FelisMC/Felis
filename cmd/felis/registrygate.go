@@ -21,20 +21,7 @@ import (
 	"felis.lolicon.best/internal/registrygate"
 )
 
-// cmdRegistryGate is the sidecar entrypoint in the registry pod: it owns the
-// registry port (and the loopback hostPort containerd pulls through), lets reads
-// through anonymously, and forwards writes to the loopback-only registry:2 only
-// for an authenticated principal allowed to write that repository. See
-// internal/registrygate for the policy.
-//
-// Tokens are files under --auth-dir, one per principal (platform, build, prune),
-// mounted from the registry-auth Secret. A missing file disables that principal:
-// writes fail closed while every pull keeps working, which is the right way round
-// for a registry the running workloads depend on.
-//
-// --maint-listen is the GC sidecar's read-only handshake (registrygate.MaintHandler).
-// It has no authentication, so it must name a loopback address; --maint-dir keeps
-// an open window across a gate restart.
+// Missing tokens disable writes per principal; unauthenticated maintenance must bind loopback and persist its lease.
 func cmdRegistryGate(args []string, _, stderr io.Writer) int {
 	fs := flag.NewFlagSet("registry-gate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -124,10 +111,7 @@ func loopbackAddr(addr string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// cmdPushImage is the build Job's publish step. It runs after Kaniko built the
-// image into a tarball (--no-push) and Trivy passed that tarball, and it is the
-// only container of the build pod that holds the registry credential — the one
-// executing the untrusted Dockerfile never sees it.
+// Only the post-scan push container receives registry credentials.
 func cmdPushImage(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("push-image", flag.ContinueOnError)
 	fs.SetOutput(stderr)

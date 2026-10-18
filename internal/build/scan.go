@@ -18,45 +18,26 @@ import (
 	"time"
 )
 
-// The scan gate. Trivy scans the built tarball with no severity filter and writes
-// its full JSON report (every package, every finding); `trivy convert` turns that
-// report into a CycloneDX SBOM; then `felis scan-gate` applies the ScanPolicy,
-// prints a readable verdict, and appends the verdict, the report and the SBOM to
-// its own log inside a framed, checksummed envelope. felis-api already reads
-// build pod logs, so when the Job finishes Sync reads that envelope back and keeps
-// all three on the build: a blocked build says which findings blocked it, and an
-// admitted image has its report and SBOM on record.
-
 // Severities are the levels Trivy assigns, most severe first.
 var Severities = []string{"CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN"}
 
-// DefaultScanFailOn is the severities that block an image when felis.toml names
-// none. HIGH is left to the operator: the platform's own felis/paper image
-// carries fixable HIGH findings inside upstream paper.jar (its bundled
-// commons-compress and plexus-utils), so blocking on HIGH out of the box fails
-// every build FROM it until those ids are listed in scan_accept.
+// HIGH is left to the operator: felis/paper's bundled paper.jar carries fixable HIGH findings,
+// so blocking on HIGH would fail every build FROM it until they are in scan_accept.
 var DefaultScanFailOn = []string{"CRITICAL"}
 
 // ScanPolicy decides which findings block an image.
 type ScanPolicy struct {
-	// FailOn lists the severities that block, most severe first.
-	FailOn []string `json:"fail_on"`
-	// FailUnfixed makes a vulnerability with no fixed release block too. Off by
-	// default: a submitter cannot upgrade past it, and the report still lists it.
-	// A leaked secret always counts as fixable.
+	FailOn []string `json:"fail_on"` // blocking severities, most severe first
+	// FailUnfixed also blocks vulnerabilities with no fixed release; a leaked secret always counts as fixable.
 	FailUnfixed bool `json:"fail_unfixed"`
-	// Accept lists the vulnerability ids and secret rule ids an administrator
-	// accepted as known risks: a finding under one of them is still counted and
-	// listed, marked accepted, and never blocks.
+	// Accept lists vulnerability and secret rule ids that are still reported, marked accepted, but never block.
 	Accept []string `json:"accept,omitempty"`
 }
 
-// scanIDPattern is the shape of a finding id: CVE-2024-3094, GHSA-…, DLA-…,
-// aws-access-key-id. It keeps commas and spaces out of the scan-gate flag.
+// scanIDPattern keeps commas and spaces out of the scan-gate flag.
 var scanIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 
-// ParseScanAccept reads a comma-separated list of accepted finding ids, in the
-// order given, without repeats. An empty list is valid.
+// ParseScanAccept reads a comma-separated list of finding ids, in order and without repeats; empty is valid.
 func ParseScanAccept(s string) ([]string, error) {
 	var out []string
 	for _, id := range strings.Split(s, ",") {
@@ -74,8 +55,7 @@ func ParseScanAccept(s string) ([]string, error) {
 	return out, nil
 }
 
-// ParseSeverities reads a comma-separated severity list ("HIGH,CRITICAL"),
-// case-insensitively, into Severities order without repeats.
+// ParseSeverities reads a comma-separated severity list case-insensitively into Severities order without repeats.
 func ParseSeverities(s string) ([]string, error) {
 	seen := map[string]bool{}
 	for _, part := range strings.Split(s, ",") {
@@ -111,8 +91,7 @@ type ScanFinding struct {
 	Target    string `json:"target"`
 	Title     string `json:"title,omitempty"`
 	Blocking  bool   `json:"blocking"`
-	// Accepted marks a finding whose id the policy accepts; it never blocks.
-	Accepted bool `json:"accepted,omitempty"`
+	Accepted  bool   `json:"accepted,omitempty"` // the policy accepts this id; it never blocks
 }
 
 // Finding kinds.
@@ -121,24 +100,19 @@ const (
 	FindingSecret        = "secret"
 )
 
-// MaxSummaryFindings caps the findings a summary lists. Counts and
-// BlockingCounts still cover every finding, and the stored report has them all.
+// MaxSummaryFindings caps the findings a summary lists; the counts and the stored report cover all of them.
 const MaxSummaryFindings = 100
 
 // ScanSummary is the verdict scan-gate reaches on one report.
 type ScanSummary struct {
-	Policy   ScanPolicy `json:"policy"`
-	Blocked  bool       `json:"blocked"`
-	Packages int        `json:"packages"`
-	// Counts holds every finding by severity; BlockingCounts the ones the policy
-	// blocks on.
-	Counts         map[string]int `json:"counts"`
-	BlockingCounts map[string]int `json:"blocking_counts"`
-	// Findings lists blocking findings first, then the rest, most severe first,
-	// at most MaxSummaryFindings of them.
+	Policy         ScanPolicy     `json:"policy"`
+	Blocked        bool           `json:"blocked"`
+	Packages       int            `json:"packages"`
+	Counts         map[string]int `json:"counts"`          // every finding by severity
+	BlockingCounts map[string]int `json:"blocking_counts"` // findings the policy blocks on
+	// Findings lists blocking findings first, then the rest, most severe first, up to MaxSummaryFindings.
 	Findings []ScanFinding `json:"findings"`
-	// Omitted names the documents ("sbom", "report") left out of the envelope to
-	// keep it inside a pod log.
+	// Omitted names the documents ("sbom", "report") dropped to keep the envelope inside a pod log.
 	Omitted []string `json:"omitted,omitempty"`
 }
 
@@ -237,8 +211,7 @@ func severity(s string) string {
 	return "UNKNOWN"
 }
 
-// Reason is the one line a blocked build records as its error, naming the
-// blocking counts and the first few finding ids. It is empty when nothing blocks.
+// Reason is the one-line error of a blocked build: the blocking counts and the first few finding ids; empty when nothing blocks.
 func (s ScanSummary) Reason() string {
 	if !s.Blocked {
 		return ""
@@ -269,7 +242,7 @@ func (s ScanSummary) Reason() string {
 	return "the scan blocked the image: " + strings.Join(counts, ", ") + " (" + list + ")"
 }
 
-// ScanEnvelope is what scan-gate hands felis-api through its log.
+// ScanEnvelope is what `felis scan-gate` appends to its log: the verdict, the Trivy report and the CycloneDX SBOM.
 type ScanEnvelope struct {
 	Summary ScanSummary     `json:"summary"`
 	Report  json.RawMessage `json:"report,omitempty"`
@@ -282,10 +255,8 @@ const (
 	envelopeLineWidth = 76
 )
 
-// MaxEnvelopeBytes bounds the gzip-compressed envelope. The kubelet rotates a
-// container log at 10 MiB by default, and a rotated-away half is gone from
-// GetLogs; base64 grows the payload by a third, so 6 MiB keeps the whole frame in
-// one file.
+// MaxEnvelopeBytes bounds the gzip-compressed envelope: the kubelet rotates container logs at 10 MiB by default
+// and base64 adds a third, so 6 MiB keeps the whole frame in one file.
 const MaxEnvelopeBytes = 6 << 20
 
 // envelopeBudget is MaxEnvelopeBytes, shrunk by tests.
@@ -297,9 +268,7 @@ const maxEnvelopeJSON = 128 << 20
 // ErrNoScanEnvelope means a log holds no complete scan envelope.
 var ErrNoScanEnvelope = errors.New("build: no scan envelope in the log")
 
-// WriteScanEnvelope writes env to w as a framed block. When the compressed
-// envelope exceeds MaxEnvelopeBytes it drops the SBOM, then the report, and names
-// what it dropped in Summary.Omitted. It returns the envelope it wrote.
+// Drop SBOM, then report, to fit MaxEnvelopeBytes and record omissions in the returned summary.
 func WriteScanEnvelope(w io.Writer, env ScanEnvelope) (ScanEnvelope, error) {
 	var payload []byte
 	for {
@@ -343,9 +312,7 @@ func WriteScanEnvelope(w io.Writer, env ScanEnvelope) (ScanEnvelope, error) {
 	return env, bw.Flush()
 }
 
-// ReadScanEnvelope returns the last complete, intact envelope in a log. The
-// envelope scan-gate writes is the last thing it prints, so a frame that report
-// content managed to print earlier can never stand in for it.
+// ReadScanEnvelope returns the last complete, intact envelope in a log, so a frame printed earlier by report content cannot stand in for it.
 func ReadScanEnvelope(r io.Reader) (*ScanEnvelope, error) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64<<10), 1<<20)
@@ -403,8 +370,7 @@ func ReadScanEnvelope(r io.Reader) (*ScanEnvelope, error) {
 	return &env, nil
 }
 
-// Scan is the scan record kept for one build: the verdict, and gzip copies of
-// the Trivy report and the CycloneDX SBOM (nil when the envelope left one out).
+// Scan is the scan record kept for one build; ReportGz and SBOMGz are nil when the envelope left them out.
 type Scan struct {
 	BuildID   string      `json:"build_id"`
 	Summary   ScanSummary `json:"summary"`
@@ -413,7 +379,6 @@ type Scan struct {
 	SBOMGz    []byte      `json:"-"`
 }
 
-// newScan compresses an envelope's documents into a Scan.
 func newScan(buildID string, env *ScanEnvelope, at time.Time) (Scan, error) {
 	s := Scan{BuildID: buildID, Summary: env.Summary, ScannedAt: at}
 	var err error
@@ -439,9 +404,7 @@ func gzipBytes(b []byte) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// Printable strips control characters from report text before a log line
-// carries it, so a package name from the scanned image cannot start a line of
-// its own (such as a forged envelope frame).
+// Printable replaces control characters in report text so a package name from the scanned image cannot start a log line (such as a forged envelope frame).
 func Printable(s string) string {
 	return strings.Map(func(r rune) rune {
 		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || r == ' ' || r == ' ' {

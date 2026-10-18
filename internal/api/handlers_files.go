@@ -18,43 +18,17 @@ import (
 	"felis.lolicon.best/internal/naming"
 )
 
-// FileEditor is the server-file-editor surface the API depends on: list a
-// directory, read a file, write a file, all inside one server's world volume. It
-// is the repair lever for the case no other endpoint covers — a server that will
-// not boot because one line of a config file is wrong.
-//
-// Like Restorer and Backuper it only describes the operation, never the mechanism:
-// felis-api cannot touch a world in-process (the world PVC is ReadWriteOnce and
-// owned by the operator's StatefulSet), so the production implementation hands off
-// to a one-shot Job and reads the result back through pods/log — see
-// internal/fileedit, which explains why that transport needs no RBAC felis-api
-// does not already hold. Unlike Restorer and Backuper these calls are
-// SYNCHRONOUS: the caller wants the listing or the bytes, so the handler blocks on
-// the result rather than answering 202.
-//
-// It is an interface so the handlers are unit-tested against a fake; the
-// production implementation is *fileedit.Editor. Using fileedit.Entry directly
-// mirrors how ImageBuilder uses build.Request/build.Image rather than restating a
-// parallel type on this side of the seam.
-//
-// It returns fileedit.ErrNotFound / ErrBadPath / ErrTooLarge / ErrConflict /
-// ErrNoSpace / ErrExists, which writeFileEditError maps to 404 / 400 / 413 / 409 /
-// 507 / 409.
-//
-// Read and Write return the file's SHA-256 (hex); Upload lands exactly the bytes
-// src describes or fails. StartUpload and StartUnzip are the two that can run
-// longer than a request: they start their Job and return, and Ops reports it
-// (handlers_fileops.go). List also reports the room left on the volume. Write's expect is the
-// hash a client read the file at; when set, a file that changed since is refused
-// with ErrConflict instead of being overwritten. createOnly and a false overwrite
-// refuse an existing path with ErrExists.
+// FileEditor edits world-volume files; StartUpload and StartUnzip return before their Jobs finish.
 type FileEditor interface {
 	List(ctx context.Context, server, path string) (fileedit.Listing, error)
+	// Read returns the file hash before redaction.
 	Read(ctx context.Context, server, path string) (content []byte, sha256 string, err error)
+	// Write rejects a changed expect hash or an existing path with createOnly; it returns lowercase SHA-256 hex.
 	Write(ctx context.Context, server, path string, content []byte, expect string, createOnly bool) (sha256 string, err error)
 	Mkdir(ctx context.Context, server, path string) error
 	Delete(ctx context.Context, server, path string) error
 	Rename(ctx context.Context, server, path, to string) error
+	// Upload writes exactly src or fails; overwrite=false rejects an existing path.
 	Upload(ctx context.Context, server, path string, src fileedit.UploadSource, overwrite bool) error
 	StartUpload(ctx context.Context, server, path string, src fileedit.UploadSource, overwrite bool) (fileedit.OpState, error)
 	StartUnzip(ctx context.Context, server, path string, overwrite bool) (fileedit.OpState, error)
@@ -69,30 +43,7 @@ func (a *API) handleInternalFileBrowser(w http.ResponseWriter, r *http.Request) 
 	a.FileBrowser.ServeHTTP(w, r)
 }
 
-// writeFileRequest is the PUT /servers/{name}/file body. Content is []byte, so
-// encoding/json requires it to be base64 — which is what makes the write path
-// binary-safe: a config file with CRLF line endings, a UTF-8 BOM, or a stray
-// non-UTF-8 byte round-trips intact instead of being mangled by a string decode.
-//
-// It is a *[]byte, NOT a []byte, for the same reason permissionRequest.Value is a
-// *bool: a plain slice makes "absent", "null", and "" indistinguishable, so a body
-// of {} would decode to nil and TRUNCATE the target file to zero bytes while
-// answering 200 — a client serialisation bug silently destroying the very config
-// the caller opened this endpoint to repair. nil now means "the field was omitted"
-// and is refused; an explicit "" is still a legitimate deliberate truncate.
-//
-// ExpectSHA256 is optional. The panel always sends the hash its read returned,
-// so a save over a file someone else changed in the meantime answers 409
-// file_changed; omitting it (a script, or "overwrite anyway") writes
-// unconditionally. CreateOnly is the panel's "new file": the write lands only if
-// nothing is at the path yet (409 file_exists otherwise), so it can never
-// truncate a file the caller did not know was there. The two cannot be combined —
-// one says the file exists, the other that it must not.
-//
-// ContentSHA256 is required: the SHA-256 (hex) of the decoded content, which
-// the caller computes over the bytes it means to write. Content that hashes
-// otherwise changed on the way and is refused (400 digest_mismatch) before a Job
-// starts; the Job checks the bytes it received the same way before it writes.
+// writeFileRequest distinguishes omitted content from an explicit empty file; content is base64-encoded bytes.
 type writeFileRequest struct {
 	Content       *[]byte `json:"content"`
 	ContentSHA256 string  `json:"content_sha256"`
@@ -100,17 +51,7 @@ type writeFileRequest struct {
 	CreateOnly    bool    `json:"create_only,omitempty"`
 }
 
-// handleListFiles serves GET /api/v1/servers/{name}/files?path=… — one directory's
-// entries inside the server's world volume. An absent or empty path lists the
-// world root.
-//
-// The path travels as a QUERY parameter, not a path segment, for the same reason
-// handleRemoveImage takes ?ref=: a file path contains '/' and does not round-trip
-// through a single {placeholder}. It is passed to the executor unmodified — this
-// handler deliberately performs NO path validation, because the only containment
-// that can be trusted is the one applied at the moment of opening the file, inside
-// the Job, by os.Root (see fileedit.Execute). A pre-validating handler would
-// invite exactly the false confidence that makes string-prefix containment fail.
+// handleListFiles delegates path containment to os.Root inside the Job at file-open time.
 func (a *API) handleListFiles(w http.ResponseWriter, r *http.Request) {
 	name, ok := a.authorizeFileOp(w, r)
 	if !ok {
@@ -124,11 +65,9 @@ func (a *API) handleListFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if ls.Entries == nil {
-		ls.Entries = []fileedit.Entry{} // an empty directory is [], never null
+		ls.Entries = []fileedit.Entry{} // encode empty directories as []
 	}
-	// free_bytes lets the panel refuse an upload the volume cannot take before
-	// sending any of it; the Job that lands it checks again. It is null when the
-	// Job could not read it, so a full volume (0) is never mistaken for that.
+	// Unavailable free space is null; zero means the volume is full.
 	var free any = ls.Free
 	if ls.Free < 0 {
 		free = nil
@@ -138,11 +77,7 @@ func (a *API) handleListFiles(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleReadFile serves GET /api/v1/servers/{name}/file?path=… — one file's bytes,
-// base64-encoded by encoding/json's []byte handling. Reading is capped at
-// fileedit.MaxReadBytes inside the Job; an oversized file is 413, not a truncated
-// read, because a config editor that silently returned half a file would let a
-// subsequent save destroy the other half.
+// handleReadFile rejects oversized files rather than returning a partial read that a later save could truncate.
 func (a *API) handleReadFile(w http.ResponseWriter, r *http.Request) {
 	name, ok := a.authorizeFileOp(w, r)
 	if !ok {
@@ -159,28 +94,16 @@ func (a *API) handleReadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if content == nil {
-		content = []byte{} // an empty file is "", never null
+		content = []byte{} // encode empty files as an empty base64 string
 	}
-	// content_sha256 is of the bytes as sent (sha256 is of the file on disk,
-	// before any redaction), so the panel can tell a damaged read from the file.
+	// content_sha256 covers transmitted bytes; sha256 covers the file before redaction.
 	got := sha256.Sum256(content)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"path": path, "content": content, "sha256": sum, "content_sha256": hex.EncodeToString(got[:]),
 	})
 }
 
-// handleWriteFile serves PUT /api/v1/servers/{name}/file?path=… — replace a file's
-// contents, creating the file if absent (but never its parent directories).
-//
-// The size ceiling is enforced here, before the executor renders a Job, so an
-// oversized write is a clean 413 rather than an opaque rejection from the API
-// server when the Job spec breaches etcd's object limit. A body so large it also
-// breaches the shared 1 MiB envelope cap is refused earlier still, by decodeJSON,
-// as a 400 — the ceilings are layered, and the specific one answers first for
-// every plausible input.
-//
-// A write is audited; the two read operations are not, matching how the codebase
-// audits state changes (backup.create, image.admit) and not reads.
+// handleWriteFile caps content before Job creation to stay below etcd's object-size limit.
 func (a *API) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 	name, ok := a.authorizeFileOp(w, r)
 	if !ok {
@@ -196,9 +119,7 @@ func (a *API) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	// decodeJSON enforces only DisallowUnknownFields, which rejects a MISSPELLED
-	// field but not an omitted one — so presence is checked here, exactly as the
-	// required ?path= is checked above and as api/openapi.yaml already declares.
+	// DisallowUnknownFields rejects unknown fields, but does not require content to be present.
 	if body.Content == nil {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
 			"the content field is required"))
@@ -210,8 +131,7 @@ func (a *API) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 			len(*body.Content), fileedit.MaxWriteBytes))
 		return
 	}
-	// The hash rides the Job's argv, so only its one legitimate shape is let
-	// through: 64 lowercase hex digits, exactly what a read returned.
+	// The hash is passed in Job arguments, so accept only canonical lowercase SHA-256 hex.
 	if body.ExpectSHA256 != "" && !sha256Hex.MatchString(body.ExpectSHA256) {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
 			"expect_sha256 must be the 64-digit lowercase hex sha256 a read returned"))
@@ -237,11 +157,7 @@ func (a *API) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A write holds the world volume for its Job's lifetime (internal/maintenance);
-	// reads and listings do not. A read-only mount cannot hurt a server starting
-	// beside it, and a read that overlaps a restore or another change can at worst
-	// show a file mid-change: the sha256 it returned then no longer matches, so a
-	// save built on it is refused with file_changed.
+	// Writes hold the world-volume lock; overlapping reads rely on the expected hash to prevent stale saves.
 	kind := maintenance.KindFileWrite
 	if liveExperienceFile(r, name) {
 		kind = maintenance.KindConfigWrite
@@ -262,8 +178,7 @@ func (a *API) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"path": path, "status": "written", "sha256": sum})
 }
 
-// requirePath reads the required ?path= query parameter, answering 400 when it
-// is absent.
+// requirePath writes a 400 response when returning false.
 func requirePath(w http.ResponseWriter, r *http.Request) (string, bool) {
 	path := r.URL.Query().Get("path")
 	if path == "" {
@@ -274,10 +189,6 @@ func requirePath(w http.ResponseWriter, r *http.Request) (string, bool) {
 	return path, true
 }
 
-// handleMkdir serves POST /api/v1/servers/{name}/files/mkdir?path=… — make one
-// folder. Its parent must exist (404 otherwise) and nothing may be at the path yet
-// (409 file_exists). Like every file change it holds the world lock and is
-// audited.
 func (a *API) handleMkdir(w http.ResponseWriter, r *http.Request) {
 	name, ok := a.authorizeFileOp(w, r)
 	if !ok {
@@ -301,10 +212,7 @@ func (a *API) handleMkdir(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"path": path, "status": "created"})
 }
 
-// handleDeleteFile serves DELETE /api/v1/servers/{name}/file?path=… — delete a
-// file, a symlink (never what it points at), or a folder with everything in it.
-// The world root itself is refused (400 bad_path). The panel confirms first; this
-// route does not, because a script that says DELETE means it.
+// handleDeleteFile removes symlinks without following them and refuses the world root.
 func (a *API) handleDeleteFile(w http.ResponseWriter, r *http.Request) {
 	name, ok := a.authorizeFileOp(w, r)
 	if !ok {
@@ -328,17 +236,11 @@ func (a *API) handleDeleteFile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"path": path, "status": "deleted"})
 }
 
-// renameFileRequest is the POST /servers/{name}/files/rename body: the new path,
-// relative to the world root like ?path=.
 type renameFileRequest struct {
 	To string `json:"to"`
 }
 
-// handleRenameFile serves POST /api/v1/servers/{name}/files/rename?path=… — move
-// a file or folder to body.to. It never replaces: an existing destination is 409
-// file_exists. server.properties, config/paper-global.yml and config/ cannot be
-// moved (400 bad_path), since under another name the read path would no longer
-// know to withhold their secrets.
+// handleRenameFile protects secret-bearing paths because renaming them could bypass read redaction.
 func (a *API) handleRenameFile(w http.ResponseWriter, r *http.Request) {
 	name, ok := a.authorizeFileOp(w, r)
 	if !ok {
@@ -371,22 +273,7 @@ func (a *API) handleRenameFile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"path": path, "to": body.To, "status": "renamed"})
 }
 
-// handleUploadFile serves PUT /api/v1/servers/{name}/files/upload?path=… — land
-// the raw request body as a file, up to fileedit.MaxUploadBytes. An existing file
-// is 409 file_exists unless ?overwrite=true.
-//
-// The body is staged on felis-api's disk first (fileedit.Stage) and fetched from
-// there by the Job, on the internal face, with a one-time token: it fits in
-// neither a Job spec nor an environment. The world lock is taken only once the
-// body has arrived, so a slow upload does not hold off a backup; the stopped gate
-// ran before the body was read and the lock re-checks that nothing started since.
-//
-// Content-Length is required (411 length_required): the stage reserves room for
-// the declared size before a byte is written, and a size promised up front is
-// what lets a short body be told from a whole one. So is Content-Digest, the
-// SHA-256 the client computed over the body (contentDigest): bytes that arrive
-// hashing to anything else are refused with 400 digest_mismatch, and the client
-// sends them again.
+// handleUploadFile stages and verifies the declared length and digest before locking the world volume.
 func (a *API) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 	name, ok := a.authorizeFileOp(w, r)
 	if !ok {
@@ -465,13 +352,7 @@ func (a *API) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleInternalFileUpload serves GET /api/v1/internal/file-uploads/{id} — the
-// staged bytes of one upload, to the one Job created to land them. A file sent
-// in parts (handlers_fileops.go) is served the same way. It is Public on
-// the internal face: the Job holds no service token (it holds no credential at
-// all), so the bearer token minted with the upload is the whole check, and it
-// opens that upload once. An unknown id, a wrong token and a spent one are the
-// same 404, so the route answers nothing about which uploads exist.
+// handleInternalFileUpload uses a single-use upload token; unknown IDs and invalid or spent tokens all return 404.
 func (a *API) handleInternalFileUpload(w http.ResponseWriter, r *http.Request) {
 	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if a.FileStage == nil || !ok {
@@ -494,14 +375,7 @@ func (a *API) handleInternalFileUpload(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, f)
 }
 
-// handleInternalFileUploadLanded serves DELETE
-// /api/v1/internal/file-uploads/{id} — the Job that fetched a file sent in
-// parts reports it landed, with the token it fetched it by, and the staged copy
-// is deleted. Until then the copy stays: a Job that failed after its fetch (the
-// digest did not match, the volume filled, a file was in the way) is started
-// again by committing again, without the file being sent again. Public on the
-// internal face like the fetch, with the same token as the check; a token that
-// does not open the upload, or an unknown id, is 404.
+// handleInternalFileUploadLanded deletes staged bytes only after success, allowing failed Jobs to retry without reuploading.
 func (a *API) handleInternalFileUploadLanded(w http.ResponseWriter, r *http.Request) {
 	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if a.FileStage == nil || !ok || a.FileStage.Landed(r.PathValue("id"), token) != nil {
@@ -511,11 +385,7 @@ func (a *API) handleInternalFileUploadLanded(w http.ResponseWriter, r *http.Requ
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// contentDigest reads the SHA-256 a client computed over the body it sends, from
-// its Content-Digest header (parseContentDigest). An upload without one is
-// refused (400 digest_required): felis-api could not otherwise tell bytes
-// changed on the way from the bytes that were sent. It writes the refusal itself
-// and reports false.
+// contentDigest requires a SHA-256 Content-Digest and writes the error response when returning false.
 func contentDigest(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 	sum, err := parseContentDigest(r.Header.Values("Content-Digest"))
 	switch {
@@ -536,10 +406,7 @@ var (
 	errBadContentDigest = errors.New("a malformed sha-256 Content-Digest")
 )
 
-// parseContentDigest finds the SHA-256 in the values of a Content-Digest field
-// (RFC 9530): sha-256=:<base64>:, among any other algorithms it lists, which
-// are ignored. errNoContentDigest when there is none, errBadContentDigest when
-// it is not 32 bytes of base64 between colons.
+// parseContentDigest reads RFC 9530 sha-256=:<base64>:, ignoring other algorithms.
 func parseContentDigest(values []string) ([]byte, error) {
 	var found []byte
 	for _, v := range values {
@@ -548,7 +415,7 @@ func parseContentDigest(values []string) ([]byte, error) {
 			if !strings.EqualFold(strings.TrimSpace(key), "sha-256") {
 				continue
 			}
-			value, _, _ = strings.Cut(value, ";") // parameters
+			value, _, _ = strings.Cut(value, ";")
 			value = strings.TrimSpace(value)
 			inner, pre := strings.CutPrefix(value, ":")
 			inner, post := strings.CutSuffix(inner, ":")
@@ -570,8 +437,7 @@ func errDigestMismatch() error {
 		"the bytes that arrived do not match their Content-Digest, so they were changed on the way; send them again")
 }
 
-// auditFile records a file change. The target is "<server>:<path>", as file.write
-// has always recorded it; extra, when set, is the payload.
+// auditFile uses <server>:<path> as the target and extra as the optional payload.
 func (a *API) auditFile(r *http.Request, action, server, path string, extra map[string]any) {
 	p := principalFromContext(r.Context())
 	e := AuditEntry{Actor: auditActor(p), Action: action, ServerName: server + ":" + path}
@@ -586,27 +452,9 @@ func (a *API) auditFile(r *http.Request, action, server, path string, extra map[
 
 var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// authorizeFileOp is the shared front half of every file handler — the gate
-// that decides whether this caller may touch this server's world at all. It
-// mirrors the backup/restore gate step for step, because it is guarding the same
-// resource under the same physical constraint:
-//
-//	① name validation — 400
-//	② ServerByName — an unknown server is 404
-//	③ owner-or-admin, else 403. An unowned (released) server fails for everyone
-//	   but admin, which is the same "must re-claim first" rule restore enforces
-//	④ stopped gate: world files must not change under a live game process.
-//	   Only the system plugin's startup-only config may be read and saved live;
-//	   its Job mounts the RWO volume on the same node as the game pod.
-//	⑤ the FileEditor must be wired, else 503
-//	⑥ a server with no world volume yet gets one (EnsureWorldVolume)
-//
-// All file routes share this gate so the live-config exception stays narrow.
-//
-// It returns the validated server name and false if it has already written a
-// response.
+// authorizeFileOp requires owner or staff access and a stopped server, except for startup-only system-plugin config.
 func (a *API) authorizeFileOp(w http.ResponseWriter, r *http.Request) (string, bool) {
-	name, ok := a.authorizeServerFiles(w, r) // ① ② ③
+	name, ok := a.authorizeServerFiles(w, r)
 	if !ok {
 		return "", false
 	}
@@ -622,21 +470,13 @@ func (a *API) authorizeFileOp(w http.ResponseWriter, r *http.Request) (string, b
 		return "", false
 	}
 
-	// Files is optional: when unwired the endpoints report 503 rather than
-	// panicking, so the authorization boundary above is exercised even before the
-	// file-Job executor is wired (see FileEditor).
 	if a.Files == nil {
 		writeError(w, r, newError(http.StatusServiceUnavailable, "files_unavailable",
 			"the file editor is not configured"))
 		return "", false
 	}
 
-	// The Job mounts the world PVC by claim name. A server that has never
-	// started (or whose world the reaper archived) has none yet, so it is created
-	// here under the name and size the StatefulSet asks for, which adopts it on
-	// the first start: an owner puts a custom jar, a world or a modpack in place
-	// before that start, the way they would on a server that has run. Backups and
-	// exports keep refusing a missing volume, having nothing to read.
+	// Create the PVC before first start or after archival; the StatefulSet adopts it on start.
 	if exists, err := a.Cluster.WorldVolumeExists(r.Context(), name); err != nil {
 		writeError(w, r, err)
 		return "", false
@@ -649,23 +489,14 @@ func (a *API) authorizeFileOp(w http.ResponseWriter, r *http.Request) (string, b
 	return name, true
 }
 
-// Only the startup-only system plugin settings may be edited while running.
-// World files, uploads, deletes and plugin binaries keep the stopped gate.
+// Live edits are limited to startup-only system-plugin settings; other file operations require a stopped server.
 func liveExperienceFile(r *http.Request, name string) bool {
 	return naming.IsSystemServer(name) && strings.HasSuffix(r.URL.Path, "/file") &&
 		(r.Method == http.MethodGet || r.Method == http.MethodPut) &&
 		r.URL.Query().Get("path") == naming.ExperienceConfigFile
 }
 
-// writeFileEditError maps executor errors onto HTTP status codes. The
-// sentinels are caller-fault and get precise answers; a timeout is reported as 504
-// so the caller knows to retry rather than believing the edit was rejected; and
-// anything else collapses to a 500 by writeError, so no cluster detail leaks.
-//
-// ErrBadPath is 400 rather than 403 on purpose: a path that escapes the world root
-// is a malformed request, not a permission the caller might be granted. Answering
-// 403 would imply some caller somewhere may read /etc/passwd through this endpoint,
-// and none may.
+// writeFileEditError maps timeouts to 504 and hides unrecognized executor errors behind 500.
 func writeFileEditError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, fileedit.ErrNotFound):
@@ -681,7 +512,6 @@ func writeFileEditError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, fileedit.ErrExists):
 		writeError(w, r, newError(http.StatusConflict, "file_exists", "%s", err.Error()))
 	case errors.Is(err, fileedit.ErrDigestMismatch):
-		// A write's content reached its Job changed; nothing was written.
 		writeError(w, r, newError(http.StatusBadRequest, "digest_mismatch", "%s", err.Error()))
 	case errors.Is(err, fileedit.ErrReadDamaged):
 		writeError(w, r, newError(http.StatusBadGateway, "read_damaged",

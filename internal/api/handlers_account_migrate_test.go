@@ -10,27 +10,7 @@ import (
 	"time"
 )
 
-// Account-migration tests (spec §B3 inherit, scenario A) across BOTH faces. What they
-// prove is the handler + state machine (initiated → confirmed → code_issued → redeemed)
-// and the load-bearing security properties of the flow, against the fakeRepo and a fake
-// PasskeyVerifier — not the pgrepo SQL nor the WebAuthn crypto (both mirrored here). The
-// decisive properties, in flow order:
-//
-//   - Step-up is a FRESH proof, and force-passkey is not downgradable: an account with a
-//     passkey cannot confirm by email (no OTP is even minted).
-//   - The one-time code is bound to the NAMED target at issue AND the redeemer must be
-//     that target, so an intercepted code is useless to anyone else.
-//   - The step-up is never weaker than the login door: a cloned authenticator the login
-//     door refuses is refused here too, and confirms nothing.
-//   - Redeem is a double-spend-safe, atomic transfer: the source's servers move to the
-//     target, the source is retired, and the code cannot be replayed.
-
-// migrateEnv wires the migration doors over one shared fakeRepo: a capturing mailer (so a
-// test can read the OTP that production only ever emails, and the notices) and a fake passkey verifier
-// primed with fixed options + a verified assertion. mk builds a face for a given
-// principal — the internal handler ignores it, each external handler is scoped to one
-// caller — so a test can drive the source and the target (and an interloper) against the
-// same store.
+// migrateEnv shares one fake store across source, target and third-party sessions, with captured mail and canned passkey proof.
 func migrateEnv(repo *fakeRepo) (mk func(*Principal) *API, mailer *noticeMailer, v *fakePasskeyVerifier) {
 	mailer = &noticeMailer{}
 	v = &fakePasskeyVerifier{
@@ -54,10 +34,6 @@ func startMigrate(t *testing.T, ih http.Handler, mcUUID string) *httptest.Respon
 	return do(ih, "POST", "/api/v1/internal/account/migrate/start", `{"mc_uuid":"`+mcUUID+`"}`, jsonHeader)
 }
 
-// TestMigrateVertical walks the whole slice: an in-game start, an email-OTP step-up
-// (the source holds no passkey, so email is allowed), a code issued against a named
-// target, and the target redeeming it — moving exactly the source's servers and retiring
-// the source. The single-use property closes it: the spent code cannot be replayed.
 func TestMigrateVertical(t *testing.T) {
 	const uuid = "11111111-1111-1111-1111-111111111111"
 	src := &Principal{UserID: "u1", Email: "old@example.net", Role: "user"}
@@ -69,7 +45,7 @@ func TestMigrateVertical(t *testing.T) {
 	repo.links[uuid] = "u1"
 	repo.byName["alpha"] = &ServerRecord{Name: "alpha", OwnerID: "u1"}
 	repo.byName["beta"] = &ServerRecord{Name: "beta", OwnerID: "u1"}
-	repo.byName["other"] = &ServerRecord{Name: "other", OwnerID: "u2"} // the target's own — must NOT move
+	repo.byName["other"] = &ServerRecord{Name: "other", OwnerID: "u2"}
 
 	mk, mailer, _ := migrateEnv(repo)
 	ih := mk(src).InternalHandler()
@@ -84,8 +60,6 @@ func TestMigrateVertical(t *testing.T) {
 		t.Fatalf("status after start = %s, want initiated", w.Body.String())
 	}
 
-	// 2) email-OTP step-up. The code is delivered out of band (captured here), never in
-	// the response, and verifying it advances the migration to confirmed.
 	w := do(ehSrc, "POST", "/api/v1/account/migrate/confirm/otp/start", "", jsonHeader)
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("otp start: code = %d, want 202 (%s)", w.Code, w.Body.String())
@@ -115,8 +89,6 @@ func TestMigrateVertical(t *testing.T) {
 		t.Fatal("issue-code returned no code")
 	}
 
-	// 4) the target redeems: exactly the source's two servers move; the target's own is
-	// untouched; the source is retired.
 	w = do(ehTgt, "POST", "/api/v1/account/migrate/redeem", `{"code":"`+mcode+`"}`, jsonHeader)
 	if w.Code != http.StatusOK {
 		t.Fatalf("redeem: code = %d, want 200 (%s)", w.Code, w.Body.String())
@@ -140,15 +112,11 @@ func TestMigrateVertical(t *testing.T) {
 		t.Fatalf("replay of spent code: code = %d body %s, want 400 invalid_code", w.Code, w.Body.String())
 	}
 
-	// 6) the source never proved its address, so no notice went there.
 	if len(mailer.notices) != 0 {
 		t.Fatalf("notices to an unverified address = %q, want none", mailer.notices)
 	}
 }
 
-// TestMigrateForcePasskey pins the contract's "若有 Passkey 强制 Passkey": an account with
-// a passkey enrolled cannot step up by email — the OTP door refuses with passkey_required
-// and mints NOTHING, so the strong factor is not downgradable for an identity transfer.
 func TestMigrateForcePasskey(t *testing.T) {
 	const uuid = "22222222-2222-2222-2222-222222222222"
 	src := &Principal{UserID: "u1", Email: "old@example.net", Role: "user"}
@@ -174,10 +142,6 @@ func TestMigrateForcePasskey(t *testing.T) {
 	}
 }
 
-// TestMigratePasskeyConfirm drives the passkey step-up: begin stashes exactly one
-// migrate-purpose challenge for the caller, and finish verifies the assertion against the
-// SERVER-STASHED session data (the body carries no challenge) and advances the migration
-// to confirmed with factor 'passkey'.
 func TestMigratePasskeyConfirm(t *testing.T) {
 	const uuid = "33333333-3333-3333-3333-333333333333"
 	src := &Principal{UserID: "u1", Email: "old@example.net", Role: "user"}
@@ -209,8 +173,6 @@ func TestMigratePasskeyConfirm(t *testing.T) {
 		}
 	}
 
-	// finish: the body carries NO challenge; the stashed blob reaches the verifier only via
-	// store-stash → consume, and a verified assertion confirms the migration.
 	w = do(ehSrc, "POST", "/api/v1/account/migrate/confirm/passkey/finish",
 		`{"assertion":{"id":"cred-1","type":"public-key"}}`, jsonHeader)
 	if w.Code != http.StatusOK || acctBody(t, w)["confirmed"] != true {
@@ -224,9 +186,6 @@ func TestMigratePasskeyConfirm(t *testing.T) {
 	}
 }
 
-// TestMigratePasskeyCloneRejected proves the step-up is never weaker than the login door:
-// a cloned authenticator (rolled-back counter) is refused with the opaque envelope and
-// confirms nothing — the migration stays in initiated.
 func TestMigratePasskeyCloneRejected(t *testing.T) {
 	const uuid = "44444444-4444-4444-4444-444444444444"
 	src := &Principal{UserID: "u1", Email: "old@example.net", Role: "user"}
@@ -257,10 +216,6 @@ func TestMigratePasskeyCloneRejected(t *testing.T) {
 	}
 }
 
-// TestMigrateRedeemBinding proves the one-time code is bound to the NAMED target: an
-// interloper who holds the correct code but is a different account cannot redeem it (it
-// simply does not match), the transfer does not happen, and the code survives for the
-// genuine target to spend.
 func TestMigrateRedeemBinding(t *testing.T) {
 	const uuid = "55555555-5555-5555-5555-555555555555"
 	src := &Principal{UserID: "u1", Email: "old@example.net", Role: "user"}
@@ -293,7 +248,6 @@ func TestMigrateRedeemBinding(t *testing.T) {
 	}
 	mcode, _ := acctBody(t, w)["code"].(string)
 
-	// The interloper holds the correct code but is not the named target: no match.
 	ehEvil := mk(interloper).ExternalHandler()
 	if w := do(ehEvil, "POST", "/api/v1/account/migrate/redeem", `{"code":"`+mcode+`"}`, jsonHeader); w.Code != http.StatusBadRequest || decodeErr(t, w) != "invalid_code" {
 		t.Fatalf("interloper redeem: code = %d body %s, want 400 invalid_code", w.Code, w.Body.String())
@@ -305,7 +259,6 @@ func TestMigrateRedeemBinding(t *testing.T) {
 		t.Fatal("source retired on a non-target redeem")
 	}
 
-	// The genuine target still spends the same code — the failed attempt consumed nothing.
 	ehTgt := mk(tgt).ExternalHandler()
 	if w := do(ehTgt, "POST", "/api/v1/account/migrate/redeem", `{"code":"`+mcode+`"}`, jsonHeader); w.Code != http.StatusOK {
 		t.Fatalf("genuine target redeem: code = %d body %s, want 200", w.Code, w.Body.String())
@@ -315,10 +268,6 @@ func TestMigrateRedeemBinding(t *testing.T) {
 	}
 }
 
-// TestMigrateRedeemOverQuota: a target whose quota cannot take the source's servers is
-// refused with 403 migrate_quota_exceeded, and the refusal leaves everything as it was —
-// no server moved, the source live, the migration still code_issued, nothing audited or
-// mailed — so the same code redeems once an admin raises the quota.
 func TestMigrateRedeemOverQuota(t *testing.T) {
 	const uuid = "88888888-8888-8888-8888-888888888888"
 	src := &Principal{UserID: "u1", Email: "old@example.net", Role: "user"}
@@ -376,9 +325,6 @@ func TestMigrateRedeemOverQuota(t *testing.T) {
 	}
 }
 
-// TestMigrateGuards covers the input/state refusals: an unlinked UUID has no account to
-// migrate; a code cannot be issued before confirmation; the target may be neither the
-// source itself nor an unknown account.
 func TestMigrateGuards(t *testing.T) {
 	const uuid = "66666666-6666-6666-6666-666666666666"
 	src := &Principal{UserID: "u1", Email: "old@example.net", Role: "user"}
@@ -396,7 +342,7 @@ func TestMigrateGuards(t *testing.T) {
 		t.Fatalf("start unlinked: code = %d body %s, want 404 not_linked", w.Code, w.Body.String())
 	}
 
-	// A real start, then issue-code BEFORE confirming → 409 not_confirmed.
+	// A real start, then issue-code before confirming → 409 not_confirmed.
 	if w := startMigrate(t, ih, uuid); w.Code != http.StatusCreated {
 		t.Fatalf("start: %d (%s)", w.Code, w.Body.String())
 	}
@@ -404,7 +350,6 @@ func TestMigrateGuards(t *testing.T) {
 		t.Fatalf("issue with target==source: code = %d body %s, want 400 invalid_target", w.Code, w.Body.String())
 	}
 
-	// Confirm (email; no passkey on this account), then the target guards apply.
 	if w := do(ehSrc, "POST", "/api/v1/account/migrate/confirm/otp/start", "", jsonHeader); w.Code != http.StatusAccepted {
 		t.Fatalf("otp start: %d (%s)", w.Code, w.Body.String())
 	}
@@ -416,11 +361,6 @@ func TestMigrateGuards(t *testing.T) {
 	}
 }
 
-// TestMigrateConfirmHoldsForOneSessionBriefly pins who may issue the code: only the
-// browser session that gave the step-up, and only for migrateConfirmWindow. Any other
-// live session of the source, or the same one later, meets the step-up again; a code
-// that expires unspent does too. The source's mailbox hears about each code and about
-// the redeem.
 func TestMigrateConfirmHoldsForOneSessionBriefly(t *testing.T) {
 	const uuid = "77777777-7777-7777-7777-777777777777"
 	src := &Principal{UserID: "u1", Username: "old", Email: "old@example.net", EmailVerified: true, Role: "user", ViaSession: true}
@@ -507,7 +447,6 @@ func TestMigrateConfirmHoldsForOneSessionBriefly(t *testing.T) {
 		t.Fatalf("status after the code = %v, want code_issued for u2", st)
 	}
 
-	// The code expires unspent: back to the step-up, and the old code is dead.
 	now = now.Add(migrateCodeTTL)
 	if st := status(onA); st["state"] != "initiated" {
 		t.Fatalf("status after the code expired = %v, want initiated", st)

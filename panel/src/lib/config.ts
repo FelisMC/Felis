@@ -1,7 +1,4 @@
-// Runtime config: the panel is domain-agnostic at BUILD time (CI red line — no
-// rootDomain literal may appear in source). apiBase + rootDomain are fetched from
-// /config.json at boot, so one build serves any deployment (mirrors the Go side's
-// --set root_domain portability, spec §16/§27). A dev fallback reads VITE_* env.
+// Load deployment settings from /config.json so one panel build serves any domain.
 
 /** BuildInfo is the server's build stamp (internal/panel buildInfo). */
 export interface BuildInfo {
@@ -128,11 +125,7 @@ function embeddedIPv4(rootDomain: string): string {
   return "";
 }
 
-/** entryAddress is where anyone joins in Minecraft to reach the login server, which
- *  hands out link codes: the IP a nip.io or sslip.io root domain spells out, otherwise
- *  the root domain, with the port when it is not 25565. It mirrors the Go side's
- *  setupGameAddress, so the page and the `felis setup` terminal name the same address.
- *  Empty when config.json could not be read, as the root domain is then a guess. */
+// Match setupGameAddress: literal nip.io/sslip.io IP, otherwise root domain, omitting port 25565.
 export function entryAddress(cfg: RuntimeConfig): string {
   if (cfg.fallback) return "";
   const host = embeddedIPv4(cfg.rootDomain) || cfg.rootDomain.trim().replace(/\.$/, "");

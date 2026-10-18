@@ -1,6 +1,4 @@
-// webglAvailable probes once whether this browser can create a WebGL context
-// (hardware acceleration off, some VMs and remote desktops cannot). The probe
-// context is released right away so the fleet view still gets its own.
+// Release the probe WebGL context immediately so the fleet renderer can create its own.
 
 let cached: boolean | undefined;
 

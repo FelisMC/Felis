@@ -40,10 +40,7 @@ function draftOf(s: MailSettings): Draft {
   };
 }
 
-// MailSettingsCard is the Owner's mail relay: the server email codes, identity checks and
-// alerts go through. Saving proves the relay first (one self-test message to the sender),
-// so a relay that cannot deliver is never put in force; a test mails the Owner without
-// saving. The password is write-only: left empty, the stored one is kept.
+// Test before saving; passwords are write-only and an empty value preserves the existing secret.
 export function MailSettingsCard() {
   const { t } = useTranslation("admin");
   const query = useAsync(api.getMailSettings, []);

@@ -21,7 +21,6 @@ func TestEnsureHostBinDirOnPath(t *testing.T) {
 	}
 }
 
-// run is what the tests drive, so the PATH fix must sit in main, before it.
 func TestMainFixesPathBeforeRunning(t *testing.T) {
 	b, err := os.ReadFile("main.go")
 	if err != nil {

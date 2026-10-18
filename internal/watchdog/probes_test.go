@@ -72,10 +72,6 @@ func findingKeys(fs []Finding) []string {
 	return out
 }
 
-// TestClusterCheck: exactly the broken things are reported — a control-plane
-// Deployment down or missing, the login gate not running, a failed user server,
-// a recent failed backup Job, a late reaper and a node under disk pressure —
-// and the healthy or deliberate states are not.
 func TestClusterCheck(t *testing.T) {
 	now := t0
 	login := server("login", "login", v1alpha1.DesiredRunning, v1alpha1.PhaseStarting)
@@ -135,8 +131,6 @@ func TestClusterCheck(t *testing.T) {
 	}
 }
 
-// TestClusterCheckAPIDown: a List the API server refuses is an error, not an
-// empty (healthy-looking) cluster.
 func TestClusterCheckAPIDown(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(runtime.NewScheme()).Build()
 	if _, err := (Cluster{Client: cl, ControlNamespace: "felis", MinecraftNamespace: "minecraft"}).Check(context.Background(), t0); err == nil {
@@ -182,10 +176,6 @@ func TestBackupFinding(t *testing.T) {
 	}
 }
 
-// TestBackupFindingServers: a fresh newest bundle whose MinecraftServer export
-// failed is reported, since a lost host restores from it; an older bundle
-// with the same gap, a bundle taken without the export and a stale newest
-// bundle are left to the checks that own them.
 func TestBackupFindingServers(t *testing.T) {
 	dir := t.TempDir()
 	bundle := func(at time.Time, label, serversError string) {
@@ -287,8 +277,6 @@ func TestMemoryFinding(t *testing.T) {
 	}
 }
 
-// TestDiskFindingsDedupAndSkip: two paths on one filesystem yield at most one
-// finding, and a path that does not exist is skipped.
 func TestDiskFindingsDedupAndSkip(t *testing.T) {
 	dir := t.TempDir()
 	got := DiskFindings([]string{dir, filepath.Join(dir, "."), filepath.Join(dir, "missing")})

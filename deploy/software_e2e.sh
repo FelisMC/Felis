@@ -1,23 +1,5 @@
 #!/bin/bash
-# End to end check of server software installed from the runtime image. For each case it
-# runs the three steps a server pod runs (felis install-server, felis init-forwarding, felis
-# launch) in the Temurin image the pod would use, waits for the server to finish starting,
-# then logs in through cmd/forwardcheck the way the Velocity proxy does and asks RCON for
-# the player list, the operator's readiness probe.
-#
-#   deploy/software_e2e.sh FELIS_BIN FORWARDCHECK_BIN [CASE...]
-#
-# FELIS_BIN and FORWARDCHECK_BIN are linux binaries for this host's architecture. A CASE
-# is type:minecraft:build:java:identity, with "-" for no build and identity "forwarded"
-# (the server took the proxy's player identity) or "offline" (it logged the player in
-# under the offline-mode UUID of the name). A custom case runs the vanilla 1.21.4 jar as
-# the owner's own. Without cases it runs the matrix below, whose builds are fixed
-# upstream releases.
-#
-# FELIS_E2E_RUNTIME  container runtime (podman; rootless, the game uid mapped to the caller; mounts are relabelled for SELinux)
-# FELIS_E2E_CACHE    artifact cache base URL as the containers reach it (empty: direct)
-# FELIS_E2E_WORK     scratch directory (default a new one under /tmp; kept on failure)
-# FELIS_E2E_MEMORY   heap per server (default 1024M)
+# Usage: software_e2e.sh FELIS_BIN FORWARDCHECK_BIN [type:minecraft:build:java:identity ...].
 set -euo pipefail
 
 felis="${1:?usage: software_e2e.sh FELIS_BIN FORWARDCHECK_BIN [CASE...]}"

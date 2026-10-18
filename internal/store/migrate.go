@@ -1,7 +1,4 @@
-// Package store owns the Felis business-layer database (spec §6): the embedded
-// schema migrations and the typed access layer. Migrations are applied by
-// `felis migrate up` under a Postgres advisory lock so concurrent api/operator
-// replicas cannot race each other.
+// Package store applies embedded schema migrations under a PostgreSQL advisory lock.
 package store
 
 import (
@@ -14,10 +11,8 @@ import (
 	"strings"
 )
 
-// AdvisoryLockKey is the fixed pg_advisory_lock key guarding migrations. The
-// value is the ASCII bytes of "felis"; any replica running migrations contends
-// on the same key.
-const AdvisoryLockKey int64 = 0x66656c6973 // "felis"
+// AdvisoryLockKey serializes migrations across replicas.
+const AdvisoryLockKey int64 = 0x66656c6973
 
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
@@ -29,24 +24,17 @@ type Migration struct {
 	SQL     string
 }
 
-// Driver is the database-facing seam the migration engine drives. Splitting it
-// out lets the ordering/idempotency/lock logic be tested without a live
-// Postgres; PostgresDriver is the production implementation.
 type Driver interface {
-	// Lock acquires the migration advisory lock, blocking until held.
+	// Lock blocks until the migration advisory lock is acquired.
 	Lock(ctx context.Context) error
-	// Unlock releases the advisory lock.
 	Unlock(ctx context.Context) error
-	// EnsureVersionTable creates the schema_migrations bookkeeping table.
 	EnsureVersionTable(ctx context.Context) error
-	// AppliedVersions returns the set of versions already applied.
 	AppliedVersions(ctx context.Context) (map[int]struct{}, error)
-	// Apply runs one migration and records it, atomically.
+	// Apply runs a migration and records its version atomically.
 	Apply(ctx context.Context, m Migration) error
 }
 
-// LoadMigrations parses the embedded migrations into an ascending, gap-tolerant
-// but duplicate-free list.
+// LoadMigrations returns migrations in ascending order, rejecting duplicate versions.
 func LoadMigrations() ([]Migration, error) {
 	entries, err := fs.ReadDir(migrationsFS, "migrations")
 	if err != nil {
@@ -82,10 +70,7 @@ func LoadMigrations() ([]Migration, error) {
 	return ms, nil
 }
 
-// Up applies every pending migration in ascending order, exactly once, under
-// the advisory lock. It is safe to run concurrently from multiple replicas: the
-// lock serializes them and AppliedVersions makes the work idempotent. It refuses
-// (ErrSchemaNewer) a database that records a version this build does not embed.
+// Up applies pending migrations under the advisory lock and rejects unknown applied versions.
 func Up(ctx context.Context, d Driver, migrations []Migration) (applied []int, err error) {
 	if err := d.Lock(ctx); err != nil {
 		return nil, fmt.Errorf("acquire migration lock: %w", err)
@@ -103,9 +88,6 @@ func Up(ctx context.Context, d Driver, migrations []Migration) (applied []int, e
 	if err != nil {
 		return nil, fmt.Errorf("read applied versions: %w", err)
 	}
-	// A version this build does not embed means a newer release migrated the database.
-	// Applying the older build's remaining steps on top would be a guess about a schema
-	// it never saw, so nothing runs.
 	if err := CompareSchema(done, migrations).Newer(); err != nil {
 		return nil, err
 	}
@@ -124,7 +106,6 @@ func Up(ctx context.Context, d Driver, migrations []Migration) (applied []int, e
 	return applied, nil
 }
 
-// parseMigrationName turns "0001_init.sql" into (1, "init").
 func parseMigrationName(filename string) (int, string, error) {
 	base := strings.TrimSuffix(filename, ".sql")
 	idx := strings.IndexByte(base, '_')

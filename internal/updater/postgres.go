@@ -12,17 +12,9 @@ import (
 	"felis.lolicon.best/internal/updates"
 )
 
-// postgresFeedURL is the PostgreSQL project's machine-readable release table, the one
-// its own versioning page renders from. Checked 2026-09-25: an array with one entry per
-// major, e.g. {"major":"13","latestMinor":"23","supported":false,"eolDate":"2025-11-13"}.
 const postgresFeedURL = "https://www.postgresql.org/versions.json"
 
-// postgresFeed discovers the newest minor release of the running PostgreSQL major.
-//
-// Felis runs PostgreSQL from an image the release pins, and moving to a new major is a
-// dump and restore the operator plans. The report therefore compares within the major
-// (a minor release is a new pin), and a major that is past its end of life is surfaced
-// separately as a note.
+// postgresFeed compares minor releases within the running major; major upgrades require a planned dump and restore.
 type postgresFeed struct {
 	url       string
 	userAgent string
@@ -41,15 +33,12 @@ type postgresMajor struct {
 	EOLDate     string `json:"eolDate"`
 }
 
-// postgresRelease is one lookup's answer: the newest minor of the current major, and
-// a note when that major is no longer supported.
 type postgresRelease struct {
 	latest updates.Version
 	note   string
 }
 
-// majorKey is the feed's name for the major a version belongs to: "13" from 10 on,
-// "9.6" before that, when the second number was still part of the major.
+// majorKey uses one version component from PostgreSQL 10 onward and two for older releases.
 func majorKey(v updates.Version) string {
 	if v.Major < 10 {
 		return fmt.Sprintf("%d.%d", v.Major, v.Minor)

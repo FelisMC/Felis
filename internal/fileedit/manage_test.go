@@ -45,7 +45,6 @@ func exec(t *testing.T, root string, req Request) Result {
 	return res
 }
 
-// TestWriteCreateOnly: the panel's "new file" lands only where nothing is.
 func TestWriteCreateOnly(t *testing.T) {
 	root, _ := worldRoot(t)
 	create := func(name string) Result {
@@ -515,8 +514,7 @@ func TestUpload(t *testing.T) {
 		}
 	})
 
-	// The editor used to stop at MaxUploadBytes; a file sent in parts is bounded
-	// by the volume alone.
+	// Uploads in parts are bounded by the volume alone, not MaxUploadBytes.
 	t.Run("past the single-request limit is fetched", func(t *testing.T) {
 		root, _ := worldRoot(t)
 		stubStatfs(t, 1<<40, 1<<41)

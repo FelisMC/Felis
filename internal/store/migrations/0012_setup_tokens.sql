@@ -1,14 +1,4 @@
--- One-time setup tokens for the first-web-login bootstrap (spec §B).
--- `felis setup` binds the Owner's Minecraft account, promotes it to the
--- passwordless Owner (role='admin'), and mints one of these — the raw token
--- rides in the op.console /setup?token=... URL while only its sha-256 hash is
--- stored here, mirroring sessions and account_link_codes. Opening the URL
--- redeems the token once (ConsumeSetupToken) for a lockdown session in which the
--- Owner verifies their email and enrols a passkey instead of setting a password.
--- Tokens are single-use (consumed_at) and short-lived (expires_at, 30 min); a
--- redeemed row is spent, not deleted, so a replayed URL is a clean miss rather
--- than a fresh mint. ON DELETE CASCADE keeps pending tokens from outliving the
--- user they bootstrap (mirrors webauthn_credentials, migration 0008).
+-- One-time setup tokens for first web login: only the sha-256 of the token is stored; a token is single use and expires after 30 minutes.
 CREATE TABLE setup_tokens (
   token_hash  text PRIMARY KEY,                                  -- sha-256(raw token); the raw value only ever lives in the URL
   user_id     text NOT NULL REFERENCES users(id) ON DELETE CASCADE,

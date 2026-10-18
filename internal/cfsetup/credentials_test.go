@@ -10,9 +10,7 @@ import (
 
 const testTunnelID = "0b6f3c1e-2d4a-4b8c-9e7f-1a2b3c4d5e6f"
 
-// fakeCloudflared stands in for `cloudflared tunnel token --cred-file <path> <id>`: it
-// counts its calls and writes what FAKE_CRED names into the file (valid credentials for
-// the tunnel it was asked about by default).
+// fakeCloudflared stands in for `cloudflared tunnel token --cred-file <path> <id>`; FAKE_CRED picks the file content (good by default).
 func fakeCloudflared(t *testing.T) (bin, calls string) {
 	t.Helper()
 	dir := t.TempDir()

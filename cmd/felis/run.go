@@ -56,15 +56,7 @@ Commands:
 Run "felis <command> -h" for command-specific flags.
 `
 
-// commands is the dispatch table. It is a map rather than a switch so the router's
-// contents are DATA a test can compare against the usage text above: `version`
-// shipped once as an implemented-but-unreachable command (cmdVersion existed with
-// nothing routing to it), and a switch offers no way to notice that. Adding an entry
-// here without documenting it in usage — or vice versa — now fails a test instead of
-// shipping.
-//
-// The help aliases are deliberately NOT entries: they print usage rather than run a
-// subcommand, and listing them would make the table disagree with the command list.
+// The help aliases are not entries: they print usage rather than run a subcommand.
 var commands = map[string]func(args []string, stdout, stderr io.Writer) int{
 	"migrate":            cmdMigrate,
 	"db":                 cmdDB,

@@ -187,7 +187,6 @@ func TestStatusReport(t *testing.T) {
 	}
 }
 
-// Whatever is down reads as down, and the rest of the report still prints.
 func TestStatusWithPartsDown(t *testing.T) {
 	env := statusTestEnv(t)
 	env.cl, env.clErr = nil, errors.New("connection refused")
@@ -230,8 +229,6 @@ func TestShortImage(t *testing.T) {
 	}
 }
 
-// A node that is not ready, a Deployment without replicas or containers, and
-// lists the API server refuses each read as such.
 func TestStatusClusterEdges(t *testing.T) {
 	env := statusTestEnv(t)
 	env.cfg = &config.Config{K8s: config.K8sConfig{Namespace: "games"}}
@@ -416,9 +413,6 @@ func TestStatusWatchdog(t *testing.T) {
 	}
 }
 
-// Rows print by name in whatever order the API server lists them, a server
-// the operator has not reconciled yet reads as dashes, and open alerts print
-// by key in whatever order the state's map yields them.
 func TestStatusOrder(t *testing.T) {
 	env := statusTestEnv(t)
 	objs := append(statusClusterObjects(),
@@ -478,7 +472,6 @@ func TestStatusOrder(t *testing.T) {
 	}
 }
 
-// A selector the API server would have refused picks no pods.
 func TestPodRestartsBadSelector(t *testing.T) {
 	pods := []corev1.Pod{{Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{RestartCount: 3}}}}}
 	if n := podRestarts(&metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "app", Operator: "Near"}}}, pods); n != 0 {

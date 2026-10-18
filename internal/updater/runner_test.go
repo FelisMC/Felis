@@ -50,11 +50,6 @@ func (f fakeSource) Latest(_ context.Context, c updates.Component) (updates.Vers
 	return v, nil
 }
 
-// TestRunnerReportOnlyComposesPlan drives the whole slice with fakes and nil
-// notifier/applier (report-only): gather → assemble → updates.Run → Report. With the
-// window open, the two Scheduled+manageable components (felis-api, cloudflared) plan
-// to Apply, but with no applier wired the runner applies nothing and records the
-// no-applier error — the honest report-only state, not a silent success.
 func TestRunnerReportOnlyComposesPlan(t *testing.T) {
 	now := time.Date(2026, 7, 4, 3, 30, 0, 0, time.UTC)
 	window := updates.Window{
@@ -101,8 +96,6 @@ func TestRunnerReportOnlyComposesPlan(t *testing.T) {
 	}
 }
 
-// TestRunnerSkipsUngatherableComponent proves a component whose current version cannot
-// be read is dropped from the plan and recorded, not planned against a zero version.
 func TestRunnerSkipsUngatherableComponent(t *testing.T) {
 	now := time.Date(2026, 7, 4, 3, 30, 0, 0, time.UTC)
 	gath := fakeGatherer{
@@ -124,11 +117,6 @@ func TestRunnerSkipsUngatherableComponent(t *testing.T) {
 	}
 }
 
-// TestRunnerWithRoutingSource wires the real RoutingSource — PaperMC and GitHub both
-// pointed at live-shape httptest fixtures — through the runner end to end. Every
-// component now discovers its real latest stable (velocity 3.4.0 via PaperMC; felis-api,
-// k3s and cloudflared via GitHub Releases), the raw upstream tags survive into the report
-// (k3s's "+k3s1"), and NO component falls back to a recorded source error.
 func TestRunnerWithRoutingSource(t *testing.T) {
 	now := time.Date(2026, 7, 5, 3, 30, 0, 0, time.UTC)
 

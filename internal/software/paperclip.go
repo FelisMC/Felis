@@ -10,13 +10,7 @@ import (
 	"strings"
 )
 
-// PaperclipDownload reads which vanilla jar a Paper-family paperclip jar
-// downloads on its first start, and where it keeps it. Paperclip records the
-// download in the jar itself: META-INF/download-context ("<sha256>\t<url>\t<file
-// name>", Minecraft 1.18 on) or patch.properties (originalHash, sourceUrl and
-// version, before). Fetching that jar ahead, through the cache, makes the first
-// start need no network; paperclip still checks it against the same sha256.
-// A jar carrying neither record (an old non-paperclip build) yields nil.
+// PaperclipDownload reads embedded vanilla-download metadata for cache prefetch; non-paperclip jars return nil.
 func PaperclipDownload(jarPath string) (*File, error) {
 	zr, err := zip.OpenReader(jarPath)
 	if err != nil {
@@ -49,8 +43,7 @@ func PaperclipDownload(jarPath string) (*File, error) {
 			continue
 		}
 		if k, v, ok := strings.Cut(line, "="); ok {
-			// java.util.Properties escapes ':' and '=' in values with a
-			// backslash ("https\://launcher.mojang.com/...").
+			// Java properties escape colons and equals signs inside URL values.
 			props[strings.TrimSpace(k)] = strings.NewReplacer(`\:`, ":", `\=`, "=", `\\`, `\`).Replace(strings.TrimSpace(v))
 		}
 	}

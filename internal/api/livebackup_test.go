@@ -12,8 +12,7 @@ import (
 	"felis.lolicon.best/internal/backupjob"
 )
 
-// liveCluster is fakeCluster plus the live-backup side, holding each server's freeze and
-// what the settle loop would observe about it.
+// liveCluster records persistent freezes and the progress observed by recovery.
 type liveCluster struct {
 	*fakeCluster
 	freezes             map[string]*LiveFreeze
@@ -114,10 +113,6 @@ func newLiveFixture() *liveFixture {
 	return f
 }
 
-// TestLiveBackupFreezesCopiesAndThaws walks a live backup of a running server end to end:
-// the owner's backup is accepted while the server runs, saving goes off and the world is
-// flushed before the Job exists, saving stays off while the copy runs, and comes back on
-// the moment the copy step exits — before the archive finishes.
 func TestLiveBackupFreezesCopiesAndThaws(t *testing.T) {
 	f := newLiveFixture()
 	w := do(f.a.ExternalHandler(), "POST", "/api/v1/servers/survival/backup", "", nil)
@@ -152,8 +147,6 @@ func TestLiveBackupFreezesCopiesAndThaws(t *testing.T) {
 	}
 }
 
-// TestLiveBackupLeavesSavingOffWhenItWasOff pins that a world an owner had stopped saving
-// stays that way after the backup.
 func TestLiveBackupLeavesSavingOffWhenItWasOff(t *testing.T) {
 	f := newLiveFixture()
 	f.console.replies["save-off"] = "Saving is already turned off"
@@ -177,8 +170,6 @@ func TestLiveBackupLeavesSavingOffWhenItWasOff(t *testing.T) {
 	}
 }
 
-// TestLiveBackupUndoesAFailedStart pins that every failure before the freeze is recorded
-// leaves saving on and nothing held.
 func TestLiveBackupUndoesAFailedStart(t *testing.T) {
 	for name, setup := range map[string]func(*liveFixture){
 		"save-off refused":   func(f *liveFixture) { f.console.fail["save-off"] = true },
@@ -206,9 +197,6 @@ func TestLiveBackupUndoesAFailedStart(t *testing.T) {
 	}
 }
 
-// TestSettleLiveBackupDropsATornCopy pins the two ways a copy cannot be trusted: the game
-// restarted mid-copy (its shutdown saved), or the copy ran past the freeze cap. Either way
-// the Job is dropped and the freeze ends; only a game still the same one is sent save-on.
 func TestSettleLiveBackupDropsATornCopy(t *testing.T) {
 	f := newLiveFixture()
 	f.cl.freezes["survival"] = &LiveFreeze{Server: "survival", Job: "j1", Started: f.a.now(), PodUID: "pod-1"}
@@ -231,8 +219,6 @@ func TestSettleLiveBackupDropsATornCopy(t *testing.T) {
 	}
 }
 
-// TestSettleLiveBackupKeepsTryingSaveOn pins that a freeze is not forgotten while the game
-// will not take save-on: the next pass tries again.
 func TestSettleLiveBackupKeepsTryingSaveOn(t *testing.T) {
 	f := newLiveFixture()
 	f.cl.freezes["survival"] = &LiveFreeze{Server: "survival", Job: "j1", Started: f.a.now(), PodUID: "pod-1"}
@@ -247,9 +233,6 @@ func TestSettleLiveBackupKeepsTryingSaveOn(t *testing.T) {
 	}
 }
 
-// TestSettleLiveBackupRecoversAnUnrecordedJob pins the crash window between creating the
-// Job and recording it: after a grace the server's live Jobs are dropped and saving comes
-// back on.
 func TestSettleLiveBackupRecoversAnUnrecordedJob(t *testing.T) {
 	f := newLiveFixture()
 	f.cl.freezes["survival"] = &LiveFreeze{Server: "survival", Started: f.a.now(), PodUID: "pod-1"}
@@ -266,8 +249,6 @@ func TestSettleLiveBackupRecoversAnUnrecordedJob(t *testing.T) {
 	}
 }
 
-// TestLiveBackupRefusesAServerInTransit pins that a server starting or stopping is
-// neither frozen nor backed up.
 func TestLiveBackupRefusesAServerInTransit(t *testing.T) {
 	f := newLiveFixture()
 	f.cl.byName["survival"].Ready = false
@@ -288,9 +269,6 @@ func (b *liveScheduledBackuper) BackupScheduled(_ context.Context, name, _ strin
 	return nil
 }
 
-// TestBackupSchedulerTakesARunningWorldLive pins that a world kept running gets its daily
-// restore point while it runs, recorded as scheduled, and that a game not answering its
-// console is left for later rather than stopped.
 func TestBackupSchedulerTakesARunningWorldLive(t *testing.T) {
 	f := newLiveFixture()
 	f.cl.maintErr["survival"] = ErrNotStopped
@@ -326,10 +304,6 @@ func TestBackupSchedulerTakesARunningWorldLive(t *testing.T) {
 	}
 }
 
-// TestScheduleRunnerBacksUpARunningServerLive pins that a scheduled backup of a running
-// server keeps it running: no stop, saving paused for the copy, and the run waits for the
-// backup Job and ends without a start. A game that does not answer its console still gets
-// its backup the old way: stopped, backed up and started again.
 func TestScheduleRunnerBacksUpARunningServerLive(t *testing.T) {
 	r := newSchedRig(t)
 	lc := newLiveCluster()
@@ -366,7 +340,6 @@ func TestScheduleRunnerBacksUpARunningServerLive(t *testing.T) {
 	}
 }
 
-// TestScheduleWarningSaysTheServerStaysUp pins the in-game warning of a live backup.
 func TestScheduleWarningSaysTheServerStaysUp(t *testing.T) {
 	if got := scheduleWarning(ScheduleBackup, 5, true); !strings.Contains(got, "saving pauses for a few seconds") {
 		t.Errorf("live warning = %q", got)

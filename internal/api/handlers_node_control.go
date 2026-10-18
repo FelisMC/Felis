@@ -15,8 +15,6 @@ type NodeControl interface {
 	List(context.Context) ([]nodecontrol.Task, error)
 	Get(context.Context, string) (nodecontrol.Task, error)
 	Start(context.Context, nodecontrol.Request, string) (nodecontrol.Task, error)
-	// Host is the platform's state at a glance as the host service reads it; Quiet holds
-	// the watchdog's mail until a time; Artifact opens a finished task's download.
 	Host(context.Context) (json.RawMessage, error)
 	Quiet(context.Context, time.Time) error
 	Artifact(context.Context, string) (io.ReadCloser, int64, string, error)
@@ -111,7 +109,7 @@ func (a *API) writeNodeControlError(w http.ResponseWriter, r *http.Request, err 
 	}
 }
 
-// Fail closed for starts when the configured host service cannot report its maintenance state.
+// Fail closed for starts when the host service cannot report maintenance state.
 func NodeMaintenanceGuard(control NodeControl) func(context.Context) error {
 	return func(ctx context.Context) error {
 		tasks, err := control.List(ctx)

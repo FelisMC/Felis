@@ -30,8 +30,6 @@ func TestRequestRejectsUnsafeInputs(t *testing.T) {
 	}
 }
 
-// TestUpgradeRequest pins that updating a worker names it and its SSH target, needs no
-// fixed IP, and refuses an unsafe target like the other worker operations.
 func TestUpgradeRequest(t *testing.T) {
 	r := Request{Action: "upgrade", Name: "worker-b", SSHTarget: "root@worker-b", ConfirmMaintenance: true}
 	if err := r.Validate(); err != nil {
@@ -46,8 +44,6 @@ func TestUpgradeRequest(t *testing.T) {
 	}
 }
 
-// TestFenceRequest pins the fence request: a valid node name and the confirmation, and
-// nothing about SSH.
 func TestFenceRequest(t *testing.T) {
 	for _, action := range []string{"fence", "unfence"} {
 		r := Request{Action: action, Name: "worker-b", ConfirmMaintenance: true}
@@ -211,7 +207,6 @@ func TestCancellationFinishesTask(t *testing.T) {
 	}
 }
 
-// Optional live check under the API container's UID and SELinux domain.
 func TestHostSocketConnectivity(t *testing.T) {
 	socket := os.Getenv("FELIS_TEST_NODE_CONTROL_SOCKET")
 	if socket == "" {
@@ -226,8 +221,6 @@ func TestHostSocketConnectivity(t *testing.T) {
 	}
 }
 
-// TestHARequests pins the HA requests: enabling needs only the confirmation; joining a
-// controller needs what joining a worker does, its fixed address included.
 func TestHARequests(t *testing.T) {
 	if err := (Request{Action: "enable-ha", ConfirmMaintenance: true}).Validate(); err != nil {
 		t.Fatalf("enable-ha = %v", err)

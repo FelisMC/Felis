@@ -14,11 +14,7 @@ import { STATUS_POLL_SLOW_MS, STATUS_POLL_FAST_MS, useAsync, usePolling } from "
 import { useTier } from "@/lib/tier";
 import { canManage, ownershipPending } from "@/lib/ownership";
 
-/** ServerPlayers is the per-server player-management subpage (/servers/:name/players):
- *  the online roster, whitelist and bans over RCON while the server runs, and the wake
- *  list, which Felis keeps itself, at any time. It owns its own gating —
- *  ownership (from /me/servers, since GET status never carries `owned`) and server
- *  readiness — because as a route it can be reached directly, not just from a link. */
+// Direct navigation still requires ownership and readiness checks.
 export function ServerPlayers() {
   const { name = "" } = useParams();
   const { t } = useTranslation("servers");
@@ -58,12 +54,7 @@ export function ServerPlayers() {
   }
   if (!data) return back;
 
-  // Ownership is still resolving (tier fetch, or /me/servers for a non-admin). We
-  // have the server's identity, so show its header with a spinner beneath it rather
-  // than flashing the whole management surface at someone who may not own it. If the
-  // /me/servers read itself failed, `mineError` breaks the pending state (below) so a
-  // real owner sees a retry instead of an eternal spinner — never fail closed to
-  // NotYours, which would wrongly tell an owner the server isn't theirs on a blip.
+  // Failed ownership reads offer retry rather than claiming the viewer does not own the server.
   const pending = ownershipPending(tierLoading, isAdmin, mine, mineError);
   const owned = canManage(isAdmin, mine, name);
   const phase = shownPhase(data);

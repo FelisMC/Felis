@@ -7,16 +7,6 @@ import (
 	"time"
 )
 
-// Username-collision reclaim (spec §B3) is Mojang-priority: when a non-genuine
-// player squats a name the official service also issues, velocity bars the
-// squatter's UUID and stashes its data for 30 days. These tests pin the
-// Go-verifiable data layer of that flow — the bar, the stash, idempotency, and
-// the one safety property that must never regress: the block is keyed by UUID, so
-// the genuine Mojang player (same name, DIFFERENT UUID) is never caught.
-
-// TestReclaimBarsSquatterAndStashes is the happy path: a reclaim bars the
-// squatter UUID, the subsequent gate check for that UUID reports barred, and the
-// data hold lands with the API-clock 30-day expiry.
 func TestReclaimBarsSquatterAndStashes(t *testing.T) {
 	const squatter = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 	repo := newFakeRepo()
@@ -59,11 +49,6 @@ func TestReclaimBarsSquatterAndStashes(t *testing.T) {
 	}
 }
 
-// TestReclaimNeverCatchesGenuineMojangPlayer is the load-bearing safety property:
-// the block is keyed by UUID, never by the contested name. A genuine Mojang
-// player shares the username but carries a different UUID, so the gate must let
-// them through even after the squatter is barred. If this ever regresses,正版优先
-// becomes正版连不上 — the exact outcome the design forbids.
 func TestReclaimNeverCatchesGenuineMojangPlayer(t *testing.T) {
 	const (
 		squatter = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -78,7 +63,6 @@ func TestReclaimNeverCatchesGenuineMojangPlayer(t *testing.T) {
 		t.Fatalf("reclaim: code = %d (%s)", w.Code, w.Body.String())
 	}
 
-	// The genuine owner — identical username, different UUID — is NOT barred.
 	w := do(ih, "GET", "/api/v1/internal/player/blacklist/"+genuine, "", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("genuine check: code = %d (%s)", w.Code, w.Body.String())
@@ -88,14 +72,6 @@ func TestReclaimNeverCatchesGenuineMojangPlayer(t *testing.T) {
 	}
 }
 
-// TestReclaimProtectsAdminOnYggdrasil is the admin-on-Yggdrasil exception (spec §B3),
-// the second safety property alongside the genuine-Mojang case: a Linked
-// Operator/SysAdmin who authenticates through the third-party Yggdrasil is staff on the
-// Login Server, not a Mojang squatter, so a Mojang-priority reclaim must REFUSE rather
-// than bar them. The reclaim is declined (409 protected_admin), nothing is barred or
-// stashed, the login gate consequently passes the admin's UUID end-to-end, and the
-// refusal lands in the audit log under a DISTINCT action so it can never be mistaken
-// for a bar.
 func TestReclaimProtectsAdminOnYggdrasil(t *testing.T) {
 	const adminUUID = "0a11dead-0000-0000-0000-00000000ad11"
 	repo := newFakeRepo()
@@ -142,18 +118,6 @@ func TestReclaimProtectsAdminOnYggdrasil(t *testing.T) {
 	}
 }
 
-// TestReclaimAdminProtectionScope pins the exact predicate the exception turns on so a
-// future broadening or narrowing of it cannot pass silently. Protection holds for, and
-// ONLY for, a linked holder that is BOTH authenticated via the third-party Yggdrasil
-// AND an admin:
-//   - a thirdparty NON-admin player is still reclaimed (pins role='admin') — Mojang
-//     priority must keep displacing ordinary squatters;
-//   - a Mojang-authenticated admin is still reclaimed (pins auth_source='thirdparty') —
-//     an admin's Mojang identity has no Login-Server name to protect (and Mojang names
-//     are unique, so this is operationally moot, but it locks the conjunct);
-//   - an SSO Operator authenticated through the third-party Yggdrasil is protected even
-//     with no local login secret at all — protection turns on role + auth_source, so an
-//     admin who signs in via Cloudflare Access (§14) is covered just the same.
 func TestReclaimAdminProtectionScope(t *testing.T) {
 	const squatter = "0a11dead-0000-0000-0000-00000000ad11"
 	cases := []struct {
@@ -197,9 +161,6 @@ func TestReclaimAdminProtectionScope(t *testing.T) {
 	}
 }
 
-// TestReclaimIsIdempotent proves a retried velocity callback is harmless: a repeat
-// reclaim of an already-barred UUID still answers 200 and does not disturb the
-// original hold (matching the ON CONFLICT DO NOTHING in both inserts).
 func TestReclaimIsIdempotent(t *testing.T) {
 	const squatter = "cccccccc-cccc-cccc-cccc-cccccccccccc"
 	repo := newFakeRepo()
@@ -222,12 +183,6 @@ func TestReclaimIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestReclaimRetryReportsOriginalWindow is the regression for the response-honesty
-// fix: the squatter reconnects days later, velocity re-fires the reclaim, and the
-// hold keeps its FIRST 30-day window (ON CONFLICT preserves it). The response must
-// report that persisted window, NOT a fresh now()+30d — otherwise velocity tells
-// the player a kept-until date the stored hold does not actually have. A frozen
-// clock cannot catch this, so the clock is advanced between the two reclaims.
 func TestReclaimRetryReportsOriginalWindow(t *testing.T) {
 	const squatter = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
 	repo := newFakeRepo()
@@ -260,10 +215,6 @@ func TestReclaimRetryReportsOriginalWindow(t *testing.T) {
 	}
 }
 
-// TestReclaimAudited proves a reclaim writes a security-significant accountability
-// row: a player is barred and their world stashed, so the event lands in
-// audit_logs as player.reclaim from velocity over the internal source, with the
-// contested name and squatter UUID in the structured payload.
 func TestReclaimAudited(t *testing.T) {
 	const squatter = "dddddddd-dddd-dddd-dddd-dddddddddddd"
 	repo := newFakeRepo()
@@ -290,9 +241,6 @@ func TestReclaimAudited(t *testing.T) {
 	}
 }
 
-// TestReclaimValidation is the input matrix: a reclaim with no UUID or no username
-// is a 400, strict decoding rejects unknown fields, and a rejected request neither
-// bars anyone nor stashes anything.
 func TestReclaimValidation(t *testing.T) {
 	cases := []struct {
 		name string
@@ -328,10 +276,6 @@ func TestReclaimValidation(t *testing.T) {
 	})
 }
 
-// TestReclaimFaceSeparation enforces that the reclaim and gate-check endpoints are
-// internal-only: velocity holds a service token, a web Principal never reaches
-// them. Crossing onto the external face must 404, not silently work — a logged-in
-// user could otherwise bar an arbitrary UUID.
 func TestReclaimFaceSeparation(t *testing.T) {
 	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
 	api := newTestAPI(newFakeRepo(), newFakeCluster())

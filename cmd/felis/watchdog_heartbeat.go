@@ -16,9 +16,7 @@ import (
 	"felis.lolicon.best/internal/watchdog"
 )
 
-// defaultHeartbeatFile holds the heartbeat URL deploy/bootstrap.sh writes from
-// FELIS_WATCHDOG_HEARTBEAT_URL. It lives in /etc/felis, so a host rebuilt from
-// a bundle pings the same check once it takes the off-site bucket over.
+// Keep heartbeat configuration under /etc/felis so recovered hosts retain the monitoring identity.
 const defaultHeartbeatFile = "/etc/felis/watchdog-heartbeat-url"
 
 const (
@@ -30,21 +28,12 @@ const (
 	heartbeatReportMax = 10000
 )
 
-// heartbeat is the ping one run sends to a dead man's switch at a monitoring
-// service (Healthchecks.io, and the services that copy its API), which alerts
-// its own users when the pings stop: the host down, the timer gone, the
-// watchdog failing before it can mail. No check on the host can report those.
-// A run whose alerts reach the owners GETs url; one whose alerts reach no one
-// POSTs report to url/fail, or withholds the ping when url has a query, where
-// no /fail can be added and the missing ping trips the check instead.
+// External monitoring detects host outages; report failure through /fail or suppress query-bearing pings.
 type heartbeat struct {
 	url    string // "" pings nothing
 	fail   bool
 	report string
-	// standby is a host standing by for another host's off-site bucket: a
-	// rehearsal, or a rebuild not taken over. It pings nothing, or it would
-	// keep the check of the host that writes the bucket green after that host
-	// died.
+	// standby is a host standing by for another host's off-site bucket. It pings nothing, or it would keep the check of the host that writes the bucket green after that host died.
 	standby bool
 	// quiet is the installer's quiet window, which restarts things on
 	// purpose: no failure is pinged.
@@ -137,9 +126,7 @@ func readHeartbeatURL(path string) (string, error) {
 // redactURL is a heartbeat URL as logs show it: its scheme and host.
 func redactURL(s string) string { return heartbeatsettings.Redact(s) }
 
-// heartbeatFor picks the URL this run pings and caches it in state: the Owner's panel
-// setting wins over the host file; with the database unreadable the last run's panel URL
-// stands, and the host file is used only when the panel had none.
+// Cache panel heartbeat overrides across database outages.
 func heartbeatFor(state *watchdog.State, panel *heartbeatsettings.Settings, panelErr error, file string) string {
 	switch {
 	case panel != nil:
@@ -153,9 +140,7 @@ func heartbeatFor(state *watchdog.State, panel *heartbeatsettings.Settings, pane
 	return file
 }
 
-// standsBy reports whether this host stands by for another host's off-site
-// bucket (offsite.Status.Standby), however old that record is: the
-// installer's take-over or the host's first write ends it.
+// Standby remains effective until takeover or this host's first write, regardless of status age.
 func standsBy(offsiteOn bool, statusPath string) bool {
 	if !offsiteOn {
 		return false

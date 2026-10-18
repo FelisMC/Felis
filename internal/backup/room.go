@@ -9,20 +9,12 @@ import (
 	"syscall"
 )
 
-// MinFreeAfter is the share of the archive filesystem an on-demand backup must
-// leave free. The archive store sits on the node's disk beside the worlds and
-// the database; below about a tenth free the kubelet starts evicting pods
-// (https://docs.felismc.com/en/operations/storage#disk-full), so a backup that would cross it is refused.
+// MinFreeAfter protects node headroom on the disk shared by archives, worlds and the database.
 const MinFreeAfter = 0.10
 
-// ErrNoRoom is returned by CheckRoom when the archive would leave too little
-// free space.
 var ErrNoRoom = errors.New("backup: not enough free disk for the archive")
 
-// CheckRoom refuses an archive of srcDir into archiveDir that could push the
-// archive filesystem below minFree free. The world's uncompressed size stands
-// in for the archive's, which gzip only makes smaller. archiveDir need not
-// exist yet; its nearest existing parent is measured.
+// CheckRoom uses uncompressed world size as a conservative bound and measures the nearest existing archive parent.
 func CheckRoom(archiveDir, srcDir string, minFree float64) error {
 	dir := archiveDir
 	for {
@@ -39,7 +31,7 @@ func CheckRoom(archiveDir, srcDir string, minFree float64) error {
 	if err := syscall.Statfs(dir, &st); err != nil {
 		return fmt.Errorf("backup: measure %s: %w", dir, err)
 	}
-	bsize := uint64(st.Bsize) // uint32 on darwin
+	bsize := uint64(st.Bsize)
 	total := uint64(st.Blocks) * bsize
 	avail := uint64(st.Bavail) * bsize
 	if total == 0 {
@@ -57,7 +49,6 @@ func CheckRoom(archiveDir, srcDir string, minFree float64) error {
 	return nil
 }
 
-// treeBytes sums the sizes of the regular files under dir.
 func treeBytes(dir string) (uint64, error) {
 	var n uint64
 	err := filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {

@@ -12,13 +12,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// These tests cover the break-glass operator path that the menu added: the new
-// menuModel, the operation discriminator on ownerModel, and the root routing that
-// turns a menu choice into the right screen. Like tui_root_test.go they inject the
-// inter-screen messages directly and run the screens' outgoing commands by hand, so
-// no database, terminal, or huh key-replay is involved — only the wiring is under
-// test (the core provisioning logic is covered in breakglass_test.go).
-
 func TestNewOperatorModelDefaults(t *testing.T) {
 	m := newOperatorModel(context.Background(), &fakeOwnerStore{}, "root")
 	if m.operation != bgAddOperator {
@@ -30,9 +23,7 @@ func TestNewOperatorModelDefaults(t *testing.T) {
 	if m.step != owAuth {
 		t.Errorf("step = %v, want owAuth — the operator path always authenticates first", m.step)
 	}
-	// The username must NOT default to "owner" the way the Owner flow does: the
-	// operator path is insert-only, so a defaulted name would hit ErrConflict on the
-	// happy path every single time.
+	// The username must not default to "owner" as the Owner flow does: the operator path is insert-only, so a defaulted name would hit ErrConflict every time.
 	if m.ownerUser != "" {
 		t.Errorf("ownerUser = %q, want empty (no default for the insert-only operator path)", m.ownerUser)
 	}
@@ -73,7 +64,7 @@ func TestProvisionCmdSelectsPathByOperation(t *testing.T) {
 		if len(f.upserts) != 0 {
 			t.Errorf("want 0 owner upserts, got %d — the operator path must not use UpsertOwner", len(f.upserts))
 		}
-		// The operator path must NOT flip the global local-auth gate (Owner-only).
+		// The operator path must not flip the global local-auth gate, which is Owner-only.
 		if _, ok := f.settings[api.LocalAuthEnabledKey]; ok {
 			t.Error("the operator path flipped local auth — only the Owner thread may")
 		}
@@ -152,11 +143,6 @@ func TestOwnerModelProvisionErrorRouting(t *testing.T) {
 	})
 
 	t.Run("the Owner seat refusal returns to the form naming the seat", func(t *testing.T) {
-		// Upserting a fresh username while a seat is occupied would mint a second
-		// owner, so provisionOwner refuses with ownerSeatTakenError (Is
-		// api.ErrConflict) and the console must route back for a retype — the same
-		// recoverable contract as the operator clash, and the only Owner-path
-		// conflict there is.
 		m := newOwnerModel(ctx, &fakeOwnerStore{}, "root", true)
 		seatErr := &ownerSeatTakenError{seat: "seat-holder"}
 
@@ -258,8 +244,7 @@ func TestRootBreakGlassMenuOwnerChoice(t *testing.T) {
 }
 
 func TestRootBreakGlassSkipsMenuOnFreshMachine(t *testing.T) {
-	// No admin yet: bootstrapping the first Owner is the only sensible op, so the menu
-	// is skipped and the console opens straight on the Owner screen.
+	// No admin yet: the menu is skipped and the first Owner is bootstrapped directly.
 	m := newTestRoot(false, consoleModeBreakGlass, "")
 	if m.stage != stageOwner {
 		t.Fatalf("stage = %v, want stageOwner (no menu on a fresh machine)", m.stage)

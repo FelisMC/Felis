@@ -1,31 +1,5 @@
-# deploy/bootstrap.sh end to end on a fresh Ubuntu 24.04 x86_64 runner: the paths every
-# host goes through, run for real instead of by hand on a VM.
-#
-#   artifacts  this commit's release assets, built by deploy/build-release-artifacts.sh the
-#              way release.yml builds a tag's (amd64 only, the runners' architecture)
-#   install    a full install from those assets, the way a release installs, on a host with
-#              ufw enabled, then the same assets again (a rerun must converge without
-#              restarting what did not change, importing or uploading an image again, or
-#              touching Docker)
-#   readme     the documented one-line install as a new host runs it today: this commit's
-#              installer on its default channel, which installs the newest published
-#              release's binary, images and plugin from that release's assets; skipped until
-#              a release exists
-#   upgrade    the newest published release through its own installer and its own assets,
-#              rows of every kind seeded into its database, then this commit's assets on
-#              top of it; skipped until a release exists
-#   source     a full install built on the host from this checkout (FELIS_SKIP_FETCH):
-#              the fallback a release without assets, or an unsupported one, takes. It builds
-#              everything with Docker, so it runs by hand and weekly only
-#
-# This runs on pushes that touch what gets installed, by hand, and weekly (a moving
-# upstream: apt mirrors, k3s's install script and release assets, Adoptium).
-# deploy/e2e_check.sh holds the assertions, deploy/e2e_seed.sh the upgrade's seed and its check.
-#
-# An installer that stops on an upstream download refused or dropped (a GitHub 403, a 5xx, a
-# timeout) ends its job green, with a warning on the run: each install step hands a failed
-# run's log to deploy/e2e_upstream.sh, which sets E2E_UPSTREAM_SKIP for the job's later
-# steps. Every other installer failure, a 404 included, fails the job.
+# Test artifact installs, rerun convergence, release installs, upgrades, and source builds.
+# Only classified upstream outages may skip e2e steps; other failures fail the job.
 name: e2e
 
 on:
@@ -101,13 +75,7 @@ jobs:
           name: e2e-assets
           path: dist
 
-      # The runner has Docker preinstalled, so its absence proves nothing: the log shows
-      # whether bootstrap reached for it. From FELIS_ARTIFACT_DIR every image and the plugin
-      # come out of the assets, so it must not have. (`! grep` is spelled `if grep ... exit 1`
-      # below because bash -e ignores a failing `!` command.)
-      # ufw, enabled on many Ubuntu hosts, drops every inbound packet no rule admits, the
-      # pods' traffic to the API server among them; the runner ships it disabled. The
-      # runner's own traffic is outbound, which ufw lets through.
+      # Enable ufw to test real admission rules and verify artifact installs never invoke Docker.
       - name: Enable ufw
         run: sudo ufw --force enable
 
@@ -165,12 +133,7 @@ jobs:
           path: '*.log'
           if-no-files-found: ignore
 
-  # The documented install command on a fresh host: this commit's installer, as main serves it, on its
-  # default channel with nothing pinned. It resolves the newest release and installs that
-  # release's binary, images and plugin from its assets, each checked against its
-  # SHA256SUMS. The workflow's token is the only thing added: it lifts GitHub's limit of 60 API
-  # calls an hour for an address without one. FELIS_INSTALL_MODE picks the mode the setup
-  # console would ask for.
+  # Exercise the unpinned documented installer against checksum-verified latest release assets.
   readme:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -243,11 +206,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: bash deploy/e2e_release.sh find
 
-      # The release's own installer on its default channel, fetching the release's own
-      # binary: what a host that installed that release is running today. FELIS_REF would
-      # build the tag from source instead, a path no host takes by default. FELIS_RELEASE pins
-      # the tag found above; an installer older than FELIS_RELEASE ignores it and resolves
-      # the newest release, the same tag.
+      # Install a published release through its own installer before testing upgrades.
       - name: Install the newest release
         if: steps.release.outputs.tag != ''
         env:

@@ -32,10 +32,7 @@ interface Props {
   onSubmit: (name: string) => Promise<void>;
 }
 
-// NameDialog asks for one file or folder name. The problem with a name shows as
-// soon as something has been typed, so the button is never disabled without a
-// reason on screen; the server's own refusal lands in the same place. Mount it
-// afresh for each question (a key per opening): the field starts from `initial`.
+// Remount for each prompt so initial names and validation start fresh.
 export function NameDialog({
   open,
   onOpenChange,

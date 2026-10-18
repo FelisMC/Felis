@@ -33,10 +33,7 @@ import { lazyWithReload } from "@/lib/chunk";
 import { webglAvailable } from "@/lib/webgl";
 import type { Phase, MyServerView, WhitelistImage } from "@/lib/types";
 
-// three.js is heavy and only the Dashboard renders it — split it into its own
-// async chunk so the rest of the panel doesn't pay for it on first load.
-// A failed chunk reloads the tab once (new deploy); after that the card falls
-// back to the flat grid instead of taking the page down.
+// Retry a failed three.js chunk once, then use the flat grid.
 const VoxelFleet = lazyWithReload(() =>
   import("@/components/VoxelFleet").then((m) => ({ default: m.VoxelFleet })),
 );
@@ -198,7 +195,7 @@ function FleetView({
 }) {
   const { t } = useTranslation("dashboard");
 
-  // 1. 统计各状态 of 服务器数量
+  // 1. Count servers by state.
   const statusStats = useMemo(() => {
     let running = 0;
     let starting = 0;
@@ -234,14 +231,14 @@ function FleetView({
     ? Math.round((counts.players / statusStats.maxPlayers) * 100) 
     : 0;
 
-  // 2. 自建与外部镜像真实统计
+  // 2. Self-built and external image counts.
   const imageCount = (keep: (img: WhitelistImage) => boolean) =>
     images ? images.filter(keep).length : "—";
   const totalImagesCount = imageCount(() => true);
   const builtImagesCount = imageCount((img) => img.source === "built" || !img.source);
   const externalImagesCount = imageCount((img) => img.source === "external");
 
-  // 3. 我拥有及可认领服务器真实统计
+  // 3. Real counts of servers the caller owns or may claim.
   const ownedServersCount = useMemo(() => 
     servers.filter((s) => s.owned).length, 
     [servers]
@@ -251,7 +248,7 @@ function FleetView({
     [servers]
   );
 
-  // 4. 各种真实状态比率统计
+  // 4. Ratio of each real state.
   const runningRatio = useMemo(() => 
     servers.length > 0 ? Math.round((statusStats.running / servers.length) * 100) : 0,
     [servers, statusStats.running]
@@ -265,7 +262,7 @@ function FleetView({
     [servers, statusStats.failed]
   );
 
-  // 辅助渲染百分比进度条段
+  // Helper: a segment of the percentage bar.
   const renderBarSegment = (count: number, colorClass: string) => {
     if (servers.length === 0 || count === 0) return null;
     const widthPct = (count / servers.length) * 100;

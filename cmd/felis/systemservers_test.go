@@ -15,8 +15,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-// A system service must be born up, reaper-exempt, publicly wakeable, and
-// RCON-free — the uniform shape the topology invariants depend on.
 func TestBuildSystemServerShape(t *testing.T) {
 	ms, err := buildSystemServer(systemServerSpec{
 		name:      "login",
@@ -51,9 +49,6 @@ func TestBuildSystemServerShape(t *testing.T) {
 	}
 }
 
-// The login gate is the front door and the only safe fallback, so it carries no
-// fallback of its own; the lobby falls back to login. Neither may fall back to
-// the lobby — that would route a player past authentication.
 func TestSystemServerFallbackPolicy(t *testing.T) {
 	login, err := loginSystemServer("reg/limbo:1", "minecraft", "http://felis-api.felis.svc.cluster.local:8081", "mc.example.net", "console.mc.example.net")
 	if err != nil {
@@ -72,8 +67,6 @@ func TestSystemServerFallbackPolicy(t *testing.T) {
 	}
 }
 
-// buildSystemServer must refuse a spec that falls back to the lobby rather than
-// silently shipping the auth-bypass.
 func TestBuildSystemServerRejectsLobbyFallback(t *testing.T) {
 	_, err := buildSystemServer(systemServerSpec{
 		name:           "survival",
@@ -105,10 +98,6 @@ func TestBuildSystemServerRejectsBadInput(t *testing.T) {
 	}
 }
 
-// The login gate needs its deployment config as plain env: the internal API URL,
-// the root domain, the resolved panel host, and the lobby name — but NEVER the
-// service token (that is injected by the operator via secretKeyRef, never a literal
-// in the CRD).
 func TestLoginSystemServerEnv(t *testing.T) {
 	login, err := loginSystemServer("reg/limbo:1", "minecraft",
 		"http://felis-api.felis.svc.cluster.local:8081", "mc.example.net", "console.mc.example.net")
@@ -130,18 +119,12 @@ func TestLoginSystemServerEnv(t *testing.T) {
 			t.Errorf("env %s = %q, want %q", k, got[k], v)
 		}
 	}
-	// The CRD's EnvVar type has no valueFrom, so the token must NEVER appear here —
-	// it would have to be a plaintext value, which is the leak we refuse.
+	// The CRD's EnvVar has no valueFrom, so the token must never appear here as a plaintext value.
 	if _, leaked := got["FELIS_SERVICE_TOKEN"]; leaked {
 		t.Error("FELIS_SERVICE_TOKEN must not be baked into the CRD (operator injects it via secretKeyRef)")
 	}
 }
 
-// ensureSecretReplica copies a Secret from the control namespace into the minecraft
-// namespace (create-if-absent), so the operator's secretKeyRef on the backend pod
-// resolves. It must not overwrite an existing replica, and must degrade gracefully
-// when the source is missing or the namespaces coincide. Exercised here with the
-// Velocity forwarding secret, which setup replicates in this never-overwrite mode.
 func TestEnsureSecretReplica(t *testing.T) {
 	scheme := newSystemServerScheme(t)
 	ctx := context.Background()
@@ -250,10 +233,6 @@ func TestEnsureSecretReplica(t *testing.T) {
 	})
 }
 
-// The felis-config mirror is the one replica that must refresh: it is a rendered
-// config, and a stale workload-side copy (backup/restore/fileedit Jobs, the reaper)
-// misbehaves silently — a rotated database credential keeps the control plane moving
-// while every backup Job keeps failing auth. Credential Secrets keep create-if-absent.
 func TestEnsureSecretReplicaRefresh(t *testing.T) {
 	scheme := newSystemServerScheme(t)
 	ctx := context.Background()
@@ -343,8 +322,6 @@ func newSystemServerScheme(t *testing.T) *runtime.Scheme {
 	return scheme
 }
 
-// ensureSystemServers creates both services on a fresh cluster, then is a no-op
-// on re-run (create-if-absent), and skips a service whose image is unset.
 func TestEnsureSystemServersIdempotent(t *testing.T) {
 	scheme := newSystemServerScheme(t)
 	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
@@ -436,12 +413,6 @@ func TestEnsureSystemServersSkipsUnsetImage(t *testing.T) {
 	}
 }
 
-// TestSystemServerRconPolicy pins which system service gets the RCON write
-// channel. This is not a preference: the operator gates readiness on the RCON
-// probe, so enabling it on a backend that serves no RCON listener would hold that
-// server in Starting until it was marked Failed. The login limbo is exactly that
-// backend (LOOHP/Limbo has no RCON) AND it is the front door, so getting this
-// backwards locks every player out of the deployment.
 func TestSystemServerRconPolicy(t *testing.T) {
 	login, err := loginSystemServer("reg/limbo:1", "minecraft", "http://api:8081", "mc.example.net", "console.mc.example.net")
 	if err != nil {
@@ -473,12 +444,6 @@ func TestSystemServerRconPolicy(t *testing.T) {
 	}
 }
 
-// A root-domain change leaves the login gate handing every joining player a console
-// link built from the old domain — the one screen an unauthenticated player is
-// guaranteed to see. setup is the only thing that ever rewrites that env, and it is
-// create-if-absent, so before this it could not. The interesting half of the test is
-// the second one: converging config must not become a licence to clobber the operator
-// edits create-if-absent exists to protect.
 func TestEnsureSystemServersRefreshesDerivedEnv(t *testing.T) {
 	ctx := context.Background()
 	scheme := runtime.NewScheme()
@@ -578,10 +543,6 @@ func TestEnsureSystemServersRefreshesDerivedEnv(t *testing.T) {
 	})
 }
 
-// Setup's replicas carry each workload its own caller token and nothing more: the
-// login gate gets felis-limbo-token in the minecraft namespace, the build Jobs get
-// felis-build-token in the build namespace, a replica left stale by a rotation is
-// brought up to date, and the proxy's felis-service-token is copied nowhere.
 func TestProvisionSecretReplicasCarryCallerTokens(t *testing.T) {
 	scheme := newSystemServerScheme(t)
 	ctx := context.Background()

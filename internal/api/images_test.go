@@ -14,9 +14,6 @@ import (
 	"felis.lolicon.best/internal/build"
 )
 
-// fakeBuilder is an in-memory ImageBuilder for the handler tests. Each field is
-// the canned outcome of the matching call; the recorders let a test assert what
-// the handler forwarded.
 type fakeBuilder struct {
 	submitted   *build.Request
 	submitErr   error
@@ -133,7 +130,6 @@ func adminAPI(b ImageBuilder) *API {
 	return api
 }
 
-// Every image route is admin-tier: a non-admin is rejected before the handler.
 func TestImageRoutesAreAdminOnly(t *testing.T) {
 	cases := []struct {
 		method, target, body string
@@ -172,7 +168,6 @@ func TestBuildImageSubmits(t *testing.T) {
 	if fb.submitted == nil {
 		t.Fatal("Submit was not called")
 	}
-	// The requester identity must come from the Access principal, never the body.
 	if fb.submitted.RequestedBy != "admin@example.net" {
 		t.Errorf("requested_by = %q, want the admin email", fb.submitted.RequestedBy)
 	}
@@ -265,7 +260,6 @@ func TestListBuilds(t *testing.T) {
 	}
 }
 
-// An empty history is an empty list, so the panel never has to handle null.
 func TestListBuildsEmptyIsAnArray(t *testing.T) {
 	api := adminAPI(&fakeBuilder{})
 	w := do(api.ExternalHandler(), "GET", "/api/v1/images/build", "", nil)
@@ -331,8 +325,6 @@ func TestRemoveImageRequiresRef(t *testing.T) {
 	}
 }
 
-// When no Builder is configured, image routes report 503 — but only after the
-// admin gate, so the boundary is still enforced.
 func TestImageRoutesWithoutBuilderAre503(t *testing.T) {
 	api := newTestAPI(newFakeRepo(), newFakeCluster())
 	api.Builder = nil
@@ -360,8 +352,6 @@ func gzipped(t *testing.T, s string) []byte {
 	return buf.Bytes()
 }
 
-// scannedBuilder holds one blocked scan of bld-7 that kept its report but no
-// SBOM.
 func scannedBuilder(t *testing.T) *fakeBuilder {
 	return &fakeBuilder{scans: map[string]*build.Scan{"bld-7": {
 		BuildID:   "bld-7",

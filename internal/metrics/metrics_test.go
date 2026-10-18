@@ -8,9 +8,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
-// wantNames is the exact set of metric names spec §23 mandates "at minimum".
-// Pinning them here makes a rename a deliberate, test-visible act rather than a
-// silent dashboard/alert break.
+// wantNames is the metric set dashboards and alerts depend on; a rename must be deliberate.
 var wantNames = []string{
 	"felis_servers_total",
 	"felis_server_phase",
@@ -26,9 +24,7 @@ func TestRegisterExposesNamedFelisMetrics(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	// Record into each collector through its typed API so a Gather emits the
-	// family — this proves the exported vars are the ones actually registered,
-	// not shadow copies.
+	// Record through each typed collector so Gather proves these are the registered vars.
 	ServersTotal.WithLabelValues("Running").Set(3)
 	ServerPhase.WithLabelValues("survival", "", "Running", "Running").Set(1)
 	SetBuildInfo("operator", "v1.2.3")
@@ -58,9 +54,6 @@ func TestRegisterExposesNamedFelisMetrics(t *testing.T) {
 	}
 }
 
-// TestSyncServerPhasesDropsDeletedServers: each sync publishes exactly the
-// servers in the snapshot, so a server that left the fleet or changed phase keeps
-// no stale series behind.
 func TestSyncServerPhasesDropsDeletedServers(t *testing.T) {
 	SyncServerPhases([]ServerPhaseSample{
 		{Server: "login", Role: "login", Phase: "Starting", Desired: "Running"},
@@ -79,10 +72,7 @@ func TestSyncServerPhasesDropsDeletedServers(t *testing.T) {
 }
 
 func TestSyncServerGaugeResetsStaleStates(t *testing.T) {
-	// Self-contained (Reset->sync->assert within this one test) so it never
-	// clobbers another test's ServersTotal children. The correctness point is the
-	// Reset inside SyncServerGauge: a state present in one snapshot but absent from
-	// the next must drain to 0, not retain its stale last value forever.
+	// Self-contained: a state missing from the next snapshot must drain to 0.
 	SyncServerGauge([]string{"Running", "Running", "Stopped"})
 	if got := testutil.ToFloat64(ServersTotal.WithLabelValues("Running")); got != 2 {
 		t.Errorf("Running = %v, want 2", got)
@@ -115,10 +105,7 @@ func TestRegisterIsIdempotent(t *testing.T) {
 }
 
 func TestCountersRecordExpectedValues(t *testing.T) {
-	// These collectors are package-level singletons. This test asserts on a
-	// gauge child labelled "Stopped" (no other test touches it) and a >=1 bound
-	// on the build-failure counter, so values stay stable regardless of test
-	// ordering or accumulation across the binary.
+	// Package-level collectors are shared; assert on a label no other test touches.
 	reg := prometheus.NewRegistry()
 	if err := Register(reg); err != nil {
 		t.Fatalf("Register: %v", err)
@@ -141,8 +128,6 @@ func TestCountersRecordExpectedValues(t *testing.T) {
 	}
 }
 
-// The sign-in alerts use increase(), which needs a zero sample before the first
-// event; every child they watch must be exposed before anything is counted.
 func TestSignInSeriesStartAtZero(t *testing.T) {
 	want := map[string]int{
 		"felis_mail_total":              6,

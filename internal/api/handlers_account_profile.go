@@ -59,10 +59,7 @@ func (a *API) handleLookupProfile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, profile)
 }
 
-// handleLinkProfile is a staff designation, not proof of game-account ownership.
-// The user must already have panel authority and a fresh login factor. A client
-// supplies only the selected source and native role UUID; mapping and target user
-// are determined on the server.
+// handleLinkProfile assigns staff roles, not ownership proof; source mapping and target identity are determined server-side.
 func (a *API) handleLinkProfile(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	if !a.requireReauth(w, r, p) {
@@ -152,7 +149,6 @@ func (a *API) lookupProfile(ctx context.Context, source, input string) (*linkedP
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	// Use the same bounded, redirect-free client as game authentication.
 	resp, err := authHTTPClient.Do(req)
 	if err != nil {
 		return nil, newError(http.StatusServiceUnavailable, "auth_source_unavailable", "the selected authentication source is unavailable")

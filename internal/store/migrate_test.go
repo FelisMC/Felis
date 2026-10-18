@@ -26,7 +26,7 @@ func TestLoadMigrationsOrderedAndWellFormed(t *testing.T) {
 			t.Errorf("migrations not strictly ascending at %d: %d then %d", i, ms[i-1].Version, ms[i].Version)
 		}
 	}
-	// The init migration must define the core business tables (spec §6).
+	// The init migration defines the core business tables.
 	for _, want := range []string{"CREATE TABLE users", "CREATE TABLE servers", "CREATE TABLE world_backups"} {
 		if !strings.Contains(ms[0].SQL, want) {
 			t.Errorf("init migration missing %q", want)

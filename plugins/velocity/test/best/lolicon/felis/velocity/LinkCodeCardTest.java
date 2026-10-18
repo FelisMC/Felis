@@ -7,17 +7,6 @@ import net.kyori.adventure.text.format.TextDecoration;
 
 import java.util.List;
 
-/**
- * LinkCodeCardTest checks the {@code /link} reply: the code, and a panel address the
- * player can click open instead of typing it out.
- *
- * <p>Hermetic and framework-free like {@link InviteCardTest}, and run the same way:
- * {@code javac -cp <adventure-api.jar>:<adventure-key.jar>:<examination-api.jar> -d <out>
- * velocity/src/main/java/best/lolicon/felis/velocity/LinkCodeCard.java
- * velocity/test/best/lolicon/felis/velocity/LinkCodeCardTest.java && java -cp
- * <out>:<adventure-api.jar>:<adventure-key.jar>:<examination-api.jar>
- * best.lolicon.felis.velocity.LinkCodeCardTest}.
- */
 public final class LinkCodeCardTest {
 
     private static final String URL = "https://console.example.test/link";

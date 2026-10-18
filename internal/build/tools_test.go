@@ -5,9 +5,6 @@ import (
 	"testing"
 )
 
-// A build reads every tool from the platform registry's copy by default, and
-// each copy's repository lives under mirror/, which only the platform principal
-// may write and the pruner keeps.
 func TestToolRefsDefaultToTheRegistryCopies(t *testing.T) {
 	got := Config{RegistryURL: "registry.felis.svc:5000"}.ToolRefs()
 	want := []string{
@@ -25,8 +22,6 @@ func TestToolRefsDefaultToTheRegistryCopies(t *testing.T) {
 		t.Errorf("explicit values lost: %v", explicit)
 	}
 
-	// Without a registry the images are the pinned upstream sources and Trivy
-	// keeps its own DB default.
 	bare := Config{}.ToolRefs()
 	if !strings.Contains(bare[0], "@sha256:") || !strings.Contains(bare[1], "@sha256:") || bare[2] != "" || bare[3] != "" {
 		t.Errorf("bare ToolRefs = %v", bare)

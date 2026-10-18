@@ -20,52 +20,20 @@ import (
 	"felis.lolicon.best/internal/netguard"
 )
 
-// Felis-nano: the multi-source hasJoined multiplexer behind player game-login.
-//
-// Velocity is pointed here with -Dmojang.sessionserver and issues the request itself, not
-// through authlib. On login it computes the serverId hash and GETs hasJoined; this
-// endpoint fans that query out to the configured Yggdrasil roots in priority order
-// (Mojang first, 正版优先) and returns the first source that validates. Each upstream
-// Yggdrasil runs its own serverId-hash check — the multiplexer only relays, it computes
-// no hashes.
-//
-// The one non-negotiable transform: a non-identity (third-party) source's UUID is
-// self-asserted, so its profile is rewritten into a per-source namespace
-// (canonical = UUIDv3(felisAuthNS, tag+":"+nativeID)) BEFORE it leaves the resolver.
-// Mojang stays identity. This makes the reclaim invariant — "the genuine Mojang player
-// has a DIFFERENT UUID from any squatter" — true by construction, not assumed: MD5
-// preimage resistance means no third-party source can mint a Mojang-space UUID, and the
-// per-tag namespace means two sources cannot collide onto one identity. Every downstream
-// key (account_links, username_blacklist, owner checks) then sees one canonical UUID.
-//
-// One consequence a backend operator meets: a chat-session key a third-party source signed
-// over its native UUID cannot verify against the canonical one, even on a backend that
-// trusts that source's key. Such players' chat can only be accepted unsigned.
+// Third-party profiles use source-namespaced UUIDs; chat signatures over their native UUIDs require unsigned-chat support.
 
-// felisAuthNS is the fixed UUIDv3 namespace every third-party profile is rewritten
-// under (see the rewrite rationale above). Derived from the project name, not a magic
-// literal, so its origin is self-documenting; the exact value only has to be stable.
+// felisAuthNS must remain stable to preserve third-party player identities.
 var felisAuthNS = uuid.NewSHA1(uuid.NameSpaceURL, []byte("nano.felis.lolicon.best/auth-source"))
 
-// authHTTPClient calls the upstream Yggdrasil roots. The timeout bounds one login
-// against a hung source; the resolver moves on to the next source on any failure.
-// One shared client, sequential priority scan — a third-party login costs one
-// wasted Mojang round-trip; add parallel fan-out only if login latency bites.
+// authHTTPClient bounds each source request; sources are queried sequentially in priority order.
 var authHTTPClient = &http.Client{
 	Timeout:   5 * time.Second,
 	Transport: upstreamTransport,
-	// A redirect is not a hasJoined answer. Following one would let a configured root point
-	// this host at any URL it can reach — this listener included, where each hop re-runs the
-	// whole source scan inside the same login's timeout. The 3xx is returned as-is and the
-	// resolver skips that source like any other non-200.
+	// Reject redirects to prevent configured sources from targeting arbitrary URLs or recursively calling this listener.
 	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 }
 
-// upstreamTransport caps response headers, which the 64 KiB body limit does not cover. The
-// default allows 1 MiB, so a root that sends that much and then stalls the body pins a few
-// MiB per in-flight login for the whole timeout, and enough parallel logins OOM the host
-// for every source. Real roots answer in well under 1 KiB of headers. Its dialer refuses
-// link-local addresses (netguard.RefuseLinkLocal).
+// upstreamTransport separately bounds headers and rejects link-local addresses; the body limit does not cover headers.
 var upstreamTransport = func() *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.MaxResponseHeaderBytes = 16 << 10
@@ -73,37 +41,23 @@ var upstreamTransport = func() *http.Transport {
 	return t
 }()
 
-// AuthSource is one upstream Yggdrasil root in the multiplexer's priority list (config
-// order = priority). URL is the full hasJoined endpoint the query string is appended to.
-// Identity marks the authoritative source (Mojang) whose UUIDs are trusted as-is; every
-// other source is rewritten into felisAuthNS. Prefix is the in-game rename applied to a
-// player of this source who is holding a Mojang player's name (see prefixedName); it is
-// unused on the identity source, whose players are never renamed.
+// AuthSource order sets priority; Identity trusts native UUIDs, while other sources are rewritten into felisAuthNS.
 type AuthSource struct {
 	Tag      string
 	Prefix   string
 	URL      string
-	APIURL   string // optional Yggdrasil API root for role lookup
+	APIURL   string
 	Identity bool
 }
 
-// sessionProfile is the Mojang hasJoined contract. properties is relayed verbatim
-// (json.RawMessage) so a source's signed textures survive the multiplexer untouched, and
-// it is always emitted as an array: Velocity's GameProfile parser throws on a missing or
-// null properties key, while a Yggdrasil root may legitimately send [] or omit it for a
-// player with no skin.
+// sessionProfile preserves signed properties verbatim and emits an array because Velocity rejects missing or null properties.
 type sessionProfile struct {
 	ID         string            `json:"id"`
 	Name       string            `json:"name"`
 	Properties []json.RawMessage `json:"properties"`
 }
 
-// HasJoinedHandler returns an http.Handler serving only the Felis-nano hasJoined
-// multiplexer route (GET /session/minecraft/hasJoined), for a standalone host that
-// federates logins without standing up the full felis-api. sources is the priority list
-// (put the Mojang identity source first for 正版优先); repo backs the reclaim blacklist
-// gate — a stub that never bars is fine for a host without the reclaim DB. The full
-// felis-api mounts the same handler through its internal-face route table instead.
+// HasJoinedHandler expects priority-ordered sources with Mojang first; repo enforces the reclaim blacklist.
 func HasJoinedHandler(sources []AuthSource, repo Repo) http.Handler {
 	a := &API{AuthSources: sources, Repo: repo}
 	mux := http.NewServeMux()
@@ -111,15 +65,9 @@ func HasJoinedHandler(sources []AuthSource, repo Repo) http.Handler {
 	return mux
 }
 
-// handleHasJoined is the multi-source session verifier (Felis-nano). It is a Public
-// internal-face route: Velocity speaks the vanilla sessionserver protocol and sends no
-// service token. A rejected login is 204 No Content — exactly what Mojang returns for an
-// invalid session, which Velocity answers with its online-mode-only kick.
+// handleHasJoined accepts the tokenless sessionserver protocol; rejected sessions return 204.
 func (a *API) handleHasJoined(w http.ResponseWriter, r *http.Request) {
-	// Velocity sends no body. When a request declares one anyway, net/http tries to drain it
-	// before writing any answer, so one that never arrives holds the connection with no
-	// timeout: ReadHeaderTimeout stopped at the headers. Marking the reply as the last one on
-	// this connection skips the drain.
+	// Close requests with unexpected bodies so net/http cannot block draining a body that never arrives.
 	if r.ContentLength != 0 {
 		w.Header().Set("Connection", "close")
 		w.WriteHeader(http.StatusBadRequest)
@@ -135,9 +83,7 @@ func (a *API) handleHasJoined(w http.ResponseWriter, r *http.Request) {
 
 	prof, src, failed := a.resolveHasJoined(r.Context(), username, serverID, ip)
 	if prof == nil {
-		// With a source down, "nobody knows this player" is not established: its player may
-		// be the one logging in. 503 makes Velocity report the auth servers as down and log
-		// the status, where a 204 would tell that player their account is offline-mode.
+		// An unavailable source is not a rejected session; return 503 so Velocity reports an authentication outage.
 		if failed {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
@@ -146,39 +92,26 @@ func (a *API) handleHasJoined(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Canonicalize identity. A trusted (Mojang) source keeps its UUID; a self-asserted
-	// source is rewritten into felisAuthNS so it can never land in Mojang's UUID space
-	// nor onto another source's. resolveHasJoined has already screened both shapes and
-	// skipped unusable ones as failed; the two guards below are the last line before
-	// anything leaves, kept even though nothing reaches them.
+	// Keep Mojang UUIDs unchanged and namespace third-party UUIDs before returning them downstream.
 	canonical, err := canonicalProfileUUID(src, prof.ID)
 	if err != nil {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	if !src.Identity {
-		// A third-party source is untrusted input, its name included: nothing stops a
-		// hostile or sloppy root from answering with "§4admin", an empty string, or 200
-		// characters, all of which must not be relayed straight into the proxy's player
-		// list. Screened in resolveHasJoined; this is the last-line guard.
+		// Treat third-party profile names as untrusted even after upstream resolution.
 		if !mcUsernameRe.MatchString(prof.Name) {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 
-		// Give a Mojang player's name back to the Mojang player. The UUID rewrite above
-		// already keeps the two apart as identities, but the proxy's player registry is
-		// keyed on the NAME (Velocity: "You are already connected to this proxy!"), so
-		// without this they cannot even be online at the same time. Renaming only on an
-		// actual collision leaves the ordinary third-party player's name untouched.
+		// Velocity keys connected players by name; rename third-party collisions so the Mojang player can connect.
 		if isPremiumName(r.Context(), prof.Name) {
 			prof.Name = prefixedName(src.Prefix, prof.Name)
 		}
 	}
 
-	// Bar gate at the single chokepoint every login crosses, so a reclaimed squatter
-	// stays out even on a consumer with no limbo plugin. Keyed on the dashed canonical
-	// UUID — the same form Repo.ReclaimUsername stores.
+	// Apply the reclaim blacklist to the canonical dashed UUID on every login, including clients without the limbo plugin.
 	barred, err := a.Repo.IsUsernameBlacklisted(r.Context(), canonical.String())
 	if err != nil {
 		writeError(w, r, err)
@@ -189,35 +122,21 @@ func (a *API) handleHasJoined(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Emit the canonical UUID undashed — the 32-hex form Velocity's GameProfile expects.
+	// Velocity expects the canonical UUID as 32 undashed hex characters.
 	prof.ID = hex.EncodeToString(canonical[:])
 	if prof.Properties == nil {
-		prof.Properties = []json.RawMessage{} // a nil slice would marshal as null
+		prof.Properties = []json.RawMessage{} // encode an array instead of null
 	}
 	writeJSON(w, http.StatusOK, prof)
 }
 
-// maxHasJoinedParam bounds each query value before it is forwarded to every source. What
-// Velocity sends fits with room to spare: a login name of at most 16 characters, a signed
-// SHA-1 hex serverId of at most 41, a textual IP address. Only a direct caller sends more.
 const maxHasJoinedParam = 64
 
-// mcUsernameRe is Minecraft's username charset — the trust boundary on a third-party
-// source's self-asserted profile name.
 var mcUsernameRe = regexp.MustCompile(`^[A-Za-z0-9_]{3,16}$`)
 
-// mcUsernameMax is the protocol's username length ceiling, which prefixedName must respect.
 const mcUsernameMax = 16
 
-// prefixedName is the squatter rename: ("LS", "steve") → "LS_steve". The base name is
-// TRUNCATED to fit rather than the rename being skipped when it would not fit — skipping is
-// what would silently hand a 14-character premium name back to the squatter.
-//
-// Two players of one source whose names agree on their first mcUsernameMax-len(prefix)-1
-// characters truncate onto the same in-game name, as does a prefixed name that happens to be
-// a premium name itself. Both cost an "already connected" bounce, not an identity: the UUID
-// rewrite is what keeps players apart, and it does not depend on the name at all. Add a
-// disambiguating suffix only if real players actually collide.
+// prefixedName truncates to the protocol limit; collisions may reject a connection but do not merge UUID identities.
 func prefixedName(prefix, name string) string {
 	p := prefix + "_"
 	if keep := mcUsernameMax - len(p); len(name) > keep {
@@ -226,8 +145,7 @@ func prefixedName(prefix, name string) string {
 	return p + name
 }
 
-// canonicalProfileUUID is shared by game login and staff-initiated role binding.
-// Keep the source's native ID byte-for-byte: existing third-party identities use it.
+// canonicalProfileUUID preserves the source-native ID byte-for-byte to maintain existing third-party identities.
 func canonicalProfileUUID(src AuthSource, nativeID string) (uuid.UUID, error) {
 	if src.Identity {
 		return uuid.Parse(nativeID)
@@ -235,23 +153,12 @@ func canonicalProfileUUID(src AuthSource, nativeID string) (uuid.UUID, error) {
 	return uuid.NewMD5(felisAuthNS, []byte(src.Tag+":"+nativeID)), nil
 }
 
-// mojangProfileAPI answers the one question that decides a rename: is this username
-// registered to a Mojang account? A var, not a const, so a test can point it at a stub
-// instead of the real Mojang.
 var mojangProfileAPI = "https://api.mojang.com/users/profiles/minecraft/"
 
-// profileHTTPClient is deliberately more impatient than authHTTPClient: the name lookup is a
-// SECOND Mojang round-trip on a third-party login (the identity leg already spent one), and
-// api.mojang.com is exactly what is unreliable from the networks these servers sit on. A
-// slow answer counts as taken instead of holding the login open.
+// profileHTTPClient uses a shorter timeout for the second Mojang lookup; failures conservatively reserve the name.
 var profileHTTPClient = &http.Client{Timeout: 2 * time.Second, Transport: upstreamTransport}
 
-// A name's premium status changes on human timescales, not per login, so it is cached — but
-// asymmetrically, because the two directions have very different costs. "Taken" changes
-// only when its owner renames away, and a stale "taken" costs a third-party player nothing
-// but a prefix. "Free" can stop being true the moment someone buys that name, and a stale
-// "free" is the dangerous one: it leaves a squatter holding a name its real owner has just
-// bought. So a "free" answer is trusted for minutes and a "taken" answer for a day.
+// Cache free names briefly because purchase can invalidate them; stale reserved names cost only a prefix.
 const (
 	premiumTakenTTL = 24 * time.Hour
 	premiumFreeTTL  = 10 * time.Minute
@@ -268,12 +175,7 @@ var premiumNames = struct {
 	m map[string]premiumEntry
 }{m: make(map[string]premiumEntry)}
 
-// isPremiumName reports whether username belongs to a real Mojang account — which is what
-// makes a third-party player holding it a squatter. A lookup failure fails CLOSED (assume
-// premium → rename the third-party player), even over an expired "free": the name may have
-// been bought since, and a Mojang outage must not let a squatter keep it. Being wrong that
-// way costs a cosmetic prefix; being wrong the other way bounces the name's actual owner off
-// the proxy.
+// isPremiumName treats lookup failures as taken, including after an expired free-name cache entry.
 func isPremiumName(ctx context.Context, username string) bool {
 	key := strings.ToLower(username)
 
@@ -290,10 +192,7 @@ func isPremiumName(ctx context.Context, username string) bool {
 	}
 
 	premiumNames.Lock()
-	// Bounded by dropping the whole map rather than evicting LRU. Any third-party source that
-	// validates a login mints an entry, so a hostile one can force clears; that costs repeat
-	// lookups, or a fail-closed prefix while Mojang is unreachable, never an identity. This
-	// is a backstop against an unbounded map, not a cache policy worth tuning.
+	// Bound cache memory by clearing it; additional lookups still fail closed when Mojang is unavailable.
 	if len(premiumNames.m) >= premiumCacheMax {
 		clear(premiumNames.m)
 	}
@@ -309,9 +208,7 @@ func premiumTTL(taken bool) time.Duration {
 	return premiumFreeTTL
 }
 
-// lookupPremiumName asks Mojang whether a name is registered: 200 = it is, 404 (204 on the
-// legacy endpoint) = it is free. Anything else is an ERROR, never a "no" — a 429 or a 503
-// must not read as "this name is unowned"; see isPremiumName's fail-closed rule.
+// lookupPremiumName treats only 404 or legacy 204 as free; outages and throttling are errors.
 func lookupPremiumName(ctx context.Context, username string) (bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, mojangProfileAPI+url.PathEscape(username), nil)
 	if err != nil {
@@ -331,12 +228,7 @@ func lookupPremiumName(ctx context.Context, username string) (bool, error) {
 	return false, fmt.Errorf("mojang profile api: %s", resp.Status)
 }
 
-// resolveHasJoined queries each configured source in priority order and returns the
-// first that validates the session (200 with a profile). 204 is "not my player". Any other
-// outcome (unreachable, another status, a body that is not a profile, or a profile this
-// multiplexer will not emit) skips the source too, but is logged with its tag and reported
-// as failed: otherwise a dead or mistyped source looks exactly like a player it does not
-// know, and nobody finds out.
+// resolveHasJoined returns the first valid profile in priority order and distinguishes rejection from upstream failure.
 func (a *API) resolveHasJoined(ctx context.Context, username, serverID, ip string) (prof *sessionProfile, src AuthSource, failed bool) {
 	sources, err := a.currentAuthSources(ctx)
 	if err != nil {
@@ -381,12 +273,7 @@ func (a *API) resolveHasJoined(ctx context.Context, username, serverID, ip strin
 			failed = true
 			continue
 		}
-		// Screen what a 200 is allowed to mean BEFORE it can win. A profile this
-		// multiplexer will not emit — an identity UUID that does not parse, a third-party
-		// name outside the Minecraft charset — is the same class as a body that is not a
-		// profile: skip, log, count as failed. Letting it win would stop the ladder on one
-		// sloppy root (every source behind it silently unreachable) and read as "nobody
-		// knows this player" to Velocity while a source had actually answered.
+		// Validate a profile before accepting its source so an unusable response cannot hide later valid sources.
 		if src.Identity {
 			if _, perr := uuid.Parse(p.ID); perr != nil {
 				log.Printf("hasJoined: identity source %q answered 200 with an unparseable profile id %q", src.Tag, p.ID)

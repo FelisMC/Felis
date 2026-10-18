@@ -13,36 +13,27 @@ import (
 	"path"
 )
 
-// Content types of a download: a file goes out as its bytes, a folder as a zip.
 const (
 	DownloadFileType = "application/octet-stream"
 	DownloadZipType  = "application/zip"
 )
 
-// Download is one file or folder of a world on its way to the owner's browser,
-// run by the export Job (cmd/felis export --mode files). It passes the same
-// guards a read does (Guard): the forwarding-secret file never leaves, and
-// server.properties leaves with its RCON password redacted.
+// Download uses the same secret-file denial and properties redaction as reads.
 type Download struct {
-	// Size is a file download's exact length, or -1 for a folder, whose zip is
-	// written as it streams.
+	// Size=-1 denotes a folder whose zip length is unknown until streamed.
 	Size        int64
 	ContentType string
-	// Skipped and Withheld count, once WriteTo has run, the entries a folder
-	// download left out: links, devices and sockets, and guarded files.
+	// Skipped and Withheld are populated only after WriteTo completes.
 	Skipped, Withheld int
 
 	root  *os.Root
 	name  string
-	file  *os.File // a file download
-	body  []byte   // a redacted file download
+	file  *os.File
+	body  []byte
 	guard Guard
 }
 
-// OpenDownload opens name under rootPath for download. dir is what the caller
-// saw at name when it asked (the panel's listing): a download of a file that has
-// since become a folder, or the reverse, is refused rather than sent as the
-// other thing. The world root itself is refused; the world export sends that.
+// OpenDownload refuses changed file-versus-folder types and the world root rather than silently downloading different content.
 func OpenDownload(rootPath, name string, dir bool) (*Download, error) {
 	name = path.Clean(name)
 	if name == "." || name == "/" || !fs.ValidPath(name) {
@@ -104,7 +95,6 @@ func (d *Download) open(dir bool) error {
 	return nil
 }
 
-// Close releases what OpenDownload opened.
 func (d *Download) Close() error {
 	if d.file != nil {
 		d.file.Close()
@@ -112,10 +102,7 @@ func (d *Download) Close() error {
 	return d.root.Close()
 }
 
-// WriteTo writes the download to w: exactly Size bytes of a file, or a zip of a
-// folder whose entries sit under the folder's own name, so unpacking it makes
-// that one folder. A file that shrank since it was opened is an error, never a
-// short download passed off as whole.
+// WriteTo treats shrinking files as errors; folder entries remain under one top-level folder.
 func (d *Download) WriteTo(ctx context.Context, w io.Writer) error {
 	switch {
 	case d.body != nil:
@@ -131,11 +118,7 @@ func (d *Download) WriteTo(ctx context.Context, w io.Writer) error {
 	return d.writeZip(ctx, w)
 }
 
-// writeZip streams the folder as a zip. Everything is deflated at the fastest
-// level: the Job has one CPU and the owner's connection is the slower end, and
-// already-compressed files (jars, region files) come out as stored blocks
-// without costing much. Links, devices and sockets are left out, like a world
-// export leaves them out.
+// writeZip uses fast deflate and excludes links, devices and sockets.
 func (d *Download) writeZip(ctx context.Context, w io.Writer) error {
 	zw := zip.NewWriter(w)
 	zw.RegisterCompressor(zip.Deflate, func(out io.Writer) (io.WriteCloser, error) {
@@ -201,7 +184,6 @@ func (d *Download) writeZip(ctx context.Context, w io.Writer) error {
 	return zw.Close()
 }
 
-// ctxReader stops a long copy once ctx is done.
 type ctxReader struct {
 	ctx context.Context
 	r   io.Reader

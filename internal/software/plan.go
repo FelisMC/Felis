@@ -10,13 +10,8 @@ import (
 	"time"
 )
 
-// PlanFormat versions the Plan layout. An installation recorded under another
-// format is planned afresh.
 const PlanFormat = 1
 
-// Paths inside the data directory the installer manages. Everything under
-// .felis is the platform's; libraries/ is the standard place both the vanilla
-// bundler and the loaders put theirs.
 const (
 	ManagedDir    = ".felis"
 	ServerDir     = ".felis/server"
@@ -27,59 +22,39 @@ const (
 	ManagedPrefix = "felis-managed-"
 )
 
-// Plan is what installing a Spec takes: the files to fetch, an installer to run
-// for Forge and NeoForge, and how to launch the result. Planning reads upstream
-// metadata; carrying the plan out needs none, so a plan recorded on the volume
-// lets a server start while every metadata API is down.
+// Plan records enough metadata to reinstall or launch from the volume while upstream metadata APIs are unavailable.
 type Plan struct {
-	Format int  `json:"format"`
-	Spec   Spec `json:"spec"`
-	// Files are fetched into the data directory and checked against their
-	// digests.
-	Files []File `json:"files"`
-	// Installer is run with `--installServer` after Files are in place.
+	Format    int              `json:"format"`
+	Spec      Spec             `json:"spec"`
+	Files     []File           `json:"files"`
 	Installer *LoaderInstaller `json:"installer,omitempty"`
-	// Paperclip marks a Paper-family jar whose first start would download the
-	// vanilla jar it patches; the installer reads the jar's own record of that
-	// download and fetches it ahead, through the cache.
+	// Paperclip marks jars whose embedded vanilla-download metadata is prefetched before first start.
 	Paperclip bool `json:"paperclip,omitempty"`
-	// Mods are the identity-forwarding mods, installed under ModsDir unless the
-	// owner's own mods already carry the same mod id.
-	Mods   []Mod  `json:"mods,omitempty"`
-	Launch Launch `json:"launch"`
-	// MojangServer is the vanilla server jar the loaders build on, for the
-	// installer to place where Forge expects it.
-	MojangServer *File `json:"mojangServer,omitempty"`
+	// Mods installs managed forwarding mods unless an owner jar declares the same mod ID.
+	Mods         []Mod  `json:"mods,omitempty"`
+	Launch       Launch `json:"launch"`
+	MojangServer *File  `json:"mojangServer,omitempty"`
 }
 
-// File is one download.
 type File struct {
-	// Path is relative to the data directory.
 	Path   string `json:"path"`
 	URL    string `json:"url"`
 	Digest Digest `json:"digest"`
 	Size   int64  `json:"size,omitempty"`
 }
 
-// Mod is a forwarding mod: a File plus the mod id it declares.
 type Mod struct {
 	File
 	ModID string `json:"modId"`
 }
 
-// LoaderInstaller is a Forge or NeoForge installer jar.
 type LoaderInstaller struct {
-	Type Type `json:"type"`
-	Jar  File `json:"jar"`
-	// Version is the full Maven version ("1.20.1-47.3.0", "21.4.150"), which
-	// names the installer's output.
+	Type    Type   `json:"type"`
+	Jar     File   `json:"jar"`
 	Version string `json:"version"`
 }
 
-// Launch is how `felis launch` starts the server, after -Xmx and the owner's
-// JAVA_FLAGS: JVMArgs, then either -jar Jar, or -cp Classpath MainClass, or the
-// literal Args a Forge installer's run script names; then GameArgs and the
-// owner's spec.args.
+// Launch orders JVMArgs, the selected jar or classpath launch, GameArgs and owner arguments after heap and JAVA_FLAGS.
 type Launch struct {
 	JVMArgs   []string `json:"jvmArgs,omitempty"`
 	Jar       string   `json:"jar,omitempty"`
@@ -89,7 +64,7 @@ type Launch struct {
 	GameArgs  []string `json:"gameArgs,omitempty"`
 }
 
-// Plan resolves s into a Plan. s must already Validate.
+// Plan requires a Spec that already passed Validate.
 func (r *Resolver) Plan(ctx context.Context, s Spec) (*Plan, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
@@ -127,7 +102,6 @@ func (r *Resolver) Plan(ctx context.Context, s Spec) (*Plan, error) {
 	return p, nil
 }
 
-// mojangServerFile resolves the vanilla server jar of version mc.
 func (r *Resolver) mojangServerFile(ctx context.Context, mc string) (*File, error) {
 	v, err := r.mojangVersion(ctx, mc)
 	if err != nil {
@@ -228,8 +202,6 @@ func (r *Resolver) planPurpur(ctx context.Context, p *Plan) error {
 	return nil
 }
 
-// knotProfile is the launcher profile Fabric and Quilt meta serve for a loader
-// and game version.
 type knotProfile struct {
 	MainClass string `json:"mainClass"`
 	Libraries []struct {
@@ -241,12 +213,7 @@ type knotProfile struct {
 	} `json:"libraries"`
 }
 
-// planKnot plans a Fabric or Quilt server the way their installers lay one out:
-// every library of the loader's server profile under libraries/, the vanilla jar
-// beside them, and Knot started directly with the game jar named by system
-// property. The profile's libraries carry a sha256 where meta knows one; the
-// rest (the loader and intermediary jars) are checked against the digest file
-// their Maven repository serves.
+// planKnot prefetches loader-profile libraries and validates remaining Maven artifacts through digest sidecars.
 func (r *Resolver) planKnot(ctx context.Context, p *Plan) error {
 	s := p.Spec
 	var u, gameJarProperty string
@@ -300,10 +267,7 @@ func (r *Resolver) planKnot(ctx context.Context, p *Plan) error {
 	return nil
 }
 
-// planForge plans a Forge or NeoForge server: the installer, checked against
-// its Maven digest, and the vanilla jar it patches. The libraries the installer
-// needs are read out of the installer jar at install time (ForgeLibraries) and
-// fetched ahead, through the cache, so the installer finds them present.
+// planForge prefetches a verified installer and vanilla jar; additional libraries are discovered from the installer at install time.
 func (r *Resolver) planForge(ctx context.Context, p *Plan) error {
 	s := p.Spec
 	var full, artifact string
@@ -332,9 +296,7 @@ func (r *Resolver) planForge(ctx context.Context, p *Plan) error {
 	return nil
 }
 
-// requireHTTPS refuses a download URL upstream metadata handed out over plain
-// HTTP: the digest would still catch a swapped file, but nothing the installer
-// fetches needs to travel in the clear.
+// requireHTTPS rejects plaintext download URLs even when metadata supplies a digest.
 func requireHTTPS(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "https" || u.Host == "" {
@@ -343,12 +305,10 @@ func requireHTTPS(raw string) error {
 	return nil
 }
 
-// Maven is a Maven coordinate.
 type Maven struct {
 	Group, Artifact, Version, Classifier, Ext string
 }
 
-// ParseMaven parses "group:artifact:version[:classifier][@ext]".
 func ParseMaven(name string) (Maven, error) {
 	main, ext, _ := strings.Cut(name, "@")
 	if ext == "" {
@@ -370,7 +330,6 @@ func ParseMaven(name string) (Maven, error) {
 	return m, nil
 }
 
-// Path is the coordinate's repository path.
 func (m Maven) Path() string {
 	file := m.Artifact + "-" + m.Version
 	if m.Classifier != "" {
@@ -380,11 +339,7 @@ func (m Maven) Path() string {
 	return strings.ReplaceAll(m.Group, ".", "/") + "/" + m.Artifact + "/" + m.Version + "/" + file
 }
 
-// Log4Shell (CVE-2021-44228) mitigation, from Mojang's advisory of 2021-12-10:
-// 1.18 and 1.17 take -Dlog4j2.formatMsgNoLookups=true; 1.12 to 1.16.5 and 1.7 to
-// 1.11.2 run with the logging configuration Mojang published for each range.
-// Paper, Purpur and Forge shipped fixed builds of every version they still
-// served; the property is added for them too, since it costs nothing.
+// Apply Mojang's Log4Shell mitigations: no-lookups properties for newer affected versions and published logging configs for older ranges.
 var (
 	log4jConfig112 = File{
 		Path:   path.Join(Log4jDir, "log4j2_112-116.xml"),
@@ -415,16 +370,14 @@ func log4jMitigation(s Spec) ([]File, []string) {
 	}
 }
 
-// Modrinth projects of the forwarding mods. IDs, not slugs: a slug can be
-// renamed or taken over, a project id cannot.
+// Pin Modrinth project IDs instead of mutable slugs.
 const (
-	ModrinthFabricProxyLite  = "8dI2tmqs" // FabricProxy-Lite, fabric.mod.json id "fabricproxy-lite"
-	ModrinthFabricAPI        = "P7dR8mSH" // Fabric API, fabric.mod.json id "fabric-api"
-	ModrinthQuiltedFabricAPI = "qvIfYCYJ" // Quilted Fabric API, quilt.mod.json id "quilted_fabric_api"
-	ModrinthPCF              = "vDyrHl8l" // Proxy Compatible Forge, mods.toml modId "pcf"
+	ModrinthFabricProxyLite  = "8dI2tmqs"
+	ModrinthFabricAPI        = "P7dR8mSH"
+	ModrinthQuiltedFabricAPI = "qvIfYCYJ"
+	ModrinthPCF              = "vDyrHl8l"
 )
 
-// forwardingMod names one mod a type needs for Velocity forwarding.
 type forwardingMod struct {
 	project string
 	loader  string
@@ -436,10 +389,7 @@ func forwardingModsFor(t Type) []forwardingMod {
 	case Fabric:
 		return []forwardingMod{{ModrinthFabricProxyLite, "fabric", "fabricproxy-lite"}, {ModrinthFabricAPI, "fabric", "fabric-api"}}
 	case Quilt:
-		// Quilt loads Fabric mods, and FabricProxy-Lite's recent releases list
-		// only the fabric loader on Modrinth. Fabric API itself asks for a newer
-		// fabricloader than Quilt's loader stands in for, so Quilt takes Quilted
-		// Fabric API, which carries the same modules.
+		// Quilt uses Quilted Fabric API because Fabric API may require a newer Fabric loader than Quilt provides.
 		return []forwardingMod{{ModrinthFabricProxyLite, "fabric", "fabricproxy-lite"}, {ModrinthQuiltedFabricAPI, "quilt", "quilted_fabric_api"}}
 	case Forge:
 		return []forwardingMod{{ModrinthPCF, "forge", "pcf"}}
@@ -449,14 +399,7 @@ func forwardingModsFor(t Type) []forwardingMod {
 	return nil
 }
 
-// ForwardingFor decides whether a server can take the proxy's player identity.
-// The Paper family reads Velocity forwarding from its own config from 1.13 on.
-// The modded loaders need a forwarding mod published for their exact version:
-// FabricProxy-Lite (with Fabric API) for Fabric and Quilt, Proxy Compatible
-// Forge for Forge from 1.15.2 and NeoForge. Modrinth lists PCF for older Forge
-// too, but there it needs a mixin loader mod (MixinBootstrap, ModernMixins or
-// MixinBooter, per its README), so those versions are left out. A vanilla
-// server and a custom jar have no way to take it.
+// ForwardingFor excludes older Forge builds that need an extra mixin loader and requires forwarding mods for the exact game version.
 func (r *Resolver) ForwardingFor(ctx context.Context, s Spec) (string, error) {
 	switch s.Type {
 	case Paper, Purpur:
@@ -500,8 +443,7 @@ func (r *Resolver) forwardingMods(ctx context.Context, s Spec) ([]Mod, error) {
 	return out, nil
 }
 
-// modrinthLatest returns the newest release file of a Modrinth project for a
-// loader and game version, or nil when the project publishes none.
+// modrinthLatest returns nil when no release file matches the loader and game version.
 func (r *Resolver) modrinthLatest(ctx context.Context, project, loader, mc string) (*File, error) {
 	q := url.Values{}
 	q.Set("loaders", `["`+loader+`"]`)

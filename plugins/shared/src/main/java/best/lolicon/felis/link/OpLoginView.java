@@ -4,17 +4,6 @@ import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.Map;
 
-/**
- * OpLoginView is a pending op.console staff sign-in as the in-game approver sees it
- * ({@code GET /api/v1/internal/op-login/{id}}, spec §B op-login): whose account it is,
- * the address the code went to, and when and from where the sign-in was started. The
- * approve response reuses it for the account it approved, where only the username
- * and email are filled.
- *
- * <p>{@link #fromJson(Map)} tolerates absent fields like {@link ServerView}: a
- * missing string reads as "", an unparseable time as null, so a partial body never
- * throws on the proxy's command thread.
- */
 public final class OpLoginView {
     private final String requestId;
     private final String username;

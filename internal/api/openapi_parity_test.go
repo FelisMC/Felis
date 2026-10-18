@@ -15,13 +15,6 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// TestOpenAPISchemasMatchWireStructs keeps api/openapi.yaml honest about the
-// response bodies. Each named schema is compared with the Go struct the handler
-// actually encodes: the property set must equal the struct's JSON field set, and
-// `required` must list exactly the fields that are always on the wire (no
-// omitempty or omitzero). The panel's types are checked against the same schemas at compile
-// time (panel/src/lib/types.parity.ts), so a field added here without the docs
-// fails in Go, and one added to the docs without the panel fails in tsc.
 func TestOpenAPISchemasMatchWireStructs(t *testing.T) {
 	raw, err := os.ReadFile("../../api/openapi.yaml")
 	if err != nil {
@@ -102,8 +95,7 @@ type schemaDoc struct {
 	Items      *schemaDoc           `json:"items"`
 }
 
-// flatten resolves a top-level $ref and merges allOf parts into one object
-// schema, which is how a Go struct embedding another one is documented.
+// flatten merges top-level references and allOf so embedded Go structs compare as one object schema.
 func flatten(s schemaDoc, all map[string]schemaDoc) schemaDoc {
 	if s.Ref != "" {
 		s = all[strings.TrimPrefix(s.Ref, "#/components/schemas/")]
@@ -150,8 +142,6 @@ func wireFields(t reflect.Type) map[string]wireField {
 		if name == "" {
 			name = f.Name
 		}
-		// omitzero leaves a field out too, and is the one that does for a
-		// struct such as time.Time.
 		opts = "," + opts + ","
 		out[name] = wireField{omitempty: strings.Contains(opts, ",omitempty,") || strings.Contains(opts, ",omitzero,"), typ: f.Type}
 	}

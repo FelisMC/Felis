@@ -2,14 +2,7 @@ package best.lolicon.felis.link;
 
 import java.util.concurrent.atomic.AtomicLong;
 
-/**
- * ApiStats counts what a {@link FelisApiClient} sent and how it came back, so the
- * plugin can report felis-api's health as its callers see it: calls, the ones that
- * never got an answer (refused, reset, timed out), 4xx and 5xx answers, retries, and
- * latency. Every attempt is one call, a retried GET counting twice. Counters only
- * grow; {@link #window()} hands out what changed since the previous window, which is
- * what a periodic log line wants.
- */
+// Every attempt is one call, so a retried GET counts twice. Counters only grow; window() hands out what changed since the previous window, which suits a periodic log line.
 public final class ApiStats {
     private final AtomicLong calls = new AtomicLong();
     private final AtomicLong transport = new AtomicLong();
@@ -46,11 +39,7 @@ public final class ApiStats {
                 retries.get(), totalMillis.get(), maxMillis.get());
     }
 
-    /**
-     * window returns the counts since the previous call (the first call: since the
-     * client was made), with the slowest call in that span, and starts a new window, so
-     * consecutive windows never overlap.
-     */
+    // window resets interval counts and returns the slowest call without overlapping windows.
     public synchronized Snapshot window() {
         long max = windowMaxMillis.getAndSet(0);
         Snapshot now = new Snapshot(calls.get(), transport.get(), clientErrors.get(), serverErrors.get(),

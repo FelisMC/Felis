@@ -12,18 +12,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-// converge is the explicit pass over an installed system server whose CR predates
-// a field the desired spec has since gained (#1). It must fill exactly the
-// zero-valued whitelist fields and the derived env, and must not touch anything a
-// non-zero value already occupies — that is the operator's.
 func TestConvergeSystemServersFillsPredatedFields(t *testing.T) {
 	scheme := newSystemServerScheme(t)
 	ctx := context.Background()
 
-	// An old install: the lobby CR was created before the desired spec began
-	// rendering spec.rcon, and the login CR before the HTTP readiness gate existed.
-	// One derived env key is absent entirely (as if it were added later), and one
-	// hand-added env var plus a non-whitelisted spec field must survive.
+	// Missing defaults must be filled while custom environment and spec fields survive.
 	lobby, err := lobbySystemServer("reg/lobby:1", "minecraft")
 	if err != nil {
 		t.Fatalf("build lobby: %v", err)
@@ -99,8 +92,6 @@ func TestConvergeSystemServersFillsPredatedFields(t *testing.T) {
 	}
 }
 
-// A field already holding a non-zero value belongs to the operator: converge must
-// report "already converged" and write nothing.
 func TestConvergeSystemServersLeavesNonZeroFieldsAlone(t *testing.T) {
 	scheme := newSystemServerScheme(t)
 	ctx := context.Background()
@@ -139,8 +130,6 @@ func TestConvergeSystemServersLeavesNonZeroFieldsAlone(t *testing.T) {
 	}
 }
 
-// Guards: an absent CR is created as setup would create it, a foreign CR is
-// refused rather than adopted, and an unset image skips like the provisioner does.
 func TestConvergeSystemServersGuards(t *testing.T) {
 	scheme := newSystemServerScheme(t)
 	ctx := context.Background()
@@ -198,9 +187,6 @@ func TestConvergeSystemServersGuards(t *testing.T) {
 	})
 }
 
-// TestConvergeUserServerIdle fills the idle default only where spec.idle was
-// never set: a server whose idle stop was turned off (duration kept), one with
-// its own duration, and a system server all stay as they are.
 func TestConvergeUserServerIdle(t *testing.T) {
 	scheme := newSystemServerScheme(t)
 	ctx := context.Background()
@@ -244,10 +230,6 @@ func TestConvergeUserServerIdle(t *testing.T) {
 	}
 }
 
-// TestConvergeUserServerRcon reports a user server with no RCON block at all and
-// fills it only when asked, with the block CreateServer writes. RCON turned off on
-// purpose, a server with its own secret, and a system server stay as they are and
-// produce no line.
 func TestConvergeUserServerRcon(t *testing.T) {
 	scheme := newSystemServerScheme(t)
 	ctx := context.Background()

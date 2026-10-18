@@ -69,9 +69,6 @@ func TestStopSupersedesExplicitRestart(t *testing.T) {
 	}
 }
 
-// Once the automatic restarts are spent, a retry request starts the server over
-// with the whole budget back: the pod is recreated, the start re-anchored, and
-// the next timeout is retried automatically again.
 func TestStartRetryRevivesAServerThatGaveUp(t *testing.T) {
 	srv := runningServer()
 	srv.Spec.Startup.TimeoutSeconds = 30
@@ -121,7 +118,7 @@ func TestStartRetryRevivesAServerThatGaveUp(t *testing.T) {
 	}
 	recreatePod()
 
-	// The budget is really back: this start times out and is retried on its own.
+	// Budget restored: this start times out and retries on its own.
 	if s := at(2*time.Hour + 89*time.Second); s.Status.Phase != v1alpha1.PhaseFailed || v1alpha1.StartGaveUp(&s.Status) {
 		t.Fatalf("retried start timing out: phase=%s gaveUp=%v, want Failed with retries left", s.Status.Phase, v1alpha1.StartGaveUp(&s.Status))
 	}
@@ -130,8 +127,6 @@ func TestStartRetryRevivesAServerThatGaveUp(t *testing.T) {
 	}
 }
 
-// A request that finds the server anywhere but Failed is stale (the start
-// already recovered, or someone stopped it): it is removed and nothing else.
 func TestStaleStartRetryIsOnlyRemoved(t *testing.T) {
 	srv := runningServer()
 	srv.Annotations = map[string]string{v1alpha1.AnnotationStartRetry: "2026-07-01T12:00:00Z"}

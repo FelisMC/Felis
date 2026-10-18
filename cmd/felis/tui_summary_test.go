@@ -66,9 +66,6 @@ type fakeTTY struct{ strings.Builder }
 
 func (*fakeTTY) Close() error { return nil }
 
-// TestCopyTerminalText covers the copy under sudo, which drops SSH_TTY and
-// SSH_CONNECTION: a server without xclip or xsel must still send OSC 52 to the
-// terminal instead of failing on the missing desktop clipboard.
 func TestCopyTerminalText(t *testing.T) {
 	const link = "https://panel.example/setup?token=test-token"
 	// OSC 52 sets the system clipboard ("c") to base64 text, ended by BEL; tmux passes a

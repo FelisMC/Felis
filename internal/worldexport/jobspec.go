@@ -11,15 +11,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// Label keys applied to export objects, the same ones the other executors use
-// (internal/maintenance and internal/api keep their own copies;
-// maintenance_test pins them against these).
 const (
 	LabelManagedBy = "app.kubernetes.io/managed-by"
 	LabelComponent = "app.kubernetes.io/component"
 	LabelServer    = "felis.lolicon.best/server"
-	// LabelMode is what the Job sends (ModeWorld, ModeBackup or ModeFiles). A
-	// world or files export holds the world volume; a backup export does not.
+	// LabelMode distinguishes exports that hold the world volume from backup exports.
 	LabelMode = "felis.lolicon.best/export-mode"
 
 	managedByValue = "felis-export"
@@ -31,56 +27,36 @@ const (
 	felisBinaryPath = "/usr/local/bin/felis"
 )
 
-// What an export sends: the whole world as a tar.gz, one stored backup as a
-// tar.gz, or one file or folder of the world (a folder as a zip).
 const (
 	ModeWorld  = "world"
 	ModeBackup = "backup"
 	ModeFiles  = "files"
 )
 
-// TokenEnv carries the one-time upload token into the Pod. It is the only
-// secret the Pod holds, so it rides the environment and not argv, where a
-// process listing on the node would show it.
+// TokenEnv keeps the one-time upload token out of argv.
 const TokenEnv = "FELIS_EXPORT_TOKEN"
 
-// The Job's PUT goes chunked, so that it can end with a trailer: DigestTrailer
-// carries the SHA-256 of every byte it sent (sha-256=:<base64>:, RFC 9530),
-// which felis-api checks before the last of them reaches the browser.
-// LengthHeader declares the length up front when the Job knows it (one file),
-// which chunked encoding cannot carry, so the browser still gets a
-// Content-Length.
+// DigestTrailer carries the streamed SHA-256 (RFC 9530); LengthHeader supplies a known content length.
 const (
 	DigestTrailer = "Content-Digest"
 	LengthHeader  = "X-Felis-Export-Length"
 )
 
-// JobParams are the rendered inputs to an export Job. ExportJob is a pure
-// function of them, so the Job shape is unit-tested without a cluster.
 type JobParams struct {
 	NodeName string
 	Server   string
-	// ID names this export: it is the tail of the Job name and of the internal
-	// upload path, so two exports of one server never collide.
-	ID   string
-	Mode string
-	// WorldPVC is mounted for ModeWorld and ModeFiles, BackupPVC and BackupRef
-	// for ModeBackup.
+	ID       string
+	Mode     string
+	// WorldPVC serves world/files exports; BackupPVC and BackupRef serve backup exports.
 	WorldPVC  string
 	BackupPVC string
 	BackupRef string
-	// BackupSHA256 is what the stored archive must hash to. The Job checks it
-	// itself, because what it sends is the archive re-written without its
-	// secrets and no longer hashes to anything felis-api knows.
+	// BackupSHA256 validates the source archive before secrets are removed for export.
 	BackupSHA256 string
-	// Path is the file or folder a ModeFiles export sends, and Dir whether the
-	// caller saw a folder there.
-	Path string
-	Dir  bool
-	// TargetURL is where the Pod PUTs the archive (felis-api's internal face),
-	// and Token the one-time bearer token that opens it.
-	TargetURL string
-	Token     string
+	Path         string
+	Dir          bool
+	TargetURL    string
+	Token        string
 
 	Namespace      string
 	ServiceAccount string
@@ -97,7 +73,6 @@ type JobParams struct {
 	TTLAfterFinished time.Duration
 }
 
-// JobName is the Job an export runs as.
 func JobName(server, id string) string { return "export-" + server + "-" + id }
 
 func exportLabels(p JobParams) map[string]string {
@@ -109,26 +84,7 @@ func exportLabels(p JobParams) map[string]string {
 	}
 }
 
-// ExportJob renders the export Job. Every isolation guarantee lives here and is
-// asserted by jobspec_test.go:
-//
-//   - the weak felis-restore SA with its token auto-mount disabled, so the Pod
-//     cannot reach the K8s API;
-//   - EXACTLY one volume, read-only in the claim and in the mount: the world PVC
-//     for a world export, the backup PVC for a backup export. No Secret or
-//     ConfigMap: the one credential in the Pod is the upload token, which opens
-//     this one export and nothing else;
-//   - root with DAC_OVERRIDE and nothing more: the world is the game uid's
-//     mode-0600 files, and Pod Security baseline, which the minecraft namespace
-//     enforces, admits DAC_OVERRIDE but not the narrower DAC_READ_SEARCH. No
-//     privilege or escalation, a read-only root filesystem;
-//   - backoffLimit 0 (the token is spent by the first attempt, a retry could
-//     only fail) and activeDeadlineSeconds, so a download left hanging cannot
-//     hold the world forever; ttlSecondsAfterFinished GCs the finished Job.
-//
-// The container runs `/usr/local/bin/felis export` (cmd/felis). The backup ref is
-// an absolute path, so the backup PVC is mounted at BackupRoot, the path the
-// archives were written under, as the restore Job mounts it.
+// ExportJob mounts one volume read-only, disables API credentials, and permits no retry of the single-use token.
 func ExportJob(p JobParams) (*batchv1.Job, error) {
 	if p.Image == "" {
 		return nil, fmt.Errorf("worldexport: image is empty")
@@ -201,8 +157,7 @@ func ExportJob(p JobParams) (*batchv1.Job, error) {
 				Add:  []corev1.Capability{"DAC_OVERRIDE"},
 			},
 		},
-		// The exit error reaches the export's status and GET
-		// /servers/{name}/jobs through the terminated state.
+		// The terminated state exposes failures through the export status and server jobs API.
 		TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
 	}
 
@@ -250,7 +205,6 @@ func readOnlyClaim(name, claim string) corev1.Volume {
 	}
 }
 
-// resourceLimits parses the CPU/memory limits into a ResourceList.
 func resourceLimits(cpu, mem string) (corev1.ResourceList, error) {
 	if cpu == "" {
 		cpu = defaultCPULimit

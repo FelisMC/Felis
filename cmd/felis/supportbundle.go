@@ -55,13 +55,7 @@ var hostSecretSources = secretSources{
 	tokenFiles: []string{"/var/lib/rancher/k3s/server/token", "/var/lib/rancher/k3s/server/agent-token"},
 }
 
-// cmdSupportBundle collects what someone helping with this host needs into
-// one tar.gz: felis status and felis doctor, the logs of the control plane,
-// the builds and the systemd units, the cluster's workloads and events, and a
-// summary of the configuration. It never collects a Secret, a ConfigMap, the
-// contents of a configuration file, the database or a world, and takes every
-// value of the host's secret files out of what it does collect. Game server
-// logs, which carry player names, addresses and chat, only with -server-logs.
+// Exclude configuration contents, database, worlds, and Secrets; game logs require -server-logs.
 func cmdSupportBundle(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("support-bundle", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -207,10 +201,7 @@ func (bw *bundleWriter) logText(name string, data []byte) error {
 	return bw.add(name, bw.scrub.text(data))
 }
 
-// plain adds a file whose secrets were already taken out by structure (the
-// cluster's objects, the configuration summary) or that names none (the
-// release, disk use, addresses): known secret values still come out, and
-// nothing else is rewritten.
+// Apply known-secret redaction even to structurally sanitized content.
 func (bw *bundleWriter) plain(name string, data []byte) error {
 	return bw.add(name, bw.scrub.values(data))
 }
@@ -491,9 +482,7 @@ func (b *supportBundle) collectCluster(ctx context.Context, bw *bundleWriter) er
 	return nil
 }
 
-// collectPodLogs keeps the tail of each container's log, and of its previous
-// run when it restarted. initOnly keeps only the init containers: a game
-// server's own log carries player names, addresses and chat.
+// Collect current and previous log tails; initOnly excludes game logs containing player data.
 func (b *supportBundle) collectPodLogs(ctx context.Context, bw *bundleWriter, p corev1.Pod, initOnly bool) error {
 	type ctr struct {
 		name     string
@@ -563,10 +552,7 @@ func podTable(pods []corev1.Pod, now time.Time) []byte {
 	return buf.Bytes()
 }
 
-// redactList takes out of every object what the bundle must not carry: the
-// literal env values of pod specs and of MinecraftServers (valueFrom
-// references stay, naming the Secret without its contents), the
-// last-applied-configuration annotation that repeats them, and managedFields.
+// Remove literal environment values, last-applied configuration, and managedFields from exported objects.
 func redactList(list client.ObjectList) {
 	items, err := meta.ExtractList(list)
 	if err != nil {
@@ -622,9 +608,7 @@ func redactPodSpec(s *corev1.PodSpec) {
 	}
 }
 
-// configSummary is felis.toml without a single credential: the hostnames,
-// namespaces and which features are on. Fields are picked one by one, so a
-// field added later stays out until someone decides it is safe.
+// Allowlist non-secret summary fields so newly added configuration cannot leak automatically.
 func configSummary(c *config.Config, path string) []byte {
 	var buf bytes.Buffer
 	line := func(k string, v any) { fmt.Fprintf(&buf, "%-34s %v\n", k, v) }

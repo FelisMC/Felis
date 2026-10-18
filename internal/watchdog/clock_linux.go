@@ -4,8 +4,7 @@ package watchdog
 
 import "syscall"
 
-// ClockStatus reads the kernel's clock status word. Modes stays zero, so the
-// call only reads and needs no privilege.
+// ClockStatus leaves Modes zero to read adjtimex without requiring privilege.
 func ClockStatus() (int32, bool) {
 	var t syscall.Timex
 	if _, err := syscall.Adjtimex(&t); err != nil {

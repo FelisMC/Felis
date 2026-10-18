@@ -6,8 +6,6 @@ import (
 	"testing"
 )
 
-// TestManifestsRequiresVelocityCIDR proves the generator refuses to emit a bundle
-// without --velocity-cidr (the game policy would otherwise fail closed silently).
 func TestManifestsRequiresVelocityCIDR(t *testing.T) {
 	var out, errBuf bytes.Buffer
 	code := run([]string{"manifests"}, &out, &errBuf)
@@ -22,9 +20,6 @@ func TestManifestsRequiresVelocityCIDR(t *testing.T) {
 	}
 }
 
-// TestManifestsRejectsBadCIDR proves CIDR inputs are validated. --felis-image is
-// supplied so the only defect is the CIDR (the felis-image requirement is checked
-// before CIDR validation, so omitting it would surface the wrong error).
 func TestManifestsRejectsBadCIDR(t *testing.T) {
 	var out, errBuf bytes.Buffer
 	code := run([]string{"manifests", "--felis-image", "reg/felis:test", "--velocity-cidr", "not-a-cidr"}, &out, &errBuf)
@@ -36,9 +31,6 @@ func TestManifestsRejectsBadCIDR(t *testing.T) {
 	}
 }
 
-// TestManifestsRequiresFelisImage proves the generator refuses to emit a bundle
-// without --felis-image (the api/operator Deployments have no default image, and
-// FELIS_IMAGE has no safe guess). Same fail-loud contract as --velocity-cidr.
 func TestManifestsRequiresFelisImage(t *testing.T) {
 	var out, errBuf bytes.Buffer
 	code := run([]string{"manifests", "--velocity-cidr", "10.0.0.5/32"}, &out, &errBuf)
@@ -53,8 +45,6 @@ func TestManifestsRequiresFelisImage(t *testing.T) {
 	}
 }
 
-// TestManifestsRendersBundle proves the happy path: a valid invocation writes a
-// multi-doc YAML bundle containing the fence kinds and no cluster-scoped RBAC.
 func TestManifestsRendersBundle(t *testing.T) {
 	var out, errBuf bytes.Buffer
 	code := run([]string{"manifests", "--felis-image", "registry.felis.svc:5000/felis:v1", "--velocity-cidr", "10.0.0.5/32"}, &out, &errBuf)
@@ -100,11 +90,6 @@ func TestManifestsRendersBundle(t *testing.T) {
 	}
 }
 
-// TestManifestsReaperRequiresStorage proves --worlds-host-path is a fail-loud
-// opt-in: asking for the reaper without a writable archive store (the backup PVC,
-// which defaults to felis-backups but can be emptied) and its mount path (which
-// must equal [archive] local_path) is rejected rather than silently dropping
-// retention or deleting worlds it could not archive first.
 func TestManifestsReaperRequiresStorage(t *testing.T) {
 	base := []string{"manifests", "--felis-image", "reg/felis:test", "--velocity-cidr", "10.0.0.5/32", "--worlds-host-path", "/var/lib/felis/worlds"}
 	for _, extra := range [][]string{
@@ -128,9 +113,6 @@ func TestManifestsReaperRequiresStorage(t *testing.T) {
 	}
 }
 
-// TestManifestsBackupPVCOptOut proves --backup-pvc= renders a bundle with no
-// archive store at all: no PVC and no FELIS_BACKUP_PVC env, so backup/restore
-// answer 503 instead of pointing Jobs at a claim nobody provisions.
 func TestManifestsBackupPVCOptOut(t *testing.T) {
 	var out, errBuf bytes.Buffer
 	code := run([]string{"manifests", "--felis-image", "reg/felis:test",
@@ -145,11 +127,6 @@ func TestManifestsBackupPVCOptOut(t *testing.T) {
 	}
 }
 
-// TestManifestsRendersRetentionOnly: the archive store without a worlds root
-// still gets the daily CronJob, retention-only, so backups past their expiry
-// leave the store on an install that never reaps a world; the operator is told
-// which of the two it got. An archive path with the store switched off is a
-// mistake and fails loud.
 func TestManifestsRendersRetentionOnly(t *testing.T) {
 	var out, errBuf bytes.Buffer
 	code := run([]string{"manifests", "--felis-image", "reg/felis:test", "--velocity-cidr", "10.0.0.5/32",
@@ -179,9 +156,6 @@ func TestManifestsRendersRetentionOnly(t *testing.T) {
 	}
 }
 
-// TestManifestsRendersReaper proves the happy path with the full retention trio:
-// a batch/v1 CronJob is emitted, named felis-reaper, mounting the backup PVC at the
-// supplied archive path.
 func TestManifestsRendersReaper(t *testing.T) {
 	var out, errBuf bytes.Buffer
 	code := run([]string{
@@ -206,10 +180,6 @@ func TestManifestsRendersReaper(t *testing.T) {
 			t.Errorf("rendered bundle with reaper missing %q", want)
 		}
 	}
-	// Rendering the reaper must also warn the operator about the two preconditions
-	// this generator cannot verify (else a misarranged hostPath silently no-ops
-	// retention): the <path>/<pvc> arrangement-dependency and the multi-node
-	// nodeSelector hazard.
 	for _, want := range []string{"local-path", "nodeSelector"} {
 		if !strings.Contains(errBuf.String(), want) {
 			t.Errorf("reaper render must warn operators about %q on stderr, got %q", want, errBuf.String())
@@ -217,9 +187,6 @@ func TestManifestsRendersReaper(t *testing.T) {
 	}
 }
 
-// TestManifestsReaperNodePin: --reaper-node pins the rendered CronJob's pod via
-// kubernetes.io/hostname and replaces the "no nodeSelector" hazard note with the
-// pin confirmation; using it without the worlds root is a fail-loud 2.
 func TestManifestsReaperNodePin(t *testing.T) {
 	var out, errBuf bytes.Buffer
 	code := run([]string{
@@ -255,8 +222,6 @@ func TestManifestsReaperNodePin(t *testing.T) {
 	}
 }
 
-// TestManifestsStorageSizes proves the PVC size flags reach the rendered claims
-// and a size the API server would reject fails before anything is applied.
 func TestManifestsStorageSizes(t *testing.T) {
 	var out, errBuf bytes.Buffer
 	code := run([]string{"manifests", "--felis-image", "reg/felis:test", "--velocity-cidr", "10.0.0.5/32",
@@ -279,10 +244,6 @@ func TestManifestsStorageSizes(t *testing.T) {
 	}
 }
 
-// TestManifestsOnlyPostgres: the installer renders the database before it has
-// an image or a proxy address for the rest of the bundle, so --only postgres
-// must render without them, and render the database and nothing else (a stray
-// Deployment in that apply would start without its identities).
 func TestManifestsOnlyPostgres(t *testing.T) {
 	var out, errBuf bytes.Buffer
 	code := run([]string{"manifests", "--only", "postgres", "--control-namespace", "ctl", "--postgres-image", "example/pg:18@sha256:abc"}, &out, &errBuf)

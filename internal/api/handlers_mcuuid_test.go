@@ -6,10 +6,6 @@ import (
 	"testing"
 )
 
-// Every door that takes an mc_uuid refuses text that is not a UUID with 400
-// bad_mc_uuid. The columns are Postgres uuids, and such text used to reach the
-// database, fail there with 22P02 and come back as a 500. A UUID in another
-// spelling is stored and echoed in the one Postgres gives back.
 func TestMCUUIDMustBeAUUID(t *testing.T) {
 	repo := newFakeRepo()
 	repo.byName["survival"] = &ServerRecord{Name: "survival", OwnerID: "u1"}

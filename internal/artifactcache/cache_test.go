@@ -99,8 +99,6 @@ func errCode(t *testing.T, w *httptest.ResponseRecorder) string {
 	return e.Error
 }
 
-// Ten requests for one file, five of them at once, download it from upstream
-// once; every answer is that file.
 func TestCacheDownloadsEachFileOnce(t *testing.T) {
 	o := newOrigin(t)
 	body := []byte("paper-1.21.4-232.jar contents")
@@ -142,9 +140,6 @@ func TestCacheDownloadsEachFileOnce(t *testing.T) {
 	}
 }
 
-// What upstream serves is kept only if it hashes to the digest asked for: a
-// mismatch stores nothing, and the next request for that digest goes upstream
-// again and gets the real file once upstream serves it.
 func TestCacheKeepsOnlyContentMatchingTheDigest(t *testing.T) {
 	o := newOrigin(t)
 	real := []byte("the real jar")
@@ -162,8 +157,6 @@ func TestCacheKeepsOnlyContentMatchingTheDigest(t *testing.T) {
 	}
 }
 
-// A request names a URL; the cache only downloads from the official hosts, over
-// https, and follows no redirect off them.
 func TestCacheOnlyDownloadsFromAllowedHosts(t *testing.T) {
 	o := newOrigin(t)
 	_, h := newCache(t, o)
@@ -214,8 +207,6 @@ func TestCacheOnlyDownloadsFromAllowedHosts(t *testing.T) {
 	}
 }
 
-// A file fetched by its sha256 serves a later request naming its sha1 (how
-// Mojang and Maven publish) without going upstream.
 func TestCacheServesWeakerDigestsOfStoredFiles(t *testing.T) {
 	o := newOrigin(t)
 	body := []byte("minecraft server jar")
@@ -233,7 +224,6 @@ func TestCacheServesWeakerDigestsOfStoredFiles(t *testing.T) {
 	}
 }
 
-// Over its cap the cache drops the files served longest ago.
 func TestCacheEvictsTheLeastRecentlyServed(t *testing.T) {
 	o := newOrigin(t)
 	c, h := newCache(t, o)
@@ -260,8 +250,6 @@ func TestCacheEvictsTheLeastRecentlyServed(t *testing.T) {
 	}
 }
 
-// The installer never trusts the cache: a cache answering with the wrong bytes
-// costs a direct download, and a direct download with the wrong bytes fails.
 func TestClientChecksEveryByteItself(t *testing.T) {
 	o := newOrigin(t)
 	body := []byte("fabric-loader-0.19.5.jar")
@@ -293,8 +281,6 @@ func TestClientChecksEveryByteItself(t *testing.T) {
 	}
 }
 
-// A connection that stops delivering bytes is dropped after the idle timeout,
-// not after the overall one.
 func TestClientDropsAStalledDownload(t *testing.T) {
 	stall := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -317,8 +303,6 @@ func TestClientDropsAStalledDownload(t *testing.T) {
 	}
 }
 
-// A slow download that keeps delivering is not a stalled one: each byte that
-// arrives restarts the idle timeout.
 func TestClientKeepsASlowButSteadyDownload(t *testing.T) {
 	body := []byte(strings.Repeat("y", 8))
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

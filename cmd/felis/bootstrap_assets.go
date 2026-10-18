@@ -31,9 +31,7 @@ func cmdBootstrapAssets(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 	case "game-stack":
-		// A tar on stdout, not a directory on disk: the caller (bootstrap.sh) is the
-		// one that knows where a build context may live, and piping keeps this command
-		// side-effect-free.
+		// Writes a tar to stdout: the caller (bootstrap.sh) decides where files live, and piping keeps this command free of side effects.
 		if err := felis.GameStackTar(stdout); err != nil {
 			fmt.Fprintf(stderr, "felis bootstrap-assets: %v\n", err)
 			return 1

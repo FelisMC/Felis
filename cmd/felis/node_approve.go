@@ -63,9 +63,7 @@ func approveNode(ctx context.Context, cl client.Client, cs kubernetes.Interface,
 			}
 		}
 	}
-	// This controller's exact interface addresses: admission runs on a controller (with
-	// controller high availability, any of them), and the probe observes DNAT/SNAT from
-	// here before the production policy is adjusted.
+	// Probe from the admitting controller's actual interfaces before adjusting production policy.
 	var aCIDRs []string
 	if addrs, err := net.InterfaceAddrs(); err == nil {
 		for _, a := range addrs {
@@ -261,7 +259,7 @@ func approveNode(ctx context.Context, cl client.Client, cs kubernetes.Interface,
 	if err := waitProbeJob(ctx, cl, negative); err != nil {
 		return err
 	}
-	// Dial from Velocity's host namespace and record the address actually observed inside each backend.
+	// Dial from Velocity's host namespace and record the address observed inside each backend.
 	for _, endpoint := range endpoints {
 		c, err := net.DialTimeout("tcp", endpoint, 5*time.Second)
 		if err != nil {

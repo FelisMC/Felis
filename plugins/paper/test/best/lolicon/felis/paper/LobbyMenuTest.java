@@ -26,19 +26,6 @@ import java.util.logging.Logger;
 import static best.lolicon.felis.paper.Fakes.UNANSWERED;
 import static best.lolicon.felis.paper.Fakes.fake;
 
-/**
- * LobbyMenuTest drives the real {@link LobbyMenu} the way Paper does: felis:control
- * frames through its plugin-message listener, and real paper-api click and drag events
- * over fake inventory views, with a fake screen per player recording what the menu
- * showed, painted, sent and said. It checks the menu a player actually gets: /menu
- * opens only on a list it is still waiting for, each tile starts as loading and is
- * repainted by its own status, a click sends the one frame its tile stands for (a grey
- * tile sends nothing and says why), paging walks the whole list with the verdicts
- * intact, a refused status query marks its tile while other refusals reach chat in the
- * player's language, and nothing in the menu can be picked up or dragged.
- *
- * <p>Run: {@code ./gradlew lobbyTest} in plugins/paper (plugins/test.sh does).
- */
 public final class LobbyMenuTest {
 
     private static final Logger QUIET = Logger.getLogger("LobbyMenuTest");
@@ -323,7 +310,6 @@ public final class LobbyMenuTest {
         assertEq("... and the /menu still opens on its list", 1, s.opened.size());
     }
 
-    // ---- rig ----
 
     private static final class Rig {
         final Ticks ticks = new Ticks();
@@ -502,7 +488,6 @@ public final class LobbyMenuTest {
         }
     }
 
-    // ---- helpers ----
 
     private static ControlFrame up(String server) {
         return ControlFrame.statusUpdate(server, "Running", true, 3, 20, false);

@@ -93,9 +93,6 @@ func TestPinLeavesOtherRefsAlone(t *testing.T) {
 	}
 }
 
-// A pinned ref stays as it is, but only while the registry still holds that
-// manifest: the pruner deletes builds nothing references, and setting a server
-// back to one of them must fail here, not in ImagePullBackOff.
 func TestPinChecksAPinnedRefStillExists(t *testing.T) {
 	srv, seen := fakeRegistry(t, true)
 	r := resolverFor(srv)

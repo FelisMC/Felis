@@ -7,11 +7,6 @@ import {
   type FrameScheduler,
 } from "./logstream";
 
-// FakeEventSource drives the controller without a browser: Node has no
-// EventSource, and even in jsdom it would dial a real socket. The controller
-// takes its EventSource via a factory precisely so this fake can model the
-// lifecycle — open, message, transient drop (reconnecting), fatal close (ended),
-// and teardown — deterministically. It matches EventSourceLike structurally.
 class FakeEventSource implements EventSourceLike {
   onopen: ((ev: unknown) => void) | null = null;
   onmessage: ((ev: { data: string }) => void) | null = null;

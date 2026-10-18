@@ -12,37 +12,24 @@ import (
 	"felis.lolicon.best/internal/metrics"
 )
 
-// The account-level wrong-code budget (otpFailureBudget per otpFailureWindow)
-// is enforced in the repo; this file is what the doors do with it. The two
-// pre-session doors (email login, op-login) answer a locked account exactly
-// like a wrong code, so they never become an existence oracle; the owner
-// learns about the lock from a notice mail instead. The signed-in doors
-// (onboarding, migration step-up) answer 429 otp_account_locked with the time
-// the lock ends.
+// Public OTP endpoints conceal account locks as invalid codes; authenticated endpoints return lock expiry with 429.
 
-// noticeSender is the optional half of Mailer that sends a free-form notice;
-// internal/mail.SMTP implements it (the reaper uses the same method).
 type noticeSender interface {
 	SendNotice(ctx context.Context, email, subject, body string) error
 }
 
-// otpDoorName names each purpose in the lock notice, in both languages.
 var otpDoorName = map[string][2]string{
 	otpPurposeLogin:   {"邮箱验证码登录", "email-code sign-in"},
 	otpPurposeOpLogin: {"管理员登录", "staff sign-in"},
 }
 
-// writeOTPAccountLocked answers a signed-in door whose budget is spent.
 func writeOTPAccountLocked(w http.ResponseWriter, r *http.Request, until, now time.Time) {
 	writeError(w, r, newError(http.StatusTooManyRequests, "otp_account_locked",
 		"too many wrong codes on this account; email codes work again after %s",
 		until.UTC().Format(time.RFC3339)).retryAfter(max(until.Sub(now), time.Second)))
 }
 
-// noteOTPLock handles a redeem that met the account lock. Only the guess that
-// spent the budget (JustLocked) does anything: count, audit, log, and for the
-// pre-session doors mail the account so its owner learns why the right code
-// stopped working. Everything here is best effort; the lock already holds.
+// noteOTPLock emits metrics, audit and notices only when JustLocked first exhausts the budget; failures cannot undo the lock.
 func (a *API) noteOTPLock(r *http.Request, err error, userID, purpose string) {
 	var lock *OTPAccountLockedError
 	if !errors.As(err, &lock) || !lock.JustLocked {
@@ -86,7 +73,6 @@ func (a *API) noteOTPLock(r *http.Request, err error, userID, purpose string) {
 	metrics.MailTotal.WithLabelValues("notice", "sent").Inc()
 }
 
-// otpLockNotice renders the bilingual lock notice.
 func otpLockNotice(door [2]string, until time.Time) (subject, body string) {
 	at := until.UTC().Format("2006-01-02 15:04 MST")
 	subject = "Felis " + door[0] + "已暂停 · " + door[1] + " paused"

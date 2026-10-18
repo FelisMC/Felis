@@ -1,14 +1,11 @@
-# prometheus-operator twin of felis-alerts.yaml (kube-prometheus-stack loads
-# rules through the PrometheusRule CRD, not rule_files). The plain file is the
-# promtool-tested source; keep the groups in sync.
+# Keep the PrometheusRule twin synchronized with the plain promtool-tested alert groups.
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
   name: felis-alerts
   namespace: monitoring
   labels:
-    # Change to match your stack's ruleSelector (kube-prometheus-stack's
-    # default selects on the Helm release name).
+    # Set this to match the stack's ruleSelector (kube-prometheus-stack's default selects on the Helm release name).
     release: kube-prometheus-stack
 spec:
   groups:

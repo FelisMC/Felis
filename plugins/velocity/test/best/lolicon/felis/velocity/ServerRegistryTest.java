@@ -8,21 +8,7 @@ import java.net.InetSocketAddress;
 import java.util.List;
 import java.util.Optional;
 
-/**
- * ServerRegistryTest drives the real ServerRegistry against a fake ProxyServer: a
- * refresh registers every server that is up at a direct endpoint, leaves one
- * registered at the same address alone, moves one whose address changed, keeps the
- * last registration of one that went down, drops one that vanished from a successful
- * fetch, a single polled view re-registers between refreshes, and host routing
- * resolves only {@code <subdomain>.<root>}. Framework free: a failed assertion throws.
- *
- * <p>The views are shaped the way the operator writes status: up is {@code direct}
- * plus the Service address; down is {@code fallback} with the fallback server's NAME
- * in the address field; a server never reconciled has neither.
- *
- * <p>Run: {@code ./gradlew routingTest} in plugins/velocity (it needs the velocity-api
- * classes the plugin compiles against).
- */
+// Stopped views use fallback names instead of direct addresses.
 public final class ServerRegistryTest {
 
     private static int checks;
@@ -129,7 +115,7 @@ public final class ServerRegistryTest {
         assertEq("subdomain moved", "other", name(reg.resolveByHost("renamed.mc.example.test")));
         assertEq("subdomain taken back", "fresh", name(reg.resolveByHost("fresh.mc.example.test")));
 
-        // An empty successful fetch really does empty the proxy.
+        // An empty successful fetch empties the proxy.
         net.registrations.clear();
         reg.refresh(List.of());
         assertEq("everything deregistered", 4, net.registrations.size());

@@ -22,9 +22,6 @@ func npByName(t *testing.T, nps []*networkingv1.NetworkPolicy, name string) *net
 	return nil
 }
 
-// TestServerSelector_MatchesOperatorLabels proves the fence selects exactly the
-// pods the operator labels. If the operator ever renamed its label values the
-// policy would silently stop protecting the pods — this couples the two.
 func TestServerSelector_MatchesOperatorLabels(t *testing.T) {
 	sel := serverPodSelector()
 	want := map[string]string{
@@ -45,8 +42,6 @@ func TestServerSelector_MatchesOperatorLabels(t *testing.T) {
 	}
 }
 
-// TestDefaultDeny enforces the baseline: select all pods, declare Ingress policy,
-// admit nothing.
 func TestDefaultDeny(t *testing.T) {
 	nps := MinecraftNetworkPolicies(testParams())
 	dd := npByName(t, nps, "felis-default-deny-ingress")
@@ -62,7 +57,6 @@ func TestDefaultDeny(t *testing.T) {
 	}
 }
 
-// TestAllowRcon enforces the AND-semantics control-plane peer on port 25575.
 func TestAllowRcon(t *testing.T) {
 	nps := MinecraftNetworkPolicies(testParams())
 	rcon := npByName(t, nps, "felis-allow-rcon-from-control-plane")
@@ -76,8 +70,7 @@ func TestAllowRcon(t *testing.T) {
 	}
 	rule := rcon.Spec.Ingress[0]
 
-	// Exactly one peer, combining BOTH selectors (intersection = AND), never two
-	// peers (which would be a union/OR — far wider).
+	// One peer combining both selectors (AND); two peers would be an OR and far wider.
 	if len(rule.From) != 1 {
 		t.Fatalf("rcon peer count = %d, want 1 (AND-combined); 2 would be OR semantics", len(rule.From))
 	}
@@ -92,7 +85,7 @@ func TestAllowRcon(t *testing.T) {
 		t.Error("rcon podSelector must require part-of=felis-control-plane")
 	}
 
-	// Component must be In {api, operator} — and NOT include reaper.
+	// Component must be api or operator; reaper is excluded.
 	var compReq *metav1.LabelSelectorRequirement
 	for i := range peer.PodSelector.MatchExpressions {
 		if peer.PodSelector.MatchExpressions[i].Key == LabelComponent {
@@ -112,16 +105,13 @@ func TestAllowRcon(t *testing.T) {
 		t.Error("reaper must NOT be allowed to reach RCON")
 	}
 
-	// Port = the operator's default RCON port (single source of truth, so the
-	// prober can reach a default-port server through the fence). Pinned to the
-	// concrete 25575 too, guarding an accidental change to the operator default.
+	// Default RCON port, pinned to 25575 so a change to the operator default fails here.
 	if operator.DefaultRconPort != 25575 {
 		t.Errorf("operator.DefaultRconPort = %d, want 25575 (conventional RCON port)", operator.DefaultRconPort)
 	}
 	assertSinglePort(t, rule.Ports, int(operator.DefaultRconPort))
 }
 
-// TestAllowGame_WithCIDRs renders the ipBlock allow path on port 25565.
 func TestAllowGame_WithCIDRs(t *testing.T) {
 	p := testParams()
 	p.VelocityCIDRs = []string{"10.0.0.5/32", "10.0.0.6/32"}
@@ -151,9 +141,6 @@ func TestAllowGame_WithCIDRs(t *testing.T) {
 	assertSinglePort(t, rule.Ports, int(operator.GamePort))
 }
 
-// TestAllowGame_FailsClosed is the footgun guard: no VelocityCIDRs ⇒ a policy that
-// admits NOBODY (no ingress rule), never an empty-From rule (which K8s reads as
-// allow-all).
 func TestAllowGame_FailsClosed(t *testing.T) {
 	p := testParams()
 	p.VelocityCIDRs = nil
@@ -193,11 +180,6 @@ func assertSinglePort(t *testing.T, ports []networkingv1.NetworkPolicyPort, want
 	}
 }
 
-// TestServerEgress_OnlyDNSAndPublicInternet pins the egress fence on game server
-// pods: DNS by port, the public internet by address, and every private range
-// carved out of it — the pod and Service CIDRs, the node's LAN, metadata — with
-// one private destination let back in: the server-software cache's pods, on its
-// port only.
 func TestServerEgress_OnlyDNSAndPublicInternet(t *testing.T) {
 	p := testParams()
 	p.ServerEgressDenyCIDRs = []string{"203.0.113.7/32", "2001:db8::1/128"}
@@ -259,9 +241,6 @@ func TestServerEgress_OnlyDNSAndPublicInternet(t *testing.T) {
 	}
 }
 
-// TestLoginToInternalAPI_SelectsOnlyTheSystemLoginPod pins the one hole in the
-// server egress fence: felis-api's internal face on 8081, for the pod that is both
-// named login AND carries the setup-owned system-role label.
 func TestLoginToInternalAPI_SelectsOnlyTheSystemLoginPod(t *testing.T) {
 	p := testParams().withDefaults()
 	np := npByName(t, ServerEgressPolicies(p), "felis-login-to-internal-api")
@@ -314,9 +293,6 @@ func TestLoginToInternalAPI_SelectsOnlyTheSystemLoginPod(t *testing.T) {
 	}
 }
 
-// TestRegistryIngress_BuildNamespaceOnly pins who may dial the registry pod: build
-// pods, on the registry port. Game servers and the control plane never pull
-// through the Service — containerd pulls over the node's loopback hostPort.
 func TestRegistryIngress_BuildNamespaceAndAPI(t *testing.T) {
 	p := testParams().withDefaults()
 	np := RegistryIngressPolicy(p)
@@ -365,9 +341,6 @@ func selectorEquals(a, b metav1.LabelSelector) bool {
 	return true
 }
 
-// The cache takes requests from game server pods only, and reaches out only to
-// DNS and the public internet: a server pod hands it the URL to fetch, so the
-// cache must not be a way into the cluster or the node's network either.
 func TestArtifactsNetworkPolicies(t *testing.T) {
 	p := testParams()
 	pols := ArtifactsNetworkPolicies(p)

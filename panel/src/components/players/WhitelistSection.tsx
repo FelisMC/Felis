@@ -19,10 +19,6 @@ import {
   type Feedback,
 } from "./shared";
 
-/** WhitelistSection manages the server's join whitelist: add a name, remove any
- *  entry, and read the current list. Built to stay usable at a few hundred names —
- *  a live count, a filter and paging (via usePagedNames) once the list is long
- *  enough to need them, and a two-step remove so a name never vanishes on one tap. */
 export function WhitelistSection({ name, defaultOpen = false }: { name: string; defaultOpen?: boolean }) {
   const { t } = useTranslation("servers");
   const { data, error, loading, reload } = useAsync(
@@ -41,10 +37,7 @@ export function WhitelistSection({ name, defaultOpen = false }: { name: string; 
   const invalid = touched && player.length > 0 && !valid;
 
   const players = useMemo(() => data?.players ?? [], [data]);
-  // The server always echoes the raw RCON text. Parsed `players` drives the list /
-  // empty state; `raw` is kept as an always-available, low-key disclosure — it is
-  // ground truth when the vanilla-only parse can't tokenize a plugin or localized
-  // whitelist (the names are in `output` even when `players` came back empty).
+  // Retain raw RCON output when custom formats prevent parsing the whitelist.
   const raw = data?.output?.trim() ?? "";
 
   const { query, onQuery, q, shown, showSearch, pageItems, pageCount, clampedPage, needFooter, setPage } =

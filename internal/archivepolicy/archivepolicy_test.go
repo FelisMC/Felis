@@ -12,7 +12,6 @@ func valid() Policy {
 	return Policy{ManualKeep: 5, ManualRetentionDays: 30, ManualCooldownMinutes: 10, ScheduledEveryHours: 24, ScheduledKeep: 7, ScheduledRetentionDays: 90, ReleasedRetentionDays: 90, MaxStoreGiB: 0, AuditRetentionDays: 365}
 }
 
-// TestValidateBounds pins each key's bounds, including the ones that may be zero.
 func TestValidateBounds(t *testing.T) {
 	if err := valid().Validate(); err != nil {
 		t.Fatalf("a valid policy = %v", err)
@@ -53,8 +52,6 @@ func TestValidateBounds(t *testing.T) {
 	}
 }
 
-// TestFromConfigAndApplyRoundTrip pins that the panel starts from what felis.toml amounts
-// to, and that applying a policy sets each reaper key it names.
 func TestFromConfigAndApplyRoundTrip(t *testing.T) {
 	rc := reaper.DefaultConfig()
 	rc.MaxLocalBytes = 3<<30 + 1

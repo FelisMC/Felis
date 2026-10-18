@@ -24,7 +24,6 @@ const ThemeContext = createContext<ThemeProviderState>({
 
 const SYSTEM_DARK_QUERY = "(prefers-color-scheme: dark)";
 
-// ---- system theme store ----
 
 function systemThemeQuery() {
   if (typeof window === "undefined" || !window.matchMedia) return null;
@@ -46,7 +45,6 @@ function applyClass(t: Theme) {
   }
 }
 
-// ---- provider ----
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [theme, setThemeState] = useState<Theme>(systemThemeSnapshot);

@@ -54,10 +54,7 @@ function fieldValid(key: Key, value: string): boolean {
   return (n >= f.min && n <= f.max) || (!!f.allowZero && n === 0);
 }
 
-// RetentionCard is the Owner's backup and audit retention: how many backups of each kind a
-// server keeps and for how long, how often the scheduled restore points come, the backup
-// store's cap and how long audit rows stay. It overrides felis.toml's [archive] and
-// [audit]; clearing it hands them back.
+// Panel retention overrides TOML; clearing restores file settings.
 export function RetentionCard() {
   const { t } = useTranslation("admin");
   const query = useAsync(api.getArchivePolicy, []);

@@ -20,17 +20,10 @@ import (
 	"time"
 )
 
-// TarLocal is the zero-storageClass-requirement backend (spec §19): it mounts
-// the source PVC, tars+gzips it, and writes the archive into the backup PVC.
-// It runs on any StorageClass, including hostPath-style local-path, where the
-// snapshot backends cannot.
 type TarLocal struct {
-	// BackupRoot is the directory (backup PVC mount) archives are written into.
 	BackupRoot string
-	// Resolve maps a PVC name to its mounted filesystem path.
-	Resolve PVCResolver
-	// Now is injectable for deterministic archive names in tests.
-	Now func() time.Time
+	Resolve    PVCResolver
+	Now        func() time.Time
 }
 
 func (t *TarLocal) now() time.Time {
@@ -40,28 +33,14 @@ func (t *TarLocal) now() time.Time {
 	return time.Now()
 }
 
-// partialSuffix marks an archive still being written. Its file is the final
-// name hidden behind a leading dot, so a listing of the store shows finished
-// archives only and a leftover still says whose it was.
 const partialSuffix = ".partial"
 
-// archiveName matches the finished archives Archive names (<server>-<unix
-// nanoseconds>.tar.gz); partialName matches their unfinished form. Sweep touches
-// nothing else in the store.
 var (
 	archiveName = regexp.MustCompile(`^[^.].*-[0-9]+\.tar\.gz$`)
 	partialName = regexp.MustCompile(`^\..*-[0-9]+\.tar\.gz\.partial$`)
 )
 
-// Archive tars+gzips the world on pvc into BackupRoot and returns the archive
-// path as the opaque ref, with its size and SHA256.
-//
-// The archive is written under its hidden .partial name, flushed to disk, read
-// back in full, and only then renamed to its final name and the rename flushed
-// too. A Job killed at its deadline or a node that loses power mid-write leaves
-// a .partial for Sweep, never a truncated file under a name that looks finished,
-// and the world is deleted only after an archive that has already been read
-// back whole.
+// Archive syncs and verifies a hidden partial before final rename, then syncs the directory so incomplete writes never look finished.
 func (t *TarLocal) Archive(ctx context.Context, server, pvc string) (Archived, error) {
 	srcDir, err := t.Resolve(pvc)
 	if err != nil {
@@ -94,8 +73,6 @@ func (t *TarLocal) Archive(ctx context.Context, server, pvc string) (Archived, e
 	}
 	sum := hex.EncodeToString(h.Sum(nil))
 
-	// Read back what landed: the gzip CRC, every tar header and entry, and the
-	// entry count must all come out as written.
 	entries, _, err := verifyArchive(ctx, tmp, sum)
 	if err == nil && entries != st.entries {
 		err = fmt.Errorf("%w: %s: %d entries read back, %d written", ErrCorrupt, tmp, entries, st.entries)
@@ -119,17 +96,12 @@ func (t *TarLocal) Archive(ctx context.Context, server, pvc string) (Archived, e
 	return Archived{Ref: ArchiveRef(dest), Size: info.Size(), SHA256: sum, Skipped: st.skipped}, nil
 }
 
-// Verify reads the archive at ref back end to end (see verifyArchive).
 func (t *TarLocal) Verify(ctx context.Context, ref ArchiveRef, want string) (string, error) {
 	_, sum, err := verifyArchive(ctx, string(ref), want)
 	return sum, err
 }
 
-// verifyArchive reads the archive at p through gzip and tar to the last byte and
-// returns its entry count and SHA256. Anything that does not read back — a
-// missing file, a torn gzip stream, a CRC or length mismatch, a bad tar header,
-// or a digest other than want (when want is not "") — is ErrCorrupt. Only an
-// error opening a file that is there, or the context, is not.
+// verifyArchive reads through gzip EOF and validates tar entries and optional digest; open or cancellation errors remain distinct from corruption.
 func verifyArchive(ctx context.Context, p, want string) (int, string, error) {
 	f, err := os.Open(p)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -170,8 +142,7 @@ func verifyArchive(ctx context.Context, p, want string) (int, string, error) {
 		}
 		entries++
 	}
-	// The tar end marker is not the end of the gzip member: reading on to EOF is
-	// what checks the CRC and length in the gzip trailer.
+	// Read past the tar end marker to verify the gzip trailer CRC and length.
 	if _, err := io.Copy(io.Discard, gz); err != nil {
 		return corrupt(err)
 	}
@@ -188,10 +159,7 @@ func verifyArchive(ctx context.Context, p, want string) (int, string, error) {
 	return entries, sum, nil
 }
 
-// Sweep removes the leftovers of archives that never finished (see Sweeper). It
-// only looks at the top level of BackupRoot and only at names Archive writes;
-// partialBefore must leave room for the longest Archive, and orphanBefore for
-// the insert of the record that follows it at the very least.
+// Sweep only touches recognized top-level archive names; age thresholds must allow active writes and delayed row inserts to finish.
 func (t *TarLocal) Sweep(ctx context.Context, live func(ArchiveRef) bool, partialBefore, orphanBefore time.Time) (Swept, error) {
 	var out Swept
 	ents, err := os.ReadDir(t.BackupRoot)
@@ -240,8 +208,6 @@ func (t *TarLocal) Sweep(ctx context.Context, live func(ArchiveRef) bool, partia
 	return out, errors.Join(errs...)
 }
 
-// syncDir flushes a change to a directory's entries (a rename) to disk. A
-// filesystem that cannot sync a directory has no stronger promise to give.
 func syncDir(dir string) error {
 	d, err := os.Open(dir)
 	if err != nil {
@@ -254,26 +220,7 @@ func syncDir(dir string) error {
 	return nil
 }
 
-// Restore extracts the archive at ref into the world mount for targetPVC,
-// replacing the target's contents so the world equals the archive (spec §466
-// "restore PVC": a rollback must not leave stale files the backup lacks — e.g. a
-// griefer's chunks). It extracts over the target, then removes any pre-existing
-// entry the archive did not contain.
-//
-// The archive is read back in full before anything is extracted, so a corrupt
-// or truncated archive fails with the world untouched. The prune runs only after
-// a fully successful extract: an extract that still fails (the volume fills up)
-// leaves the target as a recoverable partial overlay rather than a destroyed
-// world. The archive is retained on restore, so such a failure is recoverable by
-// re-running the Job.
-//
-// Files and directories get back the permission bits and modification times the
-// archive recorded. Ownership is left to the server: every start re-owns the
-// world volume to the game uid (felis init-volume).
-//
-// A top-level lost+found is never a prune target. It is a filesystem artifact
-// (root-owned, mode 0700) that the non-root restore Pod cannot delete anyway,
-// and writeTarGz includes it in the archive, so it is preserved on both axes.
+// Restore verifies first, extracts, then prunes stale files only after success; failures retain the archive and may leave a retryable partial overlay.
 func (t *TarLocal) Restore(ctx context.Context, ref ArchiveRef, targetPVC string) error {
 	dstDir, err := t.Resolve(targetPVC)
 	if err != nil {
@@ -301,12 +248,7 @@ func (t *TarLocal) Restore(ctx context.Context, ref ArchiveRef, targetPVC string
 	return restoreDirMeta(dirs)
 }
 
-// pruneToManifest removes every entry under dstDir whose archive-relative path
-// is absent from keep, giving Restore replace semantics. keep holds cleaned,
-// forward-slash relative paths (no trailing slash) for every archive entry plus
-// all of their ancestor directories, so a kept file's parent dirs are never
-// removed. A top-level lost+found is always kept. dstDir (the mount root) is
-// never removed.
+// pruneToManifest preserves the mount root, top-level lost+found and ancestors of every kept archive entry.
 func pruneToManifest(dstDir string, keep map[string]struct{}) error {
 	cleanDst := filepath.Clean(dstDir)
 	return filepath.WalkDir(cleanDst, func(p string, d fs.DirEntry, err error) error {
@@ -314,7 +256,7 @@ func pruneToManifest(dstDir string, keep map[string]struct{}) error {
 			return err
 		}
 		if p == cleanDst {
-			return nil // never remove the mount root itself
+			return nil
 		}
 		relNative, err := filepath.Rel(cleanDst, p)
 		if err != nil {
@@ -323,25 +265,23 @@ func pruneToManifest(dstDir string, keep map[string]struct{}) error {
 		rel := filepath.ToSlash(relNative)
 		if rel == "lost+found" {
 			if d.IsDir() {
-				return filepath.SkipDir // filesystem artifact: keep and don't descend
+				return filepath.SkipDir
 			}
 			return nil
 		}
 		if _, ok := keep[rel]; ok {
-			return nil // the archive contained this path: keep it
+			return nil
 		}
-		// Stale: present in the target but absent from the archive.
 		if err := os.RemoveAll(p); err != nil {
 			return fmt.Errorf("backup: prune stale entry %q: %w", rel, err)
 		}
 		if d.IsDir() {
-			return filepath.SkipDir // already removed; don't descend into it
+			return filepath.SkipDir
 		}
 		return nil
 	})
 }
 
-// Delete removes the tar archive at ref.
 func (t *TarLocal) Delete(_ context.Context, ref ArchiveRef) error {
 	if err := os.Remove(string(ref)); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("backup: delete archive: %w", err)
@@ -349,19 +289,13 @@ func (t *TarLocal) Delete(_ context.Context, ref ArchiveRef) error {
 	return nil
 }
 
-// tarStats is what writeTarGz put in the archive and what it left out: skipped
-// are entries a tar cannot hold, withheld the files the filter kept back.
 type tarStats struct {
 	entries  int
 	skipped  []string
 	withheld []string
 }
 
-// writeTarGz archives srcDir (not the root entry itself) as gzip+tar. Each entry
-// keeps its permission bits, without setuid, setgid and sticky, and its
-// modification time. Entries other than regular files and directories are left
-// out and listed in the stats. A non-nil filter sees every regular file (see
-// Filter); a backup passes nil and keeps everything.
+// writeTarGz preserves regular-file and directory modes and times while stripping special bits and reporting skipped unsupported entries.
 func writeTarGz(ctx context.Context, w io.Writer, srcDir string, filter Filter) (tarStats, error) {
 	var st tarStats
 	gz := gzip.NewWriter(w)
@@ -380,9 +314,8 @@ func writeTarGz(ctx context.Context, w io.Writer, srcDir string, filter Filter) 
 			return err
 		}
 		if rel == "." {
-			return nil // don't archive the root entry itself
+			return nil
 		}
-		// Normalize to forward slashes so archives are portable.
 		name := filepath.ToSlash(rel)
 
 		mode := int64(info.Mode().Perm())
@@ -438,9 +371,6 @@ func writeTarGz(ctx context.Context, w io.Writer, srcDir string, filter Filter) 
 			st.entries++
 			return nil
 		default:
-			// A symlink could point anywhere on the node, and a device or socket
-			// has no bytes to keep: a world is plain files. What is left out is
-			// reported, so a backup never drops something silently.
 			st.skipped = append(st.skipped, name)
 			return nil
 		}
@@ -457,25 +387,14 @@ func writeTarGz(ctx context.Context, w io.Writer, srcDir string, filter Filter) 
 	return st, nil
 }
 
-// dirMeta is a directory's recorded permission bits and modification time,
-// applied once nothing more is written into it.
+// Apply directory metadata only after all extraction and pruning writes finish.
 type dirMeta struct {
 	path  string
 	mode  fs.FileMode
 	mtime time.Time
 }
 
-// readTarGz extracts the gzip+tar stream into dstDir and returns the keep-set:
-// the cleaned, forward-slash relative path of every entry the archive contained
-// plus all of their ancestor directories. The caller uses it to prune stale
-// target files for replace semantics. On any error the keep-set is incomplete
-// and must not be used to prune (a partial manifest would delete live files the
-// stream had not yet reached).
-//
-// Files get their recorded mode and modification time as they are written. A
-// directory's are returned instead (restoreDirMeta): extracting and pruning
-// inside it would move its mtime again, and a read-only mode would stop the
-// extract from writing into it.
+// readTarGz returns an incomplete keep-set on failure; never prune from it, and apply directory metadata only after extraction.
 func readTarGz(ctx context.Context, r io.Reader, dstDir string) (map[string]struct{}, []dirMeta, error) {
 	gz, err := gzip.NewReader(r)
 	if err != nil {
@@ -499,16 +418,11 @@ func readTarGz(ctx context.Context, r io.Reader, dstDir string) (map[string]stru
 			return nil, nil, fmt.Errorf("backup: read tar: %w", err)
 		}
 
-		// Guard against path traversal (zip-slip): the resolved target must stay
-		// within dstDir.
 		target := filepath.Join(cleanDst, filepath.FromSlash(hdr.Name))
 		if target != cleanDst && !strings.HasPrefix(target, cleanDst+string(os.PathSeparator)) {
 			return nil, nil, fmt.Errorf("backup: archive entry escapes target: %q", hdr.Name)
 		}
 
-		// Record this entry and its ancestors in the keep-set. Names are stored
-		// in archive form (forward slash, no trailing slash) to match the
-		// relative paths pruneToManifest derives from the on-disk walk.
 		rememberKept(keep, hdr.Name)
 
 		mode := fs.FileMode(hdr.Mode).Perm()
@@ -535,8 +449,7 @@ func readTarGz(ctx context.Context, r io.Reader, dstDir string) (map[string]stru
 			if err := out.Close(); err != nil {
 				return nil, nil, err
 			}
-			// Chmod rather than the create mode: the umask would narrow it, and
-			// a file that already existed keeps its old mode through O_TRUNC.
+			// Chmod explicitly because umask filters creation permissions and truncation retains existing file modes.
 			if err := os.Chmod(target, mode); err != nil {
 				return nil, nil, err
 			}
@@ -546,13 +459,11 @@ func readTarGz(ctx context.Context, r io.Reader, dstDir string) (map[string]stru
 				}
 			}
 		default:
-			// Ignore entry types tarLocal never writes.
 		}
 	}
 }
 
-// restoreDirMeta applies the directories' recorded modes and times, deepest
-// first, so setting a parent's time comes after every change inside it.
+// restoreDirMeta visits deepest directories first so parent timestamps survive child updates.
 func restoreDirMeta(dirs []dirMeta) error {
 	sort.SliceStable(dirs, func(i, j int) bool { return len(dirs[i].path) > len(dirs[j].path) })
 	for _, d := range dirs {
@@ -568,15 +479,10 @@ func restoreDirMeta(dirs []dirMeta) error {
 	return nil
 }
 
-// recordedTime reports whether an archive recorded a modification time. Archives
-// written before times were kept carry the Unix epoch, which is left alone
-// rather than stamped onto every file.
+// recordedTime ignores epoch timestamps from archives that predate modification-time recording.
 func recordedTime(t time.Time) bool { return t.Unix() > 0 }
 
-// rememberKept adds an archive entry name and every ancestor directory to keep,
-// normalized to a cleaned forward-slash path with no trailing slash. Adding
-// ancestors guards against archives that list a file without an explicit entry
-// for its parent dir: the dir must still survive the prune.
+// rememberKept includes parent directories even when the archive lacks explicit directory entries.
 func rememberKept(keep map[string]struct{}, name string) {
 	rel := path.Clean(strings.TrimSuffix(name, "/"))
 	for rel != "." && rel != "/" && rel != "" {

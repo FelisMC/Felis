@@ -3,12 +3,7 @@ import { opErrorText } from "./opText";
 import { forgetSession, sendInParts, watchOp } from "./sessionUpload";
 import { ONE_REQUEST_BYTES } from "./useUploads";
 
-/** uploadFile lands one file at path in a server's world volume, the way the
- *  files page sends it: in one request up to ONE_REQUEST_BYTES, in parts above,
- *  following the op that lands the parts to its end. The folders on the way are
- *  made first, since an upload into a missing folder is refused; overwrite
- *  replaces a file already at path. It settles once the file is on the volume;
- *  a refusal or a failed op rejects with an error humanizeError can word. */
+// Use one request below ONE_REQUEST_BYTES and resumable parts above it.
 export async function uploadFile(
   server: string,
   path: string,

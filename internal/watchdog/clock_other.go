@@ -2,7 +2,7 @@
 
 package watchdog
 
-// ClockStatus has no adjtimex to read outside Linux; the clock check is skipped.
+// ClockStatus skips the check outside Linux.
 func ClockStatus() (int32, bool) {
 	return 0, false
 }

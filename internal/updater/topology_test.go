@@ -6,9 +6,6 @@ import (
 	"felis.lolicon.best/internal/updates"
 )
 
-// TestTopologyEncodesPolicies pins the user's stated decisions: which components Felis
-// tracks and how aggressively. A regression here would silently change what Felis is
-// allowed to auto-apply.
 func TestTopologyEncodesPolicies(t *testing.T) {
 	want := map[string]Spec{
 		"felis-api":   {Name: "felis-api", Policy: updates.PolicyScheduled, Manageable: true, Source: sourceGitHub, Coord: "FelisMC/Felis"},
@@ -34,10 +31,6 @@ func TestTopologyEncodesPolicies(t *testing.T) {
 	}
 }
 
-// TestTopologyPinsMinecraft proves the pin is expressed as ABSENCE: no component in
-// the static topology is Pinned, because Minecraft is never force-tracked here — it
-// is appended from the live fleet at runtime. And nothing off-cluster is proposed for
-// self-apply: velocity must be non-manageable (Notify at most, never Apply).
 func TestTopologyPinsMinecraft(t *testing.T) {
 	for _, s := range Topology() {
 		if s.Policy == updates.PolicyPinned {

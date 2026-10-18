@@ -50,9 +50,7 @@ func newMaintGate(t *testing.T) (*Gate, *httptest.Server, *httptest.Server, *ups
 	return g, gs, ms, up, clk
 }
 
-// settled waits until the gate has recorded the end of the writes it answered. The client has
-// the response before the handler's deferred endWrite runs, so a test that moves the clock
-// right after a write could otherwise stamp that write's end after the move.
+// Wait for deferred endWrite before advancing the test clock so write completion gets the intended timestamp.
 func settled(t *testing.T, g *Gate) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -299,8 +297,6 @@ func TestManifestIndexListsUntaggedRevisions(t *testing.T) {
 	}
 }
 
-// A gate that just started grants no window before a quiet period has passed:
-// the installer pushes right after the registry rolls out.
 func TestReadOnlyWindowWaitsAfterStart(t *testing.T) {
 	up := httptest.NewServer(http.NotFoundHandler())
 	t.Cleanup(up.Close)

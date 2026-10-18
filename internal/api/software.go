@@ -11,9 +11,6 @@ import (
 	"felis.lolicon.best/internal/software"
 )
 
-// SoftwareCatalog reads upstream server-software metadata: the version and
-// build pickers, and what a chosen version needs. *software.Resolver is the
-// implementation; tests use a fake.
 type SoftwareCatalog interface {
 	Versions(ctx context.Context, t software.Type) ([]software.Version, error)
 	Builds(ctx context.Context, t software.Type, mc string) ([]software.Build, error)
@@ -24,20 +21,16 @@ type SoftwareCatalog interface {
 var errSoftwareUnavailable = newError(http.StatusServiceUnavailable, "software_unavailable",
 	"server software is not configured on this install")
 
-// softwareRequest is the software block of a create or patch form.
 type softwareRequest struct {
 	Type             string `json:"type"`
 	MinecraftVersion string `json:"minecraftVersion,omitempty"`
-	// Build is optional: empty takes the recommended build.
+	// empty selects the recommended build
 	Build string `json:"build,omitempty"`
-	// Java is optional: zero takes the runtime the version needs.
+	// zero selects the required Java runtime
 	Java int    `json:"java,omitempty"`
 	Jar  string `json:"jar,omitempty"`
 }
 
-// softwareError maps a catalog failure onto the API's error shape: a version or
-// build upstream does not publish is the caller's mistake, anything else is the
-// upstream being unreachable.
 func softwareError(err error) error {
 	var nf *software.NotFoundError
 	switch {
@@ -51,10 +44,6 @@ func softwareError(err error) error {
 	}
 }
 
-// resolveSoftware validates a software block against upstream and fills in what
-// it leaves out: the recommended build, the Java runtime the version needs, and
-// whether the proxy's player identity can reach the server. It returns the spec
-// and the pinned runtime image the server will run on.
 func (a *API) resolveSoftware(ctx context.Context, req softwareRequest) (*v1alpha1.SoftwareSpec, string, error) {
 	if a.Software == nil {
 		return nil, "", errSoftwareUnavailable
@@ -155,14 +144,11 @@ func recommendedBuild(builds []software.Build) string {
 	return ""
 }
 
-// softwareTypeView is one entry of the software catalog.
 type softwareTypeView struct {
-	Type software.Type `json:"type"`
-	// Builds is true when the type picks a build or loader version.
-	Builds bool `json:"builds"`
+	Type   software.Type `json:"type"`
+	Builds bool          `json:"builds"`
 }
 
-// handleSoftwareCatalog lists the software types and Java runtimes on offer.
 func (a *API) handleSoftwareCatalog(w http.ResponseWriter, r *http.Request) {
 	if a.Software == nil {
 		writeError(w, r, errSoftwareUnavailable)
@@ -175,7 +161,6 @@ func (a *API) handleSoftwareCatalog(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"types": types, "runtimes": software.Runtimes})
 }
 
-// handleSoftwareVersions lists the Minecraft versions a type runs.
 func (a *API) handleSoftwareVersions(w http.ResponseWriter, r *http.Request) {
 	if a.Software == nil {
 		writeError(w, r, errSoftwareUnavailable)
@@ -197,8 +182,6 @@ func (a *API) handleSoftwareVersions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"versions": vs})
 }
 
-// handleSoftwareVersion describes one version: the Java it needs, its builds,
-// and whether the proxy's player identity can reach a server running it.
 func (a *API) handleSoftwareVersion(w http.ResponseWriter, r *http.Request) {
 	if a.Software == nil {
 		writeError(w, r, errSoftwareUnavailable)

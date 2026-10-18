@@ -1,9 +1,4 @@
-// Package archivepolicy is the Owner's backup and audit retention, set in the panel. Each
-// key overrides the matching [archive] or [audit] key of felis.toml for every process
-// that applies it: felis-api (the owners' backup limits, the scheduled restore points,
-// the backups it records, the audit pruning), the backup Job (how many backups of each
-// kind a server keeps and for how long), and the reaper (how long a released world's
-// archive is kept). With no row, felis.toml stands.
+// Package archivepolicy applies panel retention overrides, falling back to felis.toml when absent.
 package archivepolicy
 
 import (
@@ -18,23 +13,18 @@ import (
 	"felis.lolicon.best/internal/reaper"
 )
 
-// Key is the platform_settings row.
 const Key = "archive_policy"
 
-// Policy is the retention the panel edits, in whole units.
 type Policy struct {
-	// ManualKeep and ManualRetentionDays bound an owner's own backups of one server;
-	// ManualCooldownMinutes is the shortest gap between two of them.
+	// ManualCooldownMinutes bounds the shortest interval between owner backups.
 	ManualKeep            int `json:"manualKeep"`
 	ManualRetentionDays   int `json:"manualRetentionDays"`
 	ManualCooldownMinutes int `json:"manualCooldownMinutes"`
-	// ScheduledEveryHours spaces the restore points felis-api takes of played worlds (0
-	// turns them off); ScheduledKeep and ScheduledRetentionDays bound them.
+	// ScheduledEveryHours=0 disables scheduled restore points.
 	ScheduledEveryHours    int `json:"scheduledEveryHours"`
 	ScheduledKeep          int `json:"scheduledKeep"`
 	ScheduledRetentionDays int `json:"scheduledRetentionDays"`
-	// ReleasedRetentionDays is how long the archive of a released world is kept.
-	ReleasedRetentionDays int `json:"releasedRetentionDays"`
+	ReleasedRetentionDays  int `json:"releasedRetentionDays"`
 	// MaxStoreGiB is the backup store's soft cap: owners' backups pause at it (0 = none).
 	MaxStoreGiB int `json:"maxStoreGiB"`
 	// AuditRetentionDays is how long audit rows are kept (0 keeps every row).
@@ -43,7 +33,6 @@ type Policy struct {
 
 const day = 24 * time.Hour
 
-// Validate checks every key against the bounds the panel shows.
 func (p Policy) Validate() error {
 	var bad []string
 	check := func(name string, v, lo, hi int) {
@@ -68,8 +57,7 @@ func (p Policy) Validate() error {
 	return nil
 }
 
-// FromConfig is the policy felis.toml amounts to, which the panel shows until the Owner
-// saves one. Spans are rounded to the unit the panel edits.
+// FromConfig rounds retention spans to panel-editable units.
 func FromConfig(rc reaper.Config, audit time.Duration) Policy {
 	return Policy{
 		ManualKeep:             rc.ManualKeep,
@@ -88,7 +76,6 @@ func roundTo(d, unit time.Duration) int {
 	return int((d + unit/2) / unit)
 }
 
-// Apply overrides rc with the policy's keys.
 func (p Policy) Apply(rc *reaper.Config) {
 	rc.ManualKeep = p.ManualKeep
 	rc.ManualRetention = time.Duration(p.ManualRetentionDays) * day
@@ -105,8 +92,7 @@ func (p Policy) Audit() time.Duration {
 	return time.Duration(p.AuditRetentionDays) * day
 }
 
-// Parse decodes a stored row. A missing row or JSON null (the panel handed retention
-// back to felis.toml) is nil, nil.
+// Parse returns nil for missing or cleared settings.
 func Parse(raw []byte) (*Policy, error) {
 	if len(raw) == 0 || strings.TrimSpace(string(raw)) == "null" {
 		return nil, nil
@@ -121,8 +107,7 @@ func Parse(raw []byte) (*Policy, error) {
 	return &p, nil
 }
 
-// Read loads the row through a plain database handle, for the processes outside
-// felis-api. It is nil, nil when the panel has set none.
+// Read returns nil when no panel policy is configured.
 func Read(ctx context.Context, db *sql.DB) (*Policy, error) {
 	var raw []byte
 	err := db.QueryRowContext(ctx, `SELECT value::text FROM platform_settings WHERE key = $1`, Key).Scan(&raw)
@@ -135,8 +120,7 @@ func Read(ctx context.Context, db *sql.DB) (*Policy, error) {
 	return Parse(raw)
 }
 
-// ApplyFrom overrides rc with the panel's policy, if one is set. A row that cannot be read
-// leaves felis.toml in force and is returned, for the caller to report.
+// ApplyFrom preserves configuration and returns an error if the panel override cannot be read.
 func ApplyFrom(ctx context.Context, db *sql.DB, rc *reaper.Config) error {
 	p, err := Read(ctx, db)
 	if err != nil {

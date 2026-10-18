@@ -13,31 +13,22 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
-// Object is one object in the bucket, its key relative to the configured
-// prefix.
 type Object struct {
 	Key      string
 	Size     int64
 	Modified time.Time
 }
 
-// Bucket is the object store the sync writes to. S3 is the production one; the
-// tests use an in-memory map.
 type Bucket interface {
-	// Put stores exactly size bytes read from r under key.
 	Put(ctx context.Context, key string, r io.Reader, size int64) error
-	// Get opens key. A missing key is ErrNotFound.
 	Get(ctx context.Context, key string) (io.ReadCloser, error)
-	// List returns every object whose key starts with prefix.
 	List(ctx context.Context, prefix string) ([]Object, error)
 	Remove(ctx context.Context, key string) error
 }
 
-// ErrNotFound is a key the bucket does not hold.
 var ErrNotFound = errors.New("offsite: no such object")
 
-// S3Config locates an S3-compatible bucket. Endpoint takes an http:// or
-// https:// scheme; a bare host means TLS.
+// S3Config defaults bare endpoint hosts to TLS; explicit http permits plaintext.
 type S3Config struct {
 	Endpoint  string
 	Region    string
@@ -47,18 +38,15 @@ type S3Config struct {
 	SecretKey string
 }
 
-// S3 is a Bucket on an S3-compatible store (AWS S3, Backblaze B2, Cloudflare
-// R2, Wasabi, MinIO...). Every key is placed under Prefix.
 type S3 struct {
 	client *minio.Client
 	bucket string
 	prefix string
 }
 
-// partSize bounds what one multipart upload holds in memory.
 const partSize = 16 << 20
 
-// NewS3 builds the client. It does not touch the network; Check does.
+// NewS3 does no network I/O; Check validates access.
 func NewS3(c S3Config) (*S3, error) {
 	host, secure, err := splitEndpoint(c.Endpoint)
 	if err != nil {
@@ -103,7 +91,6 @@ func cleanPrefix(p string) string {
 	return p + "/"
 }
 
-// Check proves the bucket is reachable and the credentials may use it.
 func (s *S3) Check(ctx context.Context) error {
 	ok, err := s.client.BucketExists(ctx, s.bucket)
 	if err != nil {
@@ -128,7 +115,7 @@ func (s *S3) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, err
 	}
-	// GetObject is lazy; Stat surfaces a missing key before the first read.
+	// Stat the lazy object before returning it so missing keys are reported before the first read.
 	if _, err := obj.Stat(); err != nil {
 		obj.Close()
 		if isNotFound(err) {

@@ -15,21 +15,11 @@ import (
 	"time"
 )
 
-// This file is INTEGRATION-ONLY. ExecRunner shells out to the real `cloudflared`
-// binary and calls the live Cloudflare API; none of it can run — or be honestly
-// faked — on a box without the operator's own Cloudflare account and the
-// interactive `cloudflared tunnel login` consent already completed. The orchestration
-// that uses it (Setup) and the request-body/guard logic are unit-verified in
-// cfsetup.go; what lives here is exercised only against a real account.
+// Integration-only: needs the real cloudflared binary and a Cloudflare account.
 
 const defaultAPIBase = "https://api.cloudflare.com/client/v4"
 
-// DetectPreconditions inspects the local environment for the gating facts Setup
-// needs: whether cloudflared is installed and whether the operator has logged in
-// (cert.pem present). The API token is supplied by the caller (the TUI prompts
-// for it); it is passed through so the returned value is ready to hand to Setup.
-// This only READS the environment — it performs no Cloudflare side effects — but
-// it touches the real filesystem/PATH, so it is integration-side.
+// Reads the environment only (cloudflared on PATH, cert.pem); no Cloudflare side effects.
 func DetectPreconditions(apiToken string) Preconditions {
 	pre := Preconditions{APIToken: apiToken}
 	if path, err := exec.LookPath("cloudflared"); err == nil {
@@ -43,15 +33,11 @@ func DetectPreconditions(apiToken string) Preconditions {
 	return pre
 }
 
-// ExecRunner is the production Runner: cloudflared via os/exec for the tunnel and
-// the Cloudflare API via HTTP for Access.
+// ExecRunner invokes cloudflared for tunnels and the Cloudflare HTTP API for Access.
 type ExecRunner struct {
-	// Cloudflared is the resolved cloudflared binary path (Preconditions.CloudflaredPath).
 	Cloudflared string
-	// APIToken authenticates the Access API calls (Bearer).
-	APIToken string
-	// AccountID is the Cloudflare account the Access app/policy are created under.
-	AccountID string
+	APIToken    string
+	AccountID   string
 	// APIBase defaults to the public Cloudflare API; overridable for testing.
 	APIBase string
 	// HTTP is the client used for API calls; nil means a default with a timeout.
@@ -72,18 +58,7 @@ func (r *ExecRunner) apiBase() string {
 	return defaultAPIBase
 }
 
-// VerifyAPIToken satisfies the apiTokenVerifier seam Setup probes for: it does a
-// read-only Cloudflare API call so a bad, expired, wrong-account or
-// under-permissioned token fails BEFORE any tunnel/DNS/config is created, instead
-// of surfacing late at CreateAccessApplication with a half-built edge left behind.
-//
-// It lists Access apps (per_page=1 — the cheapest authenticated read) against the
-// exact account and permission Setup will write to, so a green result means the
-// credential that actually gates the side-effecting calls works. The tunnel and
-// DNS authenticate via cert.pem, not this token, so the Access read is precisely
-// the credential worth pre-checking. apiGet surfaces 401/403 with the actionable
-// permission checklist; this method only adds the cheap pre-flight argument
-// validation so an empty token/account never reaches the wire.
+// Read-only check of the token against the account and permission Setup writes to; fails before any tunnel or DNS change.
 func (r *ExecRunner) VerifyAPIToken(ctx context.Context) error {
 	if strings.TrimSpace(r.APIToken) == "" {
 		return fmt.Errorf("cfsetup: Cloudflare API token is required")
@@ -94,18 +69,13 @@ func (r *ExecRunner) VerifyAPIToken(ctx context.Context) error {
 	return r.apiGet(ctx, fmt.Sprintf("/accounts/%s/access/apps?per_page=1", r.AccountID), nil)
 }
 
-// tunnelIDRE extracts the UUID cloudflared prints when a tunnel is created or
-// already exists.
 var tunnelIDRE = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
 
-// CreateTunnel runs `cloudflared tunnel create <name>`. cloudflared writes the
-// credentials JSON under ~/.cloudflared/<id>.json and prints the id; we parse it
-// out. If the tunnel already exists this returns its id (idempotent re-run).
+// Runs cloudflared tunnel create; an existing tunnel returns its id, so re-runs are safe.
 func (r *ExecRunner) CreateTunnel(ctx context.Context, name string) (string, string, error) {
 	var id string
 	out, err := r.runCloudflared(ctx, "tunnel", "create", name)
 	if err != nil {
-		// An "already exists" is not fatal — recover the id via `tunnel list`.
 		lid, lerr := r.lookupTunnel(ctx, name)
 		if lerr != nil || lid == "" {
 			return "", "", err
@@ -121,18 +91,7 @@ func (r *ExecRunner) CreateTunnel(ctx context.Context, name string) (string, str
 	return id, cred, nil
 }
 
-// ensureCredentials guarantees the tunnel credentials JSON exists at credPath.
-// cloudflared writes that file only at `tunnel create`, so an idempotent re-run
-// against a tunnel that already exists — or a reset+re-bootstrap where the old
-// box's ~/.cloudflared was wiped but the Cloudflare-side tunnel survived — finds
-// no local file, and the connector crash-loops with "Tunnel credentials file
-// doesn't exist". `cloudflared tunnel token --cred-file` re-fetches the token into
-// the file (authenticating with cert.pem, keeping the same id/DNS/Access), healing
-// the re-run. The secret is written to the file, not stdout.
-//
-// A file that is there but unusable — truncated, zero bytes, or another tunnel's — would
-// crash-loop the connector just the same while setup reported success, so it is moved
-// aside to <path>.invalid and re-fetched like a missing one.
+// Ensures the credentials file exists; a re-run without it re-fetches the token with cert.pem, keeping the tunnel id.
 func (r *ExecRunner) ensureCredentials(ctx context.Context, id, credPath string) error {
 	state := "missing"
 	if _, err := os.Stat(credPath); err == nil {
@@ -154,17 +113,14 @@ func (r *ExecRunner) ensureCredentials(ctx context.Context, id, credPath string)
 	if problem := credentialsProblem(credPath, id); problem != "" {
 		return fmt.Errorf("cfsetup: cloudflared regenerated tunnel %s credentials at %s, but the file %s", id, credPath, problem)
 	}
-	// The credentials file is a secret sitting next to cert.pem; don't rely on
-	// cloudflared's umask to keep it owner-only.
+	// Tunnel credentials must be owner-readable only, regardless of cloudflared's umask.
 	if err := os.Chmod(credPath, 0o600); err != nil {
 		return fmt.Errorf("cfsetup: securing credentials file %s: %w", credPath, err)
 	}
 	return nil
 }
 
-// credentialsProblem describes what makes the credentials JSON at path unusable for tunnel
-// id, or returns "" when cloudflared can run the tunnel from it: the fields
-// `cloudflared tunnel run` reads are present, and it names this tunnel.
+// Returns why the credentials file cannot run the tunnel, or "" when it can.
 func credentialsProblem(path, id string) string {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -187,7 +143,6 @@ func credentialsProblem(path, id string) string {
 	return ""
 }
 
-// lookupTunnel finds an existing tunnel's id by name via `tunnel list`.
 func (r *ExecRunner) lookupTunnel(ctx context.Context, name string) (string, error) {
 	out, err := r.runCloudflared(ctx, "tunnel", "list", "--name", name, "--output", "json")
 	if err != nil {
@@ -215,23 +170,12 @@ func (r *ExecRunner) credentialsPath(id string) string {
 	return id + ".json"
 }
 
-// RouteDNS runs `cloudflared tunnel route dns --overwrite-dns <tunnelID> <hostname>`,
-// creating (or repointing) the proxied CNAME so hostname resolves to THIS tunnel.
-//
-// --overwrite-dns is load-bearing, not cosmetic. Without it, when a record for
-// hostname already exists — most commonly a stale CNAME left by an earlier tunnel
-// that was created and later deleted/recreated on the same box — cloudflared refuses
-// with "record already exists" and changes nothing, leaving the name bound to the
-// dead tunnel. The old code swallowed exactly that error as success, so a re-run
-// reported "routed" while the hostname kept returning Cloudflare error 1033: the
-// tunnel it still pointed at had no connector. Overwriting repoints the record at the
-// tunnel we just created, making the route idempotent AND correct on every re-run.
+// --overwrite-dns is required: without it a stale CNAME from a deleted tunnel makes cloudflared refuse, and the name stays on the dead tunnel.
 func (r *ExecRunner) RouteDNS(ctx context.Context, tunnelID, hostname string) error {
 	_, err := r.runCloudflared(ctx, "tunnel", "route", "dns", "--overwrite-dns", tunnelID, hostname)
 	return err
 }
 
-// WriteTunnelConfig writes the rendered config.yml, creating its parent directory.
 func (r *ExecRunner) WriteTunnelConfig(path string, contents []byte) error {
 	if dir := filepath.Dir(path); dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -241,8 +185,7 @@ func (r *ExecRunner) WriteTunnelConfig(path string, contents []byte) error {
 	return os.WriteFile(path, contents, 0o644)
 }
 
-// CreateAccessApplication POSTs the self-hosted Access app and returns its id and
-// issued aud (spec §14: the aud felis [auth] access_jwt_aud must adopt).
+// Creates the self-hosted Access app and returns its id and aud (the aud felis [auth] access_jwt_aud must adopt).
 func (r *ExecRunner) CreateAccessApplication(ctx context.Context, app AccessApplication) (string, string, error) {
 	var resp struct {
 		Result struct {
@@ -251,7 +194,6 @@ func (r *ExecRunner) CreateAccessApplication(ctx context.Context, app AccessAppl
 		} `json:"result"`
 	}
 	if err := r.apiPost(ctx, fmt.Sprintf("/accounts/%s/access/apps", r.AccountID), app, &resp); err != nil {
-		// If application already exists, look it up instead of failing (idempotency)
 		if strings.Contains(err.Error(), "application_already_exists") || strings.Contains(err.Error(), "11010") {
 			if id, aud, lerr := r.lookupAccessApplication(ctx, app.Domain); lerr == nil && id != "" {
 				return id, aud, nil
@@ -262,14 +204,7 @@ func (r *ExecRunner) CreateAccessApplication(ctx context.Context, app AccessAppl
 	return resp.Result.ID, resp.Result.AUD, nil
 }
 
-// CreateAccessPolicy makes the Access app carry exactly the recommended policy.
-// It upserts by name instead of POST-then-swallow: when a policy of this name
-// already exists — a re-run, or a previous hand-made setup — the swallow looked
-// idempotent but left the OLD rule set in place. If that old policy is broader
-// than the fail-closed one just built (a changed identity, a hand-made
-// allow-everyone rule), op.console ends up guarded by something weaker while
-// Setup reports success. So: find it and PUT our body over it; POST only when
-// absent (a POST that races into "already exists" falls back to the PUT).
+// Upserts the fail-closed policy by name, overwriting any policy of that name so no older, broader rule set survives.
 func (r *ExecRunner) CreateAccessPolicy(ctx context.Context, appID string, policy AccessPolicy) error {
 	pid, err := r.lookupAccessPolicy(ctx, appID, policy.Name)
 	if err != nil {
@@ -289,8 +224,6 @@ func (r *ExecRunner) CreateAccessPolicy(ctx context.Context, appID string, polic
 	return nil
 }
 
-// lookupAccessPolicy finds the id of the policy named name on an Access app,
-// returning "" when absent.
 func (r *ExecRunner) lookupAccessPolicy(ctx context.Context, appID, name string) (string, error) {
 	var resp struct {
 		Result []struct {
@@ -309,9 +242,7 @@ func (r *ExecRunner) lookupAccessPolicy(ctx context.Context, appID, name string)
 	return "", nil
 }
 
-// runCloudflared executes the cloudflared binary with the given args, returning
-// combined output. The interactive `tunnel login` browser consent is NOT done
-// here — it is a separate, operator-driven step the TUI suspends to run.
+// Runs cloudflared and returns combined output. Interactive tunnel login is handled by the TUI, not here.
 func (r *ExecRunner) runCloudflared(ctx context.Context, args ...string) (string, error) {
 	bin := r.Cloudflared
 	if bin == "" {
@@ -327,9 +258,7 @@ func (r *ExecRunner) runCloudflared(ctx context.Context, args ...string) (string
 	return buf.String(), nil
 }
 
-// apiPost and apiPut send an authenticated JSON write to the Cloudflare API and,
-// on a non-2xx or success:false body, return the error. out, when non-nil,
-// receives the decoded response.
+// Authenticated JSON write to the Cloudflare API; errors on non-2xx or success:false.
 func (r *ExecRunner) apiPost(ctx context.Context, path string, body, out any) error {
 	return r.apiWrite(ctx, http.MethodPost, path, body, out)
 }
@@ -377,8 +306,7 @@ func (r *ExecRunner) apiWrite(ctx context.Context, method, path string, body, ou
 		}
 		return fmt.Errorf("cfsetup: Cloudflare API %s: status %d: %s", path, resp.StatusCode, string(raw))
 	}
-	// Cloudflare wraps every response in {success, errors, result}; surface a
-	// success:false even on a 200.
+	// Cloudflare can return success:false with HTTP 200.
 	var envelope struct {
 		Success bool              `json:"success"`
 		Errors  []json.RawMessage `json:"errors"`
@@ -394,9 +322,7 @@ func (r *ExecRunner) apiWrite(ctx context.Context, method, path string, body, ou
 	return nil
 }
 
-// apiGet sends an authenticated JSON GET to the Cloudflare API and, on a
-// non-2xx or success:false body, returns the error. out, when non-nil, receives
-// the decoded response.
+// Authenticated JSON GET to the Cloudflare API; errors on non-2xx or success:false.
 func (r *ExecRunner) apiGet(ctx context.Context, path string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.apiBase()+path, nil)
 	if err != nil {
@@ -446,7 +372,6 @@ func (r *ExecRunner) apiGet(ctx context.Context, path string, out any) error {
 	return nil
 }
 
-// lookupAccessApplication finds an existing Access application's id and aud by domain.
 func (r *ExecRunner) lookupAccessApplication(ctx context.Context, domain string) (string, string, error) {
 	var resp struct {
 		Result []struct {

@@ -19,10 +19,6 @@ func gaugeServer(name string, state v1alpha1.DesiredState) *v1alpha1.MinecraftSe
 	}
 }
 
-// TestGaugeSyncerPublishesFleetStateFromCluster drives SyncOnce against a fake
-// client to verify the whole production path bar the ticker: List the fleet,
-// translate each server to its desiredState (an unset state defaulting to
-// Stopped), and republish felis_servers_total partitioned by that state.
 func TestGaugeSyncerPublishesFleetStateFromCluster(t *testing.T) {
 	scheme := newScheme(t)
 	c := fake.NewClientBuilder().
@@ -49,9 +45,6 @@ func TestGaugeSyncerPublishesFleetStateFromCluster(t *testing.T) {
 	}
 }
 
-// TestGaugeSyncerPublishesServerPhases: every server gets one felis_server_phase
-// series carrying its system role, observed phase (Unknown before the first
-// report) and desired state.
 func TestGaugeSyncerPublishesServerPhases(t *testing.T) {
 	login := gaugeServer("login", v1alpha1.DesiredRunning)
 	login.Labels = map[string]string{v1alpha1.LabelSystemRole: "login"}

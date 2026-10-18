@@ -59,9 +59,6 @@ func readyReason(s *v1alpha1.MinecraftServer) string {
 	return ""
 }
 
-// A server that gave up on a broken image is not stuck on it: once its spec is
-// corrected, the pod still crash-looping on the old template is recreated from
-// the new one, and the corrected start gets its own timeout and restarts.
 func TestSpecChangeReplacesAPodThatGaveUp(t *testing.T) {
 	srv := runningServer()
 	srv.Spec.Startup.TimeoutSeconds = 30
@@ -131,8 +128,6 @@ func TestSpecChangeReplacesAPodThatGaveUp(t *testing.T) {
 	}
 }
 
-// Which pods a Starting server's pass replaces once the StatefulSet has a newer
-// template, and which it leaves alone.
 func TestStalePodReplacement(t *testing.T) {
 	terminating := podAt("survival-old")
 	terminating.DeletionTimestamp = &metav1.Time{Time: time.Date(2026, 6, 25, 11, 59, 0, 0, time.UTC)}
@@ -202,8 +197,6 @@ func (c noCachedPods) Get(ctx context.Context, key client.ObjectKey, obj client.
 	return c.Client.Get(ctx, key, obj, opts...)
 }
 
-// The pod is read through Reconciler.Pods alone, so the operator runs with
-// pods:get and no pod informer.
 func TestStalePodIsReadThroughTheUncachedReader(t *testing.T) {
 	r, c := newReconciler(t, fakeProber{}, runningServer(), rconSecret(), podAt("survival-old"))
 	r.Client = noCachedPods{c}

@@ -36,8 +36,6 @@ func TestParseTolerant(t *testing.T) {
 	}
 }
 
-// TestParseFailsClosed proves a garbled version is an error, never a silent 0.0.0
-// that would read as "older than everything" and trigger a spurious upgrade.
 func TestParseFailsClosed(t *testing.T) {
 	bad := []string{"", "   ", "vx.y.z", "1.2.x", "1.2.3.4.5", "1.2.3.x", "abc", "-1.2.3", "1.-2.3"}
 	for _, in := range bad {
@@ -47,8 +45,6 @@ func TestParseFailsClosed(t *testing.T) {
 	}
 }
 
-// TestParseRevision covers the fourth component Temurin uses for an emergency respin
-// of a JDK update: it is read, kept in the report, and ordered after Patch.
 func TestParseRevision(t *testing.T) {
 	v, err := Parse("25.0.4.1+1")
 	if err != nil {
@@ -88,13 +84,7 @@ func TestCompareAndAfter(t *testing.T) {
 		{"25.0.4.1+1", "25.0.5+3", -1},      // and older than the next update
 		{"25.0.4", "25.0.4.0", 0},           // an absent revision is zero
 
-		// A dev build's own stamp, "<tag>+g<sha>", against the tag it is built past.
-		// It must read EQUAL, never newer: deploy/bootstrap.sh's dev channel stamps the
-		// binary this way, so if metadata counted for ordering every dev install would
-		// report an upgrade onto a release it already contains. The "+" spelling exists
-		// precisely to buy this, and the mixed case -- metadata on one side only -- is
-		// the one the k3s pair above does not exercise. The last pair carries the
-		// metadata after a prerelease tail, the order a real earlyAccess build stamps.
+		// Build metadata must compare equal to its release tag, including after prerelease identifiers.
 		{"v1.2.3+g1a2b3c4", "v1.2.3", 0},
 		{"v1.2.3", "v1.2.3+g1a2b3c4", 0},
 		{"v1.2.3+g1a2b3c4", "v1.2.4", -1},
@@ -134,8 +124,6 @@ func TestIsPrerelease(t *testing.T) {
 	}
 }
 
-// TestStringRoundTrips proves a report shows exactly what upstream published,
-// including the "+k3s1" a human needs to recognize the build.
 func TestStringRoundTrips(t *testing.T) {
 	for _, in := range []string{"v1.30.2+k3s1", "1.2.3-rc.1", "2024.2.1"} {
 		v, _ := Parse(in)

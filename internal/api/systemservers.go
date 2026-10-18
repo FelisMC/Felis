@@ -7,8 +7,7 @@ import (
 	"felis.lolicon.best/internal/naming"
 )
 
-// System services have no player owner or business-layer row. Staff manage their
-// existing cluster objects; creation and claiming keep the reserved-name gate.
+// System services have no ownership row; staff manage existing objects while creation and claims still reject reserved names.
 func validateManagedServerName(r *http.Request, name string) error {
 	if p := principalFromContext(r.Context()); naming.IsSystemServer(name) && p != nil && p.IsAdmin() {
 		return naming.ValidateSystemServerName(name)

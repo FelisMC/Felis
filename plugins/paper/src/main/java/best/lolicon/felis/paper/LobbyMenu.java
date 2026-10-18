@@ -18,28 +18,20 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.logging.Logger;
 
-/**
- * LobbyMenu is what the {@code /menu} chest GUI does (see {@link FelisPaperPlugin} for
- * the flow): it asks the proxy for the list, opens a page of tiles, asks for each
- * tile's status and repaints it, turns a click into the one frame it stands for, and
- * shows what the proxy refuses. It decides what every slot holds ({@link Slot}); the
- * plugin's {@link Screen} draws that as items, which is what lets LobbyMenuTest drive
- * the whole menu against real paper-api events without a running server.
- */
+/** Lobby {@code /menu} chest GUI: decides each slot's content ({@link Slot}); {@link Screen} draws it. */
 final class LobbyMenu implements Listener, PluginMessageListener {
 
     // Bottom-row navigation slots on a paged menu.
     static final int PREV_SLOT = 45;
     static final int PAGE_SLOT = 49;
     static final int NEXT_SLOT = 53;
-    // How long /menu waits for the proxy's ListUpdate before saying the list is down.
-    static final long LIST_TIMEOUT_TICKS = 60L;
+    static final long LIST_TIMEOUT_TICKS = 60L; // how long /menu waits for the proxy's ListUpdate
 
-    /** Screen is one player's client as the menu sees it. */
+    /** One player's client as the menu sees it. */
     interface Screen {
         String name();
 
-        /** zh mirrors the Velocity rule: Chinese when the client locale is zh-*. */
+        /** True when the client locale is zh-*. */
         boolean zh();
 
         default String menuTitle() {
@@ -52,42 +44,39 @@ final class LobbyMenu implements Listener, PluginMessageListener {
 
         void chat(String text, Tone tone);
 
-        /** open shows a new menu page; slots[i] is slot i's content, null for none. */
+        /** Shows a new menu page; slots[i] is slot i's content, null for none. */
         void open(MenuHolder holder, String title, int size, Slot[] slots);
 
-        /** paint redraws one slot of a menu page this screen shows. */
         void paint(MenuHolder holder, int slot, Slot content);
 
-        /** shown is the menu page in front of the player, or null for none. */
+        /** Returns the menu page in front of the player, or null. */
         MenuHolder shown();
 
         void close();
     }
 
-    /** Tone is a chat line's colour: a notice (yellow) or a refusal (red). */
+    /** Chat line colour: a notice (yellow) or a refusal (red). */
     enum Tone { NOTICE, ERROR }
 
-    /** Slot is what one menu slot holds. */
     sealed interface Slot permits Loading, Status, Unavailable, Nav {
     }
 
-    /** Loading is a tile whose status has not come back yet. */
+    /** A tile whose status has not come back yet. */
     record Loading(String server) implements Slot {
     }
 
-    /** Status is a tile painted from the server's latest status. */
     record Status(ControlFrame status, MenuTiles.Tile tile) implements Slot {
     }
 
-    /** Unavailable is a tile whose status query the proxy refused, with the reason. */
+    /** A tile whose status query the proxy refused. */
     record Unavailable(String server, String reason) implements Slot {
     }
 
-    /** Nav is a bottom-row page control: an arrow, or the page number. */
+    /** A bottom-row page control: an arrow, or the page number. */
     record Nav(boolean arrow, String label) implements Slot {
     }
 
-    /** Later runs a task on the main thread after a number of ticks. */
+    /** Runs a task on the main thread after a number of ticks. */
     interface Later {
         void run(Runnable task, long ticks);
     }
@@ -96,9 +85,7 @@ final class LobbyMenu implements Listener, PluginMessageListener {
     private final Later later;
     private final Logger log;
 
-    // Players who ran /menu and are waiting for the proxy's ListUpdate, each with the
-    // token of their latest request, so an earlier request's timeout cannot cut a
-    // later one's wait short.
+    // Token of each player's latest /menu request, so an earlier request's timeout cannot cut a later wait short.
     private final Map<UUID, Object> pendingOpen = new ConcurrentHashMap<>();
 
     LobbyMenu(Function<Player, Screen> screens, Later later, Logger log) {
@@ -107,7 +94,7 @@ final class LobbyMenu implements Listener, PluginMessageListener {
         this.log = log;
     }
 
-    /** request is /menu: ask the proxy for the list, and give up after a few seconds. */
+    /** Handles /menu: asks the proxy for the list and gives up after LIST_TIMEOUT_TICKS. */
     void request(Player player) {
         UUID id = player.getUniqueId();
         Screen screen = screens.apply(player);
@@ -121,8 +108,6 @@ final class LobbyMenu implements Listener, PluginMessageListener {
             }
         }, LIST_TIMEOUT_TICKS);
     }
-
-    // ---- downstream: felis:control frames from the proxy ----
 
     @Override
     public void onPluginMessageReceived(String channel, Player player, byte[] message) {
@@ -139,8 +124,7 @@ final class LobbyMenu implements Listener, PluginMessageListener {
         Screen screen = screens.apply(player);
         switch (frame.type()) {
             case ControlFrame.LIST_UPDATE:
-                // Only a /menu that is still waiting opens; a late answer after the
-                // timeout message is dropped rather than popping a menu up unasked.
+                // A late answer after the timeout is dropped rather than opening an unasked menu.
                 if (pendingOpen.remove(player.getUniqueId()) != null) {
                     openPage(screen, frame.servers(), MenuTiles.accessByName(frame), 0);
                 }
@@ -152,13 +136,9 @@ final class LobbyMenu implements Listener, PluginMessageListener {
                 if (frame.server() != null && markUnavailable(screen, frame)) {
                     break; // a tile's status query failed: shown on the tile itself
                 }
-                // The proxy already sanitizes transport faults; this is the only place
-                // a claim/quota/policy refusal becomes visible to the player.
                 screen.chat("⚠ " + errorText(frame, screen.zh()), Tone.ERROR);
                 break;
             case ControlFrame.TRANSFER_READY:
-                // The proxy performs the actual Connect; just make sure a stale menu is
-                // not left open over the join.
                 if (screen.shown() != null) {
                     screen.close();
                 }
@@ -194,7 +174,6 @@ final class LobbyMenu implements Listener, PluginMessageListener {
             }
         }
         screen.open(holder, title(screen.menuTitle(), p, pages), size, slots);
-        // Ask the proxy for live status of every tile on this page; answers repaint them.
         for (String server : view) {
             screen.send(ControlFrame.statusQuery(server));
         }
@@ -207,15 +186,13 @@ final class LobbyMenu implements Listener, PluginMessageListener {
         }
         int slot = holder.servers().indexOf(frame.server());
         if (slot < 0) {
-            return; // a server we are not showing
+            return; // a server this menu does not show
         }
         holder.put(frame.server(), frame);
         screen.paint(holder, slot, new Status(frame, MenuTiles.tile(frame, holder.verdict(frame.server()), screen.zh())));
     }
 
-    // markUnavailable repaints a still-loading tile whose status query was refused, so
-    // it stops saying "loading" forever. Returns false when there is no such tile (the
-    // error belongs to a click, and goes to chat).
+    // Repaints a still-loading tile whose status query was refused; returns false when the error belongs to a click.
     private boolean markUnavailable(Screen screen, ControlFrame error) {
         MenuHolder holder = screen.shown();
         if (holder == null) {
@@ -229,16 +206,13 @@ final class LobbyMenu implements Listener, PluginMessageListener {
         return true;
     }
 
-    // ---- clicks: a tile is a button, never an item to pick up ----
-
     @EventHandler
     public void onInventoryClick(InventoryClickEvent event) {
         Inventory top = event.getView().getTopInventory();
         if (!(top.getHolder() instanceof MenuHolder holder)) {
-            return; // not our GUI
+            return; // not a GUI this plugin opened
         }
-        // Every slot in our GUI is a button: cancel unconditionally so nothing can be
-        // taken out, even on clicks in empty slots or the player's own inventory.
+        // Cancel every click so no item can be taken out, including in empty slots and the player's inventory.
         event.setCancelled(true);
         if (event.getClickedInventory() != top) {
             return; // click landed in the player's inventory, not a tile
@@ -250,9 +224,7 @@ final class LobbyMenu implements Listener, PluginMessageListener {
 
     @EventHandler
     public void onInventoryDrag(InventoryDragEvent event) {
-        // A drag can deposit into or sweep across our tiles without ever firing a
-        // single InventoryClickEvent on them, so the click guard alone is not enough:
-        // cancel any drag that touches our GUI so a tile can never be grabbed or smeared.
+        // A drag can fire no InventoryClickEvent on the tiles, so the click guard alone is not enough.
         if (event.getView().getTopInventory().getHolder() instanceof MenuHolder) {
             event.setCancelled(true);
         }
@@ -272,22 +244,19 @@ final class LobbyMenu implements Listener, PluginMessageListener {
         String server = holder.servers().get(slot);
         ControlFrame state = holder.latest(server);
         if (state == null) {
-            return; // still loading — no status yet, so we don't know which frame to send
+            return; // still loading: no status yet, so the frame to send is unknown
         }
         boolean zh = screen.zh();
         MenuTiles.Tile tile = MenuTiles.tile(state, holder.verdict(server), zh);
         ControlFrame click = MenuTiles.click(tile, screen.name(), server);
         if (click == null) {
-            // A start felis-api would refuse: say why and leave the menu open, so the
-            // player can pick another server.
+            // Refused start: say why and keep the menu open.
             screen.chat("⚠ " + server + ": " + MenuTiles.chatReason(tile, zh), Tone.NOTICE);
             return;
         }
         screen.send(click);
         screen.close();
     }
-
-    // ---- text ----
 
     static String title(boolean zh, int page, int pages) {
         return title(zh ? "Felis 服务器" : "Felis Servers", page, pages);
@@ -338,15 +307,14 @@ final class LobbyMenu implements Listener, PluginMessageListener {
                     break;
             }
         }
-        // An unmapped code carries felis-api's own English message; a Chinese client
-        // gets a generic line rather than untranslated text.
+        // An unmapped code carries felis-api's English message; zh clients get a generic line.
         if (!zh && f.message() != null && !f.message().isEmpty()) {
             return f.message();
         }
         return zh ? "请求失败，请重试。" : "Request failed — please try again.";
     }
 
-    // invSize is the smallest chest (one to six rows) that holds count tiles.
+    /** Returns the smallest chest size (1-6 rows) that holds count tiles. */
     static int invSize(int count) {
         int rows = Math.max(1, (count + 8) / 9);
         return Math.min(rows, 6) * 9;

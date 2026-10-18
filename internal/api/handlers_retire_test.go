@@ -37,10 +37,6 @@ func cancelRetire(a *API) *httpResult {
 	return result(do(a.ExternalHandler(), "DELETE", "/api/v1/servers/survival/retirement", "", nil))
 }
 
-// TestRetireRequest covers PUT /servers/{name}/retirement: the owner may give the
-// server up and an admin may delete it, both only with the name typed back; the
-// server is stopped and the request recorded for the reaper, and audited. Every
-// refusal leaves the server running and nothing recorded.
 func TestRetireRequest(t *testing.T) {
 	t.Run("owner gives the server up", func(t *testing.T) {
 		a, repo, cl := retireAPI(retireOwner)
@@ -146,8 +142,6 @@ func TestRetireRequest(t *testing.T) {
 	}
 }
 
-// TestRetireCancel covers DELETE /servers/{name}/retirement: the owner takes back
-// giving the server up, but only an admin cancels a deletion.
 func TestRetireCancel(t *testing.T) {
 	pending := func(repo *fakeRepo, del bool) {
 		repo.byName["survival"].Retire = &RetireState{RequestedAt: time.Now(), Delete: del}
@@ -189,9 +183,6 @@ func TestRetireCancel(t *testing.T) {
 	})
 }
 
-// A server with a pending retirement stays as its owner left it until the reaper
-// archives it: no face wakes or claims it, the lobby does not offer it, and the
-// owner's and admin's views say it is going.
 func TestRetiringServerIsFrozen(t *testing.T) {
 	t.Run("external wake", func(t *testing.T) {
 		a, repo, cl := retireAPI(retireOwner)

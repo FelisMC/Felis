@@ -14,11 +14,6 @@ import (
 	"felis.lolicon.best/internal/maintenance"
 )
 
-// The world-volume lock (internal/maintenance) from the handlers' side: a wake
-// refused because a restore/backup/file write holds the world, and those three
-// operations refused while another one does. The lock itself (atomicity, stale
-// locks, Job-backed holds) is K8sCluster's and is tested in k8scluster_test.
-
 func TestWakeRefusedDuringMaintenance(t *testing.T) {
 	busy := &MaintenanceBusyError{Kind: maintenance.KindRestore}
 

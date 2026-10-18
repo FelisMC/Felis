@@ -87,10 +87,7 @@ lobby-server=lobby
 var oldNames = domainNames{root: "old.example", panel: "console.old.example", admin: "op.console.old.example"}
 var newNames = domainNames{root: "new.example", panel: "console.new.example", admin: "op.console.new.example"}
 
-// domainRig models the host: the files, the cluster, and a felis-api, proxy and
-// operator that pick up config the way the real ones do — the api serves what it
-// read at its last restart, the proxy runs since its last restart, and the login
-// pod carries the env its MinecraftServer had when it was last rolled.
+// The fixture loads configuration only on restart, matching live process behavior.
 type domainRig struct {
 	h      domainHost
 	cl     client.Client
@@ -234,10 +231,7 @@ func (rig *domainRig) restartAPI(t *testing.T) {
 	}
 }
 
-// rollLoginPod is the operator restarting the login pod onto its CR's env.
-// operatorTick is the operator as the login pod is watched: once the CR's env
-// changes it takes operatorLag looks at the pod before the restarted pod
-// carries the new env, the way a real rollout lags the CR.
+// operatorLag delays the login Pod's adoption of CR environment changes.
 func (rig *domainRig) operatorTick(t *testing.T, c client.Client) {
 	t.Helper()
 	ctx := context.Background()

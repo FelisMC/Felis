@@ -33,9 +33,6 @@ function UsageBar({ used, total, label, icon: Icon, mono = false }: { used: numb
 
 const holds = [1, 4, 24] as const;
 
-/** HostStatusCard shows the controller host as `felis status` does: disks, memory, the
- *  installer's services and timers, and the watchdog's open alerts, with the hold that
- *  keeps the watchdog's mail back during planned maintenance. */
 export function HostStatusCard({ overview }: { overview: AsyncState<HostOverview> }) {
   const { t, i18n } = useTranslation("admin");
   const reauth = useReauth();

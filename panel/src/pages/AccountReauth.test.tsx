@@ -6,10 +6,6 @@ import { MemoryRouter } from "react-router-dom";
 import type { Identity, PasskeyCredential } from "@/lib/types";
 import { Account } from "./Account";
 
-// The Account page's changes to how the account signs in (delete or add a
-// passkey, change the email) meet 403 reauth_required when the session has not
-// proven a factor lately. These drive the page through that refusal: the check
-// dialog, each factor, and the change running again afterwards.
 
 const mocks = vi.hoisted(() => ({
   passkeyList: vi.fn(),

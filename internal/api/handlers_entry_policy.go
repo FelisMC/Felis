@@ -28,7 +28,7 @@ type entryPolicyView struct {
 }
 
 func defaultEntryPolicy() entryPolicy {
-	// Preserve existing host routing and web association until the Owner saves a policy.
+	// Preserve routing and web association until the owner saves an explicit policy.
 	return entryPolicy{Mode: "domain", RequireAccountLink: true, OfflineAction: "wake", WaitingSpace: "lobby"}
 }
 

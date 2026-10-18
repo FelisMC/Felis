@@ -51,11 +51,6 @@ func dbKeys(b *memBucket) []string {
 	return keys
 }
 
-// TestSyncSnapshotsAfterCopyingWorlds: a pass that copies an archive leaves a
-// bundle in the bucket taken after the copy, which a restore takes as the
-// latest and whose rows list the archive; the pass counts the bucket's bundles
-// once, with that one newest. A pass that copies nothing takes none, and the
-// next daily bundle replaces it.
 func TestSyncSnapshotsAfterCopyingWorlds(t *testing.T) {
 	cat := &fakeCatalog{rows: []*row{
 		{WorldBackup: WorldBackup{ID: "b1", Server: "alpha", Ref: "/a/alpha-1.tar.gz"}, status: "present"},
@@ -102,10 +97,6 @@ func TestSyncSnapshotsAfterCopyingWorlds(t *testing.T) {
 	}
 }
 
-// TestSyncSnapshotOnlyWhenACopyIsNewer: no snapshot while the newest bundle in
-// the bucket was taken after the last copy, in the same second included (bundle
-// names have one-second resolution); one when a copy is newer, or when the
-// bucket has no bundle at all; none on an install that never copied an archive.
 func TestSyncSnapshotOnlyWhenACopyIsNewer(t *testing.T) {
 	stamped := func(at time.Time) string { return dbbackup.BundleName(at, dbbackup.LabelDaily) }
 	cases := []struct {
@@ -160,8 +151,6 @@ func TestSyncSnapshotOnlyWhenACopyIsNewer(t *testing.T) {
 	}
 }
 
-// TestSyncSnapshotFailureIsReported: a snapshot that fails fails the pass, which
-// the watchdog reports, and the bundles already there still count.
 func TestSyncSnapshotFailureIsReported(t *testing.T) {
 	cat := &fakeCatalog{rows: []*row{
 		{WorldBackup: WorldBackup{ID: "b1", Server: "alpha", Ref: "/a/alpha-1.tar.gz"}, status: "present"},
@@ -182,9 +171,6 @@ func TestSyncSnapshotFailureIsReported(t *testing.T) {
 	}
 }
 
-// TestSyncBucketKeepsDailiesPastSnapshots: snapshots do not count against
-// DBKeep, so hourly ones leave the daily restore points alone, and only the
-// newest snapshot stays, while it is the newest bundle of all.
 func TestSyncBucketKeepsDailiesPastSnapshots(t *testing.T) {
 	s, b := newSyncer(t, &fakeCatalog{})
 	for _, name := range []string{
@@ -218,10 +204,6 @@ func TestSyncBucketKeepsDailiesPastSnapshots(t *testing.T) {
 	}
 }
 
-// TestSyncSweepsUnrecordedWorlds: a world object no row keeps goes once it is
-// older than OrphanAfter; a younger one, one whose age the bucket does not
-// report, one a row keeps however old, and anything that is not an archive
-// object stay.
 func TestSyncSweepsUnrecordedWorlds(t *testing.T) {
 	day := 24 * time.Hour
 	rows := func() []*row {

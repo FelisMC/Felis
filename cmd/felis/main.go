@@ -1,7 +1,4 @@
-// Command felis is the single multi-call binary for the platform (spec §25):
-// it dispatches to the api, operator, migrate, reaper, and apply subcommands.
-// Building one binary keeps the shared packages (scheme, store, config) linked
-// once and shipped in a single image.
+// Command felis dispatches the platform subcommands from one binary.
 package main
 
 import (
@@ -17,11 +14,7 @@ func main() {
 // hostBinDir is where deploy/bootstrap.sh installs felis, k3s and cloudflared.
 const hostBinDir = "/usr/local/bin"
 
-// ensureHostBinDirOnPath appends hostBinDir to PATH when it is missing, so the
-// k3s and cloudflared this binary execs are found beside it. sudo's secure_path
-// on EL leaves /usr/local/bin out: `sudo /usr/local/bin/felis db backup` would
-// otherwise run with no k3s to reach the database's pod through. Appended, so a
-// PATH that names another k3s first keeps it.
+// Append the host binary directory to handle sudo secure_path while preserving PATH precedence.
 func ensureHostBinDirOnPath() {
 	path := os.Getenv("PATH")
 	for _, dir := range filepath.SplitList(path) {

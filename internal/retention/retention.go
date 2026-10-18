@@ -1,18 +1,4 @@
-// Package retention deletes the control-plane rows that stopped mattering, so
-// the sign-in tables and the audit trail do not grow for as long as an install
-// runs.
-//
-// Every sign-in door leaves a row behind: a session per login, an email code or
-// passkey challenge per attempt, a bind code per /felis link, an op-login request
-// per staff sign-in, a setup token per invite. Each is spent once it expires,
-// is used, or is revoked, and a spent row only holds a hash nothing accepts any
-// more. Prune drops those rows Grace after they were spent: long enough that an
-// incident can still line up a session's device and address with the audit
-// trail, short enough that the tables stay the size of what is live.
-//
-// Audit rows are kept for the install's [audit] retention and then deleted, oldest
-// first. `felis db audit-export` (ExportAudit) writes the rows to a file first
-// for an install that must keep them longer.
+// Package retention prunes spent sign-in records and audit rows past their retention period.
 package retention
 
 import (
@@ -25,26 +11,19 @@ import (
 	"time"
 )
 
-// Grace is how long a spent sign-in row outlives the moment it was spent.
+// Grace retains spent sign-in records for incident correlation.
 const Grace = 30 * 24 * time.Hour
 
-// batch bounds one DELETE, so a first run on an install that never pruned stays
-// clear of the pool's statement timeout and holds its row locks briefly.
+// Bound each DELETE to keep statement duration and row-lock lifetime short.
 const batch = 5000
 
-// sweep is one table's spent rows: every statement takes the cutoff as $1 and a
-// row limit as $2, and deletes at most $2 rows spent before the cutoff.
+// Each sweep binds the cutoff as $1 and row limit as $2.
 type sweep struct {
 	table string
 	where string
 }
 
-// sweeps name each sign-in table's spent rows. A session is spent once it
-// expired or was revoked; a single-use code or challenge once it expired or was
-// redeemed; a bind code once it expired (redeeming deletes it); a migration that
-// never completed once nobody touched it for Grace (a redeemed one is the record
-// of which account moved where and is kept); an OTP failure window once it began
-// Grace ago (a window lasts a day).
+// Keep redeemed account migrations; prune only abandoned migrations after Grace.
 var sweeps = []sweep{
 	{"sessions", "expires_at < $1 OR revoked_at < $1"},
 	{"email_otps", "expires_at < $1 OR consumed_at < $1"},
@@ -57,16 +36,13 @@ var sweeps = []sweep{
 	{"otp_failure_windows", "window_start < $1"},
 }
 
-// Policy is what Prune keeps.
 type Policy struct {
-	// Audit is how long audit rows are kept; 0 keeps every row.
+	// Audit=0 retains all audit rows.
 	Audit time.Duration
 }
 
-// Result counts the rows Prune deleted, by table.
 type Result map[string]int64
 
-// Total is the number of rows deleted across all tables.
 func (r Result) Total() int64 {
 	var n int64
 	for _, v := range r {
@@ -75,9 +51,7 @@ func (r Result) Total() int64 {
 	return n
 }
 
-// Prune deletes the spent sign-in rows and the audit rows past the policy's
-// retention. It stops at the first failing table and returns what it deleted
-// so far with the error; the next run picks up from there.
+// Prune stops at the first failing table and returns the deletion counts accumulated so far.
 func Prune(ctx context.Context, db *sql.DB, now time.Time, p Policy) (Result, error) {
 	res := Result{}
 	for _, s := range sweeps {
@@ -116,9 +90,7 @@ func deleteBatched(ctx context.Context, db *sql.DB, table, where string, cutoff 
 	}
 }
 
-// Loop runs Prune a minute after it starts and then every interval until ctx
-// ends, logging what each run deleted. policy is read on every run, so a change of
-// the retention needs no restart.
+// Loop reads policy on every run so retention changes need no restart.
 func Loop(ctx context.Context, db *sql.DB, policy func(context.Context) Policy, every time.Duration, log *slog.Logger) {
 	t := time.NewTimer(time.Minute)
 	defer t.Stop()
@@ -147,7 +119,6 @@ func Loop(ctx context.Context, db *sql.DB, policy func(context.Context) Policy, 
 	}
 }
 
-// AuditRow is one audit_logs row as ExportAudit writes it.
 type AuditRow struct {
 	ID          int64           `json:"id"`
 	CreatedAt   time.Time       `json:"created_at"`
@@ -162,8 +133,7 @@ type AuditRow struct {
 	Payload     json.RawMessage `json:"payload,omitempty"`
 }
 
-// ExportAudit writes the audit rows created in [since, until) to w as JSON lines,
-// oldest first; a zero bound is open. It returns how many rows it wrote.
+// ExportAudit writes JSON lines in [since, until), oldest first; zero bounds are open.
 func ExportAudit(ctx context.Context, db *sql.DB, since, until time.Time, w io.Writer) (int, error) {
 	const q = `SELECT id, created_at, actor, COALESCE(actor_user_id, ''), source, action,
 		COALESCE(server_name, ''), COALESCE(request_id, ''), COALESCE(host(client_ip), ''),

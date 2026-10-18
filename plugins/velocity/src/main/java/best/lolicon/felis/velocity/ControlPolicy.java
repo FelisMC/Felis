@@ -6,29 +6,7 @@ import java.util.Set;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
 
-/**
- * ControlPolicy decides whether a {@code felis:control} frame is acted on, from two
- * facts the proxy knows and the sender cannot forge: which backend connection the
- * frame arrived on, and which servers the registry currently manages. It holds no
- * Velocity types so the whole decision is unit-testable (ControlPolicyTest).
- *
- * <p>Every user backend runs code its owner chose, so "arrived from a backend" says
- * nothing about who wrote the frame. Before this gate any server owner could install
- * a plugin that sent ClaimRequests and WakeRequests on behalf of whoever was standing
- * on their server, and pick the {@code server} field freely. The rules are now:
- *
- * <ul>
- *   <li>the lobby may send {@code StatusQuery}, {@code WakeRequest},
- *       {@code ClaimRequest} and {@code ListRequest};</li>
- *   <li>the login gate may send {@code LoginRelease} and nothing else;</li>
- *   <li>any other backend is refused outright, whatever the type.</li>
- * </ul>
- *
- * <p>A frame that names a server must name a user server the registry manages and
- * that is well-formed by the platform's naming rule. The two system servers are not
- * menu targets: the lobby never lists them, and waking or claiming either is not a
- * player action.
- */
+// Authorize trusted login/lobby sources only and restrict named targets to managed user servers.
 final class ControlPolicy {
 
     /** The outcome of {@link #check}; everything but ACCEPT means drop the frame. */

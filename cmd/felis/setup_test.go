@@ -94,13 +94,6 @@ func TestHostBootstrapReadyRequiresMarkerAndArtifacts(t *testing.T) {
 	}
 }
 
-// --dev used to export FELIS_CHANNEL, which nothing reads, so `felis setup --dev`
-// silently installed the RELEASE channel: the one outcome the operator did not ask
-// for. Renaming the variable to the one bootstrap does read (FELIS_VERSION_BOOTSTRAP)
-// would not have helped -- setup takes bootstrap's bootstrap_from_tui arm, where every
-// reader of it is unreachable -- so the flag refuses instead of guessing. It has to
-// refuse BEFORE the root check, or the message an unprivileged operator sees is about
-// sudo rather than about the channel.
 func TestSetupDevFlagRefusesInsteadOfSilentlyInstallingRelease(t *testing.T) {
 	var stdout, stderr strings.Builder
 

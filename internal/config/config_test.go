@@ -214,12 +214,6 @@ store = "magicbox"
 	}
 }
 
-// TestLoadRejectsUnimplementedArchiveStore guards the §19/build-reality gap:
-// tarS3, volumeSnapshot and longhorn are recognized store names but only
-// tarLocal is implemented in this build. A config naming one of them must be
-// rejected at load — otherwise felis-api boots green while the reaper CronJob
-// fails every run and restore silently 503s. The error must point the operator
-// at the fix (tarLocal), distinct from the "unknown store" message.
 func TestLoadRejectsUnimplementedArchiveStore(t *testing.T) {
 	for _, store := range []string{"tarS3", "volumeSnapshot", "longhorn"} {
 		t.Run(store, func(t *testing.T) {
@@ -241,13 +235,6 @@ store = "`+store+`"
 	}
 }
 
-// TestLoadRejectsSchemeQualifiedRegistryURL guards the §24 split-brain: the
-// registry url is a bare host[:port], read scheme-tolerantly by the admin build
-// path (registryHost strips the scheme) but scheme-INtolerantly by the
-// user-modpack lane (deriveImageRef concatenates raw). A scheme-qualified url
-// would boot felis-api green and 500 every approve while admin builds keep
-// working, so it must be rejected at load with the bare-host contract spelled
-// out. Both http:// and https:// are caught (the check is on "://").
 func TestLoadRejectsSchemeQualifiedRegistryURL(t *testing.T) {
 	for _, url := range []string{"http://registry.felis.svc:5000", "https://registry.felis.svc:5000"} {
 		t.Run(url, func(t *testing.T) {
@@ -269,8 +256,6 @@ url = "`+url+`"
 	}
 }
 
-// The scan policy reaches the build Job as written, case aside, and a severity
-// Trivy does not use fails the load instead of every build.
 func TestLoadScanPolicy(t *testing.T) {
 	cfg, err := config.Load(writeTOML(t, `
 [server]
@@ -315,10 +300,6 @@ scan_fail_on = ["HIGH", "SEVERE"]
 	}
 }
 
-// TestLoadAuthSourcesPreservesOrder pins the Felis-nano priority contract: the
-// [[auth_source]] array-of-tables decodes in file order (config order = priority), which
-// is why it is an array-of-tables and not a map. A map keyed by tag would load and pass
-// this file yet silently reorder the sources, breaking Mojang-first federation.
 func TestLoadAuthSourcesPreservesOrder(t *testing.T) {
 	cfg, err := config.Load(writeTOML(t, `
 [server]
@@ -345,13 +326,6 @@ url = "https://guild.example.net/sessionserver/session/minecraft/hasJoined"
 	}
 }
 
-// TestLoadRejectsAuthSourceIdentityKey guards the crown-jewel invariant structurally: there
-// is no identity/trusted field on AuthSourceConfig, so an attempt to set one is an unknown
-// key and Load rejects it loudly. A config can therefore never mint a source whose
-// self-asserted UUIDs are trusted verbatim — the impersonation hole stays closed.
-//
-// The source is otherwise valid, so the only thing left to reject is the identity key itself:
-// with a missing prefix the prefix rule would fail first and hide a loader that accepts it.
 func TestLoadRejectsAuthSourceIdentityKey(t *testing.T) {
 	const source = `
 [[auth_source]]
@@ -374,9 +348,6 @@ url = "postgres://felis@db/felis"
 	}
 }
 
-// TestLoadRejectsDuplicateAuthSourceTag pins the namespace-collision guard: two sources
-// sharing a tag would collapse into one per-source UUID namespace, reopening cross-source
-// impersonation. Must be rejected at load.
 func TestLoadRejectsDuplicateAuthSourceTag(t *testing.T) {
 	_, err := config.Load(writeTOML(t, `
 [server]
@@ -400,10 +371,6 @@ url = "https://b.example.net/hasJoined"
 	}
 }
 
-// TestLoadRejectsColonInAuthSourceTag pins the separator guard. The UUID of a third-party
-// player is derived from tag+":"+nativeID, and the native id is chosen by the source, so with
-// "guild" and "guild:eu" both configured the "guild" root could answer id "eu:X" and receive
-// the UUID of "guild:eu"'s player X. Both loaders share the check, so both are exercised.
 func TestLoadRejectsColonInAuthSourceTag(t *testing.T) {
 	const sources = `
 [[auth_source]]
@@ -433,8 +400,6 @@ url = "postgres://felis@db/felis"
 	}
 }
 
-// TestLoadRejectsPaddedAuthSourceTag: whitespace around a tag cannot be seen in the file but
-// is part of the namespace every player UUID of the source is hashed from.
 func TestLoadRejectsPaddedAuthSourceTag(t *testing.T) {
 	for _, tag := range []string{"littleskin ", " littleskin", "littleskin\t"} {
 		_, err := config.LoadNano(writeTOML(t, "[[auth_source]]\ntag = \""+tag+"\"\nprefix = \"LS\"\nurl = \"https://a.example.net/hasJoined\"\n"))
@@ -444,8 +409,6 @@ func TestLoadRejectsPaddedAuthSourceTag(t *testing.T) {
 	}
 }
 
-// TestLoadRejectsMojangAuthSourceTag: Mojang is prepended in code, so a listed "mojang" is a
-// second, different source that only looks like a Mojang override.
 func TestLoadRejectsMojangAuthSourceTag(t *testing.T) {
 	for _, tag := range []string{"mojang", "Mojang"} {
 		_, err := config.LoadNano(writeTOML(t, "[[auth_source]]\ntag = \""+tag+"\"\nprefix = \"MJ\"\nurl = \"https://sessionserver.mojang.com/session/minecraft/hasJoined\"\n"))
@@ -455,10 +418,6 @@ func TestLoadRejectsMojangAuthSourceTag(t *testing.T) {
 	}
 }
 
-// TestLoadRejectsSchemelessAuthSourceURL pins the silently-dead-source guard: a URL with no
-// http(s):// scheme makes http.NewRequest fail, so the source never validates any login yet
-// felis-api boots green. Reject at load with the scheme contract spelled out. An empty tag
-// is caught by the same loop.
 func TestLoadRejectsSchemelessAuthSourceURL(t *testing.T) {
 	_, err := config.Load(writeTOML(t, `
 [server]
@@ -478,9 +437,6 @@ url = "bare.example.net/hasJoined"
 	}
 }
 
-// TestLoadRejectsUnqueryableAuthSourceURL covers the URL shapes that carry a scheme yet can
-// never be queried: the resolver appends the query string to the URL verbatim, so each of
-// these would load green and leave a source that silently validates nobody.
 func TestLoadRejectsUnqueryableAuthSourceURL(t *testing.T) {
 	for _, u := range []string{
 		"ftp://a.example.net/hasJoined",
@@ -523,9 +479,6 @@ func TestAuthSourceProfileAPIURL(t *testing.T) {
 	}
 }
 
-// A source reached over plaintext can be answered by anyone on the path, who can then log in
-// as any player of that source. Only a same-host or private-network root may skip TLS, and
-// that is decided on the literal host, since nothing is resolved at load time.
 func TestLoadRejectsPlaintextPublicAuthSource(t *testing.T) {
 	load := func(u string) error {
 		_, err := config.LoadNano(writeTOML(t, "[[auth_source]]\ntag = \"a\"\nprefix = \"AA\"\nurl = \""+u+"\"\n"))
@@ -547,10 +500,6 @@ func TestLoadRejectsPlaintextPublicAuthSource(t *testing.T) {
 	}
 }
 
-// TestLoadNanoAcceptsMinimalConfig is the linchpin of the Felis-nano fold: a nano host has no
-// Postgres and no FQDN, so LoadNano must accept a felis.toml carrying ONLY [[auth_source]] —
-// the control-plane requirements (database.url, root_domain) that full Load enforces are
-// deliberately skipped. It hands back the sources.
 func TestLoadNanoAcceptsMinimalConfig(t *testing.T) {
 	cfg, err := config.LoadNano(writeTOML(t, `
 [[auth_source]]
@@ -566,9 +515,6 @@ url = "https://littleskin.example.net/api/yggdrasil/sessionserver/session/minecr
 	}
 }
 
-// TestLoadNanoStillEnforcesAuthSourceRules pins that skipping the control-plane requirements
-// does NOT skip the crown-jewel auth-source guard: a duplicate tag still collapses two sources
-// into one UUID namespace, and LoadNano must reject it exactly as Load does (shared code path).
 func TestLoadNanoStillEnforcesAuthSourceRules(t *testing.T) {
 	_, err := config.LoadNano(writeTOML(t, `
 [[auth_source]]
@@ -588,11 +534,6 @@ url = "https://b.example.net/hasJoined"
 	}
 }
 
-// TestLoadRejectsBadAuthSourcePrefix pins the rename-prefix contract. The prefix is prepended
-// to a real Minecraft username (LS_steve) when a third-party player is holding a Mojang
-// player's name, so it must exist and must be legal there — a missing or illegal prefix would
-// otherwise only surface as a login the proxy silently refuses, months later, the first time
-// two players collide.
 func TestLoadRejectsBadAuthSourcePrefix(t *testing.T) {
 	for name, prefix := range map[string]string{
 		"missing":    "",
@@ -617,9 +558,6 @@ url = "https://littleskin.example.net/hasJoined"
 	}
 }
 
-// TestLoadRejectsDuplicateAuthSourcePrefix: two sources sharing a prefix rewrite their
-// same-named players onto the SAME in-game name, which is the collision the prefix exists to
-// break. Case-insensitively, because the proxy's player registry folds case.
 func TestLoadRejectsDuplicateAuthSourcePrefix(t *testing.T) {
 	_, err := config.LoadNano(writeTOML(t, `
 [[auth_source]]
@@ -652,8 +590,6 @@ url = "postgres://felis@db/felis"
 	}
 }
 
-// TestLoadSMTPDefaultsPort pins the [smtp] contract: a host with no port gets the
-// 587 STARTTLS default, and an absent [smtp] block stays fully zero (no mailer).
 func TestLoadSMTPDefaultsPort(t *testing.T) {
 	cfg, err := config.Load(writeTOML(t, `
 [server]
@@ -685,9 +621,6 @@ url = "postgres://felis@db/felis"
 	}
 }
 
-// TestSMTPRequireTLS pins when mail may go out in the clear: only to a relay
-// on this host unless require_tls says otherwise, and an explicit value wins
-// in both directions. The key is read from felis.toml, not only set in code.
 func TestSMTPRequireTLS(t *testing.T) {
 	load := func(smtp string) config.SMTPConfig {
 		t.Helper()
@@ -725,9 +658,6 @@ from = "felis@example.net"
 	}
 }
 
-// TestLoadRejectsSMTPWithoutFrom guards the deliverability rule: naming a relay
-// host commits the block to being sendable, so a missing/invalid From fails at
-// load rather than at the first OTP a player is waiting on.
 func TestLoadRejectsSMTPWithoutFrom(t *testing.T) {
 	_, err := config.Load(writeTOML(t, `
 [server]
@@ -742,9 +672,6 @@ host = "smtp.example.net"
 	}
 }
 
-// TestClientIPHeaderAndMailCap pins the two knobs behind the sign-in rate
-// limits: the visitor-address header (explicit, or implied by an Access
-// audience that only the Cloudflare edge setup writes) and the mail cap.
 func TestClientIPHeaderAndMailCap(t *testing.T) {
 	base := `
 [server]
@@ -777,8 +704,6 @@ url = "postgres://felis@db/felis"
 	}
 }
 
-// TestLoadOffsite: a bucket turns the table on and fills in the secret refs and
-// bundle count; a half-filled or malformed table fails at load.
 func TestLoadOffsite(t *testing.T) {
 	const head = `
 [server]
@@ -824,9 +749,6 @@ prefix = "site-a"
 	}
 }
 
-// TestAuditRetention: [audit] retention resolves to a year when unset, to 0 for
-// "forever", and to the named span otherwise; a span under 30 days or one that
-// does not parse fails at load.
 func TestAuditRetention(t *testing.T) {
 	const head = `
 [server]

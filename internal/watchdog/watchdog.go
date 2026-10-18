@@ -1,17 +1,4 @@
-// Package watchdog is the consumer the platform's health signals otherwise lack:
-// `felis watchdog` runs on the host from a systemd timer, checks the control
-// plane, the login gate, the fleet, PostgreSQL, the database backups and the
-// node, and mails the platform owners when something has stayed wrong long
-// enough to matter, again every day while it stays wrong, and once more when it
-// clears.
-//
-// It runs on the host rather than in the cluster so the failures that take the
-// cluster down (k3s stopped, the API server wedged, the node out of disk) are
-// still reported: the one thing it needs to send mail, the relay, it reaches
-// directly, with the credentials it cached on its last good run.
-//
-// This file is the pure part: turning one run's findings into state changes and
-// a message. The probes that produce findings live in probes.go.
+// Package watchdog runs host health checks and maintains owner alerts across cluster outages.
 package watchdog
 
 import (
@@ -25,7 +12,6 @@ import (
 	"time"
 )
 
-// Severity orders how urgent a finding is.
 type Severity string
 
 const (
@@ -33,69 +19,48 @@ const (
 	Warning  Severity = "warning"
 )
 
-// Finding is one condition a probe saw on this run.
 type Finding struct {
-	// Key identifies the condition across runs, e.g. "deployment/felis-api". A
-	// key is also how a condition is found again once it clears.
-	Key      string   `json:"key"`
-	Severity Severity `json:"severity"`
-	// Summary and SummaryEN name what is wrong, in Chinese and English.
-	Summary   string `json:"summary"`
-	SummaryEN string `json:"summary_en"`
-	// Hint says where to look next (a command, a troubleshooting section).
-	Hint string `json:"hint,omitempty"`
-	// For is how long the condition must hold before it is mailed, so a rollout
-	// or a restart that heals itself never pages anyone.
+	// Key identifies a condition across runs.
+	Key       string   `json:"key"`
+	Severity  Severity `json:"severity"`
+	Summary   string   `json:"summary"`
+	SummaryEN string   `json:"summary_en"`
+	Hint      string   `json:"hint,omitempty"`
+	// For delays notification until a condition persists this long.
 	For time.Duration `json:"for"`
-	// Event marks a one-off (a failed Job): mailed once, with no reminder and no
-	// resolved notice when it goes away.
+	// Event is mailed once, without reminders or recovery notices.
 	Event bool `json:"event,omitempty"`
 }
 
-// Report is one run's observations.
 type Report struct {
 	Findings []Finding
-	// Unknown lists key prefixes no probe could evaluate on this run (the API
-	// server being down hides every cluster check). Alerts under them keep their
-	// state rather than reading as cleared.
+	// Unknown prefixes preserve alert state when their probes cannot run.
 	Unknown []string
 }
 
-// Alert is a finding the state file remembers across runs.
 type Alert struct {
 	Finding
 	FirstSeen time.Time `json:"first_seen"`
-	// Notified is when the alert was last mailed, at NotifiedSeverity; zero
-	// while it is pending.
+	// Notified is zero until the alert is mailed.
 	Notified         time.Time `json:"notified,omitzero"`
 	NotifiedSeverity Severity  `json:"notified_severity,omitempty"`
-	// ClearedAt is when a mailed alert was first seen gone. It is mailed as
-	// resolved only after staying gone for resolveAfter, so a value hovering at
-	// its threshold does not mail on every crossing.
+	// ClearedAt starts the resolveAfter delay before a recovery notice.
 	ClearedAt time.Time `json:"cleared_at,omitzero"`
 }
 
-// State is what the watchdog keeps between runs.
 type State struct {
 	Alerts map[string]*Alert `json:"alerts"`
-	// Recipients and SMTPPassword are cached from the last run that could read
-	// them (the database and the felis-smtp Secret), so an outage of either can
-	// still be mailed.
+	// Cache recipients and relay credentials so database or Secret outages can still be reported.
 	Recipients   []string `json:"recipients,omitempty"`
 	SMTPPassword string   `json:"smtp_password,omitempty"`
-	// Relay is the [smtp] relay of the last run that could read felis.toml,
-	// so a run of the watchdog that failed can still be mailed after the
-	// config stopped loading; nil when there is none.
+	// Relay caches the last readable SMTP configuration.
 	Relay *Relay `json:"relay,omitempty"`
-	// RelayFromPanel says Relay is the Owner's panel relay (mailsettings), which wins
-	// over felis.toml's; a run that cannot read the database keeps it.
+	// RelayFromPanel preserves the panel override when the database is unavailable.
 	RelayFromPanel bool `json:"relay_from_panel,omitempty"`
-	// Heartbeat is the heartbeat URL the Owner set in the panel (heartbeatsettings), cached
-	// so a run that cannot read the database still pings it; empty when the panel has none.
+	// Heartbeat caches the panel URL so database outages do not stop pings.
 	Heartbeat string `json:"heartbeat,omitempty"`
 }
 
-// Relay is the part of [smtp] a mail needs, besides the password.
 type Relay struct {
 	Host       string `json:"host"`
 	Port       int    `json:"port"`
@@ -104,8 +69,7 @@ type Relay struct {
 	RequireTLS bool   `json:"require_tls"`
 }
 
-// Open reports whether the owners were told of a condition that still holds:
-// an alert mailed (or logged) and not seen gone since, one-off events aside.
+// Open excludes one-off events and includes notified alerts still firing.
 func (s *State) Open() bool {
 	for _, a := range s.Alerts {
 		if !a.Notified.IsZero() && a.ClearedAt.IsZero() && !a.Event {
@@ -116,32 +80,22 @@ func (s *State) Open() bool {
 }
 
 const (
-	// remindEvery is how often a firing alert is mailed again.
-	remindEvery = 24 * time.Hour
-	// resolveAfter is how long a mailed alert must stay gone before it is
-	// mailed as resolved.
+	remindEvery  = 24 * time.Hour
 	resolveAfter = 10 * time.Minute
 )
 
-// Plan is what one run has to tell the owners.
 type Plan struct {
 	Firing    []Alert // newly past their For, or worse than when last mailed
 	Reminders []Alert // still firing a day after the last mail
 	Resolved  []Alert // gone for resolveAfter
-	// Active is every mailed condition still firing (one-off events aside), for
-	// the message's summary.
-	Active []Alert
+	Active    []Alert
 }
 
-// Empty reports whether the plan has nothing to mail.
 func (p Plan) Empty() bool {
 	return len(p.Firing) == 0 && len(p.Reminders) == 0 && len(p.Resolved) == 0
 }
 
-// Observe folds a report into s and returns what is due to be mailed. It only
-// tracks when conditions appeared and cleared; Commit records the plan as
-// delivered. A run whose mail failed, or that falls in a quiet period, saves
-// the state without committing, and the same alerts come due again next run.
+// Observe updates conditions without marking delivery; Commit only after successful mail so failures retry.
 func (s *State) Observe(r Report, now time.Time) Plan {
 	if s.Alerts == nil {
 		s.Alerts = map[string]*Alert{}
@@ -162,8 +116,6 @@ func (s *State) Observe(r Report, now time.Time) Plan {
 		case !notified && now.Sub(a.FirstSeen) >= f.For:
 			plan.Firing = append(plan.Firing, *a)
 		case notified && f.Severity == Critical && a.NotifiedSeverity != Critical:
-			// Worse than when it was mailed (a disk from low to nearly full):
-			// new news, mailed at once.
 			plan.Firing = append(plan.Firing, *a)
 		case notified && !f.Event && now.Sub(a.Notified) >= remindEvery:
 			plan.Reminders = append(plan.Reminders, *a)
@@ -175,7 +127,6 @@ func (s *State) Observe(r Report, now time.Time) Plan {
 		}
 		switch {
 		case a.Notified.IsZero() || a.Event:
-			// Never mailed, or a one-off: nothing to take back.
 			delete(s.Alerts, key)
 		case a.ClearedAt.IsZero():
 			a.ClearedAt = now
@@ -194,7 +145,6 @@ func (s *State) Observe(r Report, now time.Time) Plan {
 	return plan
 }
 
-// Commit records plan as mailed at now.
 func (s *State) Commit(plan Plan, now time.Time) {
 	for _, l := range [][]Alert{plan.Firing, plan.Reminders} {
 		for _, a := range l {
@@ -217,7 +167,6 @@ func underAny(key string, prefixes []string) bool {
 	return false
 }
 
-// sortAlerts puts critical alerts first, then orders by key.
 func sortAlerts(l []Alert) {
 	sort.Slice(l, func(i, j int) bool {
 		if (l[i].Severity == Critical) != (l[j].Severity == Critical) {
@@ -227,8 +176,6 @@ func sortAlerts(l []Alert) {
 	})
 }
 
-// Message renders the plan as one mail: a subject naming the counts and host,
-// and a body listing what fired, what is still wrong and what cleared.
 func (p Plan) Message(host string, now time.Time) (subject, body string) {
 	var parts, partsEN []string
 	if n := len(p.Firing) + len(p.Reminders); n > 0 {
@@ -273,8 +220,7 @@ func (p Plan) Message(host string, now time.Time) (subject, body string) {
 			fmt.Fprintf(&b, "  [%s] %s / %s\r\n", a.Severity, a.Summary, a.SummaryEN)
 		}
 	}
-	// The journal rather than a -dry-run: the unit carries the flags (proxy port,
-	// disk paths) a bare command line would not.
+	// Read the unit journal to include the actual configured flags.
 	fmt.Fprintf(&b, "\r\n在主机上运行 `journalctl -u felis-watchdog -n 40` 查看最近一次巡检的全部检查结果。\r\n"+
 		"Run `journalctl -u felis-watchdog -n 40` on the host for every check of the latest run.\r\n")
 	return subject, b.String()
@@ -289,7 +235,6 @@ func hasCritical(l []Alert) bool {
 	return false
 }
 
-// without returns the alerts of all not keyed in any of skip.
 func without(all []Alert, skip ...[]Alert) []Alert {
 	keys := map[string]bool{}
 	for _, l := range skip {
@@ -306,10 +251,9 @@ func without(all []Alert, skip ...[]Alert) []Alert {
 	return out
 }
 
-// ErrBadState is a state file that is not the JSON the watchdog writes.
 var ErrBadState = errors.New("watchdog: the state file is not one the watchdog wrote")
 
-// LoadState reads the state file; a missing file is a fresh state.
+// LoadState returns a fresh state for a missing file.
 func LoadState(path string) (*State, error) {
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -328,10 +272,7 @@ func LoadState(path string) (*State, error) {
 	return &s, nil
 }
 
-// RecoverState is LoadState for a run that must go on: a state file that does
-// not parse (a disk that filled mid-write, a hand edit) is renamed aside and
-// the run starts from a fresh state, rather than every later run failing on
-// it and mailing nothing. aside is where it went, "" when nothing was moved.
+// RecoverState moves malformed state aside and returns its path, or an empty path if unchanged.
 func RecoverState(path string, now time.Time) (s *State, aside string, err error) {
 	s, err = LoadState(path)
 	if !errors.Is(err, ErrBadState) {
@@ -344,8 +285,7 @@ func RecoverState(path string, now time.Time) (s *State, aside string, err error
 	return &State{Alerts: map[string]*Alert{}}, aside, nil
 }
 
-// SaveState writes s atomically, readable by root only: it caches the relay
-// password.
+// SaveState writes atomically with root-only permissions because state contains the relay password.
 func SaveState(path string, s *State) error {
 	raw, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
@@ -373,15 +313,12 @@ func SaveState(path string, s *State) error {
 	return os.Rename(tmp.Name(), path)
 }
 
-// FallbackStatePath is where a run keeps its state when the state file cannot be
-// written (a full or read-only /var/lib): tmpfs, which lasts until the host
-// restarts, next to the installer's quiet marker.
+// FallbackStatePath uses tmpfs when persistent state cannot be written.
 const FallbackStatePath = "/run/felis/watchdog-state.json"
 
-// NewestState is the state file a run reads: fallback when a run wrote it after
-// path (its save to path failed, SaveStateOr), else path.
+// NewestState prefers the fallback only when it is newer than path.
 func NewestState(path, fallback string) string {
-	fb, err := os.Stat(fallback) // "" is no fallback: it does not stat
+	fb, err := os.Stat(fallback)
 	if err != nil {
 		return path
 	}
@@ -391,10 +328,7 @@ func NewestState(path, fallback string) string {
 	return fallback
 }
 
-// SaveStateOr saves s to path and drops fallback. When path cannot be written it
-// saves s to fallback instead, so the next run still knows what this one mailed
-// and does not mail it again every two minutes. The error is path's either way,
-// saying where the state went.
+// SaveStateOr falls back on write failure and still returns the primary path error.
 func SaveStateOr(path, fallback string, s *State) error {
 	err := SaveState(path, s)
 	if err == nil {
@@ -412,9 +346,7 @@ func SaveStateOr(path, fallback string, s *State) error {
 	return fmt.Errorf("%w; kept in %s until the host restarts", err, fallback)
 }
 
-// QuietUntil reads the maintenance marker the installer writes while it
-// restarts things on purpose: a Unix timestamp, before which nothing is mailed.
-// A missing or unreadable marker means no quiet period.
+// QuietUntil reads a Unix timestamp; missing or unreadable markers disable the quiet period.
 func QuietUntil(path string) time.Time {
 	raw, err := os.ReadFile(path)
 	if err != nil {

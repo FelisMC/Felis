@@ -57,9 +57,6 @@ func TestArchivePolicyRoutesAreOwnerOnly(t *testing.T) {
 	}
 }
 
-// TestArchivePolicyOverridesTheHostAndHandsItBack pins the setting's life: felis.toml's
-// values until the Owner saves, the saved ones at once afterwards (in the views and in what
-// felis-api applies), refusals of bad values and stale revisions, and the way back.
 func TestArchivePolicyOverridesTheHostAndHandsItBack(t *testing.T) {
 	a, _ := archiveAPI()
 	ctx := context.Background()
@@ -108,8 +105,6 @@ func TestArchivePolicyOverridesTheHostAndHandsItBack(t *testing.T) {
 	}
 }
 
-// TestArchivePolicyAsksForAFreshProof pins that saving and clearing need a recent
-// reauthentication.
 func TestArchivePolicyAsksForAFreshProof(t *testing.T) {
 	a, repo := archiveAPI()
 	v := readArchivePolicy(t, a)
@@ -127,9 +122,6 @@ func TestArchivePolicyAsksForAFreshProof(t *testing.T) {
 	}
 }
 
-// TestBackupLimitsFollowThePolicy pins that the owners' backup gates read the policy in
-// force: the panel's cooldown of zero lets a second backup through that felis.toml's hour
-// would refuse.
 func TestBackupLimitsFollowThePolicy(t *testing.T) {
 	a, repo := archiveAPI()
 	repo.backupRequested = map[string]time.Time{"survival": a.now().Add(-time.Minute)}
@@ -146,8 +138,6 @@ func TestBackupLimitsFollowThePolicy(t *testing.T) {
 	}
 }
 
-// TestScheduledBackupsFollowThePolicy pins that the scheduler reads its interval from the
-// policy on every tick: the panel switching the points off stops it.
 func TestScheduledBackupsFollowThePolicy(t *testing.T) {
 	a, repo := archiveAPI()
 	a.Backuper = &liveScheduledBackuper{}

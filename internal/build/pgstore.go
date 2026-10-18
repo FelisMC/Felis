@@ -7,18 +7,12 @@ import (
 	"time"
 )
 
-// PGStore is the production Store backed by Postgres (spec §6, §16). It writes
-// the tables of the build subsystem — image_builds, image_build_scans and
-// image_whitelist —
-// and is the *only* component that holds database credentials: the build Pod
-// never does (the weak-SA red line). The SQL here is exercised by integration
-// tests against a live database, not the hermetic build_test.go suite. Every
-// statement is a narrow operation; there is no generic UPDATE escape hatch.
+// PGStore is the Postgres-backed Store; only felis-api holds database credentials, never the build Pod.
 type PGStore struct {
 	db *sql.DB
 }
 
-// NewPGStore wraps an existing pool (from store.PostgresDriver.DB()).
+// NewPGStore wraps an existing pool.
 func NewPGStore(db *sql.DB) *PGStore { return &PGStore{db: db} }
 
 func (s *PGStore) CreateBuild(ctx context.Context, b *Build) error {
@@ -114,8 +108,7 @@ func (s *PGStore) ListUnfinishedBuilds(ctx context.Context) ([]Build, error) {
 	return scanBuilds(rows)
 }
 
-// ListBuilds pages image_builds newest first. The id breaks created_at ties so
-// the pages neither repeat nor skip a row; the Dockerfile column is left empty.
+// ListBuilds pages newest first; the id breaks created_at ties, and the Dockerfile column is left empty.
 func (s *PGStore) ListBuilds(ctx context.Context, opts ListOpts) ([]Build, int, error) {
 	const match = ` WHERE $1::text = '' OR id = $1::text OR status::text = lower($1::text)
 		OR strpos(lower(image_ref), lower($1::text)) > 0`
@@ -165,19 +158,8 @@ func scanBuilds(rows *sql.Rows) ([]Build, error) {
 	return out, rows.Err()
 }
 
-// AdmitBuiltImage upserts the whitelist row on scan-gate success. ON CONFLICT
-// re-enables and re-stamps a previously-removed or superseded ref, so a rebuild
-// of the same tag re-admits it (spec §16).
-//
-// source is the ONE column the conflict path does not overwrite unconditionally:
-// a 'recommended' row is platform curation (0018), while every other field here
-// describes the build that just succeeded and must win. Rebuilding a curated tag
-// is the expected way to patch it, and that rebuild arrives through this exact
-// path — so a blind `SET source = 'built'` would silently demote the curation on
-// the first rebuild, with nothing in the request saying so. Preserving it keeps
-// the marker a deliberate admin decision: DELETE /images is the way to clear it,
-// not a build completing. Only 'recommended' is sticky; an 'external' row still
-// becomes 'built', because a real build genuinely supersedes a hand-pushed ref.
+// AdmitBuiltImage upserts the whitelist row, re-enabling a removed ref.
+// A 'recommended' source is kept so rebuilding a curated tag does not silently demote it.
 func (s *PGStore) AdmitBuiltImage(ctx context.Context, img Image) error {
 	const q = `INSERT INTO image_whitelist
 		(image_ref, source, build_id, added_by, enabled, added_at)
@@ -215,19 +197,7 @@ func (s *PGStore) ListImages(ctx context.Context) ([]Image, error) {
 	return out, rows.Err()
 }
 
-// AddExternalImage upserts a hand-pushed ref. Unlike AdmitBuiltImage this path
-// does NOT preserve a 'recommended' source, and the asymmetry is deliberate: an
-// admin POSTing this exact ref is an explicit, named re-admission, not a build
-// completing behind their back, so demoting the curated row is the outcome they
-// asked for. It also keeps the 201 body honest — AddExternalImage returns the
-// Image it constructed (source=external) without re-reading the row, so a sticky
-// source here would report a value the database does not hold.
-//
-// Note that this demote branch is REACHABLE for today's recommended rows: 0021
-// re-pointed the seeds at host-qualified registry refs (registry.<ns>.svc:5000/…),
-// which ValidateImageRef accepts — so an admin re-admitting one of those refs
-// demotes the curated row, by design. It was dead only while the seeds were bare
-// local containerd tags (0018's felis-lobby:demo), which the validation refuses.
+// Manual readmission intentionally changes a recommended image's source to external.
 func (s *PGStore) AddExternalImage(ctx context.Context, img Image) error {
 	const q = `INSERT INTO image_whitelist
 		(image_ref, source, added_by, enabled, added_at)
@@ -250,8 +220,7 @@ func (s *PGStore) RemoveImage(ctx context.Context, imageRef string) error {
 	return nil
 }
 
-// SaveScan upserts the scan record of a build. A re-read of the same pod writes
-// the same record, so Sync may retry freely.
+// SaveScan upserts, so Sync may retry freely.
 func (s *PGStore) SaveScan(ctx context.Context, sc Scan) error {
 	summary, err := json.Marshal(sc.Summary)
 	if err != nil {

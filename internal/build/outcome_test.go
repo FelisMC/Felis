@@ -30,7 +30,6 @@ func (f *fakeOutcomes) Outcome(_ context.Context, id string) (Outcome, error) {
 	return f.out, f.err
 }
 
-// runningBuild wires a Builder whose bld-1 is building under a Job in phase.
 func runningBuild(t *testing.T, phase JobPhase, out *fakeOutcomes) (*Builder, *fakeStore) {
 	t.Helper()
 	b, st, jb := newBuilder()
@@ -65,8 +64,6 @@ func gunzipString(t *testing.T, b []byte) string {
 	return string(raw)
 }
 
-// A build the scan blocked records the blocking findings as its error and keeps
-// the report and SBOM.
 func TestSyncRecordsTheScanThatBlocked(t *testing.T) {
 	out := &fakeOutcomes{out: Outcome{FailedStep: ContainerScanGate, ExitCode: 1, Message: "the scan blocked…", Scan: blockedEnvelope(t)}}
 	b, st := runningBuild(t, JobFailed, out)
@@ -96,7 +93,6 @@ func TestSyncRecordsTheScanThatBlocked(t *testing.T) {
 	}
 }
 
-// An admitted image keeps its scan too.
 func TestSyncKeepsTheScanOfAnAdmittedImage(t *testing.T) {
 	env := blockedEnvelope(t)
 	env.Summary.Blocked = false
@@ -146,8 +142,6 @@ func TestSyncNamesWhatEndedAFailedBuild(t *testing.T) {
 	}
 }
 
-// A vanished Job has no pod to read; a failed read leaves the build to the next
-// tick; without an outcome reader Sync records a plain failure.
 func TestSyncOutcomeEdges(t *testing.T) {
 	out := &fakeOutcomes{}
 	b, _ := runningBuild(t, JobUnknown, out)
@@ -212,9 +206,6 @@ func TestBuilderScanReadsTheStore(t *testing.T) {
 	}
 }
 
-// K8sOutcomes reads the first failed container in pod order, the Job's deadline
-// verdict, and looks for an envelope only when scan-gate ran. The fake clientset
-// answers every log read with "fake logs", which holds no envelope.
 func TestK8sOutcomesReadsThePod(t *testing.T) {
 	ctx := context.Background()
 	term := func(name string, code int32, msg string) corev1.ContainerStatus {
@@ -248,7 +239,7 @@ func TestK8sOutcomesReadsThePod(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The fake API serves "fake logs" for every log read, which holds no envelope.
+	// The fake API answers every log read with "fake logs", which holds no envelope.
 	if out.FailedStep != "scan-gate" || out.ScanErr == nil || out.ScanErr.Error() != "the scan-gate log holds no scan envelope" {
 		t.Errorf("scan-gate failure = %+v", out)
 	}

@@ -7,18 +7,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
-/**
- * BoundedExecutor runs the plugin's felis-api calls on a fixed number of threads with
- * a bounded wait queue. Velocity's scheduler starts a thread for every task it is
- * handed, so while felis-api was slow a burst of joins, menu clicks and commands
- * stacked blocking calls without limit, and each of them landed on the API the moment
- * it recovered. Here at most {@code threads} calls run and at most {@code queue} wait;
- * past that {@link #submit} refuses at once, so the caller can say "busy" instead of
- * leaving the player waiting on a call that would run minutes later.
- *
- * <p>A task that throws is handed to {@code onError} and the worker carries on, so one
- * bad task never shrinks the pool or disappears without a log line.
- */
+// Bound blocking API work by thread and queue limits.
+// Reject overflow immediately; log task exceptions without losing workers.
 final class BoundedExecutor {
     private final ThreadPoolExecutor pool;
     private final Consumer<Throwable> onError;

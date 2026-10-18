@@ -12,14 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// Request observability: one access-log line and two series per API request.
-//
-// The route label is the matched ServeMux pattern ("/api/v1/servers/{name}"),
-// never the raw path, so a scan of random URLs cannot grow the series set; a
-// request no route matched is "unmatched". The method label is folded the same
-// way (methodLabel). Stream routes (text/event-stream) count toward the request
-// total but stay out of the duration histogram, where an attachment that lasts
-// half an hour would only bury the latency of everything else.
+// Metric labels use matched route patterns and bounded methods; SSE requests are excluded from duration histograms.
 
 var (
 	httpRequestsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -36,15 +29,10 @@ var (
 	}, []string{"face", "route"})
 )
 
-// defaultAccessLog writes logfmt lines to stderr, next to the API's other logs.
 var defaultAccessLog = slog.New(slog.NewTextHandler(os.Stderr, nil))
 
-// routeUnmatched labels a request no route pattern matched.
 const routeUnmatched = "unmatched"
 
-// reqInfo is filled in by the handlers a request passes through, for observe to
-// read once the response is done: the matched route, and the principal once the
-// face's guard has resolved one.
 type reqInfo struct {
 	route     string
 	principal string
@@ -55,7 +43,6 @@ func reqInfoFrom(ctx context.Context) *reqInfo {
 	return info
 }
 
-// noteRoute records the matched route pattern (without its method).
 func noteRoute(r *http.Request, pattern string) {
 	if info := reqInfoFrom(r.Context()); info != nil {
 		if _, path, ok := strings.Cut(pattern, " "); ok {
@@ -65,8 +52,6 @@ func noteRoute(r *http.Request, pattern string) {
 	}
 }
 
-// tagRoute wraps a route's handler so the request records its pattern and, on
-// the authenticated faces, who made it.
 func tagRoute(pattern string, h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		noteRoute(r, pattern)
@@ -79,7 +64,6 @@ func tagRoute(pattern string, h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// methodLabel folds anything but the methods the API serves into one value.
 func methodLabel(m string) string {
 	switch m {
 	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut,
@@ -89,8 +73,6 @@ func methodLabel(m string) string {
 	return "OTHER"
 }
 
-// quietRoute reports whether a successful request is left out of the access log:
-// the probes and the scrape, which arrive every few seconds and say nothing.
 func quietRoute(route string, status int) bool {
 	if status >= 400 {
 		return false
@@ -102,8 +84,6 @@ func quietRoute(route string, status int) bool {
 	return false
 }
 
-// observe records every request that reaches face: the access-log line and the
-// felis_http_* series.
 func (a *API) observe(face string, next http.Handler) http.Handler {
 	logger := a.AccessLog
 	if logger == nil {
@@ -145,10 +125,7 @@ func (a *API) observe(face string, next http.Handler) http.Handler {
 	})
 }
 
-// statusRecorder notes the status and size of a response. It passes flushes
-// through with their error (the SSE relay's write-deadline guard depends on
-// seeing a failed flush) and unwraps for http.ResponseController, so deadlines
-// still reach the connection.
+// statusRecorder preserves flush errors and ResponseController unwrapping so SSE deadlines still reach the socket.
 type statusRecorder struct {
 	http.ResponseWriter
 	status int

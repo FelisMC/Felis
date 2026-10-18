@@ -8,21 +8,12 @@ import (
 	"felis.lolicon.best/internal/naming"
 )
 
-// The wake allowlist (server_allowlist) decides who may wake a sleeping server
-// whose autostartPolicy is allowlist. A player lands on it by joining the server
-// once (RecordJoin); these two routes let the owner, or an admin, see who is on it
-// and take a player's wake right away or give it back. It is Felis's own record in
-// Postgres, so it answers whether the server is running or not, unlike the
-// Minecraft whitelist under /access, which is the game server's and needs RCON.
+// The wake allowlist is Postgres policy, distinct from Minecraft's RCON-managed whitelist.
 
-// allowlistWakeRequest is the PUT /servers/{name}/allowlist/{uuid} body.
 type allowlistWakeRequest struct {
 	CanWake *bool `json:"can_wake"`
 }
 
-// allowlistServer resolves {name} for the allowlist routes and applies their
-// gate: 400 for a malformed name, 404 for a server that does not exist, 403 for a
-// caller who neither owns it nor is an admin.
 func (a *API) allowlistServer(w http.ResponseWriter, r *http.Request) (string, bool) {
 	name := r.PathValue("name")
 	if err := naming.ValidateServerName(name); err != nil {
@@ -41,8 +32,6 @@ func (a *API) allowlistServer(w http.ResponseWriter, r *http.Request) (string, b
 	return name, true
 }
 
-// handleAllowlistList returns the server's wake allowlist, newest first,
-// including the players whose wake right was taken away.
 func (a *API) handleAllowlistList(w http.ResponseWriter, r *http.Request) {
 	name, ok := a.allowlistServer(w, r)
 	if !ok {
@@ -56,9 +45,7 @@ func (a *API) handleAllowlistList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"server": name, "entries": entries})
 }
 
-// handleAllowlistSetWake takes a player's wake right away (can_wake false) or
-// gives it back (true). The entry stays on the list either way, so a revoked
-// player's next join does not quietly undo the owner's choice.
+// handleAllowlistSetWake retains revoked entries so a later join cannot silently restore wake access.
 func (a *API) handleAllowlistSetWake(w http.ResponseWriter, r *http.Request) {
 	name, ok := a.allowlistServer(w, r)
 	if !ok {

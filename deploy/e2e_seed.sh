@@ -1,22 +1,6 @@
 #!/bin/bash
-# Seeds the database of the release the e2e upgrade job installed, and checks after the
-# upgrade that every seeded row came through unchanged. The job runs it around the upgrade:
-#
-#   sudo bash deploy/e2e_seed.sh seed    # after the release installed
-#   sudo bash deploy/e2e_seed.sh check   # after this commit ran over it
-#
-# A fresh install's database holds only the rows its migrations write, so without the seed
-# the upgrade moves and migrates an almost empty database: the move's row-count comparison
-# compares zeros and the pending migrations never meet an existing row. The seed writes the
-# columns the oldest release has (v0.1.0), so it applies to every release since, and the
-# check reads the same columns back: a migration that rewrites one of them on purpose
-# updates the snapshot query here.
-#
-# Every row is inert. Nothing in it is a credential anyone holds: the session and the
-# challenge carry the hash of bytes nobody kept and are spent already. Nothing is due for
-# the reaper or the operator, and the retention sweep keeps spent rows for 30 days after
-# they were spent. servers stays empty: its rows mirror MinecraftServer objects the
-# operator and the reaper reconcile, and a row without one would not stay as written.
+# Seed columns supported by the oldest release and compare the same projection after upgrading.
+# Use spent credentials and no live server rows so seed data cannot trigger work.
 set -euo pipefail
 
 phase="${1:?usage: e2e_seed.sh seed|check}"
@@ -85,10 +69,8 @@ SELECT 'op_login_requests ' || row(id, user_id, email, expires_at, created_at, c
 EOF
 }
 
-# seed writes the rows in one transaction and keeps where they went and what they read as.
-# Text carries quotes, backslashes, control characters and non-ASCII, and the bytea a NUL,
-# so a dump or restore that mangles any of them shows in the check. Rows that the retention
-# sweep would judge by age are dated now.
+# Include quoted, escaped, binary, and Unicode values to detect lossy backup/restore.
+# Rows the retention sweep judges by age are dated now.
 seed() {
   local where before t
   where="$(db_where)"

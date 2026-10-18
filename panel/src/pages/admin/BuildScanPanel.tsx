@@ -22,9 +22,7 @@ const SEVERITY_STYLE: Record<ScanSeverity, string> = {
 
 const GRID = "md:grid md:grid-cols-[minmax(0,10rem)_5.5rem_minmax(0,1fr)_minmax(0,11rem)_minmax(0,1fr)] md:gap-3";
 
-/** The scan a finished build's scan gate kept: its verdict under the policy it
- *  ran with, the findings, and the full Trivy report and SBOM to download. A
- *  build still running or cancelled has none, so nothing is fetched for it. */
+// Fetch scan artifacts only after a build has finished with a report.
 export function BuildScanPanel({ build }: { build: Build }) {
   const scanned = build.status === "succeeded" || build.status === "failed";
   if (!scanned) return null;

@@ -10,12 +10,6 @@ import (
 	"time"
 )
 
-// These pin the two volumetric limits in front of the public sign-in doors:
-// the per-client-address bucket (keyed on the edge's visitor header only when
-// the install names it) and the install-wide mail budget, which must refuse
-// every address alike so it never becomes an existence oracle. They also pin
-// that neither the buckets nor the OTP cooldown map grow without bound.
-
 func TestBucketSetBurstRefillAndWait(t *testing.T) {
 	clock := time.Unix(1_700_000_000, 0)
 	s := newBucketSet(RateLimit{Burst: 3, PerMinute: 6}, func() time.Time { return clock })
@@ -127,9 +121,6 @@ func TestSourceKeyGroupsIPv6By64(t *testing.T) {
 	}
 }
 
-// TestChallengeSource pins how passkey login challenges are grouped by network: an
-// IPv4 address stands alone, an IPv6 address counts toward its /48 (one site's
-// allocation, so hopping /64s inside it stays one source).
 func TestChallengeSource(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"203.0.113.9", "203.0.113.9"},
@@ -160,8 +151,6 @@ func TestAuthDoorsThrottlePerClientAddress(t *testing.T) {
 			t.Fatalf("call %d = %d (%s)", i+1, w.Code, w.Body.String())
 		}
 	}
-	// The bucket spans every door: a different door from the same address is
-	// refused too.
 	w := do(eh, "POST", "/api/v1/auth/email/verify", `{"email":"x@example.net","code":"000000"}`, from("203.0.113.9"))
 	if c, _ := errEnvelope(t, w); w.Code != http.StatusTooManyRequests || c != "rate_limited" {
 		t.Fatalf("4th call = %d %s, want 429 rate_limited", w.Code, c)
@@ -172,7 +161,6 @@ func TestAuthDoorsThrottlePerClientAddress(t *testing.T) {
 	if w := do(eh, "POST", "/api/v1/auth/options", `{"email":"x@example.net"}`, from("198.51.100.7")); w.Code != http.StatusOK {
 		t.Fatalf("another address was throttled: %d", w.Code)
 	}
-	// The op-login poll and logout are not doors: a waiting browser polls.
 	for i := 0; i < 5; i++ {
 		if w := do(eh, "GET", "/api/v1/auth/op-login/status/abc", "", from("203.0.113.9")); w.Code == http.StatusTooManyRequests {
 			t.Fatal("op-login status poll was throttled")
@@ -184,8 +172,6 @@ func TestAuthDoorsIgnoreVisitorHeaderUnlessConfigured(t *testing.T) {
 	api, _, _ := seedLoginEmailAPI(t)
 	api.AuthDoorLimit = RateLimit{Burst: 2, PerMinute: 2}
 	eh := api.ExternalHandler()
-	// Without client_ip_header a forged CF-Connecting-IP must not mint fresh
-	// buckets: every call below comes from httptest's one peer address.
 	for i := 0; i < 2; i++ {
 		do(eh, "POST", "/api/v1/auth/options", `{"email":"x@example.net"}`,
 			map[string]string{"Content-Type": "application/json", "CF-Connecting-IP": fmt.Sprintf("203.0.113.%d", i)})
@@ -222,7 +208,6 @@ func TestMailBudgetRefusesEveryAddressAlike(t *testing.T) {
 	if mailer.calls != 1 {
 		t.Fatalf("a spent budget still mailed: %d sends", mailer.calls)
 	}
-	// The refused starts did not burn their recipients' cooldowns.
 	clock = clock.Add(time.Minute)
 	if w := start("second@example.net"); w.Code != http.StatusAccepted || mailer.calls != 2 {
 		t.Fatalf("after refill = %d, %d mails", w.Code, mailer.calls)
@@ -274,8 +259,6 @@ func TestCooldownLimiterForgetsExpiredKeys(t *testing.T) {
 }
 
 func TestMailLimitCountsNotices(t *testing.T) {
-	// The lock notice spends the same budget as codes; with none left it is
-	// skipped rather than sent.
 	api, _, _ := seedLoginEmailAPI(t)
 	mailer := &noticeMailer{}
 	api.Mailer = mailer

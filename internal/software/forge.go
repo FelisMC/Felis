@@ -13,17 +13,7 @@ import (
 	"strings"
 )
 
-// ForgeLibraries reads the libraries a Forge or NeoForge installer will want out
-// of the installer jar: every entry of install_profile.json and of the version
-// JSON it names that carries a download URL and sha1. The installer checks each
-// against that sha1 and skips the download when the file is already there, so
-// fetching them ahead through the cache leaves it nothing to fetch for them.
-// Entries without a URL are built by the installer itself. Legacy installers
-// (Minecraft 1.12.2 and older) keep a different profile and yield nothing here;
-// they fetch their own few libraries.
-//
-// It also returns where the installer expects the vanilla server jar, so that
-// can be placed ahead too.
+// ForgeLibraries prefetches digest-pinned profile dependencies; legacy installers fetch their own libraries.
 func ForgeLibraries(installerJar, mc string) (files []File, serverJar string, err error) {
 	zr, err := zip.OpenReader(installerJar)
 	if err != nil {
@@ -42,8 +32,7 @@ func ForgeLibraries(installerJar, mc string) (files []File, serverJar string, er
 		return nil, "", err
 	}
 	if profile.Install != nil && profile.Spec == nil {
-		// The legacy profile: the installer downloads its own libraries and
-		// looks for minecraft_server.<version>.jar in the install directory.
+		// Legacy installers expect minecraft_server.<version>.jar in the install directory.
 		return nil, "minecraft_server." + mc + ".jar", nil
 	}
 	libs := profile.Libraries
@@ -119,24 +108,13 @@ func readZipJSON(zr *zip.Reader, name string, v any) error {
 	return nil
 }
 
-// ErrNoForgeLaunch means a finished Forge install left nothing Felis can start.
 var ErrNoForgeLaunch = errors.New("software: the installer left no run script or server jar")
 
-// ForgeLaunch works out how to start what a Forge or NeoForge installer left in
-// dataDir. Modern installers write run.sh, whose java line is the authority on
-// how this version starts ("@libraries/.../unix_args.txt", or "-jar
-// ...-shim.jar" on later Forge); its arguments are taken as they are, minus the
-// script's own "$@". Legacy installers write a single forge jar to run with
-// -jar.
+// ForgeLaunch uses the final run.sh Java command without its forwarded shell arguments; legacy installers launch a single jar.
 func ForgeLaunch(dataDir string, inst LoaderInstaller) (Launch, error) {
 	script := filepath.Join(dataDir, "run.sh")
 	if f, err := os.Open(script); err == nil {
 		defer f.Close()
-		// The last java line starts the server, with or without a leading exec
-		// (NeoForge for 26.x writes "exec java ..."). Recent Forge first runs the
-		// shim with --onlyCheckJava on a line of its own ("java -jar
-		// forge-...-shim.jar --onlyCheckJava || exit 1"), a check of the
-		// launcher's own Java that the last line supersedes.
 		var args []string
 		sc := bufio.NewScanner(f)
 		for sc.Scan() {

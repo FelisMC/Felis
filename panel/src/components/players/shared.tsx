@@ -14,26 +14,16 @@ import { Input } from "@/components/ui/input";
 import { humanizeError } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-// MC_NAME mirrors the backend's mcNameRe (handlers_access.go): a Minecraft name is
-// 1–16 chars of [A-Za-z0-9_]. Validating client-side gives instant feedback and
-// matches exactly what the server accepts, so a well-formed name never round-trips
-// just to learn the rule. The server re-validates regardless — this is UX, not
-// trust (the structured field is the whole reason there is no injection surface).
+// Mirror the backend's player-name charset for feedback; the backend still validates it.
 export const MC_NAME = /^[A-Za-z0-9_]{1,16}$/;
 
 export type Feedback = { kind: "ok" | "err"; msg: string } | null;
 
-/** rconReply decides what a mutation reports: the server's own reply, verbatim,
- *  whenever it says anything — the reply is ground truth and names refusals too
- *  ("That player does not exist"), so a canned confirmation must never speak over
- *  it. The localized fallback only covers a silent server. */
+// Prefer raw RCON replies, which may contain refusals; use localized text only for empty replies.
 export function rconReply(output: string | undefined, fallback: string): string {
   return (output ?? "").trim() || fallback;
 }
 
-/** FeedbackLine is the shared inline result line for a player action: emerald on
- *  success, destructive on failure. There is no toast library — every section
- *  reports here, in place, right under the control that fired. */
 export function FeedbackLine({ fb }: { fb: Feedback }) {
   if (!fb) return null;
   return (
@@ -46,9 +36,6 @@ export function FeedbackLine({ fb }: { fb: Feedback }) {
   );
 }
 
-/** LoadError says a section's list failed to load and why: a lapsed session, a
- *  server mid-restart and an RCON refusal each want a different next step, so the
- *  reason is shown with the message. The section header's refresh retries. */
 export function LoadError({ message, error }: { message: string; error: unknown }) {
   return (
     <p role="alert" className="text-xs text-destructive">
@@ -57,9 +44,6 @@ export function LoadError({ message, error }: { message: string; error: unknown 
   );
 }
 
-/** PlayerField is the shared player-name input: a controlled text box that enforces
- *  the access charset live (showing the rule only once the user has typed something
- *  wrong) and fires onEnter so the keyboard-only path works in every section. */
 export function PlayerField({
   value,
   onChange,
@@ -96,13 +80,7 @@ export function PlayerField({
   );
 }
 
-/** CollapsibleSection is the shared shell for every player-management block. The
- *  page stacks several rosters (online, whitelist, bans); at a few hundred names
- *  each, showing them all expanded buries the one an admin actually wants. So each
- *  block collapses to a single index row — chevron, title, live count, and its
- *  refresh — and expands on click. The count and refresh stay visible while
- *  collapsed so the header doubles as an at-a-glance, refreshable index; `actions`
- *  therefore renders in both states, and only the body (`children`) is hidden. */
+// The count and refresh stay visible while collapsed, so the header works as an at-a-glance index; actions render in both states and only the body is hidden.
 export function CollapsibleSection({
   icon,
   title,
@@ -195,12 +173,7 @@ export function CollapsibleSection({
 const PAGE_SIZE = 10;
 const SEARCH_THRESHOLD = 8;
 
-/** usePagedNames is the shared list engine for every player roster (whitelist,
- *  online, bans): a client-side filter plus paging over the filtered result. A
- *  whitelist or a full server can run to hundreds of names, and paging a screenful
- *  at a time — after search narrows — beats a cramped scroll box. clampedPage keeps
- *  a stale-high page valid after a removal shrinks the list, so the view never
- *  lands on an empty page. Changing the query resets to the first page. */
+// Clamp pages after removals and reset to page one when the query changes.
 export function usePagedNames(names: string[]) {
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(0);
@@ -259,9 +232,6 @@ export function SearchBox({
   );
 }
 
-/** PagerFooter is the shared roster footer: a live count on the left (total, or
- *  filtered-of-total while searching) and prev / page-of / next controls on the
- *  right, shown only when there is more than one page. */
 export function PagerFooter({
   q,
   shownCount,

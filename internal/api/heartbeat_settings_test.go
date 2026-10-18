@@ -21,9 +21,6 @@ func readHeartbeat(t *testing.T, a *API) HeartbeatView {
 	return v
 }
 
-// TestHeartbeatSettingKeepsItsKeyPrivate pins the setting: saved and cleared by the Owner
-// with a fresh revision, never shown back beyond its scheme and host, and refused when it is
-// not an http(s) URL.
 func TestHeartbeatSettingKeepsItsKeyPrivate(t *testing.T) {
 	repo := newFakeRepo()
 	a := newTestAPI(repo, newFakeCluster())

@@ -25,7 +25,6 @@ func TestSystemServerManagement(t *testing.T) {
 				api, repo, cl, files := mkFiles(t)
 				api.External = staticExternal{p: principal}
 				cl.byName[name] = &ServerInfo{Name: name, Subdomain: name, Phase: "Stopped", DesiredState: "Stopped", ReaperExempt: true}
-				// These services are cluster-owned; there deliberately is no database row.
 				for _, route := range []struct {
 					method, suffix, body string
 					success              int

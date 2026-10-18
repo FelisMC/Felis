@@ -9,12 +9,7 @@ export interface PageTab<K extends string> {
   icon?: LucideIcon;
 }
 
-/** PageTabs switches between the sections of one page, drawn as an underlined row along the
- *  bottom edge of the page header (PageHeader's `tabs`). It follows the WAI-ARIA tabs pattern:
- *  the chosen tab is the one in the tab order, the arrow keys, Home and End move between tabs
- *  and choose as they go, and the chosen tab controls the panel `${idPrefix}-panel-${key}` (a
- *  page may mount only the chosen one). On a narrow screen the row scrolls sideways and keeps
- *  the chosen tab in view. */
+// On a narrow screen the row scrolls sideways and keeps the chosen tab in view.
 export function PageTabs<K extends string>({ tabs, value, onChange, label, idPrefix }: {
   tabs: readonly PageTab<K>[];
   value: K;

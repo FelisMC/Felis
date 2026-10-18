@@ -125,10 +125,7 @@ export function Account() {
   const [passkeyError, setPasskeyError] = useState<string | null>(null);
   const [passkeyNotice, setPasskeyNotice] = useState<string | null>(null);
   const [registerDialogOpen, setRegisterDialogOpen] = useState(false);
-  // Deleting a passkey goes through a confirm dialog that names it. The API
-  // refuses to remove the only passkey of an account whose email is unverified
-  // (it would be left with no way back in); the button mirrors that rule so the
-  // refusal is explained up front instead of after a round trip.
+  // Do not remove the last passkey without verified email recovery.
   const [pendingDelete, setPendingDelete] = useState<PasskeyCredential | null>(null);
   const [sessionsVersion, setSessionsVersion] = useState(0);
   const [deletingPasskey, setDeletingPasskey] = useState(false);
@@ -247,13 +244,7 @@ export function Account() {
     }
   }
 
-  // Sign-out ends a local session (passkey / email-OTP / bind-code / op-login):
-  // clear it server-side, then refresh /me. For a local session that read now 401s
-  // → the tier model flips to
-  // `unauthenticated` and RequireAuth bounces this page to /login, so no explicit
-  // navigation is needed. (On a Zero-Trust proxied session there is no local cookie
-  // to drop and /me still succeeds — sign-out is a no-op, which is the honest
-  // outcome: you cannot sign out of your org's access proxy from here.)
+  // On a Zero-Trust proxied session there is no local cookie to drop and /me still succeeds, so sign-out is a no-op: the org's access proxy cannot be signed out of from here.
   const [signingOut, setSigningOut] = useState(false);
   async function signOut() {
     if (signingOut) return;
@@ -265,10 +256,7 @@ export function Account() {
     }
   }
 
-  // Verify is a mutation, not a read, so it is hand-rolled (the useAsync producer
-  // is for the status read). On success we flip linked locally and keep the echoed
-  // UUID — the start endpoint never returns it, so this is the only confirmation
-  // of *which* account bound, shown without a refetch.
+  // Keep the verification response UUID locally because later status reads omit it.
   const [code, setCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -576,9 +564,7 @@ export function Account() {
   );
 }
 
-/** LinkedState confirms the binding. The UUID is shown only when this session
- *  just verified it (start does not return it), so a pre-existing link renders
- *  the confirmation without a UUID rather than inventing one. */
+// Show a UUID only when returned by verification, never infer one for an existing link.
 function LinkedState({ uuid, staff }: { uuid: string | null; staff: boolean }) {
   const { t } = useTranslation("account");
   return (
@@ -699,9 +685,7 @@ function MinecraftGuide() {
   );
 }
 
-/** LinkForm is the two-step redemption UX: get a code in-game, then enter it. The
- *  input auto-uppercases for instant feedback; the server also trims + uppercases,
- *  so this is cosmetic, not the source of truth. */
+// Uppercasing is display feedback; server-side normalization remains authoritative.
 function LinkForm({
   code,
   setCode,
@@ -765,16 +749,7 @@ function LinkForm({
   );
 }
 
-/** MigrationCard is the web half of §B3 account migration (scenario A "inherit").
- *  The flow is born in-game (/felis migrate proves the player) and driven here:
- *  status → step-up confirm (passkey when one is enrolled — the server 409s the
- *  OTP door in that case — else email-OTP) → issue-code (the source names the
- *  target account and reads a one-time code; the confirmation counts only in this
- *  browser and for 10 minutes, after which the status asks for it again) → redeem
- *  (the TARGET account spends the code; the source's servers move over and the
- *  source is retired). Both roles render on every account: the redeem form is
- *  always offered, and the account id is always shown so a target can hand it to
- *  the source. */
+// Both source and target migration controls remain available; transfer codes still require in-game initiation and step-up proof.
 function MigrationCard({ userId, hasPasskey }: { userId?: string; hasPasskey: boolean }) {
   const { t } = useTranslation("account");
   const mig = useAsync(() => api.migrateStatus(), []);
@@ -803,9 +778,7 @@ function MigrationCard({ userId, hasPasskey }: { userId?: string; hasPasskey: bo
     }
   }
 
-  // Step-up passkey confirm. Unlike the register/login begins (which strip the
-  // envelope server-side), the migrate begin returns go-webauthn's raw
-  // {"publicKey": {...}} document, so we descend into .publicKey here.
+  // Step-up passkey confirm. The migrate begin returns go-webauthn's raw {"publicKey": ...} document, so the inner object is read here.
   function confirmWithPasskey() {
     void run(async () => {
       const options = await api.migrateConfirmPasskeyBegin();

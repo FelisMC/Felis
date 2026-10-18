@@ -13,9 +13,6 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// java takes its options before -jar or the main class and the program's
-// arguments after: the heap and the owner's flags first, then the platform's
-// properties, then the target, then nogui and the spec's args.
 func TestLaunchArgv(t *testing.T) {
 	jar := launchArgv("/opt/java/openjdk/bin/java", software.Launch{
 		JVMArgs: []string{"-Dlog4j2.formatMsgNoLookups=true"}, Jar: ".felis/server/paper.jar", GameArgs: []string{"nogui"},
@@ -61,10 +58,6 @@ func readProps(t *testing.T, dir string) map[string]string {
 	return out
 }
 
-// Every start: the EULA the owner accepted, the game port the proxy dials,
-// offline mode behind the proxy, and RCON for the operator. A new server starts
-// with the game's own whitelist off (vanilla 26.3 turns it on by default and
-// then refuses every player); an owner who turns it on keeps it on.
 func TestWriteServerSettings(t *testing.T) {
 	dir := t.TempDir()
 	if err := writeServerSettings(dir, "25575", "s3cret"); err != nil {
@@ -115,10 +108,6 @@ func TestLaunchEnvHandsFabricProxyLiteTheSecret(t *testing.T) {
 	}
 }
 
-// The forwarding config each software reads, by the keys its own docs name:
-// Paper's proxies.velocity (paper-global.yml, 1.19 on) and
-// settings.velocity-support (paper.yml, before), and Proxy Compatible Forge's
-// [forwarding] table (enabled, mode, secret).
 func TestWriteSoftwareForwarding(t *testing.T) {
 	read := func(t *testing.T, path string) map[string]any {
 		t.Helper()

@@ -59,9 +59,6 @@ func TestNodeControlRejectsActiveWorkloadsBeforeHostCommands(t *testing.T) {
 	}
 }
 
-// TestNodeControlRefusedApprovalLeavesSchedulingAlone pins that an approval refused before
-// admission runs (here: a server still on the node) lifts the quarantine it added, so the
-// node's servers can still start; a node that was already cordoned stays cordoned.
 func TestNodeControlRefusedApprovalLeavesSchedulingAlone(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -104,10 +101,6 @@ func TestNodeControlRefusedApprovalLeavesSchedulingAlone(t *testing.T) {
 	}
 }
 
-// TestNodeControlUpgradeSendsTheControllersBuild pins what updating a worker does over SSH:
-// the controller's own felis binary goes across, the worker is told the controller's k3s
-// version, address and current peers, the scratch directory is removed afterwards, and the
-// node records the felis build it now runs. A controller or unknown node is refused.
 func TestNodeControlUpgradeSendsTheControllersBuild(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "ssh.log")
@@ -182,10 +175,6 @@ func fenceTestNode(name, role string, ready bool) *corev1.Node {
 	return n
 }
 
-// TestNodeControlFenceReleasesALostWorker pins the fence: the lost worker is cordoned,
-// loses its approval and gains the out-of-service taint once however often it runs, and
-// the pods recorded on it are deleted at once while other nodes' pods stay. An online
-// worker or a controller is refused untouched.
 func TestNodeControlFenceReleasesALostWorker(t *testing.T) {
 	ctx := context.Background()
 	ns := platform.DefaultMinecraftNamespace
@@ -243,9 +232,6 @@ func TestNodeControlFenceReleasesALostWorker(t *testing.T) {
 	}
 }
 
-// TestNodeControlApprovalLiftsTheFence pins that approving a fenced worker back takes the
-// out-of-service taint and the fence mark off once it is online, and refuses while it is
-// still offline, leaving the fence in place.
 func TestNodeControlApprovalLiftsTheFence(t *testing.T) {
 	ctx := context.Background()
 	fenced := func(ready bool) *corev1.Node {
@@ -286,11 +272,6 @@ func TestNodeControlApprovalLiftsTheFence(t *testing.T) {
 	}
 }
 
-// TestNodeControlJoinControllerSendsTheClusterAndLabels pins adding a controller: every
-// node's firewall learns it first (workers and the other controllers over SSH, this one in
-// place), its secrets travel only over stdin, the installer's controller-join mode runs
-// with the cluster's coordinates, and the ready node is labelled a controller and a home
-// for Longhorn's replicas. Without embedded etcd, or for an existing node, it is refused.
 func TestNodeControlJoinControllerSendsTheClusterAndLabels(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "ssh.log")
@@ -390,8 +371,6 @@ func TestNodeControlJoinControllerSendsTheClusterAndLabels(t *testing.T) {
 	}
 }
 
-// TestNodeControlFencesAControllerFromAnother pins fencing a lost controller: from another
-// controller only, and never the last one standing.
 func TestNodeControlFencesAControllerFromAnother(t *testing.T) {
 	ctx := context.Background()
 	run := func(e nodeExecutor) error {
@@ -414,9 +393,6 @@ func TestNodeControlFencesAControllerFromAnother(t *testing.T) {
 	}
 }
 
-// TestNodeControlUnfencesAReturnedController pins unfence: a fenced controller that is
-// online again gets its taint, mark and cordon lifted; a fenced worker is sent to approval,
-// and a controller still offline or never fenced is refused, each left untouched.
 func TestNodeControlUnfencesAReturnedController(t *testing.T) {
 	ctx := context.Background()
 	fenced := func(name, role string, ready bool) *corev1.Node {
@@ -450,8 +426,6 @@ func TestNodeControlUnfencesAReturnedController(t *testing.T) {
 	}
 }
 
-// TestNodeControlEnableHANeedsDistributedMode pins that HA is refused, before any backup
-// or change, on a controller distributed mode has not labelled.
 func TestNodeControlEnableHANeedsDistributedMode(t *testing.T) {
 	unlabelled := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "a"}}
 	var stages []string
@@ -461,8 +435,6 @@ func TestNodeControlEnableHANeedsDistributedMode(t *testing.T) {
 	}
 }
 
-// TestLocalControllerPicksThisHost pins which controller admission acts as: the online one
-// holding one of this host's addresses, whichever of several it is.
 func TestLocalControllerPicksThisHost(t *testing.T) {
 	mk := func(name, ip string, ready bool) *corev1.Node {
 		n := fenceTestNode(name, placement.RoleController, ready)

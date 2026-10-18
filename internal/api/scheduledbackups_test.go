@@ -18,7 +18,6 @@ import (
 
 var _ ScheduledBackuper = (*backupjob.Backuper)(nil)
 
-// fakeScheduledBackuper is a Backuper that can also take a scheduled backup.
 type fakeScheduledBackuper struct {
 	fakeBackuper
 	err       error
@@ -214,8 +213,6 @@ func TestBackupScheduler(t *testing.T) {
 	})
 }
 
-// The jobs route marks the executor's scheduled backups, and the scheduler
-// counts every unfinished backup and restore Job and nothing else.
 func TestK8sScheduledBackupJobs(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {

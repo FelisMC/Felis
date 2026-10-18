@@ -49,7 +49,6 @@ func findEnv(env []corev1.EnvVar, name string) *corev1.EnvVar {
 	return nil
 }
 
-// By default readiness is a plain TCP check on the game port (spec §5).
 func TestReadinessProbeDefaultsToTCP(t *testing.T) {
 	p := readinessProbe(&v1alpha1.MinecraftServer{})
 	if p.TCPSocket == nil || p.HTTPGet != nil {
@@ -60,8 +59,6 @@ func TestReadinessProbeDefaultsToTCP(t *testing.T) {
 	}
 }
 
-// When a server declares an HTTP health port, readiness gates on an HTTP GET so
-// an RCON-less loader's own "started" signal (felis-limbo) marks it Ready.
 func TestReadinessProbeHTTPWhenHealthPortSet(t *testing.T) {
 	s := &v1alpha1.MinecraftServer{}
 	s.Spec.Startup.HealthHTTPPort = 8080
@@ -87,9 +84,6 @@ func TestReadinessProbeHTTPCustomPath(t *testing.T) {
 	}
 }
 
-// A user server (no system-role label) gets the forwarding-config initContainer after
-// prepare-data, running the felis image and mounting the world volume. A system
-// login gate handles its own properties; a build with no felis image name gets no step.
 func TestBuildStatefulSetForwardingInitContainer(t *testing.T) {
 	user := &v1alpha1.MinecraftServer{}
 	user.Spec.Storage.Size = "1Gi"
@@ -121,11 +115,7 @@ func TestBuildStatefulSetForwardingInitContainer(t *testing.T) {
 	if !mounted {
 		t.Errorf("init must mount the world volume at %s, got %+v", dataMountPath, ic.VolumeMounts)
 	}
-	// The whole point of the initContainer is to write the forwarding config, which it
-	// cannot do without the secret: a missing Env here makes `init-forwarding` no-op and
-	// the server Ready-but-unjoinable — the exact silent failure the feature removes.
-	// Same secretKeyRef rule as the main container (optional so a non-modern proxy still
-	// schedules), so assert it, not just the image/identity/mount above.
+	// The init container must get the forwarding secret, or init-forwarding silently does nothing and the server is ready but unjoinable.
 	fwd := findEnv(ic.Env, envForwardingSecret)
 	if fwd == nil {
 		t.Fatalf("init must carry %s or it writes no forwarding config", envForwardingSecret)
@@ -163,10 +153,6 @@ func TestBuildStatefulSetForwardingInitContainer(t *testing.T) {
 	}
 }
 
-// Every server's image waits behind the egress gate, the last step before it: the
-// pod's NetworkPolicy is programmed after the pod starts. The gate runs the felis
-// image with nothing but the dial it needs, and it lets the server start after
-// egressGateWait, where the build's gate refuses.
 func TestBuildStatefulSetGatesEgress(t *testing.T) {
 	for _, role := range []string{"", naming.SystemLoginServer, "lobby"} {
 		server := &v1alpha1.MinecraftServer{}
@@ -205,9 +191,6 @@ func dropsAll(sc *corev1.SecurityContext) bool {
 	return sc.Capabilities != nil && len(sc.Capabilities.Drop) == 1 && sc.Capabilities.Drop[0] == "ALL"
 }
 
-// The server pod runs as the game uid under the runtime's seccomp filter, and the
-// game container holds no capability. Only prepare-data runs as root, with exactly
-// the two capabilities a chown walk needs — both inside the PodSecurity baseline.
 func TestBuildStatefulSetRunsGameAsNonRoot(t *testing.T) {
 	s := &v1alpha1.MinecraftServer{}
 	s.Spec.Storage.Size = "1Gi"
@@ -250,11 +233,7 @@ func TestBuildStatefulSetRunsGameAsNonRoot(t *testing.T) {
 	}
 }
 
-// The system-role label travels onto the pod: the platform's NetworkPolicies select
-// on it (felis-login-to-internal-api opens 8081 only to name=login AND
-// system-role=login), and a pod without it would be fenced off the one service it
-// exists to call. The selector stays the immutable labelsFor subset, so existing
-// StatefulSets roll instead of failing to update.
+// The system-role label must reach the pod: the login NetworkPolicy selects on it.
 func TestBuildStatefulSetCopiesSystemRoleOntoPods(t *testing.T) {
 	login := &v1alpha1.MinecraftServer{}
 	login.Name = naming.SystemLoginServer
@@ -284,8 +263,6 @@ func TestBuildStatefulSetCopiesSystemRoleOntoPods(t *testing.T) {
 	}
 }
 
-// A server with a health port also exposes it as a named container port so the
-// kubelet can reach it.
 func TestBuildStatefulSetAddsHealthPort(t *testing.T) {
 	s := &v1alpha1.MinecraftServer{}
 	s.Spec.Storage.Size = "1Gi"
@@ -305,10 +282,6 @@ func TestBuildStatefulSetAddsHealthPort(t *testing.T) {
 	}
 }
 
-// The login system server (and ONLY it) receives the login gate's own token,
-// sourced from a Secret via secretKeyRef — never a literal — so its felis-limbo
-// plugin can authenticate to the felis-api internal face as the limbo caller. It
-// must not be the proxy's felis-service-token, which opens every game route.
 func TestBuildEnvInjectsServiceTokenForLogin(t *testing.T) {
 	s := &v1alpha1.MinecraftServer{}
 	s.Name = naming.SystemLoginServer
@@ -329,8 +302,6 @@ func TestBuildEnvInjectsServiceTokenForLogin(t *testing.T) {
 	}
 }
 
-// A user server must NOT receive the service token. This includes a legacy,
-// unlabeled server named "login" that predates the reserved-name rule.
 func TestBuildEnvWithholdsServiceTokenFromUserServers(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -352,14 +323,6 @@ func TestBuildEnvWithholdsServiceTokenFromUserServers(t *testing.T) {
 	}
 }
 
-// Every backend receives the Velocity modern-forwarding secret — system and user alike.
-// This is the opposite rule from the service token, and deliberately so: Velocity's
-// forwarding mode is proxy-wide, so a backend without the secret cannot verify the
-// signed handshake and rejects every login the proxy sends it. It is also what makes a
-// backend's view of a player's UUID trustworthy (Mojang-verified via the signed payload,
-// not offline-derived from the username) — the premise the Owner bind rests on.
-// Sourced from a Secret, never a literal, and optional so a cluster whose proxy is not
-// in modern mode still schedules its pods.
 func TestBuildEnvInjectsForwardingSecretIntoEveryBackend(t *testing.T) {
 	for _, name := range []string{naming.SystemLoginServer, naming.SystemLobbyServer, "survival"} {
 		s := &v1alpha1.MinecraftServer{}

@@ -1,27 +1,4 @@
-// Package registrygate is the write-authorization front of the in-cluster image
-// registry. registry:2 runs with no auth of its own and listens on the pod's
-// loopback only; this gate owns the registry port and forwards to it.
-//
-// Why a gate rather than registry:2's own htpasswd auth: htpasswd is all-or-nothing
-// (every principal may write every repository, and anonymous pulls stop working),
-// while the platform needs two distinct writers and anonymous reads:
-//
-//   - reads (GET/HEAD) stay anonymous, because the node's containerd pulls through
-//     the loopback hostPort, Kaniko pulls FROM images and Trivy pulls its DB mirror,
-//     and none of them should carry a credential;
-//   - the "platform" principal (the installer) may write anything;
-//   - the "build" principal (the push step of a build Job) may write any repository
-//     outside the platform-reserved ones (felis/…, mirror/…), and may not delete;
-//   - the "prune" principal (felis-api's registry pruner) may only delete a
-//     manifest by digest, the one write that frees space.
-//
-// The gate also holds the registry read-only while the GC sidecar runs registry
-// garbage-collect (maint.go): a blob pushed during the sweep could be deleted
-// under a manifest that is about to reference it.
-//
-// Before this gate any pod that could reach the registry — a game server running a
-// tenant's plugin, or a Dockerfile RUN step inside Kaniko — could overwrite
-// felis/felis and take over the control plane on its next pull.
+// Package registrygate authorizes registry writes by principal while allowing anonymous reads.
 package registrygate
 
 import (
@@ -40,37 +17,25 @@ import (
 
 var digestRE = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
-// Principal names. They are the basic-auth usernames and the file names under the
-// gate's auth directory (cmd/felis registry-gate --auth-dir).
 const (
 	PrincipalPlatform = "platform"
 	PrincipalBuild    = "build"
 	PrincipalPrune    = "prune"
 )
 
-// Principals lists every principal the gate knows, for loading their tokens.
 var Principals = []string{PrincipalPlatform, PrincipalBuild, PrincipalPrune}
 
-// ReservedRepoRoots are the first path components the build principal may never
-// write: felis/ holds the control-plane and game images the platform runs, mirror/
-// holds the Trivy DB mirrors the scan gate trusts. A build that could overwrite
-// either would own the platform or blind its own scanner.
+// ReservedRepoRoots protects platform images and vulnerability mirrors from tenant builds.
 var ReservedRepoRoots = []string{"felis", "mirror"}
 
-// Realm is the basic-auth realm the gate challenges with.
 const Realm = "felis-registry"
 
-// Gate authorizes registry requests and proxies the allowed ones upstream.
 type Gate struct {
-	// Tokens maps a principal to its secret. A principal with an empty or missing
-	// token cannot authenticate: writes fail closed while reads keep working.
-	Tokens map[string]string
-	// Upstream is the loopback registry, e.g. http://127.0.0.1:5001.
+	// Missing or empty tokens disable authentication for that principal.
+	Tokens   map[string]string
 	Upstream *url.URL
-	// Log receives one line per refused write. Nil discards.
-	Log *slog.Logger
-	// DataDir is the registry's storage root, mounted read-only, for the manifest
-	// index (index.go). Empty turns the index off.
+	Log      *slog.Logger
+	// Empty DataDir disables the manifest index.
 	DataDir string
 
 	proxy  *httputil.ReverseProxy
@@ -78,33 +43,27 @@ type Gate struct {
 	maint  maintenance
 }
 
-// New builds a Gate for upstream.
 func New(upstream *url.URL, tokens map[string]string, log *slog.Logger) *Gate {
 	g := &Gate{Tokens: tokens, Upstream: upstream, Log: log}
 	rp := &httputil.ReverseProxy{Rewrite: func(pr *httputil.ProxyRequest) {
 		pr.SetURL(upstream)
-		// The registry builds upload Location URLs from Host: keep the one the client
-		// dialled, not the loopback upstream.
+		// Preserve the client Host that upload Location URLs are built from.
 		pr.Out.Host = pr.In.Host
 		pr.SetXForwarded()
-		// The registry has no auth of its own; the credential stops here.
+		// Strip credentials before forwarding to the unauthenticated registry.
 		pr.Out.Header.Del("Authorization")
 	}}
-	// Blob uploads and pulls are streamed; flush as bytes arrive so a large layer
-	// pull is not buffered in the gate.
+	// Flush streamed blobs without buffering entire layers.
 	rp.FlushInterval = -1
 	g.proxy = rp
 	g.health = &http.Client{Timeout: 3 * time.Second}
 	g.maint.now = time.Now
 	g.maint.quiet = DefaultQuiet
-	// A gate that just started cannot tell whether a push was mid-way through the
-	// previous one, and the installer pushes right after the registry rolls out:
-	// count the start as a write, so the first window waits for quiet too.
+	// Treat startup as a write because a push may have been interrupted by the restart.
 	g.maint.lastWrite = g.maint.now()
 	return g
 }
 
-// ServeHTTP implements http.Handler.
 func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/livez":
@@ -122,9 +81,7 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "NAME_UNKNOWN", "not a registry API path")
 		return
 	}
-	// The gate and the registry must read the same path, or an authorization check
-	// on one repository could be spent on another. Refuse every shape that a later
-	// clean-up or decode could turn into a different path.
+	// Reject paths the gate and registry could decode or normalize differently.
 	if !canonicalPath(r) {
 		writeError(w, http.StatusBadRequest, "NAME_INVALID", "non-canonical request path")
 		return
@@ -138,9 +95,7 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
-		// The API root is where Docker-compatible clients learn which auth scheme
-		// the registry wants; the daemon sends credentials on later writes only if
-		// this answer challenged it. Everything else stays anonymous for reads.
+		// Challenge at /v2/ so Docker-compatible clients send credentials on subsequent writes.
 		if isAPIRoot(r.URL.Path) && principal == "" {
 			challenge(w, "authentication required")
 			return
@@ -165,8 +120,6 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !g.maint.beginWrite() {
-		// Retry-After is what imagepush and docker push back off on; a GC sweep
-		// over a few GiB takes well under a minute.
 		w.Header().Set("Retry-After", "30")
 		writeError(w, http.StatusServiceUnavailable, "UNAVAILABLE",
 			"the registry is read-only while garbage collection runs; retry shortly")
@@ -176,8 +129,6 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	g.proxy.ServeHTTP(w, r)
 }
 
-// authenticate returns the principal the request's basic credentials name, "" for
-// an anonymous request, and an error for credentials that do not verify.
 func (g *Gate) authenticate(r *http.Request) (string, error) {
 	if r.Header.Get("Authorization") == "" {
 		return "", nil
@@ -188,7 +139,7 @@ func (g *Gate) authenticate(r *http.Request) (string, error) {
 	}
 	want, known := g.Tokens[user]
 	if !known || want == "" {
-		// Still spend a comparison so an unknown user is not faster to refuse.
+		// Perform a comparison even for unknown users to reduce timing differences.
 		subtle.ConstantTimeCompare([]byte(pass), []byte("x"))
 		return "", fmt.Errorf("unknown principal")
 	}
@@ -198,8 +149,7 @@ func (g *Gate) authenticate(r *http.Request) (string, error) {
 	return user, nil
 }
 
-// Authorize decides whether an authenticated principal may send a write request
-// for path. It returns "" to allow, or the refusal reason.
+// Authorize returns an empty string to allow a write, otherwise a refusal reason.
 func Authorize(principal, method, path string) string {
 	switch principal {
 	case PrincipalPlatform:
@@ -220,9 +170,7 @@ func Authorize(principal, method, path string) string {
 		}
 		return ""
 	case PrincipalPrune:
-		// Deleting a manifest only unlinks it; the blobs go at the next GC. The
-		// pruner never needs anything else, so a leaked prune token can neither
-		// plant an image nor delete a blob a live manifest still references.
+		// Prune credentials may unlink manifests only; blob removal belongs to GC.
 		if method != http.MethodDelete || !isManifestDigestPath(path) {
 			return "the prune principal may only delete a manifest by digest"
 		}
@@ -232,7 +180,6 @@ func Authorize(principal, method, path string) string {
 	}
 }
 
-// isManifestDigestPath reports whether path is /v2/<repo>/manifests/sha256:<hex>.
 func isManifestDigestPath(path string) bool {
 	rest, ok := strings.CutPrefix(path, "/v2/")
 	if !ok {
@@ -243,12 +190,7 @@ func isManifestDigestPath(path string) bool {
 	return n >= 3 && seg[n-2] == "manifests" && digestRE.MatchString(seg[n-1])
 }
 
-// RepoFromPath extracts the repository name from a registry API v2 path, or ""
-// when the path addresses no repository (/v2/, /v2/_catalog). The shapes are the
-// distribution API's: <name>/manifests/<ref>, <name>/blobs/<digest>,
-// <name>/blobs/uploads/[<uuid>], <name>/tags/list, <name>/referrers/<digest>.
-// Neither a reference, a digest nor an upload id contains '/', so the repository
-// is everything before the fixed tail.
+// RepoFromPath strips the fixed registry API suffix; references, digests, and upload IDs cannot contain slashes.
 func RepoFromPath(path string) string {
 	rest, ok := strings.CutPrefix(path, "/v2/")
 	if !ok {
@@ -265,9 +207,7 @@ func RepoFromPath(path string) string {
 	return ""
 }
 
-// canonicalPath rejects any request path the upstream could read differently from
-// the gate: percent-escapes Go would decode (RawPath set), dot segments a router
-// would clean, and empty segments other than the trailing slash of an upload POST.
+// canonicalPath rejects encoded, dot, and empty segments that upstream could interpret differently.
 func canonicalPath(r *http.Request) bool {
 	if r.URL.RawPath != "" && r.URL.RawPath != r.URL.Path {
 		return false
@@ -290,8 +230,6 @@ func canonicalPath(r *http.Request) bool {
 
 func isAPIRoot(p string) bool { return p == "/v2/" || p == "/v2" }
 
-// serveHealth answers 200 when the upstream registry answers its API root, the
-// check registry:2's own probes used before the gate took its port.
 func (g *Gate) serveHealth(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
@@ -318,8 +256,6 @@ func challenge(w http.ResponseWriter, msg string) {
 	writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", msg)
 }
 
-// writeError answers in the registry's own error envelope, which Docker and
-// containerd both surface verbatim to the operator.
 func writeError(w http.ResponseWriter, status int, code, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

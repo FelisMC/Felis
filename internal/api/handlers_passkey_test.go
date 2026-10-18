@@ -9,12 +9,6 @@ import (
 	"time"
 )
 
-// Passkey enrollment handler tests (spec §14 / Phase 6 bind), enrollment-only slice.
-// They drive the four account routes against the fakeRepo state machine and a fake
-// PasskeyVerifier — no real attestation crypto, no SQL — so what these PROVE is the
-// handler + challenge state machine, not the pgrepo SQL (mirrored, not run here) nor
-// the cryptographic verification (Slice 1).
-
 // frozenNow is the test clock newTestAPI installs; a live challenge expires at
 // frozenNow+passkeyChallengeTTL, an expired one strictly before frozenNow.
 var frozenNow = time.Unix(1_700_000_000, 0)
@@ -27,9 +21,7 @@ func newPasskeyAPI(repo *fakeRepo, v PasskeyVerifier, p *Principal) http.Handler
 	return api.ExternalHandler()
 }
 
-// plantPasskeyChallenge seeds a stashed registration challenge for u1 directly, so the
-// finish-side branches (expired, conflict) are reachable under the frozen clock without
-// running begin first.
+// plantPasskeyChallenge bypasses begin so expiry and conflict branches can be tested under a frozen clock.
 func plantPasskeyChallenge(repo *fakeRepo, id string, expiresAt time.Time, session []byte) {
 	repo.passkeyChallenges[id] = &fakePasskeyChallenge{
 		id: id, userID: "u1", purpose: passkeyPurposeRegister,
@@ -37,12 +29,6 @@ func plantPasskeyChallenge(repo *fakeRepo, id string, expiresAt time.Time, sessi
 	}
 }
 
-// TestPasskeyRegisterVertical walks the whole enrollment slice across the external
-// face: begin mints + stashes a challenge, finish verifies the attestation against the
-// SERVER-STASHED session data and binds the credential, list shows it, delete unbinds
-// it. The decisive assertion is the session-data round-trip: the finish body carries
-// only name+attestation, so the only path for the stashed blob into FinishRegistration
-// is store-stash → consume — proving the challenge is never client-echoed.
 func TestPasskeyRegisterVertical(t *testing.T) {
 	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
 	repo := newFakeRepo()
@@ -72,8 +58,6 @@ func TestPasskeyRegisterVertical(t *testing.T) {
 		t.Errorf("begin passed user id %q, want u1", v.lastUser.ID)
 	}
 
-	// 2) finish binds the credential. The finish body carries NO challenge — only the
-	// nickname and attestation.
 	body := `{"name":"My YubiKey","attestation":{"id":"abc","type":"public-key"}}`
 	w = do(eh, "POST", "/api/v1/account/passkey/register/finish", body, nil)
 	if w.Code != http.StatusCreated {
@@ -127,9 +111,6 @@ func TestPasskeyRegisterVertical(t *testing.T) {
 		t.Fatalf("delete left %d credentials, want 0", len(repo.passkeyCreds))
 	}
 
-	// Both mutating halves audit by the caller's Access email AND name the affected
-	// credential id as the target, so an operator reading the log can tell which
-	// passkey was bound/unbound (register previously logged an empty target).
 	var registered, removed bool
 	for _, a := range repo.audits {
 		switch a.Action {
@@ -144,10 +125,6 @@ func TestPasskeyRegisterVertical(t *testing.T) {
 	}
 }
 
-// TestPasskeyBeginPassesExistingCredentials proves excludeCredentials is wired
-// end-to-end: a caller who already has a passkey hands that credential to the verifier
-// at begin, so the authenticator can refuse to double-bind one device. The hook is
-// PasskeyCredentialsForUser → passkeyUserFor → BeginRegistration.
 func TestPasskeyBeginPassesExistingCredentials(t *testing.T) {
 	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
 	repo := newFakeRepo()
@@ -165,9 +142,6 @@ func TestPasskeyBeginPassesExistingCredentials(t *testing.T) {
 	}
 }
 
-// TestPasskeyBeginSupersedes proves a fresh begin invalidates the prior in-flight
-// challenge for the same user: two begins leave exactly one stashed challenge, so an
-// abandoned ceremony cannot be finished after the user restarts.
 func TestPasskeyBeginSupersedes(t *testing.T) {
 	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
 	repo := newFakeRepo()
@@ -180,10 +154,6 @@ func TestPasskeyBeginSupersedes(t *testing.T) {
 	}
 }
 
-// TestPasskeyUnavailable pins the graceful-degradation path: when no verifier is wired
-// the ceremony routes answer 503 (not a panic). It is NOT an auth assertion — auth runs
-// in middleware upstream of these handlers regardless. List/delete need no verifier, so
-// they keep working.
 func TestPasskeyUnavailable(t *testing.T) {
 	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
 	repo := newFakeRepo()
@@ -201,9 +171,6 @@ func TestPasskeyUnavailable(t *testing.T) {
 	}
 }
 
-// TestPasskeyFinishRejections is the finish-side failure matrix. The expired and
-// conflict cases plant state directly: the test clock is frozen, so a pre-expired
-// challenge or a pre-bound credential is the only way to reach those branches.
 func TestPasskeyFinishRejections(t *testing.T) {
 	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
 	const goodBody = `{"name":"k","attestation":{"id":"abc"}}`
@@ -273,9 +240,6 @@ func TestPasskeyFinishRejections(t *testing.T) {
 	})
 }
 
-// TestPasskeyDeleteScoping proves a caller can only unbind their OWN passkey: u2's
-// credential is invisible to u1's list and u1's delete of it 404s (never a silent
-// success that would let one account strip another's factor).
 func TestPasskeyDeleteScoping(t *testing.T) {
 	u1 := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
 	repo := newFakeRepo()
@@ -296,9 +260,6 @@ func TestPasskeyDeleteScoping(t *testing.T) {
 	}
 }
 
-// TestPasskeyDeleteLastGuard pins the last-passkey guard: without a verified email
-// the only passkey is the account's way in, so its delete is a 409 that leaves it
-// bound; a second passkey or a verified email lets the delete through.
 func TestPasskeyDeleteLastGuard(t *testing.T) {
 	cred := func(id string) PasskeyCredential {
 		return PasskeyCredential{ID: id, UserID: "u1", CredentialID: "c-" + id, CreatedAt: frozenNow}
@@ -355,8 +316,6 @@ func TestPasskeyDeleteLastGuard(t *testing.T) {
 	}
 }
 
-// TestPasskeyDeleteUnknown pins the unknown-id path: deleting an id that does not exist
-// is a 404, never a silent 204.
 func TestPasskeyDeleteUnknown(t *testing.T) {
 	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
 	eh := newPasskeyAPI(newFakeRepo(), &fakePasskeyVerifier{}, user)
@@ -365,8 +324,6 @@ func TestPasskeyDeleteUnknown(t *testing.T) {
 	}
 }
 
-// TestPasskeyListNewestFirst proves the management view orders newest-first, matching
-// the pgrepo ORDER BY created_at DESC the fake mirrors.
 func TestPasskeyListNewestFirst(t *testing.T) {
 	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
 	repo := newFakeRepo()
@@ -384,9 +341,6 @@ func TestPasskeyListNewestFirst(t *testing.T) {
 	}
 }
 
-// TestPasskeyFaceSeparation enforces that the enrollment routes are web-only: they
-// require a logged-in principal the internal (service-token) face never carries, so
-// crossing the face boundary must 404 rather than silently work.
 func TestPasskeyFaceSeparation(t *testing.T) {
 	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
 	api := newTestAPI(newFakeRepo(), newFakeCluster())

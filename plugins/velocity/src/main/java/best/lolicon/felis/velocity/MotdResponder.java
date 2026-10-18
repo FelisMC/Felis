@@ -11,20 +11,7 @@ import net.kyori.adventure.text.format.NamedTextColor;
 import java.net.InetSocketAddress;
 import java.util.Optional;
 
-/**
- * MotdResponder answers the server-list ping for a felis subdomain from cache, so
- * a player sees the right server in their list — and whether it is awake — without
- * the ping itself waking anything (spec §11 "ping MOTD：只读缓存，后台刷新"). The
- * cache it reads is the {@link ServerRegistry}'s lifecycle view, refreshed in the
- * background by the plugin's registration poll; the ping handler never touches the
- * backend or the wake lever.
- *
- * <p>This is the read-only, phase-aware subset of the responsibility: the MOTD is
- * synthesized from the server's lifecycle (online / starting / start failed /
- * sleeping) and its cached player counts. Mirroring each backend's <em>own</em> MOTD
- * string (by pinging ready servers in the background and caching the result) is a richer
- * variant deferred to a later slice; nothing here ever pings a sleeping backend.
- */
+// Answer pings from cached lifecycle data without contacting or waking sleeping backends.
 public final class MotdResponder {
     private static final String PHASE_FAILED = "Failed";
 
@@ -56,11 +43,7 @@ public final class MotdResponder {
         event.setPing(b.build());
     }
 
-    // The server-list ping carries no client locale, so the MOTD status uses the
-    // both-languages-in-one-line pattern the modded /link clients share. A start
-    // that failed still holds desiredState Running, so it is read first: joining a
-    // server whose retries are spent wakes nothing, and one between retries is
-    // waiting out a backoff, which a "starting…" line hid behind a queue that ran out.
+    // Pings have no locale; prioritize start failures over desiredState Running when composing MOTD.
     static String statusLine(ServerView v) {
         if (v.ready()) {
             return "在线 / online";

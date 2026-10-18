@@ -17,8 +17,6 @@ import (
 	"felis.lolicon.best/internal/watchdog"
 )
 
-// TestProxyFinding: a listening proxy is healthy; a closed port is the critical
-// "players cannot reach any server" finding.
 func TestProxyFinding(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -51,8 +49,6 @@ func TestSplitList(t *testing.T) {
 	}
 }
 
-// TestMailHold: mail waits through the installer's quiet window, and on a host
-// standing by for another host's off-site bucket while that host writes it.
 func TestMailHold(t *testing.T) {
 	dir := t.TempDir()
 	quiet, status := filepath.Join(dir, "quiet"), filepath.Join(dir, "status.json")
@@ -94,9 +90,6 @@ func TestMailHold(t *testing.T) {
 	}
 }
 
-// watchdogHost is a host whole watchdog passes run on: the API server and PostgreSQL
-// are down (no kubeconfig, nothing on the database port), the relay is a recorder and
-// the heartbeat URL points at a ping log.
 type watchdogHost struct {
 	dir, statePath string
 	// fallbackPath stands in for /run/felis, in a directory of its own.
@@ -147,9 +140,6 @@ func duePostgres(cachedPassword string) *watchdog.State {
 	return s
 }
 
-// TestWatchdogRunKeepsClusterAlertsWhileTheAPIIsDown: with the API server down,
-// the alerts under the cluster checks keep their state, since nothing looked
-// at them; an alert of a check that did run and found nothing reads as cleared.
 func TestWatchdogRunKeepsClusterAlertsWhileTheAPIIsDown(t *testing.T) {
 	told := time.Now().Add(-30 * time.Minute)
 	cluster := []string{"deployment/felis-api", "node/felis-1/NotReady", "server-failed/lobby"}
@@ -184,8 +174,6 @@ func TestWatchdogRunKeepsClusterAlertsWhileTheAPIIsDown(t *testing.T) {
 	}
 }
 
-// TestWatchdogDryRunMailsAndSavesNothing: a dry run prints the mail that is due
-// and the heartbeat it would ping, and sends, pings and saves nothing.
 func TestWatchdogDryRunMailsAndSavesNothing(t *testing.T) {
 	t.Setenv("FELIS_TEST_WATCHDOG_RELAY_PW", "env-pw")
 	h := newWatchdogHost(t, testWatchdogConfig+testWatchdogSMTP, duePostgres(""))
@@ -225,9 +213,6 @@ func TestWatchdogDryRunMailsAndSavesNothing(t *testing.T) {
 	}
 }
 
-// TestWatchdogRunSignsInWithTheHostRelayPassword: a pass caches the relay
-// password from the host copy even while the cluster is down, and signs in with
-// it; with no host copy and no cluster it keeps the one it had.
 func TestWatchdogRunSignsInWithTheHostRelayPassword(t *testing.T) {
 	const smtpNoRef = "[smtp]\nhost = \"smtp.config.example\"\nport = 2525\nfrom = \"felis@example.com\"\nusername = \"felis\"\n"
 	for _, tc := range []struct{ what, hostCopy, want string }{
@@ -249,9 +234,6 @@ func TestWatchdogRunSignsInWithTheHostRelayPassword(t *testing.T) {
 	}
 }
 
-// TestWatchdogRunChecksWhatIsConfigured: the proxy, the database backups, the
-// off-site copy and the build lane's scan DB are each checked when the host
-// has them, and only then.
 func TestWatchdogRunChecksWhatIsConfigured(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -294,10 +276,6 @@ func TestWatchdogRunChecksWhatIsConfigured(t *testing.T) {
 	}
 }
 
-// TestWatchdogRunStateThatDoesNotSave: a pass whose state does not save mails
-// as usual, keeps its state in the fallback, exits 1 and posts the failure to
-// the heartbeat. The next pass reads the fallback and mails nothing again; the
-// first one whose state saves drops the fallback.
 func TestWatchdogRunStateThatDoesNotSave(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root writes into a read-only directory")

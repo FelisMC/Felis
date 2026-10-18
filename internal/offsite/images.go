@@ -1,22 +1,6 @@
 package offsite
 
-// The off-site copy of the platform registry's user images. Every repository
-// outside felis/ and mirror/ holds builds that exist nowhere else: a lost
-// registry volume would otherwise leave each server pinned to one of them in
-// ImagePullBackOff until someone rebuilds it. The installer pushes felis/ and
-// mirror/ again on any host, but under the same tags at new digests (a build
-// is not reproducible, an upstream tag moves on), so from those only the
-// revisions a server or a whitelist entry pins by digest are copied, without
-// their tags: the tags belong to whatever the installer pushed last.
-//
-// The bucket holds each blob and manifest once, by digest, encrypted like
-// everything else, plus an index that says which repository holds which
-// manifests under which tags. A new index version is written whenever that
-// changes, and every version stays until ImageHistory after a newer one
-// replaced it, together with every object it names. So a registry that comes
-// back empty, a host being rebuilt whose timer runs before anyone restores
-// anything, only adds a new version: the one before it is still there to
-// restore from (FetchImages, `felis offsite fetch-images -at`).
+// Reserved image repositories copy only pinned digests without installer-owned tags; historical indexes retain replaced revisions for recovery.
 
 import (
 	"bytes"
@@ -50,48 +34,36 @@ const (
 	maxImageManifestBytes = 4 << 20
 )
 
-// ImageHistory is how long a registry state stays restorable after a newer one
-// replaced it.
 const ImageHistory = 14 * 24 * time.Hour
 
-// ErrImageGone is a manifest or blob the registry lists but no longer holds.
 var ErrImageGone = errors.New("offsite: not in the registry")
 
-// ImageSource is the registry the sync reads, anonymously.
 type ImageSource interface {
 	Repositories(ctx context.Context) ([]string, error)
-	// Revisions lists every manifest repo holds, tagged or not, and its tags.
 	Revisions(ctx context.Context, repo string) (digests []string, tags map[string]string, err error)
-	// Manifest returns the manifest stored under digest and its media type.
-	// A manifest the registry no longer holds is ErrImageGone.
+	// Manifest returns ErrImageGone when the registry lost the requested digest.
 	Manifest(ctx context.Context, repo, digest string) ([]byte, string, error)
-	// Blob opens a blob; one the registry no longer holds is ErrImageGone.
+	// Blob returns ErrImageGone when the registry lost the requested blob.
 	Blob(ctx context.Context, repo, digest string) (io.ReadCloser, error)
 }
 
-// ImageTarget is the registry FetchImages pushes into.
 type ImageTarget interface {
-	// PutBlob uploads the blob open returns unless repo already holds it.
+	// PutBlob must skip upload when the target already holds the digest.
 	PutBlob(ctx context.Context, repo, digest string, size int64, open func() (io.ReadCloser, error)) error
-	// PutManifest stores body under reference, a tag or its digest.
 	PutManifest(ctx context.Context, repo, reference, mediaType string, body []byte) error
 }
 
-// ImageIndex is one state of the registry's user images.
 type ImageIndex struct {
 	Created      time.Time                `json:"created"`
 	Repositories map[string]ImageRepo     `json:"repositories"`
 	Manifests    map[string]ImageManifest `json:"manifests"`
 }
 
-// ImageRepo is one repository: its manifests, and the tag → digest map.
 type ImageRepo struct {
 	Manifests []string          `json:"manifests"`
 	Tags      map[string]string `json:"tags,omitempty"`
 }
 
-// ImageManifest describes a stored manifest: the blobs an image manifest names
-// (config and layers), or the manifests an index names.
 type ImageManifest struct {
 	MediaType string      `json:"media_type"`
 	Size      int64       `json:"size"`
@@ -99,14 +71,11 @@ type ImageManifest struct {
 	Children  []string    `json:"children,omitempty"`
 }
 
-// ImageBlob is one blob a manifest names.
 type ImageBlob struct {
 	Digest string `json:"digest"`
 	Size   int64  `json:"size"`
 }
 
-// Images counts the manifests the repositories hold, a manifest in two
-// repositories counting twice, like two images.
 func (x *ImageIndex) Images() int {
 	n := 0
 	for _, r := range x.Repositories {
@@ -136,7 +105,6 @@ func reservedRepo(repo string) bool {
 	return slices.Contains(registrygate.ReservedRepoRoots, root)
 }
 
-// Manifest media types the copy understands.
 const (
 	mediaOCIIndex        = "application/vnd.oci.image.index.v1+json"
 	mediaDockerList      = "application/vnd.docker.distribution.manifest.list.v2+json"
@@ -144,7 +112,6 @@ const (
 	mediaDockerManifest2 = "application/vnd.docker.distribution.manifest.v2+json"
 )
 
-// describeManifest reads the blobs or child manifests out of a manifest.
 func describeManifest(body []byte, mediaType string) (ImageManifest, error) {
 	type desc struct {
 		Digest string `json:"digest"`
@@ -197,7 +164,6 @@ func describeManifest(body []byte, mediaType string) (ImageManifest, error) {
 	return im, nil
 }
 
-// imageCopy is one sync pass over the registry.
 type imageCopy struct {
 	s      *Syncer
 	remote map[string]int64
@@ -205,12 +171,10 @@ type imageCopy struct {
 	next   *ImageIndex
 	res    *Result
 	fail   func(string, ...any)
-	// failed is set by anything that leaves the new index short of the
-	// registry, which rules out pruning in this pass.
+	// failed disables pruning when an incomplete registry read could omit valid objects.
 	failed bool
 }
 
-// errSkipped marks a manifest left out without failing the pass.
 var errSkipped = errors.New("skipped")
 
 func (s *Syncer) syncImages(ctx context.Context, res *Result, fail func(string, ...any)) {
@@ -289,9 +253,7 @@ func (s *Syncer) syncImages(ctx context.Context, res *Result, fail func(string, 
 	}
 }
 
-// repo copies one repository into c.next; of a reserved one, only the pinned
-// revisions and none of its tags. A repository that cannot be read in full
-// keeps the entry the previous index had for it.
+// repo copies reserved repositories without tags and retains previous entries when a full read fails.
 func (c *imageCopy) repo(ctx context.Context, repo string, pinned []string) {
 	digests, tags, err := c.s.Images.Revisions(ctx, repo)
 	if err != nil {
@@ -334,7 +296,6 @@ func (c *imageCopy) repo(ctx context.Context, repo string, pinned []string) {
 	}
 }
 
-// carry keeps the previous index's entry for repo, and what it names.
 func (c *imageCopy) carry(repo string) {
 	entry, ok := c.prev.Repositories[repo]
 	if !ok {
@@ -357,10 +318,7 @@ func (c *imageCopy) carry(repo string) {
 	}
 }
 
-// manifest makes sure digest, everything it names, and then the manifest
-// itself are in the bucket, and records it in c.next. A manifest or blob the
-// registry lost is errSkipped, unless an earlier pass already copied the
-// manifest whole: that copy is then the only complete one and stays.
+// manifest copies dependencies first and preserves an earlier complete copy if the registry has lost part of the current image.
 func (c *imageCopy) manifest(ctx context.Context, repo, digest string) error {
 	if _, ok := c.next.Manifests[digest]; ok {
 		return nil
@@ -414,8 +372,7 @@ func (c *imageCopy) manifest(ctx context.Context, repo, digest string) error {
 	return nil
 }
 
-// gone turns err into errSkipped when it says the registry lost the manifest
-// or one of its blobs, keeping the copy an earlier pass made if there is one.
+// gone retains complete prior copies while marking missing registry content as skipped.
 func (c *imageCopy) gone(repo, digest string, err error) error {
 	if !errors.Is(err, ErrImageGone) {
 		return err
@@ -429,7 +386,6 @@ func (c *imageCopy) gone(repo, digest string, err error) error {
 	return errSkipped
 }
 
-// prevComplete reports whether every object digest needs is in the bucket.
 func (c *imageCopy) prevComplete(digest string) bool {
 	m, ok := c.prev.Manifests[digest]
 	if !ok || c.remote[imageManifestKey(digest)] != SealedSize(m.Size) {
@@ -456,7 +412,6 @@ func (c *imageCopy) addPrev(digest string) {
 	}
 }
 
-// sameImages reports whether two indexes record the same state.
 func sameImages(a, b *ImageIndex) bool {
 	ja, err1 := json.Marshal(struct {
 		R map[string]ImageRepo
@@ -469,8 +424,6 @@ func sameImages(a, b *ImageIndex) bool {
 	return err1 == nil && err2 == nil && bytes.Equal(ja, jb)
 }
 
-// pruneImages drops the index versions replaced more than ImageHistory ago,
-// then every blob and manifest no remaining version names.
 func (s *Syncer) pruneImages(ctx context.Context, versions []string, newest *ImageIndex, remote map[string]int64, res *Result, fail func(string, ...any)) {
 	keep, drop := retire(versions, s.now().Add(-ImageHistory))
 	live := map[string]bool{}
@@ -515,9 +468,7 @@ func (s *Syncer) pruneImages(ctx context.Context, versions []string, newest *Ima
 	}
 }
 
-// putImageBlob streams one blob from the registry into the bucket, checking it
-// against its digest and size on the way: a blob that does not match fails
-// the upload instead of storing bytes a restore would push as that digest.
+// putImageBlob checks size and digest while streaming so recovery cannot restore bytes under the wrong content address.
 func (s *Syncer) putImageBlob(ctx context.Context, repo string, b ImageBlob) error {
 	rc, err := s.Images.Blob(ctx, repo, b.Digest)
 	if err != nil {
@@ -545,8 +496,7 @@ func (s *Syncer) putImageIndex(ctx context.Context, stamp string, x *ImageIndex)
 	return s.putBytes(ctx, imageIndexKey(stamp), raw)
 }
 
-// digestReader passes a blob through and fails at its end when the bytes do not
-// hash to digest or are not size long.
+// digestReader verifies exact size and digest at EOF.
 type digestReader struct {
 	r      io.Reader
 	h      hash.Hash
@@ -577,9 +527,7 @@ func (d *digestReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// retire splits the index versions before the newest (oldest first) into the
-// ones still kept and the ones replaced before cutoff. The newest is in
-// neither: it is the state the pass just recorded.
+// retire excludes the newest index and partitions older versions by when they were replaced.
 func retire(versions []string, cutoff time.Time) (keep, drop []string) {
 	for i, v := range versions {
 		if i == len(versions)-1 {
@@ -595,10 +543,8 @@ func retire(versions []string, cutoff time.Time) (keep, drop []string) {
 	return keep, drop
 }
 
-// imageIndexStamps lists the registry index versions among keys, oldest first.
 func imageIndexStamps(keys map[string]int64) []string { return indexStamps(keys, imageIndexDir) }
 
-// indexStamps lists the index versions under dir among keys, oldest first.
 func indexStamps(keys map[string]int64, dir string) []string {
 	var out []string
 	for key := range keys {
@@ -615,7 +561,6 @@ func indexStamps(keys map[string]int64, dir string) []string {
 	return out
 }
 
-// ImageIndexes lists the registry index versions in the bucket, oldest first.
 func ImageIndexes(ctx context.Context, b Bucket) ([]string, error) {
 	objs, err := b.List(ctx, imageIndexDir)
 	if err != nil {
@@ -628,7 +573,6 @@ func ImageIndexes(ctx context.Context, b Bucket) ([]string, error) {
 	return imageIndexStamps(keys), nil
 }
 
-// LoadImageIndex reads one index version.
 func LoadImageIndex(ctx context.Context, b Bucket, key []byte, stamp string) (*ImageIndex, error) {
 	raw, err := getSealed(ctx, b, key, imageIndexKey(stamp), maxImageIndexBytes)
 	if err != nil {
@@ -647,10 +591,7 @@ func LoadImageIndex(ctx context.Context, b Bucket, key []byte, stamp string) (*I
 	return x, nil
 }
 
-// ChooseImageIndex picks the version a restore uses: at when given, otherwise
-// the newest. A newest version with no images while an older one has some is
-// what a rebuilt host's first sync records before the restore, so it is
-// refused with the versions worth choosing instead.
+// ChooseImageIndex refuses an empty newest registry when older indexes retain images, protecting pre-restore rebuilt hosts.
 func ChooseImageIndex(ctx context.Context, b Bucket, key []byte, at string) (string, *ImageIndex, error) {
 	versions, err := ImageIndexes(ctx, b)
 	if err != nil {
@@ -688,7 +629,6 @@ func ChooseImageIndex(ctx context.Context, b Bucket, key []byte, at string) (str
 		newest, strings.Join(older, ", "))
 }
 
-// getSealed downloads and decrypts a small object.
 func getSealed(ctx context.Context, b Bucket, key []byte, objKey string, limit int64) ([]byte, error) {
 	rc, err := b.Get(ctx, objKey)
 	if err != nil {
@@ -715,21 +655,16 @@ func (l *limitWriter) Write(p []byte) (int, error) {
 	return l.w.Write(p)
 }
 
-// FetchImagesResult is what FetchImages did.
 type FetchImagesResult struct {
 	Repositories int
 	Manifests    int
 	Tags         int
-	// BlobsPushed and BytesPushed count the blobs the registry lacked.
-	BlobsPushed int
-	BytesPushed int64
-	Failures    []string
+	BlobsPushed  int
+	BytesPushed  int64
+	Failures     []string
 }
 
-// FetchImages pushes every image x records back into t, each repository's
-// blobs first, then its manifests by digest (an index after the manifests it
-// names), then its tags. What t already holds is skipped, so a second run
-// finishes what the first could not.
+// FetchImages restores blobs, dependency-ordered manifests and then tags, skipping existing content so interrupted runs can resume.
 func FetchImages(ctx context.Context, b Bucket, key []byte, x *ImageIndex, t ImageTarget, log io.Writer) (FetchImagesResult, error) {
 	var res FetchImagesResult
 	bodies := map[string][]byte{}
@@ -752,7 +687,7 @@ func FetchImages(ctx context.Context, b Bucket, key []byte, x *ImageIndex, t Ima
 	for _, repo := range slices.Sorted(maps.Keys(x.Repositories)) {
 		entry := x.Repositories[repo]
 		if reservedRepo(repo) {
-			entry.Tags = nil // the installer's tags stay where it put them
+			entry.Tags = nil
 		}
 		done := map[string]bool{}
 		var push func(d string) error
@@ -829,8 +764,7 @@ func FetchImages(ctx context.Context, b Bucket, key []byte, x *ImageIndex, t Ima
 	return res, nil
 }
 
-// openSealed streams the decrypted content of objKey. Decryption authenticates
-// every segment; the registry checks the whole against its digest.
+// openSealed authenticates every segment; the target registry validates the complete digest.
 func openSealed(ctx context.Context, b Bucket, key []byte, objKey string) (io.ReadCloser, error) {
 	rc, err := b.Get(ctx, objKey)
 	if err != nil {

@@ -25,11 +25,6 @@ import { parseFormatting, type Formatted } from "@/lib/mcformat";
 import { cn } from "@/lib/utils";
 import { InlineError, MessageLine } from "@/components/MessageLine";
 
-// notStreamingCopy explains why there is no live feed for a phase that has no
-// streamable pod. The read path only has something to relay once a pod is up, so
-// Stopped/Failed/Stopping each get their own honest line rather than an empty
-// console. `default` covers Unknown plus any future phase the backend may emit
-// that the panel hasn't modelled yet — the screen stays informative regardless.
 function useNotStreamingCopy(phase: Phase, waitingForContainer: boolean): { icon: LucideIcon; title: string; body: string; spin?: boolean } {
   const { t } = useTranslation("servers");
   if (waitingForContainer) return { icon: HelpCircle, title: t("logs_unavailable_title"), body: t("logs_unavailable_body") };
@@ -76,9 +71,6 @@ function NotStreaming({ phase, waitingForContainer = false }: { phase: Phase; wa
   );
 }
 
-// FailedStartNotice heads the console of a server whose start failed: whether the
-// operator will try again on its own, and what the owner can do. The log below it
-// is the attempt that failed, which is what they need to find the cause.
 function FailedStartNotice({ failure, autoRestarts }: { failure: StartFailure; autoRestarts: number }) {
   const { t } = useTranslation("servers");
   const retrying = failure === "retrying";
@@ -124,18 +116,12 @@ function persistHistory(name: string, h: string[]): void {
 const MAX_HISTORY = 50;
 const HISTORY_KEY = (name: string) => `felis:cmd:history:${name}`;
 
-/** CommandInput is the §8 write-side console input: a one-line text field that
- *  sends an RCON command to the running server and displays its formatted reply.
- *  Enter sends; Up/Down cycle through persistent per-server command history.
- *  Only available when the server is Running (RCON reachable). */
 function CommandInput({ name }: { name: string }) {
   const { t } = useTranslation("servers");
   const [command, setCommand] = useState("");
   const [sending, setSending] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  // The last command's echo + the server's reply, rendered above the prompt the
-  // way a terminal does. The reply IS the result of a write: RCON returns text
-  // only, so dropping it would leave the user with no way to see what happened.
+  // Keep the raw command response visible because it contains the only confirmation or refusal.
   const [last, setLast] = useState<{ cmd: string; out: Formatted } | null>(null);
   const historyRef = useRef<string[]>(loadHistory(name));
   const cursorRef = useRef(-1);
@@ -241,10 +227,7 @@ export function ServerConsole() {
     [name],
     { coalesce: true },
   );
-  // The header, the power button and whether the stream attaches all follow the
-  // status, so it is reread: fast while the server is on its way somewhere (a
-  // wake or stop just sent, a pod starting, an automatic retry due), slow while
-  // nothing is due, which still catches an idle stop or a wake from the lobby.
+  // Poll faster during power transitions and retry backoff.
   const moving =
     !!data &&
     (data.phase === "Starting" ||
@@ -258,13 +241,7 @@ export function ServerConsole() {
   );
   const owned = canManage(isAdmin, mine, name);
 
-  // The read-side stream (spec §8) follows the running pod's log. A pod exists
-  // during BOTH Starting and Running — the operator marks Starting once the pod
-  // is up but RCON is not yet reachable (it only flips to Running after RCON
-  // readiness). Boot logs flow precisely in that Starting window, which is when a
-  // read most wants them, so the gate streams for both, not Running alone. A
-  // Failed start usually leaves its pod behind, and that pod's log is how the
-  // owner finds out why it failed, so Failed streams too.
+  // Stream Starting and Failed Pods as well as Running Pods so startup failures remain diagnosable.
   const streamable = data?.phase === "Running" || ((data?.phase === "Starting" || data?.phase === "Failed") && data.startup?.logsAvailable !== false);
   const failure = data ? startFailure(data) : null;
   const startup = data?.startup;

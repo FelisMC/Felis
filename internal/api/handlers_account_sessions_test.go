@@ -10,9 +10,7 @@ import (
 	"time"
 )
 
-// sessionsFixture signs steve (u1) in on a laptop and a phone and alex (u2) on
-// one device, each by a real cookie, so the caller's own session is whichever
-// one SessionAuth resolved from the request.
+// sessionsFixture authenticates real laptop and phone cookies so the current session follows each request.
 type sessionsFixture struct {
 	repo *fakeRepo
 	api  *API
@@ -35,8 +33,6 @@ func newSessionsFixture(t *testing.T) *sessionsFixture {
 	api.External = SessionAuth{Repo: repo, RootDomain: testRoot, Now: api.now}
 	now := api.now()
 	for tok, s := range map[string]*fakeSession{
-		// The laptop signed in by a proving door a minute ago, so the guarded
-		// changes below run without a reauth (reauth_test.go covers the gate).
 		laptopTok: {userID: "u1", lastSeen: now.Add(-10 * time.Minute), userAgent: "Firefox on Linux", clientIP: "203.0.113.5", reauthAt: now.Add(-time.Minute)},
 		phoneTok:  {userID: "u1", lastSeen: now.Add(-2 * time.Hour), userAgent: "Safari on iPhone", clientIP: "198.51.100.7"},
 		alexTok:   {userID: "u2", lastSeen: now.Add(-time.Minute)},
@@ -76,8 +72,6 @@ func TestMySessionsListsOwnDevicesAndMarksThisOne(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("listed %d sessions, want steve's 2 (alex's is not his): %+v", len(got), got)
 	}
-	// Most recently seen first; the phone is the device asking, though it was seen
-	// less recently than the laptop until this very request.
 	if got[0].TokenHash != hashCookie(phoneTok) || got[1].TokenHash != hashCookie(laptopTok) {
 		t.Fatalf("order = %s, %s; want phone (just touched) then laptop", got[0].UserAgent, got[1].UserAgent)
 	}
@@ -92,9 +86,6 @@ func TestMySessionsListsOwnDevicesAndMarksThisOne(t *testing.T) {
 	}
 }
 
-// A cookie that rode along beside some other credential is not the session the
-// caller signed in with, so nothing is marked current and "sign out the others"
-// keeps nothing back.
 func TestMySessionsMarkNothingWithoutASessionPrincipal(t *testing.T) {
 	f := newSessionsFixture(t)
 	f.api.External = staticExternal{p: &Principal{UserID: "u1", Role: "user"}}
@@ -166,8 +157,6 @@ func TestRevokeOtherSessionsKeepsThisOne(t *testing.T) {
 	}
 }
 
-// The admin route names the user in its path; a hash of someone else's session
-// under it must not end that session.
 func TestAdminRevokeSessionChecksWhoseItIs(t *testing.T) {
 	f := newSessionsFixture(t)
 	f.api.External = staticExternal{p: &Principal{UserID: "own", Role: "owner", ViaAdminAccess: true}}
@@ -223,8 +212,6 @@ func TestVerifyingANewEmailSignsOutOtherDevices(t *testing.T) {
 	}
 }
 
-// With no verified address before, no session was opened through one, so a
-// first verification signs nothing out; nor does proving the same address again.
 func TestVerifyingAFirstOrSameEmailKeepsOtherDevices(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -254,8 +241,6 @@ func TestVerifyingAFirstOrSameEmailKeepsOtherDevices(t *testing.T) {
 	}
 }
 
-// The change has committed by the time the other sessions are signed out; a
-// failure there must not report the change itself as failed.
 func TestPasskeyRemovalSucceedsWhenSigningOutOthersFails(t *testing.T) {
 	f := newSessionsFixture(t)
 	f.repo.passkeyCreds["a"] = PasskeyCredential{ID: "a", UserID: "u1", CredentialID: "c-a", CreatedAt: frozenNow}

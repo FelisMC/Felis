@@ -16,18 +16,6 @@ import { requestAssertion } from "@/lib/passkey";
 import { InlineError } from "@/components/MessageLine";
 import { formatCountdown, opLoginDeadline, useOpLoginPoll } from "@/lib/opLoginPoll";
 
-// Login is the passwordless sign-in (spec §B). Passkey and email-OTP are the
-// primary doors; a first-time player arrives with an in-game Bind Code (/link);
-// staff use the vouched op-login door (email code + in-game approval). No password
-// exists anywhere in the product. On success the API sets an HttpOnly session
-// cookie (invisible here); we then refresh the tier context so the gate
-// re-evaluates and land on the dashboard.
-//
-// Reaching this page already-authenticated (e.g. typing /login while signed in)
-// short-circuits to the dashboard rather than showing the form. RequireAuth sends
-// a signed-out visitor here with ?next= (the page they were on) and, when their
-// session ended under an open page, state.sessionEnded, which shows why; after
-// signing in they land back on that page.
 export function Login() {
   const { loading, identity, refresh } = useTier();
   const navigate = useNavigate();
@@ -54,9 +42,7 @@ export function Login() {
   // Where Minecraft players join for a code; empty until config.json is read, or
   // when it cannot be.
   const [joinAddr, setJoinAddr] = useState("");
-  // Whether `felis setup` has bound an Owner: undefined while asking, null when the
-  // answer could not be had (the doors show as usual), false on an unclaimed install,
-  // where every door is off and the page explains how to bind one instead.
+  // Owner detection distinguishes loading, unavailable, and confirmed-unclaimed installations.
   const [ownerBound, setOwnerBound] = useState<boolean | null | undefined>(undefined);
 
   // Countdown timer for OTP resend
@@ -95,9 +81,7 @@ export function Login() {
   const opPoll = useOpLoginPoll(opRequestId, opDeadline);
   const opApproved = opPoll.approved;
 
-  // Don't flash the form while the boot /me is still in flight: a signed-in visitor
-  // would briefly see a login form before being redirected away. Nor while the Owner
-  // probe is: an unclaimed install would flash doors that cannot work.
+  // Wait for identity and owner detection before displaying sign-in choices.
   if (loading || (!identity && ownerBound === undefined)) {
     return (
       <AuthLayout title={t("common:brand_name")}>
@@ -594,10 +578,6 @@ export function Login() {
   );
 }
 
-// NoOwnerNotice replaces the doors on an install `felis setup` has not created an Owner
-// on. Local sign-in is off until it does, so every door would answer "disabled"; this
-// says why and walks through provisioning in the server's terminal plus
-// the browser handoff produced by the host setup console.
 function NoOwnerNotice({ onBound }: { onBound: () => void }) {
   const { t } = useTranslation("auth");
   const [checking, setChecking] = useState(false);

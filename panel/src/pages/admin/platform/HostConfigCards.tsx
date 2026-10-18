@@ -32,9 +32,6 @@ function Choice<T extends string>({ value, options, onChange, disabled, label, d
   );
 }
 
-/** AccessCard changes how the panel is reached (directly, behind the Owner's reverse
- *  proxy, or through a Cloudflare tunnel with Access in front of the admin console) and
- *  moves the install to another root domain. */
 export function AccessCard({ overview }: { overview: Overview }) {
   const { t } = useTranslation("admin");
   const host = useHostTask(["connection-configure", "domain-check", "domain-set"]);
@@ -253,9 +250,7 @@ export function ProxyCard({ overview }: { overview: Overview }) {
   );
 }
 
-/** ConvergeCard fills in what a newer release added to servers created before it: the
- *  system servers' new fields and idle auto-stop on old user servers, and, when asked,
- *  RCON on user servers that predate it. */
+// Preserve existing server settings; filling missing RCON configuration is opt-in.
 export function ConvergeCard() {
   const { t } = useTranslation("admin");
   const host = useHostTask(["converge"]);

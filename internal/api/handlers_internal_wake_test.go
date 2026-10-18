@@ -10,12 +10,6 @@ import (
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 )
 
-// The internal-face wake (spec §9.1, §14) is what velocity drives for
-// domain-autostart: service-token auth, the joining player identified by their
-// verified online-mode UUID rather than a web Principal. These exercise the same
-// autostartPolicy gate as the external wake but keyed by UUID, plus the shared
-// cooldown and the phase reported back so velocity can decide whether to wait.
-
 const wakeUUID = "11111111-2222-3333-4444-555555555555"
 
 func newInternalWakeAPI(policy string) (*API, *fakeCluster) {
@@ -153,10 +147,6 @@ func TestInternalWakeAutostartGate(t *testing.T) {
 	})
 }
 
-// A running server is joined, not woken: the menu and /felis go wake before they
-// move anyone, and a friend who is not the owner of a running ownerOnly server was
-// told "you may not start it". Only an up-and-staying-up server skips the gate; one
-// that is on its way down is a real start and stays policy-gated.
 func TestInternalWakeOfRunningServerIsNotGated(t *testing.T) {
 	body := `{"mc_uuid":"` + wakeUUID + `"}`
 	running := func(desired v1alpha1.DesiredState) (*API, *fakeCluster, *fakeRepo) {
@@ -221,11 +211,6 @@ func TestInternalWakeCooldownIsShared(t *testing.T) {
 	}
 }
 
-// TestInternalWakeRunningCap proves the §9.1 cap is shared by the velocity-driven
-// internal wake, not only the web wake: with one slot and another server already
-// desired-Running, a join-triggered wake of a stopped server is held with 503
-// at_capacity and leaves desiredState untouched. velocity reads this as "cluster
-// full, hold the player", distinct from the 429 cooldown's "already waking".
 func TestInternalWakeRunningCap(t *testing.T) {
 	api, cl := newInternalWakeAPI("public")
 	api.MaxRunningServers = 1

@@ -5,15 +5,6 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * ExperienceConfigTest pins that a settings file broken by hand (in the file manager)
- * costs only the customizations: the login gate and the lobby run on the defaults with one
- * warning, instead of switching the login flow or the lobby's protections off.
- *
- * <p>Run: {@code javac -d <out> shared/src/main/java/best/lolicon/felis/link/*.java
- * shared/test/best/lolicon/felis/link/ExperienceConfigTest.java && java -cp <out>
- * best.lolicon.felis.link.ExperienceConfigTest}.
- */
 public final class ExperienceConfigTest {
 
     private static int checks;

@@ -9,28 +9,9 @@ import (
 	"time"
 )
 
-// op.console STAFF login tests (spec §B op-login). The two-factor door's load-bearing
-// properties, in the order the flow meets them:
-//
-//   - Two factors, both required. finish mints a session only when the mailed op_login
-//     code verifies AND an in-game admin has approved the request; neither alone works.
-//   - Neutral start. A non-staff or unknown address gets a 202 with a plausible but
-//     non-persisted request_id and nothing mailed, so start is not a staff oracle.
-//   - Neutral status. An unknown/expired/consumed handle reads approved:false exactly
-//     like a real request awaiting approval, so a fabricated handle is not an oracle.
-//   - Uniform finish failure. Unknown handle / not-approved / wrong code / lost race
-//     all collapse to one op_login_invalid envelope; an early-but-correct code is
-//     preserved (approval is read before the code is consumed), and a wrong code costs
-//     an attempt without burning the approval.
-//   - Admin-only approval. Only a linked role=admin UUID may vouch; the API's own
-//     user table is the sole gate (velocity's command itself is unprivileged).
-
 const opUUID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" // the seeded admin's linked in-game UUID
 
-// seedOpLoginAPI wires the op.console door: local sessions enabled and a single staff
-// admin "op" (id a1) whose proven address is stored in MIXED case (so the mint-against-
-// stored-casing contract is exercised by default) and whose in-game UUID opUUID is
-// linked, so the admin can act as an in-game approver.
+// seedOpLoginAPI uses mixed-case stored staff email and a linked in-game UUID for approval.
 func seedOpLoginAPI(t *testing.T) (*API, *fakeRepo, *captureMailer) {
 	t.Helper()
 	repo := newFakeRepo()
@@ -46,9 +27,6 @@ func seedOpLoginAPI(t *testing.T) (*API, *fakeRepo, *captureMailer) {
 	return api, repo, mailer
 }
 
-// startOp / statusOp / finishOp drive the three public browser calls; approveOp drives
-// the internal in-game vouch. They return the recorder so each test asserts its own
-// codes and bodies.
 func startOp(eh http.Handler, email string) *httptest.ResponseRecorder {
 	return do(eh, "POST", "/api/v1/auth/op-login/start", `{"email":"`+email+`"}`, jsonHeader)
 }
@@ -64,11 +42,6 @@ func approveOp(ih http.Handler, id, approverUUID, username string) *httptest.Res
 		`{"approver_uuid":"`+approverUUID+`","username":"`+username+`"}`, nil)
 }
 
-// TestOpLoginVertical walks the whole two-factor slice end to end: start mails a code
-// (purpose op_login) to the staff address of record and mints a pending request; the
-// browser polls status until an in-game admin approves; finish redeems code+approval
-// into the same host-only session the other doors mint. All three legs audit by the
-// account's username, and the request is single-use.
 func TestOpLoginVertical(t *testing.T) {
 	api, repo, mailer := seedOpLoginAPI(t)
 	eh := api.ExternalHandler()
@@ -117,8 +90,6 @@ func TestOpLoginVertical(t *testing.T) {
 		t.Fatalf("status before approval: approved = %v, want false", sb["approved"])
 	}
 
-	// 3) finish before approval is REFUSED and must NOT burn the code (approval is read
-	// before the code is consumed).
 	if w := finishOp(eh, reqID, code); w.Code != http.StatusBadRequest || decodeErr(t, w) != "op_login_invalid" {
 		t.Fatalf("finish before approval: code = %d body %s, want 400 op_login_invalid", w.Code, w.Body.String())
 	}
@@ -173,9 +144,6 @@ func TestOpLoginVertical(t *testing.T) {
 	}
 }
 
-// TestOpLoginOwnerAdmitted pins that the staff door admits the Owner (role=owner),
-// not just plain admins: the Owner is the primary op.console identity, so a
-// role check of "admin only" would strand it outside its own console.
 func TestOpLoginOwnerAdmitted(t *testing.T) {
 	repo := newFakeRepo()
 	repo.settings[LocalAuthEnabledKey] = []byte("true")
@@ -211,10 +179,6 @@ func TestOpLoginOwnerAdmitted(t *testing.T) {
 	}
 }
 
-// TestOpLoginStartNeutral pins the start-side anti-enumeration contract: op.console is
-// the STAFF door, so a non-admin account AND an unknown address both get a 202 carrying
-// a request_id + expires_at and mint/mail nothing, and a re-probe inside the cooldown
-// does the same — so neither the response nor the throttle tells a caller who is staff.
 func TestOpLoginStartNeutral(t *testing.T) {
 	check := func(t *testing.T, seed func(*fakeRepo), email, wantReason, wantUser string) {
 		t.Helper()
@@ -270,11 +234,6 @@ func TestOpLoginStartNeutral(t *testing.T) {
 	})
 }
 
-// TestOpLoginStartByAStranger is the case of someone who knows a staff address and
-// keeps starting logins for it. Their start mails the code to the staff inbox; the
-// staff member's own start inside the cooldown still gets a request of its own
-// (nothing new mailed, same expiry as the live code), and that inbox code finishes
-// it. A start after the cooldown mails a second code without cancelling the first.
 func TestOpLoginStartByAStranger(t *testing.T) {
 	api, repo, mailer := seedOpLoginAPI(t)
 	clock := time.Unix(1_700_000_000, 0)
@@ -328,10 +287,6 @@ func TestOpLoginStartByAStranger(t *testing.T) {
 	}
 }
 
-// TestOpLoginStatusNeutral proves status is never an enumeration oracle: it returns
-// approved:true ONLY for a genuinely approved, live, unconsumed request, and
-// approved:false (never 404) for an unknown, expired, denied, or consumed handle — all
-// indistinguishable from a real request still awaiting approval.
 func TestOpLoginStatusNeutral(t *testing.T) {
 	api, repo, _ := seedOpLoginAPI(t)
 	eh := api.ExternalHandler()
@@ -353,18 +308,12 @@ func TestOpLoginStatusNeutral(t *testing.T) {
 			t.Errorf("status %q: approved = true, want false (must not be an oracle)", id)
 		}
 	}
-	// Only the genuinely-approved live request reads true.
+
 	if acctBody(t, statusOp(eh, "live"))["approved"] != true {
 		t.Error("status of an approved live request must read approved:true")
 	}
 }
 
-// TestOpLoginFinishUniform is the redeem-side failure matrix. The anchor is uniformity:
-// an unknown handle and a wrong code for an approved request answer with the SAME
-// (code, message) envelope, so finish never doubles as an oracle. Two lifecycle
-// invariants are pinned alongside: a correct code submitted BEFORE approval is
-// preserved (approval read before consume), and a wrong code costs an attempt without
-// burning the approval.
 func TestOpLoginFinishUniform(t *testing.T) {
 	t.Run("unknown handle and wrong code are indistinguishable", func(t *testing.T) {
 		api, _, mailer := seedOpLoginAPI(t)
@@ -394,7 +343,6 @@ func TestOpLoginFinishUniform(t *testing.T) {
 		reqID := acctBody(t, startOp(eh, "op@example.net"))["request_id"].(string)
 		code := mailer.code
 
-		// Finish before approval: refused, and the code is NOT consumed.
 		if w := finishOp(eh, reqID, code); w.Code != http.StatusBadRequest || decodeErr(t, w) != "op_login_invalid" {
 			t.Fatalf("early finish: code = %d body %s, want 400 op_login_invalid", w.Code, w.Body.String())
 		}
@@ -439,9 +387,6 @@ func TestOpLoginFinishUniform(t *testing.T) {
 	})
 }
 
-// An account an admin retires between the approval and the finish signs in
-// nowhere: finish answers the uniform failure, sets no cookie, stores no session,
-// and leaves the code as it was.
 func TestOpLoginFinishRefusesRetiredAccount(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -498,10 +443,6 @@ func TestOpLoginFinishRefusesRetiredAccount(t *testing.T) {
 	})
 }
 
-// TestOpLoginApproveGate pins the in-game approval gate: only a linked staff UUID
-// (role admin or owner) may vouch (all refusals share one 403 not_admin), a
-// missing/no-longer-pending request is 404, and a bare request without an
-// approver UUID is 400.
 func TestOpLoginApproveGate(t *testing.T) {
 	plantPending := func(repo *fakeRepo) string {
 		repo.opLogins["r1"] = &fakeOpLogin{
@@ -574,9 +515,6 @@ func TestOpLoginApproveGate(t *testing.T) {
 	})
 }
 
-// TestOpLoginPendingList covers the internal push list: live pending requests are
-// returned oldest first, carrying the joined username, and an approved or expired
-// request is absent.
 func TestOpLoginPendingList(t *testing.T) {
 	api, repo, _ := seedOpLoginAPI(t)
 	ih := api.InternalHandler()
@@ -609,9 +547,6 @@ func TestOpLoginPendingList(t *testing.T) {
 	}
 }
 
-// TestOpLoginGates covers the shared front doors: the fail-closed local-auth toggle on
-// all three public legs, the CSRF Content-Type guard on the credential-minting POSTs,
-// and the input gates that must reject before any lookup or mint.
 func TestOpLoginGates(t *testing.T) {
 	t.Run("local auth disabled -> 403 on start/status/finish", func(t *testing.T) {
 		api := newTestAPI(newFakeRepo(), newFakeCluster()) // no LocalAuthEnabledKey: fails closed
@@ -664,9 +599,6 @@ func TestOpLoginGates(t *testing.T) {
 	})
 }
 
-// TestOpLoginFaceSeparation enforces the two-face split: the three public browser legs
-// must 404 on the internal (service-token) face, and the two internal in-game legs must
-// 404 on the external (session) face.
 func TestOpLoginFaceSeparation(t *testing.T) {
 	api, _, _ := seedOpLoginAPI(t)
 	eh, ih := api.ExternalHandler(), api.InternalHandler()
@@ -698,9 +630,6 @@ func showOp(ih http.Handler, id, approverUUID string) *httptest.ResponseRecorder
 	return do(ih, "GET", "/api/v1/internal/op-login/"+id+"?approver_uuid="+approverUUID, "", nil)
 }
 
-// TestOpLoginShowsWhoIsWaiting pins what the in-game admin sees before vouching:
-// start records where the sign-in came from, and the show read returns the account,
-// its address and that origin to a linked staff approver only.
 func TestOpLoginShowsWhoIsWaiting(t *testing.T) {
 	api, repo, _ := seedOpLoginAPI(t)
 	eh, ih := api.ExternalHandler(), api.InternalHandler()
@@ -774,10 +703,6 @@ func TestOpLoginShowsWhoIsWaiting(t *testing.T) {
 	})
 }
 
-// TestOpLoginApproveNamesTheAccount pins the confirmation: the admin must type the
-// name of the account the request is for. A different name leaves the request
-// pending and is audited; the matching name (any case) approves, and the response
-// says whose sign-in was approved.
 func TestOpLoginApproveNamesTheAccount(t *testing.T) {
 	api, repo, _ := seedOpLoginAPI(t)
 	ih := api.InternalHandler()

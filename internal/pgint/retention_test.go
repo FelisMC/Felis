@@ -28,9 +28,6 @@ func rowExists(t *testing.T, q string, args ...any) bool {
 	return ok
 }
 
-// Prune deletes each sign-in row a month after it was spent (expired, used or
-// revoked) and keeps the ones spent more recently and the live ones; audit rows
-// go once they are older than the policy's retention.
 func TestPruneDropsRowsSpentLongerThanGrace(t *testing.T) {
 	ctx := context.Background()
 	now := mustNow()
@@ -148,8 +145,6 @@ func TestPruneDropsRowsSpentLongerThanGrace(t *testing.T) {
 	}
 }
 
-// With no audit retention every audit row stays, and a table with more spent rows
-// than one DELETE takes is emptied of them in the same run.
 func TestPruneKeepsAuditForeverAndDrainsLargeBacklogs(t *testing.T) {
 	ctx := context.Background()
 	now := mustNow()
@@ -183,8 +178,6 @@ func TestPruneKeepsAuditForeverAndDrainsLargeBacklogs(t *testing.T) {
 
 var idRE = regexp.MustCompile(`"id":\d+`)
 
-// ExportAudit writes the rows inside [since, until) as JSON lines, oldest first,
-// with the optional columns left out when empty.
 func TestExportAuditWritesTheWindow(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "export")
@@ -205,7 +198,7 @@ func TestExportAuditWritesTheWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExportAudit: %v", err)
 	}
-	// Row ids are serial; blank them to compare the rest literally.
+	// Row ids are serial; blank them to compare the rest.
 	got := idRE.ReplaceAllString(buf.String(), `"id":0`)
 	want := `{"id":0,"created_at":"2031-03-04T01:00:00Z","actor":"internal","source":"internal:velocity","action":"server.wake"}` + "\n" +
 		`{"id":0,"created_at":"2031-03-04T02:00:00Z","actor":"alice@example.net","actor_user_id":"` + u.ID + `","source":"external","action":"server.patch","server_name":"survival","request_id":"exp-` + tag + `","client_ip":"192.0.2.7","user_agent":"curl/8","payload":{"display_name":"Survival"}}` + "\n"

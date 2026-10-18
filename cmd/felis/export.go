@@ -25,30 +25,7 @@ import (
 	"felis.lolicon.best/internal/worldexport"
 )
 
-// cmdExport is the in-Pod entrypoint the export Job runs. internal/worldexport
-// renders a Pod whose command is `/usr/local/bin/felis export`. It archives the
-// mounted world, re-streams one archive from the mounted backup store, or sends
-// one file or folder of the world, PUTs it to felis-api's internal face, and
-// exits once felis-api says the owner's browser got all of it. It is NOT a
-// user-facing command and is never invoked by hand.
-//
-// Like cmdRestore it holds no database credentials and never calls config.Load:
-// felis-api made every decision (who may download what, that the server is
-// stopped, which archive) before the Job existed. Its input is the flags below
-// plus the one-time upload token in the environment, which opens this one
-// export and nothing else.
-//
-// Whatever leaves goes through the same guards as the file editor
-// (fileedit.Guard): the proxy forwarding secret, which every server on the
-// install shares, never leaves, and server.properties leaves with its RCON
-// password redacted. A backup is stored with both, since a restore must bring
-// the world back whole, so it is filtered on the way out rather than handed
-// over as stored.
-//
-// Exit status: 0 once felis-api answers 204 (the download completed), 1 when
-// the export could not be read or handed over, a backup failed its digest
-// check, or felis-api refused it (the browser never came or left early), 2 on
-// bad flags. The last stderr line reaches the export's status and the jobs list.
+// Redact secrets on export; backups retain them for restoration.
 func cmdExport(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("export", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -109,16 +86,10 @@ func cmdExport(args []string, stdout, stderr io.Writer) int {
 // archiveType is the content type of a world or backup export.
 const archiveType = "application/gzip"
 
-// errBackupDigest fails a backup export whose stored archive no longer hashes
-// to what was recorded when it was written.
+// errBackupDigest fails a backup export whose stored archive does not hash to the digest recorded when it was written.
 var errBackupDigest = errors.New("the backup archive does not match the sha256 recorded when it was written")
 
-// exportBackup re-streams one stored archive through the export guards
-// (backup.FilterTarGz with archiveFilter). Its length changes on the way, so it
-// goes chunked. With want set, the stored bytes are hashed as they are read,
-// and FilterTarGz reads them to their end before it closes its own archive: a
-// mismatch aborts the upload while what felis-api has passed on still lacks
-// its end, so the browser never keeps a complete-looking corrupt file.
+// Hash the entire source archive and abort upload before completion on a digest mismatch.
 func exportBackup(ctx context.Context, target, token, ref, root, want string, stdout io.Writer) error {
 	// Defense in depth, as in cmdRestore: the ref comes from felis-api, but this
 	// process opens it, so it confirms the ref stays on the backup mount.
@@ -170,9 +141,7 @@ func exportWorld(ctx context.Context, target, token, root string, stdout io.Writ
 	return err
 }
 
-// exportFiles sends one file or folder of the world (fileedit.OpenDownload): a
-// file with its exact length, a folder as a zip made as it streams. dir is
-// what the owner saw at path when they asked.
+// Stream files at their known length and directories as ZIPs; dir records the caller's observed type.
 func exportFiles(ctx context.Context, target, token, root, path string, dir bool, stdout io.Writer) error {
 	d, err := fileedit.OpenDownload(root, path, dir)
 	if err != nil {
@@ -230,14 +199,7 @@ func (d *digestReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// streamExport runs write straight into the body of the PUT, hashing it as it
-// goes. Once write has finished, the SHA-256 of all it wrote rides the
-// request's trailer (worldexport.DigestTrailer), and felis-api holds back the
-// last bytes from the browser until what it received hashes the same. An error
-// from write aborts the chunked body before the trailer, and felis-api then
-// cuts the browser's download off rather than end it; that error is the one
-// reported, since the PUT's own error only wraps it. When the PUT ends first,
-// write is stopped.
+// Abort chunked uploads on producer errors; the API verifies the digest before releasing the final bytes.
 func streamExport(ctx context.Context, target, token, contentType string, size int64, write func(io.Writer) error) error {
 	pr, pw := io.Pipe()
 	trailer := http.Header{worldexport.DigestTrailer: nil}
@@ -261,16 +223,7 @@ func streamExport(ctx context.Context, target, token, contentType string, size i
 	return err
 }
 
-// putExport PUTs the export to felis-api. There is no retry: the token opens
-// the export once, so a second attempt could only be refused. Redirects are
-// refused because the request carries the token and the internal face never
-// redirects. felis-api answers only after the whole download, which the Job's
-// activeDeadlineSeconds bounds, so the header timeout is a backstop for a
-// wedged endpoint and not the real limit.
-//
-// The body always goes chunked, which is what lets it end with a trailer; a
-// size the Job knows (-1 when it does not) goes as worldexport.LengthHeader in
-// place of Content-Length.
+// Upload tokens are single-use: reject redirects and carry known length separately from chunked framing.
 func putExport(ctx context.Context, target, token, contentType string, body io.Reader, size int64, trailer http.Header) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, target, body)
 	if err != nil {

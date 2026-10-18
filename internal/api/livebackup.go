@@ -9,49 +9,22 @@ import (
 	"time"
 )
 
-// Live restore points: a backup of a server that keeps running, after the snapshot mode
-// of Proxmox VE, with the game's own save system standing in for a filesystem snapshot.
-//
-//  1. felis-api admits the backup (LiveBackupCluster.AcquireLiveBackup) and records the
-//     freeze on the server, so a restart of felis-api still finishes it.
-//  2. Over RCON it turns saving off (save-off) and writes everything in memory to disk
-//     (save-all flush): the world on disk is complete and stays still.
-//  3. The backup Job's init container copies the world into a scratch volume on the
-//     same node (felis stage-world; a reflink where the filesystem has them).
-//  4. The moment that copy step exits, settleLiveBackups turns saving back on
-//     (save-on). The archive, its checksum and its read-back then run from the copy
-//     while the game plays on.
-//
-// So players see saving paused only for the copy, seconds for a few GB. What the freeze
-// costs: a crash during it loses what changed since the flush, as any crash between two
-// autosaves does, and chunks stay loaded meanwhile. A game that restarted mid-copy has
-// saved on its way down, so its copy is dropped. Plugin databases written outside the
-// save system (SQLite, H2) are copied as they are, not as of the flush.
+// Live backup pauses game saving only for the world copy; plugin databases outside the save system are not transactionally snapshotted.
 
-// liveFreezeCap is the longest a game's saving stays off: a copy still running then is
-// given up, and saving comes back on.
 const liveFreezeCap = 5 * time.Minute
 
-// liveFlushTimeout bounds save-all flush on a large world.
 const liveFlushTimeout = 2 * time.Minute
 
-// liveUnrecordedGrace is how long a freeze may go without its Job recorded before the
-// settle loop treats felis-api as having died in between.
 const liveUnrecordedGrace = time.Minute
 
-// LiveBackuper enqueues the backup Job of a running server and returns its name
-// (backupjob.Backuper.BackupLive). reason is the world_backups reason: empty for an
-// owner's own backup, backupjob.ReasonScheduled or backupjob.ReasonReplica.
+// LiveBackuper uses an empty reason for manual backups and scheduled or replica for background copies.
 type LiveBackuper interface {
 	BackupLive(ctx context.Context, serverName, formerOwner, reason string) (string, error)
 }
 
-// errLiveBackupUnavailable answers when this install cannot back up a running server:
-// no console, no live Backuper, or a cluster without the support.
 var errLiveBackupUnavailable = newError(http.StatusConflict, "not_stopped",
 	"stop the server before backing up its world")
 
-// errLiveBackupConsole answers when the game did not take the freeze over RCON.
 var errLiveBackupConsole = newError(http.StatusServiceUnavailable, "live_backup_console",
 	"the server did not respond over its console, so it could not be backed up while running; try again or stop it first")
 
@@ -64,8 +37,7 @@ func (a *API) liveBackupParts() (LiveBackupCluster, LiveBackuper, bool) {
 	return lc, lb, ok
 }
 
-// startLiveBackup freezes a running server's world and enqueues the Job copying it. On
-// any failure saving is back on and nothing holds the world.
+// startLiveBackup restores saving and releases the world on any startup failure.
 func (a *API) startLiveBackup(ctx context.Context, name, formerOwner, reason string) error {
 	lc, lb, ok := a.liveBackupParts()
 	if !ok {
@@ -109,8 +81,7 @@ func (a *API) startLiveBackup(ctx context.Context, name, formerOwner, reason str
 	}
 	f.Job, f.WasOff = job, wasOff
 	if err := lc.SaveLiveBackup(ctx, f); err != nil {
-		// Without the record nothing would turn saving back on after the copy; thaw now
-		// and drop the Job, whose copy could then catch the game writing.
+		// Without a persisted Job record recovery cannot thaw safely; thaw immediately and discard the potentially torn copy.
 		if derr := lc.DeleteLiveBackupJob(context.Background(), name, job); derr != nil {
 			log.Printf("api: live backup of %s: could not drop Job %s: %v", name, job, derr)
 		}
@@ -120,15 +91,12 @@ func (a *API) startLiveBackup(ctx context.Context, name, formerOwner, reason str
 	return nil
 }
 
-// savingWasOff reads save-off's reply: "Saving is already turned off" names a world an
-// owner had already stopped saving, which thawing must leave as it was.
+// savingWasOff preserves an owner's existing save-off state when thawing.
 func savingWasOff(reply string) bool {
 	return strings.Contains(strings.ToLower(reply), "already")
 }
 
-// SettleLiveBackups turns saving back on for each frozen world whose copy is done, whose
-// game restarted, or whose freeze has lasted liveFreezeCap; a copy that may be torn is
-// dropped. cmd/felis runs it every couple of seconds.
+// SettleLiveBackups thaws on copy completion, game restart or freeze expiry and discards potentially torn copies.
 func (a *API) SettleLiveBackups(ctx context.Context) error {
 	lc, ok := a.Cluster.(LiveBackupCluster)
 	if !ok || a.Console == nil {
@@ -157,8 +125,7 @@ func (a *API) settleLiveBackup(ctx context.Context, lc LiveBackupCluster, f Live
 	running := p.JobExists && !p.JobFinished
 	switch {
 	case f.Job == "":
-		// felis-api died between creating the Job and recording it, or the record is
-		// unreadable: whatever Job exists copies an unfrozen world after the thaw.
+		// An unrecorded Job may copy after thaw; discard it because the source can change.
 		if age < liveUnrecordedGrace {
 			return nil
 		}
@@ -166,14 +133,13 @@ func (a *API) settleLiveBackup(ctx context.Context, lc LiveBackupCluster, f Live
 			return err
 		}
 	case !samePod:
-		// The game restarted: it saved on its way down, so a copy still going is torn.
+		// A restart saves during shutdown, invalidating any copy still in progress.
 		if running && !p.StagingDone {
 			if err := lc.DeleteLiveBackupJob(ctx, f.Server, f.Job); err != nil {
 				return err
 			}
 		}
 	case p.StagingDone || !running:
-		// The copy is done, or the Job ended without finishing it: the world may move.
 	case age >= liveFreezeCap:
 		log.Printf("api: live backup of %s: the copy took longer than %s; dropping it so the world saves again", f.Server, liveFreezeCap)
 		if err := lc.DeleteLiveBackupJob(ctx, f.Server, f.Job); err != nil {
@@ -187,7 +153,6 @@ func (a *API) settleLiveBackup(ctx context.Context, lc LiveBackupCluster, f Live
 		_, err := a.Console.RunCommand(on, f.Server, "save-on")
 		cancel()
 		if err != nil {
-			// Keep the freeze: the next pass tries again.
 			return err
 		}
 	}

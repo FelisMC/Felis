@@ -11,9 +11,7 @@ import (
 	"felis.lolicon.best/internal/api"
 )
 
-// setDefaultQuota stores the Owner's default quota the way PUT
-// /settings/self-service does, and removes it when the test ends so the rest
-// of the suite keeps the unlimited claims of users without a quota.
+// setDefaultQuota stores the default quota as PUT /settings/self-service does and removes it when the test ends.
 func setDefaultQuota(t *testing.T, raw string) {
 	t.Helper()
 	ctx := context.Background()
@@ -33,9 +31,6 @@ func seedOwnerless(t *testing.T, name string, memMB int) {
 	}
 }
 
-// A user with no quota of their own creates nothing while the default quota is
-// off, and within it once it is on: one server for a one-server default however
-// many creates race, and claims and resizes held to the same caps.
 func TestSeedOwnedServerUnderTheDefaultQuota(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "self")
@@ -105,7 +100,6 @@ func TestSeedOwnedServerUnderTheDefaultQuota(t *testing.T) {
 	}
 }
 
-// A user's own quota wins over the default, whatever the default says.
 func TestSeedOwnedServerUnderTheUsersOwnQuota(t *testing.T) {
 	ctx := context.Background()
 	setDefaultQuota(t, `{"enabled":true,"max_servers":0,"max_cpu_milli":null,"max_memory_mb":null,"max_storage_gb":null}`)

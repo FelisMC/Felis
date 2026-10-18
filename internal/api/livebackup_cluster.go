@@ -16,52 +16,38 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// LiveFreeze is a running server whose saving felis-api has turned off for a live
-// restore point (livebackup.go). It lives in the server's AnnotationLiveBackup, so a
-// felis-api restart picks the freeze up again and still turns saving back on.
+// LiveFreeze persists in AnnotationLiveBackup so the API can restore saving after a restart.
 type LiveFreeze struct {
 	Server string `json:"-"`
-	// Job is the backup Job copying the world; empty until it is created.
+	// Job is empty until creation.
 	Job     string    `json:"job,omitempty"`
 	Started time.Time `json:"started"`
-	// PodUID and Restarts name the game process that was frozen: a different one has
-	// saved on its way down, so a copy still running may be torn.
+	// PodUID and Restarts identify the frozen game process; a changed process invalidates unfinished copies.
 	PodUID   string `json:"podUID"`
 	Restarts int32  `json:"restarts"`
-	// WasOff records that saving was already off before the freeze (an owner turned it
-	// off), so thawing leaves it off.
+	// WasOff preserves an owner's preexisting save-off state during thaw.
 	WasOff bool `json:"wasOff,omitempty"`
 }
 
-// LiveProgress is how far a freeze's backup has come.
 type LiveProgress struct {
-	// PodUID and Restarts describe the game pod now; PodUID is empty when it is gone.
-	PodUID   string
-	Restarts int32
-	// JobExists, StagingDone and JobFinished follow the backup Job: its copy step has
-	// exited (either way), or the whole Job has.
+	// PodUID is empty when the game pod is gone.
+	PodUID                              string
+	Restarts                            int32
 	JobExists, StagingDone, JobFinished bool
 }
 
-// LiveBackupCluster is the cluster side of live restore points.
 type LiveBackupCluster interface {
-	// AcquireLiveBackup admits a live backup of a running, ready server that nothing
-	// else holds, and records the freeze with the world lock, under the
-	// resourceVersion it checked.
+	// AcquireLiveBackup atomically records the freeze and locks the ready, running world's checked resourceVersion.
 	AcquireLiveBackup(ctx context.Context, name string) (LiveFreeze, error)
-	// SaveLiveBackup records the freeze's Job and drops the admission lock: the Job
-	// holds the world from here on.
+	// SaveLiveBackup hands the volume hold from the admission lock to the recorded Job.
 	SaveLiveBackup(ctx context.Context, f LiveFreeze) error
-	// ClearLiveBackup forgets the freeze, and the admission lock if it is still there.
 	ClearLiveBackup(ctx context.Context, name string) error
 	ListLiveBackups(ctx context.Context) ([]LiveFreeze, error)
 	LiveBackupProgress(ctx context.Context, f LiveFreeze) (LiveProgress, error)
-	// DeleteLiveBackupJob drops a live backup Job and its pod; an empty job drops every
-	// live backup Job of the server.
+	// DeleteLiveBackupJob deletes every live backup Job for the server when job is empty.
 	DeleteLiveBackupJob(ctx context.Context, name, job string) error
 }
 
-// ErrNotRunning refuses a live backup of a server that is not up and ready.
 var ErrNotRunning = errors.New("server is not running")
 
 func (k *K8sCluster) AcquireLiveBackup(ctx context.Context, name string) (LiveFreeze, error) {
@@ -159,7 +145,7 @@ func (k *K8sCluster) ListLiveBackups(ctx context.Context) ([]LiveFreeze, error) 
 		}
 		var f LiveFreeze
 		if err := json.Unmarshal([]byte(raw), &f); err != nil {
-			// Unreadable: settle it as a freeze of no known Job, which thaws it.
+			// Treat unreadable state as a freeze without a recorded Job so recovery thaws it.
 			f = LiveFreeze{}
 		}
 		f.Server = ms.Name
@@ -222,7 +208,7 @@ func (k *K8sCluster) DeleteLiveBackupJob(ctx context.Context, name, job string) 
 	return nil
 }
 
-// gamePod is the server's game pod, nil when it has none.
+// gamePod returns nil when the server has no pod.
 func (k *K8sCluster) gamePod(ctx context.Context, name string) (*corev1.Pod, error) {
 	var pods corev1.PodList
 	if err := k.c.List(ctx, &pods, client.InNamespace(k.namespace), client.MatchingLabels{

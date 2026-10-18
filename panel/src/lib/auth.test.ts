@@ -2,12 +2,6 @@ import { describe, it, expect } from "vitest";
 import { deriveAuth, isUnauthorized, loginReturnPath } from "./auth";
 import type { Identity } from "./types";
 
-// deriveAuth is the load-bearing auth decision: it decides who is bounced to /login
-// and — critically — who is KEPT in
-// the app despite a /me failure. The one distinction that must never blur is a true
-// 401 (no session → login) versus any other failure (transient → stay functional),
-// because mistaking the latter for the former would log out a healthy Zero-Trust
-// principal on a single flaky request. These cases pin every branch.
 
 const admin: Identity = {
   user_id: "u1",
@@ -62,7 +56,7 @@ describe("deriveAuth", () => {
   });
 
   it("fails closed on a malformed identity missing is_admin", () => {
-    // Mirrors the wire-shape trap: absent fields are undefined, not thrown access.
+    // Absent fields are undefined, not a thrown access.
     const partial = { user_id: "u", email: "e", role: "user" } as unknown as Identity;
     const s = deriveAuth(partial, null, false);
     expect(s.isAdmin).toBe(false);

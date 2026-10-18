@@ -9,24 +9,12 @@ import (
 	"testing"
 )
 
-// The lobby's LuckPerms wiring is a three-file contract with no compiler behind it:
-// bootstrap.sh resolves a URL and passes it as a build-arg, the Dockerfile requires
-// that exact arg name and writes the jar to a fixed path, and entrypoint.sh copies
-// from that same path on every boot. A typo in any one of them is invisible until a
-// lobby actually starts — and then `set -e` turns the failed cp into a crashloop on
-// the always-on hub every authenticated player is transferred to.
-//
-// All three files ship inside the binary (gameStackAssets, bootstrapScript) for the
-// TUI install path that has no source checkout, so reading them back here checks
-// what is actually shipped rather than what is merely on disk.
 func TestLobbyLuckPermsWiringIsConsistent(t *testing.T) {
 	dockerfile := readGameStackFile(t, "deploy/lobby/Dockerfile")
 	entrypoint := readGameStackFile(t, "deploy/lobby/entrypoint.sh")
 	script := BootstrapScript()
 
-	// The path is the contract. RUNTIME_DIR is /paper in the entrypoint, so the
-	// Dockerfile's download target and the boot-time copy source must be the same
-	// string; anything else fails at `cp`, not at build.
+	// The immutable image JAR path must match the entrypoint's source path.
 	const jarPath = "/paper/plugins/LuckPerms.jar"
 	if !strings.Contains(dockerfile, "-o "+jarPath) {
 		t.Errorf("Dockerfile does not download LuckPerms to %s", jarPath)
@@ -52,30 +40,17 @@ func TestLobbyLuckPermsWiringIsConsistent(t *testing.T) {
 		t.Error("bootstrap.sh does not resolve the LuckPerms URL before building")
 	}
 
-	// bukkit-legacy targets Minecraft 1.8-1.12 and the other platforms are not
-	// loadable by Paper at all, so the resolver's grep must pin the /bukkit/ path
-	// segment — the metadata endpoint returns every platform's URL in one payload.
+	// Select /bukkit/ artifacts, excluding legacy and other loader builds.
 	if !strings.Contains(script, "/bukkit/loader/") {
 		t.Error("luckperms_latest_jar does not pin the bukkit/loader path; it could " +
 			"return the fabric, forge or velocity jar, none of which Paper can load")
 	}
 
-	// A missing jar must stop the build. The alternative — shipping a lobby that
-	// starts fine and answers every `lp` command from the panel's permission screen
-	// with "Unknown command" — is discovered in production.
 	if !strings.Contains(dockerfile, `if [ -z "${LUCKPERMS_JAR_URL:-}" ]`) {
 		t.Error("Dockerfile does not fail the build when LUCKPERMS_JAR_URL is unset")
 	}
 }
 
-// The Paper jar digest rides the same cross-file contract as LuckPerms above: bootstrap.sh
-// resolves "url sha256" out of Fill's content-addressed download URL and passes the digest
-// as a build-arg the Dockerfile must require and verify. docker only WARNS about an unknown
-// --build-arg, so a renamed arg would surface as a required-arg failure on a real host
-// mid-install — this test is the only compile step the pairing gets.
-//
-// Both images pull the same jar from the same URL, so both have to check it: a gate on one
-// of them leaves the other booting on whatever bytes happened to arrive.
 func TestPaperJarDigestWiringIsConsistent(t *testing.T) {
 	const arg = "PAPER_JAR_SHA256"
 	if n := strings.Count(BootstrapScript(), "--build-arg "+arg+"="); n < 2 {
@@ -90,28 +65,15 @@ func TestPaperJarDigestWiringIsConsistent(t *testing.T) {
 		if !strings.Contains(dockerfile, `if [ -z "${PAPER_JAR_SHA256:-}" ]`) {
 			t.Errorf("%s does not fail the build when %s is unset", name, arg)
 		}
-		// Requiring the arg is not the same as spending it, and which file gets hashed
-		// matters as much as the command: a `sha256sum -c` over some other download
-		// would satisfy a bare substring check while paper.jar still arrives unchecked.
+		// Verify the intended JAR's checksum, not merely the presence of a checksum command.
 		if !strings.Contains(dockerfile, `echo "$PAPER_JAR_SHA256  /paper/paper.jar" | sha256sum -c`) {
 			t.Errorf("%s never verifies /paper/paper.jar against %s", name, arg)
 		}
 	}
 }
 
-// A 1.8 client joining a protocol-47 backend dies on the first chunk unless ViaVersion's
-// serverside block-connection tracking is off: under modern forwarding the Velocity injector
-// reports 1.13 as the lowest supported protocol, ConnectionData.init() returns early on that,
-// and the 1.12.2->1.13 chunk rewrite then dereferences the provider init() never built.
-//
-// ViaVersion ships the option ON, so this is a correction bootstrap has to make rather than a
-// default it can inherit — and nothing else in the install would notice it missing. The failure
-// surfaces only when a legacy player joins, on a host that installed cleanly.
 func TestBootstrapPinsViaBlockConnectionsOff(t *testing.T) {
-	// go:embed takes the working tree verbatim, so the eol attribute is what keeps a Windows
-	// checkout from compiling CRs into the installer. Assert it rather than normalizing them
-	// away: the only assertion that would otherwise notice is the one spanning a line break
-	// below, and it would report a missing pin instead of the line endings.
+	// Keep embedded installer bytes LF-only through .gitattributes.
 	script := BootstrapScript()
 	if strings.Contains(script, "\r\n") {
 		t.Fatal("embedded bootstrap.sh has CRLF line endings; .gitattributes pins *.sh to LF " +
@@ -139,20 +101,11 @@ func TestBootstrapPinsViaBlockConnectionsOff(t *testing.T) {
 	}
 }
 
-// The embed list and the images bootstrap.sh builds are two lists nobody reconciles.
-// deploy/paper shipped an image build without ever being added to gameStackAssets, and
-// nothing said so: a checkout on disk satisfies the build either way, and the tar is
-// only the build context on the path that has no checkout — `curl | bash`, where the
-// third `docker build -f` then names a file that was never unpacked. So derive the
-// inputs from the script and from each Dockerfile's own COPY lines instead of restating
-// them here; a fourth image inherits the check for free.
 func TestGameStackTarCarriesEveryBuildInput(t *testing.T) {
 	// The plugin builds invoke this shared init script after COPYing the directory;
 	// a directory entry alone would pass the COPY check even if the script was omitted.
 	requireEmbedded(t, "plugins/shared/build-progress.gradle")
-	// Matches the path only when GAME_STACK_DIR is followed by one, which skips the
-	// build-context arguments (`"$GAME_STACK_DIR"`, `"${GAME_STACK_DIR}:/src:z"`) and
-	// the glob for gradle's output, none of which are inputs this tar has to carry.
+	// Match required source paths without treating build-context arguments or output globs as embedded inputs.
 	found := regexp.MustCompile(`\$\{GAME_STACK_DIR\}/(\S+?)"`).FindAllStringSubmatch(BootstrapScript(), -1)
 	var paths []string
 	seen := map[string]bool{}
@@ -162,10 +115,7 @@ func TestGameStackTarCarriesEveryBuildInput(t *testing.T) {
 			paths = append(paths, m[1])
 		}
 	}
-	// Guards the regex itself: a rewrite of how bootstrap.sh spells the build context
-	// would otherwise turn this test into an unconditional pass. It has to come before
-	// the loop — a missing file in there is fatal, and a floor placed after it would
-	// never be reached to say that the regex, not the tar, is what went wrong.
+	// Check the regex matches before using it to validate embedded inputs.
 	if len(paths) < 3 {
 		t.Fatalf("only %d game-stack path(s) resolved out of bootstrap.sh; the limbo, "+
 			"lobby and paper Dockerfiles are all built from ${GAME_STACK_DIR}", len(paths))
@@ -210,9 +160,6 @@ func requireEmbedded(t *testing.T, path string) {
 	}
 }
 
-// The lock file is the install's only source of upstream builds, and bootstrap.sh reads it
-// with a strict KEY=value parser that dies on anything unexpected, so a malformed lock is a
-// failed install on every host. Check the shipped copy the same way here.
 func TestGameStackLockIsComplete(t *testing.T) {
 	lock := gameStackLock(t)
 	m := regexp.MustCompile(`GAME_STACK_LOCK_KEYS="([^"]*)"`).FindStringSubmatch(BootstrapScript())
@@ -256,9 +203,6 @@ func TestGameStackLockIsComplete(t *testing.T) {
 	}
 }
 
-// Each downloaded jar's digest is a build-arg bootstrap.sh passes and the Dockerfile must
-// both require and spend on the file it downloaded; docker only warns about an unknown
-// --build-arg, so a renamed arg would ship an unchecked jar.
 func TestGameStackDigestsReachTheImageBuilds(t *testing.T) {
 	script := BootstrapScript()
 	for _, c := range []struct{ dockerfile, arg, path string }{
@@ -279,7 +223,6 @@ func TestGameStackDigestsReachTheImageBuilds(t *testing.T) {
 	}
 }
 
-// A base image named by tag alone is whatever the tag points at on build day.
 func TestDockerfileBaseImagesArePinnedByDigest(t *testing.T) {
 	root, err := os.ReadFile("Dockerfile")
 	if err != nil {
@@ -307,12 +250,6 @@ func TestDockerfileBaseImagesArePinnedByDigest(t *testing.T) {
 	}
 }
 
-// The plugin jars are built in four places the installer controls — the lobby and limbo
-// image builds, bootstrap's Velocity build and the release build of the same jar — and
-// through each module's wrapper by a developer or CI. A tag alone is whatever it points
-// at on build day, and two Gradle versions are two chances for a build to pass in one
-// place and break in the other, so all of them run one image, pinned by digest, whose
-// Gradle is the wrappers' Gradle.
 func TestPluginBuildsRunOnePinnedGradle(t *testing.T) {
 	sources := map[string]string{
 		"deploy/lobby/Dockerfile": readGameStackFile(t, "deploy/lobby/Dockerfile"),
@@ -363,11 +300,6 @@ func TestPluginBuildsRunOnePinnedGradle(t *testing.T) {
 	}
 }
 
-// Each plugin compiles against the API of the exact build the install runs, and Gradle
-// checks those bytes against the module's verification file. Nothing but this test ties
-// the three to deploy/game-stack.lock: a lock refresh that leaves them behind builds the
-// lobby against yesterday's API, or fails every image build on a checksum the file does
-// not have.
 func TestPluginApisAreTheLockedBuilds(t *testing.T) {
 	lock := gameStackLock(t)
 

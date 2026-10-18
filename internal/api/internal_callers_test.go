@@ -20,7 +20,6 @@ func bearer(tok string) map[string]string {
 	return map[string]string{"Authorization": "Bearer " + tok, "Content-Type": "application/json"}
 }
 
-// Each token answers with its own caller, and nothing else gets in.
 func TestCallerTokensNameTheCaller(t *testing.T) {
 	c := callerTokensForTest()
 	for tok, want := range map[string]Caller{
@@ -46,8 +45,6 @@ func TestCallerTokensNameTheCaller(t *testing.T) {
 		}
 	}
 
-	// A caller whose Secret is missing has an empty token; that must not turn into
-	// "any empty-ish credential passes".
 	partial := CallerTokens{CallerVelocity: "tok-velocity", CallerBuild: ""}
 	r := httptest.NewRequest("GET", "/", nil)
 	r.Header.Set("Authorization", "Bearer  ")
@@ -66,10 +63,6 @@ func TestNewCallerTokensRefusesAmbiguousSets(t *testing.T) {
 	}
 }
 
-// The caller scopes the gap asked for, spelled out rather than read back from the
-// route table: the build token reads a submission's context and nothing else, only
-// the proxy and the login gate mint link codes, only the proxy approves an
-// op-login, and only the on-node console asks for a break-glass backup.
 func TestInternalRoutesServeOnlyTheirCallers(t *testing.T) {
 	a := newTestAPI(newFakeRepo(), newFakeCluster())
 	a.Internal = callerTokensForTest()
@@ -113,7 +106,6 @@ func TestInternalRoutesServeOnlyTheirCallers(t *testing.T) {
 	}
 }
 
-// The audit names the caller whose token asked for the action.
 func TestInternalAuditNamesTheCaller(t *testing.T) {
 	repo := newFakeRepo()
 	a := newTestAPI(repo, newFakeCluster())
@@ -133,9 +125,6 @@ func TestInternalAuditNamesTheCaller(t *testing.T) {
 	}
 }
 
-// A route added to the internal table without saying who calls it would be open
-// to every token; the face refuses to build instead. Callers on an external route
-// would mean nothing, so that is refused too.
 func TestBuildFaceRequiresCallersOnInternalRoutes(t *testing.T) {
 	a := newTestAPI(newFakeRepo(), newFakeCluster())
 	noop := func(w http.ResponseWriter, r *http.Request) {}
@@ -155,6 +144,5 @@ func TestBuildFaceRequiresCallersOnInternalRoutes(t *testing.T) {
 	mustPanic("external route with callers", func() {
 		a.buildFace("external", []apiRoute{{Method: "GET", Pattern: "/api/v1/x", Callers: []Caller{CallerOps}, h: noop}}, pass)
 	})
-	// Public internal routes (probes, hasJoined) carry no token and list no callers.
 	a.buildFace("internal", []apiRoute{{Method: "GET", Pattern: "/readyz", Public: true, h: noop}}, pass)
 }

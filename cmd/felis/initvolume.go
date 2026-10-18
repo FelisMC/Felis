@@ -12,26 +12,7 @@ import (
 	"felis.lolicon.best/internal/naming"
 )
 
-// cmdInitVolume is the felis-image `prepare-data` initContainer entrypoint: it
-// hands every entry of a server's world volume to the game uid/gid before the
-// server container starts. The operator runs the server itself as naming.GameUID,
-// so a world written by an earlier release (whose server ran as root), a restore
-// Job (which extracts as root), or a storage provisioner that creates the volume
-// root-owned would otherwise leave files the server cannot write — a world that
-// boots and then fails every save.
-//
-// fsGroup covers only part of this: kubelet applies it to volume types that
-// support ownership management, and a k3s local-path PV is a hostPath underneath,
-// which it skips. A walk from inside the pod works for every volume type.
-//
-// Only mismatched entries are touched, so a volume already owned by the game uid
-// costs one lstat per entry and no writes. The walk runs inside an os.Root at the
-// data dir and uses lchown, so a symlink a plugin planted is re-owned as a link
-// and never followed out of the volume.
-//
-// A single entry that cannot be chowned is reported and skipped: failing the pod
-// over one odd file would keep the whole server down, while the server itself
-// reports the one file it cannot write. Only an unreadable data dir fails.
+// Use os.Root/lchown for hostPath ownership; report and skip individual failures.
 func cmdInitVolume(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("init-volume", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -70,9 +51,7 @@ type chownResult struct {
 
 const maxReportedChownFailures = 20
 
-// chownTree walks root and calls chown on every entry (the root dir included)
-// whose owner is not uid:gid. It returns an error only when the root itself
-// cannot be read; per-entry failures are collected in the result.
+// Root access failure aborts ownership setup; per-entry failures accumulate in the result.
 func chownTree(root *os.Root, uid, gid int, chown func(name string, uid, gid int) error) (chownResult, error) {
 	var res chownResult
 	fail := func(name string, err error) {

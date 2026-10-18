@@ -16,18 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// cmdConverge is the explicit convergence pass over already-installed system
-// servers (#1), plus the idle-stop default for user servers that predate it, and
-// with -user-rcon their RCON block (#3). Provisioning is create-if-absent, so a field the desired spec
-// gained after an install (spec.rcon, spec.startup.healthHTTPPort, a derived env
-// key) never reaches the existing CR — and nothing says so. This command fills
-// exactly those zero-value fields, and creates a login space or lobby that is missing;
-// see convergeSystemServers for the full contract and why it is a separate,
-// operator-timed step rather than part of setup.
-//
-// It reads the same host config as setup (the control plane's felis.toml) and
-// talks to the cluster with the local kubeconfig, so it must run as root on the
-// control-plane host.
+// Explicit root-only convergence fills missing defaults while preserving customization.
 func cmdConverge(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("converge", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -97,11 +86,7 @@ func cmdConverge(args []string, stdout, stderr io.Writer) int {
 	return exit
 }
 
-// convergeUserServerIdle gives every user server that predates the idle default
-// (spec.idle entirely unset) the default idle stop. A server whose idle stop was
-// turned off keeps a duration on its spec, so it is not "unset" and is left
-// alone; system servers never idle out and are skipped. Servers that already
-// carry a value produce no line, so a converged fleet prints nothing here.
+// Apply idle defaults only to entirely unset user policies; preserve explicit disablement.
 func convergeUserServerIdle(ctx context.Context, cl client.Client, namespace string) []systemServerOutcome {
 	var list v1alpha1.MinecraftServerList
 	if err := cl.List(ctx, &list, client.InNamespace(namespace)); err != nil {
@@ -135,17 +120,7 @@ func convergeUserServerIdle(ctx context.Context, cl client.Client, namespace str
 	return out
 }
 
-// convergeUserServerRcon handles user servers created before RCON was part of every
-// new server (694e3cb): spec.rcon entirely unset. Such a server has a dead console,
-// reports nobody online, and never idles out, because all three ride RCON.
-//
-// Only with fill does it turn RCON on, with the same block CreateServer writes
-// today; without it each such server gets a line saying so. The fill is opt-in
-// because the operator gates readiness on the RCON probe: a server whose image does
-// not open the listener RCON_PASSWORD asks for would sit in Starting until it is
-// marked Failed. Felis's own paper and lobby images open it; an image a user brought
-// may not, and only the operator running this can tell. A server that already
-// carries any RCON setting (on or off) is left alone and produces no line.
+// RCON fill is opt-in because custom images may not expose the expected listener.
 func convergeUserServerRcon(ctx context.Context, cl client.Client, namespace string, fill bool) []systemServerOutcome {
 	var list v1alpha1.MinecraftServerList
 	if err := cl.List(ctx, &list, client.InNamespace(namespace)); err != nil {

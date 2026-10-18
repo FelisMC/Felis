@@ -6,28 +6,18 @@ import (
 	"time"
 )
 
-// PGStore is the Postgres-backed Store (image_submissions, migration 0002). It
-// is the only submit component that holds database credentials and exposes only
-// the narrow operations the Manager needs — no generic UPDATE escape hatch. It
-// compiles here but is exercised by integration tests against a live database;
-// the Manager's logic is unit-tested against the in-memory fake instead.
 type PGStore struct {
 	db *sql.DB
 }
 
-// NewPGStore wraps an open *sql.DB.
 func NewPGStore(db *sql.DB) *PGStore { return &PGStore{db: db} }
 
-// Compile-time proof PGStore satisfies the Store interface.
 var _ Store = (*PGStore)(nil)
 
 const submissionColumns = `id, submitted_by, display_name, context_ref, status,
 	image_ref, build_id, reviewed_by, reject_reason, created_at, reviewed_at, context_sha256`
 
-// CreateSubmission counts and inserts in one transaction under a per-submitter
-// advisory lock, so two creates by the same user, on one replica or several,
-// serialize and the second sees the first's row. A hashtext collision between
-// two users only serializes their creates.
+// CreateSubmission uses a per-user advisory lock so concurrent replicas cannot exceed the pending-row cap.
 func (s *PGStore) CreateSubmission(ctx context.Context, sub *Submission, maxPending int) (int, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -73,8 +63,7 @@ func (s *PGStore) ListSubmissions(ctx context.Context) ([]Submission, error) {
 	return s.querySubmissions(ctx, q)
 }
 
-// PageSubmissions reads the scope's status counts, the filtered total and one
-// page. id breaks created_at ties so a page boundary never repeats or skips a row.
+// PageSubmissions breaks timestamp ties by ID for stable page boundaries.
 func (s *PGStore) PageSubmissions(ctx context.Context, opts ListOpts) (Page, error) {
 	page := Page{Counts: map[Status]int{}}
 	rows, err := s.db.QueryContext(ctx, `SELECT status, count(*) FROM image_submissions
@@ -108,16 +97,7 @@ func (s *PGStore) PageSubmissions(ctx context.Context, opts ListOpts) (Page, err
 	return page, err
 }
 
-// cas executes a single-statement compare-and-set — an UPDATE or DELETE whose
-// WHERE clause is the predicate — and reports whether THIS call moved a row. The
-// `status = 'pending_review'` guard is the actual CAS predicate in each caller's
-// query and is deliberately kept INLINE — it is security-visible, so a reader
-// auditing "can a non-pending row be flipped or deleted?" must see it next to the
-// SET or DELETE. cas only folds the shared ExecContext + RowsAffected tail so
-// the reviewers and deleters cannot drift in how they report a lost race or a
-// RowsAffected error. n == 0 means a concurrent actor already won the row —
-// reported as won=false (never an error), which the Manager maps to
-// ErrAlreadyReviewed / ErrNotFound.
+// cas returns won=false for zero affected rows; each caller keeps its pending-status predicate in the SQL statement.
 func (s *PGStore) cas(ctx context.Context, q string, args ...any) (bool, error) {
 	res, err := s.db.ExecContext(ctx, q, args...)
 	if err != nil {
@@ -127,9 +107,6 @@ func (s *PGStore) cas(ctx context.Context, q string, args ...any) (bool, error) 
 	return n > 0, err
 }
 
-// ApproveSubmission is the approve CAS: it flips the row only while it is still
-// pending_review AND still carries the digest the reviewer approved, so neither
-// a concurrent reviewer nor a re-upload after the review can let it win.
 func (s *PGStore) ApproveSubmission(ctx context.Context, id, reviewedBy, imageRef, digest string, at time.Time) (bool, error) {
 	const q = `UPDATE image_submissions
 		SET status = 'approved', image_ref = $2, reviewed_by = $3, reviewed_at = $4
@@ -137,14 +114,12 @@ func (s *PGStore) ApproveSubmission(ctx context.Context, id, reviewedBy, imageRe
 	return s.cas(ctx, q, id, imageRef, reviewedBy, at, digest)
 }
 
-// SetContextDigest records an upload's digest, only while the row is pending.
 func (s *PGStore) SetContextDigest(ctx context.Context, id, digest string) (bool, error) {
 	const q = `UPDATE image_submissions SET context_sha256 = $2
 		WHERE id = $1 AND status = 'pending_review'`
 	return s.cas(ctx, q, id, digest)
 }
 
-// RejectSubmission is the reject CAS, mirroring ApproveSubmission.
 func (s *PGStore) RejectSubmission(ctx context.Context, id, reviewedBy, reason string, at time.Time) (bool, error) {
 	const q = `UPDATE image_submissions
 		SET status = 'rejected', reviewed_by = $2, reject_reason = $3, reviewed_at = $4
@@ -168,15 +143,11 @@ func (s *PGStore) LinkBuild(ctx context.Context, id, buildID string) error {
 	return nil
 }
 
-// DeleteSubmission is the admin delete: any status, one row, no predicate beyond
-// the id. False means the id was already gone (a concurrent delete won).
 func (s *PGStore) DeleteSubmission(ctx context.Context, id string) (bool, error) {
 	const q = `DELETE FROM image_submissions WHERE id = $1`
 	return s.cas(ctx, q, id)
 }
 
-// DeletePendingSubmission is the withdraw CAS: owner + pending_review must both
-// still hold, so a reviewed submission can never be deleted through this path.
 func (s *PGStore) DeletePendingSubmission(ctx context.Context, id, submittedBy string) (bool, error) {
 	const q = `DELETE FROM image_submissions
 		WHERE id = $1 AND submitted_by = $2 AND status = 'pending_review'`
@@ -200,13 +171,10 @@ func (s *PGStore) querySubmissions(ctx context.Context, q string, args ...any) (
 	return out, rows.Err()
 }
 
-// rowScanner is the read surface shared by *sql.Row (single) and *sql.Rows (in a
-// list loop), so one scan body serves both without copy-paste.
 type rowScanner interface {
 	Scan(dest ...any) error
 }
 
-// scanSubmission scans a single row, translating no-rows into ErrNotFound.
 func scanSubmission(row *sql.Row) (*Submission, error) {
 	sub, err := scanSubmissionRows(row)
 	if err == sql.ErrNoRows {
@@ -215,8 +183,6 @@ func scanSubmission(row *sql.Row) (*Submission, error) {
 	return sub, err
 }
 
-// scanSubmissionRows decodes one row's columns, mapping nullable text/time
-// columns through sql.Null* (NULLIF/absent values become zero, omitted in JSON).
 func scanSubmissionRows(row rowScanner) (*Submission, error) {
 	var (
 		sub                                         Submission

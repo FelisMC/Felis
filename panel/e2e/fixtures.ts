@@ -48,13 +48,7 @@ export async function expectPinnedHeading(page: Page, title: string, top: number
   await expect(heading).toBeInViewport({ ratio: 1 });
 }
 
-/** expectFitsScreen fails when anything scrolls sideways or a visible element
- *  pokes past the viewport edge (an overflow-hidden parent would just cut it
- *  off). The shell scrolls in an overflow-y-auto pane, whose computed
- *  overflow-x is auto as well, so a computed style cannot tell a deliberate
- *  horizontal scroller from the page pane: only a container that asks for one
- *  by class (overflow-x-auto, overflow-x-scroll, overflow-auto, e.g. a wide
- *  table) may be wider than the screen. */
+// Allow viewport overflow only for explicitly designated horizontal scrollers.
 export async function expectFitsScreen(page: Page) {
   const report = await page.evaluate(() => {
     const vw = document.documentElement.clientWidth;

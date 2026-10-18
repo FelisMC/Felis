@@ -1,8 +1,5 @@
-// The server name rule (spec §2, §22) as the API enforces it in internal/naming:
-// 3–32 lowercase letters, digits or hyphens, no hyphen at either end, and none
-// of the names the platform keeps for itself. The same rule covers subdomains.
-// The create form checks it as the person types, so a name the API would
-// answer with 400 never reaches it.
+// Keep server-name validation aligned with internal/naming.
+// The create form checks it as the person types, so a name the API would refuse with 400 never reaches it.
 
 // RESERVED_SERVER_NAMES mirrors `reserved` in internal/naming/naming.go.
 export const RESERVED_SERVER_NAMES: readonly string[] = [

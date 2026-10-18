@@ -20,54 +20,22 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// System services are the always-on backends Felis provisions for itself after
-// setup: the login limbo (LOOHP/Limbo auth gate) and the lobby (Paper + the
-// felis-paper /menu hub). Unlike a user server they are created Running, are
-// exempt from the world reaper, and carry reserved names — so they take the
-// ValidateSystemServerName admission path rather than the user ValidateServerName.
-//
-// The routing topology and the one security invariant they encode:
-//
-//	connect → login (auth gate, front door) → lobby (/menu hub) → target backend
-//
-// A stopped/starting server's fallback must land on the LOGIN gate, never on the
-// lobby: falling back to the lobby would drop an unauthenticated player past the
-// gate. So login has NO fallback (if it is down we refuse the connection rather
-// than route onward) and everything else — the lobby included — falls back to
-// login. "Rather have login unreachable than abandon authentication."
+// System services (login limbo and lobby) are created Running, exempt from the reaper, and use reserved names.
 
-// systemServerSpec is the small, explicit shape a system service is built from.
-// It is intentionally narrower than the user applyRequest: no autostart choice
-// (always public), no RCON, no resource overrides — a system service is uniform
-// by construction so the invariants above cannot be configured away.
 type systemServerSpec struct {
 	name           string
 	subdomain      string
 	displayName    string
 	image          string
-	memory         string // container memory limit == request (§22 ceiling)
-	storage        string // world PVC size
-	fallbackServer string // "" = none (refuse when down); never the lobby
-	healthHTTPPort int32  // > 0 → gate readiness on an HTTP health endpoint
-	// rcon opts a system service into the RCON write channel. It is per-service and
-	// NOT a default, because enabling it on a backend that runs no RCON listener is
-	// actively destructive rather than merely useless: the operator gates readiness
-	// on the probe, so the server would never leave Starting and would eventually be
-	// marked Failed. The login limbo is exactly that case (LOOHP/Limbo has no RCON),
-	// and it is the front door — taking it down locks everyone out.
-	rcon bool
-	// env are extra plain (non-secret) environment variables baked into the pod.
-	// System-service configuration derived from the deployment (the internal API
-	// URL, root domain, lobby name) rides here; secrets never do — the service
-	// token is injected by the operator via secretKeyRef, not as a literal value.
-	env []v1alpha1.EnvVar
+	memory         string            // container memory limit and request
+	storage        string            // world PVC size
+	fallbackServer string            // "" = none (refuse when down); never the lobby
+	healthHTTPPort int32             // > 0 gates readiness on an HTTP health endpoint
+	rcon           bool              // RCON write channel; off for the limbo, which has no RCON listener and would never become ready
+	env            []v1alpha1.EnvVar // plain, non-secret variables; the service token is injected via secretKeyRef
 }
 
-// systemRcon renders the RCON block for a system service. The secret name comes
-// from naming.RconSecretName — the same convention felis-api writes for user
-// servers and the operator provisions against — so a system service is not a
-// second, parallel way of doing this. Port is left 0 so the operator's default is
-// the only place the number lives.
+// systemRcon uses naming.RconSecretName and leaves Port 0 so the operator default applies.
 func systemRcon(in systemServerSpec) v1alpha1.RconSpec {
 	if !in.rcon {
 		return v1alpha1.RconSpec{Enabled: false}
@@ -81,20 +49,9 @@ func systemRcon(in systemServerSpec) v1alpha1.RconSpec {
 	}
 }
 
-// felisLimboHealthPort is the port the felis-limbo readiness plugin serves its
-// HTTP health endpoint on. The login system service gates pod readiness on it so
-// "the limbo has finished starting" — not merely "the game socket is bound" —
-// is what marks it Ready.
-const felisLimboHealthPort int32 = 8080
+const felisLimboHealthPort int32 = 8080 // gates the login pod's readiness on the limbo having finished starting
 
-// The felis-limbo login plugin reads its deployment configuration from these
-// environment variables (env wins over its felis-link.properties template). The
-// non-secret four are baked into the login pod's Spec.Env here at provision time
-// (they derive from the deployment: the internal API URL, the root domain, the
-// resolved panel host, the lobby server name); the service-token secret is injected
-// separately by the operator via secretKeyRef. Without the token the plugin
-// fail-safes to readiness-only, so a login pod that has the URL/domain but not yet
-// the token is safe (it simply does not authenticate) rather than broken.
+// Env vars read by the felis-limbo plugin (env wins over felis-link.properties); the service token is injected separately.
 const (
 	envAPIBaseURL    = naming.EnvAPIBaseURL
 	envRootDomain    = "FELIS_ROOT_DOMAIN"
@@ -102,16 +59,7 @@ const (
 	envLobbyServer   = "FELIS_LOBBY_SERVER"
 )
 
-// buildSystemServer constructs an always-on, reaper-exempt MinecraftServer from
-// a systemServerSpec. It is a pure function (no K8s, no I/O) so it is unit
-// testable without a cluster. Unlike buildMinecraftServerFromApplyRequest it:
-//   - permits reserved names (login/lobby) via ValidateSystemServerName,
-//   - sets DesiredState=Running (the service is up the moment it exists),
-//   - sets ReaperExempt=true and AutostartPolicy=public,
-//   - enables RCON only where the image actually serves it (in.rcon): the lobby
-//     is Paper and needs the write channel like any user server, while the login
-//     limbo has no RCON listener at all and gates readiness on pod TCP/HTTP
-//     health instead — see the operator reconciler.
+// buildSystemServer builds a Running, reaper-exempt, public-autostart server; RCON is enabled only when in.rcon.
 func buildSystemServer(in systemServerSpec, namespace string) (*v1alpha1.MinecraftServer, error) {
 	if err := naming.ValidateSystemServerName(in.name); err != nil {
 		return nil, fmt.Errorf("invalid name: %w", err)
@@ -122,9 +70,7 @@ func buildSystemServer(in systemServerSpec, namespace string) (*v1alpha1.Minecra
 	if in.image == "" {
 		return nil, fmt.Errorf("image is required for system server %q", in.name)
 	}
-	// A system service must never fall back onto the lobby: that would route an
-	// unauthenticated player past the login gate. Refuse to build one that does,
-	// rather than silently ship the bypass.
+	// A lobby fallback would route unauthenticated players past the login gate.
 	if in.fallbackServer == naming.SystemLobbyServer {
 		return nil, fmt.Errorf("system server %q must not fall back to the lobby (%q) — it would bypass the login gate; fall back to %q or leave it empty",
 			in.name, naming.SystemLobbyServer, naming.SystemLoginServer)
@@ -165,9 +111,7 @@ func buildSystemServer(in systemServerSpec, namespace string) (*v1alpha1.Minecra
 			AutostartPolicy: v1alpha1.AutostartPublic,
 			ReaperExempt:    true,
 			FallbackServer:  in.fallbackServer,
-			// Behind the Velocity proxy (which enforces online-mode and modern
-			// forwarding), backends run offline-mode; the proxy is the one place
-			// online-mode is true (spec §8, §11).
+			// Backends run offline-mode behind Velocity, the only online-mode component.
 			OnlineMode: false,
 			Rcon:       systemRcon(in),
 			Storage:    v1alpha1.StorageSpec{Size: storageQ.String()},
@@ -178,17 +122,7 @@ func buildSystemServer(in systemServerSpec, namespace string) (*v1alpha1.Minecra
 	}, nil
 }
 
-// loginSystemServer is the LOOHP/Limbo auth gate. It is the front door and the
-// only safe fallback, so it carries no fallback of its own: if it is down the
-// proxy refuses the connection rather than routing onward past authentication.
-//
-// apiBaseURL is the felis-api internal face the login plugin authenticates to;
-// panelHostname is the resolved console/panel host the plugin links players at (the
-// single source of truth for that host — see defaultPanelHostname), and rootDomain
-// is kept for the plugin's own console.<root> fallback when the panel env is absent
-// (an older operator). All three are baked in as plain env. The service token is NOT
-// passed here — the operator injects it via secretKeyRef so the credential never
-// lands in the CRD.
+// The login gate has no fallback, so its failure cannot bypass authentication.
 func loginSystemServer(image, namespace, apiBaseURL, rootDomain, panelHostname string) (*v1alpha1.MinecraftServer, error) {
 	return buildSystemServer(systemServerSpec{
 		name:           naming.SystemLoginServer,
@@ -197,7 +131,7 @@ func loginSystemServer(image, namespace, apiBaseURL, rootDomain, panelHostname s
 		image:          image,
 		memory:         "512Mi",
 		storage:        "1Gi",
-		fallbackServer: "", // none — refuse if the gate is down
+		fallbackServer: "",
 		healthHTTPPort: felisLimboHealthPort,
 		env: []v1alpha1.EnvVar{
 			{Name: envAPIBaseURL, Value: apiBaseURL},
@@ -208,9 +142,7 @@ func loginSystemServer(image, namespace, apiBaseURL, rootDomain, panelHostname s
 	}, namespace)
 }
 
-// lobbySystemServer is the post-auth /menu hub (Paper + felis-paper). It falls
-// back to the login gate — never to itself and never onward — so a lobby that is
-// briefly down still routes players through authentication first.
+// lobbySystemServer is the post-auth /menu hub; it falls back to the login gate.
 func lobbySystemServer(image, namespace string) (*v1alpha1.MinecraftServer, error) {
 	return buildSystemServer(systemServerSpec{
 		name:           naming.SystemLobbyServer,
@@ -220,20 +152,12 @@ func lobbySystemServer(image, namespace string) (*v1alpha1.MinecraftServer, erro
 		memory:         "1Gi",
 		storage:        "2Gi",
 		fallbackServer: naming.SystemLoginServer,
-		// Paper serves RCON, and the lobby is administered through the panel like any
-		// other server — online players, console, permissions all ride this channel.
-		rcon: true,
+		rcon:           true,
 	}, namespace)
 }
 
-// buildSystemServerClient builds a controller-runtime client for the setup-time
-// system-service provisioner. It is deliberately best-effort and never calls
-// ctrl.SetupSignalHandler (setup owns its own context): it first honours the
-// standard resolution (in-cluster, then $KUBECONFIG / --kubeconfig, then
-// ~/.kube/config) and, failing that, falls back to the k3s admin kubeconfig the
-// host bootstrap writes at hostBootstrapKubeconfigPath — the common case when
-// setup runs as root directly on a single-node control-plane host. A returned
-// error is not fatal to setup; the caller degrades to printed guidance.
+// buildSystemServerClient resolves a kubeconfig the standard way, then falls back to the k3s admin kubeconfig at
+// hostBootstrapKubeconfigPath; an error is not fatal to setup.
 func buildSystemServerClient() (client.Client, error) {
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
@@ -249,7 +173,6 @@ func buildSystemServerClient() (client.Client, error) {
 	return client.New(cfg, client.Options{Scheme: scheme})
 }
 
-// hostRESTConfig is the cluster connection buildSystemServerClient describes.
 func hostRESTConfig() (*rest.Config, error) {
 	cfg, err := ctrl.GetConfig()
 	if err != nil {
@@ -261,28 +184,22 @@ func hostRESTConfig() (*rest.Config, error) {
 	return cfg, nil
 }
 
-// systemServerOutcome records what ensureSystemServers did with one service so
-// setup can report it without the provisioner deciding on the output format.
 type systemServerOutcome struct {
 	name      string
-	created   bool     // true = we created it this run
-	updated   bool     // true = we refreshed an existing replica from the source
-	available bool     // true = the required object now exists
-	skipped   string   // non-empty = why it was skipped (image unset / already exists)
-	err       error    // non-nil = create failed
+	created   bool
+	updated   bool
+	available bool
+	skipped   string // why the service was skipped (image unset / already exists)
+	err       error
 	changes   []string // converge only: the fields this pass filled
 }
 
-// systemServerPlan is one system service in the provisioner's table: its name,
-// the image config gives it, and the pure builder for its desired CR.
 type systemServerPlan struct {
 	name  string
 	image string
 	build func(image, namespace string) (*v1alpha1.MinecraftServer, error)
 }
 
-// systemServerPlans is the single description of the login+lobby pair, shared by
-// ensureSystemServers (create-if-absent) and convergeSystemServers (field fill).
 func systemServerPlans(loginImage, lobbyImage, apiBaseURL, rootDomain, panelHostname string) []systemServerPlan {
 	return []systemServerPlan{
 		{name: naming.SystemLoginServer, image: loginImage, build: func(image, ns string) (*v1alpha1.MinecraftServer, error) {
@@ -292,13 +209,7 @@ func systemServerPlans(loginImage, lobbyImage, apiBaseURL, rootDomain, panelHost
 	}
 }
 
-// ensureSystemServers idempotently creates the login and lobby system services.
-// It create-if-absent per service: an existing CRD is left untouched (so an
-// operator's later edits to a system service survive re-runs of setup), a
-// service whose image is unset in config is skipped with a reason, and any other
-// service is created. It never deletes or overwrites. The caller supplies the
-// K8s client and namespace; this function performs no signal-handler or client
-// setup of its own.
+// ensureSystemServers creates missing login and lobby servers; existing ones are never overwritten and a service with no image is skipped.
 func ensureSystemServers(ctx context.Context, cl client.Client, namespace, loginImage, lobbyImage, apiBaseURL, rootDomain, panelHostname string) []systemServerOutcome {
 	plans := systemServerPlans(loginImage, lobbyImage, apiBaseURL, rootDomain, panelHostname)
 
@@ -313,9 +224,7 @@ func ensureSystemServers(ctx context.Context, cl client.Client, namespace, login
 			outcomes = append(outcomes, systemServerOutcome{name: p.name, err: err})
 			continue
 		}
-		// Create-if-absent: check first so an existing service is reported as a
-		// deliberate skip rather than an AlreadyExists error. Never adopt a
-		// legacy user server that happens to occupy a reserved system name.
+		// An existing service is a skip, not an AlreadyExists error; a user server on a reserved name is never adopted.
 		var existing v1alpha1.MinecraftServer
 		getErr := cl.Get(ctx, client.ObjectKeyFromObject(ms), &existing)
 		if getErr == nil {
@@ -374,31 +283,15 @@ func ensureSystemServers(ctx context.Context, cl client.Client, namespace, login
 	return outcomes
 }
 
-// derivedSystemEnv are the system-server env vars whose values setup computes from
-// config rather than inventing. They are the exception to create-if-absent, and the
-// exception is narrow on purpose.
-//
-// Everything else on an existing system service is left alone so an operator's edits
-// survive a re-run — but these are not the operator's to own, they are a copy of
-// config that goes stale the moment config changes. That is not hypothetical: after
-// a root-domain change the login gate keeps handing every joining player a console
-// link built from the OLD domain, which is the one screen an unauthenticated player
-// is guaranteed to see. Nothing else in the install rewrites them, so a re-run of
-// setup is the only chance they get to catch up.
+// derivedSystemEnv lists env vars computed from config. Unlike the rest of an existing system server they are
+// refreshed on every setup re-run, so a root-domain change reaches the login gate.
 var derivedSystemEnv = map[string]bool{
 	envAPIBaseURL:    true,
 	envRootDomain:    true,
 	envPanelHostname: true,
 }
 
-// refreshDerivedEnv converges the config-derived env of an existing system server
-// onto what setup just computed, and reports whether anything actually changed.
-//
-// It only ever overwrites a name that is already present with a different value, and
-// only for the names above: env the operator added by hand is untouched, and a name
-// missing from the live object is left missing rather than added back, since a
-// deliberate removal is indistinguishable from drift and re-adding it would fight the
-// operator every run.
+// refreshDerivedEnv overwrites only derived keys already present with a different value; keys the operator added or removed are left alone.
 func refreshDerivedEnv(ctx context.Context, cl client.Client, existing, desired *v1alpha1.MinecraftServer) (bool, error) {
 	want := derivedEnvWanted(desired)
 	changed, err := patchOnConflictRetry(ctx, cl, existing, func() bool {
@@ -417,15 +310,7 @@ func refreshDerivedEnv(ctx context.Context, cl client.Client, existing, desired 
 	return changed, nil
 }
 
-// patchOnConflictRetry applies mutate to obj and sends only the difference, as a
-// merge patch that carries the resourceVersion obj was read at. The operator writes
-// status and felis-api patches spec.idle on these same objects, so a write can land
-// between setup's read and its patch: the apiserver then answers 409, and this
-// re-reads obj and runs mutate again on the fresh copy, up to retry.DefaultRetry's
-// five attempts. The pinned resourceVersion is what keeps a list field such as
-// spec.env safe — a merge patch replaces a list whole, and without the lock an
-// entry added concurrently would be dropped. mutate reports whether it changed
-// anything; nothing is sent when it did not. obj holds the stored object after.
+// Pin merge patches to resourceVersion and retry conflicts to preserve concurrent list updates.
 func patchOnConflictRetry(ctx context.Context, cl client.Client, obj client.Object, mutate func() bool) (bool, error) {
 	key := client.ObjectKeyFromObject(obj)
 	changed, reread := false, false
@@ -445,7 +330,6 @@ func patchOnConflictRetry(ctx context.Context, cl client.Client, obj client.Obje
 	return changed, err
 }
 
-// derivedEnvWanted maps the derived env keys of desired onto their values.
 func derivedEnvWanted(desired *v1alpha1.MinecraftServer) map[string]string {
 	want := make(map[string]string, len(derivedSystemEnv))
 	for _, e := range desired.Spec.Env {
@@ -456,24 +340,7 @@ func derivedEnvWanted(desired *v1alpha1.MinecraftServer) map[string]string {
 	return want
 }
 
-// convergeSystemServers is the explicit convergence pass over already-installed
-// system servers (#1). ensureSystemServers is create-if-absent by design — an
-// existing CR is left alone so a re-run cannot clobber an operator's edits — and
-// that leaves no path for a field the DESIRED spec gained after the install:
-// spec.rcon (the lobby's write channel), spec.startup.healthHTTPPort (the login
-// gate's readiness probe), or a config-derived env key that did not exist yet.
-// Such fields sit at their zero value forever while re-running setup reports
-// success, which is exactly the reported "configuration updates never reach an
-// installed deployment" symptom.
-//
-// This pass fills exactly those zero-value fields and the config-derived env keys,
-// and nothing else: a field already holding a non-zero value is the operator's and
-// is never overwritten. It is an explicit command rather than an implicit step of
-// setup because some fills need an ordering only the operator knows — enabling
-// RCON or the HTTP readiness gate on a server whose image predates the listener
-// would hold that server in Starting until it was marked Failed. Rebuild (or
-// upgrade) the images first, then run this. A system server that is missing
-// altogether is created from the desired spec, as setup would create it.
+// Convergence fills unset fields only; update images before enabling their new readiness requirements.
 func convergeSystemServers(ctx context.Context, cl client.Client, namespace, loginImage, lobbyImage, apiBaseURL, rootDomain, panelHostname string) []systemServerOutcome {
 	outcomes := make([]systemServerOutcome, 0, 2)
 	for _, p := range systemServerPlans(loginImage, lobbyImage, apiBaseURL, rootDomain, panelHostname) {
@@ -490,8 +357,7 @@ func convergeSystemServers(ctx context.Context, cl client.Client, namespace, log
 		var existing v1alpha1.MinecraftServer
 		switch err := cl.Get(ctx, client.ObjectKeyFromObject(desired), &existing); {
 		case apierrors.IsNotFound(err):
-			// A login space or lobby that is gone is created again, as setup creates it;
-			// the panel's Login & lobby page offers this pass when one is missing.
+			// A missing login or lobby is recreated, as setup does.
 			if err := cl.Create(ctx, desired); err != nil {
 				outcomes = append(outcomes, systemServerOutcome{name: p.name, err: err})
 				continue
@@ -537,11 +403,7 @@ func convergeSystemServers(ctx context.Context, cl client.Client, namespace, log
 	return outcomes
 }
 
-// convergeDerivedEnv makes the config-derived env match the desired values: a key
-// whose value drifted is overwritten, and a key missing entirely is added. This is
-// the wider half of the same explicit pass — refreshDerivedEnv's present-only loop
-// can never introduce a NEW key, which is how a derived key added after an install
-// never reached it at all.
+// convergeDerivedEnv overwrites drifted derived keys and adds missing ones, unlike refreshDerivedEnv.
 func convergeDerivedEnv(existing, desired *v1alpha1.MinecraftServer) []string {
 	want := derivedEnvWanted(desired)
 	var changes []string
@@ -564,71 +426,28 @@ func convergeDerivedEnv(existing, desired *v1alpha1.MinecraftServer) []string {
 	return changes
 }
 
-// provisionSecretReplicas copies the Secrets workload pods mount from the control
-// namespace into the namespaces those pods run in. The proxy's felis-service-token
-// is not among them: it lives in the control namespace and on the host, and a copy
-// anywhere else would open every game route to whoever reads that namespace.
+// provisionSecretReplicas mirrors workload Secrets into their namespaces. felis-service-token is excluded:
+// a copy elsewhere would open every game route to whoever reads that namespace.
 func provisionSecretReplicas(ctx context.Context, cl client.Client, controlNS, minecraftNS, buildNS string) []systemServerOutcome {
 	return []systemServerOutcome{
-		// refresh=true for both caller tokens: the control namespace holds the
-		// current value and `felis rotate-token` replaces it there, so a replica
-		// that differs is stale and the login gate would be turned away with it.
+		// refresh: `felis rotate-token` replaces the source, so a differing replica is stale.
 		ensureSecretReplica(ctx, cl, controlNS, minecraftNS,
 			naming.LimboTokenSecretName, naming.ServiceTokenSecretKey, "limbo-token", "minecraft ns", true),
 		ensureSecretReplica(ctx, cl, controlNS, minecraftNS,
 			naming.ForwardingSecretName, naming.ForwardingSecretKey, "forwarding-secret", "minecraft ns", false),
-		// refresh=true: felis-config is the rendered config, not a credential. The
-		// backup/restore/fileedit Jobs and the reaper mount this copy, so a re-run
-		// must update it when the control plane's render has moved on (a stale copy
-		// e.g. keeps an old database URL after a credential rotation).
+		// refresh: the rendered config goes stale (e.g. after a database credential rotation) for the Jobs and reaper that mount it.
 		ensureSecretReplica(ctx, cl, controlNS, minecraftNS,
 			"felis-config", "felis.toml", "config", "minecraft ns", true),
-		// The reaper's pre-reap warning emails authenticate with the same relay
-		// password felis-api uses; the reaper pod runs in the minecraft namespace,
-		// where a secretKeyRef resolves only against a local mirror. Skipped while
-		// the relay is not configured yet — the "configure email" screen refreshes
-		// both mirrors when it applies.
+		// The reaper pod needs a local copy of the SMTP relay password; skipped until the relay is configured.
 		ensureSecretReplica(ctx, cl, controlNS, minecraftNS,
 			"felis-smtp", "password", "smtp", "minecraft ns", false),
-		// The build namespace needs the build token: the build Job's fetch
-		// initContainer reads the submission context from the internal face, and
-		// that is all this token opens. Best effort — a deployment that only
-		// installs the control plane simply never builds a user submission.
+		// The build fetch initContainer reads the submission context with this token; best-effort.
 		ensureSecretReplica(ctx, cl, controlNS, buildNS,
 			naming.BuildTokenSecretName, naming.ServiceTokenSecretKey, "build-token", "felis-build ns", true),
 	}
 }
 
-// ensureSecretReplica copies one Secret from the control namespace into a workload
-// namespace (minecraft — or the build namespace, whose fetch initContainer reads the
-// context from the felis-api internal face with the build token) so a pod can mount it
-// via secretKeyRef. A secretKeyRef is namespace-local, but those workloads do not run
-// beside the control plane — so without this replica the secretKeyRef would dangle and
-// wedge the pod in CreateContainerConfigError.
-//
-// Several Secrets need it, for different reasons: the caller tokens of the login
-// limbo and the build Pod's context fetch (both authenticate to the felis-api
-// internal face, each with its own token),
-// the Velocity modern-forwarding secret (every backend — it is how a backend knows
-// a login really came from the proxy, and so that the player's UUID is Mojang-verified
-// rather than offline-derived), and the SMTP relay password (the reaper's pre-reap
-// warning emails; the felis-config mirror is what carries [smtp] into its pod).
-//
-// It is create-if-absent: an existing replica is left untouched so a hand-rotated
-// value in the workload namespace is never clobbered (to rotate, delete the replica
-// and re-run setup). Best-effort like the rest of the provisioner: a missing source or
-// a create failure degrades to a reported outcome, never a hard setup failure. It
-// copies only Type and Data — never labels/annotations/ownerRefs — so the replica
-// carries no accidental GC owner or managed-by lineage.
-//
-// refreshExisting switches a replica to refresh-in-place from the control namespace.
-// The felis-config mirror uses it because that Secret is a rendered config and the
-// workload Jobs that mount it (backup/restore/fileedit) plus the reaper silently
-// misbehave on a stale copy — e.g. after a database credential rotation the control
-// plane moves on while every backup Job keeps failing auth. The caller tokens use it
-// because `felis rotate-token` replaces them in the control namespace, which makes a
-// differing replica stale by definition. The forwarding and SMTP Secrets keep the
-// never-overwrite rule.
+// Replicate only Type and Data; preserve existing values unless refreshExisting requests replacement.
 func ensureSecretReplica(ctx context.Context, cl client.Client, controlNamespace, minecraftNamespace, secretName, secretKey, label, where string, refreshExisting bool) systemServerOutcome {
 	name := label + " (" + where + ")"
 	validate := func(secret *corev1.Secret, location, skipped string) systemServerOutcome {
@@ -638,8 +457,6 @@ func ensureSecretReplica(ctx context.Context, cl client.Client, controlNamespace
 		}
 		return systemServerOutcome{name: name, available: true, skipped: skipped}
 	}
-	// refreshFromControl updates an existing replica from the control-namespace source
-	// when the rendered key differs. Only the felis-config mirror opts in.
 	refreshFromControl := func(existing *corev1.Secret) systemServerOutcome {
 		var src corev1.Secret
 		if err := cl.Get(ctx, client.ObjectKey{Namespace: controlNamespace, Name: secretName}, &src); err != nil {
@@ -672,7 +489,7 @@ func ensureSecretReplica(ctx context.Context, cl client.Client, controlNamespace
 		return systemServerOutcome{name: name, updated: true, available: true}
 	}
 	if controlNamespace == minecraftNamespace {
-		// Same namespace needs no replica, but the source still has to exist.
+		// Same namespace needs no replica, but the source must exist.
 		var existing corev1.Secret
 		err := cl.Get(ctx, client.ObjectKey{Namespace: minecraftNamespace, Name: secretName}, &existing)
 		if err == nil {
@@ -697,7 +514,6 @@ func ensureSecretReplica(ctx context.Context, cl client.Client, controlNamespace
 	if !apierrors.IsNotFound(getErr) {
 		return systemServerOutcome{name: name, err: getErr}
 	}
-	// Read the source of truth from the control namespace.
 	var src corev1.Secret
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: controlNamespace, Name: secretName}, &src); err != nil {
 		if apierrors.IsNotFound(err) {

@@ -21,139 +21,68 @@ import (
 
 const testRoot = "mc.example.net" // neutral; never a deployment domain
 
-// ---- fakes ----
-
 type fakeRepo struct {
-	bySub     map[string]*ServerRecord
-	byName    map[string]*ServerRecord
-	linked    map[string]bool
-	quota     map[string]bool
-	allowlist map[string]map[string]bool // name -> user_id -> on list (web face)
-	// allowUUID mirrors the UUID-keyed server_allowlist table itself, the gate the
-	// internal/velocity wake uses (name -> mc_uuid -> on list). allowlist above is
-	// the account_links-bridged web view of the same data.
-	allowUUID map[string]map[string]bool
-	// allowEntries is the listing face of server_allowlist (name -> rows as
-	// ServerAllowlist returns them); SetAllowlistWake flips CanWake in place.
+	bySub        map[string]*ServerRecord
+	byName       map[string]*ServerRecord
+	linked       map[string]bool
+	quota        map[string]bool
+	allowlist    map[string]map[string]bool // name -> user_id -> on list (web face)
+	allowUUID    map[string]map[string]bool // name -> mc_uuid -> on list (UUID-keyed server_allowlist)
 	allowEntries map[string][]AllowlistEntry
 	allowlistErr error // forces ServerAllowlist to fail
 	mine         map[string][]MyServerView
-	// owners mirrors the ServerOwners join (name -> claim state); a live unclaimed
-	// server appears with an empty OwnerID. ownersErr forces the lookup to fail so
-	// a test can prove the fleet read degrades rather than 500ing.
-	owners    map[string]ServerOwnership
-	ownersErr error
-	claimOK   map[string]bool // name -> claim succeeds; absent name -> ErrNotFound
-	// claimQuotaRefuse simulates ClaimServer's atomic quota gate (audit #4)
-	// refusing a name whose advisory pre-check already passed.
-	claimQuotaRefuse map[string]bool
-	// migrateQuotaRefuse names redeeming targets whose quota RedeemMigration's gate
-	// finds too small for the servers moving in; it refuses only a source that owns one.
-	migrateQuotaRefuse map[string]bool
-	// serverResources / resourceUpdates mirror the cached resource columns:
-	// serverResources is what the cache held (ResizeServer keeps its storage), and
-	// UpdateServerResources and ResizeServer record their writes for assertions.
-	serverResources map[string]ResourceSpec
-	resourceUpdates map[string]ResourceSpec
-	resizeErr       error // ResizeServer fails with it (a store outage)
-	// quotaChecked records the size every QuotaCheck, and every ResizeServer that
-	// grows an owned server, was asked about, in order.
-	quotaChecked []ResourceSpec
-	audits       []AuditEntry
-	failAudit    error // Audit fails with it (a store outage)
-	// backupRequested mirrors the newest backup.create audit row per server,
-	// stamped by Audit with the wall clock (LastBackupRequest).
-	backupRequested map[string]time.Time
-	joins           []string
-	// create-server seeding (spec §15)
-	seeded  map[string]bool   // name -> servers row exists
-	aliases map[string]string // subdomain -> bound server name
-	seedErr error
-	// owned holds the servers SeedOwnedServer wrote, by name (selfservice_test.go).
-	owned map[string]fakeOwned
-	// account linking (spec §10)
-	linkCodes map[string]fakeLinkCode // code -> pending binding
-	links     map[string]string       // mc_uuid -> user_id (mirrors UNIQUE(mc_uuid))
-	// linkAuthSource mirrors account_links.auth_source (mc_uuid -> mojang|thirdparty),
-	// the value copied from the consumed code at verify (migration 0005).
-	linkAuthSource map[string]string
-	// world backups (spec §7, §22). A nil slice lists empty.
-	backups        []fakeBackup
-	backupListOpts BackupListOpts // the last AllBackups or BackupsForUser options
-	// session auth (spec §B, passwordless). staff is keyed by username (the login key);
-	// sessions by token_hash; settings by key. They mirror the PG contract so the
-	// hermetic tests exercise the same fail-closed semantics the integration impl
-	// honors.
-	staff    map[string]*StaffUser   // username -> staff login row
-	sessions map[string]*fakeSession // token_hash -> session
-	settings map[string][]byte       // key -> jsonb value
-	// failSessionUser / failGetSetting force those reads to fail with a generic
-	// (non-ErrNotFound) error, simulating a store outage for the 503 auth path.
-	failSessionUser error
-	// failTouchSession / failRevokeOthers / failMarkReauth force those session
-	// writes to fail.
-	failTouchSession error
-	failRevokeOthers error
-	failMarkReauth   error
-	failGetSetting   error
-	failAdminExists  error // AdminExists fails with it (a store outage)
-	failRedeemSetup  error
-	failUserDetail   error
-	// player email OTPs (spec §B2). Keyed by row id; the verify path scans for the
-	// newest live (user, purpose) just as the PG query does.
-	otps map[string]*fakeEmailOTP
-	// otpSeq orders codes by insertion (the PG created_at): a frozen test clock mints
-	// several codes at one instant, so time cannot tell the oldest apart.
-	otpSeq int
-	// otpBudget mirrors otp_failure_windows, keyed user|purpose.
-	otpBudget map[string]*fakeOTPBudget
-	// op-login requests (spec §B op-login). opLogins mirrors op_login_requests keyed
-	// by id; the in-game approve/finish paths mutate status/consumed in place, and
-	// tests plant rows directly to drive the status/finish/pending-list paths.
-	opLogins map[string]*fakeOpLogin
-	// setup tokens (spec §B setup)
-	setupTokens map[string]fakeSetupToken
-	// username-collision reclaim (spec §B3). blacklist mirrors username_blacklist
-	// (mc_uuid -> barred), holds mirrors player_data_holds keyed by the held
-	// (squatter) mc_uuid — both keyed by UUID, matching the PG UNIQUE(mc_uuid)
-	// idempotency. They are written together by ReclaimUsername so the fake encodes
-	// the same all-or-nothing contract the PG transaction enforces.
-	blacklist map[string]bool
-	holds     map[string]fakeDataHold
-	// player passkey enrollment (spec §14 / Phase 6). passkeyCreds is keyed by row id
-	// and mirrors webauthn_credentials (the credential_id UNIQUE guard is enforced in
-	// CreatePasskeyCredential); passkeyChallenges is keyed by row id and mirrors
-	// webauthn_challenges, so the consume path scans the newest live (user, purpose)
-	// just as the PG query does.
-	passkeyCreds      map[string]PasskeyCredential
-	passkeyChallenges map[string]*fakePasskeyChallenge
-	// discoverable ("usernameless") login challenge store (task #40), keyed by opaque handle id
-	// with no user key, mirroring migration 0013. discoverableFull forces the capped-out path
-	// (ErrTooManyDiscoverableChallenges) so the begin 429 branch is reachable without inserting
-	// thousands of rows.
-	discoverableChallenges map[string]*fakeDiscoverableChallenge
-	discoverableFull       bool
-	// user admin fakes
-	seededUsers []seededUser
-	fakeQuotas  map[string]*QuotaView
-	// deletedIDs remembers soft-deleted user ids: DeleteUser drops the row from
-	// seededUsers (so listings hide it, mirroring the WHERE deleted_at IS NULL
-	// query), and this set keeps the account dead for the liveness guards.
-	deletedIDs map[string]bool
-	// pingErr, when non-nil, is returned by Ping to simulate DB liveness check
-	// failures in /readyz tests.
-	pingErr error
-	// account migration (spec §B3 inherit, scenario A) keyed by row id, mirroring
-	// account_migrations. Server ownership for the transfer is read/written on
-	// byName[*].OwnerID (the servers projection), and the source's retirement is
-	// applied to seededUsers, so the fake exercises the same all-or-nothing shape the
-	// PG transaction enforces.
-	migrations map[string]*fakeMigration
+	owners       map[string]ServerOwnership // name -> claim state; unclaimed has empty OwnerID
+	ownersErr    error
+	claimOK      map[string]bool // name -> claim succeeds; absent name -> ErrNotFound
+	// claimQuotaRefuse refuses a name whose advisory pre-check already passed.
+	claimQuotaRefuse       map[string]bool
+	migrateQuotaRefuse     map[string]bool
+	serverResources        map[string]ResourceSpec // cached resources; ResizeServer keeps the storage
+	resourceUpdates        map[string]ResourceSpec
+	resizeErr              error // ResizeServer fails with it (a store outage)
+	quotaChecked           []ResourceSpec
+	audits                 []AuditEntry
+	failAudit              error // Audit fails with it (a store outage)
+	backupRequested        map[string]time.Time
+	joins                  []string
+	seeded                 map[string]bool   // name -> servers row exists
+	aliases                map[string]string // subdomain -> bound server name
+	seedErr                error
+	owned                  map[string]fakeOwned
+	linkCodes              map[string]fakeLinkCode // code -> pending binding
+	links                  map[string]string       // mc_uuid -> user_id (mirrors UNIQUE(mc_uuid))
+	linkAuthSource         map[string]string       // mc_uuid -> mojang|thirdparty
+	backups                []fakeBackup
+	backupListOpts         BackupListOpts          // the last AllBackups or BackupsForUser options
+	staff                  map[string]*StaffUser   // username -> staff login row
+	sessions               map[string]*fakeSession // token_hash -> session
+	settings               map[string][]byte       // key -> jsonb value
+	failSessionUser        error
+	failTouchSession       error
+	failRevokeOthers       error
+	failMarkReauth         error
+	failGetSetting         error
+	failAdminExists        error // AdminExists fails with it (a store outage)
+	failRedeemSetup        error
+	failUserDetail         error
+	otps                   map[string]*fakeEmailOTP
+	otpSeq                 int                       // insertion order; a frozen clock mints several codes at one instant
+	otpBudget              map[string]*fakeOTPBudget // keyed user|purpose
+	opLogins               map[string]*fakeOpLogin
+	setupTokens            map[string]fakeSetupToken
+	blacklist              map[string]bool         // mc_uuid -> barred
+	holds                  map[string]fakeDataHold // keyed by the held mc_uuid
+	passkeyCreds           map[string]PasskeyCredential
+	passkeyChallenges      map[string]*fakePasskeyChallenge
+	discoverableChallenges map[string]*fakeDiscoverableChallenge // keyed by opaque handle
+	discoverableFull       bool                                  // forces the capped-out path (ErrTooManyDiscoverableChallenges)
+	seededUsers            []seededUser
+	fakeQuotas             map[string]*QuotaView
+	deletedIDs             map[string]bool // soft-deleted user ids, kept dead for the liveness guards
+	pingErr                error           // returned by Ping
+	migrations             map[string]*fakeMigration
 }
 
-// fakePasskeyChallenge mirrors a webauthn_challenges row: its owner and purpose, the
-// opaque stashed SessionData, single-use via consumed, and createdAt to order the
-// newest-live lookup the consume path performs.
 type fakePasskeyChallenge struct {
 	id          string
 	userID      string
@@ -162,14 +91,10 @@ type fakePasskeyChallenge struct {
 	expiresAt   time.Time
 	consumed    bool
 	createdAt   time.Time
-	// challenge and source are set on email-first login rows only (migration 0029).
-	challenge string
-	source    string
+	challenge   string // set on email-first login rows only
+	source      string
 }
 
-// fakeDiscoverableChallenge mirrors a webauthn_discoverable_challenges row (task #40): no user
-// or purpose (a from-zero begin has neither), just the opaque stashed SessionData, its expiry,
-// and single-use via consumed. Keyed by the opaque handle in the map, like the real table's id.
 type fakeDiscoverableChallenge struct {
 	sessionData []byte
 	expiresAt   time.Time
@@ -177,10 +102,6 @@ type fakeDiscoverableChallenge struct {
 	source      string
 }
 
-// fakeDataHold mirrors a player_data_holds row at the granularity the verifiable
-// (write-only) layer exercises: which name/data was stashed for the squatter UUID
-// and when the 30-day window ends. reclaimed_by_user_id/reclaimed_at have no fake
-// fields — the inherit flow that would set them is CODE-ONLY (deferred).
 type fakeDataHold struct {
 	id        string
 	username  string
@@ -188,13 +109,11 @@ type fakeDataHold struct {
 	expiresAt time.Time
 }
 
-// fakeOTPBudget mirrors an otp_failure_windows row.
 type fakeOTPBudget struct {
 	windowStart time.Time
 	failures    int
 }
 
-// OTPLockedUntil mirrors PGRepo.OTPLockedUntil through the shared otpLockEnd rule.
 func (f *fakeRepo) OTPLockedUntil(_ context.Context, userID, purpose string, now time.Time) (time.Time, error) {
 	b := f.otpBudget[userID+"|"+purpose]
 	if b == nil {
@@ -203,8 +122,7 @@ func (f *fakeRepo) OTPLockedUntil(_ context.Context, userID, purpose string, now
 	return otpLockEnd(b.windowStart, b.failures, now), nil
 }
 
-// chargeOTP mirrors chargeOTPMismatch: one wrong guess on each open code and one on
-// the (user, purpose) budget.
+// chargeOTP charges one wrong guess to each open code and to the (user, purpose) budget.
 func (f *fakeRepo) chargeOTP(open []*fakeEmailOTP, userID, purpose string, now time.Time) error {
 	for _, o := range open {
 		o.attempts++
@@ -222,9 +140,6 @@ func (f *fakeRepo) chargeOTP(open []*fakeEmailOTP, userID, purpose string, now t
 	return ErrOTPInvalid
 }
 
-// fakeEmailOTP mirrors an email_otps row: only the code hash is held (never the
-// digits), attempts caps brute force, consumed marks single-use, and createdAt
-// orders the newest-live lookup.
 type fakeEmailOTP struct {
 	id        string
 	userID    string
@@ -238,43 +153,30 @@ type fakeEmailOTP struct {
 	seq       int
 }
 
-// fakeSession mirrors a sessions row: its owner, its expiry, and whether it has
-// been revoked.
 type fakeSession struct {
 	userID    string
 	expiresAt time.Time
 	revoked   bool
-	// lastSeen is last_seen_at; zero reads as "seen at the moment it is asked
-	// about", so a literal session in a test is fresh unless it says otherwise.
-	lastSeen  time.Time
+	lastSeen  time.Time // zero reads as "seen now"
 	createdAt time.Time
 	userAgent string
 	clientIP  string
 	touches   int
-	// reauthAt is reauth_at: when the session last proved a factor; zero = never.
-	reauthAt time.Time
+	reauthAt  time.Time // zero = never reauthenticated
 }
 
-// fakeBackup mirrors a world_backups row: the client-facing view plus the
-// server-side backup_ref the list queries never expose.
 type fakeBackup struct {
 	view   BackupView
 	ref    string
 	sha256 string
 }
 
-// fakeLinkCode mirrors an account_link_codes row.
 type fakeLinkCode struct {
 	mcUUID     string
 	authSource string
 	expiresAt  time.Time
 }
 
-// fakeOpLogin mirrors an op_login_requests row (spec §B op-login) at the granularity
-// the verifiable layer exercises: status ('pending'|'approved'|'denied') is the
-// projection of (approved_at, denied_at) the handler's status/finish gates read,
-// consumed mirrors consumed_at (the single-use guard), and createdAt orders the
-// pending list oldest-first (the PG ORDER BY created_at).
 type fakeOpLogin struct {
 	id        string
 	userID    string
@@ -287,8 +189,6 @@ type fakeOpLogin struct {
 	userAgent string
 }
 
-// fakeSetupToken mirrors a setup_tokens row (spec §B setup): a one-time
-// lockdown-enrollment token. ConsumedAt is zero until the /setup flow redeems it.
 type fakeSetupToken struct {
 	TokenHash, UserID string
 	ExpiresAt         time.Time
@@ -344,9 +244,6 @@ func (f *fakeRepo) IsLinked(_ context.Context, u string) (bool, error) { return 
 
 func (f *fakeRepo) QuotaCheck(_ context.Context, userID string, _ string, incoming ResourceSpec) (bool, error) {
 	f.quotaChecked = append(f.quotaChecked, incoming)
-	// For hermetic tests, QuotaCheck answers from the per-user quota flag —
-	// tests that care about per-dimension checks should use fakeQuotas with
-	// direct inspection.
 	return f.quota[userID], nil
 }
 
@@ -358,8 +255,6 @@ func (f *fakeRepo) UpdateServerResources(ctx context.Context, name string, cpu, 
 	return nil
 }
 
-// ResizeServer mirrors PGRepo.ResizeServer: an owned server that grows is checked
-// with its whole size, storage taken from the cache, and a refusal writes nothing.
 func (f *fakeRepo) ResizeServer(_ context.Context, name string, cpu, mem int) (ResourceSpec, error) {
 	if f.resizeErr != nil {
 		return ResourceSpec{}, f.resizeErr
@@ -385,45 +280,25 @@ func (f *fakeRepo) CreateLinkCode(_ context.Context, code, mcUUID, authSource st
 	return nil
 }
 
-// VerifyLinkCode mirrors PGRepo.VerifyLinkCode exactly so the hermetic tests
-// exercise the same contract the integration impl honors: strict expiry against
-// the passed clock, a different-user UUID → ErrConflict WITHOUT consuming the
-// code, same (user, uuid) idempotent, the code's auth_source copied onto the link
-// (and refreshed on re-verify), and the code consumed only on success.
 func (f *fakeRepo) VerifyLinkCode(_ context.Context, userID, code string, now time.Time) (string, string, error) {
 	rec, ok := f.linkCodes[code]
 	if !ok || !rec.expiresAt.After(now) {
 		return "", "", ErrLinkCodeInvalid
 	}
 	if existing, ok := f.links[rec.mcUUID]; ok && existing != userID {
-		// A soft-deleted link's identity is unclaimed: the fresh in-game code lets a
-		// live caller take it over (mirrors PGRepo). Disabled-but-not-deleted stays a
-		// conflict — takeover there would bypass the lockout. Neither arm consumes
-		// the code.
+		// A soft-deleted link can be taken over; a disabled one stays a conflict (takeover would bypass the lockout).
 		if !f.seededDeleted(existing) {
 			return "", "", ErrConflict
 		}
 	}
 	f.links[rec.mcUUID] = userID
-	f.linkAuthSource[rec.mcUUID] = rec.authSource // copy/refresh, mirrors DO UPDATE
+	f.linkAuthSource[rec.mcUUID] = rec.authSource
 	f.linked[userID] = true
 	delete(f.linkCodes, code)
 	return rec.mcUUID, rec.authSource, nil
 }
 
-// RedeemPlayerBindCode mirrors PGRepo.RedeemPlayerBindCode: it create-or-fetches a
-// player keyed on the code's verified mc_uuid. The staff map stands in for the single
-// users table, so a newly created role='user' player is stored there (uuid-derived
-// username) and resolves through SessionUser/UserByID just like the PG JOIN. An
-// already-linked admin UUID is refused without consuming the code; an already-linked
-// player is fetched idempotently.
-//
-// Contract gap vs PG (benign): on an orphan link (mc_uuid linked but its users row
-// gone) the fake resolves no role and falls through to the idempotent return, minting
-// a session for a ghost id, whereas PG's account_links⋈users JOIN would find no row,
-// take the insert branch and 500 on the UNIQUE(mc_uuid) clash. The account_links.user_id
-// FK makes an orphan link unreachable in production, so this divergence is untestable
-// rather than a real behavioral difference.
+// RedeemPlayerBindCode diverges from PG on an orphan link (its users row gone), which the FK makes unreachable in production.
 func (f *fakeRepo) RedeemPlayerBindCode(_ context.Context, newUserID, code string, now time.Time) (string, string, string, error) {
 	rec, ok := f.linkCodes[code]
 	if !ok || !rec.expiresAt.After(now) {
@@ -432,11 +307,11 @@ func (f *fakeRepo) RedeemPlayerBindCode(_ context.Context, newUserID, code strin
 	if existing, ok := f.links[rec.mcUUID]; ok {
 		for _, u := range f.staff { // resolve the linked identity to check its role
 			if u.ID == existing && u.Role != "user" {
-				return "", "", "", ErrPlayerBindForbidden // staff must use op.console; do not consume
+				return "", "", "", ErrPlayerBindForbidden
 			}
 		}
 		if f.seededDead(existing) {
-			return "", "", "", ErrPlayerAccountRetired // dead account; do not consume
+			return "", "", "", ErrPlayerAccountRetired
 		}
 		delete(f.linkCodes, code)
 		return existing, rec.mcUUID, rec.authSource, nil
@@ -449,13 +324,8 @@ func (f *fakeRepo) RedeemPlayerBindCode(_ context.Context, newUserID, code strin
 	return newUserID, rec.mcUUID, rec.authSource, nil
 }
 
-// CreateEmailOTP / VerifyEmailOTP mirror PGRepo's contract so the hermetic tests
-// exercise the same semantics the integration impl honors: a fresh code supersedes
-// the prior live one for (user, purpose), expiry and the attempt cap are checked
-// before the hash compare, a wrong guess costs an attempt without consuming the
-// code, and a match consumes it and flips the user row verified.
 func (f *fakeRepo) CreateEmailOTP(_ context.Context, id, userID, email, codeHash, purpose string, expiresAt time.Time) error {
-	for k, o := range f.otps { // supersede any prior live code (DELETE ... consumed_at IS NULL)
+	for k, o := range f.otps {
 		if o.userID == userID && o.purpose == purpose && !o.consumed {
 			delete(f.otps, k)
 		}
@@ -469,9 +339,6 @@ func (f *fakeRepo) CreateEmailOTP(_ context.Context, id, userID, email, codeHash
 	return nil
 }
 
-// AddLoginEmailOTP mirrors PGRepo.AddLoginEmailOTP: the live codes of (user, purpose)
-// that expired at now go, then all but the newest otpLiveLoginCodes-1, and the new
-// code joins the rest.
 func (f *fakeRepo) AddLoginEmailOTP(_ context.Context, id, userID, email, codeHash, purpose string, now, expiresAt time.Time) error {
 	var live []*fakeEmailOTP
 	for k, o := range f.otps {
@@ -519,10 +386,9 @@ func (f *fakeRepo) VerifyEmailOTP(_ context.Context, userID, purpose, codeHash s
 		return "", ErrOTPLocked
 	}
 	if live.codeHash != codeHash {
-		return "", f.chargeOTP([]*fakeEmailOTP{live}, userID, purpose, now) // a typo costs an attempt but does not consume the code
+		return "", f.chargeOTP([]*fakeEmailOTP{live}, userID, purpose, now)
 	}
-	// A DIFFERENT verified holder of the same address → ErrEmailTaken, code left
-	// live — mirrors PGRepo's guard + the users_verified_email_unique index.
+	// Another verified holder of the address yields ErrEmailTaken and leaves the code live.
 	for _, u := range f.staff {
 		if u.ID != userID && u.EmailVerified && strings.EqualFold(u.Email, live.email) {
 			return "", ErrEmailTaken
@@ -548,11 +414,6 @@ func (f *fakeRepo) SetUserEmail(_ context.Context, userID, email string) error {
 	return ErrNotFound
 }
 
-// CreatePasskeyChallenge / ConsumePasskeyChallengeByUser mirror PGRepo's contract so
-// the hermetic tests exercise the same semantics: a fresh begin supersedes ALL prior
-// rows for (user, purpose) — live, consumed, or expired — so the table holds at most one
-// row per (user, purpose), and the consume path redeems the newest live one (expiry
-// checked before consuming), single-use.
 func (f *fakeRepo) CreatePasskeyChallenge(_ context.Context, id, userID, purpose string, sessionData []byte, expiresAt time.Time) error {
 	for k, c := range f.passkeyChallenges { // supersede all prior (DELETE ... user_id=$1 AND purpose=$2)
 		if c.userID == userID && c.purpose == purpose {
@@ -566,10 +427,6 @@ func (f *fakeRepo) CreatePasskeyChallenge(_ context.Context, id, userID, purpose
 	return nil
 }
 
-// AddPasskeyLoginChallenge / ConsumePasskeyLoginChallenge mirror PGRepo's email-first
-// login pair: begin reaps the account's spent login rows, refuses once source holds
-// maxLiveChallengesPerSource live login rows, and stores the challenge beside the
-// others; consume redeems the live row whose challenge the browser signed.
 func (f *fakeRepo) AddPasskeyLoginChallenge(_ context.Context, id, userID, purpose, source, challenge string, sessionData []byte, now, expiresAt time.Time) error {
 	fromSource := 0
 	for k, c := range f.passkeyChallenges {
@@ -620,17 +477,12 @@ func (f *fakeRepo) ConsumePasskeyChallengeByUser(_ context.Context, userID, purp
 	return live.sessionData, nil
 }
 
-// CreateDiscoverableChallenge / ConsumeDiscoverableChallenge mirror PGRepo's non-user-keyed
-// contract (task #40): begin reaps expired/consumed rows, refuses once source holds
-// maxLiveChallengesPerSource live rows, then stashes under the opaque handle; consume redeems
-// by handle, single-use, expiry checked. discoverableFull forces the global cap so the begin
-// 429 branch is reachable without inserting thousands of rows.
 func (f *fakeRepo) CreateDiscoverableChallenge(_ context.Context, id, source string, sessionData []byte, now, expiresAt time.Time) error {
 	if f.discoverableFull {
 		return ErrTooManyPasskeyChallenges
 	}
 	fromSource := 0
-	for k, c := range f.discoverableChallenges { // reap (DELETE ... expires_at<=now OR consumed_at NOT NULL)
+	for k, c := range f.discoverableChallenges {
 		if c.consumed || !c.expiresAt.After(now) {
 			delete(f.discoverableChallenges, k)
 			continue
@@ -654,8 +506,6 @@ func (f *fakeRepo) ConsumeDiscoverableChallenge(_ context.Context, id string, no
 	return c.sessionData, nil
 }
 
-// CreatePasskeyCredential mirrors PGRepo: a credential_id already bound to ANY account
-// → ErrConflict (the UNIQUE guard), never a silent rebind.
 func (f *fakeRepo) CreatePasskeyCredential(_ context.Context, c PasskeyCredential) error {
 	for _, ex := range f.passkeyCreds {
 		if ex.CredentialID == c.CredentialID {
@@ -666,9 +516,7 @@ func (f *fakeRepo) CreatePasskeyCredential(_ context.Context, c PasskeyCredentia
 	return nil
 }
 
-// PasskeyCredentialsForUser mirrors PGRepo: the user's own passkeys, newest first.
-// CreatedAt orders the list; id is a deterministic tie-break for the frozen test clock
-// (the PG ORDER BY is created_at DESC; same-instant rows are simply stable here).
+// PasskeyCredentialsForUser breaks timestamp ties by ID because the fixture clock is frozen.
 func (f *fakeRepo) PasskeyCredentialsForUser(_ context.Context, userID string) ([]PasskeyCredential, error) {
 	var out []PasskeyCredential
 	for _, c := range f.passkeyCreds {
@@ -685,9 +533,6 @@ func (f *fakeRepo) PasskeyCredentialsForUser(_ context.Context, userID string) (
 	return out, nil
 }
 
-// DeletePasskeyCredential mirrors PGRepo: scoped to userID so a caller can only unbind
-// their OWN credential; no matching (user, id) row → ErrNotFound; the last passkey of
-// a user whose email is unverified (or who has no user row here) → ErrLastPasskey.
 func (f *fakeRepo) DeletePasskeyCredential(_ context.Context, userID, id string) error {
 	c, ok := f.passkeyCreds[id]
 	if !ok || c.UserID != userID {
@@ -712,8 +557,6 @@ func (f *fakeRepo) DeletePasskeyCredential(_ context.Context, userID, id string)
 	return nil
 }
 
-// DeleteAllPasskeyCredentialsForUser mirrors PGRepo: unbind every passkey the user holds,
-// and removing zero is a successful no-op (never ErrNotFound).
 func (f *fakeRepo) DeleteAllPasskeyCredentialsForUser(_ context.Context, userID string) error {
 	for id, c := range f.passkeyCreds {
 		if c.UserID == userID {
@@ -723,10 +566,6 @@ func (f *fakeRepo) DeleteAllPasskeyCredentialsForUser(_ context.Context, userID 
 	return nil
 }
 
-// AdvanceCredentialSignCount mirrors PGRepo: find the passkey by its UNIQUE credential_id, set
-// the stored counter to newSignCount, and stamp last_used_at. A credential_id matching no row
-// is a successful no-op (the PG UPDATE touches zero rows), so a test can assert both the
-// advance-on-success and the never-error-on-missing contracts.
 func (f *fakeRepo) AdvanceCredentialSignCount(_ context.Context, credentialID string, newSignCount uint32, usedAt time.Time) error {
 	for id, c := range f.passkeyCreds {
 		if c.CredentialID == credentialID {
@@ -740,31 +579,17 @@ func (f *fakeRepo) AdvanceCredentialSignCount(_ context.Context, credentialID st
 	return nil
 }
 
-// fakePasskeyVerifier is the hermetic PasskeyVerifier: it performs no real attestation
-// or assertion crypto, so it exercises the enrollment AND login STATE MACHINES (challenge
-// persistence, consume, conflict, audit, session mint) without go-webauthn.
-// BeginRegistration/BeginLogin return a fixed options blob and an opaque session marker;
-// FinishRegistration returns the credential the test preloaded and FinishLogin the
-// assertion it preloaded, or a forced error when failErr is set (to drive the finish 400
-// path). beginLoginErr drives BeginLogin's own failure branch — a user with no assertable
-// credential — which the login-begin handler maps to passkey_login_failed.
+// fakePasskeyVerifier returns canned results without performing cryptographic verification.
 type fakePasskeyVerifier struct {
-	options       json.RawMessage
-	credential    VerifiedCredential
-	assertion     VerifiedAssertion
-	failErr       error
-	beginLoginErr error
-	// lastUser/lastSession capture what the handler passed, so a test can assert the
-	// stashed SessionData round-trips and the existing credentials reach the verifier.
-	lastUser    PasskeyUser
-	lastSession []byte
-	// loginSession, when set, is the SessionData BeginLogin hands out in place of the
-	// per-user marker, so a test can tell two live login ceremonies apart at finish.
-	loginSession []byte
-	// discoverableUserHandle is the userHandle the fake feeds to FinishDiscoverableLogin's
-	// resolver, so a handler test drives the userHandle → UserByID → session-mint wiring for a
-	// chosen account (or an unknown handle, to exercise the resolve-fails branch).
-	discoverableUserHandle []byte
+	options                json.RawMessage
+	credential             VerifiedCredential
+	assertion              VerifiedAssertion
+	failErr                error
+	beginLoginErr          error
+	lastUser               PasskeyUser
+	lastSession            []byte
+	loginSession           []byte // when set, BeginLogin returns it instead of the per-user marker
+	discoverableUserHandle []byte // handle fed to the FinishDiscoverableLogin resolver
 }
 
 func (v *fakePasskeyVerifier) BeginRegistration(user PasskeyUser) (json.RawMessage, []byte, error) {
@@ -825,9 +650,6 @@ func (v *fakePasskeyVerifier) FinishDiscoverableLogin(resolveUser func([]byte) (
 	if v.failErr != nil {
 		return VerifiedAssertion{}, v.failErr
 	}
-	// Drive the resolver with the configured user handle so the handler's userHandle → UserByID
-	// → session-mint wiring runs end to end; a resolve error (unknown handle) fails the ceremony
-	// exactly as the real ValidateDiscoverableLogin would when the handler cannot be resolved.
 	u, err := resolveUser(v.discoverableUserHandle)
 	if err != nil {
 		return VerifiedAssertion{}, err
@@ -858,8 +680,6 @@ func (f *fakeRepo) SetAllowlistWake(_ context.Context, n, uuid string, canWake b
 	return ErrNotFound
 }
 
-// RequestRetire and CancelRetire mirror PGRepo's: the first request time is
-// kept, a deletion stays a deletion, and only an admin cancels a deletion.
 func (f *fakeRepo) RequestRetire(_ context.Context, n string, del bool) (RetireState, error) {
 	rec, ok := f.byName[n]
 	if !ok {
@@ -889,13 +709,8 @@ func (f *fakeRepo) UserByMCUUID(_ context.Context, uuid string) (string, error) 
 	return "", ErrNotFound
 }
 
-// ReclaimUsername mirrors PGRepo.ReclaimUsername: it bars the squatter UUID and
-// stashes the data hold together (the all-or-nothing PG transaction), keyed by
-// mc_uuid so a repeat reclaim of an already-barred UUID is an idempotent no-op
-// (ON CONFLICT (mc_uuid) DO NOTHING on both tables) — the first reclaim wins and
-// a duplicate neither errors nor overwrites the stored hold.
 func (f *fakeRepo) ReclaimUsername(_ context.Context, id, squatterUUID, username, dataRef string, expiresAt time.Time) (time.Time, error) {
-	if h, ok := f.holds[squatterUUID]; ok { // already stashed — idempotent no-op; keep & report the first window
+	if h, ok := f.holds[squatterUUID]; ok {
 		return h.expiresAt, nil
 	}
 	f.blacklist[squatterUUID] = true
@@ -906,9 +721,6 @@ func (f *fakeRepo) IsUsernameBlacklisted(_ context.Context, mcUUID string) (bool
 	return f.blacklist[mcUUID], nil
 }
 
-// IsProtectedAdminLink mirrors PGRepo's JOIN of account_links to users: linked,
-// auth_source 'thirdparty', and the linked user staff (admin OR owner) — no
-// password-hash test, so an SSO Operator or the Owner is protected like any other.
 func (f *fakeRepo) IsProtectedAdminLink(_ context.Context, mcUUID string) (bool, error) {
 	userID, ok := f.links[mcUUID]
 	if !ok || f.linkAuthSource[mcUUID] != authSourceThirdParty {
@@ -939,8 +751,6 @@ func (f *fakeRepo) RecordJoin(_ context.Context, n, uuid string) error {
 	return nil
 }
 func (f *fakeRepo) MyServers(_ context.Context, u string) ([]MyServerView, error) {
-	// Fresh rows per call, as PGRepo scans them: the handler joins live state
-	// into the slice it gets.
 	return append([]MyServerView(nil), f.mine[u]...), nil
 }
 func (f *fakeRepo) ServerOwners(_ context.Context) (map[string]ServerOwnership, error) {
@@ -956,7 +766,6 @@ func (f *fakeRepo) SeedServer(_ context.Context, name, subdomain string, _, _, _
 	if bound, ok := f.aliases[subdomain]; ok && bound != name {
 		return ErrConflict
 	}
-	// Like the SQL: an earlier server of this name gives up its other aliases.
 	for sub, bound := range f.aliases {
 		if bound == name && sub != subdomain {
 			delete(f.aliases, sub)
@@ -998,22 +807,17 @@ func (f *fakeRepo) BackupStoreBytes(context.Context) (int64, error) {
 	return n, nil
 }
 
-// AllBackups / BackupsForUser / LatestBackup mirror the PG queries' contract so
-// the hermetic tests can't pass against a too-lenient fake: only status='present'
-// rows are visible, the user scope is the former_owner column, and LatestBackup
-// is the newest present row for a server (or ErrNotFound).
 func (f *fakeRepo) AllBackups(_ context.Context, opts BackupListOpts) ([]BackupView, int, error) {
 	return f.pageBackups("", opts)
 }
 func (f *fakeRepo) BackupsForUser(_ context.Context, userID string, opts BackupListOpts) ([]BackupView, int, error) {
-	if userID == "" { // an empty id is no former owner; "" below means every owner
+	if userID == "" { // An empty former-owner ID would widen this fixture query to all owners.
 		return nil, 0, nil
 	}
 	return f.pageBackups(userID, opts)
 }
 
-// pageBackups filters like the PG query (present, in scope, on the server) and
-// pages newest first, recording the options it was asked for.
+// pageBackups returns present backups newest first and records opts.
 func (f *fakeRepo) pageBackups(owner string, opts BackupListOpts) ([]BackupView, int, error) {
 	f.backupListOpts = opts
 	var match []BackupView
@@ -1077,12 +881,6 @@ func (f *fakeRepo) ExpireBackup(_ context.Context, id string, at time.Time) erro
 	return ErrNotFound
 }
 
-// ---- staff / session auth fakes (spec §B, passwordless) ----
-// Each method mirrors the PGRepo contract: a returned StaffUser is copied so a
-// test cannot mutate the stored row by reference, SessionUser re-reads the
-// CURRENT staff row (so a role change or a deleted account takes effect on live
-// sessions just as the PG JOIN does), and the settings/sessions semantics match.
-
 func (f *fakeRepo) UserByUsername(_ context.Context, username string) (*StaffUser, error) {
 	if u, ok := f.staff[username]; ok {
 		cp := *u
@@ -1100,8 +898,7 @@ func (f *fakeRepo) UserByID(_ context.Context, id string) (*StaffUser, error) {
 	return nil, ErrNotFound
 }
 func (f *fakeRepo) UpsertOwner(_ context.Context, id, username, email string) error {
-	// Mirror PG ON CONFLICT (username): preserve the existing id so live sessions
-	// survive a re-bootstrap.
+	// Preserves the existing id so live sessions survive a re-bootstrap.
 	if existing, ok := f.staff[username]; ok {
 		id = existing.ID
 	}
@@ -1138,8 +935,6 @@ func (f *fakeRepo) MarkSessionReauth(_ context.Context, tokenHash string, at tim
 	return nil
 }
 
-// liveSession mirrors PGRepo's sessionLive: unrevoked, unexpired, its account
-// alive, and a staff session seen within staffSessionIdle.
 func (f *fakeRepo) liveSession(s *fakeSession, now time.Time) (*StaffUser, bool) {
 	if s.revoked || !s.expiresAt.After(now) {
 		return nil, false
@@ -1242,9 +1037,6 @@ func (f *fakeRepo) CompareAndSetSetting(ctx context.Context, key string, expecte
 	return f.SetSetting(ctx, key, value)
 }
 
-// ---- user admin fakes ----
-
-// seededUser is a test-only user row held in the fake repo.
 type seededUser struct {
 	view   UserView
 	detail UserDetail
@@ -1299,7 +1091,6 @@ func (f *fakeRepo) ListUsers(_ context.Context, opts ListUsersOpts) ([]UserView,
 	if end > len(filtered) {
 		end = len(filtered)
 	}
-	// Newest first — the PG orders by created_at DESC too.
 	for i, j := 0, len(filtered)-1; i < j; i, j = i+1, j-1 {
 		filtered[i], filtered[j] = filtered[j], filtered[i]
 	}
@@ -1316,14 +1107,10 @@ func (f *fakeRepo) UserDetail(_ context.Context, userID string) (*UserDetail, er
 			return &su.detail, nil
 		}
 	}
-	// Legacy fixtures seeded only into f.staff are live accounts (nothing marked
-	// them disabled or deleted), so detail reads must resolve them too — the
-	// liveness guards (discoverable login, owner protection) treat "unknown" as a
-	// fault, and these fixtures are known.
+	// Fixtures seeded only in f.staff remain live for detail reads.
 	for _, u := range f.staff {
 		if u.ID == userID {
 			if f.deletedIDs[userID] {
-				// A soft-deleted account still HAS a detail row; it is flagged, not gone.
 				return &UserDetail{UserView: UserView{
 					ID: u.ID, Username: u.Username, Role: u.Role, Disabled: true,
 				}, DeletedAt: &deletedAt}, nil
@@ -1369,8 +1156,7 @@ func (f *fakeRepo) UpdateUser(_ context.Context, userID string, patch UpdateUser
 			f.seededUsers[i].detail.Username = *patch.Username
 		}
 		if patch.Email != nil {
-			// Changing the address voids the proof of it, exactly like PGRepo:
-			// only VerifyEmailOTP may assert a verified address.
+			// Changing the address voids its verification.
 			if *patch.Email != f.seededUsers[i].view.Email {
 				f.seededUsers[i].view.EmailVerified = false
 				f.seededUsers[i].detail.EmailVerified = false
@@ -1393,8 +1179,7 @@ func (f *fakeRepo) DeleteUser(_ context.Context, userID, _ string) error {
 		if su.view.ID == userID {
 			f.seededUsers = append(f.seededUsers[:i], f.seededUsers[i+1:]...)
 			f.deletedIDs[userID] = true
-			// Mirror PGRepo: deletion severs the account's identity assets so the
-			// closed account keeps neither a login credential nor a MC-UUID claim.
+			// Deletion severs the login credential and MC-UUID claim.
 			for uuid, uid := range f.links {
 				if uid == userID {
 					delete(f.links, uuid)
@@ -1423,10 +1208,7 @@ func (f *fakeRepo) SetUserDisabled(_ context.Context, userID string, disabled bo
 	return ErrNotFound
 }
 
-// ---- account migration fakes (spec §B3 inherit, scenario A) ----
-
-// fakeMigration mirrors an account_migrations row through its state machine. Zero
-// times mean the corresponding NULL column (not yet confirmed / no code issued).
+// fakeMigration mirrors an account_migrations row; zero times mean the NULL column.
 type fakeMigration struct {
 	id             string
 	sourceUserID   string
@@ -1458,8 +1240,6 @@ func (m *fakeMigration) view() *MigrationView {
 	return v
 }
 
-// userLive mirrors the PG "id = $1 AND deleted_at IS NULL" guard: a seeded, not-yet-
-// retired user is live; an unknown or soft-deleted one is not.
 func (f *fakeRepo) userLive(userID string) bool {
 	for _, su := range f.seededUsers {
 		if su.view.ID == userID {
@@ -1545,7 +1325,6 @@ func (f *fakeRepo) RedeemMigration(_ context.Context, targetUserID, codeHash str
 			}
 		}
 	}
-	// Re-point every server the source owns to the target (byName holds pointers).
 	var moved []string
 	for name, rec := range f.byName {
 		if rec.OwnerID == mig.sourceUserID {
@@ -1554,7 +1333,6 @@ func (f *fakeRepo) RedeemMigration(_ context.Context, targetUserID, codeHash str
 		}
 	}
 	sort.Strings(moved) // deterministic for assertions
-	// Retire the source: disable + soft-delete.
 	for i, su := range f.seededUsers {
 		if su.view.ID == mig.sourceUserID {
 			f.seededUsers[i].view.Disabled = true
@@ -1568,11 +1346,6 @@ func (f *fakeRepo) RedeemMigration(_ context.Context, targetUserID, codeHash str
 	return mig.sourceUserID, moved, nil
 }
 
-// ---- quota admin fakes ----
-
-// liveUserExists mirrors PGRepo.requireLiveUser: the admin quota/link fakes
-// only act on a live seeded row, so a unit test can drive the unknown-user 404
-// the real FK would otherwise turn into a 500.
 func (f *fakeRepo) liveUserExists(id string) bool {
 	for _, su := range f.seededUsers {
 		if su.view.ID == id && su.detail.DeletedAt == nil {
@@ -1582,10 +1355,7 @@ func (f *fakeRepo) liveUserExists(id string) bool {
 	return false
 }
 
-// seededDead mirrors PGRepo's liveness filters (audit #33): a seeded user that was
-// disabled or soft-deleted is dead for the login doors and session validation. A
-// fixture that was never seeded (legacy tests put it straight into f.staff) is
-// treated as live, matching the fakes' pre-existing behavior.
+// seededDead treats unseeded fixtures as live.
 func (f *fakeRepo) seededDead(id string) bool {
 	if f.deletedIDs[id] {
 		return true
@@ -1598,8 +1368,7 @@ func (f *fakeRepo) seededDead(id string) bool {
 	return false
 }
 
-// seededDeleted is the narrower liveness query: soft-deleted only (a disabled
-// account still holds its identity, mirroring VerifyLinkCode's takeover rule).
+// seededDeleted excludes disabled accounts because they still retain their identity.
 func (f *fakeRepo) seededDeleted(id string) bool {
 	if f.deletedIDs[id] {
 		return true
@@ -1645,13 +1414,10 @@ func (f *fakeRepo) SetQuotas(_ context.Context, userID string, qi QuotaInput, _ 
 	if f.fakeQuotas == nil {
 		f.fakeQuotas = map[string]*QuotaView{}
 	}
-	// A full replacement, like the SQL upsert: nil is unlimited.
 	f.fakeQuotas[userID] = &QuotaView{UserID: userID, Custom: true, MaxServers: qi.MaxServers,
 		MaxCPUMilli: qi.MaxCPUMilli, MaxMemoryMB: qi.MaxMemoryMB, MaxStorageGB: qi.MaxStorageGB}
 	return f.fakeQuotas[userID], nil
 }
-
-// ---- session admin fakes ----
 
 func (f *fakeRepo) ListUserSessions(_ context.Context, userID string, now time.Time) ([]SessionView, error) {
 	var out []SessionView
@@ -1698,13 +1464,6 @@ func (f *fakeRepo) LinkAccount(_ context.Context, userID, mcUUID, authSource str
 	return nil
 }
 
-// ---- op-login & setup token fakes (spec §B op-login / setup) ----
-
-// UserByEmail mirrors PGRepo.UserByEmail: only a VERIFIED address resolves (the
-// address was proven via an email OTP, not merely asserted), and the match is
-// case-insensitive so the caller may type the address in any casing — the STORED
-// casing is what the mailer and audit trail use. A non-verified or unknown address
-// is indistinguishable from no account: both yield ErrNotFound.
 func (f *fakeRepo) UserByEmail(_ context.Context, email string) (*StaffUser, error) {
 	for _, u := range f.staff {
 		if u.EmailVerified && strings.EqualFold(u.Email, email) && !f.seededDead(u.ID) {
@@ -1715,12 +1474,6 @@ func (f *fakeRepo) UserByEmail(_ context.Context, email string) (*StaffUser, err
 	return nil, ErrNotFound
 }
 
-// ConsumeLoginEmailOTP mirrors PGRepo.ConsumeLoginEmailOTP: every live (unconsumed,
-// unexpired) code of (user, purpose) is a candidate. Nothing live → ErrOTPInvalid;
-// the account lock next; every live code out of attempts → ErrOTPLocked; no match →
-// one attempt on each open code plus one budget failure, nothing consumed; a match
-// spends every live code. No identity side-effect (login already resolved the
-// userID via UserByEmail, so the address is settled).
 func (f *fakeRepo) ConsumeLoginEmailOTP(_ context.Context, userID, purpose, codeHash string, now time.Time) error {
 	var live, open []*fakeEmailOTP
 	matched := false
@@ -1752,8 +1505,6 @@ func (f *fakeRepo) ConsumeLoginEmailOTP(_ context.Context, userID, purpose, code
 	return nil
 }
 
-// CreateOpLoginRequest records a fresh pending op.console login attempt. status is
-// born 'pending'; createdAt orders the pending list (the PG ORDER BY created_at).
 func (f *fakeRepo) CreateOpLoginRequest(_ context.Context, req NewOpLoginRequest) error {
 	f.opLogins[req.ID] = &fakeOpLogin{
 		id: req.ID, userID: req.UserID, email: req.Email, status: "pending",
@@ -1763,9 +1514,6 @@ func (f *fakeRepo) CreateOpLoginRequest(_ context.Context, req NewOpLoginRequest
 	return nil
 }
 
-// OpLoginRequestByID loads a request by handle, projecting the fake row into the
-// OpLoginRequest the handlers read, with the username joined like the PG query.
-// Status is the (approved_at, denied_at) projection the handler gates on.
 func (f *fakeRepo) OpLoginRequestByID(_ context.Context, id string) (*OpLoginRequest, error) {
 	r, ok := f.opLogins[id]
 	if !ok {
@@ -1778,10 +1526,7 @@ func (f *fakeRepo) OpLoginRequestByID(_ context.Context, id string) (*OpLoginReq
 	}, nil
 }
 
-// ConsumeOpLoginRequest stamps consumed on an approved, unconsumed, unexpired
-// request (the finish path's single-use guard), mirroring the PG zero-rows-else
-// UPDATE. The handler reads the approval first too; the store refuses a pending
-// request on its own so the single-use guard never depends on that read.
+// ConsumeOpLoginRequest refuses a pending request itself, independent of the handler's approval read.
 func (f *fakeRepo) ConsumeOpLoginRequest(_ context.Context, id string, now time.Time) error {
 	r, ok := f.opLogins[id]
 	if !ok || r.status != "approved" || r.consumed || !r.expiresAt.After(now) {
@@ -1791,10 +1536,7 @@ func (f *fakeRepo) ConsumeOpLoginRequest(_ context.Context, id string, now time.
 	return nil
 }
 
-// ListPendingOpLogins returns the live (pending, unconsumed, unexpired) requests
-// oldest-first, mirroring the PG WHERE consumed_at IS NULL AND approved_at IS NULL
-// AND expires_at > now ORDER BY created_at. Username is joined from the staff map
-// (the in-game admin needs to name who is waiting).
+// ListPendingOpLogins returns live (pending, unconsumed, unexpired) requests oldest first.
 func (f *fakeRepo) ListPendingOpLogins(_ context.Context, now time.Time) ([]OpLoginRequest, error) {
 	var out []OpLoginRequest
 	for _, r := range f.opLogins {
@@ -1816,9 +1558,6 @@ func (f *fakeRepo) ListPendingOpLogins(_ context.Context, now time.Time) ([]OpLo
 	return out, nil
 }
 
-// ApproveOpLogin marks a pending request approved by approverUserID, atomically: it
-// flips status to 'approved' only on a still-pending, unconsumed, unexpired row, else
-// ErrNotFound (double approve / dead request is a no-op the caller surfaces as 404).
 func (f *fakeRepo) ApproveOpLogin(_ context.Context, id, approverUserID string, now time.Time) error {
 	r, ok := f.opLogins[id]
 	if !ok || r.consumed || r.status != "pending" || !r.expiresAt.After(now) {
@@ -1828,9 +1567,7 @@ func (f *fakeRepo) ApproveOpLogin(_ context.Context, id, approverUserID string, 
 	return nil
 }
 
-// RedeemSetupToken spends a setup token and stores s for its user, or ErrNotFound
-// when the token is absent, already spent, or expired. failRedeemSetup fails the
-// whole redemption.
+// RedeemSetupToken returns ErrNotFound for an absent, spent or expired token; failRedeemSetup fails it outright.
 func (f *fakeRepo) RedeemSetupToken(ctx context.Context, tokenHash string, now time.Time, s NewSession) (string, error) {
 	if f.failRedeemSetup != nil {
 		return "", f.failRedeemSetup
@@ -1848,8 +1585,6 @@ func (f *fakeRepo) RedeemSetupToken(ctx context.Context, tokenHash string, now t
 	return tok.UserID, nil
 }
 
-// usernameFor joins a userID to its staff username (the op-login projection the
-// in-game admin needs to name who is waiting). "" when the user is gone.
 func (f *fakeRepo) usernameFor(userID string) string {
 	for _, u := range f.staff {
 		if u.ID == userID {
@@ -1859,9 +1594,6 @@ func (f *fakeRepo) usernameFor(userID string) string {
 	return ""
 }
 
-// fakeRestorer records the restore it was asked to start and returns a canned
-// error, mirroring the Restorer kick-off contract. The real restore Job is
-// integration-only, so the handler is tested against this fake (spec §466).
 type fakeRestorer struct {
 	err     error
 	calls   int
@@ -1883,20 +1615,18 @@ type fakeCluster struct {
 	desired     map[string]v1alpha1.DesiredState
 	created     map[string]CreateServerInput // name -> the validated input it was created from
 	patched     map[string]ServerSpecPatch   // name -> the validated spec patch it received
-	noWorld     map[string]bool              // server names modeled WITHOUT a world volume (never started / reaped)
+	noWorld     map[string]bool              // servers modeled without a world volume
 	ensured     []string                     // EnsureWorldVolume calls
 	orphanWorld map[string]bool              // names with a world volume but no server (CR deleted by hand)
 	createErr   error
 	pingErr     error
-	patchErr    error // PatchServerSpec fails with it after finding the server
-	goneOnPatch bool  // PatchServerSpec finds the server deleted since it was read
-	// maintErr / wakeErr: what AcquireMaintenance / SetDesiredState(Running)
-	// return for a server (the world-volume lock, internal/maintenance).
-	maintErr map[string]error
-	wakeErr  map[string]error
-	acquired []string // "name:kind" per admitted AcquireMaintenance
-	released []string // names per ReleaseMaintenance
-	retried  []string // names per RetryStart
+	patchErr    error            // PatchServerSpec fails with it after finding the server
+	goneOnPatch bool             // PatchServerSpec finds the server deleted since it was read
+	maintErr    map[string]error // AcquireMaintenance result per server
+	wakeErr     map[string]error
+	acquired    []string // "name:kind" per admitted AcquireMaintenance
+	released    []string // names per ReleaseMaintenance
+	retried     []string // names per RetryStart
 }
 
 func newFakeCluster() *fakeCluster {
@@ -1925,9 +1655,6 @@ func (c *fakeCluster) ListServers(_ context.Context) ([]ServerInfo, error) {
 }
 func (c *fakeCluster) Ping(_ context.Context) error { return c.pingErr }
 
-// WorldVolumeExists models the world PVC: a known server has one unless the test
-// named it in noWorld (never started / already reaped); an unknown name has one
-// only when named in orphanWorld (its CR was deleted by hand).
 func (c *fakeCluster) WorldVolumeExists(_ context.Context, n string) (bool, error) {
 	if c.orphanWorld[n] {
 		return true, nil
@@ -1947,7 +1674,7 @@ func (c *fakeCluster) EnsureWorldVolume(_ context.Context, n string) error {
 
 func (c *fakeCluster) SetDesiredState(_ context.Context, n string, s v1alpha1.DesiredState) error {
 	if _, ok := c.byName[n]; !ok {
-		return ErrNotFound // the MinecraftServer is gone, as K8sCluster.getServer reports it
+		return ErrNotFound
 	}
 	if err := c.wakeErr[n]; err != nil && s == v1alpha1.DesiredRunning {
 		return err
@@ -1956,8 +1683,6 @@ func (c *fakeCluster) SetDesiredState(_ context.Context, n string, s v1alpha1.De
 	return nil
 }
 
-// RetryStart records the retry on top of the plain start, so a test tells a
-// Failed server's retry apart from an ordinary wake.
 func (c *fakeCluster) RetryStart(ctx context.Context, n string) error {
 	if err := c.SetDesiredState(ctx, n, v1alpha1.DesiredRunning); err != nil {
 		return err
@@ -2035,8 +1760,6 @@ func (c *fakeCluster) PatchServerSpec(_ context.Context, n string, p ServerSpecP
 		return c.patchErr
 	}
 	c.patched[n] = p
-	// Apply only the fields the lifecycle view exposes, so a follow-up read sees
-	// the mutation (mirrors the real merge patch touching only non-nil fields).
 	if p.AutostartPolicy != nil {
 		info.AutostartPolicy = string(*p.AutostartPolicy)
 	}
@@ -2070,10 +1793,6 @@ func (c *fakeCluster) PatchServerSpec(_ context.Context, n string, p ServerSpecP
 	return nil
 }
 
-// fakeConsole records the command it was asked to run and returns a canned reply
-// or error, mirroring the Console contract. The real K8sConsole's password
-// resolution and RCON dial are integration-only, so the handler is tested
-// against this fake (spec §8 写=RCON).
 type fakeConsole struct {
 	reply      string
 	err        error
@@ -2091,8 +1810,6 @@ func (f *fakeConsole) RunCommand(_ context.Context, name, command string) (strin
 	return f.reply, nil
 }
 
-// staticExternal injects a fixed principal so handler logic is tested without a
-// session store.
 type staticExternal struct {
 	p   *Principal
 	err error
@@ -2100,7 +1817,7 @@ type staticExternal struct {
 
 func (s staticExternal) Authenticate(*http.Request) (*Principal, error) { return s.p, s.err }
 
-// okInternal admits every request as one caller, the proxy unless set.
+// okInternal admits every request as one caller (the proxy unless set).
 type okInternal struct{ caller Caller }
 
 func (o okInternal) Authenticate(*http.Request) (Caller, error) {
@@ -2109,8 +1826,6 @@ func (o okInternal) Authenticate(*http.Request) (Caller, error) {
 	}
 	return o.caller, nil
 }
-
-// ---- helpers ----
 
 func newTestAPI(repo Repo, cl Cluster) *API {
 	return &API{Repo: repo, Cluster: cl, Internal: okInternal{}, RootDomain: testRoot,
@@ -2149,22 +1864,17 @@ func decodeErr(t *testing.T, w *httptest.ResponseRecorder) string {
 	return raw["error"]["code"]
 }
 
-// ---- dual-face separation ----
-
 func TestInternalFaceRequiresServiceToken(t *testing.T) {
 	api := newTestAPI(newFakeRepo(), newFakeCluster())
 	api.Internal = CallerTokens{CallerVelocity: "s3cr3t"}
 	h := api.InternalHandler()
 
-	// no token -> 401
 	if w := do(h, "GET", "/api/v1/servers", "", nil); w.Code != http.StatusUnauthorized {
 		t.Fatalf("no token: code = %d, want 401", w.Code)
 	}
-	// wrong token -> 401
 	if w := do(h, "GET", "/api/v1/servers", "", map[string]string{"Authorization": "Bearer nope"}); w.Code != http.StatusUnauthorized {
 		t.Fatalf("wrong token: code = %d, want 401", w.Code)
 	}
-	// right token -> 200
 	if w := do(h, "GET", "/api/v1/servers", "", map[string]string{"Authorization": "Bearer s3cr3t"}); w.Code != http.StatusOK {
 		t.Fatalf("right token: code = %d, want 200", w.Code)
 	}
@@ -2178,27 +1888,22 @@ func TestHealthzIsUnauthenticated(t *testing.T) {
 	}
 }
 
-// TestReadyzPingsDependencies proves /readyz verifies DB and K8s API liveness
-// before declaring ready, and returns 503 when either is down (spec §7).
 func TestReadyzPingsDependencies(t *testing.T) {
 	repo := newFakeRepo()
 	cl := newFakeCluster()
 	api := newTestAPI(repo, cl)
 	api.Internal = CallerTokens{CallerVelocity: "s3cr3t"}
 
-	// Both healthy.
 	if w := do(api.InternalHandler(), "GET", "/readyz", "", nil); w.Code != http.StatusOK {
 		t.Fatalf("readyz code = %d, want 200 when both deps are healthy (%s)", w.Code, w.Body.String())
 	}
 
-	// DB down.
 	repo.pingErr = errors.New("connection refused")
 	if w := do(api.InternalHandler(), "GET", "/readyz", "", nil); w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("readyz code = %d, want 503 when DB is down (%s)", w.Code, w.Body.String())
 	}
 	repo.pingErr = nil
 
-	// K8s API down.
 	cl.pingErr = errors.New("cannot reach apiserver")
 	if w := do(api.InternalHandler(), "GET", "/readyz", "", nil); w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("readyz code = %d, want 503 when K8s API is down (%s)", w.Code, w.Body.String())
@@ -2213,16 +1918,10 @@ func TestExternalFaceRequiresPrincipal(t *testing.T) {
 	}
 }
 
-// TestUnbindUserPasskeys proves the authenticator-remediation door
-// (DELETE /users/{id}/passkeys) severs every passkey a target account holds, is
-// gated to the owner role (an Operator-grade admin is refused, so it is stricter
-// than the app-admin surface), and treats an account with no passkeys as a 200
-// no-op rather than a 404 — remediation must be idempotent.
 func TestUnbindUserPasskeys(t *testing.T) {
 	repo := newFakeRepo()
 	api := newTestAPI(repo, newFakeCluster())
 
-	// Seed the target account with two bound passkeys.
 	ctx := context.Background()
 	for _, id := range []string{"pk1", "pk2"} {
 		if err := repo.CreatePasskeyCredential(ctx, PasskeyCredential{
@@ -2263,13 +1962,6 @@ func TestUnbindUserPasskeys(t *testing.T) {
 	})
 }
 
-// TestMeIdentity proves GET /api/v1/me reports the server-computed identity the
-// panel uses to gate its Admin / SysAdmin navigation. The load-bearing assertion
-// is the third subtest: is_admin tracks Principal.IsAdmin(), so the admin ROLE is
-// not sufficient — the request must ALSO have arrived via the admin Access path
-// (ViaAdminAccess). An admin who reached the panel through the ordinary app path
-// therefore reads is_admin=false and the panel hides the admin surfaces (which the
-// backend would 403 regardless). This keeps the client from re-deriving graded ZT.
 func TestMeIdentity(t *testing.T) {
 	get := func(p *Principal) map[string]any {
 		api := newTestAPI(newFakeRepo(), newFakeCluster())
@@ -2311,11 +2003,6 @@ func TestMeIdentity(t *testing.T) {
 	})
 }
 
-// TestMyServersJoinsLiveState proves /me/servers carries the live CRD fields the
-// panel renders: every row gets the display name, live phase and counts, and
-// only the caller's own rows get owner detail (desired state, autostart policy,
-// an unreadable player count), as the status route withholds them from others.
-// A cluster read failure keeps the Postgres rows with the cached phase.
 func TestMyServersJoinsLiveState(t *testing.T) {
 	repo := newFakeRepo()
 	repo.mine = map[string][]MyServerView{"u1": {
@@ -2379,13 +2066,6 @@ func TestMyServersJoinsLiveState(t *testing.T) {
 	}
 }
 
-// ---- fleet (SysAdmin cockpit read) ----
-
-// TestFleetAdminRead proves the SysAdmin cockpit's fleet read is admin-tier AND
-// fleet-wide. Two properties distinguish it from the app-tier /me/servers: a plain
-// user is rejected by adminOnly before the handler runs, and an admin sees EVERY
-// server the cluster reports (CRD truth via ListServers, §1) rather than a
-// caller-scoped slice.
 func TestFleetAdminRead(t *testing.T) {
 	cl := newFakeCluster()
 	cl.list = []ServerInfo{
@@ -2404,9 +2084,6 @@ func TestFleetAdminRead(t *testing.T) {
 	})
 
 	t.Run("admin via ordinary app path forbidden (graded ZT)", func(t *testing.T) {
-		// The admin ROLE alone is not enough: without the admin Access path adminOnly
-		// rejects, so the cockpit read cannot be reached by an admin who arrived via
-		// the ordinary app face — exactly as GET /api/v1/me reports is_admin=false there.
 		api := newTestAPI(newFakeRepo(), cl)
 		api.External = staticExternal{p: &Principal{UserID: "a1", Email: "a1@example.net",
 			Role: "admin", ViaAdminAccess: false}}
@@ -2416,8 +2093,6 @@ func TestFleetAdminRead(t *testing.T) {
 		}
 	})
 
-	// fleetRow mirrors the on-the-wire fleetServerView: the lifecycle fields plus
-	// the ownership join.
 	type fleetRow struct {
 		Name         string `json:"name"`
 		Owner        string `json:"owner"`
@@ -2446,16 +2121,12 @@ func TestFleetAdminRead(t *testing.T) {
 
 	t.Run("admin reads the whole fleet", func(t *testing.T) {
 		rows := readFleet(t, adminAPI(newFakeRepo()))
-		// Fleet-wide: all three servers, not a caller-scoped subset.
 		if len(rows) != 3 {
 			t.Fatalf("servers = %d, want 3 (the fleet read must not be caller-scoped)", len(rows))
 		}
 	})
 
 	t.Run("system services are marked read-only", func(t *testing.T) {
-		// The login gate and the lobby carry reserved names, so every per-server
-		// route rejects them; the fleet row must say "system" so the cockpit
-		// renders them without actions that would 400.
 		sysCl := newFakeCluster()
 		sysCl.list = []ServerInfo{
 			{Name: "login", Phase: "Running", Ready: true},
@@ -2492,8 +2163,6 @@ func TestFleetAdminRead(t *testing.T) {
 
 	t.Run("ownership comes from the account id", func(t *testing.T) {
 		repo := newFakeRepo()
-		// The caller (a1) owns "survival" but has no email, so its display is the
-		// username; "creative" belongs to someone else; "skyblock" is unclaimed.
 		repo.owners["survival"] = ServerOwnership{OwnerID: "a1", Owner: "a1-username"}
 		repo.owners["creative"] = ServerOwnership{OwnerID: "u2", Owner: "alice@example.net"}
 		repo.owners["skyblock"] = ServerOwnership{}
@@ -2514,8 +2183,6 @@ func TestFleetAdminRead(t *testing.T) {
 	})
 
 	t.Run("a server without a business row cannot be claimed", func(t *testing.T) {
-		// A CRD the servers table does not know (or a soft-deleted row) answers a
-		// claim with 404, so the row must not offer one.
 		rows := readFleet(t, adminAPI(newFakeRepo()))
 		for _, r := range rows {
 			if r.Claimable || r.Owned || r.OwnerUnknown {
@@ -2543,7 +2210,7 @@ func TestFleetAdminRead(t *testing.T) {
 		repo.owners["survival"] = ServerOwnership{OwnerID: "u2", Owner: "alice@example.net"} // would merge, but the lookup errors
 		repo.owners["skyblock"] = ServerOwnership{}
 		repo.ownersErr = fmt.Errorf("postgres unreachable")
-		rows := readFleet(t, adminAPI(repo)) // must still be 200, not 500
+		rows := readFleet(t, adminAPI(repo))
 		if len(rows) != 3 {
 			t.Fatalf("servers = %d, want 3 (a Postgres blip must not drop the fleet)", len(rows))
 		}
@@ -2554,8 +2221,6 @@ func TestFleetAdminRead(t *testing.T) {
 		}
 	})
 }
-
-// ---- join-event ----
 
 func TestJoinEvent(t *testing.T) {
 	repo := newFakeRepo()
@@ -2588,8 +2253,6 @@ func TestJoinEvent(t *testing.T) {
 	})
 }
 
-// ---- claim (§9.3) ----
-
 func TestClaimStateMachine(t *testing.T) {
 	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user", ViaAdminAccess: false}
 
@@ -2613,8 +2276,6 @@ func TestClaimStateMachine(t *testing.T) {
 		}
 	})
 	t.Run("atomic gate refusal -> 403 quota_exceeded", func(t *testing.T) {
-		// The advisory pre-check passed, but ClaimServer's serialized re-check
-		// (audit #4) refuses: the caller must see the same 403, not a 500.
 		repo := newFakeRepo()
 		repo.linked["u1"] = true
 		repo.quota["u1"] = true
@@ -2654,10 +2315,6 @@ func TestClaimStateMachine(t *testing.T) {
 			t.Fatalf("audit not written as expected: %+v", repo.audits)
 		}
 	})
-	// A world the reaper released used to have its resource cache zeroed, and the
-	// quota gate read the cache: the claim passed every resource cap and the server
-	// then counted as nothing. The claim reads the server's size off the cluster,
-	// gates on it, and writes it back to the cache.
 	t.Run("gated on the server's real size, whatever the cache says", func(t *testing.T) {
 		repo := newFakeRepo()
 		repo.linked["u1"] = true
@@ -2711,8 +2368,7 @@ func TestClaimStateMachine(t *testing.T) {
 	})
 }
 
-// claimCluster holds the survival server a claim test claims: 2 CPUs, 4Gi of memory
-// and a 10Gi world.
+// claimCluster holds the survival server a claim test claims: 2 CPUs, 4Gi of memory and a 10Gi world.
 func claimCluster() *fakeCluster {
 	cl := newFakeCluster()
 	cl.byName["survival"] = &ServerInfo{Name: "survival", StorageSize: "10Gi", Resources: corev1.ResourceRequirements{
@@ -2720,8 +2376,6 @@ func claimCluster() *fakeCluster {
 	}}
 	return cl
 }
-
-// ---- wake (autostartPolicy gate + cooldown) ----
 
 func TestWakeAutostartGate(t *testing.T) {
 	mk := func(policy string) (*API, *fakeCluster) {
@@ -2791,21 +2445,12 @@ func TestWakeCooldown(t *testing.T) {
 	if w := do(h, "POST", "/api/v1/servers/survival/wake", "", nil); w.Code != http.StatusAccepted {
 		t.Fatalf("first wake code = %d", w.Code)
 	}
-	// clock is frozen, so the second wake is inside the cooldown window
 	if w := do(h, "POST", "/api/v1/servers/survival/wake", "", nil); w.Code != http.StatusTooManyRequests {
 		t.Fatalf("second wake code = %d, want 429", w.Code)
 	}
 }
 
-// TestWakeRunningCap exercises the §9.1 cluster-wide concurrency lever on the
-// external wake path. The cap counts CRD truth via ListServers (never Postgres,
-// per §1) and is a default-off lever: MaxRunningServers <= 0 disables it exactly
-// as a zero WakeCooldown disables the per-server throttle. A full cluster answers
-// 503 at_capacity — distinct from the cooldown's 429 — and an already-Running
-// target re-wakes idempotently regardless of the cap.
 func TestWakeRunningCap(t *testing.T) {
-	// capAPI builds an external-face API whose cluster already holds `running`
-	// servers desired-Running plus a stopped "survival" target, with the cap set.
 	capAPI := func(cap, running int) (*API, *fakeCluster) {
 		cl := newFakeCluster()
 		target := &ServerInfo{Name: "survival", AutostartPolicy: "public",
@@ -2863,12 +2508,6 @@ func TestWakeRunningCap(t *testing.T) {
 	})
 }
 
-// TestWakeCooldownNotBurnedAtCapacity is the §9.1 regression guard for the
-// cooldown/cap ordering: a wake the running-cap refuses with 503 must NOT start
-// the per-server cooldown. Otherwise a player held because the cluster was
-// momentarily full would, once a slot frees, still be made to wait out a 30s
-// cooldown their refused wake never earned. With the clock frozen, a 503 followed
-// by the same server waking the instant capacity frees must return 202, not 429.
 func TestWakeCooldownNotBurnedAtCapacity(t *testing.T) {
 	cl := newFakeCluster()
 	target := &ServerInfo{Name: "survival", AutostartPolicy: "public",
@@ -2881,8 +2520,6 @@ func TestWakeCooldownNotBurnedAtCapacity(t *testing.T) {
 	api.External = staticExternal{p: &Principal{UserID: "u", Role: "user"}}
 	h := api.ExternalHandler()
 
-	// The cluster is full (1 running == cap): the wake is refused with 503 and must
-	// leave the cooldown unstarted.
 	if w := do(h, "POST", "/api/v1/servers/survival/wake", "", nil); w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("at-capacity wake code = %d, want 503", w.Code)
 	}
@@ -2890,8 +2527,6 @@ func TestWakeCooldownNotBurnedAtCapacity(t *testing.T) {
 		t.Fatal("desiredState must not change when refused at capacity")
 	}
 
-	// A slot frees (the other server is gone). The same server, same frozen clock,
-	// must now wake — a 429 here would prove the 503 had burned the cooldown.
 	cl.list = []ServerInfo{*target}
 	if w := do(h, "POST", "/api/v1/servers/survival/wake", "", nil); w.Code != http.StatusAccepted {
 		t.Fatalf("post-capacity wake code = %d, want 202 (the 503 must not burn the cooldown)", w.Code)
@@ -2900,8 +2535,6 @@ func TestWakeCooldownNotBurnedAtCapacity(t *testing.T) {
 		t.Fatalf("desired = %q, want Running", cl.desired["survival"])
 	}
 }
-
-// ---- Zero-Trust admin boundary (§14) ----
 
 func TestAdminBoundary(t *testing.T) {
 	api := newTestAPI(newFakeRepo(), newFakeCluster())
@@ -2922,9 +2555,6 @@ func TestAdminBoundary(t *testing.T) {
 	})
 	t.Run("admin via admin-access reaches handler", func(t *testing.T) {
 		api.External = staticExternal{p: &Principal{UserID: "a", Role: "admin", ViaAdminAccess: true}}
-		// The body is empty so the real handler rejects it (validation 400 with no
-		// Builder → 503), but the point is that the admin Zero-Trust path is NOT
-		// stopped at the 403 boundary — it reaches the handler.
 		w := do(api.ExternalHandler(), "POST", "/api/v1/servers", `{}`, nil)
 		if w.Code == http.StatusForbidden {
 			t.Fatalf("admin via admin-access must reach the handler, got 403")
@@ -2932,12 +2562,6 @@ func TestAdminBoundary(t *testing.T) {
 	})
 }
 
-// TestOpConsoleDoorGate proves op.console is staff-only at the DOOR: a non-admin
-// principal that reaches the operator host is refused before any handler, even on an
-// app-tier route (/me) that no adminOnly wraps. Authentication is not access on
-// op.console — the "internal permission verification" the model requires on top of
-// Zero-Trust. The gate is scoped to the admin host, so the identical principal is
-// unaffected on the player console.
 func TestOpConsoleDoorGate(t *testing.T) {
 	opHost := "op.console." + testRoot
 	playerHost := "console." + testRoot
@@ -2972,11 +2596,6 @@ func TestOpConsoleDoorGate(t *testing.T) {
 	})
 }
 
-// TestSessionAuthOwnerGetsAdminAccess guards the owner-inclusion fix: a role=owner
-// local session on op.console must carry ViaAdminAccess (and thus IsOwner()). The
-// owner is a superset of admin, so excluding it from the session admin-path — as the
-// code once did (u.Role == "admin" only) — silently made IsOwner() unreachable via a
-// passwordless session, locking the platform owner out of the operator console.
 func TestSessionAuthOwnerGetsAdminAccess(t *testing.T) {
 	repo := newFakeRepo()
 	repo.settings[LocalAuthEnabledKey] = []byte("true")
@@ -2995,8 +2614,6 @@ func TestSessionAuthOwnerGetsAdminAccess(t *testing.T) {
 		t.Fatalf("owner via local session on op.console must carry admin access AND IsOwner, got %+v", p)
 	}
 }
-
-// ---- error envelope ----
 
 func TestErrorEnvelopeHasRequestID(t *testing.T) {
 	api := newTestAPI(newFakeRepo(), newFakeCluster())
@@ -3045,8 +2662,6 @@ func TestSessionAuthUsesConfiguredAdminHostname(t *testing.T) {
 		t.Fatalf("root-domain fallback host must not grant admin-path access when admin_hostname is configured")
 	}
 
-	// A private address the install never named is the player face, whatever the
-	// Host header claims.
 	r = httptest.NewRequest("GET", "https://10.211.55.4:30443/api/v1/me", nil)
 	r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
 	p, err = auth.Authenticate(r)
@@ -3058,9 +2673,6 @@ func TestSessionAuthUsesConfiguredAdminHostname(t *testing.T) {
 	}
 }
 
-// The operator console by Host: the configured name, the op.console.<root>
-// fallback, and a bare IP only where the install names it (the nip.io/sslip.io
-// root domain's embedded address, or an IP admin_hostname).
 func TestHostIsAdminConsole(t *testing.T) {
 	cases := []struct {
 		name, host, root, admin string
@@ -3092,8 +2704,6 @@ func TestHostIsAdminConsole(t *testing.T) {
 	}
 }
 
-// With no session cookie there is nothing to authenticate: a Cloudflare Access
-// assertion or a bearer JWT is not a credential felis-api accepts.
 func TestSessionAuthIgnoresAccessAssertions(t *testing.T) {
 	repo := newFakeRepo()
 	repo.settings[LocalAuthEnabledKey] = []byte("true")
@@ -3106,10 +2716,6 @@ func TestSessionAuthIgnoresAccessAssertions(t *testing.T) {
 	}
 }
 
-// TestSessionAuthOutageIs503Not401: a session-store outage must surface as 503
-// auth_unavailable, not a 401 that reads as "please log in again". Both failure
-// points are covered — the local_auth_enabled read and the session row read —
-// plus the regression that a genuinely missing session still answers 401.
 func TestSessionAuthOutageIs503Not401(t *testing.T) {
 	apiWith := func(repo *fakeRepo) *API {
 		a := newTestAPI(repo, newFakeCluster())
@@ -3133,7 +2739,6 @@ func TestSessionAuthOutageIs503Not401(t *testing.T) {
 		t.Fatalf("session read outage = %d body %s, want 503 auth_unavailable", w.Code, w.Body.String())
 	}
 
-	// Regression: fail-closed auth (missing/invalid session) stays a 401.
 	repo = newFakeRepo()
 	repo.settings[LocalAuthEnabledKey] = []byte("true")
 	if w := do(apiWith(repo).ExternalHandler(), "GET", "/api/v1/me", "", cookie); w.Code != http.StatusUnauthorized || decodeErr(t, w) != "unauthorized" {

@@ -162,8 +162,6 @@ func TestRconProberSaveTimesOut(t *testing.T) {
 	}
 }
 
-// The broadcast is plain ASCII on the wire and decodes back to the exact text, CJK
-// and a character outside the BMP included.
 func TestTellrawCommand(t *testing.T) {
 	text := `[Felis] 服务器将在 30 秒后关闭 / "stops" 🙂`
 	cmd := tellrawCommand(text)

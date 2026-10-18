@@ -15,17 +15,7 @@ import (
 	"felis.lolicon.best/internal/imagepush"
 )
 
-// cmdImageBundle writes a release's image bundle: one OCI layout tar holding every
-// image an install runs, for one platform, plus its listing (one "role name
-// manifest-digest config-digest" line per image). deploy/build-release-artifacts.sh
-// runs it in CI; deploy/bootstrap.sh imports the tar into k3s's containerd and
-// pushes it into the platform registry with push-image --image.
-//
-//	--layout role=name=path   an image buildx wrote with --output type=oci
-//	--pull role=ref           a digest-pinned public image, named repository@digest
-//
-// The tar and the listing are written beside their final paths and renamed into
-// place, so a failed run leaves neither behind.
+// The tar and the listing are renamed into place, so a failed run leaves neither behind.
 func cmdImageBundle(args []string, _, stderr io.Writer) int {
 	fs := flag.NewFlagSet("image-bundle", flag.ContinueOnError)
 	fs.SetOutput(stderr)

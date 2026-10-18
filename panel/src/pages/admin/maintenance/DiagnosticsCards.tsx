@@ -69,9 +69,7 @@ export function DoctorCard() {
   );
 }
 
-/** SupportBundleCard collects status, health checks, logs and cluster state into one
- *  redacted archive to share when asking for help; the game servers' own logs carry
- *  player names, addresses and chat, so they go in only when asked. */
+// Game logs contain player data and require explicit inclusion.
 export function SupportBundleCard() {
   const { t } = useTranslation("admin");
   const host = useHostTask(["support-bundle"]);

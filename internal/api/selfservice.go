@@ -20,13 +20,7 @@ import (
 var errEULARequired = newError(http.StatusBadRequest, "eula_required",
 	"a server built from server software runs under the Minecraft EULA; accept it to continue (https://aka.ms/MinecraftEULA)")
 
-// admitImage admits a whitelisted server image and pins the build its tag names
-// now: the world is created on that build and stays on it until an admin
-// changes the image. Admission is data-driven (the whitelist), never a free
-// image string.
 func (a *API) admitImage(ctx context.Context, ref string) (string, error) {
-	// The whitelist lives in the build subsystem; with no Builder there is no
-	// admission source.
 	if a.Builder == nil {
 		return "", errBuildUnavailable
 	}
@@ -43,14 +37,7 @@ func (a *API) admitImage(ctx context.Context, ref string) (string, error) {
 	return a.pinImage(ctx, ref)
 }
 
-// checkNewServerName refuses a name or subdomain already taken, before any
-// write. The CRD is the lifecycle source; SeedServer re-checks the alias
-// atomically. A duplicate name with a fresh subdomain would otherwise reach the
-// seed and bind the new alias onto the existing server before the CRD create
-// failed. A server deleted outside the reaper (kubectl delete) leaves its world
-// volume behind, and a new server of the same name would mount it and hand the
-// old world to its new owner, so the name stays taken until an operator removes
-// the volume.
+// checkNewServerName reserves names with leftover PVCs to prevent a new owner from inheriting a deleted server's world.
 func (a *API) checkNewServerName(ctx context.Context, name, subdomain string) error {
 	switch _, err := a.Cluster.GetBySubdomain(ctx, subdomain); {
 	case err == nil:
@@ -74,14 +61,9 @@ func (a *API) checkNewServerName(ctx context.Context, name, subdomain string) er
 	return nil
 }
 
-// ---- the Owner's default quota ----
-
 const selfServiceQuotaKey = "self_service_quota"
 
-// selfServiceQuota is the default quota: the caps of every user without a quota
-// of their own, once Enabled. A nil cap is unlimited, 0 grants none. Off (the
-// default), a user without their own quota cannot create servers and claims stay
-// unlimited for them, as before the setting existed.
+// selfServiceQuota uses nil for unlimited and zero for none; disabled defaults block creation but do not limit claims.
 type selfServiceQuota struct {
 	Enabled      bool `json:"enabled"`
 	MaxServers   *int `json:"max_servers"`
@@ -176,15 +158,8 @@ func (a *API) handleSetSelfServiceQuota(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, view)
 }
 
-// ---- the caller's own quota ----
-
-// serverQuotaView answers GET /me/server-quota: whether the caller can create a
-// server, under which quota, and what their servers use of it.
 type serverQuotaView struct {
 	QuotaState
-	// CanCreate is true when the caller may create a server now. Reason names
-	// what stops them otherwise: not_linked, self_service_disabled,
-	// software_unavailable or quota_full.
 	CanCreate bool   `json:"canCreate"`
 	Reason    string `json:"reason,omitempty"`
 }
@@ -217,12 +192,6 @@ func (a *API) handleMyServerQuota(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, view)
 }
 
-// ---- creating a server for yourself ----
-
-// selfCreateRequest is the form a user creates their own server with. It has
-// no image and no resource overrides: a user's server always runs server
-// software on the runtime image, sized by memory (and optionally CPU) within
-// their quota.
 type selfCreateRequest struct {
 	Name            string          `json:"name"`
 	Subdomain       string          `json:"subdomain"`
@@ -235,11 +204,7 @@ type selfCreateRequest struct {
 	AcceptEULA      bool            `json:"acceptEula"`
 }
 
-// handleSelfCreateServer (POST /me/servers) creates a server owned by the
-// caller, within the quota in force for them: their own, else the Owner's
-// default quota. The quota check and the owned row are one transaction in the
-// caller's claim lane (SeedOwnedServer), so concurrent creates cannot both pass
-// a cap.
+// handleSelfCreateServer checks quota and inserts ownership in one transaction to prevent concurrent quota overshoot.
 func (a *API) handleSelfCreateServer(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	ctx := r.Context()
@@ -303,8 +268,6 @@ func (a *API) handleSelfCreateServer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	// In distributed mode the server goes to the admitted node carrying the
-	// fewest user servers, the same choice a failover makes.
 	var node string
 	if a.Distribution != nil {
 		if node, err = a.Distribution.FailoverTarget(ctx); err != nil {
@@ -366,28 +329,17 @@ func (a *API) handleSelfCreateServer(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ---- an owner changing their own server ----
-
-// ownerPatchRequest is what a server's owner may change: its name in the
-// panel, who may wake it, idle stop, its memory and CPU within their quota, and
-// its server software. The image, the finer resource fields and storage stay
-// with admins.
 type ownerPatchRequest struct {
-	DisplayName     *string          `json:"displayName,omitempty"`
-	AutostartPolicy *string          `json:"autostartPolicy,omitempty"`
-	IdleStopSeconds *int32           `json:"idleStopSeconds,omitempty"`
-	Memory          *string          `json:"memory,omitempty"`
-	CPU             *string          `json:"cpu,omitempty"`
-	Software        *softwareRequest `json:"software,omitempty"`
-	// ConfirmSoftwareChange acknowledges that moving to another type or
-	// Minecraft version opens the world with it (see patchServerRequest).
-	ConfirmSoftwareChange bool `json:"confirmSoftwareChange,omitempty"`
-	AcceptEULA            bool `json:"acceptEula,omitempty"`
+	DisplayName           *string          `json:"displayName,omitempty"`
+	AutostartPolicy       *string          `json:"autostartPolicy,omitempty"`
+	IdleStopSeconds       *int32           `json:"idleStopSeconds,omitempty"`
+	Memory                *string          `json:"memory,omitempty"`
+	CPU                   *string          `json:"cpu,omitempty"`
+	Software              *softwareRequest `json:"software,omitempty"`
+	ConfirmSoftwareChange bool             `json:"confirmSoftwareChange,omitempty"`
+	AcceptEULA            bool             `json:"acceptEula,omitempty"`
 }
 
-// handleOwnerPatchServer (PATCH /me/servers/{name}) is the owner's spec change.
-// It runs the admin patch's validation and quota gate on the fields an owner may
-// set.
 func (a *API) handleOwnerPatchServer(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	name := r.PathValue("name")

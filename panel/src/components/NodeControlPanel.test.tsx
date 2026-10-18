@@ -67,9 +67,6 @@ describe("host node management", () => {
     await user.click(screen.getByRole("button", { name: "Execute operation" }));
     expect(calls.startNodeTask).toHaveBeenCalledWith({ action: "upgrade", name: "worker-01", sshTarget: "worker-01", confirmMaintenance: true });
   });
-  // Controller high availability: a single-controller install offers to enable it, which
-  // names no node and states its own impact; once on, the operation becomes adding a
-  // controller, which names the new host and its fixed address.
   it("enables controller high availability without naming a node", async () => {
     const user = userEvent.setup();
     const running = { ...failed, state: "running" as const, request: { action: "enable-ha" as const, confirmMaintenance: true } };

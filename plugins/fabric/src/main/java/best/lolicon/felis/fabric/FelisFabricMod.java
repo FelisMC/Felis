@@ -22,15 +22,7 @@ import java.util.UUID;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 
-/**
- * FelisFabricMod is the Fabric (dedicated-server) leg of the §10 account-link
- * flow. A server-side {@code /link} command takes the player's already-verified
- * UUID, asks felis-api for a one-time code, and shows it in chat; the player then
- * redeems it on the web console. The command itself is the shared {@link ModLink}
- * (the HTTP call on a daemon I/O thread, the reply back on the server thread, one
- * generic line for any failure); this class registers it and adapts the command
- * source.
- */
+/** Fabric dedicated-server {@code /link} command; the shared {@link ModLink} does the work. */
 public final class FelisFabricMod implements DedicatedServerModInitializer {
     private static final Logger LOGGER = LogUtils.getLogger();
 
@@ -60,7 +52,6 @@ public final class FelisFabricMod implements DedicatedServerModInitializer {
         dispatcher.register(Commands.literal("link").executes(ctx -> link.run(new LinkSource(ctx.getSource()))));
     }
 
-    /** LinkSource is a command source as the shared /link sees it. */
     private static final class LinkSource implements ModLink.Source {
         private final CommandSourceStack source;
         private final ServerPlayer player; // null for the console or a command block

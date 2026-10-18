@@ -25,8 +25,6 @@ func maintenanceJob(managedBy string, finished bool) *batchv1.Job {
 	return j
 }
 
-// A desiredState flipped to Running behind felis-api's back (kubectl, a script)
-// while a restore Job is unpacking into the world must not get a game pod.
 func TestReconcileRunning_HeldDuringMaintenance(t *testing.T) {
 	r, c := newReconciler(t, fakeProber{}, runningServer(), rconSecret(), maintenanceJob("felis-restore", false))
 	r.Jobs = c
@@ -91,8 +89,6 @@ func TestReconcileRunning_NotHeldByReadsOrFinishedJobs(t *testing.T) {
 	}
 }
 
-// A server that is already up is never held: its pod is the one on the volume,
-// and holding would only stall its readiness bookkeeping.
 func TestReconcileRunning_RunningServerNotHeld(t *testing.T) {
 	r, c := newReconciler(t, fakeProber{}, runningServer(), rconSecret())
 	reconcile(t, r, "survival") // creates the StatefulSet at replicas 1

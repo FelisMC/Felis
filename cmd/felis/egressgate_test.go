@@ -29,8 +29,6 @@ func TestEgressGateRequiresPositiveReachability(t *testing.T) {
 	}
 }
 
-// The gate holds while the probe answers and lets the pod go on once the policy
-// lands, which the test plays by closing the listener.
 func TestEgressGateWaitsForTheLock(t *testing.T) {
 	shrinkEgressGate(t)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -63,7 +61,6 @@ func TestEgressGateWaitsForTheLock(t *testing.T) {
 	}
 }
 
-// A probe that keeps answering means no policy is enforced: the build must not run.
 func TestEgressGateRefusesAnOpenNetwork(t *testing.T) {
 	shrinkEgressGate(t)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -89,8 +86,6 @@ func TestEgressGateRefusesAnOpenNetwork(t *testing.T) {
 	}
 }
 
-// A server's gate waits out --wait all the same, then lets the pod start with a
-// warning in its log.
 func TestEgressGateFailOpenWaitsThenWarns(t *testing.T) {
 	shrinkEgressGate(t)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

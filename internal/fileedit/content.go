@@ -6,8 +6,6 @@ import (
 	"strconv"
 )
 
-// splitContent is the base64 of content cut into contentChunk-sized parts, the
-// values of ContentEnv_0 … ContentEnv_<n-1>. Empty content is zero parts.
 func splitContent(content []byte) []string {
 	enc := base64.StdEncoding.EncodeToString(content)
 	parts := make([]string, 0, (len(enc)+contentChunk-1)/contentChunk)
@@ -19,15 +17,9 @@ func splitContent(content []byte) []string {
 	return parts
 }
 
-// contentPartEnv names part i of the content.
 func contentPartEnv(i int) string { return ContentEnv + "_" + strconv.Itoa(i) }
 
-// ContentFromEnv reassembles a write's content from the environment the Job spec
-// set (see ContentEnv). A part count that is missing, not a number or negative,
-// or a part that is not set, is an error rather than a shorter file: writing a
-// truncated config would be worse than not writing at all. Parts are looked up
-// rather than read so an unset one cannot pass as empty; the lookups stop at the
-// first one missing, so a count larger than the spec carries costs nothing.
+// ContentFromEnv rejects missing or malformed parts so incomplete content cannot be written as a truncated file.
 func ContentFromEnv(lookup func(string) (string, bool)) ([]byte, error) {
 	raw, _ := lookup(ContentPartsEnv)
 	n, err := strconv.Atoi(raw)

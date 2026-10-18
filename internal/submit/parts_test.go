@@ -162,7 +162,6 @@ func TestChunkedUploadPartCap(t *testing.T) {
 	}
 }
 
-// The staged total meets the same cap as a whole context, with the same error.
 func TestChunkedUploadTotalCappedLikeAWholeContext(t *testing.T) {
 	m, _, _, id := newChunkedManager(t)
 	m.MaxContextBytes = 10
@@ -178,8 +177,6 @@ func TestChunkedUploadTotalCappedLikeAWholeContext(t *testing.T) {
 	}
 }
 
-// Staged bytes count against the storage budget, so parts parked on several
-// pending submissions cannot hold more than stored contexts could.
 func TestChunkedUploadStagedBytesCountAgainstTheBudget(t *testing.T) {
 	m, _, fb, a := newChunkedManager(t)
 	ctx := context.Background()

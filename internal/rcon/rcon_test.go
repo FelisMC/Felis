@@ -14,7 +14,7 @@ import (
 	"felis.lolicon.best/internal/rcon"
 )
 
-// fakeRCON is a minimal Source RCON server used to exercise the client
+// fakeRCON is a minimal Source RCON server that exercises the client
 // hermetically (no real Minecraft server, no network beyond loopback).
 type fakeRCON struct {
 	ln       net.Listener
@@ -169,8 +169,6 @@ func TestDialAndExecute(t *testing.T) {
 	}
 }
 
-// A command goes out in one packet of at most 4096 bytes; a longer one is
-// refused before anything is sent.
 func TestExecuteRefusesAnOversizeCommand(t *testing.T) {
 	longest := strings.Repeat("a", 4096-10) // 10: id, type, two terminators
 	f := startFakeRCON(t, "s3cret", map[string]string{longest: "ok"})

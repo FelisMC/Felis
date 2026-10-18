@@ -55,12 +55,11 @@ func TestContextUploadStatusReportsTheStagedLength(t *testing.T) {
 
 func TestContextUploadErrors(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		err  error
-		code int
-		want string
-		msg  string
-		// retry is the Retry-After the answer must carry, if any.
+		name  string
+		err   error
+		code  int
+		want  string
+		msg   string
 		retry string
 	}{
 		{"offset mismatch", &submit.OffsetMismatchError{Received: 12}, 409, "upload_offset_mismatch", "the upload holds 12 bytes", ""},
@@ -86,9 +85,6 @@ func TestContextUploadErrors(t *testing.T) {
 	}
 }
 
-// Completion is where a context lands: it holds the per-user upload cooldown and
-// writes the same audit event as the single upload, and a failed completion
-// gives the cooldown back.
 func TestContextUploadCompleteHoldsTheCooldownAndAudits(t *testing.T) {
 	repo := newFakeRepo()
 	fs := &fakeSubmissions{}
@@ -122,7 +118,6 @@ func TestContextUploadCompleteHoldsTheCooldownAndAudits(t *testing.T) {
 	if w.Code != http.StatusTooManyRequests || decodeErr(t, w) != "submission_cooldown" {
 		t.Fatalf("second completion in the window: %d %s, want 429 submission_cooldown", w.Code, w.Body.String())
 	}
-	// A part never waits on the cooldown.
 	if w := do(eh, "PUT", "/api/v1/me/submissions/sub-9/context/upload?offset=0", "\x1f\x8b",
 		map[string]string{"Content-Digest": contentDigestOf("\x1f\x8b")}); w.Code != http.StatusOK {
 		t.Fatalf("part inside the cooldown: code = %d, want 200 (%s)", w.Code, w.Body.String())
@@ -144,10 +139,6 @@ func TestContextUploadWithoutServiceIs503(t *testing.T) {
 	}
 }
 
-// A context upload, whole or in parts, carries the SHA-256 of its body: one
-// without it is refused before the lane sees it, and bytes that do not hash to
-// it are refused as changed on the way (the lane keeps none of them), so the
-// client sends them again.
 func TestContextUploadsCheckTheBodyDigest(t *testing.T) {
 	body := "\x1f\x8b\x08\x00 the modpack bytes"
 	for _, rq := range []struct{ name, method, target string }{

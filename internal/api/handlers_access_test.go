@@ -6,8 +6,7 @@ import (
 	"testing"
 )
 
-// mkAccess builds an API whose "survival" server is owned by owner1 and Ready,
-// with a fresh fakeConsole wired — the shared fixture for the §7 access tests.
+// mkAccess supplies a ready, owned survival server and a fresh console recorder.
 func mkAccess(t *testing.T) (*API, *fakeRepo, *fakeCluster, *fakeConsole) {
 	t.Helper()
 	repo := newFakeRepo()
@@ -22,12 +21,6 @@ func mkAccess(t *testing.T) (*API, *fakeRepo, *fakeCluster, *fakeConsole) {
 
 var accessOwner = &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
 
-// TestAccessTranslation pins the structured-field → RCON-command translation for
-// every §7 action. The exact gotCommand is the contract LuckPerms / vanilla will
-// receive, so each variant that hides a bug is checked: a permission grant with
-// an OMITTED value must become "... true" (not the *bool zero "... false", which
-// would be a silent DENY), an explicit false must stay false, and an optional
-// world must append " world=<w>" only when present.
 func TestAccessTranslation(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -44,10 +37,8 @@ func TestAccessTranslation(t *testing.T) {
 			`{"action":"ban","player":"Griefer_99"}`, "ban Griefer_99", "access.ban.ban"},
 		{"pardon", "/api/v1/servers/survival/access/ban",
 			`{"action":"pardon","player":"Griefer_99"}`, "pardon Griefer_99", "access.ban.pardon"},
-		// kick has no action field — a single verb — so its label is "access.kick".
 		{"kick", "/api/v1/servers/survival/access/kick",
 			`{"player":"Griefer_99"}`, "kick Griefer_99", "access.kick"},
-		// The *bool trap: omitted value defaults to true (grant), NOT false (deny).
 		{"permission set default grant", "/api/v1/servers/survival/access/permission",
 			`{"action":"set","player":"Steve","node":"essentials.fly"}`,
 			"lp user Steve permission set essentials.fly true", "access.permission.set"},
@@ -89,11 +80,6 @@ func TestAccessTranslation(t *testing.T) {
 	}
 }
 
-// TestAccessInjectionRejected is the security verification: a space, newline, or
-// other off-charset character in ANY structured field must be rejected with 400
-// AND must never reach RCON. Without per-field validation each of these inputs
-// would splice a second command into the assembled line — so this matrix, not the
-// happy-path gotCommand assert, is what proves the injection defence.
 func TestAccessInjectionRejected(t *testing.T) {
 	cases := []struct {
 		name, path, body string
@@ -126,17 +112,13 @@ func TestAccessInjectionRejected(t *testing.T) {
 			`{"action":"add","player":"Steve","group":"vi p"}`},
 		{"group group newline", "/api/v1/servers/survival/access/group",
 			`{"action":"add","player":"Steve","group":"a\nb"}`},
-		// Trailing / embedded control characters: the anchored regex uses Go's `$`
-		// (= \z, absolute end), so even a SINGLE trailing newline after an otherwise
-		// valid name is rejected — a Perl `$` (\Z) would have let "Steve\n" through.
+		// Go's regex end anchor rejects trailing newlines as well as embedded control characters.
 		{"whitelist player trailing newline", "/api/v1/servers/survival/access/whitelist",
 			`{"action":"add","player":"Steve\n"}`},
 		{"whitelist player carriage return", "/api/v1/servers/survival/access/whitelist",
 			`{"action":"add","player":"Steve\r"}`},
 		{"whitelist player tab", "/api/v1/servers/survival/access/whitelist",
 			`{"action":"add","player":"Ste\tve"}`},
-		// Length bounds: a name past 16 chars / node past 64 chars must be rejected,
-		// not truncated, so an over-long field can never carry a smuggled tail.
 		{"whitelist player over 16 chars", "/api/v1/servers/survival/access/whitelist",
 			`{"action":"add","player":"AAAAAAAAAAAAAAAAA"}`},
 		{"permission node over 64 chars", "/api/v1/servers/survival/access/permission",
@@ -157,8 +139,6 @@ func TestAccessInjectionRejected(t *testing.T) {
 	}
 }
 
-// TestAccessUnknownAction rejects an action enum value no handler understands,
-// before any RCON contact.
 func TestAccessUnknownAction(t *testing.T) {
 	cases := []struct{ name, path, body string }{
 		{"whitelist", "/api/v1/servers/survival/access/whitelist", `{"action":"frobnicate","player":"Steve"}`},
@@ -182,8 +162,6 @@ func TestAccessUnknownAction(t *testing.T) {
 	}
 }
 
-// TestAccessUnknownField proves decodeJSON's strict mode locks the body shape for
-// every mutating access route — no extra knob can ride in.
 func TestAccessUnknownField(t *testing.T) {
 	api, _, _, console := mkAccess(t)
 	api.External = staticExternal{p: accessOwner}
@@ -197,10 +175,6 @@ func TestAccessUnknownField(t *testing.T) {
 	}
 }
 
-// TestAccessOwnerGate proves the shared issueAccessCommand gate: an owner and an
-// admin pass (on their own / on any node), a non-owner non-admin is rejected with
-// 403 and never reaches RCON. The gate is the same one handleCommand uses, so one
-// route exercises it for all five.
 func TestAccessOwnerGate(t *testing.T) {
 	body := `{"action":"add","player":"Steve"}`
 	path := "/api/v1/servers/survival/access/whitelist"
@@ -237,9 +211,6 @@ func TestAccessOwnerGate(t *testing.T) {
 	})
 }
 
-// TestAccessReadinessAndFailures covers the non-happy lifecycle states the shared
-// helper maps: unknown server → 404, stopped server → 409 (no RCON), unreachable
-// console → 503 (no audit), nil console → 503.
 func TestAccessReadinessAndFailures(t *testing.T) {
 	body := `{"action":"add","player":"Steve"}`
 	path := "/api/v1/servers/survival/access/whitelist"
@@ -291,8 +262,6 @@ func TestAccessReadinessAndFailures(t *testing.T) {
 	})
 }
 
-// TestAccessWhitelistList exercises the read projector: GET returns the parsed
-// player list plus the raw reply, and is owner-gated like the writes.
 func TestAccessWhitelistList(t *testing.T) {
 	t.Run("parses players and returns raw output", func(t *testing.T) {
 		api, repo, _, console := mkAccess(t)
@@ -319,7 +288,6 @@ func TestAccessWhitelistList(t *testing.T) {
 		if console.gotCommand != "whitelist list" {
 			t.Fatalf("console got %q, want %q", console.gotCommand, "whitelist list")
 		}
-		// A read must never write the audit trail — only the mutating routes audit.
 		if len(repo.audits) != 0 {
 			t.Fatalf("GET whitelist must not audit: %+v", repo.audits)
 		}
@@ -333,7 +301,6 @@ func TestAccessWhitelistList(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("code = %d body %s", w.Code, w.Body.String())
 		}
-		// players must render as [] (non-nil) so the client never sees null.
 		var raw map[string]json.RawMessage
 		if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
 			t.Fatalf("body not JSON: %v", err)
@@ -359,8 +326,6 @@ func TestAccessWhitelistList(t *testing.T) {
 	})
 }
 
-// TestParseWhitelistOutput unit-tests the vanilla parser directly, including the
-// formats issueAccessCommand never produces but a real server might.
 func TestParseWhitelistOutput(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -389,9 +354,6 @@ func TestParseWhitelistOutput(t *testing.T) {
 	}
 }
 
-// TestAccessPlayers exercises the online-roster read projector: GET runs "list"
-// and returns the online/max tally, the parsed names, and the raw reply, owner-
-// gated like the writes and never auditing.
 func TestAccessPlayers(t *testing.T) {
 	t.Run("parses tally, names and raw output", func(t *testing.T) {
 		api, repo, _, console := mkAccess(t)
@@ -455,9 +417,6 @@ func TestAccessPlayers(t *testing.T) {
 	})
 }
 
-// TestParseListOutput unit-tests the "list" parser directly, including formats
-// issueAccessCommand never produces but a real server might. Names parse from the
-// colon tail independently of the count line, so both are pinned separately.
 func TestParseListOutput(t *testing.T) {
 	cases := []struct {
 		in          string
@@ -469,7 +428,6 @@ func TestParseListOutput(t *testing.T) {
 		{"There are 0 of a max of 20 players online:", 0, 20, []string{}},
 		{"There are 0 of a max of 20 players online", 0, 20, []string{}},
 		{"", 0, 0, []string{}},
-		// A colon tail with no recognised count line still yields names, tally 0.
 		{"Online: a,  b ,c", 0, 0, []string{"a", "b", "c"}},
 	}
 	for _, tc := range cases {
@@ -491,8 +449,6 @@ func TestParseListOutput(t *testing.T) {
 	}
 }
 
-// TestAccessBanList exercises the ban-list read projector: GET runs "banlist",
-// returns the parsed names plus the raw reply, is owner-gated, and never audits.
 func TestAccessBanList(t *testing.T) {
 	t.Run("parses players and returns raw output", func(t *testing.T) {
 		api, repo, _, console := mkAccess(t)
@@ -554,12 +510,6 @@ func TestAccessBanList(t *testing.T) {
 	})
 }
 
-// TestParseBanlistOutput unit-tests the ban parser directly. The critical cases are
-// the SEPARATOR variants: "banlist" emits one feedback message per ban and RCON's
-// concatenation separator is version-dependent, so the parser must return the same
-// names whether entries are newline-, space-, or non-separated — and must never let
-// the header or a reason's own colon/spaces leak into a name (a corrupt name would
-// arm an off-charset pardon).
 func TestParseBanlistOutput(t *testing.T) {
 	cases := []struct {
 		name string
@@ -572,8 +522,6 @@ func TestParseBanlistOutput(t *testing.T) {
 			[]string{"Steve", "Alex"},
 		},
 		{
-			// The separator the wire format might actually use: header + entries
-			// concatenated with spaces, reasons carrying spaces of their own.
 			"space-concatenated with spaced reasons",
 			"There are 2 ban(s): Steve was banned by Server: griefing spawn Alex was banned by Server: spam",
 			[]string{"Steve", "Alex"},
@@ -598,13 +546,6 @@ func TestParseBanlistOutput(t *testing.T) {
 	}
 }
 
-// TestLuckPermsMissingIsAConflict: on a server without LuckPerms every lp command
-// is answered by the server's unknown-command reply, and each LuckPerms door must
-// say so (409 luckperms_missing) with no audit of a change that never happened (#4).
-// The replies are what the servers send: Paper 1.21's captured live from a paper
-// server over RCON, and a Spigot one colored the way its console renders it. The
-// empty reply LuckPerms itself gives (it answers after RCON has flushed) and an
-// LP message that mentions "unknown command" mid-line both stay successes.
 func TestLuckPermsMissingIsAConflict(t *testing.T) {
 	doors := []struct{ name, method, path, body string }{
 		{"permission", "POST", "/api/v1/servers/survival/access/permission", `{"action":"set","player":"Steve","node":"essentials.fly"}`},

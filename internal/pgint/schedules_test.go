@@ -56,9 +56,6 @@ func applied(t *testing.T, what string, ok bool, err error, want bool) {
 	}
 }
 
-// TestScheduleStoreCRUD pins the settings side of server_schedules: a round
-// trip of every column, the per-server limit, the run-state guard on changes,
-// and the lookups scoped to their server.
 func TestScheduleStoreCRUD(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "sch-crud")
@@ -164,8 +161,6 @@ func mustClaim(t *testing.T, id int64, due, next *time.Time, now time.Time) (boo
 	return repo.ClaimScheduleRun(context.Background(), id, due, next, now)
 }
 
-// TestScheduleStoreRunCAS pins the compare-and-set writes of a run, which
-// keep two felis-api processes from firing one run twice.
 func TestScheduleStoreRunCAS(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "sch-cas")
@@ -281,9 +276,6 @@ func TestScheduleStoreRunCAS(t *testing.T) {
 	applied(t, "warn a disabled schedule's run", ok, err, false)
 }
 
-// TestDueSchedules pins what the runner reads: enabled schedules of live
-// servers due by the horizon, every run in progress, runs first, with the
-// server's owner now.
 func TestDueSchedules(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "sch-due")
@@ -340,9 +332,6 @@ func TestDueSchedules(t *testing.T) {
 	}
 }
 
-// TestSchedulesFollowTheServer: a recreated server of the same name starts
-// without the earlier one's schedules, and an account migration hands the
-// migrated servers' schedules to the target.
 func TestSchedulesFollowTheServer(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "sch-seed")

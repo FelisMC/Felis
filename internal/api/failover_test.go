@@ -25,10 +25,7 @@ type failoverRig struct {
 	now  time.Time
 }
 
-// newFailoverRig is an Owner looking at worker b, lost: alice (running, two intact backups
-// and a newer corrupt one), bob (no backup), carol (already failing over) and ghost (no
-// servers row) have their worlds on it; a is the controller, c an approved worker, d one
-// not approved, e an approved one that is offline too.
+// newFailoverRig includes recoverable, backup-less, migrating, missing-record and offline-node cases.
 func newFailoverRig() *failoverRig {
 	g := &failoverRig{repo: newFakeRepo(), nc: &fakeNodeControl{}, now: failoverT0}
 	for _, name := range []string{"alice", "bob", "carol"} {
@@ -87,9 +84,6 @@ func TestFailoverRoutesAreOwnerOnly(t *testing.T) {
 	}
 }
 
-// TestFailoverPlanShowsTheRecoveryPoint pins the plan: each server on the lost node with
-// the newest intact backup a failover would restore (or none), what it has underway, and
-// the nodes that can take the worlds.
 func TestFailoverPlanShowsTheRecoveryPoint(t *testing.T) {
 	g := newFailoverRig()
 	w := do(g.a.ExternalHandler(), "GET", "/api/v1/nodes/b/failover", "", nil)
@@ -126,10 +120,6 @@ func TestFailoverPlanShowsTheRecoveryPoint(t *testing.T) {
 	}
 }
 
-// TestFailoverStartsEachServerAndFencesTheNode pins the failover request: the typed
-// confirmation and the target are checked first, then each server goes over from its
-// newest intact backup, the ones that cannot are reported, one already failing over is
-// kept, and node-control is asked to fence the node.
 func TestFailoverStartsEachServerAndFencesTheNode(t *testing.T) {
 	g := newFailoverRig()
 	for body, want := range map[string]string{
@@ -184,7 +174,6 @@ func TestFailoverStartsEachServerAndFencesTheNode(t *testing.T) {
 		t.Error("the failover was not audited")
 	}
 
-	// A failover that failed is started again by the next request.
 	g.d.placed["b"][2].Operation.State = "failed"
 	g.repo.backups = append(g.repo.backups, fakeBackup{view: BackupView{ID: "bk-c", ServerName: "carol", Status: "present", CreatedAt: failoverT0}, ref: "/backups/bk-c.tar.gz"})
 	g.d.begun = nil
@@ -196,8 +185,6 @@ func TestFailoverStartsEachServerAndFencesTheNode(t *testing.T) {
 	}
 }
 
-// TestFailoverAsksForAFreshProof pins that the failover and its setting are guarded by a
-// recent reauthentication.
 func TestFailoverAsksForAFreshProof(t *testing.T) {
 	g := newFailoverRig()
 	p := &Principal{UserID: "owner", Role: "owner", ViaAdminAccess: true, ViaSession: true, EmailVerified: true}
@@ -261,8 +248,6 @@ func (g *failoverRig) savePolicy(p FailoverPolicy) {
 	g.repo.settings[failoverPolicyKey] = raw
 }
 
-// TestFailoverTickFencesWhatFailoversWaitOn pins the fence retries: one task per waiting
-// node, none while one runs, and another only after fenceRetry.
 func TestFailoverTickFencesWhatFailoversWaitOn(t *testing.T) {
 	g := newFailoverRig()
 	g.savePolicy(FailoverPolicy{AfterMinutes: 15})
@@ -295,9 +280,6 @@ func TestFailoverTickFencesWhatFailoversWaitOn(t *testing.T) {
 	}
 }
 
-// TestAutomaticFailover pins when the automatic failover acts: only when switched on, with
-// the controller up and exactly one worker lost for long enough, and not for a node whose
-// servers all have a failover already (even a failed one).
 func TestAutomaticFailover(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -336,9 +318,6 @@ func TestAutomaticFailover(t *testing.T) {
 	}
 }
 
-// TestReplicasKeepWorkerWorldsRecent pins the replicas: a world on a worker whose newest
-// backup is older than the interval gets a live copy recorded as a replica, one with a
-// recent backup does not, and none starts when they are switched off.
 func TestReplicasKeepWorkerWorldsRecent(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -370,8 +349,6 @@ func TestReplicasKeepWorkerWorldsRecent(t *testing.T) {
 			if !tc.want {
 				return
 			}
-			// The copy is done and the freeze cleared: the next tick within the hour starts
-			// nothing more.
 			delete(f.cl.freezes, "survival")
 			if err := f.a.FailoverTick(context.Background()); err != nil {
 				t.Fatal(err)

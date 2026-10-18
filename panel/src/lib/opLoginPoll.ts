@@ -2,22 +2,14 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import type { ApiError } from "@/lib/types";
 
-// The op-login status endpoint answers approved:false for an unknown, expired or
-// used request alike (it must not tell a stranger which staff addresses exist), so
-// it never says a request died. The expires_at that start returned is the only
-// end the page gets.
+// The server hides invalid request states to prevent enumeration; expiry comes from the initial response.
 
 /** OP_LOGIN_TTL_MS mirrors otpTTL in handlers_email_otp.go: how long a request lives. */
 export const OP_LOGIN_TTL_MS = 10 * 60 * 1000;
 export const OP_POLL_BASE_MS = 3000;
 export const OP_POLL_MAX_MS = 30000;
 
-/**
- * opLoginDeadline turns start's expires_at into a deadline on this browser's
- * clock. One already past, or further off than a request can live, means the two
- * clocks disagree; the request was minted just now, so the TTL from now is the
- * better estimate then.
- */
+// Use the request TTL when server/browser clock disagreement produces an impossible deadline.
 export function opLoginDeadline(expiresAt: string, now: number): number {
   const remaining = Date.parse(expiresAt) - now;
   if (!Number.isFinite(remaining) || remaining <= 0 || remaining > OP_LOGIN_TTL_MS) {
@@ -37,9 +29,7 @@ export function formatCountdown(ms: number): string {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
 }
 
-// A failure worth asking again after: no answer at all, a rate limit, or the server
-// side. Anything else (local sessions switched off, a malformed id) answers the
-// same way every time.
+// Retry missing responses, rate limits, and server errors; permanent refusals stop polling.
 function retryable(e: unknown): boolean {
   const status = (e as Partial<ApiError> | null)?.status;
   return status === undefined || status === 0 || status === 429 || status >= 500;
@@ -55,12 +45,7 @@ export interface OpLoginPoll {
   error: unknown;
 }
 
-/**
- * useOpLoginPoll asks whether the request was approved in-game until it is, until
- * the deadline passes, or until the server refuses outright, backing off while the
- * calls fail. The countdown keeps running after approval: the code has to be
- * redeemed before the same deadline.
- */
+// Approval does not extend the code redemption deadline.
 export function useOpLoginPoll(requestId: string | null, deadline: number | null): OpLoginPoll {
   const [approved, setApproved] = useState(false);
   const [retrying, setRetrying] = useState(false);

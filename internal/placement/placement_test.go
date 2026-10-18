@@ -27,9 +27,6 @@ func node(name, role string, ready bool, labels ...string) *corev1.Node {
 	return n
 }
 
-// TestAdmitted pins who may hold worlds and control-plane pods: any online controller
-// (several with high availability), an approved worker, and nobody whose identity label
-// is missing or another node's, or who is named the controller without its role.
 func TestAdmitted(t *testing.T) {
 	spoofed := node("b", RoleWorker, true, LabelApproved, "true")
 	spoofed.Labels[LabelIdentity] = "a"
@@ -59,8 +56,6 @@ func TestAdmitted(t *testing.T) {
 	}
 }
 
-// TestWorkerRefusesControllers pins that a migration's worker check takes workers only:
-// a controller is a target through its own check.
 func TestWorkerRefusesControllers(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {
@@ -80,8 +75,6 @@ func TestWorkerRefusesControllers(t *testing.T) {
 	}
 }
 
-// TestResolveFindsTheWorldsNode pins Resolve: the server's own node, else where it last
-// ran, else the controller; refused when that node cannot take it.
 func TestResolveFindsTheWorldsNode(t *testing.T) {
 	scheme := runtime.NewScheme()
 	for _, add := range []func(*runtime.Scheme) error{corev1.AddToScheme, v1alpha1.AddToScheme} {

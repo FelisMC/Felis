@@ -86,8 +86,6 @@ func finished(j batchv1.Job, cond batchv1.JobConditionType) batchv1.Job {
 	return j
 }
 
-// The executors keep their own label copies (they must not import each other or
-// this package's callers); this pins what they actually render against JobKind.
 func TestJobKindMatchesTheExecutors(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -157,9 +155,6 @@ func TestHolderFromJobs(t *testing.T) {
 	}
 }
 
-// A safety snapshot holds the volume as a restore from its creation until
-// felis-api settles the chain, finished or not, so nothing wakes the server
-// between the backup Job and the restore Job it is followed by.
 func TestHolderFromRestoreChain(t *testing.T) {
 	j, err := backupjob.BackupJob(backupjob.JobParams{
 		Server: "survival", WorldPVC: "world-survival-0", BackupPVC: "felis-backups",
@@ -227,9 +222,6 @@ func TestHolderFromLock(t *testing.T) {
 	}
 }
 
-// An export Job that does not say it reads a backup holds, like a files Job
-// with an unknown mode: a world export a newer build labels differently must
-// not let the server start under it.
 func TestExportJobWithoutModeHolds(t *testing.T) {
 	j := exportJob(t, "survival", worldexport.ModeBackup)
 	if j.Labels[LabelExportMode] != ExportModeBackup {

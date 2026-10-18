@@ -73,9 +73,7 @@ func writeZip(t *testing.T, at string, entries ...zent) {
 	}
 }
 
-// tree is everything under dir: each file's content, "<dir>" for a folder and
-// "-> target" for a link. Comparing two trees is how a test says "nothing
-// changed", working folders included.
+// tree lists everything under dir: file contents, "<dir>" for folders and "-> target" for links; comparing trees shows nothing changed.
 func tree(t *testing.T, dir string) map[string]string {
 	t.Helper()
 	out := map[string]string{}

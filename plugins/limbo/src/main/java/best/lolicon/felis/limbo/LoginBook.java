@@ -12,17 +12,10 @@ import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 
 import java.util.regex.Pattern;
 
-/**
- * LoginBook renders what the gate shows a player: the book it opens on join (the bind
- * code, a line that opens the login page when clicked, and the reminder to use the
- * system browser, where WebAuthn/passkey works; the WeChat/QQ in-app browsers break
- * it), and the chat lines, whose web addresses open when clicked.
- */
+/** Renders the login book (bind code, clickable login link, system-browser reminder) and chat lines. */
 final class LoginBook {
 
-    // A web address in a chat line runs to the next space. The client makes nothing
-    // in server chat clickable by itself, so a player who closed the book had to type
-    // the login URL out by hand.
+    // Server chat makes no URL clickable by itself, so a web address runs to the next space and is linked here.
     private static final LegacyComponentSerializer CHAT = LegacyComponentSerializer.builder()
             .character(LegacyComponentSerializer.SECTION_CHAR)
             .extractUrls(Pattern.compile("https?://\\S+"), Style.style(NamedTextColor.AQUA, TextDecoration.UNDERLINED))
@@ -48,7 +41,7 @@ final class LoginBook {
                 Component.text(settings.text("bookAuthor", "Felis")), page);
     }
 
-    /** chatLine renders one chat line with § colour codes, its web addresses clickable. */
+    /** Renders one chat line with § colour codes and clickable web addresses. */
     static Component chatLine(String line) {
         return CHAT.deserialize(line);
     }

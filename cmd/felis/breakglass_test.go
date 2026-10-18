@@ -13,11 +13,6 @@ import (
 	"felis.lolicon.best/internal/api"
 )
 
-// fakeOwnerStore records what break-glass / setup provisioning writes and answers
-// the identity lookups, so the core logic (admin resolution, provisioning,
-// accountability audit, setup-token mint) is exercised without a database or a
-// terminal. The design is passwordless: accounts carry no credential, and the
-// Owner completes first-login through the setup-token web flow.
 type fakeOwnerStore struct {
 	upserts   []upsertCall
 	inserts   []upsertCall
@@ -91,10 +86,7 @@ func (f *fakeOwnerStore) UpsertOwner(_ context.Context, id, username, email stri
 	return nil
 }
 
-// InsertOperator records an insert-only Operator provision. A username already in
-// the users map is a conflict (api.ErrConflict), mirroring the PGRepo insert-only
-// contract; a fresh one is recorded and reflected into users so a later lookup — or
-// a second insert of the same name — sees it. The row is passwordless (role=admin).
+// InsertOperator records an insert-only provision. A username already in users is a conflict, as in PGRepo; the row is passwordless (role=admin).
 func (f *fakeOwnerStore) InsertOperator(_ context.Context, id, username, email string) error {
 	if f.insertErr != nil {
 		return f.insertErr
@@ -206,10 +198,7 @@ func TestProvisionOwner(t *testing.T) {
 	})
 
 	t.Run("an occupied seat refuses any other username", func(t *testing.T) {
-		// The seat is the single owner row: upserting a fresh name would take the
-		// insert arm and mint a SECOND owner, while the existing seat — possibly the
-		// compromised account this reset was meant to replace — stays live, and no
-		// supported path can delete an owner row.
+		// The seat is a single owner row: upserting a fresh name would mint a second owner beside the live one, and no supported path deletes an owner row.
 		f := &fakeOwnerStore{ownerSeat: "seat-holder"}
 		err := provisionOwner(ctx, f, "someone-else", "")
 		if !errors.Is(err, api.ErrConflict) {
@@ -469,7 +458,7 @@ func TestPerformBreakGlass(t *testing.T) {
 		if out.auditErr == nil {
 			t.Error("auditErr = nil, want the surfaced audit failure")
 		}
-		// The load-bearing writes must still have happened.
+		// The writes that matter must still happen.
 		if len(f.upserts) != 1 {
 			t.Error("owner was not provisioned despite a recoverable audit failure")
 		}
@@ -493,9 +482,7 @@ func TestPerformBreakGlass(t *testing.T) {
 	})
 
 	t.Run("records accountability before enabling local auth, surviving an enableLocalAuth failure", func(t *testing.T) {
-		// The Owner is written by provisionOwner; if the audit were written only after
-		// enableLocalAuth, a failed toggle write would leave that write with no "who did
-		// it" row. Order guarantees the accountability row lands first.
+		// The audit row is written before enableLocalAuth: if it came after, a failed toggle would leave the Owner write with no accountability row.
 		f := &fakeOwnerStore{setErr: errors.New("settings write down")}
 		op := breakGlassOp{mode: "recovery", accountable: "root", osUser: "alice", ownerUsername: "owner", attemptedAdmin: "root"}
 		if _, err := performBreakGlass(ctx, f, op); err == nil {
@@ -604,7 +591,7 @@ func TestProvisionOperator(t *testing.T) {
 		if err == nil {
 			t.Fatal("want error when the store fails")
 		}
-		// A generic store fault must NOT be mistaken for a username conflict.
+		// A generic store fault must not be mistaken for a username conflict.
 		if errors.Is(err, api.ErrConflict) {
 			t.Error("a generic store error was misreported as a conflict")
 		}
@@ -636,7 +623,7 @@ func TestPerformAddOperator(t *testing.T) {
 		if len(f.inserts) != 1 || f.inserts[0].username != "ops-jordan" {
 			t.Errorf("operator was not provisioned: %+v", f.inserts)
 		}
-		// Adding an Operator must NOT flip the global local-auth gate (Owner-only).
+		// Adding an Operator must not flip the global local-auth gate, which is Owner-only.
 		if _, ok := f.settings[api.LocalAuthEnabledKey]; ok {
 			t.Error("local auth was enabled — operator-add must not touch the global gate")
 		}

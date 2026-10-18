@@ -23,35 +23,26 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// Thresholds. The durations are how long a condition must hold before it is
-// mailed (Finding.For): long enough for a rollout, a restart or an installer
-// run to heal it, short enough that players are not the first to notice.
+// Finding durations allow transient rollouts and restarts to recover before alerting.
 const (
-	controlPlaneFor = 5 * time.Minute
-	systemServerFor = 10 * time.Minute
-	failedServerFor = 5 * time.Minute
-	nodeNotReadyFor = 5 * time.Minute
-	nodePressureFor = 2 * time.Minute
-	postgresFor     = 3 * time.Minute
-	kubeAPIFor      = 5 * time.Minute
-	backupFor       = 10 * time.Minute
-	diskLowFor      = 15 * time.Minute
-	diskCriticalFor = 5 * time.Minute
-	memoryLowFor    = 15 * time.Minute
-	// watchdogFailedFor is five failed runs in a row.
+	controlPlaneFor   = 5 * time.Minute
+	systemServerFor   = 10 * time.Minute
+	failedServerFor   = 5 * time.Minute
+	nodeNotReadyFor   = 5 * time.Minute
+	nodePressureFor   = 2 * time.Minute
+	postgresFor       = 3 * time.Minute
+	kubeAPIFor        = 5 * time.Minute
+	backupFor         = 10 * time.Minute
+	diskLowFor        = 15 * time.Minute
+	diskCriticalFor   = 5 * time.Minute
+	memoryLowFor      = 15 * time.Minute
 	watchdogFailedFor = 10 * time.Minute
 
-	// jobFailureWindow is how far back a failed Job is still news.
 	jobFailureWindow = 24 * time.Hour
-	// maxBackupAge is the daily database backup's deadline: a day plus the
-	// timer's randomized delay and a margin.
+	// Allow the daily backup interval plus timer jitter and a margin.
 	maxBackupAge = 26 * time.Hour
-	// maxReaperAge is the same for the daily reaper CronJob.
 	maxReaperAge = 26 * time.Hour
-	// maxScanDBAge is how old the registry's copy of Trivy's vulnerability DB may
-	// grow. felis-build-tools.timer refreshes it twice a day and upstream publishes
-	// every six hours; three days of failed refreshes means scans are passing
-	// images against advisories that are no longer current.
+	// maxScanDBAge bounds the age of vulnerability data used by scans.
 	maxScanDBAge = 72 * time.Hour
 
 	diskLowRatio      = 0.15
@@ -59,8 +50,6 @@ const (
 	memoryLowRatio    = 0.10
 )
 
-// controlDeployments are the control-plane Deployments, with what their outage
-// takes down.
 var controlDeployments = []struct {
 	name, impact, impactEN string
 }{
@@ -70,20 +59,16 @@ var controlDeployments = []struct {
 	{"registry", "游戏镜像拉取和构建都会失败", "game image pulls and builds fail"},
 }
 
-// ClusterPrefixes are the keys Cluster.Check produces. When the API server
-// cannot be reached, alerts under them keep their state (Report.Unknown).
+// ClusterPrefixes retain alert state when the Kubernetes API cannot be reached.
 var ClusterPrefixes = []string{"deployment/", "system-server/", "server-failed/", "job-failed/", "reaper-stale", "node/"}
 
-// Cluster checks the Kubernetes side: the control plane, the system servers,
-// the fleet, recent Job failures, the reaper's schedule and the nodes.
 type Cluster struct {
 	Client             client.Client
 	ControlNamespace   string
 	MinecraftNamespace string
 }
 
-// Check returns the cluster's findings. An error means the API server could
-// not answer; the caller reports that and treats every cluster check as unknown.
+// Check errors make cluster checks unknown, preserving existing alerts.
 func (c Cluster) Check(ctx context.Context, now time.Time) ([]Finding, error) {
 	var out []Finding
 	for _, d := range controlDeployments {
@@ -119,7 +104,7 @@ func (c Cluster) Check(ctx context.Context, now time.Time) ([]Finding, error) {
 	var cj batchv1.CronJob
 	switch err := c.Client.Get(ctx, client.ObjectKey{Namespace: c.MinecraftNamespace, Name: platform.SAReaper}, &cj); {
 	case apierrors.IsNotFound(err):
-		// Retention is off; there is no reaper to be late.
+		// Retention disabled means no reaper is expected.
 	case err != nil:
 		return nil, fmt.Errorf("get reaper cronjob: %w", err)
 	default:
@@ -167,9 +152,7 @@ func (c Cluster) deployment(ctx context.Context, name, impact, impactEN string) 
 	}, nil
 }
 
-// serverFinding reports a system server that should run and does not, and a
-// user server that failed. A user server that is merely stopped or starting is
-// its owner's business.
+// Alert on stopped system servers and failed user servers, not ordinary user stops or starts.
 func serverFinding(ms *v1alpha1.MinecraftServer, ns string) *Finding {
 	phase := ms.Status.Phase
 	if phase == "" {
@@ -204,7 +187,6 @@ func serverFinding(ms *v1alpha1.MinecraftServer, ns string) *Finding {
 	}
 }
 
-// failureMessage is the first false condition's message, as ": <message>".
 func failureMessage(ms *v1alpha1.MinecraftServer) string {
 	for _, c := range ms.Status.Conditions {
 		if c.Status == "False" && c.Message != "" {
@@ -214,8 +196,6 @@ func failureMessage(ms *v1alpha1.MinecraftServer) string {
 	return ""
 }
 
-// jobFinding reports a Job in the minecraft namespace (a world backup, a
-// restore, a reaper run) that failed within jobFailureWindow, once.
 func jobFinding(j *batchv1.Job, now time.Time) *Finding {
 	for _, c := range j.Status.Conditions {
 		if c.Type != batchv1.JobFailed || c.Status != corev1.ConditionTrue {
@@ -247,8 +227,6 @@ func jobFinding(j *batchv1.Job, now time.Time) *Finding {
 	return nil
 }
 
-// reaperFinding reports a reaper CronJob that has not succeeded for over a day:
-// idle worlds are neither backed up nor released, and expired backups pile up.
 func reaperFinding(cj *batchv1.CronJob, now time.Time) *Finding {
 	if cj.Spec.Suspend != nil && *cj.Spec.Suspend {
 		return nil
@@ -268,8 +246,6 @@ func reaperFinding(cj *batchv1.CronJob, now time.Time) *Finding {
 	}
 }
 
-// nodeFindings reports a node that is not Ready or is under pressure: the
-// kubelet is about to evict pods, or already is.
 func nodeFindings(n *corev1.Node) []Finding {
 	var out []Finding
 	for _, c := range n.Status.Conditions {
@@ -294,10 +270,7 @@ func nodeFindings(n *corev1.Node) []Finding {
 	return out
 }
 
-// WatchdogFailed is the watchdog's own run failing (felis-watchdog-failed.service,
-// through OnFailure=): while it fails no other check runs and nothing else is
-// mailed. detail is how the run ended. It waits watchdogFailedFor, so one run cut
-// short by a slow host mails nobody.
+// WatchdogFailed alerts only after repeated watchdog failures, when other checks cannot run.
 func WatchdogFailed(detail string) Finding {
 	return Finding{
 		Key: "watchdog/run", Severity: Critical, For: watchdogFailedFor,
@@ -307,8 +280,6 @@ func WatchdogFailed(detail string) Finding {
 	}
 }
 
-// StateSetAside is a state file RecoverState moved aside: the alerts it held
-// start over, so a condition still firing is mailed again as new.
 func StateSetAside(aside string) Finding {
 	return Finding{
 		Key: "watchdog/state", Severity: Warning, Event: true,
@@ -318,7 +289,6 @@ func StateSetAside(aside string) Finding {
 	}
 }
 
-// KubeAPIDown is the finding for an API server that did not answer.
 func KubeAPIDown(err error) Finding {
 	return Finding{
 		Key: "kube-api", Severity: Critical, For: kubeAPIFor,
@@ -328,8 +298,6 @@ func KubeAPIDown(err error) Finding {
 	}
 }
 
-// PostgresDown is the finding for a database that did not answer. It runs as
-// the felis-postgres Deployment; the host reaches it on the loopback hostPort.
 func PostgresDown(err error) Finding {
 	ns := platform.DefaultControlNamespace
 	return Finding{
@@ -341,12 +309,7 @@ func PostgresDown(err error) Finding {
 	}
 }
 
-// BackupFinding reports a daily control-plane database backup older than a
-// day, or none at all, in dir, and a fresh one that would restore no servers.
-// The age goes by the daily bundles alone: a manual or off-site bundle taken
-// since would keep a stopped timer quiet until it too is a day old. The
-// servers check reads the newest bundle of any label, the one a lost host
-// restores from.
+// BackupFinding measures age from daily bundles and server-export health from the newest bundle.
 func BackupFinding(dir string, now time.Time) *Finding {
 	bundles, err := dbbackup.List(dir)
 	if err != nil {
@@ -383,11 +346,7 @@ func BackupFinding(dir string, now time.Time) *Finding {
 	return f
 }
 
-// serversFinding reports a bundle whose MinecraftServer export failed: a
-// restore from it, which a lost host would take from the newest bundle, brings
-// back the database and no servers. A bundle it cannot read is left to the
-// restore that verifies it; a bundle taken without the export on purpose
-// (`felis db backup -no-servers`) records no failure.
+// Report failed server exports; intentional -no-servers bundles are exempt.
 func serversFinding(b dbbackup.Bundle) *Finding {
 	f, err := os.Open(b.Path)
 	if err != nil {
@@ -406,11 +365,7 @@ func serversFinding(b dbbackup.Bundle) *Finding {
 	}
 }
 
-// OffsiteFinding reports an off-site copy that has not completed a clean run
-// within offsite.StaleAfter, going by the record `felis offsite sync` leaves
-// in statusFile. It is a warning: the local copies are intact, but a lost
-// node would now lose what the bucket lacks, and the reaper keeps idle worlds
-// on disk until their archives reach the bucket.
+// OffsiteFinding warns when no clean sync has completed within offsite.StaleAfter.
 func OffsiteFinding(statusFile string, now time.Time) *Finding {
 	const hint = "journalctl -u felis-offsite -n 50; `sudo felis offsite status` (https://docs.felismc.com/en/operations/troubleshooting#offsite-stopped)"
 	st, err := offsite.ReadStatus(statusFile)
@@ -473,10 +428,7 @@ func OffsiteFinding(statusFile string, now time.Time) *Finding {
 	return f
 }
 
-// ScanDBFinding reports the build lane's tool copies (the vulnerability DBs in
-// particular) not refreshed within maxScanDBAge, going by the record
-// `felis mirror-build-tools` leaves in statusFile. A build still runs and its scan
-// still gates, but against an old DB: a warning.
+// ScanDBFinding warns when tool refreshes are older than maxScanDBAge.
 func ScanDBFinding(statusFile string, now time.Time) *Finding {
 	const hint = "journalctl -u felis-build-tools -n 50; refresh now with `sudo felis mirror-build-tools` (https://docs.felismc.com/en/operations/troubleshooting#build-pods-not-starting)"
 	st, err := imagepush.ReadMirrorStatus(statusFile)
@@ -509,9 +461,7 @@ func ScanDBFinding(statusFile string, now time.Time) *Finding {
 	return f
 }
 
-// DiskFindings reports each filesystem under paths that is running out of
-// space. Paths on one filesystem are reported once, under the first of them; a
-// path that does not exist is skipped (a feature that is not in use).
+// DiskFindings deduplicates filesystems and skips nonexistent paths.
 func DiskFindings(paths []string) []Finding {
 	var out []Finding
 	seen := map[uint64]bool{}
@@ -552,8 +502,7 @@ func DiskFindings(paths []string) []Finding {
 	return out
 }
 
-// MemoryFinding reports sustained low available memory from a /proc/meminfo
-// style file. A file that cannot be read (not Linux) reports nothing.
+// MemoryFinding skips unreadable /proc/meminfo files.
 func MemoryFinding(meminfo string) *Finding {
 	f, err := os.Open(meminfo)
 	if err != nil {
@@ -583,7 +532,6 @@ func MemoryFinding(meminfo string) *Finding {
 	}
 }
 
-// roundHours prints a duration to the hour, "35h" rather than "35h0m0s".
 func roundHours(d time.Duration) string {
 	return strings.TrimSuffix(d.Round(time.Hour).String(), "0m0s")
 }

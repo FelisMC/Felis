@@ -44,8 +44,6 @@ func TestUpdateReportFiltersToSelection(t *testing.T) {
 	}
 }
 
-// A component that cannot be read must never vanish silently, and "latest unknown"
-// must never stand in for "the release feed was unreachable" — both causes are named.
 func TestUpdateReportNamesBothFailureCauses(t *testing.T) {
 	res := planResult(nil)
 	res.GatherErrors["velocity"] = errors.New("jar missing")
@@ -60,9 +58,6 @@ func TestUpdateReportNamesBothFailureCauses(t *testing.T) {
 	}
 }
 
-// Every selector in the table must be a real flag on the FlagSet, and every
-// planner-backed selector must name a component the topology actually tracks —
-// otherwise a selector silently matches nothing at runtime.
 func TestUpdateTargetsMatchTopology(t *testing.T) {
 	tracked := map[string]bool{}
 	for _, s := range updater.Topology() {
@@ -78,7 +73,6 @@ func TestUpdateTargetsMatchTopology(t *testing.T) {
 	}
 }
 
-// Every selector in the table is a flag: the FlagSet is built from the table.
 func TestUpdateSelectorsAreFlags(t *testing.T) {
 	var out, errb strings.Builder
 	if code := cmdUpdate([]string{"-h"}, &out, &errb); code != 2 {
@@ -113,9 +107,6 @@ func mustVersion(t *testing.T, s string) updates.Version {
 	return v
 }
 
-// The record the panel shows keeps every component with a state that cannot be
-// mistaken: a feed failure is "unknown" with its reason, an unreadable install is
-// listed after the plan, and each row carries the selector that prints its apply.
 func TestBuildStatusReport(t *testing.T) {
 	res := planResult([]updates.Action{
 		{Component: "felis-api", Current: mustVersion(t, "v0.4.0"), Latest: mustVersion(t, "v0.5.0"), LatestKnown: true, Kind: updates.ActionNotify},

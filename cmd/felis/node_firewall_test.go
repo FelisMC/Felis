@@ -38,9 +38,6 @@ func TestDistributedFirewallPathsAndSyntax(t *testing.T) {
 	}
 }
 
-// TestControllerPeersFirewall pins what controller high availability opens: every
-// controller reaches each node's kubelet, and on a controller the others' etcd and
-// supervisor ports, ahead of the drop; a worker never opens etcd; a broad range is refused.
 func TestControllerPeersFirewall(t *testing.T) {
 	for _, controller := range []bool{false, true} {
 		args := []string{"--dry-run", "--peers", "192.0.2.1/32,192.0.2.2/32,192.0.2.3/32", "--controller-ip", "192.0.2.1", "--controller-peers", "192.0.2.1/32,192.0.2.3/32"}

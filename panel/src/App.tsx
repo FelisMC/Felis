@@ -14,10 +14,7 @@ import { Login } from "@/pages/Login";
 import { Dashboard } from "@/pages/Dashboard";
 import { lazyWithReload } from "@/lib/chunk";
 
-// Sign-in and the landing page ship in the entry bundle; every other page is
-// its own chunk, fetched the first time it is opened, so a phone opening the
-// panel never downloads the admin pages it cannot use. Vite names each chunk
-// after its page, and panel.go caches the hashed files for a year.
+// Lazy-load pages beyond sign-in and landing to keep the initial bundle small.
 const Setup = lazyWithReload(() => import("@/pages/Setup").then((m) => ({ default: m.Setup })));
 const ServersPage = lazyWithReload(() =>
   import("@/pages/servers/ServersPage").then((m) => ({ default: m.ServersPage })),
@@ -68,12 +65,7 @@ const UpdatesPage = lazyWithReload(() =>
 const PlatformSettingsPage = lazyWithReload(() => import("@/pages/admin/PlatformSettingsPage").then((m) => ({ default: m.PlatformSettingsPage })));
 const AuthSourcesPage = lazyWithReload(() => import("@/pages/admin/AuthSourcesPage").then((m) => ({ default: m.AuthSourcesPage })));
 
-// Three UX surfaces over two Zero-Trust tiers (DESIGN-WEB-3SIDES):
-//   /        User-Side    — app-tier, every authenticated principal
-//   /admin/* Admin-Side   — admin-tier, server & content administration
-//   /ops/*   SysAdmin-Side— admin-tier, platform observability cockpit
-// Both admin groups sit behind the SAME RequireAdmin wrapper (one is_admin gate);
-// the split is by concern, not by tier. TierProvider fetches /me once at boot.
+// TierProvider fetches /me once at boot.
 export default function App() {
   return (
     <ThemeProvider>
@@ -81,7 +73,7 @@ export default function App() {
         <BrowserRouter>
         <SetupRequiredRedirect />
         <Routes>
-          {/* Pre-app sign-in surface (spec §B, passwordless). It sits OUTSIDE
+          {/* Pre-app sign-in surface (passwordless). It sits outside
               RequireAuth — RequireAuth redirects here — and outside AppShell, so
               it renders its own centered chrome with no nav/tier dependency. */}
           <Route path="/login" element={<Login />} />

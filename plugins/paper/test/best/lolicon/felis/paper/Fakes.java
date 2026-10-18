@@ -15,11 +15,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-/**
- * Fakes are the paper-api interfaces LobbyGuardTest drives the real listener with,
- * built with {@link Proxy}. They answer what the guard reads (a permission, a
- * world, its spawn, a block's type, a shooter) and record what it does to a player.
- */
 final class Fakes {
     private Fakes() {
     }
@@ -31,10 +26,7 @@ final class Fakes {
         Object answer(String method, Object[] args) throws Throwable;
     }
 
-    /**
-     * fake builds an instance of an interface. Methods the answers leave unanswered
-     * return a zero value; the guard reads nothing it is not told.
-     */
+    /** fake builds an instance of an interface. Methods the answers leave unanswered return a zero value; the guard reads nothing it is not told. */
     static <T> T fake(Class<T> type, Answers answers) {
         InvocationHandler h = (proxy, m, args) -> {
             Object[] a = args == null ? new Object[0] : args;
@@ -75,11 +67,7 @@ final class Fakes {
         return null;
     }
 
-    /**
-     * A world whose spawn is a fixed location, and what was set on it. A clockless world
-     * (the nether, the end) says so through isFixedTime; refusesTime makes setTime throw
-     * the way Paper does for one.
-     */
+    /** A world with a fixed spawn and the settings made on it. A clockless world (the nether, the end) says so through isFixedTime; refusesTime makes setTime throw as Paper does. */
     static final class FakeWorld {
         final World world;
         final Location spawn;

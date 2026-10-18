@@ -10,10 +10,6 @@ import (
 	"felis.lolicon.best/internal/maintenance"
 )
 
-// maintenanceError maps the world-volume lock's refusals onto their 409s:
-// maintenance_in_progress while a restore, backup, file write or world export
-// holds the volume, not_stopped (with the caller's wording) while the server is
-// not fully down. Anything else passes through unchanged.
 func maintenanceError(err error, notStopped string) error {
 	var busy *MaintenanceBusyError
 	switch {
@@ -47,14 +43,7 @@ func maintenanceLabel(kind string) string {
 	return "another operation"
 }
 
-// acquireWorld admits one world-volume operation of the given kind
-// (internal/maintenance) and returns the release to run once its Job exists, or
-// false after writing the refusal. notStopped is the not_stopped wording the
-// calling face uses.
-//
-// The release runs on a context detached from the request: a client that hangs
-// up the moment its 202 is written must not leave the lock behind to refuse the
-// owner's next wake for maintenance.Grace.
+// acquireWorld returns a release callback detached from the request so client disconnects cannot strand the admission lock.
 func (a *API) acquireWorld(w http.ResponseWriter, r *http.Request, name, kind, notStopped string) (func(), bool) {
 	if err := a.Cluster.AcquireMaintenance(r.Context(), name, kind); err != nil {
 		a.writeLookupError(w, r, maintenanceError(err, notStopped))

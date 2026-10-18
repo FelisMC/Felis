@@ -56,7 +56,7 @@ func TestGuardServesInterstitialForWeChatNavigation(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 	body := w.Body.String()
-	// It must be the interstitial, NOT the SPA index (which contains "Felis").
+	// It must be the interstitial, not the SPA index (which contains "Felis").
 	if !strings.Contains(body, "系统浏览器") || !strings.Contains(body, "Passkey") {
 		t.Fatalf("body is not the interstitial: %q", body)
 	}
@@ -102,7 +102,7 @@ func TestGuardPassesThroughNonWebView(t *testing.T) {
 func TestGuardIgnoresAssetAndAPIRequests(t *testing.T) {
 	h := newPanelHandler(t)
 
-	// An asset request from the SAME WebView (no Accept: text/html) must pass through,
+	// An asset request from the same WebView (no Accept: text/html) must pass through,
 	// so an acknowledged SPA can still load its scripts.
 	req := httptest.NewRequest(http.MethodGet, "/config.json", nil)
 	req.Header.Set("Accept", "application/json")

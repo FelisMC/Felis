@@ -255,9 +255,6 @@ func TestHostLease(t *testing.T) {
 	}
 }
 
-// TestSyncStandsBy: a host restored from the writer's backup copies nothing
-// into the bucket, prunes nothing, and records nothing as copied, whether the
-// bucket names that host or holds its copies without naming anyone.
 func TestSyncStandsBy(t *testing.T) {
 	for _, named := range []bool{true, false} {
 		t.Run(fmt.Sprintf("named=%v", named), func(t *testing.T) {
@@ -292,8 +289,6 @@ func TestSyncStandsBy(t *testing.T) {
 	}
 }
 
-// TestSyncRecordsTheWriter: the first run records this host before the key
-// id and the first upload.
 func TestSyncRecordsTheWriter(t *testing.T) {
 	s, b := newSyncer(t, &fakeCatalog{})
 	delete(b.objs, keyMark)

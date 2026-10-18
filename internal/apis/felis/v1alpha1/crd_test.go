@@ -11,9 +11,7 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// crdSchema loads the openAPIV3Schema the cluster enforces, from the same YAML
-// `felis bootstrap-assets crd` applies. The x-kubernetes-validations (CEL) rules
-// ride along as extensions and are checked live with a server-side dry run.
+// crdSchema loads the openAPIV3Schema that `felis bootstrap-assets crd` applies; CEL rules ride along as extensions and are checked by a server-side dry run.
 func crdSchema(t *testing.T) *spec.Schema {
 	t.Helper()
 	raw, err := os.ReadFile("../../../../deploy/crd/felis.lolicon.best_minecraftservers.yaml")

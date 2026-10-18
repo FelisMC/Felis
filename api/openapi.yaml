@@ -1,37 +1,8 @@
-# felis-api — OpenAPI 3.1 description of both faces (spec §7, §14, §28 #7).
-#
-# ONE binary serves TWO http.Handlers (internal / external). This document
-# describes both, distinguished per-operation by the `x-felis-face` extension
-# (an array, because `/healthz` is served by both faces) and `x-felis-tier`
-# (the Zero-Trust grade: public | service | app | admin).
-#
-# VERIFIED vs. HAND-MAINTAINED — read before trusting a field:
-#   * The {method, path} -> {x-felis-face set, x-felis-tier} mapping is
-#     machine-checked. internal/api/openapi_test.go parses this file and asserts
-#     EXACT bidirectional parity against the route tables the handlers are built
-#     from (internalAPIRoutes / externalAPIRoutes in internal/api/api.go). A route
-#     added, removed, re-faced, or re-tiered without updating this file fails
-#     `go test ./...`. So path, method, face and tier are as trustworthy as the code.
-#   * Which operations a setup-lockdown session may still use (x-felis-setup-allowed)
-#     is checked the same way against the SetupAllowed flag in those tables.
-#   * The named response schemas are compared field by field with the Go structs
-#     the handlers encode (internal/api/openapi_parity_test.go).
-#   * Every request the handler tests send is held to this file once the package
-#     has run (internal/api/openapi_contract_test.go): the operation (or
-#     x-felis-common-responses) must list the status that came back, a JSON response
-#     must fit the schema for that status and carry no property it does not name,
-#     and the JSON request behind a 2xx must fit the requestBody. Statuses and
-#     bodies no test reaches are still hand-maintained.
-#
-# The deployment zone (RootDomain, spec §2) never appears here — `example.test`
-# is a placeholder, per the no-hardcoded-domain red line.
+# Face/tier extensions distinguish handlers; tests check contracts and example.test remains a placeholder.
 
 openapi: 3.1.0
 
-# Answers any operation can give under the stated condition, declared once here
-# instead of under every operation. when: any | internal (served on the internal
-# face) | session (takes the session cookie) | setup-locked (takes the session
-# cookie and is not x-felis-setup-allowed) | json-body (takes a JSON requestBody).
+# Shared responses use when selectors: any, internal, session, setup-locked, and json-body.
 # code, when set, is the error code that answer carries.
 x-felis-common-responses:
   - status: 500
@@ -3042,7 +3013,6 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
-  # ----------------------------------------------------- external: servers ---
   /api/v1/servers/{name}/wake:
     post:
       tags: [servers]
@@ -3957,7 +3927,6 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  # -------------------------------------------------- external: local auth ---
   /api/v1/auth/options:
     post:
       tags: [auth]
@@ -6210,7 +6179,6 @@ paths:
         '507':
           $ref: '#/components/responses/InsufficientStorage'
 
-  # ------------------------------------------------------ world export (app) ---
   /api/v1/servers/{name}/backups/{id}/export:
     post:
       tags: [backups]
@@ -7703,7 +7671,6 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
-  # ------------------------------------------------------ users (admin tier) ----
   /api/v1/users:
     get:
       tags: [users]

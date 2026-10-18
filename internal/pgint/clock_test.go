@@ -11,9 +11,7 @@ import (
 	"felis.lolicon.best/internal/api"
 )
 
-// A method handed the API clock writes only that clock (PGRepo's doc). Each case
-// runs the API clock an hour behind the database's, so a time taken from now()
-// instead lands an hour away from the one the method was given.
+// Each case runs the API clock an hour behind the database; a time taken from now() would show up an hour off.
 
 func skewedClock() time.Time { return mustNow().Add(-time.Hour).Truncate(time.Microsecond) }
 
@@ -33,8 +31,6 @@ func wantStamp(t *testing.T, what string, got, want time.Time) {
 	}
 }
 
-// A session is created and last seen at its sign-in on the API clock, which is
-// also the clock the staff idle cutoff reads.
 func TestSessionTimesComeFromTheSignIn(t *testing.T) {
 	ctx := context.Background()
 	now := skewedClock()
@@ -70,8 +66,6 @@ func TestSessionTimesComeFromTheSignIn(t *testing.T) {
 	wantStamp(t, "last_seen_at", ss[0].LastSeenAt, signedIn)
 }
 
-// Every door that writes a link stamps it, and whatever else its transaction
-// creates, at the time it was given.
 func TestLinkWritesStampTheAPIClock(t *testing.T) {
 	ctx := context.Background()
 	now := skewedClock()
@@ -146,8 +140,6 @@ func TestLinkWritesStampTheAPIClock(t *testing.T) {
 	})
 }
 
-// The redeem moves the servers, retires the source and ends its sessions at the
-// instant it records the migration redeemed.
 func TestMigrationRedeemStampsTheAPIClock(t *testing.T) {
 	ctx := context.Background()
 	now := skewedClock()

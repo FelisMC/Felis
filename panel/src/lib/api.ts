@@ -74,9 +74,7 @@ import { loadConfig } from "./config";
 import { base64Sha256, sha256Of } from "./digest";
 import i18next from "i18next";
 
-// Typed client for the felis-api external face (spec §7). Credentials are sent so
-// the upstream Zero-Trust / Access cookie rides along; the panel never holds a
-// service token, and the RCON password is never requested (spec §8).
+// Send session cookies; the panel never receives service tokens or RCON passwords.
 
 function isApiError(x: unknown): x is { error: { code: string; message: string; request_id?: string } } {
   if (typeof x !== "object" || x === null || !("error" in x)) return false;
@@ -84,13 +82,7 @@ function isApiError(x: unknown): x is { error: { code: string; message: string; 
   return typeof e === "object" && e !== null && typeof (e as { code?: unknown }).code === "string";
 }
 
-// A locked session — one that still owes the forced onboarding (passkey
-// enrollment) — gets `403 setup_required` from every protected route. Rendered as
-// a generic permission error that reads as "you may not do this", when the truth
-// is "one step remains and completing it unlocks the app" (#8). api.ts cannot
-// navigate (no router here), so it announces the code on a window event; the
-// App-shell listener routes the person to /setup, which resumes from the session
-// without needing a token. Non-browser callers keep the plain error.
+// Announce setup_required so the router can resume passkey enrollment.
 export const SETUP_REQUIRED_EVENT = "felis:setup-required";
 
 function announceSetupRequired(err: ApiError): void {
@@ -99,11 +91,7 @@ function announceSetupRequired(err: ApiError): void {
   window.dispatchEvent(new Event(SETUP_REQUIRED_EVENT));
 }
 
-// A 401 from a protected route means the session ended under the page (it
-// expired, or an admin revoked it). TierProvider hears this and re-reads /me,
-// and RequireAuth then sends the person to /login with the page to come back
-// to. /me is left out because it is that re-read, and /auth/* because the
-// sign-in doors run without a session by design.
+// Recheck identity after protected-route 401s; exclude /me and unauthenticated sign-in endpoints.
 export const SESSION_EXPIRED_EVENT = "felis:session-expired";
 
 function announceSessionExpired(err: ApiError, path: string): void {
@@ -112,10 +100,7 @@ function announceSessionExpired(err: ApiError, path: string): void {
   window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
 }
 
-// A 403 forbidden or not_admin is the role gate refusing the call. The account
-// may have been demoted since /me was read, which leaves admin pages and buttons
-// up that every call now refuses. TierProvider hears this and re-reads /me, which
-// takes them down; a refusal the current role explains changes nothing there.
+// Recheck identity after role-gate 403s to remove access after demotion.
 export const ACCESS_REFUSED_EVENT = "felis:access-refused";
 const ROLE_REFUSALS = new Set(["forbidden", "not_admin"]);
 
@@ -124,12 +109,8 @@ function announceAccessRefused(err: ApiError): void {
   window.dispatchEvent(new Event(ACCESS_REFUSED_EVENT));
 }
 
-// CONNECTION_EVENT reports when requests stop reaching the API (detail.ok =
-// false) and when one gets through again (true). A fetch that rejects never
-// saw a response: the network is down, or Cloudflare Access redirected the
-// call to its cross-origin login page because the Access session expired,
-// which fetch reports as the same TypeError. AppShell shows a banner with a
-// reload, since only a full page load can go through the Access login.
+// Rejected fetches cover network outages and cross-origin Access redirects alike.
+// AppShell shows a banner with a reload, since only a full page load can go through the Access login.
 export const CONNECTION_EVENT = "felis:connection";
 let connectionLost = false;
 
@@ -153,13 +134,7 @@ function networkError(e: unknown): ApiError {
   };
 }
 
-// urlPath builds an API path from literal text and route values, percent-
-// encoding each value as one path segment. Values come from router params and
-// form fields, and react-router hands params over decoded, so "%2F" arrives as
-// "/": interpolated raw, a crafted link could point a button at another
-// endpoint, carrying the viewer's cookie. encodeURIComponent covers "/", "?"
-// and "#"; "." and ".." survive it and fetch would still walk the path up, so
-// those and "" are refused before anything is sent.
+// Encode individual path segments and reject empty, dot, and parent segments before authenticated fetches.
 export function urlPath(strings: TemplateStringsArray, ...values: string[]): string {
   let out = strings[0];
   values.forEach((v, i) => {
@@ -177,12 +152,7 @@ export function urlPath(strings: TemplateStringsArray, ...values: string[]): str
   return out;
 }
 
-// fetchOK performs one call and returns the response when it is 2xx, else
-// throws an ApiError that always keeps the HTTP status. A body that is not the
-// API's JSON envelope (an HTML 502 or 524 page from the tunnel while the API
-// restarts, a bare 503 from the ingress) becomes `upstream_unavailable`, so the
-// setup and session branches still see the status and the person reads "try
-// again shortly" instead of a JSON parse error.
+// Preserve HTTP status even for non-JSON upstream errors.
 async function fetchOK(path: string, init: RequestInit): Promise<Response> {
   const { apiBase } = await loadConfig();
   let res: Response;
@@ -250,9 +220,7 @@ async function send<T>(path: string, init: RequestInit): Promise<T> {
   }
 }
 
-// downloadBlob reads a 2xx attachment whole, with the file name its Content-Disposition
-// gives. It is for host files that need a fresh reauthentication (a support bundle, the
-// audit export): a plain link could not answer reauth_required with the dialog.
+// Fetch attachments through the client so reauth_required can open the verification dialog.
 async function downloadBlob(path: string): Promise<{ blob: Blob; filename: string }> {
   const res = await fetchOK(path, { method: "GET" });
   const disposition = res.headers.get("Content-Disposition") ?? "";
@@ -268,11 +236,7 @@ function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   });
 }
 
-// sendWithProgress sends body by XMLHttpRequest, the one browser API that
-// reports how much of a request body has gone out (fetch has no upload
-// progress), and settles the way send does: the parsed 2xx body, or the same
-// ApiError fetchOK would throw. onProgress gets the bytes of body sent so far;
-// signal aborts the request with an AbortError; headers go along with it.
+// XMLHttpRequest supplies upload progress; cancellation rejects with AbortError.
 async function sendWithProgress<T>(
   method: string,
   path: string,
@@ -326,9 +290,7 @@ async function sendWithProgress<T>(
   });
 }
 
-// sendDigested sends body as sendWithProgress does, with its SHA-256 in
-// Content-Digest: felis-api hashes what arrives and keeps none of it on a
-// mismatch (400 digest_mismatch), so bytes changed on the way never land.
+// Attach Content-Digest and reject mismatched bodies before storing any bytes.
 async function sendDigested<T>(
   method: string,
   path: string,
@@ -379,9 +341,7 @@ function submissionPage(path: string, params?: SubmissionListParams): Promise<Su
   }));
 }
 
-// Setup bootstrap (spec §B). The one-time token from `felis setup` is redeemed for
-// a lockdown session; the response (and /setup/status) reports which onboarding
-// steps remain so the Setup wizard can drive email verification + passkey enrollment.
+// Setup token redemption creates a restricted session until onboarding completes.
 export interface SetupState {
   user_id: string;
   username: string;
@@ -393,14 +353,9 @@ export interface SetupState {
 }
 
 export const api = rejectingSync({
-  // Session doors (spec §B). The product is passwordless: a session is minted only
-  // by passkey, email-OTP, bind code, or the op-login vouch flow below. Every door
-  // sets an HttpOnly cookie as a side effect and may 403 `local_auth_disabled` on a
-  // Zero-Trust-only deployment.
+  // Sign-in endpoints set HttpOnly cookies and may reject local_auth_disabled.
 
-  // logout is idempotent server-side (clears the session row + cookie); calling it
-  // without a session still resolves 200. After it, refreshing /me yields 401, which
-  // the tier model reads as `unauthenticated` and routes back to /login.
+  // Logout is idempotent; reloading /me after clearing the session returns 401.
   logout: () => request<{ ok: boolean }>("POST", "/auth/logout"),
 
   bind: (code: string) =>
@@ -429,11 +384,8 @@ export const api = rejectingSync({
   authPasskeyDiscoverableFinish: (login_id: string, assertion: any) =>
     request<any>("POST", "/auth/passkey/login/discoverable/finish", { login_id, assertion }),
 
-  // Op-login (spec §B): the staff door. start mails an OTP to a staff address and
-  // returns a request handle; an online admin vouches in-game with
-  // `/felis web op approve <request_id>`; the panel polls status until approved,
-  // then finish redeems {request_id, code} into a session. start answers 202 with a
-  // request_id for ANY well-formed address (anti-enumeration), so the UI just waits.
+  // Staff sign-in requires emailed OTP plus in-game approval before session redemption.
+  // start answers 202 with a request_id for any well-formed address (anti-enumeration), so the UI just waits.
   opLoginStart: (email: string) =>
     request<{ request_id: string; expires_at: string }>("POST", "/auth/op-login/start", { email }),
 
@@ -446,28 +398,18 @@ export const api = rejectingSync({
       code,
     }),
 
-  // Setup bootstrap (spec §B). redeem consumes the one-time token from the setup URL
-  // and mints a lockdown session (Public); status re-reads progress for a reload
-  // mid-wizard (SetupAllowed — the surviving session, no token needed).
   setupRedeem: (token: string) =>
     request<SetupState>("POST", "/auth/setup/redeem", { token }),
 
   setupStatus: () =>
     request<SetupState>("GET", "/auth/setup/status"),
 
-  // Identity (spec §7 GET /me) — the tier keystone. is_admin is server-computed
-  // (Principal.IsAdmin); the panel reads it but re-deriving admin-ness is the
-  // backend's job. Drives nav + route guards only; every admin route 403s on its
-  // own regardless of what the panel renders.
+  // Navigation uses server-computed is_admin; backend routes enforce authorization independently.
   me: () => request<Identity>("GET", "/me"),
 
   myServers: () =>
     request<{ servers: MyServerView[] }>("GET", "/me/servers").then((r) => r.servers ?? []),
 
-  // fleet is the SysAdmin cockpit's fleet-wide read (admin-tier GET /fleet): every
-  // server's CRD lifecycle view plus its owner. It 403s for a non-admin principal —
-  // the panel only renders the cockpit link behind is_admin, and the route guards
-  // again server-side regardless of what the UI shows.
   fleet: () =>
     request<{ servers: FleetServer[] }>("GET", "/fleet").then((r) => r.servers ?? []),
 
@@ -486,33 +428,21 @@ export const api = rejectingSync({
   claim: (name: string) =>
     request<{ name: string; claimed: boolean }>("POST", urlPath`/servers/${name}/claim`),
 
-  // Retirement (PUT/DELETE /servers/{name}/retirement): the owner gives the server
-  // up, or an admin deletes it (delete: true, admin only). felis-api stops the
-  // server and records the request; the reaper archives the world and carries it
-  // out on its next daily run. confirm must repeat the server's name. The cancel
-  // is the owner's for a give-up and an admin's for a deletion (403 otherwise).
+  // Retirement confirmation repeats the server name; only administrators can request deletion.
+  // The cancel is the owner's for a give-up and an admin's for a deletion.
   retireServer: (name: string, body: { confirm: string; delete: boolean }) =>
     request<{ name: string; retiring: RetireState }>("PUT", urlPath`/servers/${name}/retirement`, body),
 
   cancelRetire: (name: string) => request<void>("DELETE", urlPath`/servers/${name}/retirement`),
 
-  /** sendCommand runs one RCON command against a running server (spec §8 写=RCON).
-   *  The backend strips a leading "/", rejects control characters (newline → 400)
-   *  and caps the command at 1000 bytes. The reply is the server's plain-text
-   *  response body. */
+  // Commands strip a leading slash, reject control characters, and have a 1000-byte limit.
   sendCommand: (name: string, command: string) =>
     request<{ output: string }>("POST", urlPath`/servers/${name}/command`, { command }),
 
-  // Access control (spec §7 access). The backend translates these STRUCTURED fields
-  // into RCON commands — every field is charset-validated server-side before it is
-  // concatenated, so there is no free-text injection surface. All are owner-or-admin
-  // gated and require the server to be Running (409 `not_running` otherwise), so the
-  // panel only exposes them on a running server. The reply's `output` is the raw RCON
-  // text, surfaced verbatim as confirmation.
+  // Structured access operations require a running server; the backend validates command fields.
+  // The reply's output is the raw RCON text, surfaced verbatim as confirmation.
 
-  /** accessWhitelistList reads the server's whitelist. This GET ALSO requires a
-   *  Running server (the readiness gate covers the read, not just the writes), so
-   *  callers must gate the fetch on phase === "Running". */
+  // Whitelist reads also require phase Running.
   accessWhitelistList: (name: string) =>
     request<WhitelistResult>("GET", urlPath`/servers/${name}/access/whitelist`),
 
@@ -522,9 +452,7 @@ export const api = rejectingSync({
       player,
     }),
 
-  /** accessBanList reads the server's ban list. Like accessWhitelistList this GET
-   *  requires a Running server (the readiness gate covers the read too), so callers
-   *  gate the fetch on phase === "Running". */
+  /** accessBanList reads the ban list. Like accessWhitelistList it requires a Running server, so callers gate the fetch on phase === "Running". */
   accessBanList: (name: string) =>
     request<BanlistResult>("GET", urlPath`/servers/${name}/access/ban`),
 
@@ -534,18 +462,14 @@ export const api = rejectingSync({
       player,
     }),
 
-  /** accessPlayers reads WHO is online (the only source of names — status carries
-   *  the count alone). Like accessWhitelistList this GET requires a Running server,
-   *  so callers gate the fetch on phase === "Running". */
+  // Player names come from RCON, while lifecycle status provides only counts.
   accessPlayers: (name: string) =>
     request<PlayersResult>("GET", urlPath`/servers/${name}/access/players`),
 
   accessKick: (name: string, player: string) =>
     request<KickResult>("POST", urlPath`/servers/${name}/access/kick`, { player }),
 
-  // Wake allowlist (GET/PUT /servers/{name}/allowlist): Felis's own record of who
-  // may wake the server under autostartPolicy "allowlist". Owner-or-admin gated,
-  // and unlike the access routes above it needs no running server.
+  // The wake allowlist is independent of the game's whitelist and works while stopped.
   serverAllowlist: (name: string) =>
     request<{ server: string; entries: AllowlistEntry[] }>(
       "GET",
@@ -676,9 +600,6 @@ export const api = rejectingSync({
       req,
     ),
 
-  // Server software (internal/api/software.go): the catalog, a type's Minecraft
-  // versions newest first, and what one version needs and offers. felis-api
-  // reads them from upstream and caches them for ten minutes.
   softwareCatalog: () =>
     request<{ types: { type: SoftwareType; builds: boolean }[]; runtimes: number[] }>("GET", "/software"),
   softwareVersions: (type: SoftwareType) =>
@@ -739,11 +660,7 @@ export const api = rejectingSync({
       req,
     ),
 
-  // World backups (spec §7). listBackups is the app-tier read: an admin sees every
-  // present backup, a user only the backups of worlds they formerly owned — the
-  // scope is decided server-side from the principal, so a user cannot widen it.
-  // server narrows the page to one server inside that scope. Only present
-  // (restorable) rows come back, newest first, one page at a time with the total.
+  // Paginate present backups within the backend's administrator/former-owner scope.
   listBackups: (params?: { server?: string; limit?: number; offset?: number }) => {
     const sp = new URLSearchParams();
     if (params?.server) sp.set("server", params.server);
@@ -755,26 +672,11 @@ export const api = rejectingSync({
     );
   },
 
-  // deleteBackup deletes one backup, in the same scope that lists it (an admin any,
-  // a user only a world they formerly owned; any other id is 404 no_backup). It
-  // leaves every list and restore at once; the reaper deletes the archive on its
-  // next daily run and the off-site sync its copy. 409 restore_in_progress while a
-  // restore on that server may still be reading it.
+  // Deleting a backup queues archive removal; active restores reject with restore_in_progress.
   deleteBackup: (id: string) =>
     request<{ id: string; status: "expired" }>("DELETE", urlPath`/backups/${id}`),
 
-  // restoreBackup starts an ASYNC restore of a server's world from a backup
-  // (spec §7 POST restore-backup). It accepts an optional backupId in the body: when
-  // absent the backend restores the latest backup and resolves its opaque ref
-  // server-side — the client never names a backup by handle (spec §286).
-  // Preconditions are enforced server-side and surfaced as codes: owner-or-admin +
-  // former-owner match (403), a present backup must exist (404 no_backup), and the
-  // server MUST be fully stopped (409 not_stopped) since the restore writes into
-  // the live world volume. By default the backend first backs up the world as it
-  // is (a "pre_restore" backup) and starts the restore only once that succeeded;
-  // safetySnapshot=false skips it. The reply is 202 {name, status:"restoring",
-  // backup_id, safety_snapshot} — success means the work was enqueued, not that
-  // the world is back yet; serverJobs shows the snapshot and the restore.
+  // Restore selects the latest backup by default and queues after its safety snapshot succeeds.
   restoreBackup: (name: string, backupId?: string, safetySnapshot = true) => {
     const body: { backup_id?: string; safety_snapshot?: boolean } = {};
     if (backupId) body.backup_id = backupId;
@@ -786,25 +688,11 @@ export const api = rejectingSync({
     );
   },
 
-  // backupNow enqueues a manual backup (spec §7 POST backup). Preconditions are
-  // enforced server-side and surfaced as codes: owner-or-admin (403) and the
-  // server MUST be fully stopped (409 not_stopped — the world volume is RWO), so
-  // callers gate the action on phase === "Stopped". The reply is 202
-  // {name, status:"backing_up"}: the Job is enqueued, not done — watch
-  // serverJobs for the outcome.
+  // 202 means the manual backup is queued; follow serverJobs for completion.
   backupNow: (name: string) =>
     request<{ name: string; status: string }>("POST", urlPath`/servers/${name}/backup`),
 
-  // World export: a copy of one backup (startBackupExport, the same scope as
-  // delete and restore) or of a stopped server's current world (startWorldExport,
-  // 409 not_stopped otherwise; the world is held until the download ends). The
-  // reply is a one-time ticket bound to the caller. An export Job then hands the
-  // archive to felis-api: exportStatus reads "pending" until it has, and once
-  // "ready" the browser must open exportDownloadURL within 90 s. The download
-  // streams through felis-api, so it is opened as a link (an <a download>) and
-  // never read into memory. 429 export_busy past the limits (one per person at a
-  // time, two across the platform, six an hour); 410 export_expired once the
-  // ticket was used or its time ran out.
+  // Export tickets are single-use, expire after 90 seconds ready, and are subject to per-user and platform limits.
   startBackupExport: (name: string, id: string) =>
     request<ExportTicket>("POST", urlPath`/servers/${name}/backups/${id}/export`),
 
@@ -818,36 +706,24 @@ export const api = rejectingSync({
     return `${apiBase}${urlPath`/exports/${ticket}/download`}`;
   },
 
-  // serverJobs lists the newest backup/restore Jobs of one server, newest first
-  // (GET /servers/{name}/jobs). Owner-or-admin gated server-side; a Job's
-  // failure text rides `message`. The backend answers 503 until the job-status
-  // reader is wired, so callers should tolerate that error.
+  // Job status may return 503 when its reader is unavailable.
   serverJobs: (name: string) =>
     request<{ server: string; jobs: ServerJob[] }>(
       "GET",
       urlPath`/servers/${name}/jobs`,
     ).then((r) => r.jobs ?? []),
 
-  // Scheduled tasks of one server (GET/POST /servers/{name}/schedules, PUT/DELETE
-  // .../{id}, POST .../{id}/run). Owner-or-admin gated server-side; 503
-  // schedules_unavailable while the schedule store is not wired. A server holds
-  // at most `limit` of them (409 schedule_limit past it).
   listSchedules: (name: string) =>
     request<{ server: string; schedules: Schedule[]; limit: number }>(
       "GET",
       urlPath`/servers/${name}/schedules`,
     ).then((r) => ({ schedules: r.schedules ?? [], limit: r.limit })),
 
-  // createSchedule saves a new schedule; it belongs to the server's current
-  // owner. Validation failures are 400 bad_request / bad_schedule with the reason
-  // in the message.
+  // createSchedule saves a new schedule for the server's current owner. Validation failures are 400 bad_request or bad_schedule, with the reason in the message.
   createSchedule: (name: string, input: ScheduleInput) =>
     request<Schedule>("POST", urlPath`/servers/${name}/schedules`, input),
 
-  // updateSchedule replaces a schedule's settings (the whole input, not a patch)
-  // and passes it to the server's current owner, which is how a schedule the
-  // runner disabled after an owner change comes back. 409 schedule_running while
-  // it runs.
+  // Updating replaces the whole schedule and transfers it to the current owner.
   updateSchedule: (name: string, id: number, input: ScheduleInput) =>
     request<Schedule>("PUT", urlPath`/servers/${name}/schedules/${String(id)}`, input),
 
@@ -855,34 +731,19 @@ export const api = rejectingSync({
   deleteSchedule: (name: string, id: number) =>
     request<null>("DELETE", urlPath`/servers/${name}/schedules/${String(id)}`),
 
-  // runSchedule runs a schedule now, without the players' warning; its next
-  // scheduled run stays where it is. The reply is 202 with the schedule after the
-  // run's first step: a restart or backup goes on in the background and shows in
-  // run_state. 409 schedule_running mid-run, 409 schedule_stale when the server
-  // changed owner since the schedule was saved.
+  // Manual runs preserve the next scheduled time; restart/backup progress continues asynchronously.
   runSchedule: (name: string, id: number) =>
     request<Schedule>("POST", urlPath`/servers/${name}/schedules/${String(id)}/run`),
 
-  // Server file manager (spec §7). Every route is owner-or-admin gated and
-  // refuses with 409 not_stopped unless the server is fully stopped (the world
-  // volume is RWO), so callers gate on phase === "Stopped". The path travels as a
-  // query parameter — a file path contains "/" and never round-trips through a
-  // path segment. Content is []byte on the wire, which Go's encoding/json renders
-  // as base64, so it is binary-safe in both directions. A listing also says how
-  // much room the world volume has (free_bytes), so an upload too big for it is
-  // refused before it is sent.
+  // File operations require a fully stopped server and owner/admin access.
+  // File paths use query parameters and binary contents use base64; listings include free space.
   listServerFiles: (name: string, path: string) =>
     request<{ path: string; entries: ServerFileEntry[]; truncated: boolean; free_bytes: number | null }>(
       "GET",
       urlPath`/servers/${name}/files` + `?path=${encodeURIComponent(path)}`,
     ),
 
-  // readServerFile returns one file's bytes (base64) and the sha256 of the file
-  // as stored. A file over the read ceiling is a 413, never a silent truncation,
-  // because a later save of a truncated body would destroy the rest of the file.
-  // The content must hash to content_sha256, the digest of the bytes as sent: a
-  // read damaged on the way is refused (read_damaged) rather than opened, since
-  // saving it would write the damage back.
+  // Reject oversized or digest-damaged reads so subsequent saves cannot truncate or corrupt the original.
   readServerFile: async (name: string, path: string) => {
     const r = await request<{ path: string; content: string; sha256: string; content_sha256: string }>(
       "GET",
@@ -898,13 +759,7 @@ export const api = rejectingSync({
     return r;
   },
 
-  // writeServerFile atomically replaces a file's contents (creating it if
-  // absent). Sending an explicit "" is a deliberate truncate; the wire field is
-  // required, but that is enforced by the caller (this method always sends one).
-  // With expectSha256 (the hash the read returned) a file someone changed since
-  // is refused with 409 file_changed; without it the write is unconditional.
-  // The content goes with its SHA-256 (content_sha256), so content changed on
-  // the way is refused (digest_mismatch) and nothing is written.
+  // An empty body truncates; verify content digest and expected prior hash before atomic replacement.
   writeServerFile: async (name: string, path: string, content: string, expectSha256?: string) =>
     request<{ path: string; status: string; sha256: string }>(
       "PUT",
@@ -950,10 +805,7 @@ export const api = rejectingSync({
       { to },
     ),
 
-  // uploadServerFile sends a file's raw bytes (the browser sets Content-Length
-  // from the Blob) and their SHA-256, with progress. Without overwrite an
-  // existing file is 409 file_exists; with it the file is replaced whole or not
-  // at all.
+  // Uploads replace a file atomically only when overwrite is requested.
   uploadServerFile: (
     name: string,
     path: string,
@@ -970,14 +822,8 @@ export const api = rejectingSync({
       opts,
     ),
 
-  // A file too big for one request goes up in parts (components/files/
-  // sessionUpload.ts drives it): begin a session for its path and size, which
-  // reserves room for all of it; put each part at its byte offset, with its
-  // SHA-256; then commit, which answers at once with the op landing it (watch
-  // listServerFileOps). A session answers only the account and server it was
-  // begun for, and lists the parts it holds with their SHA-256. It stays until
-  // the Job landing its file reports it landed, so a landing that fails can be
-  // committed again, and is dropped after 6 hours idle.
+  // Reserve total upload space, send digest-checked parts by offset, then commit asynchronously.
+  // Sessions remain reusable after landing failure and expire after six hours idle.
   beginServerFileUpload: (name: string, path: string, size: number) =>
     request<FileUploadSession>(
       "POST",
@@ -1008,9 +854,7 @@ export const api = rejectingSync({
   commitServerFileUpload: (name: string, id: string, overwrite: boolean) =>
     request<{ op: FileOp }>("POST", urlPath`/servers/${name}/files/uploads/${id}/commit`, { overwrite }),
 
-  // unzipServerFile extracts a .zip into the folder holding it, in the
-  // background. Without overwrite an archive that would replace files fails
-  // file_exists and lists them, to be confirmed and run again with overwrite.
+  // Extraction conflicts require confirmation before retrying with overwrite.
   unzipServerFile: (name: string, path: string, overwrite: boolean) =>
     request<{ op: FileOp }>(
       "POST",
@@ -1032,10 +876,7 @@ export const api = rejectingSync({
       urlPath`/servers/${name}/files/download` + `?path=${encodeURIComponent(path)}&dir=${dir}`,
     ),
 
-  // Account linking (spec §10). Both are POST: start reports status from the
-  // session principal (no body, side-effect-free), verify consumes a code the
-  // player was shown in-game. The panel can never mint a code — that is the
-  // internal in-game face — so there is no client method for it.
+  // Link codes originate in-game; the web client can only redeem them.
   linkStatus: () => request<LinkStatus>("POST", "/account/link/start"),
 
   linkVerify: (code: string) =>
@@ -1078,9 +919,7 @@ export const api = rejectingSync({
   emailVerify: (code: string) =>
     request<{ verified: boolean; email: string }>("POST", "/account/email/verify", { code }),
 
-  // setEmail records the caller's address WITHOUT an OTP round-trip (the setup
-  // wizard's Step 1). The bootstrap has no SMTP, so email_verified stays false; a
-  // later Settings/SMTP flow verifies it via emailStart/emailVerify.
+  // Recording an email does not verify it; SMTP verification is a separate step.
   setEmail: (email: string) =>
     request<{ email: string }>("POST", "/account/email", { email }),
 
@@ -1107,12 +946,8 @@ export const api = rejectingSync({
   revokeMyOtherSessions: () =>
     request<{ revoked: number }>("POST", "/account/sessions/revoke-others"),
 
-  // Re-authentication. Adding or removing a passkey and changing the email are
-  // refused with 403 reauth_required unless this session proved a factor in the
-  // last few minutes. Status names the factors that can prove it: "passkey",
-  // "email" (a code to the verified address) or "sign_in" (operators sign in
-  // again). Like the migrate begin, the passkey begin returns the raw
-  // {"publicKey": {...}} document.
+  // Passkey and email changes require a recently verified factor; otherwise return reauth_required.
+  // The passkey begin returns the raw {"publicKey": ...} document.
   reauthStatus: () =>
     request<{ needed: boolean; until?: string; factors: string[] }>("GET", "/account/reauth"),
 
@@ -1127,11 +962,7 @@ export const api = rejectingSync({
   reauthEmailVerify: (code: string) =>
     request<{ ok: boolean; until: string }>("POST", "/account/reauth/email/verify", { code }),
 
-  // Account migration (spec §B3 inherit). Started in-game with /felis migrate; the
-  // web side then drives: status → step-up confirm (passkey when enrolled, email-OTP
-  // otherwise) → issue-code (source names the target account and reads the one-time
-  // code) → redeem (the TARGET account spends the code; the source's servers move to
-  // it and the source is retired).
+  // Account migration starts in-game and uses step-up confirmation before source-code issue and target redemption.
   migrateStatus: () =>
     request<{
       active: boolean;
@@ -1183,12 +1014,8 @@ export const api = rejectingSync({
   // lifecycle valve, the only way an upload is reclaimed from the PVC.
   deleteSubmission: (id: string) => request<Submission>("DELETE", urlPath`/submissions/${id}`),
 
-  // The reviewer's read path to the uploaded build context: the executed
-  // Dockerfile lives inside the tarball, so approving without this would be
-  // blind. The body is the attacker-supplied archive — download it, never
-  // render it — which the API's attachment disposition enforces.
-  // Resolves to the sha256 the API vouched for while streaming these bytes (it
-  // aborts the transfer on a mismatch), so the approval can name what was read.
+  // Download attacker-controlled build contexts as attachments; never render their contents.
+  // It resolves to the sha256 the API vouched for while streaming, so the approval can name what was read.
   downloadSubmissionContext: async (id: string): Promise<string | null> => {
     const res = await fetchOK(urlPath`/submissions/${id}/context`, { method: "GET" });
     const digest = res.headers.get("X-Felis-Context-Sha256")?.trim().toLowerCase() || null;
@@ -1209,10 +1036,7 @@ export const api = rejectingSync({
   createSubmission: (displayName: string) =>
     request<Submission>("POST", "/me/submissions", { display_name: displayName }),
 
-  // A chunked context upload (lib/contextUpload.ts drives it): ask where the
-  // staged upload stands, send each part at its byte offset, then store it. Each
-  // part carries its SHA-256, and one changed on the way is refused
-  // (digest_mismatch) and sent again.
+  // Send context parts by byte offset with SHA-256; retry digest_mismatch parts.
   getContextUpload: (id: string) =>
     request<ContextUploadProgress>("GET", urlPath`/me/submissions/${id}/context/upload`),
 
@@ -1244,7 +1068,6 @@ export const api = rejectingSync({
   getDBBackup: () => request<DBBackupStatus>("GET", "/platform/db-backup"),
   getUpdateReport: () => request<UpdateReport>("GET", "/updates/report"),
 
-  // ---- User admin (admin-tier, spec §7 user admin) ----
 
   listUsers: (params?: {
     query?: string;
@@ -1296,10 +1119,7 @@ export const api = rejectingSync({
   revokeUserSession: (id: string, hash: string) =>
     request<{ ok: boolean }>("DELETE", urlPath`/users/${id}/sessions/${hash}`),
 
-  // unbindUserPasskeys severs EVERY passkey the user holds (owner-tier account
-  // remediation for a lost or compromised authenticator). It is deliberately not
-  // a lockout — the account keeps its other doors (email OTP, in-game op-login
-  // re-enrollment). Unbinding an account that holds no passkeys is a 200 no-op.
+  // Unbinding passkeys preserves other sign-in methods and succeeds if none exist.
   unbindUserPasskeys: (id: string) =>
     request<{ ok: boolean }>("DELETE", urlPath`/users/${id}/passkeys`),
 
@@ -1317,15 +1137,7 @@ export const api = rejectingSync({
     ),
 });
 
-/**
- * consoleStreamURL builds the §8 read-side SSE endpoint for a server. It mirrors
- * request()'s `${apiBase}${path}` join, but is a plain string builder rather than
- * a fetch: an EventSource is *constructed* from a URL (and carries the Access
- * cookie via withCredentials), it is not requested through this module. The name
- * is percent-encoded defensively — server names are validated `[a-z0-9-]`
- * upstream, but the URL is built from a router param, so encoding keeps a stray
- * value from breaking the URL.
- */
+// EventSource uses the encoded endpoint with withCredentials to carry session cookies.
 export function consoleStreamURL(apiBase: string, name: string): string {
   return `${apiBase}/servers/${encodeURIComponent(name)}/console`;
 }
@@ -1359,8 +1171,7 @@ export function humanizeError(e: unknown): string {
 
   const err = e as Partial<ApiError>;
   switch (err.code) {
-    // Session doors (spec §B): every passwordless door 403s this when local
-    // sessions are disabled on a Zero-Trust-only deployment.
+    // Session doors: every passwordless door 403s this when local sessions are disabled on a Zero-Trust-only deployment.
     case "node_operation_busy":
       return t("node_operation_busy");
     case "node_control_unavailable":
@@ -1419,18 +1230,13 @@ export function humanizeError(e: unknown): string {
       return t("already_claimed");
     case "image_not_whitelisted":
       return t("image_not_whitelisted");
-    // Image pinning (internal/imagepin): a server runs the exact build its tag
-    // named when it was created or last changed, so the registry has to hold the
-    // tag, and moving a world to another build needs an explicit confirmation.
+    // Changing a pinned server image requires confirmation and a registry-held digest.
     case "image_not_in_registry":
       return t("image_not_in_registry");
     case "registry_unavailable":
       return t("registry_unavailable");
     case "image_change_unconfirmed":
       return t("image_change_unconfirmed");
-    // Server software (internal/api/software.go, selfservice.go): what upstream
-    // offers is checked when a server is created or changed, the runtime image
-    // must be in the registry, and creating a server needs a quota.
     case "eula_required":
     case "software_unavailable":
     case "software_not_found":
@@ -1451,10 +1257,7 @@ export function humanizeError(e: unknown): string {
     // new server cannot mount the old world.
     case "world_volume_exists":
       return t("world_volume_exists");
-    // Retirement (internal/api/handlers_retire.go): a server given up or being
-    // deleted cannot be woken or claimed until that is cancelled or done; the
-    // request repeats the server's name; a system server is never retired; a
-    // deletion refuses while a hand-deleted server's world volume is left.
+    // Pending retirement prevents wake or claim; system servers cannot retire.
     case "server_retiring":
       return t("server_retiring");
     case "confirm_mismatch":
@@ -1465,17 +1268,13 @@ export function humanizeError(e: unknown): string {
       return t("world_volume_orphaned");
     case "cooldown":
       return t("cooldown");
-    // Access control (spec §7): the server must be Running for any RCON-backed
-    // access change; the panel gates on phase, but a stale phase can still race.
+    // Access control: the server must be Running for any RCON-backed access change; the panel gates on phase, but a stale phase can still race.
     case "not_running":
       return t("not_running");
     case "console_unavailable":
       return t("console_unavailable");
     case "luckperms_missing":
       return t("luckperms_missing");
-    // World restore (spec §7 restore-backup): the world volume must be free, so a
-    // running/starting server 409s not_stopped; no present backup 404s no_backup;
-    // the restore subsystem may be unwired (503 restore_unavailable).
     case "no_backup":
       return t("no_backup");
     // The backup failed a read-back (sha256 or gzip/tar parse), so the server
@@ -1506,9 +1305,6 @@ export function humanizeError(e: unknown): string {
       return t("backup_store_full");
     case "restore_unavailable":
       return t("restore_unavailable");
-    // World export: over the per-person, platform or hourly limit (429), a
-    // ticket already used or past its time (410), a download asked for before
-    // the archive arrived (409), or export not wired on this deployment (503).
     case "export_busy":
       return t("export_busy");
     case "export_expired":
@@ -1517,9 +1313,6 @@ export function humanizeError(e: unknown): string {
       return t("export_not_ready");
     case "export_unavailable":
       return t("export_unavailable");
-    // Server create/edit (spec §22): the portability regex + reservation list are
-    // enforced server-side, and the create form's own checks are weaker, so these
-    // refusals reach the dialog as-is.
     case "bad_name":
       return t("bad_name");
     case "bad_subdomain":
@@ -1532,9 +1325,7 @@ export function humanizeError(e: unknown): string {
       return t("storage_immutable");
     case "bad_idle_stop":
       return t("bad_idle_stop");
-    // Email identity: the verified-email uniqueness index (migration 0020) plus
-    // VerifyEmailOTP's guard make a second verified holder impossible; the OTP
-    // relay can also refuse to deliver at all.
+    // Email identity: the verified-email uniqueness index and VerifyEmailOTP's guard make a second verified holder impossible; the OTP relay can also refuse to deliver at all.
     case "email_taken":
       return t("email_taken");
     case "mail_undeliverable":
@@ -1542,8 +1333,7 @@ export function humanizeError(e: unknown): string {
     // No [smtp] relay at all: every door that mails a code refuses before minting.
     case "mail_unavailable":
       return t("mail_unavailable");
-    // File editor (spec §7): path/size refusals from the sandboxed job, plus the
-    // subsystem being unwired.
+    // File editor: path and size refusals from the sandboxed job, plus the subsystem being unwired.
     case "bad_path":
       return t("bad_path");
     case "too_large":
@@ -1565,9 +1355,7 @@ export function humanizeError(e: unknown): string {
       return t("upload_incomplete");
     case "length_required":
       return t("length_required");
-    // Every upload body carries its SHA-256 (sendDigested): bytes that hash
-    // differently on arrival are refused, and a file the browser can no longer
-    // read (changed on disk since it was picked) is never sent.
+    // Every upload body carries its SHA-256 (sendDigested): bytes that hash differently on arrival are refused, and a file the browser cannot read is never sent.
     case "digest_mismatch":
       return t("digest_mismatch");
     case "digest_required":

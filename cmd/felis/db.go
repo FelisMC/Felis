@@ -40,9 +40,6 @@ var defaultKeep = map[string]int{
 	dbbackup.LabelOffsite:    1,
 }
 
-// cmdDB implements `felis db`: logical backups of the control-plane database
-// together with the host state a rebuild needs (internal/dbbackup). The verb
-// comes first for the same reason as `felis migrate up`.
 func cmdDB(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprint(stderr, dbUsage)
@@ -110,11 +107,7 @@ func dbDatabase(path string) (config.DatabaseConfig, error) {
 	return cfg.Database, nil
 }
 
-// dbTools places pg_dump, pg_restore and psql. The installer's database runs in
-// k3s and the host has no PostgreSQL client, so when the host config names the
-// [database] deployment the tools run in its postgres container over the
-// container's socket, as the URL's role on the URL's database. Otherwise they
-// come from PATH and connect with the URL.
+// Use PostgreSQL tools in the configured Deployment, otherwise local PATH and the database URL.
 func dbTools(db config.DatabaseConfig) (dbbackup.Tools, error) {
 	if db.Deployment == "" {
 		return dbbackup.Tools{}, nil
@@ -176,9 +169,7 @@ func dbBackup(fs *flag.FlagSet, dir *string, args []string, stdout, stderr io.Wr
 	defer cancel()
 	path, err := dbbackup.Backup(ctx, o)
 	if errors.Is(err, dbbackup.ErrServersMissing) {
-		// The bundle is on disk and holds the database; the exit status fails
-		// the timer's run so the gap shows in systemctl and the journal, and
-		// the panel and the watchdog read it from the record and the manifest.
+		// Return failure for incomplete server exports while preserving the usable database bundle.
 		fmt.Fprintf(stdout, "felis db backup: wrote %s\n", path)
 		fmt.Fprintf(stderr, "felis db backup: %v\n  a restore from %s brings back the database but no servers; check `k3s kubectl get minecraftservers -A`, then run `felis db backup` again\n", err, filepath.Base(path))
 		return 1
@@ -257,9 +248,7 @@ func dbRestore(fs *flag.FlagSet, dir *string, args []string, stdout, stderr io.W
 	if safety != "" {
 		fmt.Fprintf(stdout, "  the database as it was before is in %s\n", safety)
 	}
-	// Nothing migrates at startup, so a control plane newer than the bundle needs
-	// its migrations re-applied; rolling back to the release that wrote the bundle
-	// must skip that, or the rollback is undone.
+	// Apply newer migrations after restore unless rolling back to the bundle's original release.
 	fmt.Fprintf(stdout, "  next: felis migrate up -config %s (skip it when rolling back to felis %s, which wrote this bundle)\n", *cfgPath, orUnknown(m.FelisVersion))
 	fmt.Fprintln(stdout, "        kubectl -n felis scale deployment felis-api felis-operator --replicas=1")
 	return 0

@@ -10,7 +10,6 @@ import (
 	"felis.lolicon.best/internal/maintenance"
 )
 
-// outcome asserts how a schedule's last run ended and that no run is left.
 func (r *schedRig) outcome(t *testing.T, id int64, result, detail string) *Schedule {
 	t.Helper()
 	s := r.st.row(t, id)
@@ -54,7 +53,7 @@ func TestScheduleRunnerFiring(t *testing.T) {
 			got[0] != `{"action":"command","detail":"There are 2 players online","result":"ok","schedule":1}` {
 			t.Fatalf("run audits %v", got)
 		}
-		r.tick(t) // not due again
+		r.tick(t)
 		if r.con.calls != 1 || len(r.runAudits()) != 1 {
 			t.Fatalf("ran again: %d console calls", r.con.calls)
 		}
@@ -276,7 +275,7 @@ func TestScheduleRunnerRestart(t *testing.T) {
 		r.step(t, id, runStopping)
 		info.Ready = false
 		r.tick(t)
-		r.step(t, id, runStopping) // not Ready, but not Stopped either
+		r.step(t, id, runStopping)
 		info.Phase = string(v1alpha1.PhaseStopped)
 		r.tick(t)
 		r.outcome(t, id, ScheduleOK, "")
@@ -368,7 +367,7 @@ func TestScheduleRunnerBackup(t *testing.T) {
 		r.cl.maintErr["survival"] = ErrNotStopped
 		r.cl.byName["survival"].DesiredState = string(v1alpha1.DesiredStopped)
 		r.tick(t)
-		r.step(t, id, runStopping) // the pod is still going down
+		r.step(t, id, runStopping)
 		delete(r.cl.maintErr, "survival")
 		r.stopped()
 		r.clock = schedT0.Add(2 * time.Minute)
@@ -670,8 +669,7 @@ func TestScheduleRunnerEdges(t *testing.T) {
 }
 
 func TestScheduleNextRunMidnightJump(t *testing.T) {
-	// Chile moves its clocks from 00:00 to 01:00 on 2026-09-06: that Sunday has
-	// no midnight, so the weekday is read at midday.
+	// Chile skips 2026-09-06 midnight; evaluate the weekday at midday.
 	santiago := mustZone(t, "America/Santiago")
 	s := Schedule{MinuteOfDay: 12 * 60, Weekdays: 1, Timezone: "America/Santiago"}
 	after := time.Date(2026, 9, 5, 13, 0, 0, 0, santiago)
@@ -680,8 +678,6 @@ func TestScheduleNextRunMidnightJump(t *testing.T) {
 	}
 }
 
-// TestScheduleFinishLostRace: a finish that another felis-api beat to the row
-// changes nothing and leaves no second schedule.run audit.
 func TestScheduleFinishLostRace(t *testing.T) {
 	r := newSchedRig(t)
 	id := r.schedule(ScheduleRestart, schedT0, func(s *Schedule) { s.LastResult = ScheduleOK })

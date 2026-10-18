@@ -6,34 +6,11 @@ import (
 	"strings"
 )
 
-// Pre-session identifier-first discovery (spec §B, #71). Given a typed email, this
-// Public door reports which console login methods the account can use, so the SPA's
-// identifier-first form can prompt for the right authenticator (a passkey assertion,
-// or "we'll email you a code") instead of guessing.
-//
-// It is the deliberate counter-slice to the anti-enumeration login doors
-// (handlers_auth_email.go, handlers_passkey.go): those refuse to disclose whether an
-// address has an account precisely because THIS endpoint is the one sanctioned place
-// existence is revealed. An empty methods array means "no (verified) account, or
-// none of its methods is available on this install". That makes it a
-// mass-enumeration surface by design — an accepted product decision, the
-// same one the email door's header records. The handler sends no mail and mutates
-// nothing, so a per-recipient cooldown would merely block a legitimate retry; what
-// bounds enumeration is the per-client-address token bucket shared by every public
-// auth door (throttleAuthDoor in ratelimit.go).
-//
-// It never reveals STAFFNESS. Methods are computed by the SAME rule for every resolved
-// account — no role branch, no operator hint — so a staff email and a player email in
-// the same credential state return byte-identical bodies. The console doors' own
-// post-redemption staff refusal is not previewed here: a staff caller is told
-// email_otp is available and is turned away only later, at op.console's Zero-Trust
-// gate. Staffness is thus invisible by construction, with no side channel to regress.
+// Auth options intentionally reveal available login methods, but compute them identically for staff and players.
 type authOptionsRequest struct {
 	Email string `json:"email"`
 }
 
-// handleAuthOptions resolves the typed email and returns the console login methods it
-// can use. Public, pre-session, gated on local_auth_enabled like its sibling doors.
 func (a *API) handleAuthOptions(w http.ResponseWriter, r *http.Request) {
 	if !localAuthEnabled(r.Context(), a.Repo) {
 		writeError(w, r, newError(http.StatusForbidden, "local_auth_disabled",
@@ -55,14 +32,11 @@ func (a *API) handleAuthOptions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// methods is initialised non-nil so the no-account branch marshals as [] (not null).
 	methods := []string{}
 
 	u, err := a.Repo.UserByEmail(r.Context(), email)
 	switch {
 	case errors.Is(err, ErrNotFound):
-		// The sanctioned existence oracle: an unknown (or not-yet-verified) address is
-		// not disguised — it honestly reports no methods.
 		writeJSON(w, http.StatusOK, map[string]any{"methods": methods})
 		return
 	case err != nil:
@@ -70,13 +44,7 @@ func (a *API) handleAuthOptions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Compute methods identically for EVERY resolved account. There is deliberately no
-	// branch on u.Role: a staff address must be indistinguishable from a player address
-	// in the same credential state, so the response carries nothing account-identifying.
-	//
-	// Advertise passkey only when a verifier is actually wired: both login halves 503
-	// passkey_unavailable when a.Passkey is nil regardless of enrolled credentials, so
-	// options must not offer a method the finish door would immediately reject.
+	// Do not branch on role or advertise passkeys without a configured verifier.
 	if a.Passkey != nil {
 		creds, err := a.Repo.PasskeyCredentialsForUser(r.Context(), u.ID)
 		if err != nil {
@@ -87,10 +55,6 @@ func (a *API) handleAuthOptions(w http.ResponseWriter, r *http.Request) {
 			methods = append(methods, "passkey")
 		}
 	}
-	// Email-OTP login works for any resolved verified account (UserByEmail resolves only
-	// email_verified rows), so it is on offer whenever a relay can mail the code; with
-	// none the email door answers 503 mail_unavailable, so it is left out like an
-	// unwired passkey verifier.
 	if a.mailer(r.Context()) != nil {
 		methods = append(methods, "email_otp")
 	}

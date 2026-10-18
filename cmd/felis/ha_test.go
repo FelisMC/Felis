@@ -55,9 +55,6 @@ func postgresPod(node string) *corev1.Pod {
 	return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "felis-postgres-x", Namespace: "felis", Labels: map[string]string{platform.LabelComponent: platform.ComponentPostgres}}, Spec: corev1.PodSpec{NodeName: node}}
 }
 
-// TestHostLeaderIsWherePostgresRuns pins the host leader: the controller running the
-// database's pod; the first online controller by name while that pod has no live node;
-// the one node of a single-node install; an error with no controller online.
 func TestHostLeaderIsWherePostgresRuns(t *testing.T) {
 	ctx := context.Background()
 	for name, tc := range map[string]struct {
@@ -130,8 +127,6 @@ func TestSelfNodeName(t *testing.T) {
 	}
 }
 
-// TestCopyTreeForAVolume pins what copy-volume adds to the world copy: a target left
-// half-filled is emptied first, and each directory keeps its exact mode.
 func TestCopyTreeForAVolume(t *testing.T) {
 	from, to := t.TempDir(), t.TempDir()
 	if err := os.MkdirAll(filepath.Join(from, "base"), 0o700); err != nil {
@@ -219,10 +214,6 @@ func haMover(cl client.Client, dir string) *haMigration {
 	return &haMigration{cl: cl, controlNS: "felis", mcNS: "minecraft", backupPVC: "felis-backups", class: platform.DefaultReplicatedStorageClass, node: "a", image: "felis:1", dbSize: "10Gi", dbPath: dir, stateDir: dir, poll: time.Millisecond, timeout: time.Second, out: io.Discard}
 }
 
-// TestMigrateStorageMovesTheControlPlane walks the move: the control plane and the system
-// servers stop, each volume (the database's host directory included) is copied by a Job on
-// the home controller into a replicated claim of its size, the lobby is pointed at its
-// replicated world and given back its desired state, and a second run repeats nothing.
 func TestMigrateStorageMovesTheControlPlane(t *testing.T) {
 	ctx := context.Background()
 	cl, jobs := haCluster(t)
@@ -296,8 +287,6 @@ func TestMigrateStorageMovesTheControlPlane(t *testing.T) {
 	}
 }
 
-// TestMigrateStorageResumes pins that a failed copy stops the move, keeps what was done,
-// and is copied again next time from an emptied target.
 func TestMigrateStorageResumes(t *testing.T) {
 	ctx := context.Background()
 	cl, jobs, fail := haClusterFailing(t)
@@ -325,8 +314,6 @@ func TestMigrateStorageResumes(t *testing.T) {
 	}
 }
 
-// TestCSIMountDirFindsTheReplicatedVolume pins how host tools find a replicated volume:
-// the kubelet's mount of it for a pod on this host, and an error where none is mounted.
 func TestCSIMountDirFindsTheReplicatedVolume(t *testing.T) {
 	root := t.TempDir()
 	mount := filepath.Join(root, "pods", "uid-1", "volumes", "kubernetes.io~csi", "pvc-123", "mount")
@@ -341,8 +328,6 @@ func TestCSIMountDirFindsTheReplicatedVolume(t *testing.T) {
 	}
 }
 
-// TestMigrateStorageOnAFreshInstall pins that with no database directory yet there is
-// nothing of the database to copy: its replicated volume simply starts empty.
 func TestMigrateStorageOnAFreshInstall(t *testing.T) {
 	cl, jobs := haCluster(t)
 	m := haMover(cl, t.TempDir())

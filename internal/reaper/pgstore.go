@@ -8,15 +8,10 @@ import (
 	"time"
 )
 
-// PGStore is the production Store backed by Postgres (spec §6, §18). The SQL
-// here is exercised by integration tests against a live database, not the
-// hermetic reaper_test.go suite. Every statement is the narrow operation §18
-// requires; there is no generic UPDATE escape hatch.
 type PGStore struct {
 	db *sql.DB
 }
 
-// NewPGStore wraps an existing pool (from store.PostgresDriver.DB()).
 func NewPGStore(db *sql.DB) *PGStore { return &PGStore{db: db} }
 
 func (s *PGStore) ListActiveServers(ctx context.Context) ([]Candidate, error) {
@@ -54,10 +49,7 @@ func (s *PGStore) ListActiveServers(ctx context.Context) ([]Candidate, error) {
 }
 
 func (s *PGStore) FreshBackup(ctx context.Context, server string, since time.Time) (Fresh, bool, error) {
-	// Only the reaper's own archives count (an idle reap's or a retirement's),
-	// and only those taken since the current owner claimed the server: a manual
-	// backup may predate a panel edit that did not move last_active_at, and an
-	// archive from before the claim is the previous owner's world. One found corrupt is never reused.
+	// Reuse only intact reaper archives newer than activity and the current claim; manual backups may predate unrecorded edits.
 	const q = `SELECT b.id, b.backup_ref, COALESCE(b.sha256, ''), b.offsite_at IS NOT NULL FROM world_backups b
 		WHERE b.server_name = $1 AND b.status = 'present' AND b.reason IN ('inactive_15d', 'released') AND b.created_at >= $2
 		  AND b.corrupt_at IS NULL
@@ -83,15 +75,7 @@ func (s *PGStore) InsertBackup(ctx context.Context, rec BackupRecord) error {
 	return err
 }
 
-// ReleaseWorld releases ownership and resets the activity clock and warnings —
-// without deleting the row (red line ②). The resource cache stays: the server
-// keeps its spec, an ownerless row is in nobody's quota sum, and the next claim is
-// gated on that size and counts it. The wake allowlist is emptied in the same
-// statement: its players were vouched for by the owner being released, and an
-// ownerless server set to autostartPolicy=allowlist would otherwise stay
-// wakeable by them. A pending release is done with once the world is gone;
-// a pending deletion stays, so an idle reap that lands on a server an admin is
-// deleting leaves the deletion for the next run.
+// ReleaseWorld preserves resource sizes, clears wake grants and completes release requests while retaining pending deletions.
 func (s *PGStore) ReleaseWorld(ctx context.Context, name string, at time.Time) error {
 	const q = `WITH released AS (
 		UPDATE servers
@@ -103,10 +87,6 @@ func (s *PGStore) ReleaseWorld(ctx context.Context, name string, at time.Time) e
 	return err
 }
 
-// DeleteServerRow marks a server deleted once its MinecraftServer is gone. The
-// row stays (red line ②) and so do its backups (red line ③), recorded against
-// the name; the aliases go, which frees the subdomain, and the allowlist with
-// them. A create under the name later starts the row over (api.SeedServer).
 func (s *PGStore) DeleteServerRow(ctx context.Context, name string, at time.Time) error {
 	const q = `WITH gone AS (
 		UPDATE servers
@@ -127,7 +107,7 @@ func (s *PGStore) RestartClock(ctx context.Context, name string, at time.Time) e
 }
 
 func (s *PGStore) MarkWarned(ctx context.Context, name string, tier Tier, at time.Time) error {
-	// The column is one of two fixed identifiers, never user input.
+	// The column is a fixed warning identifier, never user input.
 	col := "warned_3d_at"
 	if tier == Tier1d {
 		col = "warned_1d_at"
@@ -151,12 +131,7 @@ func (s *PGStore) EvictableBackups(ctx context.Context) ([]StoredBackup, error) 
 	return s.queryBackups(ctx, q)
 }
 
-// ExcessBackups lists the present backups of one reason that owner holds of
-// server beyond the newest keep, oldest first: what the backup Job removes after
-// adding one. Another owner's backups of the same server (one it held before the
-// world was reaped and claimed again) are theirs to restore and never counted.
-// protect, when set, is a backup id left out of the list whatever its age (the
-// one a chained restore is about to extract).
+// ExcessBackups scopes retention to owner, server and reason; protect always excludes a backup needed by a chained restore.
 func (s *PGStore) ExcessBackups(ctx context.Context, server, owner, reason string, keep int, protect string) ([]StoredBackup, error) {
 	const q = `SELECT id, server_name, backup_ref, size_bytes, reason, COALESCE(sha256, '') FROM world_backups
 		WHERE server_name = $1 AND COALESCE(former_owner, '') = $5 AND status = 'present' AND reason = $2 AND id <> $4
@@ -234,9 +209,6 @@ func (s *PGStore) MarkBackupDeleted(ctx context.Context, id string, at time.Time
 	return err
 }
 
-// Audit writes a reaper-sourced row. The actor/source are the system identity
-// "reaper" (no human Access email applies, spec §14); former_owner has no
-// dedicated column so it goes into the payload jsonb.
 func (s *PGStore) Audit(ctx context.Context, rec AuditRecord) error {
 	payload := []byte("{}")
 	if rec.FormerOwner != "" {

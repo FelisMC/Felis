@@ -46,9 +46,7 @@ export function parseCap(v: string, scale = 1): number | null | undefined {
   return Number.isSafeInteger(n) && n <= 2147483647 ? n : undefined;
 }
 
-// SelfServiceQuotaCard is the Owner's default quota: once on, every user without a
-// quota of their own may create servers within it, and claims and resizes are held
-// to it as well. Off, those users cannot create servers.
+// Default quota governs users without individual quotas, including create, claim, and resize admission.
 export function SelfServiceQuotaCard() {
   const { t } = useTranslation("admin");
   const query = useAsync(api.getSelfServiceQuota, []);

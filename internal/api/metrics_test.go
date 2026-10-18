@@ -11,13 +11,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-// TestMetricsEndpoint locks the scrape surface: the internal face serves the
-// felis_* collectors (the API process is felis_image_build_failures_total's
-// only producer), and the external face never serves metrics.
 func TestMetricsEndpoint(t *testing.T) {
-	// Give every collector a sample so the exposition carries all four families:
-	// an empty vector family is omitted from the text output entirely. The bumps
-	// stay inside this test binary — the collectors are per-process globals.
 	metrics.SyncServerGauge([]string{"Running"})
 	metrics.StartDurationSeconds.Observe(3)
 	metrics.ImageBuildFailuresTotal.Inc()
@@ -46,7 +40,6 @@ func TestMetricsEndpoint(t *testing.T) {
 	}
 }
 
-// The store pool's counts reach the internal scrape once registered.
 func TestMetricsEndpointCarriesTheStorePool(t *testing.T) {
 	pool, err := sql.Open("pgx", "postgres://felis@127.0.0.1:1/felis")
 	if err != nil {

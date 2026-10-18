@@ -18,37 +18,17 @@ import (
 	"felis.lolicon.best/internal/nodecontrol"
 )
 
-// Failover of a lost worker, or with controller high availability a lost controller
-// (internal/distributed failover.go), from the Owner panel or on its own once automatic
-// failover is on, and the background work around it:
-//
-//   - the plan: the servers whose worlds are on the lost node, each with its newest intact
-//     backup, which is what a failover restores and so how much it loses;
-//   - the failover itself: one Operation per server towards the chosen node, and a fence
-//     task for node-control, which alone may cordon and taint nodes;
-//   - FailoverTick, every half minute: fence tasks for the failovers waiting on one, the
-//     automatic failover, and the replicas: a live copy of each world running on a node
-//     that can be failed over every ReplicaMinutes, so the newest backup a failover
-//     restores is recent.
-//
-// The automatic failover acts only while a controller is up and exactly one node is lost
-// (and not fenced yet), for at least AfterMinutes: several nodes vanishing at once looks
-// more like the controller's own network failing than like dead machines.
+// Automatic failover requires a live controller and exactly one lost, unfenced node to avoid reacting to controller network loss.
 
 const failoverPolicyKey = "failover_policy"
 
-// FailoverPolicy is the Owner's failover setting.
 type FailoverPolicy struct {
-	// Automatic fails a lost worker over without waiting for the Owner, once it has been
-	// gone AfterMinutes.
 	Automatic    bool `json:"automatic"`
 	AfterMinutes int  `json:"afterMinutes"`
-	// ReplicaMinutes is how often a world running on a worker is copied live; 0 turns the
-	// replicas off.
+	// ReplicaMinutes=0 disables live replicas.
 	ReplicaMinutes int `json:"replicaMinutes"`
 }
 
-// defaultFailoverPolicy holds until the Owner saves one: failover by hand, hourly replicas.
 var defaultFailoverPolicy = FailoverPolicy{AfterMinutes: 15, ReplicaMinutes: 60}
 
 func (p FailoverPolicy) valid() bool {
@@ -138,14 +118,12 @@ func (a *API) handleSetFailoverPolicy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, view)
 }
 
-// FailoverBackup is the backup a failover would restore.
 type FailoverBackup struct {
 	ID        string    `json:"id"`
 	CreatedAt time.Time `json:"createdAt"`
 	SizeBytes int64     `json:"sizeBytes"`
 }
 
-// FailoverServer is one server of a failover plan.
 type FailoverServer struct {
 	Name         string                 `json:"name"`
 	DesiredState string                 `json:"desiredState"`
@@ -153,7 +131,6 @@ type FailoverServer struct {
 	Operation    *distributed.Operation `json:"operation"`
 }
 
-// FailoverPlan is what failing a node over would do.
 type FailoverPlan struct {
 	Node      string           `json:"node"`
 	Lost      bool             `json:"lost"`
@@ -163,7 +140,6 @@ type FailoverPlan struct {
 	Targets   []string         `json:"targets"`
 }
 
-// validNode checks a node name from the path the way node-control does.
 func validNode(name string) bool {
 	return nodecontrol.Request{Action: "fence", Name: name, ConfirmMaintenance: true}.Validate() == nil
 }
@@ -216,19 +192,16 @@ func (a *API) handleFailoverPlan(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, plan)
 }
 
-// FailoverSkip is a server a failover left where it was, and why.
 type FailoverSkip struct {
 	Name   string `json:"name"`
-	Reason string `json:"reason"` // no_backup, unknown_server or failed
+	Reason string `json:"reason"`
 	Error  string `json:"error,omitempty"`
 }
 
-// FailoverResult is what a failover started.
 type FailoverResult struct {
 	Operations []distributed.Operation `json:"operations"`
 	Skipped    []FailoverSkip          `json:"skipped"`
-	// FenceTask is the node-control task fencing the node, when this request started one;
-	// FenceError says why none could be started (it is retried in the background).
+	// FenceError records a failed fence-task submission; background work retries it.
 	FenceTask  *nodecontrol.Task `json:"fenceTask,omitempty"`
 	FenceError string            `json:"fenceError,omitempty"`
 }
@@ -286,9 +259,7 @@ func (a *API) writeFailoverError(w http.ResponseWriter, r *http.Request, err err
 	a.writeMigrationError(w, r, err)
 }
 
-// failOver starts the failover of every server on node towards target and asks
-// node-control to fence node. A server already failing over keeps its own failover; one
-// with no intact backup, or that cannot start, is reported and left where it is.
+// failOver preserves existing operations and skips servers without an intact backup or an admissible target.
 func (a *API) failOver(ctx context.Context, node, target, actor string) (FailoverResult, error) {
 	res := FailoverResult{Operations: []distributed.Operation{}, Skipped: []FailoverSkip{}}
 	if _, err := a.Distribution.LostNode(ctx, node); err != nil {
@@ -335,16 +306,11 @@ func (a *API) failOver(ctx context.Context, node, target, actor string) (Failove
 	return res, nil
 }
 
-// fenceRetry is how long after starting a fence task another may be started for the same
-// node: long enough for one to finish, short enough that a failover is not held up for
-// long by a fence that did not take.
 const fenceRetry = 2 * time.Minute
 
-// errNoNodeControl is returned when the host service that fences nodes is not wired.
 var errNoNodeControl = errors.New("the host node service is not configured, so the node cannot be fenced; the failover waits")
 
-// ensureFence asks node-control to fence node, unless a fence of it is running or one was
-// started within fenceRetry. It returns the task it started, if any.
+// ensureFence suppresses concurrent or recent fence requests within fenceRetry.
 func (a *API) ensureFence(ctx context.Context, node, actor string) (*nodecontrol.Task, error) {
 	if a.NodeControl == nil {
 		return nil, errNoNodeControl
@@ -368,8 +334,6 @@ func (a *API) ensureFence(ctx context.Context, node, actor string) (*nodecontrol
 	return &task, nil
 }
 
-// failoverState is FailoverTick's memory: the per-node fence throttle and when each world
-// last had a replica started.
 type failoverState struct {
 	once     sync.Once
 	fences   *cooldownLimiter
@@ -391,15 +355,12 @@ func (a *API) initFailoverState() {
 	a.failover.replicas = &cooldownLimiter{now: a.now, last: map[string]time.Time{}}
 }
 
-// Audit identity of the background failover work.
 const (
 	failoverActor = "failover"
 	replicaAction = "backup.replica"
 )
 
-// FailoverTick runs the background half of failover once; cmd/felis calls it every half
-// minute in distributed mode. Each part runs whatever the others did, and their errors
-// are joined.
+// FailoverTick runs every background task independently and joins their errors.
 func (a *API) FailoverTick(ctx context.Context) error {
 	if a.Distribution == nil {
 		return nil
@@ -431,9 +392,7 @@ func (a *API) FailoverTick(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// autoFailover fails the one lost worker over once it has been gone policy.AfterMinutes,
-// towards the least loaded online node. A server whose failover failed is left for the
-// Owner: retrying it on its own could loop.
+// autoFailover leaves failed server failovers for manual intervention to avoid automatic retry loops.
 func (a *API) autoFailover(ctx context.Context, policy FailoverPolicy) error {
 	lost, controllerUp, err := a.Distribution.LostNodes(ctx)
 	if err != nil || !controllerUp || len(lost) != 1 {
@@ -471,12 +430,7 @@ func (a *API) autoFailover(ctx context.Context, policy FailoverPolicy) error {
 	return nil
 }
 
-// startReplica starts at most one replica per tick: the first world running on a worker
-// whose newest intact backup is older than every, and which has not had a replica started
-// within every. A world whose game did not answer its console waits as long; one that is
-// starting, stopping or busy is simply tried again on the next tick. It waits while any
-// backup or restore Job runs, so replicas queue behind each other and behind the owners'
-// own operations.
+// startReplica starts at most one per tick and waits behind all running backup and restore Jobs.
 func (a *API) startReplica(ctx context.Context, every time.Duration) error {
 	if jobs, ok := a.JobStatus.(WorldJobCounter); ok {
 		if n, err := jobs.RunningWorldJobs(ctx); err != nil || n > 0 {

@@ -181,8 +181,6 @@ func TestBackupNowPlanChangesNothing(t *testing.T) {
 	}
 }
 
-// A plan that saves nothing says so, without the manual_keep warning; a starting
-// server counts as something to save once -stop is given, and a running one always.
 func TestBackupNowPlanWithNothingToSave(t *testing.T) {
 	starting := []backupNowWorld{startingWorld("bravo"), emptyWorld("charlie")}
 	for _, tc := range []struct {
@@ -246,8 +244,6 @@ func TestBackupNowBacksUpEachWorldInTurn(t *testing.T) {
 	}
 }
 
-// Without -stop a running server is backed up where it runs and left running, after
-// the stopped ones; one starting is skipped and fails the run.
 func TestBackupNowBacksUpRunningServersLive(t *testing.T) {
 	g := newBNRig(runningWorld("bravo"), startingWorld("delta"), stoppedWorld("alpha"))
 	g.states["bravo"] = []string{"running", "succeeded"}
@@ -423,8 +419,6 @@ func TestBackupNowNamedServers(t *testing.T) {
 	}
 }
 
-// The world list mirrors the backup route's own gate, so the plan says exactly what
-// the route would refuse.
 func TestListBackupNowWorlds(t *testing.T) {
 	withStatus := func(ms *v1alpha1.MinecraftServer, ready bool) *v1alpha1.MinecraftServer {
 		ms.Status.Ready = ready

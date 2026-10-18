@@ -41,37 +41,12 @@ import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-/**
- * LobbyGuard keeps the lobby a hub: a place every authenticated player passes through
- * on the way to a server, which nobody can hurt, get hurt in, or leave a mark on.
- * Without it the lobby is a plain survival world: mobs at night, PvP, and every block
- * broken or placed by a passer-by stays in the world volume for the next player.
- *
- * <p>The following are defaults; felis-experience.json can adjust each behavior.
- *
- * <p><b>World.</b> Every world is made peaceful with natural spawning, PvP, mob
- * griefing and TNT off, time frozen at noon and the weather clear, and inventories
- * kept. These are world rules (level.dat), so they are set here on enable and on
- * every world load rather than in server.properties.
- *
- * <p><b>Players.</b> A player takes no damage and never goes hungry; one who falls out
- * of the world is put back at spawn. Without {@link #BUILD_PERMISSION} (ops have it by
- * default) a player joins in adventure mode at spawn and cannot break or place
- * blocks, pour or scoop liquids, trample farmland, light fires, or harm any entity:
- * mobs, item frames, paintings, armor stands and vehicles alike. Buttons, doors,
- * pressure plates and containers keep working, so a lobby an admin builds with
- * them still works for everyone.
- *
- * <p><b>Onboarding.</b> Every join gets one chat line saying what the lobby is for,
- * with a click that runs {@code /menu}: the only way on from here, and one nobody
- * would otherwise guess.
- */
+/** Keeps the lobby a hub: peaceful worlds, no damage or hunger, and no block or entity changes without BUILD_PERMISSION. felis-experience.json overrides each default. */
 final class LobbyGuard implements Listener {
 
     /** Lets a player build in the lobby (default: ops). */
     static final String BUILD_PERMISSION = "felis.lobby.build";
 
-    /** Noon: the lobby is always lit. */
     private static final long NOON = 6000L;
 
     boolean guarded(Player player) {
@@ -90,11 +65,7 @@ final class LobbyGuard implements Listener {
         this.settings = settings;
     }
 
-    /**
-     * protect applies the world rules and logs what it could not set. The lobby's job is
-     * the menu, so a rule a server version refuses (or no longer has) costs the rule,
-     * never the plugin.
-     */
+    /** Applies the world rules; a rule the server version refuses is logged and never disables the plugin. */
     void protect(World world) {
         try {
             applyRules(world);
@@ -106,8 +77,7 @@ final class LobbyGuard implements Listener {
 
     void applyRules(World world) {
         world.setDifficulty(Difficulty.valueOf(settings.text("difficulty", "PEACEFUL")));
-        // Only a world with its own clock has a time of day to set; the nether and the
-        // end have none and refuse.
+        // The nether and the end have no time of day and refuse setTime.
         if (settings.flag("freezeTime", true) && !world.isFixedTime()) {
             world.setTime(Math.floorMod(settings.number("time", NOON), 24000L));
         }
@@ -131,8 +101,6 @@ final class LobbyGuard implements Listener {
     public void onWorldLoad(WorldLoadEvent event) {
         protect(event.getWorld());
     }
-
-    // ---- joining ----
 
     @EventHandler
     public void onJoin(PlayerJoinEvent event) {
@@ -167,8 +135,6 @@ final class LobbyGuard implements Listener {
                         NamedTextColor.GOLD));
     }
 
-    // ---- nobody gets hurt ----
-
     @EventHandler(priority = EventPriority.LOW)
     public void onDamage(EntityDamageEvent event) {
         if (!(event.getEntity() instanceof Player player)) {
@@ -188,8 +154,6 @@ final class LobbyGuard implements Listener {
             event.setCancelled(true);
         }
     }
-
-    // ---- nobody leaves a mark ----
 
     @EventHandler(priority = EventPriority.LOW)
     public void onBreak(BlockBreakEvent event) {
@@ -219,7 +183,7 @@ final class LobbyGuard implements Listener {
         }
     }
 
-    /** Stepping on farmland or turtle eggs destroys them; pressure plates are left alone. */
+    /** Stepping on farmland or turtle eggs destroys them; pressure plates stay usable. */
     @EventHandler(priority = EventPriority.LOW)
     public void onTrample(PlayerInteractEvent event) {
         Block block = event.getClickedBlock();
@@ -232,7 +196,7 @@ final class LobbyGuard implements Listener {
         }
     }
 
-    /** Fire spreads and burns with nobody behind it, so only a builder may start one. */
+    /** Fire spreads with nobody behind it, so only a builder may start one. */
     @EventHandler(priority = EventPriority.LOW)
     public void onIgnite(BlockIgniteEvent event) {
         if (settings.flag("protectBuild", true) &&
@@ -284,7 +248,7 @@ final class LobbyGuard implements Listener {
         }
     }
 
-    /** guardedCulprit: the entity is a guarded player, or something one of them shot. */
+    /** True when the entity is a guarded player, or a projectile one of them shot. */
     private boolean guardedCulprit(Entity culprit) {
         if (culprit instanceof Projectile projectile && projectile.getShooter() instanceof Player shooter) {
             return guarded(shooter);

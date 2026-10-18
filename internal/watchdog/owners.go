@@ -5,9 +5,6 @@ import (
 	"database/sql"
 )
 
-// OwnerEmails returns the verified addresses of the enabled owner accounts, the
-// people who can act on an alert, in order. internal/pgint holds its contract
-// against the real schema.
 func OwnerEmails(ctx context.Context, db *sql.DB) ([]string, error) {
 	rows, err := db.QueryContext(ctx,
 		`SELECT email FROM users

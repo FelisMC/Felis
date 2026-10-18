@@ -1,20 +1,5 @@
--- Account migration (spec §B3 inherit): a LIVE old account hands its owned servers
--- to a new account and is then retired. This is scenario A (the source runs
--- /felis migrate in-game), distinct from the eviction-inherit hook on
--- player_data_holds (scenario B, a barred UUID's stashed data).
---
--- State machine (one live migration per source at a time):
---   initiated   -- /felis migrate in-game put the source account into migrate mode
---   confirmed   -- source proved control via a FRESH web step-up (passkey if any is
---                  enrolled, else email-OTP) — never mere session possession
---   code_issued -- source named the target account by id and minted a one-time code
---   redeemed    -- target logged in, entered the code; owned servers re-pointed to the
---                  target and the source account disabled (terminal)
---
--- The transfer moves server ownership only. It does NOT move the mc_uuid link (the
--- target keeps the in-game identity it logged in with) nor web credentials (email /
--- passkeys stay with the source) — moving credentials would make migrate a
--- credential-theft primitive.
+-- Account migration: a live account hands its owned servers to a new account, then retires.
+-- Only server ownership moves; moving credentials would make migrate a credential-theft primitive.
 CREATE TABLE account_migrations (
   id              text PRIMARY KEY,
   source_user_id  text NOT NULL REFERENCES users(id),
@@ -29,9 +14,7 @@ CREATE TABLE account_migrations (
   updated_at      timestamptz NOT NULL DEFAULT now()
 );
 
--- At most one live (non-terminal) migration per source. Re-running /felis migrate
--- supersedes any earlier unfinished attempt (StartMigration deletes it first), so
--- this guards against two concurrent live migrations racing the same source.
+-- One live migration per source: a new /felis migrate supersedes any earlier unfinished attempt.
 CREATE UNIQUE INDEX idx_account_migrations_live_source
   ON account_migrations (source_user_id)
   WHERE state <> 'redeemed';

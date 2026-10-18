@@ -9,10 +9,6 @@ import (
 	"time"
 )
 
-// TestAllowlistRoutes covers GET /servers/{name}/allowlist and PUT
-// /servers/{name}/allowlist/{uuid}: the owner and an admin read and change the
-// list, anyone else is refused before the repo is touched, a UUID that is not on
-// the list is 404, and each change is audited with the UUID it touched.
 func TestAllowlistRoutes(t *testing.T) {
 	const friend = "0f8fad5b-d9cb-469f-a165-70867728950e"
 	const other = "7c9e6679-7425-40de-944b-e07fc1f90ae7"

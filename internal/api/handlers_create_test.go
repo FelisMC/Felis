@@ -24,9 +24,7 @@ func decodeField(t *testing.T, w *httptest.ResponseRecorder, field string) strin
 	return s
 }
 
-// newCreateAPI wires an admin-authenticated API with a Builder whose whitelist
-// admits the canonical test image, plus handles to the fakes so a test can
-// pre-seed state and assert what the §15 create flow wrote.
+// newCreateAPI admits the canonical test image and exposes its stores for assertions.
 func newCreateAPI() (*API, *fakeRepo, *fakeCluster, *fakeBuilder) {
 	repo := newFakeRepo()
 	cl := newFakeCluster()
@@ -40,8 +38,6 @@ func newCreateAPI() (*API, *fakeRepo, *fakeCluster, *fakeBuilder) {
 
 const admittedImage = "registry.felis.svc:5000/mc:1"
 
-// validCreateBody is a well-formed §15 form; tests mutate one field at a time by
-// writing their own JSON.
 const validCreateBody = `{"name":"survival","subdomain":"survival",` +
 	`"image":"registry.felis.svc:5000/mc:1","memory":"2Gi","storage":"10Gi"}`
 
@@ -51,9 +47,6 @@ func createBodyWithDisplayName(name string) string {
 	return strings.TrimSuffix(validCreateBody, "}") + `,"displayName":` + string(quoted) + "}"
 }
 
-// TestCreateServerSuccess covers the happy path end-to-end: the form is
-// validated, the business rows are seeded, the CRD is created cold and unowned,
-// and the §22 memory ceiling is materialized on the created spec.
 func TestCreateServerSuccess(t *testing.T) {
 	api, repo, cl, _ := newCreateAPI()
 
@@ -82,7 +75,6 @@ func TestCreateServerSuccess(t *testing.T) {
 		t.Errorf("autostartPolicy = %q, want ownerOnly", in.AutostartPolicy)
 	}
 
-	// §22 ceiling: the memory limit must be present, non-zero, and match memory.
 	memLim, has := in.Resources.Limits[corev1.ResourceMemory]
 	if !has || memLim.IsZero() {
 		t.Fatalf("memory limit missing or zero: %+v", in.Resources.Limits)
@@ -101,8 +93,6 @@ func TestCreateServerSuccess(t *testing.T) {
 	if repo.aliases["survival"] != "survival" {
 		t.Errorf("subdomain alias = %q, want survival", repo.aliases["survival"])
 	}
-	// Quota is NOT consulted on create (the server is unowned; quota is charged at
-	// claim). repo.quota is empty here yet the create still succeeded.
 
 	// Audit written with the admin's identity.
 	if len(repo.audits) != 1 || repo.audits[0].Action != "server.create" ||
@@ -116,8 +106,6 @@ func TestCreateServerSuccess(t *testing.T) {
 	}
 }
 
-// TestCreateServerResourceOverride confirms the optional resources block widens
-// the CPU envelope and can override the memory limit/request independently.
 func TestCreateServerResourceOverride(t *testing.T) {
 	api, _, cl, _ := newCreateAPI()
 	body := `{"name":"survival","subdomain":"survival","image":"registry.felis.svc:5000/mc:1",` +
@@ -147,9 +135,6 @@ func TestCreateServerResourceOverride(t *testing.T) {
 	}
 }
 
-// TestDeriveJavaHeap pins the JVM heap derivation: always JVM-valid "M" units
-// (never "Gi"), always strictly below the cgroup ceiling, with headroom that is
-// the larger of 512Mi or 25%, capped at half the limit for small ceilings.
 func TestDeriveJavaHeap(t *testing.T) {
 	cases := []struct{ limit, want string }{
 		{"2Gi", "1536M"},  // 2048 - 512 (25% == floor)
@@ -171,9 +156,6 @@ func TestDeriveJavaHeap(t *testing.T) {
 	}
 }
 
-// TestCreateServerRejections is the validation matrix: every malformed or
-// conflicting request is rejected with the right status and stable error code,
-// and (critically) nothing reaches the cluster on a rejection.
 func TestCreateServerRejections(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -273,10 +255,6 @@ func TestCreateServerRejections(t *testing.T) {
 			wantCode: http.StatusConflict, wantErr: "subdomain_taken",
 		},
 		{
-			// A dup-name create with a FRESH subdomain must be rejected BEFORE any
-			// PG write. Otherwise SeedServer binds the new alias onto the
-			// pre-existing server and commits it, leaving a stray alias after the
-			// create 409s — a failed request must not mutate state.
 			name: "duplicate server name",
 			body: `{"name":"survival","subdomain":"fresh","image":"registry.felis.svc:5000/mc:1","memory":"2Gi","storage":"10Gi"}`,
 			setup: func(_ *fakeRepo, cl *fakeCluster) {
@@ -322,9 +300,6 @@ func TestCreateServerRejections(t *testing.T) {
 			if got := decodeErr(t, w); got != c.wantErr {
 				t.Errorf("error code = %q, want %q", got, c.wantErr)
 			}
-			// Every rejection short-circuits before CreateServer, so no rejected
-			// request may have created a CRD. (The dup-name setup pre-seeds byName
-			// directly, never cl.created.)
 			if len(cl.created) != 0 {
 				t.Errorf("a rejected create must not create a CRD, got %+v", cl.created)
 			}
@@ -335,8 +310,6 @@ func TestCreateServerRejections(t *testing.T) {
 	}
 }
 
-// TestCreateServerWithoutBuilderIs503 proves create requires the build subsystem
-// (its whitelist is the image-admission source) and fails before any write.
 func TestCreateServerWithoutBuilderIs503(t *testing.T) {
 	api, _, cl, _ := newCreateAPI()
 	api.Builder = nil
@@ -349,7 +322,6 @@ func TestCreateServerWithoutBuilderIs503(t *testing.T) {
 	}
 }
 
-// The display name is trimmed before it is written, like a patch does.
 func TestCreateServerTrimsDisplayName(t *testing.T) {
 	api, _, cl, _ := newCreateAPI()
 	w := do(api.ExternalHandler(), "POST", "/api/v1/servers", createBodyWithDisplayName("  Survival Realm  "), nil)

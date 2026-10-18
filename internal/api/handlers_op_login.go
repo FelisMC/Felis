@@ -7,74 +7,16 @@ import (
 	"strings"
 )
 
-// op.console STAFF login (spec §B op-login): the two-factor door for the most
-// sensitive tier. Unlike the console.<root_domain> player doors (email OTP / bind
-// code), a staff web session is never minted from a single factor. The flow is a
-// three-call state machine over op_login_requests (migration 0016), all Public
-// pre-session routes (the caller has no principal yet), plus internal-face routes
-// for the in-game side (show and approve are driven by velocity's /felis command;
-// pending has no consumer yet — see handleOpLoginPending):
-//
-//	POST /api/v1/auth/op-login/start            (public)   — mint a request + mail an OTP
-//	GET  /api/v1/auth/op-login/status/{id}      (public)   — poll until an admin approves
-//	POST /api/v1/auth/op-login/finish           (public)   — redeem code+approval → session
-//	GET  /api/v1/internal/op-login/pending      (internal) — list requests awaiting a vouch
-//	GET  /api/v1/internal/op-login/{id}         (internal) — who a request is for, shown to the admin
-//	POST /api/v1/internal/op-login/{id}/approve (internal) — an in-game admin vouches
-//
-// The two factors:
-//
-//   - Possession of the staff mailbox — an email-OTP under purpose op_login, minted by
-//     start and redeemed by finish, reusing the email_otps lifecycle (the purpose
-//     column keeps it from ever colliding with a console login_email or onboard code).
-//   - An in-game vouch — an already-trusted admin who is ONLINE approves the pending
-//     request via velocity's /felis command (internal approve). The API's own user
-//     table is the sole authority: only a UUID linked to a staff account may
-//     approve (velocity's command runs for any player and relies on this check).
-//     The admin first sees whose request it is (account, address, where it was
-//     started) and approves by typing that account's name, so a code relayed by a
-//     stranger ("please approve abc123") cannot be vouched for blind.
-//
-// finish mints the session only when BOTH have landed. Neither factor alone — a mailed
-// code without an approval, or an approval without the code — yields a session.
-//
-// Anti-enumeration. op.console sits behind Cloudflare Zero-Trust at the edge, but the
-// external API is hostname-agnostic at the route level, so these Public routes are
-// reachable from console.<root_domain> too and must not become a staff oracle:
-//
-//   - start resolves the typed email; a non-staff or unknown address gets the SAME 202
-//     with a plausible (non-persisted, random) request_id and mails nothing, so a
-//     caller cannot tell a staff address from any other.
-//   - status returns approved:false for an unknown/expired/denied/consumed id exactly
-//     as for a live-but-unapproved one; only a genuinely approved live request reads
-//     approved:true, and driving an id to that state REQUIRES an in-game admin vouch a
-//     fabricated id can never obtain.
-//   - finish collapses unknown id, not-yet-approved, wrong code, locked, and lost-race
-//     into one uniform failure, and (like the console door) never reveals staffness.
+// Staff op-login requires a mailbox code and approval from an in-game staff identity.
 
-// otpPurposeOpLogin scopes an email code to the op.console staff door, keeping it from
-// ever colliding with or satisfying a console login_email or onboarding code for the
-// same account. VerifyEmailOTP/ConsumeLoginEmailOTP are queried per (user, purpose),
-// so the op-login factor is fully independent of the player-console doors.
+// otpPurposeOpLogin isolates staff codes from player-login and onboarding codes.
 const otpPurposeOpLogin = "op_login"
 
-// opLoginStartRequest is the start body: the staff address the code is mailed to.
 type opLoginStartRequest struct {
 	Email string `json:"email"`
 }
 
-// handleOpLoginStart begins a staff op.console login (Public, pre-session): it mints an
-// op_login_requests row for the resolved staff account and mails an email-OTP under
-// otpPurposeOpLogin, returning the request handle the browser polls. A non-staff or
-// unknown address yields the SAME 202 with a random, non-persisted handle and no mail,
-// so this never doubles as a staff-enumeration oracle (op.console's own Zero-Trust is
-// the edge gate; this app-layer neutrality covers the hostname-agnostic route).
-//
-// Anyone who knows a staff address can start a login for it, so a start never cancels
-// the codes already mailed (AddLoginEmailOTP), and a start inside the per-recipient
-// cooldown still gets a request of its own but mails nothing: the code mailed moments
-// ago is live and finishes it. A stranger's starts therefore only add codes to the
-// staff inbox and never keep its owner from signing in.
+// handleOpLoginStart preserves existing codes and returns indistinguishable responses for unknown or non-staff addresses.
 func (a *API) handleOpLoginStart(w http.ResponseWriter, r *http.Request) {
 	if !localAuthEnabled(r.Context(), a.Repo) {
 		writeError(w, r, newError(http.StatusForbidden, "local_auth_disabled",
@@ -96,18 +38,13 @@ func (a *API) handleOpLoginStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The install-wide mail budget is checked before the address is resolved,
-	// so while it is spent every address gets the same 429.
+	// Check the mail budget before resolving the address so every address receives the same 429.
 	if err := a.checkMailBudget(r.Context()); err != nil {
 		writeError(w, r, err)
 		return
 	}
 
-	// Per-recipient cooldown reserved BEFORE any work, identical to the console email
-	// door: one mail per window, and the neutral (non-staff) branch keeps the
-	// reservation too so a probe holds the window exactly like a real send. The key is
-	// namespaced apart from the console door's "login:email:" so the two
-	// unauthenticated doors never perturb each other's throttle.
+	// Reserve before lookup; unknown addresses retain the cooldown, scoped separately from player login.
 	emailKey := "oplogin:email:" + strings.ToLower(email)
 	lim := a.otpLimiter()
 	emailAt, fresh := lim.reserve(emailKey, otpResendCooldown)
@@ -120,20 +57,14 @@ func (a *API) handleOpLoginStart(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 
-	// Compute expiry once, from the reservation, so the neutral and real branches
-	// return identical bodies and the request row and its OTP are coterminous. Inside
-	// the cooldown the live code is the one the standing reservation mailed, so the
-	// request ends with it.
+	// Use the reservation's expiry for responses, requests and OTPs, including starts within the cooldown.
 	expiresAt := emailAt.Add(otpTTL)
 
-	// neutral returns the indistinguishable no-op success: a plausible but non-persisted
-	// handle that status(id) reads approved:false forever (no row, never approvable). It
-	// mints nothing and mails nothing, and KEEPS the reservation so a probe holds the
-	// window exactly like a real send.
+	// Unknown addresses retain the cooldown and receive a random, unpersisted handle to prevent enumeration.
 	neutral := func() {
 		fakeID, err := newOTPID()
 		if err != nil {
-			writeError(w, r, err) // committed stays false → deferred rollback frees the window
+			writeError(w, r, err)
 			return
 		}
 		committed = true
@@ -149,20 +80,16 @@ func (a *API) handleOpLoginStart(w http.ResponseWriter, r *http.Request) {
 		neutral()
 		return
 	case err != nil:
-		// Real read fault: leave committed false so the deferred rollback frees the
-		// window (a transient DB blip must not burn it).
+		// Release the cooldown on store failures so an outage does not consume it.
 		writeError(w, r, err)
 		return
 	}
-	// op.console is the STAFF door: a player who typed their address here (they belong
-	// on console.<root_domain>) gets the neutral response, never a request or a code.
-	// Staff means admin OR owner — the Owner is the primary op.console user.
 	if !staffRole(u.Role) {
 		a.authFailure(r, "op_login", "not_staff", u)
 		neutral()
 		return
 	}
-	// A locked door (wrong-code budget spent) is neutral too: no request, no mail.
+	// Locked accounts receive the same response without a request or email.
 	switch until, err := a.Repo.OTPLockedUntil(r.Context(), u.ID, otpPurposeOpLogin, a.now()); {
 	case err != nil:
 		writeError(w, r, err)
@@ -189,8 +116,7 @@ func (a *API) handleOpLoginStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !fresh {
-		// Inside the cooldown: the code mailed with the standing reservation finishes
-		// this request too, and the mailbox still sees one code per window.
+		// Requests created within the cooldown share the existing code and its expiry.
 		a.auditAccount(r, u, "auth.op_login.requested", "")
 		writeJSON(w, http.StatusAccepted, map[string]any{
 			"request_id": id, "expires_at": expiresAt.UTC(),
@@ -207,8 +133,7 @@ func (a *API) handleOpLoginStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	// Mint+mail against the STORED staff address (UserByEmail matched case-insensitively);
-	// the request row snapshots the same address for its audit trail.
+	// Deliver to the stored address; lookup is case-insensitive.
 	if err := a.Repo.AddLoginEmailOTP(r.Context(), otpID, u.ID, u.Email, otpCodeHash(code), otpPurposeOpLogin, a.now(), expiresAt); err != nil {
 		writeError(w, r, err)
 		return
@@ -224,13 +149,7 @@ func (a *API) handleOpLoginStart(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleOpLoginStatus reports whether a staff login request has been approved in-game
-// (Public, pre-session). It is a pure read the browser polls after start: it returns
-// approved:true only for a genuinely approved, live, unconsumed request, and
-// approved:false for everything else — including an unknown, expired, denied, or
-// already-consumed id — so a fabricated handle polls as approved:false forever and the
-// endpoint is not a staff-enumeration oracle (only an in-game admin vouch, impossible
-// against a fake id, flips it true).
+// handleOpLoginStatus returns approved:false for unknown, expired, denied or consumed requests.
 func (a *API) handleOpLoginStatus(w http.ResponseWriter, r *http.Request) {
 	if !localAuthEnabled(r.Context(), a.Repo) {
 		writeError(w, r, newError(http.StatusForbidden, "local_auth_disabled",
@@ -241,8 +160,6 @@ func (a *API) handleOpLoginStatus(w http.ResponseWriter, r *http.Request) {
 	approved := false
 	switch req, err := a.Repo.OpLoginRequestByID(r.Context(), id); {
 	case errors.Is(err, ErrNotFound):
-		// Unknown handle: neutral approved:false (never 404), uniform with a real request
-		// still awaiting approval.
 	case err != nil:
 		writeError(w, r, err)
 		return
@@ -252,21 +169,12 @@ func (a *API) handleOpLoginStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"approved": approved})
 }
 
-// opLoginFinishRequest is the finish body: the request handle from start and the code
-// read from the staff mailbox. The handle selects the account (there is no principal);
-// the code proves possession of the mailbox this session.
 type opLoginFinishRequest struct {
 	RequestID string `json:"request_id"`
 	Code      string `json:"code"`
 }
 
-// handleOpLoginFinish redeems an approved request plus its mailed code into a staff
-// session (Public, pre-session). It mints the session only when BOTH factors have
-// landed: the request is approved-and-live AND the code verifies. Every failure mode —
-// unknown handle, not-yet-approved, wrong or locked code, lost race — collapses into
-// ONE uniform 400, so a code-less caller learns nothing (not staffness, not approval
-// state). The approval is read BEFORE the code is consumed so a valid code submitted
-// early (before an admin approves) is preserved for a retry rather than burned.
+// handleOpLoginFinish requires both factors and returns one uniform failure for invalid, locked or raced requests.
 func (a *API) handleOpLoginFinish(w http.ResponseWriter, r *http.Request) {
 	if !localAuthEnabled(r.Context(), a.Repo) {
 		writeError(w, r, newError(http.StatusForbidden, "local_auth_disabled",
@@ -289,8 +197,6 @@ func (a *API) handleOpLoginFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The single uniform failure every "cannot complete" branch returns, so unknown
-	// handle / not-approved / wrong code / locked / lost-race are indistinguishable.
 	invalid := newError(http.StatusBadRequest, "op_login_invalid",
 		"this operator login could not be completed; restart the sign-in")
 
@@ -305,18 +211,13 @@ func (a *API) handleOpLoginFinish(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	// Read the approval state BEFORE touching the code: an early finish (user typed the
-	// code before an admin approved) must not consume the code. Not-approved collapses
-	// into the same uniform failure as a bad code, so the ordering leaks nothing.
+	// Check approval before consuming the code so an early submission can retry.
 	if loginReq.Status != "approved" || loginReq.Consumed || !loginReq.ExpiresAt.After(now) {
 		a.authFailure(r, "op_login", "not_approved", a.opLoginAccount(r, loginReq.UserID))
 		writeError(w, r, invalid)
 		return
 	}
-	// A disabled or soft-deleted account finishes nothing, whatever it proved: start
-	// found it through the live-only UserByEmail, but an admin may have retired it
-	// since (audit #33; a soft delete disables the account too). Checked before the
-	// code is touched, like the approval, and answered with the same uniform failure.
+	// Recheck account status before consuming the code; the account may have been disabled since start.
 	d, err := a.Repo.UserDetail(r.Context(), loginReq.UserID)
 	if err != nil {
 		writeError(w, r, err)
@@ -327,9 +228,7 @@ func (a *API) handleOpLoginFinish(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, invalid)
 		return
 	}
-	// Consume the mailed code (op_login purpose). A wrong/expired/locked code charges an
-	// attempt without minting anything and returns the uniform failure — the code, not
-	// the request, is the problem, and the request stays approved for a retry.
+	// A failed code attempt leaves the approved request available for retry.
 	switch err := a.Repo.ConsumeLoginEmailOTP(r.Context(), loginReq.UserID, otpPurposeOpLogin, otpCodeHash(code), now); {
 	case errors.Is(err, ErrOTPInvalid), errors.Is(err, ErrOTPLocked), errors.Is(err, ErrOTPAccountLocked):
 		a.noteOTPLock(r, err, loginReq.UserID, otpPurposeOpLogin)
@@ -340,21 +239,16 @@ func (a *API) handleOpLoginFinish(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	// Both factors proven. Atomically spend the request (approved→consumed, single-use):
-	// this serialises against a concurrent finish and records which request completed.
+	// Atomically consume the request so concurrent finishes cannot mint multiple sessions.
 	switch err := a.Repo.ConsumeOpLoginRequest(r.Context(), requestID, now); {
 	case errors.Is(err, ErrNotFound):
-		// Lost a race (another finish consumed it) or it expired between the checks —
-		// uniform failure. The code was already spent by the winner.
 		writeError(w, r, invalid)
 		return
 	case err != nil:
 		writeError(w, r, err)
 		return
 	}
-	// Load the staff account for the session + response. Re-assert staff as defence in
-	// depth: only staff ever get a request minted, but the session must never be issued
-	// to a non-staff identity even if the row were somehow otherwise.
+	// Recheck the staff role before minting a session, even for an approved request.
 	u, err := a.Repo.UserByID(r.Context(), loginReq.UserID)
 	if err != nil {
 		writeError(w, r, err)
@@ -373,8 +267,7 @@ func (a *API) handleOpLoginFinish(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"user_id": u.ID, "role": u.Role})
 }
 
-// opLoginAccount loads the account a login request belongs to for a failure's
-// audit row, falling back to the bare id.
+// opLoginAccount falls back to the account ID when loading audit details fails.
 func (a *API) opLoginAccount(r *http.Request, userID string) *StaffUser {
 	if u, err := a.Repo.UserByID(r.Context(), userID); err == nil {
 		return u
@@ -382,12 +275,6 @@ func (a *API) opLoginAccount(r *http.Request, userID string) *StaffUser {
 	return &StaffUser{ID: userID}
 }
 
-// handleOpLoginPending lists live pending staff login requests, oldest first (internal
-// face). Today no plugin consumes it: the approver learns the request id out-of-band
-// (the op.console start screen shows it to the person logging in) and runs
-// /felis web op approve <id>. The route exists so velocity can later push the waiting
-// list to online admins without an API change. Internal-only: velocity holds a service
-// token and no pending request is secret to the operator crew.
 func (a *API) handleOpLoginPending(w http.ResponseWriter, r *http.Request) {
 	reqs, err := a.Repo.ListPendingOpLogins(r.Context(), a.now())
 	if err != nil {
@@ -407,10 +294,7 @@ func (a *API) handleOpLoginPending(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"pending": out})
 }
 
-// opLoginApprover resolves the in-game player running /felis web op approve to a
-// linked staff account (admin, or the owner superset). An unlinked UUID or a
-// non-staff player may never see or vouch for an op.console login; all refusals
-// share one 403 so a caller cannot tell "not linked" from "linked but not staff".
+// opLoginApprover returns the same 403 for unlinked and non-staff game identities.
 func (a *API) opLoginApprover(r *http.Request, mcUUID string) (*StaffUser, error) {
 	notAdmin := newError(http.StatusForbidden, "not_admin", "only a linked administrator may approve an operator login")
 	approverID, err := a.Repo.UserByMCUUID(r.Context(), mcUUID)
@@ -433,8 +317,7 @@ func (a *API) opLoginApprover(r *http.Request, mcUUID string) (*StaffUser, error
 	return approver, nil
 }
 
-// pendingOpLogin loads a request an admin may still vouch for: pending, unconsumed
-// and unexpired. Anything else is the same 404 the approve race returns.
+// pendingOpLogin returns the same 404 for all requests that cannot be approved.
 func (a *API) pendingOpLogin(r *http.Request, id string) (*OpLoginRequest, error) {
 	notFound := newError(http.StatusNotFound, "op_login_not_found", "no pending operator login with that id")
 	req, err := a.Repo.OpLoginRequestByID(r.Context(), id)
@@ -450,12 +333,7 @@ func (a *API) pendingOpLogin(r *http.Request, id string) (*OpLoginRequest, error
 	return req, nil
 }
 
-// handleOpLoginShow tells the in-game admin who a pending request is for before
-// they vouch (internal face): the account, its address, when and from where the
-// sign-in was started. velocity's /felis web op approve <code> renders this and
-// asks the admin to confirm by name. The approver UUID rides in the query and gets
-// the same staff check as approve, since velocity's command runs for any player and
-// a staff address must not be readable by one.
+// handleOpLoginShow requires a linked staff approver because the Velocity command is available to all players.
 func (a *API) handleOpLoginShow(w http.ResponseWriter, r *http.Request) {
 	approverUUID := strings.TrimSpace(r.URL.Query().Get("approver_uuid"))
 	if approverUUID == "" {
@@ -482,24 +360,12 @@ func (a *API) handleOpLoginShow(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// opLoginApproveRequest is the internal approve body: the online-mode UUID of the
-// in-game admin running /felis web op approve, and the account name they typed to
-// confirm whose sign-in they are vouching for. The API resolves the UUID to a
-// linked account and refuses unless that account is staff (admin or owner) — this
-// check against the API's authoritative user table is the only gate; velocity's
-// command itself is unprivileged.
 type opLoginApproveRequest struct {
 	ApproverUUID string `json:"approver_uuid"`
 	Username     string `json:"username"`
 }
 
-// handleOpLoginApprove records an in-game admin's vouch for a pending staff login
-// (internal face), supplying the second factor. It resolves the approver UUID to a
-// linked staff account (admin or owner; else 403), requires the typed username to
-// name the request's account (else 409, request left pending), then flips the
-// request approved. A missing or no-longer-pending request is 404. Self-approval is
-// allowed: a staff member online as their own admin identity supplies a genuine
-// second factor (in-game session control) distinct from the mailbox factor.
+// handleOpLoginApprove permits self-approval; control of the in-game staff identity is the second factor.
 func (a *API) handleOpLoginApprove(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req opLoginApproveRequest
@@ -523,7 +389,6 @@ func (a *API) handleOpLoginApprove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	// Minecraft names are case-insensitive, and so is the name an admin retypes.
 	if !strings.EqualFold(typed, loginReq.Username) {
 		payload, _ := json.Marshal(map[string]string{"request_id": id, "typed_username": typed})
 		a.auditEntry(r, AuditEntry{

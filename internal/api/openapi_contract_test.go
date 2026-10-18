@@ -20,20 +20,6 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// The route-table parity tests (openapi_test.go) prove api/openapi.yaml names the
-// right {method, path, face, tier, setup}; the struct parity test proves the named
-// schemas match their Go structs. Neither sees what a handler actually answers. This
-// file does: every request a handler test sends through do() is kept, and once the
-// whole package has run TestMain holds each exchange to the document —
-//
-//   - the operation must list the status that came back (or a default / 4XX / 5XX);
-//   - a JSON body must fit the schema documented for that status, and a response
-//     object may carry only the properties its schema names;
-//   - the JSON request behind a 2xx must fit the documented requestBody, naming
-//     only the properties it names.
-//
-// Requests to a path the document does not have are left to the route parity test.
-
 type contractCall struct {
 	method, path string
 	reqCT        string
@@ -49,7 +35,6 @@ var contractCalls struct {
 	list []contractCall
 }
 
-// recordContract keeps one do() exchange for checkContract.
 func recordContract(r *http.Request, body string, w *httptest.ResponseRecorder) {
 	at := ""
 	if _, file, line, ok := runtime.Caller(2); ok {
@@ -79,9 +64,7 @@ type contractDoc struct {
 
 type contractCommon struct {
 	Status int `json:"status"`
-	// When is any, internal (an operation the internal face serves), session (one
-	// that takes the session cookie), setup-locked (a session one a setup-lockdown
-	// session may not use) or json-body (one that takes a JSON requestBody).
+	// When selects applicability: any, internal, session, setup-locked or json-body.
 	When     string         `json:"when"`
 	Code     string         `json:"code"`
 	Response map[string]any `json:"response"`
@@ -107,7 +90,6 @@ func checkContract(path string, calls []contractCall) ([]string, error) {
 	for tmpl := range doc.Paths {
 		routes = append(routes, compileContractRoute(tmpl))
 	}
-	// The most literal template wins: /servers/limbo is not /servers/{name}.
 	sort.Slice(routes, func(i, j int) bool {
 		if routes[i].literals != routes[j].literals {
 			return routes[i].literals > routes[j].literals
@@ -139,8 +121,6 @@ func checkContract(path string, calls []contractCall) ([]string, error) {
 		if !ok {
 			continue
 		}
-		// A path asked on the face that does not serve it: the route parity test
-		// owns which face serves what.
 		if c.status == http.StatusNotFound && contractErrorMessage(c.respBody) == "no such endpoint" {
 			continue
 		}
@@ -164,13 +144,11 @@ func checkContract(path string, calls []contractCall) ([]string, error) {
 				}
 			}
 		}
-		// decodeJSON reads the body whatever Content-Type says, so a JSON body sent
-		// without one (as most handler tests send it) is held to the document too.
 		reqJSON := isJSON(c.reqCT) || (c.reqCT == "" && json.Valid(c.reqBody))
 		if c.status/100 == 2 && reqJSON && len(c.reqBody) > 0 {
 			rb, ok := op["requestBody"].(map[string]any)
 			if !ok && c.method == http.MethodGet {
-				continue // a body on a GET is ignored, whatever it holds
+				continue
 			}
 			if !ok {
 				report(c, "a JSON request body was accepted but %s %s documents none", c.method, tmpl)
@@ -219,8 +197,6 @@ func contractResponse(op map[string]any, status int) (map[string]any, bool) {
 	return nil, false
 }
 
-// contractCommonResponse finds a common answer whose condition the operation meets
-// and whose error code, when it names one, is the one that came back.
 func contractCommonResponse(doc *contractDoc, op map[string]any, c contractCall) (map[string]any, bool) {
 	for _, common := range doc.Common {
 		if common.Status != c.status || (common.Code != "" && contractErrorCode(c.respBody) != common.Code) {
@@ -322,9 +298,6 @@ func (v *contractValidator) deref(n map[string]any) map[string]any {
 	return n
 }
 
-// check returns where value leaves schema. strict also refuses object properties
-// the schema does not name, unless it allows additional ones: a response field and
-// a request field the document misnames (display_name for displayName) both show.
 func (v *contractValidator) check(schema map[string]any, value any, at string, strict bool) []string {
 	schema = v.deref(schema)
 	if ref, ok := schema["x-unresolved"]; ok {
@@ -470,8 +443,6 @@ func containsJSON(list []any, v any) bool {
 	return false
 }
 
-// The checker is itself held to known drifts: each synthetic exchange below either
-// disagrees with api/openapi.yaml in exactly the way named, or agrees with it.
 func TestContractCheckerCatchesDrift(t *testing.T) {
 	jsonCT := "application/json"
 	errBody := func(code, msg string) []byte {
@@ -480,29 +451,19 @@ func TestContractCheckerCatchesDrift(t *testing.T) {
 	calls := []contractCall{
 		// An empty fleet sent as null.
 		{method: "GET", path: "/api/v1/servers", status: 200, respCT: jsonCT, respBody: []byte(`{"servers":null}`), at: "a"},
-		// A property the schema does not name.
 		{method: "GET", path: "/api/v1/servers", status: 200, respCT: jsonCT, respBody: []byte(`{"servers":[],"extra":1}`), at: "b"},
-		// A status the operation does not list.
 		{method: "GET", path: "/api/v1/me", status: 418, respCT: jsonCT, respBody: errBody("teapot", "no"), at: "c"},
-		// wrong_caller is an internal-face answer; /me is external only.
 		{method: "GET", path: "/api/v1/me", status: 403, respCT: jsonCT, respBody: errBody("wrong_caller", "no"), at: "d"},
-		// ...and on an internal operation it is a common answer.
 		{method: "GET", path: "/api/v1/servers", status: 403, respCT: jsonCT, respBody: errBody("wrong_caller", "no"), at: "e"},
-		// /me stays open during the setup lockdown, so setup_required is not its answer...
 		{method: "GET", path: "/api/v1/me", status: 403, respCT: jsonCT, respBody: errBody("setup_required", "no"), at: "f"},
 		// ...while a session operation outside the allow-list may give it.
 		{method: "GET", path: "/api/v1/servers/survival/files", status: 403, respCT: jsonCT, respBody: errBody("setup_required", "no"), at: "g"},
-		// A path this face does not serve belongs to the route parity test.
 		{method: "GET", path: "/api/v1/me", status: 404, respCT: jsonCT, respBody: errBody("not_found", "no such endpoint"), at: "h"},
-		// The request behind a 2xx must fit the requestBody.
 		{method: "POST", path: "/api/v1/account/link/verify", reqCT: jsonCT, reqBody: []byte(`{"code":5}`),
 			status: 200, respCT: jsonCT, respBody: []byte(`{"linked":true,"mc_uuid":"u","auth_source":"mojang"}`), at: "i"},
 		// A response field outside its enum.
 		{method: "POST", path: "/api/v1/account/link/verify", reqCT: jsonCT, reqBody: []byte(`{"code":"ABC"}`),
 			status: 200, respCT: jsonCT, respBody: []byte(`{"linked":true,"mc_uuid":"u","auth_source":""}`), at: "j"},
-		// A request property the requestBody does not name: the document once had
-		// display_name where the handler reads displayName. Sent with no Content-Type,
-		// which the handler decodes all the same.
 		{method: "POST", path: "/api/v1/servers", reqBody: []byte(`{"name":"x1","subdomain":"x1","display_name":"X"}`),
 			status: 201, respCT: jsonCT, respBody: []byte(`{"name":"x1","subdomain":"x1","desiredState":"Stopped"}`), at: "k"},
 	}

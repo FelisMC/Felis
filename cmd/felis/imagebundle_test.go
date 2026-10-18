@@ -13,9 +13,6 @@ import (
 	"testing"
 )
 
-// writeTestLayout writes an OCI layout tar holding one linux/arch image with one
-// layer, the way buildx --output type=oci leaves a single-platform build, and
-// returns its path with the manifest and config digests.
 func writeTestLayout(t *testing.T, dir, arch, layer string) (path, manifestDigest, configDigest string) {
 	t.Helper()
 	blobs := map[string][]byte{}

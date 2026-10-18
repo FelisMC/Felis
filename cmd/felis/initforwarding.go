@@ -17,45 +17,16 @@ import (
 // modern-forwarding secret under (mirrors internal/operator.envForwardingSecret).
 const forwardingSecretEnv = "FELIS_FORWARDING_SECRET"
 
-// defaultForwardingDataDir is the world PVC mount inside a server pod (mirrors
-// internal/operator.dataMountPath). It is Paper's working directory, so its
-// config/ and server.properties live under it.
+// Keep the forwarding data directory aligned with the operator's world mount.
 const defaultForwardingDataDir = "/data"
 
-// fwd*Mode are the modes the written config lands with. The initContainer runs as
-// the same uid as the server container (naming.GameUID, pinned by the operator in
-// the pod securityContext) after the prepare-data initContainer has handed the
-// whole volume to that uid, so owner read/write is all the server needs to rewrite
-// these files on boot and nothing else on the node gets write access to them.
+// The game UID needs owner read/write access to regenerate these configuration files.
 const (
 	fwdFileMode os.FileMode = 0o644
 	fwdDirMode  os.FileMode = 0o755
 )
 
-// cmdInitForwarding is the felis-image initContainer entrypoint that makes an
-// ARBITRARY Paper image joinable behind a modern-forwarding Velocity proxy,
-// WITHOUT modifying that image: it writes the Velocity block into
-// <data>/config/paper-global.yml and forces online-mode=false in
-// <data>/server.properties before the server container starts. This is the same
-// config deploy/lobby/entrypoint.sh writes for the Felis-built lobby, lifted into
-// Go so it can be applied to an image Felis did not build.
-//
-// It is idempotent and MERGE-based: Paper expands paper-global.yml to its full
-// default tree on first boot, and the panel file editor may change either file
-// between boots, so it only ever sets proxies.velocity.* and the single
-// online-mode key and preserves every other setting.
-//
-// "Preserves" means values, not formatting, and only for the YAML half:
-// sigs.k8s.io/yaml round-trips through JSON, so paper-global.yml comes back with
-// its keys sorted and its comments dropped. Every setting survives and Paper reads
-// it back identically, but a user who annotated that file loses the annotations.
-// Accepted rather than fixed: comment-faithful editing means a yaml.v3 Node walk,
-// which is a lot of machinery for two keys. server.properties is edited line-wise
-// and does keep its comments and ordering.
-//
-// An empty/unset secret is a deliberate no-op (exit 0): a cluster whose proxy is
-// not in modern mode provisions no Secret, and wedging every server's init on a
-// missing optional value would be worse than the pre-forwarding status quo.
+// Merge forwarding settings only; an empty optional secret leaves configuration unchanged.
 func cmdInitForwarding(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("init-forwarding", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -135,10 +106,7 @@ func writePaperGlobal(dataDir, secret string) error {
 	return writeFileMode(path, out)
 }
 
-// setVelocity sets proxies.velocity.{enabled,online-mode,secret}, creating the
-// intermediate maps when missing. proxies.velocity.online-mode is Paper trusting
-// that the proxy verified the player as premium — distinct from server.properties
-// online-mode, which must be false so the backend does not re-authenticate.
+// Paper trusts proxy verification; server.properties must disable backend reauthentication.
 func setVelocity(root map[string]any, secret string) {
 	velocity := childMap(childMap(root, "proxies"), "velocity")
 	velocity["enabled"] = true
@@ -146,9 +114,7 @@ func setVelocity(root map[string]any, secret string) {
 	velocity["secret"] = secret
 }
 
-// childMap returns parent[key] as a map, replacing a missing or non-map value with
-// a fresh one. sigs.k8s.io/yaml decodes nested objects to map[string]any (JSON
-// semantics), so the assertion holds for any well-formed paper-global.yml.
+// Replace absent or non-map child values using YAML's map[string]any representation.
 func childMap(parent map[string]any, key string) map[string]any {
 	if m, ok := parent[key].(map[string]any); ok {
 		return m
@@ -158,10 +124,6 @@ func childMap(parent map[string]any, key string) map[string]any {
 	return m
 }
 
-// forceServerPropertyOffline sets online-mode=false in server.properties. A backend
-// behind a modern-forwarding proxy must be offline-mode (the proxy did the Mojang
-// auth); an arbitrary image defaulting to online-mode=true rejects every proxied
-// login.
 func forceServerPropertyOffline(dataDir string) error {
 	path := filepath.Join(dataDir, "server.properties")
 	var content []byte
@@ -173,10 +135,7 @@ func forceServerPropertyOffline(dataDir string) error {
 	return writeFileMode(path, upsertProperty(content, "online-mode", "false"))
 }
 
-// upsertProperty sets key=value in a java .properties body, replacing an existing
-// uncommented assignment or appending one, and leaving every other line —
-// comments included — untouched. Keys sit at column 0 the way Paper writes them,
-// so a "#key=" comment does not match.
+// upsertProperty preserves unrelated lines and ignores commented assignments.
 func upsertProperty(content []byte, key, value string) []byte {
 	want := key + "=" + value
 	prefix := key + "="
@@ -198,9 +157,7 @@ func upsertProperty(content []byte, key, value string) []byte {
 	return []byte(body + want + "\n")
 }
 
-// writeFileMode writes data then forces the mode, since WriteFile honours the
-// umask and leaves an existing file's mode alone: a file an older release wrote
-// world-writable (0666) is tightened back to fwdFileMode on the next boot.
+// Force the final mode because WriteFile preserves existing permissions and applies umask to new files.
 func writeFileMode(path string, data []byte) error {
 	if err := os.WriteFile(path, data, fwdFileMode); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
@@ -211,18 +168,8 @@ func writeFileMode(path string, data []byte) error {
 	return nil
 }
 
-// writeSoftwareForwarding writes the forwarding config of a runtime-image
-// server, by what it runs (software.ForwardingFor decided whether it can):
-//
-//   - Paper and Purpur: the Velocity block of config/paper-global.yml from 1.19,
-//     of paper.yml's settings.velocity-support before;
-//   - Forge and NeoForge: the [forwarding] table of Proxy Compatible Forge's
-//     config/proxy-compatible-forge.toml;
-//   - Fabric and Quilt: nothing on disk, since FabricProxy-Lite takes the secret
-//     from the environment `felis launch` sets;
-//   - a server without forwarding: nothing.
-//
-// The launcher forces online-mode=false for every one of them.
+// Write Paper/Purpur Velocity settings or Forge/NeoForge proxy-compatible forwarding settings.
+// Fabric/Quilt read forwarding secrets from the environment; all proxy backends run offline mode.
 func writeSoftwareForwarding(dataDir string, s software.Spec, secret string) (string, error) {
 	if secret == "" {
 		return "no forwarding secret set; leaving config untouched", nil

@@ -4,20 +4,7 @@ import best.lolicon.felis.link.ServerView;
 
 import java.util.List;
 
-/**
- * LegacyForwardingTest covers how a CR's forwarding=legacy label reaches the fork's
- * {@code felis.legacy-forwarding.servers} property (#15): marked servers join and leave
- * it, the startup value stays in as a floor, an unchanged list rewrites nothing, and the
- * report says whether the running proxy acts on the change (stock, a fork that reads
- * the list once, a fork that re-reads it). Detection must not initialize the proxy's
- * connection class. Framework free: a failed assertion throws and the process exits
- * non-zero.
- *
- * <p>Run: {@code javac -d <out> shared/src/main/java/best/lolicon/felis/link/*.java
- * velocity/src/main/java/best/lolicon/felis/velocity/LegacyForwarding.java
- * velocity/test/best/lolicon/felis/velocity/LegacyForwardingTest.java && java -cp <out>
- * best.lolicon.felis.velocity.LegacyForwardingTest}.
- */
+// Detection must not initialize the proxy's connection class. Framework free.
 public final class LegacyForwardingTest {
 
     private static int checks;
@@ -112,7 +99,6 @@ public final class LegacyForwardingTest {
         assertEq("no connection class was initialized", 0, initialized);
     }
 
-    // ---- fixtures ----
 
     // Each fixture class counts its own initialization; detect must leave it at zero.
     static int initialized;

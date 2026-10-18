@@ -72,7 +72,7 @@ var (
 			Padding(1, 2).
 			Width(60)
 
-	// Step rail (breadcrumb) — shows where you are in the linear wizard.
+	// Step rail (breadcrumb) — shows the current position in the linear wizard.
 	tuiRailDone   = lipgloss.NewStyle().Foreground(cSuccess)
 	tuiRailActive = lipgloss.NewStyle().Bold(true).Foreground(cWhite).Background(cPrimary).Padding(0, 1)
 	tuiRailTodo   = lipgloss.NewStyle().Foreground(cDim)

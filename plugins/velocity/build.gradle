@@ -5,32 +5,10 @@ plugins {
 group = 'best.lolicon.felis'
 version = '0.1.0'
 
-// The proxy API this jar compiles against. Default = the newest RELEASED velocity-api,
-// which is what deploy/bootstrap.sh installs. velocity-api is compileOnly, so this
-// selects the surface we are CHECKED against, not one that ships in the jar.
-//
-// Do NOT drift this back to a -SNAPSHOT of the 3.x line: 3.3.0-SNAPSHOT (the previous
-// value) froze in 2024 and tops out at MINECRAFT_1_21, so it cannot even name the
-// protocol the rest of the stack speaks.
+// Compile against a released Velocity API supporting the installed stack, without bundling it.
 def velocityApi = findProperty('velocityApi') ?: '3.5.1'
 
-// 21 is the floor of the proxy we ship against: velocity-api 3.5.1's Gradle module
-// metadata declares `org.gradle.jvm.version = 21`, so 17 does not buy backward reach —
-// it makes resolution fail outright. 21 bytecode also loads on Velocity 4, which runs a
-// newer JVM still, so ONE jar serves both lines.
-//
-// The knob exists only for the Velocity-4 compile check: velocity-api 4.0.0-SNAPSHOT
-// demands `jvm.version = 25`, and Gradle refuses to put a 25 library on a 21 consumer's
-// classpath. To prove these sources also compile against the 4 API (4.0.0 itself is
-// unreleased — zero published builds; only the snapshot exists), build with a JDK 25
-// toolchain and both knobs turned up:
-//
-//   ./gradlew build -PvelocityApi=4.0.0-SNAPSHOT -PjavaTarget=25 --dependency-verification lenient
-//
-// That build is a CHECK, not an artifact — the jar we deploy is the default 21 one. The
-// lenient flag is part of it: gradle/verification-metadata.xml pins the checksums of the
-// 3.5.1 graph, and a snapshot's bytes change with every publish, so strict verification
-// (the default) refuses it.
+// Keep deployed bytecode at Java 21; the JDK 25 snapshot compatibility check is separate from release verification.
 def javaTarget = JavaVersion.toVersion(findProperty('javaTarget') ?: '21')
 
 java {
@@ -53,9 +31,7 @@ dependencies {
     annotationProcessor "com.velocitypowered:velocity-api:${velocityApi}"
 }
 
-// The platform-agnostic link core lives in ../shared and is compiled straight
-// into this jar. The core has zero third-party dependencies, so source-sharing
-// keeps every loader self-contained with nothing to shade.
+// Compile the dependency-free shared core into each loader JAR without shading.
 sourceSets {
     main {
         java {
@@ -68,12 +44,7 @@ tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
 }
 
-// Routing self-tests: ServerRegistry and WaitingRouter run unchanged against the real
-// velocity-api types (faked with java.lang.reflect.Proxy, test/.../Fakes.java) and a
-// stub felis-api on a loopback port. They reuse the compile classpath, which dependency
-// verification has already checked, so they add no artifact. Kept out of `build` on
-// purpose: bootstrap runs `gradle clean build` on every install, and a test there would
-// only slow the install down. plugins/test.sh runs `./gradlew routingTest`.
+// Kept out of build on purpose: bootstrap runs gradle clean build on every install, and a test there would only slow it. plugins/test.sh runs ./gradlew routingTest.
 sourceSets {
     routingTest {
         java {
@@ -105,9 +76,7 @@ tasks.register('routingTest') {
     dependsOn routingMains
 }
 
-// Byte-identical jars from identical sources. deploy/bootstrap.sh restarts the proxy only when
-// a file it runs changed (velocity_fingerprint), and build-time timestamps in the jar would
-// make every rebuild look like a change and disconnect every player on each rerun.
+// Produce deterministic JARs so unchanged rebuilds do not restart the proxy and disconnect players.
 tasks.withType(AbstractArchiveTask).configureEach {
     preserveFileTimestamps = false
     reproducibleFileOrder = true

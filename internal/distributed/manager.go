@@ -45,9 +45,7 @@ type Manager struct {
 	Namespace, Image, Controller string
 	Archive                      archivetransfer.Client
 	Resolve                      placement.Resolver
-	// HA is controller high availability: a lost controller may be failed over like a
-	// worker, and the worlds on the controllers get replicas too.
-	HA bool
+	HA                           bool
 	// Record is idempotent by transfer ID and runs on A after durable archive commit.
 	Record func(context.Context, Backup) error
 }
@@ -146,7 +144,6 @@ func (m *Manager) CreateRestoreJob(ctx context.Context, p restore.JobParams) err
 	if err != nil {
 		return err
 	}
-	// Preserve the existing deterministic-name conflict and finished-Job retry rules.
 	return restore.NewK8sJobs(&pinnedClient{Client: m.Client, node: world.Node, manager: m}).CreateRestoreJob(ctx, p)
 }
 
@@ -223,15 +220,13 @@ func jobSucceeded(j *batchv1.Job) bool {
 	return false
 }
 
-// RemoteArchiver lets the existing reaper make every decision on A and snapshot only one remote PVC.
-// Local verification, retention and offsite continue to use the same tarLocal paths.
+// RemoteArchiver snapshots remote PVCs while the reaper retains archive policy and local-path handling.
 type RemoteArchiver struct {
 	*backup.TarLocal
 	Manager *Manager
 }
 
-// A failed migration may wait for operator intervention longer than normal
-// backup retention. Keep its safety archive until the persistent lock releases.
+// Retain a migration safety archive until its persistent lock is released.
 func (a *RemoteArchiver) Delete(ctx context.Context, ref backup.ArchiveRef) error {
 	var servers v1alpha1.MinecraftServerList
 	if err := a.Manager.Client.List(ctx, &servers, client.InNamespace(a.Manager.Namespace)); err != nil {

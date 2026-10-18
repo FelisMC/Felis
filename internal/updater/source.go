@@ -7,23 +7,16 @@ import (
 	"felis.lolicon.best/internal/updates"
 )
 
-// RoutingSource is the production updates.ReleaseSource. updates.Run calls a single
-// source for every non-pinned component, so this one dispatches each component to its
-// configured upstream by the topology: the PaperMC Fill API for Velocity, the GitHub
-// Releases API for felis-api, k3s, cloudflared and the Temurin JRE, and the
-// PostgreSQL project's release table for the database.
+// RoutingSource dispatches release lookups according to component topology.
 type RoutingSource struct {
 	routes map[string]Spec
 	paper  paperMC
 	gh     github
 	pg     postgresFeed
-	// notes holds what a lookup learned beyond the version, keyed by component: today
-	// only an end-of-life PostgreSQL major. updates.Run calls Latest sequentially.
+	// notes holds per-component release details; updates.Run calls Latest sequentially.
 	notes map[string]string
 }
 
-// NewRoutingSource builds the router from a topology. Pinned specs are indexed too
-// but never reached (Run skips pinned components before calling Latest).
 func NewRoutingSource(specs []Spec) *RoutingSource {
 	routes := make(map[string]Spec, len(specs))
 	for _, s := range specs {
@@ -32,12 +25,8 @@ func NewRoutingSource(specs []Spec) *RoutingSource {
 	return &RoutingSource{routes: routes, paper: newPaperMC(), gh: newGitHub(), pg: newPostgresFeed(), notes: map[string]string{}}
 }
 
-// Notes returns what the last lookups learned beyond each version, keyed by
-// component, for the caller to print under the report.
 func (r *RoutingSource) Notes() map[string]string { return r.notes }
 
-// Latest implements updates.ReleaseSource. An unknown component name is an error, not
-// a silent zero, so a topology/route mismatch is loud.
 func (r *RoutingSource) Latest(ctx context.Context, comp updates.Component) (updates.Version, error) {
 	spec, ok := r.routes[comp.Name]
 	if !ok {
@@ -49,8 +38,7 @@ func (r *RoutingSource) Latest(ctx context.Context, comp updates.Component) (upd
 	case sourceGitHub:
 		return r.gh.latestStable(ctx, spec.Coord)
 	case sourceTemurin:
-		// The feature release the host runs picks the repository: a newer feature is a
-		// release decision (the installer's pin), never a patch to report.
+		// Keep Temurin discovery within the installed feature release; changing feature versions requires an installer pin update.
 		return r.gh.latestTemurin(ctx, comp.Current.Major)
 	case sourcePostgres:
 		rel, err := r.pg.latest(ctx, comp.Current)
@@ -62,7 +50,6 @@ func (r *RoutingSource) Latest(ctx context.Context, comp updates.Component) (upd
 		}
 		return rel.latest, nil
 	case sourceNone:
-		// A pinned component (Run never reaches this, but be explicit and loud).
 		return updates.Version{}, fmt.Errorf("updater: %q is pinned and has no release source", comp.Name)
 	default:
 		return updates.Version{}, fmt.Errorf("updater: component %q has an unknown source kind", comp.Name)

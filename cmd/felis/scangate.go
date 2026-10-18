@@ -16,13 +16,7 @@ import (
 // few thousand packages, far below this. Tests shrink it.
 var maxScanDocument int64 = 64 << 20
 
-// cmdScanGate is the build pod's verdict step, after trivy wrote its full JSON
-// report and trivy convert wrote the CycloneDX SBOM. It applies the scan policy
-// to the report, prints the verdict and every blocking finding, then appends the
-// verdict, the report and the SBOM to its log as the envelope felis-api keeps on
-// the build (build.WriteScanEnvelope). It exits 1 when a finding blocks, which
-// fails the pod before the push step runs, and 2 when the report cannot be read,
-// so a scan that produced nothing usable never admits an image.
+// Exit 1 for blocking findings and 2 for unreadable reports; either prevents publishing.
 func cmdScanGate(args []string, stdout, stderr io.Writer) int {
 	fset := flag.NewFlagSet("scan-gate", flag.ContinueOnError)
 	fset.SetOutput(stderr)

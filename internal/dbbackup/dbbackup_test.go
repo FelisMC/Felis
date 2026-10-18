@@ -17,10 +17,7 @@ import (
 	"time"
 )
 
-// The PostgreSQL client tools are faked with shell scripts over a one-file
-// "database" ($FAKE_DIR/db). The fake psql only writes the replayed rows back
-// when its input ends in COMMIT, which is how a real server treats an open
-// transaction at disconnect, so rollback-on-failure is observable.
+// The fake psql writes replayed rows back only when its input ends in COMMIT, so rollback on failure is observable.
 
 const fakePGDump = `#!/bin/sh
 D="$FAKE_DIR"
@@ -73,8 +70,6 @@ tail -n 1 "$D/psql.stdin" | grep -q '^COMMIT;$' || exit 0
 grep '^DATA ' "$D/psql.stdin" | sed 's/^DATA //' > "$D/db"
 `
 
-// fakeExec stands in for kubectl exec: the argv up to -- is its own, and none
-// of the caller's environment crosses into the "container".
 const fakeExec = `#!/bin/sh
 D="$FAKE_DIR"
 pre=""
@@ -86,7 +81,6 @@ exec env -i FAKE_DIR="$D" PATH="$PATH" "$@"
 
 const testURL = "postgres://felis:s3cret-pw@127.0.0.1:5432/felis?sslmode=disable"
 
-// podConn is the in-container connection the Exec tests hand the tools.
 const podConn = "host=/var/run/postgresql port=5432 dbname=felis user=felis"
 
 type fakePG struct {
@@ -112,7 +106,6 @@ func newFakePG(t *testing.T, db string) *fakePG {
 	return f
 }
 
-// newFakePod is newFakePG with the tools behind a fake kubectl exec.
 func newFakePod(t *testing.T, db string) *fakePG {
 	t.Helper()
 	f := newFakePG(t, db)
@@ -125,7 +118,6 @@ func newFakePod(t *testing.T, db string) *fakePG {
 	return f
 }
 
-// execRuns is how many tool runs went through the fake kubectl exec.
 func (f *fakePG) execRuns(t *testing.T) int {
 	t.Helper()
 	b, _ := os.ReadFile(filepath.Join(f.dir, "exec.args"))
@@ -181,7 +173,6 @@ func stateDir(t *testing.T) string {
 
 var t0 = time.Date(2026, 9, 24, 3, 30, 0, 0, time.UTC)
 
-// recorded is the Status of the last freshness record, or the zero Status.
 func (pg *fakePG) recorded(t *testing.T) Status {
 	t.Helper()
 	args, _ := os.ReadFile(filepath.Join(pg.dir, "record.args"))
@@ -223,7 +214,6 @@ func TestBackupWritesAVerifiableBundle(t *testing.T) {
 		}
 	}
 
-	// The password reaches pg_dump through the environment, never argv.
 	args, _ := os.ReadFile(filepath.Join(pg.dir, "pg_dump.args"))
 	if strings.Contains(string(args), "s3cret-pw") {
 		t.Errorf("password on the pg_dump command line: %s", args)
@@ -264,7 +254,6 @@ func TestBackupWritesAVerifiableBundle(t *testing.T) {
 		}
 	}
 
-	// No scratch or partial files survive a successful run.
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), ".partial") || strings.HasSuffix(e.Name(), ".dump") {
@@ -293,8 +282,6 @@ func TestBackupRecordsFreshness(t *testing.T) {
 	if st.Name != filepath.Base(path) || st.Label != LabelDaily || !st.At.Equal(t0) || st.SizeBytes != info.Size() || st.SchemaVersion != 21 || !st.DailyAt.Equal(t0) {
 		t.Fatalf("recorded %+v", st)
 	}
-	// A manual bundle an hour later is the newest record, and carries the
-	// daily one's time for the panel to judge the timer by.
 	if _, err := Backup(context.Background(), BackupOptions{
 		DatabaseURL: testURL, Dir: dir, Label: LabelManual, Tools: pg.tools, Now: at(t0.Add(time.Hour)), Record: true,
 	}); err != nil {
@@ -317,7 +304,6 @@ func TestBackupRecordsFreshness(t *testing.T) {
 	}
 }
 
-// failingExport stands in for a cluster that does not answer.
 func failingExport(context.Context) ([]byte, error) {
 	return nil, errors.New("connection refused")
 }
@@ -326,9 +312,6 @@ func hasServers(m Manifest) bool {
 	return slices.ContainsFunc(m.Files, func(f ManifestEntry) bool { return f.Name == serversEntry })
 }
 
-// TestBackupRecordsAClusterThatDidNotAnswer: the database still gets its
-// bundle when the cluster is away, and the caller learns the bundle restores
-// no servers, as do the manifest and the panel's record.
 func TestBackupRecordsAClusterThatDidNotAnswer(t *testing.T) {
 	pg := newFakePG(t, "x\n")
 	dir := t.TempDir()
@@ -355,8 +338,6 @@ func TestBackupRecordsAClusterThatDidNotAnswer(t *testing.T) {
 	}
 }
 
-// TestBackupRequiringServersWritesNothing: a caller that can try again later
-// gets no bundle rather than one that restores no servers.
 func TestBackupRequiringServersWritesNothing(t *testing.T) {
 	pg := newFakePG(t, "x\n")
 	dir := t.TempDir()
@@ -373,7 +354,6 @@ func TestBackupRequiringServersWritesNothing(t *testing.T) {
 	if st := pg.recorded(t); st.Name != "" {
 		t.Errorf("recorded %+v for a backup that failed", st)
 	}
-	// With the cluster answering, the same backup is whole.
 	path, err = Backup(context.Background(), BackupOptions{
 		DatabaseURL: testURL, Dir: dir, Label: LabelOffsite, Tools: pg.tools, Now: at(t0),
 		ExportServers:  func(context.Context) ([]byte, error) { return []byte(`{"kind":"List","items":[]}`), nil },
@@ -441,7 +421,6 @@ func TestReadManifestStopsAtTheManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Everything after the manifest is withheld: the reader fails past it.
 	cut := strings.Index(string(raw), "PGDMP")
 	cutErr := errors.New("the rest has not arrived")
 	m, err := ReadManifest(io.MultiReader(bytes.NewReader(raw[:cut]), iotest.ErrReader(cutErr)))
@@ -452,7 +431,6 @@ func TestReadManifestStopsAtTheManifest(t *testing.T) {
 		t.Errorf("manifest = %+v", m)
 	}
 
-	// A stream that fails before the manifest is whole says why.
 	if _, err := ReadManifest(io.MultiReader(bytes.NewReader(raw[:100]), iotest.ErrReader(cutErr))); !errors.Is(err, cutErr) {
 		t.Errorf("stream failing in the header: err = %v, want %v", err, cutErr)
 	}
@@ -497,7 +475,6 @@ func TestBackupFailures(t *testing.T) {
 	}{
 		{"dump_fail", "connection refused"},
 		{"dump_garbage", "does not read back"},
-		// An object another role created in the database: the error names the fix.
 		{"dump_denied", "sudo -u postgres psql -d felis -c 'ALTER TABLE servers_preserve OWNER TO felis'"},
 	} {
 		t.Run(tc.flag, func(t *testing.T) {
@@ -543,9 +520,6 @@ func TestBackupFailures(t *testing.T) {
 	})
 }
 
-// The installer's database is a k3s pod and the host has no client tools: every
-// tool runs behind kubectl exec, reaches the database through the container's
-// socket, and moves the archive over stdout and stdin.
 func TestBackupAndRestoreThroughThePod(t *testing.T) {
 	pg := newFakePod(t, "users: alice\n")
 	dir := t.TempDir()
@@ -628,7 +602,6 @@ func TestVerifyCatchesCorruption(t *testing.T) {
 		t.Fatalf("flipped dump byte: err = %v, want member corrupt", err)
 	}
 
-	// A bundle intact inside but not the one the sidecar vouches for.
 	raw[i+10] ^= 0x20
 	raw = append(raw, make([]byte, 512)...)
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
@@ -654,7 +627,6 @@ func TestVerifyRejectsUnlistedMember(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Re-pack with an extra member the manifest does not list.
 	src, _ := os.Open(path)
 	defer src.Close()
 	out := filepath.Join(dir, "felis-db-20260924T040000Z-manual.tar")
@@ -711,8 +683,6 @@ func TestListPruneCheck(t *testing.T) {
 		t.Error("a pruned bundle's sidecar survived")
 	}
 
-	// Check goes by the newest daily bundle: the pre-migrate one taken an hour
-	// ago says nothing about the timer.
 	if b, err := Check(dir, 26*time.Hour, t0); err != nil || b.Name != "felis-db-20260923T033000Z-daily.tar" {
 		t.Errorf("Check fresh = %v, %v", b, err)
 	}
@@ -727,8 +697,6 @@ func TestListPruneCheck(t *testing.T) {
 	if _, err := Backup(context.Background(), BackupOptions{DatabaseURL: testURL, Dir: only, Label: LabelManual, Tools: pg.tools, Now: at(t0), Record: true}); err != nil {
 		t.Fatal(err)
 	}
-	// No daily bundle: the record leaves daily_at out (a zero time would read
-	// as year 1), so the panel shows none.
 	if args, _ := os.ReadFile(filepath.Join(pg.dir, "record.args")); !strings.Contains(string(args), `"label":"manual"`) || strings.Contains(string(args), "daily_at") {
 		t.Errorf("record without a daily bundle = %s", args)
 	}
@@ -784,8 +752,6 @@ func TestAge(t *testing.T) {
 	}
 }
 
-// Delete removes an older bundle with its checksum, and refuses the newest bundle, a
-// name outside the directory and a file that is not there.
 func TestDelete(t *testing.T) {
 	dir := t.TempDir()
 	newest := BundleName(t0.Add(48*time.Hour), LabelDaily)

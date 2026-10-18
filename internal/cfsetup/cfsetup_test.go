@@ -8,25 +8,8 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// The Cloudflare Tunnel + Access setup is INTEGRATION-ONLY end to end: the tunnel,
-// DNS, and Access resources only exist against the operator's live account. These
-// tests pin the two things this box CAN verify and that actually protect the
-// operator:
-//
-//  1. the recommended Access policy is FAIL-CLOSED — it can never serialize to
-//     public/allow-everyone or skip authentication (the load-bearing property,
-//     the analog of "reclaim never catches the genuine Mojang player"); and
-//  2. the gating refuses with NO side effects when the operator's own
-//     preconditions (cloudflared, login, API token) are not met.
-//
-// We deliberately do NOT assert "Setup calls the runner in this exact order" —
-// that only restates the code. testRoot is a placeholder; real domains are
-// config-only and red-line-forbidden in source.
+const testRoot = "mc.example.net" // placeholder domain
 
-const testRoot = "mc.example.net"
-
-// recordingRunner is a fake Runner that records every side-effecting call so a
-// test can assert that a refusal happened BEFORE any Cloudflare mutation.
 type recordingRunner struct {
 	calls       []string
 	tunnelID    string
@@ -91,11 +74,6 @@ func goodPreconditions() Preconditions {
 	return Preconditions{CloudflaredPath: "/usr/local/bin/cloudflared", CertExists: true, APIToken: "tok"}
 }
 
-// TestRecommendedPolicyIsFailClosed is the load-bearing safety property: the
-// recommended policy admits a scoped identity and is NEVER public. It checks every
-// way the policy could go wrong — an unscoped build, a bare-everyone allow, and a
-// bypass decision must all be refused — and that legitimate scopings (a specific
-// email, an org SSO domain, and an SSO-IdP-only login method) are accepted.
 func TestRecommendedPolicyIsFailClosed(t *testing.T) {
 	t.Run("scoped by email is allowed and fail-closed", func(t *testing.T) {
 		p, err := BuildRecommendedPolicy("rec", AccessIdentity{Emails: []string{"owner@example.net"}})
@@ -117,8 +95,6 @@ func TestRecommendedPolicyIsFailClosed(t *testing.T) {
 	})
 
 	t.Run("scoped by SSO login method only is allowed (Google/Keycloak/Entra)", func(t *testing.T) {
-		// IdP-only scoping yields include everyone + require login_method — the
-		// Cloudflare-recommended authenticated-users shape, which is constrained.
 		p, err := BuildRecommendedPolicy("rec", AccessIdentity{LoginMethods: []string{"idp-google-123"}})
 		if err != nil {
 			t.Fatalf("SSO login_method scoping rejected: %v", err)
@@ -149,9 +125,6 @@ func TestRecommendedPolicyIsFailClosed(t *testing.T) {
 	})
 
 	t.Run("everyone OR identity is refused (include rules are OR — everyone wins)", func(t *testing.T) {
-		// Cloudflare Access include rules combine as OR: a user matches if they
-		// satisfy ANY rule. So {everyone} OR {email:X} admits everyone — the email
-		// rule is pure redundancy. Only a require (AND) can narrow an everyone base.
 		orPublic := AccessPolicy{
 			Name:     "everyone-or-email",
 			Decision: "allow",
@@ -166,9 +139,6 @@ func TestRecommendedPolicyIsFailClosed(t *testing.T) {
 	})
 
 	t.Run("unrecognized include type is refused (allowlist, not denylist)", func(t *testing.T) {
-		// A fail-closed guard must reject include shapes it does not recognize as
-		// scoped — an ip:0.0.0.0/0 include, for instance, is public but is not one
-		// of the known-bad shapes a denylist would catch.
 		ipAny := AccessPolicy{
 			Name:     "ip-any",
 			Decision: "allow",
@@ -180,8 +150,6 @@ func TestRecommendedPolicyIsFailClosed(t *testing.T) {
 	})
 
 	t.Run("empty/malformed include rule is refused", func(t *testing.T) {
-		// A degenerate include rule with no recognized key must not slip through the
-		// allowlist as if it were scoped.
 		empty := AccessPolicy{
 			Name:     "empty-rule",
 			Decision: "allow",
@@ -193,8 +161,6 @@ func TestRecommendedPolicyIsFailClosed(t *testing.T) {
 	})
 
 	t.Run("everyone narrowed by a non-constraining require is refused", func(t *testing.T) {
-		// A require of {everyone} does not narrow anything; everyone base + such a
-		// require is still public.
 		noopRequire := AccessPolicy{
 			Name:     "everyone-require-everyone",
 			Decision: "allow",
@@ -218,10 +184,6 @@ func TestRecommendedPolicyIsFailClosed(t *testing.T) {
 	})
 }
 
-// TestSetupGatingHasNoSideEffects proves each operator-only precondition is a hard
-// gate: a missing cloudflared, an absent login (no cert.pem), or a missing API
-// token each aborts Setup with the right error and — critically — with ZERO calls
-// to the runner, so a gated refusal never half-creates a tunnel or DNS record.
 func TestSetupGatingHasNoSideEffects(t *testing.T) {
 	base := Params{
 		PanelHostname:  "console." + testRoot,
@@ -256,10 +218,6 @@ func TestSetupGatingHasNoSideEffects(t *testing.T) {
 	}
 }
 
-// TestSetupRefusesUnscopedPolicyBeforeSideEffects is defense-in-depth: even with
-// every precondition met, an empty AccessIdentity (which would yield a public
-// policy) aborts Setup BEFORE any tunnel/DNS/app is created. The fail-closed guard
-// is wired into the orchestrator, not merely a standalone helper.
 func TestSetupVerifiesAPITokenBeforeCloudflareMutations(t *testing.T) {
 	tokenErr := errors.New("token inactive")
 	runner := &verifyingRunner{verifyErr: tokenErr}
@@ -288,7 +246,7 @@ func TestSetupRefusesUnscopedPolicyBeforeSideEffects(t *testing.T) {
 		PanelHostname:  "console." + testRoot,
 		AdminHostname:  "op.console." + testRoot,
 		TunnelName:     "felis",
-		AccessIdentity: AccessIdentity{}, // unscoped → public → must be refused
+		AccessIdentity: AccessIdentity{},
 		Pre:            goodPreconditions(),
 	}
 	if _, err := Setup(context.Background(), runner, p); err == nil {
@@ -299,10 +257,6 @@ func TestSetupRefusesUnscopedPolicyBeforeSideEffects(t *testing.T) {
 	}
 }
 
-// TestSetupSucceedsAndReportsAud is the happy path against the fake: with good
-// preconditions and a scoped identity, Setup routes exactly the web hostnames
-// (never the game host), and reports the Access aud the caller must adopt into
-// felis [auth] access_jwt_aud.
 func TestSetupSucceedsAndReportsAud(t *testing.T) {
 	runner := &recordingRunner{aud: "felis-aud-xyz"}
 	p := Params{
@@ -320,7 +274,6 @@ func TestSetupSucceedsAndReportsAud(t *testing.T) {
 	if res.AccessAud != "felis-aud-xyz" {
 		t.Fatalf("AccessAud = %q, want felis-aud-xyz (felis-api must validate this)", res.AccessAud)
 	}
-	// Exactly the two web hostnames are routed; the bare game host never is.
 	if len(res.RoutedHostnames) != 2 {
 		t.Fatalf("routed %v, want the two web hostnames only", res.RoutedHostnames)
 	}
@@ -331,10 +284,6 @@ func TestSetupSucceedsAndReportsAud(t *testing.T) {
 	}
 }
 
-// TestIngressSafetyInvariants parses the generated cloudflared config back and
-// asserts the properties that protect the origin: the final rule is the
-// hostname-less fail-shut 404 catch-all, every routed hostname points at the panel
-// origin and nowhere else, and the raw game host is never an ingress hostname.
 func TestIngressSafetyInvariants(t *testing.T) {
 	const origin = "http://localhost:8080"
 	hostnames := []string{"console." + testRoot, "op.console." + testRoot}
@@ -349,13 +298,10 @@ func TestIngressSafetyInvariants(t *testing.T) {
 	if len(cfg.Ingress) == 0 {
 		t.Fatal("no ingress rules")
 	}
-	// The catch-all MUST be last and MUST be the fail-shut 404.
 	last := cfg.Ingress[len(cfg.Ingress)-1]
 	if last.Hostname != "" || last.Service != catchAllService {
 		t.Fatalf("final ingress rule = %+v, want hostname-less %s catch-all", last, catchAllService)
 	}
-	// Every non-terminal rule routes a known web hostname to the panel origin, and
-	// the raw game host is never routed.
 	for _, rule := range cfg.Ingress[:len(cfg.Ingress)-1] {
 		if rule.Hostname == testRoot {
 			t.Fatalf("the raw game host %q must never be an ingress hostname", testRoot)

@@ -7,11 +7,7 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// JarModIDs returns the mod ids a mod jar declares: fabric.mod.json's id,
-// quilt.mod.json's quilt_loader.id, and the modId of every [[mods]] table of a
-// Forge or NeoForge mods.toml. A jar that is not a mod, or cannot be read, declares none; the
-// installer uses this only to avoid adding a forwarding mod the owner already
-// put in themselves.
+// JarModIDs returns none for unreadable or non-mod jars; it only prevents duplicate managed forwarding mods.
 func JarModIDs(jarPath string) []string {
 	zr, err := zip.OpenReader(jarPath)
 	if err != nil {
@@ -37,10 +33,7 @@ func JarModIDs(jarPath string) []string {
 			ids = append(ids, m.QuiltLoader.ID)
 		}
 	}
-	// Only the [[mods]] tables declare mods; the modId keys under
-	// [[dependencies.<id>]] name what a mod depends on (PCF's own file lists
-	// forge, neoforge and minecraft there), and counting those would take a mod
-	// that merely depends on PCF for PCF itself.
+	// Read mod IDs only from mods tables; dependency tables name required mods rather than identities declared by this jar.
 	for _, name := range []string{"META-INF/mods.toml", "META-INF/neoforge.mods.toml"} {
 		body, err := readZipText(&zr.Reader, name)
 		if err != nil {

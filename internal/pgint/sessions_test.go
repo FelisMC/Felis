@@ -49,8 +49,6 @@ func listedHashes(t *testing.T, userID string, now time.Time) []string {
 	return out
 }
 
-// A staff session dies after 30 idle minutes and a player's does not; both
-// SessionUser and the session list agree on which are live.
 func TestStaffSessionsIdleOut(t *testing.T) {
 	ctx := context.Background()
 	now := mustNow()
@@ -188,8 +186,6 @@ func TestRevokeOtherUserSessionsKeepsOne(t *testing.T) {
 	}
 }
 
-// reauth_at: a proven sign-in stores the proof, a bind-code sign-in stores
-// none, SessionUser reads it back, and a reauth marks only a live session.
 func TestSessionReauthProof(t *testing.T) {
 	ctx := context.Background()
 	now := mustNow()

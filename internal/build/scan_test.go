@@ -101,8 +101,6 @@ func TestParseScanAccept(t *testing.T) {
 	}
 }
 
-// An accepted id stays counted and listed, marked accepted, and never blocks;
-// the other findings are judged as before.
 func TestSummarizeAcceptedIDsNeverBlock(t *testing.T) {
 	s, err := Summarize([]byte(trivyFixture), ScanPolicy{FailOn: []string{"CRITICAL", "HIGH"},
 		Accept: []string{"CVE-2024-0001", "aws-access-key-id", "CVE-2099-0001"}})
@@ -131,8 +129,6 @@ func TestSummarizeAcceptedIDsNeverBlock(t *testing.T) {
 	}
 }
 
-// A CRITICAL,HIGH policy blocks HIGH and CRITICAL findings that have a fixed release
-// (a FixedVersion, or Trivy's status "fixed"), and a leaked secret always.
 func TestSummarizeDefaultPolicy(t *testing.T) {
 	s, err := Summarize([]byte(trivyFixture), ScanPolicy{FailOn: []string{"CRITICAL", "HIGH"}})
 	if err != nil {
@@ -208,8 +204,6 @@ func TestSummarizeCleanAndBadReports(t *testing.T) {
 	}
 }
 
-// One CVE in two packages is two blocking findings under one id: the reason
-// names the id once and counts the other.
 func TestReasonNamesARepeatedIDOnce(t *testing.T) {
 	report := `{"SchemaVersion":2,"Results":[{"Target":"mods","Vulnerabilities":[
 	 {"VulnerabilityID":"CVE-2024-0001","PkgName":"log4j-core","InstalledVersion":"2.14.1","FixedVersion":"2.17.1","Severity":"CRITICAL"},
@@ -223,8 +217,6 @@ func TestReasonNamesARepeatedIDOnce(t *testing.T) {
 	}
 }
 
-// A summary lists at most MaxSummaryFindings findings, while the counts and the
-// reason still cover every one.
 func TestSummarizeCapsTheListedFindings(t *testing.T) {
 	var vulns []string
 	for i := range 150 {
@@ -281,8 +273,6 @@ func TestScanEnvelopeRoundTripsThroughALog(t *testing.T) {
 	}
 }
 
-// The reader takes the last intact frame: scan-gate prints its envelope last, and
-// a frame whose checksum does not match is ignored.
 func TestReadScanEnvelopeTakesTheLastIntactFrame(t *testing.T) {
 	frame := func(blocked bool) string {
 		var b bytes.Buffer
@@ -312,7 +302,6 @@ func TestReadScanEnvelopeTakesTheLastIntactFrame(t *testing.T) {
 	}
 }
 
-// An envelope past the budget drops the SBOM first, then the report, and says so.
 func TestWriteScanEnvelopeDropsWhatDoesNotFit(t *testing.T) {
 	defer func(old int) { envelopeBudget = old }(envelopeBudget)
 	envelopeBudget = 2048

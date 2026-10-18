@@ -10,14 +10,9 @@ import (
 	"felis.lolicon.best/internal/naming"
 )
 
-// scheduleRunTimeout bounds the first step of a run somebody asked for. The
-// step outlives the request, so a client that hangs up cannot cut a stop off
-// halfway.
+// scheduleRunTimeout bounds work that outlives the request so a disconnect cannot interrupt the first step.
 const scheduleRunTimeout = 30 * time.Second
 
-// scheduleServer resolves {name} for the schedule routes and applies their
-// gate: 400 for a malformed name, 404 for a server that does not exist, 403
-// for a caller who neither owns it nor is an admin, 503 without a store.
 func (a *API) scheduleServer(w http.ResponseWriter, r *http.Request) (*ServerRecord, bool) {
 	name := r.PathValue("name")
 	if err := naming.ValidateServerName(name); err != nil {
@@ -41,7 +36,6 @@ func (a *API) scheduleServer(w http.ResponseWriter, r *http.Request) (*ServerRec
 	return rec, true
 }
 
-// scheduleID parses {id}.
 func scheduleID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id <= 0 {
@@ -51,7 +45,6 @@ func scheduleID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	return id, true
 }
 
-// writeScheduleError maps the store's schedule errors.
 func (a *API) writeScheduleError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, ErrScheduleRunning):
@@ -65,7 +58,6 @@ func (a *API) writeScheduleError(w http.ResponseWriter, r *http.Request, err err
 	}
 }
 
-// auditSchedule records a change to a schedule by the signed-in caller.
 func (a *API) auditSchedule(r *http.Request, action string, s *Schedule) {
 	p := principalFromContext(r.Context())
 	e := AuditEntry{Actor: auditActor(p), Action: action, ServerName: s.Server,
@@ -76,7 +68,6 @@ func (a *API) auditSchedule(r *http.Request, action string, s *Schedule) {
 	a.auditEntry(r, e)
 }
 
-// handleListSchedules serves GET /servers/{name}/schedules.
 func (a *API) handleListSchedules(w http.ResponseWriter, r *http.Request) {
 	rec, ok := a.scheduleServer(w, r)
 	if !ok {
@@ -93,8 +84,6 @@ func (a *API) handleListSchedules(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"server": rec.Name, "schedules": list, "limit": maxSchedulesPerServer})
 }
 
-// handleCreateSchedule serves POST /servers/{name}/schedules. The schedule
-// belongs to the server's current owner (see Schedule.OwnerID).
 func (a *API) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 	rec, ok := a.scheduleServer(w, r)
 	if !ok {
@@ -119,8 +108,7 @@ func (a *API) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, s)
 }
 
-// handleUpdateSchedule serves PUT /servers/{name}/schedules/{id}: new settings,
-// and the schedule passes to the server's current owner.
+// handleUpdateSchedule transfers the schedule to the server's current owner.
 func (a *API) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 	rec, ok := a.scheduleServer(w, r)
 	if !ok {
@@ -153,7 +141,6 @@ func (a *API) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s)
 }
 
-// handleDeleteSchedule serves DELETE /servers/{name}/schedules/{id}.
 func (a *API) handleDeleteSchedule(w http.ResponseWriter, r *http.Request) {
 	rec, ok := a.scheduleServer(w, r)
 	if !ok {
@@ -176,10 +163,7 @@ func (a *API) handleDeleteSchedule(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleRunSchedule serves POST /servers/{name}/schedules/{id}/run: the run
-// starts now, without the players' warning, and the next scheduled run stays
-// where it is. The answer is the schedule after the run's first step; a restart
-// or backup goes on in the background.
+// handleRunSchedule skips player warnings and preserves the next scheduled time; later steps continue in the background.
 func (a *API) handleRunSchedule(w http.ResponseWriter, r *http.Request) {
 	rec, ok := a.scheduleServer(w, r)
 	if !ok {
@@ -224,7 +208,6 @@ func (a *API) handleRunSchedule(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, after)
 }
 
-// firstRun is the next run of a schedule just saved, nil while it is disabled.
 func (a *API) firstRun(s *Schedule) *time.Time {
 	if !s.Enabled {
 		return nil

@@ -15,15 +15,12 @@ import (
 var releaseTagPattern = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
 var githubRepoPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 
-// InstallTarget pins both the installer and the source tree to one revision.
-// Release is set only when installing checksum-verified published assets.
 type InstallTarget struct {
 	Release  string
 	Revision string
 	Script   string
 }
 
-// InstallerSource uses the same GitHub client and token as release discovery.
 type InstallerSource struct {
 	github github
 	repo   string
@@ -51,8 +48,7 @@ func NewInstallerSource(repoURL string) (InstallerSource, error) {
 
 func (s InstallerSource) RepoURL() string { return "https://github.com/" + s.repo + ".git" }
 
-// Prepare downloads the complete script before any host changes. A moving ref
-// (including main) is resolved once; the installer receives that same full SHA.
+// Prepare resolves moving refs once and downloads the installer before host changes, pinning script and source to the same full SHA.
 func (s InstallerSource) Prepare(ctx context.Context, release, ref string) (InstallTarget, error) {
 	if ref == "" {
 		endpoint := "releases/latest"

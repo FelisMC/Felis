@@ -1,14 +1,6 @@
 package best.lolicon.felis.link;
 
-/**
- * LinkException is thrown when a link-code request does not succeed. It carries
- * the HTTP status (0 for a transport/timeout failure that produced no response)
- * and the server's stable {@code error.code} when one was returned, so callers
- * can branch on a machine-readable cause without parsing human text. The message
- * is safe to log server-side; the plugins deliberately do <em>not</em> echo it to
- * the player, surfacing a generic "try again" line instead so nothing internal
- * leaks into chat.
- */
+// Preserve status and stable error codes for branching, but never echo internal failures into player chat.
 public final class LinkException extends Exception {
     private static final long serialVersionUID = 1L;
 

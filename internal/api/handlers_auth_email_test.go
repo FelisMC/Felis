@@ -10,25 +10,7 @@ import (
 	"time"
 )
 
-// Pre-session Email-OTP LOGIN tests (spec §B, console.<root_domain> returning-player
-// door). The load-bearing properties, in the order the flow meets them:
-//
-//   - Neutrality on start: an unknown address gets a byte-identical 202 to a real
-//     send AND the same cooldown reservation, so neither the response nor the
-//     throttle is an existence oracle.
-//   - Purpose separation: login codes (otpPurposeLogin) and onboarding codes
-//     (otpPurposeOnboard) never satisfy each other, even for one account holding
-//     both live at once.
-//   - Verify uniformity: unknown address and wrong code collapse to the same
-//     invalid_code envelope, so a code-less caller learns nothing.
-//   - Staff refusal AFTER redeem: only the mailbox owner, holding a live code, can
-//     ever see the staff_account refusal — and the code is spent reaching it.
-
-// seedLoginEmailAPI wires the public email-login door: local sessions enabled and a
-// single verified player "player" (id u1) whose proven address is stored in MIXED
-// case, so the case-insensitivity contracts (resolve on typed lowercase, mint against
-// stored casing) are exercised by default. Both routes are Public — no External
-// wiring needed.
+// seedLoginEmailAPI uses a mixed-case stored address to exercise case-insensitive lookup and delivery to the stored spelling.
 func seedLoginEmailAPI(t *testing.T) (*API, *fakeRepo, *captureMailer) {
 	t.Helper()
 	repo := newFakeRepo()
@@ -43,9 +25,7 @@ func seedLoginEmailAPI(t *testing.T) (*API, *fakeRepo, *captureMailer) {
 	return api, repo, mailer
 }
 
-// errEnvelope decodes the standard error body into its stable (code, message) pair —
-// request_id varies per request, so uniformity assertions compare these two fields,
-// never raw bytes.
+// errEnvelope omits variable request IDs when comparing uniform errors.
 func errEnvelope(t *testing.T, w *httptest.ResponseRecorder) (code, msg string) {
 	t.Helper()
 	var raw map[string]map[string]string
@@ -55,18 +35,10 @@ func errEnvelope(t *testing.T, w *httptest.ResponseRecorder) (code, msg string) 
 	return raw["error"]["code"], raw["error"]["message"]
 }
 
-// TestLoginEmailVertical walks the whole returning-player slice: a typed lowercase
-// address resolves the mixed-case stored account, the code is mailed to the account's
-// STORED casing (the address of record), and redeeming it mints the same host-only
-// felis_session as the other session doors — single-use, audited on both halves by the
-// account's username. The redeem never rewrites users.email (login re-proves an
-// already-verified address via ConsumeLoginEmailOTP), so the stored casing is
-// untouched by definition.
 func TestLoginEmailVertical(t *testing.T) {
 	api, repo, mailer := seedLoginEmailAPI(t)
 	eh := api.ExternalHandler()
 
-	// 1) start: 202 says "sent" and when it expires — never the code itself.
 	w := do(eh, "POST", "/api/v1/auth/email/start", `{"email":"player@example.net"}`, jsonHeader)
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("start: code = %d, want 202 (%s)", w.Code, w.Body.String())
@@ -81,8 +53,6 @@ func TestLoginEmailVertical(t *testing.T) {
 	if s, _ := b["expires_at"].(string); s == "" {
 		t.Error("start must report expires_at")
 	}
-	// The mail goes to the account's STORED address, not the typed casing — the code
-	// is delivered to the mailbox of record regardless of how the player typed it.
 	if mailer.calls != 1 || mailer.email != "Player@Example.NET" {
 		t.Fatalf("mailer: calls=%d email=%q, want 1 send to the STORED casing Player@Example.NET",
 			mailer.calls, mailer.email)
@@ -91,7 +61,6 @@ func TestLoginEmailVertical(t *testing.T) {
 	if len(code) != otpCodeDigits {
 		t.Fatalf("delivered code %q: len = %d, want %d", code, len(code), otpCodeDigits)
 	}
-	// Exactly one row, scoped to the LOGIN purpose, holding a hash — not the digits.
 	if len(repo.otps) != 1 {
 		t.Fatalf("persisted codes = %d, want 1", len(repo.otps))
 	}
@@ -104,8 +73,6 @@ func TestLoginEmailVertical(t *testing.T) {
 		}
 	}
 
-	// 2) verify — typed in yet another casing, proving the verify-side resolver is
-	// case-insensitive too — mints the session.
 	w = do(eh, "POST", "/api/v1/auth/email/verify",
 		`{"email":"PLAYER@example.NET","code":"`+code+`"}`, jsonHeader)
 	if w.Code != http.StatusOK {
@@ -115,7 +82,6 @@ func TestLoginEmailVertical(t *testing.T) {
 	if vb["user_id"] != "u1" || vb["role"] != "user" {
 		t.Fatalf("verify body = %v, want user_id:u1 role:user", vb)
 	}
-	// The HttpOnly cookie is the whole point — same contract as every session door.
 	cookies := w.Result().Cookies()
 	if len(cookies) != 1 || cookies[0].Name != sessionCookieName || cookies[0].Value == "" {
 		t.Fatalf("want one non-empty %s cookie, got %v", sessionCookieName, cookies)
@@ -131,7 +97,6 @@ func TestLoginEmailVertical(t *testing.T) {
 		t.Errorf("session expiresAt = %v, want now+sessionTTL = %v", s.expiresAt, want)
 	}
 
-	// Both halves audit by the account's username (there is no principal yet).
 	if n := len(repo.audits); n != 2 {
 		t.Fatalf("want 2 audits (otp_sent, login), got %d: %+v", n, repo.audits)
 	}
@@ -149,10 +114,6 @@ func TestLoginEmailVertical(t *testing.T) {
 	}
 }
 
-// TestLoginEmailStartNeutralOnUnknownAddress pins the start-side anti-enumeration
-// contract: an address with no verified account yields a 202 BYTE-IDENTICAL to a
-// real send (frozen clock ⇒ same expires_at), mints and mails nothing, audits
-// nothing — and a re-probe inside the cooldown answers the same 202 a resend does.
 func TestLoginEmailStartNeutralOnUnknownAddress(t *testing.T) {
 	// A real send for comparison.
 	apiK, _, _ := seedLoginEmailAPI(t)
@@ -191,8 +152,6 @@ func TestLoginEmailStartNeutralOnUnknownAddress(t *testing.T) {
 		t.Errorf("re-probe must mint/mail nothing, got otps=%d mails=%d", len(repoU.otps), mailerU.calls)
 	}
 
-	// An UNVERIFIED account is indistinguishable from no account: UserByEmail only
-	// resolves proven addresses, so the door never mails one nobody controls.
 	repoV := newFakeRepo()
 	repoV.settings[LocalAuthEnabledKey] = []byte("true")
 	repoV.staff["u"] = &StaffUser{ID: "u9", Username: "u", Email: "half@example.net", Role: "user"} // EmailVerified false
@@ -209,13 +168,9 @@ func TestLoginEmailStartNeutralOnUnknownAddress(t *testing.T) {
 	}
 }
 
-// TestLoginEmailGates covers the shared front doors of both halves: the fail-closed
-// local-auth toggle, the cross-site-forgery Content-Type guard (these are Public,
-// credential-minting routes — same rationale as handleBindRedeem), and the input
-// gates that must reject before any mint or lookup.
 func TestLoginEmailGates(t *testing.T) {
 	t.Run("local auth disabled -> 403 on both halves", func(t *testing.T) {
-		api := newTestAPI(newFakeRepo(), newFakeCluster()) // no LocalAuthEnabledKey: fails closed
+		api := newTestAPI(newFakeRepo(), newFakeCluster())
 		eh := api.ExternalHandler()
 		if w := do(eh, "POST", "/api/v1/auth/email/start", `{"email":"a@example.net"}`, jsonHeader); w.Code != http.StatusForbidden || decodeErr(t, w) != "local_auth_disabled" {
 			t.Errorf("start: code = %d body %s, want 403 local_auth_disabled", w.Code, w.Body.String())
@@ -276,11 +231,6 @@ func TestLoginEmailGates(t *testing.T) {
 	})
 }
 
-// TestLoginEmailStartRateLimited closes the unauthenticated email-bomb vector on the
-// public door: one send per recipient per window, keyed case-insensitively, and
-// namespaced apart from the authenticated onboarding throttle so neither door can
-// starve the other. A start inside the window is answered like the one that sent,
-// so whoever asks lands on the code screen with the mail already in the inbox.
 func TestLoginEmailStartRateLimited(t *testing.T) {
 	start := func(eh http.Handler, email string) *httptest.ResponseRecorder {
 		return do(eh, "POST", "/api/v1/auth/email/start", `{"email":"`+email+`"}`, jsonHeader)
@@ -301,7 +251,6 @@ func TestLoginEmailStartRateLimited(t *testing.T) {
 		if w.Code != http.StatusAccepted {
 			t.Fatalf("resend inside the window: code = %d, want 202 (%s)", w.Code, w.Body.String())
 		}
-		// The expiry is the first code's, the one the inbox holds.
 		if b := acctBody(t, w); b["sent"] != true || b["expires_at"] != "2023-11-14T22:23:20Z" {
 			t.Errorf("resend body = %v, want sent:true expires_at:2023-11-14T22:23:20Z", b)
 		}
@@ -326,7 +275,6 @@ func TestLoginEmailStartRateLimited(t *testing.T) {
 		if w := start(eh, "Player@Example.NET"); w.Code != http.StatusAccepted {
 			t.Fatalf("first send: code = %d, want 202 (%s)", w.Code, w.Body.String())
 		}
-		// A recased retype is the same mailbox: it must hit the same window.
 		if w := start(eh, "player@example.net"); w.Code != http.StatusAccepted || mailer.calls != 1 {
 			t.Fatalf("recased resend: code = %d mails = %d, want 202 and no second mail (key must be lowercased)",
 				w.Code, mailer.calls)
@@ -334,9 +282,6 @@ func TestLoginEmailStartRateLimited(t *testing.T) {
 	})
 
 	t.Run("login and onboard cooldowns are namespaced apart", func(t *testing.T) {
-		// The unauthenticated login door must not perturb the authenticated
-		// onboarding throttle for the same mailbox — distinct keys, so both doors
-		// admit one send each at the same instant.
 		api, _, mailer := seedLoginEmailAPI(t)
 		api.External = staticExternal{p: &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}}
 		eh := api.ExternalHandler()
@@ -354,10 +299,6 @@ func TestLoginEmailStartRateLimited(t *testing.T) {
 	})
 }
 
-// TestLoginStartsInsideTheWindowMatchExactly: with a clock that moves on every read,
-// a start inside the cooldown still answers with the very expires_at the first start
-// returned, on both email doors and for known and unknown addresses alike, so a
-// repeat start is indistinguishable from the first down to the nanosecond.
 func TestLoginStartsInsideTheWindowMatchExactly(t *testing.T) {
 	ticking := func(api *API) {
 		clock := time.Unix(1_700_000_000, 0)
@@ -397,10 +338,6 @@ func TestLoginStartsInsideTheWindowMatchExactly(t *testing.T) {
 	}
 }
 
-// TestLoginEmailStartKeepsEarlierCodes is the stranger-keeps-starting case: someone
-// who knows the address starts a login every cooldown. Each start adds a code to the
-// owner's inbox and never cancels one, so the owner's own code keeps working until
-// otpLiveLoginCodes newer ones exist; signing in spends every code still out.
 func TestLoginEmailStartKeepsEarlierCodes(t *testing.T) {
 	api, repo, mailer := seedLoginEmailAPI(t)
 	clock := time.Unix(1_700_000_000, 0)
@@ -443,11 +380,6 @@ func TestLoginEmailStartKeepsEarlierCodes(t *testing.T) {
 	}
 }
 
-// TestLoginEmailVerifyRejections is the redeem-side failure matrix. The anchor case
-// is uniformity: an unknown address and a wrong code for a known address answer with
-// the same (code, message) envelope, so the verify half never doubles as an
-// existence oracle. Expired/locked rows are planted directly — the frozen clock
-// makes that the only deterministic route to those branches.
 func TestLoginEmailVerifyRejections(t *testing.T) {
 	verify := func(eh http.Handler, email, code string) *httptest.ResponseRecorder {
 		return do(eh, "POST", "/api/v1/auth/email/verify",
@@ -467,7 +399,6 @@ func TestLoginEmailVerifyRejections(t *testing.T) {
 		apiW, repoW, _ := seedLoginEmailAPI(t)
 		liveLogin(repoW, "lg", otpCodeHash("123456"), time.Unix(1_700_000_600, 0), 0)
 		wWrong := verify(apiW.ExternalHandler(), "player@example.net", "654321")
-		// No account at all.
 		apiU, _, _ := seedLoginEmailAPI(t)
 		wGhost := verify(apiU.ExternalHandler(), "ghost@example.net", "654321")
 
@@ -515,12 +446,6 @@ func TestLoginEmailVerifyRejections(t *testing.T) {
 	})
 
 	t.Run("exhausted code is invisible: same invalid_code as a wrong code, no locked oracle", func(t *testing.T) {
-		// A locked row (attempts == cap) must NOT surface as a distinct 429 otp_locked
-		// on this public, pre-session door: that status would be an existence oracle —
-		// a code-less prober could mail a victim address a code, burn its attempt budget,
-		// and read otp_locked as "this address has an account." It collapses to the SAME
-		// 400 invalid_code a wrong code returns, byte-for-byte. (The authenticated
-		// onboarding door keeps otp_locked as actionable feedback; this one cannot.)
 		api, repo, _ := seedLoginEmailAPI(t)
 		liveLogin(repo, "lk", otpCodeHash("123456"), time.Unix(1_700_000_600, 0), otpMaxAttempts)
 		wLocked := verify(api.ExternalHandler(), "player@example.net", "123456") // correct digits, but exhausted
@@ -546,18 +471,11 @@ func TestLoginEmailVerifyRejections(t *testing.T) {
 	})
 }
 
-// TestLoginEmailPurposeSeparation proves the email_otps purpose column does its one
-// job in both directions: a live ONBOARDING code cannot open the login door, a live
-// LOGIN code cannot satisfy onboarding verify. Two complementary properties fall out
-// and both are pinned: the OTHER flow's row is never consumed or charged (the
-// per-purpose query never sees it), while the door's OWN live code IS charged one
-// attempt — cross-door digits are just a wrong guess, never a free brute-force try.
 func TestLoginEmailPurposeSeparation(t *testing.T) {
 	api, repo, _ := seedLoginEmailAPI(t)
 	api.External = staticExternal{p: &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}}
 	eh := api.ExternalHandler()
 
-	// Both purposes live at once for u1, distinct digits.
 	repo.otps["ob"] = &fakeEmailOTP{
 		id: "ob", userID: "u1", email: "player@example.net", codeHash: otpCodeHash("111111"),
 		purpose: otpPurposeOnboard, expiresAt: time.Unix(1_700_000_600, 0), createdAt: time.Unix(1_700_000_600, 0),
@@ -567,9 +485,6 @@ func TestLoginEmailPurposeSeparation(t *testing.T) {
 		purpose: otpPurposeLogin, expiresAt: time.Unix(1_700_000_600, 0), createdAt: time.Unix(1_700_000_600, 0),
 	}
 
-	// Onboarding code at the LOGIN door: refused. The onboard row is untouched (the
-	// login-purpose query never saw it); the LIVE LOGIN code is charged one attempt —
-	// to the login door these are simply wrong digits.
 	w := do(eh, "POST", "/api/v1/auth/email/verify",
 		`{"email":"player@example.net","code":"111111"}`, jsonHeader)
 	if w.Code != http.StatusBadRequest || decodeErr(t, w) != "invalid_code" {
@@ -586,9 +501,6 @@ func TestLoginEmailPurposeSeparation(t *testing.T) {
 		t.Fatal("a cross-purpose code must never mint a session")
 	}
 
-	// Login code at the ONBOARDING door: refused symmetrically — the login row is not
-	// consumed and not charged further (the onboard-purpose query never saw it; its
-	// one attempt above stands), while the onboard code eats the wrong guess...
 	w = do(eh, "POST", "/api/v1/account/email/verify", `{"code":"222222"}`, nil)
 	if w.Code != http.StatusBadRequest || decodeErr(t, w) != "invalid_code" {
 		t.Fatalf("login code at onboard door: code = %d body %s, want 400 invalid_code", w.Code, w.Body.String())
@@ -601,7 +513,6 @@ func TestLoginEmailPurposeSeparation(t *testing.T) {
 		t.Errorf("cross-door digits must cost the onboard code one attempt: consumed=%v attempts=%d",
 			o.consumed, o.attempts)
 	}
-	// ...and the login code is still redeemable at its own door afterwards.
 	w = do(eh, "POST", "/api/v1/auth/email/verify",
 		`{"email":"player@example.net","code":"222222"}`, jsonHeader)
 	if w.Code != http.StatusOK {
@@ -610,14 +521,6 @@ func TestLoginEmailPurposeSeparation(t *testing.T) {
 	}
 }
 
-// TestLoginEmailVerifyRefusesStaff pins the staff refusal AND its ordering. The
-// public door provably never mints a session for role=admin (op.console keeps its
-// Zero-Trust gate) — but the refusal must be reachable only by the mailbox owner:
-// a wrong code for a staff address answers the same invalid_code as for anyone, and
-// the 403 costs the valid code (verify-then-refuse), so it cannot be farmed as an
-// is-this-address-staff oracle.
-// Staff means admin AND owner (migration 0011): both must be refused at the
-// player door, after the code proves mailbox control.
 func TestLoginEmailVerifyRefusesStaff(t *testing.T) {
 	for _, role := range []string{"admin", "owner"} {
 		t.Run(role, func(t *testing.T) { verifyStaffRefusedAtPlayerDoor(t, role) })
@@ -646,13 +549,11 @@ func verifyStaffRefusedAtPlayerDoor(t *testing.T, role string) {
 		t.Skip("astronomically unlucky code collision; rerun")
 	}
 
-	// Without the code, staffness is invisible: plain invalid_code.
 	if w := do(eh, "POST", "/api/v1/auth/email/verify",
 		`{"email":"boss@example.net","code":"000000"}`, jsonHeader); w.Code != http.StatusBadRequest || decodeErr(t, w) != "invalid_code" {
 		t.Fatalf("wrong code for staff: code = %d body %s, want 400 invalid_code", w.Code, w.Body.String())
 	}
 
-	// With the code: 403 staff_account — and no cookie, no session row, no success audit.
 	w := do(eh, "POST", "/api/v1/auth/email/verify",
 		`{"email":"boss@example.net","code":"`+good+`"}`, jsonHeader)
 	if w.Code != http.StatusForbidden || decodeErr(t, w) != "staff_account" {
@@ -669,7 +570,7 @@ func verifyStaffRefusedAtPlayerDoor(t *testing.T, role string) {
 			t.Error("a refused staff login must not be audited as a successful login")
 		}
 	}
-	// Ordering pin: the refusal consumed the code (verify ran BEFORE the staff
+	// Ordering pin: the refusal consumed the code (verify ran before the staff
 	// check), so replaying it now collapses to invalid_code.
 	if w := do(eh, "POST", "/api/v1/auth/email/verify",
 		`{"email":"boss@example.net","code":"`+good+`"}`, jsonHeader); w.Code != http.StatusBadRequest || decodeErr(t, w) != "invalid_code" {
@@ -678,8 +579,6 @@ func verifyStaffRefusedAtPlayerDoor(t *testing.T, role string) {
 	}
 }
 
-// TestLoginEmailFaceSeparation enforces that both halves are web-only: the internal
-// (service-token) face must 404 them, never serve them.
 func TestLoginEmailFaceSeparation(t *testing.T) {
 	api, _, _ := seedLoginEmailAPI(t)
 	ih := api.InternalHandler()
@@ -691,11 +590,6 @@ func TestLoginEmailFaceSeparation(t *testing.T) {
 	}
 }
 
-// TestLoginEmailStartFailedDeliveryReleasesCooldown covers the reserve→rollback
-// path on the login door: a send that reserves the window but fails to deliver must
-// release it, so the immediate retry is admitted instead of 429'd — a transient SMTP
-// blip must not lock a returning player out for the whole window. The failure is
-// also not audited as a send.
 func TestLoginEmailStartFailedDeliveryReleasesCooldown(t *testing.T) {
 	repo := newFakeRepo()
 	repo.settings[LocalAuthEnabledKey] = []byte("true")
@@ -725,13 +619,6 @@ func TestLoginEmailStartFailedDeliveryReleasesCooldown(t *testing.T) {
 	}
 }
 
-// A disabled or soft-deleted account is DEAD at every door: the pre-session
-// resolvers refuse it (uniformly, so the door stays no-oracle), a session that
-// was live a moment ago stops authenticating, DeleteUser severs the account's
-// passkeys and Minecraft links, and the bind door refuses to reuse the retired
-// identity instead of minting a session for it. Audit #33 found the opposite
-// live: a deleted user re-logged-in through the email door and GET /me answered
-// 200 — deletion and the disable lockout were both bypassable by logging in again.
 func TestDeadAccountsCannotLogInOrKeepSessions(t *testing.T) {
 	ctx := context.Background()
 	now := time.Unix(1_700_000_000, 0)
@@ -804,8 +691,7 @@ func TestDeadAccountsCannotLogInOrKeepSessions(t *testing.T) {
 		t.Error("DeleteUser left the passkey: a login credential outlives the account")
 	}
 
-	// The bind door refuses to reuse the retired identity (a stale link that
-	// predates the fix, or a username squatted by the deleted row).
+	// Model a stale link pointing to a retired account.
 	repo.links[uuid] = "u-dead"
 	repo.linkCodes["CODE1234"] = fakeLinkCode{mcUUID: uuid, authSource: "mojang", expiresAt: now.Add(time.Hour)}
 	if _, _, _, err := repo.RedeemPlayerBindCode(ctx, "u-new", "CODE1234", now); !errors.Is(err, ErrPlayerAccountRetired) {
@@ -816,10 +702,6 @@ func TestDeadAccountsCannotLogInOrKeepSessions(t *testing.T) {
 	}
 }
 
-// TestPublicMailDoorsWithoutRelay: with no [smtp] relay both public doors that mail
-// a code answer 503 mail_unavailable before the address is looked up, so a known
-// address, a staff address and an unknown one get the same answer, no code or
-// op-login request is minted, and no cooldown is spent for when a relay is added.
 func TestPublicMailDoorsWithoutRelay(t *testing.T) {
 	api, repo, _ := seedLoginEmailAPI(t)
 	repo.staff["op"] = &StaffUser{ID: "a1", Username: "op", Email: "op@example.net", Role: "admin", EmailVerified: true}

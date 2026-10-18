@@ -5,15 +5,8 @@ import { FleetGrid } from "@/components/FleetGrid";
 import { webglAvailable } from "@/lib/webgl";
 import type { MyServerView } from "@/lib/types";
 
-// VoxelFleet renders the fleet as a grid of voxels, one per server, colored by
-// lifecycle phase — the 3D view of the same state machine the list shows (spec
-// §22 phases). Design constraints (panel/DESIGN.md §"where 3D earns its place"):
-//   • exactly ONE WebGLRenderer for the whole app surface;
-//   • the render loop is paused while the tab is hidden (no background GPU burn);
-//   • everything is disposed on unmount (no context leak on route changes).
-// Raw three.js (not react-three-fiber) keeps the dependency/build surface minimal.
-// Without WebGL (acceleration off, some VMs and remote desktops) the renderer
-// cannot be created at all, so the card falls back to the flat FleetGrid.
+// Use one WebGL renderer, pause while hidden, and dispose resources on unmount.
+// Without WebGL the renderer cannot be created, so the card falls back to the flat FleetGrid.
 
 interface Props {
   servers: MyServerView[];
@@ -75,7 +68,7 @@ function VoxelScene({ servers, onUnsupported }: Props & { onUnsupported: () => v
     scene.add(group);
 
     const geometry = new THREE.BoxGeometry(0.9, 0.9, 0.9);
-    // Tracks the live meshes so we can dispose materials and rebuild on change.
+    // Tracks the live meshes so materials can be disposed and rebuilt on change.
     let voxels: { mesh: THREE.Mesh; pulsing: boolean; base: number }[] = [];
 
     function clearVoxels() {
@@ -116,8 +109,7 @@ function VoxelScene({ servers, onUnsupported }: Props & { onUnsupported: () => v
 
     build(serversRef.current);
 
-    // Rebuild only when the *shape* (names + phases) of the fleet changes, polled
-    // cheaply against a signature so we avoid teardown churn on identical data.
+    // Rebuild only when the shape (names and phases) of the fleet changes; a cheap signature check avoids teardown churn on identical data.
     let signature = sig(serversRef.current);
     const rebuildTimer = window.setInterval(() => {
       const next = sig(serversRef.current);
@@ -186,9 +178,7 @@ function VoxelScene({ servers, onUnsupported }: Props & { onUnsupported: () => v
   return <div ref={mountRef} className="h-full w-full relative" />;
 }
 
-/** sig is a cheap fingerprint of the fleet's renderable shape (order-independent
- *  per index): name+phase pairs. Player counts don't change the voxels, so they
- *  don't trigger a rebuild. */
+// Player counts do not affect voxel shape; fingerprint name and phase only.
 function sig(servers: MyServerView[]): string {
   return servers.map((s) => `${s.name}:${s.phase}`).join("|");
 }

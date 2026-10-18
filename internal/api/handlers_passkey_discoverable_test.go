@@ -11,30 +11,7 @@ import (
 	"time"
 )
 
-// Pre-session DISCOVERABLE ("usernameless") passkey login tests (spec §14, task #40 — the
-// truly from-zero console.<root_domain> door). These drive the two Public routes against the
-// fakeRepo's non-user-keyed challenge store and a fake PasskeyVerifier, so what they PROVE is
-// the handler + login state machine (opaque-handle stash → consume → userHandle-resolve →
-// session mint), NOT the pgrepo SQL nor the cryptographic assertion verification (the latter is
-// the parity subject of internal/passkey/verifier_test.go's TestDiscoverableLoginRoundTrip).
-// The load-bearing properties, in flow order:
-//
-//   - No identifier crosses the wire: begin has no request body and finish carries only the
-//     opaque login_id + the assertion. The account is revealed solely by the userHandle the
-//     verifier surfaces, resolved server-side via UserByID — never anything the client names.
-//   - Session-data round-trip: the stashed SessionData reaches FinishDiscoverableLogin only via
-//     store-stash → consume (the finish body has no session data), so it is never client-echoed.
-//   - Fail-closed anti-enumeration on finish: a bogus/expired/consumed handle, a failed
-//     assertion, AND a userHandle that resolves to no account all collapse to ONE
-//     passkey_login_invalid envelope — finish is never an existence/state oracle.
-//   - Volumetric bound: begin has no per-caller identity to rate-limit (that is delegated to the
-//     edge), so the server-side guard is the hard global cap → 429 too_many_challenges.
-
-// seedDiscoverableLoginAPI wires the public from-zero door: local sessions enabled, a single
-// verified player "player" (id u1) with one bound passkey, and a verifier primed with fixed
-// options, a verified assertion, and a discoverableUserHandle of "u1" — so the default resolve
-// path surfaces that account exactly as a real resident credential's userHandle would. Both
-// routes are Public (no External principal), proving they are truly pre-session.
+// seedDiscoverableLoginAPI supplies a resident-credential userHandle resolving to the seeded account.
 func seedDiscoverableLoginAPI(t *testing.T) (*API, *fakeRepo, *fakePasskeyVerifier) {
 	t.Helper()
 	repo := newFakeRepo()
@@ -56,21 +33,10 @@ func seedDiscoverableLoginAPI(t *testing.T) (*API, *fakeRepo, *fakePasskeyVerifi
 	return api, repo, v
 }
 
-// TestPasskeyDiscoverableLoginVertical walks the whole from-zero slice across the external face:
-// begin stashes one challenge under an opaque login_id and returns the assertion options with
-// that handle merged in; finish consumes the handle, verifies the assertion against the
-// SERVER-STASHED session data, resolves the account from the authenticator-revealed userHandle
-// (NOT from anything typed), and mints the same host-only felis_session as the other doors. The
-// decisive assertion is the session-data round-trip: the finish body carries only login_id +
-// assertion, so the only path for the stashed blob into FinishDiscoverableLogin is store-stash →
-// consume — the challenge is never client-echoed.
 func TestPasskeyDiscoverableLoginVertical(t *testing.T) {
 	api, repo, v := seedDiscoverableLoginAPI(t)
 	eh := api.ExternalHandler()
 
-	// 1) begin: usernameless — no request body by design (the caller supplies no identifier),
-	// only the JSON Content-Type CSRF guard. The response is one {"publicKey":{...},"login_id":
-	// "..."} document, and exactly one challenge is stashed, keyed by the returned handle.
 	w := do(eh, "POST", "/api/v1/auth/passkey/login/discoverable/begin", `{}`, jsonHeader)
 	if w.Code != http.StatusOK {
 		t.Fatalf("begin: code = %d, want 200 (%s)", w.Code, w.Body.String())
@@ -90,8 +56,6 @@ func TestPasskeyDiscoverableLoginVertical(t *testing.T) {
 		t.Errorf("the stashed challenge must be keyed by the returned login_id %q", loginID)
 	}
 
-	// 2) finish: the body carries ONLY the login_id and the assertion — no identifier and no
-	// session data. The account is revealed by the userHandle the verifier surfaces (u1).
 	w = do(eh, "POST", "/api/v1/auth/passkey/login/discoverable/finish",
 		`{"login_id":"`+loginID+`","assertion":{"id":"cred-1","type":"public-key"}}`, jsonHeader)
 	if w.Code != http.StatusOK {
@@ -122,7 +86,7 @@ func TestPasskeyDiscoverableLoginVertical(t *testing.T) {
 	if want := frozenNow.Add(sessionTTL); !s.expiresAt.Equal(want) {
 		t.Errorf("session expiresAt = %v, want now+sessionTTL = %v", s.expiresAt, want)
 	}
-	// Audited once, by the RESOLVED account's username (there is no principal yet); begin is silent.
+
 	if n := len(repo.audits); n != 1 {
 		t.Fatalf("want exactly 1 audit (passkey_login_discoverable), got %d: %+v", n, repo.audits)
 	}
@@ -137,10 +101,6 @@ func TestPasskeyDiscoverableLoginVertical(t *testing.T) {
 	}
 }
 
-// TestPasskeyDiscoverableLoginBeginCapped pins the store-wide bound: with the store at its hard
-// cap, begin answers 429 too_many_challenges and stashes nothing. A reap alone cannot bound a
-// burst, since freshly-inserted rows are not yet expired; the per-source bound below keeps one
-// network from reaching this cap.
 func TestPasskeyDiscoverableLoginBeginCapped(t *testing.T) {
 	api, repo, _ := seedDiscoverableLoginAPI(t)
 	repo.discoverableFull = true
@@ -155,10 +115,6 @@ func TestPasskeyDiscoverableLoginBeginCapped(t *testing.T) {
 	}
 }
 
-// TestPasskeyDiscoverableLoginBeginPerSourceCap: the usernameless begin has no account to key
-// on, so the store holds each network (IPv4 address, IPv6 /48) to 32 live challenges. The
-// begins come from 33 different /64s inside one /48, so the per-/64 auth-door bucket never
-// trips and only the /48 bound refuses the last; another network still begins.
 func TestPasskeyDiscoverableLoginBeginPerSourceCap(t *testing.T) {
 	api, repo, _ := seedDiscoverableLoginAPI(t)
 	api.ClientIPHeader = "CF-Connecting-IP"
@@ -184,9 +140,6 @@ func TestPasskeyDiscoverableLoginBeginPerSourceCap(t *testing.T) {
 	}
 }
 
-// TestPasskeyDiscoverableLoginBeginVerifierError pins the verifier-fault path: a
-// BeginDiscoverableLogin failure is a server-side fault, answered passkey_login_failed, and
-// stashes no challenge (there is nothing to stash — the ceremony never started).
 func TestPasskeyDiscoverableLoginBeginVerifierError(t *testing.T) {
 	api, repo, v := seedDiscoverableLoginAPI(t)
 	v.beginLoginErr = errors.New("cannot begin discoverable")
@@ -201,10 +154,6 @@ func TestPasskeyDiscoverableLoginBeginVerifierError(t *testing.T) {
 	}
 }
 
-// TestPasskeyDiscoverableLoginGates covers the shared front doors of both halves: the
-// fail-closed local-auth toggle, graceful degradation when no verifier is wired, the CSRF
-// Content-Type guard (these are Public, credential-minting routes), and the finish input gates
-// that must reject before any consume or resolve.
 func TestPasskeyDiscoverableLoginGates(t *testing.T) {
 	const beginPath = "/api/v1/auth/passkey/login/discoverable/begin"
 	const finishPath = "/api/v1/auth/passkey/login/discoverable/finish"
@@ -266,12 +215,6 @@ func TestPasskeyDiscoverableLoginGates(t *testing.T) {
 	})
 }
 
-// TestPasskeyDiscoverableLoginFinishRejections is the redeem-side failure matrix and the anchor
-// for from-zero anti-enumeration: a bogus handle, an expired challenge, an assertion that fails
-// verification, AND a userHandle that resolves to no account must ALL answer the byte-identical
-// passkey_login_invalid envelope (code AND message) and mint no session. The last case is the
-// one unique to this door — the account is chosen by the authenticator, so an unresolvable
-// handle must fail exactly like a bad signature, never leaking that the handle was well-formed.
 func TestPasskeyDiscoverableLoginFinishRejections(t *testing.T) {
 	const finishPath = "/api/v1/auth/passkey/login/discoverable/finish"
 	finish := func(eh http.Handler, loginID string) *httptest.ResponseRecorder {
@@ -334,8 +277,6 @@ func TestPasskeyDiscoverableLoginFinishRejections(t *testing.T) {
 	}
 }
 
-// TestPasskeyDiscoverableLoginFaceSeparation enforces that both halves are web-only: the
-// internal (service-token) face must 404 them, never serve them.
 func TestPasskeyDiscoverableLoginFaceSeparation(t *testing.T) {
 	api, _, _ := seedDiscoverableLoginAPI(t)
 	ih := api.InternalHandler()
@@ -362,11 +303,6 @@ func beginDiscoverableLogin(t *testing.T, eh http.Handler) string {
 	return loginID
 }
 
-// TestPasskeyDiscoverableLoginAdvancesSignCount proves the success half of task #40 item 5: a
-// verified from-zero assertion advances the stored signature counter to the value the
-// authenticator reported and stamps last_used_at. Without this the stored counter would sit at
-// the enrollment-time 0 forever, leaving the clone check below no moving baseline to judge a
-// later regression against.
 func TestPasskeyDiscoverableLoginAdvancesSignCount(t *testing.T) {
 	api, repo, v := seedDiscoverableLoginAPI(t)
 	// A clean (non-clone) assertion reporting an advanced counter.
@@ -388,12 +324,6 @@ func TestPasskeyDiscoverableLoginAdvancesSignCount(t *testing.T) {
 	}
 }
 
-// TestPasskeyDiscoverableLoginCloneRejected proves the fail-closed half of task #40 item 5: a
-// verified assertion carrying a CloneWarning (signature-counter regression — a possible cloned
-// authenticator) is refused. The refusal (1) collapses into the same passkey_login_invalid
-// envelope as any other finish failure so a prober gets no clone oracle, (2) mints NO session,
-// (3) does NOT advance or stamp the stored credential, and (4) is audited distinctly for the
-// operator under the resolved account.
 func TestPasskeyDiscoverableLoginCloneRejected(t *testing.T) {
 	api, repo, v := seedDiscoverableLoginAPI(t)
 	v.assertion = VerifiedAssertion{CredentialID: "cred-1", UserVerified: true, SignCount: 3, CloneWarning: true}
@@ -416,7 +346,7 @@ func TestPasskeyDiscoverableLoginCloneRejected(t *testing.T) {
 	if got := repo.passkeyCreds["row1"]; got.SignCount != 0 || got.LastUsedAt != nil {
 		t.Errorf("clone refusal must not advance/stamp the credential, got SignCount=%d LastUsedAt=%v", got.SignCount, got.LastUsedAt)
 	}
-	// Audited distinctly, under the resolved account, so the operator sees the clone signal.
+
 	if n := len(repo.audits); n != 1 || repo.audits[0].Action != "auth.passkey_clone_rejected" {
 		t.Fatalf("want exactly 1 auth.passkey_clone_rejected audit, got %+v", repo.audits)
 	}

@@ -12,17 +12,8 @@ import (
 	"time"
 )
 
-// cmdStageWorld is the first step of a live restore point (internal/api livebackup.go).
-// While felis-api holds the running server's saving off, the backup Job's init container
-// copies the world volume, mounted read-only at --from, into a scratch directory at --to;
-// the moment it exits felis-api turns saving back on, and the Job's main container
-// archives the copy at leisure. The game pauses its writes only for the copy, never for
-// the compression, the checksum or the read-back.
-//
-// It copies each file to the end it reaches, so a log the server keeps appending to
-// cannot fail the copy the way it fails a tar of the live volume. A file is cloned
-// instead of copied (reflink, FICLONE) where the filesystem allows it, which on XFS or
-// Btrfs makes the copy near-instant whatever the world's size.
+// Copy the world while saving is disabled; resume saving when the staging container exits.
+// Compression and verification run after saving resumes; copy growing files through their observed end.
 func cmdStageWorld(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("stage-world", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -46,17 +37,12 @@ type stageStats struct {
 	bytes         int64
 }
 
-// stageWorld copies the tree at from into to, which must exist and be empty: regular
-// files, directories and symlinks, with their modes and modification times. Sockets,
-// devices and pipes have no place in a world and are skipped. It refuses up front when
-// to has less free space than from holds.
+// Require an empty destination with enough space; copy regular files, directories, and symlinks only.
 func stageWorld(from, to string) (stageStats, error) {
 	return copyTree(from, to, copyOptions{})
 }
 
-// copyOptions widen copyTree for moving a whole volume (felis ha copy-volume): owner
-// keeps each entry's owner and exact mode, which needs root; replace empties to first,
-// so a copy that stopped half-way can be done again.
+// Owner preservation needs root; replace empties the destination so interrupted copies can restart.
 type copyOptions struct {
 	owner, replace bool
 }

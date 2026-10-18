@@ -9,27 +9,8 @@ import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
 
-/**
- * LegacyForwarding keeps the Felis-Legacy fork's per-server legacy-forwarding list, the
- * system property {@value #PROPERTY}, in step with felis-api's server list (#15). A
- * server whose CR carries {@code felis.lolicon.best/forwarding=legacy} joins the list,
- * and leaves it when the label goes. The value the proxy was started with (bootstrap's
- * {@code -D}, {@code legacy18} by default) is a floor that always stays in, so an
- * install upgraded without labelling its CRs forwards exactly as before.
- *
- * <p>The fork reads the property itself; this class only rewrites it. What a rewrite
- * achieves depends on the proxy build, which {@link #detect(ClassLoader)} tells apart:
- * <ul>
- *   <li>stock Velocity has one proxy-wide mode and never reads the property, so a
- *       marked server keeps modern forwarding;</li>
- *   <li>a fork carrying patch 0003 alone parses the property once, when the first
- *       player reaches a backend. The first rewrite runs inside ProxyInitializeEvent,
- *       which Velocity waits for before it accepts a connection, so that one lands;
- *       a later change needs a proxy restart;</li>
- *   <li>a fork carrying 0004 as well re-reads the property on every backend
- *       connection, so a change applies from the next one.</li>
- * </ul>
- */
+// Merge labelled legacy servers with the startup list, which remains a compatibility floor.
+// Stock Velocity ignores this property; patch 0003 reads at startup and 0004 rereads per connection.
 final class LegacyForwarding {
     static final String PROPERTY = "felis.legacy-forwarding.servers";
     static final String CONNECTION_CLASS = "com.velocitypowered.proxy.connection.backend.VelocityServerConnection";
@@ -86,18 +67,12 @@ final class LegacyForwarding {
         this.proxy = proxy;
     }
 
-    /**
-     * accepting marks the end of ProxyInitializeEvent: from here on a fork that reads
-     * the list once may already have read it.
-     */
+    /** accepting marks the end of ProxyInitializeEvent, after which a fork that reads the list once may already have read it. */
     synchronized void accepting() {
         accepting = true;
     }
 
-    /**
-     * apply rewrites the property for a server list felis-api answered with (or the
-     * saved one restored at startup), and returns what changed, or null when nothing did.
-     */
+    /** apply rewrites the property for a server list felis-api answered with (or the saved one restored at startup) and returns what changed, or null when nothing did. */
     synchronized Update apply(Collection<ServerView> servers) {
         Set<String> next = new TreeSet<>(floor);
         for (ServerView v : servers) {
@@ -146,11 +121,7 @@ final class LegacyForwarding {
         return detect(loader, CONNECTION_CLASS);
     }
 
-    /**
-     * detect looks for the methods the fork patches add to the backend connection class.
-     * The class is loaded without being initialized: initializing it would run a 0003-only
-     * fork's static parse of the property before {@link #apply} had rewritten it.
-     */
+    // Inspect classes without initialization to avoid parsing legacy properties before apply updates them.
     static Proxy detect(ClassLoader loader, String className) {
         boolean perServer = false;
         boolean live = false;

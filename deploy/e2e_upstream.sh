@@ -1,27 +1,11 @@
 #!/bin/bash
-# Whether a failed installer run in the e2e workflow stopped on an upstream download that
-# was refused or dropped, which says nothing about the commit under test. Each install step
-# hands its log and the installer's status here when the installer fails:
-#
-#   sudo ... bash deploy/bootstrap.sh 2>&1 | tee install.log || bash deploy/e2e_upstream.sh install.log $?
-#
-# It reads the installer's last ERR-trap line ("bootstrap failed near line N (exit E)") and
-# the line just before it. When that line is curl's own error for the same status, and the
-# error is one a mirror or GitHub answers with on a bad minute (a connection refused, reset
-# or timed out, a 403, 408, 429 or 5xx), it leaves a warning and E2E_UPSTREAM_SKIP=1 in
-# $GITHUB_ENV and exits 0: the job's later steps are gated on that variable, so the job ends
-# green with the warning on the run. Anything else exits with the installer's status. A 404
-# is a URL or a version the installer names, which a commit can break, so it fails.
-#
-# deploy/e2e_upstream_test.sh holds its checks, against bootstrap.sh's own trap message.
+# Skip classified transient upstream failures only; 404 and all unclassified installer errors still fail.
 set -euo pipefail
 
 log="${1:?usage: e2e_upstream.sh LOG STATUS}"
 status="${2:?usage: e2e_upstream.sh LOG STATUS}"
 
-# The last run of trap lines and the line before it. bash may fire the trap again for each
-# function the failure unwinds through, and the EXIT cleanup can print after it. The log
-# keeps the installer's colour codes, so nothing is anchored on the left.
+# Match the final nested error-trap chain and preceding curl error, allowing color codes and later cleanup output.
 code="" before=""
 { read -r code && IFS= read -r before; } < <(awk '
   /bootstrap failed near line [0-9]+ \(exit [0-9]+\)$/ {

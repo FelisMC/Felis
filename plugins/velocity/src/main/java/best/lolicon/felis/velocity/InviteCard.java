@@ -7,16 +7,6 @@ import net.kyori.adventure.text.format.NamedTextColor;
 
 import java.util.List;
 
-/**
- * InviteCard builds the chat prompt an invited player sees: one line naming who wants
- * them where, then a green Accept and a red Deny that are real click-to-run commands,
- * so answering is a click rather than a command they have to retype.
- *
- * <p>It is a pure function of (inviter, server, language, ttl) and holds no Velocity
- * types, which is the point: the buttons are the whole feature, and this way
- * {@link InviteCardTest} can assert their colour and their click command without a live
- * proxy. Sending is left to the caller.
- */
 final class InviteCard {
 
     static final String ACCEPT_COMMAND = "/invite accept";
@@ -25,22 +15,14 @@ final class InviteCard {
     private InviteCard() {
     }
 
-    /**
-     * lines renders the prompt in the INVITEE's language — they are the one being asked.
-     * The two buttons carry a hover tip as well as the click: a player who does not know
-     * chat can be clicked finds out by pointing at it, and one who has clicks disabled at
-     * least sees the command to type.
-     */
+    /** lines renders the prompt in the invitee's language. The buttons carry a hover tip as well as the click, so a player who has clicks disabled still sees the command to type. */
     static List<Component> lines(String inviterName, String server, boolean zh, long ttlSeconds) {
         Component headline = Component.text(
                 zh ? inviterName + " 邀请你前往「" + server + "」服务器"
                    : inviterName + " invites you to « " + server + " »",
                 NamedTextColor.AQUA);
 
-        // Each button names the server this card is advertising. Chat scrollback keeps old
-        // cards clickable forever, and a newer invite replaces the pending one, so a bare
-        // "/invite accept" clicked on last week's card would honour today's invite and send
-        // the player somewhere they never agreed to. Naming it makes the click checkable.
+        // Include the server in each button command so old chat cards cannot accept unrelated current invites.
         String accept = ACCEPT_COMMAND + " " + server;
         String deny = DENY_COMMAND + " " + server;
         Component buttons = Component.text("  ")

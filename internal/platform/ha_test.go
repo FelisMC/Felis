@@ -65,10 +65,6 @@ func besidePostgres(spec corev1.PodSpec) bool {
 	return term.TopologyKey == "kubernetes.io/hostname" && term.LabelSelector.MatchLabels[LabelComponent] == ComponentPostgres
 }
 
-// TestControllerHARendersAMovableControlPlane pins the HA bundle: every control-plane
-// workload may run on any controller and leaves a dead one quickly, the ones holding
-// volumes run beside PostgreSQL, and each volume is the replicated copy on the Longhorn
-// class, the database's included.
 func TestControllerHARendersAMovableControlPlane(t *testing.T) {
 	p := haParams()
 	if err := p.Validate(); err != nil {
@@ -148,9 +144,6 @@ func TestControllerHARendersAMovableControlPlane(t *testing.T) {
 	}
 }
 
-// TestSingleControllerStaysPinned pins that without HA nothing moves: one controller's
-// identity, no quick eviction or affinity, the original volumes, the database on its
-// host directory.
 func TestSingleControllerStaysPinned(t *testing.T) {
 	p := haParams()
 	p.ControllerHA = false

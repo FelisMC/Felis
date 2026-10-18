@@ -28,9 +28,6 @@ func patchSurvival(api *API, body string) *httptest.ResponseRecorder {
 	return do(api.ExternalHandler(), "PATCH", "/api/v1/servers/survival", body, nil)
 }
 
-// TestPatchServerDisplayName covers the simplest spec mutation end-to-end: a
-// cosmetic field is patched, the merge reaches the cluster, and the admin is
-// audited. It also pins that a displayName patch needs no image admission.
 func TestPatchServerDisplayName(t *testing.T) {
 	api, repo, cl, _ := newPatchAPI()
 
@@ -55,8 +52,6 @@ func TestPatchServerDisplayName(t *testing.T) {
 	}
 }
 
-// TestPatchServerAutostartPolicy confirms a valid policy is parsed onto the CRD
-// and the lifecycle view reflects it (the fake applies the merge).
 func TestPatchServerAutostartPolicy(t *testing.T) {
 	api, _, cl, _ := newPatchAPI()
 
@@ -73,8 +68,6 @@ func TestPatchServerAutostartPolicy(t *testing.T) {
 	}
 }
 
-// TestPatchServerImageReAdmitted proves a new image is re-checked against the
-// whitelist before it reaches the CRD — admission is the only legal image source.
 func TestPatchServerImageReAdmitted(t *testing.T) {
 	api, _, cl, _ := newPatchAPI()
 
@@ -87,8 +80,6 @@ func TestPatchServerImageReAdmitted(t *testing.T) {
 	}
 }
 
-// TestPatchServerMemoryReDerives confirms a memory change re-derives the §22
-// ceiling and the JVM heap exactly as create does — from the FINAL limit.
 func TestPatchServerMemoryReDerives(t *testing.T) {
 	api, _, cl, _ := newPatchAPI()
 
@@ -109,8 +100,6 @@ func TestPatchServerMemoryReDerives(t *testing.T) {
 	}
 }
 
-// TestPatchServerMemoryOverride confirms the resources block widens the envelope
-// and the heap derives from the OVERRIDDEN ceiling, mirroring create.
 func TestPatchServerMemoryOverride(t *testing.T) {
 	api, _, cl, _ := newPatchAPI()
 
@@ -130,10 +119,6 @@ func TestPatchServerMemoryOverride(t *testing.T) {
 	}
 }
 
-// TestPatchServerPreservesStorageCache pins the storage dimension of the quota
-// aggregate: a resources patch cannot change storage, so the cached storage
-// must survive it — passing 0 would silently zero the owner's aggregate (the
-// cached columns are QuotaCheck's only input) from that patch onward.
 func TestPatchServerPreservesStorageCache(t *testing.T) {
 	api, repo, _, _ := newPatchAPI()
 	repo.byName["survival"].OwnerID = "u1"
@@ -150,9 +135,6 @@ func TestPatchServerPreservesStorageCache(t *testing.T) {
 	}
 }
 
-// TestPatchServerRejections is the validation matrix: each malformed request is
-// rejected with the right status and stable error code, and (critically) NOTHING
-// reaches the cluster on a rejection — the analog of create's "no CRD written".
 func TestPatchServerRejections(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -234,9 +216,6 @@ func TestPatchServerRejections(t *testing.T) {
 			wantCode: http.StatusBadRequest, wantErr: "bad_request",
 		},
 		{
-			// A well-formed patch against a missing server reaches the cluster, which
-			// returns ErrNotFound -> 404. The fake records nothing on NotFound, so the
-			// "no spec patched" invariant still holds.
 			name:     "server not found",
 			target:   "/api/v1/servers/ghost",
 			body:     `{"displayName":"x"}`,
@@ -267,9 +246,6 @@ func TestPatchServerRejections(t *testing.T) {
 	}
 }
 
-// TestPatchServerImageWithoutBuilderIs503 proves the Builder requirement is
-// scoped to IMAGE patches only: a non-image patch succeeds without a Builder,
-// while an image patch fails 503 before any spec is written.
 func TestPatchServerImageWithoutBuilderIs503(t *testing.T) {
 	api, _, cl, _ := newPatchAPI()
 	api.Builder = nil
@@ -288,9 +264,6 @@ func TestPatchServerImageWithoutBuilderIs503(t *testing.T) {
 	}
 }
 
-// TestPatchServerIdleStop covers the idle auto-stop knob: 0 turns it off, a
-// value inside the range is carried to the cluster, and one outside is refused
-// before anything is written.
 func TestPatchServerIdleStop(t *testing.T) {
 	for _, tc := range []struct {
 		body     string
@@ -348,8 +321,6 @@ func wantQuantity(t *testing.T, what string, list corev1.ResourceList, key corev
 	}
 }
 
-// The edit dialog sends only the field the admin changed. Each patch lays that one
-// field over the server's pod block and keeps the rest.
 func TestPatchServerEditsOneResource(t *testing.T) {
 	t.Run("cpu only keeps the memory and the heap", func(t *testing.T) {
 		api, repo, cl, _ := newPatchAPI()
@@ -431,8 +402,6 @@ func TestPatchServerEditsOneResource(t *testing.T) {
 	}
 }
 
-// Clearing the display name in the dialog sends an empty one; the server then
-// goes by its name again. Blank space counts as empty.
 func TestPatchServerClearsDisplayName(t *testing.T) {
 	api, _, cl, _ := newPatchAPI()
 	cl.byName["survival"].DisplayName = "Survival Realm"
@@ -447,10 +416,6 @@ func TestPatchServerClearsDisplayName(t *testing.T) {
 	}
 }
 
-// An owner over a cap an admin lowered (quota set below what they already use)
-// must still be brought back under it: only growth is held to the caps. Before,
-// every resource patch ran the quota check, so shrinking a server of an over-cap
-// owner got the same 403 as growing it.
 func TestPatchServerOverQuotaMayShrink(t *testing.T) {
 	api, repo, cl, _ := newPatchAPI()
 	seedResources(cl)
@@ -487,11 +452,6 @@ func TestPatchServerOverQuotaMayShrink(t *testing.T) {
 	}
 }
 
-// A resize is written to the resource cache, the figures the owner's quota sums
-// read, before the cluster sees it. The write used to come after the patch with its
-// error dropped, so a failed write left the owner's new size uncounted. When the
-// cluster then refuses the patch, the cache is put back: to what the cluster
-// reports, or, when the server is gone from it, to what the cache held.
 func TestPatchServerResizeCache(t *testing.T) {
 	const body = `{"resources":{"cpu":"2"}}`
 	before := ResourceSpec{CPUMilli: 750, MemoryMB: 2048, StorageMB: 5120}

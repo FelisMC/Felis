@@ -48,9 +48,7 @@ const PAGE_SIZE = 10;
 const SEARCH_DEBOUNCE_MS = 300;
 const DEFAULT_CONTEXT_LIMIT = 1024 * 1024 * 1024;
 
-// The linked build's outcome as shown in a row's expanded details. Colors mirror
-// the admin build page; the labels are player-facing, so they come from this
-// page's namespace instead of the raw status string.
+// The linked build's outcome as shown in a row's expanded details. Colours mirror the admin build page; the labels are player-facing, so they come from this page's namespace.
 const BUILD_STATUS_STYLE: Record<BuildStatus, string> = {
   pending: "bg-amber-500/10 text-amber-500 border-amber-500/20 animate-pulse",
   building: "bg-blue-500/10 text-blue-500 border-blue-500/20 animate-pulse",
@@ -92,9 +90,7 @@ export function MySubmissionsPage() {
   const [submitStep, setSubmitStep] = useState<"create" | "upload" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ sent: number; total: number } | null>(null);
-  // A submission whose upload stopped (a failure, or Pause): submitting again
-  // sends to it, carrying on from its staged bytes when the file is the same,
-  // instead of creating a second pending submission.
+  // Reuse incomplete submissions and matching staged bytes on upload retry.
   const [pending, setPending] = useState<{ id: string; name: string; file: File; sent: number } | null>(null);
   const sentRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
@@ -139,9 +135,7 @@ export function MySubmissionsPage() {
   const { data, error: fetchError, loading, reload } = useAsync(listMine, [listMine], { keepPrevious: true });
   const submissions = useMemo<Submission[]>(() => data?.submissions ?? [], [data]);
   const matching = data?.total ?? 0;
-  // A review lands whenever an admin gets to it and an approved pack builds on
-  // its own, so the list keeps reading: every few seconds while a shown build
-  // is still under way, at the slow pace otherwise.
+  // Poll faster while a visible build is active and slower while awaiting review.
   const building = submissions.some((s) => s.build_status === "pending" || s.build_status === "building");
   usePolling(reload, building ? STATUS_POLL_FAST_MS : STATUS_POLL_SLOW_MS);
 

@@ -14,8 +14,7 @@ import (
 
 const pinnedDigest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 
-// fakePinner pins every unpinned ref to pinnedDigest, or fails with err. A ref
-// that already names a digest comes back as is, like imagepin.Resolver.
+// fakePinner preserves already-pinned refs and resolves other refs to pinnedDigest unless err is set.
 type fakePinner struct {
 	err  error
 	seen []string
@@ -32,8 +31,6 @@ func (f *fakePinner) Pin(_ context.Context, ref string) (string, error) {
 	return ref + "@" + pinnedDigest, nil
 }
 
-// TestCreateServerStoresPinnedImage: the spec a server is created with names the
-// digest its tag resolved to, so a later push over the tag cannot move it.
 func TestCreateServerStoresPinnedImage(t *testing.T) {
 	api, _, cl, _ := newCreateAPI()
 	pin := &fakePinner{}
@@ -51,9 +48,6 @@ func TestCreateServerStoresPinnedImage(t *testing.T) {
 	}
 }
 
-// TestCreateServerPinErrors: a tag the registry does not hold is the caller's
-// problem (400); a registry that cannot answer is the platform's (503). Neither
-// creates anything.
 func TestCreateServerPinErrors(t *testing.T) {
 	for _, tc := range []struct {
 		err      error
@@ -76,8 +70,6 @@ func TestCreateServerPinErrors(t *testing.T) {
 	}
 }
 
-// TestPatchServerImageChangeUnconfirmed: moving a world to another build is
-// refused until the caller acknowledges the chunk upgrade cannot be undone.
 func TestPatchServerImageChangeUnconfirmed(t *testing.T) {
 	api, repo, cl, _ := newPatchAPI()
 	cl.byName["survival"].Image = "registry.felis.svc:5000/mc:0@" + pinnedDigest
@@ -95,8 +87,6 @@ func TestPatchServerImageChangeUnconfirmed(t *testing.T) {
 	}
 }
 
-// TestPatchServerImageConfirmedAudited: a confirmed change stores the pinned ref
-// and the audit row names both builds.
 func TestPatchServerImageConfirmedAudited(t *testing.T) {
 	api, repo, cl, _ := newPatchAPI()
 	from := "registry.felis.svc:5000/mc:0@" + pinnedDigest
@@ -123,8 +113,6 @@ func TestPatchServerImageConfirmedAudited(t *testing.T) {
 	}
 }
 
-// TestPatchServerImageSamePinIsNoChange: re-picking the tag a server runs, while
-// the tag still names the same build, changes nothing and needs no confirmation.
 func TestPatchServerImageSamePinIsNoChange(t *testing.T) {
 	api, repo, cl, _ := newPatchAPI()
 	cl.byName["survival"].Image = admittedImage + "@" + pinnedDigest
@@ -145,9 +133,6 @@ func TestPatchServerImageSamePinIsNoChange(t *testing.T) {
 	}
 }
 
-// TestPatchServerImageRestoresPinnedBuild: the exact build an earlier change
-// replaced is admitted by its tag and set as is, so a world restored from a
-// backup can go back to the build that wrote it.
 func TestPatchServerImageRestoresPinnedBuild(t *testing.T) {
 	api, _, cl, fb := newPatchAPI()
 	cl.byName["survival"].Image = admittedImage + "@" + pinnedDigest

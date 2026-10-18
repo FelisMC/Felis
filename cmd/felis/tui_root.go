@@ -12,23 +12,15 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// sizeable is implemented by screens that need to know the terminal area
-// available to them (after the root reserves space for the step rail). huh-based
-// screens forward this to form.WithWidth/WithHeight; custom screens use it to
-// avoid overflowing the frame.
+// Size screens after reserving the root step rail.
 type sizeable interface {
 	setSize(width, height int)
 }
 
-// arrowNavigable is implemented by screens that don't need ←/→ for their own
-// input (selects, summaries), so the root may repurpose those keys to walk back
-// through completed steps. Text-input screens omit it and keep the arrows for
-// cursor movement — that's the "don't fight the input fields" rule.
+// Text-input screens retain horizontal arrows for cursor movement.
 type arrowNavigable interface {
 	arrowNavOK() bool
 }
-
-// ---- Connection methods ----
 
 type connectMethod int
 
@@ -49,8 +41,6 @@ func connectMethodLabel(m connectMethod) string {
 	}
 }
 
-// ---- Messages: sub-model → root ----
-
 type preflightDoneMsg struct{}
 
 type ownerResultMsg struct {
@@ -63,9 +53,6 @@ type ownerResultMsg struct {
 	err           error
 }
 
-// connectResultMsg is emitted by every connection method (the chooser for
-// local, the edge model for Cloudflare, the reverse-proxy model for BYO). It is
-// the single, method-agnostic outcome the root advances on.
 type connectResultMsg struct {
 	method        connectMethod
 	panelHostname string
@@ -83,12 +70,7 @@ func goBack() tea.Cmd { return func() tea.Msg { return goBackMsg{} } }
 // connection chooser.
 type reconfigureConnectMsg struct{}
 
-// reconfigureStorageMsg is sent from the summary/status screen to re-enter the
-// storage chooser — the supported way to fix a mistyped S3 detail or switch
-// backends after install, without hand-editing felis.toml and the Secret.
 type reconfigureStorageMsg struct{}
-
-// ---- rootModel: top-level session ----
 
 type wizardStage int
 
@@ -98,17 +80,10 @@ const (
 	stageStorage
 	stageOwner
 	stageSummary
-	// stageMenu is the break-glass operation menu. It is appended last so the
-	// setup-flow rail indices (Preflight…Done) are unshifted; the rail is suppressed
-	// in break-glass mode, so this stage never reaches it.
+	// Append recovery stages without changing setup rail indices; hide the rail during recovery.
 	stageMenu
 )
 
-// setupRailSteps is the one progress rail shared by the whole first-run flow,
-// spanning both bubbletea programs: the host-bootstrap installer is rail cell 0,
-// and the post-install wizard owns cells 1–4. Defining it once keeps the two
-// programs' breadcrumbs identical so the rail reads as a single continuous bar
-// rather than restarting when the wizard takes over.
 var setupRailSteps = []string{"Bootstrap", "Preflight", "Connection", "Storage", "Panel login", "Done"}
 
 type rootModel struct {
@@ -121,10 +96,7 @@ type rootModel struct {
 	// (read-only), or -1 when the live screen is in front. Driven by ←/→.
 	reviewing int
 
-	// reconfiguringConnect is set while re-entering the connection chooser from the
-	// summary's "change connection" (or the re-run status screen). In that flow the
-	// storage backend is already configured, so completing the connection returns
-	// straight to the summary instead of forcing the operator back through storage.
+	// Connection reconfiguration skips storage and returns to the summary.
 	reconfiguringConnect bool
 
 	width  int
@@ -176,9 +148,7 @@ func newRootModel(ctx context.Context, store ownerStore, db config.DatabaseConfi
 			rm.stage = stageMenu
 			rm.screen = newMenuModel()
 		} else {
-			// Fresh machine: bootstrapping the first Owner is the only sensible op, so skip
-			// the menu and go straight to it (offering "add Operator" here would mint a
-			// staff account the login gate still rejects).
+			// Fresh machine: bootstrapping the first Owner is the only operation, so the menu is skipped; offering add Operator here would mint a staff account the login gate still rejects.
 			rm.stage = stageOwner
 			rm.screen = newOwnerModel(ctx, store, osUser, adminExists)
 		}
@@ -194,9 +164,7 @@ func (m *rootModel) Init() tea.Cmd {
 }
 
 func (m *rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// Rail navigation claims ←/→ before anything else sees them. While reviewing
-	// it owns every key so nothing leaks into the live screen underneath;
-	// otherwise it only takes ← (to enter review) and lets the rest fall through.
+	// Review owns input; otherwise claim only available horizontal arrows for navigation.
 	if key, ok := msg.(tea.KeyMsg); ok {
 		if handled, model, cmd := m.handleRailKey(key); handled {
 			return model, cmd
@@ -238,10 +206,7 @@ func (m *rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case haltResultMsg:
-		// Halt is terminal in break-glass: record the durable summary (so cmdBreakGlass
-		// can re-print it past the alt-screen teardown) and quit. A load/perform failure
-		// routes through the root's error path; an empty fleet or cancel leaves halted
-		// false, so the summary reports "no changes made".
+		// Recovery halts terminate the TUI after recording the durable summary.
 		if msg.err != nil {
 			m.err = msg.err
 			return m, tea.Quit
@@ -259,9 +224,7 @@ func (m *rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case backupResultMsg:
-		// Sync backup is terminal in break-glass, mirroring halt: record the durable
-		// summary and quit. A resolve/HTTP failure routes through the error path; an
-		// empty fleet or cancel leaves backedUp false.
+		// Record recovery-backup results before quitting; cancellation and an empty fleet make no change.
 		if msg.err != nil {
 			m.err = msg.err
 			return m, tea.Quit
@@ -359,9 +322,7 @@ func (m *rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// adopt installs a new screen, hands it the current size, and returns its Init.
-// Centralizing screen swaps here guarantees every screen is sized before its
-// first View — the fix for the rail being clipped off the top of the frame.
+// Size each replacement screen before its first render.
 func (m *rootModel) adopt(s tea.Model) (tea.Model, tea.Cmd) {
 	m.screen = s
 	m.reviewing = -1 // every stage change drops back to the live screen
@@ -369,10 +330,7 @@ func (m *rootModel) adopt(s tea.Model) (tea.Model, tea.Cmd) {
 	return m, s.Init()
 }
 
-// handleRailKey implements ←/→ navigation of the step rail. While reviewing a
-// completed step it owns every key (so nothing leaks into the live screen);
-// otherwise it claims only ← to enter review, and only when the active screen
-// doesn't need the arrows for its own text input.
+// Claim horizontal arrows only during review or when the active screen has no text input.
 func (m *rootModel) handleRailKey(k tea.KeyMsg) (bool, tea.Model, tea.Cmd) {
 	if m.reviewing >= 0 {
 		switch k.String() {
@@ -421,10 +379,7 @@ func (m *rootModel) displayStage() int {
 	return int(m.stage)
 }
 
-// reviewBody renders a read-only recap of an already-completed step. Steps in
-// this wizard commit as you finish them (the Owner account and its one-time
-// login link are created on submit), so review is deliberately look-only — there
-// is no re-editing a step you've passed.
+// Review is read-only because completed steps have already committed changes.
 func (m *rootModel) reviewBody(stage int) string {
 	var b strings.Builder
 	switch wizardStage(stage) {
@@ -458,10 +413,7 @@ func (m *rootModel) pushSize() {
 		return
 	}
 	if s, ok := m.screen.(sizeable); ok {
-		// Reserve one extra row: huh renders a hair taller than its WithHeight
-		// budget (the help line sits outside it). Clipping the rail off the top is
-		// the bug we're fixing, so we round the budget down — a blank bottom row is
-		// invisible, an overflowed top is not.
+		// Reserve one extra row for huh's rendering beyond its height budget.
 		avail := m.height - m.chromeHeight() - 1
 		if avail < 1 {
 			avail = 1

@@ -56,10 +56,6 @@ func (a *reclaimArchiver) Archive(_ context.Context, server, _ string) (backup.A
 func (a *reclaimArchiver) Restore(context.Context, backup.ArchiveRef, string) error { return nil }
 func (a *reclaimArchiver) Delete(context.Context, backup.ArchiveRef) error          { return nil }
 
-// TestReclaimRestartsReaperClock: a world reaped weeks ago and claimed by a new
-// owner is not reaped again on the next run, and when it does go idle the reap
-// archives the new owner's world instead of reusing the previous owner's
-// archive (data-durability-5).
 func TestReclaimRestartsReaperClock(t *testing.T) {
 	ctx := context.Background()
 	st := reaper.NewPGStore(db)
@@ -152,11 +148,6 @@ func TestReclaimRestartsReaperClock(t *testing.T) {
 	}
 }
 
-// TestManualBackupRationing pins the SQL behind data-durability-9: keep-N
-// pruning picks a server's oldest on-demand backups, capacity eviction takes
-// on-demand backups before copied reaper archives and never offers the only
-// copy of a reaped world, and the API's cooldown and store-size reads see the
-// rows the rest of the platform writes.
 func TestManualBackupRationing(t *testing.T) {
 	ctx := context.Background()
 	st := reaper.NewPGStore(db)
@@ -255,10 +246,6 @@ func TestManualBackupRationing(t *testing.T) {
 	}
 }
 
-// TestBackupReadBack pins the SQL behind data-durability-7/15/16: the digest a
-// backup is written with survives a later read-back, a corrupt archive is no
-// longer offered for reuse, restore or read-back but stays listed, and it is
-// the first a keep-N prune removes.
 func TestBackupReadBack(t *testing.T) {
 	ctx := context.Background()
 	st := reaper.NewPGStore(db)
@@ -398,10 +385,6 @@ func TestBackupReadBack(t *testing.T) {
 	}
 }
 
-// TestReleasedWorldKeepsItsSize: a world the reaper released keeps its resource
-// cache, so the next claim is gated on the server's size and counts it. Zeroed on
-// release, it let a user whose quota is spent claim the server anyway and then
-// counted it as nothing.
 func TestReleasedWorldKeepsItsSize(t *testing.T) {
 	ctx := context.Background()
 	st := reaper.NewPGStore(db)
@@ -455,8 +438,6 @@ func TestReleasedWorldKeepsItsSize(t *testing.T) {
 	}
 }
 
-// TestRestartClock: an idle server with no world to reclaim gets its clock and
-// warnings reset, and keeps its owner and resource cache (data-durability-19).
 func TestRestartClock(t *testing.T) {
 	ctx := context.Background()
 	st := reaper.NewPGStore(db)

@@ -3,9 +3,6 @@ import { humanizeError } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
 import type { FileOp, FileOpError } from "@/lib/types";
 
-/** opErrorText says why an op ended failed. The codes an extraction refuses an
- *  archive with name the entry at fault; the rest are the codes the file routes
- *  answer, worded as they are there. */
 export function opErrorText(op: FileOp["op"], e: FileOpError): string {
   const t = i18next.getFixedT(null, "files");
   const entry = e.entry ?? "";

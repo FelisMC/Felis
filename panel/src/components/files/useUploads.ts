@@ -7,9 +7,7 @@ import { joinPath, nameTooLong } from "./names";
 import { opErrorText } from "./opText";
 import { discardSession, forgetSession, sendInParts, watchOp } from "./sessionUpload";
 
-/** The most one upload request carries, mirrored from fileedit.MaxUploadBytes
- *  (413 above it). A larger file goes up in parts instead (sessionUpload.ts),
- *  with no ceiling but the room on the world volume. */
+// Keep the single-request limit aligned with fileedit.MaxUploadBytes; larger uploads use sessions.
 export const ONE_REQUEST_BYTES = 64 * 1024 * 1024;
 
 /** queued waits its turn; exists found a file already at its path and waits for
@@ -50,9 +48,7 @@ interface Options {
   free?: number | null;
 }
 
-// useUploads runs a queue of uploads into a server's world volume, one at a time:
-// each is a file Job that holds the world lock, so a second one sent alongside
-// would only be refused with 409 maintenance_in_progress.
+// Serialize uploads because each landing Job holds the world lock.
 export function useUploads(server: string, { onLanded, onOp, hold = false, free = null }: Options) {
   const [items, setItems] = useState<UploadItem[]>([]);
   const current = useRef(items);
@@ -169,10 +165,7 @@ export function useUploads(server: string, { onLanded, onOp, hold = false, free 
     );
   }, [items, hold, server, patch, drop, discard, sendLarge]);
 
-  /** add queues files for dir. `entries` is dir's listing: a file of the same
-   *  name there waits for replace or skip instead of being sent to be refused.
-   *  Files the world volume has no room for are refused before any is sent,
-   *  counting the ones ahead of them in the same batch. */
+  // Check total queued space before sending; existing names require replace or skip.
   const add = useCallback((files: readonly File[], dir: string, entries: readonly ServerFileEntry[] | null) => {
     const t = i18next.getFixedT(null, "files");
     let budget = room.current;

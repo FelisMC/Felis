@@ -43,50 +43,43 @@ func validNodeName(name string) bool {
 }
 
 type Request struct {
-	Action             string   `json:"action"`
-	Name               string   `json:"name,omitempty"`
-	SSHTarget          string   `json:"sshTarget,omitempty"`
-	ExternalIP         string   `json:"externalIP,omitempty"`
-	Peers              []string `json:"peers,omitempty"`
-	ConfirmMaintenance bool     `json:"confirmMaintenance"`
-	// Params are the action's own inputs (actions.go), kept with the task.
-	Params map[string]string `json:"params,omitempty"`
-	// Secrets reach the executor only: a task never stores or reports them, so a retry
-	// asks for them again.
+	Action             string            `json:"action"`
+	Name               string            `json:"name,omitempty"`
+	SSHTarget          string            `json:"sshTarget,omitempty"`
+	ExternalIP         string            `json:"externalIP,omitempty"`
+	Peers              []string          `json:"peers,omitempty"`
+	ConfirmMaintenance bool              `json:"confirmMaintenance"`
+	Params             map[string]string `json:"params,omitempty"`
+	// Secrets are never persisted or reported; retries must supply them again.
 	Secrets map[string]string `json:"secrets,omitempty"`
 }
 
 type Task struct {
-	ID         string     `json:"id"`
-	Request    Request    `json:"request"`
-	Actor      string     `json:"actor"`
-	State      string     `json:"state"`
-	Stage      string     `json:"stage"`
-	StartedAt  time.Time  `json:"startedAt"`
-	FinishedAt *time.Time `json:"finishedAt,omitempty"`
-	Error      string     `json:"error,omitempty"`
-	Log        string     `json:"log,omitempty"`
-	// Result is what the action reports back as data (findings, a check's answer),
-	// set through SetResult; Artifact is a file it produced for download (Artifact).
-	Result   json.RawMessage `json:"result,omitempty"`
-	Artifact string          `json:"artifact,omitempty"`
+	ID         string          `json:"id"`
+	Request    Request         `json:"request"`
+	Actor      string          `json:"actor"`
+	State      string          `json:"state"`
+	Stage      string          `json:"stage"`
+	StartedAt  time.Time       `json:"startedAt"`
+	FinishedAt *time.Time      `json:"finishedAt,omitempty"`
+	Error      string          `json:"error,omitempty"`
+	Log        string          `json:"log,omitempty"`
+	Result     json.RawMessage `json:"result,omitempty"`
+	Artifact   string          `json:"artifact,omitempty"`
 }
 
-// MaxResult bounds a task's Result.
 const MaxResult = 256 << 10
 
 type Executor func(context.Context, Request, func(string) error, io.Writer) error
 
 type outcomeKey struct{}
 
-// outcome collects what the executor reports besides its log.
 type outcome struct {
 	mu       sync.Mutex
 	result   json.RawMessage
 	artifact string
 }
 
-// SetResult records v, as JSON, as the running task's Result.
 func SetResult(ctx context.Context, v any) error {
 	o, ok := ctx.Value(outcomeKey{}).(*outcome)
 	if !ok {
@@ -105,8 +98,6 @@ func SetResult(ctx context.Context, v any) error {
 	return nil
 }
 
-// SetArtifact records path, a file under one of the manager's artifact directories,
-// as the running task's download.
 func SetArtifact(ctx context.Context, path string) error {
 	o, ok := ctx.Value(outcomeKey{}).(*outcome)
 	if !ok {
@@ -126,15 +117,11 @@ type Manager struct {
 	active  string
 	ctx     context.Context
 	wg      sync.WaitGroup
-	// ArtifactDirs are where a task's download may live; a path elsewhere is not served.
+	// ArtifactDirs restricts which task outputs may be downloaded.
 	ArtifactDirs []string
-	// Host answers GET /host, the platform's state at a glance; Quiet holds the
-	// watchdog's mail until the given time (the zero time lifts the hold). Nil hooks
-	// answer 404.
-	Host  func(context.Context) (any, error)
-	Quiet func(time.Time) error
-	// OffsiteKey reads the key that seals the off-site copies, for the Owner to keep
-	// elsewhere; it is answered, never stored with a task.
+	// Nil Host or Quiet hooks answer 404; a zero quiet deadline lifts the notification hold.
+	Host       func(context.Context) (any, error)
+	Quiet      func(time.Time) error
 	OffsiteKey func() (string, error)
 }
 
@@ -346,7 +333,7 @@ func (m *Manager) run(t Task, secrets map[string]string) {
 }
 func (m *Manager) Wait() { m.wg.Wait() }
 
-// Handler is reachable only through the root-owned socket mounted into felis-api.
+// Handler is accessible only through the root-owned socket mounted into felis-api.
 func (m *Manager) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /tasks", func(w http.ResponseWriter, r *http.Request) { json.NewEncoder(w).Encode(m.List()) })
@@ -444,8 +431,7 @@ func (m *Manager) Handler() http.Handler {
 	return mux
 }
 
-// serveArtifact streams a finished task's download. The path comes from the task the
-// executor recorded, and is served only from an artifact directory, as a regular file.
+// Serve only recorded artifacts that are regular files under an artifact directory.
 func (m *Manager) serveArtifact(w http.ResponseWriter, r *http.Request) {
 	m.mu.Lock()
 	t, ok := m.tasks[r.PathValue("id")]
@@ -472,7 +458,7 @@ func (m *Manager) serveArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer f.Close()
-	// A large bundle outlasts the server's write timeout on a slow browser.
+	// Disable the write timeout for large downloads.
 	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(30 * time.Minute))
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
@@ -535,14 +521,12 @@ func (c *Client) Start(ctx context.Context, r Request, actor string) (Task, erro
 	return out, err
 }
 
-// Host reads the platform's state at a glance, as the host service reports it.
 func (c *Client) Host(ctx context.Context) (json.RawMessage, error) {
 	var out json.RawMessage
 	err := c.call(ctx, "GET", "/host", nil, &out)
 	return out, err
 }
 
-// OffsiteKey reads the key that seals the off-site copies.
 func (c *Client) OffsiteKey(ctx context.Context) (string, error) {
 	var out struct {
 		Key string `json:"key"`
@@ -551,7 +535,6 @@ func (c *Client) OffsiteKey(ctx context.Context) (string, error) {
 	return out.Key, err
 }
 
-// Quiet holds the watchdog's mail until until; the zero time lifts the hold.
 func (c *Client) Quiet(ctx context.Context, until time.Time) error {
 	raw, err := json.Marshal(map[string]time.Time{"until": until})
 	if err != nil {
@@ -572,8 +555,7 @@ func (c *Client) Quiet(ctx context.Context, until time.Time) error {
 	return nil
 }
 
-// Artifact opens a finished task's download: its body, size and file name. The
-// caller closes the body. It is not bound by the client's request timeout, only ctx.
+// Artifact returns a body the caller must close; only ctx bounds the download.
 func (c *Client) Artifact(ctx context.Context, id string) (io.ReadCloser, int64, string, error) {
 	if !idPattern.MatchString(id) {
 		return nil, 0, "", ErrNotFound
@@ -639,8 +621,6 @@ func (w *boundedLog) Write(p []byte) (int, error) {
 	return original, nil
 }
 
-// limitText reads a task's time limit as the error message words it: "45-minute",
-// "12-hour".
 func limitText(d time.Duration) string {
 	if d%time.Hour == 0 {
 		return fmt.Sprintf("%d-hour", d/time.Hour)

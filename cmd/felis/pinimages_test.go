@@ -19,9 +19,6 @@ import (
 
 const pinTestDigest = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
 
-// TestPinUserServerImages pins exactly the user servers still on a platform tag,
-// reports a tag the registry lost as an error without touching that server, and
-// has nothing left to do on a second pass.
 func TestPinUserServerImages(t *testing.T) {
 	reg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v2/felis/paper/manifests/demo" {
@@ -87,7 +84,6 @@ func TestPinUserServerImages(t *testing.T) {
 	}
 }
 
-// A fresh install has no CRD yet; the command must read that as nothing to pin.
 func TestPinUserServerImagesNoCRD(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(newSystemServerScheme(t)).WithInterceptorFuncs(interceptor.Funcs{
 		List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {

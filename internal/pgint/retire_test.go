@@ -15,8 +15,6 @@ import (
 	"felis.lolicon.best/internal/reaper"
 )
 
-// ---- retirement (migration 0035) --------------------------------------------------
-
 func retireColumns(t *testing.T, name string) (sql.NullTime, bool) {
 	t.Helper()
 	var at sql.NullTime
@@ -27,10 +25,6 @@ func retireColumns(t *testing.T, name string) (sql.NullTime, bool) {
 	return at, del
 }
 
-// TestRetireRequestContract pins PUT and DELETE /servers/{name}/retirement at the
-// SQL: asking again keeps the first request's time, a deletion once asked for
-// stays one whoever asks after, only an admin takes a deletion back, and a
-// server that is gone is not found.
 func TestRetireRequestContract(t *testing.T) {
 	ctx := context.Background()
 	owner := newUser(t, "user", "retire")
@@ -109,9 +103,6 @@ func TestRetireRequestContract(t *testing.T) {
 	}
 }
 
-// TestRetiringServerIsNotClaimable: a server an admin is releasing or deleting
-// cannot be claimed, even unowned, and the claim lists say so; only its owner is
-// told of the request, and the admin fleet read sees it on every row.
 func TestRetiringServerIsNotClaimable(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "rtclaim")
@@ -198,11 +189,6 @@ func TestRetiringServerIsNotClaimable(t *testing.T) {
 	}
 }
 
-// TestRetireReaperStore pins the reaper's reads and writes of a retirement: the
-// request reaches its candidates, a retirement's archive holds the world as an
-// idle reap's does and is never evicted while it is the only copy, releasing the
-// world finishes a give-up and leaves a deletion for the next run, and marking
-// the row deleted takes only a server asked to be deleted.
 func TestRetireReaperStore(t *testing.T) {
 	ctx := context.Background()
 	st := reaper.NewPGStore(db)
@@ -338,9 +324,7 @@ func TestRetireReaperStore(t *testing.T) {
 	}
 }
 
-// fleetCluster knows a set of servers by uid; every other row in the shared
-// schema reads as a server whose CRD is gone and whose world volume is still
-// there, which the reaper never touches.
+// fleetCluster lists servers by uid; any other row reads as a server whose CRD is gone, which the reaper never touches.
 type fleetCluster struct {
 	uids          map[string]string
 	deletedPVC    []string
@@ -382,12 +366,6 @@ func (c *fleetCluster) DeleteServer(_ context.Context, name, uid string) error {
 	return nil
 }
 
-// TestRetirementThroughTheReaper runs the reaper over a give-up and a deletion
-// felis-api recorded, beside a server played minutes ago: the two go on the
-// first run however recently they were played, each archived first (in name
-// order, as the reaper lists them), and a second
-// run finds nothing left to do. The deleted server's name and subdomain are free
-// for a new server, which starts clean.
 func TestRetirementThroughTheReaper(t *testing.T) {
 	ctx := context.Background()
 	st := reaper.NewPGStore(db)

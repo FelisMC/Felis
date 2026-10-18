@@ -37,7 +37,6 @@ func expectEvents(t *testing.T, rec *record.FakeRecorder, step string, want ...s
 	}
 }
 
-// Each phase change lands one Event, and a pass that changes nothing lands none.
 func TestReconcilerRecordsThePhaseTimeline(t *testing.T) {
 	down := false
 	r, c := newReconciler(t, switchProber{down: &down}, runningServer())
@@ -64,7 +63,6 @@ func TestReconcilerRecordsThePhaseTimeline(t *testing.T) {
 	expectEvents(t, rec, "degraded", "Warning RconNotReachable Running → Starting: i/o timeout")
 }
 
-// A timed-out start and the pod recreation that retries it are Warnings.
 func TestTimeoutAndAutoRestartAreWarnings(t *testing.T) {
 	srv := runningServer()
 	srv.Spec.Startup.TimeoutSeconds = 30
@@ -87,7 +85,6 @@ func TestTimeoutAndAutoRestartAreWarnings(t *testing.T) {
 		"Warning AutoRestart Failed → Starting: start timed out; recreated the pod (attempt 1 of 3)")
 }
 
-// Idle auto-stop says why it stopped the server.
 func TestIdleStopRecordsAnEvent(t *testing.T) {
 	srv := runningServer()
 	srv.Spec.Idle = v1alpha1.IdleSpec{AutoStopEnabled: true, EmptySecondsBeforeStop: 60}
@@ -109,7 +106,6 @@ func TestIdleStopRecordsAnEvent(t *testing.T) {
 	expectEvents(t, rec, "idle", "Normal IdleStop no players online for 60s; set desiredState to Stopped")
 }
 
-// A pass that fails records nothing, even though it changed the phase in memory.
 func TestFailedPassRecordsNoEvent(t *testing.T) {
 	r, c := newReconciler(t, fakeProber{}, runningServer(), rconSecret())
 	rec := record.NewFakeRecorder(32)

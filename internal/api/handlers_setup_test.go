@@ -10,11 +10,6 @@ import (
 	"time"
 )
 
-// TestSetupNoSMTPFlow pins the no-SMTP onboarding contract: setup completes on email
-// RECORDED + passkey ENROLLED, never on email verification (the bootstrap has no SMTP,
-// so the Owner's address is stored unverified). The lockdown must therefore lift on a
-// passkey, not on email_verified — otherwise the unverified Owner could never leave the
-// wizard to reach the Settings/SMTP page.
 func TestSetupNoSMTPFlow(t *testing.T) {
 	repo := newFakeRepo()
 	// Fresh Owner: admin, no email, unverified, no passkey — exactly post-CompleteOwnerSetup.
@@ -43,7 +38,6 @@ func TestSetupNoSMTPFlow(t *testing.T) {
 		t.Fatalf("fresh owner status = %v, want setup_required=true email=\"\" has_passkey=false", s)
 	}
 
-	// 2. Record the email — NO OTP. The row is written but email_verified stays false.
 	w := do(h, "POST", "/api/v1/account/email", `{"email":"owner@example.net"}`, jsonHeader)
 	if w.Code != http.StatusOK {
 		t.Fatalf("set-email code = %d, want 200 (%s)", w.Code, w.Body.String())
@@ -66,7 +60,6 @@ func TestSetupNoSMTPFlow(t *testing.T) {
 	// 5. Enroll a passkey (the Owner's only pre-SMTP credential).
 	repo.passkeyCreds["pk1"] = PasskeyCredential{ID: "pk1", UserID: "o1", CredentialID: "cred1"}
 
-	// 6. Passkey present ⇒ setup complete AND the lockdown lifts (the route no longer 403s setup_required).
 	if s := status(t); s["setup_required"] != false || s["has_passkey"] != true {
 		t.Fatalf("post-passkey status = %v, want setup_required=false has_passkey=true", s)
 	}
@@ -76,11 +69,6 @@ func TestSetupNoSMTPFlow(t *testing.T) {
 	}
 }
 
-// TestSetEmailClearsVerified pins the invariant that recording an unproven address
-// drops any prior verification: /account/email is app-tier + SetupAllowed, so any
-// authenticated session can reach it — an already-verified caller who changes their
-// address must NOT keep email_verified=true asserting a proof they never gave. Only
-// VerifyEmailOTP (which proves the address) may set that flag.
 func TestSetEmailClearsVerified(t *testing.T) {
 	repo := newFakeRepo()
 	// A fully onboarded staff account: email already proven.
@@ -99,11 +87,6 @@ func TestSetEmailClearsVerified(t *testing.T) {
 	}
 }
 
-// TestSetupCompletesForNoEmailPlayer pins the console-tier player fix: a bind-code
-// player joins with NO email (by design — no SMTP) and completes forced onboarding by
-// enrolling a passkey alone. setup_required MUST then report false, in lockstep with
-// requireOnboarded lifting (api.go:615). The OLD predicate (email == "" || !hasPasskey)
-// trapped exactly this state — email is empty forever, so it looped the player.
 func TestSetupCompletesForNoEmailPlayer(t *testing.T) {
 	repo := newFakeRepo()
 	// A console-tier player: role=user, no email ever, no passkey.
@@ -131,7 +114,6 @@ func TestSetupCompletesForNoEmailPlayer(t *testing.T) {
 		t.Fatalf("fresh player status = %v, want setup_required=true email=\"\"", s)
 	}
 
-	// Enroll a passkey — the ONLY step a no-email player can complete.
 	repo.passkeyCreds["pk1"] = PasskeyCredential{ID: "pk1", UserID: "p1", CredentialID: "cred1"}
 
 	// Setup is now COMPLETE even though email stays empty. The OLD predicate returned
@@ -141,10 +123,6 @@ func TestSetupCompletesForNoEmailPlayer(t *testing.T) {
 	}
 }
 
-// Redeeming a setup link signs the owner in once. A link the store does not know
-// (unknown, spent, expired) is the uniform 400; a store that fails is an outage,
-// answered as one, so the page does not tell the owner a link that still works
-// was used up.
 func TestSetupRedeem(t *testing.T) {
 	const raw = "setup-token-raw"
 	sum := sha256.Sum256([]byte(raw))

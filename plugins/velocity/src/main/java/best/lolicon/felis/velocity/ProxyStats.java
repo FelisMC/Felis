@@ -4,15 +4,7 @@ import best.lolicon.felis.link.ApiStats;
 
 import java.util.concurrent.atomic.AtomicLongArray;
 
-/**
- * ProxyStats counts the proxy-side failures that each already get a warning line, so
- * an operator can see their rate without grepping: calls the bounded pool refused,
- * join-events that failed or were dropped (each one leaves the reaper blind to a real
- * join and skips an allowlist append), transfers that did not connect, and server-list
- * refreshes that failed. {@link #window()} returns what changed since the previous
- * window; {@link #line} folds that and felis-api's own window into the periodic log
- * line.
- */
+// window returns what changed since the previous call; line folds that and felis-api's own window into the periodic health line.
 final class ProxyStats {
     enum Event {
         POOL_REFUSED("busy refusals"),
@@ -51,10 +43,7 @@ final class ProxyStats {
         return delta;
     }
 
-    /**
-     * line is the periodic health line for one window, or null when the window saw no
-     * felis-api call, no failure and nobody waiting (an idle proxy logs nothing).
-     */
+    /** line is the periodic health line for one window, or null when the window was idle (an idle proxy logs nothing). */
     static String line(long minutes, ApiStats.Snapshot api, long[] events, int waiting) {
         boolean any = api.calls > 0 || waiting > 0;
         StringBuilder sb = new StringBuilder();

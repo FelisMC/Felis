@@ -31,8 +31,7 @@ import (
 type fakeExporter struct {
 	reqs []worldexport.Request
 	err  error
-	// stopped receives each Job Stop is asked to delete; the sweep asks from
-	// a goroutine of its own.
+	// stopped receives Job deletions from the asynchronous sweep.
 	stopped chan string
 }
 
@@ -83,8 +82,6 @@ var (
 	hex16 = regexp.MustCompile(`^[0-9a-f]{16}$`)
 )
 
-// exportFixture: owner1 owns survival (stopped) and creative, owner3 owns gamma
-// (stopped); bk1 is survival's backup, bk2 creative's, both formerly owner1's.
 func exportFixture() (*API, *fakeRepo, *fakeCluster, *fakeExporter) {
 	repo := newFakeRepo()
 	for name, owner := range map[string]string{"survival": "owner1", "creative": "owner1", "gamma": "owner3"} {
@@ -147,8 +144,7 @@ func waitExportReady(t *testing.T, h http.Handler, ticket, user string) {
 	}
 }
 
-// uploadExport serves the Job's PUT on the internal face in the background.
-// digest, when set, is the trailer the Job sends once its body has ended.
+// uploadExport supplies the digest trailer only after the body ends.
 func uploadExport(h http.Handler, id, token string, body io.Reader, digest string) <-chan *httptest.ResponseRecorder {
 	out := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
@@ -175,11 +171,7 @@ func awaitUpload(t *testing.T, up <-chan *httptest.ResponseRecorder) *httptest.R
 	}
 }
 
-// doSoon is do for a request that must be refused outright. A download that
-// claimed the export by mistake would block on the parked body, and an upload
-// let in by mistake would wait for a browser, so either fails the test after a
-// bound instead of hanging it.
-// awaitStop returns the next Job the sweep asked to delete.
+// doSoon bounds requests that would otherwise hang if incorrectly admitted; awaitStop waits for the sweep's deletion.
 func awaitStop(t *testing.T, ex *fakeExporter) string {
 	t.Helper()
 	select {
@@ -371,8 +363,6 @@ func TestExportWorldGate(t *testing.T) {
 		}
 	})
 
-	// A refusal after admission gives the export back: the owner is not left
-	// blocked by an export that never got a Job.
 	t.Run("lock conflict and a failed Job are refunded", func(t *testing.T) {
 		a, _, cl, ex := exportFixture()
 		h := a.ExternalHandler()
@@ -446,9 +436,6 @@ func TestExportLimits(t *testing.T) {
 	})
 }
 
-// TestExportRendezvous walks one world export end to end through the handlers:
-// the Job's PUT parks until the owner's download claims it, the archive streams
-// through untouched, the ticket works once and for its user only.
 func TestExportRendezvous(t *testing.T) {
 	a, repo, _, ex := exportFixture()
 	var clock atomic.Int64
@@ -483,7 +470,6 @@ func TestExportRendezvous(t *testing.T) {
 		t.Fatalf("PUT to another id = %d", w.Code)
 	}
 
-	// A length that is no byte count is refused before the token is spent.
 	for _, bad := range []string{"-1", "12abc", "0x10"} {
 		if w := doSoon(t, in, "PUT", "/api/v1/internal/exports/"+job.ID, "x", map[string]string{
 			"Authorization": "Bearer " + job.Token, worldexport.LengthHeader: bad}); w.Code != http.StatusBadRequest || decodeErr(t, w) != "bad_request" {
@@ -553,7 +539,7 @@ func TestExportRendezvous(t *testing.T) {
 	if len(repo.audits) != 1 {
 		t.Fatalf("audits = %+v, want the start only", repo.audits)
 	}
-	beginExport(t, ext, worldPath, "owner1") // the finished export no longer counts
+	beginExport(t, ext, worldPath, "owner1")
 }
 
 func TestExportExpiry(t *testing.T) {
@@ -581,7 +567,6 @@ func TestExportExpiry(t *testing.T) {
 		}
 	})
 
-	// The owner closed the tab, so no route sweeps; felis-api's loop does.
 	t.Run("the loop stops a Job left pending, and only that one", func(t *testing.T) {
 		a, _, _, ex := exportFixture()
 		var clock atomic.Int64
@@ -639,8 +624,6 @@ func TestExportExpiry(t *testing.T) {
 	})
 }
 
-// TestExportStatusReportsFailedJob: a Job that dies before it connects turns
-// the export failed with the Job's own error, and frees the owner's slot.
 func TestExportStatusReportsFailedJob(t *testing.T) {
 	a, _, _, ex := exportFixture()
 	js := &fakeJobStatus{}
@@ -672,10 +655,6 @@ func TestExportStatusReportsFailedJob(t *testing.T) {
 	beginExport(t, ext, backupPath, "owner1")
 }
 
-// TestExportRegistryRaces: two transitions the handlers reach only in a race.
-// A Job reported failed just as its upload arrived must not fail the ready
-// export, and the claim timer firing as the browser claims must not spend the
-// export under its download.
 func TestExportRegistryRaces(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	reg := (&API{}).exportTickets()
@@ -707,16 +686,14 @@ func TestExportRegistryRaces(t *testing.T) {
 	}
 }
 
-// exportServers runs both faces for real, so deadlines apply and an aborted
-// download reaches the client as an error.
+// exportServers uses real HTTP connections to exercise deadlines and aborted downloads.
 func exportServers(t *testing.T, a *API) (ext, in *httptest.Server) {
 	ext, in = httptest.NewServer(a.ExternalHandler()), httptest.NewServer(a.InternalHandler())
 	t.Cleanup(func() { ext.Close(); in.Close() })
 	return ext, in
 }
 
-// realUpload sends the Job's PUT as cmd/felis export does: chunked, with the
-// size when it is known (not -1) and, when set, digest as the trailer.
+// realUpload sends a chunked body with optional declared size and digest trailer.
 func realUpload(t *testing.T, in *httptest.Server, job worldexport.Request, body io.Reader, size int64, digest string) <-chan *http.Response {
 	req, err := http.NewRequest("PUT", in.URL+"/api/v1/internal/exports/"+job.ID, body)
 	if err != nil {
@@ -768,11 +745,6 @@ func awaitResponse(t *testing.T, ch <-chan *http.Response) *http.Response {
 	}
 }
 
-// TestExportStreamsWhatTheJobSends: the archive reaches the browser byte for
-// byte, with the length the Job declared when it declared one. The Job checks a
-// backup against its recorded digest itself and, on a mismatch, cuts its upload
-// short of the end; the download then aborts too, so the browser never holds a
-// complete-looking file.
 func TestExportStreamsWhatTheJobSends(t *testing.T) {
 	archive := randomBytes(3*exportCopyBuffer + 4321)
 
@@ -821,9 +793,6 @@ func TestExportStreamsWhatTheJobSends(t *testing.T) {
 		}
 	})
 
-	// The Job's trailer is the SHA-256 of what it sent. Bytes that arrive
-	// otherwise, or without it, or not as many as it declared, never reach the
-	// browser to their end, and the Job hears the download failed.
 	t.Run("bytes changed on the way never reach the browser whole", func(t *testing.T) {
 		flipped := bytes.Clone(archive)
 		flipped[len(flipped)/2] ^= 1
@@ -880,8 +849,7 @@ func TestExportStreamsWhatTheJobSends(t *testing.T) {
 
 const fileDownloadPath = "/api/v1/servers/survival/files/download?path="
 
-// fileDownloadFixture is exportFixture with the file manager wired, which the
-// file routes' gate requires.
+// fileDownloadFixture adds the file manager required by the file-route authorization gate.
 func fileDownloadFixture() (*API, *fakeRepo, *fakeCluster, *fakeExporter) {
 	a, repo, cl, ex := exportFixture()
 	a.Files = &fakeFileEditor{}
@@ -938,8 +906,6 @@ func TestFileDownloadGate(t *testing.T) {
 		}
 	})
 
-	// Like every file route, a server that has never started gets its world
-	// volume first rather than a refusal.
 	t.Run("before the first start", func(t *testing.T) {
 		a, _, cl, ex := fileDownloadFixture()
 		cl.noWorld["survival"] = true
@@ -957,8 +923,7 @@ func TestFileDownloadGate(t *testing.T) {
 		edit              func(*API, *fakeCluster)
 		code              int
 		errCode           string
-		// msg, when set, is what the refusal must say.
-		msg string
+		msg               string
 	}{
 		{name: "stranger", user: "stranger", query: "a.yml", code: http.StatusForbidden, errCode: "forbidden"},
 		{name: "principal without an account", user: "nouser", query: "a.yml", code: http.StatusForbidden, errCode: "forbidden"},
@@ -992,8 +957,6 @@ func TestFileDownloadGate(t *testing.T) {
 			if tc.msg != "" && !strings.Contains(w.Body.String(), tc.msg) {
 				t.Errorf("body %s does not say %q", w.Body.String(), tc.msg)
 			}
-			// Nothing is left behind: no Job, no audit, no ticket, no start
-			// counted against the hour.
 			reg := a.exportTickets()
 			if len(ex.reqs) != 0 || len(repo.audits) != 0 || len(cl.released) != 0 || len(reg.byTicket) != 0 || len(reg.starts) != 0 {
 				t.Errorf("a refused download started %d Jobs, wrote %d audits, released %v, left %d tickets and %v",
@@ -1030,7 +993,7 @@ func TestFileDownloadLimits(t *testing.T) {
 		h := a.ExternalHandler()
 		beginExport(t, h, fileDownloadPath+"a.yml", "owner1")
 		beginExport(t, h, fileDownloadPath+"b.yml", "owner1")
-		beginExport(t, h, worldPath, "owner1") // file downloads do not hold an export off
+		beginExport(t, h, worldPath, "owner1")
 		busy(t, do(h, "POST", fileDownloadPath+"c.yml", "", as("owner1")),
 			"you already have 2 file downloads in progress; let one finish first", "90")
 		if len(ex.reqs) != 3 {
@@ -1072,8 +1035,6 @@ func TestFileDownloadLimits(t *testing.T) {
 	})
 }
 
-// TestFileDownloadServed: a file goes out as its raw bytes under its own name,
-// with its length; a folder as a zip, streamed without one.
 func TestFileDownloadServed(t *testing.T) {
 	for _, tc := range []struct {
 		name, query, contentType, disposition string
@@ -1087,8 +1048,6 @@ func TestFileDownloadServed(t *testing.T) {
 			a, _, _, ex := fileDownloadFixture()
 			ext, in := exportServers(t, a)
 			v := beginExport(t, a.ExternalHandler(), fileDownloadPath+tc.query, "owner1")
-			// Past what the server would buffer and measure itself when the
-			// handler sets no length.
 			body := randomBytes(64 << 10)
 			up := realUpload(t, in, ex.reqs[0], bytes.NewReader(body), tc.size, contentDigestOf(string(body)))
 			waitExportReady(t, a.ExternalHandler(), v.Ticket, "owner1")
@@ -1120,9 +1079,6 @@ func (zeros) Read(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// TestExportUploadPace: the Job's upload waits for the browser longer than the
-// body-deadline grace, and then moves at the browser's pace, without being cut
-// off; a body that stops moving for exportStall is.
 func TestExportUploadPace(t *testing.T) {
 	defer func(g time.Duration, r float64, s time.Duration) { bodyGrace, bodyMinRate, exportStall = g, r, s }(bodyGrace, bodyMinRate, exportStall)
 	bodyGrace, bodyMinRate, exportStall = 100*time.Millisecond, 1<<30, 300*time.Millisecond
@@ -1207,8 +1163,6 @@ func TestExportUploadPace(t *testing.T) {
 	})
 }
 
-// TestK8sExportJobs: export Jobs show in the jobs list by what they archive,
-// and never count as world work the backup scheduler waits for.
 func TestK8sExportJobs(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
@@ -1256,8 +1210,6 @@ func TestK8sExportJobs(t *testing.T) {
 		}
 	}
 
-	// The kinds agree with maintenance.JobKind: a world export and a file
-	// download hold the world, a backup export does not.
 	if kind, holds := maintenance.JobKind(world); kind != maintenance.KindExport || !holds {
 		t.Errorf("JobKind(world export) = %q, %v", kind, holds)
 	}

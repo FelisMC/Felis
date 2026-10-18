@@ -57,11 +57,7 @@ func javaBinary() (string, error) {
 	return exec.LookPath("java")
 }
 
-// cmdInstallServer is the install initContainer of a runtime-image server: it
-// brings the world volume to the server software the spec names (see
-// software.Installer) and records how to launch it. It runs in the runtime image,
-// after the egress gate, as the game uid with no capability; it holds neither the
-// RCON password nor the forwarding secret.
+// Install software as the game UID without capabilities or runtime secrets.
 func cmdInstallServer(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("install-server", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -105,10 +101,6 @@ func describeLaunch(l software.Launch) string {
 	}
 }
 
-// cmdLaunch is the server container's entrypoint in the runtime image. It writes
-// the settings the platform owns (the EULA the owner accepted when creating the
-// server, the game port, offline mode behind the proxy, RCON), then replaces
-// itself with java started the way the installation record says.
 func cmdLaunch(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("launch", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -178,10 +170,7 @@ func launchArgv(java string, l software.Launch, memory, flags string, extra []st
 	return append(argv, extra...)
 }
 
-// launchEnv hands FabricProxy-Lite the forwarding secret through the variable
-// it reads (FABRIC_PROXY_SECRET), and turns on its fix for players kicked over
-// chat signatures after switching servers, which every Felis player does when a
-// sleeping server wakes under them.
+// FabricProxy-Lite reads forwarding configuration from the environment and disables incompatible chat signatures.
 func launchEnv(env []string, s software.Spec) []string {
 	if s.Forwarding != software.ForwardingVelocity || (s.Type != software.Fabric && s.Type != software.Quilt) {
 		return env
@@ -193,10 +182,6 @@ func launchEnv(env []string, s software.Spec) []string {
 	return append(env, "FABRIC_PROXY_SECRET="+secret, "FABRIC_PROXY_HACK_MESSAGE_CHAIN=true")
 }
 
-// writeServerSettings writes what the platform decides in server.properties and
-// accepts the EULA. Every start rewrites them: the proxy reaches the server on
-// the game port, verifies players itself (so the server runs offline mode), and
-// the operator probes readiness and stops the server over RCON.
 func writeServerSettings(dataDir, rconPort, rconPassword string) error {
 	if err := writeFileMode(filepath.Join(dataDir, "eula.txt"), []byte("eula=true\n")); err != nil {
 		return err
@@ -208,11 +193,7 @@ func writeServerSettings(dataDir, rconPort, rconPassword string) error {
 		return fmt.Errorf("read %s: %w", path, err)
 	}
 	if fresh {
-		// Recent vanilla versions (26.3 among them) write white-list=true into a
-		// new server.properties.
-		// Who may join is the platform's call (the wake policy and allowlist),
-		// so a new server starts with the game's own whitelist off; the owner can
-		// turn it on, and a later start leaves their choice alone.
+		// Disable vanilla's new-file whitelist by default; preserve owner changes on subsequent starts.
 		content = upsertProperty(content, "white-list", "false")
 	}
 	content = upsertProperty(content, "server-port", strconv.Itoa(gamePort))
@@ -230,10 +211,7 @@ func writeServerSettings(dataDir, rconPort, rconPassword string) error {
 	return writeFileMode(path, content)
 }
 
-// cmdInstallSelf copies this binary into a directory, for the runtime image's
-// containers: they run `felis install-server` and `felis launch` from an
-// emptyDir this initContainer fills, so the runtime image itself stays a plain
-// upstream Java image.
+// Copy felis into the shared emptyDir so the runtime image can remain an upstream Java image.
 func cmdInstallSelf(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("install-self", flag.ContinueOnError)
 	fs.SetOutput(stderr)

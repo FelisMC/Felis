@@ -27,19 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// felis restore-host rebuilds an install from its off-site copy on a host where Felis
-// was just installed: the whole of https://docs.felismc.com/en/operations/backup#rebuild-host up to
-// taking the bucket over, in one command. The installer runs it on its own with
-// FELIS_RESTORE_FROM_OFFSITE=1.
-//
-// Each step is the command the runbook names, run as a child of this binary, and each is
-// recorded once done in restoreStateFile, so a run cut short (a dropped SSH session, a
-// bucket timeout) picks up where it stopped. The database is restored once; a rerun never
-// restores it over what the restored install has written since.
-//
-// What it leaves to the operator: moving the domain (the install keeps this host's
-// address, so old passkeys stop working until users register new ones) and the
-// Cloudflare tunnel, both of which need the operator's own DNS or account.
+// Persist restore steps for retry; domain and tunnel migration remain operator actions.
 
 // restoreStateDir holds the fetched bundle and the progress record.
 const restoreStateDir = "/var/lib/felis/restore-host"
@@ -313,11 +301,7 @@ func bundleEntry(bundle, name string) ([]byte, error) {
 	}
 }
 
-// restorableServers takes the bundle's MinecraftServer list as this host can apply it:
-// user servers only (the new install made its own login and lobby, carrying this
-// host's domain), each stopped until its world is back, with no placement on a node of
-// the old cluster, no claim name from an old migration and none of the old cluster's
-// locks or in-flight marks.
+// Restore user servers stopped, without old node placement, claims, or locks.
 func restorableServers(raw []byte) ([]byte, []string, error) {
 	var list struct {
 		Items []map[string]any `json:"items"`

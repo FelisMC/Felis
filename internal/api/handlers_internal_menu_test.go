@@ -11,14 +11,6 @@ import (
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 )
 
-// The internal-face claim + menu pair (spec §9.3, §12) is what velocity drives for
-// the felis-paper lobby, which holds no token of its own. The claim mirrors the
-// external Principal-gated claim but keys identity off the verified online-mode
-// UUID; the menu adds the ownership-derived `claimable` flag the §11 lifecycle
-// views never carry. These assert the exact wire keys, not just status, because a
-// key velocity's parser reads but the handler never emits fails silently — every
-// tile would read claimable=false forever and a status-only test would still pass.
-
 const menuUUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
 func internalClaim(api *API, body string) *httptest.ResponseRecorder {
@@ -45,7 +37,7 @@ func TestInternalClaim(t *testing.T) {
 		api, repo := setup()
 		repo.links[menuUUID] = "user1" // account_links: UUID → user1 (implies linked)
 		repo.quota["user1"] = true
-		repo.claimOK["survival"] = true // UPDATE ... WHERE owner_id IS NULL hits 1 row
+		repo.claimOK["survival"] = true
 
 		w := internalClaim(api, body)
 		if w.Code != http.StatusOK {
@@ -62,13 +54,13 @@ func TestInternalClaim(t *testing.T) {
 		if got["claimed"] != true {
 			t.Fatalf("claimed = %v, want true", got["claimed"])
 		}
-		// The claim is by the resolved user, and it is audited as a velocity action.
+
 		repo.assertClaimAudit(t, "survival")
 	})
 
 	t.Run("unlinked UUID → 412 not_linked, no claim", func(t *testing.T) {
 		api, repo := setup()
-		repo.claimOK["survival"] = true // would succeed if we got that far
+		repo.claimOK["survival"] = true
 		// menuUUID is absent from repo.links → UserByMCUUID returns ErrNotFound.
 
 		w := internalClaim(api, body)
@@ -155,8 +147,6 @@ func TestInternalMenuStatus(t *testing.T) {
 			t.Fatalf("code = %d body %s", w.Code, w.Body.String())
 		}
 		got := decodeMenu(t, w)
-		// Assert every key the lobby's MenuStatus parser reads, by exact name —
-		// the §11-trap guard: a renamed/absent key would read as a zero value.
 		assertEq(t, "name", got["name"], "survival")
 		assertEq(t, "phase", got["phase"], "Running")
 		assertEq(t, "ready", got["ready"], true)
@@ -191,8 +181,6 @@ func TestInternalMenuStatus(t *testing.T) {
 	})
 }
 
-// ---- local helpers ----
-
 func decodeMenu(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
 	t.Helper()
 	if w.Code != http.StatusOK {
@@ -226,8 +214,6 @@ func internalMenuAccess(api *API, uuid string) *httptest.ResponseRecorder {
 	return do(api.InternalHandler(), "GET", "/api/v1/internal/player/menu-access/"+uuid, "", nil)
 }
 
-// The menu-access verdicts tell the lobby, per tile, whether this player may start
-// the server and why not, with the wake's own gates behind each one.
 func TestInternalMenuAccess(t *testing.T) {
 	gone := &RetireState{RequestedAt: time.Now()}
 	setup := func() (*API, *fakeRepo) {

@@ -120,7 +120,6 @@ func TestHoldWorldWaitsUntilQuiet(t *testing.T) {
 	}
 }
 
-// Once held, every other holder check sees the reaper, and release lets go.
 func TestHoldWorldLocksAndReleases(t *testing.T) {
 	k, c, clk := holdCluster(t, holdServer(v1alpha1.DesiredStopped, v1alpha1.PhaseStopped))
 	held, release, err := k.HoldWorld(context.Background(), "survival")
@@ -140,7 +139,6 @@ func TestHoldWorldLocksAndReleases(t *testing.T) {
 	}
 }
 
-// The lock is rewritten while held, so it never lapses under a long archive.
 func TestHoldWorldKeepsLockFresh(t *testing.T) {
 	k, c, clk := holdCluster(t, holdServer(v1alpha1.DesiredStopped, v1alpha1.PhaseStopped))
 	k.beat = 5 * time.Millisecond
@@ -167,8 +165,6 @@ func TestHoldWorldKeepsLockFresh(t *testing.T) {
 	}
 }
 
-// A lock someone else removed (or replaced) ends the hold: the reaper must not
-// delete a world it no longer holds.
 func TestHoldWorldEndsWhenLockIsLost(t *testing.T) {
 	k, c, _ := holdCluster(t, holdServer(v1alpha1.DesiredStopped, v1alpha1.PhaseStopped))
 	k.beat = 5 * time.Millisecond
@@ -209,17 +205,12 @@ func TestWorldExists(t *testing.T) {
 	}
 }
 
-// gamePodComponent is a copy of the operator's pod label value; a drift would
-// let the reaper archive a world beside a server still saving it.
 func TestGamePodComponentMatchesOperator(t *testing.T) {
 	if gamePodComponent != operator.ComponentValue {
 		t.Fatalf("gamePodComponent = %q, operator labels its pods %q", gamePodComponent, operator.ComponentValue)
 	}
 }
 
-// DeleteServer removes the MinecraftServer Inspect returned, and nothing that
-// merely carries its name: a server made again under the name (another uid)
-// stays, and one already gone is not an error.
 func TestDeleteServerRemovesOnlyTheInspectedServer(t *testing.T) {
 	ms := holdServer(v1alpha1.DesiredStopped, v1alpha1.PhaseStopped)
 	ms.UID = "uid-1"

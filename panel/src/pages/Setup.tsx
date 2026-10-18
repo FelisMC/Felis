@@ -13,25 +13,7 @@ import { base64urlToBytes, bytesToBase64url } from "@/lib/utils";
 import { useTier } from "@/lib/tier";
 import { InlineError } from "@/components/MessageLine";
 
-// Setup is the Owner's first-run onboarding wizard (spec §B setup bootstrap). The
-// `felis setup` host-authorized flow prints https://op.console.<root>/setup?token=<raw> —
-// the Owner is staff, so onboarding lands on the operator console, not the player
-// panel; this page redeems that one-time token (minting a lockdown session), then drives the
-// two remaining steps — record an email, enroll a passkey — before handing off to the
-// dashboard. It sits OUTSIDE RequireAuth (like /login): the visitor arrives without
-// a session, and the redeem is what creates one.
-//
-// The email is only RECORDED, not verified: the bootstrap has no SMTP, so there is no
-// code to mail. Passkey is the Owner's only pre-SMTP login credential and is
-// mandatory. Reload-safe: the token is single-use, so a refresh mid-wizard re-reads
-// progress from /auth/setup/status (the surviving session) rather than dead-ending on
-// a spent token. The step endpoints and /me are all SetupAllowed, so the lockdown
-// session can complete the wizard; the backend lifts the lockdown once a passkey is
-// enrolled, and we hand off to / once nothing remains.
-// retryable tells a failure worth another try with the same link (the server or
-// the network failed, or asked to slow down) from a link that cannot work. The
-// redeem spends the token only together with the session it mints, so a failed
-// try leaves the link as it was.
+// Setup creates its own session, requires a passkey before SMTP exists, and retries only transient token failures.
 function retryable(e: unknown): boolean {
   const status = (e as Partial<ApiError> | undefined)?.status;
   return status === 0 || status === 429 || (typeof status === "number" && status >= 500);
@@ -185,10 +167,6 @@ export function Setup() {
   );
 }
 
-/** EmailStep is the §B setup Step 1: record the Owner's email. The bootstrap has no
- *  SMTP, so there is no code to send — the address is stored UNVERIFIED (a later
- *  Settings/SMTP flow verifies it). On success it calls onRecorded (a status re-read)
- *  so the wizard advances to the passkey step. */
 function EmailStep({
   initialEmail,
   onRecorded,
@@ -256,11 +234,7 @@ function EmailStep({
   );
 }
 
-/** PasskeyStep enrolls the Owner's first passkey against the SetupAllowed register
- *  endpoints — the same ceremony as the Account page. Passkey is the Owner's ONLY
- *  login credential before SMTP exists (email-OTP login refuses admins; op-login
- *  needs SMTP + a second admin), so it is mandatory: there is no skip, and the
- *  backend lockdown lifts only once a passkey is enrolled. */
+// The setup lock lifts only after passkey enrollment.
 function PasskeyStep({
   onEnrolled,
 }: {

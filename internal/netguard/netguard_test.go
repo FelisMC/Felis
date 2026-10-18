@@ -2,8 +2,6 @@ package netguard
 
 import "testing"
 
-// TestRefuseLinkLocal pins that the metadata address and its kin are refused while
-// ordinary public, private and loopback addresses pass.
 func TestRefuseLinkLocal(t *testing.T) {
 	for _, addr := range []string{"169.254.169.254:80", "[fe80::1]:443", "0.0.0.0:80", "[::]:80", "224.0.0.1:80", "[ff02::1]:25"} {
 		if err := RefuseLinkLocal("tcp", addr, nil); err == nil {

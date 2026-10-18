@@ -5,10 +5,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// felisTheme recolors huh's base theme to the Felis palette (cyan primary,
-// purple accent, green success) so the forms feel like part of the product
-// rather than a generic huh prompt. We start from ThemeBase — a neutral
-// skeleton with the right structure — and override only the colored bits.
 func felisTheme() *huh.Theme {
 	t := huh.ThemeBase()
 
@@ -22,10 +18,6 @@ func felisTheme() *huh.Theme {
 	f.ErrorMessage = lipgloss.NewStyle().Foreground(cError)
 
 	f.SelectSelector = lipgloss.NewStyle().Foreground(cPrimary).SetString("▸ ")
-	// Unselected rows recede to dim and the active row is bright cyan + bold, so
-	// the list reads at a glance as a picker with one row chosen — not a wall of
-	// equally-lit info text. huh's single-select paints UnselectedOption (not
-	// Option), which ThemeBase leaves bright; overriding it is the key fix.
 	f.Option = lipgloss.NewStyle().Foreground(cDim)
 	f.UnselectedOption = lipgloss.NewStyle().Foreground(cDim)
 	f.SelectedOption = lipgloss.NewStyle().Foreground(cPrimary).Bold(true)

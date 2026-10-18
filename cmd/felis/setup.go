@@ -25,9 +25,6 @@ const hostBootstrapKubeconfigPath = "/etc/rancher/k3s/k3s.yaml"
 
 var errHostBootstrapCancelled = errors.New("host bootstrap cancelled")
 
-// cmdSetup is the normal first-run operator console. It is intentionally separate
-// from breakGlass: setup creates the initial Owner and optional web edge; breakGlass
-// is reserved for emergency local recovery/reset.
 func cmdSetup(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -39,14 +36,7 @@ func cmdSetup(args []string, stdout, stderr io.Writer) int {
 		}
 		return 2
 	}
-	// setup cannot honour a channel, so it refuses rather than silently installing the
-	// other one. It used to export FELIS_CHANNEL here, which nothing has ever read --
-	// deploy/bootstrap.sh reads FELIS_VERSION_BOOTSTRAP -- so --dev was a silent no-op
-	// that installed release. Renaming the variable would not fix it: on this path
-	// bootstrap takes the bootstrap_from_tui arm, which re-images the host from the
-	// binary setup is already running, and every reader of FELIS_VERSION_BOOTSTRAP
-	// (use_release_binary, resolve_install_ref) is unreachable from there. Choosing a
-	// channel means re-running the installer, which is what this points the operator at.
+	// Setup uses the running binary; changing release channels requires rerunning the installer.
 	if *dev {
 		fmt.Fprintln(stderr, "felis setup: --dev is not supported here; setup re-images this host from the felis binary it is already running.")
 		fmt.Fprintln(stderr, "To install a different channel, re-run the bootstrap installer with FELIS_VERSION_BOOTSTRAP=dev (see https://docs.felismc.com/en/guide/deployment#channels).")
@@ -100,11 +90,8 @@ func cmdSetup(args []string, stdout, stderr io.Writer) int {
 	}
 	defer setup.drv.Close()
 
-	// Game services are provisioned independently, before the wizard opens: the Owner
-	// follows the setup link into the panel while the wizard is still on screen, and the
-	// login space and lobby must already exist there. The wizard owns the terminal, so
-	// the report is printed once it closes. A failed login/lobby must not stop the host
-	// administrator from opening the panel to diagnose it.
+	// Provision game services before the wizard exposes the owner's setup link.
+	// A failed login or lobby must not stop the operator from opening the panel to diagnose it.
 	var games bytes.Buffer
 	if err := provisionSystemServers(ctx, setup.cfg, &games); err != nil {
 		fmt.Fprintf(&games, "felis setup: Minecraft services need attention: %v\n", err)
@@ -188,11 +175,6 @@ func reportSetupResult(stdout io.Writer, res breakGlassResult, bootstrapped, adm
 	}
 }
 
-// provisionSystemServers ensures the login limbo and lobby system services exist,
-// then prints the login-first Velocity wiring. deploy/bootstrap.sh writes this
-// configuration for its host proxy; operators only need to mirror it when they
-// deliberately run Velocity elsewhere.
-
 func provisionSystemServers(ctx context.Context, cfg *config.Config, out io.Writer) error {
 	fail := func(format string, args ...any) error {
 		fmt.Fprintf(out, "\nfelis setup: "+format+"\n", args...)
@@ -207,26 +189,11 @@ func provisionSystemServers(ctx context.Context, cfg *config.Config, out io.Writ
 		return fail("could not reach the cluster to provision the login/lobby system servers: %v\n"+
 			"Re-run `sudo felis setup` on the control-plane host once the cluster is reachable", err)
 	}
-	// The login limbo authenticates to the felis-api INTERNAL face, so it needs the
-	// internal base URL, the root domain (to link players at the console), and its
-	// own token (felis-limbo-token). The first two are plain env baked into the pod
-	// here; the token is a Secret the operator injects by reference — but a
-	// secretKeyRef is namespace-local, so first replicate the token Secret from the
-	// control namespace into the minecraft namespace where the login pod runs. The control namespace is
-	// the platform default (there is no felis.toml override for it); a deployment that
-	// renamed it must replicate the Secret by hand.
+	// Inject the login token by Secret reference; URL and domain are plain environment values.
+	// Secret references are namespace-local, so replicate the token before starting workload Pods.
 	controlNS := platform.DefaultControlNamespace
 	apiBaseURL := platform.InternalAPIBaseURL(controlNS)
-	// These Secrets must land in the minecraft namespace before the pods that
-	// mount them are created: the login gate's token (login authenticates to
-	// felis-api with it), the Velocity forwarding secret (every backend verifies the proxy's
-	// signed handshake with it — without it the login gate would derive an OFFLINE
-	// UUID and players would bind the wrong Minecraft identity), and felis-config
-	// (the on-demand BACKUP Job runs in the minecraft namespace and mounts it to
-	// self-record its world_backups row; without the replica the Job's volume
-	// mount fails and every backup request strands in the cluster).
-	// An empty build_namespace means the build system's compiled-in default; the
-	// replica must target the namespace the Jobs actually run in.
+	// Create namespace-local Secrets before workloads; an empty build namespace selects the compiled default.
 	buildNS := cfg.Registry.BuildNamespace
 	if buildNS == "" {
 		buildNS = platform.DefaultBuildNamespace
@@ -251,13 +218,8 @@ func provisionSystemServers(ctx context.Context, cfg *config.Config, out io.Writ
 	return nil
 }
 
-// printVelocityWiringGuidance records the login-first topology bootstrap applies to
-// its host proxy and an external proxy must mirror. Felis auto-registers login/lobby
-// as dynamic backends via /api/v1/servers, while velocity.toml owns the static
-// login-only fallback. The invariant is stateful: every fresh connection lands on
-// login; only login may release a linked player to the lobby; and the proxy may then
-// redirect that release to the originally requested backend or park it in the lobby
-// while the backend wakes.
+// The static proxy fallback names only login; login and lobby register dynamically.
+// Every fresh connection authenticates at login before lobby or backend routing.
 func printVelocityWiringGuidance(out io.Writer, rootDomain string) {
 	fmt.Fprintln(out, "\nfelis setup: Velocity login topology (bootstrap configured the host proxy automatically):")
 	fmt.Fprintln(out, "  If Velocity runs on another host, mirror these settings there:")

@@ -48,9 +48,7 @@ interface ActionHistoryItem {
   target: string;
   value?: boolean;
   world?: string;
-  // undo is the exact write that puts a permission back as it was before; absent
-  // when that state is unknown, so the entry offers no revert (a guess would turn
-  // a removed deny into a grant). Group entries invert their action instead.
+  // Revert only known prior values; guessing after removing a deny could grant access.
   undo?: { action: "set" | "unset"; value?: boolean };
   status: "success" | "error";
   output: string;
@@ -97,20 +95,13 @@ export function ServerLuckPerms() {
     [name, selectedPlayer]
   );
 
-  // LuckPerms does not reply over RCON (its commands finish asynchronously, after
-  // the response is flushed) — verified live on 5.5.85: every `lp` command
-  // returns an empty body while `list`/`plugins` answer normally. A silent,
-  // entry-less reply therefore means "could not read", NOT "no groups / no
-  // permissions": the two projection panels must not claim the latter on their
-  // own. The writes still work, so the page keeps offering them.
+  // LuckPerms commands finish after RCON flushes; an empty reply does not prove an empty permission set.
   const lpSilent =
     !!lpInfo &&
     !(lpInfo.output ?? "").trim() &&
     (lpInfo.groups?.length ?? 0) === 0 &&
     (lpInfo.permissions?.length ?? 0) === 0;
-  // Unread: the lists below know nothing, so they say so instead of "none", and a
-  // group or node is removed by typing it — a read row is the only other way in,
-  // and on LuckPerms 5.5 there never is one.
+  // Unknown LuckPerms reads still allow removal by explicit group or node name.
   const lpUnread = lpSilent || !!lpError;
 
   // Form State
@@ -211,10 +202,7 @@ export function ServerLuckPerms() {
     return { node, world };
   };
 
-  // priorValue is the value the last read showed for a node in a world (LuckPerms
-  // matches both case-insensitively), or undefined when no row showed one: the
-  // node was unset, or nothing could be read. A read still in flight or one whose
-  // refresh failed is stale (it predates the last write), so it knows nothing.
+  // Revert only from a successful prior read, matching node and world case-insensitively.
   const priorValue = (node: string, world: string): boolean | undefined => {
     if (lpUnread || lpLoading) return undefined;
     return lpInfo?.permissions?.find(

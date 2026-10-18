@@ -125,8 +125,6 @@ func TestAuthSourcesSaveAndRuntime(t *testing.T) {
 	}
 }
 
-// A deleted source keeps its tag reserved for the endpoint it pointed at: the tag is the
-// players' UUID namespace, so it comes back for that endpoint and for no other.
 func TestAuthSourcesDeleteRetiresTheTag(t *testing.T) {
 	a, repo := seedAuthSourcesAPI()
 	v := readAuthSources(t, a)
@@ -301,8 +299,6 @@ func TestAuthSourcesOwnerGateAndReauth(t *testing.T) {
 	}
 }
 
-// TestUpstreamRefusesLinkLocal pins that the auth client dials through
-// netguard.RefuseLinkLocal, so no source URL reaches the cloud metadata service.
 func TestUpstreamRefusesLinkLocal(t *testing.T) {
 	resp, err := authHTTPClient.Get("http://169.254.169.254/latest/meta-data/")
 	if err == nil {

@@ -15,18 +15,7 @@ import (
 	"felis.lolicon.best/internal/backup"
 )
 
-// cmdRestore is the in-Pod entrypoint the restore Job runs. internal/restore
-// renders a Pod whose command is `/usr/local/bin/felis restore`. It extracts a
-// world archive from the backup mount into the world mount and exits — it is NOT a
-// user-facing command and is never invoked by hand.
-//
-// It deliberately holds NO database credentials and never calls config.Load:
-// the felis-api made the authorization decision and looked up the archive ref;
-// this process is the unprivileged hands that move bytes. Its entire input is
-// the five flags below, mirroring the four-power isolation the rendered Job
-// enforces (a restore Pod must not be able to reach the felis DB or the K8s
-// API). All of those guarantees live in the Pod spec; this command only needs
-// the archive store and the two mount roots.
+// Restore Jobs receive no database or Kubernetes credentials; admission belongs to felis-api.
 func cmdRestore(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("restore", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -66,18 +55,13 @@ func cmdRestore(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "felis restore: archive store %q is not implemented in this build (only tarLocal)\n", *store)
 		return 1
 	}
-	// Defense in depth: the ref comes from felis-api (trusted), but this process
-	// is the one that opens it, so it confirms the ref stays within the backup
-	// mount. A ref outside it would mean reading an arbitrary host path, which a
-	// restore Pod must never do.
+	// Validate archive containment inside the backup mount before opening it.
 	if !refWithinRoot(*ref, *backupRoot) {
 		fmt.Fprintf(stderr, "felis restore: ref %q is not under backup root %q\n", *ref, *backupRoot)
 		return 1
 	}
 
-	// The world PVC is mounted directly at worldsRoot, so the resolver returns it
-	// for any target; the archive ref is absolute and is opened directly. This is
-	// the same TarLocal the reaper uses to write archives, run in reverse.
+	// The Job mounts the target PVC directly; source archive references remain absolute.
 	archiver := &backup.TarLocal{
 		BackupRoot: *backupRoot,
 		Resolve: func(string) (string, error) {

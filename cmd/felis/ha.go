@@ -27,13 +27,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// felis ha is the host side of controller high availability (internal/platform ha.go):
-//
-//	felis ha leader [-or-unreachable]   exit 0 on the controller that runs the host's
-//	                                     cluster-wide jobs (the timers' ExecCondition)
-//	felis ha migrate-storage ...        move the control plane's volumes to the
-//	                                     replicated class (the installer, enabling HA)
-//	felis ha copy-volume -from -to      the copy one migration Job runs
 func cmdHA(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: felis ha leader|migrate-storage|copy-volume [flags]")
@@ -51,14 +44,7 @@ func cmdHA(args []string, stdout, stderr io.Writer) int {
 	return 2
 }
 
-// ---- leader ----
-
-// The host leader is the controller running the PostgreSQL pod: the host's own tools
-// reach the database on that node's loopback port only (platform.PostgresHostPort), and
-// with controller high availability the control plane's other volumes are attached there
-// too. On a single controller it is that controller, always. When the database's pod has
-// no live node (it is being moved), the first online controller by name stands in, so the
-// watchdog still runs somewhere to report it.
+// The host leader follows PostgreSQL placement, falling back to the first online controller if unavailable.
 func hostLeader(ctx context.Context, cl client.Reader, controlNS string) (string, error) {
 	var nodes corev1.NodeList
 	if err := cl.List(ctx, &nodes); err != nil {
@@ -158,8 +144,6 @@ func haLeaderVerdict(self, leader string, err error, orUnreachable, quiet bool, 
 	return 1
 }
 
-// ---- copy-volume ----
-
 func cmdHACopyVolume(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("ha copy-volume", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -177,8 +161,6 @@ func cmdHACopyVolume(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "felis ha copy-volume: copied %d files (%d bytes) in %s\n", st.files, st.bytes, time.Since(started).Round(time.Millisecond))
 	return 0
 }
-
-// ---- migrate-storage ----
 
 // haVolume is one control-plane volume to move: from a claim, or (the database) from a
 // host directory, into its replicated copy.
@@ -280,7 +262,7 @@ func (m *haMigration) plan(ctx context.Context) ([]haVolume, error) {
 		vols = append(vols, haVolume{Namespace: m.mcNS, From: s.WorldPVC(), To: "world-" + s.Name + "-ha", Server: s.Name})
 	}
 	// A source that does not exist has nothing to move (a claim never bound, a
-	// feature never used); its copy is simply created empty by the HA bundle.
+	// feature never used); its copy is created empty by the HA bundle.
 	var out []haVolume
 	for _, v := range vols {
 		if v.HostPath != "" {
@@ -507,9 +489,7 @@ func (m *haMigration) waitJobGone(ctx context.Context, job *batchv1.Job) error {
 
 const haMigratedLabel = "felis.lolicon.best/ha-copy"
 
-// haCopyJob is the Job copying one volume: pinned to the node holding the source, which
-// it mounts read-only (a claim, or the database's host directory), with the replicated
-// copy read-write; root with only what keeping owners takes.
+// Pin volume-copy Jobs to the source node and mount the source read-only.
 func haCopyJob(v haVolume, node, image string) *batchv1.Job {
 	source := corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: v.From, ReadOnly: true}}
 	if v.HostPath != "" {
@@ -551,9 +531,7 @@ func haCopyJob(v haVolume, node, image string) *batchv1.Job {
 
 func boolPtr(b bool) *bool { return &b }
 
-// pointServers moves each system server onto its replicated world and gives it back the
-// desired state it had before the move. The operator, started again by the HA bundle,
-// creates its pods on any controller.
+// Restore system servers' desired states after switching to replicated worlds.
 func (m *haMigration) pointServers(ctx context.Context, vols []haVolume, st *haState) error {
 	for _, v := range vols {
 		if v.Server == "" {

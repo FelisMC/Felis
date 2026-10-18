@@ -89,9 +89,6 @@ const rebuildServers = `{"apiVersion":"v1","kind":"List","items":[
  {"apiVersion":"felis.lolicon.best/v1alpha1","kind":"MinecraftServer","metadata":{"name":"creative","namespace":"minecraft"},"spec":{"desiredState":"Stopped"}}
 ]}`
 
-// TestRestorableServersCleansTheOldCluster pins what is applied on the rebuilt host: user
-// servers only, each stopped, without the old cluster's node placement, migration claim
-// name, locks or in-flight marks, and with everything else as the bundle had it.
 func TestRestorableServersCleansTheOldCluster(t *testing.T) {
 	out, names, err := restorableServers([]byte(rebuildServers))
 	if err != nil {
@@ -124,8 +121,6 @@ func TestRestorableServersCleansTheOldCluster(t *testing.T) {
 	}
 }
 
-// TestRestoreHostRunsTheRunbookOnce pins the steps in order, that each is recorded, and
-// that a second run does nothing again (above all, never restores the database twice).
 func TestRestoreHostRunsTheRunbookOnce(t *testing.T) {
 	dir := t.TempDir()
 	r := &fakeRestoreRunner{t: t, dir: dir, servers: rebuildServers, restores: map[string]string{"survival": "bk-9"}}
@@ -172,8 +167,6 @@ func TestRestoreHostRunsTheRunbookOnce(t *testing.T) {
 	}
 }
 
-// TestRestoreHostResumesAfterAFailure pins that a failed step stops the run with what is
-// done recorded, and the next run starts at the failed step.
 func TestRestoreHostResumesAfterAFailure(t *testing.T) {
 	dir := t.TempDir()
 	r := &fakeRestoreRunner{t: t, dir: dir, servers: rebuildServers, fail: map[string]error{"felis offsite fetch-uploads": errors.New("bucket timeout")}}
@@ -208,9 +201,6 @@ func TestRestoreHostResumesAfterAFailure(t *testing.T) {
 	}
 }
 
-// TestRestoreHostTakesTheNamedBundle pins -bundle on a rerun: before the database is
-// restored it fetches and uses the named bundle, although a newer one was fetched before;
-// after, it is refused and the restored bundle stands.
 func TestRestoreHostTakesTheNamedBundle(t *testing.T) {
 	dir := t.TempDir()
 	r := &fakeRestoreRunner{t: t, dir: dir, servers: rebuildServers, fail: map[string]error{"felis offsite fetch-images": errors.New("bucket timeout")}}
@@ -236,8 +226,6 @@ func TestRestoreHostTakesTheNamedBundle(t *testing.T) {
 	}
 }
 
-// TestRestoreHostRefusesAnInstallWithServers pins that a rebuild never replaces an
-// install already in use unless asked to.
 func TestRestoreHostRefusesAnInstallWithServers(t *testing.T) {
 	dir := t.TempDir()
 	r := &fakeRestoreRunner{t: t, dir: dir, servers: rebuildServers, count: 3}
@@ -253,7 +241,6 @@ func TestRestoreHostRefusesAnInstallWithServers(t *testing.T) {
 	}
 }
 
-// TestNewestBundleAndBundleEntry pins the two bundle helpers.
 func TestNewestBundleAndBundleEntry(t *testing.T) {
 	dir := t.TempDir()
 	if _, err := newestBundle(dir); err == nil {

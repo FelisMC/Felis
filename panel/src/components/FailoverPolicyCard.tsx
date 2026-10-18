@@ -32,9 +32,6 @@ function validDraft(d: Draft): boolean {
   return after >= 10 && after <= 1440 && (replica === 0 || (replica >= 15 && replica <= 1440));
 }
 
-// FailoverPolicyCard is the Owner's failover setting for distributed mode: whether a lost
-// worker is failed over without waiting for the Owner, after how long, and how often the
-// worlds running on workers are copied live so a failover loses little.
 export function FailoverPolicyCard() {
   const { t } = useTranslation("admin");
   const query = useAsync(api.getFailoverPolicy, []);

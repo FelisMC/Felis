@@ -17,10 +17,7 @@ import (
 	"felis.lolicon.best/internal/watchdog"
 )
 
-// hostOverview is the platform at a glance as the panel's maintenance page shows it: what
-// `felis status` prints, as data, plus the host settings the panel can change. It never
-// carries a secret: the watchdog's state holds a cached SMTP password, of which only the
-// alerts are read.
+// Host overview data must not contain secrets.
 type hostOverview struct {
 	Host    string    `json:"host"`
 	At      time.Time `json:"at"`

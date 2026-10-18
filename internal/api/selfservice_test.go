@@ -11,14 +11,11 @@ import (
 	"felis.lolicon.best/internal/software"
 )
 
-// fakeOwned is one server SeedOwnedServer wrote.
 type fakeOwned struct {
 	owner string
 	res   ResourceSpec
 }
 
-// fakeCaps mirrors readQuota: the user's own quota row (fakeQuotas), else the
-// default quota setting when it is on, else none.
 func (f *fakeRepo) fakeCaps(userID string) (*QuotaInput, string) {
 	if q, ok := f.fakeQuotas[userID]; ok {
 		return &QuotaInput{MaxServers: q.MaxServers, MaxCPUMilli: q.MaxCPUMilli, MaxMemoryMB: q.MaxMemoryMB, MaxStorageGB: q.MaxStorageGB}, "user"
@@ -82,9 +79,7 @@ func (f *fakeRepo) SelfServiceState(_ context.Context, userID string) (QuotaStat
 	return QuotaState{Source: source, Limits: caps, Usage: f.usage(userID, "")}, nil
 }
 
-// fakeCatalog answers like the upstream metadata the resolver reads: Paper
-// offers 1.21.4 (builds 232, recommended, and 231) and a 1.21.5 release
-// candidate, both on Java 21; vanilla offers 1.21.4.
+// fakeCatalog offers fixed Paper and vanilla builds on Java 21, including a release candidate.
 type fakeCatalog struct{ err error }
 
 func (c fakeCatalog) Versions(_ context.Context, t software.Type) ([]software.Version, error) {
@@ -111,8 +106,7 @@ func (c fakeCatalog) ForwardingFor(_ context.Context, s software.Spec) (string, 
 
 const runtimeRegistry = "registry.felis.svc:5000"
 
-// newSelfServiceAPI is an API whose caller is player "u1", linked to a
-// Minecraft account, with server software configured.
+// newSelfServiceAPI supplies a linked u1 and a configured software catalog.
 func newSelfServiceAPI() (*API, *fakeRepo, *fakeCluster) {
 	repo := newFakeRepo()
 	cl := newFakeCluster()
@@ -142,8 +136,6 @@ func selfCreate(a *API, name, memory string) (int, string, string) {
 	return w.Code, code, w.Body.String()
 }
 
-// The Owner's answer for a fresh install: nobody without a quota of their own
-// can create a server until a default quota is turned on.
 func TestSelfCreateIsOffWithoutAQuota(t *testing.T) {
 	a, _, cl := newSelfServiceAPI()
 	if status, code, body := selfCreate(a, "mine", "2Gi"); status != http.StatusForbidden || code != "self_service_disabled" {
@@ -154,8 +146,6 @@ func TestSelfCreateIsOffWithoutAQuota(t *testing.T) {
 	}
 }
 
-// Under a default quota of one 4 GiB server a user gets exactly one, owned by
-// them, running the software they picked on the runtime image of its Java.
 func TestSelfCreateWithinTheDefaultQuota(t *testing.T) {
 	a, repo, cl := newSelfServiceAPI()
 	enableDefaultQuota(repo, 1, 4096)
@@ -187,7 +177,6 @@ func TestSelfCreateWithinTheDefaultQuota(t *testing.T) {
 	}
 }
 
-// A user's own quota applies even with the default quota off.
 func TestSelfCreateUnderTheUsersOwnQuota(t *testing.T) {
 	a, repo, _ := newSelfServiceAPI()
 	two := 2
@@ -215,8 +204,6 @@ func TestSelfCreateNeedsALinkedAccountAndTheEULA(t *testing.T) {
 	}
 }
 
-// A server the cluster refuses must not keep the quota slot or the subdomain:
-// the next attempt, once the cluster takes it, fits the same one-server quota.
 func TestSelfCreateGivesTheSlotBackWhenTheClusterRefuses(t *testing.T) {
 	a, repo, cl := newSelfServiceAPI()
 	enableDefaultQuota(repo, 1, 4096)
@@ -225,8 +212,6 @@ func TestSelfCreateGivesTheSlotBackWhenTheClusterRefuses(t *testing.T) {
 		t.Fatalf("create the cluster refused = %d, want a server error", status)
 	}
 	cl.createErr = nil
-	// Another name: re-seeding the same name never counts the old row, so only
-	// a fresh name shows whether the refused server still holds the one slot.
 	if status, _, body := selfCreate(a, "other", "2Gi"); status != http.StatusCreated {
 		t.Fatalf("next create after the refusal = %d (%s), want 201", status, body)
 	}
@@ -263,8 +248,6 @@ func TestResolveSoftwareRefusesWhatUpstreamDoesNotOffer(t *testing.T) {
 	}
 }
 
-// Moving a world to another version is one-way, so the owner confirms it; the
-// change is theirs to make and nobody else's.
 func TestOwnerChangesTheirServersSoftware(t *testing.T) {
 	a, repo, cl := newSelfServiceAPI()
 	enableDefaultQuota(repo, 1, 4096)

@@ -7,19 +7,12 @@ import (
 	"testing"
 )
 
-// adminAPIWithBuildLogs is adminAPI plus a build-log streamer, so the §16
-// build-log handler is exercised against a fake (the real K8sBuildLogStreamer's
-// pod selection + pods/log follow are integration-only). A bare fakeBuilder
-// satisfies the admin gate's interface dependency.
 func adminAPIWithBuildLogs(streamer LogStreamer) *API {
 	api := adminAPI(&fakeBuilder{})
 	api.BuildLogs = streamer
 	return api
 }
 
-// A valid build id streams the build Pod log as SSE and forwards the id to the
-// build-namespace streamer (spec §16, §416 日志流复用 §8). A finite source (one
-// line then EOF) lets the relay return without blocking on the heartbeat.
 func TestBuildLogsStreamsForAdmin(t *testing.T) {
 	streamer := &fakeLogStreamer{src: io.NopCloser(strings.NewReader("building image...\n"))}
 	api := adminAPIWithBuildLogs(streamer)
@@ -41,9 +34,6 @@ func TestBuildLogsStreamsForAdmin(t *testing.T) {
 	}
 }
 
-// A malformed build id is rejected up front (400) and never reaches the streamer:
-// the id becomes a label-selector value, so a crafted id (here a comma + '=' that
-// would inject a second selector requirement) must be refused before selection.
 func TestBuildLogsRejectsMalformedID(t *testing.T) {
 	streamer := &fakeLogStreamer{src: io.NopCloser(strings.NewReader("x\n"))}
 	api := adminAPIWithBuildLogs(streamer)
@@ -59,8 +49,6 @@ func TestBuildLogsRejectsMalformedID(t *testing.T) {
 	}
 }
 
-// With no BuildLogs streamer configured, the route reports 503 — but only after
-// the admin gate and id validation, so the boundary is still enforced.
 func TestBuildLogsUnconfiguredIs503(t *testing.T) {
 	api := adminAPI(&fakeBuilder{}) // BuildLogs deliberately left nil
 	w := do(api.ExternalHandler(), "GET", "/api/v1/images/build/bld-1/logs", "", nil)
@@ -72,9 +60,6 @@ func TestBuildLogsUnconfiguredIs503(t *testing.T) {
 	}
 }
 
-// No build Pod for the id (not scheduled yet, or GC'd after completion) is 404 —
-// distinct from the 409 the §8 server console returns for a stopped server, since
-// a build's pod absence is "not found", not "not running".
 func TestBuildLogsNotFoundIs404(t *testing.T) {
 	api := adminAPIWithBuildLogs(&fakeLogStreamer{err: ErrNotFound})
 	w := do(api.ExternalHandler(), "GET", "/api/v1/images/build/bld-1/logs", "", nil)
@@ -86,8 +71,6 @@ func TestBuildLogsNotFoundIs404(t *testing.T) {
 	}
 }
 
-// A pod that exists but whose log stream cannot be opened (e.g. kaniko's image is
-// still pulling, container Waiting) is a transient 503 the client retries.
 func TestBuildLogsUnavailableIs503(t *testing.T) {
 	api := adminAPIWithBuildLogs(&fakeLogStreamer{err: ErrConsoleUnavailable})
 	w := do(api.ExternalHandler(), "GET", "/api/v1/images/build/bld-1/logs", "", nil)

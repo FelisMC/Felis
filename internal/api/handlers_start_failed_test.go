@@ -9,11 +9,6 @@ import (
 	"felis.lolicon.best/internal/maintenance"
 )
 
-// A start that Failed holds desiredState Running already, so the wake that
-// re-writes Running changes nothing. These pin the two ways out: a person's
-// wake in the panel starts it over (RetryStart), and a player's join onto one
-// whose retries are spent is told so (409 start_failed) and never resets them.
-
 func failedServer(gaveUp bool) *ServerInfo {
 	return &ServerInfo{Name: "survival", AutostartPolicy: "public",
 		DesiredState: string(v1alpha1.DesiredRunning), Phase: string(v1alpha1.PhaseFailed),

@@ -11,14 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// backupModel is the break-glass "back up a world now" screen (§B4 "Sync"). It mirrors
-// haltModel's shape (async load → huh pick → async work → outcome card), but the work
-// step is an HTTP call to the felis-api internal face rather than a direct CRD write:
-// rendering a backup Job needs felis-api's deployment coordinates. All decision logic
-// lives in backupnow.go (unit-tested); this file is the untested terminal glue.
-//
-// It reuses listServersForHalt for the picker (the same "list servers with phase"
-// need) — the API backs a running pick up live and refuses one starting or stopping.
+// All decision logic lives in backupnow.go; this file is the untested terminal glue.
 type backupStep int
 
 const (

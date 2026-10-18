@@ -55,9 +55,7 @@ func sessionAnswer(t *testing.T, w *httptest.ResponseRecorder) fileSessionView {
 	return s
 }
 
-// doPart sends one part with the Content-Length given, whatever the body's own
-// length: -1 sends none, and one past the body is a part cut short. Its
-// Content-Digest is that of the body.
+// doPart overrides Content-Length independently of body length to model absent or truncated parts.
 func doPart(h http.Handler, target, body string, length int64) *httptest.ResponseRecorder {
 	return doPartDigest(h, target, body, length, contentDigestOf(body))
 }
@@ -97,8 +95,6 @@ func fetchStaged(api *API, src fileedit.UploadSource) *httptest.ResponseRecorder
 
 var opStarted = time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC)
 
-// TestFileUploadSession drives a session from begin to the Job's fetch across
-// both faces, and each way it can go wrong on the way.
 func TestFileUploadSession(t *testing.T) {
 	commit := func(api *API, id, body string) *httptest.ResponseRecorder {
 		return do(api.ExternalHandler(), "POST", sessionsRoute+"/"+id+"/commit", body, jsonHeader)
@@ -586,9 +582,6 @@ func (b *brokenWriter) Header() http.Header         { return b.header }
 func (b *brokenWriter) WriteHeader(code int)        { b.code = code }
 func (b *brokenWriter) Write(p []byte) (int, error) { return 0, errors.New("connection reset") }
 
-// TestFileOpsWorldGates pins the stopped and world-volume gates on the routes
-// that begin or start a background op: each refuses before a byte is staged, a
-// lock is asked for, or a Job is created.
 func TestFileOpsWorldGates(t *testing.T) {
 	routes := []struct{ name, target, body string }{
 		{"begin", sessionsRoute + "?path=a.jar", `{"size":3}`},

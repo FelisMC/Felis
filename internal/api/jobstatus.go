@@ -6,40 +6,24 @@ import (
 	"time"
 )
 
-// AsyncJob is the observable outcome of one asynchronous world operation. The API
-// only ENQUEUES backup/restore Jobs — the work, and any failure, happens in the
-// cluster — so without this projection a failed job left its only trace in a Job
-// object an operator with kubectl could read. The route is the API-side outlet.
 type AsyncJob struct {
 	Name       string    `json:"name"`
-	Kind       string    `json:"kind"`  // "backup" | "restore" | "export_world" | "export_backup" | "export_files"
-	State      string    `json:"state"` // "running" | "succeeded" | "failed"
+	Kind       string    `json:"kind"`
+	State      string    `json:"state"`
 	Message    string    `json:"message,omitempty"`
 	StartedAt  time.Time `json:"started_at,omitzero"`
 	FinishedAt time.Time `json:"finished_at,omitzero"`
-	// ThenRestore is set on a restore's safety snapshot (a backup Job): "pending"
-	// until the restore behind it starts ("started") or is given up
-	// ("abandoned", with a ChainAbandon* code in ThenRestoreReason and its
-	// English in Message). RestoreBackupID is the backup that restore extracts.
+	// ThenRestore tracks the safety snapshot's follow-up restore as pending, started or abandoned with a reason.
 	ThenRestore       string `json:"then_restore,omitempty"`
 	ThenRestoreReason string `json:"then_restore_reason,omitempty"`
 	RestoreBackupID   string `json:"restore_backup_id,omitempty"`
-	// Scheduled marks a backup felis-api took on its own (BackupScheduler), so
-	// the owner can tell it from one somebody asked for.
-	Scheduled bool `json:"scheduled,omitempty"`
+	Scheduled         bool   `json:"scheduled,omitempty"`
 }
 
-// JobStatusReader reads the newest backup/restore Jobs for a server, newest
-// first. Optional like Restorer/Backuper: when nil the route answers 503.
 type JobStatusReader interface {
 	LatestJobs(ctx context.Context, serverName string) ([]AsyncJob, error)
 }
 
-// handleServerJobs serves GET /api/v1/servers/{name}/jobs — the latest async world
-// operations for one server, so a 202 that later failed is visible without kubectl.
-// Authorization mirrors the backup/restore gates' front half (owner-or-admin); the
-// message is free-form Job text and can name paths the owner already sees through
-// the file editor.
 func (a *API) handleServerJobs(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	name := r.PathValue("name")

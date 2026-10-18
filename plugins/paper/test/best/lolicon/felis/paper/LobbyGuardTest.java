@@ -50,21 +50,7 @@ import java.util.logging.Level;
 import java.util.logging.LogRecord;
 import java.util.logging.Logger;
 
-/**
- * LobbyGuardTest drives the real LobbyGuard handlers with real paper-api events built
- * around fake players, worlds and entities: what a passer-by may not do to the lobby,
- * that a builder may, that nobody is hurt or starved and a fall into the void lands at
- * spawn, and what a player is told and set to on joining. Framework free: a failed
- * assertion throws.
- *
- * <p>The game rules resolve through the server's registry, which a fake cannot stand in
- * for; they are checked on a real Paper server. Here, the registry failing to load is
- * what a rule the server refuses looks like, and the guard has to log it and carry on.
- *
- * <p>Run: {@code ./gradlew lobbyTest} in plugins/paper.
- */
-// The paper-api event constructors are marked for removal (the server builds them);
-// a test raising the events itself has no other way in.
+// Simulate unavailable game-rule registries; construct deprecated events directly for listener tests.
 @SuppressWarnings("removal")
 public final class LobbyGuardTest {
 
@@ -249,7 +235,6 @@ public final class LobbyGuardTest {
         assertEq("... as a warning, not a crash", Level.WARNING, WARNINGS.get(0).getLevel());
     }
 
-    // ---- helpers ----
 
     private record Case(String what, Function<Player, Cancellable> event) {
         boolean fire(Player p) {
@@ -269,10 +254,7 @@ public final class LobbyGuardTest {
         return Fakes.fake(Arrow.class, (m, a) -> m.equals("getShooter") ? shooter : Fakes.UNANSWERED);
     }
 
-    /**
-     * dispatch hands the event to every LobbyGuard handler that takes its type, the way
-     * Bukkit would, and reports whether it ended up cancelled.
-     */
+    /** dispatch hands the event to every LobbyGuard handler that takes its type, as Bukkit would, and reports whether it ended up cancelled. */
     private static boolean dispatch(Cancellable event) {
         if (event instanceof PlayerArmorStandManipulateEvent e) {
             GUARD.onArmorStand(e);

@@ -16,8 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// EmergencyStop records the stop intent before scaling the owned workload. It
-// bypasses RCON and operator reconciliation, retaining normal Pod shutdown grace.
+// EmergencyStop persists stop intent before scaling and preserves normal pod shutdown grace.
 func (k *K8sCluster) EmergencyStop(ctx context.Context, name string) error {
 	if err := k.SetDesiredState(ctx, name, v1alpha1.DesiredStopped); err != nil {
 		return err

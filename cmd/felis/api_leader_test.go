@@ -13,9 +13,6 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 )
 
-// TestLeadLoopsRunsTheLoopsOnlyWithTheLease pins the lease: while another felis-api keeps
-// renewing it this one runs nothing; once that holder stops, it takes over and starts the
-// loops; and stopping releases the lease.
 func TestLeadLoopsRunsTheLoopsOnlyWithTheLease(t *testing.T) {
 	apiLeaseDuration, apiLeaseRenew, apiLeaseRetry = 1500*time.Millisecond, time.Second, 200*time.Millisecond
 	t.Cleanup(func() { apiLeaseDuration, apiLeaseRenew, apiLeaseRetry = 15*time.Second, 10*time.Second, 2*time.Second })

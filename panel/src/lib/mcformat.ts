@@ -1,10 +1,4 @@
-// Console formatting codes. Minecraft servers and plugins colour text with §
-// codes (§a green, §l bold, §r reset, and the §x§r§r§g§g§b§b hex form), and a
-// server started with a colour terminal writes ANSI SGR escapes instead. Shown
-// raw, both turn a log into noise. parseFormatting splits a line into styled
-// segments once, when the line arrives; the console renders each segment as a
-// React text node inside a styled span, so nothing from the log ever reaches
-// the page as markup.
+// Render parsed log segments as text nodes, never as HTML markup.
 
 export interface SegmentStyle {
   /** A CSS colour, e.g. "#55ff55". */

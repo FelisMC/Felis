@@ -11,35 +11,8 @@ import type { Identity } from "./types";
 import { ACCESS_REFUSED_EVENT, api, SESSION_EXPIRED_EVENT } from "./api";
 import { deriveAuth, isUnauthorized, type AuthState } from "./auth";
 
-// TierProvider fetches GET /me at boot and re-fetches on demand (refresh), exposing
-// the result through context. Four design rules, all load-bearing:
-//
-//  1. Fail-closed: `isAdmin` is `identity?.is_admin === true`. While /me is in
-//     flight (`identity === null`) or after it rejects, isAdmin is false — admin
-//     nav/routes stay hidden. The `=== true` (not just truthy) also closes the
-//     wire-shape trap: if the JSON ever arrives without `is_admin`, the value is
-//     `undefined`, which is correctly non-admin rather than a thrown access.
-//
-//  2. Still-functional on a transient failure: a /me rejection that is NOT a 401 is
-//     swallowed to a null identity, NOT re-thrown and NOT treated as logged-out. A
-//     principal whose /me momentarily fails still gets the full User-Side app; they
-//     simply don't see admin surfaces. (The backend 403s admin data calls
-//     independently, so this is safe.) Only a genuine 401 sets `unauthenticated`.
-//     The failure itself is `identityError`: the admin and owner gates show it
-//     with a retry, since "not authorized" would be a guess.
-//
-//  3. Login-aware: `unauthenticated` (a true 401) routes to /login; `refresh()`
-//     re-reads /me after a login / logout so the gate re-evaluates without a reload.
-//
-//  4. Session-aware while open: a 401 from any protected call (api.ts announces
-//     SESSION_EXPIRED_EVENT), a role refusal (ACCESS_REFUSED_EVENT, at most once
-//     per ACCESS_RECHECK_MS), the tab coming back into view, or the window
-//     regaining focus re-reads /me through `revalidate()`. It leaves `loading`
-//     alone, so the app stays mounted during the check; a 401 signs the person
-//     out, a changed role redraws the gates (a demoted admin loses the admin
-//     pages), and `sessionEnded` tells the login page why the person landed there.
-//
-// Rules 1–2 are UX truth, not a security control — see DESIGN-WEB-3SIDES §1.
+// Only 401 signs out; missing or malformed identity flags grant no elevated role.
+// Revalidate on protected-route errors, focus, and visibility changes without unmounting the app.
 
 export interface TierState extends AuthState {
   /** Owner (platform-level, one above admin) — exposed so nav can show the Users
@@ -175,9 +148,7 @@ export function TierProvider({ children }: { children: ReactNode }) {
   }, [revalidate]);
 
   const state = deriveAuth(identity, error, loading);
-  // isOwner is separate from isAdmin: an owner implicitly passes isAdmin (the
-  // backend grades by operation), but isOwner gates user management. Both are
-  // fail-closed — identity === null or missing fields → false.
+  // Owner and admin flags fail closed independently.
   const isOwner = identity?.is_owner === true;
 
   return (

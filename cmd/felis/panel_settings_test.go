@@ -12,9 +12,6 @@ import (
 	"felis.lolicon.best/internal/mailsettings"
 )
 
-// TestPanelSettingsSaysWhatThePanelHolds pins felis panel-settings: yes or no for the relay
-// and the heartbeat, never a value, and exit 1 when the database cannot be read, so the
-// installer warns as it would with nothing saved.
 func TestPanelSettingsSaysWhatThePanelHolds(t *testing.T) {
 	cfg := filepath.Join(t.TempDir(), "felis.host.toml")
 	writeTestFile(t, cfg, testWatchdogConfig, 0o600)

@@ -111,10 +111,6 @@ func TestPlanKeepsTheNewestTaggedPlatformImages(t *testing.T) {
 	}
 }
 
-// A BuildKit push stores an image index plus one untagged revision per platform
-// and per attestation, and a server's spec pins the index. The children must stay
-// with it: the VM's test-one lost its arm64 manifest this way and could no longer
-// pull the paper image it was pinned to.
 func TestPlanKeepsTheManifestsAKeptIndexNames(t *testing.T) {
 	withKids := func(r registrygate.Revision, kids ...string) registrygate.Revision {
 		for _, k := range kids {
@@ -261,9 +257,6 @@ func TestRunAbortsOnAPartialView(t *testing.T) {
 	}
 }
 
-// Through the real gate: the index comes off the data directory, the delete is
-// authorized as the prune principal and reaches the registry without the
-// credential.
 func TestRunThroughTheGate(t *testing.T) {
 	root := t.TempDir()
 	repoDir := filepath.Join(root, "docker/registry/v2/repositories/e2e/probe/_manifests")
@@ -332,8 +325,6 @@ func TestRunThroughTheGate(t *testing.T) {
 	}
 }
 
-// The gate reads an index's children off the blob store, so a pinned index keeps
-// its platform manifest end to end, and an unpinned one goes with it.
 func TestRunThroughTheGateKeepsAPinnedIndexWhole(t *testing.T) {
 	root := t.TempDir()
 	repoDir := filepath.Join(root, "docker/registry/v2/repositories/felis/paper/_manifests")

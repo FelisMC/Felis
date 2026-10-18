@@ -1,15 +1,5 @@
 #!/bin/bash
-# The newest published release, for the e2e workflow's readme and upgrade jobs, and what
-# their installer logs must show about how that release reached the host:
-#
-#   bash deploy/e2e_release.sh find                # tag, binary, sums into $GITHUB_OUTPUT
-#   bash deploy/e2e_release.sh check-own LOG       # the release's own installer (upgrade)
-#   bash deploy/e2e_release.sh check-readme LOG    # this commit's installer on its default
-#                                                  # channel, the documented command (readme)
-#
-# The checks read TAG, BINARY and SUMS from the environment, as find wrote them. The
-# runners are x86_64, so the binary asset is felis-linux-amd64. deploy/e2e_release_test.sh
-# holds this script's own checks, against bootstrap.sh's own messages.
+# Resolve the latest stable release and validate x86_64 artifact installation through exported TAG/BINARY/SUMS.
 set -euo pipefail
 
 ASSET=felis-linux-amd64
@@ -29,12 +19,7 @@ lacks_re() { # label regex log
   if hit="$(grep -E -m 1 -- "$2" "$3")"; then fail "$1: ${hit}"; else pass "$1"; fi
 }
 
-# find_release: `gh release view` with no tag answers with the newest release that is not a
-# prerelease, the one the installer's release channel resolves.
-#
-# An empty tag skips the readme and upgrade jobs, green. Only gh's own `release not found`
-# means there is no release; any other failure (a token it refused, a rate limit, a network
-# error) fails the step, or every release's upgrade would go untested without a word.
+# Only an explicitly absent release skips e2e coverage; other GitHub failures remain errors.
 find_release() {
   local lines err rc=0 tag names binary="" sums=""
   err="$(mktemp)"

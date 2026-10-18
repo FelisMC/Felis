@@ -24,58 +24,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * ControlChannel is the proxy end of the {@code felis:control} plugin-message channel
- * (spec §12): the bridge between the felis-paper lobby's {@code /menu} GUI and the
- * routing core. The lobby is a pure UI face — it holds no felis-api token and keeps
- * no queue — so every menu action arrives here as a {@link ControlFrame}, this class
- * drives the felis-api internal endpoints and the shared waiting queue, and answers
- * downstream with another frame. It is the §27 scenario-10 path: {@code /menu →
- * plugin msg → velocity → api → 共用等待队列 → ready 后 Connect}.
- *
- * <p><b>Anti-spoof (spec §14).</b> The acting identity is taken from the
- * {@link ServerConnection} the message arrived on — {@code source.getPlayer()} — and
- * never from the frame's {@code player} field. That alone does not make a frame
- * trustworthy: every user backend runs plugins its owner chose, and the player on a
- * connection is whoever happens to be standing on that server. So the connection's
- * <em>server</em> decides what may be sent at all ({@link ControlPolicy}): the lobby
- * gets the menu frames, the login gate gets {@code LoginRelease}, and every other
- * backend is dropped. A frame from a client is dropped too. The {@code server} field
- * must name a managed user server; the autostartPolicy / ownership gates
- * server-side then decide whether this UUID may act on it.
- *
- * <p><b>Load.</b> Each accepted frame is at most one blocking felis-api call, so
- * frames are metered per player ({@link FrameBudget}) and menu projections are
- * shared across players for {@link #STATUS_TTL_MILLIS}: a lobby full of players
- * opening the menu at once reads each server's status once, not once per player.
- * The one per-player read is a menu open's {@code ListRequest}: a single call that
- * says what the player may do with every tile.
- *
- * <p><b>Threading.</b> {@code felis:control} frames arrive on a Velocity event
- * thread, but every felis-api call below blocks on HTTP. So each handler does the
- * non-blocking work synchronously — decode, derive identity, and
- * {@code setResult(handled())} to stop the frame being forwarded — then hands the
- * blocking call to {@link FelisVelocityPlugin#async}, sending any downstream frame
- * from inside that callback. {@code setResult} must run before the handler returns;
- * it cannot be set from the async hop.
- *
- * <p>The lobby's upstream frames map onto the menu (spec §12): a {@code ListRequest}
- * asks which tiles to draw ({@code ListUpdate} back: the registry's names, the
- * player's own first, each with what felis-api says the player may do with it); a
- * {@code StatusQuery} refreshes a tile ({@code StatusUpdate} back); a
- * {@code WakeRequest} (owned server) wakes and parks; a {@code ClaimRequest}
- * (ownerless server) runs the two-rule split — claim asserts ownership/quota, then
- * the wake applies the autostartPolicy gate — and parks on success. Refusals come
- * back as {@code Error}; readiness as {@code TransferReady} just before the proxy
- * Connects the player (via {@link WaitingRouter.MenuTransferListener}).
- *
- * <p>The login gate's one frame, {@code LoginRelease}, asks the proxy to move the
- * player to the lobby. It replaces the BungeeCord {@code Connect} the gate used to
- * send: {@code bungeecord:main} is handled inside Velocity before any plugin event,
- * so it cannot be restricted to the gate and is switched off in velocity.toml
- * instead. The release itself is still authorized by
- * {@link WaitingRouter#onServerPreConnect}.
- */
+// Mark plugin messages handled synchronously before dispatching metered API work off-thread.
 public final class ControlChannel implements WaitingRouter.MenuTransferListener {
 
     /** The namespaced channel both ends register; shared with the codec's name. */
@@ -86,9 +35,7 @@ public final class ControlChannel implements WaitingRouter.MenuTransferListener 
     // Two full menu pages (45 tiles + the list each) in a burst, then 10 frames a second.
     private static final int FRAME_BURST = 96;
     private static final double FRAME_REFILL_PER_SECOND = 10.0;
-    // Upper bound on tiles in one ListUpdate. A proxy→backend plugin message is capped
-    // at 32767 bytes; 500 names of at most 32 chars plus 500 verdicts of at most 12
-    // (each quoted, comma-separated) come to about 25 KB.
+    // Upper bound on tiles in one ListUpdate: a proxy-to-backend plugin message is capped at 32767 bytes, and 500 names with verdicts come to about 25 KB.
     static final int MAX_LISTED = 500;
     // The menu-access verdict for a server the player owns; those tiles lead the list.
     static final String MENU_OWNER = "owner";
@@ -124,10 +71,7 @@ public final class ControlChannel implements WaitingRouter.MenuTransferListener 
         this.policy = new ControlPolicy(loginServer, lobbyServer, registry::isManaged);
     }
 
-    /**
-     * register opens the channel and wires this instance as the waiting queue's
-     * menu-transfer listener. The caller still registers it as an event subscriber.
-     */
+    /** register opens the channel and wires this instance as the waiting queue's menu-transfer listener. The caller still registers it as an event subscriber. */
     void register() {
         proxy.getChannelRegistrar().register(CHANNEL);
         router.setMenuTransferListener(this);
@@ -138,13 +82,10 @@ public final class ControlChannel implements WaitingRouter.MenuTransferListener 
         if (!CHANNEL.getId().equals(event.getIdentifier().getId())) {
             return; // not ours → leave Velocity's default handling alone
         }
-        // We own this channel end to end: a felis:control frame is never relayed to
-        // the other side, whatever its source. Consume it before doing anything else.
+        // A felis:control frame is never relayed to the other side: consume it before anything else.
         event.setResult(PluginMessageEvent.ForwardResult.handled());
 
-        // Identity comes from the connection, never the frame (spec §14). A frame from
-        // anything but a backend server (e.g. a client) is not a legitimate lobby
-        // action — drop it.
+        // Identity comes from the connection, never the frame. A frame from anything but a backend server (a client, say) is not a legitimate lobby action: drop it.
         if (!(event.getSource() instanceof ServerConnection)) {
             return;
         }
@@ -205,10 +146,7 @@ public final class ControlChannel implements WaitingRouter.MenuTransferListener 
         budget.forget(event.getPlayer().getUniqueId());
     }
 
-    // A ListRequest draws the menu: the names come from the registry, and what this
-    // player may do with each comes from felis-api in one call. When felis-api cannot
-    // answer (or the pool is full) the names still go out, and the lobby draws its
-    // tiles without verdicts, as before they existed.
+    // Return server names without verdicts if the API or call pool is unavailable.
     private void handleList(ServerConnection source, Player player) {
         List<String> names = listed();
         UUID id = player.getUniqueId();
@@ -227,11 +165,7 @@ public final class ControlChannel implements WaitingRouter.MenuTransferListener 
         }
     }
 
-    /**
-     * menuList orders the tiles and pairs each with its verdict: the player's own
-     * servers first, then everything else, each group by name. The cap applies after
-     * the ordering, so a player's own servers are never the ones cut.
-     */
+    // Order owned servers first before applying the menu cap.
     static ControlFrame menuList(List<String> names, Map<String, String> access) {
         List<String> sorted = new ArrayList<>(names);
         sorted.sort(Comparator.comparing((String n) -> !MENU_OWNER.equals(access.get(n)))
@@ -300,16 +234,12 @@ public final class ControlChannel implements WaitingRouter.MenuTransferListener 
         }
     }
 
-    // A WakeRequest is the menu's Join or Start button: wake
-    // it and park them in the shared queue. enqueueFromMenu does the HTTP off-thread
-    // and reports its own refusals to the player; nothing to await here.
+    // enqueueFromMenu performs wake admission and waiting off-thread and reports refusals itself.
     private void handleWake(ServerConnection source, Player player, String server) {
         router.enqueueFromMenu(player, server);
     }
 
-    // A ClaimRequest is the menu's Claim & Start on an ownerless server: the two-rule
-    // split. Claim first (ownership + quota); only on success wake-and-park (the
-    // autostartPolicy gate). A claim refusal answers with Error and never wakes.
+    // Claim ownership and quota first; only successful claims proceed to policy-gated wake and queueing.
     private void handleClaim(ServerConnection source, Player player, String server) {
         UUID id = player.getUniqueId();
         boolean taken = plugin.async(() -> {
@@ -319,7 +249,7 @@ public final class ControlChannel implements WaitingRouter.MenuTransferListener 
                 send(source, errorFrame(e, server));
                 return; // claim refused → do not wake a server the player doesn't own
             }
-            statusCache.remove(server); // it is no longer claimable
+            statusCache.remove(server); // already claimed, so not claimable
             // Owned now → run the second rule. enqueueFromMenu spawns its own async
             // hop for the wake, which is fine from here.
             router.enqueueFromMenu(player, server);
@@ -329,11 +259,7 @@ public final class ControlChannel implements WaitingRouter.MenuTransferListener 
         }
     }
 
-    /**
-     * onReady fires when a menu-parked player's backend goes ready, just before the
-     * proxy Connects them. The lobby uses {@code TransferReady} to react (close the
-     * menu / show "joining"); the actual move is the proxy's Connect, not this frame.
-     */
+    // TransferReady announces readiness; the proxy still performs the connection.
     @Override
     public void onReady(Player player, String serverName) {
         player.getCurrentServer().ifPresent(sc ->
@@ -344,12 +270,7 @@ public final class ControlChannel implements WaitingRouter.MenuTransferListener 
         connection.sendPluginMessage(CHANNEL, Control.encode(frame));
     }
 
-    // errorFrame turns a LinkException into a downstream Error. felis-api's structured
-    // errors carry user-safe text (the same {code,message} the external API returns),
-    // but a transport failure (statusCode 0) carries internal IO detail — host names,
-    // refused ports — that must not reach a player's screen, so it is generalized.
-    // The lobby localizes known codes itself; this fallback message may reach the
-    // screen raw, so it carries both languages in one line (the no-locale pattern).
+    // Hide transport details behind generic text; pass through structured API refusals.
     private static ControlFrame errorFrame(LinkException e, String server) {
         String code = e.errorCode() != null ? e.errorCode() : "error";
         String message = e.statusCode() == 0

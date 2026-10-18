@@ -5,10 +5,7 @@ import { useTranslation } from "react-i18next";
 
 export type BadgeVariant = "default" | "muted" | "destructive" | "outline";
 
-/** PHASE_COLOR maps a lifecycle Phase to a foreground hue. Kept in sync with the
- *  voxel palette (VoxelFleet reads it through phaseColor) so the 3D scene and the
- *  list read identically. "Stopping" is orange — a teardown sibling to Starting's
- *  amber, distinct from Stopped's slate so the transient state is legible. */
+// Keep phase colors aligned with the voxel palette.
 export const PHASE_COLOR: Record<Phase, string> = {
   Running: "#22c55e",
   Starting: "#eab308",
@@ -39,11 +36,7 @@ const VARIANT: Record<Phase, BadgeVariant> = {
 // Phases that should pulse: the two in-flight transitions a pod is moving through.
 const TRANSIENT: ReadonlySet<Phase> = new Set<Phase>(["Starting", "Stopping"]);
 
-/** phaseColor / phaseVariant resolve a Phase to its hue / Badge variant, degrading
- *  to the Unknown styling for any value outside the modelled union. `phase` arrives
- *  from felis-api as parsed-but-unvalidated JSON, so a raw map index can be
- *  undefined when the backend emits a phase the panel hasn't modelled yet; the
- *  fallback keeps the badge and the voxel scene rendering a sane neutral instead. */
+// Unvalidated phases fall back to neutral Unknown styling.
 export function phaseColor(phase: Phase): string {
   return PHASE_COLOR[phase] ?? PHASE_COLOR.Unknown;
 }
@@ -58,11 +51,7 @@ export const MAX_AUTO_RESTARTS = 3;
 
 export type StartFailure = "retrying" | "gaveUp";
 
-/** startFailure reads how a Failed start stands from the owner detail. "retrying"
- *  means the operator's next automatic attempt is coming; "gaveUp" means nothing
- *  will start it again until a person does. A Failed server meant to stop, or a
- *  public view without the owner detail, reads as null: there is no retry to
- *  offer there, and the badge stays the plain Failed one. */
+// Hide start-failure detail for public views and servers requested to stop.
 export function startFailure(s: {
   phase?: Phase;
   desiredState?: string;
@@ -76,9 +65,7 @@ export function startFailure(s: {
  *  run with no pod up ("start"), or asked to stop while still up ("stop"). */
 export type PendingPower = "start" | "stop";
 
-/** pendingPower compares the phase with desiredState, the lever a wake or stop
- *  sets at once; the phase follows once the operator acts. Without desiredState
- *  (a public view) nothing reads as pending. */
+// Compare phase with desiredState; public views without desiredState show no pending transition.
 export function pendingPower(s: { phase: Phase; desiredState?: string }): PendingPower | null {
   if (s.desiredState === "Running" && (s.phase === "Stopped" || s.phase === "Stopping" || s.phase === "Unknown")) {
     return "start";
@@ -87,9 +74,7 @@ export function pendingPower(s: { phase: Phase; desiredState?: string }): Pendin
   return null;
 }
 
-/** shownPhase is the phase a person should see: one already asked to start reads
- *  Starting, one asked to stop reads Stopping, so a wake or stop shows at once
- *  instead of the old phase lingering until the operator gets to it. */
+// Display accepted start/stop intent before the operator updates phase.
 export function shownPhase(s: { phase: Phase; desiredState?: string }): Phase {
   const pending = pendingPower(s);
   return pending === "start" ? "Starting" : pending === "stop" ? "Stopping" : s.phase;

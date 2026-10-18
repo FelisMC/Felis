@@ -36,17 +36,7 @@ const (
 	owError
 )
 
-// ownerModel collects the owner account. The input phases (admin name, recovery
-// code, root override, owner details) are huh forms; the async phases (verifying,
-// provisioning) show a spinner; the done phase shows the credential card. The
-// outward contract is unchanged: it emits an ownerResultMsg when finished.
-//
-// The same model serves the Add-Operator break-glass operation: the Owner and
-// Operator flows are identical in shape (authenticate or override → collect a
-// username → provision → show a one-time credential), so an operation discriminator
-// switches the few differences (which provision function runs, the on-screen
-// labels, whether a username is defaulted) rather than forking a near-duplicate
-// model. The zero value, bgProvisionOwner, is the original Owner behaviour.
+// Use one model for owner and operator operations; zero selects owner provisioning.
 type ownerModel struct {
 	ctx         context.Context
 	store       ownerStore
@@ -58,9 +48,7 @@ type ownerModel struct {
 	attempt     string
 	recovery    recoveryConfig
 
-	// Recovery proof: the admin the typed name resolved to, the code mailed to it,
-	// and once settled either how it was proven or why the run fell back to the
-	// override.
+	// Recovery proof: the admin the typed name resolved to, the code mailed to it, and how the run settled (proven, or the override with its reason).
 	admin      *api.StaffUser
 	code       *recoveryCode
 	codeNote   string // "wrong code" line shown above a rebuilt code form
@@ -114,12 +102,7 @@ func newOwnerModel(ctx context.Context, store ownerStore, osUser string, adminEx
 	return m
 }
 
-// newOperatorModel builds the model for the Add-Operator break-glass operation. It
-// always starts at admin authentication: adding an Operator presupposes an existing
-// admin (that is why the menu only offers it when one exists), so there is no
-// bootstrap branch. The username is left empty
-// on purpose — defaulting it to "owner" (as the Owner flow does) would make the
-// happy path insert a duplicate and hit ErrConflict on every attempt.
+// Adding operators requires administrator authentication and an explicit username.
 func newOperatorModel(ctx context.Context, store ownerStore, osUser string) *ownerModel {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
@@ -193,12 +176,7 @@ func (m *ownerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case owProvisionMsg:
 		if msg.err != nil {
-			// api.ErrConflict marks the two recoverable refusals: a taken Operator
-			// username (insert-only clash) and an Owner reset naming anything but the
-			// occupied seat (ownerSeatTakenError Is ErrConflict). Route back to the
-			// form with a note so the operator can retype, rather than tearing down
-			// the console — any other error is a genuine fault and still ends the
-			// session.
+			// Return username conflicts to the form; other errors terminate recovery.
 			if errors.Is(msg.err, api.ErrConflict) {
 				m.provisionErr = msg.err
 				m.step = owProvision
@@ -349,10 +327,7 @@ func (m *ownerModel) provisionCmd() tea.Cmd {
 		otpSkipped:     m.skip,
 		otpSkipDetail:  m.skipDetail,
 	}
-	// performAddOperator and performBreakGlass share a signature; the operation
-	// discriminator selects which one runs. The operator path is insert-only and
-	// never flips local auth (see performAddOperator); the Owner path upserts and
-	// enables local session sign-in.
+	// Adding operators is insert-only; owner recovery upserts and enables local sign-in.
 	perform := performBreakGlass
 	if m.operation == bgAddOperator {
 		perform = performAddOperator
@@ -379,8 +354,6 @@ func (m *ownerModel) ownerResultCmd() tea.Cmd {
 		}
 	}
 }
-
-// ---- form builders ----
 
 func (m *ownerModel) buildAuthForm() *huh.Form {
 	return m.sized(newFelisForm(huh.NewGroup(
@@ -518,8 +491,6 @@ func requiredField(name string) func(string) error {
 		return nil
 	}
 }
-
-// ---- views ----
 
 func (m *ownerModel) View() string {
 	switch m.step {

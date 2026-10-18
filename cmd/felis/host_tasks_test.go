@@ -45,8 +45,6 @@ func readLines(t *testing.T, path string) []string {
 	return strings.Split(strings.TrimSpace(string(raw)), "\n")
 }
 
-// TestHostTasksRunTheirCommands pins the command each host task runs: the CLI's own, with
-// the flags that make it act without asking.
 func TestHostTasksRunTheirCommands(t *testing.T) {
 	dir := t.TempDir()
 	log := filepath.Join(dir, "calls")
@@ -124,9 +122,6 @@ func replicasOf(t *testing.T, cs *fake.Clientset, name string) int32 {
 	return *d.Spec.Replicas
 }
 
-// TestRestoreDatabaseStopsAndRestartsTheControlPlane pins the order of a database restore
-// (verify, stop the panel and the operator, restore, migrate, start them again) and that a
-// failed restore still starts them again, with the replicas they had.
 func TestRestoreDatabaseStopsAndRestartsTheControlPlane(t *testing.T) {
 	dir := t.TempDir()
 	log := filepath.Join(dir, "calls")
@@ -163,8 +158,6 @@ func TestRestoreDatabaseStopsAndRestartsTheControlPlane(t *testing.T) {
 	}
 }
 
-// TestHostSettingsRecordAndReconfigure pins that changed host settings land in the file
-// the installer recalls, and that the installer is run for exactly what reads them.
 func TestHostSettingsRecordAndReconfigure(t *testing.T) {
 	dir := t.TempDir()
 	settings := filepath.Join(dir, "host-settings.env")
@@ -216,8 +209,6 @@ func TestEnvFileRoundTrip(t *testing.T) {
 	}
 }
 
-// TestSupportBundleIsOfferedForDownload pins that the bundle the run wrote becomes the
-// task's download, through the node-control manager as the panel starts it.
 func TestSupportBundleIsOfferedForDownload(t *testing.T) {
 	dir := t.TempDir()
 	support := filepath.Join(dir, "support")
@@ -256,7 +247,6 @@ func TestSupportBundleIsOfferedForDownload(t *testing.T) {
 	}
 }
 
-// TestCurrentHostSettingsReadTheUnits pins that the panel sees what the units say.
 func TestCurrentHostSettingsReadTheUnits(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "felis-db-backup.timer"), []byte("[Timer]\nOnCalendar=*-*-* 04:15:00\n"), 0o644)
@@ -318,7 +308,6 @@ func TestHostQuietMarker(t *testing.T) {
 	}
 }
 
-// TestDoctorViewGroupsByArea pins the panel's view of a doctor run.
 func TestDoctorViewGroupsByArea(t *testing.T) {
 	r := doctorReport{host: "ctl-a", at: time.Unix(0, 0), source: "checks run as felis-watchdog.service runs them", notes: []string{"no heartbeat"},
 		skip: map[string]string{"offsite": "not configured"},

@@ -17,9 +17,7 @@ import (
 	"testing"
 )
 
-// writeZip builds a jar holding the given files, for the readers that only
-// look at a jar's metadata. The contents are the real files out of the real
-// jars (testdata), so what the readers parse is what upstream ships.
+// Use captured JAR metadata rather than invented upstream values.
 func writeZip(t *testing.T, files map[string][]byte) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "test.jar")
@@ -51,8 +49,6 @@ func testdata(t *testing.T, name string) []byte {
 	return b
 }
 
-// What the Forge 1.20.1 installer lists is what gets fetched ahead: each
-// library with its URL and sha1, and the vanilla jar where serverJarPath says.
 func TestForgeLibrariesFromTheRealInstallerProfile(t *testing.T) {
 	profile := testdata(t, "forge/install_profile-1.20.1-47.4.10.json")
 	version := testdata(t, "forge/version-1.20.1-47.4.10.json")
@@ -92,8 +88,6 @@ func TestForgeLibrariesFromTheRealInstallerProfile(t *testing.T) {
 	}
 }
 
-// Every run script an installer has written in the end-to-end runs: the
-// launch is the arguments of the java line that starts the server.
 func TestForgeLaunchReadsTheRealRunScripts(t *testing.T) {
 	for _, tc := range []struct {
 		script string
@@ -124,10 +118,6 @@ func TestForgeLaunchReadsTheRealRunScripts(t *testing.T) {
 	}
 }
 
-// The vanilla jar paperclip downloads, read from the real paper jars' records:
-// download-context in Paper 1.21.4 build 232, patch.properties in 1.16.5 build
-// 794. Paperclip keeps it at cache/mojang_<version>.jar, where the end-to-end
-// run found it.
 func TestPaperclipDownloadFromRealJars(t *testing.T) {
 	jar := writeZip(t, map[string][]byte{"META-INF/download-context": testdata(t, "paperclip/download-context-1.21.4-232")})
 	f, err := PaperclipDownload(jar)
@@ -158,8 +148,6 @@ func TestPaperclipDownloadFromRealJars(t *testing.T) {
 	}
 }
 
-// The ids the real forwarding mods declare. PCF's mods.toml also names forge,
-// neoforge and minecraft, in its dependency tables; those are not mods it is.
 func TestJarModIDsFromRealModMetadata(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -199,8 +187,6 @@ versionRange="[21,)"
 		t.Errorf("unreadable jar: %v", ids)
 	}
 }
-
-// ---- the installer ----
 
 // testServer is a tiny vanilla "release" served through fakeUpstream's
 // transport: a manifest naming one version JSON, which names one server jar,
@@ -269,8 +255,6 @@ func (ts *testServer) installer(dir string) *Installer {
 	return &Installer{DataDir: dir, Resolver: &Resolver{HTTP: &http.Client{Transport: ts.up}}, Fetch: ts, Log: io.Discard}
 }
 
-// A download that does not match its published digest never reaches the
-// server's files, and nothing claims the software is installed.
 func TestInstallRefusesAFileThatDoesNotMatch(t *testing.T) {
 	ts := newTestServer(t, "1.21.4")
 	for u := range ts.jars {
@@ -288,8 +272,6 @@ func TestInstallRefusesAFileThatDoesNotMatch(t *testing.T) {
 	}
 }
 
-// A server whose files are intact starts while every metadata API is down:
-// the recorded plan is carried out again without asking upstream anything.
 func TestInstallStartsFromTheRecordWhileUpstreamIsDown(t *testing.T) {
 	ts := newTestServer(t, "1.21.4")
 	dir := t.TempDir()
@@ -319,8 +301,6 @@ func TestInstallStartsFromTheRecordWhileUpstreamIsDown(t *testing.T) {
 	}
 }
 
-// Moving to another version removes the jar the old one placed, and nothing of
-// the world or the owner's settings.
 func TestInstallRemovesTheOldVersionsFilesOnly(t *testing.T) {
 	ts := newTestServer(t, "1.21.4", "1.21.3")
 	dir := t.TempDir()
@@ -349,8 +329,6 @@ func TestInstallRemovesTheOldVersionsFilesOnly(t *testing.T) {
 	}
 }
 
-// A forwarding mod the owner put in themselves is used instead of the managed
-// copy, which goes; without theirs the managed one is placed.
 func TestPlaceModsDefersToTheOwnersCopy(t *testing.T) {
 	ts := newTestServer(t)
 	dir := t.TempDir()

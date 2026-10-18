@@ -12,25 +12,7 @@ import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 import java.util.function.UnaryOperator;
 
-/**
- * LinkConfigLoader resolves a {@link LinkConfig} the same way on every platform:
- * environment variables ({@code FELIS_API_BASE_URL}, {@code FELIS_SERVICE_TOKEN})
- * win, falling back to a {@code felis-link.properties} file in the platform's
- * config directory. Neither the API base URL nor the service token is ever
- * compiled in — this loader is the single seam each loader's entrypoint calls, so
- * the source tree stays domain- and credential-free. On first run it writes a
- * commented template and then reports the values as missing, so an operator gets
- * a file to fill in rather than a silent half-configured plugin. A token from the
- * file follows the file while the process runs ({@link FileToken}), so
- * {@code felis rotate-token velocity} replaces it without restarting the proxy.
- *
- * <p>The two call timeouts ({@code connect-timeout-seconds},
- * {@code request-timeout-seconds}, or {@code FELIS_API_CONNECT_TIMEOUT_SECONDS} /
- * {@code FELIS_API_REQUEST_TIMEOUT_SECONDS}) are optional and default to
- * {@value #DEFAULT_TIMEOUT_SECONDS} s. A value that is not a whole number of seconds
- * from 1 to {@value #MAX_TIMEOUT_SECONDS} fails the load: a typo quietly falling back
- * to the default would hide the setting the operator meant to change.
- */
+// Environment overrides properties; absent values create a template and fail, while invalid timeouts are rejected.
 public final class LinkConfigLoader {
     public static final String ENV_URL = "FELIS_API_BASE_URL";
     public static final String ENV_TOKEN = "FELIS_SERVICE_TOKEN";
@@ -46,23 +28,12 @@ public final class LinkConfigLoader {
     private LinkConfigLoader() {
     }
 
-    /**
-     * load resolves config for the given properties file path, writing a template
-     * if the file does not yet exist.
-     *
-     * @throws IOException if the file cannot be read/created, or if neither the
-     *     environment nor the file supplies both required values, or if a
-     *     timeout is not a whole number of seconds in range.
-     */
+    // Create a template when absent but reject missing required values or invalid timeouts.
     public static LinkConfig load(Path propertiesFile) throws IOException {
         return load(propertiesFile, msg -> { });
     }
 
-    /**
-     * load, with {@code notice} told when a token from the file is replaced while
-     * the process runs ({@link FileToken}). A token from the environment is fixed
-     * for the life of the process.
-     */
+    /** load, with notice told when a token from the file is replaced while the process runs (FileToken). A token from the environment is fixed for the life of the process. */
     public static LinkConfig load(Path propertiesFile, Consumer<String> notice) throws IOException {
         return load(propertiesFile, System::getenv, notice, System::nanoTime);
     }

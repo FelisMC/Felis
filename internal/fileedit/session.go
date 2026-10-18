@@ -14,81 +14,36 @@ import (
 	"time"
 )
 
-// A file too big for one request body arrives as a session: Begin declares its
-// size and where it goes, Append adds one part at a time in order, and Seal
-// hands the finished file to the Job that lands it, which fetches it through
-// Open like any other staged upload. The Cloudflare edge refuses bodies over
-// 100 MB, so a part is at most PartBytes; the file itself has no ceiling but the
-// room on the staging disk, and Begin reserves all of it up front, so an upload
-// that starts is one the disk can finish.
-//
-// Every call names the user and the server the session was begun for, and a
-// session answers no one else: an id that is someone else's reads as unknown.
-//
-// Each part carries the SHA-256 the client computed over it, and a part whose
-// bytes hash to anything else was changed on the way and is refused. A part that
-// fails midway (the connection dropped, the edge cut it off, the digest did not
-// match) is rolled back to where it started, so the session's length is always
-// the resume point. The session keeps each part's size and digest, so a client
-// resuming with a file from disk can check the file still holds the bytes
-// already sent before it sends the rest.
-//
-// A sealed session stays until the Job that fetched it says its file has landed
-// (Landed), so a Job that failed at any point before that (a broken fetch, a
-// full volume, a file in the way) can be started again without the file being
-// sent again; one left idle for SessionIdle is dropped (Expire).
+const PartBytes = 32 << 20 // parts stay below the Cloudflare body limit
 
-// PartBytes is the largest part Append takes, matching the modpack upload's
-// parts (submit.DefaultPartMaxBytes).
-const PartBytes = 32 << 20
-
-// SessionIdle is how long a session may sit untouched before Expire drops it:
-// long enough to resume after a lost connection or a laptop lid, short enough
-// that an abandoned upload gives its room back the same day.
 const SessionIdle = 6 * time.Hour
 
-// MaxSessionsPerUser bounds the sessions one user holds open at once. Each
-// reserves its whole size on the staging disk, so without a bound one user
-// could reserve the disk out from under everyone for SessionIdle.
 const MaxSessionsPerUser = 4
 
 var (
-	// ErrTooManySessions is a Begin by a user who already holds
-	// MaxSessionsPerUser sessions.
-	ErrTooManySessions = errors.New("fileedit: too many uploads in progress")
-	// ErrUploadBusy is a call on a session another request is still appending
-	// to. Parts go one at a time.
-	ErrUploadBusy = errors.New("fileedit: another request is still writing this upload")
-	// ErrPartTooLarge is a part over PartBytes, or one that runs past the size
-	// the session was begun with.
-	ErrPartTooLarge = errors.New("fileedit: the part is too large")
-	// ErrUploadIncomplete is a Seal before every byte has arrived.
+	ErrTooManySessions  = errors.New("fileedit: too many uploads in progress")
+	ErrUploadBusy       = errors.New("fileedit: another request is still writing this upload")
+	ErrPartTooLarge     = errors.New("fileedit: the part is too large")
 	ErrUploadIncomplete = errors.New("fileedit: the upload has not finished arriving")
 )
 
-// OffsetError is a part that does not start where the session ends. Received is
-// where it does end, so the client resumes from there.
 type OffsetError struct{ Received int64 }
 
 func (e *OffsetError) Error() string {
 	return fmt.Sprintf("fileedit: the upload holds %d bytes; send the part that starts there", e.Received)
 }
 
-// Session is where one session stands.
 type Session struct {
 	ID       string
 	Path     string
 	Size     int64
 	Received int64
-	// Parts are the parts that make up Received, in order.
-	Parts []Part
+	Parts    []Part
 }
 
-// Part is one part a session took: its length and the SHA-256 (lowercase hex)
-// it arrived with and matched.
 type Part struct {
 	Size   int64
-	SHA256 string
+	SHA256 string // lowercase hex
 }
 
 type session struct {
@@ -100,9 +55,7 @@ type session struct {
 	busy               bool
 	touched            time.Time
 
-	// armed is set by Seal with the digest of the token it minted and cleared by
-	// the Open that spends it. tokenHash stays until the next Seal, so the Job
-	// holding that token can still report its file landed (Landed).
+	// armed is cleared by Open; tokenHash remains so Landed can authenticate completion.
 	armed     bool
 	tokenHash [sha256.Size]byte
 }
@@ -114,8 +67,6 @@ func (s *Stage) now() time.Time {
 	return time.Now()
 }
 
-// Begin opens a session for a file of size bytes that will land at path on
-// server, reserving room for all of it.
 func (s *Stage) Begin(user, server, path string, size int64) (Session, error) {
 	if size < 0 {
 		return Session{}, fmt.Errorf("fileedit: an upload of %d bytes", size)
@@ -160,7 +111,7 @@ func (s *Stage) Begin(user, server, path string, size int64) (Session, error) {
 	return Session{ID: id, Path: path, Size: size}, nil
 }
 
-// lookup finds the caller's session. s.mu must be held.
+// lookup requires s.mu and scopes sessions to the caller.
 func (s *Stage) lookup(user, server, id string) (*session, error) {
 	ss, ok := s.sessions[id]
 	if !ok || ss.user != user || ss.server != server {
@@ -173,7 +124,6 @@ func (ss *session) view(id string) Session {
 	return Session{ID: id, Path: ss.path, Size: ss.size, Received: ss.received, Parts: slices.Clone(ss.parts)}
 }
 
-// Status reports where the caller's session stands.
 func (s *Stage) Status(user, server, id string) (Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -184,11 +134,7 @@ func (s *Stage) Status(user, server, id string) (Session, error) {
 	return ss.view(id), nil
 }
 
-// Append adds the n bytes of body at offset, which must be where the session
-// ends. body must end right after them (an HTTP body of that Content-Length
-// does), and they must hash to want, the SHA-256 the client computed over them
-// (ErrDigestMismatch otherwise). On any failure the session is left as it was
-// before the call.
+// Append requires the current offset, exact length and matching digest; failure restores the previous session state.
 func (s *Stage) Append(user, server, id string, offset int64, body io.Reader, n int64, want []byte) (Session, error) {
 	s.mu.Lock()
 	ss, err := s.lookup(user, server, id)
@@ -215,8 +161,7 @@ func (s *Stage) Append(user, server, id string, offset int64, body io.Reader, n 
 	ss.busy = true
 	s.mu.Unlock()
 
-	// The session is ours until busy is cleared, so the file and the hash are
-	// touched without the lock. The hash's state is kept to undo a failed part.
+	// busy grants exclusive file and hash access; saving hash state allows a failed part to roll back.
 	before, err := ss.h.(encoding.BinaryMarshaler).MarshalBinary()
 	if err == nil {
 		part := sha256.New()
@@ -243,23 +188,18 @@ func (s *Stage) Append(user, server, id string, offset int64, body io.Reader, n 
 	return ss.view(id), nil
 }
 
-// appendPart writes exactly n bytes of body at offset in the file named file,
-// feeding them to h as well.
 func appendPart(file string, offset int64, body io.Reader, n int64, h io.Writer) error {
 	f, err := os.OpenFile(file, os.O_WRONLY, 0)
 	if err != nil {
 		return fmt.Errorf("fileedit: open the staged upload: %w", err)
 	}
 	src := &bodyReader{r: body}
-	// One byte past n, so the read that finds the end happens here.
 	got, copyErr := io.Copy(io.MultiWriter(io.NewOffsetWriter(f, offset), h), io.LimitReader(src, n+1))
 	closeErr := f.Close()
 	return stageFailure(src.err, copyErr, closeErr, got, n)
 }
 
-// Seal ends the caller's session and arms it for one fetch: the Staged it
-// returns carries a fresh token, and any token an earlier Seal minted stops
-// working. Every byte must have arrived.
+// Seal rotates the token and arms a complete session for one fetch.
 func (s *Stage) Seal(user, server, id string) (Staged, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -283,8 +223,7 @@ func (s *Stage) Seal(user, server, id string) (Staged, error) {
 	return st, nil
 }
 
-// openSession is Open for a sealed session. s.mu must be held; ok is false when
-// id names no session.
+// openSession requires s.mu; ok=false means the ID is not a session.
 func (s *Stage) openSession(id string, sum [sha256.Size]byte) (path string, size int64, ok bool, err error) {
 	ss, found := s.sessions[id]
 	if !found {
@@ -298,11 +237,7 @@ func (s *Stage) openSession(id string, sum [sha256.Size]byte) (path string, size
 	return ss.file, ss.size, true, nil
 }
 
-// Landed tells the stage the Job holding token has put session id's file in
-// place, and deletes the session: nothing will fetch it again. Only the token
-// the latest Seal minted says so, spent or not, so a Job an earlier commit
-// started, or anyone else, changes nothing (ErrNotStaged). An upload staged by
-// Put answers to its own token too and is left to the release that deletes it.
+// Landed requires the latest Seal token; uploads staged by Put retain their separate cleanup callback.
 func (s *Stage) Landed(id, token string) error {
 	sum := sha256.Sum256([]byte(token))
 	s.mu.Lock()
@@ -315,9 +250,6 @@ func (s *Stage) Landed(id, token string) error {
 		}
 		return nil
 	}
-	// Before the first Seal tokenHash is zero, which no token hashes to. A sealed
-	// session has every byte, so a part arriving now could only be an empty one
-	// and leaves nothing to account for: no busy check, unlike Drop.
 	if subtle.ConstantTimeCompare(sum[:], ss.tokenHash[:]) != 1 {
 		s.mu.Unlock()
 		return ErrNotStaged
@@ -328,7 +260,6 @@ func (s *Stage) Landed(id, token string) error {
 	return nil
 }
 
-// Drop cancels the caller's session and deletes what it holds.
 func (s *Stage) Drop(user, server, id string) error {
 	s.mu.Lock()
 	ss, err := s.lookup(user, server, id)
@@ -345,15 +276,13 @@ func (s *Stage) Drop(user, server, id string) error {
 	return nil
 }
 
-// dropLocked forgets a session and gives back the room it still had reserved.
-// s.mu must be held; the caller deletes the file.
+// dropLocked requires s.mu and leaves file deletion to the caller; unreceived disk reservations are released.
 func (s *Stage) dropLocked(id string, ss *session) {
 	delete(s.sessions, id)
 	s.reserved -= ss.size - ss.received
 }
 
-// Expire drops every session untouched for SessionIdle, sealed or not, and
-// reports how many it dropped. A session a part is arriving for is never idle.
+// Expire removes idle sealed or unsealed sessions; an active part write is never idle.
 func (s *Stage) Expire() int {
 	cutoff := s.now().Add(-SessionIdle)
 	var files []string

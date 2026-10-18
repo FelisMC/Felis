@@ -2,8 +2,6 @@ package fileedit
 
 import "testing"
 
-// TestArchiveRule: a stored archive's entry is matched by its name as a path,
-// however the archive spelled it.
 func TestArchiveRule(t *testing.T) {
 	for _, c := range []struct {
 		name             string

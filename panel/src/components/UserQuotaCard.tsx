@@ -33,9 +33,7 @@ function draftOf(q: QuotaView): Draft {
   };
 }
 
-// UserQuotaCard is one user's quota: the default quota every user without one
-// of their own is held to, or caps of their own, which win over it whatever
-// it says. Going back to the default removes their own.
+// UserQuotaCard is one user's quota. Users without their own quota are held to the default; their own caps win over it, and going back to the default removes them.
 export function UserQuotaCard({ userId }: { userId: string }) {
   const { t } = useTranslation("admin");
   const quotas = useAsync(() => api.getUserQuotas(userId), [userId]);

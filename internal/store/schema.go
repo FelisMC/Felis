@@ -8,17 +8,13 @@ import (
 	"strings"
 )
 
-// ErrSchemaNewer marks a database that a newer Felis has migrated: it records versions
-// this build does not embed. Up only rolls forward, so running this build against it
-// would read and write tables whose shape it was never written for.
+// ErrSchemaNewer indicates applied versions absent from this build.
 var ErrSchemaNewer = errors.New("database schema is newer than this felis build")
 
-// ErrSchemaBehind marks a database that still lacks migrations this build embeds.
+// ErrSchemaBehind indicates pending embedded migrations.
 var ErrSchemaBehind = errors.New("database schema is behind this felis build")
 
-// Schema is how a database's recorded migrations line up with the ones embedded in
-// this build. Comparing the two sets, rather than counting, is what tells "behind"
-// from "migrated by a newer release": both can have the same number of rows.
+// Schema compares migration sets; equal counts can still contain different versions.
 type Schema struct {
 	Applied int   // embedded migrations the database has
 	Total   int   // embedded migrations
@@ -27,7 +23,6 @@ type Schema struct {
 	Unknown []int // applied, but not embedded here, ascending
 }
 
-// CompareSchema lines applied up with migrations.
 func CompareSchema(applied map[int]struct{}, migrations []Migration) Schema {
 	s := Schema{Total: len(migrations)}
 	known := make(map[int]struct{}, len(migrations))
@@ -50,8 +45,6 @@ func CompareSchema(applied map[int]struct{}, migrations []Migration) Schema {
 	return s
 }
 
-// Newer returns ErrSchemaNewer, with the versions and what to do, when a newer Felis
-// migrated this database; nil otherwise.
 func (s Schema) Newer() error {
 	if len(s.Unknown) == 0 {
 		return nil
@@ -60,8 +53,7 @@ func (s Schema) Newer() error {
 		ErrSchemaNewer, versionList(s.Unknown), knownRange(s.Latest))
 }
 
-// Err is Newer, else ErrSchemaBehind when migrations are pending: the check a server
-// makes before it serves anything from the database.
+// Err rejects unknown applied versions before reporting pending migrations.
 func (s Schema) Err() error {
 	if err := s.Newer(); err != nil {
 		return err
@@ -73,7 +65,6 @@ func (s Schema) Err() error {
 	return nil
 }
 
-// ReadSchema compares what the database records with the embedded migrations.
 func ReadSchema(ctx context.Context, d Driver) (Schema, error) {
 	migrations, err := LoadMigrations()
 	if err != nil {
@@ -86,8 +77,6 @@ func ReadSchema(ctx context.Context, d Driver) (Schema, error) {
 	return CompareSchema(applied, migrations), nil
 }
 
-// CheckSchema fails unless the database carries exactly the migrations this build
-// embeds.
 func CheckSchema(ctx context.Context, d Driver) error {
 	s, err := ReadSchema(ctx, d)
 	if err != nil {

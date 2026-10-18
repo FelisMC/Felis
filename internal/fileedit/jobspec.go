@@ -12,23 +12,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// Label keys applied to file-editor objects, mirroring internal/restore and
-// internal/backupjob so all three world-touching executors are observable the same
-// way. LabelOpID is the one addition: it is how felis-api finds THIS invocation's
-// Pod among any others, which matters here in a way it does not for restore —
-// file operations are interactive and repeated, so several may be in flight or
-// lingering inside their TTL at once. LabelMode carries the operation so the
-// world-volume lock (internal/maintenance) can tell a write, which holds the
-// volume, from a read or listing, which does not.
 const (
 	LabelManagedBy = "app.kubernetes.io/managed-by"
 	LabelComponent = "app.kubernetes.io/component"
 	LabelServer    = "felis.lolicon.best/server"
 	LabelOpID      = "felis.lolicon.best/files-op"
 	LabelMode      = "felis.lolicon.best/files-mode"
-	// LabelAsync marks the Job of an upload or unzip felis-api started and does
-	// not wait on (Editor.StartUpload, Editor.StartUnzip); Ops finds them by it.
-	// AnnotationPath names the file such a Job works on, for Ops to show.
 	LabelAsync     = "felis.lolicon.best/files-async"
 	AnnotationPath = "felis.lolicon.best/files-path"
 
@@ -40,35 +29,24 @@ const (
 	containerName   = "files"
 )
 
-// JobParams are the rendered inputs to a file-editor Job, derived from a server +
-// operation + Config by the Editor. jobspec is a pure function of them so the
-// security-critical Job shape is unit-tested without a cluster.
 type JobParams struct {
 	NodeName string
 	Server   string
-	// OpID is the per-invocation identifier that both names the Job and labels its
-	// Pod. See Editor.run for why every invocation gets a fresh one.
-	OpID    string
-	Op      string
-	Path    string
-	Content []byte // OpWrite only
-	// Expect is a write's precondition hash (see Execute); empty writes
-	// unconditionally. CreateOnly makes a write refuse an existing path.
+	OpID     string
+	Op       string
+	Path     string
+	Content  []byte
+	// Expect empty writes unconditionally; CreateOnly refuses existing paths.
 	Expect     string
 	CreateOnly bool
-	// To is a rename's destination.
-	To string
-	// SourceURL, UploadToken, UploadSize and UploadSHA256 tell an upload Job where
-	// to fetch its bytes and what they must be (see Stage); Overwrite lets it
-	// replace an existing file.
+	To         string
+	// UploadSize and UploadSHA256 must match fetched bytes; Overwrite permits replacing an existing file.
 	SourceURL    string
 	UploadToken  string
 	UploadSize   int64
 	UploadSHA256 string
 	Overwrite    bool
-	// Async marks a Job felis-api does not wait on: it carries LabelAsync and
-	// AnnotationPath, which Ops reads it back by. Only an upload or an unzip
-	// runs so.
+	// Async marks uploads or unzips whose completion is read later through Ops.
 	Async        bool
 	WorldPVC     string
 	BrowserURL   string
@@ -88,20 +66,7 @@ type JobParams struct {
 	TTLAfterFinished time.Duration
 }
 
-// FilesJobName is the Job name for one file operation. Unlike RestoreJobName it is
-// NOT a pure function of the server: it carries the per-invocation OpID.
-//
-// That difference is forced by RBAC and is the single most load-bearing decision in
-// this package. felis-api holds `jobs: create` in the minecraft namespace and
-// NOTHING else — no jobs:get, no jobs:delete (internal/platform.APIMinecraftRole).
-// So it can neither poll a Job nor clean one up; ttlSecondsAfterFinished is the only
-// reclamation. With a deterministic name the FIRST file operation would leave a
-// completed Job squatting the name for the whole TTL window, and every subsequent
-// operation would collide with it — and, unable to delete it, the editor would be
-// wedged until the TTL expired. A restore can accept that (it runs once per
-// incident); an editor cannot (browse a directory, open a file, save it — three
-// operations in as many seconds). internal/backupjob reached the same conclusion for
-// the same reason.
+// FilesJobName includes OpID to avoid collisions while completed Jobs await TTL cleanup; the API cannot delete them.
 func FilesJobName(server, opID string) string { return "files-" + server + "-" + opID }
 
 func filesLabels(p JobParams) map[string]string {
@@ -118,39 +83,6 @@ func filesLabels(p JobParams) map[string]string {
 	return l
 }
 
-// FilesJob renders the file-editor Job. Its isolation is the strictest of the three
-// world executors — a strict SUBSET of what a restore Pod gets — and every guarantee
-// is asserted by jobspec_test.go, because no cluster runs in this environment:
-//
-//   - runs under the weak felis-restore SA (never the felis-api SA) with its token
-//     auto-mount disabled, so it cannot reach the K8s API (spec §16, §21). It reuses
-//     that bare, Role-less SA for the same reason internal/backupjob does: this Pod
-//     needs no K8s API access at all, so a second identity with the same (empty)
-//     powers would be a manifest to maintain for no isolation gain;
-//   - mounts EXACTLY ONE volume — the world PVC — and NO Secret, NO ConfigMap, and
-//     NO backup PVC. It is therefore strictly blinder than the backup Pod, which
-//     mounts the config Secret to self-record its row: a file-editor Pod has nothing
-//     to record, so it is handed no database URL or platform credential (the
-//     four-power red line, spec §22);
-//   - mounts that one volume READ-ONLY for list and read (see mutates), so the
-//     two operations that only look physically cannot change anything — the
-//     kernel refuses, not merely the code. This is why readOnly is derived from the
-//     op rather than fixed;
-//   - runs as a non-root, fixed uid/gid with an fsGroup matching the operator's
-//     StatefulSet, so a file this Pod writes is owned by the identity the minecraft
-//     server later runs as — a config file the server cannot read would be worse
-//     than no edit at all;
-//   - no privilege, no privilege escalation, read-only root filesystem, drop ALL
-//     capabilities. The world mount is the only writable path, and only for an op
-//     that mutates;
-//   - activeDeadlineSeconds + backoffLimit=0 so a wedged mount cannot loop or hang
-//     forever; ttlSecondsAfterFinished GCs the finished Job, which — see
-//     FilesJobName — is the ONLY cleanup available to felis-api.
-//
-// The container runs `/usr/local/bin/felis files` (cmd/felis), which performs the
-// operation under os.Root containment and prints the marked JSON Result line that
-// felis-api reads back through pods/log. A browser instead pulls read commands
-// from the internal API and posts each result there using a scoped token.
 func FilesJob(p JobParams) (*batchv1.Job, error) {
 	if p.BrowserURL != "" && (mutates(p.Op) || p.BrowserToken == "" || p.Async) {
 		return nil, fmt.Errorf("fileedit: a browser must be read-only and have a token")
@@ -189,9 +121,7 @@ func FilesJob(p JobParams) (*batchv1.Job, error) {
 		ttl = int32(defaultTTL / time.Second)
 	}
 
-	// Only an op that changes the world gets it read-write. Mounting read-only for
-	// list and read makes "a listing cannot damage a world" a kernel guarantee
-	// rather than a code-review one.
+	// Mount read operations read-only so the kernel enforces their inability to alter the world.
 	readOnlyWorld := !mutates(p.Op)
 
 	args := []string{
@@ -199,12 +129,9 @@ func FilesJob(p JobParams) (*batchv1.Job, error) {
 		"--path", p.Path,
 		"--worlds-root", p.WorldsRoot,
 	}
-	// The expected hash is a digest of content the caller already holds, not a
-	// secret, so it rides argv; only the content itself needs the env channel.
+	// Expected hashes may travel in argv; file content uses the environment channel.
 	switch p.Op {
 	case OpWrite:
-		// The content's own SHA-256 goes beside it, so the Job writes only the
-		// bytes felis-api handed over (Request.ContentSHA256).
 		args = append(args, "--sha256", digest(p.Content))
 		if p.Expect != "" {
 			args = append(args, "--expect-sha256", p.Expect)
@@ -215,8 +142,7 @@ func FilesJob(p JobParams) (*batchv1.Job, error) {
 	case OpRename:
 		args = append(args, "--to", p.To)
 	case OpUpload:
-		// The URL, size and digest are not secrets — only the token is, and it
-		// rides the environment below.
+		// Only the upload token is secret and goes in the environment, unlike URL, size and digest.
 		args = append(args, "--source-url", p.SourceURL,
 			"--size", strconv.FormatInt(p.UploadSize, 10), "--sha256", p.UploadSHA256)
 		if p.Overwrite {
@@ -247,12 +173,7 @@ func FilesJob(p JobParams) (*batchv1.Job, error) {
 		},
 	}
 
-	// New content rides the Job spec as base64 env vars (see ContentEnv for why
-	// it is several). felis-api cannot create a Secret (it holds secrets:get only),
-	// so the spec is the sole channel into the Pod; base64 keeps arbitrary bytes —
-	// CRLF line endings, a UTF-8 BOM, a binary blob — intact through a field that
-	// must be a valid string. Content is set ONLY for a write and the token ONLY
-	// for an upload or read-only browser, so no other Job spec carries either.
+	// Split base64 content across environment variables; write content and upload or browser tokens appear only in Jobs that need them.
 	switch p.Op {
 	case OpWrite:
 		parts := splitContent(p.Content)
@@ -277,8 +198,7 @@ func FilesJob(p JobParams) (*batchv1.Job, error) {
 			Annotations: filesAnnotations(p),
 		},
 		Spec: batchv1.JobSpec{
-			// One shot: a file operation that failed must surface its failure, not be
-			// retried behind the caller's back — a retried write is a second write.
+			// Disable retries so a failed write is not repeated behind the caller's request.
 			BackoffLimit:            int32Ptr(0),
 			ActiveDeadlineSeconds:   int64Ptr(deadline),
 			TTLSecondsAfterFinished: int32Ptr(ttl),
@@ -307,7 +227,6 @@ func FilesJob(p JobParams) (*batchv1.Job, error) {
 	return job, nil
 }
 
-// resourceLimits parses the CPU/memory limits into a ResourceList.
 func resourceLimits(cpu, mem string) (corev1.ResourceList, error) {
 	if cpu == "" {
 		cpu = defaultCPULimit
@@ -333,12 +252,7 @@ func boolPtr(b bool) *bool    { return &b }
 func int32Ptr(i int32) *int32 { return &i }
 func int64Ptr(i int64) *int64 { return &i }
 
-// filesCapabilities is what the root executor keeps after dropping ALL (see
-// Config.RunAsUser). DAC_OVERRIDE opens a mode-0600 file (level.dat) the game wrote
-// as its own uid, which a fixed non-root uid could not. A write, mkdir, upload or
-// unzip also keeps CHOWN so what it creates can be handed to naming.GameUID
-// (exec.go ownWritten). List, read, delete and rename create nothing and get no
-// more than they need.
+// filesCapabilities permits DAC_OVERRIDE for game-owned private files and CHOWN only for operations that create files.
 func filesCapabilities(op string) []corev1.Capability {
 	if op == OpWrite || op == OpMkdir || op == OpUpload || op == OpUnzip {
 		return []corev1.Capability{"CHOWN", "DAC_OVERRIDE"}
@@ -346,10 +260,7 @@ func filesCapabilities(op string) []corev1.Capability {
 	return []corev1.Capability{"DAC_OVERRIDE"}
 }
 
-// filesPodSecurityContext pins the Pod identity. Root by default: the world volume
-// belongs to the game uid (naming.GameUID), and root with DAC_OVERRIDE reaches its
-// mode-0600 files as well as any a previous root-run release left behind. FSGroup is
-// only rendered when configured so a root executor never chgrps the volume.
+// filesPodSecurityContext defaults to root for private game files and omits FSGroup unless configured to avoid changing volume ownership.
 func filesPodSecurityContext(p JobParams) *corev1.PodSecurityContext {
 	sc := &corev1.PodSecurityContext{
 		RunAsNonRoot: boolPtr(false),
@@ -362,8 +273,6 @@ func filesPodSecurityContext(p JobParams) *corev1.PodSecurityContext {
 	return sc
 }
 
-// filesAnnotations names the file an async Job works on. A path does not fit a
-// label (63 characters, no slashes), so it rides an annotation.
 func filesAnnotations(p JobParams) map[string]string {
 	if !p.Async {
 		return nil

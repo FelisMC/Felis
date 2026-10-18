@@ -8,21 +8,11 @@ import (
 	"time"
 )
 
-// PGRepo is the production Repo backed by Postgres (spec §6). It owns only the
-// business projection the CRD cannot express. The SQL here is exercised by
-// integration tests against a live database, not the hermetic api_test.go suite.
-//
-// A method handed the API clock (now, or a NewSession minted on it) stamps the
-// times it writes from that clock, column defaults included: a transaction on two
-// clocks records one event at two instants, and the fake, which only has the API
-// clock, stops describing it. now() is for methods given no clock. The updated_at
-// triggers (0010) stay on now(): display bookkeeping no reader compares to the API
-// clock.
+// PGRepo uses supplied API timestamps for writes; only updated_at triggers use the database clock.
 type PGRepo struct {
 	db *sql.DB
 }
 
-// NewPGRepo wraps an existing pool (from store.PostgresDriver.DB()).
 func NewPGRepo(db *sql.DB) *PGRepo { return &PGRepo{db: db} }
 
 func (p *PGRepo) Ping(ctx context.Context) error { return p.db.PingContext(ctx) }
@@ -63,7 +53,6 @@ func (p *PGRepo) ServerByName(ctx context.Context, name string) (*ServerRecord, 
 	return &r, nil
 }
 
-// retireState is a servers row's pending retirement, nil when there is none.
 func retireState(at sql.NullTime, deleteServer bool) *RetireState {
 	if !at.Valid {
 		return nil
@@ -78,11 +67,6 @@ func (p *PGRepo) IsLinked(ctx context.Context, userID string) (bool, error) {
 	return ok, err
 }
 
-// CreateLinkCode persists a one-time link code for a verified in-game UUID (spec
-// §10). expires_at is supplied by the caller (the API clock + TTL) so expiry is
-// driven by one authoritative clock. The code is a PRIMARY KEY; a collision on
-// the crypto/rand value is astronomically unlikely but surfaces as a plain
-// driver error (the caller can retry) rather than being masked here.
 func (p *PGRepo) CreateLinkCode(ctx context.Context, code, mcUUID, authSource string, expiresAt time.Time) error {
 	_, err := p.db.ExecContext(ctx,
 		`INSERT INTO account_link_codes (code, mc_uuid, auth_source, expires_at) VALUES ($1, $2, $3, $4)`,
@@ -90,14 +74,6 @@ func (p *PGRepo) CreateLinkCode(ctx context.Context, code, mcUUID, authSource st
 	return err
 }
 
-// VerifyLinkCode consumes a code for userID and writes the account_links binding
-// in one transaction (spec §10). The different-user conflict is detected by a
-// guarded SELECT inside the tx rather than by inspecting a driver-specific unique
-// violation, so the logic is portable. On the conflict path the tx rolls back, so
-// the code is NOT consumed — a wrong user must not be able to burn the real
-// owner's pending code. The UNIQUE(mc_uuid) constraint is the last-resort guard
-// against a concurrent racer that passed the SELECT; that loses to a 500, which
-// is acceptable for this integration-only path.
 func (p *PGRepo) VerifyLinkCode(ctx context.Context, userID, code string, now time.Time) (string, string, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -117,18 +93,12 @@ func (p *PGRepo) VerifyLinkCode(ctx context.Context, userID, code string, now ti
 		return "", "", err
 	}
 
-	// If this UUID is already linked, only the same user may re-verify (idempotent).
-	// A different LIVE user is a conflict and must not consume the code. A link whose
-	// account was soft-deleted is the exception: the identity is unclaimed (the
-	// account is gone; e.g. a migrated source, whose retire keeps the link but is
-	// otherwise dead), and the fresh in-game code proves the caller still holds this
-	// UUID, so the live caller takes the link over. Disabled-but-not-deleted stays a
-	// conflict — taking over a locked account's identity would bypass the lockout.
+	// A link owned by a soft-deleted account is taken over; a disabled account's link stays a conflict
+	// so a lockout cannot be bypassed.
 	var existingUser string
 	switch err := tx.QueryRowContext(ctx,
 		`SELECT user_id FROM account_links WHERE mc_uuid = $1`, mcUUID).Scan(&existingUser); {
 	case errors.Is(err, sql.ErrNoRows):
-		// not yet linked — fall through to insert
 	case err != nil:
 		return "", "", err
 	default:
@@ -151,10 +121,6 @@ func (p *PGRepo) VerifyLinkCode(ctx context.Context, userID, code string, now ti
 		}
 	}
 
-	// Copy the code's auth_source onto the durable link. On the idempotent
-	// re-verify path DO UPDATE refreshes it (a player who re-linked via a different
-	// Yggdrasil this time gets the latest source stored), keeping the persisted
-	// value equal to the one returned to the caller.
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO account_links (user_id, mc_uuid, auth_source, verified_at) VALUES ($1, $2, $3, $4)
 		 ON CONFLICT (user_id, mc_uuid) DO UPDATE SET auth_source = EXCLUDED.auth_source`,
@@ -171,14 +137,6 @@ func (p *PGRepo) VerifyLinkCode(ctx context.Context, userID, code string, now ti
 	return mcUUID, authSource, nil
 }
 
-// RedeemPlayerBindCode redeems a Bind Code into a player account + link in one
-// transaction (console-tier access model). It mirrors VerifyLinkCode's structure —
-// strict expiry against the passed clock, the durable-link write, and the DELETE
-// that consumes the code — but creates or fetches the user instead of requiring one.
-// See the Repo interface for the full contract. Like VerifyLinkCode a concurrent
-// racer that passed the SELECT loses to the UNIQUE(mc_uuid)/UNIQUE(username) guard
-// (a 500), acceptable for this integration-only path; the primary idempotency is the
-// mc_uuid-keyed fetch below.
 func (p *PGRepo) RedeemPlayerBindCode(ctx context.Context, newUserID, code string, now time.Time) (string, string, string, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -196,17 +154,6 @@ func (p *PGRepo) RedeemPlayerBindCode(ctx context.Context, newUserID, code strin
 	case err != nil:
 		return "", "", "", err
 	}
-	// The lock above serialises redeemers of ONE code; the ON CONFLICT arms below
-	// cover the rarer cross-code race (two live codes for the same UUID redeemed
-	// together), where both transactions reach the inserts before either commits.
-
-	// Create-or-fetch keyed on the verified UUID. An already-linked role='user' player
-	// is fetched (idempotent "log in via the game"); any STAFF account (admin or
-	// owner, i.e. role != 'user') is refused (op.console only) BEFORE any consume, so
-	// the code survives; a DISABLED or soft-deleted account is refused the same way
-	// (audit #33 — a dead account must not resurrect through the bind door); an
-	// unlinked UUID births a fresh role='user' player with a uuid-derived unique
-	// username.
 	userID := newUserID
 	var existingRole string
 	var disabled, deleted bool
@@ -221,9 +168,7 @@ func (p *PGRepo) RedeemPlayerBindCode(ctx context.Context, newUserID, code strin
 			newUserID, mcUUID, now); err != nil {
 			return "", "", "", fmt.Errorf("create player: %w", err)
 		}
-		// Re-read by username so a cross-code race converges on the winner's row
-		// (our id was discarded by DO NOTHING) instead of a bare 500 — and so a
-		// deleted row squatting on the username is refused rather than reused.
+		// Re-read by username so a concurrent winner's row is used and a deleted row squatting it is refused.
 		var role string
 		var dis, del bool
 		if err := tx.QueryRowContext(ctx,
@@ -247,7 +192,7 @@ func (p *PGRepo) RedeemPlayerBindCode(ctx context.Context, newUserID, code strin
 		return "", "", "", err
 	default:
 		if existingRole != "user" {
-			return "", "", "", ErrPlayerBindForbidden // staff must use op.console
+			return "", "", "", ErrPlayerBindForbidden
 		}
 		if disabled || deleted {
 			return "", "", "", ErrPlayerAccountRetired
@@ -264,9 +209,7 @@ func (p *PGRepo) RedeemPlayerBindCode(ctx context.Context, newUserID, code strin
 	return userID, mcUUID, authSource, nil
 }
 
-// CompleteOwnerSetup creates the first Owner and a one-time panel login under
-// host-root authority. An unfinished setup renews the link without resetting the
-// account; an Owner with a login factor is left untouched (ErrConflict).
+// CompleteOwnerSetup creates the first owner and setup token; an owner with an existing login factor causes ErrConflict.
 func (p *PGRepo) CompleteOwnerSetup(ctx context.Context, newUserID string, now time.Time,
 	tokenHash string, tokenExpiresAt time.Time) (string, string, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
@@ -275,8 +218,7 @@ func (p *PGRepo) CompleteOwnerSetup(ctx context.Context, newUserID string, now t
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op after commit
 
-	// Serialize first-run creation as well as link renewal, including the case
-	// where there is no user row to lock yet.
+	// Serializes first-run creation and link renewal even when no user row exists to lock.
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('felis.owner_setup'))`); err != nil {
 		return "", "", err
 	}
@@ -306,7 +248,6 @@ func (p *PGRepo) CompleteOwnerSetup(ctx context.Context, newUserID string, now t
 		LocalAuthEnabledKey, "true", now); err != nil {
 		return "", "", fmt.Errorf("enable local auth: %w", err)
 	}
-	// A renewed link replaces any unused links for this account.
 	if _, err := tx.ExecContext(ctx, `DELETE FROM setup_tokens WHERE user_id = $1`, userID); err != nil {
 		return "", "", err
 	}
@@ -321,26 +262,18 @@ func (p *PGRepo) CompleteOwnerSetup(ctx context.Context, newUserID string, now t
 	return userID, username, nil
 }
 
-// QuotaCheck reports whether accepting a server with resource spec `incoming`
-// would push userID over any quota cap. excludeName is the server row whose own
-// cached resources should be excluded ("" for a fresh claim where the row
-// doesn't exist yet). Four dimensions are checked: server count, CPU millicores,
-// memory MB, and storage MB. A NULL or missing quota row/column means unlimited
-// for that dimension. As a standalone read it is advisory — it backs the
-// handler's fast-path 403 — while the AUTHORITATIVE gates are the ones
-// ClaimServer and ResizeServer run in the owner's claim lane.
+// QuotaCheck is advisory; ClaimServer and ResizeServer repeat the check under the user's lock.
 func (p *PGRepo) QuotaCheck(ctx context.Context, userID string, excludeName string, incoming ResourceSpec) (bool, error) {
 	return quotaFits(ctx, p.db, userID, excludeName, incoming)
 }
 
-// quotaFits is QuotaCheck over either the pool or a transaction.
 func quotaFits(ctx context.Context, q rowQuerier, userID, excludeName string, incoming ResourceSpec) (bool, error) {
 	caps, err := readQuota(ctx, q, userID)
 	if err != nil {
 		return false, err
 	}
 	if caps.Source == "" {
-		return true, nil // no quota of any kind → unlimited
+		return true, nil
 	}
 	maxServers, maxCPU, maxMem, maxStor := caps.MaxServers, caps.MaxCPU, caps.MaxMem, caps.MaxStor
 
@@ -355,9 +288,6 @@ func quotaFits(ctx context.Context, q rowQuerier, userID, excludeName string, in
 	return quotaAllows(maxServers, maxCPU, maxMem, maxStor, count, cpuSum, memSum, storSum, 1, incoming), nil
 }
 
-// UpdateServerResources overwrites a server's resource cache. The per-owner
-// aggregate used by QuotaCheck is a SQL SUM over the cached columns, so every
-// size the cluster takes must reach them, through here or ResizeServer.
 func (p *PGRepo) UpdateServerResources(ctx context.Context, name string, cpuMilli, memoryMB, storageMB int) error {
 	_, err := p.db.ExecContext(ctx,
 		`UPDATE servers SET cached_cpu_milli = $2, cached_memory_mb = $3, cached_storage_mb = $4 WHERE name = $1 AND deleted_at IS NULL`,
@@ -365,10 +295,7 @@ func (p *PGRepo) UpdateServerResources(ctx context.Context, name string, cpuMill
 	return err
 }
 
-// ResizeServer gates and records a CPU and memory resize before the cluster sees
-// it. The owner is only known from the row, and the lane must be taken before the
-// row lock (a redeem holds lanes while it moves rows), so a server that changes
-// hands in between is read again in a fresh transaction under its new owner's lane.
+// ResizeServer locks the owner's lane before the server row and retries if ownership changes.
 func (p *PGRepo) ResizeServer(ctx context.Context, name string, cpuMilli, memoryMB int) (ResourceSpec, error) {
 	for attempt := 1; ; attempt++ {
 		prev, moved, err := p.resizeServer(ctx, name, cpuMilli, memoryMB)
@@ -381,8 +308,7 @@ func (p *PGRepo) ResizeServer(ctx context.Context, name string, cpuMilli, memory
 	}
 }
 
-// resizeServer is one attempt of ResizeServer. moved reports that the owner it
-// locked for is no longer the row's, and nothing was written.
+// resizeServer reports moved when ownership changed without writing anything.
 func (p *PGRepo) resizeServer(ctx context.Context, name string, cpuMilli, memoryMB int) (prev ResourceSpec, moved bool, err error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -417,8 +343,6 @@ func (p *PGRepo) resizeServer(ctx context.Context, name string, cpuMilli, memory
 		return ResourceSpec{}, true, nil
 	}
 
-	// A server nobody owns is checked against the empty owner, who has no caps:
-	// every quotas row belongs to a user.
 	if cpuMilli > prev.CPUMilli || memoryMB > prev.MemoryMB {
 		ok, err := quotaFits(ctx, tx, owner.String, name,
 			ResourceSpec{CPUMilli: cpuMilli, MemoryMB: memoryMB, StorageMB: prev.StorageMB})
@@ -437,26 +361,6 @@ func (p *PGRepo) resizeServer(ctx context.Context, name string, cpuMilli, memory
 	return prev, false, tx.Commit()
 }
 
-// ClaimServer performs the atomic ownership transfer (spec §9.3). A missing
-// server is ErrNotFound; an existing-but-owned server yields claimed=false so the
-// handler can answer 409; a claim that would push the user over any of the four
-// quota caps yields ErrQuotaExceeded (the handler's pre-check is a fast path,
-// this gate is the authoritative one). The whole decision — quota read,
-// per-owner aggregate, and the ownership UPDATE — runs in ONE transaction under
-// pg_advisory_xact_lock(hashtext(user_id)), so two concurrent claims by the same
-// user for two DIFFERENT ownerless servers serialize instead of both passing the
-// gate (audit #4); the row is additionally taken FOR UPDATE so concurrent claims
-// of the SAME server still resolve to exactly one winner.
-//
-// A claim starts the reaper's clock afresh: last_active_at moves to the claim
-// and the pre-reap warnings clear. A world reaped before keeps its release time
-// as last_active_at, so without the reset a new owner who configures it from
-// the panel before anyone joins would lose it on the next reaper run, with no
-// warning and no archive of their own.
-//
-// It also empties the wake allowlist. Every entry is a player who joined while
-// someone else held the server (or nobody did), so it vouches for nothing on the
-// new owner's; a friend of the new owner is added again by their next join.
 func (p *PGRepo) ClaimServer(ctx context.Context, name, userID string) (bool, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -464,10 +368,7 @@ func (p *PGRepo) ClaimServer(ctx context.Context, name, userID string) (bool, er
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op after commit
 
-	// Serialize this user's claim lane: the aggregate read below and the
-	// ownership write must observe one consistent quota state. A hashtext
-	// collision across users merely serializes unrelated claims — never waives a
-	// cap.
+	// Serializes this user's claims so the quota aggregate and the ownership write see one state.
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, userID); err != nil {
 		return false, err
 	}
@@ -485,18 +386,12 @@ func (p *PGRepo) ClaimServer(ctx context.Context, name, userID string) (bool, er
 		return false, err
 	}
 	if owned.Valid {
-		return false, nil // already claimed → 409 at the handler
+		return false, nil
 	}
-	// An unowned server an admin is releasing or deleting: its world is about to
-	// be archived and deleted, or the server itself removed. The handler refuses
-	// it up front; this holds against a request that lands in between.
 	if retiring {
 		return false, nil
 	}
 
-	// The four-dimension gate, re-run inside the transaction. No quota of any
-	// kind leaves every NullInt64 invalid → quotaAllows treats each dimension as
-	// unlimited, matching QuotaCheck.
 	caps, err := readQuota(ctx, tx, userID)
 	if err != nil {
 		return false, err
@@ -537,12 +432,7 @@ func (p *PGRepo) ClaimServer(ctx context.Context, name, userID string) (bool, er
 	return true, nil
 }
 
-// quotaAllows applies the four spec §9.3 caps to one per-owner aggregate plus
-// incomingCount servers whose specs sum to incoming. Shared by QuotaCheck (the
-// advisory pre-check), ClaimServer (the atomic gate) and RedeemMigration (a
-// migration's servers arriving at once) so they can never drift. An invalid (NULL or
-// missing) cap means unlimited for that dimension; storage is compared in MB
-// against max_storage_gb × 1024.
+// quotaAllows treats invalid caps as unlimited; storage caps use GB.
 func quotaAllows(maxServers, maxCPU, maxMem, maxStor sql.NullInt64,
 	count, cpuSum, memSum, storSum, incomingCount int64, incoming ResourceSpec) bool {
 	if maxServers.Valid && count+incomingCount > maxServers.Int64 {
@@ -560,8 +450,6 @@ func quotaAllows(maxServers, maxCPU, maxMem, maxStor sql.NullInt64,
 	return true
 }
 
-// UserInAllowlist reports whether any Minecraft UUID linked to the user is on the
-// wake allowlist with its wake right intact (revoked_at IS NULL).
 func (p *PGRepo) UserInAllowlist(ctx context.Context, name, userID string) (bool, error) {
 	const q = `SELECT EXISTS(
 		SELECT 1 FROM server_allowlist sa JOIN account_links al ON al.mc_uuid = sa.mc_uuid
@@ -571,11 +459,6 @@ func (p *PGRepo) UserInAllowlist(ctx context.Context, name, userID string) (bool
 	return ok, err
 }
 
-// UUIDInAllowlist is the internal-face allowlist check keyed by the in-game UUID
-// directly (spec §9.4). The server_allowlist table is UUID-keyed, so the
-// velocity-driven wake — which knows the joining player only by their online-mode
-// UUID — needs no account_links bridge (contrast UserInAllowlist). A revoked
-// entry does not count.
 func (p *PGRepo) UUIDInAllowlist(ctx context.Context, name, mcUUID string) (bool, error) {
 	const q = `SELECT EXISTS(
 		SELECT 1 FROM server_allowlist WHERE server_name = $1 AND mc_uuid = $2 AND revoked_at IS NULL)`
@@ -584,10 +467,6 @@ func (p *PGRepo) UUIDInAllowlist(ctx context.Context, name, mcUUID string) (bool
 	return ok, err
 }
 
-// ServerAllowlist lists a server's wake allowlist, newest first, revoked entries
-// included so the owner can give the right back. Username is the live account the
-// UUID is linked to, empty when there is none: only linked players get past the
-// login gate, so an unnamed entry belongs to a closed or unlinked account.
 func (p *PGRepo) ServerAllowlist(ctx context.Context, name string) ([]AllowlistEntry, error) {
 	rows, err := p.db.QueryContext(ctx,
 		`SELECT sa.mc_uuid::text, COALESCE(u.username, ''), sa.added_at, sa.revoked_at IS NULL
@@ -611,10 +490,6 @@ func (p *PGRepo) ServerAllowlist(ctx context.Context, name string) ([]AllowlistE
 	return out, rows.Err()
 }
 
-// SetAllowlistWake gives an allowlisted UUID its wake right back or takes it away.
-// ErrNotFound when the UUID is not on the server's list. Taking it away keeps the
-// row (revoked_at) so the player's next join cannot restore it; repeating either
-// call changes nothing, and a repeated revoke keeps the first revoked_at.
 func (p *PGRepo) SetAllowlistWake(ctx context.Context, name, mcUUID string, canWake bool) error {
 	res, err := p.db.ExecContext(ctx,
 		`UPDATE server_allowlist
@@ -633,10 +508,6 @@ func (p *PGRepo) SetAllowlistWake(ctx context.Context, name, mcUUID string, canW
 	return nil
 }
 
-// RequestRetire records the server's retirement for the reaper to carry out.
-// Asking again keeps the first request time, so the panel's "since" stays true,
-// and a deletion once asked for is not turned back into a release by the owner
-// asking too.
 func (p *PGRepo) RequestRetire(ctx context.Context, name string, deleteServer bool) (RetireState, error) {
 	var st RetireState
 	switch err := p.db.QueryRowContext(ctx,
@@ -653,9 +524,7 @@ func (p *PGRepo) RequestRetire(ctx context.Context, name string, deleteServer bo
 	return st, nil
 }
 
-// CancelRetire drops the server's pending retirement. The row is locked while
-// the deletion flag is read, so an owner cannot cancel a deletion an admin asked
-// for in between.
+// CancelRetire locks the row so a racing staff deletion cannot be cancelled by the owner.
 func (p *PGRepo) CancelRetire(ctx context.Context, name string, mayCancelDelete bool) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -681,10 +550,6 @@ func (p *PGRepo) CancelRetire(ctx context.Context, name string, mayCancelDelete 
 	return tx.Commit()
 }
 
-// UserByMCUUID resolves a verified in-game UUID to its linked user_id (spec §10
-// account_links), or ErrNotFound when the UUID is not linked to any account. A
-// link whose account is dead reads the same as no link at all (audit #33), so the
-// in-game doors never act as a retired identity.
 func (p *PGRepo) UserByMCUUID(ctx context.Context, mcUUID string) (string, error) {
 	var userID string
 	switch err := p.db.QueryRowContext(ctx,
@@ -700,9 +565,6 @@ func (p *PGRepo) UserByMCUUID(ctx context.Context, mcUUID string) (string, error
 	return userID, nil
 }
 
-// RecordJoin renews activity and auto-appends the UUID to the allowlist in one
-// transaction (spec §7, §9.4). A missing server is ErrNotFound. An entry the
-// owner revoked stays revoked: the append leaves an existing row alone.
 func (p *PGRepo) RecordJoin(ctx context.Context, name, mcUUID string) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -731,9 +593,6 @@ func (p *PGRepo) RecordJoin(ctx context.Context, name, mcUUID string) error {
 	return tx.Commit()
 }
 
-// MyServers lists the servers the user owns, each with its pending retirement,
-// and the unowned ones they may claim. An unowned server an admin is releasing or
-// deleting is listed but not claimable.
 func (p *PGRepo) MyServers(ctx context.Context, userID string) ([]MyServerView, error) {
 	const q = `SELECT s.name, COALESCE(sa.subdomain, ''),
 		COALESCE(s.owner_id = $1, false) AS owned, (s.owner_id IS NULL AND s.retire_requested_at IS NULL) AS claimable,
@@ -762,12 +621,6 @@ func (p *PGRepo) MyServers(ctx context.Context, userID string) ([]MyServerView, 
 	return out, rows.Err()
 }
 
-// ServerOwners returns name -> claim state for every non-deleted server (the
-// SysAdmin cockpit's fleet read). The LEFT JOIN keeps unclaimed servers (owner_id
-// NULL) with an empty OwnerID, and the deleted_at filter drops soft-deleted ones.
-// The display value prefers the recognizable email (the same identity the audit
-// log records as the human actor, §6) and falls back to the never-NULL username
-// when the address is absent.
 func (p *PGRepo) ServerOwners(ctx context.Context) (map[string]ServerOwnership, error) {
 	const q = `SELECT s.name, COALESCE(s.owner_id, ''), COALESCE(NULLIF(u.email, ''), u.username, ''),
 		s.retire_requested_at, s.retire_delete
@@ -793,23 +646,7 @@ func (p *PGRepo) ServerOwners(ctx context.Context) (map[string]ServerOwnership, 
 	return out, rows.Err()
 }
 
-// SeedServer inserts the business rows backing a newly created server (spec
-// §15): the servers row (owner_id NULL — the server is created unowned and
-// claimed later, spec §9.3) and its subdomain alias. The create handler has
-// already found no server and no world volume of this name, so a row that is
-// here belongs to an earlier server of the same name: one removed with kubectl,
-// a create whose CRD write failed, or one the reaper deleted between removing
-// its MinecraftServer and marking the row. That row starts over, and the earlier
-// server's other aliases and allowlist go with it; nothing of its owner, claim,
-// activity clock, reaper warnings, pending retirement or scheduled tasks reaches
-// the new server, so the reaper's unfinished deletion no longer applies to it. A
-// retried create lands on the same fresh state. The alias subdomain is a PRIMARY
-// KEY: bound to another server, it rolls the whole seed back and returns
-// ErrConflict, letting the create handler answer 409 before it touches the CRD.
-//
-// Two creates of one name racing between the handler's cluster check and the
-// first CRD write can still leave the loser's alias in place of the winner's;
-// that window is the create path's documented non-transactional tradeoff.
+// SeedServer may leave a losing alias when same-name creates race across the database and cluster writes.
 func (p *PGRepo) SeedServer(ctx context.Context, name, subdomain string, cpuMilli, memoryMB, storageMB int) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -852,23 +689,15 @@ func (p *PGRepo) SeedServer(ctx context.Context, name, subdomain string, cpuMill
 	return tx.Commit()
 }
 
-// AllBackups lists one page of every present world backup, newest first (spec
-// §7 GET /backups, admin scope; world_backups in §22). Only status='present' rows
-// are listed — an expired or deleted backup is gone (spec §466).
 func (p *PGRepo) AllBackups(ctx context.Context, opts BackupListOpts) ([]BackupView, int, error) {
 	return p.pageBackups(ctx, ``, opts)
 }
 
-// BackupsForUser lists one page of the present world backups of worlds the user
-// formerly owned, newest first (spec §7 GET /backups, former_owner scope). A NULL
-// former_owner never matches a user id, so orphaned backups stay admin-only.
 func (p *PGRepo) BackupsForUser(ctx context.Context, userID string, opts BackupListOpts) ([]BackupView, int, error) {
 	return p.pageBackups(ctx, ` AND former_owner = $2`, opts, userID)
 }
 
-// pageBackups counts and reads one page of present backups under the caller's
-// scope clause, whose parameters follow the server filter ($1). id breaks
-// created_at ties so a page boundary never repeats or skips a row.
+// pageBackups pages present backups under scope, whose parameters follow $1; id breaks created_at ties.
 func (p *PGRepo) pageBackups(ctx context.Context, scope string, opts BackupListOpts, scopeArgs ...any) ([]BackupView, int, error) {
 	match := ` FROM world_backups WHERE status = 'present' AND ($1::text = '' OR server_name = $1::text)` + scope
 	args := append([]any{opts.Server}, scopeArgs...)
@@ -887,8 +716,7 @@ func (p *PGRepo) pageBackups(ctx context.Context, scope string, opts BackupListO
 	return out, total, err
 }
 
-// scanBackupViews drains a world_backups result set into BackupViews. backup_ref
-// is intentionally not selected — it never leaves the server (spec §286 principle).
+// scanBackupViews leaves backup_ref unselected: it never leaves the server.
 func scanBackupViews(rows *sql.Rows) ([]BackupView, error) {
 	defer rows.Close()
 	var out []BackupView
@@ -907,10 +735,6 @@ func scanBackupViews(rows *sql.Rows) ([]BackupView, error) {
 	return out, rows.Err()
 }
 
-// LatestBackup returns the most recent present backup for a server that has not
-// failed a read-back (spec §466 restore), or ErrNotFound. Unlike the list queries
-// this selects backup_ref — the caller (the restore handler) hands it to the
-// Restorer and never serializes it.
 func (p *PGRepo) LatestBackup(ctx context.Context, serverName string) (*BackupRecord, error) {
 	const q = `SELECT id, server_name, COALESCE(former_owner, ''), backup_ref, COALESCE(size_bytes, 0),
 		COALESCE(sha256, ''), created_at
@@ -927,7 +751,6 @@ func (p *PGRepo) LatestBackup(ctx context.Context, serverName string) (*BackupRe
 	return &b, nil
 }
 
-// BackupByID returns a single present backup by its id, or ErrNotFound.
 func (p *PGRepo) BackupByID(ctx context.Context, id string) (*BackupRecord, error) {
 	const q = `SELECT id, server_name, COALESCE(former_owner, ''), backup_ref, COALESCE(size_bytes, 0),
 		corrupt_at IS NOT NULL, COALESCE(sha256, '')
@@ -943,10 +766,6 @@ func (p *PGRepo) BackupByID(ctx context.Context, id string) (*BackupRecord, erro
 	return &b, nil
 }
 
-// ExpireBackup marks one present backup expired. The reaper's ListExpiredBackups
-// picks expired rows up whatever their expires_at; pulling expires_at in to at is
-// what lets the off-site copy drop the bucket's copy (KeptRefs, ExpiredRefs)
-// instead of keeping it to the original date.
 func (p *PGRepo) ExpireBackup(ctx context.Context, id string, at time.Time) error {
 	res, err := p.db.ExecContext(ctx,
 		`UPDATE world_backups SET status = 'expired', expires_at = LEAST(expires_at, $2)
@@ -962,8 +781,6 @@ func (p *PGRepo) ExpireBackup(ctx context.Context, id string, at time.Time) erro
 	return nil
 }
 
-// LastBackupRequest reads the newest backup.create audit row for the server
-// since the given time; the created_at index bounds the scan to that window.
 func (p *PGRepo) LastBackupRequest(ctx context.Context, serverName string, since time.Time) (time.Time, error) {
 	var at sql.NullTime
 	err := p.db.QueryRowContext(ctx,
@@ -976,7 +793,6 @@ func (p *PGRepo) LastBackupRequest(ctx context.Context, serverName string, since
 	return at.Time, nil
 }
 
-// BackupStoreBytes sums size_bytes over the present world backups.
 func (p *PGRepo) BackupStoreBytes(ctx context.Context) (int64, error) {
 	var n int64
 	err := p.db.QueryRowContext(ctx,
@@ -984,13 +800,6 @@ func (p *PGRepo) BackupStoreBytes(ctx context.Context) (int64, error) {
 	return n, err
 }
 
-// ScheduledBackupCandidates is the ScheduleStore behind BackupScheduler. A
-// world's point is its current owner's newest intact scheduled backup taken
-// since they claimed it: a previous owner's backups say nothing about the world
-// the new owner has built, and a corrupt one restores nothing. last_active_at
-// moves on every join, so a world nobody joined since its point is skipped. A
-// world being given up is skipped too: the reaper archives it anyway, and a
-// backup Job holding it when the reaper runs would put the release off a day.
 func (p *PGRepo) ScheduledBackupCandidates(ctx context.Context, before time.Time) ([]ScheduledCandidate, error) {
 	rows, err := p.db.QueryContext(ctx,
 		`SELECT s.name, s.owner_id FROM servers s
@@ -1021,15 +830,12 @@ func (p *PGRepo) ScheduledBackupCandidates(ctx context.Context, before time.Time
 }
 
 func (p *PGRepo) Audit(ctx context.Context, e AuditEntry) error {
-	// A nil Payload must land as SQL NULL, not the text "null"; a non-nil Payload is
-	// passed as a JSON text the jsonb column parses (same idiom as reaper.PGStore).
+	// A nil Payload is stored as SQL NULL, not the text "null".
 	var payload any
 	if len(e.Payload) > 0 {
 		payload = string(e.Payload)
 	}
-	// actor_user_id goes through a lookup so an id with no users row (a purged
-	// account) lands as NULL instead of failing
-	// the foreign key and losing the row.
+	// actor_user_id resolves through users so a purged account lands as NULL instead of failing the foreign key.
 	_, err := p.db.ExecContext(ctx,
 		`INSERT INTO audit_logs (actor, source, action, server_name, request_id, payload,
 		                         actor_user_id, client_ip, user_agent)
@@ -1040,13 +846,6 @@ func (p *PGRepo) Audit(ctx context.Context, e AuditEntry) error {
 	return err
 }
 
-// ---- player email verification (spec §B2 onboarding) ----
-
-// CreateEmailOTP supersedes any prior live code for (user, purpose) and inserts the
-// fresh one, in one transaction (spec §B2). The supersede DELETE means a re-request
-// invalidates the earlier mail, so only the most recent code can ever verify — a
-// player who requested twice cannot be confused into typing the stale digits. Only
-// the hash is stored; the digits live only in the email.
 func (p *PGRepo) CreateEmailOTP(ctx context.Context, id, userID, email, codeHash, purpose string, expiresAt time.Time) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1068,12 +867,6 @@ func (p *PGRepo) CreateEmailOTP(ctx context.Context, id, userID, email, codeHash
 	return tx.Commit()
 }
 
-// AddLoginEmailOTP stores a code for a pre-session login door beside the codes
-// already mailed for (user, purpose), keeping the newest otpLiveLoginCodes live:
-// it drops every unconsumed code outside the newest otpLiveLoginCodes-1 unexpired
-// ones (so expired codes go too), then inserts. It never cancels a code just because another start came in, so knowing
-// an address is not enough to keep its owner from holding a working code
-// (ConsumeLoginEmailOTP accepts any live one).
 func (p *PGRepo) AddLoginEmailOTP(ctx context.Context, id, userID, email, codeHash, purpose string, now, expiresAt time.Time) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1100,16 +893,6 @@ func (p *PGRepo) AddLoginEmailOTP(ctx context.Context, id, userID, email, codeHa
 	return tx.Commit()
 }
 
-// VerifyEmailOTP redeems the newest live code for (user, purpose) in one
-// transaction (spec §B2). The row is taken FOR UPDATE so a concurrent verify of the
-// same code cannot double-spend it. The branch order is deliberate: expiry and the
-// attempt cap are checked before the hash compare, so an expired or locked code is
-// never silently accepted, and a hash mismatch costs an attempt (UPDATE attempts+1)
-// without consuming the code — a typo must not burn a still-valid code. On a match
-// the code is consumed and the user row is flipped verified, returning the proven
-// address — unless a DIFFERENT account already proved the same address, which is
-// ErrEmailTaken with the code left unconsumed (the address, not the guess, is the
-// problem). ErrOTPInvalid / ErrOTPLocked / ErrEmailTaken are the only domain errors.
 func (p *PGRepo) VerifyEmailOTP(ctx context.Context, userID, purpose, codeHash string, now time.Time) (string, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1150,12 +933,7 @@ func (p *PGRepo) VerifyEmailOTP(ctx context.Context, userID, purpose, codeHash s
 		return "", chargeOTPMismatch(ctx, tx, userID, purpose, now)
 	}
 
-	// A DIFFERENT account may not also prove this address: the pre-session login
-	// door resolves accounts BY verified email (UserByEmail), so a second verified
-	// holder would make the identity ambiguous. The code is NOT consumed and no
-	// attempt is charged — the address, not the guess, is the problem. The check is
-	// the application-level counterpart of the users_verified_email_unique index
-	// (migration 0020), which catches a cross-user race that passes this SELECT.
+	// users_verified_email_unique catches the cross-user race that passes this check.
 	var taken bool
 	if err := tx.QueryRowContext(ctx,
 		`SELECT EXISTS (SELECT 1 FROM users
@@ -1173,9 +951,7 @@ func (p *PGRepo) VerifyEmailOTP(ctx context.Context, userID, purpose, codeHash s
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE users SET email = $2, email_verified = true WHERE id = $1`, userID, email); err != nil {
-		// Lost the race the guarded SELECT above cannot serialise: the index rejects
-		// the second write, and it reads as the same answer the sequential path gives.
-		// The rollback undoes the OTP consumption with it, so the code stays live.
+		// The unique index rejected a concurrent verify; the rollback keeps the code live.
 		if isUniqueViolation(err) {
 			return "", ErrEmailTaken
 		}
@@ -1187,13 +963,6 @@ func (p *PGRepo) VerifyEmailOTP(ctx context.Context, userID, purpose, codeHash s
 	return email, nil
 }
 
-// SetUserEmail records email on the user row WITHOUT verifying it (setup bootstrap
-// has no SMTP — the Owner enters an address a later Settings/SMTP flow will verify).
-// It clears email_verified in the same write: only VerifyEmailOTP ever sets that
-// flag, and it does so only alongside the proven address, so recording a fresh
-// (unproven) address must drop any prior verification rather than leave a stale
-// email_verified=true asserting an address the user never proved. For a fresh Owner
-// the flag is already false, so this is a no-op there.
 func (p *PGRepo) SetUserEmail(ctx context.Context, userID, email string) error {
 	res, err := p.db.ExecContext(ctx,
 		`UPDATE users SET email = $2, email_verified = false WHERE id = $1`, userID, email)
@@ -1210,21 +979,7 @@ func (p *PGRepo) SetUserEmail(ctx context.Context, userID, email string) error {
 	return nil
 }
 
-// ---- player game-login: username-collision reclaim (spec §B3) ----
-
-// ReclaimUsername bars the squatter UUID and stashes its data hold in one
-// transaction (spec §B3 正版优先), returning the hold's EFFECTIVE expiry — the
-// value actually persisted, which the caller echoes so the rejected player is
-// told the truth about how long their data is kept. The blacklist insert is
-// ON CONFLICT (mc_uuid) DO NOTHING; the hold insert is a no-op DO UPDATE so a
-// retried reclaim of an already-stashed UUID does not move the original window
-// yet RETURNING still fires, handing back the FIRST reclaim's expires_at rather
-// than a fresh now()+TTL (DO NOTHING would suppress RETURNING and lose it). The
-// two writes share the tx so a failure on the second rolls back the first: the
-// system is never left with a barred UUID whose data was never held (data loss)
-// nor a hold for a UUID still able to connect (squatter not barred). dataRef ""
-// lands as SQL NULL (the column is nullable — archival may be deferred),
-// mirroring the NULLIF idiom used for optional text elsewhere.
+// ReclaimUsername preserves the original hold expiry on retry; empty dataRef stores NULL.
 func (p *PGRepo) ReclaimUsername(ctx context.Context, id, squatterUUID, username, dataRef string, expiresAt time.Time) (time.Time, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1253,10 +1008,6 @@ func (p *PGRepo) ReclaimUsername(ctx context.Context, id, squatterUUID, username
 	return effective, nil
 }
 
-// IsUsernameBlacklisted reports whether an in-game UUID is barred by a prior
-// reclaim (spec §B3). It is a single EXISTS keyed by the UUID — the genuine
-// Mojang player, who shares the contested name under a different UUID, never
-// matches.
 func (p *PGRepo) IsUsernameBlacklisted(ctx context.Context, mcUUID string) (bool, error) {
 	var ok bool
 	err := p.db.QueryRowContext(ctx,
@@ -1264,15 +1015,6 @@ func (p *PGRepo) IsUsernameBlacklisted(ctx context.Context, mcUUID string) (bool
 	return ok, err
 }
 
-// IsProtectedAdminLink reports whether mc_uuid belongs to a Linked Operator/SysAdmin
-// who authenticates through the third-party Yggdrasil — the admin-on-Yggdrasil reclaim
-// exception (spec §B3). The EXISTS joins account_links to users on exactly three
-// conjuncts: the UUID is linked, that link authenticated via 'thirdparty', and the
-// linked user is staff (admin OR owner — the Owner is the one identity that must never
-// be displaced). It intentionally does not test HOW the account signs in: staff may
-// authenticate via SSO (Cloudflare Access, §14) or any local passwordless door and
-// must be protected just the same — the sign-in method is orthogonal to "is staff"
-// and "logs in via the Login Server". Keyed by UUID, the only identity velocity holds.
 func (p *PGRepo) IsProtectedAdminLink(ctx context.Context, mcUUID string) (bool, error) {
 	var ok bool
 	err := p.db.QueryRowContext(ctx,
@@ -1283,11 +1025,6 @@ func (p *PGRepo) IsProtectedAdminLink(ctx context.Context, mcUUID string) (bool,
 	return ok, err
 }
 
-// ---- staff account lookups (spec §B, passwordless) ----
-
-// UserByUsername loads a staff login projection by username, or ErrNotFound.
-// The account is passwordless — staff authenticate via email-OTP / passkey, so
-// no password column is read.
 func (p *PGRepo) UserByUsername(ctx context.Context, username string) (*StaffUser, error) {
 	const q = `SELECT id, username, COALESCE(email, ''), role::text, email_verified
 		FROM users WHERE username = $1`
@@ -1302,10 +1039,6 @@ func (p *PGRepo) UserByUsername(ctx context.Context, username string) (*StaffUse
 	return &u, nil
 }
 
-// AdminExists reports whether any staff account (admin or owner) already exists. It is the
-// break-glass console's bootstrap-vs-recovery switch: false means the typed
-// credential mints the first Owner (no prior identity to verify against), true
-// means the operator must identify against an existing staff account for accountability.
 func (p *PGRepo) AdminExists(ctx context.Context) (bool, error) {
 	const q = `SELECT 1 FROM users WHERE role IN ('admin', 'owner') LIMIT 1`
 	var one int
@@ -1318,8 +1051,6 @@ func (p *PGRepo) AdminExists(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// UserByID loads the same staff projection by id, or ErrNotFound. The
-// account is passwordless — no password column is read.
 func (p *PGRepo) UserByID(ctx context.Context, id string) (*StaffUser, error) {
 	const q = `SELECT id, username, COALESCE(email, ''), role::text, email_verified
 		FROM users WHERE id = $1`
@@ -1334,16 +1065,6 @@ func (p *PGRepo) UserByID(ctx context.Context, id string) (*StaffUser, error) {
 	return &u, nil
 }
 
-// UpsertOwner creates or resets the Owner account direct-to-Postgres (the
-// break-glass first-run / recovery path). role is forced to 'owner' — the
-// platform-level identity above admin (migration 0011); every owner-tier route
-// and the panel's owner surfaces gate on exactly this role, so writing a plain
-// 'admin' here would silently strand them. On a username conflict the email is
-// overwritten while the existing id is preserved, so live sessions referencing
-// it survive a reset — and the role is re-asserted, which is also the documented
-// promotion path for a pre-0011 install whose Owner row is still 'admin'. The
-// account is passwordless by design. The empty email is stored as NULL
-// (users.email is nullable).
 func (p *PGRepo) UpsertOwner(ctx context.Context, id, username, email string) error {
 	_, err := p.db.ExecContext(ctx,
 		`INSERT INTO users (id, username, email, role) VALUES ($1, $2, NULLIF($3, ''), 'owner')
@@ -1352,11 +1073,7 @@ func (p *PGRepo) UpsertOwner(ctx context.Context, id, username, email string) er
 	return err
 }
 
-// OwnerUsername names the single active Owner seat, or "" when no owner exists.
-// It backs the console's single-seat guard: once a seat is occupied only that
-// username may be re-targeted (see cmd/felis provisionOwner), because a fresh
-// name would take the upsert's insert arm and mint a SECOND owner row that no
-// supported path can remove (the panel protects every owner row).
+// OwnerUsername returns the single active owner or an empty string, preventing a second owner from being created.
 func (p *PGRepo) OwnerUsername(ctx context.Context) (string, error) {
 	var name string
 	switch err := p.db.QueryRowContext(ctx,
@@ -1370,13 +1087,6 @@ func (p *PGRepo) OwnerUsername(ctx context.Context) (string, error) {
 	}
 }
 
-// InsertOperator mints a NEW Operator (additional staff admin) account
-// direct-to-Postgres. role is forced to 'admin'. UNLIKE UpsertOwner this is
-// insert-only: a username conflict leaves the existing row untouched and
-// surfaces as ErrConflict — the console routes a rename off that sentinel — so
-// adding an Operator can never silently reset the Owner's or another
-// Operator's row. The account is passwordless by design. The empty email is
-// stored as NULL.
 func (p *PGRepo) InsertOperator(ctx context.Context, id, username, email string) error {
 	_, err := p.db.ExecContext(ctx,
 		`INSERT INTO users (id, username, email, role) VALUES ($1, $2, NULLIF($3, ''), 'admin')`,
@@ -1387,13 +1097,10 @@ func (p *PGRepo) InsertOperator(ctx context.Context, id, username, email string)
 	return err
 }
 
-// CreateSession records a minted session by the sha-256 of its cookie value
-// (spec §B). Only the hash is stored, mirroring tokens.
 func (p *PGRepo) CreateSession(ctx context.Context, s NewSession) error {
 	return insertSession(ctx, p.db, s)
 }
 
-// sqlExecer is the write half shared by *sql.DB and *sql.Tx.
 type sqlExecer interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
@@ -1407,19 +1114,11 @@ func insertSession(ctx context.Context, db sqlExecer, s NewSession) error {
 	return err
 }
 
-// sessionLive is the condition every reader of live sessions shares, over
-// sessions s JOIN users u, with $2 = now and $3 = the staff idle cutoff (now
-// minus staffSessionIdle). The disabled/deleted filter is the belt to the doors'
-// braces: even a session minted for an account that was alive a moment ago stops
-// authenticating the instant the account is disabled or soft-deleted, so every
-// authenticated route is fail-closed regardless of which door minted the cookie
-// (audit #33). A staff session also dies after sitting idle; a player's lasts
-// to its expiry.
+// sessionLive uses $2 for now and $3 for the staff idle cutoff; disabled or deleted users never authenticate.
 const sessionLive = `s.revoked_at IS NULL AND s.expires_at > $2
 	AND u.disabled = false AND u.deleted_at IS NULL
 	AND (u.role = 'user' OR s.last_seen_at > $3)`
 
-// SessionUser resolves a live session hash to its user, or ErrNotFound.
 func (p *PGRepo) SessionUser(ctx context.Context, tokenHash string, now time.Time) (*SessionedUser, error) {
 	const q = `SELECT u.id, u.username, COALESCE(u.email, ''), u.role::text, COALESCE(u.email_verified, false),
 			s.last_seen_at, s.reauth_at
@@ -1440,7 +1139,6 @@ func (p *PGRepo) SessionUser(ctx context.Context, tokenHash string, now time.Tim
 	return &u, nil
 }
 
-// TouchSession advances a session's last_seen_at to now, never backwards.
 func (p *PGRepo) TouchSession(ctx context.Context, tokenHash string, now time.Time) error {
 	_, err := p.db.ExecContext(ctx,
 		`UPDATE sessions SET last_seen_at = $2 WHERE token_hash = $1 AND last_seen_at < $2`,
@@ -1448,7 +1146,6 @@ func (p *PGRepo) TouchSession(ctx context.Context, tokenHash string, now time.Ti
 	return err
 }
 
-// MarkSessionReauth records a proven factor on a live session.
 func (p *PGRepo) MarkSessionReauth(ctx context.Context, tokenHash string, at time.Time) error {
 	_, err := p.db.ExecContext(ctx,
 		`UPDATE sessions SET reauth_at = $2 WHERE token_hash = $1 AND revoked_at IS NULL`,
@@ -1456,8 +1153,6 @@ func (p *PGRepo) MarkSessionReauth(ctx context.Context, tokenHash string, at tim
 	return err
 }
 
-// RevokeSession marks a session revoked (logout). Idempotent: a missing or
-// already-revoked session is not an error.
 func (p *PGRepo) RevokeSession(ctx context.Context, tokenHash string) error {
 	_, err := p.db.ExecContext(ctx,
 		`UPDATE sessions SET revoked_at = now() WHERE token_hash = $1 AND revoked_at IS NULL`,
@@ -1465,9 +1160,6 @@ func (p *PGRepo) RevokeSession(ctx context.Context, tokenHash string) error {
 	return err
 }
 
-// ---- runtime platform settings (spec §B platform_settings) ----
-
-// GetSetting reads a setting's raw jsonb value as bytes, or ErrNotFound.
 func (p *PGRepo) GetSetting(ctx context.Context, key string) ([]byte, error) {
 	var value []byte
 	switch err := p.db.QueryRowContext(ctx,
@@ -1480,9 +1172,6 @@ func (p *PGRepo) GetSetting(ctx context.Context, key string) ([]byte, error) {
 	return value, nil
 }
 
-// SetSetting upserts a setting's raw jsonb value by key. value is cast to jsonb
-// so a []byte argument lands in the jsonb column without a driver round-trip
-// guessing the type.
 func (p *PGRepo) SetSetting(ctx context.Context, key string, value []byte) error {
 	_, err := p.db.ExecContext(ctx,
 		`INSERT INTO platform_settings (key, value) VALUES ($1, $2::jsonb)
@@ -1509,20 +1198,6 @@ func (p *PGRepo) CompareAndSetSetting(ctx context.Context, key string, expected,
 	return err
 }
 
-// ---- player passkey enrollment (spec §14 WebAuthn / Phase 6 bind, migration 0007) ----
-
-// CreatePasskeyChallenge supersedes any prior challenge for (user, purpose) and inserts
-// the fresh one, in one transaction (mirrors CreateEmailOTP). The supersede DELETE
-// removes ALL prior rows for (user, purpose) — not just the live one — so a re-begin
-// invalidates the earlier ceremony AND reaps any already-consumed or expired row it left
-// behind. That bounds the table at one row per (user, purpose): the begin→finish loop
-// nets zero growth, since each begin sweeps the consumed row the previous finish stamped.
-// (Deleting a consumed row is safe: it has already been redeemed and nothing reads it.)
-// Begins for one (user, purpose) take a transaction-scoped advisory lock first: without
-// it two racing begins each delete what the other has not committed yet and both insert,
-// leaving extra rows that only the next begin sweeps.
-// The opaque SessionData is held server-side so the client cannot forge the challenge
-// it must answer at finish.
 func (p *PGRepo) CreatePasskeyChallenge(ctx context.Context, id, userID, purpose string, sessionData []byte, expiresAt time.Time) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1549,12 +1224,6 @@ func (p *PGRepo) CreatePasskeyChallenge(ctx context.Context, id, userID, purpose
 	return tx.Commit()
 }
 
-// ConsumePasskeyChallengeByUser redeems the newest live (unconsumed, unexpired at now)
-// challenge for (user, purpose) in one transaction (mirrors VerifyEmailOTP). The row is
-// taken FOR UPDATE so a concurrent finish cannot double-spend it; expiry is checked
-// before consuming so a stale challenge is never accepted. On success consumed_at is
-// stamped (single-use) and the stashed SessionData is returned. No live row →
-// ErrPasskeyChallengeInvalid.
 func (p *PGRepo) ConsumePasskeyChallengeByUser(ctx context.Context, userID, purpose string, now time.Time) ([]byte, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1591,18 +1260,9 @@ func (p *PGRepo) ConsumePasskeyChallengeByUser(ctx context.Context, userID, purp
 	return sessionData, nil
 }
 
-// maxLiveChallengesPerSource bounds the live login challenges one source (an IPv4
-// address or IPv6 /48, see challengeSource) holds in each login store. A ceremony
-// takes seconds and a challenge lives passkeyChallengeTTL, so a network with a few
-// dozen people signing in at once stays well inside it, while a flood of begins
-// fills its own allowance and leaves the other networks their sign-ins. Each store's
-// begins from one source serialise on a transaction-scoped advisory lock
-// (lockChallengeSource), so racing begins cannot all pass one count.
-const maxLiveChallengesPerSource = 32
+const maxLiveChallengesPerSource = 32 // live login challenges one source (IPv4 or IPv6 /48) may hold per store
 
-// lockChallengeSource takes the advisory lock that makes a login store's per-source
-// count and insert one decision. store names the table, so the two stores' allowances
-// for one source never wait on each other. The lock is released at commit or rollback.
+// lockChallengeSource serializes a store's per-source count and insert; store names the table so stores do not block each other.
 func lockChallengeSource(ctx context.Context, tx *sql.Tx, store, source string) error {
 	if _, err := tx.ExecContext(ctx,
 		`SELECT pg_advisory_xact_lock(hashtext($1 || ':' || $2))`, store, source); err != nil {
@@ -1611,12 +1271,6 @@ func lockChallengeSource(ctx context.Context, tx *sql.Tx, store, source string) 
 	return nil
 }
 
-// AddPasskeyLoginChallenge stores an email-first login ceremony beside the ones
-// already live for (user, purpose); finish finds it by the challenge the browser
-// signed (ConsumePasskeyLoginChallenge), so a begin by anyone who knows the address
-// never cancels its owner's ceremony. Under the source's lock it reaps the account's
-// spent login rows, refuses with ErrTooManyPasskeyChallenges once source holds
-// maxLiveChallengesPerSource live login challenges, then inserts.
 func (p *PGRepo) AddPasskeyLoginChallenge(ctx context.Context, id, userID, purpose, source, challenge string, sessionData []byte, now, expiresAt time.Time) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1652,10 +1306,6 @@ func (p *PGRepo) AddPasskeyLoginChallenge(ctx context.Context, id, userID, purpo
 	return tx.Commit()
 }
 
-// ConsumePasskeyLoginChallenge redeems the live login challenge of (user, purpose)
-// whose challenge is the one the browser signed, single-use: the row is taken FOR
-// UPDATE, expiry is checked against now, consumed_at is stamped, and the stashed
-// SessionData is returned. No such live row → ErrPasskeyChallengeInvalid.
 func (p *PGRepo) ConsumePasskeyLoginChallenge(ctx context.Context, userID, purpose, challenge string, now time.Time) ([]byte, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1691,24 +1341,9 @@ func (p *PGRepo) ConsumePasskeyLoginChallenge(ctx context.Context, userID, purpo
 	return sessionData, nil
 }
 
-// ---- discoverable ("usernameless") passkey login (task #40, migration 0013) ----
+const maxLiveDiscoverableChallenges = 16384 // table-wide live-row bound for the discoverable-login store
 
-// maxLiveDiscoverableChallenges hard-bounds the non-user-keyed discoverable-login challenge
-// store: once this many LIVE (unexpired, unconsumed) rows exist, a new begin is refused
-// (ErrTooManyPasskeyChallenges → 429). Each source is held to maxLiveChallengesPerSource
-// first, so filling the store takes this many / 32 distinct networks; a row is a few hundred
-// bytes, so the ceiling is a few MB.
-const maxLiveDiscoverableChallenges = 16384
-
-// CreateDiscoverableChallenge stashes a discoverable-login ceremony under an opaque handle,
-// bounding the table in one transaction (see the Repo interface for the full contract).
-// Under the source's lock it reaps expired/consumed rows, then refuses when source already
-// holds maxLiveChallengesPerSource live rows or the table holds
-// maxLiveDiscoverableChallenges. Because the reap ran first, the counts are exactly the live
-// rows, so the bounds hold under an adversarial begin-flood (which a reap alone cannot: a
-// burst inside the TTL leaves every fresh row live). The per-source bound is exact; the
-// table bound can be passed by begins from different sources racing the same count, at
-// most one row per open connection, which leaves the few-MB ceiling where it was.
+// CreateDiscoverableChallenge enforces per-source bounds; concurrent sources may overshoot the table-wide bound.
 func (p *PGRepo) CreateDiscoverableChallenge(ctx context.Context, id, source string, sessionData []byte, now, expiresAt time.Time) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1742,9 +1377,6 @@ func (p *PGRepo) CreateDiscoverableChallenge(ctx context.Context, id, source str
 	return tx.Commit()
 }
 
-// ConsumeDiscoverableChallenge redeems the challenge under handle id, single-use (see the Repo
-// interface for the contract). The row is taken FOR UPDATE so a concurrent finish cannot
-// double-spend it; expiry is checked before consuming. No live row → ErrPasskeyChallengeInvalid.
 func (p *PGRepo) ConsumeDiscoverableChallenge(ctx context.Context, id string, now time.Time) ([]byte, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1779,10 +1411,6 @@ func (p *PGRepo) ConsumeDiscoverableChallenge(ctx context.Context, id string, no
 	return sessionData, nil
 }
 
-// CreatePasskeyCredential stores a freshly verified passkey (enrollment). Only public
-// attestation material is written; a credential_id already bound to ANY account is left
-// untouched (ON CONFLICT DO NOTHING) and reported as ErrConflict via a zero RowsAffected,
-// so an authenticator is never silently rebound. Empty aaguid/name land as SQL NULL.
 func (p *PGRepo) CreatePasskeyCredential(ctx context.Context, c PasskeyCredential) error {
 	res, err := p.db.ExecContext(ctx,
 		`INSERT INTO webauthn_credentials
@@ -1805,9 +1433,6 @@ func (p *PGRepo) CreatePasskeyCredential(ctx context.Context, c PasskeyCredentia
 	return nil
 }
 
-// PasskeyCredentialsForUser lists the passkeys a user has bound, newest first, for the
-// credential-management view. Nullable aaguid/name collapse to "" via COALESCE; the
-// nullable last_used_at maps to a *time.Time (nil until an assertion is verified).
 func (p *PGRepo) PasskeyCredentialsForUser(ctx context.Context, userID string) ([]PasskeyCredential, error) {
 	const q = `SELECT id, user_id, credential_id, public_key, sign_count,
 		COALESCE(aaguid, ''), COALESCE(name, ''), created_at, last_used_at,
@@ -1840,15 +1465,7 @@ func (p *PGRepo) PasskeyCredentialsForUser(ctx context.Context, userID string) (
 	return out, rows.Err()
 }
 
-// AdvanceCredentialSignCount records a successful assertion on the passkey identified by
-// credentialID: it advances the stored signature counter to newSignCount and stamps
-// last_used_at. credential_id is UNIQUE so exactly one row is touched; a missing row (the
-// credential was unbound mid-ceremony) affects zero rows and is a successful no-op, never an
-// error — the assertion is already cryptographically complete by the time this runs.
-//
-// The counter only moves forward: two assertions verified at once against the same stored
-// value land in either order, and the lower one must not overwrite the higher, or a clone
-// replaying the count in between would pass the next check.
+// AdvanceCredentialSignCount only raises counters; concurrent lower assertions cannot reopen replay and removed credentials are a no-op.
 func (p *PGRepo) AdvanceCredentialSignCount(ctx context.Context, credentialID string, newSignCount uint32, usedAt time.Time) error {
 	_, err := p.db.ExecContext(ctx,
 		`UPDATE webauthn_credentials SET sign_count = GREATEST(sign_count, $2), last_used_at = $3
@@ -1857,17 +1474,13 @@ func (p *PGRepo) AdvanceCredentialSignCount(ctx context.Context, credentialID st
 	return err
 }
 
-// DeletePasskeyCredential removes the passkey row id, scoped to userID so a caller can
-// only unbind their OWN credential. No matching (user, id) row → ErrNotFound via a zero
-// RowsAffected, so a stale or cross-user id cannot silently no-op as success.
 func (p *PGRepo) DeletePasskeyCredential(ctx context.Context, userID, id string) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	// Lock the user row first: every delete for this user queues here, so the count
-	// below cannot go stale between the check and the DELETE.
+	// The user row lock queues deletes so the count below cannot go stale before the DELETE.
 	var verified bool
 	switch err := tx.QueryRowContext(ctx,
 		`SELECT email_verified FROM users WHERE id = $1 FOR UPDATE`, userID).Scan(&verified); {
@@ -1895,24 +1508,12 @@ func (p *PGRepo) DeletePasskeyCredential(ctx context.Context, userID, id string)
 	return tx.Commit()
 }
 
-// DeleteAllPasskeyCredentialsForUser unbinds every passkey a user holds. Unlike the
-// single-credential delete this does NOT report ErrNotFound on zero rows: removing all of
-// a user's passkeys when they have none is a successful no-op, since "the user holds no
-// passkeys" is exactly the intended post-condition. It is the remediation that stops a
-// passkey planted through a transiently-hijacked session from surviving; its production
-// caller is the owner-tier DELETE /users/{id}/passkeys, which a complete remediation
-// pairs with a session revoke (unbinding alone leaves the live hijacked session).
 func (p *PGRepo) DeleteAllPasskeyCredentialsForUser(ctx context.Context, userID string) error {
 	_, err := p.db.ExecContext(ctx,
 		`DELETE FROM webauthn_credentials WHERE user_id = $1`, userID)
 	return err
 }
 
-// ---- user admin (spec §7, admin-only) ----
-
-// ListUsers returns a page of non-deleted users matching the optional filters,
-// newest first. total counts every user the same filters match, so the admin
-// page can size its pagination without a second round-trip.
 func (p *PGRepo) ListUsers(ctx context.Context, opts ListUsersOpts) ([]UserView, int, error) {
 	limit := opts.Limit
 	if limit <= 0 || limit > 100 {
@@ -1923,8 +1524,6 @@ func (p *PGRepo) ListUsers(ctx context.Context, opts ListUsersOpts) ([]UserView,
 		offset = 0
 	}
 
-	// Build the WHERE clause from filters. All args are positional so the order
-	// of appends must match.
 	where := ` WHERE u.deleted_at IS NULL`
 	var args []any
 	argn := 0
@@ -1979,7 +1578,6 @@ func (p *PGRepo) ListUsers(ctx context.Context, opts ListUsersOpts) ([]UserView,
 	return out, total, rows.Err()
 }
 
-// UserDetail loads one user with its linked MC accounts, or ErrNotFound.
 func (p *PGRepo) UserDetail(ctx context.Context, userID string) (*UserDetail, error) {
 	const q = `SELECT u.id, u.username, COALESCE(u.email, ''), u.role::text,
 		u.disabled, u.email_verified,
@@ -1997,12 +1595,9 @@ func (p *PGRepo) UserDetail(ctx context.Context, userID string) (*UserDetail, er
 		return nil, err
 	}
 
-	// Load linked MC accounts.
 	linkRows, err := p.db.QueryContext(ctx,
 		`SELECT mc_uuid::text, COALESCE(auth_source, 'mojang'), verified_at
 		 FROM account_links WHERE user_id = $1 ORDER BY verified_at`, userID)
-	// A failed read is the call's failure: an empty list would tell the admin the
-	// user has no Minecraft account linked.
 	if err != nil {
 		return nil, err
 	}
@@ -2020,7 +1615,6 @@ func (p *PGRepo) UserDetail(ctx context.Context, userID string) (*UserDetail, er
 	return &d, nil
 }
 
-// CreateUser mints a new user row. A username conflict → ErrConflict.
 func (p *PGRepo) CreateUser(ctx context.Context, input CreateUserInput, _ string) (*UserView, error) {
 	const q = `INSERT INTO users (id, username, email, role)
 		VALUES (gen_random_uuid()::text, $1, NULLIF($2, ''), $3::user_role)
@@ -2041,10 +1635,7 @@ func (p *PGRepo) CreateUser(ctx context.Context, input CreateUserInput, _ string
 	return &v, nil
 }
 
-// UpdateUser applies the non-nil fields of patch and returns the updated view.
-// A username conflict → ErrConflict; a non-existent user → ErrNotFound.
 func (p *PGRepo) UpdateUser(ctx context.Context, userID string, patch UpdateUserInput, _ string) (*UserView, error) {
-	// Build a dynamic SET clause from non-nil patch fields.
 	var sets []string
 	var args []any
 	argn := 0
@@ -2055,12 +1646,7 @@ func (p *PGRepo) UpdateUser(ctx context.Context, userID string, patch UpdateUser
 	}
 	if patch.Email != nil {
 		argn++
-		// Changing the address voids any proof of it: only VerifyEmailOTP may assert
-		// a verified address (mirrors SetUserEmail's rationale — a fresh, unproven
-		// value must not keep a stale verified flag that would let the pre-session
-		// email login resolve the account). A no-op edit that passes the same value
-		// keeps the flag; the second expression reads the OLD row, so comparing
-		// there is exact.
+		// A changed address drops email_verified; only VerifyEmailOTP may assert it.
 		sets = append(sets,
 			fmt.Sprintf("email = NULLIF($%d, '')", argn),
 			fmt.Sprintf("email_verified = (email_verified AND email IS NOT DISTINCT FROM NULLIF($%d, ''))", argn))
@@ -2072,7 +1658,6 @@ func (p *PGRepo) UpdateUser(ctx context.Context, userID string, patch UpdateUser
 		args = append(args, *patch.Role)
 	}
 	if len(sets) == 0 {
-		// No fields to update; return the current view.
 		v, err := p.userView(ctx, userID)
 		if err != nil {
 			return nil, err
@@ -2098,8 +1683,6 @@ func (p *PGRepo) UpdateUser(ctx context.Context, userID string, patch UpdateUser
 	case errors.Is(err, sql.ErrNoRows):
 		return nil, ErrNotFound
 	case err != nil:
-		// A username UNIQUE violation surfaces as a driver error; map it to
-		// ErrConflict so the handler can answer 409.
 		if isUniqueViolation(err) {
 			return nil, ErrConflict
 		}
@@ -2108,8 +1691,6 @@ func (p *PGRepo) UpdateUser(ctx context.Context, userID string, patch UpdateUser
 	return &v, nil
 }
 
-// userView returns a live user's projection, or ErrNotFound. It is the read half
-// shared by UpdateUser (no-op return) and several other paths.
 func (p *PGRepo) userView(ctx context.Context, userID string) (*UserView, error) {
 	const q = `SELECT id, username, COALESCE(email, ''), role::text, disabled,
 		email_verified, created_at, updated_at,
@@ -2128,12 +1709,6 @@ func (p *PGRepo) userView(ctx context.Context, userID string) (*UserView, error)
 	return &v, nil
 }
 
-// DeleteUser soft-deletes a user in one transaction: sets deleted_at, revokes
-// every live session, releases every owned server, and severs the account's
-// identity assets (passkey credentials, Minecraft links) so a closed account
-// cannot keep a login credential or pin an in-game identity via
-// UNIQUE(mc_uuid)(audit #33). The user row is preserved so audit_logs.actor
-// references survive.
 func (p *PGRepo) DeleteUser(ctx context.Context, userID, _ string) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2141,7 +1716,6 @@ func (p *PGRepo) DeleteUser(ctx context.Context, userID, _ string) error {
 	}
 	defer tx.Rollback()
 
-	// Verify the user exists and is not already deleted.
 	var exists bool
 	if err := tx.QueryRowContext(ctx,
 		`SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL)`,
@@ -2152,8 +1726,6 @@ func (p *PGRepo) DeleteUser(ctx context.Context, userID, _ string) error {
 		return ErrNotFound
 	}
 
-	// Release all owned servers, emptying their wake allowlists: the players on
-	// them were the departing owner's to vouch for (ClaimServer does the same).
 	if _, err := tx.ExecContext(ctx,
 		`WITH released AS (
 		   UPDATE servers SET owner_id = NULL WHERE owner_id = $1 AND deleted_at IS NULL RETURNING name)
@@ -2162,16 +1734,12 @@ func (p *PGRepo) DeleteUser(ctx context.Context, userID, _ string) error {
 		return err
 	}
 
-	// Revoke every live session.
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`,
 		userID); err != nil {
 		return err
 	}
 
-	// Sever the login credentials and in-game bindings: a passkey is a standing
-	// login foothold and occupies credential_id UNIQUE, and an account_links row
-	// would keep the Minecraft UUID claimed forever, blocking any future binding.
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM webauthn_credentials WHERE user_id = $1`, userID); err != nil {
 		return err
@@ -2181,7 +1749,6 @@ func (p *PGRepo) DeleteUser(ctx context.Context, userID, _ string) error {
 		return err
 	}
 
-	// Soft-delete the user row.
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE users SET disabled = true, deleted_at = now() WHERE id = $1`,
 		userID); err != nil {
@@ -2191,10 +1758,6 @@ func (p *PGRepo) DeleteUser(ctx context.Context, userID, _ string) error {
 	return tx.Commit()
 }
 
-// SetUserDisabled flips the disabled flag. Setting disabled→true additionally
-// revokes every live session so the account is immediately locked out. Both land
-// in one transaction: a disable whose revocation failed is rolled back and
-// reported, so the admin never reads "disabled" while a session still stands.
 func (p *PGRepo) SetUserDisabled(ctx context.Context, userID string, disabled bool) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2223,12 +1786,6 @@ func (p *PGRepo) SetUserDisabled(ctx context.Context, userID string, disabled bo
 	return tx.Commit()
 }
 
-// ---- quota admin ----
-
-// GetQuotas returns the quotas row for a user (Custom), or a zero-value view
-// when no row exists, which leaves them to the default quota. An unknown or
-// soft-deleted user id is ErrNotFound, never a zero-value answer: the admin
-// sub-resource routes all 404 on a user that has no live row.
 func (p *PGRepo) GetQuotas(ctx context.Context, userID string) (*QuotaView, error) {
 	if err := p.requireLiveUser(ctx, userID); err != nil {
 		return nil, err
@@ -2247,10 +1804,6 @@ func (p *PGRepo) GetQuotas(ctx context.Context, userID string) (*QuotaView, erro
 	return &v, nil
 }
 
-// requireLiveUser gates the user-scoped admin sub-resources (quotas, account
-// links) on a live users row. Without it a write would hit the user_id foreign
-// key and surface as an opaque 500, and the read would answer as if a
-// never-existed id did; every admin route answers ErrNotFound → 404 instead.
 func (p *PGRepo) requireLiveUser(ctx context.Context, userID string) error {
 	var ok bool
 	if err := p.db.QueryRowContext(ctx,
@@ -2264,9 +1817,6 @@ func (p *PGRepo) requireLiveUser(ctx context.Context, userID string) error {
 	return nil
 }
 
-// SetQuotas replaces the user's quotas row. A nil field stores NULL, which every
-// quota gate reads as unlimited; any other value is the cap, 0 included. The form
-// always carries all four caps, so clearing one is a matter of leaving it out.
 func (p *PGRepo) SetQuotas(ctx context.Context, userID string, qi QuotaInput, setBy string) (*QuotaView, error) {
 	if err := p.requireLiveUser(ctx, userID); err != nil {
 		return nil, err
@@ -2287,8 +1837,6 @@ func (p *PGRepo) SetQuotas(ctx context.Context, userID string, qi QuotaInput, se
 	return &v, nil
 }
 
-// ClearQuotas removes a user's own quotas row, leaving them to the default
-// quota (readQuota). A user without one is left as they are.
 func (p *PGRepo) ClearQuotas(ctx context.Context, userID string) (*QuotaView, error) {
 	if err := p.requireLiveUser(ctx, userID); err != nil {
 		return nil, err
@@ -2299,9 +1847,6 @@ func (p *PGRepo) ClearQuotas(ctx context.Context, userID string) (*QuotaView, er
 	return &QuotaView{UserID: userID}, nil
 }
 
-// ---- session admin ----
-
-// ListUserSessions returns every live session for a user, most recently seen first.
 func (p *PGRepo) ListUserSessions(ctx context.Context, userID string, now time.Time) ([]SessionView, error) {
 	const q = `SELECT s.token_hash, s.created_at, s.expires_at, s.last_seen_at, s.user_agent, s.client_ip
 		FROM sessions s JOIN users u ON u.id = s.user_id
@@ -2323,7 +1868,6 @@ func (p *PGRepo) ListUserSessions(ctx context.Context, userID string, now time.T
 	return out, rows.Err()
 }
 
-// RevokeAllUserSessions marks every live session of userID revoked.
 func (p *PGRepo) RevokeAllUserSessions(ctx context.Context, userID string) error {
 	_, err := p.db.ExecContext(ctx,
 		`UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`,
@@ -2331,9 +1875,6 @@ func (p *PGRepo) RevokeAllUserSessions(ctx context.Context, userID string) error
 	return err
 }
 
-// RevokeUserSession revokes one unexpired session of userID, or reports
-// ErrNotFound when the hash names no such session. The user_id condition is what
-// keeps a hash from one account from ending a session of another.
 func (p *PGRepo) RevokeUserSession(ctx context.Context, userID, tokenHash string) error {
 	res, err := p.db.ExecContext(ctx,
 		`UPDATE sessions SET revoked_at = now()
@@ -2352,8 +1893,6 @@ func (p *PGRepo) RevokeUserSession(ctx context.Context, userID, tokenHash string
 	return nil
 }
 
-// RevokeOtherUserSessions revokes every unexpired session of userID but
-// keepTokenHash, returning how many it ended.
 func (p *PGRepo) RevokeOtherUserSessions(ctx context.Context, userID, keepTokenHash string) (int, error) {
 	res, err := p.db.ExecContext(ctx,
 		`UPDATE sessions SET revoked_at = now()
@@ -2366,9 +1905,6 @@ func (p *PGRepo) RevokeOtherUserSessions(ctx context.Context, userID, keepTokenH
 	return int(n), err
 }
 
-// ---- account-link admin ----
-
-// UnlinkAccount removes a single (user_id, mc_uuid) binding.
 func (p *PGRepo) UnlinkAccount(ctx context.Context, userID, mcUUID string) error {
 	res, err := p.db.ExecContext(ctx,
 		`DELETE FROM account_links WHERE user_id = $1 AND mc_uuid = $2`,
@@ -2386,15 +1922,10 @@ func (p *PGRepo) UnlinkAccount(ctx context.Context, userID, mcUUID string) error
 	return nil
 }
 
-// LinkAccount force-binds a UUID to a user. A UUID already linked to a different
-// user → ErrConflict; same (user, uuid) pair is idempotent (ON CONFLICT DO
-// NOTHING on the UNIQUE(mc_uuid) constraint, plus an idempotency check via
-// EXISTS).
 func (p *PGRepo) LinkAccount(ctx context.Context, userID, mcUUID, authSource string) error {
 	if err := p.requireLiveUser(ctx, userID); err != nil {
 		return err
 	}
-	// Check idempotency first: already linked to this user → success.
 	var exists bool
 	if err := p.db.QueryRowContext(ctx,
 		`SELECT EXISTS(SELECT 1 FROM account_links WHERE user_id = $1 AND mc_uuid = $2)`,
@@ -2405,8 +1936,6 @@ func (p *PGRepo) LinkAccount(ctx context.Context, userID, mcUUID, authSource str
 		return nil
 	}
 
-	// Try insert. The UNIQUE(mc_uuid) constraint will reject a UUID already
-	// bound to a different user.
 	res, err := p.db.ExecContext(ctx,
 		`INSERT INTO account_links (user_id, mc_uuid, auth_source, verified_at)
 		 VALUES ($1, $2, $3, now())
@@ -2425,18 +1954,7 @@ func (p *PGRepo) LinkAccount(ctx context.Context, userID, mcUUID, authSource str
 	return nil
 }
 
-// ---- account migration (spec §B3 inherit, scenario A) ----
-
-// StartMigration puts a live source account into migrate mode. It supersedes any
-// earlier unfinished migration for the source (so re-running /felis migrate restarts
-// cleanly, invalidating a prior outstanding code) and inserts a fresh 'initiated' row,
-// both under one transaction so the partial unique index never sees two live rows.
-//
-// Starts for one source serialise on a transaction-scoped advisory lock, so racing
-// starts each supersede the one before instead of tripping the unique index. The
-// liveness check rides on the INSERT, after the supersede: a redeem of this source holds
-// the code_issued row until it commits, the supersede waits on that row, and the INSERT's
-// fresh snapshot then sees the source retired (a check before the wait would not).
+// StartMigration checks liveness on the INSERT's fresh snapshot after superseding, so a racing redeem's retirement is visible.
 func (p *PGRepo) StartMigration(ctx context.Context, id, sourceUserID string, now time.Time) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2453,8 +1971,6 @@ func (p *PGRepo) StartMigration(ctx context.Context, id, sourceUserID string, no
 		sourceUserID); err != nil {
 		return err
 	}
-	// The source must be a live (non-deleted) account; a retired one can never
-	// re-initiate a migration.
 	res, err := tx.ExecContext(ctx,
 		`INSERT INTO account_migrations (id, source_user_id, state, created_at, updated_at)
 		 SELECT $1, $2, 'initiated', $3, $3
@@ -2473,8 +1989,6 @@ func (p *PGRepo) StartMigration(ctx context.Context, id, sourceUserID string, no
 	return tx.Commit()
 }
 
-// MigrationForSource loads the live (non-redeemed) migration for a source, or
-// ErrNotFound when none is in flight.
 func (p *PGRepo) MigrationForSource(ctx context.Context, sourceUserID string) (*MigrationView, error) {
 	const q = `SELECT id, source_user_id, COALESCE(target_user_id, ''), state,
 		COALESCE(confirm_factor, ''), COALESCE(confirm_session, ''), confirmed_at,
@@ -2493,10 +2007,7 @@ func (p *PGRepo) MigrationForSource(ctx context.Context, sourceUserID string) (*
 	return &v, nil
 }
 
-// ConfirmMigration moves the source's migration to 'confirmed', stamping the step-up
-// factor, time and session. It advances only from where migrationStage puts a caller
-// back at the step-up (0 rows → ErrConflict): 'initiated', a confirmation that lapsed
-// or belongs to another session, or a code that expired unspent, which it clears.
+// ConfirmMigration clears expired codes and accepts only states where this session must repeat fresh proof.
 func (p *PGRepo) ConfirmMigration(ctx context.Context, sourceUserID, factor, session string, now time.Time) error {
 	res, err := p.db.ExecContext(ctx,
 		`UPDATE account_migrations
@@ -2520,11 +2031,7 @@ func (p *PGRepo) ConfirmMigration(ctx context.Context, sourceUserID, factor, ses
 	return nil
 }
 
-// IssueMigrationCode advances 'confirmed' → 'code_issued', binding the target and
-// storing the one-time code hash + TTL. The confirmation must be this session's and
-// younger than migrateConfirmWindow at now. The caller has already validated the
-// target is a live account other than the source; the target FK is the backstop.
-// Anything else → ErrConflict.
+// IssueMigrationCode requires fresh same-session proof; the caller validates the target and the foreign key is a final backstop.
 func (p *PGRepo) IssueMigrationCode(ctx context.Context, sourceUserID, targetUserID, session, codeHash string, now, expiresAt time.Time) error {
 	res, err := p.db.ExecContext(ctx,
 		`UPDATE account_migrations
@@ -2545,8 +2052,6 @@ func (p *PGRepo) IssueMigrationCode(ctx context.Context, sourceUserID, targetUse
 	return nil
 }
 
-// RedeemMigration performs the atomic transfer + retirement in one transaction. See
-// the interface doc for the full contract.
 func (p *PGRepo) RedeemMigration(ctx context.Context, targetUserID, codeHash string, now time.Time) (string, []string, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2554,9 +2059,7 @@ func (p *PGRepo) RedeemMigration(ctx context.Context, targetUserID, codeHash str
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op after commit
 
-	// Find and lock the pending migration whose named target is exactly this user. A
-	// code whose target is a different user simply does not match — an intercepted
-	// code is useless to a non-target. FOR UPDATE serializes concurrent redeems.
+	// Lock only the pending migration bound to this target so intercepted codes cannot redeem for another account.
 	var migID, sourceUserID string
 	switch err := tx.QueryRowContext(ctx,
 		`SELECT id, source_user_id FROM account_migrations
@@ -2570,11 +2073,7 @@ func (p *PGRepo) RedeemMigration(ctx context.Context, targetUserID, codeHash str
 		return "", nil, err
 	}
 
-	// Take both accounts' claim lanes, ClaimServer's lock, in id order so two
-	// migrations crossing between the same pair cannot deadlock. The target's makes
-	// the quota read below and the move one consistent decision against its own
-	// claims; the source's keeps a claim of its own from landing between the count
-	// of its servers and their move.
+	// Lock both claim lanes in account-ID order to prevent crossing migrations from deadlocking and quota checks from racing claims.
 	lanes := []string{sourceUserID, targetUserID}
 	if lanes[1] < lanes[0] {
 		lanes[0], lanes[1] = lanes[1], lanes[0]
@@ -2585,11 +2084,7 @@ func (p *PGRepo) RedeemMigration(ctx context.Context, targetUserID, codeHash str
 		}
 	}
 
-	// The target's four caps (spec §9.3) must hold with every server the source owns
-	// added in, as a claim of each would. Over any cap, nothing moves and the code
-	// stays unspent, so the target can have an admin raise its quota and redeem again
-	// before the code expires. A source that owns nothing moves nothing, and retires
-	// even into a target already over a cap.
+	// Quota failure rolls back without consuming the code; an empty source may retire even when the target is already over quota.
 	var n, cpu, mem, stor int64
 	if err := tx.QueryRowContext(ctx,
 		`SELECT COUNT(*), COALESCE(SUM(cached_cpu_milli), 0), COALESCE(SUM(cached_memory_mb), 0), COALESCE(SUM(cached_storage_mb), 0)
@@ -2616,9 +2111,6 @@ func (p *PGRepo) RedeemMigration(ctx context.Context, targetUserID, codeHash str
 		}
 	}
 
-	// Re-point every server the source owns to the target, collecting the names for
-	// the audit trail. Server ownership moves, and the servers' scheduled tasks
-	// with it: they belong to the same person.
 	rows, err := tx.QueryContext(ctx,
 		`UPDATE servers SET owner_id = $2, claimed_at = $3
 		 WHERE owner_id = $1 AND deleted_at IS NULL
@@ -2649,9 +2141,6 @@ func (p *PGRepo) RedeemMigration(ctx context.Context, targetUserID, codeHash str
 		return "", nil, err
 	}
 
-	// Retire the source: revoke its live sessions and soft-delete it so it can neither
-	// log in nor start another migration (double-spend defense). The servers just moved
-	// away, so there is nothing left to release.
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE sessions SET revoked_at = $2 WHERE user_id = $1 AND revoked_at IS NULL`,
 		sourceUserID, now); err != nil {
@@ -2663,7 +2152,6 @@ func (p *PGRepo) RedeemMigration(ctx context.Context, targetUserID, codeHash str
 		return "", nil, err
 	}
 
-	// Mark the migration terminal.
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE account_migrations SET state = 'redeemed', redeemed_at = $2 WHERE id = $1`,
 		migID, now); err != nil {
@@ -2676,19 +2164,8 @@ func (p *PGRepo) RedeemMigration(ctx context.Context, targetUserID, codeHash str
 	return sourceUserID, moved, nil
 }
 
-// ---- pre-session email login (spec §B) ----
-
-// UserByEmail resolves a VERIFIED email address to its login projection, or
-// ErrNotFound. Only a proven (email_verified true) address resolves, so a
-// merely-asserted address never reaches a session-mintable identity. The
-// account is passwordless — no password column is read.
 func (p *PGRepo) UserByEmail(ctx context.Context, email string) (*StaffUser, error) {
-	// lower() on both sides honors the interface's case-insensitivity contract
-	// and matches the users_verified_email_unique index (lower(email)).
-	// Disabled and soft-deleted accounts are invisible here on purpose: every caller
-	// is a pre-session LOGIN door (console email/passkey, op-login, /auth/options),
-	// and a dead account must not be able to mint a session again — deletion and the
-	// disable lockout would otherwise be bypassable by simply logging in (audit #33).
+	// Case-insensitive verified-email lookup excludes disabled and deleted accounts to prevent sign-in after retirement.
 	const q = `SELECT id, username, COALESCE(email, ''), role::text, email_verified
 		FROM users WHERE lower(email) = lower($1) AND email_verified = true
 		  AND disabled = false AND deleted_at IS NULL`
@@ -2703,19 +2180,7 @@ func (p *PGRepo) UserByEmail(ctx context.Context, email string) (*StaffUser, err
 	return &u, nil
 }
 
-// ConsumeLoginEmailOTP redeems a live code for the PRE-SESSION login doors (and
-// the step-up doors, which keep one code live) in one transaction. Every live,
-// unexpired code for (user, purpose) is taken FOR UPDATE, since a login door keeps
-// several (AddLoginEmailOTP). The branch order matches VerifyEmailOTP: nothing live
-// is ErrOTPInvalid; the account lock comes next; when every live code has used up
-// its attempts the answer is ErrOTPLocked; a code matching none charges one attempt
-// to each code still open and one failure to the account, and consumes nothing. A
-// match consumes that code and every other live one for (user, purpose): the
-// sign-in they were mailed for has happened. There are no identity side-effects:
-// it neither writes users.email nor runs the verified-email uniqueness guard —
-// login already resolved the userID via UserByEmail, which requires
-// email_verified, so the address is settled. Errors are exactly ErrOTPInvalid /
-// ErrOTPLocked / *OTPAccountLockedError.
+// ConsumeLoginEmailOTP locks all live codes, charges mismatches to every eligible code and the account, and consumes all on a match.
 func (p *PGRepo) ConsumeLoginEmailOTP(ctx context.Context, userID, purpose, codeHash string, now time.Time) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2753,7 +2218,6 @@ func (p *PGRepo) ConsumeLoginEmailOTP(ctx context.Context, userID, purpose, code
 		return err
 	}
 	if live == 0 {
-		// Nothing live: never minted, already consumed, trimmed, or expired.
 		return ErrOTPInvalid
 	}
 	if until, err := otpLockedUntil(ctx, tx, userID, purpose, now, true); err != nil {
@@ -2777,19 +2241,15 @@ func (p *PGRepo) ConsumeLoginEmailOTP(ctx context.Context, userID, purpose, code
 	return tx.Commit()
 }
 
-// OTPLockedUntil reads the (user, purpose) wrong-code lock for a start door.
 func (p *PGRepo) OTPLockedUntil(ctx context.Context, userID, purpose string, now time.Time) (time.Time, error) {
 	return otpLockedUntil(ctx, p.db, userID, purpose, now, false)
 }
 
-// rowQuerier is the read half shared by *sql.DB and *sql.Tx.
 type rowQuerier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-// otpLockedUntil returns when the (user, purpose) lock ends, or zero when the
-// budget is not spent in the current window. forUpdate takes the row lock so a
-// redeem serialises its check with its own charge.
+// otpLockedUntil optionally locks the budget row so checking and charging serialize.
 func otpLockedUntil(ctx context.Context, q rowQuerier, userID, purpose string, now time.Time, forUpdate bool) (time.Time, error) {
 	query := `SELECT window_start, failures FROM otp_failure_windows WHERE user_id = $1 AND purpose = $2`
 	if forUpdate {
@@ -2808,7 +2268,6 @@ func otpLockedUntil(ctx context.Context, q rowQuerier, userID, purpose string, n
 	return otpLockEnd(start, failures, now), nil
 }
 
-// otpLockEnd is the lock rule on one budget row: spent inside a live window.
 func otpLockEnd(windowStart time.Time, failures int, now time.Time) time.Time {
 	end := windowStart.Add(otpFailureWindow)
 	if failures < otpFailureBudget || !end.After(now) {
@@ -2817,11 +2276,7 @@ func otpLockEnd(windowStart time.Time, failures int, now time.Time) time.Time {
 	return end
 }
 
-// chargeOTPMismatch records one wrong guess against every live code of (user,
-// purpose) that still has attempts left and against the account budget, commits,
-// and returns what the caller should answer: ErrOTPInvalid, or the lock this guess
-// just tripped. The caller holds those codes FOR UPDATE, so the charged set is the
-// set it compared. A window that has ended starts over at 1.
+// chargeOTPMismatch requires the compared codes locked FOR UPDATE and commits the failed attempt before returning its refusal.
 func chargeOTPMismatch(ctx context.Context, tx *sql.Tx, userID, purpose string, now time.Time) error {
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE email_otps SET attempts = attempts + 1
@@ -2855,12 +2310,6 @@ func chargeOTPMismatch(ctx context.Context, tx *sql.Tx, userID, purpose string, 
 	return ErrOTPInvalid
 }
 
-// ---- op.console staff login: in-game approval state machine (spec §B op-login) ----
-
-// CreateOpLoginRequest records a fresh pending op.console login attempt for a staff
-// account. It writes the SECOND factor only — the email-OTP is minted separately
-// under purpose 'op_login' — so a row here means this staff account is waiting for
-// an in-game admin to vouch. Email is a snapshot for the audit trail.
 func (p *PGRepo) CreateOpLoginRequest(ctx context.Context, req NewOpLoginRequest) error {
 	_, err := p.db.ExecContext(ctx,
 		`INSERT INTO op_login_requests (id, user_id, email, expires_at, client_ip, user_agent)
@@ -2869,10 +2318,6 @@ func (p *PGRepo) CreateOpLoginRequest(ctx context.Context, req NewOpLoginRequest
 	return err
 }
 
-// OpLoginRequestByID loads a request by its handle, joined to its account's
-// username, or ErrNotFound. finish additionally checks Status=='approved',
-// !Consumed, and ExpiresAt>now before minting a session. Status is derived from
-// approved_at: 'approved' once set, else 'pending'.
 func (p *PGRepo) OpLoginRequestByID(ctx context.Context, id string) (*OpLoginRequest, error) {
 	const q = `SELECT r.id, r.user_id, u.username, r.email, r.expires_at, r.created_at,
 		       r.consumed_at, r.approved_at, r.client_ip, r.user_agent
@@ -2899,12 +2344,6 @@ func (p *PGRepo) OpLoginRequestByID(ctx context.Context, id string) (*OpLoginReq
 	return &r, nil
 }
 
-// ListPendingOpLogins returns the live (pending, unconsumed, unexpired at now)
-// requests oldest-first, for the in-game admin's approval prompt. A resolved or
-// expired request drops out of the list, so an admin only ever sees actionable
-// attempts. The username is joined because the approval prompt names the staff
-// account; created_at orders the list and lets the prompt show how long a request
-// has been waiting.
 func (p *PGRepo) ListPendingOpLogins(ctx context.Context, now time.Time) ([]OpLoginRequest, error) {
 	const q = `SELECT r.id, r.user_id, u.username, r.email, r.expires_at, r.created_at,
 		       r.client_ip, r.user_agent
@@ -2929,11 +2368,6 @@ func (p *PGRepo) ListPendingOpLogins(ctx context.Context, now time.Time) ([]OpLo
 	return out, rows.Err()
 }
 
-// ApproveOpLogin marks a pending request approved by approverUserID (the in-game
-// admin), atomically: it stamps approved_at and approved_by only WHERE the row is
-// still pending, unconsumed, and unexpired at now. Zero rows affected (gone,
-// already resolved, or expired) → ErrNotFound, so a double approval or an
-// approval of a dead request is a no-op the caller can surface.
 func (p *PGRepo) ApproveOpLogin(ctx context.Context, id, approverUserID string, now time.Time) error {
 	res, err := p.db.ExecContext(ctx,
 		`UPDATE op_login_requests SET approved_at = $3, approved_by = $2
@@ -2952,11 +2386,6 @@ func (p *PGRepo) ApproveOpLogin(ctx context.Context, id, approverUserID string, 
 	return nil
 }
 
-// ConsumeOpLoginRequest stamps consumed_at on an APPROVED, unconsumed, unexpired
-// request, atomically, so it can be exchanged for a session exactly once. Zero
-// rows affected (pending, already consumed, or expired) → ErrNotFound. This is the
-// finish path's single-use guard; the email-OTP is consumed separately, so a lost
-// race here never silently mints a second session.
 func (p *PGRepo) ConsumeOpLoginRequest(ctx context.Context, id string, now time.Time) error {
 	res, err := p.db.ExecContext(ctx,
 		`UPDATE op_login_requests SET consumed_at = $2
@@ -2975,12 +2404,6 @@ func (p *PGRepo) ConsumeOpLoginRequest(ctx context.Context, id string, now time.
 	return nil
 }
 
-// ---- setup token redemption (spec §B) ----
-
-// RedeemSetupToken spends a one-time setup token and stores s as a session of the
-// token's user in one transaction, so a failure leaves the token unspent. It
-// returns the user id, or ErrNotFound when the token is absent, already spent, or
-// expired.
 func (p *PGRepo) RedeemSetupToken(ctx context.Context, tokenHash string, now time.Time, s NewSession) (string, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -3009,11 +2432,7 @@ func (p *PGRepo) RedeemSetupToken(ctx context.Context, tokenHash string, now tim
 	return userID, nil
 }
 
-// CreateSetupToken persists a one-time first-web-login token, storing only its
-// hash (the raw value rides in the /setup?token=... URL). The setup Owner-creation
-// path uses CompleteOwnerSetup so Owner creation, local auth, and this token
-// commit atomically; this lower-level helper remains for callers that already
-// established the user. The token is redeemed exactly once by RedeemSetupToken.
+// CreateSetupToken stores only the hash; initial setup uses CompleteOwnerSetup to create owner, auth setting and token atomically.
 func (p *PGRepo) CreateSetupToken(ctx context.Context, tokenHash, userID string, expiresAt time.Time) error {
 	_, err := p.db.ExecContext(ctx,
 		`INSERT INTO setup_tokens (token_hash, user_id, expires_at) VALUES ($1, $2, $3)`,
@@ -3021,8 +2440,6 @@ func (p *PGRepo) CreateSetupToken(ctx context.Context, tokenHash, userID string,
 	return err
 }
 
-// isUniqueViolation reports whether err is a Postgres unique-constraint
-// violation (code 23505).
 func isUniqueViolation(err error) bool {
 	return stringsContains(err.Error(), "duplicate key") || stringsContains(err.Error(), "23505")
 }

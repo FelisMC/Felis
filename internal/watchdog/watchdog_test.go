@@ -31,8 +31,6 @@ func run(s *State, r Report, now time.Time) Plan {
 	return p
 }
 
-// TestObserveLifecycle walks one condition through pending, firing, the daily
-// reminder, clearing, and the resolved notice after it stayed clear.
 func TestObserveLifecycle(t *testing.T) {
 	s := &State{}
 	f := finding("deployment/felis-api", Critical, 5*time.Minute)
@@ -70,8 +68,6 @@ func TestObserveLifecycle(t *testing.T) {
 	}
 }
 
-// TestObserveFlapWithinResolveWindow: a condition that returns before
-// resolveAfter is neither resolved nor mailed as new.
 func TestObserveFlapWithinResolveWindow(t *testing.T) {
 	s := &State{}
 	f := finding("disk//", Warning, 0)
@@ -85,8 +81,6 @@ func TestObserveFlapWithinResolveWindow(t *testing.T) {
 	}
 }
 
-// TestObservePendingNeverMailed: a condition that heals inside its For is
-// dropped without a word.
 func TestObservePendingNeverMailed(t *testing.T) {
 	s := &State{}
 	run(s, Report{Findings: []Finding{finding("deployment/registry", Critical, 5*time.Minute)}}, t0)
@@ -95,7 +89,6 @@ func TestObservePendingNeverMailed(t *testing.T) {
 	}
 }
 
-// TestObserveEscalation: a warning that turns critical is mailed again at once.
 func TestObserveEscalation(t *testing.T) {
 	s := &State{}
 	run(s, Report{Findings: []Finding{finding("disk//", Warning, 0)}}, t0)
@@ -108,8 +101,6 @@ func TestObserveEscalation(t *testing.T) {
 	}
 }
 
-// TestObserveEventOnce: a failed Job is mailed once, never reminded, and leaves
-// without a resolved notice.
 func TestObserveEventOnce(t *testing.T) {
 	s := &State{}
 	ev := finding("job-failed/backup-survival-x", Warning, 0)
@@ -125,8 +116,6 @@ func TestObserveEventOnce(t *testing.T) {
 	}
 }
 
-// TestObserveUnknownCarriesOver: while the API server is down, cluster alerts
-// neither resolve nor restart their clocks.
 func TestObserveUnknownCarriesOver(t *testing.T) {
 	s := &State{}
 	f := finding("system-server/login", Critical, 0)
@@ -143,7 +132,6 @@ func TestObserveUnknownCarriesOver(t *testing.T) {
 	}
 }
 
-// TestObserveUncommittedRetries: a plan whose mail failed comes due again.
 func TestObserveUncommittedRetries(t *testing.T) {
 	s := &State{}
 	f := finding("postgres", Critical, 0)
@@ -207,8 +195,6 @@ func TestQuietUntil(t *testing.T) {
 	}
 }
 
-// TestRecoverState: a state file that does not parse is moved aside, whole,
-// and the run starts over; a good or missing one is loaded as LoadState does.
 func TestRecoverState(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.json")
@@ -244,9 +230,6 @@ func TestRecoverState(t *testing.T) {
 	}
 }
 
-// TestSaveStateOr: a state file that cannot be written leaves the state in the
-// fallback, which the next run reads; once the file takes it again the fallback
-// goes, and a fallback older than the file is never read.
 func TestSaveStateOr(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root writes into a read-only directory")
@@ -336,7 +319,6 @@ func TestSaveStateOr(t *testing.T) {
 	}
 }
 
-// TestStateOpen: open is a condition the owners were told of that still holds.
 func TestStateOpen(t *testing.T) {
 	s := &State{}
 	f := finding("memory", Warning, time.Hour)

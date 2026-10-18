@@ -318,9 +318,7 @@ const tabs = [
 ] as const;
 type Tab = (typeof tabs)[number]["key"];
 
-// UpdatesPage is the Owner's maintenance page: the host's state, backups, the off-site
-// copy, diagnostics and updates, each a tab. Every tab stays mounted, so a draft on one
-// survives a look at another; the header's reload rereads all of them.
+// Keep maintenance tabs mounted so navigation preserves drafts; page refresh reloads every card.
 export function UpdatesPage() {
   const { t } = useTranslation("admin");
   const [params, setParams] = useSearchParams();

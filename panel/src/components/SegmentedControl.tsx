@@ -7,11 +7,6 @@ export interface Segment<K extends string> {
   count?: number;
 }
 
-/** SegmentedControl picks one of a few views of the same thing: a status filter beside a search
- *  box, a schedule's kind. It is a radio group: the chosen segment is the one in the tab order,
- *  and the arrow keys, Home and End move between segments and choose as they go. A count, when
- *  given, follows the label as a small badge and is read with it as "Label (count)". The row scrolls sideways when the screen is too
- *  narrow for it. */
 export function SegmentedControl<K extends string>({ segments, value, onChange, label, className }: {
   segments: readonly Segment<K>[];
   value: K;

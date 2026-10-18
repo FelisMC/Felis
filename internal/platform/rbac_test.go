@@ -7,9 +7,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 )
 
-// testParams is a fully-specified Params used across the platform tests. It sets
-// VelocityCIDRs so the game policy renders its allow path; tests that need the
-// fail-closed path clear it explicitly.
+// testParams is a fully specified Params; it sets VelocityCIDRs so the game policy renders its allow path.
 func testParams() Params {
 	return Params{
 		ControlNamespace:   "felis",
@@ -44,7 +42,7 @@ func hasRule(role *rbacv1.Role, apiGroup, resource, verb string) bool {
 	return false
 }
 
-// grantsResource reports whether role has ANY rule touching (apiGroup, resource).
+// grantsResource reports whether role has any rule for (apiGroup, resource).
 func grantsResource(role *rbacv1.Role, apiGroup, resource string) bool {
 	for _, r := range role.Rules {
 		if contains(r.APIGroups, apiGroup) && contains(r.Resources, resource) {
@@ -63,9 +61,6 @@ func contains(haystack []string, needle string) bool {
 	return false
 }
 
-// TestAPIRole_CreatesJobsInBothNamespaces is the #1 regression guard: felis-api
-// must be able to create the build Job (build ns) AND the restore Job (minecraft
-// ns). An earlier reading of §21 omitted batch/jobs entirely; this asserts both.
 func TestAPIRole_CreatesJobsInBothNamespaces(t *testing.T) {
 	rbac := ControlPlaneRBAC(testParams())
 
@@ -88,10 +83,7 @@ func TestAPIRole_CreatesJobsInBothNamespaces(t *testing.T) {
 			t.Errorf("felis-api-builds must have batch/jobs:%s for the build-Job lifecycle", v)
 		}
 	}
-	// Read-side build logs (spec §16, §416 日志流复用 §8): list build Pods to find the
-	// build Job's pod, then read its log subresource — and nothing wider. This
-	// mirrors the minecraft console-read least-privilege line: pods:list + pods/log,
-	// never pods:get (a pod's full object can carry more than its logs).
+	// Build logs: pods:list to find the build pod, then pods/log; never pods:get, since a pod object can carry more than its logs.
 	if !hasRule(build, groupCore, "pods", "list") {
 		t.Error("felis-api-builds must list pods (pods:list) to find the build Job's pod for the §16 build-log read")
 	}
@@ -103,8 +95,6 @@ func TestAPIRole_CreatesJobsInBothNamespaces(t *testing.T) {
 	}
 }
 
-// TestAPIRole_MinecraftPowersExact pins felis-api's minecraft verbs and, crucially,
-// what it must NOT have: no status writes, no delete.
 func TestAPIRole_MinecraftPowersExact(t *testing.T) {
 	mc := roleByName(t, ControlPlaneRBAC(testParams()).Roles, "felis-api")
 	// watch backs the informer cache the fleet reads come from.
@@ -145,25 +135,19 @@ func TestAPIRole_MinecraftPowersExact(t *testing.T) {
 	if hasRule(mc, groupCore, "persistentvolumeclaims", "watch") || hasRule(mc, groupCore, "persistentvolumeclaims", "delete") {
 		t.Error("felis-api must NOT watch or delete PVCs")
 	}
-	// Read-side console (spec §8 读=pods/log follow): list pods to find the
-	// running pod, then read its log subresource — and nothing wider.
+	// Console reads: pods:list to find the pod, then pods/log only.
 	if !hasRule(mc, groupCore, "pods", "list") {
 		t.Error("felis-api must list pods (pods:list) to find a server's running pod for the console read")
 	}
 	if !hasRule(mc, groupCore, "pods/log", "get") {
 		t.Error("felis-api must read pod logs (pods/log:get) for the console read (spec §8 读=pods/log follow)")
 	}
-	// Least-privilege line: the streamer lists pods then reads pods/log, it never
-	// Gets a pod object — so pods:get must be ABSENT (a pod's full object can carry
-	// more than its logs).
+	// Least privilege: the streamer lists pods and reads pods/log, never a pod object, so pods:get stays absent.
 	if hasRule(mc, groupCore, "pods", "get") {
 		t.Error("felis-api must NOT have pods:get (the console streamer lists then reads pods/log, never Gets a pod)")
 	}
 }
 
-// TestOperatorRole_ScopeExact pins the operator's cached-client verb set and its
-// hard exclusions: no PVC, no pods, no events, no statefulset patch/delete, and
-// status carrying only `update`.
 func TestOperatorRole_ScopeExact(t *testing.T) {
 	op := roleByName(t, ControlPlaneRBAC(testParams()).Roles, "felis-operator")
 
@@ -173,8 +157,7 @@ func TestOperatorRole_ScopeExact(t *testing.T) {
 			t.Errorf("operator must have minecraftservers:%s (cached client)", v)
 		}
 	}
-	// Idle auto-stop patches spec.desiredState=Stopped (spec §8). Found live:
-	// without this grant the auto-stop fails closed with a 403.
+	// Idle auto-stop patches spec.desiredState=Stopped; without this grant it fails with 403.
 	if !hasRule(op, groupFelis, "minecraftservers", "patch") {
 		t.Error("operator must have minecraftservers:patch (idle auto-stop writes spec.desiredState)")
 	}
@@ -249,9 +232,6 @@ func TestOperatorRole_ScopeExact(t *testing.T) {
 	}
 }
 
-// TestReaperRole_ScopeExact pins the reaper's two destructive powers and confirms
-// it holds none of the operator's/api's resources. It uses reaperParams because the
-// reaper identity is gated on the retention trio (see TestReaperRBAC_GatedOnRetention).
 func TestReaperRole_ScopeExact(t *testing.T) {
 	rp := roleByName(t, ControlPlaneRBAC(reaperParams()).Roles, "felis-reaper")
 
@@ -290,12 +270,6 @@ func TestReaperRole_ScopeExact(t *testing.T) {
 	}
 }
 
-// TestReaperRBAC_GatedOnRetention locks the reaper identity to its consumer: the
-// felis-reaper SA, Role, and RoleBinding (which carry the bundle's ONLY
-// persistentvolumeclaims:delete grant) render iff the retention trio is supplied —
-// the same gate as the CronJob. A standing, unconsumed pvc:delete grant would widen
-// the blast radius of a control-plane compromise, so it must not exist without the
-// reaper that needs it.
 func TestReaperRBAC_GatedOnRetention(t *testing.T) {
 	hasSA := func(rbac RBAC, name string) bool {
 		for _, sa := range rbac.ServiceAccounts {
@@ -327,8 +301,7 @@ func TestReaperRBAC_GatedOnRetention(t *testing.T) {
 	if roles, bindings := reaperRoleBindings(off); roles != 0 || bindings != 0 {
 		t.Errorf("reaper Role/RoleBinding present without retention (roles=%d bindings=%d)", roles, bindings)
 	}
-	// And the bundle then holds NO pvc:delete grant at all — the worst-case primitive
-	// is simply absent, not merely unbound.
+	// The bundle holds no pvc:delete grant at all.
 	for _, role := range off.Roles {
 		if hasRule(role, groupCore, "persistentvolumeclaims", "delete") {
 			t.Errorf("%s grants pvc:delete with no reaper deployed — the destructive grant must be gated", role.Name)
@@ -345,12 +318,6 @@ func TestReaperRBAC_GatedOnRetention(t *testing.T) {
 	}
 }
 
-// TestOnlyReaperDeletesMinecraftServers locks the lifecycle invariant: a
-// MinecraftServer is retained when its world is reaped (released by Stop + PVC
-// reclaim, so it can be claimed again), and removed only when an admin deletes the
-// server, by the reaper, after it archived and deleted the world. No other
-// control-plane identity may hold minecraftservers:delete, and without a reaper
-// deployed none does.
 func TestOnlyReaperDeletesMinecraftServers(t *testing.T) {
 	for _, role := range ControlPlaneRBAC(testParams()).Roles {
 		if hasRule(role, groupFelis, "minecraftservers", "delete") {
@@ -373,9 +340,6 @@ func TestOnlyReaperDeletesMinecraftServers(t *testing.T) {
 	}
 }
 
-// TestNoClusterScopedRBAC enforces the §22 red line: nothing in the bundle is a
-// ClusterRole or ClusterRoleBinding, and no Role uses wildcards, escalation verbs,
-// or grants power over RBAC resources themselves.
 func TestNoClusterScopedRBAC(t *testing.T) {
 	rbac := ControlPlaneRBAC(testParams())
 
@@ -417,9 +381,6 @@ func TestNoClusterScopedRBAC(t *testing.T) {
 	}
 }
 
-// TestRoleBindings_RefLocalRoleAndControlPlaneSA enforces that every binding
-// references a namespaced Role (never a ClusterRole) and a ServiceAccount subject
-// living in the control namespace.
 func TestRoleBindings_RefLocalRoleAndControlPlaneSA(t *testing.T) {
 	p := testParams()
 	rbac := ControlPlaneRBAC(p)
@@ -453,9 +414,6 @@ func TestRoleBindings_RefLocalRoleAndControlPlaneSA(t *testing.T) {
 	}
 }
 
-// TestLeaseRolesAreNarrow pins the leader-election grants: each control-plane identity may
-// create a lease and read and renew its own one only, record Events, and nothing else, in
-// the control namespace, bound to that identity alone.
 func TestLeaseRolesAreNarrow(t *testing.T) {
 	p := testParams()
 	rbac := ControlPlaneRBAC(p)

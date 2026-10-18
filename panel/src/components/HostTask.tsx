@@ -10,9 +10,7 @@ import { saveBlob } from "@/lib/download";
 import { useAsync, usePolling, useRefreshSignal } from "@/lib/hooks";
 import type { HostTaskAction, NodeControlRequest, NodeControlTask } from "@/lib/types";
 
-/** useHostTask follows the newest host task of the given actions: it starts one (behind
- *  a fresh reauthentication), and reads its progress while it runs. The host runs one
- *  task at a time, so busy also holds while any other task runs. */
+// Host tasks require fresh authentication; any active task makes the host busy.
 export function useHostTask(actions: HostTaskAction[]) {
   const reauth = useReauth();
   const list = useAsync(api.nodeTasks, [], { coalesce: true });

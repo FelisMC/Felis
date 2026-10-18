@@ -5,50 +5,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 
-/**
- * ControlFrame is one message on the {@code felis:control} plugin-message channel
- * (spec §12): the wire contract between the felis-paper lobby and the Velocity
- * proxy. The lobby is a pure UI face — it holds no felis-api token and maintains no
- * queue — so every lobby action travels to Velocity as one of these frames, and
- * Velocity answers with one back. {@link Control} encodes/decodes them; this class
- * is just the immutable value, source-shared into both the velocity and paper jars
- * so the two ends can never drift on field names.
- *
- * <p>There are nine frame types, discriminated by {@link #type()}:
- * <ul>
- *   <li><b>Upstream from the lobby</b>: {@link #WAKE_REQUEST} and
- *       {@link #CLAIM_REQUEST} carry {@code player}+{@code server};
- *       {@link #STATUS_QUERY} carries {@code server}; {@link #LIST_REQUEST} carries
- *       nothing.</li>
- *   <li><b>Upstream from the login gate</b>: {@link #LOGIN_RELEASE} carries nothing
- *       but the informational {@code player}. It replaces the BungeeCord
- *       {@code Connect} the gate used to send, so {@code bungeecord:main} can be
- *       switched off proxy-wide.</li>
- *   <li><b>Downstream</b> (velocity → lobby): {@link #STATUS_UPDATE} is the tile
- *       projection; {@link #LIST_UPDATE} is the set of tiles to show, with what the player may do with each;
- *       {@link #TRANSFER_READY} tells the lobby a parked player's backend is up;
- *       {@link #ERROR} reports a refusal.</li>
- * </ul>
- *
- * <p>Which upstream types a backend may send is decided by the proxy from the
- * connection they arrive on (the lobby's set, or the login gate's single type); a
- * frame from any other backend is dropped whatever its type.
- *
- * <p>The {@code player} field is informational only on the upstream frames:
- * Velocity derives the real identity from the {@code ServerConnection} the message
- * arrived on, never from this field, so a compromised backend cannot act as another
- * player (spec §14). The lobby still fills it in for symmetry and logging.
- *
- * <p>The spec sketches {@code StatusUpdate} as {@code {server,phase,players,
- * claimable}}; this refines {@code players} into {@link #ready()} +
- * {@link #playersOnline()} + {@link #playersMax()}, mapping the frame 1:1 onto the
- * {@code GET …/menu} endpoint so the GUI can render both the phase button and a
- * "3/20" player count from a single frame.
- *
- * <p>Accessors degrade to {@code null}/{@code 0}/{@code false} for fields absent on
- * a given type, mirroring {@link ServerView}'s tolerant philosophy: a frame is read
- * for the fields its type defines and no others.
- */
+// Authenticate the source connection, never the frame identity; undefined fields use safe defaults.
 public final class ControlFrame {
 
     /** Upstream: park-and-wake a server the player may already own (player, server). */
@@ -105,7 +62,6 @@ public final class ControlFrame {
         this.access = access;
     }
 
-    // ---- factories (tolerant: no field validation, so decode can always rebuild) ----
 
     public static ControlFrame wakeRequest(String player, String server) {
         return new ControlFrame(WAKE_REQUEST, player, server, null, false, 0, 0, false, null, null);
@@ -142,13 +98,7 @@ public final class ControlFrame {
         return listUpdate(servers, null);
     }
 
-    /**
-     * listUpdate with {@code access} also carries what the player may do with each
-     * server: {@code access.get(i)} is felis-api's verdict for {@code servers.get(i)}
-     * ({@code ""} when unknown). A null name drops its verdict with it; missing
-     * verdicts read as unknown, and extra ones are cut. With no known verdict at all
-     * the list stays empty and the frame is the plain name list.
-     */
+    // Keep verdicts aligned with names; missing verdicts are unknown and extras are discarded.
     public static ControlFrame listUpdate(List<String> servers, List<String> access) {
         List<String> names = new ArrayList<>();
         List<String> verdicts = new ArrayList<>();
@@ -173,7 +123,6 @@ public final class ControlFrame {
         return new ControlFrame(LOGIN_RELEASE, player, null, null, false, 0, 0, false, null, null);
     }
 
-    // ---- accessors ----
 
     public String type() {
         return type;
@@ -220,11 +169,7 @@ public final class ControlFrame {
         return servers;
     }
 
-    /**
-     * access is the {@link #LIST_UPDATE}'s verdict per server, aligned with
-     * {@link #servers()} ({@code ""} for one felis-api gave none); empty when the
-     * proxy sent names only, and on every other type.
-     */
+    /** access is the LIST_UPDATE verdict per server, aligned with servers(); empty when the proxy sent names only, and on every other type. */
     public List<String> access() {
         return access;
     }

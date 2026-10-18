@@ -1,9 +1,4 @@
-// The panel ships two translations; everything a browser reports is mapped onto
-// one of them before i18next picks. Any Chinese (zh, zh-TW, zh-HK, zh-Hant, a
-// stale "zh_TW" in storage) reads the zh-CN text and any English the en-US
-// text. Mapping at detection matters: i18next first looks for an exact
-// supported code anywhere in the browser's list, so ["zh-TW", "en-US"] would
-// land on English if zh-TW reached it unmapped.
+// Normalize Chinese and English regional language codes before i18next selects supported translations.
 
 export const SUPPORTED_LANGUAGES = ["en-US", "zh-CN"] as const;
 

@@ -13,9 +13,7 @@ export function parentOf(dir: string): string {
  *  (fileedit.secretConfigPath). */
 export const SECRET_CONFIG_PATH = "config/paper-global.yml";
 
-/** The paths the read path guards by name (fileedit.guardedPaths): under another
- *  name it would hand back what it withholds, so the server refuses to move them
- *  (400 bad_path) and the page does not offer to. */
+// Renaming guarded files could bypass read protection; neither backend nor UI permits it.
 const MANAGED_PATHS = new Set([SECRET_CONFIG_PATH, "config", "server.properties"]);
 
 export function isManaged(path: string): boolean {
@@ -33,10 +31,7 @@ export function nameTooLong(name: string): boolean {
 
 export type NameProblem = "name_required" | "name_slash" | "name_dots" | "name_too_long" | "name_taken";
 
-/** nameProblem says why name cannot be used for a new entry in a folder listing
- *  `entries`, or null when it can. `current` is the entry being renamed, whose own
- *  name is not a clash. The name is taken as typed less surrounding spaces, which
- *  is what the page sends. */
+// nameProblem returns null for valid names; the current entry is excluded from rename conflicts.
 export function nameProblem(
   raw: string,
   entries: readonly ServerFileEntry[] | null,
@@ -51,9 +46,7 @@ export function nameProblem(
   return null;
 }
 
-/** sortEntries puts folders first, then orders names the way people count
- *  ("r.2.0" before "r.10.0"), with case second to the letters ("apple" before
- *  "Banned"). The server lists in byte order. */
+/** sortEntries puts folders first, then orders names the way people count ("r.2.0" before "r.10.0"), with case second ("apple" before "Banned"). The server lists in byte order. */
 export function sortEntries(entries: readonly ServerFileEntry[]): ServerFileEntry[] {
   return [...entries].sort(
     (a, b) =>

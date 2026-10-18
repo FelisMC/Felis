@@ -13,11 +13,8 @@ import (
 	"time"
 )
 
-// DefaultUserAgent identifies Felis to the metadata APIs. PaperMC and Modrinth
-// both ask for an agent naming the application and a contact.
 const DefaultUserAgent = "felis-software/1 (+https://felis.lolicon.best)"
 
-// Public upstream endpoints.
 const (
 	MojangManifestURL = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
 	FillURL           = "https://fill.papermc.io"
@@ -30,14 +27,9 @@ const (
 	ModrinthURL       = "https://api.modrinth.com"
 )
 
-// maxMetadataBytes bounds one metadata response. The largest real one, Quilt's
-// loader list for a version, is under 1 MiB.
 const maxMetadataBytes = 16 << 20
 
-// Resolver reads upstream metadata. The zero value talks to the public
-// upstreams with a 30-second client; tests point the URL fields at an httptest
-// server. With CacheTTL set, responses are kept that long, so the panel's
-// version pickers do not hit upstream on every keystroke.
+// Resolver defaults to public metadata and a 30-second client; CacheTTL enables cached picker responses.
 type Resolver struct {
 	HTTP      *http.Client
 	UserAgent string
@@ -83,7 +75,6 @@ func (r *Resolver) client() *http.Client {
 	return &http.Client{Timeout: 30 * time.Second}
 }
 
-// UpstreamError reports an upstream that answered with something unusable.
 type UpstreamError struct {
 	URL    string
 	Status int
@@ -99,13 +90,11 @@ func (e *UpstreamError) Error() string {
 
 func (e *UpstreamError) Unwrap() error { return e.Err }
 
-// NotFoundError reports a version or build upstream does not publish.
 type NotFoundError struct{ What string }
 
 func (e *NotFoundError) Error() string { return "software: " + e.What + " not found" }
 
-// get fetches a URL's body, sharing one request between concurrent callers and
-// serving from the cache while it is fresh.
+// get shares concurrent requests for the same URL and serves fresh cached responses.
 func (r *Resolver) get(ctx context.Context, url string) ([]byte, error) {
 	r.mu.Lock()
 	if r.CacheTTL > 0 {
@@ -187,9 +176,7 @@ func (r *Resolver) getJSON(ctx context.Context, url string, v any) error {
 	return nil
 }
 
-// sidecarDigest reads the .sha256 (or, failing that, .sha1) file a Maven
-// repository serves beside an artifact. The file holds the hex digest, sometimes
-// followed by the file name.
+// sidecarDigest prefers Maven sha256 then sha1, accepting an optional filename after the hex digest.
 func (r *Resolver) sidecarDigest(ctx context.Context, artifactURL string) (Digest, error) {
 	var firstErr error
 	for _, algo := range []string{SHA256, SHA1} {
@@ -215,7 +202,6 @@ func (r *Resolver) sidecarDigest(ctx context.Context, artifactURL string) (Diges
 
 func jsonUnmarshal(body []byte, v any) error { return json.Unmarshal(body, v) }
 
-// bytesMatch reports whether body hashes to d.
 func bytesMatch(body []byte, d Digest) bool {
 	h, err := NewHash(d.Algo)
 	if err != nil {

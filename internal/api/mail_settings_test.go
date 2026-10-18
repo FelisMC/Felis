@@ -13,8 +13,7 @@ import (
 
 const mailSettingsPath = "/api/v1/settings/smtp"
 
-// fakeRelay is the sender NewMailer hands out: it records what it was built from and
-// what it sent, and fails Ping or SendNotice with pingErr.
+// fakeRelay records construction and sends, with pingErr controlling Ping and SendNotice failures.
 type fakeRelay struct {
 	settings mailsettings.Settings
 	log      *[]string
@@ -84,8 +83,6 @@ func relayBody(revision string, password *string, port int) string {
 	return string(raw)
 }
 
-// TestMailSettingsReadShowsWhereTheRelayComesFrom pins the three sources and that the
-// password never leaves the API.
 func TestMailSettingsReadShowsWhereTheRelayComesFrom(t *testing.T) {
 	if v := newMailFixture(nil).view(t); v.Source != "none" || v.Host != "" || v.PasswordSet {
 		t.Errorf("no relay anywhere = %+v", v)
@@ -96,10 +93,6 @@ func TestMailSettingsReadShowsWhereTheRelayComesFrom(t *testing.T) {
 	}
 }
 
-// TestMailSettingsSaveChecksTheRelayAndOverridesFelisToml pins the save: fresh proof is
-// required, the relay is pinged before anything is stored, an absent password carries the
-// current one over, and once saved the relay is what every send goes through, with its
-// hourly cap applied to the mail budget.
 func TestMailSettingsSaveChecksTheRelayAndOverridesFelisToml(t *testing.T) {
 	f := newMailFixture(hostRelay())
 	w := do(f.a.ExternalHandler(), "PUT", mailSettingsPath, relayBody("", nil, 587), jsonHeader)
@@ -162,8 +155,6 @@ func TestMailSettingsSaveChecksTheRelayAndOverridesFelisToml(t *testing.T) {
 	}
 }
 
-// TestMailSettingsRefusesAPortOffTheSubmissionList pins that a relay on another port is
-// refused before anything is dialled.
 func TestMailSettingsRefusesAPortOffTheSubmissionList(t *testing.T) {
 	f := newMailFixture(nil)
 	f.p.ReauthAt = f.a.now()
@@ -179,7 +170,6 @@ func TestMailSettingsRefusesAPortOffTheSubmissionList(t *testing.T) {
 	}
 }
 
-// TestMailSettingsClearHandsTheRelayBack pins that clearing goes back to felis.toml's relay.
 func TestMailSettingsClearHandsTheRelayBack(t *testing.T) {
 	f := newMailFixture(hostRelay())
 	f.p.ReauthAt = f.a.now()
@@ -203,8 +193,6 @@ func TestMailSettingsClearHandsTheRelayBack(t *testing.T) {
 	}
 }
 
-// TestMailSettingsTestMailsTheOwner pins where a test message goes: the caller's verified
-// address, else the sender itself.
 func TestMailSettingsTestMailsTheOwner(t *testing.T) {
 	f := newMailFixture(nil)
 	f.p.ReauthAt = f.a.now()
@@ -225,7 +213,6 @@ func TestMailSettingsTestMailsTheOwner(t *testing.T) {
 	}
 }
 
-// TestMailSettingsOwnerOnly pins that only the Owner reaches the relay.
 func TestMailSettingsOwnerOnly(t *testing.T) {
 	f := newMailFixture(hostRelay())
 	f.a.External = staticExternal{p: &Principal{UserID: "admin", Role: "admin", ViaAdminAccess: true}}
@@ -236,7 +223,6 @@ func TestMailSettingsOwnerOnly(t *testing.T) {
 	}
 }
 
-// TestRelayTestErrorCategories pins the coarse reasons the panel shows.
 func TestRelayTestErrorCategories(t *testing.T) {
 	for msg, want := range map[string]string{
 		"smtp: dial smtp.example.com:587: connection refused":     "smtp_unreachable",
@@ -254,9 +240,6 @@ func TestRelayTestErrorCategories(t *testing.T) {
 	}
 }
 
-// TestMailSettingsRevisionSurvivesReSpacing pins that the revision a save answers with is
-// the one the next read reports even after the store re-spaces the JSON, as PostgreSQL
-// does with jsonb; otherwise every second save would be refused as a conflict.
 func TestMailSettingsRevisionSurvivesReSpacing(t *testing.T) {
 	f := newMailFixture(nil)
 	f.p.ReauthAt = f.a.now()

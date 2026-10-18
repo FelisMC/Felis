@@ -48,9 +48,7 @@ func TestAddressFinding(t *testing.T) {
 }
 
 func TestClockFinding(t *testing.T) {
-	// Status words as <linux/timex.h> spells them: STA_PLL 0x0001, STA_UNSYNC
-	// 0x0040, STA_NANO 0x2000. An unsynced kernel reports 0x0041 with a daemon
-	// that has not locked yet, 0x0040 with none; chronyd synced leaves 0x2001.
+	// Model Linux STA_PLL, STA_UNSYNC, and STA_NANO combinations for synchronized and unsynchronized kernels.
 	if f := ClockFinding(0x2001, true); f != nil {
 		t.Fatalf("synchronized: got %+v", f)
 	}

@@ -28,9 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-// The panel's platform operations run here, on the controller host, through node-control:
-// each is what the matching CLI command does, run as root, with its output in the task log.
-// The node lifecycle (join, approve, fence...) stays in node_control.go.
+// Run panel host operations as root through node-control and capture output in the task log.
 
 // hostSettingsFile keeps the host settings the panel changed (Platform settings → Host);
 // the installer takes them as its defaults on every later run (recall_host_settings).
@@ -178,9 +176,7 @@ func (e nodeExecutor) requireUnit(dir, unit string) error {
 	return nil
 }
 
-// reconfigure runs the embedded installer for the named targets only
-// (FELIS_INSTALL_MODE=reconfigure): the timers and units it owns are rewritten from the
-// same functions a full run uses, with the host settings it recalls.
+// Reuse installer functions for targeted reconfiguration with persisted host settings.
 func (e nodeExecutor) reconfigure(ctx context.Context, out io.Writer, targets []string, env ...string) error {
 	shell := e.shell
 	if shell == "" {
@@ -199,11 +195,8 @@ func (e nodeExecutor) reconfigure(ctx context.Context, out io.Writer, targets []
 	return nil
 }
 
-// restoreDatabase replaces the control-plane database with a bundle: the panel and the
-// operator stop, the bundle is restored (the current database is bundled first), the
-// migrations of this release are applied, and both start again. The task runs in
-// node-control, which the stop does not touch; whatever fails, the control plane is
-// started again so the panel can say what happened.
+// Stop API/operator and take a safety backup before restoring and migrating the database.
+// Whatever fails, the control plane is started again so the panel can report what happened.
 func (e nodeExecutor) restoreDatabase(ctx context.Context, bundle string, stage func(string) error, out io.Writer) (resultErr error) {
 	if err := stage("verify"); err != nil {
 		return err
@@ -351,11 +344,7 @@ func writeEnvFile(path, header string, vals map[string]string) error {
 	return os.Rename(tmp.Name(), path)
 }
 
-// configureOffsite points the off-site copy at a bucket: [offsite] in both host config
-// files, the bucket's credentials (and the key that seals the copies) in offsite.env, the
-// hourly timer through the installer, then a check that the bucket answers and its
-// objects are sealed with this host's key. A key the bucket's objects are not sealed with
-// is never put in place of the one already kept: the installer refuses it.
+// A key the bucket's objects are not sealed with is never put in place of the one already kept; the installer refuses it.
 func (e nodeExecutor) configureOffsite(ctx context.Context, r nodecontrol.Request, stage func(string) error, out io.Writer) error {
 	p, s := r.Params, r.Secrets
 	if err := stage("configure"); err != nil {
@@ -460,10 +449,7 @@ func (e nodeExecutor) configureStorage(ctx context.Context, r nodecontrol.Reques
 	return nil
 }
 
-// configureConnection changes how the panel is reached. local and reverse-proxy also take
-// a Cloudflare edge down (connector, Access audience, the NodePort fence), so the change
-// is whole; cloudflare builds the tunnel and Access through cfsetup, logging in to
-// Cloudflare first when this host has never done so: the log then carries the URL to open.
+// Clear Cloudflare state for local/reverse-proxy modes; tunnel mode establishes connector and Access policy.
 func (e nodeExecutor) configureConnection(ctx context.Context, r nodecontrol.Request, stage func(string) error, out io.Writer) error {
 	p := r.Params
 	cfg, err := config.Load(hostSetupConfigPath)
@@ -613,9 +599,7 @@ func (e nodeExecutor) supportBundle(ctx context.Context, serverLogs bool, out io
 	return nodecontrol.SetArtifact(ctx, newest)
 }
 
-// hostSettings records the changed settings in host-settings.env, where every later
-// installer run finds them, and has the installer rewrite what reads them now: the
-// database backup timer, or the proxy's unit (which restarts it, disconnecting players).
+// Persist host settings before regenerating units so future installer runs retain changes.
 func (e nodeExecutor) hostSettings(ctx context.Context, p map[string]string, stage func(string) error, out io.Writer) error {
 	if err := stage("configure"); err != nil {
 		return err
@@ -653,9 +637,7 @@ func (e nodeExecutor) hostSettings(ctx context.Context, p map[string]string, sta
 	return e.reconfigure(ctx, out, targets)
 }
 
-// serverForwarding sets or drops the legacy forwarding label on a user server, the
-// switch https://docs.felismc.com/en/guide/servers#forwarding-mode documents with kubectl. The proxy picks it up at its next
-// server-list refresh.
+// The proxy adopts forwarding-label changes on its next server-list refresh.
 func (e nodeExecutor) serverForwarding(ctx context.Context, server string, legacy bool, out io.Writer) error {
 	role, err := kubectlOutput(ctx, "-n", e.namespace, "get", "minecraftserver", server, "-o", "jsonpath={.metadata.labels.felis\\.lolicon\\.best/system-role}")
 	if err != nil {

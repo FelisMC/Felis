@@ -4,11 +4,7 @@ import { usePolling } from "@/lib/hooks";
 import type { FileOp } from "@/lib/types";
 import { OP_POLL_MS } from "./sessionUpload";
 
-// useFileOps follows a server's background ops (an extraction, or the landing of
-// a file sent in parts): read once when `enabled` turns on, then again every
-// OP_POLL_MS while one runs. They carry on with the page closed, so a visit
-// after one began still shows it and how it ended. onEnded runs once for each op
-// seen running here that has since ended.
+// Poll active operations and report each observed completion once, including after revisiting the page.
 export function useFileOps(server: string, enabled: boolean, onEnded: (op: FileOp) => void) {
   const [ops, setOps] = useState<FileOp[]>([]);
   const [error, setError] = useState<unknown>(null);

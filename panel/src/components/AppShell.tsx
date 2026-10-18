@@ -67,17 +67,12 @@ function SectionGroup({
   );
 }
 
-// Shared visual baseline for every clickable icon button in the sidebar foot.
-// Styled with a subtle border and background to make them feel like tangible widgets,
-// resolving the flat "floating icons in empty space" visual issue.
+// Shared visual baseline for every clickable icon button in the sidebar foot: a subtle border and background, so they read as widgets rather than floating icons.
 const FOOT_ICON_BTN =
   "flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border/40 bg-muted/20 text-muted-foreground hover:bg-accent hover:text-foreground focus:outline-none transition-all duration-150 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed";
 
 function UserStrip() {
-  // The sidebar foot identifies the principal and exposes one action — sign out.
-  // It shows the email and the role by its name in the UI language (user_id is a
-  // UUID). While /me is loading or has failed both lines hold a muted dash, so
-  // the strip never flashes empty and never names a role it has not read.
+  // Do not infer a role while identity is loading or unknown.
   const { identity, refresh } = useTier();
   const { t } = useTranslation("account");
   const [signingOut, setSigningOut] = useState(false);
@@ -158,11 +153,7 @@ function ThemeToggle() {
   );
 }
 
-// ConnectionBanner shows while API calls get no response at all (api.ts
-// CONNECTION_EVENT): the network is down, or Cloudflare Access sent the call to
-// its login page. It clears on the next call that gets through (the pages'
-// polling makes one soon); an expired Access sign-in only passes on a full page
-// load, hence the reload button.
+// Clear connection warnings on the next response; Access expiration may require a full reload.
 function ConnectionBanner() {
   const { t } = useTranslation("common");
   const [lost, setLost] = useState(isConnectionLost);
@@ -188,10 +179,6 @@ function ConnectionBanner() {
   );
 }
 
-// MobileNav is the phone-width way into every page: the sidebar is md-only, so
-// below md a menu button opens the same sections (and the same sign-out strip)
-// as a drawer from the left. Following a link closes it; so does a route change
-// from anywhere else (back button, a link inside the page).
 function MobileNav({ sections }: { sections: NavSection[] }) {
   const { t } = useTranslation("common");
   const { pathname } = useLocation();
@@ -254,10 +241,7 @@ export function AppShell() {
   useEffect(() => {
     if (main) main.scrollTop = 0;
   }, [main, pathname]);
-  // Sections are derived purely from is_admin and is_owner: User-Side always,
-  // Admin-Side only for admins, Owner-Side only for the platform owner. Both
-  // flags are fail-closed (false while /me loads or on failure), so admin and
-  // owner sections appear only once identity is confirmed.
+  // Missing identity flags grant neither admin nor owner sections.
   const sections = visibleSections(isAdmin, isOwner);
 
   // Sync document metadata with the active language.

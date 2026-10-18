@@ -29,10 +29,6 @@ interface Props {
   confirmDisabled?: boolean;
 }
 
-// ConfirmDialog asks before an action that cannot be taken back, in the panel's
-// own dialog rather than window.confirm (which some embedded browsers block, so
-// the action could never be confirmed there). The failure stays next to the
-// buttons that caused it.
 export function ConfirmDialog({
   open,
   onOpenChange,

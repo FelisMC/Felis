@@ -191,9 +191,7 @@ func TestReconcileRunning_CreatesWorkloadAndInjectsGracefulShutdown(t *testing.T
 		t.Errorf("headless service ClusterIP = %q, want None", hl.Spec.ClusterIP)
 	}
 
-	// StatefulSet exists with the shutdown grace period. The pre-stop save runs
-	// from the operator over RCON, so the pod carries no preStop hook (none of the
-	// game images ship an RCON client to run one with).
+	// Shutdown grace period is set; the pre-stop save runs over RCON from the operator, so the pod has no preStop hook.
 	sts := getSTS(t, c, "survival")
 	if got := sts.Spec.Template.Spec.TerminationGracePeriodSeconds; got == nil || *got != 300 {
 		t.Errorf("terminationGracePeriodSeconds = %v, want 300", got)
@@ -224,8 +222,7 @@ func TestReconcileRunning_CreatesWorkloadAndInjectsGracefulShutdown(t *testing.T
 		t.Errorf("statefulset owner refs = %+v, want one ref to survival", sts.OwnerReferences)
 	}
 
-	// The server pod must NOT mount a ServiceAccount token (spec §21): it runs
-	// untrusted user worlds/plugins and has no business reaching the K8s API.
+	// The server pod must not mount a ServiceAccount token: it runs untrusted worlds and plugins.
 	if amt := sts.Spec.Template.Spec.AutomountServiceAccountToken; amt == nil || *amt {
 		t.Error("server pod must set AutomountServiceAccountToken=false — untrusted workloads must not reach the API")
 	}
@@ -433,18 +430,14 @@ func TestReconcileStopped_SkipsSaveWithoutReadyPodOrRcon(t *testing.T) {
 	})
 }
 
-// --- idle auto-stop tests (spec §8) ---------------------------------------
+// Idle auto-stop tests
 
-// TestIdleAutoStop_EmptyServerGetsTimestamp verifies that the first zero
-// sampled once the arrival window is over stamps EmptySince and keeps the server
-// Running.
 func TestIdleAutoStop_EmptyServerGetsTimestamp(t *testing.T) {
 	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 0, Max: 20, Known: true}}, runningServer(), rconSecret())
 	base := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
 	clock := base
 	r.Now = func() metav1.Time { return metav1.NewTime(clock) }
-	// Enable idle auto-stop with a generous timeout so we don't trigger the
-	// actual stop in this test.
+	// Generous timeout so the auto-stop never fires in this test.
 	s := getServer(t, c, "survival")
 	s.Spec.Idle = v1alpha1.IdleSpec{AutoStopEnabled: true, EmptySecondsBeforeStop: 900}
 	if err := c.Update(context.Background(), s); err != nil {
@@ -466,9 +459,6 @@ func TestIdleAutoStop_EmptyServerGetsTimestamp(t *testing.T) {
 	}
 }
 
-// TestIdleAutoStop_StopsAfterTimeout exercises the full auto-stop path:
-// first reconcile stamps EmptySince; after advancing the clock past the
-// timeout, the next reconcile flips desiredState to Stopped.
 func TestIdleAutoStop_StopsAfterTimeout(t *testing.T) {
 	prober := fakeProber{players: operator.PlayerCount{Online: 0, Max: 20, Known: true}}
 	r, c := newReconciler(t, prober, runningServer(), rconSecret())
@@ -510,8 +500,6 @@ func TestIdleAutoStop_StopsAfterTimeout(t *testing.T) {
 	}
 }
 
-// TestIdleAutoStop_ResetsWhenPlayerJoins verifies that EmptySince is cleared
-// when the player tally goes from zero to non-zero.
 func TestIdleAutoStop_ResetsWhenPlayerJoins(t *testing.T) {
 	emptyProber := fakeProber{players: operator.PlayerCount{Online: 0, Max: 20, Known: true}}
 	r, c := newReconciler(t, emptyProber, runningServer(), rconSecret())
@@ -548,11 +536,6 @@ func TestIdleAutoStop_ResetsWhenPlayerJoins(t *testing.T) {
 	}
 }
 
-// TestIdleAutoStop_UnreadTallyNeverStops pins the safety rule behind
-// PlayerCount.Known: a `list` reply the parser cannot read is no sample at all.
-// It must not stamp EmptySince, must not stop a server whose countdown already
-// ran out, must keep the last known tally on display, and must say why on the
-// PlayersCounted condition.
 func TestIdleAutoStop_UnreadTallyNeverStops(t *testing.T) {
 	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 4, Max: 20, Known: true}}, runningServer(), rconSecret())
 	base := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
@@ -612,9 +595,6 @@ func TestIdleAutoStop_UnreadTallyNeverStops(t *testing.T) {
 	}
 }
 
-// TestIdleAutoStop_SystemServerNeverIdles: the login gate and the lobby must
-// stay up whatever their spec says. A stopped gate locks every player out, and
-// nothing would wake it.
 func TestIdleAutoStop_SystemServerNeverIdles(t *testing.T) {
 	srv := runningServer()
 	srv.Labels = map[string]string{v1alpha1.LabelSystemRole: "lobby"}
@@ -640,11 +620,6 @@ func TestIdleAutoStop_SystemServerNeverIdles(t *testing.T) {
 	}
 }
 
-// TestIdleAutoStop_RequeuesUntilDeadline pins the self-driving requeue: an
-// empty Running server must wake the controller at the auto-stop deadline with
-// no external event to lean on. Live, the EmptySince stamp sat unexamined for
-// minutes because nothing re-triggered the reconcile loop — this test fails if
-// the requeue is ever dropped again.
 func TestIdleAutoStop_RequeuesUntilDeadline(t *testing.T) {
 	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 0, Max: 20, Known: true}}, runningServer(), rconSecret())
 	base := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
@@ -707,10 +682,6 @@ func expectIdle(t *testing.T, r *operator.Reconciler, c client.Client, clock *ti
 	}
 }
 
-// TestIdleAutoStop_ArrivalWindowHoldsTheCountdown: a server comes up because
-// someone asked for it, and that player is still being moved in when the first
-// ready probe reads zero. With a short timeout, the countdown stamped then stopped
-// the server just as they got in; it starts once the arrival window is over.
 func TestIdleAutoStop_ArrivalWindowHoldsTheCountdown(t *testing.T) {
 	r, c, clock, ready := idleServer(t)
 	if s := getServer(t, c, "survival"); s.Status.Phase != v1alpha1.PhaseRunning || s.Status.EmptySince != nil {
@@ -724,10 +695,6 @@ func TestIdleAutoStop_ArrivalWindowHoldsTheCountdown(t *testing.T) {
 	expectIdle(t, r, c, clock, stamp.Add(60*time.Second), v1alpha1.DesiredStopped, &stamp)
 }
 
-// TestIdleAutoStop_CalledBackStopStartsAFreshRun: a wake can land after the idle
-// stop but before the scale-down completes, and the same pod comes straight back.
-// The stop's EmptySince used to survive into that run and stop it again at its
-// first zero, with the player who woke it still on the way in.
 func TestIdleAutoStop_CalledBackStopStartsAFreshRun(t *testing.T) {
 	r, c, clock, ready := idleServer(t)
 	stamp := ready.Add(operator.ArrivalWindow)
@@ -753,9 +720,6 @@ func TestIdleAutoStop_CalledBackStopStartsAFreshRun(t *testing.T) {
 	expectIdle(t, r, c, clock, woke.Add(2*time.Minute), v1alpha1.DesiredRunning, nil)
 }
 
-// TestIdleAutoStop_RestartStartsAFreshRun: a run that drops back to Starting (the
-// pod restarted) comes back to players reconnecting. The old run's EmptySince
-// stopped it at its first zero.
 func TestIdleAutoStop_RestartStartsAFreshRun(t *testing.T) {
 	r, c, clock, ready := idleServer(t)
 	stamp := ready.Add(operator.ArrivalWindow)
@@ -779,9 +743,6 @@ func TestIdleAutoStop_RestartStartsAFreshRun(t *testing.T) {
 	expectIdle(t, r, c, clock, back.Add(2*time.Minute), v1alpha1.DesiredRunning, nil)
 }
 
-// TestIdleAutoStop_RequeuesWhileOccupied verifies the slow probe cadence that
-// notices the last player leaving: with players online there is no deadline to
-// aim at, but the tally must still be re-sampled.
 func TestIdleAutoStop_RequeuesWhileOccupied(t *testing.T) {
 	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 3, Max: 20, Known: true}}, runningServer(), rconSecret())
 
@@ -800,8 +761,6 @@ func TestIdleAutoStop_RequeuesWhileOccupied(t *testing.T) {
 	}
 }
 
-// TestNoIdleRequeueWhenDisabled guards against a blanket requeue: servers
-// without idle auto-stop keep the old quiescent behaviour.
 func TestNoIdleRequeueWhenDisabled(t *testing.T) {
 	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 0, Max: 20, Known: true}}, runningServer(), rconSecret())
 
@@ -814,9 +773,6 @@ func TestNoIdleRequeueWhenDisabled(t *testing.T) {
 	}
 }
 
-// TestRconStamp_StableAcrossReconciles pins that the pod template stamp does
-// not drift while the Secret is untouched — a drifting value would roll the
-// pod on every reconcile.
 func TestRconStamp_StableAcrossReconciles(t *testing.T) {
 	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 0, Max: 20, Known: true}}, runningServer(), rconSecret())
 
@@ -834,10 +790,6 @@ func TestRconStamp_StableAcrossReconciles(t *testing.T) {
 	}
 }
 
-// TestRconSecretRecreation_RollsTemplate is the regression for the live lockup:
-// deleting the Secret re-mints a different password, and the pod must be
-// rolled onto it — otherwise the old pod keeps authenticating with the lost
-// password and the RCON gate fails forever.
 func TestRconSecretRecreation_RollsTemplate(t *testing.T) {
 	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 0, Max: 20, Known: true}}, runningServer(), rconSecret())
 
@@ -877,12 +829,10 @@ func stsTemplateStamp(t *testing.T, c client.Client, name string) string {
 	return sts.Spec.Template.Annotations[operator.RconSecretAnnotation]
 }
 
-// TestIdleAutoStop_SkipsWhenDisabled verifies that a Running empty server does
-// NOT get an EmptySince timestamp when AutoStopEnabled is false.
 func TestIdleAutoStop_SkipsWhenDisabled(t *testing.T) {
 	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 0, Max: 20, Known: true}}, runningServer(), rconSecret())
 
-	// Idle is NOT enabled (default).
+	// Idle auto-stop is off by default.
 	s := getServer(t, c, "survival")
 	if s.Spec.Idle.AutoStopEnabled {
 		t.Fatal("idle autostop should be disabled by default")
@@ -898,9 +848,6 @@ func TestIdleAutoStop_SkipsWhenDisabled(t *testing.T) {
 	}
 }
 
-// TestReconcileRunning_ReadinessTimeoutConvertsToFailed verifies that a server
-// whose pod is ready but whose RCON probe keeps failing past
-// readinessTimeoutSeconds transitions to Failed (spec §5, §8).
 func TestReconcileRunning_ReadinessTimeoutConvertsToFailed(t *testing.T) {
 	srv := runningServer()
 	srv.Spec.Startup.ReadinessTimeoutSeconds = 30
@@ -935,8 +882,7 @@ func TestReconcileRunning_ReadinessTimeoutConvertsToFailed(t *testing.T) {
 		t.Error("Ready must be false in Failed phase")
 	}
 	if !isConditionTrue(server, v1alpha1.ConditionReady) {
-		// ConditionReady is False here — isConditionTrue checks for True.
-		// We just want to verify the condition is set.
+		// ConditionReady stays False here; the test only checks that the condition is set.
 	}
 	if isConditionTrue(server, v1alpha1.ConditionRconReached) {
 		t.Error("RconReached must not be True in Failed phase")
@@ -944,9 +890,6 @@ func TestReconcileRunning_ReadinessTimeoutConvertsToFailed(t *testing.T) {
 	_ = res
 }
 
-// TestReconcileRunning_StartupTimeoutConvertsToFailed verifies that a server
-// whose pod never becomes ready past timeoutSeconds transitions to Failed
-// (spec §5).
 func TestReconcileRunning_StartupTimeoutConvertsToFailed(t *testing.T) {
 	srv := runningServer()
 	srv.Spec.Startup.TimeoutSeconds = 30
@@ -984,10 +927,6 @@ func TestReconcileRunning_StartupTimeoutConvertsToFailed(t *testing.T) {
 	_ = res
 }
 
-// TestReconcileRunning_ReadyClearsStartAnchor pins the recovery hygiene: once a
-// server is Ready the start anchor must clear, so a later pod blip can never
-// inherit the stale anchor and be judged StartupTimeout (found live: the
-// operator marked an already-recovered server Failed minutes after recovery).
 func TestReconcileRunning_ReadyClearsStartAnchor(t *testing.T) {
 	r, c := newReconciler(t, fakeProber{}, runningServer(), rconSecret())
 	base := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
@@ -1012,9 +951,6 @@ func TestReconcileRunning_ReadyClearsStartAnchor(t *testing.T) {
 	}
 }
 
-// TestReconcileRunning_ProvisionedRecovers: markFailed flips Provisioned to
-// False, and a recovered server must flip it back — a permanent False misleads
-// every consumer of the conditions (kubectl waits, monitoring) forever.
 func TestReconcileRunning_ProvisionedRecovers(t *testing.T) {
 	srv := runningServer()
 	srv.Spec.Startup.TimeoutSeconds = 30
@@ -1047,8 +983,6 @@ func TestReconcileRunning_ProvisionedRecovers(t *testing.T) {
 	}
 }
 
-// --- helpers ---------------------------------------------------------------
-
 func getSTSErr(c client.Client, name string) (*appsv1.StatefulSet, error) {
 	var sts appsv1.StatefulSet
 	err := c.Get(context.Background(), types.NamespacedName{Namespace: "minecraft", Name: name}, &sts)
@@ -1066,10 +1000,7 @@ func isConditionTrue(server *v1alpha1.MinecraftServer, condType string) bool {
 
 func ptrTime(t metav1.Time) *metav1.Time { return &t }
 
-// startDurationState reads the global felis_start_duration_seconds histogram's
-// accumulated sample count and sum directly (Histogram implements Metric.Write),
-// so assertions can be expressed as deltas and never depend on observations
-// other tests made into the same process-wide collector.
+// Reads the global start-duration histogram as deltas so other tests in the process do not interfere.
 func startDurationState(t *testing.T) (count uint64, sum float64) {
 	t.Helper()
 	var m dto.Metric
@@ -1079,12 +1010,6 @@ func startDurationState(t *testing.T) (count uint64, sum float64) {
 	return m.GetHistogram().GetSampleCount(), m.GetHistogram().GetSampleSum()
 }
 
-// TestReconcileRunning_ObservesStartDuration proves the felis_start_duration_seconds
-// wiring (spec §23) end-to-end across reconcile passes: the Starting pass anchors
-// status.startRequestedAt, the value survives the patchStatus round-trip, and the
-// first Running pass observes ReadySignalAt-StartRequestedAt into the histogram.
-// A step-advancing clock (90s between the two passes) makes the observed duration
-// a non-zero, exact value rather than the 0 a constant clock would yield.
 func TestReconcileRunning_ObservesStartDuration(t *testing.T) {
 	r, c := newReconciler(t, fakeProber{}, runningServer(), rconSecret())
 
@@ -1120,11 +1045,6 @@ func TestReconcileRunning_ObservesStartDuration(t *testing.T) {
 	}
 }
 
-// TestReconcileRunning_StartDurationObservedOnce guards against a re-observation
-// bug: once a server is Running, further reconciles must not re-Observe the
-// histogram (the once-only readySignalAt guard owns the Observe), and a Stop must
-// clear startRequestedAt so a subsequent start re-anchors instead of measuring
-// from the original boot.
 func TestReconcileRunning_StartDurationObservedOnce(t *testing.T) {
 	r, c := newReconciler(t, fakeProber{}, runningServer(), rconSecret())
 
@@ -1134,7 +1054,7 @@ func TestReconcileRunning_StartDurationObservedOnce(t *testing.T) {
 
 	afterFirst, _ := startDurationState(t)
 
-	reconcile(t, r, "survival") // still Running -> must NOT observe again
+	reconcile(t, r, "survival") // Already Running: must not observe again.
 	afterSecond, _ := startDurationState(t)
 	if afterSecond != afterFirst {
 		t.Errorf("re-reconcile of a Running server observed again: %d -> %d", afterFirst, afterSecond)
@@ -1154,10 +1074,6 @@ func TestReconcileRunning_StartDurationObservedOnce(t *testing.T) {
 	}
 }
 
-// A pod that drops out of readiness under a Running server sends it back through
-// Starting; its way back to ready is a start like any other, and is observed as
-// one, measured from the new Starting pass. Before, readySignalAt kept the first
-// run's time, so every start after the first went unobserved.
 func TestReconcileRunning_ObservesStartDurationAfterAPodBlip(t *testing.T) {
 	r, c := newReconciler(t, fakeProber{}, runningServer(), rconSecret())
 	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
@@ -1196,10 +1112,6 @@ func TestReconcileRunning_ObservesStartDurationAfterAPodBlip(t *testing.T) {
 	}
 }
 
-// A server whose RCON Secret does not exist yet is the normal case on first
-// reconcile — felis-api writes spec.rcon.secretRef but holds secrets:get, not
-// create, so the name it points at is a promise the operator has to keep. Before
-// this the server sat in Starting/RconSecretUnavailable forever.
 func TestReconcileProvisionsMissingRconSecret(t *testing.T) {
 	r, c := newReconciler(t, fakeProber{}, runningServer())
 	reconcile(t, r, "survival")
@@ -1213,9 +1125,7 @@ func TestReconcileProvisionsMissingRconSecret(t *testing.T) {
 	if pw == "" {
 		t.Fatal("rcon Secret was created with an empty password")
 	}
-	// 16 random bytes as hex. An assertion on the shape, not the value: a password
-	// short enough to guess is the failure this is guarding, and it cannot be
-	// checked by comparing against a fixture.
+	// 16 random bytes as hex; the test checks the shape, not a fixed value.
 	if len(pw) != 32 {
 		t.Fatalf("password = %d chars, want 32 hex chars", len(pw))
 	}
@@ -1229,9 +1139,6 @@ func TestReconcileProvisionsMissingRconSecret(t *testing.T) {
 	}
 }
 
-// Reconcile runs every few seconds; regenerating the password on each pass would
-// leave the running server authenticating with a value the control plane no longer
-// has, breaking the console until the pod happened to restart.
 func TestReconcileKeepsAnExistingRconPassword(t *testing.T) {
 	r, c := newReconciler(t, fakeProber{}, runningServer(), rconSecret())
 	reconcile(t, r, "survival")
@@ -1247,10 +1154,6 @@ func TestReconcileKeepsAnExistingRconPassword(t *testing.T) {
 	}
 }
 
-// The idle auto-stop reads Status.Players, which is only sampled by the RCON
-// probe. With RCON off the tally stays at its zero value, and a bare
-// "players == 0" test would read that as an empty server and stop one full of
-// people.
 func TestIdleAutoStopIsInertWithoutRcon(t *testing.T) {
 	server := runningServer()
 	server.Spec.Rcon = v1alpha1.RconSpec{Enabled: false}
@@ -1292,10 +1195,6 @@ func expectInitImages(t *testing.T, c client.Client, want string) {
 	}
 }
 
-// TestFelisUpgradeLeavesARunningServerAlone: the installer moves the felis image
-// on every release. A running server keeps the template it started with rather
-// than restarting under its players; any other change still rolls it, and the
-// roll carries the new image along.
 func TestFelisUpgradeLeavesARunningServerAlone(t *testing.T) {
 	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 1, Max: 20, Known: true}}, runningServer(), rconSecret())
 	r.FelisImage = felisV1
@@ -1327,8 +1226,6 @@ func TestFelisUpgradeLeavesARunningServerAlone(t *testing.T) {
 	}
 }
 
-// TestFelisUpgradeReachesAServerOnItsNextStart: a stopped server's next start
-// writes the whole template, the new felis image included.
 func TestFelisUpgradeReachesAServerOnItsNextStart(t *testing.T) {
 	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 0, Max: 20, Known: true}}, runningServer(), rconSecret())
 	r.FelisImage = felisV1
@@ -1349,9 +1246,6 @@ func TestFelisUpgradeReachesAServerOnItsNextStart(t *testing.T) {
 	expectInitImages(t, c, felisV2)
 }
 
-// TestReconcileStopped_WaitsForALiveBackup pins that a stop does not scale the pod down
-// while a live backup copies the world (the shutdown save would land in the copy), and
-// goes ahead once the freeze is gone or too old to trust.
 func TestReconcileStopped_WaitsForALiveBackup(t *testing.T) {
 	base := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
@@ -1395,8 +1289,6 @@ func TestReconcileStopped_WaitsForALiveBackup(t *testing.T) {
 	}
 }
 
-// TestIdleAutoStop_WaitsForALiveBackup pins that an empty server is not stopped for
-// idleness while a live backup copies its world, and is once the freeze is gone.
 func TestIdleAutoStop_WaitsForALiveBackup(t *testing.T) {
 	prober := fakeProber{players: operator.PlayerCount{Online: 0, Max: 20, Known: true}}
 	r, c := newReconciler(t, prober, runningServer(), rconSecret())

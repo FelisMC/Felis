@@ -16,10 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// Labels the backup/restore executors apply (internal/backupjob and
-// internal/restore keep their own copies). Literals on purpose: api defines the
-// read seam and must not import the executors — their dependency direction is
-// "executors implement api's interfaces", never the reverse.
+// Job label values must match internal/backupjob and internal/restore without reversing their dependency on api.
 const (
 	jobServerLabel    = "felis.lolicon.best/server"
 	jobManagedByLabel = "app.kubernetes.io/managed-by"
@@ -28,28 +25,19 @@ const (
 	jobManagedByRestore = "felis-restore"
 	jobManagedByExport  = "felis-export"
 
-	// jobBackupReasonLabel marks the backup Job of a scheduled restore point
-	// (backupjob.LabelReason).
 	jobBackupReasonLabel     = "felis.lolicon.best/backup-reason"
 	jobBackupReasonScheduled = "scheduled"
 )
 
-// K8sJobStatus reads the async Jobs the executors created, by the server label
-// both apply.
 type K8sJobStatus struct {
 	c         client.Client
 	namespace string
 }
 
-// NewK8sJobStatus builds the reader over the cluster client and the namespace the
-// server workloads (and their Jobs) live in.
 func NewK8sJobStatus(c client.Client, namespace string) *K8sJobStatus {
 	return &K8sJobStatus{c: c, namespace: namespace}
 }
 
-// LatestJobs lists this server's backup, restore and export Jobs newest-first,
-// capped so a long history cannot balloon the response. Jobs the label selector
-// catches but another component created (unknown managed-by) are dropped.
 func (k *K8sJobStatus) LatestJobs(ctx context.Context, serverName string) ([]AsyncJob, error) {
 	var list batchv1.JobList
 	if err := k.c.List(ctx, &list, client.InNamespace(k.namespace),
@@ -70,13 +58,7 @@ func (k *K8sJobStatus) LatestJobs(ctx context.Context, serverName string) ([]Asy
 	return out, nil
 }
 
-// explainFailures replaces a failed Job's condition text ("Job has reached the
-// specified backoff limit") with the error its container exited on. The
-// executors set TerminationMessagePolicy FallbackToLogsOnError, so the
-// terminated state carries the tail of the log, whose last line is the
-// "felis backup: …" / "felis restore: …" error. The pods carry the Job's
-// labels, so one list covers every Job of the server; a pod already collected
-// by the Job TTL, or a list error, leaves the condition text in place.
+// explainFailures keeps the Job condition text when pod termination details have expired or cannot be read.
 func (k *K8sJobStatus) explainFailures(ctx context.Context, serverName string, jobs []AsyncJob) {
 	failed := map[string]int{}
 	for i, j := range jobs {
@@ -108,14 +90,9 @@ func (k *K8sJobStatus) explainFailures(ctx context.Context, serverName string, j
 	}
 }
 
-// outOfMemoryLine is a failed Job's message when the kernel killed it for
-// memory. The reason in brackets is what the panel knows it by.
 const outOfMemoryLine = "the job ran out of memory and the system stopped it (OOMKilled)"
 
-// lastTerminationLine returns the last non-empty line of the pod's terminated
-// container message, capped for display. A container the kernel killed for
-// going over its memory limit printed nothing about it, so that is said instead
-// of whatever line it happened to print last.
+// lastTerminationLine prioritizes OOMKilled over stale output and caps the displayed line.
 func lastTerminationLine(pod *corev1.Pod) string {
 	for _, cs := range pod.Status.ContainerStatuses {
 		t := cs.State.Terminated
@@ -135,14 +112,11 @@ func lastTerminationLine(pod *corev1.Pod) string {
 	return ""
 }
 
-// jobToAsyncJob projects one Job onto the AsyncJob the jobs route answers with.
 func jobToAsyncJob(j *batchv1.Job) (AsyncJob, bool) {
 	aj, ok := jobOutcome(j)
 	if !ok {
 		return aj, false
 	}
-	// A safety snapshot says what became of the restore behind it; a chain given
-	// up after a snapshot that succeeded explains itself in the message.
 	if state := j.Labels[maintenance.LabelThenRestore]; state != "" && aj.Kind == "backup" {
 		aj.ThenRestore = state
 		aj.RestoreBackupID = j.Annotations[maintenance.AnnotationRestoreBackupID]
@@ -157,11 +131,7 @@ func jobToAsyncJob(j *batchv1.Job) (AsyncJob, bool) {
 	return aj, true
 }
 
-// RunningWorldJobs counts the backup and restore Jobs of every server that
-// have yet to finish (BackupScheduler waits for them). Export Jobs are left
-// out: one moves at its browser's pace, a download left running for an hour
-// must not hold every world's restore point back, and the export limits
-// (exportMaxActive) already bound the load they add.
+// RunningWorldJobs excludes browser-paced exports so long downloads cannot delay every server's scheduled backup.
 func (k *K8sJobStatus) RunningWorldJobs(ctx context.Context) (int, error) {
 	var list batchv1.JobList
 	if err := k.c.List(ctx, &list, client.InNamespace(k.namespace), client.HasLabels{jobManagedByLabel}); err != nil {
@@ -177,8 +147,6 @@ func (k *K8sJobStatus) RunningWorldJobs(ctx context.Context) (int, error) {
 	return n, nil
 }
 
-// PendingRestoreChains lists the safety snapshots felis-api has yet to settle,
-// across every server (the label selector keeps it to them).
 func (k *K8sJobStatus) PendingRestoreChains(ctx context.Context) ([]RestoreChain, error) {
 	var list batchv1.JobList
 	if err := k.c.List(ctx, &list, client.InNamespace(k.namespace), client.MatchingLabels{
@@ -216,8 +184,6 @@ func (k *K8sJobStatus) PendingRestoreChains(ctx context.Context) ([]RestoreChain
 	return out, nil
 }
 
-// SettleRestoreChain records how a chain was settled on its snapshot Job, which
-// releases the world volume the chain was holding.
 func (k *K8sJobStatus) SettleRestoreChain(ctx context.Context, job, state, reason string) error {
 	meta := map[string]any{"labels": map[string]string{maintenance.LabelThenRestore: state}}
 	if reason != "" {
@@ -231,10 +197,6 @@ func (k *K8sJobStatus) SettleRestoreChain(ctx context.Context, job, state, reaso
 	return k.c.Patch(ctx, obj, client.RawPatch(types.MergePatchType, patch))
 }
 
-// jobOutcome projects one Job onto its kind/state/message. Complete condition →
-// succeeded, Failed → failed with its reason (Job conditions carry the generic
-// "backoff limit exceeded" text; the pod log holds the underlying error), anything
-// else is still running.
 func jobOutcome(j *batchv1.Job) (AsyncJob, bool) {
 	kind := ""
 	switch j.Labels[jobManagedByLabel] {
@@ -243,8 +205,7 @@ func jobOutcome(j *batchv1.Job) (AsyncJob, bool) {
 	case jobManagedByRestore:
 		kind = "restore"
 	case jobManagedByExport:
-		// As maintenance.JobKind reads it: a Job that names no mode this build
-		// knows reads as a world export, the kind that holds the world.
+		// Unknown export modes conservatively count as world exports that hold the volume.
 		switch j.Labels[maintenance.LabelExportMode] {
 		case maintenance.ExportModeBackup:
 			kind = "export_backup"

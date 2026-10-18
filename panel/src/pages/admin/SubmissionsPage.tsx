@@ -46,17 +46,12 @@ export function SubmissionsPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [busyType, setBusyType] = useState<"approve" | "reject" | "delete" | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
-  // The sha256 of each context this reviewer downloaded in this session. An
-  // approval names the digest of what was actually read; the listed digest
-  // stands in when the review happened elsewhere (the CLI, an earlier session).
+  // Approve the downloaded context digest; use the listed digest for reviews completed elsewhere.
   const [reviewedDigests, setReviewedDigests] = useState<Record<string, string>>({});
   // Delete arms the row (trash → confirm/cancel) before it fires; a row gone on
   // one stray click would take its uploaded context with it.
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
 
-  // Search, filter and paging all run on the server: the queue can hold any
-  // number of uploads, so the page reads one screenful and the counts beside it.
-  // The search goes out a moment after typing stops and starts from page one.
   const [search, setSearch] = useState("");
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | SubmissionStatus>("all");
@@ -134,9 +129,7 @@ export function SubmissionsPage() {
     setRejectDialogOpen(true);
   }
 
-  // Delete retires the submission outright — any status — along with its
-  // uploaded context: the lane's only lifecycle valve, the path that reclaims
-  // a rejected or consumed upload from the uploads PVC.
+  // Retiring submissions also reclaims their uploaded context.
   async function handleDelete(id: string) {
     if (busyId) return;
     setBusyId(id);

@@ -48,10 +48,6 @@ func mustPayload(t *testing.T, res Result) []byte {
 	return b
 }
 
-// TestEditorRendersParams checks the Editor projects each operation onto the
-// JobParams the renderer expects — in particular that the world PVC comes from the
-// shared naming convention rather than being assembled locally, which is what keeps
-// the editor pointed at the same volume the operator created and the reaper deletes.
 func TestEditorRendersParams(t *testing.T) {
 	t.Run("list", func(t *testing.T) {
 		r := &fakeRunner{payload: mustPayload(t, Result{Entries: []Entry{{Name: "a"}}, Avail: 7 << 30})}
@@ -158,10 +154,6 @@ func TestEditorRendersParams(t *testing.T) {
 	})
 }
 
-// TestEditorMintsAFreshOpID guards the RBAC-forced invariant from the other side:
-// the Job name is unique per invocation only because the Editor mints a new id
-// every time. If it ever cached one, two operations would collide on a name
-// felis-api has no permission to delete.
 func TestEditorMintsAFreshOpID(t *testing.T) {
 	r := &fakeRunner{payload: mustPayload(t, Result{ContentSHA256: hex.EncodeToString(sumOf(""))})}
 	e := &Editor{Runner: r, Config: Config{Image: "img"}}
@@ -183,10 +175,6 @@ func TestEditorMintsAFreshOpID(t *testing.T) {
 	}
 }
 
-// TestEditorMapsResultCodes proves a caller-fault Result becomes the sentinel the
-// API maps. The default branch matters most: an unrecognised code must FAIL rather
-// than read as success, so a future Job version reporting a new failure mode cannot
-// be silently mistaken for a completed operation.
 func TestEditorMapsResultCodes(t *testing.T) {
 	cases := []struct {
 		name string
@@ -237,9 +225,6 @@ func TestEditorMapsResultCodes(t *testing.T) {
 	})
 }
 
-// TestEditorRefusesOversizedWriteBeforeTheCluster checks the size ceiling is applied
-// before a Job is rendered. Letting it through would surface as an opaque etcd
-// object-size rejection long after felis-api committed to the request.
 func TestEditorRefusesOversizedWriteBeforeTheCluster(t *testing.T) {
 	r := &fakeRunner{payload: mustPayload(t, Result{})}
 	e := &Editor{Runner: r, Config: Config{Image: "img"}}
@@ -253,9 +238,6 @@ func TestEditorRefusesOversizedWriteBeforeTheCluster(t *testing.T) {
 	}
 }
 
-// A read whose bytes do not hash to the digest the Job sent with them changed
-// on the way, and none of them is handed on: an editor saving a damaged read
-// would write the damage back.
 func TestEditorReadRefusesBytesChangedOnTheWay(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -275,9 +257,6 @@ func TestEditorReadRefusesBytesChangedOnTheWay(t *testing.T) {
 	}
 }
 
-// TestEditorNormalisesEmptyResults pins that "nothing there" is a success, not a
-// nil surprise: an empty directory lists as [] and a zero-length file reads as
-// empty bytes, so no caller has to distinguish nil from empty.
 func TestEditorNormalisesEmptyResults(t *testing.T) {
 	r := &fakeRunner{payload: mustPayload(t, Result{ContentSHA256: hex.EncodeToString(sumOf(""))})}
 	e := &Editor{Runner: r, Config: Config{Image: "img"}}
@@ -299,9 +278,6 @@ func TestEditorNormalisesEmptyResults(t *testing.T) {
 	}
 }
 
-// TestExtractResult covers the log-scanning half of the transport: pods/log merges
-// stdout and stderr, so the payload must be found by its marker among arbitrary
-// noise rather than by assuming the log is pure JSON.
 func TestExtractResult(t *testing.T) {
 	t.Run("finds the payload among stderr noise", func(t *testing.T) {
 		log := "warning: something from the runtime\n" +
@@ -338,10 +314,6 @@ func TestExtractResult(t *testing.T) {
 	})
 }
 
-// TestEditorStartsBackgroundOps checks an upload or unzip too long to wait on is
-// started, not run: its Job carries the async label and the longer deadline,
-// the longer TTL Ops reads it back within, and the larger CPU share, and what
-// comes back names the Job Ops will report on.
 func TestEditorStartsBackgroundOps(t *testing.T) {
 	src := UploadSource{URL: "http://api/big", Token: "tok", Size: 5 << 30, SHA256: "sum"}
 

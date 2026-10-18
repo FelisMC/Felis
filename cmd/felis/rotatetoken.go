@@ -38,13 +38,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// rotate-token replaces one credential the installer generated: an internal
-// caller's token (naming.CallerTokens), the registry's write tokens, the
-// Velocity forwarding secret or the database password. The new value goes into
-// the installer's record first, so that whatever fails later a re-run of the
-// installer puts it everywhere; then into the Secrets and files that carry it;
-// then whatever read the old value at start restarts. Without -yes it prints
-// what it would change and what that interrupts, and changes nothing.
+// Persist rotated credentials in the installer record first so reruns retain them.
+// Apply credential files and Secrets before restarting consumers; without -yes, show changes only.
 
 const (
 	defaultSecretsEnvPath = "/etc/felis/secrets.env"
@@ -68,10 +63,6 @@ const (
 	apiRestartNote = "felis-api restarts (a single replica): the panel, sign-in and the proxy's calls are unavailable for the few seconds that takes"
 )
 
-// installerTokenKeys names each caller's token in the installer's secrets.env
-// (deploy/bootstrap.sh load_or_make_secrets). A re-run of the installer applies
-// these values to the Secrets, so a rotation that skipped the file would be
-// undone by the next upgrade.
 var installerTokenKeys = map[string]string{
 	"velocity": "SERVICE_TOKEN",
 	"limbo":    "LIMBO_TOKEN",
@@ -261,9 +252,7 @@ func randomToken() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// tokenFingerprint is how the proxy names the token it reloaded in its log
-// (plugins/shared FileToken.fingerprint): the first twelve hex digits of its
-// SHA-256, enough to tell tokens apart and useless for finding one.
+// Log token fingerprints as the first twelve SHA-256 hex digits, matching the proxy.
 func tokenFingerprint(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])[:12]
@@ -392,9 +381,7 @@ func (r tokenRotator) rotateCaller(ctx context.Context, ct naming.CallerToken, a
 		}
 	}
 
-	// The proxy's file changes before felis-api rolls, so the file never falls
-	// behind the Secret; the proxy's log is read from just before the write,
-	// since it may pick the new token up before the rollout ends.
+	// Write the proxy token before API rollout and read reload logs starting before the write.
 	since := r.now()
 	if hostProxy {
 		if err := setProxyToken(r.linkProps, tok); err != nil {
@@ -458,20 +445,14 @@ func (r tokenRotator) proxyReloaded(ctx context.Context, since time.Time, finger
 	}
 }
 
-// journalSince is the proxy unit's journal from the second since falls in. A
-// journal that cannot be read reads as one without the line, which ends in the
-// restart a rotation made before the proxy could reload.
+// An unreadable reload journal triggers the restart fallback.
 func journalSince(ctx context.Context, since time.Time) string {
 	out, _ := exec.CommandContext(ctx, "journalctl", "-u", velocityUnit, "--since", "@"+strconv.FormatInt(since.Unix(), 10),
 		"-o", "cat", "--no-pager", "-q").Output()
 	return string(out)
 }
 
-// setProxyToken writes the proxy's token into felis-link.properties and puts
-// the file's modification time back. The proxy re-reads its token by itself,
-// while `felis domain check` and `felis domain set` read a file newer than the
-// proxy's start as config it has not loaded (the installer's
-// install_if_changed keeps the time for the same reason).
+// Preserve mtime because domain checks treat a newer file as unapplied proxy configuration.
 func setProxyToken(path, token string) error {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -595,10 +576,7 @@ func (r tokenRotator) rotateForwarding(ctx context.Context, apply bool) error {
 	return nil
 }
 
-// gamePods lists the running game server pods: those a rotation may restart,
-// and the servers left alone because a backup, restore or file write holds
-// their world (internal/maintenance), which a restart in the middle of would
-// break.
+// Skip servers held by maintenance; restarting them could corrupt their worlds.
 func (r tokenRotator) gamePods(ctx context.Context) ([]corev1.Pod, []string, error) {
 	var pods corev1.PodList
 	// The operator's managed-by label is on its server pods alone (see rotateCaller).
@@ -752,10 +730,7 @@ func withPassword(raw, password string) (string, error) {
 // scramIterations is PostgreSQL's default scram_iterations.
 const scramIterations = 4096
 
-// scramVerifier is the SCRAM-SHA-256 verifier PostgreSQL stores for a password
-// (RFC 5802 and RFC 7677, in the form libpq's PQencryptPasswordConn makes).
-// ALTER ROLE stores a verifier as it is given, so the password itself never
-// reaches the server, where a failing statement is logged with its text.
+// Store a SCRAM-SHA-256 verifier (RFC 5802/7677) so ALTER ROLE never logs the password.
 func scramVerifier(password string, salt []byte, iterations int) (string, error) {
 	salted, err := pbkdf2.Key(sha256.New, password, salt, iterations, sha256.Size)
 	if err != nil {
@@ -784,10 +759,7 @@ func alterRoleSQL(role, verifier string) string {
 	return "ALTER ROLE \"" + strings.ReplaceAll(role, `"`, `""`) + "\" WITH PASSWORD '" + verifier + "';\n"
 }
 
-// setKeyValueLine rewrites the `key<sep>value` line of a flat key/value file
-// (secrets.env, a .properties file), appending one when the key is absent. The
-// file is replaced atomically and keeps its mode and owner: felis-link.properties
-// is root:felis-velocity 0640, and the proxy must still be able to read it.
+// Atomically replace key-value files while preserving mode and ownership.
 func setKeyValueLine(path, key, sep, value string) error {
 	return setKeyValueLines(path, sep, [][2]string{{key, value}})
 }
@@ -820,9 +792,7 @@ func setKeyValueLines(path, sep string, kv [][2]string) error {
 	return replaceFileKeepingMode(path, info, []byte(strings.Join(lines, "\n")+"\n"))
 }
 
-// replaceFileKeepingMode atomically replaces path with data, keeping the mode and
-// owner info describes: these files are read by other users (the proxy's) and
-// some hold credentials, so a rewrite must not widen or narrow who can read them.
+// Atomic credential replacement preserves mode and owner to retain existing access boundaries.
 func replaceFileKeepingMode(path string, info os.FileInfo, data []byte) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
 	if err != nil {

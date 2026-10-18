@@ -7,11 +7,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-// ServerInfo is the lifecycle view read from the MinecraftServer CRD + status
-// (spec §4). The CRD is the source-of-truth; the API mutates its spec only via
-// the app-tier desiredState lever (wake/stop, spec §9.1) and the admin-tier spec
-// patch (spec §7 PATCH /servers/{name}) — never the business-layer fields, which
-// live in Postgres (spec §22).
+// ServerInfo projects CRD lifecycle state; business ownership and quotas remain in Postgres.
 type ServerInfo struct {
 	NodeName        string `json:"nodeName,omitempty"`
 	Name            string `json:"name"`
@@ -27,47 +23,31 @@ type ServerInfo struct {
 	DisplayName     string `json:"displayName,omitempty"`
 	Image           string `json:"image,omitempty"`
 	JavaMemory      string `json:"javaMemory,omitempty"`
-	// Memory is the pod memory limit (the §22 ceiling) — what an admin picks as
-	// the server's memory. JavaMemory is the heap derived from it.
+	// Memory is the pod limit; JavaMemory is the heap derived from it.
 	Memory      string `json:"memory,omitempty"`
 	StorageSize string `json:"storageSize,omitempty"`
 	CPU         string `json:"cpu,omitempty"`
-	// IdleStopSeconds is how long the server may sit empty before idle
-	// auto-stop scales it down; 0 means it never idles out.
+	// IdleStopSeconds=0 disables idle shutdown.
 	IdleStopSeconds int32 `json:"idleStopSeconds"`
-	// PlayerCountUnknown is true while the operator cannot read the player
-	// count over RCON; idle auto-stop waits until it can.
+	// PlayerCountUnknown suspends idle shutdown until RCON can read the count.
 	PlayerCountUnknown bool `json:"playerCountUnknown,omitempty"`
-	// LegacyForwarding mirrors the CR's forwarding=legacy label: the proxy
-	// forwards this server's players in the handshake address (#15).
+	// LegacyForwarding enables player-identity forwarding in the handshake address.
 	LegacyForwarding bool `json:"legacyForwarding,omitempty"`
-	// AutoRestarts is how often the operator has recreated the pod of this start
-	// after it timed out; StartGaveUp is true once no automatic retry is coming
-	// (v1alpha1.StartGaveUp). A Failed server without StartGaveUp is still in its
-	// restart backoff and may yet come up on its own.
+	// StartGaveUp means no automatic retry remains; Failed without it may still be in restart backoff.
 	AutoRestarts int32 `json:"autoRestarts,omitempty"`
 	StartGaveUp  bool  `json:"startGaveUp,omitempty"`
-	// ReaperExempt marks a system server (spec.reaperExempt, the lobby): the
-	// reaper never touches it, so it cannot be given up or deleted either.
+	// ReaperExempt system servers cannot be released or deleted.
 	ReaperExempt bool `json:"reaperExempt,omitempty"`
-	// Retiring is the pending request to give the server up or delete it. It is
-	// business state from Postgres, joined onto the owner's and staff's view by
-	// the status route; the cluster never sets it.
+	// Retiring is joined from Postgres; the cluster does not set it.
 	Retiring *RetireState `json:"retiring,omitempty"`
-	// Resources is the spec's pod resource block. It stays off the wire; a spec
-	// patch reads it so the fields the admin left out keep their values.
+	// Resources stays off the wire and supplies unchanged values when patching the spec.
 	Resources corev1.ResourceRequirements `json:"-"`
-	// Software is what a runtime-image server runs; nil for a server image.
+	// Software is nil for a server image.
 	Software *ServerSoftware `json:"software,omitempty"`
-	// Startup explains scheduling and container state independently of the CR phase.
-	Startup *StartupStatus `json:"startup,omitempty"`
+	Startup  *StartupStatus  `json:"startup,omitempty"`
 }
 
-// CreateServerInput is the validated, structured create-server form (spec §15).
-// felis-api has already enforced naming, reservation, image whitelist, quota
-// policy, and the §22 memory ceiling before this reaches the cluster: there is
-// no free-form YAML path — every field is a typed, validated value. A created
-// server starts DesiredState=Stopped and unowned (claimed later, spec §9.3).
+// CreateServerInput is already validated; new servers start stopped and unowned.
 type CreateServerInput struct {
 	NodeName        string
 	Name            string
@@ -77,110 +57,57 @@ type CreateServerInput struct {
 	JavaMemory      string
 	StorageSize     string
 	AutostartPolicy v1alpha1.AutostartPolicy
-	// Resources is the fully-resolved pod resource block. Its memory limit is the
-	// §22 ceiling — felis-api guarantees it is non-zero (the operator does not
-	// derive a cgroup limit from JavaMemory).
+	// Resources must include a nonzero pod memory limit; the operator does not derive one from JavaMemory.
 	Resources corev1.ResourceRequirements
-	// Software, when set, makes Image the runtime image for its Java and the server
-	// software data on the world volume (internal/software).
+	// Software makes Image the Java runtime image, with server software stored on the world volume.
 	Software *v1alpha1.SoftwareSpec
 }
 
-// ServerSpecPatch is the resolved, validated set of admin-tier mutations applied
-// to one MinecraftServer spec (spec §7 PATCH /servers/{name}). felis-api has
-// already validated naming, admitted any new image against the whitelist, parsed
-// the policy, and derived the §22 memory ceiling before this reaches the cluster:
-// there is no free-form YAML path. Every field is a pointer — nil means "leave
-// unchanged", so the patch touches only the fields the admin explicitly set. It
-// deliberately omits the dual-write routing identity (subdomain, the object name)
-// and the world PVC size, which felis-api rejects before constructing this so the
-// CRD and Postgres never desync (spec §22).
+// ServerSpecPatch uses nil for unchanged fields and excludes routing identity and world-volume size to avoid cross-store drift.
 type ServerSpecPatch struct {
 	DisplayName     *string
 	AutostartPolicy *v1alpha1.AutostartPolicy
 	Image           *string
-	// Resources is the whole pod block after the patch — the current spec with the
-	// admin's changes laid over it — whose memory limit is the non-zero §22
-	// ceiling. JavaMemory is the heap re-derived from that ceiling; it is set only
-	// when the memory moved, so a CPU-only patch leaves the heap alone.
-	JavaMemory *string
-	Resources  *corev1.ResourceRequirements
-	// IdleStopSeconds sets idle auto-stop: 0 turns it off, anything else is the
-	// empty duration before the stop (already range-checked).
+	// Resources is the merged pod block; JavaMemory changes only when the memory limit changes.
+	JavaMemory      *string
+	Resources       *corev1.ResourceRequirements
 	IdleStopSeconds *int32
-	// Software replaces the server software (with Image set to its runtime image);
-	// ClearSoftware drops it, for an admin moving the server onto a server image.
+	// ClearSoftware removes the runtime-software selection when moving to a server image.
 	Software      *v1alpha1.SoftwareSpec
 	ClearSoftware bool
 }
 
-// Cluster is the lifecycle-layer access the API depends on: reads of the
-// MinecraftServer CRD, the app-tier desiredState lever (spec §9.1), the admin-tier
-// create (spec §15), and the admin-tier spec patch (spec §7). It is an interface
-// so handlers are tested against a fake; the controller-runtime implementation
-// (k8sCluster) is integration-tested only — it requires a live cluster.
 type Cluster interface {
-	// Ping verifies the K8s API is reachable and the MinecraftServer cache has
-	// synced — used by /readyz (spec §7), so a replica serves the fleet reads only
-	// once it holds the whole fleet.
+	// Ping requires both Kubernetes reachability and a fully synced MinecraftServer cache.
 	Ping(ctx context.Context) error
 
-	// GetServer reads one MinecraftServer's lifecycle view, or ErrNotFound.
 	GetServer(ctx context.Context, name string) (*ServerInfo, error)
-	// WorldVolumeExists reports whether the server's world PVC exists in the
-	// server namespace. A server that never started — or whose world the
-	// retention reaper already archived and deleted — has no claim, and a
-	// backup/restore Job would hang Pending on the missing volume with nothing
-	// ever recorded, so both handlers refuse those up front.
 	WorldVolumeExists(ctx context.Context, name string) (bool, error)
-	// EnsureWorldVolume creates the server's world volume claim when it has none, sized
-	// and classed as the operator would make it: a host rebuilt from its backups
-	// restores worlds into servers that have never started there.
+	// EnsureWorldVolume creates a missing PVC with the operator's size and class so its StatefulSet can adopt it.
 	EnsureWorldVolume(ctx context.Context, name string) error
-	// GetBySubdomain finds the MinecraftServer whose spec.subdomain matches, or
-	// ErrNotFound.
 	GetBySubdomain(ctx context.Context, subdomain string) (*ServerInfo, error)
-	// ListServers returns the lifecycle view of every MinecraftServer, for the
-	// velocity registration pull (spec §7 GET /servers).
 	ListServers(ctx context.Context) ([]ServerInfo, error)
-	// SetDesiredState flips spec.desiredState — the only write the API performs
-	// against the CRD (spec §9.1). It is idempotent. Flipping to Running returns a
-	// *MaintenanceBusyError (errors.Is ErrMaintenanceInProgress) while a restore,
-	// backup or file write holds the world volume.
+	// SetDesiredState is idempotent and refuses Running with MaintenanceBusyError while the volume is held.
 	SetDesiredState(ctx context.Context, name string, state v1alpha1.DesiredState) error
-	// RetryStart is SetDesiredState(Running) for a server whose start Failed: it
-	// also asks the operator to start it over with a fresh auto-restart budget
-	// (v1alpha1.AnnotationStartRetry). Maintenance refuses it the same way.
+	// RetryStart also resets the automatic restart budget; maintenance still blocks startup.
 	RetryStart(ctx context.Context, name string) error
-	// RestartServer requests a pod restart without changing desired state.
 	RestartServer(ctx context.Context, name string) error
-	// AcquireMaintenance admits one world-volume operation (internal/maintenance
-	// kind): ErrNotStopped unless fully stopped (except system config writes), a
-	// *MaintenanceBusyError while another operation holds the volume. The check
-	// and the lock are one atomic write against a concurrent wake.
+	// AcquireMaintenance atomically checks the stopped state and locks against wakes; only system-config writes may run live.
 	AcquireMaintenance(ctx context.Context, name, kind string) error
-	// ReleaseMaintenance drops the admission lock once the operation's Job exists
-	// (or could not be created). It is idempotent.
+	// ReleaseMaintenance is idempotent and runs after Job creation succeeds or fails.
 	ReleaseMaintenance(ctx context.Context, name string) error
-	// CreateServer creates a MinecraftServer CRD from the validated form (spec
-	// §15). It returns ErrConflict if a server of that name already exists.
 	CreateServer(ctx context.Context, in CreateServerInput) error
-	// PatchServerSpec applies an admin-tier spec mutation (spec §7 PATCH
-	// /servers/{name}): only the non-nil fields of the patch are written, via a
-	// merge patch so a concurrent operator status write is never clobbered. It
-	// returns ErrNotFound if no server of that name exists.
+	// PatchServerSpec merge-patches non-nil fields so concurrent operator status updates survive.
 	PatchServerSpec(ctx context.Context, name string, patch ServerSpecPatch) error
 }
 
-// ServerSoftware is the panel's view of a runtime-image server's software.
 type ServerSoftware struct {
 	Type             string `json:"type"`
 	MinecraftVersion string `json:"minecraftVersion,omitempty"`
 	Build            string `json:"build,omitempty"`
 	Java             int32  `json:"java"`
 	Jar              string `json:"jar,omitempty"`
-	// Forwarding is velocity when the server takes the proxy's player identity,
-	// none when players join it under offline-mode UUIDs.
+	// Forwarding=none gives direct players offline-mode UUIDs; velocity preserves proxy-authenticated identity.
 	Forwarding string `json:"forwarding"`
 }
 

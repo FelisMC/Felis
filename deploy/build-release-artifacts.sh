@@ -1,31 +1,5 @@
 #!/usr/bin/env bash
-# Builds everything a Felis release installs, for every architecture, into one directory:
-#
-#   felis-linux-<arch>                  the felis binary, panel included
-#   felis-image-felis-linux-<arch>.tar  the control-plane image          (OCI layout tars:
-#   felis-image-game-linux-<arch>.tar   the limbo, lobby and paper images  `ctr images import`
-#   felis-image-base-linux-<arch>.tar   the registry and PostgreSQL        reads them as-is)
-#   felis-images-linux-<arch>.txt       one "bundle role name manifest-digest config-digest"
-#                                       line per image in the three tars
-#   felis-velocity.jar                  the proxy plugin (JVM bytecode, one for every arch)
-#   SHA256SUMS                          the sha256 of every file above
-#
-# Every name above is a contract with deploy/bootstrap.sh, which installs from a release's
-# assets (or from a directory like this one, FELIS_ARTIFACT_DIR) instead of building on the
-# host: with them a host needs neither Docker, Gradle, Go nor Docker Hub. The images are split
-# in three because they change at different rates: the control plane with every release, the
-# game images when game-stack.lock or a plugin changes, the base images almost never. An
-# upgrade downloads only the tars holding an image the host does not have yet.
-#
-# .github/workflows/release.yml runs this on a tag and publishes the directory; e2e.yml runs
-# it on a branch and installs from the directory.
-#
-# Needs docker with buildx, and binfmt/QEMU for the architectures other than the builder's:
-# the game images' runtime stages run apt-get on the target platform. The builder's own felis
-# binary writes the image tars, so Go is not needed here either.
-#
-# Usage: deploy/build-release-artifacts.sh <version> <out-dir>
-#   FELIS_RELEASE_ARCHES   the architectures to build (default "amd64 arm64")
+# Usage: build-release-artifacts.sh <version> <out-dir>; buildx/binfmt support cross-architecture images.
 set -Eeuo pipefail
 
 log() { printf '\033[1;36m[release]\033[0m %s\n' "$*"; }
@@ -94,7 +68,6 @@ for arch in $ARCHES; do
   platforms="${platforms:+${platforms},}linux/${arch}"
 done
 
-# ---- the felis binaries --------------------------------------------------------------
 # Through the repo Dockerfile, the one recipe that runs the panel build before go build:
 # a plain `go build` compiles against the placeholder panel and ships it.
 log "building felis ${VERSION} for ${platforms}"
@@ -119,7 +92,6 @@ HOST_FELIS="${OUT}/felis-linux-$(host_arch)"
 got="$("$HOST_FELIS" version | sed -n 1p)"
 [ "$got" = "felis ${VERSION}" ] || die "felis reports '${got}', want 'felis ${VERSION}': the version stamp did not reach the binary"
 
-# ---- the Velocity plugin -------------------------------------------------------------
 # The command bootstrap's source path runs, on a copy of the tree so the checkout stays clean.
 log "building felis-velocity.jar in ${PLUGIN_BUILD_IMAGE%%@*}"
 mkdir -p "${WORK}/velocity"
@@ -131,7 +103,6 @@ jars=( "${WORK}"/velocity/plugins/velocity/build/libs/felis-velocity-*.jar )
 [ "${#jars[@]}" -eq 1 ] && [ -f "${jars[0]}" ] || die "the felis-velocity build must produce exactly one plugin jar"
 install -m 0644 "${jars[0]}" "${OUT}/felis-velocity.jar"
 
-# ---- the images ----------------------------------------------------------------------
 FELIS_IMAGE="${REGISTRY_URL}/felis/felis:$(image_tag_for_version "$VERSION")"
 game_build_args=(
   --build-arg "LIMBO_JAR_URL=$(lock_value LIMBO_JAR_URL)"

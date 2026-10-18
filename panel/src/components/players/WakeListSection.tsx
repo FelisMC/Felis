@@ -10,13 +10,7 @@ import type { AllowlistEntry, AutostartPolicy } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { CollapsibleSection, FeedbackLine, LoadError, PagerFooter, SearchBox, usePagedNames, type Feedback } from "./shared";
 
-/** WakeListSection shows who may wake the server while it sleeps under the "wake
- *  list" autostart policy, and lets the owner take that right away or give it back.
- *  Felis keeps this list itself, so unlike the other player blocks it works whether
- *  the server is running or not — which is when it matters most. A player lands on
- *  it by joining once; a revoked row stays (marked) so a rejoin cannot undo the
- *  owner's choice, which is also why the action is a reversible toggle and needs
- *  no confirm step. */
+// Retain revoked wake rows so joining again cannot restore permission; edits work while stopped.
 export function WakeListSection({
   name,
   policy,

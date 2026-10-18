@@ -93,10 +93,7 @@ function byName(a: UnifiedServer, b: UnifiedServer): number {
   );
 }
 
-/** compareBy orders servers by the picked key, then by name. The name settles
- *  every tie, so a list that rereads every few seconds keeps each row in place
- *  until the key itself changes. Status runs live to idle, the order of the
- *  phase filter. */
+// Use name as a stable tiebreaker between periodic list refreshes.
 function compareBy(key: SortKey): (a: UnifiedServer, b: UnifiedServer) => number {
   switch (key) {
     case "status":
@@ -157,9 +154,7 @@ export function ServersPage() {
 
   usePolling(reload, REFRESH_MS);
 
-  // The refresh button answers its own click alone. The background reread every
-  // few seconds leaves it still and clickable; a spin and a disabled button on
-  // each tick read as the page stalling.
+  // Background polling must not disable the manual refresh button.
   const [refreshing, setRefreshing] = useState(false);
   if (refreshing && !loading) setRefreshing(false);
   const cards = usePageRefresh();
@@ -560,9 +555,7 @@ function ServerActions({
     );
   }
 
-  // An unclaimed server is the player's to claim and nothing more: waking it and
-  // its console belong to its owner, and it has none yet. An admin runs any server
-  // (the wake and console routes admit them), so theirs keep both beside the claim.
+  // Unclaimed servers expose claim only, except administrators retain wake and console access.
   const claimable = server.claimable && !server.owned;
 
   return (

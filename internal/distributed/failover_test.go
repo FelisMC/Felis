@@ -99,9 +99,6 @@ func worldJob(name, node string, finished bool) *batchv1.Job {
 	return j
 }
 
-// TestFailoverRestoresTheBackupOnAnotherNode walks a failover end to end: begun off the
-// lost node, it waits for the fence and for the old pod to go, restores the chosen backup
-// into a new claim on the target, and switches the server there, running again.
 func TestFailoverRestoresTheBackupOnAnotherNode(t *testing.T) {
 	m, ctx := failoverFixture(t)
 	game := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "alice-0", Namespace: "minecraft", Labels: map[string]string{v1alpha1.LabelServer: "alice", v1alpha1.LabelComponent: "server"}}, Spec: corev1.PodSpec{NodeName: "b"}, Status: corev1.PodStatus{Phase: corev1.PodRunning}}
@@ -219,9 +216,6 @@ func TestFailoverRestoresTheBackupOnAnotherNode(t *testing.T) {
 	}
 }
 
-// TestFailoverAdmission pins what may be failed over and where: never off an online node or
-// onto the lost one, an underway failover is not redirected, and a migration the lost node
-// holds up is given up for it.
 func TestFailoverAdmission(t *testing.T) {
 	m, ctx := fixture(t)
 	backup := archivetransfer.Receipt{Ref: "/backups/alice-1.tar.gz"}
@@ -265,8 +259,6 @@ func TestFailoverAdmission(t *testing.T) {
 	}
 }
 
-// TestFailoverStopsWhenTheServerIsStarted pins that starting the server during the fence
-// fails the failover instead of waiting forever.
 func TestFailoverStopsWhenTheServerIsStarted(t *testing.T) {
 	m, ctx := failoverFixture(t)
 	op, err := m.BeginFailover(ctx, "alice", "c", "owner", archivetransfer.Receipt{Ref: "/backups/alice-1.tar.gz"})
@@ -284,9 +276,6 @@ func TestFailoverStopsWhenTheServerIsStarted(t *testing.T) {
 	}
 }
 
-// TestFailoverTargetAndLostWorkers pins the automatic failover's choices: the online node
-// holding the fewest worlds, on a tie the controller and then the first by name, never a
-// cordoned or offline one; and which nodes count as lost workers.
 func TestFailoverTargetAndLostWorkers(t *testing.T) {
 	m, ctx := failoverFixture(t)
 	controller := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "a", Labels: map[string]string{placement.LabelIdentity: "a", placement.LabelRole: placement.RoleController}}, Status: corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}}}
@@ -340,8 +329,6 @@ func TestFailoverTargetAndLostWorkers(t *testing.T) {
 	}
 }
 
-// TestNodesReportFenceAndLoss pins the node view's fence and loss fields, and that a
-// migration or failover may target the controller.
 func TestNodesReportFenceAndLoss(t *testing.T) {
 	m, ctx := failoverFixture(t)
 	fenceNode(t, m, "b")
@@ -376,8 +363,6 @@ func TestNodesReportFenceAndLoss(t *testing.T) {
 	}
 }
 
-// TestFenced pins the fence: cordoned, no longer approved, and tainted out of service, all
-// three.
 func TestFenced(t *testing.T) {
 	taint := corev1.Taint{Key: TaintOutOfService, Value: "nodeshutdown", Effect: corev1.TaintEffectNoExecute}
 	node := func(unschedulable bool, approved string, taints ...corev1.Taint) *corev1.Node {
@@ -404,9 +389,6 @@ func TestFenced(t *testing.T) {
 	}
 }
 
-// TestServersOnListsTheLostNodesWorlds pins the failover plan's server list: the user
-// servers placed on the node, by spec or by where they last ran, with what they have
-// underway; system servers and other nodes' servers are left out.
 func TestServersOnListsTheLostNodesWorlds(t *testing.T) {
 	m, ctx := failoverFixture(t)
 	ran := &v1alpha1.MinecraftServer{ObjectMeta: metav1.ObjectMeta{Name: "bob", Namespace: "minecraft"}}
@@ -437,8 +419,6 @@ func TestServersOnListsTheLostNodesWorlds(t *testing.T) {
 	}
 }
 
-// TestFailoverDropsAMigrationsLeftovers pins that a migration given up for a failover
-// leaves none of its Jobs behind.
 func TestFailoverDropsAMigrationsLeftovers(t *testing.T) {
 	m, ctx := fixture(t)
 	migration, err := m.BeginMigration(ctx, "alice", "c", "owner")
@@ -459,8 +439,6 @@ func TestFailoverDropsAMigrationsLeftovers(t *testing.T) {
 	}
 }
 
-// TestFailoverFailsWhenItsGroundShifts pins the fence stage's own checks: a lock taken over
-// by something else, and a target that went away, fail the failover.
 func TestFailoverFailsWhenItsGroundShifts(t *testing.T) {
 	for name, shift := range map[string]func(*testing.T, *Manager){
 		"lock": func(t *testing.T, m *Manager) {
@@ -487,8 +465,6 @@ func TestFailoverFailsWhenItsGroundShifts(t *testing.T) {
 	}
 }
 
-// TestFailoverWithoutTheOldClaim pins that a failover whose old claim is gone sizes the new
-// one from the server's storage spec.
 func TestFailoverWithoutTheOldClaim(t *testing.T) {
 	m, ctx := failoverFixture(t)
 	s := getServer(t, m, ctx)
@@ -521,8 +497,6 @@ func TestFailoverWithoutTheOldClaim(t *testing.T) {
 	}
 }
 
-// TestFailoverWaitsForTheFence pins that a world with nothing left on the lost node still
-// waits for the fence before it is restored anywhere, and is pending a fence meanwhile.
 func TestFailoverWaitsForTheFence(t *testing.T) {
 	m, ctx := fixture(t)
 	setReady(t, m, "b", false)
@@ -547,9 +521,6 @@ func TestFailoverWaitsForTheFence(t *testing.T) {
 	}
 }
 
-// TestReplicaCandidatesAreRunningWorkerWorlds pins which worlds get replicas: user servers
-// up and ready on a worker, with nothing underway; not the controller's, not stopped or
-// starting ones, not system servers, not one being moved.
 func TestReplicaCandidatesAreRunningWorkerWorlds(t *testing.T) {
 	m, ctx := fixture(t)
 	running := func(name, node string, mutate ...func(*v1alpha1.MinecraftServer)) *v1alpha1.MinecraftServer {
@@ -591,10 +562,6 @@ func TestReplicaCandidatesAreRunningWorkerWorlds(t *testing.T) {
 	}
 }
 
-// TestControllerHAFailsOverALostController pins what controller high availability adds: a
-// lost controller may be failed over while another controller carries on (and never
-// without HA, nor as the last one), it counts as lost for the automatic failover, any
-// online controller takes worlds, and worlds on the home controller get replicas too.
 func TestControllerHAFailsOverALostController(t *testing.T) {
 	m, ctx := fixture(t)
 	controller := func(name string, ready bool) *corev1.Node {

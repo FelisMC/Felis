@@ -1,26 +1,4 @@
-// Package registryprune deletes the manifests in the platform registry that
-// nothing uses any more, so the registry-gc sidecar's next sweep can free their
-// layers. Without it the registry only grows: every rebuild of a tag leaves the
-// previous manifest behind, a whitelist entry an admin removes keeps its image,
-// and each installer run adds a platform image.
-//
-// A manifest is kept when any of these hold, and so is every manifest a kept
-// image index names (its per-platform images and attestations):
-//
-//   - an image reference the platform still depends on names it: a whitelist
-//     entry (by tag, by wildcard tag, or by digest), a server's spec (servers are
-//     pinned by digest, so a sleeping server keeps the exact build it was created
-//     with even after its tag moved on), or the images the control plane and the
-//     build Jobs run;
-//   - it was pushed less than Grace ago, which covers a build that pushed but has
-//     not been admitted to the whitelist yet;
-//   - it lives under a platform-reserved root (felis/, mirror/), is tagged, and is
-//     among the KeepTagged most recently pushed tagged manifests of its
-//     repository. The installer owns those tags; the newest few stay for a
-//     rollback, the older ones go.
-//
-// Everything else is deleted through the registry gate as the prune principal,
-// which may do nothing but delete a manifest by digest.
+// Package registryprune deletes unused manifests while retaining dependencies, recent pushes, and rollback images.
 package registryprune
 
 import (
@@ -35,56 +13,45 @@ import (
 	"felis.lolicon.best/internal/registrygate"
 )
 
-// Defaults for Pruner's zero fields.
 const (
 	DefaultGrace      = 24 * time.Hour
 	DefaultKeepTagged = 5
 )
 
-// Registry is the pruner's view of the registry (Client in production).
 type Registry interface {
 	Repositories(ctx context.Context) ([]string, error)
 	Index(ctx context.Context, repo string) (*registrygate.Index, error)
 	Delete(ctx context.Context, repo, digest string) error
 }
 
-// Pruner decides and deletes.
 type Pruner struct {
 	Registry Registry
-	// Host is the registry host[:port] image refs spell (registry.felis.svc:5000).
-	// Refs under any other host are not this registry's and are ignored.
+	// Host selects image references belonging to this registry.
 	Host string
-	// Refs lists every image reference still in use. An error aborts the run: a
-	// partial view could delete an image something depends on.
+	// Refs must return a complete view; an error aborts pruning.
 	Refs func(ctx context.Context) ([]string, error)
-	// Grace keeps manifests pushed this recently. Zero means DefaultGrace.
+	// Grace defaults to DefaultGrace.
 	Grace time.Duration
-	// KeepTagged is how many tagged manifests per reserved repository survive by
-	// recency alone. Zero means DefaultKeepTagged.
+	// KeepTagged retains recent tagged manifests per reserved repository; zero uses DefaultKeepTagged.
 	KeepTagged int
-	// Now is the clock; nil means time.Now.
-	Now func() time.Time
-	// Log receives one line per deletion and a summary. Nil discards.
-	Log *slog.Logger
+	Now        func() time.Time
+	Log        *slog.Logger
 }
 
-// Target is one manifest the pruner deletes.
 type Target struct {
 	Repo, Digest string
 }
 
 func (t Target) String() string { return t.Repo + "@" + t.Digest }
 
-// Report summarizes one run.
 type Report struct {
 	Repositories int
 	Manifests    int
 	Deleted      []Target
-	// Failed counts deletions the registry refused; they are retried next run.
+	// Failed deletions are retried on the next run.
 	Failed int
 }
 
-// Run lists the registry, decides, and deletes.
 func (p *Pruner) Run(ctx context.Context) (Report, error) {
 	var rep Report
 	if p.Registry == nil || p.Refs == nil || p.Host == "" {
@@ -125,8 +92,7 @@ func (p *Pruner) Run(ctx context.Context) (Report, error) {
 	return rep, nil
 }
 
-// Loop runs Run every interval until ctx ends, starting after one interval's
-// tenth so a restart loop does not hammer the registry.
+// Loop delays its first run by interval/10 to limit restart churn.
 func (p *Pruner) Loop(ctx context.Context, every time.Duration) {
 	t := time.NewTimer(every / 10)
 	defer t.Stop()
@@ -168,8 +134,6 @@ func (p *Pruner) log() *slog.Logger {
 	return slog.New(slog.DiscardHandler)
 }
 
-// Plan decides which manifests to delete. It is pure so every keep rule is
-// tested without a registry.
 func Plan(indexes map[string]*registrygate.Index, refs []string, host string, now time.Time, grace time.Duration, keepTagged int) []Target {
 	keep := map[Target]bool{}
 	for _, ref := range refs {
@@ -226,10 +190,7 @@ func Plan(indexes map[string]*registrygate.Index, refs []string, host string, no
 	return out
 }
 
-// keepChildren extends keep from each kept image index to the manifests it names:
-// the per-platform images and their attestations, which no ref spells but every
-// pull of the index fetches. An index can name another index, so it runs to a
-// fixed point.
+// Retain index descendants transitively, including platform manifests and attestations.
 func keepChildren(repo string, idx *registrygate.Index, keep map[Target]bool) {
 	for grew := true; grew; {
 		grew = false
@@ -246,8 +207,6 @@ func keepChildren(repo string, idx *registrygate.Index, keep map[Target]bool) {
 	}
 }
 
-// newestTagged returns the n most recently pushed distinct digests any tag in idx
-// names.
 func newestTagged(idx *registrygate.Index, pushed map[string]time.Time, n int) []string {
 	seen := map[string]bool{}
 	var tagged []string
@@ -280,8 +239,7 @@ func reserved(repo string) bool {
 	return false
 }
 
-// ParseRef splits host/repo[:tag][@digest] for refs under host. A ref with
-// neither tag nor digest means :latest, as it does for every image client.
+// ParseRef defaults references without a tag or digest to :latest.
 func ParseRef(ref, host string) (repo, tag, digest string, ok bool) {
 	rest, ok := strings.CutPrefix(strings.TrimSpace(ref), host+"/")
 	if !ok || rest == "" {

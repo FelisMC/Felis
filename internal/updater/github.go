@@ -12,55 +12,20 @@ import (
 	"felis.lolicon.best/internal/updates"
 )
 
-// githubBaseURL is the GitHub REST API root. It is a field on the github source (not a
-// hardcoded constant in the request) so discovery runs against an httptest server in
-// tests without touching the network.
 const githubBaseURL = "https://api.github.com"
 
-// github discovers the latest STABLE release of a GitHub repository from the REST API's
-// /repos/{repo}/releases/latest endpoint, which GitHub defines as the most recent
-// non-draft, non-prerelease release. Felis tracks felis-api, k3s and cloudflared this
-// way.
-//
-// Unlike the PaperMC Fill API, GitHub ENFORCES a User-Agent: a request without one is
-// answered "403 Request forbidden by administrative rules. Please make sure your request
-// has a User-Agent header" (verified against api.github.com on 2026-07-05 — a UA-less
-// request 403'd while a plain browser UA got 200, so the gate is on presence, not on the
-// UA's content). Felis always sends its descriptive UA, so the requirement is met.
-//
-// It uses /releases/latest (one request per repo) rather than listing releases: it is
-// GitHub's own "newest stable" definition and is gentle on the unauthenticated 60-req/h
-// rate limit a CronJob shares. The one semantic gap — GitHub sorts "latest" by the
-// release's created_at (not by version), so a repo that back-ports a patch to an OLD
-// line LAST would report that patch — does not bite Felis's tracked repos: felis-api
-// and cloudflared are
-// single-line (date order == version order), and k3s is Notify-only (a missed
-// notification self-corrects on the next release, and never drives an apply).
+// GitHub latest follows release creation time rather than maximum semantic version; this source reports that selected stable release.
 type github struct {
-	baseURL   string // e.g. "https://api.github.com"
-	userAgent string // MUST be non-empty — GitHub 403s a UA-less request
-	// token is an optional credential. Empty means unauthenticated, which is the right
-	// posture for the public repos Felis tracks (felis-api, k3s, cloudflared) and is what
-	// the 60-req/h note above is about. It is load-bearing only when felis-api is built
-	// from a private fork, where its absence does not look like an auth failure:
-	// GitHub answers 404 — not 401 or 403 — for a private repo the caller cannot see, so
-	// "no token" is indistinguishable from "no release published yet" by status alone.
-	// latestStable says both in the error rather than making an operator guess, for any
-	// repository other than the official one, which is public.
-	//
-	// It is read from the environment and never compiled in. A constant would be
-	// committed to the very repository it protects, ship inside every felis binary where
-	// strings(1) recovers it, reach every node the image is imported onto, and need a
-	// rebuild and a redeploy to rotate.
+	baseURL   string
+	userAgent string // GitHub requires a nonempty User-Agent
+	// token is optional and environment-provided; private-repository 404 responses can also mean missing credentials.
 	token string
 	hc    *http.Client
 }
 
-// tokenEnv names the environment variable holding the GitHub credential. deploy/bootstrap.sh
-// reads the same variable to clone a private fork, so an operator sets one value once.
+// tokenEnv must match the credential variable used by bootstrap for private-repository cloning.
 const tokenEnv = "FELIS_GITHUB_TOKEN"
 
-// newGitHub builds a source pointed at the live GitHub REST API with sane defaults.
 func newGitHub() github {
 	return github{
 		baseURL:   githubBaseURL,
@@ -70,28 +35,13 @@ func newGitHub() github {
 	}
 }
 
-// releaseResponse is the slice of GET /repos/{repo}/releases/latest that Felis reads.
-// The live shape (2026-07-05) for both a CalVer project (cloudflared "2026.6.1") and a
-// v-prefixed, build-tagged one (k3s "v1.36.2+k3s1") is:
-//
-//	{"tag_name":"v1.36.2+k3s1","prerelease":false,"draft":false, ...}
-//
-// updates.Parse tolerates the leading "v" and strips "+build" metadata, so both tag
-// styles reduce to a comparable Version while String() keeps the raw for the report.
 type releaseResponse struct {
 	TagName    string `json:"tag_name"`
 	Prerelease bool   `json:"prerelease"`
 	Draft      bool   `json:"draft"`
 }
 
-// latestStable returns the newest STABLE release of repo (e.g. "cloudflare/cloudflared").
-//
-// It fails closed: a transport error, a non-200 status (GitHub answers 404 when a repo
-// has no non-prerelease release, so "no stable release" surfaces as an error, never a
-// zero version), an undecodable body, a response that is somehow marked draft/prerelease,
-// or an unparseable / prerelease-parsing tag all return an error. /releases/latest
-// already excludes drafts and prereleases; the explicit re-checks are defense in depth so
-// an upstream change can never silently promote a prerelease into a scheduled apply.
+// latestStable rejects malformed, draft or prerelease responses even if the latest endpoint returns them.
 func (g github) latestStable(ctx context.Context, repo string) (updates.Version, error) {
 	tag, err := g.latestTag(ctx, repo)
 	if err != nil {
@@ -100,9 +50,7 @@ func (g github) latestStable(ctx context.Context, repo string) (updates.Version,
 	return parseStableTag(repo, tag)
 }
 
-// latestTemurin returns the newest stable Temurin build of one JDK feature release.
-// Adoptium publishes each feature line from its own repository and tags every build
-// "jdk-<version>" ("jdk-25.0.4.1+1"); the prefix is the only thing Parse cannot take.
+// latestTemurin restricts discovery to the current JDK feature and strips the jdk- tag prefix before parsing.
 func (g github) latestTemurin(ctx context.Context, feature int) (updates.Version, error) {
 	repo := fmt.Sprintf("adoptium/temurin%d-binaries", feature)
 	tag, err := g.latestTag(ctx, repo)
@@ -123,7 +71,6 @@ func parseStableTag(repo, tag string) (updates.Version, error) {
 	return v, nil
 }
 
-// latestTag fetches the tag of repo's /releases/latest.
 func (g github) latestTag(ctx context.Context, repo string) (string, error) {
 	return g.releaseTag(ctx, repo, "releases/latest")
 }
@@ -153,10 +100,7 @@ func (g github) releaseTag(ctx context.Context, repo, endpoint string) (string, 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		// 404 is the ambiguous one: GitHub hides a private repo behind it rather than
-		// answering 401/403, so an unauthenticated miss and a repo with no stable release
-		// are the same status. Name both causes, and name the fix for the one an operator
-		// can act on. The official repository is public, so there only the first applies.
+		// For private forks a 404 may mean missing credentials or no stable release; report both possibilities.
 		if endpoint == "releases/latest" && resp.StatusCode == http.StatusNotFound && strings.EqualFold(repo, officialRepo) {
 			return "", fmt.Errorf("github: %s releases/latest returned HTTP 404 — it has no published stable release", repo)
 		}

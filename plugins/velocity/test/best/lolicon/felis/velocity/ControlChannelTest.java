@@ -22,17 +22,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 
-/**
- * ControlChannelTest drives the real ControlChannel (with the real WaitingRouter,
- * ServerRegistry, FelisApiClient and call pool behind it) through Velocity's
- * PluginMessageEvent, against a fake proxy and a stub felis-api: which frames are
- * consumed, which sources may act and as whom, what each lobby frame answers,
- * that status answers are shared across players, that a claim refusal never wakes,
- * and that the per-player frame budget holds. Framework free: a failed assertion
- * throws.
- *
- * <p>Run: {@code ./gradlew routingTest} in plugins/velocity.
- */
 public final class ControlChannelTest {
 
     private static final String SERVERS = "/api/v1/internal/servers/";
@@ -326,9 +315,7 @@ public final class ControlChannelTest {
     }
 
     private static void budget() {
-        // 96 frames in a burst, then 10 a second: a flood is cut off, the connection
-        // is not. Every accepted ListRequest is answered exactly once (from the call pool,
-        // or at once when the pool is full), so the answers count the accepted frames.
+        // Count one answer per accepted frame, including immediate busy replies, while excess frames are throttled.
         Fakes.FakePlayer p = player(true);
         for (int i = 0; i < 150; i++) {
             message(p.on(lobby), ControlChannel.CHANNEL, Control.encode(ControlFrame.listRequest()));
@@ -373,7 +360,6 @@ public final class ControlChannelTest {
         return seen;
     }
 
-    // ---- helpers ----
 
     private static Fakes.FakePlayer player(boolean linked) {
         int n = nextPlayer++;
@@ -409,10 +395,7 @@ public final class ControlChannelTest {
         return f.server() + " " + f.phase() + " " + f.ready();
     }
 
-    // Shaped like the operator's status: up is direct at addr; down is the fallback,
-    // whose name ("login") sits in the address field.
-    // view is a server as GET /servers lists it, and the stub API's status, menu and
-    // wake answer for the same state: up at addr, or down on the "login" fallback.
+    // Use direct addresses only for running servers; stopped views carry the fallback server name.
     private static ServerView view(String name, boolean ready, String addr) {
         api.ready.put(name, ready);
         api.address.put(name, addr);

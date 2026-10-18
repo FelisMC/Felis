@@ -44,8 +44,7 @@ const isActive = (b: Build) => b.status === "pending" || b.status === "building"
 
 const BUILD_STATUSES: BuildStatus[] = ["pending", "building", "succeeded", "failed", "cancelled"];
 
-// The server matches a status by its code, so a status typed the way the badge
-// shows it ("失败") is sent as the code ("failed").
+// The server matches a status by its code, so a label typed in the UI language is sent as the code (failed).
 function serverQuery(search: string, t: TFunction): string {
   const q = search.trim();
   const status = BUILD_STATUSES.find((s) => t(`admin:build_status_${s}`).toLowerCase() === q.toLowerCase());
@@ -81,10 +80,7 @@ export function ImageBuildPage() {
   const locale = i18n.language;
   const now = Date.now();
   const config = useConfig();
-  // The owner tier comes from the server-side /me verdict (TierProvider), never
-  // from guessing at the address: the old mock-era email heuristic misread the
-  // real owner (felis-owner@example.com) as non-owner while treating any
-  // "owner@…" address as one.
+  // The owner tier comes from the server-side /me verdict (TierProvider), never from guessing at the address: an email heuristic once misread the real owner as a non-owner.
   const { isOwner, identity } = useTier();
 
   // Form & Dialog State
@@ -96,10 +92,7 @@ export function ImageBuildPage() {
   const [triggering, setTriggering] = useState(false);
   const [triggerError, setTriggerError] = useState<string | null>(null);
 
-  // The submission picker reads while the dialog is open. Its search runs on
-  // the server (id, submitter or name), so a submission older than the newest
-  // page is still one query away, and a failed read says why instead of
-  // passing for an empty list.
+  // Search submissions server-side so older entries remain selectable.
   const [subSearch, setSubSearch] = useState("");
   const [subQuery, setSubQuery] = useState("");
   useEffect(() => {
@@ -148,9 +141,7 @@ export function ImageBuildPage() {
     setBaseImage("");
   };
 
-  // Build List State. The list is the server's (GET /images/build), so a build
-  // started from another browser, or by another admin, shows up and can be
-  // cancelled here too.
+  // Build List State. The list is the server's (GET /images/build), so a build started from another browser or by another admin shows up and can be cancelled here too.
   const [activeLogBuildId, setActiveLogBuildId] = useState<string | null>(null);
   const [cancelBuild, setCancelBuild] = useState<Build | null>(null);
 

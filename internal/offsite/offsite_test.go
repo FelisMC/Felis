@@ -57,8 +57,6 @@ func TestEncryptRoundTrip(t *testing.T) {
 	}
 }
 
-// TestDecryptRejectsTampering: a wrong key, a flipped bit, a missing tail at a
-// segment boundary and swapped segments all fail instead of yielding data.
 func TestDecryptRejectsTampering(t *testing.T) {
 	key := testKey(t)
 	plain := make([]byte, 3*segmentSize)
@@ -109,8 +107,6 @@ func TestParseKey(t *testing.T) {
 		t.Errorf("KeyID = %q, want 16 hex chars that differ per key", KeyID(k))
 	}
 }
-
-// ---- fakes ----------------------------------------------------------------
 
 type memBucket struct {
 	mu      sync.Mutex
@@ -286,8 +282,6 @@ func newSyncer(t *testing.T, cat *fakeCatalog) (*Syncer, *memBucket) {
 	}, b
 }
 
-// TestSyncCopiesWorldsAndRecordsThem: each pending archive is encrypted into
-// the bucket and marked; a second run sends nothing again.
 func TestSyncCopiesWorldsAndRecordsThem(t *testing.T) {
 	cat := &fakeCatalog{rows: []*row{
 		{WorldBackup: WorldBackup{ID: "b1", Server: "alpha", Ref: "/var/lib/felis/archives/alpha-1.tar.gz"}, status: "present"},
@@ -320,8 +314,6 @@ func TestSyncCopiesWorldsAndRecordsThem(t *testing.T) {
 	}
 }
 
-// TestSyncResumesWithoutResending: an object stored by a run that died before
-// recording it is recorded, not uploaded twice; a partial one is replaced.
 func TestSyncResumesWithoutResending(t *testing.T) {
 	cat := &fakeCatalog{rows: []*row{
 		{WorldBackup: WorldBackup{ID: "b1", Server: "alpha", Ref: "/a/alpha-1.tar.gz"}, status: "present"},
@@ -345,8 +337,6 @@ func TestSyncResumesWithoutResending(t *testing.T) {
 	}
 }
 
-// TestSyncFailureLeavesRowPending: a failed upload is reported, the row stays
-// unmarked (so the reaper keeps the world), and the rest still go.
 func TestSyncFailureLeavesRowPending(t *testing.T) {
 	cat := &fakeCatalog{rows: []*row{
 		{WorldBackup: WorldBackup{ID: "b1", Server: "alpha", Ref: "/a/alpha-1.tar.gz"}, status: "present"},
@@ -373,10 +363,6 @@ func TestSyncFailureLeavesRowPending(t *testing.T) {
 	}
 }
 
-// TestSyncExpiresOnlyPastRetention: a remote archive goes once its row has
-// expired, or once its owner deleted it (status expired, expires_at pulled to
-// the delete); one evicted early from the local disk stays until then, and an
-// object with no row at all is left alone.
 func TestSyncExpiresOnlyPastRetention(t *testing.T) {
 	cat := &fakeCatalog{rows: []*row{
 		{WorldBackup: WorldBackup{ID: "old", Ref: "/a/old.tar.gz"}, status: "deleted", expires: now.Add(-time.Hour), offsite: now.Add(-100 * 24 * time.Hour)},
@@ -400,8 +386,6 @@ func TestSyncExpiresOnlyPastRetention(t *testing.T) {
 	}
 }
 
-// TestSyncDBKeepsNewest: only the newest DBKeep bundles are sent, and older
-// remote bundles are pruned down to DBKeep.
 func TestSyncDBKeepsNewest(t *testing.T) {
 	s, b := newSyncer(t, &fakeCatalog{})
 	for _, name := range []string{
@@ -437,9 +421,6 @@ func TestSyncDBKeepsNewest(t *testing.T) {
 	}
 }
 
-// TestSyncDBRanksWithTheBucket: an old local bundle (kept here by its label's
-// own retention) that newer bundles in the bucket outrank is not sent, so a
-// pass does not upload what it then prunes, and the next pass the same again.
 func TestSyncDBRanksWithTheBucket(t *testing.T) {
 	s, b := newSyncer(t, &fakeCatalog{})
 	writeFile(t, s.DBDir, "felis-db-20260910T030000Z-pre-migrate.tar", 50)
@@ -464,8 +445,6 @@ func TestSyncDBRanksWithTheBucket(t *testing.T) {
 	}
 }
 
-// TestFetchWorldsRestoresVolume: after a rebuild, every present archive the
-// volume lacks comes back byte for byte; ones already there are left alone.
 func TestFetchWorldsRestoresVolume(t *testing.T) {
 	cat := &fakeCatalog{rows: []*row{
 		{WorldBackup: WorldBackup{ID: "b1", Server: "alpha", Ref: "/a/alpha-1.tar.gz"}, status: "present"},
@@ -517,11 +496,6 @@ func TestWorldKeyRejectsOddRefs(t *testing.T) {
 	}
 }
 
-// TestSyncBigArchiveDoesNotStallThePass: an archive the uplink cannot send in
-// time fails at its own deadline and stays pending, while the database bundle
-// (sent before any world) and the archives after it still reach the bucket.
-// One deadline for the whole pass used to go to the big archive, every hour,
-// with the bundles queued behind it.
 func TestSyncBigArchiveDoesNotStallThePass(t *testing.T) {
 	cat := &fakeCatalog{rows: []*row{
 		{WorldBackup: WorldBackup{ID: "b1", Server: "alpha", Ref: "/a/alpha-1.tar.gz"}, status: "present"},
@@ -564,9 +538,6 @@ func TestSyncBigArchiveDoesNotStallThePass(t *testing.T) {
 	}
 }
 
-// TestUploadBudgetFitsTheUplink: by default a 10 GiB archive may take well over
-// what a 20 Mbit/s uplink needs to send it, and the smallest object still gets
-// the grace.
 func TestUploadBudgetFitsTheUplink(t *testing.T) {
 	s := &Syncer{}
 	const big = 10 << 30

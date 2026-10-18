@@ -21,26 +21,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// cmdApply creates a MinecraftServer CRD from a JSON form.
-//
-// It is an operator-only direct CRD create path — it does NOT seed Postgres
-// business rows (ownership, alias, image whitelist, audit), so the resulting
-// server is claimable only if those rows are seeded separately. For normal
-// provisioning prefer the Web form or felis-api.
-//
-// Usage: felis apply -f server.json [-n minecraft]
-//
-// This is a DIRECT Kubernetes write — it does not go through felis-api. It
-// requires a kubeconfig or in-cluster identity with "create minecraftservers"
-// permission in the target namespace. Subdomain duplicates are checked against
-// existing CRDs in the target namespace (same check as the web form's
-// Cluster.GetBySubdomain).
+// Direct CR creation does not seed database rows; claiming requires those rows separately.
 
-// applyRequest is the CLI-facing server creation form. It mirrors the Web
-// form's field shape (createServerRequest) so the two provisioners stay
-// structurally aligned, but validation differs: here we validate the CRD
-// resource shape only — image whitelist admission, PG alias seeding, quota, and
-// audit are the API's business layer and are NOT performed.
 type applyRequest struct {
 	Name            string           `json:"name"`
 	Subdomain       string           `json:"subdomain"`
@@ -52,7 +34,6 @@ type applyRequest struct {
 	Resources       *resourceRequest `json:"resources,omitempty"`
 }
 
-// resourceRequest mirrors the API's resourceRequest.
 type resourceRequest struct {
 	CPU           string `json:"cpu,omitempty"`
 	CPURequest    string `json:"cpuRequest,omitempty"`
@@ -92,27 +73,19 @@ func cmdApply(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "felis apply: invalid JSON: %v\n", err)
 		return 1
 	}
-	// Drain the decoder: a second Decode must hit io.EOF — anything else
-	// (another value, trailing garbage like ] or }) means the input is not
-	// exactly one valid form.
+	// A second Decode must hit io.EOF; anything else is trailing input.
 	if err := dec.Decode(&struct{}{}); err == nil || !errors.Is(err, io.EOF) {
 		fmt.Fprintln(stderr, "felis apply: invalid JSON: unexpected data after the server form")
 		return 1
 	}
 
-	// Build the CRD from the form. This validates the resource shape but does
-	// NOT perform image whitelist admission or PG seeding (API business layer).
 	ms, err := buildMinecraftServerFromApplyRequest(req, *namespace)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis apply: %v\n", err)
 		return 1
 	}
 
-	// ------- K8s client (one context, one client) -------
-	// The operator runs this on the node, where the kubeconfig is k3s's own file and
-	// neither $KUBECONFIG nor ~/.kube is set. buildSystemServerClient falls back to that
-	// file and names what it tried; ctrl.GetConfigOrDie exited 1 there without a word,
-	// because controller-runtime's logger is never set up in a CLI command.
+	// On the node the kubeconfig is k3s's own file; buildSystemServerClient falls back to it.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	cl, err := buildSystemServerClient()
@@ -121,11 +94,7 @@ func cmdApply(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	// Subdomain duplicate check: the web form queries GetBySubdomain before
-	// creating; we list all CRDs in the namespace and check spec.subdomain.
-	// metadata.name already receives K8s AlreadyExists enforcement on create,
-	// so a name collision surfaces cleanly — but subdomain has no such native
-	// uniqueness, so it must be checked explicitly.
+	// K8s enforces metadata.name uniqueness on create; spec.subdomain needs this explicit check.
 	if err := checkSubdomainUnique(ctx, cl, *namespace, req.Subdomain); err != nil {
 		fmt.Fprintf(stderr, "felis apply: %v\n", err)
 		return 1
@@ -146,14 +115,8 @@ func cmdApply(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// buildMinecraftServerFromApplyRequest validates the request and constructs a
-// MinecraftServer CRD. It is a pure function (no K8s, no I/O) so it can be
-// tested without a cluster. It validates: name/subdomain format, required
-// fields, policy enum, positive K8s quantities, request ≤ limit, and the §22
-// memory ceiling. The returned CRD is always DesiredState=Stopped and unowned
-// (ownership is established by a later claim).
+// buildMinecraftServerFromApplyRequest validates the request without I/O; the CRD is always Stopped and unowned.
 func buildMinecraftServerFromApplyRequest(req applyRequest, namespace string) (*v1alpha1.MinecraftServer, error) {
-	// ---- name & subdomain ----
 	if err := naming.ValidateServerName(req.Name); err != nil {
 		return nil, fmt.Errorf("invalid name: %w", err)
 	}
@@ -168,13 +131,11 @@ func buildMinecraftServerFromApplyRequest(req applyRequest, namespace string) (*
 		return nil, fmt.Errorf("image is required")
 	}
 
-	// ---- autostart policy ----
 	policy, err := parseApplyAutostartPolicy(req.AutostartPolicy)
 	if err != nil {
 		return nil, err
 	}
 
-	// ---- resources (§22 ceiling) ----
 	memQ, err := parseApplyPositiveQuantity(req.Memory, "memory")
 	if err != nil {
 		return nil, err
@@ -220,7 +181,6 @@ func buildMinecraftServerFromApplyRequest(req applyRequest, namespace string) (*
 		return nil, fmt.Errorf("internal error: refusing to create a server without a memory ceiling")
 	}
 
-	// ---- storage ----
 	storageQ, err := parseApplyPositiveQuantity(req.Storage, "storage")
 	if err != nil {
 		return nil, err
@@ -240,10 +200,7 @@ func buildMinecraftServerFromApplyRequest(req applyRequest, namespace string) (*
 			AutostartPolicy: policy,
 			Storage:         v1alpha1.StorageSpec{Size: storageQ.String()},
 			Resources:       corev1.ResourceRequirements{Limits: limits, Requests: requests},
-			// The rest matches what felis-api's create writes (K8sCluster.CreateServer):
-			// fall back to the login gate while stopped, RCON on (readiness, the
-			// player count and the console all ride it; the operator mints the
-			// password), and the default idle stop.
+			// Matches felis-api's create: login-gate fallback while stopped, RCON on, default idle stop.
 			FallbackServer: naming.SystemLoginServer,
 			Rcon: v1alpha1.RconSpec{
 				Enabled: true,
@@ -257,11 +214,6 @@ func buildMinecraftServerFromApplyRequest(req applyRequest, namespace string) (*
 	}, nil
 }
 
-// checkSubdomainUnique lists all MinecraftServers in namespace and rejects the
-// request if any CRD already carries the given spec.subdomain. metadata.name
-// uniqueness is enforced by K8s on Create, but spec.subdomain must be checked
-// here because two CRDs with different names could otherwise share a subdomain.
-// It reuses the caller's context and K8s client.
 func checkSubdomainUnique(ctx context.Context, cl client.Client, namespace, subdomain string) error {
 	var list v1alpha1.MinecraftServerList
 	if err := cl.List(ctx, &list, client.InNamespace(namespace)); err != nil {
@@ -275,8 +227,6 @@ func checkSubdomainUnique(ctx context.Context, cl client.Client, namespace, subd
 	return nil
 }
 
-// validateResourceCeilings checks that every resource request is ≤ its limit;
-// Kubernetes would reject the CRD anyway, but we fail fast with a clear message.
 func validateResourceCeilings(requests, limits corev1.ResourceList) error {
 	for name, lim := range limits {
 		req, ok := requests[name]
@@ -290,16 +240,12 @@ func validateResourceCeilings(requests, limits corev1.ResourceList) error {
 	return nil
 }
 
-// resourcesMemoryString returns the memory limit as a human-readable string
-// for the success log.
 func resourcesMemoryString(rr corev1.ResourceRequirements) string {
 	if m, ok := rr.Limits[corev1.ResourceMemory]; ok {
 		return m.String()
 	}
 	return "?"
 }
-
-// ---- pure helpers (K8s-free, testable) ----
 
 func parseApplyAutostartPolicy(s string) (v1alpha1.AutostartPolicy, error) {
 	switch s {

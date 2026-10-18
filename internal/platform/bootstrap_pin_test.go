@@ -29,10 +29,6 @@ func bootstrapVar(t *testing.T, b []byte, name string) string {
 	return string(m[3])
 }
 
-// The renderer puts defaultRegistryImage in the registry Deployment, and bootstrap
-// caches and GC-pins REGISTRY_IMAGE in containerd. If the two drift, kubelet looks
-// for an image nobody cached or pinned, and an air-gapped box cannot start its
-// registry at all.
 func TestBootstrapPinsTheRegistryImage(t *testing.T) {
 	b, err := os.ReadFile("../../deploy/bootstrap.sh")
 	if err != nil {
@@ -50,10 +46,6 @@ func TestBootstrapPinsTheRegistryImage(t *testing.T) {
 	}
 }
 
-// The renderer puts defaultPostgresImage in the felis-postgres Deployment, and
-// bootstrap pulls and GC-pins POSTGRES_IMAGE and reads the cluster directory's
-// major version off its tag. If the two drift, the pod runs an image bootstrap
-// never checked against the data directory.
 func TestBootstrapPinsThePostgresImage(t *testing.T) {
 	if got := bootstrapVar(t, readBootstrap(t), "POSTGRES_IMAGE"); got != defaultPostgresImage {
 		t.Fatalf("bootstrap POSTGRES_IMAGE = %q, renderer default = %q", got, defaultPostgresImage)
@@ -63,8 +55,6 @@ func TestBootstrapPinsThePostgresImage(t *testing.T) {
 	}
 }
 
-// Bootstrap creates the data directory, the superuser Secret and the host config
-// that point at what PostgresObjects renders, and execs into its container by name.
 func TestBootstrapAgreesWithThePostgresConstants(t *testing.T) {
 	b := readBootstrap(t)
 	for _, c := range []struct{ name, want string }{

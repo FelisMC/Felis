@@ -8,14 +8,6 @@ import (
 	"felis.lolicon.best/internal/metrics"
 )
 
-// The account holder's own sessions: every device signed in to the account,
-// which one is making this request, and a way to sign any of them out. The admin
-// routes in handlers_users.go read and revoke the same rows for any user.
-
-// handleListMySessions lists the caller's live sessions, most recently seen
-// first, marking the one this request came in on (GET /account/sessions). A
-// caller signed in through Cloudflare Access has no session of its own, so none
-// is marked.
 func (a *API) handleListMySessions(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	sessions, err := a.Repo.ListUserSessions(r.Context(), p.UserID, a.now())
@@ -34,10 +26,7 @@ func (a *API) handleListMySessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"sessions": sessions})
 }
 
-// handleRevokeMySession signs out one of the caller's sessions
-// (DELETE /account/sessions/{hash}). A hash that is not a live session of the
-// caller is 404, whoever it belongs to. Revoking the session this request came
-// in on is a sign-out, so the cookie is cleared too.
+// handleRevokeMySession returns 404 for all non-owned sessions and clears the cookie when revoking the current one.
 func (a *API) handleRevokeMySession(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	hash := r.PathValue("hash")
@@ -59,9 +48,6 @@ func (a *API) handleRevokeMySession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "signed_out": current})
 }
 
-// handleRevokeMyOtherSessions signs out every session of the caller except the
-// one this request came in on (POST /account/sessions/revoke-others), and says
-// how many it ended.
 func (a *API) handleRevokeMyOtherSessions(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	n, err := a.Repo.RevokeOtherUserSessions(r.Context(), p.UserID, callerSessionHash(r, p))
@@ -74,12 +60,7 @@ func (a *API) handleRevokeMyOtherSessions(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"revoked": n})
 }
 
-// revokeOtherSessionsAfter signs out the caller's other devices after a change
-// that retires a way in: a removed passkey, or a new verified email replacing the
-// address sign-in codes went to. A session opened with the old factor ends with
-// it. The change has already committed, so a failure here is logged and the
-// request still succeeds; answering an error would invite retrying a change that
-// took effect.
+// revokeOtherSessionsAfter runs after a committed factor change; failure is logged without making the completed change appear retryable.
 func (a *API) revokeOtherSessionsAfter(r *http.Request, change string) {
 	p := principalFromContext(r.Context())
 	n, err := a.Repo.RevokeOtherUserSessions(r.Context(), p.UserID, callerSessionHash(r, p))
@@ -92,8 +73,6 @@ func (a *API) revokeOtherSessionsAfter(r *http.Request, change string) {
 	}
 }
 
-// callerSessionHash is the session the request authenticated with, or "" for a
-// principal that did not come from a session cookie.
 func callerSessionHash(r *http.Request, p *Principal) string {
 	if p == nil || !p.ViaSession {
 		return ""

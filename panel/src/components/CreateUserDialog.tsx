@@ -27,10 +27,6 @@ interface Props {
   onCreated: (id: string) => void;
 }
 
-// Passwordless create (spec §B): the account is minted with no credential at all.
-// The new user signs in with an in-game /link bind code (or email-OTP / passkey
-// once their address is verified), so there is nothing to hand over here — on
-// success we just jump to the new user's detail page.
 export function CreateUserDialog({ onCreated }: Props) {
   const { t } = useTranslation("admin");
   const [open, setOpen] = useState(false);

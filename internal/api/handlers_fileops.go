@@ -13,25 +13,9 @@ import (
 	"felis.lolicon.best/internal/maintenance"
 )
 
-// A file too big for the one-request upload (handleUploadFile) arrives as an
-// upload session instead: POST …/files/uploads begins one for a path and a
-// size, PUT …/files/uploads/{id}?offset= sends it in parts of at most
-// fileedit.PartBytes (each part fits the Cloudflare edge's body limit), and POST
-// …/files/uploads/{id}/commit lands it. The session lives on felis-api's staging
-// disk (fileedit.Stage, session.go), bound to the account and the server it was
-// begun for; the room for the whole file is reserved when it begins, so there is
-// no product ceiling on the size, only the disk.
-//
-// Landing a file that size, like unzipping an archive, can outlast a request,
-// so both answer 202 with the op, and GET …/files/ops reports how far it has got
-// and how it ended (fileedit.Editor.StartUpload, StartUnzip, Ops). The Job holds
-// the world volume while it runs, as any file write does, and the server cannot
-// start until it ends.
+// Upload sessions reserve the full size on staging disk; background landing and unzip Jobs hold the world-volume lock.
 
-// fileSessionView is where an upload session stands. Parts are the parts it
-// took, in order, each with the SHA-256 it arrived with: a client resuming from
-// a file on disk checks the file still holds those bytes before it sends the
-// rest.
+// fileSessionView includes ordered part digests so a resumed upload can verify the local file has not changed.
 type fileSessionView struct {
 	ID           string         `json:"id"`
 	Path         string         `json:"path"`
@@ -41,7 +25,6 @@ type fileSessionView struct {
 	Parts        []filePartView `json:"parts"`
 }
 
-// filePartView is one part a session took.
 type filePartView struct {
 	Size   int64  `json:"size"`
 	SHA256 string `json:"sha256"`
@@ -58,7 +41,6 @@ func sessionView(s fileedit.Session) fileSessionView {
 	}
 }
 
-// namesFit reports whether every name in path fits one folder entry.
 func namesFit(path string) bool {
 	for _, name := range strings.Split(path, "/") {
 		if len(name) > fileedit.NameMax {
@@ -68,23 +50,15 @@ func namesFit(path string) bool {
 	return true
 }
 
-// errNameTooLong refuses a path namesFit rejects, before any byte is taken:
-// the Job would only find out once it tried to create the file.
 func errNameTooLong() *apiError {
 	return newError(http.StatusBadRequest, "bad_path", "a name in the path is longer than %d bytes", fileedit.NameMax)
 }
 
-// beginFileUploadRequest is the POST …/files/uploads body.
 type beginFileUploadRequest struct {
 	Size *int64 `json:"size"`
 }
 
-// handleBeginFileUpload serves POST /api/v1/servers/{name}/files/uploads?path=…
-// — begin an upload session for a file of body.size bytes that will land at
-// path. The gate is the file manager's, so a server that is running is refused
-// before any byte is sent; the parts that follow need only the account and the
-// server, so starting the server midway costs the upload nothing but the
-// commit's refusal until it is stopped again.
+// handleBeginFileUpload requires a stopped server; later parts may arrive while running, but commit must wait.
 func (a *API) handleBeginFileUpload(w http.ResponseWriter, r *http.Request) {
 	name, ok := a.authorizeFileOp(w, r)
 	if !ok {
@@ -98,8 +72,7 @@ func (a *API) handleBeginFileUpload(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// The Job checks the path against the volume when the file lands, hours of
-	// upload later for a big one; one that could never land is refused now.
+	// Reject unusable paths before staging; the Job rechecks containment when landing the file.
 	if !filepath.IsLocal(path) || filepath.Clean(path) == "." {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_path",
 			"the path must name a file inside the world folder"))
@@ -127,9 +100,6 @@ func (a *API) handleBeginFileUpload(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, sessionView(s))
 }
 
-// handleFileUploadStatus serves GET /api/v1/servers/{name}/files/uploads/{id}
-// — where the caller's session stands, so a client that lost a part's answer
-// resumes from received.
 func (a *API) handleFileUploadStatus(w http.ResponseWriter, r *http.Request) {
 	name, user, ok := a.authorizeFileSession(w, r)
 	if !ok {
@@ -143,15 +113,7 @@ func (a *API) handleFileUploadStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sessionView(s))
 }
 
-// handleFileUploadPart serves PUT
-// /api/v1/servers/{name}/files/uploads/{id}?offset=… — append the raw body to
-// the caller's session. offset must be where the session ends (409
-// upload_offset_mismatch otherwise; the status says where), and Content-Length
-// and Content-Digest are required, as for the one-request upload: the part is
-// taken whole or not at all, and a part that breaks midway, or whose bytes do
-// not hash to its digest (400 digest_mismatch), leaves the session where it
-// was. A part over fileedit.PartBytes is refused before a byte of it is read
-// (Append).
+// handleFileUploadPart requires the current offset; interrupted or digest-mismatched parts leave the session unchanged.
 func (a *API) handleFileUploadPart(w http.ResponseWriter, r *http.Request) {
 	name, user, ok := a.authorizeFileSession(w, r)
 	if !ok {
@@ -180,8 +142,6 @@ func (a *API) handleFileUploadPart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sessionView(s))
 }
 
-// handleDropFileUpload serves DELETE /api/v1/servers/{name}/files/uploads/{id}
-// — cancel the caller's session and free the room it holds.
 func (a *API) handleDropFileUpload(w http.ResponseWriter, r *http.Request) {
 	name, user, ok := a.authorizeFileSession(w, r)
 	if !ok {
@@ -194,23 +154,11 @@ func (a *API) handleDropFileUpload(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// startFileOpRequest is the body of a commit or an unzip.
 type startFileOpRequest struct {
 	Overwrite bool `json:"overwrite"`
 }
 
-// handleCommitFileUpload serves POST
-// /api/v1/servers/{name}/files/uploads/{id}/commit — land the caller's
-// finished session at its path, replacing a file there only with
-// body.overwrite (the op ends file_exists otherwise). It answers 202 with the
-// op; GET …/files/ops reports how it ends.
-//
-// The world lock is taken BEFORE the session is sealed: a commit made while an
-// earlier commit's Job is still fetching the file is refused by that Job's hold
-// on the volume, so it never mints the fresh token that would lock the running
-// Job out. The session outlives a Job that fails for any reason, so such a
-// commit is simply made again; the Job whose file landed deletes it
-// (handleInternalFileUploadLanded).
+// handleCommitFileUpload locks the world before Seal so a concurrent commit cannot rotate a running Job's fetch token.
 func (a *API) handleCommitFileUpload(w http.ResponseWriter, r *http.Request) {
 	name, ok := a.authorizeFileOp(w, r)
 	if !ok {
@@ -227,8 +175,7 @@ func (a *API) handleCommitFileUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	s, err := a.FileStage.Status(user, name, id)
-	// Refused before the world lock is asked for; Seal checks again under the
-	// stage's own lock, for a part that arrives in between.
+	// Seal rechecks under the staging lock in case another part arrives after this check.
 	if err == nil && s.Received != s.Size {
 		err = fmt.Errorf("%w: %d of %d bytes are here", fileedit.ErrUploadIncomplete, s.Received, s.Size)
 	}
@@ -262,15 +209,7 @@ func (a *API) handleCommitFileUpload(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]any{"op": opView(op)})
 }
 
-// handleUnzipFile serves POST /api/v1/servers/{name}/files/unzip?path=… —
-// extract the .zip at path into the folder holding it. Without body.overwrite
-// an archive that would replace any file changes nothing and the op ends
-// file_exists with the list of them, for the caller to confirm and run again
-// with overwrite. It answers 202 with the op, like a commit.
-//
-// Only the name is checked here, so a caller who picked the wrong file hears
-// so at once; whether it is a zip, and whether every entry is safe to extract,
-// is the Job's to decide (fileedit/unzip.go).
+// handleUnzipFile leaves existing files unchanged without overwrite; the Job validates archive entries.
 func (a *API) handleUnzipFile(w http.ResponseWriter, r *http.Request) {
 	name, ok := a.authorizeFileOp(w, r)
 	if !ok {
@@ -303,11 +242,7 @@ func (a *API) handleUnzipFile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]any{"op": opView(op)})
 }
 
-// handleListFileOps serves GET /api/v1/servers/{name}/files/ops — the server's
-// background uploads and unzips, newest first: the one running, if any, and
-// those that ended within the last half hour. It has no stopped gate: while
-// one runs the server cannot start, and a finished one is still worth showing
-// after it has.
+// handleListFileOps has no stopped-server gate so completed operations remain visible after startup.
 func (a *API) handleListFileOps(w http.ResponseWriter, r *http.Request) {
 	name, ok := a.authorizeServerFiles(w, r)
 	if !ok {
@@ -330,7 +265,6 @@ func (a *API) handleListFileOps(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ops": views})
 }
 
-// fileOpView is one background file operation as the API shows it.
 type fileOpView struct {
 	ID         string       `json:"id"`
 	Op         string       `json:"op"`
@@ -345,11 +279,6 @@ type fileOpView struct {
 	Error      *fileOpError `json:"error,omitempty"`
 }
 
-// fileOpError is why an op failed. Code is the one the synchronous file routes
-// answer with for the same refusal (writeFileEditError), or an unzip's own
-// (archive_invalid, archive_unsafe, archive_symlink, type_conflict), or
-// job_failed for a Job that ended without saying why; the rest is what the Job
-// reported about it.
 type fileOpError struct {
 	Code          string   `json:"code"`
 	Message       string   `json:"message"`
@@ -377,10 +306,7 @@ func opView(op fileedit.OpState) fileOpView {
 	return v
 }
 
-// opError maps a failed op onto the API's codes. A Job that printed no result
-// carries only its reason (DeadlineExceeded, BackoffLimitExceeded, OOMKilled):
-// the log it left is the world's content and the runtime's, and none of it is
-// the caller's to read.
+// opError exposes only the Job's reason when no result was printed; raw logs may contain private world data.
 func opError(op fileedit.OpState) *fileOpError {
 	res := op.Result
 	if res == nil {
@@ -408,8 +334,6 @@ func opError(op fileedit.OpState) *fileOpError {
 	}
 }
 
-// requireFileStage checks the caller has an account to bind an upload session
-// to and that sessions are configured, and returns the account.
 func (a *API) requireFileStage(w http.ResponseWriter, r *http.Request) (string, bool) {
 	p := principalFromContext(r.Context())
 	if p == nil || p.UserID == "" {
@@ -424,9 +348,7 @@ func (a *API) requireFileStage(w http.ResponseWriter, r *http.Request) (string, 
 	return p.UserID, true
 }
 
-// authorizeServerFiles is authorizeFileOp without the stopped and world-volume
-// gates: the name is valid, the server exists, and the caller owns it or is
-// staff. It returns the server name.
+// authorizeServerFiles omits the stopped-server and world-volume checks.
 func (a *API) authorizeServerFiles(w http.ResponseWriter, r *http.Request) (string, bool) {
 	name := r.PathValue("name")
 	if err := validateManagedServerName(r, name); err != nil {
@@ -445,10 +367,7 @@ func (a *API) authorizeServerFiles(w http.ResponseWriter, r *http.Request) (stri
 	return name, true
 }
 
-// authorizeFileSession is the gate of a session's parts, status and cancel:
-// the caller still owns the server (or is staff) and has the account the
-// session was begun under. A session answers only that account on that server
-// (fileedit.Stage), so it returns both.
+// authorizeFileSession requires server access and the same account that began the session.
 func (a *API) authorizeFileSession(w http.ResponseWriter, r *http.Request) (name, user string, ok bool) {
 	name, ok = a.authorizeServerFiles(w, r)
 	if !ok {
@@ -458,7 +377,6 @@ func (a *API) authorizeFileSession(w http.ResponseWriter, r *http.Request) (name
 	return name, user, ok
 }
 
-// writeFileSessionError maps the upload session's errors onto HTTP statuses.
 func writeFileSessionError(w http.ResponseWriter, r *http.Request, err error) {
 	var offset *fileedit.OffsetError
 	switch {

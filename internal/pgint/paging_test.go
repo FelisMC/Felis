@@ -14,11 +14,6 @@ import (
 	"felis.lolicon.best/internal/submit"
 )
 
-// ---- list pages and batched lookups (api-surface-7) ------------------------------
-
-// GetBuilds answers a page's worth of build lookups in one query: the rows that
-// exist, with their outcome and without the Dockerfile, and nothing for an id
-// that has no row or for no ids at all.
 func TestBuildStoreGetBuilds(t *testing.T) {
 	ctx := context.Background()
 	s := build.NewPGStore(db)
@@ -53,9 +48,6 @@ func TestBuildStoreGetBuilds(t *testing.T) {
 	}
 }
 
-// PageSubmissions pages one scope newest first (id breaking a created_at tie),
-// filters by status and by any part of the id, submitter or name, reports the
-// filtered total, and counts the scope's statuses regardless of the filters.
 func TestSubmitStorePageSubmissions(t *testing.T) {
 	ctx := context.Background()
 	s := submit.NewPGStore(db)
@@ -140,8 +132,6 @@ func TestSubmitStorePageSubmissions(t *testing.T) {
 	}
 }
 
-// The backups list pages newest first inside the caller's scope, narrows to one
-// server on request, counts the matches, and never lists a backup that is gone.
 func TestBackupListPaging(t *testing.T) {
 	ctx := context.Background()
 	tag := suffix(t)
@@ -193,9 +183,6 @@ func TestBackupListPaging(t *testing.T) {
 	}
 }
 
-// ListUsers reports as total every live user the same filters match, past the
-// last page too, so the admin page does not size its pagination from the whole
-// table and offer pages that come back empty.
 func TestListUsersTotalFollowsFilters(t *testing.T) {
 	ctx := context.Background()
 	tag := suffix(t)

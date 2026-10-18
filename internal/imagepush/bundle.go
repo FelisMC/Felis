@@ -12,58 +12,34 @@ import (
 	"time"
 )
 
-// The release bundle: one OCI layout tar per architecture holding every image an
-// install runs (the control plane, the login, lobby and Paper images, the registry
-// and PostgreSQL), built once by CI. The installer imports it into k3s's containerd
-// and pushes it into the platform registry, so a host needs neither Docker nor
-// Docker Hub to install.
-//
-// Every index.json entry points straight at one platform's image manifest: no
-// nested index, no platform field, no descriptor whose blobs are missing. ctr's
-// importer then imports each entry the same way whatever platform matcher it runs
-// with, and the digest a pod pins is the digest containerd holds.
+// Bundle entries point directly to complete platform manifests so containerd imports the digest Pods use.
 
-// BundleImage is one image WriteBundle puts in a bundle.
 type BundleImage struct {
-	// Role is the image's job in the install (felis, limbo, registry, ...), for the
-	// listing the installer reads.
-	Role string
-	// Name is the containerd image name the bundle gives it.
-	Name string
-	// Layout is an OCI layout tar (buildx --output type=oci) holding the image.
+	Role   string
+	Name   string
 	Layout string
-	// Source is a digest-pinned reference to read it from a public registry when
-	// Layout is empty.
+	// Source is used when Layout is empty and must be digest-pinned.
 	Source string
 }
 
-// BundleEntry describes one image of a written bundle.
 type BundleEntry struct {
 	Role, Name string
-	// Digest is the image manifest's digest; Config its config's, which is the
-	// image ID docker and CRI report.
+	// Digest identifies the manifest; Config identifies the image ID reported by CRI.
 	Digest, Config string
 }
 
-// bundleTime stamps every tar header, so two runs over the same images write the
-// same bytes.
 var bundleTime = time.Unix(0, 0).UTC()
 
-// resolvedImage is a BundleImage narrowed to one platform's manifest.
 type resolvedImage struct {
 	BundleImage
 	mediaType string
 	body      []byte
 	m         *manifest
 	config    []byte
-	// open returns one blob's bytes; the writer checks them against the digest.
-	open func(ctx context.Context, d descriptor) (io.ReadCloser, error)
+	open      func(ctx context.Context, d descriptor) (io.ReadCloser, error)
 }
 
-// WriteBundle writes the images as one OCI layout tar to w, each narrowed to s's
-// platform, and returns what it wrote. Every blob is checked against its digest on
-// the way through, and every image's config must be for the platform, so a bundle
-// cannot carry an image another architecture's build left behind.
+// WriteBundle verifies every blob digest and image config platform.
 func WriteBundle(ctx context.Context, s *Source, images []BundleImage, w io.Writer) ([]BundleEntry, error) {
 	goos, arch, _ := s.platform()
 	seenRole, seenName := map[string]bool{}, map[string]bool{}
@@ -175,10 +151,7 @@ func bundleHeader(name string, size int64) *tar.Header {
 	return &tar.Header{Name: name, Mode: 0o644, Size: size, Typeflag: tar.TypeReg, ModTime: bundleTime}
 }
 
-// bundleNames is every name the bundle gives an image: its own, and for a tagged
-// name also repository@digest. Pods run the game images pinned to their digest
-// (felis pin-images), and CRI looks a pinned reference up by that second name, so
-// with it a pinned pod starts from what the bundle imported instead of pulling.
+// Add repository@digest aliases so CRI can find imported images for digest-pinned Pods.
 func bundleNames(name, digest string) []string {
 	if refTag(name) == "" {
 		return []string{name}
@@ -186,7 +159,6 @@ func bundleNames(name, digest string) []string {
 	return []string{name, refRepo(name) + "@" + digest}
 }
 
-// refTag is the tag of a host/repository:tag name, or "" for a digest name.
 func refTag(name string) string {
 	if strings.Contains(name, "@") {
 		return ""
@@ -197,7 +169,6 @@ func refTag(name string) string {
 	return ""
 }
 
-// refRepo is a reference with its tag and digest dropped.
 func refRepo(ref string) string {
 	name, _, _ := strings.Cut(ref, "@")
 	if i := strings.LastIndexByte(name, ':'); i > strings.LastIndexByte(name, '/') {
@@ -206,15 +177,12 @@ func refRepo(ref string) string {
 	return name
 }
 
-// PinnedName is the name containerd lists a digest-pinned reference under once CRI
-// pulled it: repository@digest, the tag dropped. It is the name a bundle gives an
-// image read from Source, so the pods naming that reference find it.
+// PinnedName drops the tag to match CRI's repository@digest naming.
 func PinnedName(ref string) string {
 	_, digest, _ := strings.Cut(ref, "@")
 	return refRepo(ref) + "@" + digest
 }
 
-// copyBlob streams one blob into the tar, checking its size and digest.
 func copyBlob(ctx context.Context, tw *tar.Writer, r *resolvedImage, d descriptor) error {
 	rc, err := r.open(ctx, d)
 	if err != nil {
@@ -229,7 +197,7 @@ func copyBlob(ctx context.Context, tw *tar.Writer, r *resolvedImage, d descripto
 	if err != nil {
 		return fmt.Errorf("imagepush: %s: blob %s: %w", r.Name, d.Digest, err)
 	}
-	// A byte past the descriptor's size is looked for, never written.
+	// Check one byte beyond the declared size without writing it.
 	if extra, _ := io.CopyN(io.Discard, rc, 1); extra > 0 {
 		return fmt.Errorf("imagepush: %s: blob %s is longer than its %d bytes", r.Name, d.Digest, d.Size)
 	}
@@ -239,7 +207,6 @@ func copyBlob(ctx context.Context, tw *tar.Writer, r *resolvedImage, d descripto
 	return nil
 }
 
-// resolveLayoutImage finds the platform's image in a buildx OCI layout tar.
 func resolveLayoutImage(img BundleImage, s *Source) (*resolvedImage, error) {
 	idx, err := readLayoutIndex(img.Layout)
 	if err != nil {
@@ -290,10 +257,7 @@ func resolveLayoutImage(img BundleImage, s *Source) (*resolvedImage, error) {
 	return nil, fmt.Errorf("imagepush: %s: indexes nest too deep", img.Layout)
 }
 
-// pickLayoutEntry chooses the entry for s's platform. A lone entry without a
-// platform is taken as it is (its config is checked later); buildx's attestation
-// manifests say unknown/unknown and never match. Releases are built for plain
-// linux/amd64 and linux/arm64, so a variant is not looked at.
+// Accept a lone platform-less entry, verify its config later, and exclude unknown/unknown attestations.
 func pickLayoutEntry(entries []layoutDescriptor, s *Source) (layoutDescriptor, error) {
 	if len(entries) == 1 && entries[0].Platform == nil {
 		return entries[0], nil
@@ -307,7 +271,6 @@ func pickLayoutEntry(entries []layoutDescriptor, s *Source) (layoutDescriptor, e
 	return layoutDescriptor{}, fmt.Errorf("no %s/%s image among %d entries", wantOS, wantArch, len(entries))
 }
 
-// resolveSourceImage reads the platform's manifest of a digest-pinned public image.
 func resolveSourceImage(ctx context.Context, img BundleImage, s *Source) (*resolvedImage, error) {
 	sr, err := ParseSourceRef(img.Source)
 	if err != nil {
@@ -316,7 +279,6 @@ func resolveSourceImage(ctx context.Context, img BundleImage, s *Source) (*resol
 	if sr.Digest == "" {
 		return nil, fmt.Errorf("imagepush: %s is not pinned by digest; a release bundles only pinned images", img.Source)
 	}
-	// manifest checks the bytes against the pinned digest.
 	body, mt, err := s.manifest(ctx, sr, sr.Digest)
 	if err != nil {
 		return nil, fmt.Errorf("imagepush: %s: %w", sr, err)

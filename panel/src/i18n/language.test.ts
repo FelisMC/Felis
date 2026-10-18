@@ -15,9 +15,7 @@ async function boot(languages: string[]) {
   return instance;
 }
 
-// Importing ./index boots the app's own instance, which on some Node versions (22,
-// which CI runs) caches jsdom's en-US in storage before the first test; a first
-// visit starts from empty storage, and no test may inherit another's choice.
+// Reset storage so i18n initialization and previous tests cannot preselect the next test's language.
 beforeEach(() => {
   localStorage.clear();
 });

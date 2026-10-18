@@ -31,9 +31,6 @@ func gamePodOf(uid string, restarts int32) *corev1.Pod {
 	}
 }
 
-// TestAcquireLiveBackupAdmitsOnlyARunningFreeServer pins the admission: a server that is
-// up and ready, with its game pod running and nothing else on its world, gets the freeze
-// recorded with the world lock; anything else is refused before the game is touched.
 func TestAcquireLiveBackupAdmitsOnlyARunningFreeServer(t *testing.T) {
 	ctx := context.Background()
 	k, c := lockCluster(t, runningServer(), gamePodOf("pod-1", 2))
@@ -77,9 +74,6 @@ func TestAcquireLiveBackupAdmitsOnlyARunningFreeServer(t *testing.T) {
 	}
 }
 
-// TestLiveBackupRecordLifecycle pins the record: saving it names the Job and hands the
-// world lock to that Job, listing finds it, and clearing removes it and the lock only when
-// the lock is the backup's own.
 func TestLiveBackupRecordLifecycle(t *testing.T) {
 	ctx := context.Background()
 	k, c := lockCluster(t, runningServer(), gamePodOf("pod-1", 0))
@@ -121,8 +115,6 @@ func TestLiveBackupRecordLifecycle(t *testing.T) {
 	}
 }
 
-// TestLiveBackupProgressReadsTheCopyStep pins what the settle loop sees: the game pod's
-// identity, and the backup Job's copy step having exited.
 func TestLiveBackupProgressReadsTheCopyStep(t *testing.T) {
 	ctx := context.Background()
 	job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "backup-survival-x", Namespace: "minecraft", Labels: map[string]string{backupjob.LabelServer: "survival", backupjob.LabelLive: "true"}}}
@@ -161,10 +153,6 @@ func TestLiveBackupProgressReadsTheCopyStep(t *testing.T) {
 	}
 }
 
-// TestEnsureWorldVolumeMatchesTheOperator pins that a rebuilt host's world claim has the
-// name, size and class the operator's StatefulSet would ask for (so it adopts the claim
-// on the first start), that an existing claim is left alone, and that an unknown server
-// is refused.
 func TestEnsureWorldVolumeMatchesTheOperator(t *testing.T) {
 	ctx := context.Background()
 	ms := stoppedServer()

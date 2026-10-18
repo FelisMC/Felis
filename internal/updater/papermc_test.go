@@ -8,17 +8,8 @@ import (
 	"testing"
 )
 
-// velocityV3Fixture is the PaperMC Fill v3 GET /v3/projects/velocity response body,
-// captured from the live API on 2026-07-04 (keys and version strings exactly as
-// returned; JSON whitespace normalized). Grounding the fixture in the real response is
-// what makes this a contract test rather than a self-referential one:
-//   - the newest overall version is a -SNAPSHOT (3.5.0-SNAPSHOT) while the newest
-//     stable release is 3.4.0, so the stable filter runs against real data; and
-//   - the "versions" object groups the ENTIRE 3.x line under a single key "3.0.0"
-//     (not per-minor keys), so a parser that trusted the group key to bound the
-//     versions inside it would be wrong — proof the key-agnostic flatten is required.
-//
-// (The v2 API this replaces now returns HTTP 410.)
+// Captured Fill metadata groups versions by major line and includes snapshots alongside stable releases.
+// The v2 API this replaces now returns HTTP 410.
 const velocityV3Fixture = `{
   "project": {"id": "velocity", "name": "Velocity"},
   "versions": {
@@ -46,9 +37,6 @@ func newTestPaperMC(srv *httptest.Server) paperMC {
 	}
 }
 
-// TestPaperMCLatestStableFiltersSnapshots is the core assertion: against the real v3
-// shape, latestStable returns the newest STABLE release (3.4.0), never the newer
-// 3.5.0-SNAPSHOT prerelease.
 func TestPaperMCLatestStableFiltersSnapshots(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v3/projects/velocity" {
@@ -72,12 +60,6 @@ func TestPaperMCLatestStableFiltersSnapshots(t *testing.T) {
 	}
 }
 
-// TestPaperMCSendsNonGenericUserAgent proves Felis transmits a descriptive,
-// contact-carrying User-Agent rather than a generic library default. PaperMC's API
-// usage policy asks for this and reserves the right to block anonymous/generic agents;
-// upstream enforcement was not active on the project endpoint as of 2026-07-04 (a bare
-// UA got HTTP 200), so this verifies OUR compliance with the policy, not an upstream
-// gate we depend on.
 func TestPaperMCSendsNonGenericUserAgent(t *testing.T) {
 	var gotUA string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -103,8 +85,6 @@ func TestPaperMCSendsNonGenericUserAgent(t *testing.T) {
 	}
 }
 
-// TestPaperMCFailsClosedOnHTTPError proves a non-200 (like the real 410 Gone the dead
-// v2 endpoint now returns) yields an error, never a bogus zero version.
 func TestPaperMCFailsClosedOnHTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "Gone", http.StatusGone)
@@ -116,8 +96,6 @@ func TestPaperMCFailsClosedOnHTTPError(t *testing.T) {
 	}
 }
 
-// TestPaperMCFailsClosedWhenOnlySnapshots proves a feed with no stable release is an
-// error, not a silent latest — so a SNAPSHOT-only line never drives an update.
 func TestPaperMCFailsClosedWhenOnlySnapshots(t *testing.T) {
 	const onlySnapshots = `{"versions":{"9.9":["9.9.0-SNAPSHOT","9.8.0-SNAPSHOT"]}}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -130,8 +108,6 @@ func TestPaperMCFailsClosedWhenOnlySnapshots(t *testing.T) {
 	}
 }
 
-// TestPaperMCSkipsUnparseableTags proves one garbled entry does not blind discovery:
-// the max stable among the parseable versions is still returned.
 func TestPaperMCSkipsUnparseableTags(t *testing.T) {
 	const withJunk = `{"versions":{"g":["not-a-version","3.4.0","","3.4.0-SNAPSHOT"]}}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

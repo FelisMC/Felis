@@ -21,16 +21,11 @@ func acctBody(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
 	return m
 }
 
-// TestAccountLinkVertical walks the whole §10 flow across both faces and proves
-// the point of the slice: linking reconnects the claim vertical that handleClaim
-// (handlers_user.go:100) otherwise dead-ends with 412 not_linked.
 func TestAccountLinkVertical(t *testing.T) {
 	const mcUUID = "11111111-1111-1111-1111-111111111111"
 	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
 
 	repo := newFakeRepo()
-	// Pre-arm the downstream claim gates so a *successful* claim becomes possible
-	// the instant the link gate clears — that is what demonstrates the unblock.
 	repo.quota["u1"] = true
 	repo.claimOK["survival"] = true
 
@@ -62,20 +57,15 @@ func TestAccountLinkVertical(t *testing.T) {
 	if b := acctBody(t, w); b["linked"] != true || b["mc_uuid"] != mcUUID || b["auth_source"] != authSourceMojang {
 		t.Fatalf("verify body = %v, want linked:true mc_uuid:%s auth_source:%s", b, mcUUID, authSourceMojang)
 	}
-	// The link is audited as account.link by the principal's Access email.
 	if n := len(repo.audits); n != 1 || repo.audits[0].Action != "account.link" || repo.audits[0].Actor != "u1@example.net" {
 		t.Fatalf("link audit not written as expected: %+v", repo.audits)
 	}
 
-	// 3) the identical claim now passes the link gate and succeeds — the vertical
-	// is reconnected, which is the whole reason this slice exists.
 	if w := do(eh, "POST", "/api/v1/servers/survival/claim", "", nil); w.Code != http.StatusOK {
 		t.Fatalf("post-link claim: code = %d body %s, want 200", w.Code, w.Body.String())
 	}
 }
 
-// TestCreateLinkCode covers the internal mint endpoint: input validation, strict
-// decoding, and that a real code lands in the store with the API-clock TTL.
 func TestCreateLinkCode(t *testing.T) {
 	const mcUUID = "22222222-2222-2222-2222-222222222222"
 	repo := newFakeRepo()
@@ -89,8 +79,6 @@ func TestCreateLinkCode(t *testing.T) {
 		}
 	})
 	t.Run("unknown field rejected (no user_id smuggling)", func(t *testing.T) {
-		// The schema deliberately has no user_id on a code; a caller must not be able
-		// to introduce one via an extra field.
 		w := do(ih, "POST", "/api/v1/internal/account/link/code", `{"mc_uuid":"`+mcUUID+`","user_id":"u1"}`, nil)
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("strict decode must reject unknown field, code = %d (%s)", w.Code, w.Body.String())
@@ -134,8 +122,6 @@ func TestCreateLinkCode(t *testing.T) {
 		}
 	})
 	t.Run("omitted auth_source with a v3 UUID derives thirdparty", func(t *testing.T) {
-		// A felis-nano rewrite is a name-based UUIDv3; the version nibble alone must
-		// classify it so no Java plugin has to learn the auth_source field.
 		const v3UUID = "33333333-3333-3333-8333-333333333333"
 		w := do(ih, "POST", "/api/v1/internal/account/link/code", `{"mc_uuid":"`+v3UUID+`"}`, nil)
 		if w.Code != http.StatusCreated {
@@ -166,10 +152,6 @@ func TestCreateLinkCode(t *testing.T) {
 	})
 }
 
-// TestLinkVerifyRejections is the verify failure matrix. The expired case seeds a
-// past-dated code directly: the test clock is frozen, so there is nothing to
-// "advance" — planting an already-expired code is the only way to exercise the
-// expiry branch.
 func TestLinkVerifyRejections(t *testing.T) {
 	const mcUUID = "33333333-3333-3333-3333-333333333333"
 	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
@@ -223,15 +205,12 @@ func TestLinkVerifyRejections(t *testing.T) {
 		if w.Code != http.StatusConflict || decodeErr(t, w) != "already_linked" {
 			t.Fatalf("code = %d body %s", w.Code, w.Body.String())
 		}
-		// A wrong-user submission must not burn the real owner's pending code.
 		if _, ok := repo.linkCodes["FRESHCOD"]; !ok {
 			t.Error("a conflicting verify must not consume the code")
 		}
 	})
 }
 
-// TestLinkVerifyIdempotent re-verifies the same (user, uuid) pair with a fresh
-// code and expects a clean 200, not a self-conflict.
 func TestLinkVerifyIdempotent(t *testing.T) {
 	const mcUUID = "44444444-4444-4444-4444-444444444444"
 	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
@@ -254,11 +233,6 @@ func TestLinkVerifyIdempotent(t *testing.T) {
 	}
 }
 
-// A link whose account was SOFT-DELETED is unclaimed: a fresh in-game code lets a
-// live account take it over (the migrated-source path — retire keeps the link but
-// kills the account), while a merely disabled holder keeps its identity so the
-// lockout cannot be re-linked away, and neither dead link has in-game standing
-// (UserByMCUUID reads it exactly like an unlinked UUID). Audit #33's in-game half.
 func TestLinkVerifyTakesOverDeletedLinkOnly(t *testing.T) {
 	ctx := context.Background()
 	const mcGone = "55555555-5555-5555-5555-555555555555"
@@ -286,7 +260,6 @@ func TestLinkVerifyTakesOverDeletedLinkOnly(t *testing.T) {
 		t.Errorf("links[%s] = %q after takeover, want u-take", mcGone, repo.links[mcGone])
 	}
 
-	// A disabled (not deleted) holder keeps the identity: 409, code survives, link unmoved.
 	if err := repo.SetUserDisabled(ctx, "u-locked", true); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
@@ -306,9 +279,6 @@ func TestLinkVerifyTakesOverDeletedLinkOnly(t *testing.T) {
 	}
 }
 
-// TestLinkAuthSourcePropagates proves auth_source survives the whole §10 flow: a
-// thirdparty source captured in-game at mint reaches the durable link and the
-// verify response — the value the web side can never originate itself.
 func TestLinkAuthSourcePropagates(t *testing.T) {
 	const mcUUID = "55555555-5555-5555-5555-555555555555"
 	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
@@ -324,7 +294,6 @@ func TestLinkAuthSourcePropagates(t *testing.T) {
 	}
 	code, _ := acctBody(t, w)["code"].(string)
 
-	// Verify on the web: the response and the stored link must both carry thirdparty.
 	w = do(api.ExternalHandler(), "POST", "/api/v1/account/link/verify", `{"code":"`+code+`"}`, nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("verify: code = %d, want 200 (%s)", w.Code, w.Body.String())
@@ -337,8 +306,6 @@ func TestLinkAuthSourcePropagates(t *testing.T) {
 	}
 }
 
-// TestLinkStart pins the status endpoint handleClaim's 412 points at: it reports
-// link state and instructions, and never mints (it has no UUID to mint against).
 func TestLinkStart(t *testing.T) {
 	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
 	mk := func(repo *fakeRepo) http.Handler {
@@ -370,9 +337,6 @@ func TestLinkStart(t *testing.T) {
 	})
 }
 
-// TestAccountLinkFaceSeparation enforces the schema-forced face split: the code
-// generator is internal-only, and verify/start are web-only. Crossing those
-// faces must 404, not silently work.
 func TestAccountLinkFaceSeparation(t *testing.T) {
 	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
 	api := newTestAPI(newFakeRepo(), newFakeCluster())
@@ -380,13 +344,9 @@ func TestAccountLinkFaceSeparation(t *testing.T) {
 	ih := api.InternalHandler()
 	eh := api.ExternalHandler()
 
-	// The generator must not exist on the web face — a logged-in user could
-	// otherwise mint a code for a UUID they never proved they own.
 	if w := do(eh, "POST", "/api/v1/internal/account/link/code", `{"mc_uuid":"x"}`, nil); w.Code != http.StatusNotFound {
 		t.Errorf("code endpoint on external face: code = %d, want 404", w.Code)
 	}
-	// verify / start are web-only: they require a logged-in principal the internal
-	// face never carries.
 	if w := do(ih, "POST", "/api/v1/account/link/verify", `{"code":"ABCDEFGH"}`, nil); w.Code != http.StatusNotFound {
 		t.Errorf("verify endpoint on internal face: code = %d, want 404", w.Code)
 	}

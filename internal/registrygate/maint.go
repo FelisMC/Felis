@@ -11,26 +11,11 @@ import (
 	"time"
 )
 
-// registry garbage-collect is only safe on a registry nobody writes to: it marks
-// the blobs every manifest references, then deletes the rest, and a layer pushed
-// between the two phases is deleted under the manifest that arrives next. The GC
-// sidecar therefore asks the gate for a read-only window over a loopback-only
-// maintenance listener (MaintHandler), and the gate grants it only once writes
-// have been quiet for a while, so a push that is between two of its requests is
-// not cut in half.
-//
-// While the window is open every write answers 503 with Retry-After; reads keep
-// working, so running servers and kubelet re-pulls never notice. The window is a
-// lease: a GC sidecar that dies mid-sweep cannot leave the registry read-only for
-// longer than the lease it asked for.
+// Registry GC needs a write-free lease: writes return 503 while reads continue, and lease expiry recovers from sidecar failure.
 
-// DefaultQuiet is how long writes must have been idle before a read-only window is
-// granted. A push issues its requests back to back; two minutes of silence means
-// no push is mid-way.
+// DefaultQuiet requires idle time between the last write and a GC lease to avoid interrupting multi-request pushes.
 const DefaultQuiet = 2 * time.Minute
 
-// maxLease bounds a read-only window. A sweep over a few GiB takes seconds; an
-// hour covers a large registry on a slow disk.
 const maxLease = time.Hour
 
 type maintenance struct {
@@ -43,7 +28,6 @@ type maintenance struct {
 	now       func() time.Time
 }
 
-// beginWrite admits a write unless a read-only window is open.
 func (m *maintenance) beginWrite() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -63,8 +47,7 @@ func (m *maintenance) endWrite() {
 	m.lastWrite = m.now()
 }
 
-// acquire opens (or extends) a read-only window for lease. It refuses while a
-// write is in flight or the last one finished less than quiet ago.
+// acquire refuses while writes are active or the quiet period has not elapsed.
 func (m *maintenance) acquire(lease time.Duration) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -95,9 +78,7 @@ func (m *maintenance) readOnly() (bool, time.Time) {
 	return m.now().Before(m.until), m.until
 }
 
-// persist records the window's end in stateFile, so a gate container restarted
-// mid-sweep comes back read-only instead of admitting writes into a running GC.
-// Called with mu held.
+// Persist the lease across gate restarts; caller holds mu.
 func (m *maintenance) persist() {
 	if m.stateFile == "" {
 		return
@@ -112,9 +93,7 @@ func (m *maintenance) persist() {
 	}
 }
 
-// SetMaintenanceState makes the gate keep its read-only window in path (on a
-// volume that outlives the container) and resumes a window a previous run of the
-// gate left open.
+// SetMaintenanceState restores and persists the read-only lease on a durable volume.
 func (g *Gate) SetMaintenanceState(path string) error {
 	g.maint.mu.Lock()
 	defer g.maint.mu.Unlock()
@@ -136,22 +115,13 @@ func (g *Gate) SetMaintenanceState(path string) error {
 	return nil
 }
 
-// SetQuiet overrides DefaultQuiet (tests and drills shorten it).
 func (g *Gate) SetQuiet(d time.Duration) {
 	g.maint.mu.Lock()
 	g.maint.quiet = d
 	g.maint.mu.Unlock()
 }
 
-// MaintHandler serves the GC sidecar's side of the handshake. It carries no
-// authentication, so it must only ever listen on the pod's loopback:
-//
-//	POST /readonly?lease=<seconds>  200 once the window is open, 409 while writes are not quiet
-//	POST /readwrite                 200, the window is closed
-//	GET  /readonly                  200 while read-only, 409 otherwise
-//
-// POST-only verbs keep the sidecar's busybox wget (which cannot send DELETE) able
-// to drive it.
+// MaintHandler is unauthenticated and must listen only on Pod loopback.
 func (g *Gate) MaintHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /readonly", func(w http.ResponseWriter, r *http.Request) {
@@ -191,6 +161,4 @@ func (g *Gate) MaintHandler() http.Handler {
 	return mux
 }
 
-// MaintStatePath is where cmd/felis keeps the window inside the maintenance
-// volume.
 func MaintStatePath(dir string) string { return filepath.Join(dir, "readonly-until") }

@@ -11,12 +11,7 @@ import (
 	"github.com/charmbracelet/huh"
 )
 
-// connectChooserModel presents the ways to reach the panel as peer choices.
-// None is privileged: "Local" installs nothing, "Cloudflare Tunnel" is a
-// turnkey integration, and "Reverse proxy" just records hostnames and hands the
-// operator a copy-paste guide. The admin console is gated by the Owner's
-// local session (passwordless sign-in) regardless; Cloudflare Access is an
-// *additional* layer.
+// The admin console is gated by the Owner's local session regardless; Cloudflare Access is an additional layer.
 type connectChooserModel struct {
 	rootDomain string
 	adminHost  string
@@ -116,8 +111,6 @@ func (m *connectChooserModel) View() string { return m.form.View() }
 // arrowNavOK lets the root repurpose ←/→ to walk the step rail: this screen
 // navigates its options with ↑/↓, so the horizontal arrows are free.
 func (m *connectChooserModel) arrowNavOK() bool { return true }
-
-// ---- Reverse proxy: collect hostnames, record them, render a guide ----
 
 type rpStep int
 

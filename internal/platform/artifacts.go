@@ -12,12 +12,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
-// The server-software download cache (internal/artifactcache): one Deployment,
-// its Service and its volume in the control namespace.
 const (
-	// ComponentArtifacts labels the cache. Like the registry it is a supporting
-	// workload and not part-of=felis-control-plane, so no control-plane peer
-	// selector can select it.
+	// ComponentArtifacts must stay outside part-of=felis-control-plane so control-plane network peers cannot select it.
 	ComponentArtifacts = "artifacts"
 	ArtifactsName      = "felis-artifacts"
 	ArtifactsPort      = int32(8090)
@@ -26,8 +22,6 @@ const (
 	artifactsDataPath    = "/cache"
 )
 
-// ArtifactCacheURL is the cache's in-cluster base URL, which the operator hands
-// runtime-image servers' install steps.
 func ArtifactCacheURL(controlNamespace string) string {
 	if controlNamespace == "" {
 		controlNamespace = DefaultControlNamespace
@@ -39,22 +33,13 @@ func artifactsLabels() map[string]string {
 	return map[string]string{LabelName: appName, LabelComponent: ComponentArtifacts}
 }
 
-// artifactsMaxBytes is the cache's own cap, 90% of the volume's request: on
-// k3s local-path the request is only a label, so the cache evicts by itself to
-// stay inside it.
+// artifactsMaxBytes caps cache usage at 90% of the requested volume because local-path PVC capacity is not enforced.
 func artifactsMaxBytes(p Params) int64 {
 	q := resource.MustParse(p.ArtifactsStorage)
 	return q.Value() / 10 * 9
 }
 
-// artifactsDeployment runs `felis artifact-cache`. It calls no Kubernetes API
-// (no service account token), runs as the control-plane's non-root uid with a
-// read-only root filesystem and no capability, and writes only its volume.
-// Losing it costs nothing but bandwidth: an install that cannot reach it
-// downloads from upstream itself, so its volume is not replicated. It runs
-// under the control plane's priority class all the same: its image is the felis
-// image the installer pins, it asks for almost nothing, and evicting it under
-// disk pressure would free none of the disk its volume holds.
+// Cache data is disposable; failed cache access falls back to upstream downloads, so its volume is not replicated.
 func artifactsDeployment(p Params) *appsv1.Deployment {
 	p = p.withDefaults()
 	labels := artifactsLabels()
@@ -97,7 +82,6 @@ func artifactsDeployment(p Params) *appsv1.Deployment {
 		ObjectMeta: metav1.ObjectMeta{Name: ArtifactsName, Namespace: p.ControlNamespace, Labels: labels},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: int32Ptr(1),
-			// One writer of the volume at a time.
 			Strategy: appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType},
 			Selector: &metav1.LabelSelector{MatchLabels: labels},
 			Template: corev1.PodTemplateSpec{
@@ -136,8 +120,7 @@ func artifactsService(p Params) *corev1.Service {
 	}
 }
 
-// artifactsPVC is the cache's volume, on the cluster default class even with
-// controller HA: everything on it can be downloaded again.
+// artifactsPVC uses the default storage class even under controller HA because cached artifacts can be downloaded again.
 func artifactsPVC(p Params) *corev1.PersistentVolumeClaim {
 	p = p.withDefaults()
 	return &corev1.PersistentVolumeClaim{
@@ -152,12 +135,7 @@ func artifactsPVC(p Params) *corev1.PersistentVolumeClaim {
 	}
 }
 
-// ArtifactsNetworkPolicies fence the cache both ways. Only game server pods
-// reach its port: they are what it serves. Out of the pod it may resolve names
-// and reach the public internet, the official download hosts, and nothing
-// private: a server pod hands it the URL to fetch, and although the cache only
-// accepts its allowlisted hosts, a URL must never be a way into the cluster or
-// the node's network.
+// ArtifactsNetworkPolicies allow game-pod ingress and public upstream egress while excluding private destinations.
 func ArtifactsNetworkPolicies(p Params) []*networkingv1.NetworkPolicy {
 	p = p.withDefaults()
 	tcp, udp := corev1.ProtocolTCP, corev1.ProtocolUDP
@@ -193,9 +171,7 @@ func ArtifactsNetworkPolicies(p Params) []*networkingv1.NetworkPolicy {
 	return []*networkingv1.NetworkPolicy{ingress, egress}
 }
 
-// serverToArtifacts is the server egress rule to the cache: the cache's pods in
-// the control namespace, on its port. The internet rule excludes every private
-// range, so without it a server could not reach the Service at all.
+// Add explicit cache egress because the general server internet rule excludes private Service ranges.
 func serverToArtifacts(p Params) networkingv1.NetworkPolicyEgressRule {
 	tcp := corev1.ProtocolTCP
 	port := intstr.FromInt32(ArtifactsPort)

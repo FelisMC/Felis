@@ -61,17 +61,12 @@ import { formatBytes, formatRelative } from "@/lib/format";
 import type { FileOp, ServerFileEntry } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-/** The write ceiling, mirrored from fileedit.MaxWriteBytes (server truth). Reads
- *  are capped at 1 MiB server-side; a larger file is refused there with 413, so
- *  this only gates the save button to keep the common case honest up front. */
-const MAX_WRITE_BYTES = 256 * 1024;
-const MAX_READ_BYTES = 1024 * 1024;
+const MAX_WRITE_BYTES = 256 * 1024; // mirrors fileedit.MaxWriteBytes; gates the save button
+const MAX_READ_BYTES = 1024 * 1024; // larger files are refused with 413
 const TextFileEditor = lazy(() => import("@/components/files/TextFileEditor").then((m) => ({ default: m.TextFileEditor })));
 const BINARY_EXTENSION = /\.(jar|zip|gz|tar|7z|rar|dat|mca|mcr|schem|schematic|nbt|db|sqlite|png|jpe?g|gif|webp|ico|ogg|mp[34]|pdf|class|exe|dll|so|bin)$/i;
 
-/** The []byte wire codec: Go's encoding/json renders []byte as base64, so the
- *  editor must speak it explicitly in both directions. Chunked so a ~256 KiB
- *  file never trips the argument-length ceiling of String.fromCharCode. */
+/** encoding/json renders []byte as base64; chunked to stay under the String.fromCharCode argument limit. */
 function bytesToBase64(bytes: Uint8Array): string {
   let bin = "";
   for (let i = 0; i < bytes.length; i += 0x8000) {
@@ -87,10 +82,7 @@ function base64ToBytes(b64: string): Uint8Array {
   return out;
 }
 
-/** decodeText returns the file's text, or null when the bytes are not valid
- *  UTF-8 or contain NUL. Such files open read-only: a textarea round-trip would
- *  silently corrupt them, and this editor exists to REPAIR configs, never to
- *  damage data it does not understand. */
+/** Returns null for invalid UTF-8 or NUL bytes: such files open read-only because a textarea round-trip would corrupt them. */
 function decodeText(bytes: Uint8Array): string | null {
   try {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
@@ -100,22 +92,15 @@ function decodeText(bytes: Uint8Array): string | null {
   }
 }
 
-/** isZip says whether a file is one the page offers to extract: only .zip is,
- *  since extraction reads the zip format alone. */
 function isZip(name: string): boolean {
   return name.toLowerCase().endsWith(".zip");
 }
 
-/** The name questions the page asks, each tied to the folder it was asked in. */
 type Naming =
   | { kind: "file" | "folder"; dir: string }
   | { kind: "rename"; dir: string; entry: ServerFileEntry };
 
-/** ServerFiles is the world-volume file manager: browse, edit a config (the "one
- *  wrong line in server.properties" repair), make, rename, delete and upload.
- *  Every call is owner-or-admin gated and refused with 409 not_stopped unless the
- *  server is fully stopped (the world volume is RWO), so the page gates up front
- *  instead of letting each call fail. */
+/** World-volume file manager; every call needs a fully stopped server (409 not_stopped), so the page gates up front. */
 export function ServerFiles() {
   const { name = "" } = useParams();
   const [params] = useSearchParams();
@@ -140,14 +125,11 @@ export function ServerFiles() {
   const [listTarget, setListTarget] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
   const folders = useRef(new Map<string, { at: number; listing: Awaited<ReturnType<typeof api.listServerFiles>> }>());
-  // Bytes free on the world volume by the latest listing; null while unknown
-  // (the listing says null when the Job could not tell; 0 is a full volume).
+  // null while unknown; 0 is a full volume.
   const [free, setFree] = useState<number | null>(null);
   const [msg, setMsg] = useState<{ kind: "success" | "error"; text: string } | null>(null);
 
-  // Every load takes a ticket and only the newest one lands. The rows and the
-  // breadcrumbs stay clickable while a folder loads, so a slow answer for a
-  // folder already left behind would otherwise replace the one clicked after it.
+  // Only the newest load lands: rows stay clickable while a folder loads, so a slow answer must not replace a later one.
   const loadSeq = useRef(0);
   const load = useCallback(
     async (p: string, cached = false) => {
@@ -180,10 +162,7 @@ export function ServerFiles() {
     [name],
   );
 
-  // Load (and reload after a stop) only once the viewer is resolved as owner and
-  // the server is fully stopped — both are hard server-side gates of every call.
-  // `dir` stays out of the list: load() itself moves it, and a navigation that
-  // re-ran this effect would fetch the same folder twice.
+  // Exclude dir from dependencies because load changes it; including it would duplicate directory fetches.
   useEffect(() => {
     if (owned && stopped) void load(dir);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -196,11 +175,7 @@ export function ServerFiles() {
   // stop flips the page from the notice to the listing without a manual reload.
   usePolling(statusQ.reload, stopped ? null : STATUS_POLL_FAST_MS);
 
-  // Editor state. `editable` false marks a binary file (rendered read-only).
-  // `sha256` is the hash the read returned: every save sends it back, so a file
-  // someone changed in the meantime is refused (409 file_changed) and `conflict`
-  // turns on instead of their edit being silently overwritten. `error` is a save
-  // failure, shown inside the dialog where the person is looking.
+  // Send the read SHA-256 on save to reject concurrent edits with file_changed.
   const [open, setOpen] = useState<{
     path: string;
     text: string;
@@ -328,10 +303,7 @@ export function ServerFiles() {
     }
   }
 
-  // A background op (an extraction, or a file landing from parts) holds the
-  // world until it ends, and goes on with the page closed. One that succeeded
-  // changed the folder, so the listing is reread; an extraction started here
-  // that stopped at files it would replace asks about them at once.
+  // A succeeded op rereads the listing; an extraction stopped at files it would replace asks about them.
   const startedHere = useRef(new Set<string>());
   const [conflicts, setConflicts] = useState<FileOp | null>(null);
   const [conflictsOpen, setConflictsOpen] = useState(false);
@@ -346,16 +318,13 @@ export function ServerFiles() {
     }
   }
   const fileOps = useFileOps(name, owned && stopped, opEnded);
-  // Backups, restores, world exports and downloads hold the world as well,
-  // whichever tab or person started them. A restore replaces the files listed.
+  // Backups, restores, exports and downloads also hold the world, whoever started them.
   const worldJobs = useWorldJobs(name, owned && stopped, () => void load(dir));
   const held = worldJobs.holder;
   useEffect(() => {
     if (held !== null) folders.current.clear();
   }, [held]);
 
-  // A download holds the world while felis-api gets it ready, and a change
-  // sent meanwhile could only be refused.
   const [downloading, setDownloading] = useState<string | null>(null);
   const [unzipping, setUnzipping] = useState<string | null>(null);
   const alive = useRef(true);
@@ -366,8 +335,7 @@ export function ServerFiles() {
     [],
   );
 
-  // Uploads run one at a time. The listing is reread once the queue has drained
-  // rather than after each file: every listing is a Job of its own.
+  // The listing is reread once the queue has drained, since every listing is a Job.
   const landedSince = useRef(false);
   const uploads = useUploads(name, {
     onLanded: () => {
@@ -377,11 +345,9 @@ export function ServerFiles() {
     hold: fileOps.running || downloading !== null || unzipping !== null || held !== null,
     free,
   });
-  // Each change is a Job holding the world lock, so while anything else holds
-  // it a change could only be refused.
+  // Each change is a Job holding the world lock, so any other holder blocks it.
   const changing = uploads.busy || fileOps.running || downloading !== null || unzipping !== null || held !== null;
-  // Names what holds the lock now: queued uploads wait on the rest too, so
-  // those come first.
+  // Names the current lock holder; queued uploads come last.
   const waitTitle =
     fileOps.running || unzipping !== null
       ? t("wait_for_op")
@@ -395,11 +361,8 @@ export function ServerFiles() {
     landedSince.current = false;
     void load(dir);
   }, [uploads.busy, dir, load]);
-  // A browser leaving the page takes the uploads with it.
   useUnsavedGuard(uploads.busy);
-  // A file dropped anywhere else on the page would be opened by the browser in
-  // place of the panel, taking the queue with it; outside the list a drop does
-  // nothing. The list itself claims its drops first.
+  // A file dropped outside the list would be opened by the browser, taking the queue with it; the list claims its own drops first.
   useEffect(() => {
     const refuse = (e: DragEvent) => {
       if (e.defaultPrevented || !e.dataTransfer?.types.includes("Files")) return;
@@ -415,16 +378,12 @@ export function ServerFiles() {
   }, []);
 
   const [naming, setNaming] = useState<Naming | null>(null);
-  // The entry outlives the dialog closing, so its title holds through the
-  // closing animation.
   const [deleting, setDeleting] = useState<ServerFileEntry | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
-  // dragenter and dragleave fire for every child crossed, so the overlay counts
-  // them rather than flickering at each row.
+  // dragenter and dragleave fire for every child crossed, so the overlay counts depth.
   const [dragDepth, setDragDepth] = useState(0);
 
-  // The name dialog mounts per question, so each one starts from its own name.
   function ask(next: Naming) {
     setMsg(null);
     setNaming(next);
@@ -529,10 +488,7 @@ export function ServerFiles() {
     fileOps.dismiss(conflicts.id);
   }
 
-  // download has felis-api get the file, or the folder as a .zip, ready and
-  // hands it to the browser, as a backup download does. The two secrets never
-  // leave: server.properties comes with rcon.password redacted, and the
-  // folder holding paper-global.yml comes without it.
+  // Downloads redact RCON passwords and omit forwarding-secret configuration files.
   async function download(entry: ServerFileEntry) {
     const p = joinPath(dir, entry.name);
     setMsg(null);

@@ -4,22 +4,7 @@ import java.util.UUID;
 import java.util.concurrent.Executor;
 import java.util.function.Consumer;
 
-/**
- * ModLink is the {@code /link} command the Fabric, Forge and NeoForge mods share (the
- * §10 account-link flow): it takes the player's server-verified UUID, asks felis-api
- * for a one-time code off the server thread, and shows the code and where to redeem
- * it back on the server thread, so a slow felis-api never stalls the tick loop. A
- * failure reaches the player as one generic line, with the details in the server log.
- * Each mod only adapts its command source to {@link Source}; ModLinkTest drives this
- * class against a stub felis-api.
- *
- * <p>A mod mints a link code for the UUID its server reports, and only an online-mode
- * server has checked that UUID with Mojang. Behind a proxy the backend runs
- * offline-mode and the proxy's own {@code /link} already serves every backend; on a
- * cracked server the UUID is whatever the client claims, so a code minted there would
- * let anyone link someone else's Minecraft account. The mods therefore link only on a
- * standalone online-mode server.
- */
+// Mint codes asynchronously only for verified online-mode UUIDs, then deliver results on the server thread.
 public final class ModLink {
     /** PLAYERS_ONLY answers /link from the console or a command block. */
     public static final String PLAYERS_ONLY = "/link 只能由玩家执行 / /link can only be run by a player.";
@@ -65,10 +50,7 @@ public final class ModLink {
     private final Executor io;
     private final Consumer<String> warn;
 
-    /**
-     * @param io   runs the felis-api call; the mods pass one daemon thread
-     * @param warn writes a warning to the server log
-     */
+    /** io runs the felis-api call (the mods pass one daemon thread); warn writes a warning to the server log. */
     public ModLink(LinkClient client, Executor io, Consumer<String> warn) {
         this.client = client;
         this.io = io;

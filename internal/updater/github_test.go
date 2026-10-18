@@ -8,12 +8,7 @@ import (
 	"testing"
 )
 
-// These fixtures are the meaningful slice of GET /repos/{repo}/releases/latest, captured
-// from the live GitHub REST API on 2026-07-05. They exercise the two real tag styles
-// Felis must handle: cloudflared ships a CalVer tag ("2026.6.1") and k3s a v-prefixed tag
-// carrying build metadata ("v1.36.2+k3s1"). The k3s list at that time also showed the
-// prerelease pattern this source must reject — rc builds are tagged "-rcN" AND flagged
-// "prerelease": true — which the fail-closed tests below reproduce.
+// Use captured CalVer and semver releases; reject RC tags and prerelease flags.
 const (
 	cloudflaredLatestFixture = `{"tag_name":"2026.6.1","prerelease":false,"draft":false,"name":"2026.6.1"}`
 	k3sLatestFixture         = `{"tag_name":"v1.36.2+k3s1","prerelease":false,"draft":false,"name":"v1.36.2+k3s1"}`
@@ -21,8 +16,6 @@ const (
 	temurinLatestFixture = `{"tag_name":"jdk-25.0.4.1+1","prerelease":false,"draft":false,"name":"jdk-25.0.4.1+1"}`
 )
 
-// TestGitHubLatestTemurin reads the feature line's repository and drops the "jdk-"
-// prefix Adoptium tags every build with.
 func TestGitHubLatestTemurin(t *testing.T) {
 	var path string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -63,10 +56,6 @@ func ghFixtureServer(body string) *httptest.Server {
 	}))
 }
 
-// TestGitHubLatestStableParsesRealTags proves both live tag styles reduce to the right
-// stable Version: cloudflared's CalVer and k3s's v-prefixed, build-tagged tag. It also
-// pins that String() preserves the raw upstream tag (so "+k3s1" reaches the report),
-// while the numeric core is what comparison uses.
 func TestGitHubLatestStableParsesRealTags(t *testing.T) {
 	cases := []struct {
 		name            string
@@ -100,9 +89,6 @@ func TestGitHubLatestStableParsesRealTags(t *testing.T) {
 	}
 }
 
-// TestGitHubClearsTheUserAgentGate proves Felis's request carries the User-Agent GitHub
-// requires: the fixture server refuses a UA-less request with 403 exactly as the live API
-// does, so a successful discovery is evidence the client sent one.
 func TestGitHubClearsTheUserAgentGate(t *testing.T) {
 	var gotUA string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -127,8 +113,6 @@ func TestGitHubClearsTheUserAgentGate(t *testing.T) {
 	}
 }
 
-// TestGitHubFailsClosedOn404 proves a repo with no stable release (GitHub returns 404
-// from /releases/latest) is an error, not a bogus zero version.
 func TestGitHubFailsClosedOn404(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
@@ -140,9 +124,6 @@ func TestGitHubFailsClosedOn404(t *testing.T) {
 	}
 }
 
-// TestGitHubFailsClosedOnPrereleaseFlag proves the defensive re-check holds: even if the
-// endpoint ever returned a release flagged prerelease, Felis refuses it rather than
-// promoting an rc into a scheduled apply.
 func TestGitHubFailsClosedOnPrereleaseFlag(t *testing.T) {
 	const rc = `{"tag_name":"v1.37.0-rc1+k3s1","prerelease":true,"draft":false}`
 	srv := ghFixtureServer(rc)
@@ -153,8 +134,6 @@ func TestGitHubFailsClosedOnPrereleaseFlag(t *testing.T) {
 	}
 }
 
-// TestGitHubFailsClosedOnUnparseableTag proves a tag that is not a version (some repos
-// tag "nightly" / "latest") is an error, not a silent zero.
 func TestGitHubFailsClosedOnUnparseableTag(t *testing.T) {
 	const junk = `{"tag_name":"nightly","prerelease":false,"draft":false}`
 	srv := ghFixtureServer(junk)
@@ -165,9 +144,6 @@ func TestGitHubFailsClosedOnUnparseableTag(t *testing.T) {
 	}
 }
 
-// TestGitHubSendsTokenOnlyWhenSet proves the credential reaches the wire as a Bearer
-// header when present, and that an empty token sends NO Authorization header at all —
-// the public repos (k3s, cloudflared) must keep working with no credential configured.
 func TestGitHubSendsTokenOnlyWhenSet(t *testing.T) {
 	for _, tc := range []struct {
 		name, token, wantAuth string
@@ -195,11 +171,6 @@ func TestGitHubSendsTokenOnlyWhenSet(t *testing.T) {
 	}
 }
 
-// TestGitHubNamesTheTokenOnAnUnauthenticated404 pins the diagnostic that makes a private
-// repo debuggable. GitHub hides a repo the caller cannot see behind 404 rather than 401,
-// so this status is genuinely ambiguous; the error must name BOTH causes and the env var
-// that fixes the actionable one. With a token already set that hint would be wrong, so it
-// must not appear.
 func TestGitHubNamesTheTokenOnAnUnauthenticated404(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)

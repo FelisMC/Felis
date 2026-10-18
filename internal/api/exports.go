@@ -24,69 +24,29 @@ import (
 	"felis.lolicon.best/internal/worldexport"
 )
 
-// World export and file download. The owner downloads a tar.gz of their world,
-// either as it is now (the server stopped) or as one of its backups, or one file
-// or folder of a stopped world (a folder as a zip), straight into the browser:
-//
-//  1. POST /servers/{name}/world/export, /servers/{name}/backups/{id}/export or
-//     /servers/{name}/files/download checks the caller and the server, admits
-//     the export against the limits below and starts a one-shot felis-export
-//     Job (internal/worldexport) that reads the world or the archive read-only.
-//     It answers 202 with a ticket: 256 random bits, good for the caller who
-//     started it and nobody else.
-//  2. The Job PUTs the archive to the internal face (PUT
-//     /api/v1/internal/exports/{id} with the one-time token it was started
-//     with), and that request waits, body unread, for the browser.
-//  3. The panel polls GET /exports/{ticket} until it reads ready, then points a
-//     hidden <a download> at GET /exports/{ticket}/download, which claims the
-//     waiting PUT and copies its body into the response 32 KiB at a time. The
-//     archive passes through felis-api's memory once and never touches a disk
-//     it owns, and the Job moves at the browser's pace.
-//
-// Nothing on the way is trusted to deliver the bytes intact. The Job hashes
-// what it sends and ends its chunked PUT with the SHA-256 as a trailer;
-// felis-api hashes what it receives and holds the last buffer back from the
-// browser until the two agree (relayExport), so a download whose bytes changed
-// between the Job and here fails in the browser rather than lands complete.
-//
-// A backup is checked by the Job against the sha256 recorded when it was
-// written (cmd/felis export): on a mismatch the Job aborts its upload short of
-// the archive's end, the download aborts with it, and the browser reports a
-// failed download and never keeps a complete-looking corrupt file.
-//
-// Tickets live in felis-api's memory. A restart forgets them, and a Job that
-// then PUTs finds nothing and fails, which the jobs list shows.
+// Export tickets live in memory; an API restart invalidates them and the associated Jobs fail.
 
-// Exporter starts the Job that archives a world or a backup and hands it to the
-// internal upload route (internal/worldexport). Optional: when nil the export
-// routes answer 503. Stop deletes a Job felis-api has given up on.
+// Exporter is optional; nil yields 503, and Stop deletes abandoned Jobs.
 type Exporter interface {
 	Start(ctx context.Context, r worldexport.Request) (job string, err error)
 	Stop(ctx context.Context, job string) error
 }
 
-// Limits on exports. Each one keeps a Job, a connection and a 64 KiB copy
-// buffer alive for as long as a download takes, and a world export or a file
-// download also keeps its server from starting.
 const (
-	exportMaxActive  = 2 // admitted and not yet over, install-wide
+	exportMaxActive  = 2 // admitted active exports, install-wide
 	exportMaxPerUser = 1
-	exportPerHour    = 6 // started by one user in any hour
+	exportPerHour    = 6 // starts per user per hour
 	exportCopyBuffer = 32 << 10
 
-	// File downloads count apart from the world and backup exports, with
-	// their own limits: one is a file or a folder, usually small and over in
-	// seconds, and an owner fetching a few configs one after another must
-	// neither wait on an export nor hold one off.
+	// File downloads have separate limits so small config downloads do not block world exports.
 	fileExportMaxActive  = 4
 	fileExportMaxPerUser = 2
 	fileExportPerHour    = 30
 )
 
-// exportClass is one set of export limits and how a refusal names them.
 type exportClass struct {
 	maxActive, perUser, perHour    int
-	busyUser, busyActive, busyHour string // each formats its limit
+	busyUser, busyActive, busyHour string
 }
 
 var (
@@ -111,43 +71,33 @@ func (e *exportEntry) class() exportClass {
 	return worldExports
 }
 
-// exportStarts keys a user's recent starts within one class.
 type exportStarts struct {
 	userID string
 	files  bool
 }
 
-// Timings. Vars only so a test can shrink them.
 var (
-	// exportClaimTTL is how long the Job's upload waits for the browser.
-	exportClaimTTL = 90 * time.Second
-	// exportPendingTTL is how long an export may take to reach ready: the Job
-	// is scheduled, pulls its image and connects well inside it.
+	exportClaimTTL   = 90 * time.Second
 	exportPendingTTL = 10 * time.Minute
-	// exportStall is the longest either end may go without moving a byte.
-	exportStall = 2 * time.Minute
-	// exportKeepSpent is how long a finished ticket still answers 410
-	// export_expired before it reads as unknown.
+	exportStall      = 2 * time.Minute
+	// exportKeepSpent retains finished tickets as 410 before they become unknown.
 	exportKeepSpent = 10 * time.Minute
 )
 
-// States of an export.
 const (
-	exportPending   = "pending"   // the Job has not connected yet
-	exportReady     = "ready"     // its upload is waiting for the browser
-	exportStreaming = "streaming" // the browser is downloading
-	exportFailed    = "failed"    // the Job died before it connected
-	exportSpent     = "spent"     // downloaded, or given up
+	exportPending   = "pending" // Job has not connected
+	exportReady     = "ready"   // upload awaits the browser
+	exportStreaming = "streaming"
+	exportFailed    = "failed" // Job failed before connecting
+	exportSpent     = "spent"  // downloaded or abandoned
 )
 
-// exportTicketView answers both export routes.
 type exportTicketView struct {
 	Ticket   string `json:"ticket"`
 	State    string `json:"state"`
 	Filename string `json:"filename"`
 }
 
-// exportStatusView answers GET /exports/{ticket}.
 type exportStatusView struct {
 	State   string `json:"state"`
 	Message string `json:"message,omitempty"`
@@ -162,32 +112,29 @@ func errNoExport() error {
 }
 
 type exportEntry struct {
-	ticket    string
-	id        string
-	tokenHash [32]byte
-	userID    string
-	server    string
-	mode      string
-	files     bool // a file download, counted in fileExports
-	filename  string
-	// contentType is what the download is served as: a gzip archive, a zip,
-	// or a single file's raw bytes.
+	ticket      string
+	id          string
+	tokenHash   [32]byte
+	userID      string
+	server      string
+	mode        string
+	files       bool
+	filename    string
 	contentType string
 	job         string
 	state       string
 	message     string
-	at          time.Time // when it entered its state
+	at          time.Time // time of entry into the current state
 	upload      *exportUpload
 }
 
-// exportUpload is the Job's PUT, parked until a browser claims it.
 type exportUpload struct {
 	body io.Reader
-	size int64 // what the Job declared (worldexport.LengthHeader); -1 when it did not
-	// digest reads the Job's trailer, which is there once body has ended.
+	size int64 // declared length; -1 when absent
+	// digest is available only after the body ends.
 	digest  func() []string
 	claimed chan struct{}
-	done    chan error // how the download ended; buffered
+	done    chan error // buffered download outcome
 }
 
 func (e *exportEntry) active() bool {
@@ -199,8 +146,7 @@ type exportRegistry struct {
 	byTicket map[string]*exportEntry
 	byID     map[string]*exportEntry
 	starts   map[exportStarts][]time.Time // oldest first
-	// stop deletes the Job of an export the sweep expired while it was
-	// pending, and is run apart from the lock.
+	// stop deletes expired pending Jobs outside the lock.
 	stop func(job string)
 }
 
@@ -216,8 +162,7 @@ func (a *API) exportTickets() *exportRegistry {
 	return a.exports
 }
 
-// ExpireExports runs the export sweep on its own, for felis-api's loop: the
-// routes sweep as they are called, and an owner who closed the tab calls none.
+// ExpireExports sweeps even when no client is polling.
 func (a *API) ExpireExports() {
 	g := a.exportTickets()
 	g.mu.Lock()
@@ -225,8 +170,7 @@ func (a *API) ExpireExports() {
 	g.sweepLocked(a.now())
 }
 
-// stopExportJob deletes one export Job. A delete that fails leaves the Job to
-// its own deadline.
+// stopExportJob leaves failed deletions to the Job's deadline.
 func (a *API) stopExportJob(job string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -235,10 +179,7 @@ func (a *API) stopExportJob(job string) {
 	}
 }
 
-// sweepLocked expires what has waited too long and forgets what ended long ago.
-// A Job still pending at its TTL never connected: its Pod is stuck unscheduled
-// or pulling, and until its deadline it would keep the server from starting,
-// so it is deleted.
+// sweepLocked deletes stalled pending Jobs so their world-volume holds cannot block startup until the Job deadline.
 func (g *exportRegistry) sweepLocked(now time.Time) {
 	for t, e := range g.byTicket {
 		switch {
@@ -268,9 +209,6 @@ func randomHex(n int) string {
 	return hex.EncodeToString(b)
 }
 
-// admit reserves the export e describes (its user, server, mode, class,
-// filename and content type) and returns its upload token, or refuses it with
-// export_busy. Only exports of e's class count against it.
 func (g *exportRegistry) admit(e *exportEntry, now time.Time) (string, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -302,7 +240,7 @@ func (g *exportRegistry) admit(e *exportEntry, now time.Time) (string, error) {
 	return token, nil
 }
 
-// drop forgets an export that never got its Job, and gives its start back.
+// drop also refunds the start reservation when Job creation fails.
 func (g *exportRegistry) drop(e *exportEntry) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -328,8 +266,7 @@ func (g *exportRegistry) started(e *exportEntry, job string) {
 	e.job = job
 }
 
-// lookup returns a copy of userID's export by its ticket. Another user's reads
-// as unknown, and a spent one as export_expired.
+// lookup returns 404-equivalent unknown for another user's ticket and export_expired for a spent ticket.
 func (g *exportRegistry) lookup(ticket, userID string, now time.Time) (exportEntry, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -344,8 +281,7 @@ func (g *exportRegistry) lookup(ticket, userID string, now time.Time) (exportEnt
 	return *e, nil
 }
 
-// fail records that the export's Job died before it connected, and reports
-// false when the export has moved on since.
+// fail applies only while the Job has not connected.
 func (g *exportRegistry) fail(ticket, message string, now time.Time) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -357,8 +293,7 @@ func (g *exportRegistry) fail(ticket, message string, now time.Time) bool {
 	return true
 }
 
-// arrive parks the Job's upload on the export the id and token open. Unknown
-// ids, wrong tokens and exports past pending all read the same.
+// arrive treats unknown IDs, invalid tokens and non-pending exports identically.
 func (g *exportRegistry) arrive(id, token string, up *exportUpload, now time.Time) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -375,8 +310,7 @@ func (g *exportRegistry) arrive(id, token string, up *exportUpload, now time.Tim
 	return true
 }
 
-// giveUp spends an export whose upload nobody claimed, and reports false when a
-// claim got there first.
+// giveUp loses to a concurrent claim and then returns false.
 func (g *exportRegistry) giveUp(up *exportUpload, now time.Time) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -389,8 +323,7 @@ func (g *exportRegistry) giveUp(up *exportUpload, now time.Time) bool {
 	return false
 }
 
-// claim hands userID's ready export to its download: from here on the ticket is
-// spent whatever happens to the download.
+// claim spends the ticket even if the subsequent download fails.
 func (g *exportRegistry) claim(ticket, userID string, now time.Time) (exportEntry, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -418,18 +351,7 @@ func (g *exportRegistry) finish(ticket string, now time.Time) {
 	}
 }
 
-// handleExportBackup starts the download of one backup (POST
-// /api/v1/servers/{name}/backups/{id}/export). The gate is restore's and
-// delete's together:
-//
-//	① name validation; ② an unknown server is 404; ③ owner-or-admin, else 403
-//	④ the backup must exist, and a non-admin must be its former owner: any
-//	   other id reads as unknown (404 no_backup), as it does in their list
-//	⑤ cross-server guard: the backup must be this server's (403)
-//	⑥ an archive that failed its read-back is 409 backup_corrupt
-//
-// It needs no stopped server and takes no world lock: the Job reads the backup
-// store only.
+// handleExportBackup requires former-owner or staff access and reads only the backup store, without a world lock.
 func (a *API) handleExportBackup(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	name, rec, ok := a.exportGate(w, r)
@@ -476,11 +398,7 @@ func (a *API) handleExportBackup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, exportTicketView{Ticket: e.ticket, State: exportPending, Filename: e.filename})
 }
 
-// handleExportWorld starts the download of a stopped server's world as it is
-// now (POST /api/v1/servers/{name}/world/export). The gate is a backup's: owner
-// or admin, the server fully stopped, a world volume to read, and the
-// world-volume lock, which the export Job then holds (as KindExport) until the
-// download ends, so the server cannot start under it and tear the archive.
+// handleExportWorld holds the stopped world's volume until download ends to prevent startup during archival.
 func (a *API) handleExportWorld(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	name, rec, ok := a.exportGate(w, r)
@@ -530,21 +448,9 @@ func (a *API) handleExportWorld(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, exportTicketView{Ticket: e.ticket, State: exportPending, Filename: e.filename})
 }
 
-// archiveContentType is how a world or a backup export is served.
 const archiveContentType = "application/gzip"
 
-// handleDownloadFile starts the download of one file or folder of a stopped
-// server's world (POST /api/v1/servers/{name}/files/download?path=…&dir=true
-// for a folder). The gate is the file manager's (authorizeFileOp), plus an
-// account to bind the ticket to. The download is an export: a felis-export Job
-// in files mode reads the file, or zips the folder, from the world volume and
-// hands it over through a ticket like any other, under the world-volume lock
-// (as KindExport) so the server cannot start mid-zip.
-//
-// The path is passed to the Job as it came, as every file route does (see
-// handleListFiles): the Job's os.Root is the containment, and the guards run
-// there. Only the world root is refused here, since a whole world is what the
-// world export is for.
+// handleDownloadFile delegates containment to the Job's os.Root and holds the world volume for the download.
 func (a *API) handleDownloadFile(w http.ResponseWriter, r *http.Request) {
 	name, ok := a.authorizeFileOp(w, r)
 	if !ok {
@@ -598,9 +504,7 @@ func errExportUnavailable() error {
 	return newError(http.StatusServiceUnavailable, "export_unavailable", "world export and downloads are not configured")
 }
 
-// exportGate is the front half both export routes share: a valid name, a known
-// server, and a caller who owns it or is an admin. The ticket is bound to the
-// caller's account, so a principal without one cannot start an export.
+// exportGate binds the ticket to the caller's account after checking server ownership or staff access.
 func (a *API) exportGate(w http.ResponseWriter, r *http.Request) (string, *ServerRecord, bool) {
 	p := principalFromContext(r.Context())
 	name := r.PathValue("name")
@@ -620,9 +524,6 @@ func (a *API) exportGate(w http.ResponseWriter, r *http.Request) (string, *Serve
 	return name, rec, true
 }
 
-// startExport creates the admitted export's Job, or forgets the export and
-// writes the error. what carries the mode's own fields (the backup and its
-// digest, or the path); the rest comes from e.
 func (a *API) startExport(w http.ResponseWriter, r *http.Request, e *exportEntry, token string, what worldexport.Request) bool {
 	what.Server, what.Mode, what.ID, what.Token = e.server, e.mode, e.id, token
 	what.TargetURL = a.InternalBaseURL + "/api/v1/internal/exports/" + e.id
@@ -636,10 +537,6 @@ func (a *API) startExport(w http.ResponseWriter, r *http.Request, e *exportEntry
 	return true
 }
 
-// handleExportStatus answers GET /api/v1/exports/{ticket}: pending while the
-// Job gets going, ready once its upload waits for the browser, failed (with the
-// Job's error) when it died first. A downloaded or expired ticket is 410
-// export_expired; an unknown one, or another user's, is 404.
 func (a *API) handleExportStatus(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	reg := a.exportTickets()
@@ -648,8 +545,7 @@ func (a *API) handleExportStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	// A Job list that fails leaves the export pending: the next poll asks again,
-	// and exportPendingTTL ends it either way.
+	// Keep the export pending on Job-list failures; polling retries until exportPendingTTL.
 	if e.state == exportPending && e.job != "" && a.JobStatus != nil {
 		jobs, _ := a.JobStatus.LatestJobs(r.Context(), e.server)
 		for _, j := range jobs {
@@ -661,11 +557,7 @@ func (a *API) handleExportStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, exportStatusView{State: e.state, Message: e.message})
 }
 
-// handleExportDownload streams a ready export to its browser (GET
-// /api/v1/exports/{ticket}/download). The claim spends the ticket before the
-// first byte moves, so a second tab, a retry or a HEAD probe never gets a
-// second copy; a HEAD is refused outright, since claiming on it would spend the
-// ticket on a response with no body.
+// handleExportDownload refuses HEAD because claiming spends the ticket before any body bytes are sent.
 func (a *API) handleExportDownload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
@@ -700,8 +592,7 @@ func (a *API) handleExportDownload(w http.ResponseWriter, r *http.Request) {
 	e.upload.done <- err
 	if err != nil {
 		log.Printf("api: export %s of %s ended early: %v", e.id, e.server, err)
-		// Abort the response rather than end it: a download cut short must
-		// read as failed in the browser, never as a complete file.
+		// Abort truncated downloads so the browser reports failure instead of accepting an incomplete file.
 		panic(http.ErrAbortHandler)
 	}
 	log.Printf("api: export %s of %s sent %d bytes, sha256 %s", e.id, e.server, n, sum)
@@ -712,14 +603,7 @@ var (
 	errExportLength = errors.New("the export Job sent a different number of bytes than it declared")
 )
 
-// relayExport copies the Job's upload into the download through fixed 32 KiB
-// buffers, restarting w's write deadline on every write, and checks it on the
-// way: the bytes must hash to the SHA-256 the Job's trailer carries once it has
-// sent them all (worldexport.DigestTrailer), and number what it declared, when
-// it did. The latest buffer read is held back until both hold, so bytes changed
-// between the Job and here, or a Job that sent no digest, end the download
-// short of its end, and the browser reports it failed rather than keep a
-// complete-looking corrupt file. It returns the bytes sent and their SHA-256.
+// relayExport holds the final buffer until the Job's digest trailer and declared length match, aborting on mismatch.
 func relayExport(w http.ResponseWriter, up *exportUpload) (int64, string, error) {
 	out := &stallWriter{w: w, rc: http.NewResponseController(w)}
 	h := sha256.New()
@@ -760,13 +644,11 @@ func relayExport(w http.ResponseWriter, up *exportUpload) (int64, string, error)
 			return n, "", err
 		}
 	}
-	_ = out.rc.SetWriteDeadline(time.Time{}) // the connection may serve another request
+	_ = out.rc.SetWriteDeadline(time.Time{}) // clear the deadline before connection reuse
 	return n, hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// stallWriter restarts the connection's write deadline before every write, so
-// a write fails only once the browser has taken nothing for exportStall. It
-// has no ReadFrom, so io.CopyBuffer uses the buffer it is given.
+// stallWriter omits ReadFrom so io.CopyBuffer uses the supplied buffer and resets deadlines on each write.
 type stallWriter struct {
 	w  io.Writer
 	rc *http.ResponseController
@@ -777,13 +659,7 @@ func (s *stallWriter) Write(p []byte) (int, error) {
 	return s.w.Write(p)
 }
 
-// handleInternalExportUpload takes an export Job's archive (PUT
-// /api/v1/internal/exports/{id}). The one-time bearer token minted with the
-// export is the check, as for file uploads: an unknown id, a wrong token and a
-// token already used all read the same 404. The request then waits for the
-// browser, up to exportClaimTTL, and answers once the download has ended: 204
-// when it got the whole archive, 410 export_expired when nobody came for it,
-// the browser left early or the Job itself cut the upload short.
+// handleInternalExportUpload uses a one-time token and waits for the browser; invalid or spent tokens return 404.
 func (a *API) handleInternalExportUpload(w http.ResponseWriter, r *http.Request) {
 	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok {
@@ -831,9 +707,7 @@ func (a *API) handleInternalExportUpload(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// stallBody restarts the connection's read deadline on every read, so reading
-// fails only once no byte has come for exportStall, and clears it when the body
-// ends, as deadlineBody does.
+// stallBody resets the read deadline for each chunk and clears it when the body ends.
 type stallBody struct {
 	r    io.Reader
 	rc   *http.ResponseController

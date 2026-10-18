@@ -19,8 +19,6 @@ import (
 	"felis.lolicon.best/internal/reaper"
 )
 
-// TestReportReaperRunFailsTheJob: a run that could not process a server, or
-// could not remove an expired backup, exits 1 so the Job shows as failed.
 func TestReportReaperRunFailsTheJob(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -52,13 +50,6 @@ func TestReportReaperRunFailsTheJob(t *testing.T) {
 	}
 }
 
-// TestResolveWorldDir pins the two world layouts the reaper must find, and the
-// fail-closed miss. The stock local-path arm is derived from the live PVC's
-// volumeName — a name-based guess (glob) could tar a stale deleted PV's bytes and
-// then delete the current world, which is why it is read from the API instead.
-// TestReaperConfigManualKeys: the on-demand backup keys default to 30 days,
-// five per server and a ten-minute cooldown, accept overrides, and refuse
-// values that would keep nothing or throttle backwards.
 func TestReaperConfigManualKeys(t *testing.T) {
 	rc, err := reaperConfig(&config.Config{})
 	if err != nil {
@@ -88,9 +79,6 @@ func TestReaperConfigManualKeys(t *testing.T) {
 	}
 }
 
-// TestReaperConfigScheduledKeys: the scheduled restore points default to one a
-// day, seven per server and the reaper's 90 days, accept overrides ("0s" turns
-// them off), and refuse values that would keep nothing or run backwards.
 func TestReaperConfigScheduledKeys(t *testing.T) {
 	rc, err := reaperConfig(&config.Config{})
 	if err != nil {
@@ -184,10 +172,6 @@ func TestResolveWorldDir(t *testing.T) {
 	})
 }
 
-// The pre-reap warner resolves the owner's VERIFIED email and hands the notice
-// to the mailer. Every failure (no verified address, relay refusal) returns an
-// error so the reaper retries on its next run instead of stamping a notice
-// nobody received.
 func TestMailWarner(t *testing.T) {
 	lookup := func(email string, err error) func(context.Context, string) (string, error) {
 		return func(context.Context, string) (string, error) { return email, err }

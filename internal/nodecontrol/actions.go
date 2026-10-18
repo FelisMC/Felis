@@ -10,19 +10,13 @@ import (
 	"time"
 )
 
-// action is one fixed host operation: what it takes, whether it holds the platform's
-// maintenance gate, and how long it may run.
 type action struct {
-	// blocking actions hold server starts, world maintenance, live backups and migrations
-	// while they run (NodeMaintenanceGuard in felis-api); the rest leave the platform alone.
+	// Blocking actions hold server starts and world maintenance while running.
 	blocking bool
-	// confirm marks an action that disconnects players, restarts the panel or replaces
-	// data: the request must carry ConfirmMaintenance. confirmIf adds the confirmation
-	// only for some of its parameters.
-	confirm   bool
-	confirmIf func(Request) bool
-	timeout   time.Duration
-	// params and secrets are the keys the request may carry; check validates them.
+	// confirm requires ConfirmMaintenance; confirmIf restricts that requirement to selected parameters.
+	confirm         bool
+	confirmIf       func(Request) bool
+	timeout         time.Duration
 	params, secrets []string
 	check           func(Request) error
 }
@@ -43,8 +37,6 @@ var (
 	rotatableKinds  = []string{"velocity", "limbo", "build", "ops", "registry", "forwarding", "db"}
 )
 
-// The node lifecycle actions predate the table's other columns: each holds the gate and
-// is confirmed, and none runs longer than 45 minutes.
 func nodeAction(check func(Request) error) action {
 	return action{blocking: true, confirm: true, timeout: 45 * time.Minute, check: check}
 }
@@ -94,8 +86,7 @@ var actions = map[string]action{
 	"connection-configure": {confirm: true, timeout: 20 * time.Minute, params: []string{"mode", "panelHost", "adminHost", "identity", "accountID"},
 		secrets: []string{"apiToken"}, check: checkConnection},
 
-	// The proxy hands a legacy-forwarded server the player's identity in the handshake,
-	// which the server then trusts from anything reaching its port: confirmed when set.
+	// Legacy forwarding trusts identity from any reachable client, so enabling it requires confirmation.
 	"server-forwarding": {timeout: 2 * time.Minute, params: []string{"server", "legacy"},
 		confirmIf: func(r Request) bool { return r.Params["legacy"] == "true" },
 		check: func(r Request) error {
@@ -117,8 +108,6 @@ var actions = map[string]action{
 		check:     checkHostSettings},
 }
 
-// NodeAction reports whether name is one of the node lifecycle actions, which audit
-// under platform.node; the other host tasks audit under platform.host.
 func NodeAction(name string) bool {
 	switch name {
 	case "fence", "unfence", "enable-ha", "join", "approve", "upgrade", "join-controller", "enable":
@@ -127,8 +116,7 @@ func NodeAction(name string) bool {
 	return false
 }
 
-// Blocking reports whether a running task of this action holds the platform's
-// maintenance gate. An unknown action does, so a newer host service fails closed.
+// Blocking treats unknown actions as holding the gate.
 func Blocking(name string) bool {
 	a, ok := actions[name]
 	return !ok || a.blocking
@@ -215,8 +203,6 @@ func needFixedIP(r Request) error {
 	return nil
 }
 
-// checkHA validates the optional floating address of enable-ha: an IPv4 address, the
-// interface it sits on and the VRRP router ID, as the installer's FELIS_HA_VIP* take them.
 func checkHA(r Request) error {
 	vip, iface, vrid := r.Params["vip"], r.Params["vipInterface"], r.Params["vrid"]
 	if vip == "" {

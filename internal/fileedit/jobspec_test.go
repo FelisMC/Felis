@@ -47,9 +47,6 @@ func testParams(op string) JobParams {
 	}
 }
 
-// TestFilesJobIsolation asserts every isolation guarantee FilesJob documents. No
-// cluster runs in this environment, so this pure-function test IS the enforcement:
-// if someone loosens the Pod spec, this is what catches it.
 func TestFilesJobIsolation(t *testing.T) {
 	job, err := FilesJob(testParams(OpRead))
 	if err != nil {
@@ -154,7 +151,7 @@ func TestFilesJobIsolation(t *testing.T) {
 		if job.Spec.ActiveDeadlineSeconds == nil || *job.Spec.ActiveDeadlineSeconds != 120 {
 			t.Fatalf("ActiveDeadlineSeconds = %v, want 120", job.Spec.ActiveDeadlineSeconds)
 		}
-		// The TTL is the ONLY cleanup available: felis-api holds no jobs:delete.
+		// The TTL is the only cleanup: felis-api holds no jobs:delete.
 		if job.Spec.TTLSecondsAfterFinished == nil || *job.Spec.TTLSecondsAfterFinished != 120 {
 			t.Fatalf("TTLSecondsAfterFinished = %v, want 120", job.Spec.TTLSecondsAfterFinished)
 		}
@@ -177,8 +174,6 @@ func TestFilesJobIsolation(t *testing.T) {
 	})
 }
 
-// TestFilesJobExpectArg: a write's precondition hash reaches the entrypoint as a
-// flag, and only a write carries one.
 func TestFilesJobExpectArg(t *testing.T) {
 	sum := strings.Repeat("a", 64)
 	for _, tc := range []struct {
@@ -203,9 +198,6 @@ func TestFilesJobExpectArg(t *testing.T) {
 	}
 }
 
-// TestFilesJobWorldMountIsReadOnlyForReads pins the guarantee that list and read
-// cannot mutate a world. For them the kernel refuses the write, not
-// merely the code — a defence that survives a bug in the entrypoint.
 func TestFilesJobWorldMountIsReadOnlyForReads(t *testing.T) {
 	cases := []struct {
 		op           string
@@ -250,8 +242,6 @@ func envLookup(env []corev1.EnvVar) func(string) (string, bool) {
 	}
 }
 
-// TestFilesJobContentEnv pins the write channel: content rides the Job spec
-// base64-encoded, and ONLY for a write — no other Job spec carries caller content.
 func TestFilesJobContentEnv(t *testing.T) {
 	t.Run("write carries the content, reassembled by the entrypoint", func(t *testing.T) {
 		p := testParams(OpWrite)
@@ -340,8 +330,6 @@ func TestFilesJobContentEnv(t *testing.T) {
 	}
 }
 
-// TestFilesJobOpArgs pins what each op hands the entrypoint beyond --op and
-// --path, and that the upload token rides the environment, never argv.
 func TestFilesJobOpArgs(t *testing.T) {
 	args := func(p JobParams) []string {
 		t.Helper()
@@ -397,11 +385,6 @@ func TestFilesJobOpArgs(t *testing.T) {
 	}
 }
 
-// TestFilesJobNameIsPerInvocation is the RBAC-forced property documented on
-// FilesJobName. felis-api holds jobs:create and NOTHING else — no jobs:delete — so
-// a deterministic name would let the first completed Job squat it for a whole TTL
-// window and wedge every subsequent operation. Two operations on the same server
-// must therefore never collide.
 func TestFilesJobNameIsPerInvocation(t *testing.T) {
 	a := testParams(OpRead)
 	b := testParams(OpRead)
@@ -428,8 +411,6 @@ func TestFilesJobNameIsPerInvocation(t *testing.T) {
 	}
 }
 
-// TestFilesJobRejectsBadParams checks the renderer fails loudly rather than
-// producing a Job that cannot run or that would be refused by etcd.
 func TestFilesJobRejectsBadParams(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -460,9 +441,6 @@ func TestFilesJobRejectsBadParams(t *testing.T) {
 	}
 }
 
-// TestFilesJobAsync checks a background Job is marked so Ops finds it, on the
-// Job and on its Pod, and carries the path Ops shows; a Job felis-api waits on
-// carries neither, so Ops never reports it.
 func TestFilesJobAsync(t *testing.T) {
 	for _, op := range []string{OpUpload, OpUnzip} {
 		t.Run(op, func(t *testing.T) {

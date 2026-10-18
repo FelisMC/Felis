@@ -22,45 +22,7 @@ import org.bukkit.plugin.java.JavaPlugin;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * FelisPaperPlugin is the felis-paper lobby face (spec §12): the {@code /menu} (and
- * {@code /server}) chest GUI players use to pick, wake or claim a backend without
- * ever touching the command line. It is the player-facing end of the §27 scenario-10
- * path — {@code /menu → plugin msg → velocity → api → 共用等待队列 → ready 后 Connect}.
- *
- * <p><b>Pure UI face.</b> This plugin deliberately holds no felis-api token, opens no
- * HTTP connection, and keeps no waiting queue. Every action it takes is a single
- * {@link ControlFrame} written to the {@code felis:control} plugin-message channel,
- * and every piece of state it shows arrives as a frame on the same channel. The
- * Velocity proxy ({@code ControlChannel}) is the only thing that talks to felis-api,
- * and it derives the acting player's identity from the backend connection rather than
- * anything this lobby sends (spec §14) — so even a fully compromised lobby cannot act
- * as another player or reach the API directly. The build enforces this physically:
- * only the channel codec ({@code Control}/{@code ControlFrame}/{@code Json}) is
- * compiled in from the shared core; {@code FelisApiClient} and the token config are
- * not on the lobby's classpath at all.
- *
- * <p><b>Flow.</b> {@code /menu} sends a {@code ListRequest}; the proxy answers with a
- * {@code ListUpdate} naming every user server it routes, built from the same registry
- * it routes by, so a server created in the panel shows up here without anyone editing
- * this plugin. The list puts the player's own servers first and carries felis-api's
- * verdict on each: whether this player may start it, and why not. The menu then
- * paints a "loading" tile per server on the page (45 per page, arrows in the bottom
- * row) and fires a {@code StatusQuery} for each; the proxy answers with
- * {@code StatusUpdate} frames that repaint each tile ({@link MenuTiles}): Join when it
- * is up, Claim &amp; Start when it is ownerless, a grey tile naming the reason when the
- * player may not start it, Start otherwise, with the phase in the player's language.
- * Claim sends a {@code ClaimRequest}; Join and Start both send a {@code WakeRequest};
- * each closes the menu. A grey tile sends nothing: its reason goes to chat and the
- * menu stays open. A claim refusal comes back as an {@code Error} frame and is shown to the
- * player here; wake-path refusals (policy gate, capacity) are chat messages the
- * proxy's waiting queue sends directly. Readiness arrives as {@code TransferReady}
- * just before the proxy Connects them.
- *
- * <p>What the menu does lives in {@link LobbyMenu}, which {@code ./gradlew lobbyTest}
- * drives against real paper-api events; this class wires it up and draws its slots
- * as items.
- */
+/** Lobby {@code /menu} and {@code /server} chest GUI. It holds no felis-api token: it only exchanges ControlFrames on felis:control, and the proxy talks to felis-api. */
 public final class FelisPaperPlugin extends JavaPlugin {
 
     private LobbyMenu menu;
@@ -77,14 +39,11 @@ public final class FelisPaperPlugin extends JavaPlugin {
         LobbyMenu menu = new LobbyMenu(PaperScreen::new,
                 (task, ticks) -> getServer().getScheduler().runTaskLater(this, task, ticks), getLogger());
         this.menu = menu;
-        // Open both ends of felis:control. Outgoing carries Wake/Claim/StatusQuery to
-        // the proxy; incoming receives StatusUpdate/TransferReady/Error back.
         getServer().getMessenger().registerOutgoingPluginChannel(this, Control.CHANNEL);
         getServer().getMessenger().registerIncomingPluginChannel(this, Control.CHANNEL, menu);
         getServer().getPluginManager().registerEvents(menu, this);
 
-        // The lobby is a hub nobody can hurt or be hurt in (LobbyGuard). Worlds loaded
-        // before this point get the rules here, later ones on their WorldLoadEvent.
+        // Worlds loaded before this point are protected here, later ones on their WorldLoadEvent.
         LobbyGuard guard = new LobbyGuard(getLogger(), experience);
         getServer().getPluginManager().registerEvents(guard, this);
         getServer().getWorlds().forEach(guard::protect);
@@ -92,8 +51,6 @@ public final class FelisPaperPlugin extends JavaPlugin {
         getLogger().info("felis-paper enabled: felis:control open, server list from the proxy. "
                 + "Pure UI face — no felis-api token.");
     }
-
-    // ---- commands: /menu and /server both open the GUI ----
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
@@ -105,12 +62,10 @@ public final class FelisPaperPlugin extends JavaPlugin {
         return true;
     }
 
-    /** zh mirrors the Velocity rule: render Chinese when the client locale is zh-*. */
+    /** True when the client locale is zh-*, matching the Velocity rule. */
     static boolean zh(Player player) {
         return "zh".equalsIgnoreCase(player.locale().getLanguage());
     }
-
-    // ---- rendering: PaperScreen draws the menu's slots as items ----
 
     private final class PaperScreen implements LobbyMenu.Screen {
         private final Player player;

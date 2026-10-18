@@ -215,11 +215,7 @@ export function EditServerDialog({
   const cpu = form.cpu.trim();
   const cpuOk = cpuValid(cpu);
 
-  // The software is sent when the picker is open on a choice that differs from
-  // what the server runs. Another type or game version, or leaving a server
-  // image, opens the world with other software for good, so it waits for the
-  // same kind of acknowledgement as an image change; leaving a server image also
-  // takes the EULA.
+  // Software changes may irreversibly upgrade worlds and require acknowledgement; leaving an image also requires EULA acceptance.
   const pickingSoftware = source === "software" && (changingSoftware || !currentSoftware);
   const jarUpload = pickingSoftware && software.type === "custom" ? jarFile : null;
   const cur = choiceOf(currentSoftware);

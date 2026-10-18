@@ -18,11 +18,7 @@ import { useAsync } from "@/lib/hooks";
 import { requestAssertion } from "@/lib/passkey";
 import { useTier } from "@/lib/tier";
 
-// A change to how the account signs in (a passkey added or removed, the email
-// changed) needs this session to have proven a factor in the last few minutes,
-// so a browser left signed in cannot quietly swap the account's ways in. The API
-// refuses such a change with 403 reauth_required; useReauth catches that, asks
-// for the proof in this dialog and runs the change again once it is given.
+// On reauth_required, obtain fresh proof and retry the account-security change.
 
 export function isReauthRequired(e: unknown): boolean {
   return (e as { code?: string } | null)?.code === "reauth_required";
@@ -55,10 +51,7 @@ export function useReauth() {
     });
   }, []);
 
-  // guard runs a change. Refused for want of a fresh proof, it asks for one and
-  // runs the change a second time; closing the dialog rejects with
-  // reauth_cancelled. A change that needs a user gesture of its own (a WebAuthn
-  // create) uses confirm and lets the user press its button again instead.
+  // WebAuthn creation needs a new user gesture after confirmation; closing rejects reauth_cancelled.
   const guard = useCallback(
     async <T,>(change: () => Promise<T>): Promise<T> => {
       try {

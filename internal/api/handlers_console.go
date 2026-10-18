@@ -5,35 +5,13 @@ import (
 	"net/http"
 )
 
-// maxConsoleCommandLen caps the command body well under RCON's single-packet
-// limit (internal/rcon maxPacketLen = 4096, minus framing). The cap is
-// deliberately conservative — interactive console commands are short — so an
-// over-long command fails as a clean 400 here rather than surfacing as an opaque
-// 500 from the RCON writer.
+// maxConsoleCommandLen stays below the RCON packet limit including framing.
 const maxConsoleCommandLen = 1024
 
-// commandRequest is the console-write body (spec §8 写=RCON). One field, one
-// line: decodeJSON rejects unknown fields so no extra knob can smuggle in.
 type commandRequest struct {
 	Command string `json:"command"`
 }
 
-// handleCommand runs one RCON command against the caller's server and returns
-// the server's reply (spec §8, 读写分离: 写=RCON; spec §7 POST
-// /servers/{name}/command). It is app-tier — operating your OWN server — gated
-// by isOwnerOrAdmin, mirroring handleStop. The order is authorization first,
-// then a readiness pre-check, then the write:
-//
-//	① name + body validation (single line, bounded length)
-//	② ownership: owner or admin, else 403 (404 if the server is unknown)
-//	③ readiness: a write only makes sense on a Running server (§141 Ready ⟺ RCON
-//	   reachable), so a non-Ready server is a specific 409, not a blind dial
-//	④ the RCON write; an unreachable channel is ErrConsoleUnavailable → 503 (the
-//	   §141 invariant can drop between the §③ check and the dial — the pre-check
-//	   is for a better error, not a correctness guarantee)
-//
-// The RCON password is resolved entirely inside the Console implementation and
-// never appears in the request or response (spec §286: RCON 密码绝不下发前端).
 func (a *API) handleCommand(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	name := r.PathValue("name")
@@ -48,14 +26,12 @@ func (a *API) handleCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A console command is exactly one line (normalizeConsoleCommand).
 	command, err := normalizeConsoleCommand(body.Command)
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
 
-	// Ownership: owner or admin, mirroring handleStop. An unknown server is 404.
 	rec, err := a.managedServerRecord(r.Context(), name)
 	if err != nil {
 		a.writeLookupError(w, r, err)
@@ -66,10 +42,7 @@ func (a *API) handleCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Readiness pre-check: a write only makes sense on a Running server. This
-	// yields a specific "not running" 409 instead of a blind dial that would time
-	// out. It is racy (the server can drop between here and the dial), so the
-	// write below still maps an unreachable channel to 503.
+	// The server may become unavailable after readiness was checked; the command still maps connection failures to 503.
 	info, err := a.Cluster.GetServer(r.Context(), name)
 	if err != nil {
 		a.writeLookupError(w, r, err)
@@ -81,8 +54,6 @@ func (a *API) handleCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Console is wired in production (cmd/felis); the nil guard only defends
-	// against a misconstructed API, failing as 503 rather than panicking.
 	if a.Console == nil {
 		writeError(w, r, newError(http.StatusServiceUnavailable, "console_unavailable",
 			"console subsystem is not configured"))
@@ -96,7 +67,6 @@ func (a *API) handleCommand(w http.ResponseWriter, r *http.Request) {
 			"server console is currently unreachable; wake the server and retry"))
 		return
 	case err != nil:
-		// ErrNotFound (server vanished mid-request) → 404; anything else → 500.
 		a.writeLookupError(w, r, err)
 		return
 	}

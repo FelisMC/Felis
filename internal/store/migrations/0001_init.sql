@@ -1,7 +1,4 @@
--- Felis business-layer schema (spec §6). The CRD is the lifecycle
--- source-of-truth; this database owns only what the CRD cannot express:
--- ownership/claim, account links, quotas, image admission, builds, backups,
--- audit. Authoritative CRD fields are never duplicated here.
+-- Keep lifecycle state in the CRD; store business records here without duplicating CRD fields.
 
 CREATE TYPE user_role        AS ENUM ('admin','user');
 CREATE TYPE build_status     AS ENUM ('pending','building','succeeded','failed','cancelled');
@@ -52,7 +49,7 @@ CREATE TABLE image_whitelist (
 CREATE TABLE image_builds (
   id text PRIMARY KEY, image_ref text NOT NULL, status build_status NOT NULL DEFAULT 'pending',
   dockerfile text NOT NULL,                  -- archived for audit
-  context_ref text, base_image text,         -- resolved FROM, audit
+  context_ref text, base_image text,         -- the FROM image as resolved at build time, kept for audit
   requested_by text NOT NULL, job_name text, log_ref text, error text,
   created_at timestamptz NOT NULL DEFAULT now(), finished_at timestamptz
 );

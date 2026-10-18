@@ -9,25 +9,18 @@ import (
 	"strings"
 )
 
-// Version is a Minecraft version a type can run.
 type Version struct {
 	ID     string `json:"id"`
 	Stable bool   `json:"stable"`
 }
 
-// Build is a Paper/Purpur build or a loader version for one Minecraft version.
 type Build struct {
-	ID     string `json:"id"`
-	Stable bool   `json:"stable"`
-	// Recommended marks the build the panel preselects: the newest stable one, or
-	// Forge's own recommended build where it names one.
-	Recommended bool `json:"recommended,omitempty"`
+	ID          string `json:"id"`
+	Stable      bool   `json:"stable"`
+	Recommended bool   `json:"recommended,omitempty"`
 }
 
-// minVersion is the oldest Minecraft version each type is offered for: the
-// oldest the installer has been run against end to end. Older versions exist
-// upstream; they need installer paths (legacy Forge profiles, pre-Fabric
-// intermediaries) nobody has exercised here.
+// minVersion limits each type to installer paths supported and exercised by this build.
 var minVersion = map[Type]string{
 	Vanilla:  "1.7.10",
 	Paper:    "1.8.8",
@@ -38,10 +31,7 @@ var minVersion = map[Type]string{
 	NeoForge: "1.20.2",
 }
 
-// offered reports whether version v of type t is inside the supported range.
-// Snapshot ids that do not parse as a release ("24w14a") are offered for the
-// types whose upstream lists them, since they sort after every release before
-// them; the minimums all predate snapshot naming changes.
+// offered applies release minimums but accepts non-release snapshot IDs supplied by the upstream type.
 func offered(t Type, v string) bool {
 	min, ok := minVersion[t]
 	if !ok {
@@ -53,7 +43,6 @@ func offered(t Type, v string) bool {
 	return AtLeast(v, min)
 }
 
-// Versions lists the Minecraft versions a type runs, newest first.
 func (r *Resolver) Versions(ctx context.Context, t Type) ([]Version, error) {
 	var out []Version
 	switch t {
@@ -68,8 +57,7 @@ func (r *Resolver) Versions(ctx context.Context, t Type) ([]Version, error) {
 			}
 			out = append(out, Version{ID: v.ID, Stable: v.Type == "release"})
 		}
-		// The manifest is already newest first; keep its order, which places
-		// snapshots correctly where their ids do not sort.
+		// Preserve manifest order because snapshot IDs cannot be sorted as release numbers.
 		return filterOffered(t, out), nil
 	case Paper:
 		var p struct {
@@ -157,8 +145,6 @@ func filterOffered(t Type, in []Version) []Version {
 	return out
 }
 
-// sortVersionsDesc orders release-shaped versions newest first; a release sorts
-// before its own pre-releases.
 func sortVersionsDesc(vs []Version) {
 	sort.SliceStable(vs, func(i, j int) bool {
 		a, aok := parseMC(vs[i].ID)
@@ -176,8 +162,6 @@ func sortVersionsDesc(vs []Version) {
 	})
 }
 
-// Builds lists the builds or loader versions of type t for Minecraft version
-// mc, newest first, with the one to preselect marked Recommended.
 func (r *Resolver) Builds(ctx context.Context, t Type, mc string) ([]Build, error) {
 	if !versionPattern(mc) {
 		return nil, fmt.Errorf("%w: invalid minecraft version %q", ErrInvalid, mc)
@@ -292,7 +276,6 @@ func (r *Resolver) Builds(ctx context.Context, t Type, mc string) ([]Build, erro
 	return out, nil
 }
 
-// RecommendedBuild returns the build Builds marks Recommended.
 func (r *Resolver) RecommendedBuild(ctx context.Context, t Type, mc string) (string, error) {
 	builds, err := r.Builds(ctx, t, mc)
 	if err != nil {
@@ -306,7 +289,6 @@ func (r *Resolver) RecommendedBuild(ctx context.Context, t Type, mc string) (str
 	return builds[0].ID, nil
 }
 
-// HasVersion reports whether type t offers Minecraft version mc.
 func (r *Resolver) HasVersion(ctx context.Context, t Type, mc string) (bool, error) {
 	vs, err := r.Versions(ctx, t)
 	if err != nil {
@@ -320,7 +302,6 @@ func (r *Resolver) HasVersion(ctx context.Context, t Type, mc string) (bool, err
 	return false, nil
 }
 
-// HasBuild reports whether build b exists for type t and version mc.
 func (r *Resolver) HasBuild(ctx context.Context, t Type, mc, b string) (bool, error) {
 	builds, err := r.Builds(ctx, t, mc)
 	if err != nil {
@@ -338,8 +319,6 @@ func (r *Resolver) HasBuild(ctx context.Context, t Type, mc, b string) (bool, er
 	return false, nil
 }
 
-// RequiredJava returns the Java major version Minecraft version mc of type t
-// needs: Paper's own published minimum for Paper, Mojang's for everything else.
 func (r *Resolver) RequiredJava(ctx context.Context, t Type, mc string) (int, error) {
 	if t == Custom {
 		return 0, nil
@@ -368,7 +347,6 @@ func (r *Resolver) RequiredJava(ctx context.Context, t Type, mc string) (int, er
 	return 8, nil
 }
 
-// prereleaseTag reports a version carrying a pre-release marker.
 func prereleaseTag(v string) bool {
 	l := strings.ToLower(v)
 	for _, tag := range []string{"alpha", "beta", "pre", "rc", "snapshot"} {
@@ -379,7 +357,6 @@ func prereleaseTag(v string) bool {
 	return false
 }
 
-// mojangManifest is the slice of version_manifest_v2.json Felis reads.
 type mojangManifest struct {
 	Versions []struct {
 		ID   string `json:"id"`
@@ -411,8 +388,6 @@ func (r *Resolver) mojangManifest(ctx context.Context) (*mojangManifest, error) 
 	return &m, nil
 }
 
-// mojangVersion reads one version's JSON through the manifest, checking the
-// sha1 the manifest gives for it.
 func (r *Resolver) mojangVersion(ctx context.Context, mc string) (*mojangVersionJSON, error) {
 	m, err := r.mojangManifest(ctx)
 	if err != nil {
@@ -466,11 +441,7 @@ func (r *Resolver) neoForgeVersions(ctx context.Context) ([]string, error) {
 	return v.Versions, err
 }
 
-// neoForgeMinecraft maps a NeoForge version to its Minecraft version. Up to
-// Minecraft 1.21.x NeoForge numbered itself after the version with the leading
-// "1." dropped ("21.4.150" is 1.21.4, "21.0.167" is 1.21); from the year-based
-// releases on it carries the version whole, with a 0 patch for an unpatched one
-// ("26.3.0.85" is 26.3, "26.1.2.7" is 26.1.2).
+// NeoForge versions map 21.4.x to Minecraft 1.21.4; year-based versions preserve the full game version and omit a zero patch.
 func neoForgeMinecraft(v string) (string, bool) {
 	base, _, _ := strings.Cut(v, "-")
 	f := strings.Split(base, ".")
@@ -512,11 +483,6 @@ func numericParts(v string) []int {
 	return out
 }
 
-// semverLess orders loader versions the way semantic versioning does: by their
-// numeric parts, a release after its own pre-releases ("0.30.1-beta.4" before
-// "0.30.1"), pre-releases by their dot-separated identifiers, numbers
-// numerically. Quilt's meta lists a game version's loaders in no order at all,
-// so the newest has to be found this way.
 func semverLess(a, b string) bool {
 	ab, apre, _ := strings.Cut(a, "-")
 	bb, bpre, _ := strings.Cut(b, "-")

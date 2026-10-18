@@ -22,24 +22,15 @@ import (
 // systemdUnitDir is where the installer writes its units.
 const systemdUnitDir = "/etc/systemd/system"
 
-// hostCommand runs a host tool (systemctl, journalctl, k3s) and returns its
-// stdout. A tool that exits non-zero still returns what it printed:
-// `systemctl is-active` prints "inactive" and exits 3.
+// Preserve tool stdout on failure, including systemctl's inactive response with exit 3.
 func hostCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
 	return exec.CommandContext(ctx, name, args...).Output()
 }
 
-// hostServices are the long-running units a full install depends on, checked
-// when their unit file is present: k3s runs the cluster, felis-velocity is the
-// game proxy, felis-nano the single-binary host that runs without k3s.
+// Check installed long-running units only; full and nano hosts depend on different services.
 var hostServices = []string{"k3s.service", "felis-velocity.service", "felis-nano.service"}
 
-// cmdDoctor runs every check felis watchdog runs, with the settings
-// felis-watchdog.service gives it, plus what only the host shows (systemd
-// units that failed or stopped, timers that no longer fire, alerts that reach
-// no one), and prints them grouped by area with where to look next. It mails
-// nothing, pings no heartbeat and leaves the watchdog's state alone: it is
-// safe to run at any time, as often as wanted.
+// It mails nothing, pings no heartbeat and leaves watchdog state alone, so it is safe to run at any time.
 func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -253,9 +244,6 @@ func collectDoctor(ctx context.Context, env doctorEnv) doctorReport {
 	return out
 }
 
-// printDoctorReport prints each area's findings under its heading, an area
-// with none as fine or, when skip says why, as not checked, then the notes
-// and the count. It returns the exit status: 1 when anything was found.
 func printDoctorReport(stdout io.Writer, findings []watchdog.Finding, skip map[string]string, notes []string) int {
 	byArea := map[string][]watchdog.Finding{}
 	for _, f := range findings {

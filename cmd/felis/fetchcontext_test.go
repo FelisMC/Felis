@@ -66,8 +66,6 @@ func tgzBody(t *testing.T, entries ...tarEntry) []byte {
 	return buf.Bytes()
 }
 
-// A normal context extracts with its tree intact, and the executable bit that
-// modpack entrypoints rely on survives.
 func TestExtractTarGzRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	body := tgzBody(t,
@@ -94,8 +92,6 @@ func TestExtractTarGzRoundTrip(t *testing.T) {
 	}
 }
 
-// The guards: "..", absolute paths, symlinks, and special files are refused whole
-// — nothing escapes, and nothing is silently skipped.
 func TestExtractTarGzRefusesEscapes(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -123,8 +119,6 @@ func TestExtractTarGzRefusesEscapes(t *testing.T) {
 	}
 }
 
-// A context that expands past the byte or entry cap is refused, however small
-// it was compressed: gzip bombs and inode floods stop at the cap.
 func TestExtractTarGzCapsExpansion(t *testing.T) {
 	bytesCap, entriesCap := maxContextBytes, maxContextEntries
 	t.Cleanup(func() { maxContextBytes, maxContextEntries = bytesCap, entriesCap })
@@ -147,9 +141,6 @@ func TestExtractTarGzCapsExpansion(t *testing.T) {
 	}
 }
 
-// The command end to end: it dials the URL with the bearer token from the
-// environment, and refuses to run without it (the internal face would 401
-// anyway; failing at parse time is the honest earlier error).
 func TestCmdFetchContextFetchAndExtract(t *testing.T) {
 	body := tgzBody(t, tarEntry{name: "Dockerfile", body: "FROM scratch\n"})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -189,9 +180,6 @@ func TestCmdFetchContextFetchAndExtract(t *testing.T) {
 	}
 }
 
-// With --sha256 the fetch refuses any bytes but the approved ones, including
-// a tarball that extracts cleanly: that is exactly the context an uploader
-// swapped in after the review.
 func TestCmdFetchContextChecksDigest(t *testing.T) {
 	body := tgzBody(t, tarEntry{name: "Dockerfile", body: "FROM scratch\n"})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -230,8 +218,6 @@ func TestCmdFetchContextChecksDigest(t *testing.T) {
 	}
 }
 
-// The request carries the service token, so a redirect is a failure: the token
-// never follows it to another host (build-supply-chain-13).
 func TestCmdFetchContextRefusesRedirects(t *testing.T) {
 	var leaked bool
 	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -252,8 +238,6 @@ func TestCmdFetchContextRefusesRedirects(t *testing.T) {
 	}
 }
 
-// A body that is not a gzip tarball must fail the extraction rather than produce
-// an empty (or partial) context Kaniko would then try to build.
 func TestExtractTarGzRejectsNonGzip(t *testing.T) {
 	dir := t.TempDir()
 	err := extractTarGz(strings.NewReader("not a tarball"), dir)
@@ -271,10 +255,6 @@ func shrinkFetchWindow(t *testing.T, interval, window time.Duration) {
 	t.Cleanup(func() { fetchRetryInterval, fetchRetryWindow = oldInterval, oldWindow })
 }
 
-// A control-plane blip mid-fetch is survived: a 5xx on the first attempt is
-// retried and the second attempt's tarball extracts. This walks back the live
-// drill's failure, where the api pod rolled mid-fetch and the single attempt
-// died, failing the build Job.
 func TestFetchContextRetriesThroughBlip(t *testing.T) {
 	shrinkFetchWindow(t, 10*time.Millisecond, time.Second)
 	body := tgzBody(t, tarEntry{name: "Dockerfile", body: "FROM scratch\n"})
@@ -302,9 +282,6 @@ func TestFetchContextRetriesThroughBlip(t *testing.T) {
 	}
 }
 
-// The live drill's exact shape: the dial itself is refused (the api pod is
-// gone and no endpoint answers). A refused dial is retried like any other
-// transport failure, and once the face is back the fetch completes.
 func TestFetchContextRetriesRefusedDial(t *testing.T) {
 	shrinkFetchWindow(t, 10*time.Millisecond, 5*time.Second)
 	body := tgzBody(t, tarEntry{name: "Dockerfile", body: "FROM scratch\n"})
@@ -351,8 +328,6 @@ func TestFetchContextRetriesRefusedDial(t *testing.T) {
 	}
 }
 
-// A 4xx is an answer, not a blip: a missing/never-uploaded context fails
-// immediately — no retry loop burns the build's deadline on a terminal error.
 func TestFetchContextDoesNotRetry4xx(t *testing.T) {
 	shrinkFetchWindow(t, 5*time.Millisecond, 200*time.Millisecond)
 	var calls int32
@@ -375,8 +350,6 @@ func TestFetchContextDoesNotRetry4xx(t *testing.T) {
 	}
 }
 
-// The retry is bounded: an internal face that stays down does not hang the
-// build pod; the window runs out and the fetch reports the exhausted retries.
 func TestFetchContextGivesUpAfterWindow(t *testing.T) {
 	shrinkFetchWindow(t, 5*time.Millisecond, 60*time.Millisecond)
 	var calls int32

@@ -20,10 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-// The world-volume lock against a fake API server. The fake client honours
-// resourceVersion on an optimistic-lock patch, so the atomic half is exercised
-// for real; what it cannot model is two felis-api replicas racing, which the
-// resourceVersion check is precisely the defence against.
+// The fake client enforces resourceVersion conflicts but does not simulate two API replicas racing.
 
 var lockNow = time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
 
@@ -135,7 +132,6 @@ func TestAcquireMaintenance(t *testing.T) {
 		if got, want := ann[maintenance.Annotation], maintenance.LockValue(maintenance.KindRestore, lockNow); got != want {
 			t.Fatalf("lock = %q, want %q", got, want)
 		}
-		// A second admission while the first holds (its Job not yet created) is refused.
 		var busy *MaintenanceBusyError
 		if err := k.AcquireMaintenance(ctx, "survival", maintenance.KindBackup); !errors.As(err, &busy) || busy.Kind != maintenance.KindRestore {
 			t.Fatalf("second admission: %v, want busy(restore)", err)
@@ -309,8 +305,6 @@ func TestStartRespectsMaintenance(t *testing.T) {
 	})
 }
 
-// gamePodComponent is a copy of the operator's pod label value; a drift would
-// let a restore start beside a terminating server.
 func TestGamePodComponentMatchesOperator(t *testing.T) {
 	if gamePodComponent != operator.ComponentValue {
 		t.Fatalf("gamePodComponent = %q, operator labels its pods %q", gamePodComponent, operator.ComponentValue)

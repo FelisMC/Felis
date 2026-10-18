@@ -50,9 +50,6 @@ func TestDBVerifySaysWhatTheBundleHolds(t *testing.T) {
 	}
 }
 
-// TestDBRestoreNeedsYes: without -yes a restore describes the bundle and stops
-// before anything reaches the database, even with -force and
-// -no-safety-backup, which would otherwise let the replay run at once.
 func TestDBRestoreNeedsYes(t *testing.T) {
 	dir := newPodRig(t)
 	cfg := podConfig(t, dir)
@@ -206,8 +203,6 @@ func TestPreMigrateBackupOnlyGuardsAPopulatedDatabase(t *testing.T) {
 	}
 }
 
-// audit-export takes a day or an RFC 3339 instant for each bound, and refuses a
-// malformed or inverted window before it opens the config or the database.
 func TestAuditExportBounds(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
 		{"", "0001-01-01T00:00:00Z"},
@@ -239,11 +234,7 @@ func TestAuditExportBounds(t *testing.T) {
 	}
 }
 
-// podK3s stands in for `k3s kubectl exec ... --`: it logs its argv and runs the
-// command after -- from the "container" directory, which is the only place the
-// PostgreSQL tools exist, as on an installed host. `kubectl get` lists one
-// MinecraftServer, logged to k3s.get, and refuses its first N calls while
-// servers_fail holds N.
+// The fake container runs PostgreSQL tools and fails kubectl get while servers_fail is positive.
 const podK3s = `#!/bin/sh
 if [ "$1" = kubectl ] && [ "$2" = get ]; then
   printf '%s\n' "$*" >> "$FAKE_DIR/k3s.get"
@@ -308,9 +299,7 @@ func newPodRig(t *testing.T) string {
 	return dir
 }
 
-// podRuns returns what the fake k3s ran since the last call, failing on any
-// run outside the database container or with the password on its command
-// line (visible to every local user in ps).
+// Reject commands outside the database container or with passwords in argv.
 func podRuns(t *testing.T, dir string) []string {
 	t.Helper()
 	log := filepath.Join(dir, "k3s.args")
@@ -354,11 +343,6 @@ func ranIn(runs []string, prefix string) bool {
 	return false
 }
 
-// TestDBBackupAndRestoreRunTheToolsInTheDatabasePod: on an installed host the
-// database is a k3s Deployment and no PostgreSQL client exists outside it, so
-// `felis db backup` and `restore` must reach the tools through kubectl exec,
-// over the pod's socket, and without putting the role's password on a command
-// line.
 func TestDBBackupAndRestoreRunTheToolsInTheDatabasePod(t *testing.T) {
 	dir := newPodRig(t)
 	cfg := podConfig(t, dir)
@@ -388,8 +372,6 @@ func TestDBBackupAndRestoreRunTheToolsInTheDatabasePod(t *testing.T) {
 	}
 }
 
-// TestPreMigrateBackupRunsInTheDatabasePod: the snapshot in front of an upgrade
-// is the one taken most often, by bootstrap on every rerun.
 func TestPreMigrateBackupRunsInTheDatabasePod(t *testing.T) {
 	dir := newPodRig(t)
 	ms := []store.Migration{{Version: 1}, {Version: 2}}
@@ -464,9 +446,6 @@ func bundleServers(t *testing.T, bundle string) []byte {
 	}
 }
 
-// TestDBBackupWithoutServersFails: when the cluster stays away the daily
-// bundle is still written, and `felis db backup` exits 1, so the timer's run
-// shows failed, saying a restore from the bundle brings back no servers.
 func TestDBBackupWithoutServersFails(t *testing.T) {
 	noServerExportWait(t)
 	dir := newPodRig(t)
@@ -493,8 +472,6 @@ func TestDBBackupWithoutServersFails(t *testing.T) {
 	}
 }
 
-// TestDBBackupRetriesTheServerExport: a cluster back on the last try costs the
-// bundle nothing, and what it holds is ready for kubectl apply.
 func TestDBBackupRetriesTheServerExport(t *testing.T) {
 	noServerExportWait(t)
 	dir := newPodRig(t)
@@ -514,10 +491,6 @@ func TestDBBackupRetriesTheServerExport(t *testing.T) {
 	}
 }
 
-// TestPreMigrateBackupExportsServers: the snapshot every upgrade takes, often
-// the newest bundle, carries the MinecraftServer objects too; a cluster that
-// is away does not hold back the migration, whose rollback needs the database
-// alone.
 func TestPreMigrateBackupExportsServers(t *testing.T) {
 	noServerExportWait(t)
 	dir := newPodRig(t)
@@ -546,14 +519,10 @@ func TestPreMigrateBackupExportsServers(t *testing.T) {
 	}
 }
 
-// TestServerExportStopsWaitingWithTheContext: a backup whose time is up stops
-// waiting for the cluster between tries.
 func TestServerExportStopsWaitingWithTheContext(t *testing.T) {
 	dir := newPodRig(t)
 	writeTestFile(t, filepath.Join(dir, "servers_fail"), "99", 0o600)
-	// Long enough for the first try to run to its refusal: starting the fake
-	// k3s on a busy machine can take a few hundred ms. Still far below the
-	// 10s retry wait, so waiting it out would fail the check below.
+	// Allow process startup while staying below the retry interval to verify cancellation interrupts waiting.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	start := time.Now()

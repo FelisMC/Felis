@@ -113,8 +113,7 @@ func validate(t Ticket, root string, limit int64) error {
 	return nil
 }
 
-// Server journals consumption before IO, so process restarts cannot enable replay.
-// A failure consumes the ticket too: the controller issues a fresh ticket on retry.
+// Server journals ticket consumption before I/O; retries require a new ticket, even after failure.
 type Server struct {
 	Root, Key string
 	Limit     int64
@@ -530,9 +529,7 @@ func (s *Server) availableBytes() (int64, error) {
 	return int64(st.Bavail)*int64(st.Bsize) - int64(float64(st.Blocks)*float64(st.Bsize)*backup.MinFreeAfter), nil
 }
 
-// Sweep keeps receipts for committed archives across arbitrarily long A outages.
-// Expired failed transfers and downloads need no replay journal: signature expiry
-// still rejects them. The extra day leaves no overlap with an active upload.
+// Sweep retains committed receipts indefinitely and removes expired transfers after an extra day.
 func (s *Server) Sweep(now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

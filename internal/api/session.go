@@ -17,40 +17,21 @@ import (
 	"time"
 )
 
-// Local sessions (spec §B, passwordless). Every sign-in door (email-OTP, passkey,
-// bind code, op-login, setup redeem) ends in a server-minted session, the external
-// face's only credential.
-// We store only the sha-256 of the opaque cookie value, mirroring how service tokens
-// are stored, so a database read never yields a usable cookie.
-
 const (
-	// sessionCookieName is the host-only session cookie. It carries no Domain
-	// attribute, so an op.console session is never sent to the player console.
+	// sessionCookieName is host-only to isolate operator and player sessions.
 	sessionCookieName = "felis_session"
-	// sessionTTL bounds a local session. Staff re-authenticate after it.
-	sessionTTL = 12 * time.Hour
-	// staffSessionIdle ends a staff session that has authenticated no request for
-	// this long; a player session has only sessionTTL. Any authenticated request
-	// counts, a panel tab's background refresh included, so what this ends is a
-	// session left behind in a closed tab or on a machine that went to sleep.
+	sessionTTL        = 12 * time.Hour
+	// staffSessionIdle counts all authenticated requests, including background refreshes.
 	staffSessionIdle = 30 * time.Minute
-	// sessionTouchEvery is how stale a session's last_seen_at may grow before a
-	// request advances it: an active session costs one write a minute, not one per
-	// request, and the idle limit is honored to within this.
-	sessionTouchEvery = time.Minute
-	// maxSessionUserAgent caps the User-Agent a session keeps to name its device.
+	// sessionTouchEvery bounds last_seen_at write frequency and idle-expiry precision.
+	sessionTouchEvery   = time.Minute
 	maxSessionUserAgent = 256
 )
 
-// LocalAuthEnabledKey is the platform_settings key that gates whether
-// local sessions are honored. It is flipped on by `felis breakGlass`
-// direct-to-Postgres at first-run and read live per-request, so enabling local
-// auth needs no pod roll. Exported so the break-glass writer and this
-// per-request reader share one source of truth instead of drifting copies.
+// LocalAuthEnabledKey is read per request; changing the setting requires no pod restart.
 const LocalAuthEnabledKey = "local_auth_enabled"
 
-// newSessionToken returns a fresh opaque session value (256 bits, URL-safe). It
-// is the cookie value; only its hash is persisted.
+// newSessionToken returns a 256-bit cookie value; only its hash is persisted.
 func newSessionToken() (string, error) {
 	var b [32]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -59,29 +40,20 @@ func newSessionToken() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b[:]), nil
 }
 
-// hashCookie maps a cookie value to its storage key (sha-256 hex), so the raw
-// cookie is never written to the database.
 func hashCookie(value string) string {
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
 }
 
-// signInProof says whether the sign-in minting a session proved a factor of the
-// account. A proven sign-in counts as a fresh reauth, so the new session may add
-// a passkey or change the email straight away (requireReauth).
+// signInProof determines whether a new session also receives a fresh reauth window.
 type signInProof bool
 
 const (
-	// provenSignIn: a passkey, an email code, op-login or the setup token.
 	provenSignIn signInProof = true
-	// bindCodeSignIn: the in-game identity alone, which never unlocks the
-	// account's other factors.
+	// bindCodeSignIn proves the game identity without unlocking changes to account factors.
 	bindCodeSignIn signInProof = false
 )
 
-// startSession mints a session for userID and sets its cookie. Every sign-in door
-// ends here (or at mintSession), so every session records the device it was
-// minted for.
 func (a *API) startSession(w http.ResponseWriter, r *http.Request, userID string, proof signInProof) error {
 	token, s, err := a.mintSession(r, userID, proof)
 	if err != nil {
@@ -94,8 +66,7 @@ func (a *API) startSession(w http.ResponseWriter, r *http.Request, userID string
 	return nil
 }
 
-// mintSession makes a session cookie value and the row that stores it, for a door
-// that writes the row itself.
+// mintSession returns the cookie value and an unpersisted session row.
 func (a *API) mintSession(r *http.Request, userID string, proof signInProof) (string, NewSession, error) {
 	token, err := newSessionToken()
 	if err != nil {
@@ -122,8 +93,6 @@ func (a *API) mintSession(r *http.Request, userID string, proof signInProof) (st
 	}, nil
 }
 
-// currentSessionHash is the storage key of the session cookie r carries, or ""
-// when it carries none.
 func currentSessionHash(r *http.Request) string {
 	c, err := r.Cookie(sessionCookieName)
 	if err != nil || c.Value == "" {
@@ -132,10 +101,6 @@ func currentSessionHash(r *http.Request) string {
 	return hashCookie(c.Value)
 }
 
-// setSessionCookie writes the session cookie: HttpOnly + Secure + SameSite=Lax,
-// host-only (no Domain), rooted at "/". Secure means the console must be served
-// over HTTPS — already a hard requirement, since WebAuthn and Zero Trust both
-// demand a secure context.
 func setSessionCookie(w http.ResponseWriter, value string, expires time.Time) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
@@ -148,8 +113,7 @@ func setSessionCookie(w http.ResponseWriter, value string, expires time.Time) {
 	})
 }
 
-// clearSessionCookie expires the session cookie (logout). The attributes must
-// match setSessionCookie for the browser to overwrite it.
+// clearSessionCookie must match setSessionCookie's attributes to overwrite the cookie.
 func clearSessionCookie(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
@@ -162,17 +126,7 @@ func clearSessionCookie(w http.ResponseWriter) {
 	})
 }
 
-// hostIsAdminConsole reports whether the request arrived on the configured
-// operator console host. The session cookie is host-only, so a session minted on
-// the admin host is structurally unable to reach the player console. If older
-// configs omit [auth].admin_hostname, fall back to op.console.<root_domain>.
-//
-// A bare IP counts only when the install names it: the address a
-// <ip>.nip.io / <ip>.sslip.io root domain embeds (what `felis setup` prints as
-// the local panel URL when wildcard DNS is unavailable), or an admin_hostname
-// set to an IP. The Host header is the client's to choose, so "any loopback or
-// private address" would let anyone who reaches the origin's port present
-// Host: 10.0.0.1 and be graded as the operator console.
+// hostIsAdminConsole accepts IP hosts only when explicitly configured or encoded in the wildcard-DNS root domain.
 func hostIsAdminConsole(r *http.Request, rootDomain, adminHostname string) bool {
 	want := strings.TrimSpace(adminHostname)
 	if want == "" {
@@ -196,8 +150,7 @@ func hostIsAdminConsole(r *http.Request, rootDomain, adminHostname string) bool 
 	return strings.EqualFold(strings.TrimSuffix(host, "."), strings.TrimSuffix(want, "."))
 }
 
-// rootDomainIP is the address a wildcard-DNS root domain spells out:
-// 10.0.0.5.nip.io and 10.0.0.5.sslip.io both name 10.0.0.5.
+// rootDomainIP extracts the address from a nip.io or sslip.io root domain.
 func rootDomainIP(rootDomain string) (netip.Addr, bool) {
 	domain := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(rootDomain), "."))
 	for _, suffix := range []string{".nip.io", ".sslip.io"} {
@@ -210,14 +163,7 @@ func rootDomainIP(rootDomain string) (netip.Addr, bool) {
 	return netip.Addr{}, false
 }
 
-// SessionAuth is the ExternalAuth for the web face: the local session cookie
-// the sign-in doors mint. There is no other credential; Cloudflare Access, when
-// the install sits behind it, is enforced at the edge.
-//
-//   - No cookie  → unauthenticated.
-//   - Cookie set → local auth MUST be enabled (a missing or non-true
-//     local_auth_enabled setting is treated as disabled — fail closed); the
-//     session hash must resolve to a live user.
+// SessionAuth requires an enabled local_auth_enabled setting and a cookie hash resolving to a live user.
 type SessionAuth struct {
 	Repo          Repo
 	RootDomain    string
@@ -232,8 +178,6 @@ func (s SessionAuth) now() time.Time {
 	return time.Now()
 }
 
-// Authenticate resolves the caller from the session cookie (see the type
-// comment for the fail-closed rules).
 func (s SessionAuth) Authenticate(r *http.Request) (*Principal, error) {
 	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil || cookie.Value == "" {
@@ -243,13 +187,10 @@ func (s SessionAuth) Authenticate(r *http.Request) (*Principal, error) {
 	ctx := r.Context()
 	enabled, err := localAuthEnabledStatus(ctx, s.Repo)
 	if err != nil {
-		// The session store is unreachable: this is an outage, not a verdict on
-		// the caller's credentials, so the middleware answers 503 rather than a
-		// misleading "please log in".
+		// Store outages return 503 so they do not appear as invalid credentials.
 		return nil, fmt.Errorf("%w: %v", errAuthBackend, err)
 	}
 	if !enabled {
-		// A cookie was presented but local auth is off: reject.
 		return nil, fmt.Errorf("local auth disabled")
 	}
 
@@ -262,7 +203,7 @@ func (s SessionAuth) Authenticate(r *http.Request) (*Principal, error) {
 		return nil, fmt.Errorf("%w: %v", errAuthBackend, err)
 	}
 	if now.Sub(u.LastSeenAt) >= sessionTouchEvery {
-		// A failed touch costs at most an early idle sign-out, so the request goes on.
+		// A failed touch can cause an early idle sign-out but does not reject this request.
 		if err := s.Repo.TouchSession(ctx, hash, now); err != nil {
 			log.Printf("api: record session activity (request_id=%s): %v", requestIDFromContext(ctx), err)
 		}
@@ -279,27 +220,16 @@ func (s SessionAuth) Authenticate(r *http.Request) (*Principal, error) {
 	}, nil
 }
 
-// errAuthBackend marks an authentication failure caused by the session store
-// being unreachable (e.g. Postgres down) rather than by a missing or invalid
-// credential. Middleware maps it to 503 so an outage is not misreported as 401.
+// errAuthBackend maps store failures to 503 instead of 401.
 var errAuthBackend = errors.New("auth backend unavailable")
 
-// localAuthEnabled reports whether the runtime local_auth_enabled toggle is true.
-// A missing setting, a read error, or a non-true value all read as disabled — the
-// gate fails closed so local sessions are honored, and new ones minted, only on an
-// explicit opt-in. Both SessionAuth (honoring a cookie) and the login handler
-// (minting one) consult it, so the two never disagree about whether local auth is
-// live.
+// localAuthEnabled fails closed on missing, invalid or unreadable settings.
 func localAuthEnabled(ctx context.Context, repo Repo) bool {
 	enabled, _ := localAuthEnabledStatus(ctx, repo)
 	return enabled
 }
 
-// localAuthEnabledStatus is localAuthEnabled with the outage case kept apart: a
-// MISSING setting (ErrNotFound — never enabled) reads as (false, nil), while a
-// store read failure reads as (false, err) so SessionAuth can tell "local auth
-// is off" (401) from "the database is down" (503). An unreadable value still
-// fails closed as disabled — it is a config fault, not an outage.
+// localAuthEnabledStatus distinguishes a missing or invalid setting from a store outage.
 func localAuthEnabledStatus(ctx context.Context, repo Repo) (bool, error) {
 	raw, err := repo.GetSetting(ctx, LocalAuthEnabledKey)
 	switch {
@@ -315,5 +245,4 @@ func localAuthEnabledStatus(ctx context.Context, repo Repo) (bool, error) {
 	return enabled, nil
 }
 
-// ensure SessionAuth satisfies ExternalAuth at compile time.
 var _ ExternalAuth = SessionAuth{}

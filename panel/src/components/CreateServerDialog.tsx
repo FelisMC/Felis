@@ -39,12 +39,7 @@ import { DISPLAY_NAME_MAX, serverNameIssue, type ServerNameIssue } from "@/lib/n
 import type { AutostartPolicy, ServerQuota } from "@/lib/types";
 import { InlineError } from "@/components/MessageLine";
 
-// CreateServerDialog IS the §15 收口 ("structured form, not free YAML"): every
-// dangerous knob (hostNetwork, hostPath, arbitrary image, raw resource quantities)
-// is simply absent from the UI. A server runs either server software the
-// platform installs on the runtime image, or (staff only) an image from the
-// server-side whitelist (GET /images); memory/storage are constrained choices
-// the API re-validates. Nothing here can express a privileged pod.
+// Expose structured fields only; the backend validates resource limits and image eligibility.
 
 
 function policyOptions(t: (key: string) => string): { value: AutostartPolicy; label: string }[] {
@@ -100,9 +95,7 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
   const [eula, setEula] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  // A custom jar chosen here goes into the new server's files once it exists.
-  // created names that server while its jar is still to land: a failed upload
-  // is retried alone, the server is not created again.
+  // Retry a failed custom-JAR upload against the created server instead of creating another.
   const [jarFile, setJarFile] = useState<File | null>(null);
   const [created, setCreated] = useState<string | null>(null);
   const [uploaded, setUploaded] = useState<number | null>(null);
@@ -138,7 +131,7 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
 
   const useSoftware = !staff || source === "software";
   const enabledImages = (images.data ?? []).filter((i) => i.enabled);
-  // An image chosen before it was disabled or removed no longer counts as chosen.
+  // An image chosen before it was disabled or removed stops counting as chosen.
   const image = enabledImages.some((i) => i.image_ref === form.image) ? form.image : "";
   const nameIssue = serverNameIssue(form.name);
   const subdomainIssue = serverNameIssue(form.subdomain);

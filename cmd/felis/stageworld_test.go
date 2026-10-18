@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// TestStageWorldCopiesTheFrozenWorld pins what the archive step will see: every file with
-// its bytes, mode and time, directories and symlinks, and nothing that is not a file.
 func TestStageWorldCopiesTheFrozenWorld(t *testing.T) {
 	from, to := t.TempDir(), t.TempDir()
 	when := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
@@ -67,8 +65,6 @@ func TestStageWorldCopiesTheFrozenWorld(t *testing.T) {
 	}
 }
 
-// TestStageWorldRefusesWhatItCannotHold pins the two refusals: a scratch directory that
-// is not empty, and one without room for the world.
 func TestStageWorldRefusesWhatItCannotHold(t *testing.T) {
 	from, to := t.TempDir(), t.TempDir()
 	if err := os.WriteFile(filepath.Join(from, "level.dat"), []byte("0123456789"), 0o644); err != nil {

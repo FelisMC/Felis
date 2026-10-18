@@ -10,14 +10,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// These tests exercise the root wizard's state machine directly by injecting the
-// inter-screen messages into rootModel.Update. They bypass all real I/O (DB,
-// migrations, panel probe, provisioning) — the screens emit those messages via
-// commands we don't run — so the only thing under test is the orchestration:
-// which screen the root advances to, and what it records on the result. This is
-// the part the dashboard→wizard refactor actually put at risk, and it needs no
-// root, k3s, or database.
-
 func drive(t *testing.T, m *rootModel, msg tea.Msg) *rootModel {
 	t.Helper()
 	next, _ := m.Update(msg)
@@ -92,10 +84,6 @@ func TestRootSetupLocalSummary(t *testing.T) {
 	}
 }
 
-// TestRootReconfigureConnectSkipsStorage locks the flow guard: from the finished
-// summary, "change connection" re-enters only the connection chooser and returns
-// straight to the summary — storage was already configured, so the operator is not
-// dragged back through it, and the earlier storage recap is preserved.
 func TestRootReconfigureConnectSkipsStorage(t *testing.T) {
 	m := newTestRoot(false, consoleModeSetup, "")
 	m = drive(t, m, preflightDoneMsg{})
@@ -115,8 +103,7 @@ func TestRootReconfigureConnectSkipsStorage(t *testing.T) {
 		t.Fatalf("reconfigure screen = %T, want *connectChooserModel", m.screen)
 	}
 
-	// Completing it returns straight to the summary — NOT the storage chooser —
-	// with the original storage recap intact.
+	// Completing it returns straight to the summary, not the storage chooser, with the original storage recap intact.
 	m = drive(t, m, connectResultMsg{method: connectReverseProxy, panelHostname: "panel.felis.example.com", guide: "caddy…"})
 	if _, ok := m.screen.(*setupOwnerModel); !ok {
 		t.Fatalf("pending link should refresh, screen = %T", m.screen)
@@ -137,9 +124,6 @@ func TestRootReconfigureConnectSkipsStorage(t *testing.T) {
 	}
 }
 
-// TestRootReconfigureStorageReEntersChooser locks the post-install "change storage"
-// path: from the finished summary it re-enters the storage chooser (not the
-// connection one) and returns to the summary carrying the new storage recap.
 func TestRootReconfigureStorageReEntersChooser(t *testing.T) {
 	m := newTestRoot(false, consoleModeSetup, "")
 	m = drive(t, m, preflightDoneMsg{})
@@ -173,10 +157,6 @@ func TestRootReconfigureStorageReEntersChooser(t *testing.T) {
 	}
 }
 
-// TestRootReconfigureSMTP locks the post-install "configure email" path: from
-// the re-run status screen it opens the SMTP form, and finishing it lands back
-// on the status screen (not the first-run summary, which would drop the
-// alreadySetUp framing).
 func TestRootReconfigureSMTP(t *testing.T) {
 	m := newTestRoot(true, consoleModeSetup, "")
 	m = drive(t, m, preflightDoneMsg{})
@@ -200,9 +180,6 @@ func TestRootReconfigureSMTP(t *testing.T) {
 	}
 }
 
-// TestRootReconfigureStorageKeepsStatusFraming locks the same rule for the
-// "change storage" path: on a re-run, completing it must land back on the
-// alreadySetUp status framing (with the updated recap), not "Setup complete."
 func TestRootReconfigureStorageKeepsStatusFraming(t *testing.T) {
 	m := newTestRoot(true, consoleModeSetup, "")
 	m = drive(t, m, preflightDoneMsg{})
@@ -255,9 +232,6 @@ func TestRootRerunResumesUnfinishedLogin(t *testing.T) {
 }
 
 func TestRootBreakGlassQuitsAfterOwner(t *testing.T) {
-	// Break-glass with a staff account present opens on the operation menu; choosing
-	// "provision/reset the Owner" lands on the owner screen, which must quit on
-	// completion without entering the connection chooser (that step is setup-only).
 	m := newTestRoot(true, consoleModeBreakGlass, "")
 	if m.stage != stageMenu {
 		t.Fatalf("break-glass initial stage = %v, want stageMenu", m.stage)
@@ -288,11 +262,6 @@ func TestRootBreakGlassQuitsAfterOwner(t *testing.T) {
 
 func key(t tea.KeyType) tea.KeyMsg { return tea.KeyMsg{Type: t} }
 
-// TestRootRailReviewNavigation locks the ←/→ rail-walk added for ergonomics:
-// from a yielding screen ← steps back through completed stages read-only,
-// → / esc return to the live screen, and ← is ignored on text-input screens
-// (which need the arrow for their cursor). A screenshot can't verify this — the
-// keys only matter live — so the contract lives here.
 func TestRootRailReviewNavigation(t *testing.T) {
 	m := newTestRoot(false, consoleModeSetup, "")
 	m = drive(t, m, preflightDoneMsg{})
@@ -311,11 +280,6 @@ func TestRootRailReviewNavigation(t *testing.T) {
 	}
 }
 
-// TestSetupRailSpansBootstrap locks the cross-program progress rail: the
-// host-bootstrap screen shows Bootstrap as the live step 1, and once the wizard
-// takes over Bootstrap is carried as a completed (✓) step ahead of the live one.
-// This is what makes the rail read as one continuous bar across the two separate
-// bubbletea programs instead of restarting when the wizard launches.
 func TestSetupRailSpansBootstrap(t *testing.T) {
 	boot := newHostBootstrapModel(context.Background())
 	if v := boot.View(); !strings.Contains(v, "1. Bootstrap") || !strings.Contains(v, "Preflight") {

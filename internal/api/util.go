@@ -8,20 +8,9 @@ import (
 	"strings"
 )
 
-// maxBodyBytes caps request bodies; the API only accepts small JSON documents.
-const maxBodyBytes = 1 << 20 // 1 MiB
+const maxBodyBytes = 1 << 20
 
-// requireJSONContentType rejects a request whose body is not declared
-// application/json, returning 415 before any decode. It guards the credential-bearing
-// auth writes (email-OTP, passkey, op-login, setup redeem) against a cross-site
-// forgery: an HTML form can
-// only POST as application/x-www-form-urlencoded, multipart/form-data, or text/plain
-// — never JSON — and a cross-site fetch that forces application/json triggers a CORS
-// preflight this API never answers, so neither form can be forged off-origin. The
-// session cookie's SameSite=Lax already blocks the bearing of credentials cross-site;
-// this is the belt to that suspenders, and it costs a legitimate same-origin caller
-// nothing (the panel always sends application/json on a bodied request). Media-type
-// parameters (e.g. "; charset=utf-8") are ignored — only the type/subtype must match.
+// requireJSONContentType blocks cross-origin form submissions to credential-bearing endpoints; media-type parameters are allowed.
 func requireJSONContentType(r *http.Request) error {
 	mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || !strings.EqualFold(mt, "application/json") {
@@ -31,9 +20,6 @@ func requireJSONContentType(r *http.Request) error {
 	return nil
 }
 
-// decodeJSON strictly decodes a small request body into v, rejecting unknown
-// fields and trailing data so malformed callers fail fast with 400, and a body
-// past maxBodyBytes with 413.
 func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	dec.DisallowUnknownFields()

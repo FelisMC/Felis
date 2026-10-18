@@ -80,9 +80,7 @@ function salvage(raw: unknown, groups: ExperienceGroup[]): Experience {
   return kept;
 }
 
-// readExperience reads the settings file. A file damaged by hand (in the file manager) is
-// not an error: the game runs on the defaults, and the page shows what it can salvage with
-// `damaged` set, so saving writes a good file over it.
+// Salvage damaged settings and expose damage so saving can replace the invalid file.
 export async function readExperience(name: string, groups: ExperienceGroup[]): Promise<{ values: Experience; sha256: string; damaged: boolean }> {
   let file;
   try {

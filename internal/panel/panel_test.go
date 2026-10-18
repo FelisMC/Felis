@@ -44,9 +44,6 @@ func TestHandlerServesPanelAndConfig(t *testing.T) {
 	if cfg.APIBase != "/api/v1" || cfg.RootDomain != "example.test" || cfg.GameVersion != "26.3" {
 		t.Fatalf("config = %+v", cfg)
 	}
-	// The tiering plumbing surfaces the two console hostnames so one bundle can
-	// detect which face it is being served from, plus a resolved build stamp for
-	// the version badge. A clean release tag resolves to a non-dev build.
 	if cfg.PanelHostname != "console.example.test" || cfg.AdminHostname != "op.console.example.test" {
 		t.Fatalf("config tiering hostnames = %+v", cfg)
 	}
@@ -61,12 +58,6 @@ func TestHandlerServesPanelAndConfig(t *testing.T) {
 	}
 }
 
-// TestParseBuildVersionSplitsBothStampForms pins the two shapes a felis binary can
-// carry. The "+g<sha>" form is what deploy/bootstrap.sh's dev channel links in, and
-// it is the one that regressed: before it was parsed, a dev build fell through to the
-// default case and the badge rendered the whole stamp as the release with no commit.
-// The SPA appends the public game port to the addresses players copy, so
-// /config.json carries it, except when a bare hostname already reaches the proxy.
 func TestHandlerPublishesNonDefaultGamePort(t *testing.T) {
 	for _, tc := range []struct{ in, want int }{{0, 0}, {25565, 0}, {25570, 25570}} {
 		h := Handler(http.NotFoundHandler(), "example.test", "", "", tc.in, "", "v1.2.3")
@@ -86,8 +77,6 @@ func TestHandlerPublishesNonDefaultGamePort(t *testing.T) {
 	}
 }
 
-// The SPA offers enabling controller high availability or adding a controller from the
-// deployment shape /config.json carries.
 func TestHandlerPublishesTheTopology(t *testing.T) {
 	for _, tc := range []struct {
 		shape []Topology
@@ -135,9 +124,6 @@ func TestParseBuildVersionSplitsBothStampForms(t *testing.T) {
 	}
 }
 
-// The console's pages go out under a CSP that admits the inline theme script by
-// its hash (and nothing else inline), cannot be framed, and cache by name:
-// hashed assets forever, the page itself never without revalidation.
 func TestHandlerSetsPageSecurityAndCacheHeaders(t *testing.T) {
 	h := Handler(http.NotFoundHandler(), "example.test", "", "", 0, "26.3", "v1.2.3")
 

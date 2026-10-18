@@ -24,15 +24,7 @@ import java.util.UUID;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 
-/**
- * FelisForgeMod is the Forge server-side leg of the §10 account-link flow. On
- * {@link RegisterCommandsEvent} it installs a {@code /link} command that mints a
- * one-time code from felis-api for the player's already-verified UUID. The command
- * is the shared {@link ModLink}, as on the other loaders (the HTTP call on a daemon
- * I/O thread, the reply back on the server thread, one generic line for any
- * failure). If config is missing the mod stays loaded but
- * never registers the command, so the proxy/server runs un-crippled.
- */
+/** Forge {@code /link} command; the shared {@link ModLink} does the work. Without config the mod loads but registers nothing. */
 @Mod("felis_link")
 public final class FelisForgeMod {
     private static final Logger LOGGER = LogUtils.getLogger();
@@ -65,7 +57,6 @@ public final class FelisForgeMod {
         dispatcher.register(Commands.literal("link").executes(ctx -> link.run(new LinkSource(ctx.getSource()))));
     }
 
-    /** LinkSource is a command source as the shared /link sees it. */
     private static final class LinkSource implements ModLink.Source {
         private final CommandSourceStack source;
         private final ServerPlayer player; // null for the console or a command block

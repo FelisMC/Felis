@@ -31,10 +31,6 @@ func (m *captureMailer) SendOTP(_ context.Context, email, code string) error {
 	return nil
 }
 
-// TestEmailOTPVertical walks the whole §B2 email-proof slice across the external
-// face: a player asks for a code, the platform delivers it (here, into the test
-// mailer), the player types it back, and only then does the user row flip verified.
-// It proves the digits never ride the HTTP response and that both halves audit.
 func TestEmailOTPVertical(t *testing.T) {
 	const email = "player@example.net"
 	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
@@ -50,8 +46,6 @@ func TestEmailOTPVertical(t *testing.T) {
 	api.Mailer = mailer
 	eh := api.ExternalHandler()
 
-	// 1) start mints + delivers a code. The response says "sent" and when it expires
-	// — but NEVER the code itself.
 	w := do(eh, "POST", "/api/v1/account/email/start", `{"email":"`+email+`"}`, nil)
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("start: code = %d, want 202 (%s)", w.Code, w.Body.String())
@@ -109,11 +103,6 @@ func TestEmailOTPVertical(t *testing.T) {
 	}
 }
 
-// TestWithRecoverLogsPanicStack pins the observability contract: a recovered panic
-// must still leave the client an opaque 500 "panic", but the panic value, a stack,
-// and the request path MUST be logged first — otherwise a 500 like the email-OTP
-// report is untraceable (an operator has nothing to grep for). Regression guard for
-// the silent recover that cost a live debugging session.
 func TestWithRecoverLogsPanicStack(t *testing.T) {
 	var buf bytes.Buffer
 	old := log.Writer()
@@ -139,9 +128,6 @@ func TestWithRecoverLogsPanicStack(t *testing.T) {
 	}
 }
 
-// TestEmailOTPStartValidation covers the mint-side input gate and the no-relay
-// refusal: a malformed address never mints, and with no Mailer the start answers
-// 503 mail_unavailable without minting, so no code exists to leak anywhere.
 func TestEmailOTPStartValidation(t *testing.T) {
 	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
 	mk := func(repo *fakeRepo) http.Handler {
@@ -202,8 +188,6 @@ func TestEmailOTPStartValidation(t *testing.T) {
 	})
 }
 
-// TestDeliverOTPWithoutMailer: a caller that reaches deliverOTP with no relay gets
-// the 503, and the code is written nowhere, the log included.
 func TestDeliverOTPWithoutMailer(t *testing.T) {
 	var logged strings.Builder
 	old := log.Writer()
@@ -220,10 +204,6 @@ func TestDeliverOTPWithoutMailer(t *testing.T) {
 	}
 }
 
-// TestEmailOTPStartRateLimited closes the email-bomb vector: handleEmailOTPStart is
-// an authenticated primitive that mails arbitrary addresses, so a resend cooldown
-// bounds it on both the caller (a fan-out across many addresses) and the recipient
-// (a convergence of many accounts on one mailbox).
 func TestEmailOTPStartRateLimited(t *testing.T) {
 	const emailA, emailB = "a@example.net", "b@example.net"
 	u1 := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
@@ -295,9 +275,6 @@ func TestEmailOTPStartRateLimited(t *testing.T) {
 	})
 }
 
-// TestEmailOTPVerifyRejections is the redeem-side failure matrix. The expired and
-// locked cases plant rows directly: the test clock is frozen, so an already-expired
-// or already-exhausted row is the only way to reach those branches deterministically.
 func TestEmailOTPVerifyRejections(t *testing.T) {
 	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
 	mk := func(repo *fakeRepo) http.Handler {
@@ -389,9 +366,6 @@ func TestEmailOTPVerifyRejections(t *testing.T) {
 	})
 }
 
-// TestEmailOTPBruteForceLockout drives the lockout end-to-end through the handler:
-// wrong guesses are charged one at a time until the budget is spent, after which
-// even the correct code is refused with 429 — the brute-force ceiling in action.
 func TestEmailOTPBruteForceLockout(t *testing.T) {
 	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
 	repo := newFakeRepo()
@@ -424,9 +398,6 @@ func TestEmailOTPBruteForceLockout(t *testing.T) {
 	}
 }
 
-// TestEmailOTPSupersede proves a re-request invalidates the prior code: only the
-// newest live code for (user, purpose) can be redeemed, so an intercepted-then-
-// reissued code cannot be used after the player asks again.
 func TestEmailOTPSupersede(t *testing.T) {
 	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
 	repo := newFakeRepo()
@@ -458,9 +429,6 @@ func TestEmailOTPSupersede(t *testing.T) {
 	}
 }
 
-// TestEmailOTPFaceSeparation enforces that both halves are web-only: they require a
-// logged-in principal the internal (service-token) face never carries, so crossing
-// the face boundary must 404, not silently work.
 func TestEmailOTPFaceSeparation(t *testing.T) {
 	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
 	api := newTestAPI(newFakeRepo(), newFakeCluster())
@@ -475,9 +443,6 @@ func TestEmailOTPFaceSeparation(t *testing.T) {
 	}
 }
 
-// TestEmailOTPMailerError pins the delivery-failure path: a Mailer that errors
-// surfaces as a 5xx (the code was persisted but never delivered), and the failure
-// is NOT audited as a successful send.
 func TestEmailOTPMailerError(t *testing.T) {
 	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
 	repo := newFakeRepo()
@@ -497,9 +462,7 @@ func TestEmailOTPMailerError(t *testing.T) {
 	}
 }
 
-// flakyMailer fails its first SendOTP, then succeeds, so a test can observe whether
-// a failed delivery left the cooldown consumed (a retry would be wrongly throttled)
-// or released (the retry is admitted, as it must be).
+// flakyMailer fails once to expose whether delivery failure releases the resend cooldown.
 type flakyMailer struct {
 	calls int
 }
@@ -512,11 +475,6 @@ func (m *flakyMailer) SendOTP(_ context.Context, _, _ string) error {
 	return nil
 }
 
-// TestEmailOTPStartFailedDeliveryReleasesCooldown covers the new reserve→rollback
-// path: a send that reserves the cooldown but then fails to deliver must release it,
-// so the very next attempt at the same instant is admitted rather than 429'd. Without
-// the deferred release a transient SMTP blip would lock a player out for the whole
-// window — strictly worse than the throttle is meant to be.
 func TestEmailOTPStartFailedDeliveryReleasesCooldown(t *testing.T) {
 	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
 	mailer := &flakyMailer{}
@@ -547,12 +505,6 @@ func (leakyMailer) SendOTP(_ context.Context, _, _ string) error {
 	return errors.New("smtp: auth as ops@example.net: 535 5.7.8 bad credentials")
 }
 
-// TestEmailOTPStartRelayRefusalIsNotInternalError pins both halves of the
-// delivery-failure contract. A relay that refuses the message is not a bug in
-// Felis, so it must not answer "internal error" — that reads as a broken panel
-// and sends the operator hunting through handler code instead of their [smtp]
-// block. And the relay's own text must not ride along on the wire: it names the
-// SMTP account, while this route is reachable by any signed-in player.
 func TestEmailOTPStartRelayRefusalIsNotInternalError(t *testing.T) {
 	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
 	api := newTestAPI(newFakeRepo(), newFakeCluster())
@@ -575,9 +527,7 @@ func TestEmailOTPStartRelayRefusalIsNotInternalError(t *testing.T) {
 	}
 }
 
-// gateMailer blocks every SendOTP until all concurrent callers have arrived, making
-// any check-then-act window in the throttle deterministically observable instead of
-// scheduler-dependent. It is the committed counterpart of the adversarial burst probe.
+// gateMailer blocks sends until concurrent requests arrive, exposing non-atomic throttle checks deterministically.
 type gateMailer struct {
 	calls   int64
 	entered chan struct{}
@@ -591,11 +541,6 @@ func (m *gateMailer) SendOTP(_ context.Context, _, _ string) error {
 	return nil
 }
 
-// TestEmailOTPStartConcurrentBurstBounded is the regression guard for the email-bomb
-// closure under concurrency. net/http serves each request on its own goroutine, so a
-// throttle that peeks then records in two steps lets a burst of starts for one victim
-// from one principal all slip through together. The atomic reserve admits exactly one;
-// the rest get 429. (Runs without -race — the gate makes the race deterministic.)
 func TestEmailOTPStartConcurrentBurstBounded(t *testing.T) {
 	const n = 8
 	mailer := &gateMailer{entered: make(chan struct{}, n), release: make(chan struct{})}
@@ -616,9 +561,6 @@ func TestEmailOTPStartConcurrentBurstBounded(t *testing.T) {
 		}(i)
 	}
 
-	// Drain whoever reached the mailer, then release them. A correct throttle admits
-	// exactly one; a buggy one lets several arrive before any records, and they pile
-	// up here within the deadline.
 	deadline := time.After(2 * time.Second)
 	reached := 0
 loop:

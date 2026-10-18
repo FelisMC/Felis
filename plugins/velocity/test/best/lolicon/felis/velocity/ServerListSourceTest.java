@@ -11,18 +11,6 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.stream.Stream;
 
-/**
- * ServerListSourceTest covers what the proxy routes on while felis-api is down: a
- * successful fetch is saved and always wins, a failure keeps the current
- * registrations, and only before the first success does the saved list come back —
- * field for field, once. Framework free: a failed assertion throws and the process
- * exits non-zero.
- *
- * <p>Run: {@code javac -d <out> shared/src/main/java/best/lolicon/felis/link/*.java
- * velocity/src/main/java/best/lolicon/felis/velocity/ServerListSource.java
- * velocity/test/best/lolicon/felis/velocity/ServerListSourceTest.java && java -cp <out>
- * best.lolicon.felis.velocity.ServerListSourceTest}.
- */
 public final class ServerListSourceTest {
 
     private static int checks;
@@ -149,8 +137,7 @@ public final class ServerListSourceTest {
         assertEq("rewritten", true, Files.readString(file, StandardCharsets.UTF_8).contains("\"10.43.0.17:25565\""));
     }
 
-    // A proxy restarted during an outage must keep forwarding a marked 1.8 backend the
-    // legacy way (#15), so the mark rides the saved list like every other field.
+    // A proxy restarted during an outage must keep forwarding a marked 1.8 backend the legacy way, so the mark rides the saved list like every other field.
     private static void theLegacyForwardingMarkIsSaved(Path dir) throws Exception {
         Path file = fresh(dir);
         ServerView legacy = new ServerView("legacy18", "old", "Running", true,
@@ -184,7 +171,6 @@ public final class ServerListSourceTest {
         throw new AssertionError("a bare array is not a server list");
     }
 
-    // ---- harness ----
 
     private static List<ServerView> fetch() throws LinkException {
         List<ServerView> a = answer;

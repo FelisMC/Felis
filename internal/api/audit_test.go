@@ -12,10 +12,6 @@ import (
 	"felis.lolicon.best/internal/metrics"
 )
 
-// Audit attribution: a row names the acting account by id and never by an
-// address the caller merely asserted; refused sign-ins, throttling and logouts
-// leave rows; a failed write is counted instead of vanishing.
-
 func TestAuditActorIgnoresUnverifiedEmail(t *testing.T) {
 	cases := []struct {
 		name string
@@ -36,8 +32,6 @@ func TestAuditActorIgnoresUnverifiedEmail(t *testing.T) {
 	}
 }
 
-// A player who sets their address to the owner's still signs every row as
-// themselves, by username and by id.
 func TestAuditCannotBeSignedWithAnotherPersonsEmail(t *testing.T) {
 	repo := newFakeRepo()
 	repo.settings[LocalAuthEnabledKey] = []byte("true")
@@ -161,7 +155,7 @@ func TestLogoutAuditsTheLiveSession(t *testing.T) {
 	eh := api.ExternalHandler()
 	cookie := map[string]string{"Content-Type": "application/json", "Cookie": sessionCookieName + "=tok"}
 	do(eh, "POST", "/api/v1/auth/logout", "", cookie)
-	do(eh, "POST", "/api/v1/auth/logout", "", cookie) // already revoked: no second row
+	do(eh, "POST", "/api/v1/auth/logout", "", cookie)
 	if len(repo.audits) != 1 || repo.audits[0].Action != "auth.logout" || repo.audits[0].ActorUserID != "u1" || repo.audits[0].Actor != "player" {
 		t.Fatalf("logout audits = %+v, want one auth.logout by player/u1", repo.audits)
 	}

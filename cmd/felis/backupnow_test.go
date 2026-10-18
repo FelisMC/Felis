@@ -115,8 +115,7 @@ func TestRequestBackup(t *testing.T) {
 		}
 	})
 
-	// The status-code → friendly-message mapping is the peer's real logic; assert each
-	// well-known code produces a distinct operator-facing message.
+	// Each well-known status code maps to its own operator-facing message.
 	cases := []struct {
 		name   string
 		code   int
@@ -169,9 +168,6 @@ func TestRequestBackup(t *testing.T) {
 	})
 }
 
-// The Sync picker must not offer system servers: the backup API validates names
-// and resolves a servers-table row, so a lobby/login pick can only die in
-// validation — a dead choice in an emergency console.
 func TestBackupPickable(t *testing.T) {
 	got := backupPickable([]haltableServer{
 		{name: "lobby", phase: "Running", system: true},

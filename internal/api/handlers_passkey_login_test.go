@@ -12,31 +12,7 @@ import (
 	"time"
 )
 
-// Pre-session Passkey (assertion) LOGIN tests (spec §B, console.<root_domain>
-// returning-player door — the public sibling of the email-OTP login door). These drive
-// the two Public routes against the fakeRepo challenge state machine and a fake
-// PasskeyVerifier, so what they PROVE is the handler + login state machine (challenge
-// stash → consume → session mint), not the pgrepo SQL nor the cryptographic assertion
-// verification (both mirrored, not run here). The load-bearing properties, in flow order:
-//
-//   - Session-data round-trip: the finish body carries only email+assertion, so the only
-//     path for the stashed blob into FinishLogin is store-stash → consume — the challenge
-//     is never client-echoed.
-//   - Anti-enumeration on finish: unknown email, no live challenge, expired challenge and
-//     a bad assertion all collapse to ONE passkey_login_invalid envelope, so the finish
-//     half is never an existence/state oracle.
-//   - Ceremonies coexist: finish picks the live challenge the browser signed, so a
-//     begin by someone else who knows the address never cancels the owner's, and each
-//     network holds a bounded number of live login challenges.
-//   - Staff admitted: unlike the email door's staff_account refusal, a passkey stands
-//     alone (possession + user-verification), so role=admin mints a session here.
-
-// seedLoginPasskeyAPI wires the public passkey-login door: local sessions enabled, a
-// single verified player "player" (id u1) whose proven address is stored in MIXED case
-// (so the resolve-on-typed-lowercase contract is exercised by default), one passkey
-// credential bound to that account, and a verifier primed with fixed options + a verified
-// assertion. Both routes are Public — no External principal wired, proving they are truly
-// pre-session.
+// seedLoginPasskeyAPI uses a mixed-case verified address and canned passkey proof for pre-session login.
 func seedLoginPasskeyAPI(t *testing.T) (*API, *fakeRepo, *fakePasskeyVerifier) {
 	t.Helper()
 	repo := newFakeRepo()
@@ -57,12 +33,7 @@ func seedLoginPasskeyAPI(t *testing.T) (*API, *fakeRepo, *fakePasskeyVerifier) {
 	return api, repo, v
 }
 
-// plantLoginChallenge seeds a stashed LOGIN-purpose challenge for u1 directly, so the
-// finish-side branches (expired, verification failure) are reachable under the frozen
-// clock without running begin first. Mirrors plantPasskeyChallenge, but scoped to
-// passkeyPurposeLogin so it is only ever consumed by the login door. Its challenge is
-// the one the fake verifier hands out by default, so loginAssertion("cred-1",
-// "YXNzZXJ0") answers it.
+// plantLoginChallenge matches loginAssertion("cred-1", "YXNzZXJ0") under the frozen fixture clock.
 func plantLoginChallenge(repo *fakeRepo, id string, expiresAt time.Time) {
 	repo.passkeyChallenges[id] = &fakePasskeyChallenge{
 		id: id, userID: "u1", purpose: passkeyPurposeLogin, challenge: "YXNzZXJ0", source: "192.0.2.1",
@@ -70,9 +41,7 @@ func plantLoginChallenge(repo *fakeRepo, id string, expiresAt time.Time) {
 	}
 }
 
-// loginAssertion is the JSON a browser posts back from navigator.credentials.get(): the
-// credential id plus response.clientDataJSON, the base64url JSON that carries the signed
-// challenge.
+// loginAssertion embeds the signed challenge in base64url response.clientDataJSON.
 func loginAssertion(credID, challenge string) string {
 	clientData := base64.RawURLEncoding.EncodeToString(
 		[]byte(`{"type":"webauthn.get","challenge":"` + challenge + `","origin":"https://console.example.net"}`))
@@ -84,21 +53,10 @@ func finishBody(email, challenge string) string {
 	return `{"email":"` + email + `","assertion":` + loginAssertion("cred-1", challenge) + `}`
 }
 
-// TestPasskeyLoginVertical walks the whole returning-player slice across the external
-// face: begin resolves the mixed-case account from a lowercase-typed email, hands its
-// bound credential to the verifier, returns the assertion options verbatim and stashes
-// one login challenge; finish verifies the assertion against the SERVER-STASHED session
-// data and mints the same host-only felis_session as the email door. The decisive
-// assertion is the session-data round-trip: the finish body carries only email+assertion,
-// so the only path for the stashed blob into FinishLogin is store-stash → consume,
-// proving the challenge is never client-echoed.
 func TestPasskeyLoginVertical(t *testing.T) {
 	api, repo, v := seedLoginPasskeyAPI(t)
 	eh := api.ExternalHandler()
 
-	// 1) begin: options FLAT (envelope stripped), exactly one login-purpose challenge stashed for u1, and
-	// the account's bound credential handed to the verifier (so the authenticator can be
-	// asked to assert with a known key).
 	w := do(eh, "POST", "/api/v1/auth/passkey/login/begin", `{"email":"player@example.net"}`, jsonHeader)
 	if w.Code != http.StatusOK {
 		t.Fatalf("begin: code = %d, want 200 (%s)", w.Code, w.Body.String())
@@ -121,9 +79,6 @@ func TestPasskeyLoginVertical(t *testing.T) {
 		}
 	}
 
-	// 2) finish — typed in yet another casing, proving the finish-side resolver is
-	// case-insensitive too — verifies the assertion and mints the session. The body
-	// carries NO challenge, only email+assertion.
 	w = do(eh, "POST", "/api/v1/auth/passkey/login/finish", finishBody("PLAYER@example.NET", "YXNzZXJ0"), jsonHeader)
 	if w.Code != http.StatusOK {
 		t.Fatalf("finish: code = %d, want 200 (%s)", w.Code, w.Body.String())
@@ -167,11 +122,6 @@ func TestPasskeyLoginVertical(t *testing.T) {
 	}
 }
 
-// TestPasskeyLoginBeginNoPasskey pins the begin-side anti-enumeration floor: an unknown
-// email and a KNOWN verified account that has enrolled no passkey answer the SAME
-// no_passkey envelope, so the two are indistinguishable. (The remaining has-passkey-vs-not
-// status split is the documented, accepted trade-off; the auth-door bucket bounds how
-// fast one address can probe it.) Neither path stashes a challenge.
 func TestPasskeyLoginBeginNoPasskey(t *testing.T) {
 	begin := func(eh http.Handler, email string) *httptest.ResponseRecorder {
 		return do(eh, "POST", "/api/v1/auth/passkey/login/begin", `{"email":"`+email+`"}`, jsonHeader)
@@ -182,7 +132,6 @@ func TestPasskeyLoginBeginNoPasskey(t *testing.T) {
 		apiU, repoU, _ := seedLoginPasskeyAPI(t)
 		wGhost := begin(apiU.ExternalHandler(), "ghost@example.net")
 
-		// Known verified account that has enrolled NO passkey.
 		apiN, repoN, _ := seedLoginPasskeyAPI(t)
 		delete(repoN.passkeyCreds, "row1")
 		wNone := begin(apiN.ExternalHandler(), "player@example.net")
@@ -203,9 +152,6 @@ func TestPasskeyLoginBeginNoPasskey(t *testing.T) {
 	})
 }
 
-// TestPasskeyLoginBeginVerifierError pins the verifier-fault path: a BeginLogin failure is
-// a server-side fault, answered passkey_login_failed, stashing nothing, and the immediate
-// retry reaches the verifier again.
 func TestPasskeyLoginBeginVerifierError(t *testing.T) {
 	api, repo, v := seedLoginPasskeyAPI(t)
 	v.beginLoginErr = errors.New("no assertable credential")
@@ -222,10 +168,6 @@ func TestPasskeyLoginBeginVerifierError(t *testing.T) {
 	}
 }
 
-// TestPasskeyLoginGates covers the shared front doors of both halves: the fail-closed
-// local-auth toggle, graceful degradation when no verifier is wired, the CSRF Content-Type
-// guard (these are Public, credential-minting routes), and the input gates that must
-// reject before any lookup or stash.
 func TestPasskeyLoginGates(t *testing.T) {
 	const beginPath = "/api/v1/auth/passkey/login/begin"
 	const finishPath = "/api/v1/auth/passkey/login/finish"
@@ -290,9 +232,6 @@ func TestPasskeyLoginGates(t *testing.T) {
 	})
 
 	t.Run("finish bad inputs -> 400", func(t *testing.T) {
-		// An assertion key of {} is non-empty (2 bytes), so it clears the len==0 gate and
-		// fails later at passkey_login_invalid — the "missing assertion" gate is only the
-		// absent key. These are the cases the input gate itself must catch.
 		cases := []struct{ name, body, wantCode string }{
 			{"bad email", `{"email":"notanemail","assertion":{"id":"x"}}`, "bad_request"},
 			{"missing assertion", `{"email":"player@example.net"}`, "bad_request"},
@@ -311,12 +250,6 @@ func TestPasskeyLoginGates(t *testing.T) {
 	})
 }
 
-// TestPasskeyLoginFinishRejections is the redeem-side failure matrix and the anchor for
-// anti-enumeration: an unknown email, a known account with no live challenge, an expired
-// challenge and an assertion that fails verification must ALL answer the byte-identical
-// passkey_login_invalid envelope (code AND message) and mint no session — so the finish
-// half never doubles as an existence or ceremony-state oracle. Expired state is planted
-// directly: the frozen clock makes that the only deterministic route to that branch.
 func TestPasskeyLoginFinishRejections(t *testing.T) {
 	const finishPath = "/api/v1/auth/passkey/login/finish"
 	finish := func(eh http.Handler, email, assertion string) *httptest.ResponseRecorder {
@@ -379,11 +312,6 @@ func TestPasskeyLoginFinishRejections(t *testing.T) {
 	}
 }
 
-// TestPasskeyLoginCeremoniesCoexist is the case of someone who knows the address and
-// begins logins for it while its owner signs in. Every begin stashes a ceremony of its
-// own; finish verifies against the one whose challenge the browser signed, so the
-// owner's earlier ceremony survives any number of later begins, and a stranger's
-// assertion over a challenge nobody issued consumes nothing.
 func TestPasskeyLoginCeremoniesCoexist(t *testing.T) {
 	api, repo, v := seedLoginPasskeyAPI(t)
 	eh := api.ExternalHandler()
@@ -422,11 +350,6 @@ func TestPasskeyLoginCeremoniesCoexist(t *testing.T) {
 	}
 }
 
-// TestPasskeyLoginBeginPerSourceCap bounds the challenge store by network: 32 live login
-// challenges begun from one IPv6 /48 fill that network's allowance (429
-// too_many_challenges, nothing stashed), while a begin from another network still gets
-// its ceremony. The begins come from 33 different /64s inside the /48, so the per-/64
-// auth-door bucket never trips and only the /48 bound can refuse the last one.
 func TestPasskeyLoginBeginPerSourceCap(t *testing.T) {
 	api, repo, _ := seedLoginPasskeyAPI(t)
 	api.ClientIPHeader = "CF-Connecting-IP"
@@ -455,9 +378,6 @@ func TestPasskeyLoginBeginPerSourceCap(t *testing.T) {
 	}
 }
 
-// TestPasskeyChallengeCanonicalForm pins that the stored and the signed challenge compare
-// equal whatever padding each side used: go-webauthn accepts padded and unpadded
-// base64url, and a browser's clientDataJSON may arrive either way.
 func TestPasskeyChallengeCanonicalForm(t *testing.T) {
 	if got, err := optionsChallenge(json.RawMessage(`{"publicKey":{"challenge":"ZmFrZQ=="}}`)); err != nil || got != "ZmFrZQ" {
 		t.Errorf("optionsChallenge(padded) = %q, %v; want ZmFrZQ", got, err)
@@ -481,11 +401,6 @@ func TestPasskeyChallengeCanonicalForm(t *testing.T) {
 	}
 }
 
-// TestPasskeyLoginAllowsStaff pins the deliberate contrast with the email door: that door
-// refuses role != user with 403 staff_account (op.console keeps its Zero-Trust in-game
-// gate), but the passkey door ADMITS staff — a passkey is a strong two-factor authenticator
-// (possession + user-verification), enough to stand alone. This guards against a future
-// "make the doors consistent" change silently locking admins out of passkey login.
 func TestPasskeyLoginAllowsStaff(t *testing.T) {
 	repo := newFakeRepo()
 	repo.settings[LocalAuthEnabledKey] = []byte("true")
@@ -520,8 +435,6 @@ func TestPasskeyLoginAllowsStaff(t *testing.T) {
 	}
 }
 
-// TestPasskeyLoginFaceSeparation enforces that both halves are web-only: the internal
-// (service-token) face must 404 them, never serve them.
 func TestPasskeyLoginFaceSeparation(t *testing.T) {
 	api, _, _ := seedLoginPasskeyAPI(t)
 	ih := api.InternalHandler()
@@ -533,13 +446,6 @@ func TestPasskeyLoginFaceSeparation(t *testing.T) {
 	}
 }
 
-// TestPasskeyLoginFinishCloneRejected is the username-first mirror of the discoverable door's
-// clone refusal (task #40 item 5). Both doors share applyAssertion, but each WIRES it
-// independently, so this proves the username-first finish also fails closed on a CloneWarning:
-// the same opaque passkey_login_invalid envelope (no clone oracle), no session minted, the stored
-// credential left untouched at its enrollment-time counter, and a distinct auth.passkey_clone_
-// rejected audit under the account. Challenge is planted directly so finish is reachable under
-// the frozen clock without a live begin.
 func TestPasskeyLoginFinishCloneRejected(t *testing.T) {
 	api, repo, v := seedLoginPasskeyAPI(t)
 	v.assertion = VerifiedAssertion{CredentialID: "cred-1", UserVerified: true, SignCount: 3, CloneWarning: true}

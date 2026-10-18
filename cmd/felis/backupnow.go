@@ -30,14 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// backupnow is the break-glass "back up a world now" op (§B4 "Sync"). Unlike halt —
-// which writes the CRD directly — a backup needs felis-api's deployment coordinates
-// (FELIS_IMAGE / FELIS_BACKUP_PVC) to render the one-shot backup Job, so the console
-// cannot do it in-process. It POSTs the felis-api INTERNAL face (ops-token auth)
-// while the API is alive, and the API renders the Job and audits the action. This file
-// is the pure core (no bubbletea); tui_backupnow.go is the terminal glue. The
-// `felis backup-now` command (cmdBackupNow, below) takes the same route for every
-// user server in turn.
+// Request backups through the internal API, which owns Job configuration.
 
 // backupNowOutcome is the durable result of a backup request, re-printed after the TUI
 // alt-screen tears down.
@@ -46,10 +39,7 @@ type backupNowOutcome struct {
 	status string // "backing_up" on success
 }
 
-// resolveInternalAPI reads the two things the on-node console needs to reach the
-// felis-api internal face: the felis-api-internal Service ClusterIP (the host's
-// resolver is not CoreDNS, so the cluster-DNS name is useless here) and the ops
-// token. Both live in the control namespace.
+// resolveInternalAPI reads the internal Service ClusterIP and the ops token from the control namespace; cluster DNS does not resolve on the host.
 func resolveInternalAPI(ctx context.Context, cl client.Client, controlNamespace string) (baseURL, token string, err error) {
 	var svc corev1.Service
 	if err := cl.Get(ctx, types.NamespacedName{Namespace: controlNamespace, Name: platform.APIInternalServiceName}, &svc); err != nil {
@@ -73,11 +63,7 @@ func resolveInternalAPI(ctx context.Context, cl client.Client, controlNamespace 
 	return fmt.Sprintf("http://%s:%d", ip, platform.APIInternalPort), token, nil
 }
 
-// requestBackup POSTs the internal backup endpoint and maps the response to a friendly
-// outcome. osUser is sent for audit attribution (parity with halt); the API records it
-// as the actor. A transport failure is distinguished from an HTTP error status because
-// break-glass runs when things are broken — and this op needs the API alive by design,
-// so "the API is down" is the useful message.
+// Distinguish transport failure from API rejection in recovery output.
 func requestBackup(ctx context.Context, hc *http.Client, baseURL, token, name, osUser string) (backupNowOutcome, error) {
 	body, _ := json.Marshal(map[string]string{"os_user": osUser})
 	url := baseURL + "/api/v1/internal/servers/" + name + "/backup"
@@ -100,9 +86,7 @@ func requestBackup(ctx context.Context, hc *http.Client, baseURL, token, name, o
 	return backupNowOutcome{}, backupErrorFromResponse(resp)
 }
 
-// backupErrorFromResponse turns a non-202 into a human message. The well-known codes get
-// an operator-facing explanation; anything else falls back to the API's
-// {"error":{code,message}} body, then the bare status code.
+// Prefer known error codes, then the API message, then HTTP status when explaining backup rejection.
 func backupErrorFromResponse(resp *http.Response) error {
 	var e struct {
 		Error struct {
@@ -115,10 +99,7 @@ func backupErrorFromResponse(resp *http.Response) error {
 
 	switch resp.StatusCode {
 	case http.StatusConflict:
-		// Several refusals share 409: a server between running and stopped, an install that
-		// cannot back up a running server, and the missing-world-volume gate. A body without
-		// its own text reads as the first (the only 409 before the others existed); any
-		// other falls through to the API's own operator text, which tells them apart.
+		// Several refusals share 409. A body without text means the first refusal (the only 409 before the others existed); the API's text tells the rest apart.
 		if e.Error.Code == "" || (e.Error.Code == "not_stopped" && e.Error.Message == "") {
 			return fmt.Errorf("the server is starting or stopping — back it up once it is running or stopped")
 		}
@@ -138,10 +119,7 @@ func backupErrorFromResponse(resp *http.Response) error {
 	return fmt.Errorf("felis-api returned HTTP %d", resp.StatusCode)
 }
 
-// backupRequestTimeout bounds one backup request. A running server's request returns
-// only once the game has flushed its world to disk (save-off, then save-all flush,
-// up to two minutes on a large world) and the Job exists; the API thaws the game if
-// the caller hangs up first, so the wait covers the flush.
+// backupRequestTimeout bounds one backup request. A running server's request returns only after the game flushes its world (up to two minutes), so the wait covers the flush.
 const backupRequestTimeout = 3 * time.Minute
 
 // performBackupNow composes resolve + request. controlNamespace holds the Service +
@@ -155,12 +133,7 @@ func performBackupNow(ctx context.Context, cl client.Client, controlNamespace, n
 	return requestBackup(ctx, hc, baseURL, token, name, osUser)
 }
 
-// backupPickable narrows the backup picker to servers the backup API can accept.
-// System servers (login/lobby) are excluded: they have no row in the servers
-// table and carry reserved names, so every attempt dies in name validation —
-// offering them would be a dead pick. The halt picker keeps them on purpose
-// (break-glass retains full power over system servers); only the API-backed
-// backup op cannot reach them.
+// backupPickable excludes system servers: they have no servers-table row and reserved names, so every backup attempt would fail validation. The halt picker keeps them on purpose.
 func backupPickable(servers []haltableServer) []haltableServer {
 	out := make([]haltableServer, 0, len(servers))
 	for _, s := range servers {
@@ -171,11 +144,6 @@ func backupPickable(servers []haltableServer) []haltableServer {
 	return out
 }
 
-// cmdBackupNow is `felis backup-now`: the world of every user server (or of the
-// named ones) archived now, one at a time, through the internal backup route the
-// console's Sync uses. A world lives only in its volume and the off-site copy holds
-// only its archives, so this is the lever in front of a planned move to another
-// host, a disk swap or anything else that could lose a volume.
 func cmdBackupNow(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("backup-now", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -238,9 +206,7 @@ func cmdBackupNow(args []string, stdout, stderr io.Writer) int {
 			return backupNowStopped(ctx, cl, &ms)
 		},
 		halt: func(ctx context.Context, name string) error {
-			// The database is opened only once a server is to be stopped: the halt
-			// is audited like the console's, and a run with nothing running needs
-			// no more than the API.
+			// The database opens only when a server must be stopped, since the halt is audited like the console's.
 			if repo == nil {
 				d, err := store.Open(ctx, cfg.Database.URL)
 				if err != nil {
@@ -293,10 +259,7 @@ type backupNowWorld struct {
 	hasWorld bool   // its world volume exists
 }
 
-// listBackupNowWorlds lists the user servers of namespace in the API server's
-// order (by name), each with what the backup route checks. System servers are
-// left out: they have no row in the servers table, so the route refuses them
-// (backupPickable).
+// Exclude system servers because the backup route requires a business-database row.
 func listBackupNowWorlds(ctx context.Context, cl client.Client, namespace string) ([]backupNowWorld, error) {
 	var list v1alpha1.MinecraftServerList
 	if err := cl.List(ctx, &list, client.InNamespace(namespace)); err != nil {
@@ -343,14 +306,10 @@ func backupNowStopped(ctx context.Context, cl client.Client, ms *v1alpha1.Minecr
 	return len(pods.Items) == 0, nil
 }
 
-// errBackupAPIUnreachable is a backup request that never reached felis-api. It
-// ends a backup-now run: every later world would fail the same way, and stopping
-// servers for backups that cannot be taken only takes them away from players.
+// errBackupAPIUnreachable ends a backup-now run: every later world would fail the same way, and stopping servers for backups that cannot be taken only takes them from players.
 var errBackupAPIUnreachable = errors.New("felis-api unreachable (a backup needs it alive)")
 
-// Polling of backup-now. A graceful stop saves the world first; the backup Job's
-// own deadline (backupjob, 30 minutes) ends a Job that hangs, so its wait needs no
-// cap of its own.
+// The backup Job's own 30-minute deadline (backupjob) ends a hung Job, so polling needs no cap of its own.
 const (
 	backupNowPoll      = 2 * time.Second
 	backupNowStopWait  = 10 * time.Minute

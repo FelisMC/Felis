@@ -20,8 +20,6 @@ func gamePod() *corev1.Pod {
 	return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "survival-0", Namespace: "minecraft"}}
 }
 
-// A start that timed out is retried by recreating its pod after a doubling
-// backoff (1m, 2m, 4m past the timeout), three times, then left Failed.
 func TestTimedOutStartRecreatesThePodWithBackoff(t *testing.T) {
 	srv := runningServer()
 	srv.Spec.Startup.TimeoutSeconds = 30
@@ -83,7 +81,6 @@ func TestTimedOutStartRecreatesThePodWithBackoff(t *testing.T) {
 	}
 }
 
-// An RCON channel that never answers on a TCP-ready pod gets the same retry.
 func TestReadinessTimeoutRecreatesThePod(t *testing.T) {
 	srv := runningServer()
 	srv.Spec.Startup.ReadinessTimeoutSeconds = 30
@@ -124,9 +121,6 @@ func (switchProber) Save(context.Context, string, string) error { return nil }
 
 func (switchProber) Broadcast(context.Context, string, string, string) error { return nil }
 
-// A Running server keeps its phase and endpoint through two missed probes,
-// re-probing every 10s; the third consecutive miss degrades it to Starting,
-// and any success in between starts the count over.
 func TestRunningServerDegradesOnlyAfterThreeMisses(t *testing.T) {
 	down := false
 	r, c := newReconciler(t, switchProber{down: &down}, runningServer(), rconSecret())
@@ -164,8 +158,6 @@ func TestRunningServerDegradesOnlyAfterThreeMisses(t *testing.T) {
 	}
 }
 
-// A miss count lives in the operator's memory, so it has to go with the run it
-// counts: a server meant to stop and a server deleted leave none behind.
 func TestProbeMissCountsGoWithTheServer(t *testing.T) {
 	missOnce := func(t *testing.T) (*operator.Reconciler, client.Client) {
 		t.Helper()
@@ -207,8 +199,6 @@ func TestProbeMissCountsGoWithTheServer(t *testing.T) {
 	})
 }
 
-// A Failed server wakes when its next auto-restart falls due, and every 5m
-// once the attempts are spent, instead of every 2s.
 func TestFailedServerRequeuesWhenTheRetryIsDue(t *testing.T) {
 	srv := runningServer()
 	srv.Spec.Startup.TimeoutSeconds = 30
@@ -247,8 +237,6 @@ func (c noCachedSecrets) Get(ctx context.Context, key client.ObjectKey, obj clie
 	return c.Client.Get(ctx, key, obj, opts...)
 }
 
-// RCON Secrets are provisioned and read through Reconciler.Secrets alone, so the
-// operator runs with secrets:get and no Secret informer.
 func TestRconSecretsAreReadThroughTheUncachedReader(t *testing.T) {
 	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 2, Max: 20}}, runningServer())
 	r.Client = noCachedSecrets{c}
@@ -280,7 +268,6 @@ func (s *staleOnce) Get(ctx context.Context, key client.ObjectKey, obj client.Ob
 	return s.Reader.Get(ctx, key, obj, opts...)
 }
 
-// Losing the create race re-reads the winner through the same uncached reader.
 func TestRconSecretCreateRaceRereadsUncached(t *testing.T) {
 	r, c := newReconciler(t, fakeProber{}, runningServer(), rconSecret())
 	r.Client = noCachedSecrets{c}

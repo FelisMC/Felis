@@ -11,8 +11,6 @@ import (
 	"os"
 )
 
-// VerifyRestored reads target files back and compares them with every regular archive entry.
-// OpenRoot keeps a malicious path or existing symlink inside the world volume.
 func VerifyRestored(ctx context.Context, ref, world string) error {
 	root, err := os.OpenRoot(world)
 	if err != nil {

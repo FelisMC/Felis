@@ -15,15 +15,11 @@ import (
 	"felis.lolicon.best/internal/reaper"
 )
 
-// archivePolicyTTL is how long felis-api keeps the retention it read, so a change saved
-// through any replica is in force on every one within it.
 const archivePolicyTTL = 15 * time.Second
 
-// ArchivePolicy resolves the backup and audit retention in force for felis-api: the
-// panel's (archivepolicy) when the Owner saved one, else felis.toml's.
+// ArchivePolicy prefers panel retention over host config.
 type ArchivePolicy struct {
-	Repo Repo
-	// Host is felis.toml's [archive] and HostAudit its [audit] retention.
+	Repo      Repo
 	Host      reaper.Config
 	HostAudit time.Duration
 
@@ -33,8 +29,7 @@ type ArchivePolicy struct {
 	read   bool
 }
 
-// panel is the Owner's saved policy, nil when there is none; a row that cannot be read
-// is logged and leaves felis.toml in force.
+// panel is nil when unset; unreadable rows are logged and fall back to host retention.
 func (p *ArchivePolicy) panel(ctx context.Context) *archivepolicy.Policy {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -63,7 +58,6 @@ func (p *ArchivePolicy) invalidate() {
 	p.mu.Unlock()
 }
 
-// Reaper is the [archive] retention in force.
 func (p *ArchivePolicy) Reaper(ctx context.Context) reaper.Config {
 	rc := p.Host
 	if pol := p.panel(ctx); pol != nil {
@@ -72,7 +66,7 @@ func (p *ArchivePolicy) Reaper(ctx context.Context) reaper.Config {
 	return rc
 }
 
-// Audit is how long audit rows are kept; 0 keeps every row.
+// Audit=0 retains all rows.
 func (p *ArchivePolicy) Audit(ctx context.Context) time.Duration {
 	if pol := p.panel(ctx); pol != nil {
 		return pol.Audit()
@@ -80,8 +74,6 @@ func (p *ArchivePolicy) Audit(ctx context.Context) time.Duration {
 	return p.HostAudit
 }
 
-// backupCooldown, backupStoreCap and scheduledEvery read the retention in force, or the
-// static fields when no policy is wired (tests, a bare API).
 func (a *API) backupCooldown(ctx context.Context) time.Duration {
 	if a.ArchivePolicy != nil {
 		return a.ArchivePolicy.Reaper(ctx).ManualCooldown
@@ -96,8 +88,6 @@ func (a *API) backupStoreCap(ctx context.Context) int64 {
 	return a.BackupStoreCap
 }
 
-// ArchivePolicyView is GET/PUT /settings/archive-policy: the retention in force, where it
-// comes from (panel or host), and its revision.
 type ArchivePolicyView struct {
 	archivepolicy.Policy
 	Source   string `json:"source"`
@@ -120,8 +110,7 @@ func (a *API) archivePolicyView(ctx context.Context) (ArchivePolicyView, []byte,
 	if saved != nil {
 		view.Policy, view.Source = *saved, "panel"
 	}
-	// The revision hashes the canonical encoding: PostgreSQL's jsonb does not keep the
-	// bytes it was given.
+	// Hash canonical JSON because Postgres jsonb does not preserve input bytes.
 	canonical, _ := json.Marshal(struct {
 		archivepolicy.Policy
 		Source string
@@ -174,7 +163,6 @@ func (a *API) handleSetArchivePolicy(w http.ResponseWriter, r *http.Request) {
 	a.writeArchivePolicy(w, r, body.Revision, &body.Policy)
 }
 
-// handleClearArchivePolicy hands retention back to felis.toml.
 func (a *API) handleClearArchivePolicy(w http.ResponseWriter, r *http.Request) {
 	if !a.requireReauth(w, r, principalFromContext(r.Context())) || !a.archivePolicyReady(w, r) {
 		return
@@ -187,8 +175,7 @@ func (a *API) handleClearArchivePolicy(w http.ResponseWriter, r *http.Request) {
 	a.writeArchivePolicy(w, r, current.Revision, nil)
 }
 
-// writeArchivePolicy compare-and-sets the row (nil writes JSON null) and answers with the
-// policy now in force.
+// writeArchivePolicy uses compare-and-set; nil stores JSON null.
 func (a *API) writeArchivePolicy(w http.ResponseWriter, r *http.Request, revision string, p *archivepolicy.Policy) {
 	current, expected, err := a.archivePolicyView(r.Context())
 	if err != nil {

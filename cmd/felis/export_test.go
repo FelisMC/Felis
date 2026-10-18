@@ -170,7 +170,6 @@ func TestCmdExportWorld(t *testing.T) {
 	}
 }
 
-// A world root that cannot be opened fails before anything reaches felis-api.
 func TestCmdExportWorldUnreadable(t *testing.T) {
 	rcv := receiveExport(t, noContent)
 	t.Setenv(worldexport.TokenEnv, "tok")
@@ -181,9 +180,6 @@ func TestCmdExportWorldUnreadable(t *testing.T) {
 	}
 }
 
-// An export that fails part-way must never reach felis-api as a complete body:
-// the chunked upload is cut off, so felis-api aborts the browser's download,
-// and the failure itself is what the Job reports.
 func TestStreamExportWriteErrorAbortsTheUpload(t *testing.T) {
 	broken := errors.New("disk read failed")
 	rcv := receiveExport(t, noContent)
@@ -206,8 +202,6 @@ func TestStreamExportWriteErrorAbortsTheUpload(t *testing.T) {
 	}
 }
 
-// When felis-api refuses first, its reason is reported, not the closed pipe
-// that then stops the writer.
 func TestStreamExportRefusalStopsTheWriter(t *testing.T) {
 	refusing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
@@ -325,9 +319,7 @@ func TestCmdExportBackup(t *testing.T) {
 		})
 	}
 
-	// The stored bytes are checked as they stream, and the archive the Job sends
-	// is only closed once they are all read: a mismatch cuts the upload off
-	// short of its end, so felis-api never passes on a complete-looking copy.
+	// Digest failure must interrupt the upload before a corrupt archive can appear complete.
 	t.Run("a digest mismatch cuts the upload off before its end", func(t *testing.T) {
 		rcv := receiveExport(t, noContent)
 		t.Setenv(worldexport.TokenEnv, "tok")
@@ -387,10 +379,7 @@ func TestCmdExportBackup(t *testing.T) {
 		}
 	})
 
-	// The request carries the token and the internal face never redirects, so a
-	// redirect is refused rather than followed with the token attached. A 302 or
-	// 303 is the one net/http would follow on its own (as a GET, and to the same
-	// host with the Authorization header still on it).
+	// A 302 or 303 would be followed by net/http with the Authorization header still attached, so the test asserts the redirect is refused.
 	for _, status := range []int{http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
 		t.Run("a redirect is not followed: "+strconv.Itoa(status), func(t *testing.T) {
 			elsewhere := receiveExport(t, noContent)
@@ -513,9 +502,6 @@ func TestCmdExportUsage(t *testing.T) {
 	}
 }
 
-// TestCmdExportWiring: the Job's `felis export` reaches cmdExport, and
-// felis-api's executor mounts the backup store at the path the archives were
-// written under, since a backup's ref is an absolute path there.
 func TestCmdExportWiring(t *testing.T) {
 	t.Setenv(worldexport.TokenEnv, "")
 	var stdout, stderr bytes.Buffer

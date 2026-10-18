@@ -72,13 +72,10 @@ interface MockAccount {
   disabled?: boolean;
   created_at?: string;
   updated_at?: string;
-  // The user's own quota row; without one the default quota applies.
-  quota?: Omit<QuotaView, "custom">;
+  quota?: Omit<QuotaView, "custom">; // the default quota applies when absent
   sessions?: SessionView[];
-  // Until when this browser's session counts as re-authenticated (ms epoch),
-  // and the address an email-change code was last sent to.
-  reauthUntil?: number;
-  pendingEmail?: string;
+  reauthUntil?: number; // ms epoch until which the session counts as re-authenticated
+  pendingEmail?: string; // address the email-change code was last sent to
 }
 
 interface MockServer extends ServerStatus {
@@ -93,9 +90,7 @@ interface PlayerLuckPerms {
 interface AccessState {
   whitelist: string[];
   banned: string[];
-  // online is the mock's stand-in for the live RCON "list" roster. Kick and ban
-  // splice a player out of it so the demo roster reflects the action on reload.
-  online: string[];
+  online: string[]; // stands in for the RCON "list" roster; kick and ban remove entries
   luckperms: Record<string, PlayerLuckPerms>;
 }
 
@@ -105,8 +100,7 @@ interface MockState {
   images: WhitelistImage[];
   access: Record<string, AccessState>;
   backups: BackupView[];
-  // Backup/restore Jobs by server, newest first. The mock finishes each at once.
-  jobs: Record<string, ServerJob[]>;
+  jobs: Record<string, ServerJob[]>; // backup/restore jobs by server, newest first
   builds: Build[];
   passkeys: Record<AccountID, { id: string; name: string; created_at: string }[]>;
   submissions: Submission[];
@@ -119,15 +113,12 @@ interface MockState {
   heartbeat: HeartbeatSettings;
   failoverPolicy: FailoverPolicySettings;
   entryPolicy: EntryPolicySettings;
-  // The Owner's default quota (settings/self-service); off, as on a new install.
   selfService: SelfServiceQuotaSettings;
   host: MockHost;
-  // Each server's world volume, seeded on first visit.
-  files: Record<string, MockTree>;
+  files: Record<string, MockTree>; // per-server world volume, seeded on first visit
 }
 
-// MockHost stands in for the controller host's node-control service: its tasks finish at
-// once, and the settings they change show up in the overview.
+// MockHost stands in for the node-control service; its tasks finish at once.
 interface MockHost {
   tasks: NodeControlTask[];
   quietUntil?: string;
@@ -137,9 +128,7 @@ interface MockHost {
   storage: HostOverview["storage"];
 }
 
-// PLAYER_NAME mirrors the backend's mcNameRe (handlers_access.go) so the mock
-// rejects a malformed player exactly as the real API would (400 bad_request),
-// keeping the panel's error path exercisable in dev.
+// Keep in sync with mcNameRe in handlers_access.go.
 const PLAYER_NAME = /^[A-Za-z0-9_]{1,16}$/;
 const LP_NODE = /^[A-Za-z0-9_.*-]{1,64}$/;
 const LP_CTX = /^[A-Za-z0-9_-]{1,48}$/;
@@ -217,20 +206,13 @@ const LOGIN_HINT_SCRIPT = `
 })();
 `;
 
-// World-backup seed. A backup is written when the reaper archives an inactive
-// world, so these read as "sleep saves": a handful for survival (recent through one
-// nearly expired, to exercise the relative-time and near-expiry states), one for
-// modded, none for the rest so the empty state shows too. former_owner is the
-// archiving owner; GET /backups is scoped by it for non-admins (BackupsForUser).
 const GiB = 1024 ** 3;
 const DAY_MS = 86_400_000;
 
-// Uploaded build contexts by submission id. Seeded submissions get a small
-// stand-in archive so the review page's download and digest check have bytes.
+// Uploaded build contexts by submission id; seeded submissions get a stand-in archive.
 const contextBlobs = new Map<string, Buffer>();
 
-// Staged chunked uploads by submission id, and the caps the mock reports. The
-// part cap is small so a modest test file already goes up in several parts.
+// Staged chunked uploads by submission id; the small part cap forces multi-part uploads.
 const stagedParts = new Map<string, Buffer>();
 const MOCK_PART_MAX = 256 * 1024;
 const MOCK_CONTEXT_MAX = 1024 * 1024 * 1024;
@@ -260,7 +242,6 @@ function backup(
 ): BackupView {
   const created = Date.now() - daysAgo * DAY_MS;
   return {
-    // A seeded row is named by its age; one made now needs a sequence to stay unique.
     id: daysAgo > 0 ? `bk-${server}-${daysAgo}` : `bk-${server}-now-${++freshBackups}`,
     server_name: server,
     former_owner: formerOwner,
@@ -277,9 +258,8 @@ function mockBackups(): BackupView[] {
     backup("survival", 5, 1.4 * GiB, "owner"),
     backup("survival", 20, 1.3 * GiB, "owner"),
     backup("survival", 45, 1.2 * GiB, "owner"),
-    backup("survival", 88, 2.1 * GiB, "owner"), // ~2 days from expiry — exercises the urgency state
+    backup("survival", 88, 2.1 * GiB, "owner"), // ~2 days from expiry
     backup("modded", 12, 0.6 * GiB, "owner"),
-    // The linked player's own server, so a player sees the restore rows too.
     backup("lobby", 2, 0.8 * GiB, "linked", "manual"),
     backup("lobby", 30, 0.7 * GiB, "linked"),
   ];
@@ -305,8 +285,7 @@ function initialState(): MockState {
         memory: "4Gi",
         javaMemory: "3072M",
         storageSize: "20Gi",
-        // Pinned the way felis-api stores it: the tag it was created from plus the
-        // digest that tag named then.
+        // tag@digest, as felis-api stores it
         image:
           "registry.felis.svc:5000/paper-1.21:demo@sha256:3b637d68843f53750a2e3c2d29c0346b6f81ffd22db2902b80bd5048ee04cc09",
       }),
@@ -317,7 +296,6 @@ function initialState(): MockState {
         memory: "2Gi",
         javaMemory: "1536M",
         storageSize: "10Gi",
-        // Server software on the Java 21 runtime, as a self-created server runs.
         image: runtimeImage(21),
         software: { type: "paper", minecraftVersion: "1.21.4", build: "232", java: 21, forwarding: "velocity" },
       }),
@@ -343,8 +321,7 @@ function initialState(): MockState {
       ...generatedServers(),
     ],
     access: {
-      // Seeded past a page (PAGE_SIZE=10) and the search threshold (>8) so the
-      // whitelist's paging + filter are both exercisable in the mock demo.
+      // 25 whitelisted names: past one page (10) and the search threshold (8)
       survival: {
         whitelist: [
           "mock_player", "test_player", "Notch", "jeb_", "Dinnerbone",
@@ -353,17 +330,13 @@ function initialState(): MockState {
           "Tommyinnit", "Tubbo", "Ranboo", "Wilbur_Soot", "Philza",
           "Captain_Puffy", "Nihachu", "Fundy", "Quackity", "Karl_Jacobs",
         ],
-        // 12 banned names — past the search threshold (>8) and a page (>10) so the ban
-        // list's filter + paging demo too; kept distinct from the online roster so the
-        // mock reads like a real server (you don't ban who's currently on).
+        // 12 banned names, disjoint from the online roster
         banned: [
           "Griefer_99", "tnt_troll", "hack_client_x", "spam_bot_01", "lava_caster",
           "dupe_glitcher", "griefKing", "nukebot", "AFK_farmer", "chat_spammer",
           "xray_cheater", "fly_hacker",
         ],
-        // 12 online, matching the server's playersOnline:12 — past the search threshold (>8)
-        // and a page (>10) so the roster's filter + paging are both exercisable, with a
-        // few non-whitelisted names to try kick / ban on.
+        // 12 online, matching playersOnline; includes non-whitelisted names for kick and ban
         online: [
           "mock_player", "test_player", "Notch", "Steve", "Alex", "jeb_",
           "Dinnerbone", "Griefer_88", "rndGuest_7", "xX_Raider_Xx", "creeper_fan", "Herobrine",
@@ -406,7 +379,6 @@ function initialState(): MockState {
         created_at: new Date(Date.now() - 1800000).toISOString(),
         finished_at: new Date(Date.now() - 1700000).toISOString(),
       },
-      // Started by another admin: the list is the server's, so it shows here too.
       {
         id: "bld-3",
         image_ref: "registry.felis.svc:5000/user-uploads/sub-9:latest",
@@ -414,7 +386,7 @@ function initialState(): MockState {
         requested_by: "admin2@mock.felis.local",
         created_at: new Date(Date.now() - 300000).toISOString(),
       },
-      // Older history, enough to need a second page.
+      // enough history for a second page
       ...Array.from({ length: 11 }, (_, i): Build => ({
         id: `bld-old-${i + 1}`,
         image_ref: `registry.felis.svc:5000/paper-1.21:r${i + 1}`,
@@ -527,11 +499,7 @@ function initialState(): MockState {
   };
 }
 
-// generatedServers fills the mock fleet past one page so the SysAdmin cockpit's
-// pagination and fuzzy search are actually exercisable in dev. Deterministic (no
-// Math.random) so the demo is stable across reloads: phase / owner / policy /
-// capacity all cycle. 8 themes × 3 = 24 servers; with the 6 hand-authored ones the
-// fleet is 30 → two pages at PAGE_SIZE 20.
+// generatedServers pads the fleet past one page (page size 20) with deterministic data.
 function generatedServers(): MockServer[] {
   const phases: Phase[] = ["Running", "Stopped", "Starting", "Failed", "Running", "Stopped"];
   const owners: (AccountID | null)[] = ["owner", "linked", "user", null];
@@ -615,7 +583,7 @@ function server(
   };
 }
 
-// mockScan is the scan build.Builder.Scan would keep for the seeded builds.
+// mockScan returns the stored scan of a seeded build.
 function mockScan(b: Build): BuildScan | null {
   const at = b.finished_at ?? b.created_at;
   if (b.id === "bld-2") {
@@ -709,8 +677,7 @@ function setSessionCookie(res: ServerResponse, accountID: string): void {
   res.setHeader("Set-Cookie", `${SESSION_COOKIE}=${accountID}; Path=/; SameSite=Lax`);
 }
 
-// signInProven opens a session through a door that proved a factor (email code,
-// passkey, operator login), which like the real API counts as a re-auth.
+// signInProven opens a session through a proven factor (email code, passkey, operator login), which counts as a re-auth.
 function signInProven(ctx: RequestContext, accountID: AccountID): void {
   setSessionCookie(ctx.res, accountID);
   const acc = ctx.state.accounts[accountID];
@@ -719,8 +686,7 @@ function signInProven(ctx: RequestContext, accountID: AccountID): void {
 
 const REAUTH_MS = 5 * 60_000;
 
-/** reauthFactors mirrors reauthState: a passkey, an email code to a verified
- *  address (users) or a fresh sign-in (operators). None → nothing to re-prove. */
+// reauthFactors mirrors the backend reauthState; empty when there is nothing to re-prove.
 function reauthFactors(state: MockState, acc: MockAccount): string[] {
   const hasPasskey = (state.passkeys[acc.id] ?? []).length > 0;
   if (!hasPasskey && !acc.emailVerified) return [];
@@ -730,8 +696,7 @@ function reauthFactors(state: MockState, acc: MockAccount): string[] {
   return factors;
 }
 
-/** refusedForReauth answers 403 reauth_required, as the real API does, for a
- *  change to how the account signs in without a recent proof. */
+// refusedForReauth answers 403 reauth_required for a sign-in change without a recent proof.
 function refusedForReauth(ctx: SessionContext): boolean {
   const acc = ctx.account;
   if (reauthFactors(ctx.state, acc).length === 0 || (acc.reauthUntil ?? 0) > Date.now()) return false;
@@ -748,14 +713,11 @@ function clearSessionCookie(res: ServerResponse): void {
   res.setHeader("Set-Cookie", `${SESSION_COOKIE}=; Path=/; Max-Age=0; SameSite=Lax`);
 }
 
-// thisSessionHash is the session the mock cookie stands for: one per account,
-// so the account page can mark "This device".
+// thisSessionHash is the per-account session the mock cookie stands for.
 function thisSessionHash(acc: MockAccount): string {
   return `mock-this-${acc.id}`;
 }
 
-/** accountSessions seeds, on first read, the browsers an account is signed in
- *  on: this one, a phone seen yesterday and a PC idle for a week. */
 function accountSessions(acc: MockAccount): SessionView[] {
   if (!acc.sessions) {
     const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
@@ -822,13 +784,7 @@ function visibleServers(state: MockState, accountInfo: MockAccount): MyServerVie
     .map((serverInfo) => myServerView(serverInfo, accountInfo));
 }
 
-// fleetView projects the internal mock servers into the GET /fleet wire shape
-// (the SysAdmin cockpit's read). It is the mock mirror of the Go fleetServerView:
-// the CRD field names (playersOnline/playersMax, ready, endpoint*) plus the
-// runtime `ready`/`endpoint*` fields, and the owner joined as the email
-// (COALESCE(email, username) server-side). Endpoint and live player counts are
-// gated on Running, exactly as the real cluster reports them. Ownership is
-// decided by account id for the caller, as the Go handler does.
+// fleetView mirrors the Go fleetServerView (GET /fleet).
 function fleetView(state: MockState, accountInfo: MockAccount): FleetServer[] {
   return state.servers.map((s, i) => {
     const { owner, ...wire } = s;
@@ -845,9 +801,6 @@ function fleetView(state: MockState, accountInfo: MockAccount): FleetServer[] {
   });
 }
 
-// myServerView mirrors handleMyServers: ownership and claim state plus the live
-// fields, with owner detail (desired state, policy, unreadable count) only on
-// rows the caller owns.
 function myServerView(serverInfo: MockServer, accountInfo: MockAccount): MyServerView {
   const owned = canManage(accountInfo, serverInfo);
   return {
@@ -868,8 +821,7 @@ function myServerView(serverInfo: MockServer, accountInfo: MockAccount): MyServe
   };
 }
 
-// statusView mirrors handleServerStatus: the whole projection for the owner or
-// an admin, the public subset (publicServerInfo) for anyone else.
+// statusView returns the full projection to an owner or admin, the public subset to anyone else.
 function statusView(serverInfo: MockServer, accountInfo: MockAccount): ServerStatus {
   const { owner: _owner, ...wire } = serverInfo;
   if (canManage(accountInfo, serverInfo)) return wire;
@@ -938,13 +890,7 @@ function sendCreateError(res: ServerResponse, code: CreateError): void {
   sendError(res, status, code, code);
 }
 
-// ---- server software (internal/api/software.go) ----
-
-// MOCK_SOFTWARE is a slice of what upstream offers, taken from the metadata the
-// software package's tests capture: each type's versions newest first, the Java
-// each needs, whether identity forwarding reaches it (a forwarding mod published
-// for it on Modrinth, or Paper's own config from 1.13), and its builds with the
-// one felis-api preselects.
+// MOCK_SOFTWARE is a catalog slice: versions newest first, each with its required Java, forwarding support and builds.
 type MockSoftwareVersion = { id: string; stable: boolean; java: number; forwarding: boolean; builds?: SoftwareBuild[] };
 const FABRIC_LOADERS: SoftwareBuild[] = [
   { id: "0.19.5", stable: true, recommended: true },
@@ -1008,17 +954,14 @@ function softwareVersion(type: string, mc: string | undefined): MockSoftwareVers
   return Object.hasOwn(MOCK_SOFTWARE, type) ? MOCK_SOFTWARE[type as Exclude<SoftwareType, "custom">].find((v) => v.id === mc) : undefined;
 }
 
-// jarPathOK is software.ValidateJarPath: relative, inside the server directory,
-// a .jar, and outside the .felis directory the platform manages.
+// jarPathOK mirrors software.ValidateJarPath.
 function jarPathOK(p: string | undefined): boolean {
   if (!p || p.startsWith("/") || !p.endsWith(".jar")) return false;
   const parts = p.split("/");
   return parts.every((s) => s !== "" && s !== "." && s !== "..") && parts[0] !== ".felis";
 }
 
-// resolveSoftware is the API's resolveSoftware: the recommended build when none
-// is picked, the earliest runtime the version needs unless a newer one is, and
-// forwarding as upstream allows.
+// resolveSoftware defaults to the recommended build and the earliest runtime that fits the version.
 function resolveSoftware(req: SoftwareRequest): ServerSoftware | SoftwareError {
   if (!SOFTWARE_TYPES.includes(req.type)) return "bad_software";
   if (req.java !== undefined && !RUNTIMES.includes(req.java)) return "bad_software";
@@ -1039,13 +982,11 @@ function resolveSoftware(req: SoftwareRequest): ServerSoftware | SoftwareError {
   return { type: req.type, minecraftVersion: v.id, build, java: (req.java ?? runtime) as Runtime, forwarding: v.forwarding ? "velocity" : "none" };
 }
 
-// runtimeImage is the Temurin runtime pinned the way felis-api stores it.
+// runtimeImage returns the Temurin runtime reference pinned by digest.
 function runtimeImage(java: number): string {
   const ref = `registry.felis.svc:5000/mirror/eclipse-temurin:${java}-jre`;
   return `${ref}@sha256:${createHash("sha256").update(ref).digest("hex")}`;
 }
-
-// ---- self-service (internal/api/selfservice.go) ----
 
 function quantityMB(q: string | undefined): number {
   const m = /^(\d+(?:\.\d+)?)(Gi|Mi)$/.exec(q ?? "");
@@ -1058,8 +999,7 @@ function cpuMilli(q: string | undefined): number {
   return q.endsWith("m") ? Number(q.slice(0, -1)) || 0 : Math.round((Number(q) || 0) * 1000);
 }
 
-// quotaState is SelfServiceState: the caller's own quota, else the default one
-// when the Owner has turned it on, else none; and what their servers use.
+// quotaState picks the user's own quota, else the default when enabled, else none.
 function quotaState(state: MockState, acc: MockAccount): Omit<ServerQuota, "canCreate" | "reason"> {
   const owned = state.servers.filter((s) => s.owner === acc.id);
   const usage = {
@@ -1079,8 +1019,6 @@ function quotaState(state: MockState, acc: MockAccount): Omit<ServerQuota, "canC
   return { source: "", limits: null, usage };
 }
 
-// fitsQuota is quotaAllows: each capped total, with what is being added, stays
-// within its cap.
 function fitsQuota(q: Omit<ServerQuota, "canCreate" | "reason">, add: { servers: number; cpu_milli: number; memory_mb: number; storage_mb: number }): boolean {
   const l = q.limits ?? {};
   const u = q.usage;
@@ -1090,8 +1028,6 @@ function fitsQuota(q: Omit<ServerQuota, "canCreate" | "reason">, add: { servers:
     (l.max_storage_gb == null || u.storage_mb + add.storage_mb <= l.max_storage_gb * 1024);
 }
 
-// patchMockServer is patchServer for the fields the edit dialog sends, for an
-// admin (PATCH /servers/{name}) and for the owner (PATCH /me/servers/{name}).
 async function patchMockServer(ctx: SessionContext, serverInfo: MockServer, ownerPatch: boolean): Promise<void> {
   const body = await readJSON<{
     displayName?: string; autostartPolicy?: AutostartPolicy; idleStopSeconds?: number; memory?: string;
@@ -1182,8 +1118,7 @@ async function patchMockServer(ctx: SessionContext, serverInfo: MockServer, owne
   else sendJSON(ctx.res, 200, { name: serverInfo.name, desiredState: serverInfo.desiredState });
 }
 
-// handleMockSoftware answers the server software catalog, the caller's quota,
-// creating and changing a server of their own, and the Owner's default quota.
+// handleMockSoftware serves the software catalog, the caller's quota, self-service server creation and the default quota.
 async function handleMockSoftware(ctx: SessionContext): Promise<boolean> {
   const key = route(ctx);
   const [, type, , version] = ctx.parts.slice(2).map(decodeURIComponent);
@@ -1278,9 +1213,7 @@ async function handleMockSoftware(ctx: SessionContext): Promise<boolean> {
   return false;
 }
 
-// Op-login requests the mock has handed out. Nobody is in-game to vouch, so each
-// one approves itself a few seconds after start; an "expire…" address never does
-// and lapses quickly, to show the page's expiry path.
+// Op-login requests auto-approve after a few seconds; an "expire…" address lapses instead.
 const opLogins = new Map<string, { approveAt: number; expiresAt: number }>();
 
 async function handlePublic(ctx: RequestContext): Promise<boolean> {
@@ -1395,7 +1328,7 @@ async function handlePublic(ctx: RequestContext): Promise<boolean> {
       });
       return true;
     }
-    // The mock install always has its Owner; the unbound page is covered by Login.test.tsx.
+    // The mock install always has an Owner.
     case "GET auth/owner-status":
       sendJSON(ctx.res, 200, { owner_bound: true });
       return true;
@@ -1430,13 +1363,11 @@ async function handlePublic(ctx: RequestContext): Promise<boolean> {
   }
 }
 
-// hostArchivePolicy is the retention felis.toml's defaults amount to (reaper.DefaultConfig).
+// hostArchivePolicy returns the felis.toml default retention (reaper.DefaultConfig).
 function hostArchivePolicy(): ArchivePolicySettings {
   return { manualKeep: 5, manualRetentionDays: 30, manualCooldownMinutes: 10, scheduledEveryHours: 24, scheduledKeep: 7, scheduledRetentionDays: 90, releasedRetentionDays: 90, maxStoreGiB: 0, auditRetentionDays: 365, source: "host", revision: "" };
 }
 
-// mockHostOverview is what the host service reports for the mock: one disk, the usual
-// units, the database bundles and whatever the host tasks changed.
 function mockHostOverview(state: MockState): HostOverview {
   const day = (n: number) => new Date(Date.now() - n * 86_400_000);
   const stamp = (d: Date) => d.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
@@ -1471,7 +1402,6 @@ const mockStages: Partial<Record<NodeControlRequest["action"], string[]>> = {
   "connection-configure": ["configure"], "storage-configure": ["configure"], "host-settings": ["configure"], "restore-host": ["rebuild"],
 };
 
-// runMockHostTask finishes a host task at once and applies what it changes.
 function runMockHostTask(state: MockState, request: NodeControlRequest, actor: string): NodeControlTask {
   const id = createHash("sha256").update(`${Date.now()}-${Math.random()}`).digest("hex").slice(0, 32);
   const now = new Date().toISOString();
@@ -1518,8 +1448,7 @@ function runMockHostTask(state: MockState, request: NodeControlRequest, actor: s
   return task;
 }
 
-// handleMockHost answers the routes the controller host's service backs: host tasks,
-// the overview, the watchdog hold, the off-site key and the audit export. Owner only.
+// handleMockHost serves the host-service routes; owner only.
 async function handleMockHost(ctx: SessionContext): Promise<boolean> {
   const key = route(ctx);
   const taskRoute = key.match(/^(GET|POST) settings\/node-control\/tasks\/([a-f0-9]+)(\/retry|\/artifact)?$/);
@@ -1612,8 +1541,7 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
       }
       return true;
     }
-    // The mail relay: a host "smtp.fail…" refuses the check, so the panel's failure path
-    // can be seen; anything else is accepted.
+    // A host starting with "smtp.fail" refuses the check; any other is accepted.
     case "GET settings/smtp":
     case "PUT settings/smtp":
     case "DELETE settings/smtp":
@@ -1648,8 +1576,7 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
       }
       return true;
     }
-    // Retention: the felis.toml defaults until a save; a manual keep of 0 is refused, so the
-    // panel's validation failure can be seen.
+    // Defaults until a save; a manual keep of 0 is refused.
     case "GET settings/archive-policy":
     case "PUT settings/archive-policy":
     case "DELETE settings/archive-policy": {
@@ -1728,8 +1655,7 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
         } else if (ctx.state.authSources.retired.some((r) => body.sources.some((s) => s.tag === r.tag && s.url !== r.url))) {
           sendError(ctx.res, 409, "auth_source_tag_retired", "a deleted source's ID can be reused only with its endpoint");
         } else {
-          // A source left out is deleted and its tag retired with its endpoint; a retired tag
-          // added back with that endpoint is restored (internal/api/handlers_auth_sources.go).
+          // A source left out is deleted and its tag retired; adding it back with the same endpoint restores it.
           const { sources, retired } = ctx.state.authSources;
           const kept = retired.filter((r) => !body.sources.some((s) => s.tag === r.tag));
           const deleted = sources.filter((source) => !body.sources.some((s) => s.tag === source.tag)).map(({ tag, url }) => ({ tag, url }));
@@ -1754,7 +1680,6 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
         sendError(ctx.res, 403, "forbidden", "owner account required");
         return true;
       }
-      // Yesterday's daily run: fresh, so the card shows its healthy state.
       const at = new Date(Date.now() - 9 * 3600 * 1000);
       const stamp = at.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
       sendJSON(ctx.res, 200, {
@@ -1778,8 +1703,7 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
         sendError(ctx.res, 403, "forbidden", "owner account required");
         return true;
       }
-      // Last night's timer run: one update waiting, one feed unreachable, one
-      // install unreadable, so the card shows every state it has.
+      // one update waiting, one feed unreachable, one install unreadable
       sendJSON(ctx.res, 200, {
         report: {
           checked_at: new Date(Date.now() - 7 * 3600 * 1000).toISOString(),
@@ -1839,8 +1763,7 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
       sendJSON(ctx.res, 200, identity(ctx.account));
       return true;
     case "GET fleet":
-      // Admin-tier, fleet-wide — mirrors the real adminOnly gate (a non-admin is
-      // 403'd before the handler) so the cockpit's RequireAdmin path is exercised.
+      // Admin only, as the real adminOnly gate.
       if (!isAdmin(ctx.account.role)) {
         sendError(ctx.res, 403, "forbidden", "admin account required");
         return true;
@@ -1849,9 +1772,7 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
       return true;
     case "GET backups":
       {
-        // Admin sees every archive; a user only worlds they formerly owned — mirrors
-        // AllBackups vs BackupsForUser. server narrows inside that scope, and rows
-        // come a page at a time, newest first, with the matching total.
+        // Admins see every archive, users only the worlds they once owned; paged, newest first.
         const url = new URL(ctx.req.url ?? "/", "http://localhost");
         const server = url.searchParams.get("server") ?? "";
         const limit = Math.min(Number(url.searchParams.get("limit")) || 20, 100);
@@ -1891,8 +1812,7 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
         return true;
       }
       const next = ctx.account.pendingEmail ?? ctx.account.email;
-      // Like the real API: replacing a verified address signs the other devices
-      // out, and proving a code counts as a re-auth.
+      // Replacing a verified address signs the other devices out; a proven code counts as a re-auth.
       if (ctx.account.emailVerified && next.toLowerCase() !== ctx.account.email.toLowerCase()) {
         const here = thisSessionHash(ctx.account);
         ctx.account.sessions = accountSessions(ctx.account).filter((s) => s.token_hash === here);
@@ -1998,7 +1918,7 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
       return true;
     }
     case "GET account/migrate":
-      // No migration pending: the real API's answer until one is started in-game.
+      // No migration is pending until one is started in-game.
       sendJSON(ctx.res, 200, { active: false });
       return true;
     case "GET account/sessions": {
@@ -2031,9 +1951,7 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
         return true;
       }
       if (ctx.method === "DELETE" && ctx.parts[2] === "backups" && ctx.parts[3] && ctx.parts.length === 4) {
-        // Mirrors handleDeleteBackup: the scope that lists a backup deletes it and
-        // any other id is 404 no_backup; a restore on its server that may still be
-        // reading it is 409 restore_in_progress. The row turns expired at once.
+        // Outside the caller's scope is 404 no_backup; a restore reading it is 409 restore_in_progress.
         const b = ctx.state.backups.find((x) => x.id === ctx.parts[3] && x.status === "present");
         if (!b || !(isAdmin(ctx.account.role) || b.former_owner === ctx.account.id)) {
           sendError(ctx.res, 404, "no_backup", "no matching backup exists");
@@ -2051,7 +1969,7 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
         return true;
       }
       if (ctx.method === "DELETE" && ctx.parts[2] === "account" && ctx.parts[3] === "passkey" && ctx.parts[4] === "credentials" && ctx.parts[5]) {
-        // The real API asks for the re-auth before it looks the passkey up.
+        // Re-auth is checked before the passkey lookup.
         if (refusedForReauth(ctx)) return true;
         const id = ctx.parts[5];
         const list = ctx.state.passkeys[ctx.account.id] ?? [];
@@ -2060,14 +1978,13 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
           sendError(ctx.res, 404, "not_found", "passkey not found");
           return true;
         }
-        // Same rule as the real API: the only passkey of an account without a
-        // verified email stays, or the account would have no way to sign in.
+        // The only passkey of an account without a verified email stays; it is the sole way to sign in.
         if (list.length === 1 && !ctx.account.emailVerified) {
           sendError(ctx.res, 409, "last_passkey", "this is your only passkey and your email is not verified");
           return true;
         }
         list.splice(idx, 1);
-        // Like the real API, removing a passkey signs the other devices out.
+        // Removing a passkey signs the other devices out.
         const here = thisSessionHash(ctx.account);
         ctx.account.sessions = accountSessions(ctx.account).filter((s) => s.token_hash === here);
         ctx.res.statusCode = 204;
@@ -2084,7 +2001,6 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
 async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
   if (ctx.parts[2] !== "users") return false;
 
-  // Owner access check for user management routes
   if (!isOwner(ctx.account.role)) {
     sendError(ctx.res, 403, "forbidden", "owner account required");
     return true;
@@ -2092,7 +2008,6 @@ async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
 
   const userIdOrAction = ctx.parts[3];
 
-  // GET /api/v1/users
   if (is("GET", ctx) && !userIdOrAction) {
     const url = new URL(ctx.req.url ?? "/", "http://localhost");
     const search = url.searchParams.get("search")?.toLowerCase() || "";
@@ -2100,7 +2015,6 @@ async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
     const limit = parseInt(url.searchParams.get("limit") || "10", 10);
 
     const allUsers = Object.values(ctx.state.accounts).map((acc) => {
-      // count active/owned servers
       const serverCount = ctx.state.servers.filter((s) => s.owner === acc.id).length;
       return {
         id: `mock-${acc.id}`,
@@ -2131,7 +2045,6 @@ async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
     return true;
   }
 
-  // POST /api/v1/users
   if (is("POST", ctx) && !userIdOrAction) {
     const body = await readJSON<CreateUserRequest>(ctx.req);
     const username = body.username?.trim().toLowerCase();
@@ -2172,7 +2085,6 @@ async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
     return true;
   }
 
-  // Routes starting with /api/v1/users/{id}
   if (userIdOrAction) {
     const rawId = userIdOrAction;
     const accountKey = rawId.startsWith("mock-") ? rawId.substring(5) : rawId;
@@ -2185,7 +2097,6 @@ async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
 
     const subAction = ctx.parts[4];
 
-    // GET /api/v1/users/{id}
     if (is("GET", ctx) && !subAction) {
       const serverCount = ctx.state.servers.filter((s) => s.owner === acc.id).length;
       const linked_accounts = acc.linked ? [{
@@ -2210,7 +2121,6 @@ async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
       return true;
     }
 
-    // PATCH /api/v1/users/{id}
     if (is("PATCH", ctx) && !subAction) {
       const body = await readJSON<PatchUserRequest>(ctx.req);
 
@@ -2252,7 +2162,6 @@ async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
       return true;
     }
 
-    // DELETE /api/v1/users/{id}
     if (is("DELETE", ctx) && !subAction) {
       if (ctx.account.id === acc.id) {
         sendError(ctx.res, 403, "self_protected", "cannot delete your own account");
@@ -2286,7 +2195,6 @@ async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
       return true;
     }
 
-    // POST /api/v1/users/{id}/disable
     if (is("POST", ctx) && subAction === "disable") {
       if (ctx.account.id === acc.id) {
         sendError(ctx.res, 403, "self_protected", "cannot disable your own account");
@@ -2303,14 +2211,12 @@ async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
       return true;
     }
 
-    // GET /api/v1/users/{id}/quotas: the user's own quota (custom), or none, which
-    // leaves them to the default quota.
+    // Returns the user's own quota, or none when the default applies.
     if (is("GET", ctx) && subAction === "quotas") {
       sendJSON(ctx.res, 200, acc.quota ? { ...acc.quota, custom: true } : { user_id: acc.id, custom: false });
       return true;
     }
 
-    // PUT /api/v1/users/{id}/quotas
     if (is("PUT", ctx) && subAction === "quotas") {
       const body = await readJSON<QuotaInput>(ctx.req);
       const caps = [body.max_servers, body.max_cpu_milli, body.max_memory_mb, body.max_storage_gb];
@@ -2330,7 +2236,6 @@ async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
       return true;
     }
 
-    // DELETE /api/v1/users/{id}/quotas: back to the default quota.
     if (is("DELETE", ctx) && subAction === "quotas") {
       acc.quota = undefined;
       acc.updated_at = new Date().toISOString();
@@ -2338,13 +2243,11 @@ async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
       return true;
     }
 
-    // GET /api/v1/users/{id}/sessions
     if (is("GET", ctx) && subAction === "sessions") {
       sendJSON(ctx.res, 200, { sessions: accountSessions(acc) });
       return true;
     }
 
-    // DELETE /api/v1/users/{id}/sessions/{hash} — revoke single session
     if (is("DELETE", ctx) && subAction === "sessions" && ctx.parts[5]) {
       const hash = ctx.parts[5];
       const list = accountSessions(acc);
@@ -2357,14 +2260,12 @@ async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
       return true;
     }
 
-    // DELETE /api/v1/users/{id}/sessions
     if (is("DELETE", ctx) && subAction === "sessions" && !ctx.parts[5]) {
       acc.sessions = [];
       sendJSON(ctx.res, 200, { ok: true });
       return true;
     }
 
-    // POST /api/v1/users/{id}/links — manual link
     if (is("POST", ctx) && subAction === "links") {
       const body = await readJSON<{ mc_uuid: string; auth_source?: string }>(ctx.req);
       if (!body.mc_uuid) {
@@ -2377,7 +2278,6 @@ async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
       return true;
     }
 
-    // DELETE /api/v1/users/{id}/links/{mc_uuid} — unlink
     if (is("DELETE", ctx) && subAction === "links" && ctx.parts[5]) {
       acc.linked = false;
       acc.updated_at = new Date().toISOString();
@@ -2392,13 +2292,11 @@ async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
 async function handleImageRoute(ctx: SessionContext): Promise<boolean> {
   if (ctx.parts[2] !== "images") return false;
 
-  // GET /api/v1/images
   if (is("GET", ctx) && ctx.parts.length === 3) {
     sendJSON(ctx.res, 200, { images: ctx.state.images });
     return true;
   }
 
-  // POST /api/v1/images (add image)
   if (is("POST", ctx) && ctx.parts.length === 3) {
     if (!isAdmin(ctx.account.role)) {
       sendError(ctx.res, 403, "forbidden", "admin account required");
@@ -2410,7 +2308,6 @@ async function handleImageRoute(ctx: SessionContext): Promise<boolean> {
       sendError(ctx.res, 400, "bad_request", "image_ref is required");
       return true;
     }
-    // Check if already exists in whitelist
     let img = ctx.state.images.find((i) => i.image_ref === ref);
     if (img) {
       img.enabled = true;
@@ -2422,7 +2319,6 @@ async function handleImageRoute(ctx: SessionContext): Promise<boolean> {
     return true;
   }
 
-  // DELETE /api/v1/images (remove image)
   if (is("DELETE", ctx) && ctx.parts.length === 3) {
     if (!isAdmin(ctx.account.role)) {
       sendError(ctx.res, 403, "forbidden", "admin account required");
@@ -2445,7 +2341,6 @@ async function handleImageRoute(ctx: SessionContext): Promise<boolean> {
     return true;
   }
 
-  // POST /api/v1/images/build (trigger build)
   if (is("POST", ctx) && ctx.parts[3] === "build" && ctx.parts.length === 4) {
     if (!isAdmin(ctx.account.role)) {
       sendError(ctx.res, 403, "forbidden", "admin account required");
@@ -2468,31 +2363,27 @@ async function handleImageRoute(ctx: SessionContext): Promise<boolean> {
     };
     ctx.state.builds.unshift(newBuild);
 
-    // Mock build progression in a timeout
     setTimeout(() => {
       const b = ctx.state.builds.find((x) => x.id === newBuild.id);
       if (b && b.status === "building") {
         b.status = "succeeded";
         b.finished_at = new Date().toISOString();
-        // Add to whitelist images
         if (!ctx.state.images.some((i) => i.image_ref === b.image_ref)) {
           ctx.state.images.unshift({ ...whitelistImage(b.image_ref, "built"), build_id: b.id });
         }
       }
-    }, 15000); // Succeeded after 15 seconds
+    }, 15000);
 
     sendJSON(ctx.res, 202, newBuild);
     return true;
   }
 
-  // GET /api/v1/images/build (list builds)
   if (is("GET", ctx) && ctx.parts[3] === "build" && ctx.parts.length === 4) {
     if (!isAdmin(ctx.account.role)) {
       sendError(ctx.res, 403, "forbidden", "admin account required");
       return true;
     }
-    // Same page and match as build.PGStore.ListBuilds: newest first, a query hits
-    // the id or status exactly or any part of the ref, and rows carry no Dockerfile.
+    // Mirrors build.PGStore.ListBuilds: newest first; a query matches the id or status exactly, or part of the ref.
     const url = new URL(ctx.req.url ?? "/", "http://localhost");
     const q = (url.searchParams.get("query") ?? "").trim().toLowerCase();
     const limit = Math.min(Number(url.searchParams.get("limit")) || 20, 100);
@@ -2507,7 +2398,6 @@ async function handleImageRoute(ctx: SessionContext): Promise<boolean> {
     return true;
   }
 
-  // GET /api/v1/images/build/{id} (get build)
   if (is("GET", ctx) && ctx.parts[3] === "build" && ctx.parts[4] && ctx.parts.length === 5) {
     if (!isAdmin(ctx.account.role)) {
       sendError(ctx.res, 403, "forbidden", "admin account required");
@@ -2522,9 +2412,7 @@ async function handleImageRoute(ctx: SessionContext): Promise<boolean> {
     return true;
   }
 
-  // GET /api/v1/images/build/{id}/scan, /scan/report, /sbom (the kept scan). The
-  // seeded builds bld-1 (passed) and bld-2 (blocked) have one; the older history
-  // ran before builds kept their scans.
+  // Only bld-1 (passed) and bld-2 (blocked) have a kept scan.
   if (
     is("GET", ctx) && ctx.parts[3] === "build" && ctx.parts[4] &&
     ((ctx.parts[5] === "scan" && (ctx.parts.length === 6 || (ctx.parts[6] === "report" && ctx.parts.length === 7))) ||
@@ -2560,7 +2448,6 @@ async function handleImageRoute(ctx: SessionContext): Promise<boolean> {
     return true;
   }
 
-  // POST /api/v1/images/build/{id}/cancel (cancel build)
   if (is("POST", ctx) && ctx.parts[3] === "build" && ctx.parts[5] === "cancel" && ctx.parts.length === 6) {
     if (!isAdmin(ctx.account.role)) {
       sendError(ctx.res, 403, "forbidden", "admin account required");
@@ -2582,7 +2469,6 @@ async function handleImageRoute(ctx: SessionContext): Promise<boolean> {
     return true;
   }
 
-  // GET /api/v1/images/build/{id}/logs (SSE logs stream)
   if (is("GET", ctx) && ctx.parts[3] === "build" && ctx.parts[5] === "logs" && ctx.parts.length === 6) {
     if (!isAdmin(ctx.account.role)) {
       sendError(ctx.res, 403, "forbidden", "admin account required");
@@ -2601,8 +2487,7 @@ async function handleImageRoute(ctx: SessionContext): Promise<boolean> {
   return false;
 }
 
-// The same page as submit.PGStore.PageSubmissions: counts cover the whole scope,
-// status and query (id, submitter or name, any part) narrow the rows, newest first.
+// Mirrors submit.PGStore.PageSubmissions: counts cover the whole scope; status and query narrow the rows, newest first.
 function submissionPageOf(ctx: SessionContext, scope: Submission[]) {
   const url = new URL(ctx.req.url ?? "/", "http://localhost");
   const status = url.searchParams.get("status") ?? "";
@@ -2623,21 +2508,17 @@ async function handleSubmissionRoute(ctx: SessionContext): Promise<boolean> {
   const isMeSubmissions = ctx.parts[2] === "me" && ctx.parts[3] === "submissions";
   if (!isAdminSubmissions && !isMeSubmissions) return false;
 
-  // GET /api/v1/me/submissions
   if (isMeSubmissions && is("GET", ctx) && ctx.parts.length === 4) {
     const userSubs = ctx.state.submissions.filter((s) => s.submitted_by === ctx.account.email);
     sendJSON(ctx.res, 200, submissionPageOf(ctx, userSubs));
     return true;
   }
 
-  // GET /api/v1/me/submissions/limits — the 1 GiB default.
   if (isMeSubmissions && is("GET", ctx) && ctx.parts.length === 5 && ctx.parts[4] === "limits") {
     sendJSON(ctx.res, 200, { max_context_bytes: MOCK_CONTEXT_MAX });
     return true;
   }
 
-  // DELETE /api/v1/me/submissions/{id} — withdraw a still-pending submission
-  // with its context and any staged upload.
   if (isMeSubmissions && is("DELETE", ctx) && ctx.parts.length === 5) {
     const id = ctx.parts[4];
     const idx = ctx.state.submissions.findIndex((s) => s.id === id && s.submitted_by === ctx.account.email);
@@ -2657,9 +2538,7 @@ async function handleSubmissionRoute(ctx: SessionContext): Promise<boolean> {
     return true;
   }
 
-  // The chunked upload: GET/PUT /api/v1/me/submissions/{id}/context/upload and
-  // POST .../upload/complete. Parts are staged in memory the way PartStore
-  // stages them on disk: the staged length is the resume point.
+  // Chunked upload: parts stay in memory and the staged length is the resume point.
   if (isMeSubmissions && ctx.parts[5] === "context" && ctx.parts[6] === "upload") {
     const id = ctx.parts[4];
     const sub = ctx.state.submissions.find((s) => s.id === id && s.submitted_by === ctx.account.email);
@@ -2705,8 +2584,7 @@ async function handleSubmissionRoute(ctx: SessionContext): Promise<boolean> {
       }
       const next = Buffer.concat([offset === 0 ? Buffer.alloc(0) : staged, part]);
       stagedParts.set(id, next);
-      // A local network finishes a part at once; the pause lets the progress
-      // bar be seen and paused.
+      // The pause lets the progress bar be seen and paused.
       await new Promise((r) => setTimeout(r, 250));
       sendJSON(ctx.res, 200, progress(next.length));
       return true;
@@ -2723,7 +2601,6 @@ async function handleSubmissionRoute(ctx: SessionContext): Promise<boolean> {
       return true;
     }
   }
-  // POST /api/v1/me/submissions
   if (isMeSubmissions && is("POST", ctx) && ctx.parts.length === 4) {
     const body = await readJSON<{ display_name?: string }>(ctx.req);
     const displayName = body.display_name?.trim();
@@ -2745,7 +2622,6 @@ async function handleSubmissionRoute(ctx: SessionContext): Promise<boolean> {
     return true;
   }
 
-  // POST /api/v1/me/submissions/{id}/context
   if (isMeSubmissions && is("POST", ctx) && ctx.parts[5] === "context" && ctx.parts.length === 6) {
     const id = ctx.parts[4];
     const sub = ctx.state.submissions.find((s) => s.id === id);
@@ -2774,8 +2650,7 @@ async function handleSubmissionRoute(ctx: SessionContext): Promise<boolean> {
     return true;
   }
 
-  // GET /api/v1/submissions/{id}/context — the reviewer's download, carrying the
-  // digest the approval must name.
+  // Reviewer download; carries the digest the approval must name.
   if (isAdminSubmissions && is("GET", ctx) && ctx.parts[4] === "context" && ctx.parts.length === 5) {
     if (!isAdmin(ctx.account.role)) {
       sendError(ctx.res, 403, "forbidden", "admin account required");
@@ -2797,7 +2672,6 @@ async function handleSubmissionRoute(ctx: SessionContext): Promise<boolean> {
     return true;
   }
 
-  // GET /api/v1/submissions
   if (isAdminSubmissions && is("GET", ctx) && ctx.parts.length === 3) {
     if (!isAdmin(ctx.account.role)) {
       sendError(ctx.res, 403, "forbidden", "admin account required");
@@ -2807,7 +2681,6 @@ async function handleSubmissionRoute(ctx: SessionContext): Promise<boolean> {
     return true;
   }
 
-  // POST /api/v1/submissions/{id}/approve
   if (isAdminSubmissions && is("POST", ctx) && ctx.parts[4] === "approve" && ctx.parts.length === 5) {
     if (!isAdmin(ctx.account.role)) {
       sendError(ctx.res, 403, "forbidden", "admin account required");
@@ -2842,7 +2715,6 @@ async function handleSubmissionRoute(ctx: SessionContext): Promise<boolean> {
     sub.reviewed_at = new Date().toISOString();
     sub.image_ref = `registry.felis.svc:5000/user-uploads/${id}:latest`;
 
-    // Trigger mock build
     const newBuild: Build = {
       id: `bld-${Date.now()}`,
       image_ref: sub.image_ref,
@@ -2855,7 +2727,6 @@ async function handleSubmissionRoute(ctx: SessionContext): Promise<boolean> {
     ctx.state.builds.unshift(newBuild);
     sub.build_id = newBuild.id;
 
-    // Succeeded after 15 seconds
     setTimeout(() => {
       const b = ctx.state.builds.find((x) => x.id === newBuild.id);
       if (b && b.status === "building") {
@@ -2871,7 +2742,6 @@ async function handleSubmissionRoute(ctx: SessionContext): Promise<boolean> {
     return true;
   }
 
-  // POST /api/v1/submissions/{id}/reject
   if (isAdminSubmissions && is("POST", ctx) && ctx.parts[4] === "reject" && ctx.parts.length === 5) {
     if (!isAdmin(ctx.account.role)) {
       sendError(ctx.res, 403, "forbidden", "admin account required");
@@ -3086,7 +2956,6 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
   return false;
 }
 
-// ---- server files (handlers_files.go) ----
 
 interface MockFileNode {
   is_dir: boolean;
@@ -3313,10 +3182,7 @@ async function handleFilesMock(ctx: SessionContext, serverInfo: MockServer): Pro
   return false;
 }
 
-// handleRestoreBackupMock mirrors the backend's restore authorization order
-// (handlers_backups.go): owner-or-admin → specific backup by id or latest present
-// backup else 404 no_backup → non-admin former-owner match → stopped gate else
-// 409 not_stopped → 202.
+// Match backend authorization order: role, backup lookup, former owner, then stopped-state checks.
 async function handleRestoreBackupMock(ctx: SessionContext, serverInfo: MockServer): Promise<boolean> {
   if (!canManage(ctx.account, serverInfo)) {
     sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
@@ -3350,7 +3216,7 @@ async function handleRestoreBackupMock(ctx: SessionContext, serverInfo: MockServ
     backup = latest;
   }
 
-  // Non-admins may restore only a world they formerly owned (spec §466).
+  // Non-admins may restore only a world they once owned.
   if (!isAdmin(ctx.account.role) && backup.former_owner !== ctx.account.id) {
     sendError(ctx.res, 403, "forbidden", "not the former owner of this world");
     return true;
@@ -3383,9 +3249,7 @@ async function handleRestoreBackupMock(ctx: SessionContext, serverInfo: MockServ
   return true;
 }
 
-// handleBackupNowMock mirrors POST /servers/{name}/backup: owner-or-admin, then a
-// stopped world archived as it is or a running one live; a server starting or stopping
-// is refused. The Job finishes at once.
+// Match owner/admin and lifecycle admission; mock backup Jobs finish immediately.
 function handleBackupNowMock(ctx: SessionContext, serverInfo: MockServer): void {
   if (!canManage(ctx.account, serverInfo)) {
     sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
@@ -3427,10 +3291,7 @@ function listOutput(online: string[], max: number): string {
   return online.length === 0 ? head : `${head} ${online.join(", ")}`;
 }
 
-// banlistOutput reproduces vanilla's multiline "banlist" reply: a header line then
-// one "<name> was banned by <source>: <reason>" line per ban. The panel's parser
-// (parseBanlistOutput) keys on the " was banned by " marker, so this exercises the
-// real shape — header + reasons that carry their own colons and spaces — end to end.
+// Preserve vanilla's " was banned by " delimiter, including colons and spaces in reasons.
 function banlistOutput(banned: string[]): string {
   if (banned.length === 0) return "There are no bans.";
   const head = `There are ${banned.length} ban(s):`;
@@ -3438,10 +3299,7 @@ function banlistOutput(banned: string[]): string {
   return [head, ...lines].join("\n");
 }
 
-// handleAccessMock mirrors issueAccessCommand's two gates — owner/admin AND the
-// server being Running (RCON) — before dispatching the whitelist/ban routes. The GET
-// whitelist read is behind the SAME Running gate as the writes, exactly as the real
-// readiness check covers it (409 not_running on a cold server).
+// Whitelist reads and writes both require owner/admin access and a running server.
 function handleAccessMock(ctx: SessionContext, serverInfo: MockServer): boolean {
   if (!canManage(ctx.account, serverInfo)) {
     sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
@@ -3652,9 +3510,6 @@ async function handlePermissionMock(
   });
 }
 
-// handleListMutation backs both POST .../access/whitelist (add|remove) and
-// POST .../access/ban (ban|pardon): the same structured {action, player} shape with
-// a charset-validated player, echoing back {name, action, player, output}.
 async function handleListMutation(
   ctx: SessionContext,
   serverInfo: MockServer,
@@ -3728,10 +3583,7 @@ function mockCommandReply(cmd: string): string {
   return `[mock] command "${cmd}" executed`;
 }
 
-// handleRetirementMock mirrors handlers_retire.go: owner-or-admin, delete is an
-// admin's, the typed name must match, a system server is refused. The mock has no
-// reaper, so the request just sits until cancelled; the cancel of a deletion is an
-// admin's too.
+// Without a reaper, mock retirement remains pending until cancelled.
 async function handleRetirementMock(ctx: SessionContext, serverInfo: MockServer): Promise<void> {
   if (!canManage(ctx.account, serverInfo)) {
     sendError(ctx.res, 403, "forbidden", "server is not owned by this account");

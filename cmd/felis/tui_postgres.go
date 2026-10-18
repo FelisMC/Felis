@@ -10,9 +10,6 @@ import (
 	"felis.lolicon.best/internal/store"
 )
 
-// checkPostgres proves the configured database is reachable and accepts a
-// connection. Host bootstrap provisions PostgreSQL, so in the normal setup flow
-// this succeeds immediately; the preflight stage uses it to fail fast otherwise.
 func checkPostgres(dbURL string) error {
 	cfg, err := parseDBURL(dbURL)
 	if err != nil {

@@ -16,8 +16,6 @@ import (
 	"felis.lolicon.best/internal/api"
 )
 
-// ---- account migration (migration 0015) -------------------------------------------
-
 func seedOwnedServer(t *testing.T, name, ownerID string, deleted bool) {
 	t.Helper()
 	var deletedAt any
@@ -62,9 +60,6 @@ func startToCode(t *testing.T, sourceID, targetID, codeHash string, now, expires
 	}
 }
 
-// Each step advances from exactly one state, a restart kills the outstanding code,
-// and the redeem moves the source's live servers to the named target, retires the
-// source and ends its sessions, in one go and once.
 func TestMigrationStateMachine(t *testing.T) {
 	ctx := context.Background()
 	src := newUser(t, "user", "mig-src")
@@ -205,9 +200,6 @@ func TestMigrationStateMachine(t *testing.T) {
 	}
 }
 
-// The step-up lets only the session that gave it issue the code, and only for
-// migrateConfirmWindow (10 minutes). Another session, or the same one later, starts over
-// at the step-up; so does a code that expired unspent, which the new confirmation clears.
 func TestMigrationConfirmBelongsToOneSessionBriefly(t *testing.T) {
 	ctx := context.Background()
 	src := newUser(t, "user", "migw-src")
@@ -275,8 +267,6 @@ func TestMigrationConfirmBelongsToOneSessionBriefly(t *testing.T) {
 	}
 }
 
-// Racing redeems of one code move the servers once; racing starts for one source
-// all succeed and leave one live attempt.
 func TestMigrationUnderConcurrency(t *testing.T) {
 	ctx := context.Background()
 	now := mustNow()
@@ -363,9 +353,6 @@ func waitForLockWaiters(t *testing.T, prefix string, want int) {
 	t.Fatalf("fewer than %d statements %q waited on a lock within 5s", want, prefix)
 }
 
-// A restart that reaches the source while its redeem is in flight must not leave the
-// retired account a live attempt: the redeem holds the migration row, the restart's
-// supersede waits on it, and by the time the restart writes, the source is gone.
 func TestStartMigrationBehindARedeem(t *testing.T) {
 	ctx := context.Background()
 	now := mustNow()
@@ -431,9 +418,6 @@ func untouched(t *testing.T, what, srcID, session string, servers ...string) {
 	}
 }
 
-// A redeem moves the source's servers only when the target's four caps hold with all
-// of them added in. Over any cap it changes nothing, and the same code redeems once
-// the quota fits. Deleted servers count on neither side.
 func TestMigrationRedeemWithinTargetQuota(t *testing.T) {
 	ctx := context.Background()
 	now := mustNow()
@@ -451,9 +435,7 @@ func TestMigrationRedeemWithinTargetQuota(t *testing.T) {
 	session := newSession(t, src.ID, "migq-src", now.Add(time.Hour))
 	startToCode(t, src.ID, dst.ID, "h-quota", now, now.Add(10*time.Minute))
 
-	// With both servers the target would own 3 servers, 300 millicores, 384 MB of
-	// memory and 1025 MB of storage. Each cap one short of its figure refuses on its
-	// own; storage is capped in whole GB, and 1 GB is 1024 MB.
+	// Both servers would total 3 servers, 300m CPU, 384 MB memory and 1025 MB storage; each cap one short refuses alone.
 	n := func(v int) *int { return &v }
 	for _, c := range []struct {
 		name string
@@ -519,9 +501,6 @@ func holdLane(t *testing.T, userIDs ...string) *sql.Tx {
 	return tx
 }
 
-// A redeem decides under both accounts' claim lanes: a server either account claims
-// while the redeem waits is counted against the target's quota. The target holds one
-// server of a two-server cap and the source one, so either claim tips it over.
 func TestMigrationRedeemWaitsForClaims(t *testing.T) {
 	ctx := context.Background()
 	now := mustNow()
@@ -564,9 +543,6 @@ func TestMigrationRedeemWaitsForClaims(t *testing.T) {
 	}
 }
 
-// Two migrations crossing between one pair of accounts take their lanes in one order,
-// so neither deadlocks the other: both wait behind a holder of both lanes and, once it
-// lets go, both redeem.
 func TestCrossingMigrationsDoNotDeadlock(t *testing.T) {
 	ctx := context.Background()
 	now := mustNow()
@@ -593,12 +569,6 @@ func TestCrossingMigrationsDoNotDeadlock(t *testing.T) {
 	}
 }
 
-// ---- setup tokens (migration 0012) --------------------------------------------------
-
-// A setup token redeems once, never at or after expiry, and racing redeems of one
-// token yield one session. The session is written with the spend: the token's
-// user owns it, and a redemption whose session cannot be stored leaves the token
-// for the next try.
 func TestRedeemSetupTokenContract(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "setup")
@@ -695,8 +665,6 @@ func TestRedeemSetupTokenContract(t *testing.T) {
 	}
 }
 
-// ---- remediation: end every session, drop every passkey -----------------------------
-
 func TestRevokeAllUserSessionsIsScoped(t *testing.T) {
 	ctx := context.Background()
 	now := mustNow()
@@ -763,10 +731,6 @@ func TestDeleteAllPasskeyCredentialsIsScoped(t *testing.T) {
 	}
 }
 
-// ---- username reclaim (migration 0006) ----------------------------------------------
-
-// A reclaim bars the squatter's UUID (never the contested name) and stashes its data
-// once: a retry keeps the first window and handle, and a failed stash leaves no bar.
 func TestReclaimUsernameContract(t *testing.T) {
 	ctx := context.Background()
 	t0 := mustNow().Truncate(time.Second)

@@ -6,7 +6,7 @@ plugins {
 group = 'best.lolicon.felis'
 version = '0.1.0'
 
-// MC 1.20.1 is a Java-17 line — the ceiling this JDK can build.
+// MC 1.20.1 is a Java 17 line.
 java {
     sourceCompatibility = JavaVersion.VERSION_17
     targetCompatibility = JavaVersion.VERSION_17
@@ -22,15 +22,13 @@ repositories {
 
 dependencies {
     minecraft 'com.mojang:minecraft:1.20.1'
-    // Official Mojang mappings keep MC class/method names identical to the
-    // Forge/NeoForge modules, so the command handlers stay near-uniform.
     mappings loom.officialMojangMappings()
     modImplementation 'net.fabricmc:fabric-loader:0.16.5'
-    // fabric-command-api-v2 (CommandRegistrationCallback) ships in fabric-api.
+    // Provides fabric-command-api-v2 (CommandRegistrationCallback).
     modImplementation 'net.fabricmc.fabric-api:fabric-api:0.92.2+1.20.1'
 }
 
-// The zero-dependency link core is compiled straight into the remapped jar.
+// The shared link core is compiled into the remapped jar.
 sourceSets {
     main {
         java {

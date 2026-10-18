@@ -8,9 +8,6 @@ import { chunkLines, sameChunk } from "@/lib/logchunks";
 import type { LogLevel, LogLine, StreamStatus } from "@/lib/logstream";
 import type { Formatted, Segment } from "@/lib/mcformat";
 
-// Per-level tint. Plain/info are the default readable foreground; warn/error draw
-// the eye. Debug is dimmed so it recedes. The console body is a fixed dark
-// surface so it reads as a terminal regardless of the page theme.
 const LEVEL_CLASS: Record<LogLevel, string> = {
   error: "text-red-400",
   warn: "text-amber-300",
@@ -72,18 +69,8 @@ function StatusIndicator({ status }: { status: StreamStatus }) {
   );
 }
 
-/**
- * LogConsole renders the §8 read-side live console: a one-way SSE feed of the
- * running pod's log. It is intentionally NOT a terminal emulator (xterm) — the
- * feed is read-only, so a purpose-built log viewport is the right tool. Writes
- * go through the separate RCON command path; the panel never holds an RCON
- * password (spec §8/§286).
- *
- * UX follows modern log viewers: it follows the tail, but if you scroll up to
- * read history it stops yanking you down and offers a "Jump to latest" pill;
- * scrolling back to the bottom re-pins. The buffer is bounded by the controller,
- * which also batches lines to one update per frame.
- */
+// Logs are read-only SSE; commands use a separate RCON API without exposing its password.
+// Pause tail following during history inspection and resume at the bottom.
 export function LogConsole({ url, className, starting = false }: { url: string; className?: string; starting?: boolean }) {
   const { t } = useTranslation("servers");
   const { lines, status, retryable, clear, reconnect } = useLogStream(url);
@@ -106,9 +93,7 @@ export function LogConsole({ url, className, starting = false }: { url: string; 
     setPinned(distance <= PIN_THRESHOLD_PX);
   }, []);
 
-  // Follow the tail only while pinned. Runs after layout so the scroll lands on
-  // the just-appended line; when the user has scrolled up (pinned=false) it does
-  // nothing, leaving their position untouched.
+  // Scroll after layout only while pinned; preserve position during history inspection.
   useLayoutEffect(() => {
     if (!pinned) return;
     const el = scrollRef.current;

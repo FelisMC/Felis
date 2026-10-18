@@ -18,13 +18,7 @@ import (
 	"github.com/charmbracelet/huh"
 )
 
-// edgeModel publishes the panel via Cloudflare Tunnel + Access. It shares the
-// wizard's chrome with every other connection screen: no banner of its own (the
-// root paints the step rail), one huh form for input (the two credential/host
-// groups), and the same locked, clear-screen styling as Local and Reverse-proxy.
-// The intro/working/done/error states stay custom — they show status and actions
-// rather than collect input — but they use the shared widgets so nothing reads
-// as a separate popup.
+// The intro, working, done and error states stay custom because they show status and actions rather than collect input.
 type egStep int
 
 const (
@@ -107,12 +101,6 @@ func (m *edgeModel) detectCloudflared() {
 	m.certExists = pre.CertExists
 }
 
-// build assembles the single two-group form. Group 1 collects the API
-// credentials; group 2 the hostnames and who Access admits. huh owns the
-// inter-group navigation natively — enter/tab advances (and runs that group's
-// validators first), shift+tab from the top of group 2 steps back to group 1,
-// and esc aborts the whole form, which we treat as "back to the intro". This is
-// why edge no longer hand-manages two separate input screens.
 func (m *edgeModel) build() *huh.Form {
 	return m.sized(newFelisForm(
 		huh.NewGroup(
@@ -223,9 +211,7 @@ func (m *edgeModel) setSize(w, h int) {
 
 func (m *edgeModel) Init() tea.Cmd { return nil }
 
-// arrowNavOK yields ←/→ to the root's step rail only when no text field is
-// focused: the intro and the terminal states take single-key actions, so the
-// horizontal arrows are free, but while the form is up they belong to the cursor.
+// Text fields retain horizontal arrows; other screens yield them to rail navigation.
 func (m *edgeModel) arrowNavOK() bool {
 	switch m.step {
 	case egForm, egWorking:
@@ -309,10 +295,7 @@ func (m *edgeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case egForm:
-			// Intercept the exits before huh sees them: huh collapses esc and ctrl+c
-			// into a single StateAborted, so we can't tell them apart afterward.
-			// esc steps back to the intro/status screen; ctrl+c quits, matching every
-			// sibling screen. Any other key falls through to the form below.
+			// Intercept Esc and Ctrl+C separately because huh reports both as StateAborted.
 			switch msg.String() {
 			case "ctrl+c":
 				return m, tea.Quit
@@ -437,9 +420,7 @@ func (m *edgeModel) errorView() string {
 	if m.lastErr != nil {
 		b.WriteString(tuiHint.Render(m.lastErr.Error()) + "\n")
 	}
-	// Nothing done above is rolled back, and nothing needs to be: every step finds what an
-	// earlier attempt created (the tunnel, its DNS route, the Access app and policy) and
-	// carries on from it.
+	// Nothing done above is rolled back: each step finds what an earlier attempt created (the tunnel, its DNS route, the Access app and policy) and carries on from it.
 	b.WriteString("\n" + tuiHint.Render("Retrying is safe: it reuses the tunnel, DNS record and Access app created so far instead of making duplicates.") + "\n")
 	b.WriteString("\n" + tuiAction("enter", "retry", "esc", "edit"))
 	return b.String()
@@ -468,10 +449,7 @@ func (m *edgeModel) handleIntroKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// startSetup reads the form-bound fields (already validated by huh), normalizes
-// the hostnames, applies the tunnel/config defaults, and kicks off the live
-// Cloudflare run. It is shared by the form-completed path and the error retry, so
-// a retry re-runs against the same inputs without a re-entry.
+// Reuse validated form inputs when retrying setup.
 func (m *edgeModel) startSetup() tea.Cmd {
 	m.panelHost = normalizeEdgeHostname(m.panelHost)
 	m.adminHost = normalizeEdgeHostname(m.adminHost)

@@ -2,16 +2,8 @@ package best.lolicon.felis.link;
 
 import java.util.function.LongSupplier;
 
-/**
- * OutageTracker decides which failures of a repeated felis-api call are worth a log
- * line. A poll that runs every few seconds for every waiting player would bury the
- * log if each failure were a warning, and hides the outage entirely if each is a
- * debug line. Instead: the first failure after a success is {@link Report#DOWN}
- * (log a warning), later failures are {@link Report#STILL_DOWN} at most once per
- * {@code repeatMillis} (a reminder with the running count), the first success after
- * failures is {@link Report#RECOVERED} (log how long it lasted), and everything
- * else is {@link Report#NONE}.
- */
+// Log the first failure, rate-limit continued failures, and report duration on recovery.
+// Everything else is NONE, so a poll every few seconds neither buries the log nor hides an outage.
 public final class OutageTracker {
     public enum Report { NONE, DOWN, STILL_DOWN, RECOVERED }
 

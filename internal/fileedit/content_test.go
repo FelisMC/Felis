@@ -27,9 +27,6 @@ func contentEnv(content []byte) map[string]string {
 	return env
 }
 
-// TestContentSplitRoundTrip: whatever the size, the parts reassemble to the
-// bytes written, each part fits in contentChunk, and the count is the fewest
-// that do.
 func TestContentSplitRoundTrip(t *testing.T) {
 	full := contentChunk / 4 * 3 // bytes whose base64 is exactly one chunk
 	for _, tc := range []struct {
@@ -58,8 +55,6 @@ func TestContentSplitRoundTrip(t *testing.T) {
 	}
 }
 
-// TestContentFromEnvRefusesAnIncompleteSpec: a spec that does not carry the
-// whole content is an error. Writing what did arrive would truncate a config.
 func TestContentFromEnvRefusesAnIncompleteSpec(t *testing.T) {
 	two := contentEnv(make([]byte, contentChunk)) // two parts
 	if two[ContentPartsEnv] != "2" {

@@ -30,12 +30,7 @@ public final class ExperienceConfig {
         }
     }
 
-    /**
-     * Loads the settings like {@link #load}, but a file that cannot be read gives the
-     * defaults and one warning. The file sits on the world volume where the file manager
-     * can edit it by hand, and a typo there must not switch off the login flow or the
-     * lobby's protections; the panel shows the damage and saving there repairs it.
-     */
+    // Unreadable settings use protected defaults and one warning rather than disabling login or lobby guards.
     public static ExperienceConfig loadOrDefaults(Path path, Consumer<String> warn) {
         try {
             return load(path);

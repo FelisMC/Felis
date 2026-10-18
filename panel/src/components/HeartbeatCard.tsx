@@ -23,10 +23,7 @@ function looksLikeURL(s: string): boolean {
   }
 }
 
-// HeartbeatCard is the watchdog's dead man's switch: a monitoring service (Healthchecks.io
-// and the services that copy its API) the watchdog pings every run, which alerts when the
-// pings stop, even when the host itself is down. The URL's path is the check's key, so it
-// is write-only here: only its scheme and host are shown back.
+// Expose only heartbeat scheme and host because its path contains the check secret.
 export function HeartbeatCard() {
   const { t } = useTranslation("admin");
   const query = useAsync(api.getHeartbeat, []);

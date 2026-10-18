@@ -15,41 +15,22 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
-// ImageBuilder is the build-subsystem surface the API depends on (spec §16). It
-// is an interface so the image handlers are unit-tested against a fake; the
-// production implementation is *build.Builder. All build operations are
-// admin-tier (Zero Trust), enforced by adminOnly before these handlers run.
 type ImageBuilder interface {
 	Submit(ctx context.Context, req build.Request) (*build.Build, error)
-	// GetMany reads the build rows among ids without reconciling them, keyed by
-	// id — the one read-only lookup a submission list makes to surface each
-	// build's outcome to its submitter (the /images/build routes are admin-tier).
-	// State advance belongs to the reconcile loop (Sync/SyncAll), so a list render
-	// never touches the cluster. An id with no row is absent from the map.
+	// GetMany omits unknown IDs and reads without reconciliation; listing submissions must not touch the cluster.
 	GetMany(ctx context.Context, ids []string) (map[string]build.Build, error)
-	// Sync reconciles a build against its Job and returns the current view, so a
-	// GET doubles as the reconcile tick (idempotent on terminal builds).
+	// Sync reconciles against the Job and is idempotent for terminal builds.
 	Sync(ctx context.Context, id string) (*build.Build, error)
 	Cancel(ctx context.Context, id string) (*build.Build, error)
-	// ListBuilds pages the build history, newest first, with the match total.
 	ListBuilds(ctx context.Context, opts build.ListOpts) ([]build.Build, int, error)
 	ListImages(ctx context.Context) ([]build.Image, error)
 	AddExternalImage(ctx context.Context, imageRef, addedBy string) (*build.Image, error)
 	RemoveImage(ctx context.Context, imageRef string) error
-	// ImageAdmitted reports whether a concrete image ref is whitelisted and
-	// enabled — the §15 create-server form gate (admission is data-driven, never
-	// a free image string from the body).
 	ImageAdmitted(ctx context.Context, imageRef string) (bool, error)
-	// Scan reads what the build's scan gate kept: the verdict, the listed
-	// findings, and the gzipped Trivy report and CycloneDX SBOM. A build with no
-	// scan is build.ErrNotFound.
+	// Scan returns build.ErrNotFound when no scan is stored.
 	Scan(ctx context.Context, id string) (*build.Scan, error)
 }
 
-// buildImageRequest is the POST /images/build body (spec §16). The push target,
-// the uploaded Dockerfile, and the context reference are required; base_image is
-// recorded for audit only. The requester identity comes from the Access
-// principal, never the body.
 type buildImageRequest struct {
 	ImageRef   string `json:"image_ref"`
 	Dockerfile string `json:"dockerfile"`
@@ -57,13 +38,10 @@ type buildImageRequest struct {
 	BaseImage  string `json:"base_image,omitempty"`
 }
 
-// addImageRequest is the POST /images body for external admission (spec §15).
 type addImageRequest struct {
 	ImageRef string `json:"image_ref"`
 }
 
-// handleBuildImage starts a build (admin-tier). It maps validation failures to
-// 400 and everything else to the standard envelope.
 func (a *API) handleBuildImage(w http.ResponseWriter, r *http.Request) {
 	if a.Builder == nil {
 		writeError(w, r, errBuildUnavailable)
@@ -90,9 +68,6 @@ func (a *API) handleBuildImage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, bld)
 }
 
-// handleListBuilds pages the build history (admin-tier), newest first. The
-// panel lists from here, so a build started from another browser, or by another
-// admin, is still there to follow and to cancel.
 func (a *API) handleListBuilds(w http.ResponseWriter, r *http.Request) {
 	if a.Builder == nil {
 		writeError(w, r, errBuildUnavailable)
@@ -114,8 +89,6 @@ func (a *API) handleListBuilds(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"builds": builds, "total": total})
 }
 
-// handleGetBuild returns a build, reconciling it against its Job first so
-// polling drives the scan-gate translation without a separate background loop.
 func (a *API) handleGetBuild(w http.ResponseWriter, r *http.Request) {
 	if a.Builder == nil {
 		writeError(w, r, errBuildUnavailable)
@@ -130,25 +103,10 @@ func (a *API) handleGetBuild(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, bld)
 }
 
-// handleBuildLogs (spec §16, §416 日志流复用 §8) streams the build Pod's log to the
-// admin as Server-Sent Events. It funnels through relayLogStream — the very same
-// §8 read-side relay the server console uses — after a.BuildLogs selects the build
-// Job's Pod in the build namespace by build-id label and follows its kaniko
-// container. It is admin-tier (adminOnly gates the route); the relay never dials
-// RCON and never resolves a secret, it only reads pod logs.
-//
-// Every error path is resolved BEFORE the relay writes the first SSE byte — once
-// the stream headers ship the status code is fixed and no error envelope can
-// follow. The buildID becomes a label-selector value (build-id=<id>), so a
-// malformed id is rejected up front (400) rather than concatenated into a
-// selector, mirroring how handleServerConsole validates the server name before
-// touching the streamer.
+// handleBuildLogs validates error conditions before committing SSE headers.
 func (a *API) handleBuildLogs(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	// Reject anything that is not a valid label value before it reaches the
-	// selector: it cannot match a real build Pod (whose build-id label is itself a
-	// valid label value) and, left unchecked, a crafted id (e.g. one containing a
-	// comma) could inject a second selector requirement. 400 is the honest answer.
+	// Validate buildID before using it in a label selector to prevent selector injection.
 	if errs := validation.IsValidLabelValue(id); len(errs) > 0 {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
 			"build id is not a valid build identifier"))
@@ -161,10 +119,7 @@ func (a *API) handleBuildLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	p := principalFromContext(r.Context())
 
-	// Bound concurrent SSE streams per principal (shared with the console relay): a
-	// stalled reader pins this relay and its upstream build-pod follow, so cap how many
-	// one principal may hold at once. Acquired before opening the stream and released on
-	// every return path. See streamGate — this bounds blast radius, not the leak itself.
+	// Acquire the per-principal stream slot before opening the upstream log connection.
 	release, ok := a.streamGate().acquire(streamKey(p))
 	if !ok {
 		writeError(w, r, newError(http.StatusTooManyRequests, "too_many_streams",
@@ -201,8 +156,6 @@ func (a *API) handleBuildLogs(w http.ResponseWriter, r *http.Request) {
 	}), a.streamsClosing())
 }
 
-// handleCancelBuild cancels an in-flight build (admin-tier). A build that has
-// already finished is 409.
 func (a *API) handleCancelBuild(w http.ResponseWriter, r *http.Request) {
 	if a.Builder == nil {
 		writeError(w, r, errBuildUnavailable)
@@ -218,8 +171,6 @@ func (a *API) handleCancelBuild(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, bld)
 }
 
-// buildScanView is GET /images/build/{id}/scan: the scan gate's verdict and
-// listed findings, and which full documents the build keeps for download.
 type buildScanView struct {
 	BuildID   string            `json:"build_id"`
 	ScannedAt time.Time         `json:"scanned_at"`
@@ -228,9 +179,7 @@ type buildScanView struct {
 	HasSBOM   bool              `json:"has_sbom"`
 }
 
-// handleBuildScan returns the scan a build's scan gate kept (admin-tier). The
-// verdict is the gate's own, under the policy recorded with it, so a later
-// change to [registry] scan_fail_on never rewrites why an old build failed.
+// handleBuildScan returns the recorded verdict; later policy changes do not reinterpret past scans.
 func (a *API) handleBuildScan(w http.ResponseWriter, r *http.Request) {
 	scan, ok := a.buildScan(w, r)
 	if !ok {
@@ -242,20 +191,16 @@ func (a *API) handleBuildScan(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleBuildScanReport downloads the build's full Trivy JSON report.
 func (a *API) handleBuildScanReport(w http.ResponseWriter, r *http.Request) {
 	a.serveScanDocument(w, r, "report", func(s *build.Scan) []byte { return s.ReportGz },
 		"application/json", "-trivy.json", "image.build.scan.report")
 }
 
-// handleBuildSBOM downloads the build's CycloneDX SBOM.
 func (a *API) handleBuildSBOM(w http.ResponseWriter, r *http.Request) {
 	a.serveScanDocument(w, r, "SBOM", func(s *build.Scan) []byte { return s.SBOMGz },
 		"application/vnd.cyclonedx+json", ".cdx.json", "image.build.sbom")
 }
 
-// buildScan reads the scan named by the request path. On failure the error
-// response is already written.
 func (a *API) buildScan(w http.ResponseWriter, r *http.Request) (*build.Scan, bool) {
 	if a.Builder == nil {
 		writeError(w, r, errBuildUnavailable)
@@ -274,10 +219,7 @@ func (a *API) buildScan(w http.ResponseWriter, r *http.Request) (*build.Scan, bo
 	return scan, true
 }
 
-// serveScanDocument sends one gzipped document of a build's scan as a
-// download. The bytes are the image's own (package names, file paths), so the
-// attachment disposition, with the nosniff every response carries, keeps a
-// browser from rendering them.
+// serveScanDocument forces download because report fields contain untrusted image content.
 func (a *API) serveScanDocument(w http.ResponseWriter, r *http.Request, what string,
 	doc func(*build.Scan) []byte, contentType, suffix, action string) {
 	scan, ok := a.buildScan(w, r)
@@ -303,8 +245,6 @@ func (a *API) serveScanDocument(w http.ResponseWriter, r *http.Request, what str
 	_, _ = io.Copy(w, zr)
 }
 
-// handleListImages returns the image whitelist (spec §15: the create-server form
-// source).
 func (a *API) handleListImages(w http.ResponseWriter, r *http.Request) {
 	if a.Builder == nil {
 		writeError(w, r, errBuildUnavailable)
@@ -318,8 +258,6 @@ func (a *API) handleListImages(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"images": images})
 }
 
-// handleAddImage admits an externally-built image (spec §15). It is admin-tier
-// and enabled immediately, recorded with added_by for audit.
 func (a *API) handleAddImage(w http.ResponseWriter, r *http.Request) {
 	if a.Builder == nil {
 		writeError(w, r, errBuildUnavailable)
@@ -340,9 +278,6 @@ func (a *API) handleAddImage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, img)
 }
 
-// handleRemoveImage withdraws an image from the whitelist (spec §22). The ref is
-// taken from the ?ref= query parameter because image references contain '/' and
-// ':' that do not round-trip cleanly through a path segment.
 func (a *API) handleRemoveImage(w http.ResponseWriter, r *http.Request) {
 	if a.Builder == nil {
 		writeError(w, r, errBuildUnavailable)
@@ -362,14 +297,9 @@ func (a *API) handleRemoveImage(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// errBuildUnavailable is returned when the build subsystem is not configured on
-// this api instance.
 var errBuildUnavailable = newError(http.StatusServiceUnavailable, "build_unavailable",
 	"image build subsystem is not configured")
 
-// writeBuildError maps build-package errors onto HTTP status codes: a validation
-// failure is 400, a missing build/image is 404, an already-terminal build is
-// 409, and anything else collapses to a 500 by writeError.
 func writeBuildError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, build.ErrInvalid):
@@ -384,16 +314,12 @@ func writeBuildError(w http.ResponseWriter, r *http.Request, err error) {
 	}
 }
 
-// ImagePinner resolves an image ref to the immutable form a server's spec keeps
-// (imagepin.Resolver). A ref it does not manage comes back unchanged.
+// ImagePinner leaves unmanaged references unchanged.
 type ImagePinner interface {
 	Pin(ctx context.Context, ref string) (string, error)
 }
 
-// pinImage pins an admitted ref for a server spec. A tag the registry does not
-// hold is the caller's to fix (build or push it first); any other failure is the
-// registry being unreachable, and the server is not created or changed without a
-// pin, since an unpinned ref is exactly what lets a later push move its world.
+// pinImage refuses unresolved managed tags so later pushes cannot silently change a server's image.
 func (a *API) pinImage(ctx context.Context, ref string) (string, error) {
 	if a.Images == nil {
 		return ref, nil

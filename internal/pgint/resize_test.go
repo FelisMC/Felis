@@ -10,8 +10,6 @@ import (
 	"felis.lolicon.best/internal/api"
 )
 
-// ---- server resize (ResizeServer) --------------------------------------------------
-
 func seedSized(t *testing.T, name, ownerID string, size api.ResourceSpec) {
 	t.Helper()
 	var owner any
@@ -32,10 +30,6 @@ func cachedSize(t *testing.T, name string) api.ResourceSpec {
 	return s
 }
 
-// A resize that grows CPU or memory must fit every cap with the server's whole size
-// counted, its storage and itself among the owner's servers included; one that does
-// not writes nothing. A resize that grows neither is written whatever the caps say,
-// and so is any resize of a server nobody owns.
 func TestResizeServerQuota(t *testing.T) {
 	ctx := context.Background()
 	n := func(v int) *int { return &v }
@@ -103,8 +97,6 @@ func TestResizeServerQuota(t *testing.T) {
 	}
 }
 
-// A resize decides in its owner's claim lane: a server the owner claims while the
-// resize waits is counted, and here tips the owner over the CPU cap.
 func TestResizeServerWaitsForClaims(t *testing.T) {
 	ctx := context.Background()
 	n := func(v int) *int { return &v }
@@ -139,8 +131,6 @@ func TestResizeServerWaitsForClaims(t *testing.T) {
 	}
 }
 
-// A server that changes hands while its resize waits on the old owner's lane is
-// judged against the new owner's caps, under the new owner's lane.
 func TestResizeServerFollowsNewOwner(t *testing.T) {
 	ctx := context.Background()
 	n := func(v int) *int { return &v }
@@ -172,9 +162,6 @@ func TestResizeServerFollowsNewOwner(t *testing.T) {
 	}
 }
 
-// A server nobody owns has no lane to take, so its row lock is what orders a resize
-// against a claim: a resize that reaches the row while a claim holds it waits, finds
-// the claimer's name on it, and is judged against the claimer's caps.
 func TestResizeServerWaitsForAClaimOfAFreeServer(t *testing.T) {
 	ctx := context.Background()
 	n := func(v int) *int { return &v }

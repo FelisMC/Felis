@@ -5,11 +5,6 @@ import { versionLabel } from "@/lib/config";
 import { useConfig } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 
-// VersionBadge shows what the server actually runs, from the build stamp in
-// /config.json: the release for a clean build, release+commit and a dev mark
-// otherwise. It sits under the brand in a narrow sidebar, so it is the version
-// alone, cut short with an ellipsis if need be; the full stamp is in the
-// tooltip. Without a stamp it shows the product name.
 export function VersionBadge({ className }: { className?: string }) {
   const { t } = useTranslation("common");
   const build = useConfig()?.build;
@@ -31,9 +26,7 @@ export function VersionBadge({ className }: { className?: string }) {
   );
 }
 
-// ConfigBanner says when /config.json could not be read: the panel then runs
-// on build-time defaults, so server addresses and console links it shows may
-// be wrong. It does not block anything; a reload fetches the file again.
+// Missing runtime configuration leaves build defaults active; reload retries without blocking the panel.
 export function ConfigBanner({ className }: { className?: string }) {
   const { t } = useTranslation("common");
   const cfg = useConfig();

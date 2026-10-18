@@ -18,12 +18,7 @@ import type { RetireState } from "@/lib/types";
 import { isReauthCancelled, useReauth } from "@/components/ReauthDialog";
 import { cn } from "@/lib/utils";
 
-// A server leaves its owner, or the platform, through a retirement
-// (internal/api/handlers_retire.go): the owner gives it up, or an admin deletes
-// it. felis-api stops the server and records the request; the reaper archives the
-// world and carries it out on its next daily run. Until then the server cannot be
-// started or claimed, and the request can be cancelled: a give-up by its owner or
-// an admin, a deletion by an admin only.
+// Retirement holds the server stopped; only administrators can cancel deletion.
 
 /** RetiringBadge stands in for the start/stop control of a server with a pending
  *  retirement: nothing can start it until the request is cancelled or done. */
@@ -103,9 +98,7 @@ export function RetireNotice({
 
 type Mode = "release" | "delete" | "stop";
 
-/** RetireCard is the console sidebar's way to give a server up (its owner or an
- *  admin) or delete it (an admin). Either asks for the server's name typed out,
- *  the same confirmation felis-api requires, before anything is sent. */
+// Require the typed server name before submitting retirement.
 export function RetireCard({
   name,
   label,

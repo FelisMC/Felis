@@ -7,8 +7,6 @@ import (
 	"testing"
 )
 
-// Each tier a route sets is one more gate in front of its handler: a route marked
-// both Owner and Admin still refuses an admin who is not the owner.
 func TestBuildFaceStacksTierGates(t *testing.T) {
 	a := newTestAPI(newFakeRepo(), newFakeCluster())
 	ran := false

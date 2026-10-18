@@ -12,10 +12,6 @@ import (
 	"felis.lolicon.best/internal/store"
 )
 
-// ---- user admin ----------------------------------------------------------------
-
-// A user's detail whose linked accounts cannot be read is an error. It used to come
-// back with an empty list, which tells the admin the user has linked nothing.
 func TestUserDetailLinkReadFailure(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "udl")

@@ -15,18 +15,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/**
- * FelisApiClientRetryTest pins which failures FelisApiClient repeats, against a stub
- * felis-api that counts the requests each path receives: a GET is tried once more
- * after a connection that dropped mid-reply or a 502/503/504, never a third time; a POST is
- * never repeated (the first attempt may have landed); a GET that ran past the
- * request timeout is cut off at that timeout and not repeated. It then checks the
- * client's {@link ApiStats} against the requests the stub saw.
- *
- * <p>Run: {@code javac -d <out> shared/src/main/java/best/lolicon/felis/link/*.java
- * shared/test/best/lolicon/felis/link/FelisApiClientRetryTest.java && java -cp <out>
- * best.lolicon.felis.link.FelisApiClientRetryTest}.
- */
 public final class FelisApiClientRetryTest {
 
     private static final String READY = "{\"name\":\"alpha\",\"phase\":\"Running\",\"ready\":true}";
@@ -152,9 +140,7 @@ public final class FelisApiClientRetryTest {
         assertEq("slow requests", 1, count("GET /api/v1/internal/servers/slow/status"));
     }
 
-    // The calls above, attempt by attempt: flaky 503+200, cut dropped+200, down 502+502,
-    // gone 404, busy 503 (POST), slow timed out. Nine attempts, three of them retries;
-    // no answer twice (the cut reply, the timeout), one 4xx, four 5xx.
+    // Expect nine attempts: three retries, two transport failures, one 4xx, and four 5xx responses.
     private static void statsCountEveryAttempt(FelisApiClient api) throws LinkException {
         ApiStats.Snapshot t = api.stats().total();
         int sent = hits.values().stream().mapToInt(AtomicInteger::get).sum();
@@ -207,7 +193,6 @@ public final class FelisApiClientRetryTest {
                 t.summary());
     }
 
-    // ---- harness ----
 
     interface Call {
         void run() throws LinkException;

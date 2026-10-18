@@ -9,18 +9,7 @@ import net.kyori.adventure.text.format.NamedTextColor;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * OpApprovalCard builds what an admin sees after {@code /felis web op approve <code>}:
- * whose op.console sign-in the code belongs to (account, address, where and when it
- * was started), a warning to approve only a sign-in they know about, and how to
- * confirm. Confirming means typing the account name, because a code relayed by
- * someone else ("please approve abc123") is exactly the case this card exists to
- * catch; the button fills the command up to the name and leaves the name to the
- * admin.
- *
- * <p>A pure function of (request, code, language, age), like {@link InviteCard}, so
- * {@code OpApprovalCardTest} can check it without a proxy.
- */
+// Leave the account name for the administrator to type, preventing approval from an unexamined relayed code.
 final class OpApprovalCard {
 
     static final String APPROVE_COMMAND = "/felis web op approve";
@@ -31,10 +20,7 @@ final class OpApprovalCard {
     private OpApprovalCard() {
     }
 
-    /**
-     * lines renders the card in the approver's language. ageSeconds is how long ago the
-     * sign-in was started, or a negative value when the API did not say.
-     */
+    /** lines renders the card in the approver's language. ageSeconds is how long ago the sign-in started, or a negative value when the API did not say. */
     static List<Component> lines(OpLoginView req, String code, boolean zh, long ageSeconds) {
         List<Component> out = new ArrayList<>();
         out.add(Component.text(zh ? "待你批准的管理员登录" : "Operator sign-in waiting for your approval",

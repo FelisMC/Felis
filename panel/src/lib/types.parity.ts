@@ -1,16 +1,5 @@
-// Compile-time parity between the hand-written wire types (types.ts) and the
-// schemas in api/openapi.yaml, via the generated openapi.gen.ts (`npm run
-// gen:api`; CI fails when the generated file is stale). The Go side is held to
-// the same schemas by internal/api/openapi_parity_test.go, so a field that
-// changes in one place and not the others breaks a build instead of rendering
-// `undefined`.
-//
-// For each pair three things must hold:
-//   - the two key sets are equal;
-//   - a key the docs mark optional is optional here too (the panel must not
-//     count on a field the server may omit);
-//   - every documented value fits the panel type (enums included).
-// A failure names the offending keys in the error's type.
+// Check hand-written wire types against generated OpenAPI schemas at compile time.
+// Compare key sets, optionality, and documented values, including enums.
 import type { components } from "./openapi.gen";
 import type * as T from "./types";
 

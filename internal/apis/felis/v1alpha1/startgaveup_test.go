@@ -8,9 +8,6 @@ import (
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 )
 
-// StartGaveUp tells whoever waits on a start whether to keep waiting. The
-// operator's own timeout path pins the retrying cases (autorestart_test.go);
-// these are the failures it never retries.
 func TestStartGaveUp(t *testing.T) {
 	anchor := metav1.Now()
 	status := func(phase v1alpha1.Phase, reason string, restarts int32, anchored bool) *v1alpha1.MinecraftServerStatus {

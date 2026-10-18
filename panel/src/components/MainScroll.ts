@@ -1,7 +1,6 @@
 import { createContext, useCallback, useContext } from "react";
 
-/** MainScrollContext is the shell's scrolling content area. Pages scroll inside it rather
- *  than the window, so moving to another page or section brings it back to the top itself. */
+// Pages scroll inside this shell container rather than the window.
 export const MainScrollContext = createContext<HTMLElement | null>(null);
 
 /** useScrollToTop returns a function that brings the content area back to its top. */

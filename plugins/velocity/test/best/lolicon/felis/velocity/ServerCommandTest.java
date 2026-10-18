@@ -16,17 +16,7 @@ import java.util.TreeMap;
 import static best.lolicon.felis.velocity.Fakes.UNANSWERED;
 import static best.lolicon.felis.velocity.Fakes.fake;
 
-/**
- * ServerCommandTest drives FelisVelocityPlugin.yieldServerCommand against a fake
- * command and plugin manager shaped like Velocity 3.5.1's: its built-ins are owned by
- * the virtual plugin whose id is "velocity", aliases are case-insensitive, and
- * unregistering removes only the alias named. Velocity's own /server goes, and so does
- * one with no owner (how older proxies registered built-ins); a /server another plugin
- * registered, or whose owner the plugin manager cannot name, stays; with no /server at
- * all nothing is touched. Framework free: a failed assertion throws.
- *
- * <p>Run: {@code ./gradlew routingTest} in plugins/velocity.
- */
+// A /server another plugin registered, or whose owner the plugin manager cannot name, stays; with no /server at all nothing is touched. Framework free.
 public final class ServerCommandTest {
 
     private static int checks;

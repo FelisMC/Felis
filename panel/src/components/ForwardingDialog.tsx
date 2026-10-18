@@ -8,10 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { HostTaskStatus, useHostTask } from "@/components/HostTask";
 import { MessageLine } from "@/components/MessageLine";
 
-/** ForwardingDialog switches how the proxy hands a server the player's identity: modern
- *  forwarding, signed with the proxy's secret, or legacy (BungeeCord-style, in the
- *  handshake) for a 1.12-or-older backend behind ViaVersion, which cannot verify modern
- *  forwarding and so trusts whatever reaches its port. */
+// Legacy forwarding cannot authenticate player identities reaching the backend port.
 export function ForwardingDialog({ serverName, legacy, onUpdated }: { serverName: string; legacy: boolean; onUpdated: () => void }) {
   const { t } = useTranslation("servers");
   const host = useHostTask(["server-forwarding"]);

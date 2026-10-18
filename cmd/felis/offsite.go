@@ -60,11 +60,6 @@ says so.
 // felis-offsite.service unit loads it as its EnvironmentFile.
 const defaultOffsiteEnvFile = "/etc/felis/offsite.env"
 
-// cmdOffsite implements `felis offsite`: the off-site copy of the world
-// archives, the database bundles, the registry's user images and the
-// submission uploads (internal/offsite). felis-offsite.timer runs `sync`
-// hourly on the host; the fetch verbs are the way back after the node is lost
-// (https://docs.felismc.com/en/operations/backup#offsite).
 func cmdOffsite(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprint(stderr, offsiteUsage)
@@ -239,10 +234,7 @@ func offsiteSync(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int 
 	return reportRun(res, err, stdout, stderr)
 }
 
-// reportRun prints one pass's outcome and its exit code. A run stopped before
-// it copied anything (a bucket that did not answer, another key's objects,
-// another host writing the bucket) prints no counts: its zeros would read as
-// an empty bucket.
+// reportRun prints one pass's outcome and exit code. A run stopped before copying anything prints no counts, since zeros would read as an empty bucket.
 func reportRun(res offsite.Result, err error, stdout, stderr io.Writer) int {
 	if err == nil || len(res.Errors) > 0 {
 		fmt.Fprintf(stdout, "felis offsite sync: worlds copied=%d pending=%d missing=%d expired=%d; bundles copied=%d pruned=%d; images copied=%d blobs=%d pruned=%d; uploads copied=%d pruned=%d; bucket holds %d worlds (%s), %d bundles, %d images in %d repositories (%s), %d uploads (%s)\n",
@@ -301,11 +293,7 @@ func recordRun(st *offsite.Status, res offsite.Result, err error, lease offsite.
 	}
 }
 
-// offsiteSources is where one sync pass reads from: the world archive volume
-// (archiveDir, or the backupPVC's directory), the bundle directory (with the
-// host state the pass bundles, stateDir), the registry's loopback endpoint and
-// the uploads volume (uploadsDir, or the uploadsPVC's directory). An empty
-// source is skipped.
+// Skip empty offsite source paths.
 type offsiteSources struct {
 	archiveDir, backupPVC  string
 	dbDir, stateDir        string
@@ -313,10 +301,7 @@ type offsiteSources struct {
 	uploadsDir, uploadsPVC string
 }
 
-// offsiteRunLimit backstops one sync pass. Each upload has its own deadline,
-// scaled to its size (internal/offsite), so a pass over a big archive may run
-// for hours; the timer starts no second pass while one runs, and the unit's
-// TimeoutStartSec sits above this.
+// Bound each sync pass below the systemd timeout; the timer prevents overlapping passes.
 const offsiteRunLimit = 23 * time.Hour
 
 func runOffsiteSync(cfg *config.Config, env *offsiteEnv, src offsiteSources, lease *offsite.Lease, log io.Writer) (offsite.Result, error) {
@@ -363,12 +348,7 @@ func runOffsiteSync(cfg *config.Config, env *offsiteEnv, src offsiteSources, lea
 	return s.Run(ctx)
 }
 
-// offsiteSyncer is the pass runOffsiteSync runs over the resolved archive and
-// uploads directories, before its catalog and registry are attached. It
-// snapshots the database into the bundle directory after copying archives, and
-// sweeps world objects no backup records once they outlive every retention in
-// [archive], as policy (the panel's, when it holds one) overrides it; a retention
-// that does not parse sweeps none.
+// Prune unrecorded worlds only after all retention windows; invalid retention disables pruning.
 func offsiteSyncer(cfg *config.Config, env *offsiteEnv, src offsiteSources, archiveDir, uploadsDir string, lease *offsite.Lease, log io.Writer, policy func(*reaper.Config) error) *offsite.Syncer {
 	s := &offsite.Syncer{
 		Bucket: env.bucket, Key: env.key,
@@ -390,14 +370,8 @@ func offsiteSyncer(cfg *config.Config, env *offsiteEnv, src offsiteSources, arch
 	return s
 }
 
-// offsiteSnapshot takes the bundle a pass sends after copying world archives
-// (offsite.Syncer.Snapshot): what `felis db backup` takes, labelled offsite,
-// with the newest one kept in dir. It is not recorded for the panel, whose
-// backup card watches felis-db-backup.timer: snapshots come only when archives
-// are copied, and would hide a daily timer that stopped. It requires the
-// MinecraftServer objects: it becomes the newest bundle in the bucket, which a
-// lost host restores from, and a pass that cannot take a whole one fails and
-// tries again next hour.
+// Do not record offsite snapshots as daily timer backups in the panel.
+// Require server objects in the newest offsite bundle so a lost host can restore them.
 func offsiteSnapshot(db config.DatabaseConfig, dir, stateDir string, log io.Writer) func(context.Context) error {
 	return func(ctx context.Context) error {
 		tools, err := dbTools(db)
@@ -427,10 +401,7 @@ var (
 	uploadsVolume = volumeKind{"uploads volume", "-uploads-dir", "no modpack has been uploaded"}
 )
 
-// resolveVolumeDir finds the host directory behind a PVC: a local-path volume
-// is a directory on this node. A PVC still waiting for its first consumer
-// holds nothing yet: without bind that is "" (nothing to copy), with bind it
-// is bound first, for a fetch to write into.
+// An unbound PVC returns an empty path unless bind requests allocation for restore.
 func resolveVolumeDir(ctx context.Context, ns, pvcName string, kind volumeKind, bind bool, log io.Writer) (string, error) {
 	if ns == "" {
 		ns = platform.DefaultMinecraftNamespace
@@ -499,9 +470,7 @@ func csiMountDir(root, pv string) (string, error) {
 	return "", fmt.Errorf("volume %s is not mounted here", pv)
 }
 
-// bindVolume runs a pod that mounts the PVC and exits, which is what makes a
-// WaitForFirstConsumer volume (k3s local-path) get provisioned. The pod uses
-// the control plane's own image, which every install already has.
+// Mount WaitForFirstConsumer PVCs in a short-lived Pod to provision storage before restoration.
 func bindVolume(ctx context.Context, cl client.Client, ns, pvcName string, kind volumeKind, log io.Writer) error {
 	var api appsv1.Deployment
 	if err := cl.Get(ctx, types.NamespacedName{Namespace: platform.DefaultControlNamespace, Name: "felis-api"}, &api); err != nil {
@@ -780,12 +749,7 @@ func offsiteTakeOver(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) 
 	return takeOver(ctx, env.bucket, env.key, offsite.HostLease(*statusFile), *statusFile, *yes, time.Now(), stdout, stderr)
 }
 
-// takeOver is take-over once the bucket is open: without yes it says which
-// host writes the bucket, 0 for this one (or none yet), 4 for another and 5
-// for one that took the bucket over from this host; with
-// yes it records this host as the writer. A key the bucket's objects refuse
-// is 3, as in check-key: taking over a bucket this host cannot copy into
-// would only stop the host that can.
+// Takeover status codes: 0 local/unclaimed, 3 invalid key, 4 another writer, 5 taken over from this host.
 func takeOver(ctx context.Context, b offsite.Bucket, key []byte, lease offsite.Lease, statusFile string, yes bool, now time.Time, stdout, stderr io.Writer) int {
 	fit, err := offsite.CheckKey(ctx, b, key)
 	if err != nil {

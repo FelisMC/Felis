@@ -22,10 +22,7 @@ export default defineConfig(async ({ mode }) => {
     build: {
       rollupOptions: {
         output: {
-          // The framework changes far less often than the panel, so it gets a
-          // chunk of its own that stays cached across panel releases. Listed by
-          // name: a blanket node_modules rule would pull the 3D fleet's three.js
-          // out of its lazy chunk into the first load.
+          // Name shared framework chunks explicitly so three.js remains lazy-loaded.
           manualChunks(id: string) {
             if (FRAMEWORK.test(id)) return "framework";
           },

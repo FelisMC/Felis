@@ -11,9 +11,6 @@ import { formatAbsolute, formatBytes, formatRelative } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { DBBackupLabel } from "@/lib/types";
 
-// The control-plane database backup is taken on the host (felis-db-backup.timer); the
-// card says how fresh the newest backup is and, when it is not, offers a backup now, which
-// the host takes through node-control.
 
 const LABEL_KEY: Record<DBBackupLabel, string> = {
   daily: "dbbackup_label_daily",

@@ -17,59 +17,26 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-// pollInterval is how often the runner re-Lists Pods while waiting for the file
-// container to start. It is a POLL rather than a Watch because felis-api holds
-// pods:list and NOT pods:watch (internal/platform.APIMinecraftRole) — establishing
-// a watch would need a permission this design exists to avoid.
+// pollInterval uses Pod lists because the API has pods:list but no pods:watch grant.
 const pollInterval = 150 * time.Millisecond
 
-// maxLogBytes bounds what the runner will buffer from a Pod's log. The payload is
-// at most a base64-encoded MaxReadBytes (≈4/3 of 1 MiB) plus the JSON envelope, so
-// 4 MiB is generous headroom while still refusing to let a Pod that floods stderr
-// pull felis-api's memory down with it.
 const maxLogBytes = 4 << 20
 
-// K8sRunner is the production Runner (spec §7, §16). It drives one file operation
-// end to end using ONLY the three permissions felis-api already holds in the
-// minecraft namespace, which is the entire point of the design:
-//
-//	jobs:create   → create the file Job
-//	pods:list     → find its Pod and observe the phase (no pods:get, no pods:watch)
-//	pods/log:get  → read the printed result back
-//
-// It deliberately takes a typed kubernetes.Interface rather than the
-// controller-runtime client that internal/restore's K8sJobs uses: the log
-// subresource (GetLogs(...).Stream) exists only on the typed CoreV1 client, and
-// the Job create is available on both — so one client covers all three calls
-// instead of the binding carrying two.
-//
-// The transport is tested against the Kubernetes HTTP API shape; the Editor
-// tests separately verify orchestration and error mapping against a fake Runner.
+// K8sRunner requires only jobs:create, pods:list and pods/log:get; its typed client supplies the log subresource.
 type K8sRunner struct {
 	cs      kubernetes.Interface
 	Browser *Browser
 }
 
-// NewK8sRunner builds a Runner over cs. Every per-operation parameter — the
-// namespace included — travels in the JobParams the Editor renders, so there is no
-// Config to retain here.
 func NewK8sRunner(cs kubernetes.Interface) *K8sRunner {
 	return &K8sRunner{cs: cs}
 }
 
-// Run streams read results as soon as they are printed. Mutations still wait
-// for termination so returning success does not leave the next write racing
-// the cluster-side world lock.
-//
-// The Job name carries a fresh random OpID (FilesJobName), so a create collision is
-// not an expected condition the way it is for restore — an AlreadyExists here means
-// a 64-bit collision inside one TTL window and is reported rather than absorbed,
-// because absorbing it would mean returning ANOTHER operation's output.
+// Run may stream reads early but waits for mutation termination to preserve world-lock ordering; create collisions remain errors.
 func (k *K8sRunner) Run(ctx context.Context, p JobParams) ([]byte, error) {
 	if k.Browser != nil && !mutates(p.Op) {
 		payload, err := k.Browser.Run(ctx, p, k.Start)
-		// At capacity, retain the bounded one-shot path instead of starting
-		// more idle workers. All reads still use the same containment checks.
+		// Use bounded one-shot reads when reusable browser workers are at capacity.
 		if !errors.Is(err, errBrowserFull) {
 			return payload, err
 		}
@@ -110,16 +77,7 @@ func (k *K8sRunner) Run(ctx context.Context, p JobParams) ([]byte, error) {
 		job.Name, pod.Status.Phase, tail(last))
 }
 
-// awaitPod polls until the file container has started (or failed). It selects by
-// the per-invocation LabelOpID, so it can never observe a different operation's Pod
-// — the reason that label exists.
-//
-// Both Succeeded and Failed are terminal and BOTH return the Pod rather than an
-// error, because a caller-fault result (a path that escapes the root, a file that
-// is too large) is printed and then exited on cleanly, and even a genuinely failed
-// Pod may have printed a diagnosable result first. Deciding what the outcome MEANS
-// is the caller's job (Run reads the printed result); this function only decides
-// when its log can be opened without a ContainerCreating refusal.
+// awaitPod returns failed pods too because their logs may carry a valid diagnostic result.
 func (k *K8sRunner) awaitPod(ctx context.Context, p JobParams) (*corev1.Pod, error) {
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
@@ -149,20 +107,13 @@ func (k *K8sRunner) awaitPod(ctx context.Context, p JobParams) (*corev1.Pod, err
 		select {
 		case <-ticker.C:
 		case <-ctx.Done():
-			// The Editor's Timeout (or the client disconnecting) fired. The Job is left
-			// alone deliberately: felis-api holds no jobs:delete, and the Job's own
-			// activeDeadlineSeconds plus ttlSecondsAfterFinished retire it without help.
+			// Leave timed-out Jobs to their deadline and TTL; the API cannot delete them.
 			return nil, fmt.Errorf("fileedit: timed out waiting for the file job to finish: %w", ctx.Err())
 		}
 	}
 }
 
-// extractResult finds the marked payload in a Pod log. It scans for the LAST line
-// carrying ResultPrefix because pods/log returns stdout and stderr MERGED: a Go
-// runtime warning or a libc message can appear anywhere in the stream, so the
-// payload must be located by its marker rather than by position. Taking the last
-// match rather than the first is the conservative choice — if a marker somehow
-// appeared more than once, the final one is the operation's actual outcome.
+// extractResult selects the last marked line because pod logs merge runtime diagnostics with the result payload.
 func extractResult(log string) ([]byte, bool) {
 	var payload string
 	var found bool
@@ -179,8 +130,6 @@ func extractResult(log string) ([]byte, bool) {
 	return []byte(payload), true
 }
 
-// tail returns the last few hundred bytes of a log for an error message, so a
-// diagnostic is useful without embedding an entire log in an error string.
 func tail(log string) string {
 	const n = 512
 	log = strings.TrimSpace(log)
@@ -190,8 +139,6 @@ func tail(log string) string {
 	return "..." + log[len(log)-n:]
 }
 
-// Start creates the Job for p and returns without waiting on it. Ops reads it
-// back.
 func (k *K8sRunner) Start(ctx context.Context, p JobParams) error {
 	job, err := FilesJob(p)
 	if err != nil {
@@ -203,20 +150,11 @@ func (k *K8sRunner) Start(ctx context.Context, p JobParams) error {
 	return nil
 }
 
-// maxOps bounds what Ops reports, and so how many Pod logs one call reads. Only
-// one background op runs per server at a time (it holds the world volume), so
-// this many are the one running and the latest that finished within AsyncTTL.
 const maxOps = 10
 
-// opLogLines is how much of an op's log Ops reads: the result line is the last
-// thing the Job prints to stdout, the progress lines come before it, and a
-// failed run ends with one line on stderr.
 const opLogLines = 20
 
-// Ops lists the server's background Jobs, newest first, with how far each has
-// got and how it ended, read from the tail of its Pod's log. A Pod whose log
-// cannot be read yet (still pulling its image) or any more (its node went away)
-// reports no progress rather than failing the listing.
+// Ops returns unknown progress for unreadable logs rather than failing the entire listing.
 func (k *K8sRunner) Ops(ctx context.Context, namespace, server string) ([]OpState, error) {
 	sel := metav1.ListOptions{LabelSelector: LabelManagedBy + "=" + managedByValue + "," +
 		LabelServer + "=" + server + "," + LabelAsync + "=true"}
@@ -228,7 +166,6 @@ func (k *K8sRunner) Ops(ctx context.Context, namespace, server string) ([]OpStat
 	if err != nil {
 		return nil, fmt.Errorf("fileedit: list file job pods: %w", err)
 	}
-	// backoffLimit is 0, so a Job has one Pod; the newest wins all the same.
 	podOf := map[string]*corev1.Pod{}
 	for i := range pods.Items {
 		pod := &pods.Items[i]
@@ -256,7 +193,6 @@ func (k *K8sRunner) Ops(ctx context.Context, namespace, server string) ([]OpStat
 	return out, nil
 }
 
-// logTail reads the last opLogLines lines of a Pod's log.
 func (k *K8sRunner) logTail(ctx context.Context, namespace, pod string) (string, error) {
 	lines := int64(opLogLines)
 	stream, err := k.cs.CoreV1().Pods(namespace).GetLogs(pod, &corev1.PodLogOptions{
@@ -270,14 +206,7 @@ func (k *K8sRunner) logTail(ctx context.Context, namespace, pod string) (string,
 	return string(b), err
 }
 
-// opState reads one background Job, and the tail of its Pod's log, as an
-// OpState. The printed result decides the outcome whatever the Job's condition
-// says: a Job killed at its deadline just after printing did finish its work.
-// A Job that ended without one failed, and the condition's reason says how
-// (DeadlineExceeded, BackoffLimitExceeded), unless its Pod says the kernel
-// killed it for memory (ReasonOOMKilled), which the condition does not tell; a
-// Job that completed but whose log could not be read has an outcome no one can
-// tell, ResultUnavailable.
+// opState trusts a printed result over Job conditions; absent results use failure reasons or ResultUnavailable when logs cannot be read.
 func opState(job *batchv1.Job, pod *corev1.Pod, log string) OpState {
 	st := OpState{
 		ID: job.Labels[LabelOpID], Op: job.Labels[LabelMode], Path: job.Annotations[AnnotationPath],
@@ -325,13 +254,8 @@ func opState(job *batchv1.Job, pod *corev1.Pod, log string) OpState {
 	return st
 }
 
-// ReasonOOMKilled is an op's Reason when the kernel killed its Job for going over
-// the Job's memory limit: an archive of more entries than the Job can hold the
-// list of.
 const ReasonOOMKilled = "OOMKilled"
 
-// killedForMemory reports whether pod's container was killed for going over its
-// memory limit.
 func killedForMemory(pod *corev1.Pod) bool {
 	if pod == nil {
 		return false

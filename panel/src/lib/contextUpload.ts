@@ -1,12 +1,7 @@
 import { api } from "./api";
 import type { ApiError } from "./types";
 
-// uploadContext sends a submission's build context in parts. One request body is
-// bounded by whatever proxy fronts the API (the Cloudflare edge refuses bodies
-// over 100 MB), so the server stages parts of at most part_max_bytes, and the
-// staged length is the resume point: after a dropped connection, a tunnel error
-// or a busy answer, the loop asks the server where the upload stands and carries
-// on from there. Completing stores the staged bytes as the context.
+// Split contexts below proxy body limits and resume from the server's staged offset after transient failures.
 
 export interface UploadContextOptions {
   /** Reports the bytes of file sent so far (stored plus the part in flight)
@@ -14,9 +9,7 @@ export interface UploadContextOptions {
   onProgress?: (sent: number, total: number, stored: number) => void;
   /** Cancels the upload; the staged parts stay for a later resume. */
   signal?: AbortSignal;
-  /** Carry on from the parts this submission already staged, when they are a
-   *  prefix of this same file (a retry after a failure). A fresh file starts
-   *  over, which also discards whatever an earlier file left staged. */
+  // Resume only when staged parts match this file's prefix; otherwise discard the earlier upload.
   resume?: boolean;
   /** Test seam for the pause between attempts. */
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
@@ -27,11 +20,7 @@ export const MAX_ATTEMPTS = 8;
 /** Checks while the server finishes storing a large context (about 10 minutes). */
 export const MAX_COMPLETE_WAITS = 40;
 
-// A transient answer is one the next attempt can outlast: no response at all, a
-// tunnel or ingress page in place of the API's (upstream_unavailable), an uploads
-// store that did not answer the budget check (uploads_store_unavailable), a part
-// that arrived changed and was not kept (digest_mismatch), or a 409 that means
-// "ask where the upload stands and send again".
+// Retry transport, upstream, storage, digest, and recoverable upload-state errors.
 export function isTransient(e: unknown): boolean {
   const err = e as Partial<ApiError> | null;
   if (!err || typeof err.code !== "string") return false;
@@ -111,12 +100,7 @@ export async function uploadContext(id: string, file: Blob, opts: UploadContextO
   await complete(id, total, sleep, signal);
 }
 
-// complete stores the staged upload. Behind the edge a large context can take
-// longer to store than the edge waits for an answer (it gives up after 100 s),
-// and the server carries on regardless. So a transient failure here is followed
-// by watching the staged upload: still all there means the store has not taken
-// it yet (or failed and kept it), so completing again either waits (upload_busy)
-// or answers with the real outcome; gone means it was stored.
+// Completion may outlive the edge timeout; recheck staging, where absence means the context was stored.
 async function complete(
   id: string,
   total: number,

@@ -8,14 +8,6 @@ import net.kyori.adventure.text.format.TextDecoration;
 
 import java.util.List;
 
-/**
- * LinkCodeCard builds the reply to {@code /link}: the bind code, then where to enter
- * it. The panel address is a click-to-open link, because the client makes nothing in
- * server chat clickable by itself and a bare address had to be typed out by hand.
- *
- * <p>Like {@link InviteCard} it holds no Velocity types, so {@link LinkCodeCardTest}
- * can check the link without a live proxy. Sending is left to the caller.
- */
 final class LinkCodeCard {
 
     private LinkCodeCard() {

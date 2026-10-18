@@ -18,33 +18,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * ServerRegistry mirrors the felis server set into Velocity's dynamic server
- * registry and indexes it for host-based routing (spec §11). It owns two things:
- * the felis lifecycle views keyed by name + subdomain, and the registration of
- * each server's backend address as a Velocity {@link RegisteredServer}.
- *
- * <p>{@link #refresh(Collection)} is called on a <em>successful</em> fetch from
- * felis-api, so a name's absence is a genuine removal. On an API failure the
- * caller skips the refresh entirely and the previous registrations survive
- * untouched (spec §11 keep-old-on-failure) — a transient control-plane blip must
- * never deregister live backends out from under connected players.
- *
- * <p>Every API-reported backend, including the system login and lobby, lives in
- * this registry. The generated {@code velocity.toml} contains a deliberately dead
- * login placeholder only so Velocity can validate {@code try = ["login"]}; the
- * first successful refresh replaces that placeholder with the live ClusterIP. A
- * proxy that starts while felis-api is down refreshes once from the last list the
- * API answered with instead ({@link ServerListSource}).
- *
- * <p>Only a {@code direct} endpoint carries a backend address. A server that is not
- * up reports {@code fallback}, with the NAME of its fallback server ("login") in the
- * address field: dialled as a hostname that resolves nowhere, so registering it
- * turned every wake-and-transfer into "couldn't connect you". A fallback report leaves
- * the last direct registration in place — the ClusterIP belongs to the Service and
- * outlives the pod — and {@link #observe(ServerView)} lets the waiting queue apply the
- * address a fresh status poll reports before it transfers anyone.
- */
+// Only full successful refreshes remove registrations; intervening polls may update direct endpoints.
 final class ServerRegistry {
     private static final int DEFAULT_PORT = 25565;
     private static final String ENDPOINT_DIRECT = "direct";
@@ -93,11 +67,7 @@ final class ServerRegistry {
         subdomainToName.keySet().retainAll(subdomains.keySet());
     }
 
-    /**
-     * observe applies one server's freshly polled view between refreshes: the view
-     * routing reads, and its registration when the poll reports a direct endpoint. A
-     * name the last refresh did not list is left to the next one.
-     */
+    // Poll updates apply only to names known by the last full refresh.
     void observe(ServerView v) {
         String name = v.name();
         if (name == null || byName.replace(name, v) == null) {

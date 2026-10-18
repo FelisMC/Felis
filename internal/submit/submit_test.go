@@ -15,9 +15,7 @@ import (
 	"felis.lolicon.best/internal/build"
 )
 
-// gzBody returns a minimal gzip-magic-prefixed blob standing in for a real
-// context.tar.gz: UploadContext only sniffs the first two bytes, so the payload
-// after the magic is opaque.
+// gzBody returns a gzip-magic blob; UploadContext only sniffs the first two bytes.
 func gzBody(payload string) string { return "\x1f\x8b\x08\x00" + payload }
 
 // fakeBlobs is an in-memory Blobs transport. It records what was stored so a test
@@ -311,9 +309,6 @@ func TestCreatePendingDoesNotBuild(t *testing.T) {
 	}
 }
 
-// With a ContextBaseURL the derived ref is the internal-face URL the build Pod's
-// fetch initContainer dials — not a filesystem path it could never read across
-// namespaces. OpenContext then serves whatever the Blobs transport stored.
 func TestContextRefIsFetchURLAndOpenContextServesIt(t *testing.T) {
 	m, _, _ := newManager()
 	m.ContextBaseURL = "http://felis-api-internal.felis.svc.cluster.local:8081/"
@@ -351,8 +346,6 @@ func TestContextRefIsFetchURLAndOpenContextServesIt(t *testing.T) {
 	}
 }
 
-// No upload transport ⇒ no readable blob: the route reports the same 503 the
-// upload endpoint does, rather than a misleading 404.
 func TestOpenContextWithoutTransportIsUnavailable(t *testing.T) {
 	m, _, _ := newManager()
 	if _, _, err := m.OpenContext(context.Background(), "sub-1"); !errors.Is(err, ErrUploadsUnavailable) {
@@ -432,9 +425,7 @@ func TestApproveStartsExactlyOneBuildAndLinks(t *testing.T) {
 }
 
 func TestApproveDerivedRefValidates(t *testing.T) {
-	// The derived push target must satisfy the build subsystem's own admission
-	// rules, else Approve would CAS then fail at Submit. Prove it against the SAME
-	// validator the Builder uses.
+	// The derived push target must pass the Builder's own validator, or Approve would fail after the CAS.
 	m, _, _ := newManager()
 	ref := m.deriveImageRef("sub-1")
 	req := build.Request{
@@ -457,7 +448,7 @@ func TestApproveIsCASNoDoubleBuild(t *testing.T) {
 	if _, err := m.Approve(context.Background(), seed.ID, "admin@x", ""); err != nil {
 		t.Fatalf("first Approve: %v", err)
 	}
-	// A second approve loses the CAS and must NOT start another build.
+	// A second approve loses the CAS and starts no build.
 	_, err := m.Approve(context.Background(), seed.ID, "admin@x", "")
 	if !errors.Is(err, ErrAlreadyReviewed) {
 		t.Fatalf("second Approve err = %v, want ErrAlreadyReviewed", err)
@@ -491,9 +482,7 @@ func TestApproveUnknown(t *testing.T) {
 }
 
 func TestApproveBuildFailureLeavesApprovedUnlinked(t *testing.T) {
-	// The post-CAS Submit failure is the documented KNOWN-LIMITATION: the row is
-	// left approved with build_id NULL, recoverable by an admin via the direct
-	// build path. It must NOT roll back to pending or double-count.
+	// A Submit failure after the CAS leaves the row approved with build_id NULL; an admin recovers it via the direct build path.
 	m, st, bl := newManager()
 	bl.submitErr = errors.New("apiserver unreachable")
 	seed, _ := m.Create(context.Background(), CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
@@ -518,13 +507,7 @@ func TestApproveBuildFailureLeavesApprovedUnlinked(t *testing.T) {
 }
 
 func TestApproveLinkFailureNamesRunningBuild(t *testing.T) {
-	// The WORSE post-CAS partial state: Submit SUCCEEDS (a build is genuinely
-	// running and will push to image_ref) but the follow-up LinkBuild write fails,
-	// so the row is approved with build_id still NULL. On the row this is
-	// indistinguishable from the benign Submit-fail case above, so a blind re-drive
-	// would double-build/double-push to :latest. Approve must therefore return a
-	// DISTINCT error that names the running build id and forbids re-submission —
-	// this exercises that branch (the benign test above does not).
+	// Submit succeeded but LinkBuild failed: the row looks like a failed Submit, so Approve returns a distinct error naming the running build and forbids a re-submit.
 	m, st, bl := newManager()
 	st.linkErr = errors.New("db write timeout")
 	seed, _ := m.Create(context.Background(), CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
@@ -563,9 +546,7 @@ func TestApproveLinkFailureNamesRunningBuild(t *testing.T) {
 }
 
 func TestApproveValidatesBeforeCAS(t *testing.T) {
-	// A misconfigured registry makes the derived ref fail build.Validate. That
-	// deterministic failure must happen BEFORE the CAS, so the row stays pending
-	// and no build is attempted — never a stranded approved row.
+	// A bad registry config fails build.Validate before the CAS, so the row stays pending.
 	m, st, bl := newManager()
 	m.Registry = "" // derived ref becomes "/user-uploads/...", not host-qualified
 	seed, _ := m.Create(context.Background(), CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
@@ -637,9 +618,6 @@ func TestListBy(t *testing.T) {
 	}
 }
 
-// List is the whole lane whatever opts names, and both lists settle the page the
-// same way: a missing limit takes the default, an oversized one the cap, a
-// negative offset zero, and the query loses its padding.
 func TestListPagingOptions(t *testing.T) {
 	m, st, _ := newManager()
 	for _, by := range []string{"user-1", "user-2"} {
@@ -792,9 +770,6 @@ func TestUploadContextNoTransportUnavailable(t *testing.T) {
 	}
 }
 
-// The per-user pending cap bounds the review queue: at the limit a new create is
-// refused with ErrQuotaExceeded (403), a reviewed row frees a slot, and another
-// user's queue is unaffected.
 func TestCreatePendingCapRejects(t *testing.T) {
 	m, _, _ := newManager()
 	m.MaxPendingPerUser = 2
@@ -824,10 +799,6 @@ func TestCreatePendingCapRejects(t *testing.T) {
 	}
 }
 
-// The per-user storage budget bounds the sum of a user's stored contexts. It is
-// charged against the blob store's actual sizes, refuses at the boundary with
-// ErrQuotaExceeded (403 — not the 400 a single oversize blob gets), and does not
-// double-charge a re-upload of the same submission.
 func TestUploadContextStorageBudget(t *testing.T) {
 	m, _, _ := newManager()
 	fb := newFakeBlobs()
@@ -887,10 +858,6 @@ func TestUploadContextStorageBudget(t *testing.T) {
 	}
 }
 
-// An approved context stays on the store for rebuilds, out of its uploader's
-// hands; it leaves their budget, so approval gives the allowance back. It still
-// fills the store's total, and a rejected context keeps its uploader's budget
-// until it is reaped.
 func TestApprovedContextsLeaveTheUploadersBudget(t *testing.T) {
 	m, _, _ := newManager()
 	fb := newFakeBlobs()
@@ -939,8 +906,6 @@ func TestApprovedContextsLeaveTheUploadersBudget(t *testing.T) {
 	}
 }
 
-// A single oversize blob stays a 400 (ErrInvalid), distinct from the 403 the
-// per-user budget answers with — the two failure classes must not collapse.
 func TestUploadContextOversizeIsNotQuotaError(t *testing.T) {
 	m, _, _ := newManager()
 	fb := newFakeBlobs()
@@ -954,8 +919,6 @@ func TestUploadContextOversizeIsNotQuotaError(t *testing.T) {
 	}
 }
 
-// A store failure while counting the pending queue must surface as-is, never as
-// a quota verdict that blames the user.
 func TestCreatePendingCountFailureSurfaces(t *testing.T) {
 	m, st, _ := newManager()
 	st.countErr = errors.New("db is down")
@@ -965,9 +928,6 @@ func TestCreatePendingCountFailureSurfaces(t *testing.T) {
 	}
 }
 
-// Withdraw retracts the submitter's own pending submission: the row AND its
-// uploaded context are gone — which is what frees the pending slot and the
-// storage budget for a fresh submission.
 func TestWithdrawDeletesRowAndBlob(t *testing.T) {
 	m, st, _ := newManager()
 	fb := newFakeBlobs()
@@ -993,8 +953,6 @@ func TestWithdrawDeletesRowAndBlob(t *testing.T) {
 	}
 }
 
-// Another user's id is invisible on the withdraw path (404, not 403), and
-// nothing is touched.
 func TestWithdrawNotOwnerIsNotFound(t *testing.T) {
 	m, st, _ := newManager()
 	fb := newFakeBlobs()
@@ -1016,8 +974,6 @@ func TestWithdrawNotOwnerIsNotFound(t *testing.T) {
 	}
 }
 
-// A reviewed submission is frozen: the withdraw CAS refuses it (409), keeping
-// the context a running/queued build may still consume.
 func TestWithdrawReviewedIsAlreadyReviewed(t *testing.T) {
 	m, st, _ := newManager()
 	fb := newFakeBlobs()
@@ -1042,7 +998,6 @@ func TestWithdrawReviewedIsAlreadyReviewed(t *testing.T) {
 	}
 }
 
-// The admin delete retires ANY status, reaping the context with it.
 func TestDeleteAnyStatusReapsContext(t *testing.T) {
 	m, st, _ := newManager()
 	fb := newFakeBlobs()
@@ -1071,8 +1026,6 @@ func TestDeleteAnyStatusReapsContext(t *testing.T) {
 	}
 }
 
-// Deleting an unknown id — including the second delete of one already gone —
-// is ErrNotFound (404), not a crash and not a silent success.
 func TestDeleteUnknownIsNotFound(t *testing.T) {
 	m, _, _ := newManager()
 	m.Blobs = newFakeBlobs()
@@ -1081,8 +1034,6 @@ func TestDeleteUnknownIsNotFound(t *testing.T) {
 	}
 }
 
-// A deployment without an upload transport has no blobs to reap: delete still
-// retires the row.
 func TestDeleteWithoutTransport(t *testing.T) {
 	m, st, _ := newManager() // Blobs nil
 	ctx := context.Background()
@@ -1095,8 +1046,6 @@ func TestDeleteWithoutTransport(t *testing.T) {
 	}
 }
 
-// A blob-cleanup failure after the row is gone must surface loudly (naming what
-// was left behind), never masquerade as success.
 func TestDeleteBlobCleanupFailureSurfaces(t *testing.T) {
 	m, st, _ := newManager()
 	fb := newFakeBlobs()
@@ -1116,7 +1065,7 @@ func TestDeleteBlobCleanupFailureSurfaces(t *testing.T) {
 
 func TestApproveRefusesMissingContext(t *testing.T) {
 	// With a transport wired, approving a submission whose context was never
-	// uploaded fails BEFORE the CAS: the row stays pending and no build starts.
+	// uploaded fails before the CAS: the row stays pending and no build starts.
 	m, st, bl := newManager()
 	m.Blobs = newFakeBlobs() // empty → Exists=false
 	seed, _ := m.Create(context.Background(), CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
@@ -1134,8 +1083,7 @@ func TestApproveRefusesMissingContext(t *testing.T) {
 }
 
 func TestApproveProceedsWithUploadedContext(t *testing.T) {
-	// The end-to-end user path: create -> upload -> admin approve -> exactly one
-	// build through the SAME gated Builder.
+	// End to end: create, upload, admin approve, then exactly one build through the Builder.
 	m, _, bl := newManager()
 	m.Blobs = newFakeBlobs()
 	m.ContextBaseURL = "http://felis-api-internal.felis.svc.cluster.local:8081"
@@ -1163,9 +1111,6 @@ func TestApproveProceedsWithUploadedContext(t *testing.T) {
 	}
 }
 
-// Review binds to bytes (build-supply-chain-6): an approval names the digest
-// the admin inspected, and a re-upload after that makes it fail instead of
-// building content nobody saw.
 func TestApproveBindsTheReviewedDigest(t *testing.T) {
 	ctx := context.Background()
 	m, st, bl := newManager()
@@ -1212,9 +1157,6 @@ func TestApproveBindsTheReviewedDigest(t *testing.T) {
 	}
 }
 
-// An upload that finishes after the approval won cannot slip its digest in: the
-// row keeps the approved one, which the build's fetch step then enforces, and
-// the uploader hears that the submission was reviewed.
 func TestUploadAfterApprovalKeepsTheApprovedDigest(t *testing.T) {
 	ctx := context.Background()
 	m, st, _ := newManager()
@@ -1246,9 +1188,6 @@ func (a approvingBlobs) Put(ctx context.Context, id string, r io.Reader) (int64,
 	return n, err
 }
 
-// A withdraw or delete that lands while an upload's bytes stream in reaps the
-// submission before the blob exists. The upload finds its row gone and deletes
-// the blob itself: nothing else would, and no row would ever count it.
 func TestUploadRacingRemovalLeavesNoBlob(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -1314,9 +1253,6 @@ func keysOf(m map[string][]byte) []string {
 	return out
 }
 
-// Every user's contexts together are budgeted too: once they fill it, the next
-// upload is refused as a full store (507), whoever makes it and however little
-// of their own allowance they used.
 func TestUploadContextGlobalBudget(t *testing.T) {
 	m, _, _ := newManager()
 	fb := newFakeBlobs()
@@ -1355,8 +1291,6 @@ type roomyBlobs struct {
 
 func (r *roomyBlobs) CheckRoom(need int64) error { r.need = need; return r.err }
 
-// A store on the node's filesystem is asked for room for the most the upload may
-// write before any of it is read.
 func TestUploadContextChecksRoom(t *testing.T) {
 	m, _, _ := newManager()
 	rb := &roomyBlobs{fakeBlobs: newFakeBlobs(), err: fmt.Errorf("%w: disk", ErrUploadsFull)}
@@ -1379,8 +1313,6 @@ func TestUploadContextChecksRoom(t *testing.T) {
 	}
 }
 
-// A rejected submission's context goes once the retention has passed; an approved
-// one stays (it rebuilds the image after a registry loss), and so do the rows.
 func TestReapRejected(t *testing.T) {
 	m, st, _ := newManager()
 	fb := newFakeBlobs()

@@ -23,11 +23,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
-// These tests cover the recovery proof (#13): the mailed code's rules, where
-// naming an admin leads, what the mail says, how the console walks from a name to
-// a proven (or overridden) run, and what the audit row then records. No mail
-// leaves the process: the relay is a fake that keeps what it was handed.
-
 type sentMail struct{ to, subject, body string }
 
 type fakeRelay struct {
@@ -498,9 +493,6 @@ func TestRootHandsRecoveryToAccountOperations(t *testing.T) {
 	}
 }
 
-// TestPanelFirstRecoveryMailer pins that a break-glass code goes through the Owner's panel
-// relay when one is saved, and through felis.toml's when there is none or the database
-// cannot be read.
 func TestPanelFirstRecoveryMailer(t *testing.T) {
 	fallbackUsed := 0
 	fallback := func(context.Context) (recoveryMailer, error) {

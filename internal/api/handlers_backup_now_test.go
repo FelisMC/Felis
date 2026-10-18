@@ -12,9 +12,6 @@ import (
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 )
 
-// fakeBackuper records the on-demand backup kick-off the handler makes. It mirrors
-// fakeRestorer: the handler only STARTS the work, so the fake just captures the
-// arguments and returns a canned error.
 type fakeBackuper struct {
 	err          error
 	calls        int
@@ -28,11 +25,6 @@ func (f *fakeBackuper) Backup(_ context.Context, name, formerOwner string) error
 	return f.err
 }
 
-// TestBackupNow exercises POST /api/v1/servers/{name}/backup (spec §18/§19 WorldArchiver,
-// on demand). The default server is stopped and owned by owner1 with a wired
-// fakeBackuper. The focus is the owner-or-admin gate, the stopped gate (the RWO world
-// PVC must be free), the 404/503 surface, that the recorded former owner is the
-// server's CURRENT owner, and that backup is an async 202 kick-off.
 func TestBackupNow(t *testing.T) {
 	owner := &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
 
@@ -137,9 +129,6 @@ func TestBackupNow(t *testing.T) {
 	})
 
 	t.Run("no world volume -> 409 no_world_volume, no backup", func(t *testing.T) {
-		// A never-started (or reaped) server has no world PVC: the Job would hang
-		// Pending on the missing claim with nothing recorded, so the gate must
-		// refuse before the backuper is reached.
 		api, _, cl, backuper := mk()
 		cl.noWorld["survival"] = true
 		api.External = staticExternal{p: owner}
@@ -267,12 +256,6 @@ func TestBackupNow(t *testing.T) {
 	})
 }
 
-// TestInternalBackup exercises POST /api/v1/internal/servers/{name}/backup, the
-// break-glass console's face. It shares enqueueBackup with the external handler, so
-// the stopped-gate / 503 / async-202 behaviour is proven there; here the focus is the
-// internal-face difference: no Principal (service-token auth), no owner gate — even a
-// server owned by someone else backs up (the on-node operator is trusted) — and the
-// audit is attributed to "break-glass"/"internal:ops", not an email/"external".
 func TestInternalBackup(t *testing.T) {
 	mk := func() (*API, *fakeRepo, *fakeCluster, *fakeBackuper) {
 		repo := newFakeRepo()

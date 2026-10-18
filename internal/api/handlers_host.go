@@ -9,9 +9,6 @@ import (
 	"time"
 )
 
-// handleHostOverview relays the host service's view of the platform: disks, memory,
-// the installer's units and timers, the watchdog's open alerts, database bundles and
-// the off-site copy. It reads root-only host state, so it comes from node-control.
 func (a *API) handleHostOverview(w http.ResponseWriter, r *http.Request) {
 	if !a.nodeControlReady(w, r) {
 		return
@@ -26,8 +23,6 @@ func (a *API) handleHostOverview(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(raw)
 }
 
-// handleHostQuiet holds the watchdog's mail until a time within the next week, or
-// lifts the hold (until null), for maintenance the Owner knows will raise alerts.
 func (a *API) handleHostQuiet(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	if !a.requireReauth(w, r, p) || !a.nodeControlReady(w, r) {
@@ -64,8 +59,7 @@ func (a *API) handleHostQuiet(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleOffsiteKey answers the key that seals the off-site copies: without it the copies
-// in the bucket cannot be read, so the Owner keeps it somewhere other than this host.
+// handleOffsiteKey returns the decryption key, which must be retained separately from this host for recovery.
 func (a *API) handleOffsiteKey(w http.ResponseWriter, r *http.Request) {
 	if !a.requireReauth(w, r, principalFromContext(r.Context())) || !a.nodeControlReady(w, r) {
 		return
@@ -80,7 +74,6 @@ func (a *API) handleOffsiteKey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"key": key})
 }
 
-// handleNodeTaskArtifact downloads a finished task's file, such as a support bundle.
 func (a *API) handleNodeTaskArtifact(w http.ResponseWriter, r *http.Request) {
 	if !a.requireReauth(w, r, principalFromContext(r.Context())) || !a.nodeControlReady(w, r) {
 		return
@@ -110,8 +103,6 @@ func (a *API) handleNodeTaskArtifact(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, body)
 }
 
-// handleAuditExport writes the audit rows of a period as JSON lines, the panel's side
-// of `felis db audit-export`: an install keeps them past [audit] retention this way.
 func (a *API) handleAuditExport(w http.ResponseWriter, r *http.Request) {
 	if !a.requireReauth(w, r, principalFromContext(r.Context())) {
 		return
@@ -157,6 +148,5 @@ func (a *API) handleAuditExport(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name+".jsonl"))
 	w.Header().Set("Cache-Control", "no-store")
 	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(30 * time.Minute))
-	// A failure halfway can no longer change the status; the file then ends early.
 	_, _ = a.AuditExport(r.Context(), since, until, w)
 }

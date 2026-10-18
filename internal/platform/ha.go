@@ -8,41 +8,17 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// Controller high availability (Params.ControllerHA). Several controllers run k3s with
-// embedded etcd, so the cluster keeps its API while one of them is lost; the control
-// plane itself stays a single active set of pods that moves between them:
-//
-//   - its data lives on replicated volumes (ReplicatedStorageClass, Longhorn's), each
-//     copy on another controller, so a move loses nothing that was written;
-//   - every control-plane pod may run on any controller (the role label, not one
-//     identity), and leaves a node that stopped answering after haEvictionSeconds
-//     instead of the default five minutes;
-//   - the pods that hold volumes run together on the node running PostgreSQL. A
-//     replicated volume is attached to one node at a time, and host tools on that node
-//     (the host leader: `felis ha leader`) reach each of them there, as they reach the
-//     database on its loopback port.
-//
-// The originals of the volumes stay as they were, beside the replicated copies, which
-// carry haSuffix: a claim's class cannot change, and keeping them makes the way back
-// possible.
+// HA volumes use suffixed replicated claims and retain originals because existing claim storage classes cannot change.
 
 const (
-	// DefaultReplicatedStorageClass is the StorageClass deploy/bootstrap.sh creates on
-	// Longhorn for the control plane.
 	DefaultReplicatedStorageClass = "felis-replicated"
-	// haSuffix names the replicated copy of a control-plane volume.
-	haSuffix = "-ha"
-	// haEvictionSeconds is how long a control-plane pod stays bound to a node that stopped
-	// responding before it is moved.
-	haEvictionSeconds int64 = 30
-	// postgresStorageSize is the replicated database volume's default capacity.
-	postgresStorageSize = "10Gi"
-	// PostgresHAClaim is the database's replicated volume.
-	PostgresHAClaim = PostgresName + haSuffix
+
+	haSuffix                  = "-ha"
+	haEvictionSeconds   int64 = 30
+	postgresStorageSize       = "10Gi"
+	PostgresHAClaim           = PostgresName + haSuffix
 )
 
-// HAClaimName is the claim a control-plane volume uses: base itself, or its replicated
-// copy in ControllerHA mode.
 func HAClaimName(ha bool, base string) string {
 	if ha && base != "" {
 		return base + haSuffix
@@ -54,8 +30,6 @@ func claimName(p Params, base string) string {
 	return HAClaimName(p.ControllerHA, base)
 }
 
-// storageClassFor is the class of a control-plane claim: the cluster default, or the
-// replicated class in ControllerHA mode.
 func storageClassFor(p Params) *string {
 	if !p.ControllerHA {
 		return nil
@@ -64,8 +38,6 @@ func storageClassFor(p Params) *string {
 	return &class
 }
 
-// haTolerations move a control-plane pod off a node that stopped answering after
-// haEvictionSeconds; outside ControllerHA there is nowhere to move it.
 func haTolerations(p Params) []corev1.Toleration {
 	if !p.ControllerHA {
 		return nil
@@ -78,8 +50,6 @@ func haTolerations(p Params) []corev1.Toleration {
 	return out
 }
 
-// withPostgres keeps a control-plane pod on the node running PostgreSQL in ControllerHA
-// mode.
 func withPostgres(p Params) *corev1.Affinity {
 	if !p.ControllerHA {
 		return nil
@@ -93,8 +63,6 @@ func withPostgres(p Params) *corev1.Affinity {
 	}}
 }
 
-// haPlacement applies the ControllerHA placement to a control-plane pod: the role
-// selector (controllerSelector), the quick eviction, and the place beside PostgreSQL.
 func haPlacement(p Params, spec *corev1.PodSpec) {
 	spec.Tolerations = append(spec.Tolerations, haTolerations(p)...)
 	if a := withPostgres(p); a != nil {
@@ -102,7 +70,6 @@ func haPlacement(p Params, spec *corev1.PodSpec) {
 	}
 }
 
-// postgresPVC is the database's replicated volume in ControllerHA mode.
 func postgresPVC(p Params) *corev1.PersistentVolumeClaim {
 	return &corev1.PersistentVolumeClaim{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"},
@@ -117,9 +84,7 @@ func postgresPVC(p Params) *corev1.PersistentVolumeClaim {
 	}
 }
 
-// ReplicatedStorageClass is the Longhorn class of the control plane's volumes: three
-// copies (one per controller, as Longhorn puts each on another node), kept when their
-// claim is deleted, and preferably one beside the pod.
+// ReplicatedStorageClass keeps three Longhorn copies and retains data after claim deletion.
 func ReplicatedStorageClass(p Params) *storagev1.StorageClass {
 	p = p.withDefaults()
 	retain := corev1.PersistentVolumeReclaimRetain
@@ -139,7 +104,6 @@ func ReplicatedStorageClass(p Params) *storagev1.StorageClass {
 	}
 }
 
-// controllerRoleSelector picks any controller.
 func controllerRoleSelector() map[string]string {
 	return map[string]string{placement.LabelRole: placement.RoleController}
 }

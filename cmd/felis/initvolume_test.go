@@ -37,8 +37,6 @@ func openTree(t *testing.T) *os.Root {
 	return root
 }
 
-// Every entry owned by someone else is handed over, the root dir included, and a
-// symlink is re-owned as a link rather than walked into.
 func TestChownTreeHandsOverMismatchedEntries(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX ownership not represented on Windows")
@@ -62,8 +60,6 @@ func TestChownTreeHandsOverMismatchedEntries(t *testing.T) {
 	}
 }
 
-// A volume already owned by the game uid costs no chown at all: this is the steady
-// state every restart after the first one hits.
 func TestChownTreeSkipsMatchingOwner(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX ownership not represented on Windows")
@@ -82,8 +78,6 @@ func TestChownTreeSkipsMatchingOwner(t *testing.T) {
 	}
 }
 
-// One entry that refuses the chown is reported and the walk carries on: a single
-// odd file must not keep the whole server from starting.
 func TestChownTreeContinuesPastFailures(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX ownership not represented on Windows")
@@ -103,8 +97,6 @@ func TestChownTreeContinuesPastFailures(t *testing.T) {
 	}
 }
 
-// Against a real directory the owner already matches, so the command succeeds
-// without needing CAP_CHOWN — the path every test runner (non-root) can take.
 func TestCmdInitVolumeOwnedTree(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX ownership not represented on Windows")

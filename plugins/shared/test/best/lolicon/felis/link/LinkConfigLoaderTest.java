@@ -12,19 +12,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
-/**
- * LinkConfigLoaderTest checks how felis-link.properties and the environment combine:
- * the environment wins, both required values must come from somewhere, a first run
- * leaves a template and still refuses to start, and the call timeouts default to
- * 10 s, take the operator's value, and refuse anything that is not a whole number
- * of seconds from 1 to 120. A token from the file follows the file (at most one
- * look a second, a notice naming its fingerprint on each change, a blank or missing
- * file ignored); one from the environment stays fixed.
- *
- * <p>Run: {@code javac -d <out> shared/src/main/java/best/lolicon/felis/link/*.java
- * shared/test/best/lolicon/felis/link/LinkConfigLoaderTest.java && java -cp <out>
- * best.lolicon.felis.link.LinkConfigLoaderTest}.
- */
+// A token from the file follows the file (a notice names its fingerprint on each change; a blank or missing file is ignored); one from the environment stays fixed.
 public final class LinkConfigLoaderTest {
 
     private static int checks;
@@ -179,7 +167,6 @@ public final class LinkConfigLoaderTest {
         assertEq("env token gives no notice", 0, notices.size());
     }
 
-    // ---- harness ----
 
     private static java.util.function.UnaryOperator<String> env(String... kv) {
         Map<String, String> m = new HashMap<>();

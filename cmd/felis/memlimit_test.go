@@ -27,8 +27,6 @@ func TestSoftMemoryLimit(t *testing.T) {
 	}
 }
 
-// TestLimitHeapToCgroup checks the limit comes from the first cgroup file there
-// is, and that GOMEMLIMIT set by hand leaves the heap alone.
 func TestLimitHeapToCgroup(t *testing.T) {
 	prevFiles, prevLimit := cgroupMemoryFiles, debug.SetMemoryLimit(-1)
 	t.Cleanup(func() { cgroupMemoryFiles = prevFiles; debug.SetMemoryLimit(prevLimit) })

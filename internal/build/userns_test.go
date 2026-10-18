@@ -14,8 +14,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-// "auto" follows the probe through every copy of the Config; "on" and "off"
-// ignore it.
 func TestUserNamespacesMode(t *testing.T) {
 	probe := new(atomic.Bool)
 	for _, tc := range []struct {
@@ -43,8 +41,6 @@ func TestUserNamespacesMode(t *testing.T) {
 	}
 }
 
-// The probe pod has the shape that needs user-namespace support, and runs
-// nothing that matters.
 func TestUsernsProbeJobShape(t *testing.T) {
 	job := UsernsProbeJob("felis-build", "felis-build", "felis:test", "userns-probe-x")
 	spec := job.Spec.Template.Spec

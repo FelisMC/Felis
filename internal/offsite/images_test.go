@@ -16,8 +16,6 @@ import (
 	"time"
 )
 
-// ---- fake registry ---------------------------------------------------------
-
 type fakeRepo struct {
 	digests []string
 	tags    map[string]string
@@ -28,9 +26,7 @@ type fakeManifest struct {
 	mediaType string
 }
 
-// fakeRegistry is the registry as the sync reads it and as a restore writes
-// it: one blob and manifest store shared by every repository, as
-// distribution keeps it, and per-repository links.
+// fakeRegistry stores blobs and manifests shared by every repository, as distribution does.
 type fakeRegistry struct {
 	repos     map[string]*fakeRepo
 	blobs     map[string][]byte
@@ -225,11 +221,6 @@ func keysUnder(b *memBucket, prefix string) []string {
 	return out
 }
 
-// ---- tests -----------------------------------------------------------------
-
-// TestSyncImagesCopiesUserImages: user repositories are copied blob by blob,
-// each blob once however many images share it, and the platform's reserved
-// repositories are left alone. A second run with nothing new sends nothing.
 func TestSyncImagesCopiesUserImages(t *testing.T) {
 	reg := newFakeRegistry()
 	shared := layer(3000)
@@ -280,11 +271,6 @@ func TestSyncImagesCopiesUserImages(t *testing.T) {
 	}
 }
 
-// TestSyncImagesCopiesPinnedPlatformRevisions: of felis/ and mirror/ only the
-// revisions a pin names are copied, without tags; a restore puts them back by
-// digest and leaves the tags the installer pushed on the new host alone. When
-// the pins cannot be read, the previous copy of those revisions is kept and
-// the run fails.
 func TestSyncImagesCopiesPinnedPlatformRevisions(t *testing.T) {
 	reg := newFakeRegistry()
 	old := reg.image("felis/paper", "demo", layer(4000))
@@ -342,9 +328,6 @@ func TestSyncImagesCopiesPinnedPlatformRevisions(t *testing.T) {
 	}
 }
 
-// TestSyncImagesRejectsCorruptBlob: bytes that do not hash to the digest never
-// become that digest's object, the image stays out of the index, and the run
-// fails so the next one tries again.
 func TestSyncImagesRejectsCorruptBlob(t *testing.T) {
 	reg := newFakeRegistry()
 	bad := layer(100)
@@ -364,9 +347,6 @@ func TestSyncImagesRejectsCorruptBlob(t *testing.T) {
 	}
 }
 
-// TestSyncImagesSkipsWhatTheRegistryLost: a manifest whose blob the registry no
-// longer has is reported, not copied, and does not fail the run; one copied
-// earlier keeps its off-site copy.
 func TestSyncImagesSkipsWhatTheRegistryLost(t *testing.T) {
 	reg := newFakeRegistry()
 	keptLayer := layer(100)
@@ -392,9 +372,6 @@ func TestSyncImagesSkipsWhatTheRegistryLost(t *testing.T) {
 	}
 }
 
-// TestSyncImagesKeepsReplacedStates: a registry that comes back empty (a host
-// being rebuilt) writes a new index version but prunes nothing; the objects of
-// the old state go only ImageHistory after it was replaced.
 func TestSyncImagesKeepsReplacedStates(t *testing.T) {
 	reg := newFakeRegistry()
 	reg.image("user/a", "v1", layer(100))
@@ -435,8 +412,6 @@ func TestSyncImagesKeepsReplacedStates(t *testing.T) {
 	}
 }
 
-// TestSyncImagesUnreadableRepoKeepsItsEntry: a repository the registry fails to
-// list keeps its last recorded state, and the failed run prunes nothing.
 func TestSyncImagesUnreadableRepoKeepsItsEntry(t *testing.T) {
 	reg := newFakeRegistry()
 	a := reg.image("user/a", "v1", layer(100))
@@ -460,9 +435,6 @@ func TestSyncImagesUnreadableRepoKeepsItsEntry(t *testing.T) {
 	}
 }
 
-// TestFetchImagesRestoresRegistry: a fresh registry gets back every user image
-// with the same digests and tags, blobs before the manifests that name them and
-// an index after its children; a second run pushes nothing.
 func TestFetchImagesRestoresRegistry(t *testing.T) {
 	reg := newFakeRegistry()
 	shared := layer(3000)

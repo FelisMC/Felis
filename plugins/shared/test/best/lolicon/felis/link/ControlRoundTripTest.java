@@ -4,25 +4,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
 
-/**
- * ControlRoundTripTest is a hermetic, dependency-free check of the {@code
- * felis:control} codec (spec §12). It lives outside {@code src/main/java} so it
- * never ships in a module jar, and it has no test framework: a failed assertion
- * throws and the process exits non-zero.
- *
- * <p>Because the velocity and paper jars source-share the very {@link Control} and
- * {@link ControlFrame} this test exercises, a passing encode→decode round-trip
- * proves wire compatibility <em>by construction</em>, not merely that the code
- * compiles — the one part of the Java plugin layer that can be verified above
- * "compiles" without a live proxy/lobby. So it asserts field-level equality for
- * every frame type, the {@code type} discriminator on the wire, {@code Error} with
- * its optional {@code server} both present and absent, and that a malformed or
- * unknown frame is rejected, not silently mis-decoded.
- *
- * <p>Run: {@code javac -d <out> shared/src/main/java/best/lolicon/felis/link/*.java
- * shared/test/best/lolicon/felis/link/ControlRoundTripTest.java && java -cp <out>
- * best.lolicon.felis.link.ControlRoundTripTest}.
- */
 public final class ControlRoundTripTest {
 
     private static int checks;
@@ -70,9 +51,7 @@ public final class ControlRoundTripTest {
         assertContains(ControlFrame.loginRelease("p"), "\"type\":\"LoginRelease\"");
     }
 
-    // ListUpdate is the lobby's whole tile set: order is display order and must hold,
-    // an empty list stays empty (never null), and non-string entries a hand-written
-    // frame might carry are skipped rather than failing the whole list.
+    // Preserve list order and empty lists; skip malformed entries without discarding valid names.
     private static void listUpdateCarriesNamesInOrder() {
         ControlFrame f = decode(ControlFrame.listUpdate(Arrays.asList("zeta", "alpha", null, "mid")));
         assertEq("list order (null dropped)", List.of("zeta", "alpha", "mid"), f.servers());
@@ -83,10 +62,7 @@ public final class ControlRoundTripTest {
         assertEq("non-string entries skipped", List.of("a", "b"), mixed.servers());
     }
 
-    // ListUpdate's access list is the player's verdict per name, by index: it holds
-    // its alignment through a dropped name on either end, a missing or non-string
-    // verdict reads as unknown (""), and a list with no verdict at all is the plain
-    // name list on the wire.
+    // Keep access verdicts aligned when malformed names or verdicts are dropped.
     private static void listUpdateCarriesAccessByName() {
         ControlFrame f = decode(ControlFrame.listUpdate(
                 Arrays.asList("mine", null, "theirs", "fresh"),
@@ -161,7 +137,6 @@ public final class ControlRoundTripTest {
         assertRejected("{\"type\":\"Bogus\"}".getBytes(StandardCharsets.UTF_8)); // unknown type
     }
 
-    // ---- harness ----
 
     private static ControlFrame decode(ControlFrame f) {
         return Control.decode(Control.encode(f));

@@ -8,10 +8,6 @@ import (
 	"time"
 )
 
-// The server_schedules store (ServerSchedules, migration 0036).
-
-// scheduleColumns is the SELECT list scanSchedule reads, over server_schedules
-// aliased s.
 const scheduleColumns = `s.id, s.server_name, COALESCE(s.owner_id, ''), s.label, s.action, s.command,
 	s.every_minutes, s.minute_of_day, s.weekdays, s.timezone, s.warn_minutes, s.enabled,
 	s.next_run_at, s.warned_for, s.run_state, s.run_resume, s.run_step_at,
@@ -40,7 +36,6 @@ func nullTimePtr(t sql.NullTime) *time.Time {
 	return &t.Time
 }
 
-// ListSchedules lists a server's schedules, oldest first.
 func (p *PGRepo) ListSchedules(ctx context.Context, server string) ([]Schedule, error) {
 	rows, err := p.db.QueryContext(ctx,
 		`SELECT `+scheduleColumns+` FROM server_schedules s WHERE s.server_name = $1 ORDER BY s.id`, server)
@@ -59,7 +54,6 @@ func (p *PGRepo) ListSchedules(ctx context.Context, server string) ([]Schedule, 
 	return out, rows.Err()
 }
 
-// GetSchedule reads one schedule of server, or ErrNotFound.
 func (p *PGRepo) GetSchedule(ctx context.Context, server string, id int64) (*Schedule, error) {
 	s, err := scanSchedule(p.db.QueryRowContext(ctx,
 		`SELECT `+scheduleColumns+` FROM server_schedules s WHERE s.id = $1 AND s.server_name = $2`, id, server))
@@ -69,8 +63,7 @@ func (p *PGRepo) GetSchedule(ctx context.Context, server string, id int64) (*Sch
 	return s, err
 }
 
-// CreateSchedule inserts s under the server row's lock, so two saves racing
-// for the last free place cannot both take it.
+// CreateSchedule locks the server row so concurrent creates cannot exceed the per-server limit.
 func (p *PGRepo) CreateSchedule(ctx context.Context, s *Schedule, limit int) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -107,8 +100,6 @@ func (p *PGRepo) CreateSchedule(ctx context.Context, s *Schedule, limit int) err
 	return tx.Commit()
 }
 
-// scheduleMissing tells why a write guarded on an idle run_state touched no
-// row: the schedule is gone, or it is running.
 func (p *PGRepo) scheduleMissing(ctx context.Context, server string, id int64) error {
 	var state string
 	err := p.db.QueryRowContext(ctx,
@@ -124,7 +115,6 @@ func (p *PGRepo) scheduleMissing(ctx context.Context, server string, id int64) e
 	return fmt.Errorf("schedule %d of %s did not change", id, server)
 }
 
-// UpdateSchedule writes s's settings, owner and next run, unless it is running.
 func (p *PGRepo) UpdateSchedule(ctx context.Context, s *Schedule) error {
 	res, err := p.db.ExecContext(ctx,
 		`UPDATE server_schedules SET owner_id = NULLIF($3, ''), label = $4, action = $5, command = $6,
@@ -146,7 +136,6 @@ func (p *PGRepo) UpdateSchedule(ctx context.Context, s *Schedule) error {
 	return nil
 }
 
-// DeleteSchedule removes a schedule, unless it is running.
 func (p *PGRepo) DeleteSchedule(ctx context.Context, server string, id int64) error {
 	res, err := p.db.ExecContext(ctx,
 		`DELETE FROM server_schedules WHERE id = $1 AND server_name = $2 AND run_state = ''`, id, server)
@@ -162,8 +151,6 @@ func (p *PGRepo) DeleteSchedule(ctx context.Context, server string, id int64) er
 	return nil
 }
 
-// DueSchedules lists the schedules the runner has to look at, runs in progress
-// first, then by due time.
 func (p *PGRepo) DueSchedules(ctx context.Context, horizon time.Time) ([]DueSchedule, error) {
 	rows, err := p.db.QueryContext(ctx,
 		`SELECT `+scheduleColumns+`, COALESCE(v.owner_id, '')
@@ -186,7 +173,6 @@ func (p *PGRepo) DueSchedules(ctx context.Context, horizon time.Time) ([]DueSche
 	return out, rows.Err()
 }
 
-// execApplied runs a compare-and-set write and reports whether it matched.
 func (p *PGRepo) execApplied(ctx context.Context, query string, args ...any) (bool, error) {
 	res, err := p.db.ExecContext(ctx, query, args...)
 	if err != nil {
@@ -196,7 +182,6 @@ func (p *PGRepo) execApplied(ctx context.Context, query string, args ...any) (bo
 	return n > 0, err
 }
 
-// ClaimScheduleRun starts a run of a schedule without one.
 func (p *PGRepo) ClaimScheduleRun(ctx context.Context, id int64, due, next *time.Time, now time.Time) (bool, error) {
 	if due == nil {
 		return p.execApplied(ctx,
@@ -210,7 +195,6 @@ func (p *PGRepo) ClaimScheduleRun(ctx context.Context, id int64, due, next *time
 		 WHERE id = $1 AND run_state = '' AND enabled AND next_run_at = $2`, id, *due, next, now)
 }
 
-// AdvanceScheduleRun moves a run on to its next step.
 func (p *PGRepo) AdvanceScheduleRun(ctx context.Context, id int64, from, to string, resume bool, result, detail string, now time.Time) (bool, error) {
 	return p.execApplied(ctx,
 		`UPDATE server_schedules SET run_state = $3, run_resume = $4, run_step_at = $7,
@@ -219,7 +203,6 @@ func (p *PGRepo) AdvanceScheduleRun(ctx context.Context, id int64, from, to stri
 		 WHERE id = $1 AND run_state = $2`, id, from, to, resume, result, detail, now)
 }
 
-// FinishScheduleRun ends a run with its outcome.
 func (p *PGRepo) FinishScheduleRun(ctx context.Context, id int64, from, result, detail string) (bool, error) {
 	return p.execApplied(ctx,
 		`UPDATE server_schedules SET run_state = '', run_resume = false, run_step_at = NULL,
@@ -227,7 +210,6 @@ func (p *PGRepo) FinishScheduleRun(ctx context.Context, id int64, from, result, 
 		 WHERE id = $1 AND run_state = $2::text AND $2::text <> ''`, id, from, result, detail)
 }
 
-// MissScheduleRun records the run due then as missed and moves on to next.
 func (p *PGRepo) MissScheduleRun(ctx context.Context, id int64, due, next time.Time, detail string) (bool, error) {
 	return p.execApplied(ctx,
 		`UPDATE server_schedules SET next_run_at = $3, warned_for = NULL,
@@ -235,7 +217,6 @@ func (p *PGRepo) MissScheduleRun(ctx context.Context, id int64, due, next time.T
 		 WHERE id = $1 AND run_state = '' AND enabled AND next_run_at = $2`, id, due, next, detail)
 }
 
-// WarnScheduleRun marks the run due then as warned about.
 func (p *PGRepo) WarnScheduleRun(ctx context.Context, id int64, due time.Time) (bool, error) {
 	return p.execApplied(ctx,
 		`UPDATE server_schedules SET warned_for = $2
@@ -243,7 +224,6 @@ func (p *PGRepo) WarnScheduleRun(ctx context.Context, id int64, due time.Time) (
 		   AND warned_for IS DISTINCT FROM $2`, id, due)
 }
 
-// DisableSchedule turns off an enabled, idle schedule and records why.
 func (p *PGRepo) DisableSchedule(ctx context.Context, id int64, detail string) (bool, error) {
 	return p.execApplied(ctx,
 		`UPDATE server_schedules SET enabled = false, next_run_at = NULL, warned_for = NULL,

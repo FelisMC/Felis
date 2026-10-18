@@ -17,15 +17,7 @@ import (
 	"felis.lolicon.best/internal/platform"
 )
 
-// Recovery mode proves who is breaking the glass (#13). Naming a staff account is
-// where it starts: the console then mails a one-time code to that account's verified
-// address, and only that code, typed within recoveryCodeTTL, makes the run a
-// recovery attributed to the account. Every other ending — no such account, no
-// verified address, no relay, a send that fails, a wrong or late code, or the
-// operator giving up on the mail — leads to the typed OVERRIDE, which the audit row
-// records as an unverified root_override together with the reason (otp_skipped).
-// The code goes through the same [smtp] relay as the panel's login codes, so with
-// that relay down recovery still works, as an override that says why.
+// Unverified recovery uses an audited root override with otp_skipped.
 
 const (
 	recoveryCodeTTL      = 10 * time.Minute
@@ -51,10 +43,7 @@ type recoveryMailer interface {
 	SendNotice(ctx context.Context, email, subject, body string) error
 }
 
-// recoveryConfig is what the console needs to mail a recovery code. open resolves
-// the relay only when a code is about to go out, so a console used to halt a server
-// never touches [smtp] or the cluster; its error says why no relay is available.
-// host names this machine in the mail. The zero value has no relay.
+// recoveryConfig mails a recovery code. open resolves the relay only when a code is about to go out, so halting a server never touches [smtp] or the cluster.
 type recoveryConfig struct {
 	open func(ctx context.Context) (recoveryMailer, error)
 	host string
@@ -227,11 +216,7 @@ func maskEmail(email string) string {
 	return email[:1] + strings.Repeat("*", max(at-1, 3)) + email[at:]
 }
 
-// hostRecoveryMailer opens the [smtp] relay from the host the way the watchdog does:
-// the password is the env var password_ref names when that is set, else the host
-// copy at passwordPath, else the felis-smtp Secret, whose absence means a relay
-// without AUTH. The cluster is reached only when the host copy is missing, so a
-// break-glass on a host whose k3s is down still gets its code.
+// Use host SMTP credentials before consulting cluster Secrets so recovery works during k3s outages.
 func hostRecoveryMailer(c config.SMTPConfig, passwordPath, controlNS string) func(context.Context) (recoveryMailer, error) {
 	return func(ctx context.Context) (recoveryMailer, error) {
 		if strings.TrimSpace(c.Host) == "" {
@@ -259,9 +244,7 @@ func hostRecoveryMailer(c config.SMTPConfig, passwordPath, controlNS string) fun
 	}
 }
 
-// panelFirstRecoveryMailer opens the relay the Owner saved in the panel when there is one,
-// the relay the panel's own codes go through. With none, or with the database out (a
-// break-glass host may be in trouble), it falls back to felis.toml's relay.
+// Prefer the panel relay; absent settings or database failure fall back to TOML.
 func panelFirstRecoveryMailer(read func(context.Context) (*mailsettings.Settings, error), fallback func(context.Context) (recoveryMailer, error)) func(context.Context) (recoveryMailer, error) {
 	return func(ctx context.Context) (recoveryMailer, error) {
 		if s, err := read(ctx); err == nil && s != nil {

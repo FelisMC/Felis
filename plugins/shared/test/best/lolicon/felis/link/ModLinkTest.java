@@ -11,19 +11,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
-/**
- * ModLinkTest runs the mods' shared {@code /link} ({@link ModLink}) the way a mod
- * does, with a fake command source, a hand-cranked I/O thread and server thread, and
- * the real LinkClient against a stub felis-api. It checks what the caller gets: the
- * console and an offline-mode server are refused before anything is minted, a player
- * hears "requesting" at once while the code is fetched off the server thread, the
- * code and where to redeem it (the minted panel URL, else the console) arrive back on
- * the server thread, and any failure is one generic line with the details in the log.
- *
- * <p>Run: {@code javac -d <out> shared/src/main/java/best/lolicon/felis/link/*.java
- * shared/test/best/lolicon/felis/link/ModLinkTest.java && java -cp <out>
- * best.lolicon.felis.link.ModLinkTest} (plugins/test.sh does).
- */
+// Drive I/O and server-thread queues separately to verify thread confinement.
 public final class ModLinkTest {
 
     private static final String CODE = "K7Q2-9XPM";
@@ -130,7 +118,6 @@ public final class ModLinkTest {
         assertTrue("... logged as a transport failure", rig.warnings.get(0).contains("status=0"));
     }
 
-    // ---- rig ----
 
     private static final class Rig {
         final List<Runnable> io = new ArrayList<>();

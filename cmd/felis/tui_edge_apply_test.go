@@ -5,10 +5,6 @@ import (
 	"testing"
 )
 
-// TestOriginFenceRuleset pins the security-relevant shape of the nftables fence that
-// closes the panel NodePort to the public interface after the Cloudflare tunnel is
-// up. The real `nft` apply is INTEGRATION-ONLY; what MUST hold regardless of the host
-// is the ruleset itself, so it is asserted here.
 func TestOriginFenceRuleset(t *testing.T) {
 	const port = 30443
 	rs := originFenceRuleset(port)
@@ -22,9 +18,7 @@ func TestOriginFenceRuleset(t *testing.T) {
 	if strings.Contains(rs, "table ip "+felisEdgeTable) {
 		t.Errorf("ruleset must use the inet family to cover IPv6, not ip:\n%s", rs)
 	}
-	// prerouting hook at priority -300 (raw), which runs BEFORE kube-proxy's NodePort
-	// DNAT (dstnat, -100). A filter/INPUT rule would miss the DNAT'd, then-FORWARDed
-	// NodePort packet; this ordering is what makes the fence actually catch it.
+	// Filter before NodePort DNAT; INPUT rules miss forwarded packets.
 	if !strings.Contains(rs, "hook prerouting priority -300") {
 		t.Errorf("ruleset must hook prerouting at priority -300 (before kube-proxy dstnat):\n%s", rs)
 	}
@@ -36,7 +30,7 @@ func TestOriginFenceRuleset(t *testing.T) {
 	if !strings.Contains(rs, "tcp dport 30443 drop") {
 		t.Errorf("ruleset must drop tcp dport 30443:\n%s", rs)
 	}
-	// The drop must come AFTER the loopback accept, or loopback would be dropped too.
+	// The drop must come after the loopback accept, or loopback would be dropped too.
 	loIdx := strings.Index(rs, `iif "lo" accept`)
 	dropIdx := strings.Index(rs, "tcp dport 30443 drop")
 	if loIdx < 0 || dropIdx < 0 || loIdx > dropIdx {
@@ -44,9 +38,6 @@ func TestOriginFenceRuleset(t *testing.T) {
 	}
 }
 
-// TestOriginFenceRulesetHonorsPort proves the rule targets the configured NodePort,
-// not a hardcoded 30443 — a deployment that overrode FELIS_PANEL_NODEPORT must fence
-// the port it actually exposed.
 func TestOriginFenceRulesetHonorsPort(t *testing.T) {
 	rs := originFenceRuleset(30500)
 	if !strings.Contains(rs, "tcp dport 30500 drop") {
@@ -57,9 +48,6 @@ func TestOriginFenceRulesetHonorsPort(t *testing.T) {
 	}
 }
 
-// TestConnectorConnCount covers the two JSON shapes cloudflared has emitted for
-// `tunnel info --output json`, plus the safe-zero fallbacks — the gate that stops the
-// fence from closing 30443 while the tunnel is dead.
 func TestConnectorConnCount(t *testing.T) {
 	cases := []struct {
 		name string

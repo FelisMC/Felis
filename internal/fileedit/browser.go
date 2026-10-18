@@ -15,8 +15,7 @@ import (
 	"time"
 )
 
-// Browse runs inside the read-only Job and reuses Execute for every command.
-// Refuse write commands even if the other end violates the protocol.
+// Browse reuses Execute but independently refuses mutating commands from its peer.
 func Browse(ctx context.Context, worldRoot, url, token string) error {
 	if token == "" {
 		return fmt.Errorf("fileedit: browser token is required")
@@ -79,9 +78,7 @@ const (
 
 var errBrowserFull = errors.New("fileedit: browser capacity reached")
 
-// Browser reuses a short-lived, read-only Job per world. Jobs pull commands from
-// the existing internal API face: no inbound Pod port or new RBAC is needed.
-// Every browser request is still authorized by the normal file API handlers.
+// Browser reuses a read-only Job per world over the internal API without additional inbound ports or RBAC.
 type Browser struct {
 	BaseURL  string
 	mu       sync.Mutex
@@ -200,8 +197,7 @@ func (b *Browser) Run(ctx context.Context, p JobParams, start func(context.Conte
 	}
 }
 
-// ServeHTTP accepts one worker's result and long-polls its next command. The
-// random token opens only this world/session, and lives only in the Job's env.
+// ServeHTTP authenticates each worker with a world-scoped token and long-polls its next command.
 func (b *Browser) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, BrowserRoute)
 	b.mu.Lock()

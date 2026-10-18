@@ -37,9 +37,6 @@ func writeJar(t *testing.T, path string, manifest []byte) {
 	}
 }
 
-// The manifest read is the whole reason this seam can answer at all: bootstrap
-// installs the proxy as a fixed "velocity.jar", so the filename carries no version
-// and versionFromJarName alone would always fail on a real Felis node.
 func TestVelocityJarVersionReadsManifest(t *testing.T) {
 	dir := t.TempDir()
 	jar := filepath.Join(dir, "velocity.jar")
@@ -54,8 +51,6 @@ func TestVelocityJarVersionReadsManifest(t *testing.T) {
 	}
 }
 
-// A jar with no usable manifest still answers when the operator hand-placed a
-// versioned filename — the fallback path.
 func TestVelocityJarVersionFallsBackToFilename(t *testing.T) {
 	dir := t.TempDir()
 	jar := filepath.Join(dir, "velocity-3.4.0.jar")
@@ -70,8 +65,6 @@ func TestVelocityJarVersionFallsBackToFilename(t *testing.T) {
 	}
 }
 
-// Fails closed: neither source carries a version, so this must error rather than
-// report a zero version that would make every upstream release look like an upgrade.
 func TestVelocityJarVersionFailsClosed(t *testing.T) {
 	dir := t.TempDir()
 	jar := filepath.Join(dir, "velocity.jar")
@@ -85,8 +78,6 @@ func TestVelocityJarVersionFailsClosed(t *testing.T) {
 	}
 }
 
-// An unstamped `go build` reports "dev". That must be a loud gather failure, not a
-// silent 0.0.0 — a zero current would make every release upstream a false "upgrade".
 func TestHostGathererRejectsUnstampedBuild(t *testing.T) {
 	g := NewHostGatherer("dev", filepath.Join(t.TempDir(), "velocity.jar"))
 	if _, err := g.Current(context.Background(), Spec{Name: "felis-api"}); err == nil {
@@ -94,9 +85,6 @@ func TestHostGathererRejectsUnstampedBuild(t *testing.T) {
 	}
 }
 
-// The felis binary's own stamp answers for felis-api: bootstrap builds the image and
-// the host binary from one checkout with one `git describe`, so they are the same
-// artifact. A release stamp must round-trip into a comparable version.
 func TestHostGathererUsesOwnBuildStamp(t *testing.T) {
 	g := NewHostGatherer("v1.2.3", filepath.Join(t.TempDir(), "velocity.jar"))
 	got, err := g.Current(context.Background(), Spec{Name: "felis-api"})
@@ -108,8 +96,6 @@ func TestHostGathererUsesOwnBuildStamp(t *testing.T) {
 	}
 }
 
-// The JRE answers from its release file. Temurin's SEMANTIC_VERSION keeps the respin
-// component; JAVA_RUNTIME_VERSION's "-LTS" tail would read as a prerelease.
 func TestJREReleaseVersion(t *testing.T) {
 	dir := t.TempDir()
 	cases := map[string]string{
@@ -157,8 +143,6 @@ func (a argvCmd) output(_ context.Context, name string, args ...string) ([]byte,
 	return a.out, a.err
 }
 
-// PostgreSQL answers from the server binary in the felis-postgres container, never
-// from a host package the move into k3s left installed.
 func TestHostGathererPostgres(t *testing.T) {
 	const exec = "k3s kubectl exec -n felis deploy/felis-postgres -c postgres -- postgres --version"
 	var got []string

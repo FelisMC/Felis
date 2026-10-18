@@ -1,10 +1,6 @@
 import type { Page } from "@playwright/test";
 import { test, expect, t } from "./fixtures";
 
-// Every control a screen reader can land on must say what it does. The sweep
-// reads each page's accessibility tree (what assistive tech gets) and fails on
-// a button, link, field or toggle whose accessible name is empty, which is
-// what an icon-only button without aria-label turns into.
 const CONTROL_ROLES = ["button", "link", "combobox", "checkbox", "switch", "textbox", "menuitem", "tab", "slider"];
 // A named control reads `- button "Save"`; an unnamed one has nothing quoted
 // after the role, only [state] flags and maybe its value (`- combobox: Presets`).

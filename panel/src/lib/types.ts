@@ -1,12 +1,6 @@
-// Mirror of the felis-api external-face JSON (spec §7). Kept intentionally narrow:
-// only the fields the panel renders, so the UI never depends on internal shapes.
+// Mirror of the felis-api external-face JSON. Kept narrow: only the fields the panel renders, so the UI never depends on internal shapes.
 
-// The full lifecycle set felis-api can emit (v1alpha1 MinecraftServerPhase, passed
-// through verbatim by the status projection). "Stopping" is the transient teardown
-// state between Running and Stopped; the panel must model it or a stopping server
-// renders with no variant/color. Consumers that index a phase→x map MUST still
-// fall back for any value outside this union — `phase` crosses an unvalidated JSON
-// boundary, so the type is a documentation of intent, not a runtime guarantee.
+// JSON is unvalidated at runtime; phase maps still need an unknown-value fallback.
 export type Phase =
   | "Stopped"
   | "Starting"
@@ -17,20 +11,13 @@ export type Phase =
 
 export type AutostartPolicy = "ownerOnly" | "public" | "allowlist";
 
-/** RetireState is a pending retirement (Go RetireState): the owner gave the
- *  server up, or with `delete` an admin is deleting it. The reaper carries it out
- *  on its next daily run (archive the world, delete its volume, release the
- *  server, and for a deletion remove it); until then the server stays stopped and
- *  cannot be woken or claimed. Only the owner and admins are shown it. */
+// Pending retirement prevents waking or claiming until the reaper completes it.
 export interface RetireState {
   requested_at: string;
   delete: boolean;
 }
 
-/** MyServerView is the GET /me/servers row (wrapped under { servers: [...] }).
- *  Only this projection says whether the caller owns or may claim a server.
- *  The live fields come from the CRD best-effort; desiredState, autostartPolicy
- *  and playerCountUnknown are present on the caller's own rows only. */
+// Only /me/servers reports ownership and claimability; private lifecycle fields appear on owned rows.
 export interface MyServerView {
   name: string;
   subdomain: string;
@@ -54,10 +41,7 @@ export interface MyServerView {
   retiring?: RetireState;
 }
 
-/** ServerStatus is GET /servers/{name}/status (Go ServerInfo). It never carries
- *  `owned` or `claimable`; owner-tier gates read /me/servers via lib/ownership.
- *  A caller who does not own the server gets the public subset, so everything
- *  past the counts may be absent. */
+// Public status may omit private fields; ownership gates must use /me/servers.
 export interface ServerStatus {
   startup?: { stage: "creating" | "scheduling" | "preparing" | "booting" | "failed"; reason?: string; message?: string; startedAt?: string; logsAvailable: boolean };
   nodeName?: string;
@@ -104,9 +88,7 @@ export interface ServerStatus {
 /** The kinds of server software a server can run from the runtime image. */
 export type SoftwareType = "paper" | "purpur" | "fabric" | "quilt" | "forge" | "neoforge" | "vanilla" | "custom";
 
-/** ServerSoftware is what a runtime-image server runs (Go ServerSoftware).
- *  forwarding is velocity when the server takes the proxy's player identity,
- *  none when players join it under offline-mode UUIDs. */
+// forwarding=none uses offline-mode UUIDs; velocity accepts the proxy's identity.
 export interface ServerSoftware {
   type: SoftwareType;
   minecraftVersion?: string;
@@ -179,35 +161,21 @@ export interface SelfServiceQuotaSettings {
   revision: string;
 }
 
-/** WhitelistResult projects GET /servers/{name}/access/whitelist (spec §7 access).
- *  `players` is a BEST-EFFORT parse of the vanilla "whitelist list" reply done
- *  server-side (parseWhitelistOutput); `output` is the raw RCON text and is the
- *  ground truth — on a non-vanilla or localized server the parse may come back
- *  empty while `output` still names players, so the panel falls back to `output`
- *  rather than rendering a falsely-empty list. */
+// Parsed player names are best-effort; raw RCON output remains authoritative.
 export interface WhitelistResult {
   name: string;
   players: string[];
   output: string;
 }
 
-/** BanlistResult projects GET /servers/{name}/access/ban (spec §7 access). Same
- *  shape as WhitelistResult: `players` is a BEST-EFFORT parse of the vanilla
- *  "banlist" reply done server-side (parseBanlistOutput) and `output` is the raw
- *  RCON text — ground truth. A ban entry reads "<name> was banned by <src>: <reason>",
- *  so unlike the whitelist the parse anchors on the ban marker (a reason carries its
- *  own colon); on a non-vanilla or localized server the parse may come back empty
- *  while `output` still names players, so the panel falls back to `output`. */
+// Parse bans at " was banned by ", since reasons may contain colons.
 export interface BanlistResult {
   name: string;
   players: string[];
   output: string;
 }
 
-/** AllowlistEntry is one row of GET /servers/{name}/allowlist: a player who joined
- *  the server, and so may wake it under autostartPolicy "allowlist" unless the owner
- *  took that away (can_wake false; the row stays so a rejoin cannot undo it).
- *  username is the live Felis account the UUID is linked to, absent when none. */
+// Retain can_wake=false rows so a later join cannot restore revoked wake access.
 export interface AllowlistEntry {
   mc_uuid: string;
   username?: string;
@@ -215,9 +183,6 @@ export interface AllowlistEntry {
   can_wake: boolean;
 }
 
-/** AccessResult is the common echo of a successful access mutation (whitelist add/
- *  remove, ban/pardon): the server replays the structured action it ran plus the
- *  raw RCON `output`, which the panel surfaces verbatim as confirmation. */
 export interface AccessResult {
   name: string;
   action: string;
@@ -225,13 +190,8 @@ export interface AccessResult {
   output: string;
 }
 
-/** PlayersResult projects GET /servers/{name}/access/players (spec §7 access), the
- *  ONLY source of WHO is online — MyServerView.playersOnline carries the count alone.
- *  `online`/`max` are the tally; `players` is a BEST-EFFORT parse of the vanilla
- *  "list" reply (parseListOutput) and, like the whitelist, can come back empty on a
- *  non-vanilla format while `output` (the raw RCON text, ground truth) still names
- *  them. `online` can therefore be > `players.length` — show the count, fall back
- *  to `output` for names. */
+// Parsed player lists may be empty on custom servers; retain raw RCON output.
+// online can therefore be greater than players.length: show the count, and fall back to output for names.
 export interface PlayersResult {
   name: string;
   online: number;
@@ -248,18 +208,9 @@ export interface KickResult {
   output: string;
 }
 
-/** FleetServer is one row of GET /api/v1/fleet — the SysAdmin cockpit's fleet-wide
- *  read (admin-tier). It mirrors the Go fleetServerView: the CRD lifecycle
- *  projection plus the owner joined read-only from Postgres for display.
- *
- *  It is a DISTINCT type from MyServerView, not a reuse: /fleet emits the raw CRD
- *  shape — `ready` and the `endpoint*` runtime fields, with playersOnline/playersMax
- *  required — whereas MyServerView is the /me/servers projection.
- *  Sharing one interface would blur which fields each face actually guarantees. */
+// Fleet uses raw CRD fields with required player counts, unlike the ownership projection.
 export interface FleetServer extends ServerStatus {
-  /** Owner's display identity (email, or username when the address is absent).
-   *  Empty/absent for an unclaimed server or when the owner lookup failed;
-   *  ownerUnknown tells the two apart. */
+  // ownerUnknown distinguishes failed owner lookup from an unclaimed server.
   owner?: string;
   /** The caller claimed this server, decided by account id on the server. */
   owned: boolean;
@@ -267,26 +218,11 @@ export interface FleetServer extends ServerStatus {
   claimable: boolean;
   /** The owner lookup failed: an absent owner says nothing about the claim. */
   ownerUnknown?: boolean;
-  /** True for a platform-provisioned system service (the login gate, the lobby).
-   *  Their reserved names are rejected by every per-server route, so the cockpit
-   *  renders them read-only instead of offering actions that would 400. */
+  // System-server rows are read-only because per-server routes reject reserved names.
   system?: boolean;
 }
 
-/** BackupView is one row of GET /api/v1/backups (spec §7 backups). A backup is
- *  written only when the reaper archives an inactive world's PVC before reclaiming
- *  it (reason "inactive_15d"), so a backup is the SAVED STATE of a world that was
- *  put to sleep: `former_owner` is who owned it then, `expires_at` the §466
- *  retention deadline past which it can no longer be restored. The opaque
- *  backup_ref is deliberately withheld (spec §286) — the panel never names a backup
- *  by handle; restore resolves the latest present backup server-side.
- *
- *  Only `status: "present"` rows are ever listed (the query filters them) and the
- *  list is created_at-descending, so the first row for a given server that is not
- *  `corrupt` is exactly the one a restore would recover (LatestBackup's WHERE
- *  mirrors this) — the UI must name that row, not a plausible proxy.
- *  `reason`/`status` cross an unvalidated JSON boundary; render unknown values
- *  tolerantly. */
+// Restore by eligible backup identity; tolerate unknown reason/status values from unvalidated JSON.
 export interface BackupView {
   id: string;
   server_name: string;
@@ -297,9 +233,7 @@ export interface BackupView {
   status: string;
   created_at: string;
   expires_at: string;
-  /** True once the archive failed a read-back (its sha256 or its gzip/tar did
-   *  not check out). It stays listed so the loss is visible, and the API refuses
-   *  to restore it (409 backup_corrupt). */
+  // Corrupt archives remain visible but restoration rejects with backup_corrupt.
   corrupt?: boolean;
   /** When the reaper last read the archive back intact. Absent until the first
    *  read-back after it was written. */
@@ -309,11 +243,7 @@ export interface BackupView {
   skipped_entries?: number;
 }
 
-/** ServerJob is one row of GET /api/v1/servers/{name}/jobs — the observable
- *  outcome of an async backup/restore/export Job. The API only enqueues Jobs, so
- *  this projection is how a 202 that later failed becomes visible in the panel.
- *  An export_world or export_files Job holds the world until its download
- *  ends; an export_backup Job only reads the backup store. */
+// World/files exports hold the world; backup exports hold only archive storage.
 export interface ServerJob {
   name: string;
   kind: string; // "backup" | "restore" | "export_world" | "export_backup" | "export_files"
@@ -321,9 +251,7 @@ export interface ServerJob {
   message?: string;
   started_at?: string;
   finished_at?: string;
-  /** Set on a restore's safety snapshot (a backup job): "pending" until the
-   *  restore behind it starts ("started") or is given up ("abandoned", with a
-   *  code in then_restore_reason and its English in message). */
+  // Safety snapshots hold pending until the chained restore starts or is abandoned.
   then_restore?: string;
   then_restore_reason?: string;
   restore_backup_id?: string;
@@ -332,34 +260,23 @@ export interface ServerJob {
   scheduled?: boolean;
 }
 
-// ---- World export (internal/api/exports.go exportTicketView, exportStatusView) ----
 
-/** ExportTicket is the 202 of POST /servers/{name}/backups/{id}/export and
- *  /servers/{name}/world/export: the one-time handle of a download being
- *  prepared. Only the viewer who asked can read or use it, and it opens the
- *  download once. `filename` is what the browser saves. */
+// Export tickets are single-use and bound to the requesting viewer.
 export interface ExportTicket {
   ticket: string;
   state: "pending";
   filename: string;
 }
 
-/** ExportStatus is GET /exports/{ticket}: "pending" while the export Job is on
- *  its way, "ready" once felis-api holds the archive and waits (90 s) for the
- *  browser to fetch it, "failed" when the Job gave up, with its reason in
- *  message. A ticket already downloaded or past its time answers 410
- *  export_expired instead. */
+// Ready exports expire after 90 seconds; consumed or expired tickets return 410.
 export interface ExportStatus {
   state: "pending" | "ready" | "failed";
   message?: string;
 }
 
-// ---- Scheduled tasks (internal/api/schedules.go Schedule, scheduleInput) ----
 
 export type ScheduleAction = "command" | "restart" | "stop" | "start" | "backup";
-/** 0 runs once a day at minute_of_day; the rest divide a day, so the runs sit at
- *  the same clock times every day. A restart, stop, start or backup repeats at
- *  most every 60 minutes. */
+// Zero means daily; maintenance actions repeat at most hourly.
 export type ScheduleEveryMinutes = 0 | 15 | 30 | 60 | 120 | 180 | 240 | 360 | 480 | 720;
 /** How long before a restart, stop or backup the players are told in game. */
 export type ScheduleWarnMinutes = 0 | 1 | 5 | 10 | 15 | 30;
@@ -368,10 +285,7 @@ export type ScheduleRunState = "" | "claimed" | "stopping" | "backing_up" | "sta
 /** How the last run ended; empty before the first and during a run. */
 export type ScheduleResult = "" | "ok" | "skipped" | "failed" | "missed";
 
-/** Schedule is one scheduled task of a server (GET /servers/{name}/schedules).
- *  It runs at minute_of_day on the weekdays (bit 0 Sunday … bit 6 Saturday), or
- *  with every_minutes set at every multiple of it since midnight on those days,
- *  in timezone. last_detail is the backend's English. */
+// Weekday bits run Sunday=0 through Saturday=6; interval multiples are measured from local midnight.
 export interface Schedule {
   id: number;
   server: string;
@@ -395,9 +309,7 @@ export interface Schedule {
   created_at: string;
 }
 
-/** ScheduleInput is the body of a create (POST) or a save (PUT). The server trims
- *  the label, drops a command's leading slash, and refuses a command on any other
- *  action and a warning on a command or start. enabled defaults to true. */
+// Commands strip a leading slash; enabled defaults to true.
 export interface ScheduleInput {
   label?: string;
   action: ScheduleAction;
@@ -421,7 +333,7 @@ export interface WhitelistImage {
   added_at: string;
 }
 
-/** CreateServerRequest is the §15 structured form — the ONLY create path. */
+/** CreateServerRequest is the structured create form, the only create path. */
 export interface CreateServerRequest {
   nodeName?: string;
   name: string;
@@ -518,17 +430,12 @@ export interface MinecraftProfile {
   auth_source: string;
 }
 
-/** LinkStatus projects POST /account/link/start (spec §10): whether the caller's
- *  session is already bound to a Minecraft identity. The endpoint also returns an
- *  API-consumer `instructions` string; the panel renders its own player-facing copy
- *  (the raw string names the REST endpoint), so it is intentionally not modelled. */
+// The API's generic instructions are omitted because the panel provides localized copy.
 export interface LinkStatus {
   linked: boolean;
 }
 
-/** LinkResult projects a successful POST /account/link/verify (spec §10): the
- *  account_links binding is written and the now-linked Minecraft UUID is echoed
- *  back (the only place the panel learns the UUID — start never returns it). */
+// The linked Minecraft UUID is returned only by code verification.
 export interface LinkResult {
   linked: boolean;
   mc_uuid: string;
@@ -542,17 +449,8 @@ export interface ApiError {
   request_id?: string;
 }
 
-/** Identity mirrors GET /api/v1/me (app-tier — every authenticated principal may
- *  read *their own* identity). The keys are snake_case because they mirror the Go
- *  handler's JSON map verbatim (handlers_user.go handleMe → {user_id, email, role,
- *  is_admin}); a camelCase rename here would silently read `undefined` across the
- *  untyped fetch().json() boundary and make every admin look like a non-admin.
- *
- *  `is_admin` is the ONLY field the tier model trusts: it is computed server-side as
- *  Principal.IsAdmin() (Role=="admin" AND ViaAdminAccess — the graded-ZT rule), so
- *  the panel never re-derives admin-ness from `role` alone. `role` is carried for
- *  display only and, like `phase`, is documentation of intent, not a runtime
- *  guarantee — it crosses an unvalidated JSON boundary. */
+// Keep snake_case JSON keys aligned with GET /me.
+// Use server-computed is_admin for authorization display; role is a label only.
 export interface Identity {
   user_id: string;
   email: string;
@@ -582,10 +480,7 @@ export interface ServerFileEntry {
   mod_time: string;
 }
 
-/** FileUploadSession is where an upload sent in parts stands
- *  (internal/api/handlers_fileops.go fileSessionView): the next part starts at
- *  `received` and carries at most `part_max_bytes`. `parts` are the parts taken
- *  so far, in order, each with the SHA-256 (hex) it arrived with. */
+// received is the next part offset; part_max_bytes bounds each part.
 export interface FileUploadSession {
   id: string;
   path: string;
@@ -595,9 +490,7 @@ export interface FileUploadSession {
   parts: { size: number; sha256: string }[];
 }
 
-/** FileOp is one background upload landing or extraction
- *  (handlers_fileops.go fileOpView). `done` and `total` are bytes, both 0 until
- *  the Job first reports; `files` and `bytes` are what an extraction wrote. */
+// done/total are progress bytes; files/bytes report extracted output.
 export interface FileOp {
   id: string;
   op: "upload" | "unzip";
@@ -612,10 +505,7 @@ export interface FileOp {
   error?: FileOpError;
 }
 
-/** FileOpError is why an op failed (handlers_fileops.go fileOpError). On
- *  file_exists from an extraction, `conflicts` lists the first 200 files it
- *  would replace and `conflict_count` all of them; on volume_full, `need` and
- *  `avail` are bytes. */
+// Extraction conflicts list at most 200 names; need/avail are bytes on volume_full.
 export interface FileOpError {
   code: string;
   message: string;
@@ -626,7 +516,7 @@ export interface FileOpError {
   avail?: number;
 }
 
-/** Build mirrors an image_builds row (spec §6, §16). */
+/** Build mirrors an image_builds row. */
 export interface Build {
   id: string;
   image_ref: string;
@@ -640,7 +530,7 @@ export interface Build {
   error?: string;
   created_at: string;
   finished_at?: string;
-  /** sha256 of the build context the Job actually fetched. */
+  /** sha256 of the build context the Job fetched. */
   context_digest?: string;
 }
 
@@ -693,7 +583,7 @@ export interface BuildScan {
 
 export type SubmissionStatus = "pending_review" | "approved" | "rejected";
 
-/** Submission mirrors an image_submissions row (spec §6, migration 0002). */
+/** Submission mirrors an image_submissions row. */
 export interface Submission {
   id: string;
   submitted_by: string;
@@ -712,9 +602,7 @@ export interface Submission {
   context_sha256?: string;
 }
 
-/** ContextUploadProgress is where a chunked context upload stands: received is
- *  how many bytes the server holds (the next part starts there), part_max_bytes
- *  caps one part, max_context_bytes caps the whole context. */
+// received is the next offset; part_max_bytes and max_context_bytes bound uploads.
 export interface ContextUploadProgress {
   received: number;
   part_max_bytes: number;
@@ -743,7 +631,6 @@ export interface UpdateWindow {
   end: string | null;
 }
 
-// ---- Control-plane database backup (internal/api/handlers_dbbackup.go dbBackupView) ----
 
 export type DBBackupLabel = "daily" | "pre-migrate" | "pre-restore" | "offsite" | "manual";
 
@@ -769,7 +656,6 @@ export interface DBBackupStatus {
   max_age_seconds: number;
 }
 
-// ---- Component version check (internal/api/handlers_updates.go updateReportView) ----
 
 export type UpdateComponentState = "current" | "available" | "unknown" | "unreadable" | "pinned";
 
@@ -801,7 +687,6 @@ export interface UpdateReport {
   max_age_seconds: number;
 }
 
-// ---- User admin types (internal/api/repo.go UserView, UserDetail, QuotaView, SessionView) ----
 
 export interface UserView {
   id: string;
@@ -894,7 +779,7 @@ export interface ExecutionNode {
   k3sVersion: string;
   /** The felis build the node last installed; absent for a node enrolled before it was recorded. */
   felisVersion?: string;
-  /** A lost worker taken out of service for a failover: cordoned, no longer approved, tainted out of service. */
+  /** A lost worker taken out of service for a failover: cordoned, unapproved, and tainted out of service. */
   fenced: boolean;
   /** When an offline node stopped reporting ready. */
   lostSince?: string;

@@ -1,10 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
-// Browser smoke over the mock-mode dev server (dev/mockApi.ts): real routing,
-// real fetches and cookies, a fake backend. It runs the installed Chrome, so
-// no browser download is needed locally or on the GitHub runner. The mock's
-// state is shared across requests, so tests run one at a time and each one
-// resets it first. PW_BASE_URL points it at an already running mock server.
+// Mock state is shared, so serialize tests and reset it before each case.
+// PW_BASE_URL points it at an already running mock server.
 const port = 5298;
 const external = process.env.PW_BASE_URL;
 

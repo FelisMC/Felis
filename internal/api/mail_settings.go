@@ -16,16 +16,12 @@ import (
 	"felis.lolicon.best/internal/mailsettings"
 )
 
-// MailSettings resolves the relay felis-api sends codes and notices through: the one the
-// Owner saved in the panel (mailsettings.Key) when there is one, else the [smtp] relay
-// felis.toml configures. Each send resolves it again, so a relay saved in the panel
-// takes effect without restarting felis-api.
+// MailSettings prefers the panel relay over host config and refreshes it without restarting the API.
 type MailSettings struct {
 	Repo Repo
-	// Host is felis.toml's relay with its password, nil when felis.toml has none.
+	// Host is nil when no relay is configured in felis.toml.
 	Host *mailsettings.Settings
-	// NewMailer turns a relay into a sender. cmd/felis wires the mail package; the
-	// sender it returns also offers Ping and SendNotice.
+	// NewMailer must return a sender supporting Ping and SendNotice.
 	NewMailer func(mailsettings.Settings) OTPMailer
 
 	mu     sync.Mutex
@@ -33,15 +29,11 @@ type MailSettings struct {
 	at     time.Time
 }
 
-// resolvedMail is one read of the row: the stored bytes (for compare-and-set) and the
-// relay they hold, nil when the panel has none.
 type resolvedMail struct {
 	raw   []byte
 	panel *mailsettings.Settings
 }
 
-// mailSettingsTTL bounds how stale a resolved relay may be: the row is read at most this
-// often, and a save in this process drops the cache at once.
 const mailSettingsTTL = 15 * time.Second
 
 func (m *MailSettings) resolve(ctx context.Context, now time.Time) (resolvedMail, error) {
@@ -56,7 +48,7 @@ func (m *MailSettings) resolve(ctx context.Context, now time.Time) (resolvedMail
 	}
 	if err != nil {
 		if m.cached != nil {
-			// The store is out: keep sending through the last relay read.
+			// Retain the last known relay during store outages.
 			return *m.cached, nil
 		}
 		return resolvedMail{}, err
@@ -75,7 +67,6 @@ func (m *MailSettings) invalidate() {
 	m.mu.Unlock()
 }
 
-// effective is the relay in force and where it comes from: "panel", "host" or "none".
 func (m *MailSettings) effective(r resolvedMail) (*mailsettings.Settings, string) {
 	switch {
 	case r.panel != nil:
@@ -86,7 +77,7 @@ func (m *MailSettings) effective(r resolvedMail) (*mailsettings.Settings, string
 	return nil, "none"
 }
 
-// MailRateLimit is the install-wide mail budget for an hourly cap (0: the default).
+// MailRateLimit uses the default budget when hourly is zero.
 func MailRateLimit(perHour int) RateLimit {
 	if perHour <= 0 {
 		perHour = config.DefaultMailPerHour
@@ -94,8 +85,6 @@ func MailRateLimit(perHour int) RateLimit {
 	return RateLimit{Burst: max(perHour/4, 5), PerMinute: float64(perHour) / 60}
 }
 
-// mailer is the sender for this request, nil when no relay is configured anywhere. It
-// also moves the install-wide mail budget to the relay's hourly cap.
 func (a *API) mailer(ctx context.Context) OTPMailer {
 	if a.MailSettings == nil {
 		return a.Mailer
@@ -113,8 +102,7 @@ func (a *API) mailer(ctx context.Context) OTPMailer {
 	return a.MailSettings.NewMailer(*relay)
 }
 
-// mailSettingsView is GET /api/v1/settings/smtp. The password is never sent back:
-// password_set says whether one is stored.
+// mailSettingsView exposes only password_set, never the stored password.
 type mailSettingsView struct {
 	Source      string `json:"source"`
 	Host        string `json:"host"`
@@ -127,8 +115,7 @@ type mailSettingsView struct {
 	Revision    string `json:"revision"`
 }
 
-// mailSettingsRequest is a relay the panel submits. A nil Password keeps the password
-// of the relay in force, so editing the sender does not mean retyping it.
+// mailSettingsRequest keeps the effective password when Password is nil.
 type mailSettingsRequest struct {
 	Host       string  `json:"host"`
 	Port       int     `json:"port"`
@@ -140,9 +127,7 @@ type mailSettingsRequest struct {
 	Revision   string  `json:"revision"`
 }
 
-// revisionOf names a stored relay for compare-and-set in the panel. It hashes the parsed
-// relay re-encoded, never the stored bytes: PostgreSQL hands jsonb back re-spaced and
-// re-ordered, so the bytes a save wrote differ from what the next read returns.
+// revisionOf hashes canonicalized relay JSON because Postgres jsonb does not preserve byte spacing or key order.
 func revisionOf(panel *mailsettings.Settings) string {
 	if panel == nil {
 		return ""
@@ -183,8 +168,6 @@ func (a *API) handleGetMailSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a.mailSettingsView(res))
 }
 
-// submittedRelay builds the relay a save or a test names, carrying the current password
-// over when the panel sent none.
 func (a *API) submittedRelay(w http.ResponseWriter, r *http.Request) (mailsettings.Settings, resolvedMail, mailSettingsRequest, bool) {
 	var body mailSettingsRequest
 	if err := requireJSONContentType(r); err != nil {
@@ -217,14 +200,11 @@ func (a *API) submittedRelay(w http.ResponseWriter, r *http.Request) (mailsettin
 	return s, res, body, true
 }
 
-// relayPinger is the part of the mail package's sender a relay check uses.
 type relayPinger interface {
 	Ping(ctx context.Context) error
 }
 
-// handleSetMailSettings saves a relay after proving it accepts mail from the sender. The
-// check is not optional: email codes are how staff confirm sensitive changes and how
-// op-login reaches anyone, so a relay that silently fails would lock people out.
+// handleSetMailSettings verifies the sender before saving to avoid breaking authentication and account recovery mail.
 func (a *API) handleSetMailSettings(w http.ResponseWriter, r *http.Request) {
 	if !a.requireReauth(w, r, principalFromContext(r.Context())) || !a.mailSettingsReady(w, r) {
 		return
@@ -261,8 +241,7 @@ func (a *API) handleSetMailSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a.mailSettingsView(resolvedMail{raw: value, panel: &s}))
 }
 
-// handleClearMailSettings hands the relay back to felis.toml. The row is set to JSON null
-// rather than deleted, so a concurrent save still meets compare-and-set.
+// handleClearMailSettings stores JSON null rather than deleting the row so concurrent saves still use compare-and-set.
 func (a *API) handleClearMailSettings(w http.ResponseWriter, r *http.Request) {
 	if !a.requireReauth(w, r, principalFromContext(r.Context())) || !a.mailSettingsReady(w, r) {
 		return
@@ -289,9 +268,6 @@ func (a *API) handleClearMailSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a.mailSettingsView(resolvedMail{raw: []byte("null")}))
 }
 
-// handleTestMailSettings sends one test message through a relay that has not been saved,
-// to the caller's verified address (else to the sender itself). It spends the install's
-// mail budget like any other mail.
 func (a *API) handleTestMailSettings(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	if !a.requireReauth(w, r, p) || !a.mailSettingsReady(w, r) {
@@ -328,8 +304,7 @@ func (a *API) handleTestMailSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"sent_to": to})
 }
 
-// relayTestError reports why a relay failed in a few words the panel can act on. The
-// relay's own text stays in the API log: it can echo internal addresses back.
+// relayTestError keeps raw diagnostics in logs because they may expose internal addresses.
 func relayTestError(err error) *apiError {
 	msg := err.Error()
 	log.Printf("api: relay check failed: %v", err)

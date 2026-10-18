@@ -14,20 +14,8 @@ import (
 	"felis.lolicon.best/internal/maintenance"
 )
 
-// The schedule runner. cmd/felis calls RunSchedules every few seconds; each
-// call warns the players about the runs coming up, fires the runs that are
-// due and moves every run in progress one step on. All of its state is in
-// server_schedules, so a felis-api restart picks a restart or backup up where
-// it was.
-//
-// A command, stop or start is one step. A restart stops the server (runStopping)
-// and starts it once it is down (runStarting). A backup of a running server
-// stops it, takes a backup once the world volume is free (runBackingUp), waits
-// for the backup Job and starts the server again; a backup of a stopped server
-// leaves it stopped. Each step gives up after its own wait, and a run that took
-// the server down tries to bring it back when it gives up.
+// Run state is persisted so API restarts can resume; failed runs try to restart servers they stopped.
 
-// Run steps (Schedule.RunState).
 const (
 	runClaimed   = "claimed"
 	runStopping  = "stopping"
@@ -36,37 +24,23 @@ const (
 )
 
 const (
-	// scheduleMissGrace is how late a run may still start: felis-api back from
-	// a short restart catches up, and a run hours late is dropped as missed.
 	scheduleMissGrace = 10 * time.Minute
-	// claimedStale is how long a run may sit in its first step before it is
-	// taken for one whose felis-api stopped mid-step. The first step is a few
-	// API calls and at most one RCON round trip.
-	claimedStale = 2 * time.Minute
-	// stopWait is how long a run waits for the server to stop and its world
-	// volume to come free. A pod saving a big world takes a while.
-	stopWait = 15 * time.Minute
-	// backupWait is how long a run waits for its backup Job: past the Job's own
-	// deadline ([archive] backup Job deadline, 30m by default).
+	claimedStale      = 2 * time.Minute
+	stopWait          = 15 * time.Minute
+	// backupWait must exceed the backup Job deadline.
 	backupWait = 45 * time.Minute
-	// startWait is how long a run keeps trying to start the server again while
-	// the cluster is at its running cap or the world volume is still busy.
-	startWait = 15 * time.Minute
-	// backupJobSkew is how much earlier than the step the backup Job's creation
-	// stamp may read: felis-api's clock and the API server's differ a little.
-	backupJobSkew = 2 * time.Minute
-	// scheduleWarnHorizon is the longest warning lead time, in minutes.
+	startWait  = 15 * time.Minute
+	// backupJobSkew tolerates clock differences between the API and Kubernetes.
+	backupJobSkew       = 2 * time.Minute
 	scheduleWarnHorizon = 30
 )
 
-// Audit identity of a run. Each run leaves one schedule.run row when it ends.
 const (
 	scheduleActor     = "scheduler"
 	scheduleRunAction = "schedule.run"
 )
 
-// RunSchedules warns about, fires and advances the schedules once. A schedule
-// that fails is logged and left for the next call; it never holds up the rest.
+// RunSchedules isolates failures so one schedule does not block others.
 func (a *API) RunSchedules(ctx context.Context) error {
 	if a.Schedules == nil {
 		return nil
@@ -85,20 +59,18 @@ func (a *API) RunSchedules(ctx context.Context) error {
 	return nil
 }
 
-// tickSchedule does what one due schedule needs now.
 func (a *API) tickSchedule(ctx context.Context, d *DueSchedule, now time.Time) error {
 	s := &d.Schedule
 	if s.RunState != "" {
 		return a.advanceRun(ctx, s, now)
 	}
-	// Somebody else's server now: their commands must not run on it. Saving
-	// the schedule again (PUT) hands it to the new owner.
+	// Ownership changed; disable old commands until the new owner saves the schedule.
 	if d.ServerOwner != s.OwnerID {
 		_, err := a.Schedules.DisableSchedule(ctx, s.ID,
 			"the server has a new owner since this schedule was saved; save it again to use it")
 		return err
 	}
-	due := *s.NextRunAt // set on every enabled schedule DueSchedules returns idle
+	due := *s.NextRunAt
 	if now.Before(due) {
 		return a.warnRun(ctx, s, due, now)
 	}
@@ -115,12 +87,10 @@ func (a *API) tickSchedule(ctx context.Context, d *DueSchedule, now time.Time) e
 	return a.beginRun(ctx, s)
 }
 
-// warnRun tells the players on the server that a restart, stop or backup is
-// coming, once per run, when its warning time has come.
 func (a *API) warnRun(ctx context.Context, s *Schedule, due, now time.Time) error {
 	lead := time.Duration(s.WarnMinutes) * time.Minute
 	if now.Before(due.Add(-lead)) || a.Console == nil {
-		return nil // no warning, or not yet
+		return nil
 	}
 	info, err := a.Cluster.GetServer(ctx, s.Server)
 	if err != nil {
@@ -133,8 +103,7 @@ func (a *API) warnRun(ctx context.Context, s *Schedule, due, now time.Time) erro
 	if err != nil || !ok {
 		return err
 	}
-	// Warned late (felis-api was restarting at the warning time): say how long
-	// is really left.
+	// A late warning reports the remaining time instead of the configured lead time.
 	minutes := int(math.Ceil(due.Sub(now).Minutes()))
 	_, _, live := a.liveBackupParts()
 	if _, err := a.Console.RunCommand(ctx, s.Server, "say "+scheduleWarning(s.Action, minutes, live)); err != nil {
@@ -143,8 +112,6 @@ func (a *API) warnRun(ctx context.Context, s *Schedule, due, now time.Time) erro
 	return nil
 }
 
-// scheduleWarning is the in-game line announcing a run minutes ahead, in both
-// panel languages. live says a backup will be taken while the server runs.
 func scheduleWarning(action string, minutes int, live bool) string {
 	switch action {
 	case ScheduleRestart:
@@ -161,7 +128,6 @@ func scheduleWarning(action string, minutes int, live bool) string {
 	}
 }
 
-// beginRun takes the first step of a run just claimed (runClaimed).
 func (a *API) beginRun(ctx context.Context, s *Schedule) error {
 	finish := func(result, detail string) error { return a.finishRun(ctx, s, runClaimed, result, detail) }
 	info, err := a.Cluster.GetServer(ctx, s.Server)
@@ -241,8 +207,6 @@ func (a *API) beginRun(ctx context.Context, s *Schedule) error {
 		if running {
 			return a.backUpRunning(ctx, s)
 		}
-		// Already stopped: back it up as soon as the world volume is free, and
-		// leave it stopped afterwards.
 		if ok, err := a.Schedules.AdvanceScheduleRun(ctx, s.ID, runClaimed, runStopping, false, "", "", a.now()); err != nil || !ok {
 			return err
 		}
@@ -252,9 +216,7 @@ func (a *API) beginRun(ctx context.Context, s *Schedule) error {
 	return finish(ScheduleFailed, "unknown action "+s.Action)
 }
 
-// stopForRun records the stop step and then stops the server, in that order: a
-// felis-api that dies between the two leaves a running server in runStopping,
-// which the next call reads as someone having started it, and nothing is lost.
+// stopForRun persists runStopping before stopping so a crash between the two does not lose the server's running intent.
 func (a *API) stopForRun(ctx context.Context, s *Schedule, resume bool) error {
 	now := a.now()
 	if ok, err := a.Schedules.AdvanceScheduleRun(ctx, s.ID, runClaimed, runStopping, resume, "", "", now); err != nil || !ok {
@@ -266,13 +228,12 @@ func (a *API) stopForRun(ctx context.Context, s *Schedule, resume bool) error {
 	return nil
 }
 
-// advanceRun moves a run in progress on by one step, or leaves it waiting.
 func (a *API) advanceRun(ctx context.Context, s *Schedule, now time.Time) error {
 	waited := now.Sub(*s.RunStepAt)
 	switch s.RunState {
 	case runClaimed:
 		if waited < claimedStale {
-			return nil // its first step is running right now
+			return nil
 		}
 		return a.finishRun(ctx, s, runClaimed, ScheduleFailed, "felis-api stopped in the middle of this run")
 	case runStopping:
@@ -285,8 +246,6 @@ func (a *API) advanceRun(ctx context.Context, s *Schedule, now time.Time) error 
 	return a.finishRun(ctx, s, s.RunState, ScheduleFailed, "unknown run step "+s.RunState)
 }
 
-// advanceStopping waits for the server to go down. A restart then starts it;
-// a backup takes the world volume and starts the backup Job.
 func (a *API) advanceStopping(ctx context.Context, s *Schedule, waited time.Duration) error {
 	info, err := a.Cluster.GetServer(ctx, s.Server)
 	if errors.Is(err, ErrNotFound) {
@@ -295,8 +254,7 @@ func (a *API) advanceStopping(ctx context.Context, s *Schedule, waited time.Dura
 	if err != nil {
 		return err
 	}
-	// Only this run stops the server; wanted running again means a person (or
-	// a player's join) started it meanwhile, and their start stands.
+	// Preserve a start requested by a person or join while this run was waiting for shutdown.
 	if info.DesiredState == string(v1alpha1.DesiredRunning) {
 		return a.finishRun(ctx, s, runStopping, ScheduleSkipped, "someone started the server before the run finished")
 	}
@@ -338,7 +296,7 @@ func (a *API) advanceStopping(ctx context.Context, s *Schedule, waited time.Dura
 		return err
 	}
 	err = b.BackupScheduled(ctx, s.Server, s.OwnerID)
-	// Once the Job exists it holds the world; the lock only covered the gap.
+	// The Job holds the world volume after creation; the lock protects only the handoff gap.
 	if rerr := a.Cluster.ReleaseMaintenance(context.WithoutCancel(ctx), s.Server); rerr != nil {
 		log.Printf("api: release the maintenance lock on %s: %v (it lapses after %s)", s.Server, rerr, maintenance.Grace)
 	}
@@ -356,8 +314,6 @@ func (a *API) advanceStopping(ctx context.Context, s *Schedule, waited time.Dura
 	return err
 }
 
-// advanceBackingUp waits for the backup Job and records how it ended; a run
-// that stopped a running server then starts it again.
 func (a *API) advanceBackingUp(ctx context.Context, s *Schedule, waited time.Duration) error {
 	result, detail := ScheduleOK, ""
 	if a.JobStatus != nil {
@@ -370,12 +326,12 @@ func (a *API) advanceBackingUp(ctx context.Context, s *Schedule, waited time.Dur
 			j := &jobs[i]
 			if j.Scheduled && !j.StartedAt.Before(s.RunStepAt.Add(-backupJobSkew)) {
 				job = j
-				break // newest first
+				break
 			}
 		}
 		switch {
 		case job == nil && waited < backupJobSkew:
-			return nil // not listed yet
+			return nil
 		case job == nil:
 			result, detail = ScheduleFailed, "the backup Job is gone before it could be checked; see the Backups page"
 		case job.State == "running" && waited < backupWait:
@@ -396,8 +352,6 @@ func (a *API) advanceBackingUp(ctx context.Context, s *Schedule, waited time.Dur
 	return a.advanceStarting(ctx, s, 0)
 }
 
-// advanceStarting brings the server back up after a restart's stop or a
-// backup. The outcome recorded so far (the backup's) is kept when it starts.
 func (a *API) advanceStarting(ctx context.Context, s *Schedule, waited time.Duration) error {
 	why, retry, err := a.startScheduled(ctx, s.Server)
 	if errors.Is(err, ErrNotFound) {
@@ -423,9 +377,7 @@ func (a *API) advanceStarting(ctx context.Context, s *Schedule, waited time.Dura
 	return a.finishRun(ctx, s, runStarting, ScheduleFailed, detail)
 }
 
-// startScheduled starts a server for a run: the wake path without the
-// per-player cooldown. why names what kept it stopped ("" once it is wanted
-// running), and retry says whether that may clear by itself.
+// startScheduled bypasses the player cooldown; retry reports whether the blocking condition may clear.
 func (a *API) startScheduled(ctx context.Context, name string) (why string, retry bool, err error) {
 	rec, err := a.Repo.ServerByName(ctx, name)
 	if err != nil {
@@ -449,7 +401,6 @@ func (a *API) startScheduled(ctx context.Context, name string) (why string, retr
 	if !ok {
 		return "the cluster is at its running-server cap", true, nil
 	}
-	// A start that Failed is started over, as a person's start does (handleStart).
 	if info.Phase == string(v1alpha1.PhaseFailed) && info.DesiredState == string(v1alpha1.DesiredRunning) {
 		err = a.Cluster.RetryStart(ctx, name)
 	} else {
@@ -462,7 +413,6 @@ func (a *API) startScheduled(ctx context.Context, name string) (why string, retr
 	return "", false, err
 }
 
-// finishRun ends a run at step from and audits it.
 func (a *API) finishRun(ctx context.Context, s *Schedule, from, result, detail string) error {
 	detail = truncateUTF8(detail, maxScheduleDetail)
 	ok, err := a.Schedules.FinishScheduleRun(ctx, s.ID, from, result, detail)
@@ -476,8 +426,6 @@ func (a *API) finishRun(ctx context.Context, s *Schedule, from, result, detail s
 	return nil
 }
 
-// stripFormatting drops Minecraft's section-sign formatting codes from a
-// console reply and trims it.
 func stripFormatting(s string) string {
 	var b strings.Builder
 	skip := false
@@ -496,10 +444,7 @@ func stripFormatting(s string) string {
 
 func ptrTime(t time.Time) *time.Time { return &t }
 
-// backUpRunning takes a scheduled backup of a running server live (livebackup.go), so
-// players stay on and saving pauses only while the world is copied. Where that cannot
-// be done (no live support, the game not answering its console, the world busy) it falls
-// back to stopping the server, backing up and starting it again.
+// backUpRunning falls back to stop-backup-start when live backup support, console access or volume access is unavailable.
 func (a *API) backUpRunning(ctx context.Context, s *Schedule) error {
 	if _, _, ok := a.liveBackupParts(); !ok {
 		return a.stopForRun(ctx, s, true)

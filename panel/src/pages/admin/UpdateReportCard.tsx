@@ -10,10 +10,7 @@ import { cn } from "@/lib/utils";
 import type { UpdateComponent, UpdateComponentState } from "@/lib/types";
 import { CopyCommand } from "./DBBackupCard";
 
-// The installed versions are only readable on the host, so the check runs there
-// (felis-update-check.timer → `felis update --record`) and this card reads what
-// it recorded. Felis applies nothing on its own: an available update comes with
-// the host command that prints how to apply it.
+// Read host-recorded update checks; available updates require explicit application.
 
 const STATE_STYLE: Record<UpdateComponentState, string> = {
   available: "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/25",

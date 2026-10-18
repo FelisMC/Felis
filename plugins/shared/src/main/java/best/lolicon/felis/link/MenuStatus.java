@@ -2,26 +2,7 @@ package best.lolicon.felis.link;
 
 import java.util.Map;
 
-/**
- * MenuStatus is the proxy-side mirror of the felis-api lobby menu projection
- * ({@code GET /api/v1/internal/servers/{name}/menu}, spec §12). It is deliberately
- * <em>not</em> {@link ServerView}: the menu endpoint adds one field the §11 lifecycle
- * views never carry — {@link #claimable()}, derived from ownership (an ownerless
- * server can be claimed) — and drops the routing-only fields (subdomain, endpoint
- * address, desiredState) the GUI has no use for. Keeping it a separate type means a
- * future change to either contract can't silently corrupt the other.
- *
- * <p>Velocity reads this for a {@code StatusQuery} and projects it onto a
- * {@link ControlFrame#STATUS_UPDATE} frame the felis-paper lobby renders as a tile:
- * {@code ready} and {@code claimable}, with felis-api's per-player verdict from the
- * {@code ListUpdate}, choose the button (Join / Claim&nbsp;&amp;&nbsp;Start / Start, or
- * a grey tile naming why not), {@code phase} is the status line, and
- * {@code playersOnline}/{@code playersMax} render the "3/20" count.
- *
- * <p>{@link #fromJson(Map)} is tolerant in the same way as {@link ServerView}: an
- * absent field degrades to null/zero/false rather than throwing, so a partial body
- * can never crash the proxy's event thread.
- */
+// Keep menu and routing projections separate; missing fields default safely for partial responses.
 public final class MenuStatus {
     private final String name;
     private final String phase;

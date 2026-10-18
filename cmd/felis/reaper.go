@@ -29,16 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// cmdReaper runs one pass of the world reaper / retention batch (spec §18). It
-// is intentionally run-once-and-exit: a Kubernetes CronJob drives the daily
-// cadence, and RunOnce is idempotent and restart-safe, so a missed or retried
-// run simply converges. Only the tarLocal archive backend is wired in this
-// build; the snapshot backends (§19) are a later integration.
-//
-// --retention-only runs the archive-store half alone (reaper.RunRetention):
-// the CronJob an install without a worlds root gets, so backups past their
-// expiry still leave the store there. It builds no Kubernetes client and reads
-// no world.
+// Retention-only runs prune archives without resolving world volumes.
 func cmdReaper(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("reaper", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -117,11 +108,7 @@ func cmdReaper(args []string, stdout, stderr io.Writer) int {
 	}
 	r.Cluster = reaper.NewK8sCluster(cl, cfg.K8s.Namespace).WithDistributed(os.Getenv("FELIS_DISTRIBUTED") == "true")
 
-	// Pre-reap warnings go out by email when [smtp] is configured (the same
-	// relay and password_ref convention felis-api uses); without it the channel
-	// stays nil and the reaper logs each suppressed warning instead of stamping
-	// it, so a later SMTP setup still gets to warn. The owner must have a
-	// VERIFIED address — that flag is what proves the mailbox.
+	// Without SMTP, leave warnings unstamped so configuring mail later still sends them.
 	if notifier := reaperNotifier(ctx, drv.DB(), cfg.SMTP, stderr); notifier != nil {
 		db := drv.DB()
 		r.Warner = &mailWarner{
@@ -152,10 +139,7 @@ func cmdReaper(args []string, stdout, stderr io.Writer) int {
 	return reportReaperRun(sum, stdout, stderr)
 }
 
-// reportReaperRun prints the run's tally and turns a run that left work undone
-// into exit 1, so the Job fails and the watchdog's job-failed check (and the
-// FelisWorldJobFailed rule) reach the operator: a world that cannot be archived
-// is kept, and without this nobody would learn that it is never reaped.
+// Exit unsuccessfully on incomplete work so Job failure alerts expose unreaped worlds.
 func reportReaperRun(sum reaper.Summary, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "felis reaper: evaluated=%d reaped=%d released=%d deleted=%d awaiting_offsite=%d awaiting_stop=%d warned=%d skipped=%d store_full=%d evicted=%d expired=%d expire_failed=%d verified=%d corrupt=%d verify_failed=%d swept=%d orphan_archives=%d\n",
 		sum.Evaluated, sum.WorldsReaped, sum.Released, sum.ServersDeleted, sum.AwaitingOffsite, sum.AwaitingStop, sum.Warned, sum.Skipped, sum.StoreFull,
@@ -178,10 +162,7 @@ func reportReaperRun(sum reaper.Summary, stdout, stderr io.Writer) int {
 	return 1
 }
 
-// mailWarner delivers a pre-reap notice to the owner's verified email — the
-// only channel this build can reach. Unowned owners and owners who never proved
-// a mailbox yield an error; the reaper retries such notices on its next run and
-// never lets them block the reap (red line ⑤).
+// Missing verified email prevents a notice but does not block reaping.
 type mailWarner struct {
 	lookupEmail func(ctx context.Context, ownerID string) (string, error)
 	notifier    noticeNotifier
@@ -210,11 +191,7 @@ func (w *mailWarner) Warn(ctx context.Context, ownerID, server, remaining string
 	return w.notifier.SendNotice(ctx, email, subject, body)
 }
 
-// reaperConfig derives the reaper's retention windows from felis.toml. The 15d
-// idle deadline is fixed by §18; only the warning offsets, retention, the
-// store soft-cap, the on-demand backup bounds and the scheduled restore points
-// are configurable (§24). The backup Job and felis-api read the manual_* and
-// scheduled_* keys through it too.
+// The idle deadline is fixed at 15 days; configured windows control warning and backup retention.
 func reaperConfig(cfg *config.Config) (reaper.Config, error) {
 	rc := reaper.DefaultConfig()
 	if v := cfg.Archive.Retention; v != "" {
@@ -286,10 +263,7 @@ func reaperConfig(cfg *config.Config) (reaper.Config, error) {
 	return rc, nil
 }
 
-// buildArchiver constructs the WorldArchiver. Only tarLocal is implemented in
-// this build; the resolver maps each world PVC to its directory under worldsRoot
-// (resolveWorldDir). A nil cl is the retention-only run, which never archives a
-// world, so its archiver resolves none.
+// A nil cluster client supports retention-only mode and resolves no worlds.
 func buildArchiver(ctx context.Context, cfg *config.Config, worldsRoot string, cl client.Client) (backup.WorldArchiver, error) {
 	switch cfg.Archive.Store {
 	case "tarLocal":
@@ -307,23 +281,7 @@ func buildArchiver(ctx context.Context, cfg *config.Config, worldsRoot string, c
 	}
 }
 
-// resolveWorldDir maps a world PVC to its directory under worldsRoot, supporting
-// the two layouts a Felis host actually has:
-//
-//  1. <root>/<pvc> — the reaper's documented arrangement (worlds exposed by PVC
-//     name, e.g. via mounting each volume or a crafted storage class).
-//  2. <root>/<pv-name>_<namespace>_<pvc-name> — what a stock k3s install gets:
-//     local-path-provisioner stores every volume under its storage root as that
-//     exact directory name. Without this arm, retention on a default install could
-//     only ever fail to find a world (a no-op reaper, or worse an operator
-//     arranging paths by hand).
-//
-// The second path is derived EXACTLY from the live PVC's spec.volumeName, never
-// from a glob: a leftover directory of an old, deleted PV must never be mistaken
-// for the world the PVC currently binds, because the reaper archives the resolved
-// directory and then deletes that PVC — archiving stale bytes and deleting the
-// real world would be data loss. When neither path exists the first is returned,
-// so the archive walk fails loudly against the documented path.
+// Resolve only the bound PVC's explicit storage path; missing worlds fail rather than matching stale volumes.
 func resolveWorldDir(ctx context.Context, cl client.Client, namespace, worldsRoot string) backup.PVCResolver {
 	return func(pvc string) (string, error) {
 		direct := filepath.Join(worldsRoot, pvc)
@@ -374,9 +332,7 @@ func parseByteSize(s string) (int64, error) {
 	return strconv.ParseInt(s, 10, 64)
 }
 
-// reaperNotifier is the relay pre-reap warnings go through: the one the Owner saved in the
-// panel, else felis.toml's [smtp] (with the password_ref convention felis-api uses), nil
-// when neither is configured.
+// Prefer the panel relay, then TOML; return nil when neither is configured.
 func reaperNotifier(ctx context.Context, db *sql.DB, c config.SMTPConfig, stderr io.Writer) noticeNotifier {
 	panel, err := mailsettings.Read(ctx, db)
 	if err != nil {

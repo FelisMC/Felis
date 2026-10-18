@@ -30,9 +30,7 @@ interface Props {
    *  without onFile the field offers no upload. */
   file: File | null;
   onFile?: (file: File | null) => void;
-  /** The server whose files hold the jar: its root is listed so a jar already
-   *  there is picked rather than typed. A server still running cannot be read,
-   *  and then only a path can be given. */
+  // List existing JARs only while stopped; running servers accept an explicit path.
   server?: string;
   disabled?: boolean;
 }

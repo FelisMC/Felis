@@ -10,14 +10,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// Host copies of the credentials `felis setup` takes at the keyboard: the [smtp]
-// relay password and the uploads bucket's keys. The cluster reads them from the
-// felis-smtp and felis-uploads-s3 Secrets, and a Secret lives in k3s's datastore,
-// which a reinstall (uninstall.sh keeps /etc/felis) or a host rebuilt from a
-// database bundle's state/ starts empty. Each file holds the bare value, mode
-// 0600, directly in /etc/felis beside secrets.env: every installer run applies
-// the Secrets from these files, and every database bundle, so the off-site copy
-// too, carries them.
+// Store bare host credentials at mode 0600 so installation and backup recovery can recreate Secrets.
 const (
 	hostSMTPPasswordPath       = "/etc/felis/smtp-password"
 	hostUploadsS3AccessKeyPath = "/etc/felis/uploads-s3-access-key"
@@ -67,10 +60,7 @@ func readHostCredential(path string) (value string, ok bool, err error) {
 	return string(b), true, nil
 }
 
-// relayPassword is the [smtp] relay password as the host holds it: the copy
-// `felis setup` keeps at path, else, on an install from before that copy, the
-// felis-smtp Secret in ns, whose absence means a relay without AUTH. cl is only
-// used when the file is missing; a nil cl then reports errClusterUnreachable.
+// Read the host password first, consulting the cluster only when the file is missing.
 func relayPassword(ctx context.Context, path string, cl client.Client, ns string) (string, error) {
 	if pw, ok, err := readHostCredential(path); err != nil || ok {
 		return pw, err

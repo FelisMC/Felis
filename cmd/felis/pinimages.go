@@ -22,15 +22,8 @@ import (
 // spells the same value as REGISTRY_URL.
 const defaultRegistryURL = "registry.felis.svc:5000"
 
-// cmdPinImages pins every user server whose spec.image still names a mutable tag
-// in the platform registry to the digest that tag names now (internal/imagepin).
-// felis-api pins on create, so this covers the servers created before it did.
-//
-// deploy/bootstrap.sh runs it before it rebuilds the game images and pushes them
-// over the same tags: run after the push, it would pin those servers to the new
-// build, which is exactly the silent Minecraft upgrade pinning exists to stop.
-// It reaches the registry through the node's loopback hostPort, the same way the
-// installer pushes.
+// Pin user images before overwriting their mutable tags to prevent unintended upgrades.
+// It reaches the registry through the node's loopback hostPort, the same way the installer pushes.
 func cmdPinImages(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("pin-images", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -87,9 +80,7 @@ func cmdPinImages(args []string, stdout, stderr io.Writer) int {
 	return exit
 }
 
-// reportSystemPin runs pinSystemServerImage for `felis pin-images --system` and
-// prints what it did. Only a failed pin exits non-zero: the installer falls back
-// to restarting the pod on its tag then.
+// A failed system pin returns nonzero so installation can fall back to Pod recreation.
 func reportSystemPin(ctx context.Context, cl client.Client, namespace, name string, r imagepin.Resolver, stdout, stderr io.Writer) int {
 	o, err := pinSystemServerImage(ctx, cl, namespace, name, r)
 	switch {
@@ -112,13 +103,7 @@ func reportSystemPin(ctx context.Context, cl client.Client, namespace, name stri
 	return 0
 }
 
-// pinSystemServerImage fixes a system server to the build its image tag names now,
-// replacing the digest of an earlier build. The installer runs it after pushing a
-// rebuilt login or lobby image, and the operator rolls the StatefulSet onto the new
-// ref, so the build a system server runs is written in its spec and moves only when
-// a build did. An image outside the platform registry, or one naming no tag to
-// follow, is the admin's choice and is left alone; so is a server whose image an
-// admin retargets while this runs.
+// Repin rebuilt system images but preserve external references and concurrent administrator changes.
 func pinSystemServerImage(ctx context.Context, cl client.Client, namespace, name string, r imagepin.Resolver) (systemServerOutcome, error) {
 	var ms v1alpha1.MinecraftServer
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &ms); err != nil {
@@ -175,14 +160,7 @@ func loopbackEndpoint(registry string) string {
 	return "127.0.0.1"
 }
 
-// pinUserServerImages patches spec.image of every user server whose image the
-// resolver covers and is not yet pinned. System servers are the installer's to move:
-// it re-pins them with --system when it rolls them onto a new build
-// (restart_existing_system_servers).
-// A server that is already pinned, or runs an image from elsewhere, produces no
-// outcome, so a pinned fleet reports nothing. A running server restarts once as
-// the operator rolls its StatefulSet onto the pinned ref, which is the build it
-// already runs.
+// Skip already pinned and external images; running servers roll once onto the same build.
 func pinUserServerImages(ctx context.Context, cl client.Client, namespace string, r imagepin.Resolver) ([]systemServerOutcome, error) {
 	var list v1alpha1.MinecraftServerList
 	if err := cl.List(ctx, &list, client.InNamespace(namespace)); err != nil {

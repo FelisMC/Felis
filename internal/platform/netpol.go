@@ -13,25 +13,11 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
-// gamePort is the Minecraft TCP port, sourced from the operator so the policy and
-// the StatefulSet container port are one source of truth.
 const gamePort = operator.GamePort
 
-// rconPort is the RCON port the allow-rcon policy opens, sourced from the operator
-// so the policy and the server container's default RCON port are one source of
-// truth.
-//
-// This is one namespace-wide policy, so it opens a single port: the default. The
-// CRD holds spec.rcon.port to unset, 0 or 25575 with a CEL rule (RconSpec in
-// internal/apis/felis/v1alpha1), so no server can move RCON behind this fence and
-// leave the operator's readiness prober outside it. Per-server ports would need
-// per-server NetworkPolicies and a relaxed rule, together.
+// RCON is namespace-wide on one default port; changing supported ports requires updating both the CRD constraint and network policy.
 const rconPort = operator.DefaultRconPort
 
-// serverPodSelector matches every operator-managed Minecraft server pod by the
-// exact labels the operator stamps (internal/operator.labelsFor). Sourcing the
-// values from the operator package means the fence can never silently stop
-// matching the pods it protects.
 func serverPodSelector() metav1.LabelSelector {
 	return metav1.LabelSelector{MatchLabels: map[string]string{
 		v1alpha1.LabelManagedBy: operator.ManagedByValue,
@@ -39,11 +25,7 @@ func serverPodSelector() metav1.LabelSelector {
 	}}
 }
 
-// MinecraftNetworkPolicies renders the ingress fence for the minecraft namespace
-// (spec §20, §21): a default-deny baseline, RCON (25575) reachable only from the
-// {api, operator} control-plane pods, and the game port (25565) reachable only
-// from the off-cluster Velocity proxy host(s). NetworkPolicies are additive, so
-// the union admits exactly those two paths to server pods and denies all else.
+// MinecraftNetworkPolicies allow game traffic from Velocity and RCON from API or operator over a default-deny baseline.
 func MinecraftNetworkPolicies(p Params) []*networkingv1.NetworkPolicy {
 	p = p.withDefaults()
 	return []*networkingv1.NetworkPolicy{
@@ -53,24 +35,14 @@ func MinecraftNetworkPolicies(p Params) []*networkingv1.NetworkPolicy {
 	}
 }
 
-// defaultDenyIngress selects every pod in the namespace and permits no ingress —
-// the baseline that makes the two allow policies a strict allowlist.
 func defaultDenyIngress(p Params) *networkingv1.NetworkPolicy {
 	return netpol("felis-default-deny-ingress", p.MinecraftNamespace,
-		metav1.LabelSelector{}, // empty selector = all pods in the namespace
-		nil,                    // nil ingress rules = deny all ingress
+		metav1.LabelSelector{},
+		nil,
 	)
 }
 
-// allowRConFromControlPlane opens 25575 on server pods to the felis-api and
-// felis-operator pods only. Both dial RCON: felis-api for console writes
-// (internal/api.console) and felis-operator for the readiness prober
-// (internal/operator.prober). felis-reaper never opens RCON, so it is excluded.
-//
-// The single peer combines a namespaceSelector AND a podSelector, which K8s reads
-// as an intersection: pods matching the podSelector that also live in the control
-// namespace. Splitting them into two peers would be a union (allow ALL pods in
-// the control ns OR api/operator pods anywhere) — the wrong, wider semantics.
+// Keep namespaceSelector and podSelector in one peer for intersection; separate peers would widen access by union.
 func allowRConFromControlPlane(p Params) *networkingv1.NetworkPolicy {
 	tcp := corev1.ProtocolTCP
 	port := intstr.FromInt32(rconPort)
@@ -96,15 +68,7 @@ func allowRConFromControlPlane(p Params) *networkingv1.NetworkPolicy {
 	return np
 }
 
-// allowGameFromVelocity opens 25565 on server pods to Velocity proxy host(s) by
-// ipBlock. The supported proxy runs outside the pod network (on the k3s node or a
-// separate host), so the peer is an ipBlock rather than a podSelector. Kubernetes
-// always permits resident-node traffic; these rules constrain other sources.
-//
-// With no VelocityCIDRs the policy carries NO ingress rule, never an empty-From
-// rule (which K8s would read as allow-all). That denies non-node game traffic;
-// resident-node traffic remains outside NetworkPolicy's blocking capability. The
-// manifest generator still refuses an empty list so remote proxies fail loudly.
+// No VelocityCIDRs means no allow rule, not an empty From that permits all; resident-node traffic bypasses NetworkPolicy.
 func allowGameFromVelocity(p Params) *networkingv1.NetworkPolicy {
 	tcp := corev1.ProtocolTCP
 	port := intstr.FromInt32(gamePort)
@@ -125,11 +89,7 @@ func allowGameFromVelocity(p Params) *networkingv1.NetworkPolicy {
 	return netpol("felis-allow-game-from-velocity", p.MinecraftNamespace, serverPodSelector(), ingress)
 }
 
-// serverEgressExceptV4 / V6 are the destinations a game server never reaches
-// through the internet rule: every private, shared, link-local, loopback,
-// multicast and reserved range. They cover the pod and Service CIDRs of any stock
-// k3s/k8s install (10.42/16, 10.43/16), the node's private addresses, cloud
-// metadata (169.254.169.254) and the operator's LAN.
+// serverEgressExceptV4 and V6 exclude private, shared, link-local, loopback, multicast and reserved destinations.
 var (
 	serverEgressExceptV4 = []string{
 		"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
@@ -138,18 +98,7 @@ var (
 	serverEgressExceptV6 = []string{"::1/128", "fc00::/7", "fe80::/10", "ff00::/8"}
 )
 
-// ServerEgressPolicies render the egress fence for game server pods. A server runs
-// code its owner chose — plugins, mods, a whole image — so the namespace used to
-// be a launch pad: any server could push to the unauthenticated registry, dial
-// felis-api's internal face, PostgreSQL on the node, or the kube API. Now:
-//
-//   - every server may resolve names and reach the public internet (plugin
-//     updates, resource packs, web maps), and of everything private only the
-//     server-software download cache's port (artifacts.go);
-//   - the login system server additionally reaches felis-api's internal face,
-//     the one platform service it is built to call.
-//
-// Policies are additive, so the login pod gets the union of both.
+// ServerEgressPolicies allow public internet and artifact-cache access; only the login system pod also reaches the internal API.
 func ServerEgressPolicies(p Params) []*networkingv1.NetworkPolicy {
 	p = p.withDefaults()
 	return []*networkingv1.NetworkPolicy{serverEgress(p), loginToInternalAPI(p)}
@@ -161,7 +110,7 @@ func serverEgress(p Params) *networkingv1.NetworkPolicy {
 	for _, c := range p.ServerEgressDenyCIDRs {
 		_, n, err := net.ParseCIDR(c)
 		if err != nil {
-			continue // `felis manifests` rejects these before rendering
+			continue
 		}
 		if n.IP.To4() != nil {
 			v4 = append(v4, n.String())
@@ -187,26 +136,18 @@ func serverEgress(p Params) *networkingv1.NetworkPolicy {
 			PodSelector: serverPodSelector(),
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
 			Egress: []networkingv1.NetworkPolicyEgressRule{
-				// Name resolution through the cluster resolver: the DNS Service
-				// sits inside 10/8, which the internet rule excludes.
 				{
 					To:    []networkingv1.NetworkPolicyPeer{build.ClusterDNSPeer()},
 					Ports: []networkingv1.NetworkPolicyPort{{Protocol: &udp, Port: &dns}, {Protocol: &tcp, Port: &dns}},
 				},
 				{To: peers},
-				// The server-software download cache (artifacts.go), which the
-				// install step of a runtime-image server fetches through.
 				serverToArtifacts(p),
 			},
 		},
 	}
 }
 
-// loginToInternalAPI opens felis-api's internal face (8081) to the login system
-// server only. The selector needs both the reserved name and the setup-owned
-// system-role label the operator copies onto that pod — the same pair that decides
-// who receives FELIS_SERVICE_TOKEN (internal/operator buildEnv), so a user server
-// can never match it by picking a name.
+// loginToInternalAPI requires both reserved name and setup-owned role labels, matching the service-token injection gate.
 func loginToInternalAPI(p Params) *networkingv1.NetworkPolicy {
 	tcp := corev1.ProtocolTCP
 	port := intstr.FromInt32(apiInternalPort)
@@ -235,15 +176,7 @@ func loginToInternalAPI(p Params) *networkingv1.NetworkPolicy {
 	}
 }
 
-// RegistryIngressPolicy fences the registry pod: only build pods and felis-api
-// reach its port. Build pods push what they build; felis-api reads a manifest
-// digest to pin a new server's image (internal/imagepin) and deletes manifests
-// nothing references (internal/registryprune). Everything else that uses the
-// registry runs on the node — containerd's pulls and the installer's pushes both
-// arrive through the loopback hostPort — and Kubernetes never blocks
-// resident-node traffic. Write authorization is the gate's job (felis-api holds
-// only the prune principal, which can delete a manifest by digest and nothing
-// else); this policy keeps every other pod from even trying.
+// RegistryIngressPolicy admits build and API Pods; node pulls use loopback, while the registry gate separately authorizes writes.
 func RegistryIngressPolicy(p Params) *networkingv1.NetworkPolicy {
 	p = p.withDefaults()
 	tcp := corev1.ProtocolTCP
@@ -276,8 +209,7 @@ func RegistryIngressPolicy(p Params) *networkingv1.NetworkPolicy {
 	return np
 }
 
-// netpol assembles an ingress-only NetworkPolicy. A nil/empty ingress slice with
-// PolicyTypeIngress is the canonical "deny all ingress" shape.
+// netpol with ingress policy type and an empty rule list denies all ingress.
 func netpol(name, ns string, sel metav1.LabelSelector, ingress []networkingv1.NetworkPolicyIngressRule) *networkingv1.NetworkPolicy {
 	return &networkingv1.NetworkPolicy{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "NetworkPolicy"},

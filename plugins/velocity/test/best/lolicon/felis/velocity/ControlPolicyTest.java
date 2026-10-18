@@ -4,17 +4,6 @@ import best.lolicon.felis.link.ControlFrame;
 
 import java.util.Set;
 
-/**
- * ControlPolicyTest pins down who may send what on {@code felis:control}. It needs no
- * Velocity classes: {@link ControlPolicy} takes the source server's name and a
- * managed-server predicate, which is everything the proxy knows that a backend cannot
- * forge. Framework free: a failed assertion throws and the process exits non-zero.
- *
- * <p>Run: {@code javac -d <out> shared/src/main/java/best/lolicon/felis/link/*.java
- * velocity/src/main/java/best/lolicon/felis/velocity/ControlPolicy.java
- * velocity/test/best/lolicon/felis/velocity/ControlPolicyTest.java && java -cp <out>
- * best.lolicon.felis.velocity.ControlPolicyTest}.
- */
 public final class ControlPolicyTest {
 
     private static int checks;
@@ -86,7 +75,6 @@ public final class ControlPolicyTest {
         assertTrue("wellFormed slash", !ControlPolicy.wellFormed("a/b"));
     }
 
-    // ---- harness ----
 
     private static void expect(String what, ControlPolicy.Verdict want, String source, ControlFrame f) {
         ControlPolicy.Verdict got = POLICY.check(source, f);

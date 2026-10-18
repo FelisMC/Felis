@@ -15,10 +15,6 @@ func (c *captureJobs) CreateBackupJob(_ context.Context, p JobParams) error {
 	return nil
 }
 
-// The core fix: a repeat on-demand backup of the same server must not collide with
-// the previous Job's name (which would silently no-op the retry within the TTL
-// window). Two Backup calls must mint two distinct Job names, both under the
-// server's base prefix.
 func TestBackupMintsUniqueJobNamePerCall(t *testing.T) {
 	jobs := &captureJobs{}
 	b := &Backuper{Jobs: jobs, Config: Config{Image: "img", BackupPVC: "pvc"}}
@@ -85,8 +81,6 @@ func TestBackupScheduledMarksTheJob(t *testing.T) {
 	}
 }
 
-// TestBackupLiveReturnsTheJobItCreated pins that a live backup is created live, carries
-// the scratch cap and the scheduled flag, and hands back the Job name felis-api watches.
 func TestBackupLiveReturnsTheJobItCreated(t *testing.T) {
 	jobs := &captureJobs{}
 	b := &Backuper{Jobs: jobs, Config: Config{Image: "img", BackupPVC: "pvc", StageLimit: "8Gi"}}

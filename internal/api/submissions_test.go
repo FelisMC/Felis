@@ -18,10 +18,7 @@ import (
 	"felis.lolicon.best/internal/submit"
 )
 
-// fakeSubmissions is an in-memory SubmissionService for the handler tests. Each
-// *Err field injects a canned outcome; the recorders let a test assert exactly
-// what the handler forwarded (the point of the owner-scoping checks: the
-// submitter and reviewer must come from the principal, never the body).
+// fakeSubmissions records principal-derived arguments and injects canned errors.
 type fakeSubmissions struct {
 	created     *submit.CreateRequest
 	createErr   error
@@ -166,9 +163,6 @@ func (f *fakeSubmissions) OpenContext(_ context.Context, id string) (io.ReadClos
 	return io.NopCloser(strings.NewReader(f.openBody)), f.openDigest, nil
 }
 
-// appSubAPI wires a submissions service behind an ordinary user principal (the
-// app tier — /me/submissions). user@example.net / .test are deliberately not the
-// deployment domain.
 func appSubAPI(s SubmissionService) *API {
 	api := newTestAPI(newFakeRepo(), newFakeCluster())
 	api.Submissions = s
@@ -186,8 +180,6 @@ func adminSubAPI(s SubmissionService) *API {
 	return api
 }
 
-// The submitter is the principal, never the body: a valid create stamps the
-// authenticated user's id onto the submission.
 func TestCreateSubmissionStampsPrincipal(t *testing.T) {
 	fs := &fakeSubmissions{}
 	api := appSubAPI(fs)
@@ -206,8 +198,6 @@ func TestCreateSubmissionStampsPrincipal(t *testing.T) {
 	}
 }
 
-// A client cannot smuggle a submitted_by through the body: decodeJSON rejects the
-// unknown field with 400 and the handler never reaches Create.
 func TestCreateSubmissionRejectsBodySubmittedBy(t *testing.T) {
 	fs := &fakeSubmissions{}
 	api := appSubAPI(fs)
@@ -221,7 +211,6 @@ func TestCreateSubmissionRejectsBodySubmittedBy(t *testing.T) {
 	}
 }
 
-// A validation failure from the submit layer surfaces as 400 bad_request.
 func TestCreateSubmissionValidationIs400(t *testing.T) {
 	fs := &fakeSubmissions{createErr: fmt.Errorf("%w: display name is required", submit.ErrInvalid)}
 	api := appSubAPI(fs)
@@ -234,9 +223,6 @@ func TestCreateSubmissionValidationIs400(t *testing.T) {
 	}
 }
 
-// The upload endpoint forwards the raw body to the transport and stamps the
-// submitter from the principal, never the body — a user can only upload to a
-// submission under their own identity.
 func TestUploadSubmissionContextStreamsBody(t *testing.T) {
 	fs := &fakeSubmissions{}
 	api := appSubAPI(fs)
@@ -258,8 +244,6 @@ func TestUploadSubmissionContextStreamsBody(t *testing.T) {
 	}
 }
 
-// A submission the caller does not own reads back as 404 (the transport reports
-// ErrNotFound), so the endpoint cannot probe another user's submission.
 func TestUploadSubmissionContextNotOwnedIs404(t *testing.T) {
 	fs := &fakeSubmissions{uploadErr: submit.ErrNotFound}
 	api := appSubAPI(fs)
@@ -269,7 +253,6 @@ func TestUploadSubmissionContextNotOwnedIs404(t *testing.T) {
 	}
 }
 
-// Uploading to an already-reviewed submission is a 409.
 func TestUploadSubmissionContextAlreadyReviewedIs409(t *testing.T) {
 	fs := &fakeSubmissions{uploadErr: submit.ErrAlreadyReviewed}
 	api := appSubAPI(fs)
@@ -279,7 +262,6 @@ func TestUploadSubmissionContextAlreadyReviewedIs409(t *testing.T) {
 	}
 }
 
-// A wrong-format / oversize body surfaces as 400 (the transport wraps ErrInvalid).
 func TestUploadSubmissionContextBadFormatIs400(t *testing.T) {
 	fs := &fakeSubmissions{uploadErr: fmt.Errorf("%w: build context must be a gzip-compressed tarball (.tar.gz)", submit.ErrInvalid)}
 	api := appSubAPI(fs)
@@ -292,8 +274,6 @@ func TestUploadSubmissionContextBadFormatIs400(t *testing.T) {
 	}
 }
 
-// When the deployment's store has no upload transport, the endpoint reports 503
-// (ErrUploadsUnavailable) — an honest "not available here", not a 500.
 func TestUploadSubmissionContextNoTransportIs503(t *testing.T) {
 	fs := &fakeSubmissions{uploadErr: submit.ErrUploadsUnavailable}
 	api := appSubAPI(fs)
@@ -306,8 +286,6 @@ func TestUploadSubmissionContextNoTransportIs503(t *testing.T) {
 	}
 }
 
-// The upload route is app-tier: with no service configured it is 503, exactly
-// like the other /me/submissions routes.
 func TestUploadSubmissionContextWithoutServiceIs503(t *testing.T) {
 	app := appSubAPI(nil)
 	app.Submissions = nil
@@ -317,9 +295,6 @@ func TestUploadSubmissionContextWithoutServiceIs503(t *testing.T) {
 	}
 }
 
-// Withdraw retracts the caller's OWN pending submission: the submitter is the
-// principal (never the body), a reviewed submission is 409, and a foreign id is
-// 404 — the same posture as the upload route.
 func TestWithdrawSubmission(t *testing.T) {
 	t.Run("withdraws as the principal", func(t *testing.T) {
 		fs := &fakeSubmissions{}
@@ -358,8 +333,6 @@ func TestWithdrawSubmission(t *testing.T) {
 	})
 }
 
-// The admin delete retires any submission and maps the lane's 404; the route's
-// admin gate itself is pinned by TestSubmissionAdminRoutesAreAdminOnly.
 func TestDeleteSubmissionAdmin(t *testing.T) {
 	t.Run("deletes the named row", func(t *testing.T) {
 		fs := &fakeSubmissions{}
@@ -380,8 +353,6 @@ func TestDeleteSubmissionAdmin(t *testing.T) {
 	})
 }
 
-// The "my uploads" list scopes strictly to the principal's id — there is no
-// parameter that could widen it to another user's submissions.
 func TestMySubmissionsScopesToPrincipal(t *testing.T) {
 	fs := &fakeSubmissions{byResult: []submit.Submission{
 		{ID: "sub-1", SubmittedBy: "user-7", DisplayName: "p", Status: submit.StatusPendingReview},
@@ -405,9 +376,6 @@ func TestMySubmissionsScopesToPrincipal(t *testing.T) {
 	}
 }
 
-// The "my uploads" list carries the linked build's outcome — for a submitter it
-// is the only visible outlet for a failed build (the /images/build routes are
-// admin-tier). A row with no linked build gains no build fields.
 func TestMySubmissionsCarriesBuildOutcome(t *testing.T) {
 	fs := &fakeSubmissions{byResult: []submit.Submission{
 		{ID: "sub-1", SubmittedBy: "user-7", Status: submit.StatusApproved, BuildID: "bld-9"},
@@ -442,10 +410,7 @@ func TestMySubmissionsCarriesBuildOutcome(t *testing.T) {
 	}
 }
 
-// A linked build whose row is gone renders as "no outcome" rather than failing
-// the whole list; any other lookup failure must surface, never be swallowed.
 func TestMySubmissionsBuildLookupSemantics(t *testing.T) {
-	// Missing row (ErrNotFound): 200 with no build fields.
 	fs := &fakeSubmissions{byResult: []submit.Submission{{ID: "sub-1", Status: submit.StatusApproved, BuildID: "bld-gone"}}}
 	api := appSubAPI(fs)
 	api.Builder = &fakeBuilder{}
@@ -457,7 +422,6 @@ func TestMySubmissionsBuildLookupSemantics(t *testing.T) {
 		t.Errorf("missing build row: body carries build fields: %s", w.Body.String())
 	}
 
-	// Store fault: the failure is reported, not hidden behind a 200.
 	fs = &fakeSubmissions{byResult: []submit.Submission{{ID: "sub-1", BuildID: "bld-1"}}}
 	api = appSubAPI(fs)
 	api.Builder = &fakeBuilder{getErr: errors.New("db down")}
@@ -467,10 +431,6 @@ func TestMySubmissionsBuildLookupSemantics(t *testing.T) {
 	}
 }
 
-// Both lists forward the page the panel asked for and answer with the match total
-// and every status count — zero included, so a summary card never reads a missing
-// key. A number that does not parse reads as absent (the submit layer then applies
-// its default); the scope never comes from the query string.
 func TestSubmissionListsForwardThePage(t *testing.T) {
 	fs := &fakeSubmissions{
 		listed:     []submit.Submission{{ID: "sub-1", Status: submit.StatusApproved}},
@@ -519,8 +479,6 @@ func TestSubmissionListsForwardThePage(t *testing.T) {
 	}
 }
 
-// A page's build outcomes come from one lookup naming every linked build; a page
-// with no linked build asks nothing.
 func TestSubmissionPageLooksUpBuildsOnce(t *testing.T) {
 	fs := &fakeSubmissions{listed: []submit.Submission{
 		{ID: "sub-1", Status: submit.StatusApproved, BuildID: "bld-1"},
@@ -565,8 +523,6 @@ func TestSubmissionPageLooksUpBuildsOnce(t *testing.T) {
 	}
 }
 
-// Every /submissions route is admin-tier: a plain user is rejected before the
-// handler runs.
 func TestSubmissionAdminRoutesAreAdminOnly(t *testing.T) {
 	cases := []struct {
 		method, target, body string
@@ -616,7 +572,6 @@ func TestListSubmissionsAdmin(t *testing.T) {
 	}
 }
 
-// The reviewer is the admin principal's email, never client input.
 func TestApproveSubmission(t *testing.T) {
 	fs := &fakeSubmissions{}
 	api := adminSubAPI(fs)
@@ -632,8 +587,6 @@ func TestApproveSubmission(t *testing.T) {
 	}
 }
 
-// The digest the reviewer inspected travels in the body, and a context replaced
-// since then is a 409 the panel can act on.
 func TestApproveSubmissionForwardsTheReviewedDigest(t *testing.T) {
 	fs := &fakeSubmissions{}
 	digest := strings.Repeat("ab", 32)
@@ -678,8 +631,6 @@ func TestApproveSubmissionNotFoundIs404(t *testing.T) {
 	}
 }
 
-// A build hand-off failure post-approval is a server-side fault (the client did
-// nothing wrong), so it collapses to 500 — never a 4xx.
 func TestApproveBuildHandoffFailureIs500(t *testing.T) {
 	fs := &fakeSubmissions{approveErr: fmt.Errorf("submit: approved but build hand-off failed: %w",
 		errors.New("cluster unreachable"))}
@@ -724,9 +675,6 @@ func TestRejectSubmissionValidationIs400(t *testing.T) {
 	}
 }
 
-// When no Submissions service is configured, the routes report 503 — the app
-// route directly, and the admin route only AFTER the admin gate, so the boundary
-// is still enforced first.
 func TestSubmissionRoutesWithoutServiceAre503(t *testing.T) {
 	// app tier
 	app := appSubAPI(nil)
@@ -742,9 +690,6 @@ func TestSubmissionRoutesWithoutServiceAre503(t *testing.T) {
 	}
 }
 
-// The internal context route is the build Pod's only read path to a submission's
-// blob: it streams the bytes verbatim, and its error mapping distinguishes a
-// missing blob (404) from an unwired transport (503).
 func TestInternalSubmissionContextRoute(t *testing.T) {
 	newAPI := func(s SubmissionService) *API {
 		api := newTestAPI(newFakeRepo(), newFakeCluster())
@@ -786,10 +731,6 @@ func TestInternalSubmissionContextRoute(t *testing.T) {
 	})
 }
 
-// The admin context route is the reviewer's read path to the blob they are
-// approving: an admin streams the stored bytes with a download disposition,
-// and the error mapping matches the internal route (404 missing, 503 unwired).
-// The admin-only gate itself is pinned by TestSubmissionAdminRoutesAreAdminOnly.
 func TestAdminSubmissionContextRoute(t *testing.T) {
 	t.Run("streams the blob with a download disposition", func(t *testing.T) {
 		fs := &fakeSubmissions{openBody: "\x1f\x8b\x08\x00blob"}
@@ -824,8 +765,6 @@ func TestAdminSubmissionContextRoute(t *testing.T) {
 		}
 	})
 
-	// Bytes that are not the recorded ones must not arrive as a complete download:
-	// the reviewer would inspect a blob the approval does not name.
 	t.Run("aborts a blob that does not match", func(t *testing.T) {
 		big := "\x1f\x8b" + strings.Repeat("x", 100<<10)
 		fs := &fakeSubmissions{openBody: big, openDigest: strings.Repeat("0", 64)}
@@ -863,9 +802,6 @@ func TestAdminSubmissionContextRoute(t *testing.T) {
 	})
 }
 
-// A spent per-user allowance is 403 submission_quota_exceeded on both the create
-// and the upload path — distinctly NOT the 400 a malformed request gets, and not
-// the 429 the cooldown answers with.
 func TestSubmissionQuotaIs403(t *testing.T) {
 	t.Run("create", func(t *testing.T) {
 		fs := &fakeSubmissions{createErr: fmt.Errorf("%w: 5 submissions are already awaiting review", submit.ErrQuotaExceeded)}
@@ -889,9 +825,6 @@ func TestSubmissionQuotaIs403(t *testing.T) {
 	})
 }
 
-// The per-user create cooldown bounds review-queue growth: a second create in
-// the same window is 429 submission_cooldown and never reaches the service; the
-// window recovers afterwards.
 func TestCreateSubmissionRateLimited(t *testing.T) {
 	fs := &fakeSubmissions{}
 	api := appSubAPI(fs)
@@ -907,8 +840,6 @@ func TestCreateSubmissionRateLimited(t *testing.T) {
 	if w.Code != http.StatusTooManyRequests || decodeErr(t, w) != "submission_cooldown" {
 		t.Fatalf("immediate second create: code = %d body %s, want 429 submission_cooldown", w.Code, w.Body.String())
 	}
-	// The gate sits before the body handling: even a malformed request is
-	// refused while the window is closed, so it cannot be used to probe.
 	if w := do(eh, "POST", "/api/v1/me/submissions", `{`, nil); w.Code != http.StatusTooManyRequests {
 		t.Fatalf("malformed create during cooldown: code = %d, want 429", w.Code)
 	}
@@ -918,8 +849,6 @@ func TestCreateSubmissionRateLimited(t *testing.T) {
 	}
 }
 
-// A failed create frees the window: only a row that was actually recorded burns
-// the cooldown, so a validation typo is not punished with a wait.
 func TestCreateSubmissionFailureDoesNotBurnCooldown(t *testing.T) {
 	fs := &fakeSubmissions{createErr: fmt.Errorf("%w: display name is required", submit.ErrInvalid)}
 	api := appSubAPI(fs)
@@ -936,9 +865,6 @@ func TestCreateSubmissionFailureDoesNotBurnCooldown(t *testing.T) {
 	}
 }
 
-// The per-user upload cooldown bounds context streaming: a second upload in the
-// same window is 429 submission_cooldown, and a FAILED upload frees the window
-// for an immediate retry.
 func TestUploadSubmissionContextRateLimited(t *testing.T) {
 	fs := &fakeSubmissions{}
 	api := appSubAPI(fs)
@@ -957,8 +883,6 @@ func TestUploadSubmissionContextRateLimited(t *testing.T) {
 		t.Fatalf("immediate second upload: code = %d body %s, want 429 submission_cooldown", w.Code, w.Body.String())
 	}
 
-	// A failed upload releases its reservation, so the user is not punished for
-	// a genuine failure (aborted transfer, spent quota) with a cooldown wait.
 	fs2 := &fakeSubmissions{uploadErr: submit.ErrUploadsUnavailable}
 	api2 := appSubAPI(fs2)
 	api2.Now = func() time.Time { return clock }
@@ -980,8 +904,6 @@ type limitedSubmissions struct {
 
 func (l limitedSubmissions) ContextLimit() int64 { return l.limit }
 
-// The panel reads the per-upload cap before sending a file; a lane that cannot
-// report one answers like any unwired submissions endpoint.
 func TestSubmissionLimitsReportsTheContextCap(t *testing.T) {
 	api := appSubAPI(&fakeSubmissions{})
 	api.Submissions = limitedSubmissions{&fakeSubmissions{}, 99614720}

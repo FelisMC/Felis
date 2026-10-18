@@ -11,8 +11,6 @@ import (
 	"felis.lolicon.best/internal/watchdog"
 )
 
-// TestWatchdogOwnerEmails: the watchdog mails the verified address of every enabled
-// owner account, in order, and no other account's.
 func TestWatchdogOwnerEmails(t *testing.T) {
 	ctx := context.Background()
 	tag := suffix(t)

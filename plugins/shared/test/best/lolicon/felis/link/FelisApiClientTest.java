@@ -10,21 +10,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 
-/**
- * FelisApiClientTest checks, against a stub felis-api on a loopback port, that no
- * caller-supplied value can re-aim a request at a different route. It is framework
- * free like the other test mains: a failed assertion throws and the process exits
- * non-zero.
- *
- * <p>The case that motivated it: a WakeRequest for {@code victim/join-event?} used to
- * become {@code POST /api/v1/internal/servers/victim/join-event}, which appends the
- * sender to another tenant's allowlist. The stub records every raw request path, so
- * "refused" here means no request reached the server at all.
- *
- * <p>Run: {@code javac -d <out> shared/src/main/java/best/lolicon/felis/link/*.java
- * shared/test/best/lolicon/felis/link/FelisApiClientTest.java && java -cp <out>
- * best.lolicon.felis.link.FelisApiClientTest}.
- */
+// Assert rejected caller input sends no request to the stub API.
 public final class FelisApiClientTest {
 
     private static int checks;
@@ -115,7 +101,7 @@ public final class FelisApiClientTest {
             "victim/join-event?",   // the reported re-aim
             "victim/join-event",
             "../account/link/code",
-            "a b",                  // used to throw IllegalArgumentException out of URI.create
+            "a b",                  // URI.create throws IllegalArgumentException on it
             "Alpha",                // server names are lower-case
             "-lead",
             "trail-",
@@ -193,7 +179,6 @@ public final class FelisApiClientTest {
         }
     }
 
-    // ---- harness ----
 
     interface Call {
         void run() throws LinkException;

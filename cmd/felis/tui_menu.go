@@ -5,10 +5,7 @@ import (
 	"github.com/charmbracelet/huh"
 )
 
-// bgOperation is the account operation the break-glass menu dispatches to. Its
-// zero value is bgProvisionOwner so any ownerModel built without an explicit
-// operation keeps the original "provision the Owner" behaviour — the menu and the
-// operator path are strictly additive.
+// The zero operation provisions an owner.
 type bgOperation int
 
 const (
@@ -18,17 +15,8 @@ const (
 	bgSyncBackup
 )
 
-// menuChoiceMsg is emitted to the root once the operator picks an operation. The
-// menu screen has no database handle of its own, so it reports the choice upward
-// and lets the root (which holds ctx/store) build the next screen.
 type menuChoiceMsg struct{ op bgOperation }
 
-// menuModel is the thin top-level router the break-glass console opens on when a
-// staff account already exists, making the account operations peers rather than
-// tails of one wizard. It is shown only in recovery (adminExists): on a fresh
-// machine bootstrapping the first Owner is the only sensible operation, and adding
-// an Operator first would mint a staff account the login gate still rejects, so the
-// console skips straight to Owner provisioning there.
 type menuModel struct {
 	form          *huh.Form
 	choice        bgOperation

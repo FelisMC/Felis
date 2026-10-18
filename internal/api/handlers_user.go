@@ -14,9 +14,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
-// handleWake is the single lever (spec §9.1): it authorizes per autostartPolicy,
-// applies the cooldown, and flips the CRD desiredState to Running. It does not
-// transfer the player — the web flow shows status and a connect hint (spec §9.2).
 func (a *API) handleWake(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	name := r.PathValue("name")
@@ -40,8 +37,7 @@ func (a *API) handleWake(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	// A server its owner gave up, or an admin is deleting, stays stopped until the
-	// reaper archives it: a start would change the world it archives.
+	// A server pending retirement stays stopped until the reaper archives it; a start would change the archived world.
 	if rec != nil && rec.Retire != nil {
 		writeError(w, r, errServerRetiring)
 		return
@@ -55,8 +51,6 @@ func (a *API) handleWake(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, newError(http.StatusTooManyRequests, "cooldown", "wake is cooling down, retry shortly"))
 		return
 	}
-	// Global running-server cap (spec §9.1). Distinct from the per-server cooldown:
-	// 503 at_capacity means the cluster is full, not that this server is throttled.
 	ok, err := a.withinRunningCap(r.Context(), info, policy.MaxRunningServers)
 	if err != nil {
 		writeError(w, r, err)
@@ -68,15 +62,7 @@ func (a *API) handleWake(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A start that Failed already holds desiredState Running, so writing Running
-	// again changes nothing and the server stayed dead once its automatic restarts
-	// were spent. A person pressing start on it means "try again": RetryStart
-	// makes the operator start it over with a fresh restart budget. Only this face
-	// does that; a player's join never resets the budget (handleInternalWake).
-	//
-	// Either write is refused with 409 maintenance_in_progress while a restore,
-	// backup or file write holds the world volume: starting on a half-written
-	// world corrupts it.
+	// Explicit RetryStart resets the restart budget; join-driven wakes cannot, and maintenance still blocks both.
 	action := "wake"
 	if info.Phase == string(v1alpha1.PhaseFailed) && info.DesiredState == string(v1alpha1.DesiredRunning) {
 		action = "retry_start"
@@ -88,16 +74,12 @@ func (a *API) handleWake(w http.ResponseWriter, r *http.Request) {
 		a.writeLookupError(w, r, err)
 		return
 	}
-	// The wake actually flipped, so consume the per-server cooldown only now: a 503
-	// at_capacity or the SetDesiredState failure above must not burn it (a player
-	// held at capacity should retry the instant a slot frees, not wait out a
-	// cooldown their refused wake never earned).
+	// Consume the cooldown only once the wake flipped, so a refused wake does not burn it.
 	a.limiter().record(name)
 	a.audit(r, action, name)
 	writeJSON(w, http.StatusAccepted, map[string]any{"name": name, "desiredState": "Running"})
 }
 
-// handleRestart records a restart request for the operator to consume once.
 func (a *API) handleRestart(w http.ResponseWriter, r *http.Request) {
 	name, ok := a.authorizeServerFiles(w, r)
 	if !ok {
@@ -120,8 +102,6 @@ func (a *API) handleRestart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"name": rec.Name, "desiredState": "Running"})
 }
 
-// handleStop flips desiredState to Stopped. Only the owner or an admin may stop a
-// server (spec §14: operating someone else's server is admin-tier).
 func (a *API) handleStop(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	name := r.PathValue("name")
@@ -141,16 +121,13 @@ func (a *API) handleStop(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := a.Cluster.SetDesiredState(r.Context(), name, v1alpha1.DesiredStopped); err != nil {
-		a.writeLookupError(w, r, err) // a row whose MinecraftServer is gone is 404, as for a wake
+		a.writeLookupError(w, r, err)
 		return
 	}
 	a.audit(r, "stop", name)
 	writeJSON(w, http.StatusAccepted, map[string]any{"name": name, "desiredState": "Stopped"})
 }
 
-// handleClaim is the atomic claim transaction (spec §9.3): require a verified
-// account link, enforce the quota gate, then UPDATE ... WHERE owner_id IS NULL.
-// A lost race (0 rows) is 409.
 func (a *API) handleClaim(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	name := r.PathValue("name")
@@ -159,7 +136,6 @@ func (a *API) handleClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ① verified account link
 	linked, err := a.Repo.IsLinked(r.Context(), p.UserID)
 	if err != nil {
 		writeError(w, r, err)
@@ -170,18 +146,11 @@ func (a *API) handleClaim(w http.ResponseWriter, r *http.Request) {
 			"link your Minecraft account before claiming (see /api/v1/account/link/start)"))
 		return
 	}
-	// A server with a pending deletion is not claimable (ClaimServer refuses it
-	// too); saying why beats the 409 already_claimed that would otherwise explain it.
 	if rec, err := a.Repo.ServerByName(r.Context(), name); err == nil && rec.Retire != nil {
 		writeError(w, r, errServerRetiring)
 		return
 	}
 
-	// ② quota gate, evaluated before the ownership write. All four dimensions
-	// (servers, CPU, memory, storage) are checked against the user's quota caps
-	// (spec §9.3, §22), with the server at its real size (claimResources). The
-	// server being claimed has owner_id=NULL so it is not yet in the per-owner
-	// aggregate.
 	res, err := a.claimResources(r.Context(), name)
 	if err != nil {
 		a.writeLookupError(w, r, err)
@@ -197,12 +166,9 @@ func (a *API) handleClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ③ atomic claim
 	claimed, err := a.Repo.ClaimServer(r.Context(), name, p.UserID)
 	if err != nil {
-		// The atomic gate re-checks quota under the per-user lock (audit #4): a
-		// concurrent claim that spent the last slot surfaces here, with the same
-		// 403 the pre-check gives sequentially.
+		// A concurrent claim that spent the last slot surfaces here: ClaimServer re-checks quota under the per-user lock.
 		if errors.Is(err, ErrQuotaExceeded) {
 			writeError(w, r, newError(http.StatusForbidden, "quota_exceeded", "server quota exhausted"))
 			return
@@ -215,16 +181,11 @@ func (a *API) handleClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ④ audit. Allowlist population happens on first successful join (spec §9.4).
 	a.audit(r, "claim", name)
 	writeJSON(w, http.StatusOK, map[string]any{"name": name, "claimed": true})
 }
 
-// claimResources is the size a claim is gated on and then counted at: the server's
-// spec as the cluster holds it, written through to the resource cache first. The
-// cache is all the per-owner quota sums read, and a world the reaper released
-// before it kept the cache holds zeros there: gated on those, a claim passed every
-// resource cap and the server went uncounted for as long as its new owner kept it.
+// claimResources refreshes sizes from the cluster because release clears the resource cache.
 func (a *API) claimResources(ctx context.Context, name string) (ResourceSpec, error) {
 	info, err := a.Cluster.GetServer(ctx, name)
 	if err != nil {
@@ -242,7 +203,6 @@ func (a *API) claimResources(ctx context.Context, name string) (ResourceSpec, er
 	return res, nil
 }
 
-// handleStatus returns the CRD status view (spec §7 GET /servers/{name}/status).
 func (a *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if err := validateManagedServerName(r, name); err != nil {
@@ -254,9 +214,7 @@ func (a *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 		a.writeLookupError(w, r, err)
 		return
 	}
-	// The internal face (no principal) is the platform itself. On the external
-	// face the full record (image, resources, endpoint) is the owner's and the
-	// staff's; anyone else signed in sees what the game's own server list shows.
+	// The internal face (no principal) is the platform itself; externally, only the owner and staff get the full record.
 	if p := principalFromContext(r.Context()); p != nil {
 		rec, err := a.Repo.ServerByName(r.Context(), name)
 		if err != nil && !errors.Is(err, ErrNotFound) {
@@ -266,7 +224,6 @@ func (a *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 		if !a.isOwnerOrAdmin(p, rec) {
 			info = publicServerInfo(info)
 		} else if rec != nil && rec.Retire != nil {
-			// A pending retirement is Postgres state the cluster does not hold.
 			withRetire := *info
 			withRetire.Retiring = rec.Retire
 			info = &withRetire
@@ -275,8 +232,6 @@ func (a *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, info)
 }
 
-// publicServerInfo keeps the fields any signed-in caller may see of a server
-// that is not theirs.
 func publicServerInfo(s *ServerInfo) *ServerInfo {
 	return &ServerInfo{
 		Name:          s.Name,
@@ -289,15 +244,6 @@ func publicServerInfo(s *ServerInfo) *ServerInfo {
 	}
 }
 
-// handleMe returns the calling principal's own identity (spec §14 tiering). The
-// panel reads it once at boot to decide which navigation surfaces to render:
-// the User-Side for everyone, the Admin/SysAdmin sides only when is_admin. This
-// is UX truth, NOT a security control — every admin route is independently gated
-// by adminOnly + Principal.IsAdmin() server-side, so hiding a nav item never
-// widens access. is_admin is computed here as IsAdmin() (Role=="admin" AND the
-// admin Access path), so the client never re-derives the graded-ZT rule. App-tier:
-// a principal reads only its OWN identity — the response is sourced entirely from
-// the verified token, no lookup escapes it.
 func (a *API) handleMe(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	emailVerified := false
@@ -314,7 +260,6 @@ func (a *API) handleMe(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleMyServers lists what the caller owns or may claim (spec §7 GET /me/servers).
 func (a *API) handleMyServers(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	servers, err := a.Repo.MyServers(r.Context(), p.UserID)
@@ -322,13 +267,7 @@ func (a *API) handleMyServers(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	// The live fields are presentational and best-effort, mirroring handleFleet's
-	// owner join: the list exists for ownership/claim state, so a cluster hiccup
-	// must degrade to 0/0 counts and the cached phase, never 500 the whole list.
-	// The CRD status is the only source of live state (spec §1) — Postgres never
-	// stores counts. Owner detail (desired state, autostart policy, whether the
-	// count is readable) joins only onto rows the caller owns; the panel needs
-	// playerCountUnknown there to ask before a stop that may drop players.
+	// Live counts fall back to zero and cached phase on cluster failure; ownership details are joined only for owned rows.
 	if infos, err := a.Cluster.ListServers(r.Context()); err == nil {
 		byName := make(map[string]ServerInfo, len(infos))
 		for _, s := range infos {
@@ -356,37 +295,18 @@ func (a *API) handleMyServers(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if servers == nil {
-		servers = []MyServerView{} // no servers is [], never null
+		servers = []MyServerView{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"servers": servers})
 }
 
-// handleFleet is the SysAdmin cockpit's fleet-wide read: the lifecycle view of
-// EVERY MinecraftServer, from CRD + status. It is the admin-tier counterpart of
-// the app-tier handleMyServers — where /me/servers scopes to the caller, this
-// returns the whole fleet, so it gates on the admin Zero-Trust path via adminOnly.
-//
-// This is a frontend-cockpit-driven extension (the SysAdmin FleetTable in
-// panel/DESIGN-WEB-3SIDES.md), NOT a spec §7 route: §7 lists only the internal
-// velocity pull (GET /servers, service-tier) and the app-tier GET /me/servers,
-// neither of which is an external admin read. It reuses Cluster.ListServers (the
-// same CRD-truth source as the velocity pull, §1) but is a DISTINCT handler so
-// each route's provenance and tier stay honest, and so the two never share a
-// {method, path} key — the OpenAPI parity test forbids one path carrying both the
-// service and admin tiers across faces. Lifecycle is read from the CRD (§1); the
-// one business field the cockpit needs — the owner — is joined READ-ONLY from
-// Postgres at request time (§6 business authority) purely for display. This keeps
-// §1 honest: owner is never written back to the CRD and the CRD is never treated
-// as its source; the two stores keep their split, the read just renders both.
 func (a *API) handleFleet(w http.ResponseWriter, r *http.Request) {
 	servers, err := a.Cluster.ListServers(r.Context())
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
-	// Ownership is best-effort. The cockpit exists for the lifecycle view, so a
-	// Postgres hiccup must never 500 the whole fleet; the rows say the owner is
-	// unknown instead, and none offers a claim that may already be taken.
+	// Ownership is best-effort: on a Postgres failure the rows say the owner is unknown and offer no claim.
 	p := principalFromContext(r.Context())
 	owners, err := a.Repo.ServerOwners(r.Context())
 	unknown := err != nil
@@ -403,36 +323,19 @@ func (a *API) handleFleet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"servers": views})
 }
 
-// fleetServerView is one row of the SysAdmin cockpit's fleet read: the CRD
-// lifecycle view (ServerInfo, §1 authority) with the owner's display identity
-// joined alongside. The embed keeps every lifecycle field flat in the JSON so the
-// shape is a strict superset of ServerInfo.
 type fleetServerView struct {
 	ServerInfo
-	// Owner is the claiming user's display identity (email, or username when the
-	// address is absent), or "" when the server is unclaimed or the owner lookup
-	// failed (OwnerUnknown tells the two apart).
+	// Owner is display text; OwnerUnknown distinguishes lookup failure from an unclaimed server.
 	Owner string `json:"owner,omitempty"`
-	// Owned is true when the caller claimed this server, decided by account id so
-	// an owner without an email is still recognized.
-	Owned bool `json:"owned"`
-	// Claimable is true for a live, unclaimed, non-system server with no pending
-	// deletion: the same rule ClaimServer enforces. It is false whenever ownership is unknown.
+	Owned bool   `json:"owned"`
+	// Claimable is false while ownership is unknown or deletion is pending.
 	Claimable bool `json:"claimable"`
-	// OwnerUnknown is true when the best-effort owner lookup failed, so an empty
-	// Owner says nothing about whether the server is claimed.
+	// OwnerUnknown means an empty Owner does not establish that the server is unclaimed.
 	OwnerUnknown bool `json:"ownerUnknown,omitempty"`
-	// System marks a platform-provisioned system service (the login gate and the
-	// lobby, naming.IsSystemServer). Their names are reserved, so every per-server
-	// API route rejects them — the cockpit must render them read-only rather than
-	// offer claim/wake/stop/console actions that would answer 400.
+	// System identifies platform services with reserved names and no player ownership.
 	System bool `json:"system,omitempty"`
 }
 
-// createServerRequest is the structured §15 create-server form. This is the
-// ONLY way to create a server from the Web: every field is a typed, validated
-// value and decodeJSON rejects unknown fields, so a caller can never smuggle
-// free-form YAML or raw CRD fields through this endpoint.
 type createServerRequest struct {
 	NodeName        string           `json:"nodeName,omitempty"`
 	Name            string           `json:"name"`
@@ -443,19 +346,11 @@ type createServerRequest struct {
 	Storage         string           `json:"storage"`
 	AutostartPolicy string           `json:"autostartPolicy,omitempty"`
 	Resources       *resourceRequest `json:"resources,omitempty"`
-	// Software builds the server from the runtime image with server software on
-	// its volume, instead of a whitelisted server image; exactly one of the two.
-	Software *softwareRequest `json:"software,omitempty"`
-	// AcceptEULA records that the creator accepts the Minecraft EULA, which a
-	// server built from server software needs: the platform writes eula=true
-	// into it on every start.
+	Software        *softwareRequest `json:"software,omitempty"`
+	// AcceptEULA authorizes writing eula=true on every start of runtime server software.
 	AcceptEULA bool `json:"acceptEula,omitempty"`
 }
 
-// resourceRequest is the optional override block. The required top-level memory
-// already sets the pod memory limit+request (the §22 ceiling); these fields let
-// an admin widen/narrow the cgroup envelope. Each is a Kubernetes quantity
-// string ("500m", "2", "1Gi").
 type resourceRequest struct {
 	CPU           string `json:"cpu,omitempty"`
 	CPURequest    string `json:"cpuRequest,omitempty"`
@@ -463,10 +358,6 @@ type resourceRequest struct {
 	MemoryRequest string `json:"memoryRequest,omitempty"`
 }
 
-// handleCreateServer (spec §15) is the admin-tier structured create flow:
-// validate the form, admit the image against the whitelist, seed the business
-// rows, then create the MinecraftServer CRD cold (DesiredState=Stopped) and
-// unowned. There is no free-YAML path — the request is a typed form.
 func (a *API) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 	var body createServerRequest
 	if err := decodeJSON(w, r, &body); err != nil {
@@ -483,8 +374,6 @@ func (a *API) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, newError(400, "bad_node", "node selection requires distributed deployment"))
 		return
 	}
-	// Server name and subdomain both obey the §22 portability rule and the
-	// reservation list.
 	if err := naming.ValidateServerName(body.Name); err != nil {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
 		return
@@ -505,9 +394,6 @@ func (a *API) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Memory is required: it is both the JVM heap hint and the default pod memory
-	// limit+request. resolveResources fails closed if the §22 ceiling would be
-	// zero, so a CRD is never written without a concrete memory limit.
 	javaMemory, resources, err := resolveResources(body.Memory, body.Resources)
 	if err != nil {
 		writeError(w, r, err)
@@ -542,20 +428,13 @@ func (a *API) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Quota is intentionally NOT enforced here. §15 creates an UNOWNED server
-	// (owner_id NULL); the per-user quota is charged at claim time (spec §9.3 /
-	// §22). The create path is quota-free by design, not by oversight.
+	// Staff-created servers start unowned; user quota is charged when claiming, not at creation.
 
 	if err := a.checkNewServerName(r.Context(), body.Name, body.Subdomain); err != nil {
 		writeError(w, r, err)
 		return
 	}
 
-	// Seed the business rows FIRST (servers + alias). ClaimServer needs the row,
-	// so a CRD-only server would be unclaimable. PG-first means a later CRD
-	// failure leaves a claimable ghost row — acceptable, not transactional.
-	// The resource cache (cpuMilli, memoryMB, storageMB) is seeded alongside so
-	// QuotaCheck can aggregate per-owner usage without cross-system CRD reads.
 	cpuMilli := quantityToMilli(resources.Limits[corev1.ResourceCPU])
 	memMB := quantityToMB(resources.Limits[corev1.ResourceMemory])
 	storQ, _ := resource.ParseQuantity(storage)
@@ -600,8 +479,6 @@ func (a *API) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// parseAutostartPolicy maps the form value to a CRD policy. An empty value
-// defaults to the safest policy (ownerOnly); any other unknown value is a 400.
 func parseAutostartPolicy(s string) (v1alpha1.AutostartPolicy, error) {
 	switch s {
 	case "":
@@ -618,14 +495,7 @@ func parseAutostartPolicy(s string) (v1alpha1.AutostartPolicy, error) {
 	}
 }
 
-// resolveResources turns the required memory string and the optional override
-// block into the pod resource requirements. The top-level memory seeds both the
-// memory limit and request; the override block may widen CPU and memory. It
-// fails closed: the returned limit's memory is guaranteed non-zero so the §22
-// ceiling is never absent from the CRD. The first return value is the derived
-// JVM max-heap string (JavaMemory / -Xmx), computed from the FINAL memory limit
-// — NOT the raw form value — so an overridden ceiling is honored and the heap
-// stays below the cgroup limit (see deriveJavaHeap).
+// resolveResources derives the heap from the final nonzero pod memory limit, including overrides.
 func resolveResources(memory string, rr *resourceRequest) (string, corev1.ResourceRequirements, error) {
 	memQ, err := parsePositiveQuantity(memory, "memory")
 	if err != nil {
@@ -669,9 +539,6 @@ func resolveResources(memory string, rr *resourceRequest) (string, corev1.Resour
 		return "", corev1.ResourceRequirements{}, err
 	}
 
-	// §22 fail-closed: never hand the operator a CRD without a concrete memory
-	// ceiling. This cannot trigger given the positive memQ above, but the assert
-	// guarantees the invariant survives future edits.
 	memLim, ok := limits[corev1.ResourceMemory]
 	if !ok || memLim.IsZero() {
 		return "", corev1.ResourceRequirements{}, newError(http.StatusInternalServerError, "internal",
@@ -681,8 +548,6 @@ func resolveResources(memory string, rr *resourceRequest) (string, corev1.Resour
 	return deriveJavaHeap(memLim), corev1.ResourceRequirements{Limits: limits, Requests: requests}, nil
 }
 
-// checkResourceBounds refuses a request above its limit. Kubernetes rejects one
-// too; failing here gives a clear 400 instead of a bounced CRD write.
 func checkResourceBounds(limits, requests corev1.ResourceList) error {
 	if memReq, hasReq := requests[corev1.ResourceMemory]; hasReq {
 		if memLim, hasLim := limits[corev1.ResourceMemory]; hasLim && memReq.Cmp(memLim) > 0 {
@@ -699,9 +564,7 @@ func checkResourceBounds(limits, requests corev1.ResourceList) error {
 	return nil
 }
 
-// patchResourceRequest is the resources block of a patch. A field left out keeps
-// what the server has. An empty cpu or cpuRequest removes that limit or request;
-// the memory ceiling can be changed but never removed (§22).
+// patchResourceRequest keeps absent fields, permits clearing CPU constraints and never removes the memory limit.
 type patchResourceRequest struct {
 	CPU           *string `json:"cpu,omitempty"`
 	CPURequest    *string `json:"cpuRequest,omitempty"`
@@ -709,12 +572,7 @@ type patchResourceRequest struct {
 	MemoryRequest *string `json:"memoryRequest,omitempty"`
 }
 
-// mergeResources lays a patch's memory and resources over the server's current
-// pod block, so a field the admin left out keeps its value: a CPU-only patch
-// keeps the memory, a memory-only patch keeps the CPU limit. The top-level
-// memory sets the memory limit and request together, as create does; the block
-// then overrides single fields. It returns the heap derived from the final
-// ceiling and whether the ceiling moved, which is when the heap must follow.
+// mergeResources preserves absent fields and derives the heap from the final memory limit; top-level memory sets both request and limit.
 func mergeResources(cur corev1.ResourceRequirements, memory *string, rr *patchResourceRequest) (string, bool, corev1.ResourceRequirements, error) {
 	out := *cur.DeepCopy()
 	if out.Limits == nil {
@@ -726,8 +584,6 @@ func mergeResources(cur corev1.ResourceRequirements, memory *string, rr *patchRe
 	fail := func(err error) (string, bool, corev1.ResourceRequirements, error) {
 		return "", false, corev1.ResourceRequirements{}, err
 	}
-	// set parses a present field onto one list entry. An empty value removes the
-	// entry where that is allowed and is refused where it is not.
 	set := func(list corev1.ResourceList, key corev1.ResourceName, v *string, field string, removable bool) error {
 		if v == nil {
 			return nil
@@ -775,8 +631,6 @@ func mergeResources(cur corev1.ResourceRequirements, memory *string, rr *patchRe
 		return fail(err)
 	}
 
-	// §22 fail-closed: a server that somehow has no ceiling gets none invented
-	// here; the admin has to pick the memory.
 	memLim, ok := out.Limits[corev1.ResourceMemory]
 	if !ok || memLim.IsZero() {
 		return fail(newError(http.StatusBadRequest, "bad_request",
@@ -786,20 +640,7 @@ func mergeResources(cur corev1.ResourceRequirements, memory *string, rr *patchRe
 	return deriveJavaHeap(memLim), memLim.Cmp(curLim) != 0, out, nil
 }
 
-// deriveJavaHeap converts the pod memory ceiling into a JVM max-heap string
-// (JavaMemory → JAVA_MEMORY → -Xmx). Two reasons the raw K8s quantity cannot be
-// forwarded as-is:
-//
-//   - Format: the JVM's -Xmx accepts k/m/g (1024-based) suffixes, NOT the
-//     Kubernetes "Ki/Mi/Gi" forms. "-Xmx2Gi" fails to start the JVM, so we emit
-//     a plain "<N>M" value, which both -Xmx and the container entrypoint accept.
-//   - Headroom: metaspace, thread stacks, Netty direct buffers and GC structures
-//     live OUTSIDE the heap. Setting -Xmx to the full cgroup limit guarantees an
-//     eventual OOMKill, so we reserve off-heap room (the larger of 512Mi or 25%,
-//     capped at half the limit) and size the heap to what remains.
-//
-// This is a sane default the operator/runtime may later refine; it is purely a
-// derivation of the §22 ceiling and never exceeds it.
+// deriveJavaHeap emits JVM-compatible MiB and reserves the larger of 512 MiB or 25% for off-heap use, capped at half the pod limit.
 func deriveJavaHeap(limit resource.Quantity) string {
 	const mib = int64(1024 * 1024)
 	bytes := limit.Value()
@@ -819,8 +660,6 @@ func deriveJavaHeap(limit resource.Quantity) string {
 	return fmt.Sprintf("%dM", heapMiB)
 }
 
-// parseStorageSize validates the required storage size and returns the
-// canonical quantity string for the PVC (spec §15).
 func parseStorageSize(s string) (string, error) {
 	q, err := parsePositiveQuantity(s, "storage")
 	if err != nil {
@@ -829,8 +668,6 @@ func parseStorageSize(s string) (string, error) {
 	return q.String(), nil
 }
 
-// parsePositiveQuantity parses a Kubernetes quantity string and rejects any
-// non-positive value with a 400 naming the offending field.
 func parsePositiveQuantity(s, field string) (resource.Quantity, error) {
 	q, err := resource.ParseQuantity(s)
 	if err != nil {
@@ -844,57 +681,28 @@ func parsePositiveQuantity(s, field string) (resource.Quantity, error) {
 	return q, nil
 }
 
-// patchServerRequest is the structured §7 PATCH /servers/{name} form. Like the
-// §15 create form it is a CLOSED set of typed fields (decodeJSON rejects unknown
-// fields), so an admin can never smuggle raw CRD/YAML knobs through a patch.
-// Every field is a pointer: a nil pointer means "absent — leave unchanged",
-// which a plain zero value could not distinguish from "set to empty". It mutates
-// only CRD-authoritative spec fields (spec §22); it deliberately has no field for
-// the dual-write routing identity (name is the immutable object key; subdomain
-// would desync the Postgres alias) nor for the world PVC size (see below).
 type patchServerRequest struct {
 	DisplayName     *string `json:"displayName,omitempty"`
 	AutostartPolicy *string `json:"autostartPolicy,omitempty"`
 	Image           *string `json:"image,omitempty"`
-	// ConfirmImageChange acknowledges that a new image opens the world with
-	// whatever Minecraft version it carries. Chunks a newer version has upgraded
-	// cannot be read by the older one again, so without it an image change that
-	// would actually move the server is refused (image_change_unconfirmed).
-	ConfirmImageChange bool    `json:"confirmImageChange,omitempty"`
-	Memory             *string `json:"memory,omitempty"`
-	// Resources overrides single fields of the pod block; see patchResourceRequest.
-	Resources *patchResourceRequest `json:"resources,omitempty"`
-	// IdleStopSeconds sets idle auto-stop: 0 turns it off, otherwise the server
-	// stops after that many seconds with nobody online (60 to 86400).
-	IdleStopSeconds *int32 `json:"idleStopSeconds,omitempty"`
-	// Software moves the server onto server software, or to other server
-	// software, on the runtime image of its Java. Moving to another type or
-	// Minecraft version, or off a server image, needs ConfirmSoftwareChange for
-	// the same reason an image change needs ConfirmImageChange; moving off a
-	// server image also needs AcceptEULA.
+	// ConfirmImageChange acknowledges world-format changes that may prevent downgrade.
+	ConfirmImageChange bool                  `json:"confirmImageChange,omitempty"`
+	Memory             *string               `json:"memory,omitempty"`
+	Resources          *patchResourceRequest `json:"resources,omitempty"`
+	IdleStopSeconds    *int32                `json:"idleStopSeconds,omitempty"`
+	// Software type or Minecraft-version changes require confirmation; moving from a server image also requires EULA acceptance.
 	Software              *softwareRequest `json:"software,omitempty"`
 	ConfirmSoftwareChange bool             `json:"confirmSoftwareChange,omitempty"`
 	AcceptEULA            bool             `json:"acceptEula,omitempty"`
-	// Storage is recognized only so the endpoint can reject it with a precise
-	// reason rather than an opaque "unknown field": a StatefulSet's PVC capacity
-	// is immutable except for storage-class-gated expansion, which this build does
-	// not orchestrate. Accepting it would write a CRD change the operator cannot
-	// honor, so it is refused (storage_immutable) instead of silently dropped.
+	// Storage is recognized only to return storage_immutable; this build does not orchestrate PVC expansion.
 	Storage *string `json:"storage,omitempty"`
 }
 
-// The idle auto-stop range an admin may pick through PATCH /servers/{name}.
 const (
 	minIdleStopSeconds = 60
 	maxIdleStopSeconds = 86400
 )
 
-// handlePatchServer (spec §7 PATCH /servers/{name}) is the admin-tier spec
-// mutation: it validates the structured form, re-admits any new image against the
-// whitelist, re-derives the §22 memory ceiling, and applies a merge patch to the
-// MinecraftServer CRD. Only CRD-authoritative fields move; the business layer
-// (Postgres) is untouched, so the two never desync (spec §22). The admin gate is
-// the adminOnly wrapper in routing — every caller here is already an admin.
 func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if err := validateManagedServerName(r, name); err != nil {
@@ -910,9 +718,6 @@ func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
 	a.patchServer(w, r, name, body)
 }
 
-// patchServer validates and applies one spec patch, for an admin
-// (handlePatchServer) or a server's owner (handleOwnerPatchServer, which never
-// sets the admin-only fields).
 func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, body patchServerRequest) {
 	if naming.IsSystemServer(name) &&
 		((body.AutostartPolicy != nil && *body.AutostartPolicy != string(v1alpha1.AutostartPublic)) ||
@@ -921,7 +726,6 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 		return
 	}
 
-	// An empty patch is a client mistake, not a no-op success.
 	if body.DisplayName == nil && body.AutostartPolicy == nil && body.Image == nil &&
 		body.Memory == nil && body.Resources == nil && body.Storage == nil && body.IdleStopSeconds == nil &&
 		body.Software == nil {
@@ -935,17 +739,10 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 		return
 	}
 
-	// Build the resolved patch field-by-field, validating each present field with
-	// the SAME helpers the create form uses. `changed` records what actually moves
-	// so the response and audit name the real mutation.
 	var patch ServerSpecPatch
-	// Non-nil so a patch that moves nothing (re-picking the image a server is
-	// already pinned to) still answers "patched": [], as the API documents.
+	// Keep changed non-nil so no-op patches serialize as an empty array.
 	changed := []string{}
-	// imageFrom is the image a confirmed image change replaced, for the audit row.
 	var imageFrom string
-	// current reads the server once, for the fields that are checked or merged
-	// against what it has now.
 	var cur *ServerInfo
 	current := func() (*ServerInfo, error) {
 		if cur != nil {
@@ -957,7 +754,6 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 	}
 
 	if body.DisplayName != nil {
-		// An empty name is allowed: the panel then shows the server's name.
 		displayName, err := naming.CleanDisplayName(*body.DisplayName)
 		if err != nil {
 			writeError(w, r, newError(http.StatusBadRequest, "bad_display_name", "invalid display name: %v", err))
@@ -968,8 +764,7 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 	}
 
 	if body.AutostartPolicy != nil {
-		// Unlike create, an explicit empty policy is rejected rather than defaulted:
-		// a patch states an intent, so "" is ambiguous, not "the safe default".
+		// Patch policies reject explicit empty values instead of applying creation defaults.
 		if *body.AutostartPolicy == "" {
 			writeError(w, r, newError(http.StatusBadRequest, "bad_request",
 				"autostartPolicy cannot be empty"))
@@ -985,9 +780,6 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 	}
 
 	if body.IdleStopSeconds != nil {
-		// A minute is the floor: below it a player who drops for a reconnect
-		// finds the server stopping under them. A day is the ceiling; longer is
-		// what "off" is for.
 		if s := *body.IdleStopSeconds; s != 0 && (s < minIdleStopSeconds || s > maxIdleStopSeconds) {
 			writeError(w, r, newError(http.StatusBadRequest, "bad_idle_stop",
 				"idleStopSeconds must be 0 (off) or between %d and %d", minIdleStopSeconds, maxIdleStopSeconds))
@@ -998,9 +790,6 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 	}
 
 	if body.Image != nil {
-		// A new image must be re-admitted against the whitelist, exactly as create
-		// does — admission is the only source of a legal image. With no Builder
-		// there is no whitelist to check against, so the change cannot run safely.
 		if a.Builder == nil {
 			writeError(w, r, errBuildUnavailable)
 			return
@@ -1029,9 +818,7 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 			a.writeLookupError(w, r, err)
 			return
 		}
-		// Re-picking the tag a server was created from resolves to that tag's
-		// newest build, which is as much a version move as picking another image.
-		// Only a pin that lands on exactly the current image is no change at all.
+		// Selecting the original tag again may resolve to a newer digest; only matching the current digest is a no-op.
 		if image != info.Image {
 			if !body.ConfirmImageChange {
 				writeError(w, r, newError(http.StatusConflict, "image_change_unconfirmed",
@@ -1043,8 +830,6 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 			patch.Image = &image
 			changed = append(changed, "image")
 			imageFrom = info.Image
-			// A server image starts the server itself: whatever software the
-			// server ran from the runtime image goes.
 			patch.ClearSoftware = info.Software != nil
 		}
 	}
@@ -1068,10 +853,7 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 			writeError(w, r, err)
 			return
 		}
-		// Another type or Minecraft version opens the world with it, and chunks
-		// a newer version upgrades cannot be opened by the old one again: the
-		// same one-way step as an image change. A new build or Java of the same
-		// version is not.
+		// Type or Minecraft-version changes may irreversibly upgrade chunks; same-version build or Java changes do not require confirmation.
 		moves := info.Software == nil || info.Software.Type != sw.Type || info.Software.MinecraftVersion != sw.MinecraftVersion
 		if moves && !body.ConfirmSoftwareChange {
 			writeError(w, r, newError(http.StatusConflict, "software_change_unconfirmed",
@@ -1087,10 +869,6 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 		changed = append(changed, "software")
 	}
 
-	// Memory and the resource overrides are laid over the server's current pod
-	// block (mergeResources), so each may come alone and whatever the admin left
-	// out keeps its value. The heap follows the ceiling whenever memory is picked
-	// or the ceiling moves.
 	var (
 		newResources corev1.ResourceRequirements
 		resUpdated   bool
@@ -1120,12 +898,7 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 		resUpdated = true
 	}
 
-	// Resource-cache consistency + quota enforcement (spec §9.3 / §22): the cached
-	// columns are all the per-owner quota sums read, so the new size is written
-	// there before the cluster sees it, in the owner's claim lane and only if it
-	// fits (ResizeServer). Only growth is held to the caps: a change that grows
-	// neither CPU nor memory cannot push the owner past one, and it is how an admin
-	// brings a server back under a cap lowered below what the owner already uses.
+	// Resize the quota cache under the owner's claim lock before cluster writes; shrink-only changes remain allowed above quota.
 	if resUpdated && !naming.IsSystemServer(name) {
 		newCPU := quantityToMilli(newResources.Limits[corev1.ResourceCPU])
 		newMemMB := quantityToMB(newResources.Limits[corev1.ResourceMemory])
@@ -1141,9 +914,7 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 			return
 		}
 		if err := a.Cluster.PatchServerSpec(r.Context(), name, patch); err != nil {
-			// The cache now holds a size the cluster may not: it goes back to the size
-			// the cluster reports, or, when that cannot be read either, to the one it
-			// held before.
+			// On cluster-write failure restore the cache from the cluster or, if unreadable, its previous values.
 			ctx := context.WithoutCancel(r.Context())
 			if _, rerr := a.claimResources(ctx, name); rerr != nil {
 				if rerr := a.Repo.UpdateServerResources(ctx, name, prev.CPUMilli, prev.MemoryMB, prev.StorageMB); rerr != nil {
@@ -1175,11 +946,6 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 	})
 }
 
-// ---- authorization helpers ----
-
-// authorizeWake applies the autostartPolicy gate (spec §9.4). The owner and any
-// admin may always wake; otherwise the policy decides. An empty/unknown policy
-// fails safe (owner-only).
 func (a *API) authorizeWake(ctx context.Context, p *Principal, info *ServerInfo, rec *ServerRecord) error {
 	if p.IsAdmin() {
 		return nil
@@ -1199,12 +965,11 @@ func (a *API) authorizeWake(ctx context.Context, p *Principal, info *ServerInfo,
 			return nil
 		}
 		return errForbidden
-	default: // ownerOnly or unset → only owner/admin, already handled above
+	default:
 		return errForbidden
 	}
 }
 
-// isOwnerOrAdmin reports whether p owns rec or is an admin.
 func (a *API) isOwnerOrAdmin(p *Principal, rec *ServerRecord) bool {
 	if p.IsAdmin() {
 		return true
@@ -1212,8 +977,6 @@ func (a *API) isOwnerOrAdmin(p *Principal, rec *ServerRecord) bool {
 	return rec != nil && rec.OwnerID != "" && rec.OwnerID == p.UserID
 }
 
-// quantityToMilli converts a K8s resource.Quantity to millicores (e.g. "2"→2000,
-// "500m"→500). A zero/unset quantity returns 0.
 func quantityToMilli(q resource.Quantity) int {
 	if q.IsZero() {
 		return 0
@@ -1221,9 +984,7 @@ func quantityToMilli(q resource.Quantity) int {
 	return int(q.MilliValue())
 }
 
-// quantityToMB converts a K8s resource.Quantity to whole MiB, the MB of the quota
-// columns, rounding up so a size between two counts as the larger: "4Gi"→4096,
-// "1G"→954. A zero/unset quantity returns 0.
+// quantityToMB rounds up in MiB, which quota columns call MB.
 func quantityToMB(q resource.Quantity) int {
 	const mib = 1 << 20
 	return int((q.Value() + mib - 1) / mib)

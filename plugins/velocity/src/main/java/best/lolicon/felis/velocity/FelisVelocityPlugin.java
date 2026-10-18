@@ -40,30 +40,7 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Pattern;
 
-/**
- * FelisVelocityPlugin is the proxy-side of Felis (spec §10 account-link + §11
- * domain-autostart routing). Velocity sits on the player-facing edge, off-cluster,
- * and is where two responsibilities naturally live:
- *
- * <ul>
- *   <li><b>{@code /link}</b> — mints a one-time account-link code from the player's
- *       online-mode-verified UUID (the first leg of §10), unchanged.</li>
- *   <li><b>Domain-autostart routing</b> — recognizes each server's subdomain,
- *       registers backends dynamically, routes joins, wakes a sleeping target and
- *       holds the player in a lobby until it is ready, and reports real joins so
- *       the reaper and allowlist see them (§11, driving §9).</li>
- * </ul>
- *
- * <p>Routing has two hard preconditions, each fails safe: the proxy must run in
- * online mode (verified UUIDs are the whole basis of the autostartPolicy and
- * allowlist gates — under offline mode routing is refused while {@code /link}
- * keeps working), and a {@code root-domain} must be configured (the only place the
- * deployment zone enters the proxy; never compiled in). With routing active the
- * {@code felis:control} plugin-message channel (spec §12) is also opened: the
- * felis-paper lobby's {@code /menu} drives the same waiting queue through
- * {@link ControlChannel}, deriving identity from the backend connection rather than
- * the frame so a compromised lobby cannot act as another player (spec §14).
- */
+/** Velocity side of Felis: /link, /felis, /invite and subdomain routing; routing needs online mode and a root-domain. */
 @Plugin(
         id = "felis-link",
         name = "Felis Velocity",
@@ -74,34 +51,21 @@ import java.util.regex.Pattern;
 )
 public final class FelisVelocityPlugin {
     private static final Duration REGISTRATION_REFRESH = Duration.ofSeconds(15);
-    // The last server list felis-api answered with, for a restart during an API outage.
-    private static final String SERVER_LIST_FILE = "last-servers.json";
+    private static final String SERVER_LIST_FILE = "last-servers.json"; // fallback when felis-api is down at startup
     private static final Duration WAIT_POLL = Duration.ofSeconds(2);
     private static final Duration INVITE_TTL = Duration.ofSeconds(120);
-    // Long enough that spraying cards at a room is tedious, short enough that showing three
-    // friends around one after another is not. Sub-TTL on purpose: a sender may hold several
-    // live invites, they just cannot post them all in one breath.
-    private static final Duration INVITE_COOLDOWN = Duration.ofSeconds(30);
-    // felis-api calls in flight, and waiting, at most. A healthy call takes milliseconds,
-    // so this is far above what one proxy's players produce; it only binds while
-    // felis-api is slow, where 8 x the 10 s request timeout already means the 64th
-    // waiter hears back after about 80 s. Refusing past that beats a reply minutes late.
-    private static final int API_THREADS = 8;
-    private static final int API_QUEUE = 64;
+    private static final Duration INVITE_COOLDOWN = Duration.ofSeconds(30); // per sender, below the TTL
+    private static final int API_THREADS = 8; // felis-api calls in flight
+    private static final int API_QUEUE = 64; // calls waiting; further ones are refused
     private static final long BUSY_LOG_INTERVAL_MILLIS = 60_000L;
-    // One health line per window (ProxyStats.line), and a reminder at most this often
-    // while the server-list refresh keeps failing.
-    private static final Duration STATS_INTERVAL = Duration.ofMinutes(10);
-    private static final long REFRESH_OUTAGE_REPEAT_MILLIS = 5 * 60_000L;
+    private static final Duration STATS_INTERVAL = Duration.ofMinutes(10); // one health line per window
+    private static final long REFRESH_OUTAGE_REPEAT_MILLIS = 5 * 60_000L; // reminder interval while refresh keeps failing
 
     private final ProxyServer proxy;
     private final Logger logger;
     private final Path dataDirectory;
     private final InviteBook invites = new InviteBook(INVITE_TTL.toMillis(), INVITE_COOLDOWN.toMillis());
-    // Every acting command below is one felis-api call made with the service token.
-    // Five in a burst, then one every five seconds, per player: plenty for a person
-    // typing, and a bound on a client macro that would otherwise mint link codes or
-    // fire claims as fast as it can send chat.
+    // Per player: burst of 5, then one command every 5 s; each acting command is a felis-api call.
     private final FrameBudget commandBudget = new FrameBudget(5, 0.2, System::currentTimeMillis);
     private final BoundedExecutor apiCalls;
     private final AtomicLong lastBusyLog = new AtomicLong();
@@ -169,22 +133,16 @@ public final class FelisVelocityPlugin {
         proxy.getEventManager().register(this, router);
         proxy.getEventManager().register(this, motd);
 
-        // The felis:control face (spec §12): the felis-paper lobby's /menu drives the
-        // same waiting queue through this channel. Opened only with routing active —
-        // it depends on the same online-mode + root-domain guards, and its claim/wake
-        // identity is the verified UUID off the backend connection (spec §14).
         ControlChannel control = new ControlChannel(proxy, logger, apiClient, router, registry, this,
                 config.loginServer(), config.lobbyServer());
         control.register();
         proxy.getEventManager().register(this, control);
 
-        // Prime registrations immediately, then keep them fresh; drain the queue often.
         refreshRegistrations();
         repeating(REGISTRATION_REFRESH, this::refreshRegistrations);
         repeating(WAIT_POLL, router::tick);
         repeating(STATS_INTERVAL, this::logStats);
-        // Velocity accepts no connection until this handler returns, so the first
-        // refresh above reached even a fork that reads the legacy list only once.
+        // Velocity accepts no connection until this handler returns, so the first refresh above is already in.
         legacyForwarding.accepting();
 
         if (yieldServerCommand(proxy.getCommandManager(), proxy.getPluginManager())) {
@@ -197,22 +155,13 @@ public final class FelisVelocityPlugin {
                 config.rootDomain(), config.loginServer(), config.lobbyServer());
     }
 
-    /**
-     * yieldServerCommand removes Velocity's own /server, which answers every player
-     * before any backend sees the command: it lists the login gate, the lobby and every
-     * running server, and it shadows the lobby's /server, which opens the Felis menu.
-     * Without it the command reaches the backend: the menu in the lobby, a user
-     * server's own /server anywhere else. A /server another proxy plugin registered is
-     * that plugin's choice and stays. Called only with routing active; without routing
-     * the built-in is the one way to change servers.
-     */
+    /** Unregisters Velocity's built-in /server (it shadows the backend's) unless another plugin owns it. */
     static boolean yieldServerCommand(CommandManager commands, PluginManager plugins) {
         CommandMeta meta = commands.getCommandMeta("server");
         if (meta == null) {
             return false;
         }
-        // Velocity registers its built-ins under its virtual plugin, id "velocity";
-        // older proxies registered them with no plugin at all.
+        // built-ins belong to the "velocity" virtual plugin, or to no plugin on older proxies
         Object owner = meta.getPlugin();
         boolean builtin = owner == null || plugins.fromInstance(owner)
                 .map(c -> "velocity".equals(c.getDescription().getId()))
@@ -234,7 +183,6 @@ public final class FelisVelocityPlugin {
         apiCalls.shutdown();
     }
 
-    // withinBudget spends one command token for the player, or tells them to slow down.
     private boolean withinBudget(Player player) {
         if (commandBudget.tryTake(player.getUniqueId())) {
             return true;
@@ -245,11 +193,7 @@ public final class FelisVelocityPlugin {
         return false;
     }
 
-    /**
-     * async runs a felis-api task off the proxy thread, on the bounded pool. It returns
-     * false, without running the task, when API_THREADS calls are already in flight and
-     * API_QUEUE more are waiting; the caller then answers "busy" in its own terms.
-     */
+    /** Runs a felis-api task off the proxy thread; returns false without running it when the pool and queue are full. */
     boolean async(Runnable task) {
         if (apiCalls.submit(task)) {
             return true;
@@ -264,12 +208,10 @@ public final class FelisVelocityPlugin {
         return false;
     }
 
-    /** stats is the proxy's failure counters, for the health line and /felis. */
     ProxyStats stats() {
         return stats;
     }
 
-    // logStats writes the periodic health line; an idle window writes nothing.
     private void logStats() {
         String line = ProxyStats.line(STATS_INTERVAL.toMinutes(), apiClient.stats().window(), stats.window(),
                 router.waitingCount());
@@ -278,7 +220,7 @@ public final class FelisVelocityPlugin {
         }
     }
 
-    /** async for a task a player is waiting on: a refusal is told to them at once. */
+    /** Like {@link #async(Runnable)}, telling the player at once when refused. */
     boolean async(Player player, Runnable task) {
         if (async(task)) {
             return true;
@@ -290,20 +232,11 @@ public final class FelisVelocityPlugin {
         return false;
     }
 
-    // A run that falls due while the previous one is still going is skipped (SkipIfRunning).
     private void repeating(Duration interval, Runnable task) {
         proxy.getScheduler().buildTask(this, new SkipIfRunning(task)).delay(interval).repeat(interval).schedule();
     }
 
-    /**
-     * warnIfBungeeChannelOpen reports a proxy that still answers {@code bungeecord:main}.
-     * Velocity handles that channel itself, before any plugin event, so no plugin can
-     * restrict who uses it: with it on, any user backend can KickPlayer or ConnectOther
-     * anyone on the network. The installer writes
-     * {@code bungee-plugin-message-channel = false}; this catches a hand-edited or
-     * older velocity.toml. The switch is not part of the plugin API, so it is read
-     * reflectively, and an unreadable value is reported as unknown.
-     */
+    /** Warns when {@code bungeecord:main} is open: any user backend could then kick or move any player. */
     private void warnIfBungeeChannelOpen() {
         Object cfg = proxy.getConfiguration();
         Boolean open;
@@ -332,8 +265,7 @@ public final class FelisVelocityPlugin {
         }
         ServerListSource.Result r = serverList.next();
         if (r.servers != null) {
-            // The forwarding mode goes first, so a newly registered legacy backend is
-            // never reachable under modern forwarding.
+            // forwarding mode first: a new legacy backend must never be reachable under modern forwarding
             LegacyForwarding.Update lf = legacyForwarding.apply(r.servers);
             if (lf != null && lf.warning) {
                 logger.warn(lf.message);
@@ -355,8 +287,7 @@ public final class FelisVelocityPlugin {
                                 + "in the saved server list until it answers.",
                         r.failure.statusCode(), r.failure.getMessage(), r.servers.size());
             } else if (report == OutageTracker.Report.DOWN) {
-                // Keep existing registrations on a control-plane blip (spec §11): a
-                // transient failure must never deregister live backends.
+                // a transient failure must not deregister live backends
                 logger.warn("Felis: server list refresh failed (status={}): {}; keeping current registrations. "
                                 + "Repeats are summarized every {} min until it recovers.",
                         r.failure.statusCode(), r.failure.getMessage(), REFRESH_OUTAGE_REPEAT_MILLIS / 60_000L);
@@ -372,8 +303,6 @@ public final class FelisVelocityPlugin {
                     r.fileError.toString());
         }
     }
-
-    // ---- /link (spec §10 first leg) ----
 
     private void registerLinkCommand() {
         CommandManager commands = proxy.getCommandManager();
@@ -416,38 +345,7 @@ public final class FelisVelocityPlugin {
         });
     }
 
-    // ---- /felis command suite (spec §B in-game authz; P4) ----
-    //
-    // /felis is the proxy-wide operator surface: the ONE place a command runs with a
-    // service token behind it AND a Mojang-verified UUID in front of it, so it is where
-    // the in-game half of the passwordless-auth flows lives. The tree:
-    //
-    //   /felis                        proxy + routing status
-    //   /felis help                   this list
-    //   /felis server                 the felis servers this proxy knows
-    //   /felis go <server>            wake a server and move me in when it's ready
-    //   /felis claim                  take ownership of the server I'm on
-    //   /felis migrate                open a migration of my servers to another account
-    //   /felis web                    where the web consoles live
-    //   /felis web op approve <code>  show whose op.console staff login a code is (§B)
-    //   /felis web op approve <code> <account>  vouch for it, naming the account
-    //
-    // Two guards run before any subcommand that acts or reveals operational state:
-    //
-    //   - the login-limbo gate — a player still sitting in the "login" system server
-    //     (naming.SystemLoginServer) has not passed the front door, so every acting
-    //     subcommand is refused there; only `help` is always available. The console
-    //     source is the trusted operator terminal and is never "in limbo".
-    //   - player-only actions (go / claim / web op approve) reject the console: they
-    //     derive identity from the caller's verified UUID, which only a Player carries,
-    //     so an op-login approver is provably online as themselves (spec §14). The
-    //     API independently re-checks that the UUID is a linked admin — this gate is
-    //     defence in depth over that, not a substitute for it.
-
-    /** Opaque-handle charset an op-login code must match before it enters a request
-     *  path: the id minted by op-login start is 32 hex, but a conservative url-safe set
-     *  is accepted so a future id format still passes while path-dangerous input
-     *  (slash, dot, whitespace) is refused client-side rather than sent. */
+    /** Url-safe charset for an op-login code, so path-dangerous input is refused before it enters a request path. */
     private static final Pattern OP_LOGIN_CODE = Pattern.compile("^[A-Za-z0-9_-]{1,128}$");
 
     private void registerFelisCommand() {
@@ -516,10 +414,6 @@ public final class FelisVelocityPlugin {
         commands.register(meta, new BrigadierCommand(node));
     }
 
-    // ---- guards ----
-
-    // requirePlayer refuses the console for identity-bound actions (go / claim /
-    // approve): they act on the caller's Mojang-verified UUID, which only a Player has.
     private Player requirePlayer(CommandSource source) {
         if (source instanceof Player) {
             return (Player) source;
@@ -528,9 +422,7 @@ public final class FelisVelocityPlugin {
         return null;
     }
 
-    // ensureOutOfLimbo refuses an acting subcommand while the player is still in the
-    // login limbo (or not yet on any backend): they have not passed the front door.
-    // Fails closed on an unknown position.
+    // Fails closed: a player on no backend yet, or still on the login server, is refused.
     private boolean ensureOutOfLimbo(Player player) {
         boolean zh = zh(player);
         Optional<ServerConnection> current = player.getCurrentServer();
@@ -550,13 +442,9 @@ public final class FelisVelocityPlugin {
         return true;
     }
 
-    // gateInfo applies only the limbo gate (the console is always allowed) for the
-    // read-only, operational-info subcommands. Returns true when the caller may proceed.
     private boolean gateInfo(CommandSource source) {
         return !(source instanceof Player) || ensureOutOfLimbo((Player) source);
     }
-
-    // ---- handlers ----
 
     private void sendSummary(CommandSource source) {
         if (!gateInfo(source)) {
@@ -579,8 +467,6 @@ public final class FelisVelocityPlugin {
         source.sendMessage(field("lobby", config.lobbyServer()));
         source.sendMessage(field("servers", String.valueOf(registry.all().size())));
         if (!(source instanceof Player)) {
-            // Operator health, console only: felis-api as this proxy sees it, and the
-            // proxy-side failures since start.
             source.sendMessage(field("felis-api", apiClient.stats().total().summary()));
             source.sendMessage(field("waiting", String.valueOf(router.waitingCount())));
             StringBuilder failures = new StringBuilder();
@@ -642,14 +528,7 @@ public final class FelisVelocityPlugin {
         }
     }
 
-    /**
-     * doGo parks the caller on the server they named. Returns whether the request reached
-     * the waiting queue — false means a guard refused it and told the player why, which is
-     * what {@link #doInviteAnswer} reports back to the inviter instead of guessing.
-     *
-     * <p>{@code joinIfReady} is set only by an accepted invite: see
-     * {@link WaitingRouter#enqueueFromInvite}.
-     */
+    /** Returns false when a guard refused (and told the player); {@code joinIfReady} is set only by an accepted invite. */
     private boolean doGo(CommandSource source, String serverArg, boolean joinIfReady) {
         Player player = requirePlayer(source);
         if (player == null || !ensureOutOfLimbo(player)) {
@@ -662,7 +541,7 @@ public final class FelisVelocityPlugin {
         }
         String target = serverArg.trim();
         if (target.equalsIgnoreCase(config.lobbyServer())) {
-            // The lobby is a system server, so the loop below would call it unknown.
+            // the lobby is a system server, so the loop below would not find it
             router.toLobby(player);
             return true;
         }
@@ -689,8 +568,6 @@ public final class FelisVelocityPlugin {
         if (!withinBudget(player)) {
             return false;
         }
-        // Wake + park + transfer through the shared waiting queue; it reports its own
-        // policy-gate (403) and transient refusals to the player.
         if (joinIfReady) {
             router.enqueueFromInvite(player, match.name());
         } else {
@@ -753,13 +630,7 @@ public final class FelisVelocityPlugin {
         });
     }
 
-    // doMigrate opens an account migration for the calling player (spec §B3 inherit): it
-    // hands their owned servers to another account. Identity-bound (acts on the caller's
-    // verified UUID) and out-of-limbo like claim, but server-independent — it touches the
-    // account, not the server the player stands on, so there is no registry/current-server
-    // check. The command only OPENS the migration; the player finishes it on the web
-    // console (prove it's them, name the receiving account, redeem a code), so on success
-    // we point them there.
+    // Opens the migration only; the player finishes it on the web console.
     private void doMigrate(CommandSource source) {
         Player player = requirePlayer(source);
         if (player == null || !ensureOutOfLimbo(player)) {
@@ -848,11 +719,8 @@ public final class FelisVelocityPlugin {
                 NamedTextColor.GRAY));
     }
 
-    // doOpApprove is both halves of the in-game vouch. Without an account name it only
-    // shows whose sign-in the code belongs to (OpApprovalCard); with one it approves,
-    // and felis-api refuses unless the name is that request's account. The admin
-    // therefore always reads the account before vouching, and a code someone else
-    // relayed cannot be approved blind.
+    // With no account name this only shows whose sign-in the code is (OpApprovalCard); with one it approves,
+    // and felis-api refuses unless the name is that request's account.
     private void doOpApprove(CommandSource source, String codeArg, String accountArg) {
         Player player = requirePlayer(source);
         if (player == null || !ensureOutOfLimbo(player)) {
@@ -908,30 +776,8 @@ public final class FelisVelocityPlugin {
         });
     }
 
-    // ---- /invite (bring another player to the server you're on) ----
-    //
-    // /invite is a UX wrapper over `/felis go`, and nothing more: Accept runs the same doGo
-    // path on the ACCEPTING player's own verified uuid, so it fills in the name of a place
-    // the invitee could already reach unaided. You can only invite someone to the server you
-    // are standing on, so the target is RUNNING — and a running felis server already admits
-    // any linked player through <name>.<root-domain> on the link check alone (WaitingRouter
-    // .onServerPreConnect). An invite therefore hands over no access the invitee lacked: at
-    // worst a stale or guessed accept sends you somewhere you could have walked yourself,
-    // which is why a stored invite carries only a server name and never an identity to act
-    // as, and why the prompt needs no unguessable token.
-    //
-    // It is NOT consequence-free, though, and the inviter is told so. Landing on a felis
-    // server records the player in its allowlist (WaitingRouter.onServerConnected -> the
-    // join-event -> RecordJoin), and on an autostartPolicy=allowlist server that record is
-    // what lets them come back later and START the thing. Same record they would earn by
-    // walking in themselves, so this is not an escalation — but it outlives the invite, so
-    // it belongs on screen at send time rather than in a comment only we read.
-    //
-    // The remaining new capability is "make a chat card appear on any online player", which
-    // is rate-limited per sender by InviteBook rather than left to good manners.
-    //
-    // The prompt renders in the INVITEE's language (they are the one being asked) while
-    // the inviter's confirmations follow theirs.
+    // /invite wraps /felis go, run as the accepting player, so it grants no access the invitee lacked.
+    // A stored invite carries only a server name, never an identity to act as.
 
     private void registerInviteCommand() {
         CommandManager commands = proxy.getCommandManager();
@@ -940,9 +786,7 @@ public final class FelisVelocityPlugin {
                     sendInviteUsage(ctx.getSource());
                     return Command.SINGLE_SUCCESS;
                 })
-                // The optional <server> is what the card's buttons carry: it pins a click to
-                // the invite that drew it, so an old card cannot answer a newer invite. Typed
-                // bare, both still answer whatever is pending.
+                // the optional <server> pins a button click to the invite that drew it
                 .then(BrigadierCommand.literalArgumentBuilder("accept")
                         .executes(ctx -> {
                             doInviteAnswer(ctx.getSource(), true, null);
@@ -965,14 +809,9 @@ public final class FelisVelocityPlugin {
                                             StringArgumentType.getString(ctx, "server"));
                                     return Command.SINGLE_SUCCESS;
                                 })))
-                // Brigadier matches literals before arguments, so a player
-                // actually named "accept"/"deny" cannot be invited by name. They can
-                // still reach the server with /felis go, and renaming the subcommands
-                // would break the click handlers for a case worth less than that.
+                // literals match before arguments, so a player named "accept" or "deny" cannot be invited by name
                 .then(BrigadierCommand.requiredArgumentBuilder("player", StringArgumentType.word())
                         .suggests((ctx, builder) -> {
-                            // Brigadier does not filter suggestions for us: without the
-                            // prefix test every keystroke re-offers the whole proxy roster.
                             String typed = builder.getRemaining().toLowerCase(Locale.ROOT);
                             UUID self = ctx.getSource() instanceof Player
                                     ? ((Player) ctx.getSource()).getUniqueId() : null;
@@ -1013,8 +852,6 @@ public final class FelisVelocityPlugin {
             inviter.sendMessage(routingDisabled(zh));
             return;
         }
-        // You can only invite someone to where you already are, so the invite names a
-        // server the inviter is demonstrably on rather than any server they can spell.
         Optional<ServerConnection> current = inviter.getCurrentServer();
         if (current.isEmpty()
                 || isSystemServer(current.get().getServerInfo().getName())
@@ -1041,9 +878,7 @@ public final class FelisVelocityPlugin {
                     zh ? "你不用邀请自己。" : "You don't need to invite yourself.", NamedTextColor.GRAY));
             return;
         }
-        // A player still at the login gate can see the card but not answer it — doInviteAnswer's
-        // own limbo guard would refuse the click. Refuse here instead, so an invite is never a
-        // button that does nothing, and the inviter learns why rather than waiting for silence.
+        // an invitee at the login gate could not answer the card (doInviteAnswer refuses in limbo)
         Optional<ServerConnection> theirs = invitee.getCurrentServer();
         if (theirs.isEmpty()
                 || config.loginServer().equalsIgnoreCase(theirs.get().getServerInfo().getName())) {
@@ -1061,12 +896,11 @@ public final class FelisVelocityPlugin {
             return;
         }
 
-        // Last gate, so that every invite refused above stays free: the cooldown exists to
-        // stop cards being sprayed at players, and a refusal sends no card.
+        // last gate, so refused invites do not use up the cooldown
         long now = System.currentTimeMillis();
         long wait = invites.cooldownRemaining(inviter.getUniqueId(), now);
         if (wait > 0) {
-            long secs = (wait + 999) / 1000; // round up: "0 秒后再试" would be a lie
+            long secs = (wait + 999) / 1000; // round up
             inviter.sendMessage(Component.text(
                     zh ? "邀请发得太快了，请 " + secs + " 秒后再试。"
                        : "Too many invites — try again in " + secs + "s.",
@@ -1083,18 +917,7 @@ public final class FelisVelocityPlugin {
         inviter.sendMessage(accessNotice(server, zh));
     }
 
-    /**
-     * accessNotice tells the inviter what the invite costs them, because it is not nothing:
-     * a player who accepts and lands on the server is written into its allowlist by the join
-     * event, exactly as if they had walked in on their own.
-     *
-     * <p>What that record is WORTH depends on the server's autostartPolicy, so the wording
-     * does too. Under {@code allowlist} it is durable authority — that row is what lets them
-     * start the server themselves later — and the inviter is told plainly. Under any other
-     * policy (including the {@code ownerOnly} default, and the empty string the API reports
-     * when the field was never set) the row grants no waking, so claiming it did would be a
-     * lie; there it says only that they were recorded.
-     */
+    /** Warns that accepting records the invitee in the allowlist, which on an {@code allowlist}-policy server lets them start it. */
     private Component accessNotice(String server, boolean zh) {
         ServerView view = registry.view(server);
         boolean gatesOnAllowlist = view != null && "allowlist".equalsIgnoreCase(view.autostartPolicy());
@@ -1108,17 +931,12 @@ public final class FelisVelocityPlugin {
                 NamedTextColor.GRAY);
     }
 
-    // The card itself lives in InviteCard so the buttons — the whole point of the feature —
-    // can be asserted without a live proxy. All this does is address it.
     private void sendInviteCard(Player invitee, String inviterName, String server) {
         InviteCard.lines(inviterName, server, zh(invitee), INVITE_TTL.toSeconds())
                 .forEach(invitee::sendMessage);
     }
 
-    /**
-     * doInviteAnswer handles both buttons. {@code fromCard} is the server the clicked card
-     * named, or null when the player typed the subcommand bare.
-     */
+    /** {@code fromCard} is the server the clicked card named, or null when the subcommand was typed bare. */
     private void doInviteAnswer(CommandSource source, boolean accept, String fromCard) {
         Player player = requirePlayer(source);
         if (player == null || !ensureOutOfLimbo(player)) {
@@ -1133,8 +951,7 @@ public final class FelisVelocityPlugin {
                        : "You have no pending invite (it may have expired).", NamedTextColor.YELLOW));
             return;
         }
-        // Checked before consuming: a click on a card a later invite superseded must leave
-        // the live invite alone, so the player can still answer the card that is current.
+        // checked before taking: a click on a superseded card must leave the live invite alone
         if (fromCard != null && !fromCard.equalsIgnoreCase(pending.server())) {
             player.sendMessage(Component.text(
                     zh ? "这张邀请卡已被新的邀请取代——你当前的邀请是前往「" + pending.server() + "」。"
@@ -1142,10 +959,7 @@ public final class FelisVelocityPlugin {
                     NamedTextColor.YELLOW));
             return;
         }
-        // Peek-then-take is not atomic — an invite landing in that window is
-        // taken instead of the one just validated. "Newest wins" is already the rule the
-        // book enforces, so the outcome is one this player would have got anyway; make it
-        // a computeIfPresent if invites ever arrive fast enough for anyone to notice.
+        // peek-then-take is not atomic; a racing newer invite is taken instead, which matches newest-wins
         InviteBook.Invite invite = invites.take(player.getUniqueId(), now);
         if (invite == null) {
             return; // answered by a racing click; that one owns the reply
@@ -1156,25 +970,14 @@ public final class FelisVelocityPlugin {
                     zh ? "已拒绝邀请。" : "Invite declined.", NamedTextColor.GRAY));
             return;
         }
-        // Accept IS `/felis go` with the name filled in — doGo re-runs every guard: routing
-        // active, the server still registered and non-system, not already there. It differs
-        // only in joining a server that is already up rather than asking to wake it; see
-        // WaitingRouter.enqueueFromInvite for why that is the difference between a working
-        // button and a 403.
-        //
-        // Reported to the inviter AFTER the handoff, not on the click: telling them "accepted"
-        // while their guest is being turned away is worse than telling them nothing.
+        // doGo re-runs every guard; the inviter is told after the handoff, not on the click
         notifyInviter(invite, player.getUsername(),
                 doGo(player, invite.server(), true) ? Answer.ACCEPTED : Answer.FAILED);
     }
 
     private enum Answer { ACCEPTED, DECLINED, FAILED }
 
-    // notifyInviter closes the loop for whoever sent the invite; without it they wait on a
-    // prompt they can never see the answer to. Silently skipped if they left in the meantime.
-    //
-    // ACCEPTED means the transfer was handed to the waiting queue, which is as far
-    // as this can see synchronously — a wake that fails later is reported to the guest only.
+    // ACCEPTED means the transfer reached the waiting queue; a later wake failure is reported to the guest only.
     private void notifyInviter(InviteBook.Invite invite, String who, Answer answer) {
         proxy.getPlayer(invite.from()).ifPresent(p -> {
             boolean zh = zh(p);
@@ -1193,15 +996,7 @@ public final class FelisVelocityPlugin {
         });
     }
 
-    // ---- helpers ----
-
-    /**
-     * zh reports whether the caller's client locale is Chinese, so player-facing
-     * text can follow the client language. The console (and any non-player source)
-     * always reads English, and a client that has not yet sent its settings falls
-     * back to English too. Package-private so {@link WaitingRouter} and the other
-     * proxy faces share the one locale rule.
-     */
+    /** True when the source is a player whose client locale is Chinese; the console and unknown locales read English. */
     static boolean zh(CommandSource source) {
         if (!(source instanceof Player)) {
             return false;
@@ -1222,7 +1017,6 @@ public final class FelisVelocityPlugin {
                 || config.lobbyServer().equalsIgnoreCase(name);
     }
 
-    // claimError maps the felis-api claim refusals (spec §9.3) to player-safe text.
     private static String claimError(LinkException e, String server, boolean zh) {
         switch (e.statusCode()) {
             case 412:
@@ -1246,9 +1040,6 @@ public final class FelisVelocityPlugin {
         }
     }
 
-    // migrateError maps the felis-api migrate-start refusals (spec §B3) to player-safe
-    // text. A 404 means the caller's UUID isn't linked to any account to migrate; a 409
-    // means the linked account can't start one (already migrated, or retired).
     private static String migrateError(LinkException e, boolean zh) {
         switch (e.statusCode()) {
             case 404:
@@ -1266,10 +1057,6 @@ public final class FelisVelocityPlugin {
         }
     }
 
-    // opApproveError maps the internal show/approve refusals to player-safe text. A 403
-    // is the API's own admin re-check (defence in depth over the in-game gate); a 404
-    // means no live pending request carries that code; a 409 means the typed account
-    // is not the one the request is for.
     private static String opApproveError(LinkException e, String code, boolean zh) {
         switch (e.statusCode()) {
             case 403:

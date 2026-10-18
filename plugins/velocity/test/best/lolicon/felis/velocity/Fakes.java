@@ -39,14 +39,7 @@ import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/**
- * Fakes are the test doubles the routing tests run the real proxy classes against:
- * the velocity-api interfaces they touch (ProxyServer, Player, RegisteredServer, the
- * slf4j Logger) built with {@link Proxy}, and a stub felis-api on a loopback port.
- * They behave the way the real thing does where the code under test relies on it:
- * server names are case-insensitive, registering a taken name at another address
- * throws, and unregistering needs the exact ServerInfo that was registered.
- */
+// Fake names compare case-insensitively; unregister requires the exact ServerInfo.
 final class Fakes {
     private Fakes() {
     }
@@ -58,11 +51,7 @@ final class Fakes {
         Object answer(String method, Object[] args) throws Throwable;
     }
 
-    /**
-     * fake builds an instance of an interface. Methods the answers leave unanswered run
-     * the interface's default body when it has one and return a zero value otherwise
-     * (Optional.empty() for an Optional).
-     */
+    /** fake builds an instance of an interface. Unanswered methods run the interface's default body when it has one, and return a zero value otherwise. */
     static <T> T fake(Class<T> type, Answers answers) {
         InvocationHandler h = (proxy, m, args) -> {
             Object[] a = args == null ? new Object[0] : args;
@@ -135,7 +124,6 @@ final class Fakes {
         }
     }
 
-    // ---- the proxy ----
 
     static final class Net {
         private final Map<String, RegisteredServer> servers = new ConcurrentHashMap<>();
@@ -231,7 +219,6 @@ final class Fakes {
         return fake(RegisteredServer.class, (m, a) -> "getServerInfo".equals(m) ? info : UNANSWERED);
     }
 
-    // ---- players ----
 
     static final class FakePlayer {
         final UUID id;
@@ -244,15 +231,9 @@ final class Fakes {
         volatile boolean connectThrows;
         volatile String disconnectedWith;
         final List<String> messages = Collections.synchronizedList(new ArrayList<>());
-        /**
-         * refusals maps a backend to the kick it answers this player's login with (a ban,
-         * the whitelist, "server is full"): the connect fails with that reason.
-         */
+        /** refusals maps a backend to the kick it answers this player's login with (a ban, the whitelist, server full): the connect fails with that reason. */
         final Map<String, String> refusals = new ConcurrentHashMap<>();
-        /**
-         * preConnect stands in for the proxy's ServerPreConnectEvent: it maps the server a
-         * request asked for to the one it goes to, or null when a listener denied it.
-         */
+        /** preConnect stands in for ServerPreConnectEvent: it maps the server a request asked for to the one it goes to, or null when a listener denied it. */
         volatile Function<RegisteredServer, RegisteredServer> preConnect = Function.identity();
         /** connects lists every server a connection went to (after pre-connect), by name. */
         final List<String> connects = Collections.synchronizedList(new ArrayList<>());
@@ -376,7 +357,6 @@ final class Fakes {
         }
     }
 
-    // ---- logging ----
 
     static final class Log {
         final List<String> lines = Collections.synchronizedList(new ArrayList<>());
@@ -439,23 +419,8 @@ final class Fakes {
         }
     }
 
-    // ---- felis-api ----
 
-    /**
-     * Api is a stub felis-api internal face: link status from {@link #linked}, server
-     * status, menu and wake from one server state ({@link #ready}, {@link #phase},
-     * {@link #desired}, {@link #gaveUp}, {@link #policy}, {@link #owner}), and
-     * join-events recorded. {@link #linkDown} makes the link-status route answer 500.
-     *
-     * <p>Status replies carry the endpoint the way the operator writes it: a server that
-     * is up reports {@code direct} and its {@link #address}; one that is not reports
-     * {@code fallback} with the fallback server's NAME, "login", in the address field.
-     *
-     * <p>The wake follows handleInternalWake step for step, so a test cannot give the
-     * router an answer the real API never gives: an up server is 202 ready for anyone,
-     * 403 and 409 start_failed come from the state, and {@link #wakeError} only holds
-     * what the state cannot say (a cooldown, the running cap, maintenance, a fault).
-     */
+    // Use one state for status/menu/wake; unavailable endpoints use fallback names, not direct addresses.
     static final class Api implements AutoCloseable {
         final Set<UUID> linked = ConcurrentHashMap.newKeySet();
         volatile boolean linkDown;
@@ -463,28 +428,17 @@ final class Fakes {
         final Map<String, Boolean> ready = new ConcurrentHashMap<>();
         /** address is the direct endpoint a server reports while it is ready. */
         final Map<String, String> address = new ConcurrentHashMap<>();
-        /**
-         * phase, desired, restarts and gaveUp are how a not-ready server's start is going,
-         * as the status route reports it (phase Stopped and desiredState Running unless
-         * set: the wake the waiter followed has asked for Running).
-         */
+        /** phase, desired, restarts and gaveUp describe a not-ready server's start, as the status route reports it (phase Stopped and desiredState Running unless set). */
         final Map<String, String> phase = new ConcurrentHashMap<>();
         final Map<String, String> desired = new ConcurrentHashMap<>();
         final Map<String, Integer> restarts = new ConcurrentHashMap<>();
         final Set<String> gaveUp = ConcurrentHashMap.newKeySet();
-        /**
-         * policy is a server's autostartPolicy, public unless set, and owner the player
-         * who owns it. Only public or the owner passes the wake's gate: ownerOnly, and an
-         * allowlist the stub keeps empty, refuse everyone else.
-         */
+        // The fake allowlist is empty, so only public policy or ownership permits wake.
         final Map<String, String> policy = new ConcurrentHashMap<>();
         final Map<String, UUID> owner = new ConcurrentHashMap<>();
         /** statusDown makes the status route answer 500. */
         volatile boolean statusDown;
-        /**
-         * wakeError maps a server to "status code" (e.g. "429 cooldown"), answered where
-         * the real wake reaches its cooldown: after the gate and the start_failed check.
-         */
+        /** wakeError maps a server to a status code (e.g. "429 cooldown"), answered where the real wake reaches its cooldown: after the gate and the start_failed check. */
         final Map<String, String> wakeError = new ConcurrentHashMap<>();
         volatile int joinStatus = 204;
         /** claimable names the servers the menu route reports as claimable. */
@@ -492,19 +446,12 @@ final class Fakes {
         /** menuError and claimError map a server to "status code", like wakeError. */
         final Map<String, String> menuError = new ConcurrentHashMap<>();
         final Map<String, String> claimError = new ConcurrentHashMap<>();
-        /**
-         * access is what the menu-access route answers per player: server → verdict.
-         * A player with no entry gets an empty map; menuAccessError ("status code")
-         * makes the route fail for everyone.
-         */
+        /** access is what the menu-access route answers per player: server to verdict; a player with no entry gets an empty map. menuAccessError makes the route fail for everyone. */
         final Map<UUID, Map<String, String>> access = new ConcurrentHashMap<>();
         volatile String menuAccessError;
         /** menuAccessHold, while set, holds every menu-access request until it opens. */
         volatile CountDownLatch menuAccessHold;
-        /**
-         * holds maps a "METHOD path" prefix to a latch: a matching request waits for it to
-         * open (5 s at most), the way a slow felis-api keeps a call hanging.
-         */
+        /** holds maps a "METHOD path" prefix to a latch: a matching request waits for it to open (5 s at most), the way a slow felis-api keeps a call hanging. */
         final Map<String, CountDownLatch> holds = new ConcurrentHashMap<>();
         /** bodies holds the last request body per "METHOD path". */
         final Map<String, String> bodies = new ConcurrentHashMap<>();
@@ -620,11 +567,7 @@ final class Fakes {
             return true;
         }
 
-        // wake answers the way handleInternalWake does, in its order: a server that is up
-        // and meant to stay up is 202 ready with no gate, nothing flipped; then the
-        // autostartPolicy gate on the body's mc_uuid; then 409 start_failed for a start
-        // whose retries are spent; then the cooldown and the rest of wakeError; then the
-        // flip to Running and a 202 with the phase as it stands.
+        // Match backend wake ordering: already ready, policy, start failure, cooldown, then transition.
         private void wake(HttpExchange ex, String name, String body) throws IOException {
             boolean up = ready.getOrDefault(name, false);
             String want = desired.getOrDefault(name, "Running");

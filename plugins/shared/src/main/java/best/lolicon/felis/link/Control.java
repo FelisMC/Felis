@@ -5,37 +5,16 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Control is the {@code felis:control} plugin-message codec (spec §12): it turns a
- * {@link ControlFrame} into the raw bytes a plugin message carries, and back. Both
- * the Velocity proxy and the felis-paper lobby source-share this class, so the wire
- * format has exactly one definition and the two ends cannot drift.
- *
- * <p>Frames are encoded as <b>raw UTF-8 JSON bytes</b>, not via
- * {@code DataOutputStream.writeUTF}. The namespaced channel hands the listener the
- * exact byte array on both ends — Velocity's {@code PluginMessageEvent.getData()}
- * and Bukkit's {@code PluginMessageListener} — so there is no length-prefix framing
- * to agree on, and the 64&nbsp;KB ceiling {@code writeUTF} imposes is avoided.
- *
- * <p>The codec reuses the package-private {@link Json} reader (which is why this
- * lives in {@code best.lolicon.felis.link}) and a tiny hand-rolled writer, keeping
- * the shared core dependency-free. Decoding is strict on structure (a non-object or
- * a missing/unknown {@code type} throws {@link IllegalArgumentException}) and
- * tolerant on fields (absent fields degrade to null/zero, per {@link ControlFrame}).
- */
+// Use raw UTF-8 JSON; reject unknown structures while defaulting absent fields safely.
 public final class Control {
 
-    /** The plugin-message channel both ends register (spec §12). */
+    /** The plugin-message channel both ends register. */
     public static final String CHANNEL = "felis:control";
 
     private Control() {
     }
 
-    /**
-     * encode renders {@code frame} as the channel's raw UTF-8 JSON bytes. Only the
-     * fields its {@code type} defines are written, so a round-trip through
-     * {@link #decode(byte[])} reproduces an equal frame.
-     */
+    /** encode renders frame as the channel's raw UTF-8 JSON bytes, writing only the fields its type defines, so a decode round-trip reproduces an equal frame. */
     public static byte[] encode(ControlFrame frame) {
         StringBuilder sb = new StringBuilder(96);
         sb.append("{\"type\":");
@@ -87,12 +66,7 @@ public final class Control {
         return sb.toString().getBytes(StandardCharsets.UTF_8);
     }
 
-    /**
-     * decode parses raw channel bytes back into a {@link ControlFrame}. A malformed
-     * body, a non-object root, a missing {@code type}, or an unrecognized
-     * {@code type} all throw {@link IllegalArgumentException} — the caller treats a
-     * bad frame as a dropped message, never a crash.
-     */
+    // Malformed, missing-type, and unknown-type frames throw IllegalArgumentException.
     public static ControlFrame decode(byte[] data) {
         Object root;
         try {
@@ -133,7 +107,6 @@ public final class Control {
         }
     }
 
-    // ---- JSON writer (every field after "type" is preceded by a comma) ----
 
     private static void kv(StringBuilder sb, String key, String value) {
         sb.append(",\"").append(key).append("\":");
@@ -200,17 +173,13 @@ public final class Control {
         sb.append('"');
     }
 
-    // ---- JSON readers (mirror ServerView's tolerant coercion) ----
 
     private static String str(Map<?, ?> o, String key) {
         Object v = o.get(key);
         return v instanceof String ? (String) v : null;
     }
 
-    // listUpdate keeps the string entries of "servers" and skips anything else, so a
-    // partly malformed list still yields the names that are well-formed. "access" is
-    // read by the same index, so a skipped name takes its verdict with it and a
-    // verdict that is not a string reads as unknown.
+    // listUpdate keeps the string entries of "servers" and skips the rest. "access" is read by the same index, so a skipped name takes its verdict with it.
     private static ControlFrame listUpdate(Map<?, ?> o) {
         List<String> names = new ArrayList<>();
         List<String> access = new ArrayList<>();

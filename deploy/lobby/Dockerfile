@@ -1,40 +1,6 @@
-# Felis lobby image: Paper + the felis-paper /menu plugin + LuckPerms.
-#
-# CODE-ONLY in this repo — not built by the Go CI. It packages the always-on
-# "lobby" hub the setup provisioner points [velocity] lobby_image at. The lobby is
-# the POST-auth /menu hub: it is reached only when the login gate transfers an
-# authenticated player onward, and it must never be a fallback target.
-#
-# Build (deploy/bootstrap.sh does this for you, with the URLs and digests
-# deploy/game-stack.lock names):
-#   . <(grep -E '^(PAPER|LUCKPERMS)_' deploy/game-stack.lock)
-#   docker build -f deploy/lobby/Dockerfile \
-#     --build-arg PAPER_JAR_URL="$PAPER_JAR_URL" --build-arg PAPER_JAR_SHA256="$PAPER_JAR_SHA256" \
-#     --build-arg LUCKPERMS_JAR_URL="$LUCKPERMS_JAR_URL" \
-#     --build-arg LUCKPERMS_JAR_SHA256="$LUCKPERMS_JAR_SHA256" \
-#     -t felis-lobby:demo .
-#   docker save felis-lobby:demo | sudo k3s ctr images import -
-#   # felis.toml → [velocity] lobby_image = "felis-lobby:demo"
-#
-# The Paper version must match the LOGIN gate's: LOOHP/Limbo speaks exactly ONE protocol
-# per build (its SERVER_IMPLEMENTATION_VERSION), and a client has to satisfy both hops.
-#
-# Contract: the game server listens on 25565 (the CRD GamePort). The lobby speaks only the
-# felis:control plugin-message channel (spec §12) — it holds no felis-api token. It DOES
-# receive FELIS_FORWARDING_SECRET (operator-injected from the felis-forwarding-secret
-# Secret) and refuses to start without it: a lobby that cannot verify the proxy's signed
-# handshake would trust an offline, forgeable UUID.
+# Post-auth lobby requires signed forwarding and the same protocol as the login gate.
 
-# ---- build the felis-paper plugin jar (Paper API is Java 25) ----
-# The official Gradle image on JDK 25, the Gradle version plugins/*/gradle/wrapper pins.
-# The limbo Dockerfile and bootstrap's velocity build use this same image, digest and all
-# (bootstrap_asset_test.go holds the three together). The image's own `gradle` runs the
-# build rather than the module's wrapper, which would download the same distribution
-# again on every image build. The build checks every dependency against
-# plugins/paper/gradle/verification-metadata.xml and fails on a mismatch.
-# On the build platform: the jar is plain bytecode, identical for every architecture, so a
-# release building the arm64 image on an amd64 runner compiles it natively instead of under
-# QEMU (deploy/build-release-artifacts.sh). The runtime stage below stays on the target.
+# Use pinned Gradle/JDK 25 and dependency verification; build architecture-independent JARs without target emulation.
 FROM --platform=$BUILDPLATFORM gradle:9.8.1-jdk25@sha256:e4f9e3d037cc0c7d8fc42cd97edb976dfd19a5b7314212b88b6de3807d13cd47 AS plugin
 WORKDIR /src
 COPY plugins/paper/ ./plugins/paper/
@@ -43,24 +9,12 @@ RUN cd plugins/paper \
     && gradle --no-daemon --console=plain --init-script ../shared/build-progress.gradle build \
     && cp build/libs/*.jar /felis-paper.jar
 
-# ---- assemble the runtime ----
-# 25-jre, not 21: Paper 26.2 declares `java.version.minimum = 25` (PaperMC Fill v3,
-# GET /v3/projects/paper/versions/26.2) and refuses to boot on anything older. A 25 JRE
-# also runs the plugin's Java-21 bytecode, so only the runtime moves.
+# 25-jre, not 21: Paper 26.2 declares java.version.minimum = 25 and refuses to boot on anything older. A 25 JRE also runs the plugin's Java 21 bytecode, so only the runtime moves.
 FROM eclipse-temurin:25-jre@sha256:fcd7fd7b387f94bb2ac461478a7436ad8e349924c374ea8313919624dceae636
 ARG PAPER_JAR_URL
-# Required alongside the URL: Fill's URLs are content-addressed, but nothing enforces
-# that shape at build time. Checking the digest after the download turns a truncated or
-# tampered fetch into a failed build instead of a lobby booted on the wrong bytes.
+# Verify Paper's supplied digest even when the URL appears content-addressed.
 ARG PAPER_JAR_SHA256
-# LuckPerms is required, not optional: the panel's whole permission surface
-# (internal/api/handlers_access.go) issues `lp user ...` over RCON, so a lobby built
-# without it answers every grant with "Unknown command" — a failure the operator only
-# discovers in production, because the server itself starts and runs perfectly well.
-# Failing the build is the cheap place to notice. Passed in rather than pinned here for
-# the same reason PAPER_JAR_URL is: deploy/game-stack.lock names the build, so this file
-# does not change on every LuckPerms release. The digest is required like Paper's; the
-# jar runs inside the lobby with the server's full permissions.
+# Require checksum-verified LuckPerms so permission commands work without trusting unchecked plugin bytes.
 ARG LUCKPERMS_JAR_URL
 ARG LUCKPERMS_JAR_SHA256
 WORKDIR /paper
@@ -94,20 +48,13 @@ COPY deploy/lobby/entrypoint.sh /usr/local/bin/felis-entrypoint.sh
 # The operator mounts the world PVC at /data. Runtime state lives there; /paper
 # remains the immutable image seed copied into the volume by the entrypoint.
 WORKDIR /data
-# Run as the game uid (naming.GameUID in the Go tree). The operator pins the same uid in
-# the pod securityContext whatever USER an image declares; declaring it here as well
-# keeps a plain `docker run` of this image off root, and chowning the empty /data seed
-# lets that run write its world. The jar seed above stays root-owned and read-only to
-# the server.
+# Use the game UID and a writable /data seed for standalone container runs.
+# The jar seed stays root-owned and read-only to the server.
 RUN chown 1000:1000 /data
 USER 1000:1000
 
-# FELIS_GAME_PORT is the port the entrypoint pins Paper to; it MUST equal the operator's
-# GamePort (internal/operator/builders.go). Default 25565 — override only in lockstep
-# with the operator.
+# Keep FELIS_GAME_PORT aligned with the operator's GamePort.
 ENV FELIS_GAME_PORT=25565
 EXPOSE 25565
-# felis-entrypoint.sh writes config/paper-global.yml + server.properties, then execs
-# `java -jar paper.jar --nogui` from /data (headless: the pod has no console). Invoked via
-# `sh` so no +x bit is needed from the (Windows) build host.
+# Invoke through sh and run Paper headlessly from the world volume.
 ENTRYPOINT ["/bin/sh", "/usr/local/bin/felis-entrypoint.sh"]

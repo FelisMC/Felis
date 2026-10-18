@@ -8,10 +8,6 @@ import (
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 )
 
-// TestInternalRestoreRebuildsAWorld pins the host console's restore while rebuilding an
-// install: the newest intact backup goes straight into the world (no safety snapshot),
-// whose volume is created for a server never started on this host; a running server,
-// one without a backup, or an unknown server is refused.
 func TestInternalRestoreRebuildsAWorld(t *testing.T) {
 	const path = "/api/v1/internal/servers/survival/restore"
 	mk := func() (*API, *fakeRepo, *fakeCluster, *fakeRestorer) {

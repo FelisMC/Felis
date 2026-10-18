@@ -38,8 +38,6 @@ func velocityBlock(t *testing.T, root map[string]any) map[string]any {
 	return vel
 }
 
-// An empty secret must touch nothing: a proxy that is not in modern mode
-// provisions no Secret, and the init must not wedge the pod over it.
 func TestWritePaperForwardingEmptySecretIsNoop(t *testing.T) {
 	dir := t.TempDir()
 	if err := writePaperForwarding(dir, ""); err != nil {
@@ -53,7 +51,6 @@ func TestWritePaperForwardingEmptySecretIsNoop(t *testing.T) {
 	}
 }
 
-// A fresh data dir gets a complete velocity block and an offline server.properties.
 func TestWritePaperForwardingFreshDir(t *testing.T) {
 	dir := t.TempDir()
 	if err := writePaperForwarding(dir, "s3cr3t"); err != nil {
@@ -80,10 +77,6 @@ func TestWritePaperForwardingFreshDir(t *testing.T) {
 	}
 }
 
-// A pre-existing paper-global.yml (as Paper expands it on first boot) must keep
-// all of its other keys — clobbering them would silently reset the user's tuning
-// on every restart. This is the whole reason the writer merges rather than
-// overwrites.
 func TestWritePaperGlobalPreservesExistingKeys(t *testing.T) {
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "config")
@@ -147,7 +140,6 @@ func TestForceServerPropertyOfflinePreservesOthers(t *testing.T) {
 	}
 }
 
-// upsertProperty appends when the key is absent and does not grow blank lines.
 func TestUpsertPropertyAppends(t *testing.T) {
 	got := string(upsertProperty([]byte("motd=hi"), "online-mode", "false"))
 	if got != "motd=hi\nonline-mode=false\n" {
@@ -164,9 +156,6 @@ func TestUpsertPropertyAppends(t *testing.T) {
 	}
 }
 
-// The written files land at fwdFileMode: owner-writable for the game uid the init
-// shares with the server container, and no longer world-writable. chmod semantics
-// are POSIX-only, so this asserts on non-Windows.
 func TestWriteForwardingFileModes(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX file modes not represented on Windows")

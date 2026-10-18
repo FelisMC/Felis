@@ -5,18 +5,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Json is a minimal, dependency-free JSON reader. It exists so the shared link
- * core stays zero-dependency: the {@code srcDir}-sharing build model compiles
- * this source straight into every platform jar, so pulling in Gson/Jackson would
- * force shading the parser into four loaders. It parses the small, well-formed
- * bodies the felis-api internal face returns — a flat success object, or the
- * nested {@code {"error":{"code","message"}}} envelope — and nothing more exotic
- * is required.
- *
- * <p>The parser is package-private and intentionally strict: callers wrap a parse
- * failure as a "bad response from felis-api" condition rather than guessing.
- */
+// Keep shared JSON parsing dependency-free and report malformed responses rather than guessing.
 final class Json {
     private final String s;
     private int i;
@@ -25,10 +14,8 @@ final class Json {
         this.s = s;
     }
 
-    /**
-     * quote renders s as a JSON string literal, for the few request bodies that carry
-     * text a player typed. Quotes, backslashes and control characters are escaped.
-     */
+    // quote renders s as a JSON string literal, for the few request bodies that carry text a player typed.
+    // Quotes, backslashes and control characters are escaped.
     static String quote(String s) {
         StringBuilder b = new StringBuilder(s.length() + 2).append('"');
         for (int k = 0; k < s.length(); k++) {

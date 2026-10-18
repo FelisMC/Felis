@@ -22,10 +22,7 @@ type authSourceEntry struct {
 	Enabled bool `json:"enabled"`
 }
 
-// retiredAuthSource is a deleted source's tag, kept with the endpoint it pointed at.
-// Player UUIDs derive from the tag, so the tag comes back only for that endpoint: under
-// another Yggdrasil the same tag would hand those players' links, bans and data to
-// whoever holds their native IDs there.
+// Retired source tags may return only with their original endpoint because reusing a tag could transfer existing player identities.
 type retiredAuthSource struct {
 	Tag string `json:"tag"`
 	URL string `json:"url"`
@@ -38,16 +35,13 @@ type authSourcesView struct {
 	Managed  bool                `json:"managed"`
 }
 
-// storedAuthSources is the platform_settings value. Earlier releases stored the bare
-// sources array, which still reads.
+// storedAuthSources also accepts the legacy bare sources array.
 type storedAuthSources struct {
 	Sources []authSourceEntry   `json:"sources"`
 	Retired []retiredAuthSource `json:"retired"`
 }
 
-// AuthSourceSettings reuses platform_settings for the full control plane. Nano
-// keeps its TOML-only sources. A durable override is read for each login, so all
-// API replicas see the same list and a DB failure never revives a disabled root.
+// AuthSourceSettings reads durable overrides on login; store failures must not revive disabled sources.
 type AuthSourceSettings struct {
 	Repo     Repo
 	Defaults []AuthSource
@@ -102,18 +96,12 @@ func (s *AuthSourceSettings) read(ctx context.Context) (authSourcesView, []byte,
 	return view, raw, nil
 }
 
-// authSourcesRevision is the opaque revision of a source list, the same however the
-// list was stored.
 func authSourcesRevision(sources []authSourceEntry) string {
 	canonical, _ := json.Marshal(sources)
 	sum := sha256.Sum256(canonical)
 	return hex.EncodeToString(sum[:])
 }
 
-// retireAuthSources returns the retired tags after saving next over view: a saved tag
-// missing from next is retired with its endpoint, and a retired tag that comes back with
-// that same endpoint is restored. A retired tag that comes back with another endpoint is
-// refused.
 func retireAuthSources(view authSourcesView, next []authSourceEntry) ([]retiredAuthSource, error) {
 	byTag := make(map[string]authSourceEntry, len(next))
 	for _, source := range next {
@@ -228,8 +216,7 @@ func (a *API) handleSetAuthSources(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, view)
 }
 
-// handleTestAuthSource probes an unsaved source from inside the cluster, so it asks for the
-// same fresh proof as saving one: a stolen session must not get a free network probe.
+// handleTestAuthSource requires fresh proof because testing an unsaved URL can probe the cluster's network.
 func (a *API) handleTestAuthSource(w http.ResponseWriter, r *http.Request) {
 	if err := requireJSONContentType(r); err != nil {
 		writeError(w, r, err)
@@ -252,8 +239,7 @@ func (a *API) handleTestAuthSource(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	// A fresh random serverId has never joined: a healthy hasJoined endpoint
-	// answers 204. Reuse authentication's timeout, TLS and redirect policy.
+	// A healthy hasJoined endpoint returns 204 for a fresh random serverId that never joined.
 	started := time.Now()
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet,
 		source.URL+"?username=FelisProbe&serverId="+url.QueryEscape(probeID), nil)

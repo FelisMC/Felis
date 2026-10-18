@@ -11,22 +11,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * OpApprovalCardTest checks what an admin reads before vouching for an op.console
- * sign-in: the account, its address, where and when the sign-in started, and a
- * confirm button that leaves the account name for the admin to type. The name is the
- * point — a button that filled it in would let a relayed code be approved without
- * reading the card.
- *
- * <p>Hermetic and framework-free like {@link InviteCardTest}; it needs the shared link
- * sources (for {@link OpLoginView}) and the Kyori jars. Run: {@code javac -cp
- * <adventure-api.jar>:<adventure-key.jar>:<examination-api.jar> -d <out>
- * shared/src/main/java/best/lolicon/felis/link/*.java
- * velocity/src/main/java/best/lolicon/felis/velocity/OpApprovalCard.java
- * velocity/test/best/lolicon/felis/velocity/OpApprovalCardTest.java && java -cp
- * <out>:<adventure-api.jar>:<adventure-key.jar>:<examination-api.jar>
- * best.lolicon.felis.velocity.OpApprovalCardTest}.
- */
+// Require a typed account name rather than filling it from the approval card.
 public final class OpApprovalCardTest {
 
     private static int checks;
@@ -110,7 +95,6 @@ public final class OpApprovalCardTest {
         assertEq("599s", "9 分钟前", OpApprovalCard.age(599, true));
     }
 
-    // ---- harness ----
 
     private static List<String> text(List<Component> card) {
         List<String> out = new ArrayList<>();

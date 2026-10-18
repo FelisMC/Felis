@@ -11,11 +11,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// haltModel is the break-glass "halt a server" screen. It mirrors ownerModel's
-// shape (async load → huh pick → async work → outcome card) but carries no auth
-// branch: the console's root gate is the authority, and the accountable OS user is
-// already known. All decision logic lives in halt.go (unit-tested); this file is the
-// untested terminal glue, like the other console screens.
 type haltStep int
 
 const (
@@ -38,9 +33,7 @@ type haltPerformedMsg struct {
 	err     error
 }
 
-// haltResultMsg is the terminal signal to the root: it records the outcome into
-// breakGlassResult and quits, so cmdBreakGlass can re-print it after the alt-screen
-// is torn down. done is false for a cancel or an empty fleet (no change made).
+// Record the halt outcome before leaving alt-screen; cancellation or an empty fleet leaves done=false.
 type haltResultMsg struct {
 	outcome haltOutcome
 	done    bool
@@ -76,9 +69,7 @@ func newHaltModel(ctx context.Context, store ownerStore, namespace, osUser strin
 
 func (m *haltModel) Init() tea.Cmd { return tea.Batch(m.sp.Tick, m.loadCmd()) }
 
-// loadCmd builds the cluster client and lists haltable servers off the UI thread.
-// The client build (no kubeconfig) and the list (no API) can each fail; either
-// becomes the screen's terminal error rather than a panic.
+// Build clients and list servers off the UI thread; failures become terminal screen errors.
 func (m *haltModel) loadCmd() tea.Cmd {
 	return func() tea.Msg {
 		cl, err := buildSystemServerClient()

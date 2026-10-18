@@ -12,32 +12,19 @@ import (
 )
 
 const (
-	// addressFor is short: the cluster and the panel are down while the address
-	// is gone, so a DHCP renewal that lands on a new lease is an outage.
 	addressFor = 5 * time.Minute
-	// clockFor leaves room for an NTP daemon that was just enabled (by the
-	// installer, or after a reboot) to reach its first synchronization.
+	// Allow newly enabled NTP daemons time to synchronize.
 	clockFor = 30 * time.Minute
-	// certFor is zero: an expiry date does not heal itself while it waits.
-	certFor = 0
+	certFor  = 0
 
-	// certWarnWithin gives a month to find a moment to restart k3s;
-	// certCriticalWithin is the last week.
 	certWarnWithin     = 30 * 24 * time.Hour
 	certCriticalWithin = 7 * 24 * time.Hour
 
-	// staUnsync is STA_UNSYNC from <linux/timex.h>. The kernel holds it set while
-	// no NTP daemon disciplines the clock; chronyd and systemd-timesyncd clear it
-	// once they have synchronized. It is what `timedatectl` prints as "System
-	// clock synchronized: no".
+	// staUnsync is STA_UNSYNC from <linux/timex.h>, cleared once NTP synchronizes.
 	staUnsync = 0x0040
 )
 
-// AddressFinding reports that this host no longer holds want, the node address
-// the installer gave k3s and wrote into the network policies, the panel
-// certificate and (by default) the nip.io root domain. held
-// is every address on the host's interfaces. An empty or unparsable want skips
-// the check.
+// AddressFinding skips empty or invalid expected addresses.
 func AddressFinding(want string, held []net.IP) *Finding {
 	ip := net.ParseIP(want)
 	if ip == nil {
@@ -66,7 +53,6 @@ func AddressFinding(want string, held []net.IP) *Finding {
 	}
 }
 
-// HostAddresses lists the addresses on this host's interfaces.
 func HostAddresses() ([]net.IP, error) {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
@@ -81,9 +67,7 @@ func HostAddresses() ([]net.IP, error) {
 	return out, nil
 }
 
-// ClockFinding reports a clock no NTP daemon has synchronized, from the kernel's
-// adjtimex status word. ok is false where the status cannot be read (not Linux),
-// which skips the check.
+// ClockFinding skips checks when kernel clock status is unavailable.
 func ClockFinding(status int32, ok bool) *Finding {
 	if !ok || status&staUnsync == 0 {
 		return nil
@@ -96,11 +80,7 @@ func ClockFinding(status int32, ok bool) *Finding {
 	}
 }
 
-// K3sCertDirs are where k3s keeps the certificates it issues itself, the set
-// `k3s certificate check` reads: the API server's serving and client
-// certificates, the component and admin client certificates, etcd's, and the
-// agent's (kubelet, kube-proxy). temporary-certs is left out: the API server
-// makes its loopback certificate there on each start, for a hundred years.
+// K3sCertDirs excludes temporary loopback certificates regenerated on startup.
 var K3sCertDirs = []string{
 	"/var/lib/rancher/k3s/server/tls",
 	"/var/lib/rancher/k3s/server/tls/etcd",
@@ -109,20 +89,11 @@ var K3sCertDirs = []string{
 	"/var/lib/rancher/k3s/agent",
 }
 
-// CertFinding reports the certificate in the *.crt files under dirs that
-// expires first, once it is within certWarnWithin of expiring (certCriticalWithin,
-// or past it: critical). k3s issues its client and serving certificates for a
-// year and renews the ones close to expiry only as it starts, so a host that
-// runs a year without restarting k3s loses its API server and its kubelet the
-// day they lapse. Its CA certificates last ten years and no restart renews
-// them. Only the public .crt files are read, never the keys beside them; a
-// directory that does not exist (a host without k3s) reports nothing, and a
-// file that does not parse is skipped.
+// CertFinding reports the earliest expiry, skipping absent directories and unreadable or invalid certificates.
 func CertFinding(dirs []string, now time.Time) *Finding {
 	var soonest *x509.Certificate
 	var file string
 	for _, dir := range dirs {
-		// A directory or file that cannot be read reads as empty.
 		entries, _ := os.ReadDir(dir)
 		for _, e := range entries {
 			if !strings.HasSuffix(e.Name(), ".crt") {
@@ -130,7 +101,6 @@ func CertFinding(dirs []string, now time.Time) *Finding {
 			}
 			path := filepath.Join(dir, e.Name())
 			data, _ := os.ReadFile(path)
-			// k3s writes a leaf followed by the CA that signed it.
 			for {
 				var block *pem.Block
 				if block, data = pem.Decode(data); block == nil {
@@ -159,7 +129,7 @@ func CertFinding(dirs []string, now time.Time) *Finding {
 	}
 	when := soonest.NotAfter.UTC().Format("2006-01-02 15:04 UTC")
 	f := &Finding{Key: "k3s-certs", Severity: sev, For: certFor}
-	// x509 holds a certificate valid through the instant of NotAfter.
+	// Certificates remain valid through NotAfter.
 	if left < 0 {
 		f.Summary = fmt.Sprintf("k3s 证书 %s（%s）已于 %s 过期：k3s 组件之间无法再认证，集群 API、节点和面板对服务器的管理都会中断",
 			file, soonest.Subject.CommonName, when)

@@ -33,8 +33,6 @@ func (p putThenFail) Put(ctx context.Context, id string, r io.Reader) (int64, er
 	return 0, errors.New("put: connection reset")
 }
 
-// The budget check ahead of each part reads every other blob's size once per
-// blobSizeTTL; the one on completion reads them all from the store.
 func TestPartBudgetRemembersBlobSizes(t *testing.T) {
 	m, _, fb, a := newChunkedManager(t)
 	ctx := context.Background()
@@ -66,8 +64,6 @@ func TestPartBudgetRemembersBlobSizes(t *testing.T) {
 	}
 }
 
-// What this Manager stores or deletes counts in the next part's budget at once,
-// without waiting out the TTL.
 func TestPartBudgetSeesThisManagersOwnWritesAtOnce(t *testing.T) {
 	m, _, _, a := newChunkedManager(t)
 	ctx := context.Background()
@@ -121,7 +117,6 @@ func TestPartBudgetSeesAReapedBlobAtOnce(t *testing.T) {
 	}
 }
 
-// A Put that failed may still have replaced the blob, so its size is read again.
 func TestPartBudgetRereadsABlobAfterAFailedPut(t *testing.T) {
 	m, _, fb, a := newChunkedManager(t)
 	ctx := context.Background()
@@ -144,8 +139,6 @@ func TestPartBudgetRereadsABlobAfterAFailedPut(t *testing.T) {
 	}
 }
 
-// A size that cannot be read fails the check as ErrStoreUnavailable, which the
-// API answers 503 for the client to send again, never as a bare error (500).
 func TestBudgetReadFailuresAreRetryable(t *testing.T) {
 	m, _, fb, a := newChunkedManager(t)
 	ctx := context.Background()

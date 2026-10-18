@@ -13,28 +13,9 @@ import (
 	"felis.lolicon.best/internal/metrics"
 )
 
-// Volumetric limits for the public auth doors and for outbound mail.
-//
-// The per-recipient OTP cooldown (otpLimiter) stops one mailbox being bombed,
-// and the per-account wrong-code budget stops one account being guessed. Neither
-// bounds a caller who sprays many addresses or many accounts, so two more limits
-// sit in front of them:
-//
-//   - authDoorGate: a token bucket per client address over every pre-session
-//     auth door (options, login, op-login, bind, setup redeem). The client
-//     address comes from the edge's header only when the install says which
-//     header its edge writes (ClientIPHeader); with Cloudflare that header is
-//     CF-Connecting-IP, which is trustworthy because the edge setup fences the
-//     panel NodePort to loopback, so every request reaching the origin came
-//     through cloudflared. IPv6 clients are bucketed per /64, the unit one
-//     subscriber is handed.
-//   - mailGate: one install-wide bucket over every mail the API sends (codes
-//     and lock notices), so no flood can burn the SMTP relay's quota and get
-//     the sending account suspended. The public doors check it before they
-//     resolve the address, so a spent budget answers every address alike.
+// Auth limits apply per client network and mail limits install-wide; recipient and account limits alone do not bound spraying.
 
-// RateLimit is a token bucket: Burst calls at once, refilled at PerMinute. The
-// zero value disables the limit.
+// RateLimit's zero value disables throttling.
 type RateLimit struct {
 	Burst     int
 	PerMinute float64
@@ -42,10 +23,7 @@ type RateLimit struct {
 
 func (l RateLimit) enabled() bool { return l.Burst > 0 && l.PerMinute > 0 }
 
-// bucketSweepEvery is how often idle buckets are dropped; bucketMaxKeys bounds
-// the map between sweeps. Past the bound, new keys share one overflow bucket,
-// so a spray of fresh source addresses throttles itself instead of growing the
-// map.
+// New keys share an overflow bucket at bucketMaxKeys to bound memory during source-address spraying.
 const (
 	bucketSweepEvery = time.Minute
 	bucketMaxKeys    = 50_000
@@ -55,15 +33,11 @@ const (
 type tokenBucket struct {
 	tokens float64
 	at     time.Time
-	// refusing is set from a refusal until the next admission, so one episode
-	// of refusals can be recorded once.
+	// refusing marks an episode until the next admission, allowing one audit event per episode.
 	refusing bool
 }
 
-// bucketSet is a set of token buckets keyed by caller. A missing key is a full
-// bucket, so a bucket that has refilled completely carries no information and
-// is dropped by the sweep; memory is bounded by the keys active in the last
-// refill period.
+// bucketSet drops fully refilled buckets because they carry no state beyond the default full bucket.
 type bucketSet struct {
 	mu      sync.Mutex
 	now     func() time.Time
@@ -77,15 +51,13 @@ func newBucketSet(limit RateLimit, now func() time.Time) *bucketSet {
 	return &bucketSet{now: now, limit: limit, buckets: map[string]*tokenBucket{}, maxKeys: bucketMaxKeys}
 }
 
-// setLimit moves the set to a new limit; a token count above the new burst is capped at
-// the next refill.
 func (s *bucketSet) setLimit(limit RateLimit) {
 	s.mu.Lock()
 	s.limit = limit
 	s.mu.Unlock()
 }
 
-// refill brings b up to now. The caller holds mu.
+// refill requires mu.
 func (s *bucketSet) refill(b *tokenBucket, now time.Time) {
 	if elapsed := now.Sub(b.at); elapsed > 0 {
 		b.tokens = math.Min(float64(s.limit.Burst), b.tokens+elapsed.Minutes()*s.limit.PerMinute)
@@ -93,8 +65,7 @@ func (s *bucketSet) refill(b *tokenBucket, now time.Time) {
 	b.at = now
 }
 
-// sweep drops full buckets at most once per bucketSweepEvery, or at once when
-// force is set. The caller holds mu.
+// sweep requires mu; force bypasses the sweep interval.
 func (s *bucketSet) sweep(now time.Time, force bool) {
 	if !force && now.Sub(s.swept) < bucketSweepEvery {
 		return
@@ -108,7 +79,7 @@ func (s *bucketSet) sweep(now time.Time, force bool) {
 	}
 }
 
-// bucket returns key's bucket, creating a full one. The caller holds mu.
+// bucket requires mu and creates missing buckets full.
 func (s *bucketSet) bucket(key string, now time.Time) *tokenBucket {
 	s.sweep(now, false)
 	if b, ok := s.buckets[key]; ok {
@@ -130,16 +101,13 @@ func (s *bucketSet) bucket(key string, now time.Time) *tokenBucket {
 	return b
 }
 
-// take spends one token from key's bucket. When none is left it reports how
-// long until one is. A disabled limit always admits.
+// take returns the wait until a token is available; disabled limits always admit.
 func (s *bucketSet) take(key string) (bool, time.Duration) {
 	ok, wait, _ := s.admit(key)
 	return ok, wait
 }
 
-// admit is take that also reports whether a refusal is the first since key was
-// last admitted, so a flood leaves one audit row per episode instead of one
-// per refused request.
+// admit reports the first refusal since the last admission to bound refusal audit volume.
 func (s *bucketSet) admit(key string) (ok bool, wait time.Duration, first bool) {
 	if s == nil || !s.limit.enabled() {
 		return true, 0, false
@@ -158,7 +126,6 @@ func (s *bucketSet) admit(key string) (ok bool, wait time.Duration, first bool) 
 	return false, s.wait(b), first
 }
 
-// peek reports whether key's bucket holds a token, without spending it.
 func (s *bucketSet) peek(key string) (bool, time.Duration) {
 	if s == nil || !s.limit.enabled() {
 		return true, 0
@@ -177,7 +144,7 @@ func (s *bucketSet) peek(key string) (bool, time.Duration) {
 	return false, s.wait(b)
 }
 
-// wait is how long until b holds one token. The caller holds mu.
+// wait requires mu.
 func (s *bucketSet) wait(b *tokenBucket) time.Duration {
 	missing := 1 - b.tokens
 	return time.Duration(math.Ceil(missing / s.limit.PerMinute * float64(time.Minute)))
@@ -193,10 +160,8 @@ func (a *API) mailGate() *bucketSet {
 	return a.mailBuckets
 }
 
-// mailGateKey is the single install-wide mail bucket.
 const mailGateKey = "mail"
 
-// throttleAuthDoor applies the per-source bucket to one public auth door.
 func (a *API) throttleAuthDoor(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		key := sourceKey(a.clientIP(r))
@@ -215,24 +180,17 @@ func (a *API) throttleAuthDoor(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// errMailRateLimited answers a door whose mail the install-wide budget refuses.
 func errMailRateLimited(wait time.Duration) *apiError {
 	return newError(http.StatusTooManyRequests, "mail_rate_limited",
 		"this server is sending too much mail right now; try again shortly").retryAfter(wait)
 }
 
-// errMailUnavailable answers a door that would mail a code on an install with
-// no [smtp] relay. The code is never minted, so it cannot turn up anywhere.
 func errMailUnavailable() *apiError {
 	return newError(http.StatusServiceUnavailable, "mail_unavailable",
 		"this server has no mail relay configured, so it cannot send codes; sign in with a passkey or ask the server operator to set up email")
 }
 
-// checkMailBudget runs before a door mints a code: with no relay it refuses
-// with mail_unavailable, and while the install-wide budget is spent with
-// mail_rate_limited. The public doors call it before resolving the address, so
-// either refusal is the same for every address and says nothing about whether
-// it has an account.
+// checkMailBudget runs before address lookup so missing relay and exhausted budget responses reveal no account existence.
 func (a *API) checkMailBudget(ctx context.Context) error {
 	if a.mailer(ctx) == nil {
 		return errMailUnavailable()
@@ -244,10 +202,7 @@ func (a *API) checkMailBudget(ctx context.Context) error {
 	return nil
 }
 
-// clientIP is the caller's address: the edge's header when the install names
-// one and the request carries a parseable value, else the TCP peer. For
-// X-Forwarded-For the rightmost entry is used, the one the trusted proxy
-// appended itself.
+// clientIP trusts the configured edge header; X-Forwarded-For uses the rightmost entry appended by that proxy.
 func (a *API) clientIP(r *http.Request) netip.Addr {
 	if name := a.ClientIPHeader; name != "" {
 		if v := r.Header.Get(name); v != "" {
@@ -269,8 +224,7 @@ func (a *API) clientIP(r *http.Request) netip.Addr {
 	return ip.Unmap()
 }
 
-// sourceKey buckets an address: IPv4 per host, IPv6 per /64. An unparseable
-// address shares one key.
+// sourceKey groups IPv4 by host and IPv6 by /64; malformed addresses share a key.
 func sourceKey(ip netip.Addr) string {
 	switch {
 	case !ip.IsValid():
@@ -283,11 +237,7 @@ func sourceKey(ip netip.Addr) string {
 	}
 }
 
-// challengeSource is the network a passkey login challenge is counted against
-// (maxLiveChallengesPerSource): IPv4 per host, IPv6 per /48. A /48 is what one site
-// is handed, so its holder cannot spread a flood of begins over the 65,536 /64s the
-// auth-door bucket would see as separate callers. An unparseable address shares one
-// key.
+// challengeSource groups IPv6 by /48 so one site cannot spread challenge creation across its /64 auth-limit buckets.
 func challengeSource(ip netip.Addr) string {
 	switch {
 	case !ip.IsValid():

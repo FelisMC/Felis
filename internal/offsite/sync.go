@@ -1,22 +1,4 @@
-// Package offsite keeps a second copy of what a lost node would take with it:
-// every world archive (world_backups), the newest control-plane database
-// bundles (internal/dbbackup), the user images in the platform registry
-// (images.go) and the submission uploads (uploads.go), encrypted, in an
-// S3-compatible bucket off the machine. `felis
-// offsite sync` runs it from felis-offsite.timer on the host, which is where
-// the archive volume and the bundle directory live and where the registry
-// answers on its loopback hostPort.
-//
-// The database records the copy: world_backups.offsite_at is set once an
-// archive's object is in the bucket, and with [offsite] configured the reaper
-// deletes an idle world only after that (internal/reaper). Remote world
-// objects go when their row has expired, so the bucket keeps each archive for
-// the same retention the panel promises, including archives evicted early from
-// the local disk to make room; an object whose row a restore did not bring
-// back goes once it is older than the longest retention. Remote bundles are
-// pruned to the newest DBKeep. A pass that copies archives then sends a fresh
-// bundle, whose rows list them, so the newest bundle in the bucket lists every
-// archive in it and a restore from it can fetch them all.
+// Package offsite maintains encrypted recovery copies of worlds, database bundles, registry images and uploads in S3-compatible storage.
 package offsite
 
 import (
@@ -37,16 +19,12 @@ import (
 	"felis.lolicon.best/internal/dbbackup"
 )
 
-// Object key layout under the configured prefix.
 const (
 	worldsDir = "worlds/"
 	dbDir     = "db/"
 	objExt    = ".fenc"
 )
 
-// WorldKey is the object key of the world archive stored at ref (the
-// world_backups.backup_ref, an in-pod path whose last element is the file name
-// on the archive volume).
 func WorldKey(ref string) (string, bool) {
 	name := path.Base(ref)
 	if !safeName(name) {
@@ -55,14 +33,12 @@ func WorldKey(ref string) (string, bool) {
 	return worldsDir + name + objExt, true
 }
 
-// DBKey is the object key of a database bundle.
 func DBKey(bundle string) string { return dbDir + bundle + objExt }
 
 func safeName(name string) bool {
 	return name != "" && name != "." && name != ".." && name != "/" && !strings.ContainsAny(name, `/\`)
 }
 
-// WorldBackup is one world_backups row the sync works on.
 type WorldBackup struct {
 	ID      string
 	Server  string
@@ -70,77 +46,47 @@ type WorldBackup struct {
 	Created time.Time
 }
 
-// Catalog is the world_backups view the sync needs; PGCatalog in production.
 type Catalog interface {
-	// PendingWorlds lists present archives without an off-site copy yet,
-	// oldest first.
 	PendingWorlds(ctx context.Context) ([]WorldBackup, error)
-	// MarkOffsite records that the archive of row id is in the bucket.
 	MarkOffsite(ctx context.Context, id string, at time.Time) error
-	// ExpiredRefs lists the backup_ref of every row past its retention
-	// (deleted, or expired: deleted through the API; and expires_at < now)
-	// whose archive was copied off-site.
 	ExpiredRefs(ctx context.Context, now time.Time) ([]string, error)
-	// PresentWorlds lists every present archive, for a restore of the volume.
 	PresentWorlds(ctx context.Context) ([]WorldBackup, error)
-	// NewestOffsite is the latest offsite_at of any row: when the bucket last
-	// gained an archive. Zero when no archive was ever copied.
+	// NewestOffsite returns zero when no archive has been copied.
 	NewestOffsite(ctx context.Context) (time.Time, error)
-	// KeptRefs lists the backup_ref of every row whose archive the bucket
-	// keeps: present ones, and the rest until their expires_at.
+	// KeptRefs retains present archives and nonpresent rows until expires_at.
 	KeptRefs(ctx context.Context, now time.Time) ([]string, error)
 }
 
-// Syncer copies what is missing from the bucket and prunes what has expired.
 type Syncer struct {
 	Bucket  Bucket
 	Catalog Catalog
 	Key     []byte
-	// ArchiveDir is the host directory of the world archive volume; "" when
-	// there is none yet (nothing has been archived on this install).
+	// ArchiveDir empty means no local archive directory is available.
 	ArchiveDir string
-	// DBDir holds the database bundles; DBKeep is how many of the newest the
-	// bucket keeps, not counting the newest Snapshot bundle.
-	DBDir  string
-	DBKeep int
-	// Snapshot writes a bundle labelled dbbackup.LabelOffsite into DBDir. A
-	// pass that leaves the bucket holding an archive newer than its newest
-	// bundle takes one and sends it (snapshotDB); nil takes none.
+	DBDir      string
+	DBKeep     int // excludes the newest snapshot bundle
+	// Snapshot=nil disables fresh dbbackup.LabelOffsite bundles.
 	Snapshot func(ctx context.Context) error
-	// OrphanAfter is how old a world object no row keeps (KeptRefs) may get
-	// before it goes: the longest retention of any archive. Zero keeps them.
+	// OrphanAfter=0 preserves unreferenced world objects.
 	OrphanAfter time.Duration
-	// Images is the platform registry whose user images are copied (images.go);
-	// nil copies none.
-	Images ImageSource
-	// ImagePins lists, per repository, the digests a server's spec or a
-	// whitelist entry pins. Under felis/ and mirror/ only those revisions are
-	// copied (images.go); nil copies none there.
-	ImagePins func(ctx context.Context) (map[string][]string, error)
-	// UploadsDir is the host directory of the uploads volume, whose submission
-	// contexts are copied (uploads.go); empty copies none.
+	Images      ImageSource
+	// ImagePins=nil excludes felis/ and mirror/; otherwise copy only pinned digests from those repositories.
+	ImagePins  func(ctx context.Context) (map[string][]string, error)
 	UploadsDir string
-	// UploadGrace and MinRate bound one object's upload: UploadGrace plus the
-	// time the object takes at MinRate bytes a second. Zero takes the defaults.
-	// Lease names this host in felis-writer (writer.go); nil checks no writer.
-	Lease       *Lease
+	Lease      *Lease // nil disables writer checks
+	// Upload budget is UploadGrace plus size/MinRate in bytes per second; zero selects defaults.
 	UploadGrace time.Duration
 	MinRate     int64
 	Now         func() time.Time
 	Log         io.Writer
 }
 
-// Each object gets its own deadline, scaled to its size, so an archive too big
-// for the uplink fails alone and the rest of the pass still goes; one deadline
-// for the whole pass let a 10 GiB world use all of it, hour after hour, with
-// every bundle queued behind it. 512 KiB/s (about 4 Mbit/s) gives a 10 GiB
-// archive close to six hours, several times what a 20 Mbit/s uplink needs.
+// Apply deadlines per object so a large archive cannot starve the rest of a sync pass.
 const (
 	defaultUploadGrace = 10 * time.Minute
-	defaultMinRate     = 512 << 10
+	defaultMinRate     = 512 << 10 // bytes per second
 )
 
-// uploadBudget is how long an object of size plaintext bytes may take.
 func (s *Syncer) uploadBudget(size int64) time.Duration {
 	grace := s.UploadGrace
 	if grace <= 0 {
@@ -156,37 +102,26 @@ func (s *Syncer) rate() int64 {
 	return defaultMinRate
 }
 
-// Result is what one Run did and found.
 type Result struct {
-	WorldsUploaded int   `json:"worlds_uploaded"`
-	BytesUploaded  int64 `json:"bytes_uploaded"`
-	// WorldsPending are present archives still without an off-site copy
-	// after this run; the missing ones below are counted there alone.
-	WorldsPending int `json:"worlds_pending"`
-	// WorldsMissing are present rows whose archive file is not on the volume:
-	// nothing to copy, and nothing a restore could use.
-	WorldsMissing []string `json:"worlds_missing,omitempty"`
-	WorldsExpired int      `json:"worlds_expired"`
-	RemoteWorlds  int      `json:"remote_worlds"`
-	RemoteBytes   int64    `json:"remote_bytes"`
-	DBUploaded    int      `json:"db_uploaded"`
-	DBPruned      int      `json:"db_pruned"`
-	RemoteDB      int      `json:"remote_db"`
-	NewestDB      string   `json:"newest_db,omitempty"`
-	// ImageIndex is the newest registry index version in the bucket, which
-	// lists ImageRepos repositories holding Images images.
-	ImageIndex         string `json:"image_index,omitempty"`
-	ImageRepos         int    `json:"image_repos"`
-	Images             int    `json:"images"`
-	ImagesUploaded     int    `json:"images_uploaded"`
-	ImageBlobsUploaded int    `json:"image_blobs_uploaded"`
-	ImageObjectsPruned int    `json:"image_objects_pruned"`
-	RemoteImageBytes   int64  `json:"remote_image_bytes"`
-	// ImagesIncomplete are manifests the registry lists without holding all
-	// of them, so there was nothing whole to copy.
-	ImagesIncomplete []string `json:"images_incomplete,omitempty"`
-	// UploadIndex is the newest uploads index version in the bucket, which
-	// names Uploads submission contexts.
+	WorldsUploaded      int      `json:"worlds_uploaded"`
+	BytesUploaded       int64    `json:"bytes_uploaded"`
+	WorldsPending       int      `json:"worlds_pending"`
+	WorldsMissing       []string `json:"worlds_missing,omitempty"`
+	WorldsExpired       int      `json:"worlds_expired"`
+	RemoteWorlds        int      `json:"remote_worlds"`
+	RemoteBytes         int64    `json:"remote_bytes"`
+	DBUploaded          int      `json:"db_uploaded"`
+	DBPruned            int      `json:"db_pruned"`
+	RemoteDB            int      `json:"remote_db"`
+	NewestDB            string   `json:"newest_db,omitempty"`
+	ImageIndex          string   `json:"image_index,omitempty"`
+	ImageRepos          int      `json:"image_repos"`
+	Images              int      `json:"images"`
+	ImagesUploaded      int      `json:"images_uploaded"`
+	ImageBlobsUploaded  int      `json:"image_blobs_uploaded"`
+	ImageObjectsPruned  int      `json:"image_objects_pruned"`
+	RemoteImageBytes    int64    `json:"remote_image_bytes"`
+	ImagesIncomplete    []string `json:"images_incomplete,omitempty"`
 	UploadIndex         string   `json:"upload_index,omitempty"`
 	Uploads             int      `json:"uploads"`
 	UploadsUploaded     int      `json:"uploads_uploaded"`
@@ -208,11 +143,7 @@ func (s *Syncer) logf(format string, args ...any) {
 	}
 }
 
-// Run does one pass: database bundles, world archives, a bundle listing the
-// archives just copied, registry images, submission uploads, then expiry. The
-// bundles go first: they are small, and every restore starts from one. A
-// failure on one item is recorded and the pass carries on; the returned error
-// is non-nil when anything failed.
+// Run sends database bundles before large archives and continues after individual failures, returning an error if any step failed.
 func (s *Syncer) Run(ctx context.Context) (Result, error) {
 	var res Result
 	fail := func(format string, args ...any) {
@@ -221,9 +152,7 @@ func (s *Syncer) Run(ctx context.Context) (Result, error) {
 		s.logf("%s", msg)
 	}
 
-	// Before anything is written or pruned: objects sealed with another key
-	// are copies only that key opens, and DBKeep would prune them; a bucket
-	// another host writes is that host's to prune.
+	// Check encryption key and writer ownership before any upload or pruning.
 	if err := claim(ctx, s.Bucket, s.Key, s.Lease, s.now()); err != nil {
 		return res, err
 	}
@@ -298,8 +227,7 @@ func (s *Syncer) syncWorlds(ctx context.Context, remote map[string]int64, res *R
 			continue
 		}
 		want := SealedSize(fi.Size())
-		// An earlier run may have stored the object and died before recording
-		// it; a complete object is only recorded, not sent again.
+		// If an earlier run uploaded but did not record an object, record it without resending.
 		if size, ok := remote[key]; !ok || size != want {
 			if err := s.putFile(ctx, key, local, fi.Size()); err != nil {
 				fail("upload %s (%s): %v", path.Base(w.Ref), w.Server, err)
@@ -336,11 +264,7 @@ func (s *Syncer) syncDB(ctx context.Context, res *Result, fail func(string, ...a
 		fail("list %s in the bucket: %v", dbDir, err)
 		return
 	}
-	// The bucket keeps the newest keep bundles of what it holds and what is
-	// here together. Local retention is per label, so an old pre-migrate
-	// bundle can outlive newer dailies here that the bucket still has:
-	// sending it would only see it pruned again at the end of this pass, and
-	// sent again on the next.
+	// Send only bundles retained across local and remote history so older local bundles are not repeatedly uploaded then pruned.
 	names := map[string]bool{}
 	for key := range remote {
 		name := strings.TrimSuffix(strings.TrimPrefix(key, dbDir), objExt)
@@ -351,7 +275,6 @@ func (s *Syncer) syncDB(ctx context.Context, res *Result, fail func(string, ...a
 	for _, b := range local {
 		names[b.Name] = true
 	}
-	// Bundle names start with their UTC stamp, so reversed order is newest first.
 	ranked := slices.Sorted(maps.Keys(names))
 	slices.Reverse(ranked)
 	kept := keptBundles(ranked, keep)
@@ -396,12 +319,7 @@ func (s *Syncer) syncDB(ctx context.Context, res *Result, fail func(string, ...a
 	}
 }
 
-// keptBundles picks the bundles the bucket keeps from ranked, newest first:
-// the newest keep that are not snapshots, and the newest snapshot while it is
-// the newest of all. A pass takes a snapshot whenever it copies archives, up to
-// once an hour, so counting them in keep would push the daily bundles, the
-// restore points of the last fortnight, out of the bucket within a day; one
-// older than the newest daily lists nothing that daily does not.
+// keptBundles keeps daily history independent of frequent snapshots and retains the newest snapshot only while it is newest overall.
 func keptBundles(ranked []string, keep int) map[string]bool {
 	kept := map[string]bool{}
 	n := 0
@@ -420,13 +338,7 @@ func keptBundles(ranked []string, keep int) map[string]bool {
 	return kept
 }
 
-// snapshotDB takes a bundle and sends it when the bucket holds an archive
-// copied after its newest bundle was taken. A restore finds archives through
-// the world_backups rows of the bundle it restores: an archive with no row
-// there is neither fetched back nor ever expired, and until the next daily
-// bundle, up to a day later, every archive copied since the last one was in
-// that state. The comparison is by second, the resolution of bundle names; a
-// bundle taken in the second of the copy was taken after it.
+// snapshotDB uploads a bundle after newly copied archives so their catalog rows are present in the next recovery database.
 func (s *Syncer) snapshotDB(ctx context.Context, res *Result, fail func(string, ...any)) {
 	if s.Snapshot == nil || s.DBDir == "" {
 		return
@@ -472,14 +384,7 @@ func (s *Syncer) expireWorlds(ctx context.Context, remote map[string]int64, res 
 	}
 }
 
-// sweepWorlds removes world objects no row keeps once they are older than
-// OrphanAfter, the longest any archive is kept: what a restore from an older
-// bundle leaves in the bucket (its archives were copied after that bundle),
-// and the copy of a row whose MarkOffsite failed before the row expired.
-// Younger ones are kept and reported, as the reaper does on the archive
-// volume. A catalog that keeps nothing is a database not restored yet, whose
-// rows would keep everything, so nothing is swept on it; an object whose age
-// the bucket does not report stays.
+// sweepWorlds preserves young or age-unknown orphans and sweeps nothing when the catalog is empty, as on a host awaiting database restore.
 func (s *Syncer) sweepWorlds(ctx context.Context, remote map[string]int64, res *Result, fail func(string, ...any)) {
 	if s.OrphanAfter <= 0 {
 		return
@@ -527,23 +432,17 @@ func (s *Syncer) sweepWorlds(ctx context.Context, remote map[string]int64, res *
 	}
 }
 
-// putFile encrypts the file at p into key.
 func (s *Syncer) putFile(ctx context.Context, key, p string, size int64) error {
 	f, err := os.Open(p)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	// A file that changed size under us would not match the declared length;
-	// LimitReader keeps the stream to the size we announced and the bucket's
-	// length check catches a short one.
+	// Bound reads to the declared file size; the bucket detects a source that became shorter.
 	return s.putStream(ctx, key, io.LimitReader(f, size), size)
 }
 
-// putStream encrypts size bytes of src into key. The sealed size is known in
-// advance, so the upload streams: nothing larger than one part is buffered.
-// An error from src fails the upload, and so does running past the object's
-// uploadBudget.
+// putStream uses a known sealed length and per-object deadline, failing on source errors without buffering the whole object.
 func (s *Syncer) putStream(ctx context.Context, key string, src io.Reader, size int64) error {
 	budget := s.uploadBudget(size)
 	putCtx, cancel := context.WithTimeout(ctx, budget)
@@ -561,16 +460,13 @@ func (s *Syncer) putStream(ctx context.Context, key string, src io.Reader, size 
 	return err
 }
 
-// FetchResult is what Fetch did.
 type FetchResult struct {
 	Fetched  []string
 	Present  int
-	Missing  []string // present rows with no object in the bucket
+	Missing  []string
 	Failures []string
 }
 
-// FetchWorlds downloads every present archive the volume lacks: the volume
-// half of a rebuild, after the database came back from a bundle.
 func FetchWorlds(ctx context.Context, b Bucket, cat Catalog, key []byte, archiveDir string, log io.Writer) (FetchResult, error) {
 	var res FetchResult
 	worlds, err := cat.PresentWorlds(ctx)
@@ -588,8 +484,6 @@ func FetchWorlds(ctx context.Context, b Bucket, cat Catalog, key []byte, archive
 		if _, err := os.Stat(dst); err == nil {
 			continue
 		}
-		// World-readable like the archives the backup Jobs write: the restore
-		// Job reads them as its own non-root user.
 		switch err := FetchObject(ctx, b, key, objKey, dst, 0o644); {
 		case errors.Is(err, ErrNotFound):
 			res.Missing = append(res.Missing, fmt.Sprintf("%s (%s)", path.Base(w.Ref), w.Server))
@@ -609,9 +503,7 @@ func FetchWorlds(ctx context.Context, b Bucket, cat Catalog, key []byte, archive
 	return res, nil
 }
 
-// alignOwner gives a restored archive the archive volume's owner, which is the
-// user the backup Jobs write as, so the volume looks as they left it. Only root
-// can; for anyone else the file stays theirs, readable all the same.
+// alignOwner changes ownership only as root; otherwise restored archives remain readable under caller ownership.
 func alignOwner(file, dir string) {
 	if os.Geteuid() != 0 {
 		return
@@ -625,9 +517,7 @@ func alignOwner(file, dir string) {
 	}
 }
 
-// FetchObject downloads and decrypts key into dst, created with mode. The file
-// appears under its name only once it has decrypted completely; until then it
-// is a hidden .partial next to it.
+// FetchObject verifies and decrypts into a hidden temporary sibling before publishing the final name.
 func FetchObject(ctx context.Context, b Bucket, key []byte, objKey, dst string, mode os.FileMode) error {
 	rc, err := b.Get(ctx, objKey)
 	if err != nil {
@@ -661,7 +551,6 @@ func FetchObject(ctx context.Context, b Bucket, key []byte, objKey, dst string, 
 	return os.Rename(tmp, dst)
 }
 
-// ListDB returns the database bundles in the bucket, newest first.
 func ListDB(ctx context.Context, b Bucket) ([]Object, error) {
 	objs, err := b.List(ctx, dbDir)
 	if err != nil {
@@ -680,10 +569,7 @@ func ListDB(ctx context.Context, b Bucket) ([]Object, error) {
 	return out, nil
 }
 
-// PeekDB reads the manifest of the database bundle name, downloading and
-// decrypting only as far as the manifest. Each segment is authenticated
-// before any of its bytes are read, so a manifest read this way is the one
-// the bundle was sealed with.
+// PeekDB authenticates segments while reading only enough of the encrypted bundle to obtain its manifest.
 func PeekDB(ctx context.Context, b Bucket, key []byte, name string) (dbbackup.Manifest, error) {
 	rc, err := b.Get(ctx, DBKey(name))
 	if err != nil {
@@ -697,20 +583,14 @@ func PeekDB(ctx context.Context, b Bucket, key []byte, name string) (dbbackup.Ma
 		pw.CloseWithError(Decrypt(pw, rc, key))
 	}()
 	m, err := dbbackup.ReadManifest(pr)
-	pr.Close() // Decrypt stops at its next write
+	pr.Close()
 	<-done
 	return m, err
 }
 
-// dbChoices is how many older bundles ChooseDB names when it refuses the
-// newest; `felis offsite list` shows the rest.
 const dbChoices = 3
 
-// ChooseDB picks the bundle `fetch-db latest` means: the newest, unless its
-// database looks like a new install's (dbbackup.Counts.Fresh) while an older
-// bundle holds more. That newest bundle is what a rebuilt host backs up and
-// syncs before its restore, so it is refused with the bundles worth naming
-// instead. A bundle from before counts were recorded is taken to hold more.
+// ChooseDB refuses a fresh-install newest bundle when older bundles contain more data; legacy bundles without counts are treated conservatively.
 func ChooseDB(ctx context.Context, b Bucket, key []byte) (string, dbbackup.Manifest, error) {
 	bundles, err := ListDB(ctx, b)
 	if err != nil {
@@ -747,7 +627,6 @@ func ChooseDB(ctx context.Context, b Bucket, key []byte) (string, dbbackup.Manif
 		"fetch an older one by name instead of latest (all of them: felis offsite list): %s", newest, m.Counts, strings.Join(older, ", "))
 }
 
-// HumanBytes formats n in binary units.
 func HumanBytes(n int64) string {
 	const unit = 1024
 	if n < unit {

@@ -45,8 +45,6 @@ func TestVerifyDigest(t *testing.T) {
 	})
 }
 
-// A part that changed on the way is cut back off like one that broke off, below
-// the part cap and exactly at it (where the cap reads one byte past the part).
 func TestChunkedUploadCutsBackAPartChangedOnTheWay(t *testing.T) {
 	for _, tc := range []struct{ name, sent, meant string }{
 		{"under the part cap", "abX", "abc"},
@@ -71,8 +69,6 @@ func TestChunkedUploadCutsBackAPartChangedOnTheWay(t *testing.T) {
 	}
 }
 
-// A context that changed on the way leaves the one before it stored, and its
-// digest recorded.
 func TestUploadContextChangedOnTheWayKeepsThePreviousContext(t *testing.T) {
 	m, st, _ := newManager()
 	base := t.TempDir()
@@ -97,9 +93,6 @@ func TestUploadContextChangedOnTheWayKeepsThePreviousContext(t *testing.T) {
 	}
 }
 
-// Through minio-go, a mismatch found at the end of the stream aborts the
-// multipart upload, whether the last part is short or the stream ends right at a
-// part boundary.
 func TestS3ContextStorePutKeepsNothingChangedOnTheWay(t *testing.T) {
 	for _, size := range []int{2*s3PartSize + 5, 2 * s3PartSize} {
 		fake := &multipartS3{objects: map[string]string{}}

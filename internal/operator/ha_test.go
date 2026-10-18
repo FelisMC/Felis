@@ -23,9 +23,6 @@ func haNode(name string, ready bool) *corev1.Node {
 		Status: corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: status}}}}
 }
 
-// TestSystemServerFloatsWithControllerHA pins controller HA in the operator: with the home
-// controller gone, a system server nobody pinned still starts, on any controller; a user
-// server stays bound to its node and waits for it; without HA the system server waits too.
 func TestSystemServerFloatsWithControllerHA(t *testing.T) {
 	for _, tc := range []struct {
 		name         string

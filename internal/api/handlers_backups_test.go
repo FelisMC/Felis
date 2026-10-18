@@ -13,10 +13,6 @@ import (
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 )
 
-// TestListBackups exercises GET /api/v1/backups (spec §7): admin sees every
-// present backup, a regular user sees only the worlds they formerly owned, and
-// expired/deleted backups are never listed. It also asserts the opaque
-// backup_ref never reaches the wire (spec §286 principle).
 func TestListBackups(t *testing.T) {
 	mk := func() *API {
 		repo := newFakeRepo()
@@ -164,12 +160,6 @@ func TestListBackups(t *testing.T) {
 	})
 }
 
-// TestRestoreBackup exercises POST /api/v1/servers/{name}/restore-backup (spec §7,
-// §466). The default server is stopped, owned by owner1 who is also the backup's
-// former_owner, with one present backup and a wired fakeRestorer. Subtests
-// override only what they need. The focus is the layered authorization (owner +
-// former-owner), the stopped gate, the 404/503 surface, and that restore is an
-// async 202 kick-off.
 func TestRestoreBackup(t *testing.T) {
 	owner := &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
 
@@ -245,9 +235,6 @@ func TestRestoreBackup(t *testing.T) {
 	})
 
 	t.Run("current owner who is not former_owner -> 403, no restore", func(t *testing.T) {
-		// The leak guard: user "newowner" re-claimed survival (so they pass the
-		// owner gate), but the backup belongs to "olduser". They must NOT be able to
-		// resurrect another person's world.
 		api, repo, _, restorer := mk()
 		repo.byName["survival"].OwnerID = "newowner"
 		repo.backups[0].view.FormerOwner = "olduser"
@@ -262,13 +249,6 @@ func TestRestoreBackup(t *testing.T) {
 	})
 
 	t.Run("former owner after release -> 403, no restore", func(t *testing.T) {
-		// Mirror of the guard above, pinning the owner gate rather than the former-owner
-		// gate (handler comment: "must re-claim first"). owner1 took this backup, then
-		// released survival to "newowner". owner1 is still the backup's former_owner — so
-		// the former-owner gate would wave them through — but is no longer the current
-		// owner. Only the owner gate stops them; without it a superseded owner could roll
-		// a live server back onto their old world. (Disable that gate and this is the one
-		// subtest that reddens — the former-owner gate does not backstop this case.)
 		api, repo, _, restorer := mk()
 		repo.byName["survival"].OwnerID = "newowner"
 		api.External = staticExternal{p: owner} // owner1: former_owner, not current owner
@@ -397,12 +377,7 @@ func TestRestoreBackup(t *testing.T) {
 		}
 	})
 
-	// ---- restore by backup_id ----
-
-	// mkTwo supplements the base mk with two present backups for the same server
-	// so tests can exercise restoring the older one by id. bk2 is older than bk1,
-	// so LatestBackup still returns bk1 — restoring by "bk2" proves it reached the
-	// correct record.
+	// mkTwo adds an older bk2 alongside the latest bk1 to distinguish explicit selection from default restoration.
 	mkTwo := func() (*API, *fakeRepo, *fakeCluster, *fakeRestorer) {
 		repo := newFakeRepo()
 		repo.byName["survival"] = &ServerRecord{Name: "survival", OwnerID: "owner1"}
@@ -544,11 +519,6 @@ func TestRestoreBackup(t *testing.T) {
 	})
 }
 
-// TestDeleteBackup covers DELETE /api/v1/backups/{id}: the scope that lists a
-// backup deletes it, the row turns expired (out of lists, restores and the
-// budget, expires_at pulled to now so the reaper and the off-site sync take it
-// next), an out-of-scope id reads as unknown, and a restore that may be reading
-// the archive holds the delete off.
 func TestDeleteBackup(t *testing.T) {
 	owner := &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
 	admin := &Principal{UserID: "admin1", Email: "admin1@example.net", Role: "admin", ViaAdminAccess: true}

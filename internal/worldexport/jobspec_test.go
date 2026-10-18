@@ -31,10 +31,6 @@ func params(mode string) JobParams {
 	}
 }
 
-// The export Pod reads a world or an archive and hands it to felis-api. It gets
-// exactly the one volume it reads, read-only at both ends, no Secret, no API
-// token, and no capability beyond DAC_OVERRIDE: a compromised export can read
-// that one volume and talk to that one upload URL, nothing more.
 func TestExportJobIsolation(t *testing.T) {
 	for _, tc := range []struct {
 		mode, volume, claim, mountPath string
@@ -149,8 +145,6 @@ func TestExportJobRefusesIncompleteParams(t *testing.T) {
 	}
 }
 
-// TestExportJobOptionalArgs: a backup with no recorded digest carries no
-// --sha256, and a file download carries its path and no --dir.
 func TestExportJobOptionalArgs(t *testing.T) {
 	p := params(ModeBackup)
 	p.BackupSHA256 = ""
@@ -173,8 +167,6 @@ func TestExportJobOptionalArgs(t *testing.T) {
 	}
 }
 
-// TestExportJobDefaults: a caller that leaves the deadline and the TTL unset
-// still gets a Job that ends and is collected.
 func TestExportJobDefaults(t *testing.T) {
 	p := params(ModeWorld)
 	p.Deadline, p.TTLAfterFinished = 0, 0
@@ -240,8 +232,6 @@ func TestStartCreatesTheJob(t *testing.T) {
 	}
 }
 
-// A Job felis-api gave up on goes with its Pods, and one already gone is no
-// error: the sweep that stops it may run after the Job's own TTL took it.
 func TestStopDeletesTheJobAndItsPods(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	var policy metav1.DeletionPropagation

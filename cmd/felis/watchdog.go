@@ -29,11 +29,7 @@ import (
 // mailed: a restart takes seconds.
 const proxyFor = 3 * time.Minute
 
-// cmdWatchdog runs one pass of the platform watchdog (internal/watchdog): it
-// checks the cluster, PostgreSQL, the game proxy, the database backups and the
-// host (disks, memory, its address and clock), prints every finding, and mails
-// the platform owners what came due.
-// deploy/bootstrap.sh runs it every two minutes from felis-watchdog.timer.
+// bootstrap.sh runs it every two minutes from felis-watchdog.timer.
 func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("watchdog", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -156,9 +152,7 @@ func (w *watchdogFlags) register(fs *flag.FlagSet) {
 	fs.BoolVar(&w.unitFailed, "unit-failed", false, "report a failed run of felis-watchdog.service instead of checking; felis-watchdog-failed.service runs this through OnFailure=")
 }
 
-// watchdogProbes is one pass of every check, appended to report. cl is the
-// cluster client, nil while the API server is unreachable; owners is who the
-// alerts go to, and ownersErr why PostgreSQL did not say.
+// A nil cluster client marks Kubernetes checks unknown; ownersErr records unavailable database recipients.
 func watchdogProbes(ctx context.Context, w watchdogFlags, cfg *config.Config, now time.Time, report *watchdog.Report) (cl client.Client, owners []string, ownersErr error) {
 	add := func(f *watchdog.Finding) {
 		if f != nil {
@@ -214,12 +208,7 @@ func watchdogProbes(ctx context.Context, w watchdogFlags, cfg *config.Config, no
 	return cl, owners, ownersErr
 }
 
-// failureReport is what the heartbeat's failure ping carries, "" when the run
-// pings success: the alerts this run knows of reach no one (a mail that
-// failed, or no relay or recipient while something is open), or the state did
-// not save to its file: kept on tmpfs it holds until the host restarts, which
-// forgets what was mailed, and with nowhere to keep it the next run mails the
-// same alerts again.
+// Heartbeat failure includes undelivered alerts or unsaved state that would repeat notifications.
 func failureReport(unheard string, mailFailed bool, saveErr error, open bool, r watchdog.Report) string {
 	var why []string
 	if unheard != "" && (mailFailed || open) {
@@ -250,11 +239,7 @@ type mailer struct {
 	send     func(*mail.SMTP) alertSender
 }
 
-// deliver mails plan to the owners unless hold says why it waits, and commits
-// it once it reached them, or once it is logged because nothing can reach them.
-// unheard is why the owners hear nothing of this run's alerts, "" when they do;
-// mailFailed is a mail that did not go out, left uncommitted so the same
-// alerts come due again next run.
+// Commit delivered or intentionally logged alerts; leave mail failures pending for retry.
 func (m mailer) deliver(ctx context.Context, state *watchdog.State, plan watchdog.Plan, subject, body, hold string, now time.Time, stdout, stderr io.Writer) (unheard string, mailFailed bool) {
 	switch {
 	case m.relay == nil:
@@ -314,14 +299,7 @@ type unitFailedRun struct {
 	now                time.Time
 }
 
-// watchdogUnitFailed is felis-watchdog-failed.service, which systemd starts
-// through OnFailure= when a run of felis-watchdog.service fails: a crash, a
-// felis.toml that no longer loads, a hang past the unit's timeout, a mail
-// that did not go out. Such a run checks and mails nothing, so this records
-// the failure as the alert watchdog/run, due after five failed runs in a row
-// and cleared by the next run that succeeds; mails it through the relay the
-// last good run cached when felis.toml does not load; and pings the
-// heartbeat's failure endpoint. Every other alert keeps its state.
+// Repeated watchdog failures use cached mail credentials and the heartbeat failure endpoint.
 func watchdogUnitFailed(r unitFailedRun, stdout, stderr io.Writer) int {
 	detail := failureDetail(r.result, r.exitStatus)
 	cfg, cfgErr := config.Load(r.cfgPath)
@@ -392,11 +370,7 @@ func failureDetail(result, exitStatus string) string {
 	return "result " + result + ", exit status " + exitStatus
 }
 
-// mailHold is why this run's mail waits, "" when it goes out: the installer's
-// quiet window, or this host standing by for another host's off-site bucket
-// (offsite.Status.StandsBy). A standby host is a rehearsal, or a rebuild not
-// yet taken over, and the owners its restored database names are that host's,
-// which mails them itself.
+// Suppress mail during installer maintenance or while standing by for another bucket writer.
 func mailHold(quietPath string, offsiteOn bool, offsiteStatus string, now time.Time) string {
 	if until := watchdog.QuietUntil(quietPath); now.Before(until) {
 		return fmt.Sprintf("quiet until %s (installer running)", until.UTC().Format(time.RFC3339))
@@ -414,9 +388,7 @@ func mailHold(quietPath string, offsiteOn bool, offsiteStatus string, now time.T
 	return ""
 }
 
-// usesMirroredScanDB reports whether build scans read the vulnerability DB copy
-// felis mirror-build-tools keeps in the platform registry: the default, or an
-// explicit trivy_db_repository under the registry's mirror/.
+// Recognize default and explicit registry mirror repositories when checking vulnerability-data freshness.
 func usesMirroredScanDB(cfg *config.Config) bool {
 	if cfg.Registry.URL == "" {
 		return false
@@ -425,12 +397,7 @@ func usesMirroredScanDB(cfg *config.Config) bool {
 	return repo == "" || strings.HasPrefix(repo, cfg.Registry.URL+"/mirror/")
 }
 
-// refreshSMTPPassword caches the relay password (relayPassword: the host copy at
-// path, else the felis-smtp Secret), or forgets it when the Secret is gone (a
-// relay without AUTH). The host copy is read even while the cluster is down, the
-// time an alert matters most; without one, a down cluster keeps the cached
-// password. An env var named by [smtp] password_ref, when set, wins at send time
-// instead.
+// Cache host or Secret credentials; an explicit password_ref environment value wins when sending.
 func refreshSMTPPassword(ctx context.Context, path string, cl client.Client, ns string, state *watchdog.State, stderr io.Writer) {
 	password, err := relayPassword(ctx, path, cl, ns)
 	switch {
@@ -537,10 +504,7 @@ func panelSettings(ctx context.Context, url string) (*mailsettings.Settings, *he
 	return relay, beat, err
 }
 
-// relayFor picks the relay this run mails through and caches it in state, so a run while
-// the database is out (when an alert matters most) still reaches the owners. The Owner's
-// panel relay wins over felis.toml's; with the database unreadable the last run's relay
-// stands, and felis.toml's is used only when that was felis.toml's too.
+// Cache the selected relay across database outages; panel settings override TOML.
 func relayFor(state *watchdog.State, panel *mailsettings.Settings, panelErr error, c config.SMTPConfig, send func(*mail.SMTP) alertSender, refreshHostPassword func()) mailer {
 	switch {
 	case panel != nil:

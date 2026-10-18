@@ -12,8 +12,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// Label keys applied to restore objects, mirroring internal/build so the two
-// executors are observable the same way.
 const (
 	LabelManagedBy = "app.kubernetes.io/managed-by"
 	LabelComponent = "app.kubernetes.io/component"
@@ -22,9 +20,7 @@ const (
 	managedByValue = "felis-restore"
 	componentValue = "world-restore"
 
-	// AnnotationBackupRef records which archive the Job extracts, so a second
-	// restore that collides with it on the name can tell a duplicate of the same
-	// request from a request for a different backup (K8sJobs.CreateRestoreJob).
+	// AnnotationBackupRef distinguishes duplicate requests from another archive using the same deterministic Job name.
 	AnnotationBackupRef = "felis.lolicon.best/backup-ref"
 
 	worldVolume     = "world"
@@ -32,9 +28,6 @@ const (
 	felisBinaryPath = "/usr/local/bin/felis"
 )
 
-// JobParams are the rendered inputs to a restore Job, derived from a server +
-// archive ref + Config by the Restorer. jobspec is a pure function of them so
-// the security-critical Job shape is unit-tested without a cluster.
 type JobParams struct {
 	SourceURL, Token, SHA256 string
 	MaxBytes                 int64
@@ -58,10 +51,6 @@ type JobParams struct {
 	TTLAfterFinished time.Duration
 }
 
-// RestoreJobName is the deterministic Job name for a server's restore. It is a
-// pure function of the server name, which is how CreateRestoreJob detects a
-// restore already in flight (AlreadyExists) and how the orchestrator's
-// idempotency holds.
 func RestoreJobName(server string) string { return "restore-" + server }
 
 func restoreLabels(p JobParams) map[string]string {
@@ -72,26 +61,7 @@ func restoreLabels(p JobParams) map[string]string {
 	}
 }
 
-// RestoreJob renders the world-restore Job (spec §7, §16, §22). Every isolation
-// guarantee lives here and is asserted by jobspec_test.go, because no cluster
-// runs in this environment:
-//
-//   - runs under the weak felis-restore SA (never the felis-api SA) with its
-//     token auto-mount disabled, so it cannot reach the K8s API (spec §16, §21);
-//   - mounts EXACTLY two volumes — the world PVC read-write and the backup PVC
-//     read-only — and NO Secret/ConfigMap, so a poisoned archive cannot reach
-//     the felis database or any credential (the four-power red line, spec §22);
-//   - runs as a non-root, fixed uid/gid with an fsGroup so the files it writes
-//     are owned by the same identity the minecraft server later runs as;
-//   - no privilege, no privilege escalation, read-only root filesystem, drop ALL
-//     capabilities — all writes go to the mounted world PVC, nothing else;
-//   - activeDeadlineSeconds + backoffLimit=0 so a wedged or malicious archive
-//     cannot loop or run forever; ttlSecondsAfterFinished GCs the finished Job.
-//
-// The container runs `/usr/local/bin/felis restore` (cmd/felis), which extracts
-// the archive at BackupRef from the backup mount into the world mount. BackupRef
-// is an absolute path, so the backup PVC MUST be mounted at BackupRoot — the
-// same path the reaper wrote it under — for the ref to resolve.
+// RestoreJob mounts only the world and read-only backup volumes, with no Kubernetes token or database credentials.
 func RestoreJob(p JobParams) (*batchv1.Job, error) {
 	if p.Image == "" {
 		return nil, fmt.Errorf("restore: image is empty")
@@ -125,8 +95,7 @@ func RestoreJob(p JobParams) (*batchv1.Job, error) {
 		},
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: worldVolume, MountPath: p.WorldsRoot},
-			// The archive is only ever read; mounting it read-only means a
-			// compromised restore process cannot mutate other servers' backups.
+			// Read-only backup mounts prevent a compromised extractor from changing other archives.
 			{Name: backupVolume, MountPath: p.BackupRoot, ReadOnly: true},
 		},
 		Resources: corev1.ResourceRequirements{Limits: limits, Requests: limits},
@@ -134,12 +103,6 @@ func RestoreJob(p JobParams) (*batchv1.Job, error) {
 			Privileged:               boolPtr(false),
 			AllowPrivilegeEscalation: boolPtr(false),
 			ReadOnlyRootFilesystem:   boolPtr(true),
-			// Root + DAC_OVERRIDE (see restore.Config.RunAsUser): the world is
-			// owned by the game uid and Paper's files are mode 0600, so the
-			// restore must bypass file modes to overwrite what the server wrote —
-			// otherwise level.dat is un-restorable. What it extracts lands
-			// root-owned; the server's prepare-data initContainer hands it to the
-			// game uid before the server next starts.
 			Capabilities: &corev1.Capabilities{
 				Drop: []corev1.Capability{"ALL"},
 				Add:  []corev1.Capability{"DAC_OVERRIDE"},
@@ -147,8 +110,6 @@ func RestoreJob(p JobParams) (*batchv1.Job, error) {
 		},
 	}
 
-	// The exit error reaches GET /servers/{name}/jobs through the terminated
-	// state (api.K8sJobStatus), in place of the Job's generic backoff text.
 	container.TerminationMessagePolicy = corev1.TerminationMessageFallbackToLogsOnError
 
 	job := &batchv1.Job{
@@ -159,9 +120,6 @@ func RestoreJob(p JobParams) (*batchv1.Job, error) {
 			Annotations: map[string]string{AnnotationBackupRef: p.BackupRef},
 		},
 		Spec: batchv1.JobSpec{
-			// One shot: a bad archive must not loop. The TTL GCs the finished Job
-			// so a later restore of the same server is not blocked forever by a
-			// stale completed Job.
 			BackoffLimit:            int32Ptr(0),
 			ActiveDeadlineSeconds:   int64Ptr(deadline),
 			TTLSecondsAfterFinished: int32Ptr(ttl),
@@ -209,10 +167,7 @@ func RestoreJob(p JobParams) (*batchv1.Job, error) {
 	return job, nil
 }
 
-// RestoreServiceAccount renders the weak restore SA (spec §16, §21). Like the
-// build SA it is created bare: no secrets, token auto-mounting disabled, and —
-// by having no Role or RoleBinding anywhere — zero K8s API permissions. Its only
-// capability is filesystem access to the two PVCs the Job mounts.
+// RestoreServiceAccount must remain unbound with token automount disabled; its work requires only mounted filesystem access.
 func RestoreServiceAccount(namespace, name string) *corev1.ServiceAccount {
 	return &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
@@ -227,7 +182,6 @@ func RestoreServiceAccount(namespace, name string) *corev1.ServiceAccount {
 	}
 }
 
-// resourceLimits parses the CPU/memory limits into a ResourceList.
 func resourceLimits(cpu, mem string) (corev1.ResourceList, error) {
 	if cpu == "" {
 		cpu = defaultCPULimit
@@ -251,10 +205,7 @@ func resourceLimits(cpu, mem string) (corev1.ResourceList, error) {
 
 func boolPtr(b bool) *bool { return &b }
 
-// restorePodSecurityContext pins the Pod identity. Root by default — the world
-// volume is owned by the game uid and Paper writes mode-0600 files, so a different
-// non-root executor could neither read nor replace them. FSGroup is only
-// rendered when configured: a root executor must not chgrp the world volume.
+// restorePodSecurityContext defaults to root for private game files and omits FSGroup unless explicitly configured.
 func restorePodSecurityContext(p JobParams) *corev1.PodSecurityContext {
 	sc := &corev1.PodSecurityContext{
 		RunAsNonRoot: boolPtr(false),

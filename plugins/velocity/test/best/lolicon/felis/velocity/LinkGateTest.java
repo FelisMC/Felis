@@ -5,16 +5,7 @@ import best.lolicon.felis.link.LinkException;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
-/**
- * LinkGateTest covers the two rate/fallback helpers the proxy keeps in memory,
- * {@link LinkGate} and {@link FrameBudget}, on an injected clock. Framework free: a
- * failed assertion throws and the process exits non-zero.
- *
- * <p>Run: {@code javac -d <out> shared/src/main/java/best/lolicon/felis/link/*.java
- * velocity/src/main/java/best/lolicon/felis/velocity/{LinkGate,FrameBudget}.java
- * velocity/test/best/lolicon/felis/velocity/LinkGateTest.java && java -cp <out>
- * best.lolicon.felis.velocity.LinkGateTest}.
- */
+// LinkGateTest covers the two in-memory helpers the proxy keeps, LinkGate and FrameBudget, on an injected clock. Framework free: a failed assertion throws.
 public final class LinkGateTest {
 
     private static int checks;
@@ -129,7 +120,6 @@ public final class LinkGateTest {
         assertEq("forget resets", true, b.tryTake(id));
     }
 
-    // ---- harness ----
 
     private static void expectThrows(String what, LinkGate g, UUID id) {
         try {

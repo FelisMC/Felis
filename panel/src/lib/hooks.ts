@@ -27,9 +27,7 @@ export interface AsyncState<T> {
 }
 
 export interface AsyncOptions {
-  /** Keep showing the last result while new deps load, for a list whose deps
-   *  are its filter or page: the old rows stay put (each still acts on its own
-   *  item) instead of blanking to a spinner on every keystroke. */
+  // Retain prior rows while filter or pagination dependencies reload.
   keepPrevious?: boolean;
   /** Polling must not supersede a request that is still awaiting its timeout. */
   coalesce?: boolean;
@@ -44,12 +42,7 @@ interface Settled<T> {
   updatedAt: number | null;
 }
 
-/** useAsync runs an async producer on mount and on demand, guarding against
- *  setState-after-unmount and out-of-order responses. A reload with the same
- *  deps (polling, after a mutation) keeps the current data while it runs. New
- *  deps start from nothing: the result of /servers/a is never shown as
- *  /servers/b, whose buttons already act on b, not even for the one render
- *  before the new request starts. */
+// Guard unmounts and stale responses; changed dependencies must never expose another resource's data.
 export function useAsync<T>(
   fn: () => Promise<T>,
   deps: unknown[] = [],
@@ -109,9 +102,6 @@ export function useAsync<T>(
   };
 }
 
-/** useUnsavedGuard asks the browser to confirm leaving the page (reload, tab
- *  close, typing another URL) while `dirty` holds, so unsaved edits are not
- *  dropped without a prompt. */
 export function useUnsavedGuard(dirty: boolean): void {
   useEffect(() => {
     if (!dirty) return;
@@ -130,9 +120,7 @@ export function useUnsavedGuard(dirty: boolean): void {
 export const STATUS_POLL_FAST_MS = 4_000;
 export const STATUS_POLL_SLOW_MS = 15_000;
 
-/** usePolling re-runs `reload` every `ms` while the tab is visible, and at once
- *  when the tab comes back into view, so a page watching a server follows it
- *  without a manual refresh. `ms` null pauses it. */
+// Poll only while visible and refresh on return; null pauses polling.
 export function usePolling(reload: () => void, ms: number | null): void {
   useEffect(() => {
     if (ms === null) return;
@@ -148,9 +136,7 @@ export function usePolling(reload: () => void, ms: number | null): void {
   }, [reload, ms]);
 }
 
-/** A page whose header reload button covers every card on it: the button bumps
- *  `signal`, each card rereads its own data, and the button waits while any card
- *  holds unsaved changes, so a reload never overwrites a draft. */
+// Block page refresh while any card has unsaved changes.
 export interface RefreshScope {
   signal: number;
   report: (card: string, dirty: boolean) => void;
@@ -177,9 +163,7 @@ export function usePageRefresh(): { scope: RefreshScope; refresh: () => void; di
   return { scope, refresh, dirty: dirtyCards.size > 0 };
 }
 
-/** useRefreshSignal is a card's side: it reruns `reload` on each page refresh
- *  and tells the page while the card holds unsaved changes. Outside a page
- *  scope it does nothing. */
+// Outside a page refresh scope, this hook does nothing.
 export function useRefreshSignal(reload: () => void, dirty = false): void {
   const scope = useContext(RefreshContext);
   const card = useId();

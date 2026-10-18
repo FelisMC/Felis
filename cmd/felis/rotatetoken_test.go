@@ -166,9 +166,7 @@ func TestRotateLimboToken(t *testing.T) {
 	)
 	writeTestFile(t, rig.r.secretsEnv, "DB_PASSWORD=db\nSERVICE_TOKEN=proxy\nLIMBO_TOKEN=old\nOPS_TOKEN=ops\n", 0o600)
 
-	// felis-api must roll only after both copies hold the new value, and the login
-	// pod must still be there then: restarting it earlier would have it present
-	// the new token to an api that does not know it yet.
+	// Roll the API after both token replicas update, then restart the login Pod.
 	rig.r.rollout = func(_ context.Context, deployment string) error {
 		rig.events = append(rig.events, "roll "+deployment)
 		if got := rig.secret(t, "felis", "felis-limbo-token"); got != "NEWTOKEN" {
@@ -215,8 +213,6 @@ func reloadLine(token string) string {
 	return "[12:00:00 INFO] [felis-link]: Felis: service-token reloaded from /x/felis-link.properties (fingerprint " + tokenFingerprint(token) + ")\n"
 }
 
-// The host proxy re-reads its token: the rotation waits for it to say so and
-// leaves it running.
 func TestRotateVelocityTokenReloadsTheHostProxy(t *testing.T) {
 	rig := newRotationRig(t, tokenSecret("felis", "felis-service-token", "old"))
 	writeTestFile(t, rig.r.secretsEnv, "SERVICE_TOKEN=old\n", 0o600)
@@ -277,8 +273,6 @@ func TestRotateVelocityTokenReloadsTheHostProxy(t *testing.T) {
 	}
 }
 
-// A proxy that never logs the new fingerprint (an older plugin, a stuck proxy)
-// is restarted once the wait is over.
 func TestRotateVelocityTokenRestartsAProxyThatDoesNotReload(t *testing.T) {
 	rig := newRotationRig(t, tokenSecret("felis", "felis-service-token", "old"))
 	writeTestFile(t, rig.r.secretsEnv, "SERVICE_TOKEN=old\n", 0o600)
@@ -303,17 +297,12 @@ func TestRotateVelocityTokenRestartsAProxyThatDoesNotReload(t *testing.T) {
 	}
 }
 
-// The proxy and the Java plugin name a token by the same fingerprint
-// (plugins/shared LinkConfigLoaderTest fileTokenFollowsTheFile).
 func TestTokenFingerprintMatchesThePlugin(t *testing.T) {
 	if got := tokenFingerprint("new-token"); got != "348e9df2a42b" {
 		t.Errorf("tokenFingerprint(new-token) = %q, want 348e9df2a42b", got)
 	}
 }
 
-// An external proxy has no felis-link.properties here: the Secret still rotates,
-// nothing is restarted on this host, and the output says where the value is
-// without printing it.
 func TestRotateVelocityTokenForAnExternalProxy(t *testing.T) {
 	rig := newRotationRig(t, tokenSecret("felis", "felis-service-token", "old"))
 	if err := rig.r.rotate(context.Background(), "velocity", true); err != nil {
@@ -349,8 +338,6 @@ func TestRotateBuildTokenReachesTheBuildNamespace(t *testing.T) {
 	}
 }
 
-// A failed api rollout stops the rotation before the caller restarts: the login
-// gate keeps running on the old value the old api pods still accept.
 func TestRotateStopsWhenTheAPIDoesNotRoll(t *testing.T) {
 	rig := newRotationRig(t,
 		tokenSecret("felis", "felis-limbo-token", "old"),
@@ -413,7 +400,6 @@ func installedRig(t *testing.T) *rotationRig {
 	return rig
 }
 
-// Without -yes every rotation prints its plan and changes nothing.
 func TestRotatePlanChangesNothing(t *testing.T) {
 	for _, kind := range rotationKinds() {
 		t.Run(kind, func(t *testing.T) {
@@ -702,8 +688,6 @@ func TestRotateDatabasePassword(t *testing.T) {
 	}
 }
 
-// A password the database does not accept leaves the configs on the old one
-// and felis-api running: the installer's record, already new, is the way back.
 func TestRotateDatabasePasswordStopsWhenTheDatabaseRefuses(t *testing.T) {
 	rig := dbRig(t)
 	rig.r.verifyDB = func(context.Context, string) error {
@@ -728,8 +712,6 @@ func TestRotateDatabasePasswordStopsWhenTheDatabaseRefuses(t *testing.T) {
 	}
 }
 
-// Everything that can refuse does so before the installer's record or the
-// role change; what the host config alone shows is refused by the plan too.
 func TestRotateDatabasePasswordRefusesEarly(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -772,8 +754,6 @@ func TestRotateDatabasePasswordRefusesEarly(t *testing.T) {
 	}
 }
 
-// The RFC 7677 example (user "user", password "pencil"), with the stored and
-// server keys computed by openssl's PBKDF2 and HMAC rather than this code.
 func TestScramVerifier(t *testing.T) {
 	salt, _ := base64.StdEncoding.DecodeString("W22ZaJ0SNY7soEsUEjb6gQ==")
 	got, err := scramVerifier("pencil", salt, 4096)
@@ -803,10 +783,6 @@ func installerSecretKeys() map[string]bool {
 	return keys
 }
 
-// The installer and rotate-token must agree on where each caller's token lives:
-// rotate-token writes installerTokenKeys into secrets.env, and the installer
-// applies those same keys to the Secrets on its next run. A key the installer
-// does not read would be silently reverted by the next upgrade.
 func TestInstallerProvisionsEveryCallerToken(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "bootstrap.sh"))
 	if err != nil {
@@ -845,9 +821,6 @@ func TestInstallerProvisionsEveryCallerToken(t *testing.T) {
 	}
 }
 
-// Every value the installer keeps in secrets.env has a rotation that rewrites
-// that very key, and every key a rotation writes is one the installer
-// generates, keeps and so re-applies on its next run.
 func TestInstallerSecretsAreAllRotatable(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "bootstrap.sh"))
 	if err != nil {

@@ -17,10 +17,7 @@ import (
 
 var _ ServerSchedules = (*PGRepo)(nil)
 
-// fakeSchedules is an in-memory ServerSchedules with the compare-and-set
-// conditions of the PGRepo queries (internal/pgint/schedules_test.go runs the
-// same cases against Postgres). It hands out copies, so a test sees only what
-// was written through the interface.
+// fakeSchedules copies records and enforces the same compare-and-set transitions as PGRepo.
 type fakeSchedules struct {
 	rows   map[int64]*Schedule
 	owners map[string]string // server -> its owner now, for DueSchedules
@@ -44,7 +41,6 @@ func cloneSchedule(s *Schedule) *Schedule {
 
 func sameTime(p *time.Time, t time.Time) bool { return p != nil && p.Equal(t) }
 
-// put stores s as it is and returns its id.
 func (f *fakeSchedules) put(s Schedule) int64 {
 	f.nextID++
 	s.ID = f.nextID
@@ -228,8 +224,6 @@ func mustZone(t *testing.T, name string) *time.Location {
 	return loc
 }
 
-// TestScheduleNextRun pins the run times: daily and repeating rules, the
-// weekday mask read in the schedule's zone, and the two daylight-saving edges.
 func TestScheduleNextRun(t *testing.T) {
 	sh := mustZone(t, "Asia/Shanghai")
 	ny := mustZone(t, "America/New_York")
@@ -283,8 +277,6 @@ func TestScheduleNextRun(t *testing.T) {
 	}
 }
 
-// TestScheduleInputValidation walks the settings apply refuses, each with the
-// one field that makes it wrong, and what a valid body stores.
 func TestScheduleInputValidation(t *testing.T) {
 	valid := func() scheduleInput {
 		return scheduleInput{Action: ScheduleRestart, MinuteOfDay: 240, Weekdays: 0x7f, Timezone: "Asia/Shanghai", WarnMinutes: 5}
@@ -352,8 +344,7 @@ func TestScheduleInputValidation(t *testing.T) {
 	})
 }
 
-// schedRig is a server with a schedule store: survival, owned by owner1,
-// running, at 2026-09-28 03:00 UTC.
+// schedRig fixes time at 2026-09-28 03:00 UTC with a running survival server owned by owner1.
 type schedRig struct {
 	a     *API
 	repo  *fakeRepo
@@ -441,9 +432,6 @@ func schedErrCode(t *testing.T, res *http.Response) string {
 
 const schedBase = "/api/v1/servers/survival/schedules"
 
-// TestScheduleRoutesGate: every schedule route answers 400 for a bad name, 404
-// for an unknown server, 403 for a stranger and 503 without a store, before it
-// reads anything else.
 func TestScheduleRoutesGate(t *testing.T) {
 	body := `{"action":"restart","minute_of_day":240,"weekdays":127,"timezone":"UTC"}`
 	routes := []struct{ method, path, body string }{
@@ -642,8 +630,6 @@ func TestScheduleCRUD(t *testing.T) {
 	})
 }
 
-// TestScheduleRunNow: a run on request starts at once, without the warning,
-// whether or not the schedule is enabled, and leaves its next run alone.
 func TestScheduleRunNow(t *testing.T) {
 	t.Run("a command runs and the answer carries its outcome", func(t *testing.T) {
 		r := newSchedRig(t)

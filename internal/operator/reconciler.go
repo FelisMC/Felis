@@ -1,8 +1,4 @@
-// Package operator reconciles MinecraftServer objects (spec §4, §5, §7). The
-// CRD is the lifecycle source-of-truth; this controller renders the
-// StatefulSet/Service/PVC from it, gates readiness on an RCON probe, and flushes
-// the world over RCON before scaling a server down. It never reads or writes
-// business-layer (Postgres) fields.
+// Package operator reconciles MinecraftServer lifecycle state into managed workloads.
 package operator
 
 import (
@@ -35,71 +31,35 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-// Requeue cadences for the transient phases.
 const (
-	// requeueStarting is the cadence of the RCON readiness re-probe while a server
-	// is Starting. It bounds the window where the container is Ready but the API
-	// still answers 409 not_running: at 5s the observed lag after container-ready
-	// was 6~10s; 2s keeps wake-to-usable snappy without hammering a booting Java
-	// process (the probe only runs on this cadence while the server is unreachable).
-	requeueStarting     = 2 * time.Second
-	requeueStopping     = 5 * time.Second
-	requeueSecret       = 10 * time.Second
-	requeueIdleProbe    = 30 * time.Second
-	requeueRunningProbe = 60 * time.Second
-	// requeueProbeRetry re-probes a Running server soon after a miss;
-	// runningProbeMissesBeforeDegrade consecutive misses demote it to Starting.
-	requeueProbeRetry               = 10 * time.Second
-	runningProbeMissesBeforeDegrade = 3
-	// requeueFailed paces a Failed server whose auto-restarts are spent; a
-	// StatefulSet or CR event still wakes it at once.
-	requeueFailed         = 5 * time.Minute
-	requeueMaintenance    = 5 * time.Second
-	defaultTimeoutSeconds = 300
-	// maxAutoRestarts bounds how often a timed-out start is retried by
-	// recreating its pod; autoRestartBaseBackoff is the first wait, doubling
-	// per attempt.
-	maxAutoRestarts            = v1alpha1.MaxAutoRestarts
-	autoRestartBaseBackoff     = time.Minute
-	defaultReadinessTimeoutSec = 300
-	// arrivalWindow is how long after a run's first ready probe a zero tally starts
-	// no idle countdown. A server usually comes up because someone asked for it: the
-	// player who woke it is still being moved in from the lobby, players a restart
-	// dropped are reconnecting, and a modpack client sits in its configuration phase,
-	// missing from `list`, for a minute or more. Sampled before they arrived, the
-	// zero stopped a server with a short idle timeout just as they got in.
+	requeueStarting                 = 2 * time.Second // readiness probe interval while Starting
+	requeueStopping                 = 5 * time.Second
+	requeueSecret                   = 10 * time.Second
+	requeueIdleProbe                = 30 * time.Second
+	requeueRunningProbe             = 60 * time.Second
+	requeueProbeRetry               = 10 * time.Second // retry interval after a Running probe miss
+	runningProbeMissesBeforeDegrade = 3                // consecutive misses before readiness demotion
+	requeueFailed                   = 5 * time.Minute
+	requeueMaintenance              = 5 * time.Second
+	defaultTimeoutSeconds           = 300
+	maxAutoRestarts                 = v1alpha1.MaxAutoRestarts
+	autoRestartBaseBackoff          = time.Minute // initial restart backoff, doubled per attempt
+	defaultReadinessTimeoutSec      = 300
+	// Ignore empty samples during arrivalWindow so initial joining players do not trigger idle shutdown.
 	arrivalWindow = 3 * time.Minute
 )
 
-// RconSecretAnnotation stamps the pod template with a fingerprint of the
-// current RCON password. If the Secret is ever lost (its deletion destroys the
-// password) and re-provisioned, the fingerprint changes and the StatefulSet
-// rolls the pod onto the new password. Without it the running pod keeps
-// authenticating with the old value while the operator probes with the new
-// one, and the RCON gate fails until someone restarts the pod by hand.
+// RconSecretAnnotation fingerprints the password to restart Pods when the Secret is reprovisioned.
 const RconSecretAnnotation = "felis.lolicon.best/rcon-secret"
 
-// rconStamp fingerprints an RCON password for RconSecretAnnotation. 64 bits of
-// SHA-256: enough to never confuse two passwords, short enough to read.
 func rconStamp(password []byte) string {
 	sum := sha256.Sum256(password)
 	return hex.EncodeToString(sum[:8])
 }
 
-// PodTemplateAnnotation stamps the StatefulSet with a fingerprint of the pod
-// template the operator last wrote, taken with the felis image left out of the
-// init containers. The installer tags that image by release, so every platform
-// upgrade hands the operator a new one; rolling every running server onto it
-// would restart each world under its players for an init step that has already
-// run. While a server runs and the fingerprint still matches, its template is
-// left as it is and the new image arrives with its next start (stop scales to
-// zero, and a start writes the whole template). Any other change — a spec edit,
-// a new RCON password, a builder change in a new release — moves the
-// fingerprint and rolls the pod as before.
+// PodTemplateAnnotation excludes the Felis init image so release updates do not restart running game servers.
 const PodTemplateAnnotation = "felis.lolicon.best/pod-template"
 
-// podTemplateStamp fingerprints tmpl for PodTemplateAnnotation. encoding/json
-// writes map keys sorted, so the same template always hashes the same.
 func podTemplateStamp(tmpl *corev1.PodTemplateSpec, felisImage string) (string, error) {
 	t := tmpl.DeepCopy()
 	for i := range t.Spec.InitContainers {
@@ -115,58 +75,28 @@ func podTemplateStamp(tmpl *corev1.PodTemplateSpec, felisImage string) (string, 
 	return hex.EncodeToString(sum[:8]), nil
 }
 
-// Reconciler reconciles a MinecraftServer with its managed children.
 type Reconciler struct {
 	Nodes          client.Reader
 	EgressProbe    string
 	ControllerNode string
-	// ControllerHA is controller high availability: a system server (login, lobby) whose
-	// world sits on replicated storage runs on whichever controller is up, instead of
-	// being pinned to ControllerNode (floats).
+	// ControllerHA allows unpinned replicated system servers to move between controllers.
 	ControllerHA bool
 	client.Client
-	Scheme *runtime.Scheme
-	// Prober gates readiness on RCON reachability.
-	Prober Prober
-	// FelisImage is this operator's own image, used for the forwarding-config
-	// initContainer injected into user servers. Empty (an operator Deployment
-	// without FELIS_IMAGE) disables that injection rather than failing.
-	FelisImage string
-	// ArtifactCache is the base URL of the server-software download cache
-	// (felis-artifacts) that runtime-image servers install through. Empty makes
-	// them download from upstream directly.
+	Scheme        *runtime.Scheme
+	Prober        Prober
+	FelisImage    string
 	ArtifactCache string
-	// Now is injectable for deterministic timestamps in tests; defaults to
-	// metav1.Now.
-	Now func() metav1.Time
-	// Jobs reads the minecraft namespace's Jobs for the world-volume lock
-	// (internal/maintenance). It is the manager's uncached API reader, so the
-	// operator needs jobs:list and no Job informer. Nil skips the check.
+	Now           func() metav1.Time // nil uses metav1.Now
+	// Jobs must be uncached for maintenance checks; nil skips them.
 	Jobs client.Reader
-	// Secrets reads the RCON password Secrets, each by name. It is the manager's
-	// uncached API reader, so the operator holds secrets:get and no list or watch:
-	// a Secret informer would cache every Secret in the namespace (the felis-config
-	// mirror with the database URL among them) and grow with them. Nil falls back
-	// to the embedded client.
+	// Secrets avoids a Secret informer; nil falls back to the embedded client.
 	Secrets client.Reader
-	// Pods reads a server's pod-0 by name, to replace one left on an old template
-	// (replaceStalePod). The manager's uncached API reader as well, so the
-	// operator holds pods:get and no pod informer. Nil falls back to the embedded
-	// client.
-	Pods client.Reader
-	// Recorder puts an Event on the MinecraftServer at each phase change, pod
-	// recreation, idle stop and RCON Secret provision, so `kubectl describe`
-	// shows the timeline the status alone overwrites. Nil records none.
-	Recorder record.EventRecorder
-	// Watch records the passes in flight for the liveness probe. Nil skips it.
-	Watch *ReconcileWatch
+	// Pods avoids a Pod informer; nil falls back to the embedded client.
+	Pods     client.Reader
+	Recorder record.EventRecorder // nil disables Events
+	Watch    *ReconcileWatch      // nil disables liveness tracking
 
-	// probeFailures counts consecutive failed RCON probes of a Running server,
-	// by namespaced name. In memory: an operator restart forgets them, which only
-	// delays a degrade by a few probes. A count goes when a probe succeeds, when
-	// the server is meant to stop and when it is deleted. A later server of the
-	// same name inherits nothing that matters: it reaches Running only through a
-	// probe that succeeds, and that clears the count.
+	// probeFailures is process-local and resets on success, stop or deletion.
 	probeMu       sync.Mutex
 	probeFailures map[types.NamespacedName]int
 }
@@ -178,29 +108,17 @@ func (r *Reconciler) now() metav1.Time {
 	return metav1.Now()
 }
 
-// SetupWithManager wires the controller to watch MinecraftServers and the
-// children it owns.
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.MinecraftServer{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
-		// No Secret watch: a Running server is re-reconciled every
-		// requeueRunningProbe anyway, which recreates a deleted RCON Secret, and
-		// a stopped one gets it back on its next start.
 		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrentReconciles}).
 		Complete(r)
 }
 
-// maxConcurrentReconciles lets that many servers reconcile at once. A reconcile
-// blocks on RCON (up to 5s for a probe, and up to defaultSaveTimeout for the
-// save ahead of a stop), so with controller-runtime's default of one, a single
-// large world saving would stall every other server's start, stop and readiness.
-// The same server is never reconciled twice at once regardless.
 const maxConcurrentReconciles = 4
 
-// Reconcile drives a single MinecraftServer toward spec.desiredState. One pass
-// is bounded by reconcileTimeout and reported to r.Watch while it runs.
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	ctx, cancel := context.WithTimeout(ctx, reconcileTimeout)
 	defer cancel()
@@ -213,8 +131,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 func (r *Reconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var server v1alpha1.MinecraftServer
 	if err := r.Get(ctx, req.NamespacedName, &server); err != nil {
-		// Deletion is handled by owner references on the children; the probe-miss
-		// count is the one part of a server kept in memory.
 		if apierrors.IsNotFound(err) {
 			r.clearProbeFailures(req.NamespacedName)
 		}
@@ -236,7 +152,6 @@ func (r *Reconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	var res ctrl.Result
 	var err error
 	if desired == v1alpha1.DesiredStopped {
-		// Misses count only against a Running server; the next run starts afresh.
 		r.clearProbeFailures(req.NamespacedName)
 		res, err = r.reconcileStopped(ctx, &server)
 	} else {
@@ -248,9 +163,6 @@ func (r *Reconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	return res, err
 }
 
-// recordTransition logs and records a pass that moved the server to another
-// phase, with the Ready condition's reason and message. Failing, a recreated
-// pod and a Running server falling back to Starting are Warnings.
 func (r *Reconciler) recordTransition(ctx context.Context, server *v1alpha1.MinecraftServer, prevPhase v1alpha1.Phase, prevRestarts int32) {
 	phase := server.Status.Phase
 	if phase == prevPhase {
@@ -273,12 +185,7 @@ func (r *Reconciler) recordTransition(ctx context.Context, server *v1alpha1.Mine
 	r.event(server, eventType, reason, fmt.Sprintf("%s → %s: %s", from, phase, msg))
 }
 
-// takeRestartRequest recreates a Failed pod for a start retry, or a Running pod
-// for an explicit restart. A request overtaken by a stop is only removed.
-// The fresh status is written before the request is
-// removed, so a pass that fails in between leaves the request to be taken again
-// (at the cost of one more pod recreate), never a removed request with the old
-// spent budget still in place.
+// Persist restart status before removing its request annotation so interrupted passes retry instead of losing the restart.
 func (r *Reconciler) takeRestartRequest(ctx context.Context, server *v1alpha1.MinecraftServer, desired v1alpha1.DesiredState, annotation string) error {
 	explicit := annotation == v1alpha1.AnnotationRestart
 	if desired == v1alpha1.DesiredRunning && (server.Status.Phase == v1alpha1.PhaseFailed || (explicit && server.Status.Phase == v1alpha1.PhaseRunning)) {
@@ -319,8 +226,7 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 	if kind, held, err := r.maintenanceHold(ctx, server); err != nil {
 		return ctrl.Result{}, err
 	} else if held {
-		// Leave phase and the start anchor alone: nothing is starting yet, and a
-		// long restore must not be charged to the startup timeout.
+		// Keep the start anchor unchanged during restore so maintenance time cannot exhaust startup timeout.
 		server.Status.ObservedGeneration = server.Generation
 		r.setCondition(server, v1alpha1.ConditionReady, metav1.ConditionFalse, "MaintenanceInProgress",
 			"waiting for the "+kind+" on this server's world to finish before starting")
@@ -375,10 +281,7 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 		return ctrl.Result{}, err
 	}
 
-	// Before the StatefulSet, not after: buildEnv wires RCON_PASSWORD as a
-	// secretKeyRef, so a pod created ahead of its Secret never starts — it sits in
-	// CreateContainerConfigError, which reads like a broken image rather than a
-	// missing key.
+	// Create the RCON Secret before the StatefulSet to avoid CreateContainerConfigError from an unresolved secretKeyRef.
 	passwordStamp, err := r.ensureRconSecret(ctx, server)
 	if err != nil {
 		r.markStarting(server, "RconSecretUnavailable", err.Error())
@@ -394,11 +297,9 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 	}
 	desired, err := buildStatefulSetWith(placed, 1, podOptions{FelisImage: r.FelisImage, GateProbe: r.EgressProbe, ArtifactCache: r.ArtifactCache})
 	if err != nil {
-		// A malformed spec (e.g. bad storage quantity) is terminal until edited.
 		r.markFailed(server, "InvalidSpec", err.Error())
 		return ctrl.Result{}, r.patchStatus(ctx, server)
 	}
-	// A floating system server takes any controller in place of the home one it was built for.
 	if r.floats(server) {
 		desired.Spec.Template.Spec.NodeSelector = map[string]string{placement.LabelRole: placement.RoleController}
 	}
@@ -420,12 +321,10 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 		return ctrl.Result{}, err
 	}
 
-	// The pod must first pass its tcpSocket readiness (readyReplicas >= 1).
 	if current.Status.ReadyReplicas < 1 {
 		if replaced, err := r.replaceStalePod(ctx, server, &current); err != nil {
 			return ctrl.Result{}, err
 		} else if replaced {
-			// A new spec is a new start: its own timeout and restart budget.
 			server.Status.AutoRestarts = 0
 			server.Status.StartRequestedAt = nil
 			r.markStarting(server, "SpecChanged", "the spec changed while the pod was not ready; recreated the pod from the new spec")
@@ -454,8 +353,6 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 		return ctrl.Result{RequeueAfter: requeueStarting}, nil
 	}
 
-	// Then the operator gates true readiness on an RCON probe (spec §5), which
-	// also samples the current player tally for Status.Players.
 	var players PlayerCount
 	if server.Spec.Rcon.Enabled {
 		password, err := r.rconPassword(ctx, server)
@@ -468,8 +365,7 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 		}
 		pc, err := r.Prober.Probe(ctx, rconAddress(server), password)
 		if err != nil {
-			// One missed probe of a Running server is noise (a lag spike, a save);
-			// it keeps its status and endpoint until the misses run consecutive.
+			// Require consecutive probe misses before demoting a Running server.
 			if server.Status.Phase == v1alpha1.PhaseRunning && r.noteProbeFailure(client.ObjectKeyFromObject(server)) < runningProbeMissesBeforeDegrade {
 				return ctrl.Result{RequeueAfter: requeueProbeRetry}, nil
 			}
@@ -487,9 +383,6 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 		}
 		r.clearProbeFailures(client.ObjectKeyFromObject(server))
 		players = pc
-		// A tally that could not be read pauses idle auto-stop (below) instead of
-		// counting as an empty server; the condition says so, so a server that
-		// never stops idle shows why.
 		if pc.Known {
 			r.setCondition(server, v1alpha1.ConditionPlayersCounted, metav1.ConditionTrue, "Counted", "RCON list reply read")
 		} else {
@@ -498,15 +391,7 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 		}
 	}
 
-	// Idle auto-stop (spec §8): when enabled, the server is Running, and the
-	// player tally is zero, track the empty duration and auto-stop when the
-	// configured timeout expires. The existing RCON probe already supplies
-	// the player count — no extra network cost.
-	// players.Known gates the whole branch: an unread tally (RCON off, `list`
-	// failed, or a reply format the parser does not know) must never read as
-	// "empty" and stop a server full of people. It neither stamps nor clears
-	// EmptySince, so a flaky read does not restart the countdown either; the
-	// stop itself only ever follows a sample that really said zero.
+	// Unknown player counts must neither start nor clear the empty-server timer.
 	if players.Known && idleStopApplies(server) {
 		if players.Online == 0 {
 			if server.Status.EmptySince == nil {
@@ -516,15 +401,9 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 			} else if r.now().Time.Sub(server.Status.EmptySince.Time).Seconds() >=
 				float64(server.Spec.Idle.EmptySecondsBeforeStop) {
 				if liveBackupFreezing(server, r.now().Time) {
-					// A live backup is copying the world: the stop would save into the
-					// copy. EmptySince stands, so the stop follows the thaw.
+					// Preserve EmptySince while live backup delays stopping so shutdown follows thaw.
 					return ctrl.Result{RequeueAfter: liveBackupPoll}, nil
 				}
-				// Merge patch, not Update: an unrelated reconcile writes status
-				// concurrently, and shipping the whole object back risks
-				// clobbering it (the reaper's Stop uses the same pattern for
-				// the same reason). EmptySince is deliberately left for
-				// markStopping to clear once the scale-down starts.
 				patch := client.MergeFrom(server.DeepCopy())
 				server.Spec.DesiredState = v1alpha1.DesiredStopped
 				if err := r.Patch(ctx, server, patch); err != nil {
@@ -544,12 +423,7 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 	if err := r.patchStatus(ctx, server); err != nil {
 		return ctrl.Result{}, err
 	}
-	// Idle auto-stop has no natural wake-up: player joins/leaves never touch
-	// this CRD and RCON is only probed here, so without a requeue the
-	// empty-duration counter would be stamped once and then never revisited
-	// (observed live: the stamp sat unexamined for minutes). Wake at the exact
-	// deadline while the tally says empty, or on a slow cadence while players
-	// are online, to notice the moment the last one leaves.
+	// Player joins do not modify the CRD; requeue at idle expiry or poll while players are online.
 	if server.Spec.Rcon.Enabled && idleStopApplies(server) {
 		if server.Status.EmptySince != nil {
 			deadline := server.Status.EmptySince.Time.Add(time.Duration(server.Spec.Idle.EmptySecondsBeforeStop) * time.Second)
@@ -559,23 +433,15 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 		}
 		return ctrl.Result{RequeueAfter: requeueIdleProbe}, nil
 	}
-	// Without idle auto-stop nothing else wakes a Running server either: the
-	// player tally and the RCON check would only refresh on a StatefulSet or CR
-	// event. A slow cadence keeps Status.Players and readiness current.
 	return ctrl.Result{RequeueAfter: requeueRunningProbe}, nil
 }
 
-// idleStopApplies reports whether idle auto-stop is configured for server. A
-// system server (the login gate, the lobby) never idles out whatever its spec
-// says: stopping the gate locks every player out, and nothing would wake it.
+// System servers cannot idle-stop because shutting down the login gate would prevent player ingress.
 func idleStopApplies(server *v1alpha1.MinecraftServer) bool {
 	return server.Labels[v1alpha1.LabelSystemRole] == "" &&
 		server.Spec.Idle.AutoStopEnabled && server.Spec.Idle.EmptySecondsBeforeStop > 0
 }
 
-// arriving reports whether a zero tally at now may only mean the players this run
-// came up for are not in yet: it is the run's first ready probe (ReadySignalAt is
-// stamped after it) or within arrivalWindow of that probe.
 func arriving(server *v1alpha1.MinecraftServer, now metav1.Time) bool {
 	ready := server.Status.ReadySignalAt
 	return ready == nil || now.Time.Before(ready.Add(arrivalWindow))
@@ -592,15 +458,11 @@ func (r *Reconciler) reconcileStopped(ctx context.Context, server *v1alpha1.Mine
 		return ctrl.Result{}, err
 	}
 
-	// Graceful shutdown (spec §7): flush the world over RCON, then scale to zero,
-	// which sends the server SIGTERM and so its own shutdown save within the
-	// grace period.
 	if sts.Spec.Replicas == nil || *sts.Spec.Replicas != 0 {
 		if wait, err := r.noticeStop(ctx, server, &sts); err != nil || wait > 0 {
 			return ctrl.Result{RequeueAfter: wait}, err
 		}
-		// The pod saves on its way down; a live backup still copying the world would
-		// catch that save half-written, so the stop waits for the thaw (bounded).
+		// Wait for live-backup thaw so shutdown saving cannot tear the staged copy.
 		if liveBackupFreezing(server, r.now().Time) {
 			return ctrl.Result{RequeueAfter: liveBackupPoll}, nil
 		}
@@ -625,29 +487,15 @@ func (r *Reconciler) reconcileStopped(ctx context.Context, server *v1alpha1.Mine
 	return ctrl.Result{}, r.patchStatus(ctx, server)
 }
 
-// StopNoticeWindow is how long the players on a server get between the warning
-// and the stop: long enough to finish a fight or get off a boat, short enough that
-// the owner's stop (and the backup or restore waiting behind it) is not held up.
 const StopNoticeWindow = 30 * time.Second
 
-// The lines players see around a stop. The operator does not know a player's
-// language, so each carries both.
 const (
 	stopNoticeText    = "[Felis] 服务器将在 30 秒后关闭，请尽快找安全的地方 / This server stops in 30 seconds"
 	stopNowText       = "[Felis] 正在保存世界并关闭服务器 / Saving the world and stopping now"
 	stopCalledOffText = "[Felis] 关闭已取消 / The stop was called off"
 )
 
-// noticeStop warns the players on a server that is about to be scaled down, and
-// returns how long the stop must still wait for them. The first pass tells everyone
-// online and stamps StopNoticeAt; the stop goes ahead once StopNoticeWindow has
-// passed since, with a last line as it does.
-//
-// There is no wait when nobody can be told or nobody is there: RCON off, no ready
-// pod, a probe or broadcast that fails, or a tally that says zero players. A tally
-// the server did not give (an unfamiliar `list` reply) still gets the warning,
-// since players may well be on it. Idle auto-stop therefore never waits: it only
-// fires on an empty server.
+// noticeStop returns zero when no players can be notified; idle stops do not wait for an undeliverable warning.
 func (r *Reconciler) noticeStop(ctx context.Context, server *v1alpha1.MinecraftServer, sts *appsv1.StatefulSet) (time.Duration, error) {
 	if at := server.Status.StopNoticeAt; at != nil {
 		if wait := at.Time.Add(StopNoticeWindow).Sub(r.now().Time); wait > 0 {
@@ -682,16 +530,12 @@ func (r *Reconciler) noticeStop(ctx context.Context, server *v1alpha1.MinecraftS
 	return StopNoticeWindow, nil
 }
 
-// callOffStop answers a desiredState that went back to Running inside the notice
-// window: the players who were warned hear that the stop is off.
 func (r *Reconciler) callOffStop(ctx context.Context, server *v1alpha1.MinecraftServer) error {
 	r.broadcast(ctx, server, stopCalledOffText)
 	server.Status.StopNoticeAt = nil
 	return r.patchStatus(ctx, server)
 }
 
-// broadcast shows text to everyone on server, best-effort: a server that cannot be
-// reached has nobody listening either.
 func (r *Reconciler) broadcast(ctx context.Context, server *v1alpha1.MinecraftServer, text string) {
 	if !server.Spec.Rcon.Enabled {
 		return
@@ -705,18 +549,6 @@ func (r *Reconciler) broadcast(ctx context.Context, server *v1alpha1.MinecraftSe
 	}
 }
 
-// saveBeforeStop runs `save-all flush` on a server that is about to be scaled to
-// zero. The SIGTERM that follows makes the server save again on its way out, but
-// that save races the grace period: a large world killed mid-save rolls back to
-// whatever was last flushed. Flushing first leaves the shutdown save with almost
-// nothing to write.
-//
-// It is best-effort and never holds up the stop. A server without RCON, or with no
-// ready pod (still booting, or already terminating), has nothing to flush it with,
-// and a failed save still leaves the shutdown save; holding a stop the user asked
-// for over it would only keep the server up. A conflict on the Update that follows
-// re-runs it on the next reconcile, which is harmless: a second flush right after
-// the first writes nothing.
 func (r *Reconciler) saveBeforeStop(ctx context.Context, server *v1alpha1.MinecraftServer, sts *appsv1.StatefulSet) {
 	if !server.Spec.Rcon.Enabled || sts.Status.ReadyReplicas == 0 {
 		return
@@ -736,13 +568,7 @@ func (r *Reconciler) saveBeforeStop(ctx context.Context, server *v1alpha1.Minecr
 	logger.Info("pre-stop world save done", "elapsed", time.Since(start).Round(time.Millisecond).String())
 }
 
-// maintenanceHold reports whether a restore, backup or file write holds the
-// server's world volume (internal/maintenance) while its pod is about to be
-// created. felis-api already refuses a wake in that state; this is the same rule
-// for a desiredState flipped by anything else (kubectl, a script), since a game
-// pod scheduled beside a restore Job boots on a half-extracted world. A server
-// whose StatefulSet is already scaled up is never held: its pod exists, and
-// stopping it here would only lose the players on it.
+// maintenanceHold gates only Pods about to be created, not workloads already scaled up.
 func (r *Reconciler) maintenanceHold(ctx context.Context, server *v1alpha1.MinecraftServer) (string, bool, error) {
 	if r.Jobs == nil {
 		return "", false, nil
@@ -787,24 +613,7 @@ func (r *Reconciler) ensureServices(ctx context.Context, server *v1alpha1.Minecr
 	return endpointAddress, nil
 }
 
-// ensureRconSecret creates the per-server RCON password Secret named by
-// spec.rcon.secretRef the first time a server with RCON enabled reconciles, and
-// leaves it alone afterwards. Provisioning lives here rather than in felis-api's
-// CreateServer for three reasons: it is declarative (a deleted Secret is
-// re-minted on the next pass), the controller reference makes Kubernetes
-// garbage-collect the Secret with the server so no delete path has to remember
-// it, and it backfills — a server created before RCON existed only needs
-// spec.rcon filled in, and the password appears without anyone handling it.
-// felis-api never mints the password and never needs to: it reads the Secret at
-// command time (internal/api/console.go rconPassword).
-//
-// The password is 32 hex chars from crypto/rand. It is generated once and never
-// rotated here: rewriting it would leave the running server authenticating with
-// the old value until its pod restarts, so rotation belongs to an explicit
-// operation, not to a reconcile that runs every few seconds. Re-creation after
-// a deletion is the one case where a fresh password must reach the pod — the
-// caller stamps the returned fingerprint onto the pod template, so the
-// StatefulSet rolls exactly when the password underneath it changes.
+// ensureRconSecret creates once and fingerprints the stored value; it never rotates existing credentials.
 func (r *Reconciler) ensureRconSecret(ctx context.Context, server *v1alpha1.MinecraftServer) (string, error) {
 	if !server.Spec.Rcon.Enabled {
 		return "", nil
@@ -836,21 +645,14 @@ func (r *Reconciler) ensureRconSecret(ctx context.Context, server *v1alpha1.Mine
 			Labels:    map[string]string{v1alpha1.LabelServer: server.Name},
 		},
 		Type: corev1.SecretTypeOpaque,
-		// Data, not StringData: StringData is a write-only convenience the API server
-		// folds into Data, so anything reading the object back — including this
-		// package's own tests — would see an empty value. Encoding here keeps the
-		// object self-consistent the moment it is built.
+		// Use Data because StringData is write-only and reads back empty.
 		Data: map[string][]byte{ref.Key: []byte(password)},
 	}
 	if err := controllerutil.SetControllerReference(server, secret, r.Scheme); err != nil {
 		return "", err
 	}
 	if err := r.Create(ctx, secret); err != nil {
-		// Another reconcile (or a racing replica) won: that Secret is as good as
-		// this one, but the stamp must match what the next pass will read, so
-		// fetch the winner — a stale cache here just requeues (the caller's
-		// RconSecretUnavailable path retries in 10s) instead of stamping a
-		// value that would flip on the next reconcile and roll the pod twice.
+		// Read the concurrent creator's value before fingerprinting to avoid a redundant second Pod restart.
 		if apierrors.IsAlreadyExists(err) {
 			var winner corev1.Secret
 			if gerr := r.secretReader().Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: ref.Name}, &winner); gerr != nil {
@@ -865,10 +667,6 @@ func (r *Reconciler) ensureRconSecret(ctx context.Context, server *v1alpha1.Mine
 	return rconStamp([]byte(password)), nil
 }
 
-// randomRconPassword returns 16 crypto/rand bytes as hex. Hex, not base64: the
-// value is written verbatim into server.properties, whose parser treats the line
-// as raw text to end-of-line, and hex avoids every character (=, :, \, whitespace)
-// that a properties file or a shell round-trip could interpret.
 func randomRconPassword() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -891,16 +689,7 @@ func (r *Reconciler) podReader() client.Reader {
 	return r.Client
 }
 
-// replaceStalePod deletes a pod-0 that is not ready and was made from an older
-// template than the StatefulSet's current one, for the StatefulSet to recreate
-// from the new spec. The StatefulSet controller does not do it: under
-// OrderedReady it rolls a pod only once that pod is Running and Ready, so a
-// server that cannot start keeps crash-looping on the image or settings that
-// broke it however its spec is corrected, until the next timed-out retry
-// deletes the pod, or forever once the retries are spent. A ready pod is left
-// to the controller's own rolling update, and one already terminating to its
-// deletion. It acts only on a StatefulSet status that has observed the current
-// template, so the update revision it compares against is the current one.
+// replaceStalePod recreates not-ready Pods because OrderedReady cannot roll them to a repaired template on its own.
 func (r *Reconciler) replaceStalePod(ctx context.Context, server *v1alpha1.MinecraftServer, sts *appsv1.StatefulSet) (bool, error) {
 	update := sts.Status.UpdateRevision
 	if update == "" || sts.Status.ObservedGeneration < sts.Generation {
@@ -913,8 +702,7 @@ func (r *Reconciler) replaceStalePod(ctx context.Context, server *v1alpha1.Minec
 	if pod.DeletionTimestamp != nil || pod.Labels[appsv1.ControllerRevisionHashLabelKey] == update || podReady(&pod) {
 		return false, nil
 	}
-	// The UID precondition: a pod the StatefulSet already recreated is not
-	// deleted in its place.
+	// Require the checked UID so a concurrent StatefulSet replacement cannot be deleted.
 	if err := r.Delete(ctx, &pod, client.Preconditions{UID: &pod.UID}); err != nil {
 		if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
 			return false, nil
@@ -951,10 +739,7 @@ func (r *Reconciler) rconPassword(ctx context.Context, server *v1alpha1.Minecraf
 	return string(b), nil
 }
 
-// applyStatefulSet creates the StatefulSet or, if it exists, updates only its
-// mutable fields (StatefulSet selector/serviceName/volumeClaimTemplates are
-// immutable and must not be re-sent). A running server whose template changed
-// only in the felis image keeps its template (PodTemplateAnnotation).
+// applyStatefulSet preserves a running template when only the Felis init image changed.
 func (r *Reconciler) applyStatefulSet(ctx context.Context, desired *appsv1.StatefulSet) error {
 	stamp, err := podTemplateStamp(&desired.Spec.Template, r.FelisImage)
 	if err != nil {
@@ -987,8 +772,6 @@ func (r *Reconciler) applyStatefulSet(ctx context.Context, desired *appsv1.State
 	return r.Update(ctx, &existing)
 }
 
-// applyService creates or updates a Service, preserving the cluster-assigned
-// ClusterIP so the update does not orphan the address.
 func (r *Reconciler) applyService(ctx context.Context, desired *corev1.Service) error {
 	var existing corev1.Service
 	err := r.Get(ctx, client.ObjectKeyFromObject(desired), &existing)
@@ -1008,29 +791,17 @@ func (r *Reconciler) patchStatus(ctx context.Context, server *v1alpha1.Minecraft
 	return r.Status().Update(ctx, server)
 }
 
-// --- status mutators -------------------------------------------------------
-
 func (r *Reconciler) markStarting(server *v1alpha1.MinecraftServer, reason, msg string) {
 	server.Status.Phase = v1alpha1.PhaseStarting
 	server.Status.Ready = false
 	server.Status.ObservedGeneration = server.Generation
-	// Anchor felis_start_duration_seconds (spec §23) at the first Starting pass of
-	// this start attempt. Set-once (cleared on stop) so re-entrant Starting
-	// reconciles preserve the original anchor and the observed duration spans the
-	// whole start, not just the last requeue. A server that reaches readiness
-	// without ever passing through Starting leaves this nil, and markRunningReady
-	// skips the observation rather than recording a bogus one.
+	// Set once per start attempt and clear on stop to anchor startup-duration measurement.
 	if server.Status.StartRequestedAt == nil {
 		t := r.now()
 		server.Status.StartRequestedAt = &t
 	}
-	// A server back in Starting is on its way to a new ready: a pod that dropped
-	// out under a Running server, a retry after Failed, an auto-restart. Keeping
-	// the last run's ready time would make markRunningReady treat the start as
-	// already observed, and every start after the first would go unmeasured.
+	// Clear ready time so each new start is measured.
 	server.Status.ReadySignalAt = nil
-	// The empty clock belongs to a run too: the last run's would stop the new one at
-	// its first zero, before anyone it came up for is in.
 	server.Status.EmptySince = nil
 	server.Status.Endpoint = v1alpha1.EndpointStatus{Mode: v1alpha1.EndpointFallback, Address: server.Spec.FallbackServer}
 	server.Status.LiveMotd = server.Spec.Motd.Starting
@@ -1043,43 +814,30 @@ func (r *Reconciler) markRunningReady(server *v1alpha1.MinecraftServer, players 
 	server.Status.Phase = v1alpha1.PhaseRunning
 	server.Status.Ready = true
 	server.Status.ObservedGeneration = server.Generation
-	// Refresh the player tally sampled by this reconcile's RCON probe so the panel
-	// reports live occupancy instead of the 0/0 markStopped leaves behind. An
-	// unread tally keeps the last one shown.
+	// Retain the last displayed count when sampling fails.
 	if players.Known {
 		server.Status.Players = v1alpha1.PlayersStatus{Online: players.Online, Max: players.Max}
 	}
 	if server.Status.ReadySignalAt == nil {
 		t := r.now()
 		server.Status.ReadySignalAt = &t
-		// Observe felis_start_duration_seconds (spec §23) exactly once, when
-		// readiness is first reached. StartRequestedAt was persisted by an earlier
-		// Starting reconcile; if it is nil the server became ready without a
-		// Starting pass and there is no meaningful start interval to record.
+		// A nil StartRequestedAt means the server never entered Starting.
 		if server.Status.StartRequestedAt != nil {
 			metrics.StartDurationSeconds.Observe(t.Sub(server.Status.StartRequestedAt.Time).Seconds())
 		}
 	}
-	// The start attempt is over the moment it succeeds: clear the anchor so a
-	// later pod blip runs on a fresh startup budget instead of inheriting a
-	// stale one. Found live: a server that had already recovered was marked
-	// StartupTimeout minutes later because the old anchor was still ticking
-	// underneath, and the Failed condition outlived the recovery.
+	// Clear the anchor so later Pod failures receive a fresh startup budget.
 	server.Status.StartRequestedAt = nil
 	server.Status.Endpoint = v1alpha1.EndpointStatus{Mode: v1alpha1.EndpointDirect, Address: endpointAddress}
 	server.Status.LiveMotd = server.Spec.Motd.Running
 	r.setCondition(server, v1alpha1.ConditionRconReached, metav1.ConditionTrue, "Probed", "RCON probe succeeded")
 	r.setCondition(server, v1alpha1.ConditionReady, metav1.ConditionTrue, "RconReached", "server is accepting RCON")
-	// markFailed flips Provisioned to False; a recovered server must flip it
-	// back, or every consumer of the conditions sees a permanent failure flag.
 	r.setCondition(server, v1alpha1.ConditionProvisioned, metav1.ConditionTrue, "Provisioned", "server is provisioned and accepting RCON")
 }
 
 func (r *Reconciler) markStopping(server *v1alpha1.MinecraftServer) {
 	server.Status.Phase = v1alpha1.PhaseStopping
-	// The run ends here. A wake can land before the scale-down completes and bring the
-	// pod straight back: the idle stop's stale clock would then stop it again at its
-	// first zero, and the players the wake is for get their arrival window.
+	// A wake during scale-down must not inherit the previous run's idle timer.
 	server.Status.EmptySince = nil
 	server.Status.ReadySignalAt = nil
 	server.Status.Ready = false
@@ -1095,10 +853,8 @@ func (r *Reconciler) markStopped(server *v1alpha1.MinecraftServer) {
 	server.Status.Ready = false
 	server.Status.ObservedGeneration = server.Generation
 	server.Status.ReadySignalAt = nil
-	// Clear the start anchor so the next Running transition re-anchors and
-	// felis_start_duration_seconds measures the new start, not since the last one.
 	server.Status.StartRequestedAt = nil
-	server.Status.EmptySince = nil // reset idle auto-stop timer
+	server.Status.EmptySince = nil
 	server.Status.Players = v1alpha1.PlayersStatus{}
 	server.Status.Endpoint = v1alpha1.EndpointStatus{Mode: v1alpha1.EndpointFallback, Address: server.Spec.FallbackServer}
 	server.Status.LiveMotd = server.Spec.Motd.Stopped
@@ -1154,9 +910,6 @@ func readinessTimeout(server *v1alpha1.MinecraftServer) time.Duration {
 	return defaultReadinessTimeoutSec * time.Second
 }
 
-// startingRequeue paces a start: every 2s while Starting; once Failed, only
-// when the next auto-restart falls due, or every requeueFailed when the
-// attempts are spent.
 func (r *Reconciler) startingRequeue(server *v1alpha1.MinecraftServer, timeout time.Duration) time.Duration {
 	if server.Status.Phase != v1alpha1.PhaseFailed {
 		return requeueStarting
@@ -1185,11 +938,7 @@ func (r *Reconciler) clearProbeFailures(key types.NamespacedName) {
 	delete(r.probeFailures, key)
 }
 
-// recoverFailedStart retries a start that timed out. Once a backoff past the
-// timeout has elapsed (1m, then 2m, then 4m), it deletes the pod so the
-// StatefulSet recreates it, counts the attempt in Status.AutoRestarts and
-// re-anchors the start timeouts. After maxAutoRestarts the server stays Failed
-// for a human; reaching Ready or stopping resets the count.
+// recoverFailedStart uses bounded exponential backoff and reanchors timeouts; exhausted attempts wait for explicit recovery.
 func (r *Reconciler) recoverFailedStart(ctx context.Context, server *v1alpha1.MinecraftServer, timeout time.Duration) error {
 	n := server.Status.AutoRestarts
 	if n >= maxAutoRestarts || server.Status.StartRequestedAt == nil {
@@ -1211,16 +960,11 @@ func (r *Reconciler) recoverFailedStart(ctx context.Context, server *v1alpha1.Mi
 	return nil
 }
 
-// liveBackupWait bounds how long the operator defers to a live backup (felis-api's
-// AnnotationLiveBackup): a little past felis-api's own freeze cap, so a freeze felis-api
-// never cleared (it died) cannot keep a server from stopping.
+// liveBackupWait exceeds the API freeze cap so abandoned freezes cannot block shutdown indefinitely.
 const liveBackupWait = 6 * time.Minute
 
-// liveBackupPoll is how often a deferred stop looks again.
 const liveBackupPoll = 2 * time.Second
 
-// liveBackupFreezing reports a live backup copying the server's world, fresh enough to
-// wait for.
 func liveBackupFreezing(server *v1alpha1.MinecraftServer, now time.Time) bool {
 	raw := server.Annotations[v1alpha1.AnnotationLiveBackup]
 	if raw == "" {
@@ -1235,9 +979,6 @@ func liveBackupFreezing(server *v1alpha1.MinecraftServer, now time.Time) bool {
 	return now.Sub(f.Started) < liveBackupWait
 }
 
-// floats reports whether a server runs on any controller rather than a fixed node: with
-// controller high availability, a system server nobody pinned. Its world is on the
-// replicated class (felis ha migrate-storage, felis setup), so it follows the pod.
 func (r *Reconciler) floats(server *v1alpha1.MinecraftServer) bool {
 	return r.ControllerHA && server.Labels[v1alpha1.LabelSystemRole] != "" && server.Spec.NodeName == ""
 }

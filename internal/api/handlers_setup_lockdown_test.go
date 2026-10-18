@@ -8,18 +8,6 @@ import (
 	"testing"
 )
 
-// TestAdvClaim403MechanismIsRequireOnboarded independently verifies the claimed
-// root cause of the live claim-403 report. It asserts three things the claim
-// implies, each of which would falsify the claim if it failed:
-//
-//  1. /me/servers (SetupAllowed) returns 200 for a bind-onboarded player, which is
-//     why the dashboard renders demo2 with a 认领 button at all.
-//  2. claim, wake AND status all return 403 with code "setup_required" — i.e. the
-//     403 comes from requireOnboarded (api.go:612-625) BEFORE the handler, not
-//     from isOwnerOrAdmin inside it (that path returns code "forbidden").
-//  3. Flipping exactly ONE bit — enrolling a passkey — lifts the 403 on all three.
-//     This isolates requireOnboarded as the sole cause: nothing about the server
-//     record, ownership, or quota changed between the failing and passing runs.
 func TestAdvClaim403MechanismIsRequireOnboarded(t *testing.T) {
 	api, repo := seedBindAPI(t)
 	mintBindCode(t, api, repo, "DEMO2345", bindTestUUID, authSourceMojang)
@@ -31,8 +19,6 @@ func TestAdvClaim403MechanismIsRequireOnboarded(t *testing.T) {
 	cookie := map[string]string{"Cookie": sessionCookieName + "=" + sessionCookieValue(t, w)}
 	userID := repo.staff[bindTestUUID].ID
 
-	// Sanity: the bind-created player really is the lockdown-eligible state —
-	// unverified email (no email at all) and no passkey.
 	if u := repo.staff[bindTestUUID]; u.EmailVerified {
 		t.Fatalf("bind-created player has EmailVerified=true; lockdown premise is wrong")
 	}
@@ -40,9 +26,6 @@ func TestAdvClaim403MechanismIsRequireOnboarded(t *testing.T) {
 		t.Fatalf("bind-created player already has %d passkeys; lockdown premise is wrong", len(creds))
 	}
 
-	// demo2 exists, is unclaimed, and the player is linked + within quota. Every
-	// precondition for a SUCCESSFUL claim is satisfied, so any 403 here is the
-	// middleware, not the handler's own authorization.
 	cl := api.Cluster.(*fakeCluster)
 	cl.byName["demo2"] = &ServerInfo{Name: "demo2", Subdomain: "demo2", Phase: "Stopped"}
 	repo.claimOK["demo2"] = true
@@ -77,9 +60,7 @@ func TestAdvClaim403MechanismIsRequireOnboarded(t *testing.T) {
 	if got := do(api.ExternalHandler(), "POST", "/api/v1/servers/demo2/claim", "", cookie); got.Code != http.StatusOK {
 		t.Fatalf("post-passkey claim = %d %q, want 200 (%s)", got.Code, errCode(got.Body.Bytes()), got.Body.String())
 	}
-	// fakeRepo.ClaimServer reports success without writing ownership (the fake models
-	// the UPDATE's row count only), so mirror the PG write the real claim performs:
-	// UPDATE servers SET owner_id=$user WHERE name=$name AND owner_id IS NULL.
+	// The fake claim records only the row count; mirror the ownership write before testing setup behavior.
 	repo.byName["demo2"] = &ServerRecord{Name: "demo2", Subdomain: "demo2", OwnerID: userID}
 
 	// With ownership recorded, wake and status pass authorizeWake/isOwnerOrAdmin —
@@ -93,15 +74,6 @@ func TestAdvClaim403MechanismIsRequireOnboarded(t *testing.T) {
 	}
 }
 
-// TestAdvRequireOnboardedPredicate characterizes the ACTUAL 403-producing predicate
-// (api.go:615) directly, bypassing fakeRepo.SessionUser — which, unlike the real
-// PGRepo.SessionUser (pgrepo.go:927, it selects email_verified), never populates
-// EmailVerified and so cannot express a verified-email session.
-//
-// This is the falsification test for the claim's wording: the lockdown is NOT
-// unconditional on non-SetupAllowed routes. Three of the five states below sail
-// straight through, so "the route is not in the exemption list" does not by itself
-// yield 403 — the conjunction ViaSession && !EmailVerified && no-passkey does.
 func TestAdvRequireOnboardedPredicate(t *testing.T) {
 	repo := newFakeRepo()
 	api := newTestAPI(repo, newFakeCluster())
@@ -147,9 +119,6 @@ func (credsDown) PasskeyCredentialsForUser(context.Context, string) ([]PasskeyCr
 	return nil, errors.New("connection refused")
 }
 
-// A failed passkey lookup is an outage: the caller gets 503 auth_unavailable to
-// retry, never setup_required, which would send a player with a passkey off to
-// enroll another.
 func TestRequireOnboardedReportsAStoreOutage(t *testing.T) {
 	repo := newFakeRepo()
 	api := newTestAPI(repo, newFakeCluster())

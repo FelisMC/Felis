@@ -1,8 +1,6 @@
 import type { TFunction } from "i18next";
 
-/** A signed-in device as its owner would name it, read from the User-Agent the
- *  browser sent at sign-in. A part the string does not reveal stays null so the
- *  caller can fall back to a generic label. */
+// Unknown User-Agent fields remain null for generic display labels.
 export interface DeviceGuess {
   browser: string | null;
   os: string | null;

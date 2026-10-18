@@ -27,10 +27,6 @@ func sampleJobParams() JobParams {
 	}
 }
 
-// The Job must run in the isolated build namespace under the weak build SA —
-// never the api namespace/identity, and never the minecraft namespace. This is
-// the central §16/§21 red line, asserted on the rendered spec because no cluster
-// runs here.
 func TestBuildJobRunsIsolatedUnderWeakSA(t *testing.T) {
 	job, err := BuildJob(sampleJobParams())
 	if err != nil {
@@ -53,7 +49,6 @@ func TestBuildJobRunsIsolatedUnderWeakSA(t *testing.T) {
 	}
 }
 
-// A poisoned build must terminate and not loop or run unbounded.
 func TestBuildJobIsBoundedAndOneShot(t *testing.T) {
 	job, err := BuildJob(sampleJobParams())
 	if err != nil {
@@ -73,10 +68,6 @@ func TestBuildJobIsBoundedAndOneShot(t *testing.T) {
 	}
 }
 
-// A finished build must not squat in the namespace forever: without a TTL the
-// Job and its completed Pod accumulate one pair per build and eventually eat
-// the node's pod budget. The window is deliberately long (see buildJobTTL) so
-// the admin log stream stays useful for triage.
 func TestBuildJobIsReapedAfterCompletion(t *testing.T) {
 	job, err := BuildJob(sampleJobParams())
 	if err != nil {
@@ -90,8 +81,6 @@ func TestBuildJobIsReapedAfterCompletion(t *testing.T) {
 	}
 }
 
-// No build container may be privileged or able to escalate, and all containers
-// must carry resource limits.
 func TestBuildJobContainersAreHardened(t *testing.T) {
 	job, err := BuildJob(sampleJobParams())
 	if err != nil {
@@ -124,10 +113,6 @@ func TestBuildJobContainersAreHardened(t *testing.T) {
 	}
 }
 
-// The limits are caps, but the requests must be a schedulable floor: reserving the
-// full 2 CPU / 4Gi on a starter node (4 vCPU / 5.5 GiB, where the api, operator,
-// registry, Postgres and the game pods live too) leaves no room for the Pod —
-// proven live: FailedScheduling/Insufficient memory, build stuck Pending forever.
 func TestBuildJobRequestsAreASchedulableFloor(t *testing.T) {
 	job, err := BuildJob(sampleJobParams())
 	if err != nil {
@@ -161,11 +146,6 @@ func TestBuildJobRequestsAreASchedulableFloor(t *testing.T) {
 	}
 }
 
-// kaniko builds the request's exact target into a tarball and never pushes;
-// trivy reports on that tarball, trivy convert writes the SBOM, scan-gate rules
-// on the report; only then does the push container publish it. An image that
-// fails the scan is therefore never in the registry, and the credential is never
-// where the Dockerfile runs.
 func TestBuildJobScansBeforePush(t *testing.T) {
 	p := sampleJobParams()
 	job, err := BuildJob(p)
@@ -187,9 +167,7 @@ func TestBuildJobScansBeforePush(t *testing.T) {
 			t.Errorf("kaniko args = %v still carry the push-side %s", kaniko.Args, pushFlag)
 		}
 	}
-	// The pull direction needs its own flags: without the pull pair a
-	// Dockerfile's `FROM` fails against the plain-HTTP registry ("server gave
-	// HTTP response to HTTPS client") — the live failure this guards.
+	// Plain-HTTP base-image pulls require their own insecure flags.
 	for _, flag := range []string{"--insecure-pull", "--skip-tls-verify-pull"} {
 		if !hasArg(kaniko.Args, flag) {
 			t.Errorf("kaniko args = %v, want %s so base-image pulls use plain HTTP", kaniko.Args, flag)
@@ -311,7 +289,6 @@ func TestBuildJobScansBeforePush(t *testing.T) {
 	}
 }
 
-// The scan policy reaches scan-gate verbatim.
 func TestBuildJobScanPolicyReachesScanGate(t *testing.T) {
 	p := sampleJobParams()
 	p.ScanFailOn = []string{"CRITICAL", "HIGH", "MEDIUM"}
@@ -327,9 +304,6 @@ func TestBuildJobScanPolicyReachesScanGate(t *testing.T) {
 	}
 }
 
-// A failed step's last log lines become its termination message, which Sync
-// records as the build's error. scan-gate writes its own verdict there instead:
-// its log tail is the envelope's base64.
 func TestBuildJobStepsLeaveTheirLastLogLines(t *testing.T) {
 	p := sampleJobParams()
 	p.ContextRef = "http://felis-api-internal.felis.svc:8081/internal/v1/submissions/sub-1/context"
@@ -358,11 +332,6 @@ func TestBuildJobNeedsFelisImage(t *testing.T) {
 	}
 }
 
-// Kaniko (and only kaniko) must carry back exactly the unpacking capability
-// subset: drop-ALL broke every FROM <base image> build live ("failed to get
-// filesystem from image: chown /etc/gshadow: operation not permitted"), while a
-// scratch COPY masked it. The pod stays unprivileged and every other container
-// keeps the pure baseline.
 func TestBuildJobKanikoGetsOnlyUnpackCapabilities(t *testing.T) {
 	job, err := BuildJob(sampleJobParams())
 	if err != nil {
@@ -410,10 +379,6 @@ func TestBuildJobKanikoGetsOnlyUnpackCapabilities(t *testing.T) {
 	}
 }
 
-// Configured DB repositories (the internal mirrors) must reach Trivy as
-// --db-repository / --java-db-repository: without them the scan tries the
-// internet, which the build egress lock denies, and every build fails closed at
-// the scan gate — the Java DB the moment the image contains a jar.
 func TestBuildJobTrivyDBRepositoryOverride(t *testing.T) {
 	p := sampleJobParams()
 	p.TrivyDBRepository = "registry.felis.svc:5000/mirror/trivy-db:2"
@@ -437,8 +402,6 @@ func TestBuildJobTrivyDBRepositoryOverride(t *testing.T) {
 	}
 }
 
-// The build namespace egress lock must be default-deny: deny all ingress, and
-// allow egress only to cluster DNS + the internal registry — never an allow-all rule.
 func TestBuildNetworkPolicyIsDefaultDeny(t *testing.T) {
 	np := BuildNetworkPolicy(NetPolParams{
 		Namespace:         "felis-build",
@@ -494,9 +457,6 @@ func TestBuildNetworkPolicyIsDefaultDeny(t *testing.T) {
 	}
 }
 
-// An http(s) context ref — the submit lane's derived shape — must render the
-// fetch initContainer ahead of Kaniko, with the service token mounted ONLY into
-// that container, and hand Kaniko the extracted local directory.
 func TestBuildJobFetchesHTTPContext(t *testing.T) {
 	p := sampleJobParams()
 	p.ContextRef = "http://felis-api-internal.felis.svc.cluster.local:8081/api/v1/internal/submissions/sub-abc/context"
@@ -540,9 +500,7 @@ func TestBuildJobFetchesHTTPContext(t *testing.T) {
 	if len(kaniko.Env) != 0 {
 		t.Errorf("kaniko must carry no env (especially no token), got %v", kaniko.Env)
 	}
-	// The fetch container extracts as root — the uid Kaniko runs as — because
-	// Kaniko re-copies the Dockerfile and chowns it to the source owner, which no
-	// other uid can satisfy under this pod's dropped capabilities.
+	// Extract as Kaniko's root UID because its Dockerfile copy preserves source ownership without extra capabilities.
 	if fetch.SecurityContext == nil || fetch.SecurityContext.RunAsUser == nil || *fetch.SecurityContext.RunAsUser != 0 {
 		t.Error("fetch container must extract as root so Kaniko can inherit the context ownership")
 	}
@@ -573,8 +531,6 @@ func TestBuildJobFetchesHTTPContext(t *testing.T) {
 	}
 }
 
-// A ref Kaniko reads natively (or an installer pre-mounted) must NOT grow the
-// fetch initContainer: the transport is for http(s) only.
 func TestBuildJobNativeContextNeedsNoFetch(t *testing.T) {
 	p := sampleJobParams()
 	p.ContextRef = "s3://bucket/prefix/context.tar.gz"
@@ -592,8 +548,6 @@ func TestBuildJobNativeContextNeedsNoFetch(t *testing.T) {
 	}
 }
 
-// Nothing runs before the egress gate, and the gate itself holds nothing: no
-// credential, no root, no writable filesystem.
 func TestBuildJobGatesEgressFirst(t *testing.T) {
 	p := sampleJobParams()
 	p.ContextRef = "http://felis-api-internal.felis.svc.cluster.local:8081/ctx"
@@ -614,8 +568,6 @@ func TestBuildJobGatesEgressFirst(t *testing.T) {
 	}
 }
 
-// An approved submission pins its context digest on the fetch container, which
-// then refuses any other bytes; a build without one fetches unpinned.
 func TestBuildJobPinsContextDigest(t *testing.T) {
 	p := sampleJobParams()
 	p.ContextRef = "http://felis-api-internal.felis.svc.cluster.local:8081/ctx"
@@ -645,8 +597,6 @@ func TestBuildJobPinsContextDigest(t *testing.T) {
 	}
 }
 
-// The pod runs under RuntimeDefault seccomp always, and in a user namespace or
-// a sandbox runtime when the install asks for them.
 func TestBuildJobSandboxing(t *testing.T) {
 	job, err := BuildJob(sampleJobParams())
 	if err != nil {
@@ -674,8 +624,6 @@ func TestBuildJobSandboxing(t *testing.T) {
 	}
 }
 
-// Every container carries an ephemeral-storage request and limit, and kaniko's
-// limit, the largest, is the configured disk cap.
 func TestBuildJobBoundsEphemeralStorage(t *testing.T) {
 	p := sampleJobParams()
 	p.ContextRef = "http://felis-api-internal.felis.svc.cluster.local:8081/ctx"
@@ -693,9 +641,7 @@ func TestBuildJobBoundsEphemeralStorage(t *testing.T) {
 		if c.Name == ContainerKaniko && lim.String() != defaultDiskLimit {
 			t.Errorf("kaniko ephemeral-storage limit = %s, want the default %s", lim.String(), defaultDiskLimit)
 		}
-		// Trivy holds its two DBs (2.8 GiB unpacked in 2026) plus a download and
-		// the scan's temporary files; the SBOM step writes one file; scan-gate's
-		// own log, the envelope of up to 9 MiB, counts against its cap.
+		// Include database downloads, scan scratch space, and result envelopes in container storage budgets.
 		if want, ok := map[string]string{"trivy": "8Gi", "sbom": "256Mi", "scan-gate": "64Mi"}[c.Name]; ok && lim.String() != want {
 			t.Errorf("%s ephemeral-storage limit = %s, want %s", c.Name, lim.String(), want)
 		}
@@ -737,8 +683,6 @@ func TestBuildLimitRangeCoversEphemeralStorage(t *testing.T) {
 	}
 }
 
-// The pod quota must fit the most builds the config allows plus the probe pod,
-// or the queue admits a build whose pod the API server then refuses.
 func TestBuildResourceQuotaFitsMaxConcurrent(t *testing.T) {
 	rq := BuildResourceQuota("felis-build")
 	pods := rq.Spec.Hard[corev1.ResourcePods]
@@ -758,8 +702,6 @@ func initNames(cs []corev1.Container) []string {
 	return names
 }
 
-// An explicit control namespace/port override must reach the egress rule (a
-// renamed control namespace otherwise silently blocks every context fetch).
 func TestBuildNetworkPolicyHonoursControlNamespaceOverride(t *testing.T) {
 	np := BuildNetworkPolicy(NetPolParams{
 		Namespace:         "felis-build",
@@ -775,8 +717,6 @@ func TestBuildNetworkPolicyHonoursControlNamespaceOverride(t *testing.T) {
 	}
 }
 
-// With no package-source CIDRs configured, there must be zero IPBlock egress —
-// the most locked-down default (no open internet).
 func TestBuildNetworkPolicyDefaultsToNoInternet(t *testing.T) {
 	np := BuildNetworkPolicy(NetPolParams{
 		Namespace:         "felis-build",
@@ -811,9 +751,6 @@ func TestBuildNetworkPolicyAllowsConfiguredPackageMirrors(t *testing.T) {
 	}
 }
 
-// The build SA is the most dangerous identity if mis-scoped: it must be bare —
-// no secrets, token automount disabled, and (by having no Role anywhere) no API
-// rights. We assert the spec-level properties the renderer controls.
 func TestBuildServiceAccountIsBare(t *testing.T) {
 	sa := BuildServiceAccount("felis-build", "felis-build")
 	if sa.Namespace != "felis-build" {
@@ -830,8 +767,6 @@ func TestBuildServiceAccountIsBare(t *testing.T) {
 	}
 }
 
-// An invalid resource limit must surface as an error rather than render a Job
-// with no limits.
 func TestBuildJobRejectsBadResourceLimit(t *testing.T) {
 	p := sampleJobParams()
 	p.CPULimit = "not-a-quantity"
@@ -839,8 +774,6 @@ func TestBuildJobRejectsBadResourceLimit(t *testing.T) {
 		t.Error("expected error for an unparseable CPU limit")
 	}
 }
-
-// ---- helpers ----
 
 func hasArg(args []string, want string) bool {
 	for _, a := range args {
@@ -894,7 +827,6 @@ func egressAllowsPort(np *networkingv1.NetworkPolicy, port int32) bool {
 	return false
 }
 
-// guard against accidental shorthand: the test image ref must be host-qualified.
 func TestSampleRefIsHostQualified(t *testing.T) {
 	if !strings.Contains(sampleJobParams().ImageRef, "/") {
 		t.Fatal("sample image ref must be host-qualified")

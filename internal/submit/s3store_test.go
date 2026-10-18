@@ -23,9 +23,7 @@ import (
 	"github.com/minio/minio-go/v7"
 )
 
-// fakeS3 is an in-memory s3Client: it records puts and returns a NoSuchKey/404
-// error for a missing stat, so S3ContextStore's key derivation and not-found
-// handling are exercised without a live bucket.
+// fakeS3 is an in-memory s3Client that records puts and returns NoSuchKey for missing stats.
 type fakeS3 struct {
 	objects   map[string][]byte
 	putErr    error
@@ -110,8 +108,7 @@ func (f *fakeS3) GetObject(_ context.Context, bucket, object string, _ minio.Get
 func TestCheckBucketAccess(t *testing.T) {
 	ctx := context.Background()
 
-	// A reachable bucket where the probe object is simply absent (NoSuchKey) — the
-	// object-scoped key case that a bucket-level HeadBucket would wrongly reject.
+	// A reachable bucket with the probe object absent (NoSuchKey); a bucket-level HeadBucket would wrongly reject it.
 	if err := checkBucketAccess(ctx, &fakeS3{}, "b"); err != nil {
 		t.Fatalf("reachable bucket, probe absent = %v, want nil", err)
 	}
@@ -169,8 +166,6 @@ func TestS3ContextStorePutAndExists(t *testing.T) {
 	}
 }
 
-// Delete removes the derived object and is idempotent (S3 DELETE of an absent
-// key succeeds), so a retried cleanup after a partial failure cannot stick.
 func TestS3ContextStoreDelete(t *testing.T) {
 	fake := &fakeS3{}
 	s := &S3ContextStore{client: fake, bucket: "felis-uploads", prefix: "builds"}
@@ -195,8 +190,6 @@ func TestS3ContextStoreDelete(t *testing.T) {
 	}
 }
 
-// Open serves the stored object's bytes and maps a missing key to ErrBlobNotFound
-// (the internal fetch route's 404), eagerly — before the caller reads a byte.
 func TestS3ContextStoreOpen(t *testing.T) {
 	fake := &fakeS3{}
 	s := &S3ContextStore{client: fake, bucket: "felis-uploads", prefix: "builds"}
@@ -339,10 +332,7 @@ func s3KeysOf(m map[string][]byte) []string {
 	return out
 }
 
-// multipartS3 is an S3 endpoint speaking just enough of the multipart protocol for
-// minio-go to upload through it. It keeps no bytes: it records each part's size
-// and hashes the parts in order, so what it allocates stays out of the way of
-// what the uploader does.
+// multipartS3 speaks enough of the multipart protocol for minio-go to upload; it keeps no bytes, only part sizes and hashes.
 type multipartS3 struct {
 	mu        sync.Mutex
 	partSizes []int64
@@ -411,10 +401,6 @@ func s3Body(r *http.Request, w io.Writer) (int64, error) {
 	}
 }
 
-// Put cuts an upload into s3PartSize parts, so felis-api holds one small part in
-// memory however large the modpack. Left to minio-go, a stream of unknown length
-// is cut into 528MiB parts and one is allocated up front: twice the api's 256Mi
-// memory limit, which OOMKilled the panel on the first large upload.
 func TestS3ContextStorePutStreamsInSmallParts(t *testing.T) {
 	fake := &multipartS3{objects: map[string]string{}}
 	ts := httptest.NewServer(fake)
@@ -450,9 +436,6 @@ func TestS3ContextStorePutStreamsInSmallParts(t *testing.T) {
 	}
 }
 
-// When minio-go stops reading before the stream ends (after the last part S3
-// allows), the object it completed is the upload cut short: Put reports the
-// failure and removes the object instead of returning a success.
 func TestS3ContextStorePutRefusesATruncatedObject(t *testing.T) {
 	for _, tc := range []struct {
 		name string

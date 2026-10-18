@@ -105,9 +105,6 @@ func cmdNode(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	case "join-controller":
-		// Runs on the new controller, sent there by an existing controller's node-control
-		// (join-controller task): the installer's controller-join mode joins k3s to the
-		// cluster's etcd and installs the controller's host services.
 		exe, err := os.Executable()
 		if err != nil {
 			fmt.Fprintln(stderr, err)

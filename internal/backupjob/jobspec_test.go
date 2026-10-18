@@ -30,9 +30,6 @@ func sampleJobParams() JobParams {
 	}
 }
 
-// The backup Pod runs under the weak felis-restore SA — never the felis-api
-// identity — with its token un-mounted, so it cannot reach the K8s API. Its DB
-// access comes from the mounted config Secret, not from any SA permission.
 func TestBackupJobRunsUnderWeakSAWithNoAPIToken(t *testing.T) {
 	job, err := BackupJob(sampleJobParams())
 	if err != nil {
@@ -50,11 +47,6 @@ func TestBackupJobRunsUnderWeakSAWithNoAPIToken(t *testing.T) {
 	}
 }
 
-// The deliberate departure from restore's zero-secret isolation: a backup Pod
-// mounts EXACTLY the two PVCs (world read-only, backup read-write) PLUS the config
-// Secret read-only (so it can self-record its world_backups row like the reaper) —
-// and nothing else. This test freezes that exact volume set so a future edit that
-// widens it (e.g. a second Secret, or a writable world mount) fails loudly.
 func TestBackupJobMountsTwoPVCsPlusConfigSecretOnly(t *testing.T) {
 	job, err := BackupJob(sampleJobParams())
 	if err != nil {
@@ -109,11 +101,6 @@ func TestBackupJobMountsTwoPVCsPlusConfigSecretOnly(t *testing.T) {
 	}
 }
 
-// The backup container is hardened like the restore/build Job containers: no
-// privilege, no escalation, read-only root fs, ALL capabilities dropped — plus
-// DAC_OVERRIDE, because the Pod runs as root and the world may have been written
-// by a game image with a different UID (verified live: a uid-1000 executor cannot
-// read Paper's mode-0600 level.dat).
 func TestBackupJobContainerIsHardened(t *testing.T) {
 	job, err := BackupJob(sampleJobParams())
 	if err != nil {
@@ -154,7 +141,6 @@ func TestBackupJobContainerIsHardened(t *testing.T) {
 	}
 }
 
-// One-shot: a wedged archive must not loop, and a deadline caps it.
 func TestBackupJobIsOneShotWithDeadline(t *testing.T) {
 	job, err := BackupJob(sampleJobParams())
 	if err != nil {
@@ -171,8 +157,6 @@ func TestBackupJobIsOneShotWithDeadline(t *testing.T) {
 	}
 }
 
-// The command carries the former owner so the recorded backup can be restored by
-// its owner; an empty former owner (admin backing up an unowned server) omits it.
 func TestBackupJobArgsCarryServerAndOwner(t *testing.T) {
 	job, err := BackupJob(sampleJobParams())
 	if err != nil {
@@ -199,9 +183,6 @@ func TestBackupJobArgsCarryServerAndOwner(t *testing.T) {
 	}
 }
 
-// A safety snapshot records itself as pre_restore, spares the backup the chained
-// restore extracts from its prune, and carries the chain on the Job (only there:
-// felis-api settles it by patching the Job's label).
 func TestBackupJobCarriesTheRestoreChain(t *testing.T) {
 	p := sampleJobParams()
 	p.RestoreRef, p.RestoreBackupID = "/backups/survival/a.tar.gz", "bk-1"
@@ -237,9 +218,6 @@ func TestBackupJobCarriesTheRestoreChain(t *testing.T) {
 	}
 }
 
-// A scheduled backup records itself as scheduled (so the Job prunes it to its
-// own keep, not the owner's manual one) and says so on the Job for the jobs
-// route; it protects nothing and carries no chain.
 func TestBackupJobRecordsAScheduledBackup(t *testing.T) {
 	p := sampleJobParams()
 	p.Scheduled = true
@@ -272,7 +250,6 @@ func TestBackupJobRecordsAScheduledBackup(t *testing.T) {
 	}
 }
 
-// A replica records itself as a replica, so the Job prunes it to the replicas' own keep.
 func TestBackupJobRecordsAReplica(t *testing.T) {
 	p := sampleJobParams()
 	p.Replica = true
@@ -329,10 +306,6 @@ func argsContain(args []string, flag, val string) bool {
 	return false
 }
 
-// TestBackupJobLiveCopiesBeforeArchiving pins a live backup's shape: an init container
-// copies the world, mounted read-only, into a capped scratch volume, the archive step
-// reads that copy and never the volume the running game writes, and the Job and pod are
-// labelled so felis-api can tell when the copy is done.
 func TestBackupJobLiveCopiesBeforeArchiving(t *testing.T) {
 	p := sampleJobParams()
 	p.Live, p.StageLimit = true, "12Gi"

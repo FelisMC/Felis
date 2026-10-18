@@ -9,9 +9,6 @@ func valid() Settings {
 	return Settings{Host: "smtp.example.com", Port: 587, From: "noreply@example.com", Username: "noreply@example.com", Password: "secret", RequireTLS: true}
 }
 
-// TestValidateRefusesWhatCannotBeARelay pins the checks run before a relay is dialled or
-// stored: a bare host, a submission port (any other port would let the relay test probe
-// internal services), a plain sender address and bounded credentials.
 func TestValidateRefusesWhatCannotBeARelay(t *testing.T) {
 	if err := valid().Validate(); err != nil {
 		t.Fatalf("a good relay was refused: %v", err)
@@ -45,8 +42,6 @@ func TestValidateRefusesWhatCannotBeARelay(t *testing.T) {
 	}
 }
 
-// TestParseTreatsAClearedRowAsAbsent pins that a JSON null (the panel handing the relay
-// back to felis.toml) reads like no row, and that a stored relay keeps its password.
 func TestParseTreatsAClearedRowAsAbsent(t *testing.T) {
 	for _, raw := range []string{"", "null", " null "} {
 		if s, err := Parse([]byte(raw)); s != nil || err != nil {

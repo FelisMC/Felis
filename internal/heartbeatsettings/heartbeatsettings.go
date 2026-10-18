@@ -1,7 +1,4 @@
-// Package heartbeatsettings is the watchdog's heartbeat URL as the Owner sets it in the
-// panel: a dead man's switch at a monitoring service, which alerts when the watchdog's
-// pings stop. It wins over /etc/felis/watchdog-heartbeat-url, and the watchdog caches it
-// in its state so a run while the database is out still pings it.
+// Package heartbeatsettings stores the owner's heartbeat URL, overriding the watchdog file setting.
 package heartbeatsettings
 
 import (
@@ -14,16 +11,13 @@ import (
 	"strings"
 )
 
-// Key is the platform_settings row.
 const Key = "watchdog_heartbeat"
 
-// Settings is the stored row.
 type Settings struct {
 	URL string `json:"url"`
 }
 
-// Check accepts an http(s) URL with a host. Its error leaves the URL out: the path is
-// the check's key, which anyone who reads it can ping in the host's name.
+// Check omits the URL from errors because its path may contain a secret.
 func Check(s string) error {
 	u, err := url.Parse(s)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || strings.ContainsAny(s, " \t\r\n") {
@@ -32,7 +26,7 @@ func Check(s string) error {
 	return nil
 }
 
-// Redact is a heartbeat URL as logs and the panel show it: its scheme and host.
+// Redact exposes only the heartbeat URL's scheme and host.
 func Redact(s string) string {
 	u, err := url.Parse(s)
 	if err != nil || u.Host == "" {
@@ -41,7 +35,7 @@ func Redact(s string) string {
 	return u.Scheme + "://" + u.Host + "/..."
 }
 
-// Parse decodes a stored row; a missing row or JSON null is nil, nil.
+// Parse returns nil for a missing row or JSON null.
 func Parse(raw []byte) (*Settings, error) {
 	if len(raw) == 0 || strings.TrimSpace(string(raw)) == "null" {
 		return nil, nil
@@ -56,7 +50,7 @@ func Parse(raw []byte) (*Settings, error) {
 	return &s, nil
 }
 
-// Read loads the row through a plain database handle; nil, nil when the panel has none.
+// Read returns nil when no heartbeat URL is configured.
 func Read(ctx context.Context, db *sql.DB) (*Settings, error) {
 	var raw []byte
 	err := db.QueryRowContext(ctx, `SELECT value::text FROM platform_settings WHERE key = $1`, Key).Scan(&raw)

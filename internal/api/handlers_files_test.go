@@ -21,10 +21,6 @@ import (
 	"felis.lolicon.best/internal/maintenance"
 )
 
-// fakeFileEditor records what the handlers ask the executor to do and returns
-// canned results. The real executor runs a Job and reads its log back; none of
-// that is the handlers' business, so the fake collapses it to "what was asked,
-// and what came back".
 type fakeFileEditor struct {
 	err error
 
@@ -159,13 +155,7 @@ func fileRouteHeader(name, body string) map[string]string {
 // testSum is a well-formed sha256 hex digest for the fake to hand out.
 var testSum = strings.Repeat("a", 64)
 
-// mkFiles builds an API whose "survival" server is STOPPED and owned by owner1,
-// with a wired fakeFileEditor — the state in which every file operation is
-// permitted, so each subtest changes exactly the one thing it is about.
-//
-// Uploads stage in a per-test directory. MinFree is near zero because the
-// staging floor is fileedit's to test, and the machine running the tests may
-// well have less than 10% of its disk free.
+// mkFiles lowers MinFree to isolate handler behavior from the test machine's available disk space.
 func mkFiles(t *testing.T) (*API, *fakeRepo, *fakeCluster, *fakeFileEditor) {
 	t.Helper()
 	repo := newFakeRepo()
@@ -224,12 +214,6 @@ func TestRunningSystemExperienceFile(t *testing.T) {
 	})
 }
 
-// TestFileEditorStoppedGate is the gate this whole subsystem hinges on. The world
-// PVC is ReadWriteOnce, but RWO is per node: on a single node a file Job mounts it
-// right beside a running server, and a write lands under a live world that the
-// server's next save overwrites or tears. Every route
-// must therefore refuse a non-stopped server with 409 not_stopped BEFORE reaching
-// the executor, which is why each asserts calls == 0 as well as the status.
 func TestFileEditorStoppedGate(t *testing.T) {
 	owner := &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
 
@@ -248,10 +232,6 @@ func TestFileEditorStoppedGate(t *testing.T) {
 		{"upload", "PUT", "/api/v1/servers/survival/files/upload?path=plugins/x.jar", "PK-jar-bytes"},
 	}
 
-	// Both non-stopped shapes matter and they are different states: a server that is
-	// UP (Ready) plainly holds the volume, but so does one that is merely coming up
-	// (desiredState=Running, not yet Ready) — the gate keys on intent as well as
-	// readiness, exactly as the backup/restore gates do.
 	states := []struct {
 		name         string
 		ready        bool
@@ -281,12 +261,6 @@ func TestFileEditorStoppedGate(t *testing.T) {
 	}
 }
 
-// TestFileEditorWorldVolumeGate pins the second physical gate: a server with no
-// world PVC (never started, or already reaped) has no claim for the Job to mount,
-// so its Pod would sit Pending until the executor's wait timed out — a 90s hang
-// and a misleading 504 files_timeout for a request that is knowably impossible.
-// Every route must refuse BEFORE creating a Job, with the same specific 409
-// the backup/restore faces use.
 func TestFileOpsBeforeTheFirstStart(t *testing.T) {
 	owner := &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
 
@@ -305,9 +279,6 @@ func TestFileOpsBeforeTheFirstStart(t *testing.T) {
 		{"upload", "PUT", "/api/v1/servers/survival/files/upload?path=plugins/x.jar", "PK-jar-bytes"},
 	}
 
-	// A server created but never started has no world claim yet. Its owner can
-	// still put files in place before the first start (a custom jar, a world):
-	// the claim the StatefulSet would make is created first, then the Job runs.
 	for _, rt := range routes {
 		t.Run(rt.name+" before the first start creates the world volume", func(t *testing.T) {
 			api, _, cl, files := mkFiles(t)
@@ -343,10 +314,6 @@ func TestFileOpsBeforeTheFirstStart(t *testing.T) {
 	})
 }
 
-// TestFileEditorAuthorization pins who may touch a world's files. It is the same
-// owner-or-admin rule the backup routes enforce, and it must hold on every
-// route — a read-only route leaking another owner's config (an RCON password
-// lives in server.properties) would be as bad as an unauthorized write.
 func TestFileEditorAuthorization(t *testing.T) {
 	owner := &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
 	stranger := &Principal{UserID: "stranger", Email: "stranger@example.net", Role: "user"}
@@ -447,8 +414,6 @@ func TestFileEditorAuthorization(t *testing.T) {
 	}
 }
 
-// TestFileEditorHandlers covers the per-route behaviour the shared gate does not:
-// what is passed through to the executor and what comes back.
 func TestFileEditorHandlers(t *testing.T) {
 	owner := &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
 
@@ -638,11 +603,6 @@ func TestFileEditorHandlers(t *testing.T) {
 		}
 	})
 
-	// A body that omits "content" must be refused, not treated as empty. Before
-	// Content became a *[]byte, {} decoded to nil and travelled all the way to
-	// O_TRUNC — so a client serialisation bug answered 200 while zeroing the very
-	// config the caller opened the editor to repair. An explicit "" stays legal,
-	// because a deliberate truncate is a real edit; only the OMISSION is refused.
 	t.Run("a write with no content field -> 400, never a truncate", func(t *testing.T) {
 		for _, body := range []string{`{}`, `{"content":null}`} {
 			api, _, _, files := mkFiles(t)
@@ -715,8 +675,6 @@ func onlyAudit(t *testing.T, repo *fakeRepo, action, target, payload string) {
 	}
 }
 
-// TestFileManagerHandlers covers the routes that change a world's file tree
-// beyond a save: what each hands the executor, what it answers, what it audits.
 func TestFileManagerHandlers(t *testing.T) {
 	owner := &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
 
@@ -861,10 +819,6 @@ func hexSum(b []byte) string {
 
 var hiSum = hexSum([]byte("hi"))
 
-// A write carries the SHA-256 of its content: one without it, with a malformed
-// one, or whose content hashes otherwise is refused before a Job starts, and a
-// Job that found the bytes it received changed answers the same way. None of
-// them is audited.
 func TestWriteFileChecksTheContentDigest(t *testing.T) {
 	owner := &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
 	for _, tc := range []struct {
@@ -904,9 +858,7 @@ func TestWriteFileChecksTheContentDigest(t *testing.T) {
 	})
 }
 
-// doUpload sends an upload whose Content-Length is declared, not measured, the
-// way a client that streams or lies would send it. Its Content-Digest is that
-// of the body.
+// doUpload declares rather than measures Content-Length; Content-Digest covers the actual body.
 func doUpload(h http.Handler, body string, length int64) *httptest.ResponseRecorder {
 	r := httptest.NewRequest("PUT", "/api/v1/servers/survival/files/upload?path=plugins/x.jar", strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/octet-stream")
@@ -930,9 +882,6 @@ func stageEmpty(t *testing.T, api *API) {
 	}
 }
 
-// TestFileUpload drives an upload across both faces: the external PUT stages the
-// body, and the executor, standing in for the Job, fetches it from the internal
-// face with the token it was handed, as cmd/felis files does.
 func TestFileUpload(t *testing.T) {
 	owner := &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
 	const body = "PK\x03\x04 a plugin jar"
@@ -1182,10 +1131,6 @@ func TestFileUpload(t *testing.T) {
 	})
 }
 
-// TestFileEditorErrorMapping proves each executor sentinel reaches the caller as the
-// right status. The containment refusal mapping to 400 (not 403) is the one worth
-// stating: an escaping path is a malformed request, not a permission a caller might
-// be granted.
 func TestFileEditorErrorMapping(t *testing.T) {
 	owner := &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
 

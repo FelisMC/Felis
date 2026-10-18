@@ -12,9 +12,7 @@ import { MessageLine } from "@/components/MessageLine";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync, useRefreshSignal } from "@/lib/hooks";
 
-/** WorldBackupCard archives every user server's world now, or the chosen ones, one at a
- *  time: a running server is backed up live (the game stops saving while its world is
- *  copied), or stopped first when the Owner asks. */
+// Live backup disables saving only during world copying.
 export function WorldBackupCard() {
   const { t } = useTranslation("admin");
   const host = useHostTask(["backup-now"]);

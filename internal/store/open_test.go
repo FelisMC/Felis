@@ -14,10 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 )
 
-// servePG answers every connection on ln like a PostgreSQL server would: the i-th
-// connection (from 1) gets a FATAL error with the SQLSTATE answer(i) returns, or,
-// for "", a trust login and an empty reply to each simple query, which is all a
-// ping sends. It counts the connections in accepts.
+// servePG answers each connection like PostgreSQL: connection i gets the FATAL error answer(i) returns, or a trust login for "". It counts connections in accepts.
 func servePG(ln net.Listener, answer func(i int32) string, accepts *atomic.Int32) {
 	for {
 		conn, err := ln.Accept()
@@ -78,8 +75,6 @@ func testDSN(addr string) string {
 	return fmt.Sprintf("postgres://felis@%s/felis?sslmode=disable", addr)
 }
 
-// A pod's first dials are refused until the network policy admits it; the open
-// waits that out and connects once the server is reachable.
 func TestOpenRetryingWaitsOutARefusedDial(t *testing.T) {
 	addr := freeAddr(t)
 	var accepts atomic.Int32
@@ -111,7 +106,6 @@ func TestOpenRetryingWaitsOutARefusedDial(t *testing.T) {
 	}
 }
 
-// The window bounds the wait, and Open itself tries once.
 func TestOpenRetryingGivesUpAtTheWindow(t *testing.T) {
 	addr := freeAddr(t)
 	retries := 0
@@ -134,7 +128,6 @@ func TestOpenRetryingGivesUpAtTheWindow(t *testing.T) {
 	}
 }
 
-// What the server says is final, except that it is still starting.
 func TestOpenRetryingTakesTheServersAnswer(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -179,7 +172,6 @@ func TestOpenRetryingTakesTheServersAnswer(t *testing.T) {
 	}
 }
 
-// A cancelled context ends the wait without another retry.
 func TestOpenRetryingStopsWhenCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

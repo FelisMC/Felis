@@ -1,18 +1,6 @@
 #!/bin/bash
-# Checks a host that deploy/bootstrap.sh just installed (or re-ran on). The e2e workflow
-# runs it on a fresh GitHub runner after each of its two installer runs:
-#
-#   sudo bash deploy/e2e_check.sh install   # after the first run
-#   sudo bash deploy/e2e_check.sh rerun     # after the same commit ran again
-#   sudo bash deploy/e2e_check.sh release   # after the newest release installed
-#   sudo bash deploy/e2e_check.sh upgrade   # after this commit ran over a release
-#
-# It asks what an operator's first minutes ask: the binary runs, the control plane and its
-# database are rolled out and ready, a database backup can be taken and restored, the panel
-# answers on its NodePort, the proxy answers a Minecraft status ping, the host timers are
-# all there and waiting, and the backup and watchdog runs the installer made succeeded.
-# A rerun must also leave the proxy running (it restarts only when what it runs changed)
-# and keep every earlier answer.
+# Run after installer install, rerun, release, and upgrade scenarios.
+# A rerun must also leave the proxy running (it restarts only when what it runs changed) and keep every earlier answer.
 set -euo pipefail
 
 phase="${1:?usage: e2e_check.sh install|rerun|release|upgrade}"
@@ -58,10 +46,7 @@ pod_psql() {
     psql -X -q -At -v ON_ERROR_STOP=1 -U felis -d felis -c "$1"
 }
 
-# restore_drill walks the troubleshooting guide's "Restore on the same host" (https://docs.felismc.com/en/operations/backup#restore-database): refused while the
-# control plane is connected; with it scaled to 0 the bundle comes back (a row written after
-# it is gone) and the database it replaced is kept; migrate up runs; the control plane serves
-# again.
+# Verify restore refusal under live clients, safety backup, migration, and successful control-plane restart.
 restore_drill() { # dir bundle
   local dir="$1" bundle="$2" out rc
   local sel="app.kubernetes.io/part-of=felis-control-plane,app.kubernetes.io/component in (api,operator)"
@@ -103,9 +88,7 @@ restore_drill() { # dir bundle
     curl -sf --retry 10 --retry-delay 3 --retry-all-errors -o /dev/null "http://${internal}/readyz"
 }
 
-# The database runs in k3s; a release may still run it on the host, and the upgrade moved
-# it. The host has no PostgreSQL client: a bundle that verifies proves felis reaches the
-# database's pod through kubectl exec, and that pg_dump there reads every table.
+# Verify backup bundles through containerized PostgreSQL tools to exercise the production connection path.
 if [ "$phase" != release ]; then
   check "the host's own postgresql is stopped" sh -c '! systemctl is-active --quiet postgresql'
   bundle_dir="$(mktemp -d)"
@@ -119,9 +102,7 @@ if [ "$phase" != release ]; then
   fi
   rm -rf "$bundle_dir"
 fi
-# The daily reaper is what deletes expired archives. Run it once from its CronJob: the API
-# accepts a pod template naming a ServiceAccount that does not exist, and only the Job's
-# pod creation fails, so rendering it proves nothing. A release may carry exactly that bug.
+# Run an actual reaper Job because accepted templates may reference missing ServiceAccounts.
 if [ "$phase" != release ]; then
   reaper_job="felis-e2e-reaper-${phase}"
   "${KUBECTL[@]}" -n minecraft delete job "$reaper_job" --ignore-not-found >/dev/null
@@ -133,9 +114,7 @@ if [ "$phase" != release ]; then
     fail "a Job can be created from the reaper CronJob"
   fi
 fi
-# A release may predate a timer. What this commit installs has every timer bootstrap.sh
-# names, enabled and waiting, and no felis timer it does not name. The off-site copy's
-# comes only with an [offsite] bucket, which no e2e host has.
+# Require exactly the installed timers; offsite timers exist only with a configured bucket.
 if [ "$phase" != release ]; then
   timers="$(sed -n 's|^[A-Z_]*_TIMER="/etc/systemd/system/\(felis-[a-z-]*\.timer\)"$|\1|p' "$(dirname "$0")/bootstrap.sh")"
   check "bootstrap.sh names the felis timers" test -n "$timers"
@@ -150,9 +129,7 @@ if [ "$phase" != release ]; then
   for timer in $(systemctl list-unit-files --no-legend 'felis-*.timer' | awk '{print $1}'); do
     check "${timer} is a timer bootstrap.sh installs" grep -qxF "$timer" <<<"$timers"
   done
-  # The installer runs the backup and the watchdog once itself and only warns when that
-  # fails: a unit that cannot run (a flag the binary lacks, a path its sandbox hides) shows
-  # here. Without an [smtp] relay the watchdog has no mail to fail on.
+  # Verify the installer's initial backup/watchdog runs rather than accepting warning-only setup failures.
   for unit in felis-db-backup.service felis-watchdog.service; do
     check "${unit} has run" test "$(systemctl show -p ExecMainStartTimestampMonotonic --value "$unit")" != 0
     check "${unit}'s last run succeeded" test "$(systemctl show -p Result --value "$unit")" = success

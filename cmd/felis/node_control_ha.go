@@ -21,10 +21,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-// Controller high availability from the node-control side (internal/platform ha.go):
-// enable-ha turns this distributed install into one whose controllers can be several,
-// and join-controller adds one. Both run on a controller, as root.
-
 // Host paths the HA tasks read. Defaults are the k3s and Felis ones; tests point them
 // elsewhere.
 const (
@@ -64,9 +60,7 @@ func controllerCIDRs(nodes []corev1.Node, extra ...string) []string {
 	return slices.Compact(out)
 }
 
-// refreshFirewalls reinstalls every node's host firewall with the current peers and
-// controllers: workers and other controllers over SSH, this controller in place. The node
-// being added is not one of nodes yet, and installs its own.
+// Refresh every existing node's peer firewall; joining nodes install their own rules.
 func (e nodeExecutor) refreshFirewalls(ctx context.Context, nodes []corev1.Node, local *corev1.Node, peers, controllers []string, out io.Writer) error {
 	common := " --peers " + shellQuote(strings.Join(peers, ",")) + " --controller-peers " + shellQuote(strings.Join(controllers, ",")) +
 		" --namespace " + shellQuote(e.namespace) + " --control-namespace " + shellQuote(e.controlNamespace)
@@ -95,10 +89,7 @@ func (e nodeExecutor) refreshFirewalls(ctx context.Context, nodes []corev1.Node,
 	return cmd.Run()
 }
 
-// enableHA turns this distributed install into controller high availability: after a
-// database bundle and a snapshot of the cluster state, the installer runs again with
-// FELIS_CONTROLLER_HA=1, which moves k3s onto embedded etcd, installs Longhorn, moves the
-// control plane's volumes onto it (felis ha migrate-storage) and applies the HA bundle.
+// Snapshot database and host state before rerunning the installer with controller HA enabled.
 func (e nodeExecutor) enableHA(ctx context.Context, r nodecontrol.Request, controller *corev1.Node, peers []string, stage func(string) error, out io.Writer) error {
 	if controller.Labels[placement.LabelRole] != placement.RoleController {
 		return errors.New("enable distributed mode first: controller high availability builds on it")
@@ -139,12 +130,7 @@ func (e nodeExecutor) enableHA(ctx context.Context, r nodecontrol.Request, contr
 	return stage("complete")
 }
 
-// joinController adds a controller to a cluster running embedded etcd: every node's
-// firewall learns it first; then it receives, over the trusted SSH link and never through
-// the API, the cluster's server token, the agent token, this controller's /etc/felis
-// (the same database credentials, proxy secret and relay as here) and this felis binary;
-// the installer's controller-join mode joins it to etcd and installs the host services;
-// and once it is ready it is labelled a controller, a home for Longhorn's replicas.
+// Update peer firewalls before SSH credential transfer, then join etcd and admit the ready controller.
 func (e nodeExecutor) joinController(ctx context.Context, r nodecontrol.Request, nodes []corev1.Node, controller *corev1.Node, peers []string, stage func(string) error, out io.Writer) error {
 	for _, n := range nodes {
 		if n.Name == r.Name {

@@ -7,9 +7,6 @@ import (
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 )
 
-// A stop flips desiredState to Stopped for the server's owner or an admin. A
-// server whose database row outlived its MinecraftServer answers 404 not_found,
-// the same as a wake of it, where it used to be an opaque 500.
 func TestStop(t *testing.T) {
 	mk := func(p *Principal, inCluster bool) (*API, *fakeCluster, *fakeRepo) {
 		repo := newFakeRepo()

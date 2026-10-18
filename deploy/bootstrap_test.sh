@@ -1,10 +1,6 @@
 #!/bin/sh
-# Checks for deploy/bootstrap.sh. Run it as: sh deploy/bootstrap_test.sh
-#
-# The script it tests cannot be run here — it wants root, a package manager, k3s and the
-# network — so each case extracts the block it is about out of bootstrap.sh verbatim and runs
-# that with die/log stubbed. Extraction rather than a transcribed copy is the point: a copy
-# passes forever after someone edits the original.
+# Checks for deploy/bootstrap.sh: sh deploy/bootstrap_test.sh
+# Each case extracts the block under test from bootstrap.sh verbatim and runs it with die/log stubbed.
 set -u
 
 BS="${1:-$(dirname "$0")/bootstrap.sh}"
@@ -18,14 +14,10 @@ expect() { # label needle haystack
   esac
 }
 
-# --- the FELIS_VELOCITY_FORK_JAR digest gate -------------------------------------------
-# This jar becomes the proxy every player connects through, so the interesting cases are the
-# two refusals, not the happy path.
 
 gate="$(awk '/have="\$\(sha256sum <"\$FELIS_VELOCITY_FORK_JAR"/,/^    log "installing the Felis-Legacy/' "$BS")"
 [ -n "$gate" ] || { echo "FAIL: no fork-jar digest gate found in $BS"; exit 1; }
-# awk runs an unmatched end pattern to EOF, which would quietly pipe the rest of bootstrap.sh
-# into the `sh -c` below. The emptiness check above only catches a broken start pattern.
+# an unmatched awk end pattern runs to EOF and would pipe the rest of bootstrap.sh into the sh -c below
 [ "$(printf '%s\n' "$gate" | wc -l)" -lt 40 ] \
   || { echo "FAIL: the extracted block is not the gate -- did its last line move?"; exit 1; }
 
@@ -52,20 +44,14 @@ out="$(run_gate "$want")"
 expect "the matching digest installs" "LOG: installing the Felis-Legacy Velocity fork" "$out"
 expect "the install line records the digest" "(sha256 ${want})" "$out"
 
-# The build host is usually Windows, where nothing prints the digest the way sha256sum does:
-# Get-FileHash returns uppercase and certutil has shipped the bytes space-separated. Feeding
-# the gate its own output can never catch that -- these two cases are the operator's paste.
+# Windows tools print the digest uppercase (Get-FileHash) or space-separated (certutil).
 out="$(run_gate "$(printf '%s' "$want" | tr 'a-z' 'A-Z')")"
 expect "an uppercase digest is the same digest" "LOG: installing the Felis-Legacy Velocity fork" "$out"
 
 out="$(run_gate "$(printf '%s' "$want" | sed 's/../& /g')")"
 expect "a space-separated digest is the same digest" "LOG: installing the Felis-Legacy Velocity fork" "$out"
 
-# --- papermc_latest_jar answers "url sha256" from one response --------------------------
-# Fill's download URLs are content-addressed (/v1/objects/<sha256>/<name>.jar), and the
-# resolver's contract is to hand both halves back from the same grep — or refuse a URL
-# that carries no digest, rather than wave the download through unchecked. Run under
-# bash, not sh: bootstrap.sh is bash and the function uses $'\n'.
+# Fill download URLs are content-addressed (/v1/objects/<sha256>/<name>.jar). Runs under bash: the function uses $'\n'.
 
 fn="$(awk '/^papermc_latest_jar\(\)/,/^}/' "$BS")"
 [ -n "$fn" ] || { echo "FAIL: no papermc_latest_jar in $BS"; exit 1; }
@@ -97,8 +83,7 @@ expect "the resolver pairs the url with its own digest" \
 out="$(run_resolver '{"url":"https://fill-data.papermc.io/mirror/velocity-3.5.1-615.jar"}')"
 expect "a URL that carries no digest is refused" "REFUSED" "$out"
 
-# A TLS handshake cut mid-way (curl exit 35) is outside curl's own --retry set, so
-# meta_get retries it: two failures, then the answer, still resolves.
+# curl exit 35 (TLS handshake cut) is outside curl's --retry set, so meta_get retries it.
 tries="$(mktemp)"
 out="$(TRIES="$tries" bash -c '
   # curl runs in a command substitution, so the attempt count lives in a file.
@@ -120,9 +105,6 @@ out="$(bash -c '
 ')"
 expect "meta_get gives up after three attempts" "GAVE UP" "$out"
 
-# --- the Velocity digest gate -----------------------------------------------------------
-# The download must hash to what the lock (or the content-addressed URL) promised, BEFORE
-# atomic_install_file — the same refusal the Via plugins and the fork jar already get.
 
 vblock="$(awk '/^stage_velocity_jar\(\) \{/,/^}/' "$BS")"
 [ -n "$vblock" ] || { echo "FAIL: no stage_velocity_jar found in $BS"; exit 1; }
@@ -186,9 +168,6 @@ expect "another FELIS_VELOCITY_VERSION resolves that minor's newest build" \
 expect "FELIS_GAME_STACK=latest resolves the newest build of the default minor" \
   "STAGE https://fill-data.papermc.io/v1/objects/bbb/velocity-3.5.1-700.jar bbb 3.5.1" "$(run_velocity_choice latest '' 3.5.1)"
 
-# --- the game-stack lock ----------------------------------------------------------------
-# bootstrap.sh reads deploy/game-stack.lock as data: known keys only, all of them present,
-# values limited to URL and version characters, digests shaped like digests.
 
 lblock="$(awk '/^load_game_stack_lock\(\) \{/,/^}/' "$BS")"
 [ -n "$lblock" ] || { echo "FAIL: no load_game_stack_lock found in $BS"; exit 1; }
@@ -218,7 +197,6 @@ expect "a malformed digest is refused" "DIE: $ldir/badsha: PAPER_JAR_SHA256 is n
 expect "no lock file is refused with the way out" "FELIS_GAME_STACK=latest" "$(run_lock "$ldir/none")"
 rm -rf "$ldir"
 
-# --- the Temurin JRE pin ----------------------------------------------------------------
 jblock="$(awk '/^install_jre\(\) \{/,/^}/' "$BS")"
 [ -n "$jblock" ] || { echo "FAIL: no install_jre found in $BS"; exit 1; }
 jdir="$(mktemp -d)"
@@ -259,9 +237,6 @@ expect "a JRE someone else installed is left alone" "is not a Temurin build this
 expect "an unsupported architecture keeps a pre-staged JRE" "OK: JRE already installed at $jdir/jre" "$(run_jre riscv64 "$jsha")"
 rm -rf "$jdir" "$jtar"
 
-# --- [[auth_source]] carry-forward -----------------------------------------------------
-# write_felis_toml regenerates felis.toml wholesale on every run; this is what keeps the
-# operator's Yggdrasil roots from being reset to the shipped default.
 
 ablock="$(awk '/^persisted_auth_source_blocks\(\) \{/,/^}/' "$BS")"
 [ -n "$ablock" ] || { echo "FAIL: no persisted_auth_source_blocks found in $BS"; exit 1; }
@@ -319,12 +294,6 @@ for hdr in '[[ auth_source ]]' '[["auth_source"]]' "[['auth_source']]"; do
   esac
 done
 
-# --- [smtp] carry-forward does not hoard the auth_source comment block -------------------
-# persisted_smtp_block used to print every line between [smtp] and the next section
-# header -- which includes the generated Yggdrasil comment block that sits above
-# [[auth_source]]. Each re-run re-emitted that hoard plus a fresh template copy, so both
-# config files grew by one comment block per run (audit #50). The carry must be the
-# section's header and keys only, and must be byte-stable when written back.
 
 sblock="$(awk '/^persisted_smtp_block\(\) \{/,/^}/' "$BS")"
 [ -n "$sblock" ] || { echo "FAIL: no persisted_smtp_block found in $BS"; exit 1; }
@@ -380,8 +349,7 @@ case "$out" in
   *) echo "PASS the carry stops at the next section header" ;;
 esac
 
-# Write the carry back the way write_felis_toml does (carry + one fresh template block +
-# the tables) and extract again: a second re-run must add nothing.
+# Write the carry back as write_felis_toml does and extract again: a second re-run adds nothing.
 {
   printf '%s\n' "$out"
   printf '\n%s\n' '# Third-party Yggdrasil sources federated by the hasJoined multiplexer. Mojang is'
@@ -398,10 +366,7 @@ else
   fails=$((fails + 1))
 fi
 
-# --- write_nano_config leaves the unit able to read its config ---------------------------
-# felis-nano runs as a DynamicUser, so the directory must be searchable by others under a
-# hardened umask too, including one an older installer left at 0750 -- but the full
-# install's, locked to 0700 for its secrets, must not be widened.
+# felis-nano runs as a DynamicUser: its directory must stay searchable by others, the full install's 0700 must not widen.
 
 wblock="$(awk '/^write_nano_config\(\) \{/,/^}/' "$BS")"
 [ -n "$wblock" ] || { echo "FAIL: no write_nano_config found in $BS"; exit 1; }
@@ -432,9 +397,6 @@ else
   echo "SKIP directory modes: this filesystem ignores chmod"
 fi
 
-# --- install_nano_service reports a unit that dies at once ------------------------------
-# A config the new binary rejects leaves the unit in auto-restart; the install must say so
-# instead of printing "started" over a proxy whose every login now fails.
 
 iblock="$(awk '/^install_nano_service\(\) \{/,/^}/' "$BS")"
 [ -n "$iblock" ] || { echo "FAIL: no install_nano_service found in $BS"; exit 1; }
@@ -464,10 +426,6 @@ esac
 out="$(run_nano_service 0)"
 expect "a unit that stays up is reported as started" "OK: felis-nano.service enabled and started" "$out"
 
-# --- a re-run on a nano host keeps what that host is --------------------------------------
-# Re-running the installer is how a nano host updates. It must not move the endpoint an
-# off-host proxy points at, nor default a nano-only host to the full control plane. The unit
-# read back here is the one install_nano_service wrote above.
 
 rblock="$(awk '/^resolve_nano_listen\(\) \{/,/^}/' "$BS")"
 [ -n "$rblock" ] || { echo "FAIL: no resolve_nano_listen found in $BS"; exit 1; }
@@ -489,7 +447,6 @@ expect "a first install listens on loopback" "LISTEN: 127.0.0.1:8081" \
 expect "a first install takes the operator's address" "LISTEN: 10.0.0.5:8081" \
   "$(run_listen 10.0.0.5:8081 "$sdir/absent.service")"
 
-# Whatever the address came from, it reaches the firewall, the summary and the unit as-is.
 lblock="$(awk '/^validate_listen\(\) \{/,/^}/' "$BS")"
 [ -n "$lblock" ] || { echo "FAIL: no validate_listen found in $BS"; exit 1; }
 [ "$(printf '%s\n' "$lblock" | wc -l)" -lt 20 ] \
@@ -508,8 +465,7 @@ for v in '[::1]:8081' '[::]:8081' :8081 0.0.0.0:8081 127.0.0.1:8081; do
   expect "listen address $v is accepted" VALID "$(check_listen "$v")"
 done
 
-# The summary hands the operator the URL to paste into the proxy's JVM flags, so it must
-# name the address nano actually binds, and the node's only for a wildcard bind.
+# The summary URL goes into the proxy's JVM flags: it names the bound address, the node's only for a wildcard bind.
 sblock="$(awk '/^summary_nano\(\) \{/,/^}/' "$BS")"
 [ -n "$sblock" ] || { echo "FAIL: no summary_nano found in $BS"; exit 1; }
 [ "$(printf '%s\n' "$sblock" | wc -l)" -lt 40 ] \
@@ -541,8 +497,7 @@ for v in 0.0.0.0:8081 '[::]:8081' :8081; do
     "$(run_summary "$v")"
 done
 
-# Loopback is what keeps the firewall shut, and hasJoined takes no token: a default that
-# does not classify as loopback turns every fresh nano host into a public auth relay.
+# hasJoined takes no token: a non-loopback default would make every fresh nano host a public auth relay.
 run_loopback() { # listen
   FELIS_NANO_LISTEN="$1" bash -c "$kblock"'
     if nano_listen_is_loopback; then echo LOOPBACK; else echo ROUTABLE; fi'
@@ -558,9 +513,6 @@ ndefault="$(run_listen '' "$sdir/absent.service")"
 ndefault="${ndefault#LISTEN: }"
 expect "the default listen address (${ndefault:-empty}) is loopback" LOOPBACK "$(run_loopback "$ndefault")"
 
-# --- firewalld admits the proxy alone ---------------------------------------------------
-# hasJoined takes no token, so a routable bind is opened only to FELIS_NANO_PROXY_CIDR, never
-# to every source, and a re-run closes the port an earlier installer opened to everyone.
 
 cblock="$(awk '/^validate_cidr\(\) \{/,/^}/' "$BS")"
 [ -n "$cblock" ] || { echo "FAIL: no validate_cidr found in $BS"; exit 1; }
@@ -585,9 +537,7 @@ fblock="$(awk '/^configure_nano_firewall\(\) \{/,/^}/' "$BS")"
 [ "$(printf '%s\n' "$fblock" | wc -l)" -lt 40 ] \
   || { echo "FAIL: the extracted block is not the function -- did its closing brace move?"; exit 1; }
 
-# ufw_stub is ufw for a run: UFW=active or inactive, its status line translated outside the
-# C locale as ufw translates it; every other call is printed to stderr, which the installer
-# leaves alone when it silences ufw's "Rule added".
+# ufw_stub: UFW=active|inactive, status line localized as ufw does; other calls are printed to stderr.
 ufw_stub='
     ufw() {
       case "$*" in
@@ -645,7 +595,7 @@ case "$(run_fw 127.0.0.1:8081 10.0.0.7/32 1)" in
   *) echo "PASS a loopback bind leaves firewalld alone" ;;
 esac
 
-# ufw, enabled on many Ubuntu and Debian hosts, drops what no rule admits.
+
 out="$(run_fw 0.0.0.0:8081 10.0.0.7/32 0 active)"
 expect "ufw admits the nano port from the proxy CIDR alone" \
   "UFW: allow proto tcp from 10.0.0.7/32 to any port 8081 comment felis-nano" "$out"
@@ -714,8 +664,7 @@ tblock="$(awk '/^bootstrap_from_tui\(\) \{/,/^}/' "$BS")"
 [ "$(printf '%s\n' "$tblock" | wc -l)" -lt 5 ] \
   || { echo "FAIL: the extracted block is not the function -- did its closing brace move?"; exit 1; }
 
-# Only the no-terminal path can run unattended, and with a terminal attached the prompt
-# would sit waiting on it. setsid drops the controlling terminal, as cloud-init and CI have.
+# setsid drops the controlling terminal, as cloud-init and CI do; with one attached the prompt would block.
 notty=""
 if (: </dev/tty) 2>/dev/null; then
   if command -v setsid >/dev/null 2>&1; then notty=setsid; else notty=skip; fi
@@ -743,20 +692,15 @@ else
   out="$(run_mode "$sdir/absent.service" "$sdir/absent.done")"
   expect "a fresh host defaults to full" "MODE: full" "$out"
   expect "no controlling terminal takes the no-prompt path" "LOG: no terminal for a prompt" "$out"
-  # felis setup goes on to need the control plane, so under it nano is refused, and the
-  # nano-only default above must not apply either.
+  # felis setup needs the control plane: nano is refused and the nano-only default does not apply.
   expect "felis setup refuses FELIS_INSTALL_MODE=nano" "DIE: felis setup installs the full control plane" \
     "$(run_mode "$sdir/absent.service" "$sdir/absent.done" nano 1)"
   expect "felis setup installs full on a nano-only host" "MODE: full" \
     "$(run_mode "$sdir/felis-nano.service" "$sdir/absent.done" "" 1)"
 fi
 
-# --- install_go_toolchain checks the tarball before it replaces anything ----------------
-# The tarball is unpacked and run as root, so a download that does not hash to the pin is
-# refused -- and refused before the working toolchain is removed.
 
-# The function replaces whatever version sits at GOROOT_DIR, so that has to be a directory
-# Felis owns, never an operator's /usr/local/go.
+# GOROOT_DIR is replaced wholesale, so it must be a Felis-owned directory, never /usr/local/go.
 case "$(grep '^GOROOT_DIR=' "$BS")" in
   'GOROOT_DIR="/opt/felis/'*) echo "PASS the Go toolchain lives under /opt/felis" ;;
   *) echo "FAIL the Go toolchain must live under /opt/felis, got: $(grep '^GOROOT_DIR=' "$BS")"; fails=$((fails + 1)) ;;
@@ -810,9 +754,6 @@ gtmp="$(printf '%s\n' "$out" | sed -n 's/^TEMP: //p')"
 expect "the Go download is staged in a directory the cleanup removes" \
   "CURL: ${gtmp:-<none>}/go1.26.4.linux-amd64.tar.gz" "$out"
 
-# --- every download retries --------------------------------------------------------------
-# curl without --retry gives up on the first 503 or timeout: one blip in the ViaVersion, Go
-# or Docker repository download stopped a fresh install halfway.
 noretry="$(grep -nE 'curl -(fsSL|sfL)' "$BS" | grep -vE '^[0-9]+:[[:space:]]*#|<(raw-)?url>' | grep -v -- '--retry' || true)"
 if [ -z "$noretry" ]; then
   echo "PASS every curl download in the installer retries"
@@ -820,11 +761,7 @@ else
   echo "FAIL curl downloads without --retry:"; printf '%s\n' "$noretry"; fails=$((fails + 1))
 fi
 
-# --- a release asset's download is tried three times -------------------------------------
-# curl's --retry does not cover a connection reset mid-stream, the likely failure on an
-# image bundle of several hundred MiB, and what the installer falls back to is a build on
-# the host that preflight may not have counted on. A release that does not list the asset
-# (still uploading) falls back at once: no download can find it.
+# curl's --retry does not cover a reset mid-stream; a release that does not list the asset falls back at once.
 
 dlblock="$(awk '/^download_release_asset\(\) \{/,/^}/' "$BS")"
 [ -n "$dlblock" ] || { echo "FAIL: no download_release_asset found in $BS"; exit 1; }
@@ -898,10 +835,6 @@ expect "the token goes to curl on stdin" 'header = "Authorization: Bearer tok-se
 expect "a download with a token counts a stalled transfer as a failure too" "--speed-limit 1024 --speed-time 60" "$(cat "$dldir/calls")"
 rm -rf "$dldir"
 
-# --- a build preflight did not count on checks its room first ---------------------------
-# A release install budgets no Docker; an asset it then cannot use is built here, with
-# Docker's images and build cache under /var/lib/containerd. Without the room the install
-# must stop before Docker is installed, not fill the disk halfway through a build.
 
 edblock="$(awk '/^ensure_docker\(\) \{/,/^}/' "$BS"; awk '/^unplanned_build_room\(\) \{/,/^}/' "$BS")"
 case "$edblock" in *"install_docker"*"FELIS_PREFLIGHT=warn to build anyway"*) ;; *) echo "FAIL: ensure_docker / unplanned_build_room not found in $BS"; exit 1 ;; esac
@@ -952,10 +885,7 @@ case "$out" in
   *) echo "PASS a restart of Docker is not checked again" ;;
 esac
 
-# --- Docker holds no memory between builds -------------------------------------------------
-# Docker serves the installer's builds and nothing at runtime. The one it installed does not
-# start at boot, and once a step is done the daemon stops, and its containerd with it unless
-# something besides Docker keeps a namespace there.
+# Docker serves only the installer's builds; once a step is done the daemon stops, and containerd with it unless another namespace is kept.
 
 sdblock="$(awk '/^stop_docker\(\) \{/,/^}/' "$BS")"
 [ -n "$sdblock" ] || { echo "FAIL: no stop_docker found in $BS"; exit 1; }
@@ -1025,9 +955,7 @@ expect "a Docker already on the host is only started" "OK: docker already instal
 SYSTEMCTL start docker" "$out"
 case "$out" in *disable*|*enable*) echo "FAIL the host's own Docker had its boot changed"; fails=$((fails + 1)) ;; *) echo "PASS the host's own Docker keeps its boot setting" ;; esac
 
-# --- a release binary is hashed against SHA256SUMS before anything runs it ---------------
-# download_release_binary executes the asset as root to read its version stamp, so the
-# checksum has to come first, and every failure has to fall back to the source build.
+# download_release_binary runs the asset as root to read its version stamp, so the checksum comes first.
 
 vblock="$(awk '/^verify_release_checksum\(\) \{/,/^}/' "$BS")"
 [ -n "$vblock" ] || { echo "FAIL: no verify_release_checksum found in $BS"; exit 1; }
@@ -1058,11 +986,8 @@ out="$(run_verify "")"
 expect "a release without SHA256SUMS falls back to a source build" "publishes no SHA256SUMS" "$out"
 case "$out" in *VERIFIED*) echo "FAIL: a release without SHA256SUMS must not verify"; fails=$((fails + 1)) ;; esac
 
-# download_release_binary itself, with the real verify_release_checksum, run the way the
-# installer runs it: under set -Eeuo pipefail, from acquire_felis_binary or
-# acquire_nano_binary. The stand-in asset writes to the same log as ok and warn each time it
-# runs, so the log shows whether the hash was checked before the file was first executed,
-# and that a refused one never runs at all.
+# Runs download_release_binary under set -Eeuo pipefail with the real verify_release_checksum.
+# The stand-in asset logs each run, showing the hash is checked before the first execution.
 dblock="$(awk '/^download_release_binary\(\) \{/,/^}/' "$BS")"
 [ -n "$dblock" ] || { echo "FAIL: no download_release_binary found in $BS"; exit 1; }
 [ "$(printf '%s\n' "$dblock" | wc -l)" -lt 100 ] \
@@ -1081,9 +1006,8 @@ mkdir -p "$ddir/bin"
 printf '#!/bin/sh\necho "RAN: $*" >> "%s"\necho "felis v9.9.9"\n' "$ddir/log" > "$ddir/asset"
 dsum="$(sha256sum <"$ddir/asset" | cut -d' ' -f1)"
 
-# run_download SUMS [entry]: SHA256SUMS-content ("" = the release has none), and the caller
-# (acquire_felis_binary by default). INSTALL_FAILS makes install(1) fail, FETCH_FAILS a
-# command inside fetch_source. The log lands in $ddir/log; stdout says what the caller did.
+# run_download SUMS [entry]: entry defaults to acquire_felis_binary; INSTALL_FAILS fails install(1), FETCH_FAILS a command in fetch_source.
+# The log lands in $ddir/log.
 run_download() {
   rm -f "$ddir/bin/felis"
   if [ "${ALREADY_INSTALLED:-0}" = 1 ]; then cp "$ddir/asset" "$ddir/bin/felis"; chmod +x "$ddir/bin/felis"; fi
@@ -1168,8 +1092,7 @@ same_log "a release binary without SHA256SUMS is never executed" \
   "WARN: release v9.9.9 publishes no SHA256SUMS, so felis-linux-amd64 cannot be verified; building v9.9.9 from source on this host instead"
 refused_download "a release binary without SHA256SUMS"
 
-# errexit reaches inside: run as an if or && condition it did not, and an install(1) that
-# failed after HOST_BIN was removed read as an installed binary.
+# errexit is ignored inside an if/&& condition, which let a failed install(1) read as installed.
 out="$(INSTALL_FAILS=1 run_download "$(printf '%s  felis-linux-amd64\n' "$dsum")")"
 died_midway "an install(1) of the release binary that fails" $?
 case "$(cat "$ddir/log")" in
@@ -1188,7 +1111,6 @@ PREBUILT[]" $?
 out="$(INSTALL_FAILS=1 run_download "$(printf '%s  felis-linux-amd64\n' "$dsum")" acquire_nano_binary)"
 died_midway "nano: an install(1) of the release binary that fails" $?
 
-# --- cloudflared is a pinned release, checked before it is installed ---------------------
 cfblock="$(awk '/^install_cloudflared\(\) \{/,/^}/' "$BS")"
 [ -n "$cfblock" ] || { echo "FAIL: no install_cloudflared found in $BS"; exit 1; }
 cfsum="$(printf 'stand-in cloudflared\n' | sha256sum | cut -d' ' -f1)"
@@ -1223,8 +1145,7 @@ case "$out" in *INSTALL:*) echo "FAIL: a refused cloudflared must not be install
 expect "another cloudflared version needs its own digest" "DIE: no pinned sha256 for cloudflared 2027.1.0" "$(run_cf 2027.1.0 "$cfsum")"
 expect "another cloudflared version installs with its digest" "INSTALL: -m 0755" "$(run_cf 2027.1.0 deadbeef "$cfsum")"
 
-# An installed cloudflared moves only under FELIS_UPGRADE_DEPS=1, only when Felis put it
-# there, never backwards, and the running tunnel is restarted onto the new binary.
+# Upgrades need FELIS_UPGRADE_DEPS=1, a Felis-installed binary and a newer version; the tunnel restarts onto it.
 out="$(CF_PATH=/usr/local/bin/cloudflared CF_HAVE=2026.9.1 run_cf 2026.9.1 "$cfsum")"
 expect "a cloudflared at the pin is left alone" "OK: cloudflared 2026.9.1 already installed" "$out"
 case "$out" in *CURL:*) echo "FAIL: a cloudflared at the pin must not be downloaded again"; fails=$((fails + 1)) ;; esac
@@ -1259,8 +1180,7 @@ run_kinst() { # [--keep-binary]
 expect "finishing a cut-short k3s install keeps the binary in place" "SKIP=[binary] VERSION=v1.36.4+k3s1" "$(run_kinst --keep-binary)"
 expect "an install or an upgrade downloads k3s" "SKIP=[] VERSION=v1.36.4+k3s1" "$(run_kinst)"
 
-# An installed k3s moves only under FELIS_UPGRADE_DEPS=1, one minor version at a time and
-# never backwards; the refusal names the release to go through first.
+# Upgrades need FELIS_UPGRADE_DEPS=1, one minor at a time, never backwards.
 kfake="$sdir/k3s"
 : > "$sdir/k3s.service"
 run_k3s() { # installed-version pinned-version [FELIS_UPGRADE_DEPS]
@@ -1287,8 +1207,7 @@ run_k3s() { # installed-version pinned-version [FELIS_UPGRADE_DEPS]
 out="$(run_k3s v1.36.4+k3s1 v1.36.4+k3s1 1)"
 expect "a k3s at the pin is left alone" "OK: k3s v1.36.4+k3s1 already installed" "$out"
 case "$out" in *INSTALLER:*) echo "FAIL: a k3s at the pin must not be reinstalled"; fails=$((fails + 1)) ;; esac
-# k3s's image tarball is read as k3s starts, so it is fetched only for a k3s about to start
-# on a new version: a rerun downloads nothing.
+# The image tarball is fetched only for a k3s about to start on a new version.
 case "$out" in *STAGE*) echo "FAIL: a k3s left as it is must not have its images downloaded again"; fails=$((fails + 1)) ;; *) echo "PASS a k3s left as it is stages no images" ;; esac
 out="$(run_k3s v1.35.2+k3s1 v1.36.4+k3s1)"
 expect "an older k3s is reported without the flag" "this release pins v1.36.4+k3s1 (FELIS_UPGRADE_DEPS=1 moves it)" "$out"
@@ -1306,9 +1225,6 @@ expect "a newer k3s is never downgraded" "OK: k3s v1.37.0+k3s1 is newer than the
 case "$out" in *INSTALLER:*) echo "FAIL: a newer k3s must not be downgraded"; fails=$((fails + 1)) ;; esac
 expect "an unreadable k3s version stops the upgrade" "DIE: cannot compare the installed k3s 'dev'" "$(run_k3s dev v1.36.4+k3s1 1)"
 
-# --- a private repo without a token fails with the hint instead of prompting -------------
-# git asks for credentials on /dev/tty, where a piped install would sit waiting. Every
-# network git call goes through git_auth, so the switch belongs there.
 
 gablock="$(awk '/^git_auth\(\) \{/,/^}/' "$BS")"
 [ -n "$gablock" ] || { echo "FAIL: no git_auth found in $BS"; exit 1; }
@@ -1362,10 +1278,7 @@ mkdir -p "$sdir/src/.git"
 expect "a failed fetch into an existing checkout of a fork names the token" "set FELIS_GITHUB_TOKEN" \
   "$(run_fetch "$sdir/src" https://github.com/someone/felis.git)"
 
-# --- a rerun takes over whatever sits at SRC_DIR, and an abbreviated commit id ----------------
-# Real git against a local repository: git clone refuses a non-empty destination, so a tree
-# staged for FELIS_SKIP_FETCH (or left by an interrupted clone) used to stop the rerun, and a
-# short sha is no ref a server answers a shallow fetch for.
+# Real git against a local repository; a short sha is no ref a server answers a shallow fetch for.
 
 gdir="$(mktemp -d)"
 trap 'rm -f "$jar" "$sfn"; rm -rf "$vdir" "$sdir" "$smtp_dir" "$gdir"' EXIT
@@ -1412,8 +1325,7 @@ expect "a fresh clone takes an abbreviated commit id" "AT ${first} one" \
   "$(run_real_fetch "$gdir/fresh" "$first")"
 [ ! -e "$gdir/fresh.new.Ab12Cd" ] && echo "PASS   and clears the half-made checkout a killed run left" \
   || { echo "FAIL the half-made checkout a killed run left is still there"; fails=$((fails + 1)); }
-# A full clone left a local main behind origin's; with the shallow fetch failing, the whole
-# history arm must still land on origin's main.
+# A full clone leaves a local main behind origin's; the history fallback must still land on origin's main.
 git clone -q "file://$gdir/up" "$gdir/stale"
 git -C "$gdir/stale" reset -q --hard HEAD~1
 gablock_noshallow="$gablock
@@ -1434,10 +1346,6 @@ leftover="$(find "$gdir" -maxdepth 1 -name '*.new.*')"
   || { echo "FAIL a half-made checkout was left behind: $leftover"; fails=$((fails + 1)); }
 unset GIT_CONFIG_GLOBAL GIT_CONFIG_NOSYSTEM
 
-# --- default install keeps backups, and retention envs reach the renderer ----------------
-# A default install must render the world-archive PVC (without one, backup/restore answer an
-# honest 503), and FELIS_WORLDS_HOST_PATH must turn into the reaper's two flags or an
-# operator's retention enablement silently renders no CronJob. Extracted, not retyped.
 
 mblock="$(awk '/^  log "rendering \+ applying the control-plane bundle"/,/kube apply -f -/' "$BS")"
 [ -n "$mblock" ] || { echo "FAIL: no manifest_args block found in $BS"; exit 1; }
@@ -1470,8 +1378,7 @@ expect "a default install asks the renderer for the archive PVC" "--backup-pvc
 felis-backups" "$out"
 expect "the API mounts the node-control socket of the node it is pinned to" "--node-control-node
 ctl-a" "$out"
-# data-durability-17: without a worlds root the reaper still renders, retention-only,
-# so backups past their expiry leave the store; it needs the archive mount for that.
+# Without a worlds root the reaper renders retention-only and needs the archive mount to delete expired backups.
 expect "a default install passes the archive mount so expired backups are deleted" "--archive-local-path
 /var/lib/felis/archives" "$out"
 case "$out" in
@@ -1489,8 +1396,7 @@ expect "an emptied FELIS_BACKUP_PVC is the explicit no-backup shape" "--backup-p
 case "$out" in
   *--archive-local-path*) echo "FAIL: no archive mount may be passed without an archive PVC"; fails=$((fails + 1)) ;;
 esac
-# Game server egress excludes every private range already; the node's own public
-# addresses must be excluded too or a server can dial the panel NodePort on them.
+# The node's public addresses are denied too, or a server could dial the panel NodePort on them.
 expect "every global node address is denied to game server egress (v4)" "--server-egress-deny-cidr
 203.0.113.7/32" "$out"
 expect "every global node address is denied to game server egress (v6)" "--server-egress-deny-cidr
@@ -1517,34 +1423,28 @@ expect "enabling retention passes the worlds root" "--worlds-host-path
 expect "enabling retention passes the archive mount that must match felis.toml" "--archive-local-path
 /var/lib/felis/archives" "$out"
 
-# The warn fires only when the root is ABSENT (hostPath type Directory would fail);
-# the case above passes a path that exists on any host already running k3s, so it
-# must not also demand the warning — probing the real /var/lib/rancher path made
-# this suite red on exactly the hosts the installer is for. Point the warn case at
-# a path guaranteed missing.
+# The warning fires only when the root is absent, so this case points at a path that cannot exist.
 missing="/tmp/felis-worlds-root-must-not-exist-$$"
 out="$(run_bundle_flags felis-backups "$missing")"
 expect "a missing worlds root is warned about, not silently skipped" "WARN: worlds root $missing does not exist yet" "$out"
 
-# On a fresh install the k3s default root does not exist until the provisioner's first
-# volume; the installer creates it with k3s's own mode instead of warning about its default.
+# The k3s default root does not exist until the provisioner's first volume; the installer creates it with k3s's mode.
 out="$(K3S_STORAGE_ROOT_T="$missing" run_bundle_flags felis-backups "$missing")"
 expect "a missing k3s storage root is created with k3s's mode" "INSTALL -d -m 0700 -o root -g root $missing" "$out"
 case "$out" in
   *WARN*) echo "FAIL: the installer's own default root must not be warned about: $out"; fails=$((fails + 1)) ;;
 esac
 
-# The reaper reads the root as root with DAC_OVERRIDE through a static PV, so an existing
-# root is left exactly as k3s shipped it: uid 1000 is now the game servers' uid, and a
-# traverse grant for it on the node's storage root would serve nothing but them.
+# An existing root is left as k3s shipped it: the reaper reads it with DAC_OVERRIDE, and a traverse
+# grant for uid 1000 (the game servers') would serve only them.
 wdir="$(mktemp -d)"
 out="$(run_bundle_flags felis-backups "$wdir")"
 case "$out" in
   *SETFACL*|*CHMOD*|*WARN*) echo "FAIL: an existing worlds root must get no grant and no warning: $out"; fails=$((fails + 1)) ;;
 esac
 
-# data-durability-18: an older release's traverse grant on the worlds root is taken back on
-# every run -- the ACL entry from any root, the other-bits only from k3s's own storage root.
+# An earlier traverse grant on the worlds root is revoked every run: the ACL entry from any root,
+# the other-bits only from k3s's own storage root.
 rvblock="$(awk '/^revoke_worlds_root_grant\(\) \{/,/^}/' "$BS")"
 [ -n "$rvblock" ] || { echo "FAIL: no revoke_worlds_root_grant found in $BS"; exit 1; }
 run_revoke() { # k3s-root worlds-root acl-dir
@@ -1571,11 +1471,7 @@ case "$out" in
 esac
 command rm -rf "$k3sroot" "$custom"
 
-# --- the registry mirror writer -----------------------------------------------------------
-# k3s only consults registries.yaml at agent start, so a CONTENT change must restart k3s and
-# an identical file (every re-run) must restart nothing. The k3s restart is the expensive,
-# disruptive half of the pair -- getting the idempotence wrong bounces the whole cluster on
-# every installer re-run, so both halves are pinned here against the extracted function.
+# k3s reads registries.yaml only at agent start: a content change restarts k3s, an identical file restarts nothing.
 
 cmblock="$(awk '/^configure_registry_mirror\(\) \{/,/^}/' "$BS")"
 [ -n "$cmblock" ] || { echo "FAIL: no configure_registry_mirror found in $BS"; exit 1; }
@@ -1612,10 +1508,7 @@ out="$(run_mirror "$mfile")"
 expect "changed content restarts k3s again" "SYSTEMCTL restart k3s" "$out"
 rm -f "$mfile"
 
-# --- image mirroring ----------------------------------------------------------------------
-# The registry keys a repository by the path AFTER the host, so the push must swap the
-# registry host for the node's loopback endpoint and nothing else. A ref outside the
-# registry must be warned about, not silently pushed somewhere unintended.
+# The push swaps only the registry host for the node's loopback endpoint; refs outside the registry are warned about.
 
 pblock="$(awk '/^push_image_to_registry\(\) \{/,/^}/' "$BS")"
 [ -n "$pblock" ] || { echo "FAIL: no push_image_to_registry found in $BS"; exit 1; }
@@ -1653,8 +1546,7 @@ expect "and pushed to exactly that endpoint, with the platform login" "DOCKER --
 
 out="$(run_push registry.felis.svc:50000/felis/felis:demo)"
 expect "a ref outside the registry is refused with a warning" "WARN: not mirroring" "$out"
-# The push runs with the platform login, `docker --config <dir> push`, so any docker line
-# with a push in it counts.
+# The push runs as `docker --config <dir> push`, so match any docker line containing push.
 if printf '%s\n' "$out" | grep -q '^DOCKER .*push '; then
   echo "FAIL a ref outside the registry was pushed: $out"; fails=$((fails + 1))
 else
@@ -1674,10 +1566,7 @@ expect "a GC window that never ends still fails the install" "DIE: could not mir
   "$(run_push registry.felis.svc:5000/felis/felis:demo 99 1)"
 rm -rf "$pushdir"
 
-# docker must be started ONCE for the whole batch: a start/stop pair per image trips
-# systemd's start rate limit ("start-limit-hit" — observed live; the 4th image was never
-# mirrored because docker.service is socket-triggered and each cycle counts twice). An image
-# the release shipped is pushed from its bundle instead, and needs no Docker at all.
+# Start Docker once per local-image batch; release bundle uploads need no Docker.
 wiblock="$(for f in push_images_to_registry role_prebuilt role_image stop_docker; do awk '/^'"$f"'\(\) \{/,/^}/' "$BS"; done)"
 case "$wiblock" in *"push_images_to_registry() {"*"role_prebuilt() {"*"role_image() {"*"stop_docker() {"*) ;; *) echo "FAIL: push_images_to_registry or its helpers are missing from $BS"; exit 1 ;; esac
 run_batch() { # PREBUILT_ROLES [ARTIFACT_MODE [ARTIFACT_CACHE]]
@@ -1727,8 +1616,7 @@ out="$(run_batch " felis limbo lobby paper " release "$cachedir")"
 [ ! -e "$cachedir" ] && echo "PASS the downloaded bundles are removed once they are pushed" \
   || { echo "FAIL: ${cachedir} was left behind after the pushes"; fails=$((fails + 1)); rm -rf "$cachedir"; }
 
-# Each game build is also mirrored under <MC version>-<image id>, a tag no later run
-# rewrites, so an admin can still name that exact build after :demo moves on.
+# Each game build is also tagged <MC version>-<image id>, which no later run rewrites.
 vtblock="$(awk '/^push_version_tag\(\) \{/,/^}/' "$BS")"
 [ -n "$vtblock" ] || { echo "FAIL: no push_version_tag found in $BS"; exit 1; }
 run_version_tag() { # MC_VERSION
@@ -1752,8 +1640,7 @@ case "$(run_version_tag '')" in
   *) echo "PASS without a resolved Minecraft version no version tag is pushed" ;;
 esac
 
-# The registry refuses anonymous writes, and the platform token must never reach
-# docker's argv (ps) or root's ~/.docker: stdin into a throwaway --config dir.
+# The platform token must not reach docker's argv or root's ~/.docker: it goes via stdin into a throwaway --config dir.
 lblock="$(awk '/^registry_docker_login\(\) \{/,/^}/' "$BS")"
 [ -n "$lblock" ] || { echo "FAIL: no registry_docker_login found in $BS"; exit 1; }
 calls="$(mktemp)"
@@ -1777,8 +1664,7 @@ case "$out" in
 esac
 expect "the throwaway config is registered for EXIT cleanup" "TEMP /" "$out"
 
-# The registry pod's two images and the database's can only come from containerd's own
-# store: pin all three against kubelet image GC, and unpin previous ones.
+# The registry's two images and the database's come only from containerd's store: pin all three against kubelet image GC, unpin previous ones.
 pnblock="$(awk '/^pin_platform_images\(\) \{/,/^}/' "$BS")"
 [ -n "$pnblock" ] || { echo "FAIL: no pin_platform_images found in $BS"; exit 1; }
 rrblock="$(awk '/^pinned_image_ref\(\) \{/,/^}/' "$BS")"
@@ -1824,8 +1710,7 @@ case "$out" in
   *"limbo:demo io.cri"*) echo "FAIL: only the registry pod's images may be pinned or unpinned"; fails=$((fails + 1)) ;;
 esac
 
-# User servers still on a bare registry tag are pinned to the build it names BEFORE
-# this run builds and pushes new ones over it; a fresh install has nothing to pin.
+# User servers on a bare registry tag are pinned to their current build before this run pushes new ones over it.
 puiblock="$(awk '/^pin_user_server_images\(\) \{/,/^}/' "$BS")"
 [ -n "$puiblock" ] || { echo "FAIL: no pin_user_server_images found in $BS"; exit 1; }
 run_pin_user() { # crd-present(0/1) pin-exit
@@ -1862,7 +1747,6 @@ p="$(line_of pin_user_server_images)"; b="$(line_of build_game_stack)"; u="$(lin
   && echo "PASS user servers are pinned before the game images are rebuilt and pushed" \
   || { echo "FAIL: main must run pin_user_server_images before build_game_stack and push_images_to_registry (lines: $p $b $u)"; fails=$((fails + 1)); }
 
-# --- the registry's and the database's own images must not be re-pulled on every run -----
 iblock="$(awk '/^import_platform_images\(\) \{/,/^}/' "$BS")"
 [ -n "$iblock" ] || { echo "FAIL: no import_platform_images found in $BS"; exit 1; }
 
@@ -1887,11 +1771,7 @@ out="$(run_import "docker.io/library/registry:2\ndocker.io/library/postgres:18\n
 expect "only the pinned digest counts as present; the old registry tag is pulled over" "PULL crictl pull ${regimage}" "$out"
 expect "only the pinned digest counts as present; the old database tag is pulled over" "PULL crictl pull ${pgimage}" "$out"
 
-# --- installer re-runs refresh the workload namespace's felis-config copy ---------------
-# The backup/restore/fileedit Jobs and the reaper mount the workload namespace's own
-# felis-config (a secretKeyRef is namespace-local). `felis setup` makes that replica
-# create-if-absent -- right for credentials, wrong for a rendered config -- so the
-# installer must refresh it every run; a stale copy keeps old DB/archive settings.
+# `felis setup` only creates that copy if absent, so the installer refreshes it every run; a stale copy keeps old settings.
 
 fcblock="$(awk '/^apply_felis_config_secrets\(\) \{/,/^}/' "$BS")"
 [ -n "$fcblock" ] || { echo "FAIL: no apply_felis_config_secrets found in $BS"; exit 1; }
@@ -1922,9 +1802,6 @@ else
 fi
 rm -f "$kubcalls"
 
-# --- write_file_atomic leaves the old file whole when a write fails ----------------------
-# secrets.env, offsite.env and felis.host.toml were written with a plain `cat >`: a full
-# disk or a crash halfway left a truncated file that the next run took as the truth.
 
 wablock="$(awk '/^write_file_atomic\(\) \{/,/^}/' "$BS")"
 [ -n "$wablock" ] || { echo "FAIL: no write_file_atomic found in $BS"; exit 1; }
@@ -1973,8 +1850,7 @@ else
 fi
 rm -rf "$wadir" "$wafile"
 
-# The installer never runs load_or_make_secrets alone (it would mint real secrets), so
-# its writer is checked by what it calls.
+# load_or_make_secrets mints real secrets, so its writer is checked by what it calls.
 lsblock="$(awk '/^load_or_make_secrets\(\) \{/,/^}/' "$BS")"
 expect "secrets.env is written whole or not at all" 'write_file_atomic "$SECRETS_ENV" 0600 <<EOF' "$lsblock"
 case "$lsblock" in
@@ -1982,11 +1858,7 @@ case "$lsblock" in
   *) echo "PASS load_or_make_secrets writes secrets.env nowhere else" ;;
 esac
 
-# --- installer re-runs keep the operator's [registry] overrides --------------------------
-# §15's upgrade path is re-running the installer, but the build-lane mirrors and the
-# uploads backend live in [registry] as hand-written keys (https://docs.felismc.com/en/reference/configuration#felis-toml or
-# the storage wizard) that nothing in this script's inputs derives. A re-run must carry
-# them forward — without letting a stale url/build_namespace survive (installer-owned).
+# Preserve operator registry settings without retaining installer-owned coordinates.
 
 wrblock="$(awk '/^write_felis_toml\(\) \{/,/^}/' "$BS")"
 prblock="$(awk '/^persisted_registry_block\(\) \{/,/^}/' "$BS")"
@@ -2134,12 +2006,7 @@ else
 fi
 rm -f "$rdir"/felis.host.toml.*
 
-# --- installer re-runs keep [auth]; a different root domain is refused ------------------
-# The Cloudflare edge setup writes access_jwt_aud and client_ip_header into [auth] (the
-# header is what the sign-in rate limit keys on), and an operator may serve the admin
-# console on a name of their own. A re-run rewrote [auth] from the root domain and dropped
-# all of it. The hostnames also feed the proxy's felis-link.properties and the panel
-# certificate, which must follow the carried names.
+# Carry auth overrides and keep proxy/certificate hostnames aligned on reruns.
 
 adir="$(mktemp -d)"
 cat > "$adir/felis.host.toml" <<'TOML'
@@ -2237,11 +2104,7 @@ out="$(cat "$adir/v/openssl.cnf" 2>&1)"
 expect "a regenerated panel certificate names the carried hostnames" 'DNS.1 = ops.example.org
 DNS.2 = play.example.org' "$out"
 
-# The hostnames on the section's first lines and the section far past one pipe buffer:
-# a `printf | grep -q` or `| awk exit` over it has the reader exit while printf is still
-# writing, which is certain here and a scheduling race on a real host (offsite_enabled
-# lost it, see the off-site section). The config must still carry each name once, and
-# the helpers must fail nothing along the way (the installer logs every failed command).
+# Use oversized sections to expose early-reader-exit SIGPIPE races under pipefail.
 { printf '[auth]\nadmin_hostname = "ops.example.org"\npanel_hostname = "play.example.org"\n'
   seq 1 200000 | sed 's/.*/k& = "v"/'; } > "$adir/felis.host.toml"
 err="$(run_write "$adir/out.toml" "$adir" 2>&1)"
@@ -2263,9 +2126,7 @@ else
   echo "FAIL: reading a long [auth] printed:"; printf '%s\n' "$err" | head -5; fails=$((fails + 1))
 fi
 
-# A re-run that writes the same felis-link.properties leaves the file alone: felis domain
-# check reads a proxy started before the file's mtime as still on the old names. stat answers
-# as for the file the first install left, root:v 0640, which the test's user cannot make.
+# Preserve mtime for unchanged proxy properties; mock root ownership unavailable to the test user.
 run_link() { # velocity-dir [root-domain]
   VD="$1" RD="${2:-r.example.com}" TMPDIR="$1" FNFILE="$fnfile" bash -c '
     set -Eeuo pipefail
@@ -2339,9 +2200,7 @@ expect "a host with IPv6 addresses alone is refused" "DIE: could not determine t
 rm -rf "$adir"
 rm -f "$fnfile"
 
-# --- database backups: the pre-migration snapshot and the daily timer --------------------
-# Migrations only roll forward, so an upgrade must hand `migrate up` the snapshot directory,
-# and only an explicit FELIS_PRE_MIGRATE_BACKUP=0 may take that away.
+# Pass the snapshot directory to migrations unless backup is explicitly disabled.
 
 mblock="$(awk '/^run_migrations\(\) \{/,/^}/' "$BS")"
 [ -n "$mblock" ] || { echo "FAIL: no run_migrations found in $BS"; exit 1; }
@@ -2485,9 +2344,7 @@ else
   echo "FAIL the watchdog state directory must be 0700"; fails=$((fails + 1))
 fi
 
-# A run that fails is reported by felis-watchdog-failed.service, and the heartbeat URL is
-# kept private and shown by its host only. The units name no heartbeat flag, so a binary
-# from before it still runs under them.
+# Keep heartbeat URLs private and omit unsupported flags for older fallback binaries.
 failed_unit="$(cat "$tdir/felis-watchdog-failed.service")"
 expect "a failed run starts the failure report" "OnFailure=felis-watchdog-failed.service" "$unit"
 expect "the failure report runs the host binary against the watchdog's state" \
@@ -2569,10 +2426,7 @@ case "$(awk '/^summary\(\) \{/,/^}/' "$BS")" in
   *) echo "FAIL summary must call summary_alerts, summary_heartbeat, then summary_next"; fails=$((fails + 1)) ;;
 esac
 
-# --- the installer's last word: what the operator does next ------------------------------
-# An install that leaves no Owner ends on `felis setup`, and starts it when there is a
-# terminal for it; one with an Owner ends on where to sign in. The setup console must never
-# start into a log (`| tee`, cloud-init, CI), and its own failure must not fail the install.
+# Start setup only on a terminal when no owner exists; console failure must not fail installation.
 case "$(awk '/^main\(\) \{/,/^}/' "$BS" | tail -n 3)" in
   "  summary
   start_setup_console
@@ -2599,9 +2453,7 @@ cat > "$NEXT_STDIN"
 exit "${SETUP_EXIT:-0}"
 XEOF
 chmod +x "$next_dir/felis"
-# run_next PG_ANSWER: summary_next then start_setup_console under the installer's own shell
-# options and ERR trap. PG_ANSWER is what psql prints, or "fail". TERMINAL=1 stands in for
-# a terminal on stdout, which a test's captured output never is.
+# Simulate terminal and database state while retaining the installer's errexit/pipefail behavior.
 run_next() {
   : > "$next_dir/journal"
   : > "$next_dir/stdin"
@@ -2778,10 +2630,7 @@ case "$main_block" in
   *) echo "FAIL main must call configure_offsite before run_migrations and install_offsite_timer between the backup and watchdog timers"; fails=$((fails + 1)) ;;
 esac
 
-# --- the off-site copy: [offsite], its secrets file, the hourly timer ---------------------
-# Without it every backup is on one disk. A re-run must keep the bucket, the encryption key
-# must never change under objects sealed with the old one, and an install without a bucket
-# must say so loudly.
+# Preserve configured buckets and encryption keys; report local-only backups explicitly.
 
 ofile="$(mktemp)"
 for fn in write_file_atomic validate_offsite_settings persisted_offsite_block offsite_block offsite_enabled configure_offsite install_offsite_timer summary_offsite; do
@@ -2858,18 +2707,13 @@ case "$out" in
   *) echo "PASS the carried [offsite] stops at the next section" ;;
 esac
 
-# A re-run found a configured bucket "missing" and removed the off-site timer: grep -q
-# stopped at the bucket line while offsite_block was still writing, and pipefail turned
-# the SIGPIPE into "no bucket". The section far past one pipe buffer with the bucket near
-# its top makes the lost race certain.
+# Place the bucket early in a section larger than a pipe buffer to expose grep -q SIGPIPE races.
 { printf '[offsite]\nbucket = "kept"\nendpoint = "https://s3.example"\n'
   seq 1 200000 | sed 's/.*/prefix = "p&"/'; } > "$odir/felis.host.toml"
 out="$(run_offsite 'if offsite_enabled; then echo ENABLED; else echo "OFF (exit $?)"; fi')"
 expect "a configured bucket is found in a long [offsite] section" "ENABLED" "$out"
 
-# First configured install: the key is generated, the file is private, the key is shown once,
-# on the terminal alone. stdout and stderr are what a tee'd install log keeps; warn writes
-# to stderr here as in bootstrap.sh.
+# Show newly generated keys only on the terminal, never in captured installer output.
 rm -f "$odir/felis.host.toml"
 out="$(FELIS_OFFSITE_ENDPOINT=https://s3.example FELIS_OFFSITE_BUCKET=felis OFFSITE_KEY_TTY="$odir/tty" \
   FELIS_OFFSITE_ACCESS_KEY=AK FELIS_OFFSITE_SECRET_KEY=SK \
@@ -2994,9 +2838,7 @@ rm -f "$odir/tty"
 out="$(OFFSITE_ENABLED=1 OFFSITE_KEY_NEW=1 FELIS_OFFSITE_KEY=NEWKEY OFFSITE_KEY_TTY="$odir/tty" run_offsite 'install_offsite_timer; summary_offsite')"
 expect "a key the bucket takes is shown on the terminal" "WARN:     FELIS_OFFSITE_KEY=NEWKEY" "$(cat "$odir/tty" 2>/dev/null)"
 
-# A rehearsal on a spare machine restores the production host's [offsite] settings: the
-# install must find the production host writing the bucket, say this host stands by, and
-# still start the first copy so the watchdog learns it.
+# Restored hosts stand by for the current writer but still record the initial sync status.
 out="$(OFFSITE_ENABLED=1 run_offsite install_offsite_timer)"
 expect "the install asks which host writes the bucket" "RUN: offsite take-over -config $odir/felis.host.toml -env-file $odir/offsite.env" "$out"
 case "$out" in
@@ -3014,9 +2856,7 @@ case "$out" in
   *"OK: off-site copy: hourly"* | *"could not tell"* | *"OFF-SITE COPY STOPPED"*) echo "FAIL a standby host read as copying, as an error or as a key mismatch: $out"; fails=$((fails + 1)) ;;
   *) echo "PASS a standby host reads as standing by only" ;;
 esac
-# A rehearsal machine that took the bucket over by mistake leaves the production host
-# displaced: its re-run must say so, with how to take the bucket back, and never call it a
-# standby, whose watchdog stays quiet.
+# Report displaced former writers distinctly from standby hosts so owners can recover bucket control.
 out="$(OFFSITE_ENABLED=1 DISPLACED=1 run_offsite 'install_offsite_timer; summary_offsite')"
 expect "a displaced host names the host that took over" "WARN:   host spare-1 (id 4444444444444444) writes the bucket, last at 2026-09-27 07:10:00 (10m ago)" "$out"
 expect "a displaced host is a loud warning" "WARN: Another host took the [offsite] bucket over from this host:" "$out"
@@ -3051,10 +2891,7 @@ else
 fi
 rm -rf "$odir" "$ofile"
 
-# --- the control-plane image is tagged by release, so rollout undo is a rollback --------
-# Under one mutable tag `kubectl rollout undo` re-created the pods on the image the upgrade had
-# just written over it. The tag must follow the version, and an upgrade must not restart the
-# Deployments on top of the apply's own roll (that second revision is what undo would reach).
+# Use release-specific image tags and avoid redundant rollouts that obscure the previous release for undo.
 
 imgblock="$(awk '/^resolve_felis_image\(\) \{/,/^}/' "$BS"; awk '/^image_tag_for_version\(\) \{/,/^}/' "$BS")"
 [ -n "$imgblock" ] || { echo "FAIL: no resolve_felis_image found in $BS"; exit 1; }
@@ -3124,10 +2961,7 @@ else
   echo "PASS main leaves Docker to the builds that need it"
 fi
 
-# --- a rerun restarts only what changed -------------------------------------------------
-# The proxy, the login and lobby pods and PostgreSQL each disconnect every player (or cut
-# felis-api's transactions) when restarted, so a rerun that changed none of them must leave
-# them running, and one that changed a thing must still restart it.
+# Unchanged reruns leave live processes running; changed components still restart.
 
 vsblock="$(awk '/^install_velocity_service\(\) \{/,/^}/' "$BS"; awk '/^velocity_fingerprint\(\) \{/,/^}/' "$BS"; awk '/^heap_megabytes\(\) \{/,/^}/' "$BS")"
 [ -n "$vsblock" ] || { echo "FAIL: no install_velocity_service found in $BS"; exit 1; }
@@ -3364,7 +3198,6 @@ rm -rf "$lkdir"
 
 
 
-# --- the proxy heap -----------------------------------------------------------------------
 hblock="$(awk '/^heap_megabytes\(\) \{/,/^}/' "$BS")"
 [ -n "$hblock" ] || { echo "FAIL: no heap_megabytes found in $BS"; exit 1; }
 heap() { bash -c "$hblock"'
@@ -3376,9 +3209,7 @@ for bad in 1 1K 0G 01G G -1G 1.5G 9999999G; do
 done
 # The unit written for each ceiling is checked with the rerun tests above.
 
-# --- reproducible image ids ---------------------------------------------------------------
-# restart_existing_system_servers compares image ids across runs; a default BuildKit
-# provenance attestation (it carries a timestamp) would make every rebuild look new.
+# Disable timestamped provenance so cached image rebuilds retain their IDs.
 attest_line="$(grep -n '^export BUILDX_NO_DEFAULT_ATTESTATIONS=1$' "$BS" | cut -d: -f1 | head -1)"
 build_line="$(grep -n '^  docker build ' "$BS" | cut -d: -f1 | head -1)"
 if [ -n "$attest_line" ] && [ -n "$build_line" ] && [ "$attest_line" -lt "$build_line" ]; then
@@ -3387,7 +3218,6 @@ else
   echo "FAIL BUILDX_NO_DEFAULT_ATTESTATIONS=1 must be exported before the first docker build"; fails=$((fails + 1))
 fi
 
-# --- a failed run puts the previous host binary back until the new one is in use ----------
 hbdir="$(mktemp -d)"
 run_host_bin() { # exit-status in-use [no-previous]
   rm -f "$hbdir"/felis*
@@ -3439,12 +3269,7 @@ esac
 rm -rf "$hbdir"
 
 
-# --- a rerun reads the host right and keeps the proxy up --------------------------------
-# Both checks run under bootstrap.sh's own `set -Eeuo pipefail`. The lists are far past one
-# pipe buffer with the match on the first line, so a `cmd | grep -q` has grep exit while cmd
-# is still writing: cmd dies of SIGPIPE, pipefail fails the pipeline, and the install took
-# the "missing" branch on a host that had it (CI caught the PostgreSQL case reinstalling a
-# package on a rerun). apt then ran needrestart, which restarted felis-velocity.
+# Oversized early-match fixtures verify pipefail cannot misclassify installed packages and restart live services.
 
 for f in import_platform_images apt_get; do
   [ -n "$(awk '/^'"$f"'\(\) \{/,/^}/' "$BS")" ] || { echo "FAIL: no ${f} in $BS"; exit 1; }
@@ -3493,7 +3318,6 @@ expect "the install's apt runs keep needrestart from restarting services" \
   "NEEDRESTART_SUSPEND=1 -o DPkg::Lock::Timeout=5 install -y postgresql" "$out"
 rm -rf "$rrdir"
 
-# --- host hardening: k3s settings, clock, journal, the node address ----------------------
 
 kcblock="$(awk '/^k3s_node_name\(\) \{/,/^}/' "$BS")
 $(awk '/^write_k3s_config\(\) \{/,/^}/' "$BS")"
@@ -3586,8 +3410,7 @@ out="$(run_k3s_config "$kdir/broken.crt" "$kdir/k3s" renamed-host)"
 expect "a certificate openssl cannot parse is a warning, not a failed install" "WARN: could not read this node's k3s name" "$out"
 expect "and the drop-in is still written" 'write-kubeconfig-mode: "0600"' "$(cat "$dropin")"
 
-# k3s's Go collector runs at GOGC=50 through a systemd drop-in, written beside itself and
-# loaded (with a k3s restart) only when it changed.
+# k3s's Go collector runs at GOGC=50 via a systemd drop-in; k3s restarts only when it changed.
 svblock="$(awk '/^write_k3s_service_dropin\(\) \{/,/^}/' "$BS")"
 [ -n "$svblock" ] || { echo "FAIL: no write_k3s_service_dropin found in $BS"; exit 1; }
 svdropin="$kdir/k3s.service.d/50-felis.conf"
@@ -3703,7 +3526,7 @@ iblock="$(awk '/^install_k3s\(\) \{/,/^}/' "$BS")"
 iblock="$iblock
 $(awk '/^version_newer\(\) \{/,/^}/' "$BS")
 $(awk '/^k3s_upgrade_allowed\(\) \{/,/^}/' "$BS")"
-run_install_k3s() { # $1: installed version ("" = none, "broken" = a binary that does not run), $2: config drop-in changed (0|1), $3: FELIS_UPGRADE_DEPS, $4: service drop-in changed (0|1), $5: k3s.service present (1|0)
+run_install_k3s() { # Arguments: installed version, config changed, dependency upgrades, service changed, service present.
   INSTALLED="$1" CHANGED="$2" UPGRADE="${3:-0}" SVC_CHANGED="${4:-0}" UNIT="${5:-1}" KDIR="$kdir" bash -c '
     set -Eeuo pipefail
     ok() { echo "OK: $*"; }; log() { echo "LOG: $*"; }; warn() { echo "WARN: $*"; }
@@ -3752,8 +3575,7 @@ case "$out" in *"restart k3s"*) echo "FAIL the k3s installer already started k3s
 out="$(run_install_k3s v1.35.2+k3s1 1 1)"
 expect "an upgrade runs the k3s installer" "INSTALLER" "$out"
 case "$out" in *"restart k3s"*) echo "FAIL the upgrade already restarted k3s on the new settings; no second restart"; fails=$((fails + 1)) ;; *) echo "PASS an upgraded k3s is not restarted a second time" ;; esac
-# k3s's installer puts the binary in place before it writes k3s.service: a run cut short
-# between the two is finished around that binary, at its own version.
+# k3s's installer writes the binary before k3s.service; a run cut between the two is finished at that binary's version.
 out="$(run_install_k3s v1.36.4+k3s1 1 0 0 0)"
 expect "a k3s binary without k3s.service has its installer finish around it" "INSTALLER --keep-binary
 SYSTEMCTL: enable --now k3s" "$out"
@@ -3920,18 +3742,12 @@ expect "main checks the address, then turns on NTP and the journal once packages
   "detect_node_ip install_base ensure_time_sync ensure_persistent_journal install_k3s " "$order"
 expect "preflight is what warns about a leased address" "warn_dynamic_node_ip" "$(awk '/^preflight\(\) \{/,/^}/' "$BS")"
 
-# --- preflight ---------------------------------------------------------------------------
-# The whole preflight section runs against a stubbed host: every fact it reads (RAM,
-# df, ss, systemctl, routes, curl) is answered from variables, so each case below is one
-# changed fact and the verdict it must change.
+# Every fact preflight reads (RAM, df, ss, systemctl, routes, curl) is answered from variables.
 pfblock="$(awk '/^PREFLIGHT_PROBLEMS=\(\)$/,/^preflight\(\) \{/' "$BS"; awk '/^preflight\(\) \{/,/^}/' "$BS" | tail -n +2)"
 case "$pfblock" in *"preflight_outbound"*"FELIS_PREFLIGHT=warn installs anyway"*) ;; *) echo "FAIL: preflight section not found in $BS"; exit 1 ;; esac
 wdblock="$(awk '/^warn_dynamic_node_ip\(\) \{/,/^}/' "$BS")"
 pfroot="$(mktemp -d)"
-# run_pf runs preflight with the stubbed facts in the environment; each defaults to a
-# healthy host: 8 GiB RAM, one 100 GiB filesystem with 60 GiB free, no listeners, no
-# other cluster, a LAN route, every download host answering. The install defaults to a
-# source build (the dev channel), the one that writes the most and downloads from the most.
+# Use a healthy source-build fixture with adequate memory/disk, a LAN route, and reachable download hosts.
 run_pf() {
   PF_ROOT="$pfroot" bash -c '
     set -Eeuo pipefail
@@ -4011,8 +3827,7 @@ out="$(PF_MEM_KB=1950000 run_pf)"
 expect "a 2 GB host installs" "WENT ON" "$out"
 expect "with a warning about room for servers" "WARN: preflight: 1904 MiB of RAM runs the platform" "$out"
 
-# 20 GiB free on the root filesystem: every path lands there and a first install writes
-# 10 + 2 + 3 + 8 GiB, so only the sum refuses it.
+# 20 GiB free: a first install writes 10 + 2 + 3 + 8 GiB to the root filesystem, so only the sum refuses it.
 out="$(PF_DF="/ 104857600 83886080 20971520" run_pf)"
 expect "a first install that fits each budget but not their sum is refused" "/ has 20480 MiB free; this install writes about 23552 MiB there" "$out"
 out="$(PF_DF="/ 104857600 83886080 20971520
@@ -4064,8 +3879,7 @@ expect "and the install goes on" "WENT ON" "$out"
 
 out="$(PF_DOWN="github.com fill-data.papermc.io" run_pf)"
 expect "unreachable download hosts are named together" "cannot reach github.com fill-data.papermc.io over HTTPS" "$out"
-# The VM's rerun after an upgrade: one probe of fill-data.papermc.io timed out, a second a
-# minute later answered in under a second, and preflight had refused the install.
+# One probe of fill-data.papermc.io times out and a retry answers: preflight must not refuse the install.
 rm -f "$pfroot"/tries.*
 out="$(PF_FLAKY=fill-data.papermc.io run_pf)"
 expect "a download host that drops one probe is tried again" "WENT ON" "$out"
@@ -4080,9 +3894,7 @@ expect "a host that never answers is refused" "cannot reach fill-data.papermc.io
 [ "$(cat "$pfroot/tries.fill-data.papermc.io")" = xxx ] && echo "PASS after three probes" \
   || { echo "FAIL: a host that never answered was probed $(wc -c < "$pfroot/tries.fill-data.papermc.io") times"; fails=$((fails + 1)); }
 
-# An install from a release's assets builds nothing: no Docker cache under /var/lib/containerd,
-# and Docker Hub only as the fallback for an image the release cannot supply. The downloaded
-# bundles wait under /var/lib/felis until they are pushed, so that budget grows.
+# A release install builds nothing (no Docker cache under /var/lib/containerd); downloaded bundles wait under /var/lib/felis, so that budget grows.
 out="$(PF_CHANNEL=release PF_DF="/ 104857600 83886080 20971520" run_pf)"
 expect "a release install fits where a source build does not" "OK: preflight passed" "$out"
 out="$(PF_CHANNEL=release PF_DF="/ 104857600 88080384 16777216" run_pf)"
@@ -4105,9 +3917,7 @@ out="$(PF_TUI=1 PF_DOWN=api.github.com run_pf)"
 expect "the setup console only warns without it: its binary is already here" "WARN: preflight: cannot reach api.github.com" "$out"
 expect "and goes on" "OK: preflight passed" "$out"
 
-# k3s's install.sh installs k3s-selinux from Rancher's RPM repository on an SELinux host of
-# the Red Hat or SUSE family (the CentOS Stream VM has its rancher-k3s-common.repo), and the
-# k3s install fails when dnf cannot reach it.
+# k3s's install.sh installs k3s-selinux from Rancher's RPM repository on Red Hat and SUSE family SELinux hosts and fails when dnf cannot reach it.
 out="$(PF_SELINUX_RPM=1 PF_DOWN=rpm.rancher.io run_pf)"
 expect "k3s's SELinux package repository is required where its installer adds it" "cannot reach rpm.rancher.io over HTTPS" "$out"
 out="$(PF_DOWN=rpm.rancher.io run_pf)"
@@ -4135,8 +3945,7 @@ expect "install.sh adds no repository where suse comes second (Tumbleweed)" no "
 expect "nor on Debian with SELinux policies installed" no "$(adds_rpm debian)"
 rm -rf "$selroot"
 
-# An install from FELIS_ARTIFACT_DIR still probes the hosts it downloads from; the operations
-# guide on the docs site lists them for a network that admits only those.
+# An install from FELIS_ARTIFACT_DIR still probes the hosts it downloads from.
 hosts="$(PF_HOSTS=1 PF_ARTIFACT_DIR=/srv/felis-release PF_SELINUX_RPM=1 run_pf)"
 expect "an install from FELIS_ARTIFACT_DIR probes GitHub" "github.com required" "$hosts"
 
@@ -4165,7 +3974,6 @@ pforder="$(awk '/^main\(\) \{/,/^}/' "$BS" | grep -nE '^[[:space:]]*(detect_node
 expect "preflight runs once the node address is known and before the first change" \
   "detect_node_ip preflight quiet_watchdog pause_package_background_timers ensure_swap install_base " "$pforder"
 
-# --- the control-plane database: felis-postgres in k3s -------------------------------------
 bsfn() { awk '/^'"$1"'\(\) \{/,/^}/' "$BS"; }
 for f in postgres_image_major check_postgres_major prepare_postgres_data_dir label_postgres_data_dir \
   ensure_postgres_superuser_secret ensure_postgres_role deploy_postgres host_postgres_holds_felis \
@@ -4615,9 +4423,7 @@ before "the control plane is scaled back up before the rollouts are awaited" \
   'kube -n "$CONTROL_NS" scale deployment felis-api felis-operator --replicas=1' 'rollout status "$d"' "$dbblock"
 expect "the pods reach the database at its Service" 'write_felis_toml "${STATE_DIR}/felis.pod.toml" "$PG_SERVICE_ADDR"' "$dbblock"
 
-# --- a release's prebuilt assets ----------------------------------------------------------
-# Every file is used only once its sha256 is the one SHA256SUMS lists; the interesting cases
-# are the refusals, and that a refused file is never handed on.
+# Reject unchecked release assets before passing them to any installer step.
 for f in load_artifact_sums artifact_sum artifact_fetch artifact_unusable install_artifact_binary \
   select_release_artifacts load_release_listing release_listing import_release_images \
   push_release_image registry_manifest_digest stage_k3s_airgap_images install_velocity_plugin \
@@ -4696,7 +4502,6 @@ out="$(ARTIFACT_MODE=release bash -c 'die() { echo "DIE: $*"; exit 1; }; warn() 
 expect "a release's unusable asset falls back" "WARN: no plugin; building it" "$out"
 expect "and the install goes on" "GOES ON" "$out"
 
-# --- the image listing ----------------------------------------------------------------------
 llblock="$(bsfn load_release_listing)"
 d1="sha256:$(printf 'm' | sha256sum | cut -d' ' -f1)"
 d2="sha256:$(printf 'c' | sha256sum | cut -d' ' -f1)"
@@ -4719,10 +4524,7 @@ expect "a name with shell characters is refused" "REFUSED" "$(run_listing "felis
 expect "a bundle outside the felis-image-* names is refused" "REFUSED" "$(run_listing "../../etc/shadow limbo x/limbo:demo $d1 $d2")"
 expect "an empty listing is refused" "REFUSED" "$(run_listing "")"
 
-# --- importing a release's images into containerd --------------------------------------------
-# ctr is a fake containerd: `images ls` prints the refs in $adir/ctr (with the header row the
-# real one has), `images import` adds what the imported bundle's .names file holds, and
-# `images tag` adds a name.
+# The containerd stub lists, imports, and aliases image names from fixture bundle listings.
 ilblock="$(bsfn artifact_unusable; bsfn role_image; bsfn role_fallback; bsfn role_prebuilt; bsfn image_repo; bsfn image_present; bsfn pinned_image_ref; bsfn import_release_images)"
 fdig="sha256:$(printf 'felis' | sha256sum | cut -d' ' -f1)"
 gdig="sha256:$(printf 'limbo' | sha256sum | cut -d' ' -f1)"
@@ -4846,7 +4648,6 @@ out="$(run_rl "junk")"
   || { echo "FAIL: a malformed listing was reported or fetched more than once: $out"; fails=$((fails + 1)); }
 case "$out" in *-OK*) echo "FAIL: a malformed listing was used"; fails=$((fails + 1)) ;; esac
 
-# --- pushing a release image into the platform registry ----------------------------------------
 prblock="$(bsfn push_release_image)"
 run_push_release() { # role registry-digest-for-tag registry-digest-for-version-tag [MC_VERSION]
   REG_TAG="$2" REG_VER="$3" MCV="${4-26.2}" LINE="$1 felis-image-game-linux-amd64.tar registry.felis.svc:5000/felis/$1:demo registry.felis.svc:5000/felis/$1:demo $gdig $cdig" bash -c '
@@ -4890,7 +4691,6 @@ rm -f "$curlargs"
 [ -z "$(bash -c 'curl() { return 22; }; '"$rmblock"'; registry_manifest_digest 127.0.0.1:5000/felis/x:demo')" ] \
   && echo "PASS a tag the registry lacks has no digest" || { echo "FAIL: a missing tag printed a digest"; fails=$((fails + 1)); }
 
-# --- the binary from FELIS_ARTIFACT_DIR -----------------------------------------------------
 iabblock="$(bsfn load_artifact_sums; bsfn artifact_sum; bsfn install_artifact_binary)"
 mkdir -p "$adir/abin/dir" "$adir/abin/bin"
 run_artifact_binary() { # binary-script
@@ -4929,7 +4729,6 @@ FELIS_ARTIFACT_DIR="$A/dir" ARTIFACT_MODE="" ARTIFACT_SUMS=""
 install_artifact_binary' 2>&1)"
 expect "a directory without SHA256SUMS stops the install" "DIE: FELIS_ARTIFACT_DIR: $adir/abin/dir holds no SHA256SUMS" "$out"
 
-# --- which release the images come from -------------------------------------------------------
 srblock="$(bsfn select_release_artifacts)"
 run_select() { # binary-version sums-available(0|1) [ARTIFACT_MODE] [HAVE_PREBUILT_BINARY]
   printf '#!/bin/sh\necho "felis %s"\n' "$1" > "$adir/selbin"; chmod +x "$adir/selbin"
@@ -4954,7 +4753,6 @@ case "$(run_select dev 1)" in *SUMS*) echo "FAIL: an unstamped build looked up a
 expect "a source build takes nothing from a release" "MODE[] TAG[]" "$(run_select v9.9.9 1 "" "")"
 expect "FELIS_ARTIFACT_DIR stays the source" "MODE[dir] TAG[]" "$(run_select v9.9.9 1 dir)"
 
-# --- the game stack and the Velocity plugin --------------------------------------------------
 gsblock="$(bsfn build_game_stack; bsfn role_prebuilt; bsfn stop_docker)"
 run_game_stack() { # PREBUILT_ROLES-after-import FELIS_GAME_STACK [ARTIFACT_MODE]
   AFTER="$1" STACK="$2" MODE="${3-release}" bash -c '
@@ -5013,10 +4811,7 @@ expect "from FELIS_ARTIFACT_DIR it stops the install" "DIE: FELIS_ARTIFACT_DIR: 
 expect "a source build builds the plugin" "ENSURE
 BUILD" "$(run_plugin "" 0)"
 
-# --- install_if_changed never fixes a target in place -----------------------------------------
-# The proxy's account owns the directories these files land in and can swap one for a symlink
-# after the checks, so a chown or chmod by path would land on whatever the link names. The cmp
-# stub makes that swap right after the content check; chown and chmod report every call.
+# Swap a symlink after cmp to verify installation never chmods or chowns a checked target in place.
 iicblock="$(bsfn install_if_changed)"
 [ -n "$iicblock" ] || { echo "FAIL: no install_if_changed in $BS"; exit 1; }
 mkdir "$adir/iic"
@@ -5046,7 +4841,6 @@ iic_is "new bytes are installed" "ATOMIC $adir/iic/dst" "$(run_iic 644 "$mine" e
 iic_is "a target swapped for a symlink after the checks is reinstalled" "ATOMIC $adir/iic/dst" "$(run_iic 644 "$mine" swapped)"
 iic_is "and the file the link named keeps its mode" 600 "$(stat -c %a "$adir/iic/decoy")"
 
-# --- k3s's own images from its GitHub release ----------------------------------------------------
 kablock="$(bsfn stage_k3s_airgap_images)"
 mkdir -p "$adir/k3simg" "$adir/k3srel"
 printf 'k3s images\n' > "$adir/k3srel/k3s-airgap-images-amd64.tar.zst"
@@ -5090,7 +4884,6 @@ out="$(run_airgap "$ksum  k3s-airgap-images-arm64.tar.zst")"
 expect "a sums file that does not list the tarball stages nothing" "WARN: k3s v1.36.4+k3s1 lists no sha256 for k3s-airgap-images-amd64.tar.zst" "$out"
 case "$out" in *"CURL k3s-airgap-images-amd64.tar.zst"*) echo "FAIL: an unlisted tarball was downloaded"; fails=$((fails + 1)) ;; *) echo "PASS an unlisted tarball is not downloaded" ;; esac
 
-# --- one release lookup per tag ------------------------------------------------------------------
 rjblock="$(bsfn load_release_json; bsfn github_asset_id)"
 out="$(bash -c '
   github_api() { echo "API $1" >&2; printf "{\"assets\":[{\"url\":\"https://api.github.com/repos/o/r/releases/assets/11\",\"name\":\"SHA256SUMS\"},{\"url\":\"https://api.github.com/repos/o/r/releases/assets/12\",\"name\":\"felis-velocity.jar\"}]}"; }
@@ -5104,7 +4897,6 @@ out="$(bash -c '
 expect "and every asset is found in it" "11
 12" "$out"
 
-# --- FELIS_ARTIFACT_DIR is checked before anything happens ------------------------------------
 vsblock="$(awk '/^  if \[ -n "\$FELIS_ARTIFACT_DIR" \]; then$/ { f = 1 } f { print } f && /^  fi$/ { exit }' "$BS")"
 case "$vsblock" in *"FELIS_SKIP_FETCH both"*) ;; *) echo "FAIL: the FELIS_ARTIFACT_DIR checks in validate_settings moved"; exit 1 ;; esac
 run_vs() { # FELIS_ARTIFACT_DIR [FELIS_REF_PINNED]
@@ -5119,10 +4911,7 @@ expect "a FELIS_ARTIFACT_DIR with SHA256SUMS is accepted" "VALID" "$(run_vs "$ad
 expect "FELIS_ARTIFACT_DIR and FELIS_REF together are refused" "DIE: FELIS_ARTIFACT_DIR and FELIS_REF both name what to install" "$(run_vs "$adir" 1)"
 rm -rf "$adir"
 
-# --- FELIS_RELEASE installs one published release, from its assets --------------------------
-# The way back to an earlier release. Without it a rerun resolves the newest release (and
-# migrates again), and FELIS_REF builds from source; anything else that names what to install
-# would silently win over it.
+# Explicit releases must use their own assets and reject conflicting install selectors.
 vrblock="$(awk '/^  if \[ -n "\$FELIS_RELEASE" \]; then$/ { f = 1 } f { print } f && /^  fi$/ { exit }' "$BS")"
 case "$vrblock" in *"FELIS_SKIP_FETCH both"*) ;; *) echo "FAIL: the FELIS_RELEASE checks in validate_settings moved"; exit 1 ;; esac
 run_vr() { # FELIS_RELEASE, with the other settings from the environment
@@ -5170,11 +4959,7 @@ esac
 expect "an unpublished release stops the install" "DIE: could not find the published Felis release v1.3.9" "$(run_ri v1.3.9)"
 expect "without one the newest release is installed" "ref=v1.4.0 version=v1.4.0" "$(run_ri "")"
 
-# --- the setup screens' credentials come back from /etc/felis ---------------------------
-# `felis setup` keeps the relay password and the uploads bucket's keys in /etc/felis as
-# well as in their Secrets. A reinstall, or a host rebuilt from a bundle's state/, starts
-# k3s empty, so every run applies the Secrets from those files; an install from before
-# them moves the Secrets' values into the files first. No value may reach kubectl's argv.
+# Persist host credentials before applying Secrets without exposing values in kubectl argv.
 for f in secret_key_to_file apply_setup_credential_secrets; do
   [ -n "$(bsfn "$f")" ] || { echo "FAIL: no ${f} in $BS"; exit 1; }
   [ "$(bsfn "$f" | wc -l)" -lt 45 ] \
@@ -5385,8 +5170,6 @@ for existing in 0 1; do
   fi
 done
 
-# ---------------------------------------------------------------------------------------
-# --- Docker starts retain their firewalld zone, including NetworkManager's profile -------
 docker_start="$(awk '/^start_docker\(\) \{/,/^}/' "$BS")"
 [ -n "$docker_start" ] || { echo "FAIL: no start_docker found in $BS"; exit 1; }
 run_docker_start() { # firewalld-active existing-docker-zone connection-profile
@@ -5424,9 +5207,8 @@ case "$out" in
   *) echo "PASS an unmanaged bridge keeps its firewalld binding without a profile" ;;
 esac
 
-# A rerun or `felis update` on a distributed controller passes neither its fixed public
-# address nor its peer list. Losing them would move the WireGuard endpoint and shrink the host
-# firewall to the controller alone, cutting every worker off: the rerun reads both back.
+# A rerun or `felis update` passes neither the fixed public address nor the peer list; losing them would move
+# the WireGuard endpoint and cut every worker off, so both are read back.
 rdblock="$(awk '/^recall_distributed_settings\(\) \{/,/^}/' "$BS")"
 [ -n "$rdblock" ] || { echo "FAIL: no recall_distributed_settings found in $BS"; exit 1; }
 [ "$(printf '%s\n' "$rdblock" | wc -l)" -lt 15 ] \
@@ -5520,9 +5302,8 @@ case "$mainbody" in
   *) echo "FAIL main must dispatch FELIS_INSTALL_MODE=worker-upgrade"; fails=$((fails + 1)) ;;
 esac
 
-# FELIS_RESTORE_FROM_OFFSITE=1 rebuilds a fresh host from the old install's bucket: it is
-# refused up front without the bucket's credentials and key or on an installed host, and
-# runs felis restore-host once the install is done, before the setup console.
+# FELIS_RESTORE_FROM_OFFSITE=1 is refused without the bucket's credentials and key or on an installed host;
+# otherwise felis restore-host runs after the install, before the setup console.
 vrblock="$(awk '/^validate_restore_settings\(\) \{/,/^}/' "$BS")"
 rfblock="$(awk '/^restore_from_offsite\(\) \{/,/^}/' "$BS")"
 [ -n "$vrblock" ] && [ -n "$rfblock" ] || { echo "FAIL: no restore functions found in $BS"; exit 1; }
@@ -5577,11 +5358,6 @@ else
   echo "FAIL restore progress path: felis keeps <$gorestore>, the installer reads <$shrestore>"; fails=$((fails + 1))
 fi
 
-# --- controller high availability ------------------------------------------------------
-# FELIS_CONTROLLER_HA=1 is checked before anything is installed, survives reruns in
-# ha.env with the home controller, turns k3s's datastore into etcd (or joins one), gates
-# the cluster-wide timers on the host leader, configures Longhorn's defaults, pulls through
-# the registry's Service and floats the VRRP address.
 hafn() { awk "/^$1\\(\\) \\{/,/^}/" "$BS"; }
 for f in validate_ha_settings recall_ha_settings write_ha_env ha_exec_condition longhorn_default_settings install_keepalived ha_vip_interface postgres_ha_args main_controller_join configure_registry_mirror write_k3s_config; do
   body="$(hafn "$f")"
@@ -5756,10 +5532,8 @@ shlabel="$(sed -n 's/^LONGHORN_DISK_LABEL="\(.*\)"$/\1/p' "$BS")"
 if [ -n "$golabel" ] && [ "$golabel" = "$shlabel" ]; then echo "PASS joined controllers get the installer's Longhorn disk label"; else echo "FAIL Longhorn disk label: felis <$golabel>, installer <$shlabel>"; fails=$((fails + 1)); fi
 rm -rf "$hadir"
 
-# --- reconfigure from the panel ---------------------------------------------------------
-# node-control re-runs the installer with FELIS_INSTALL_MODE=reconfigure to apply what the
-# Owner changed in the panel. The settings it saved come back from host-settings.env, where
-# a variable set for the run still wins and only the panel's own keys are read.
+# node-control re-runs the installer with FELIS_INSTALL_MODE=reconfigure; settings come back from host-settings.env,
+# a variable set for the run wins, and only the panel's own keys are read.
 recall="$(hafn recall_host_settings)"
 reconf="$(hafn main_reconfigure)"
 for body in "$recall" "$reconf"; do
@@ -5823,7 +5597,6 @@ else
 fi
 rm -rf "$rcdir"
 
-# --- Docker keeps one copy of what this host builds -------------------------------------
 # Each update builds the control-plane image under a new tag. The push step removes what
 # earlier runs left in Docker and keeps this run's images and anything that is not Felis's.
 pbfn="$(hafn prune_build_images)"

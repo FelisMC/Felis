@@ -13,10 +13,6 @@ import (
 	"time"
 )
 
-// fakeLogStreamer drives the §8 read-side handler without a cluster: it returns a
-// canned source (or error) and records what it was asked to stream. The real
-// K8sLogStreamer's pod selection and pods/log follow are integration-only, so the
-// handler is tested against this fake (spec §8 读=pods/log follow).
 type fakeLogStreamer struct {
 	src     io.ReadCloser
 	err     error
@@ -24,13 +20,7 @@ type fakeLogStreamer struct {
 	gotName string
 	gotCtx  context.Context
 
-	// srcFromCtx, when set, builds the returned source from the context
-	// StreamLogs actually receives, instead of returning the pre-baked src. The
-	// teardown test uses it to prove the handler threads r.Context() through:
-	// the real K8sLogStreamer opens the pods/log follow under the passed ctx, so
-	// a source whose only cancellation path is that ctx faithfully models the
-	// leak surface. A handler that passed context.Background() would hand this a
-	// never-cancelled context and hang.
+	// srcFromCtx builds the source from StreamLogs' actual context so cancellation propagation is observable.
 	srcFromCtx func(ctx context.Context) io.ReadCloser
 }
 
@@ -57,10 +47,7 @@ type recordReadCloser struct {
 func (s *recordReadCloser) Read(p []byte) (int, error) { return s.r.Read(p) }
 func (s *recordReadCloser) Close() error               { s.closed = true; return nil }
 
-// ctxBlockingReadCloser emits one line, then blocks until its context is
-// cancelled — modeling a live `pods/log` follow stream that yields boot output
-// and then waits. It is how the disconnect-teardown test proves a client
-// disconnect (request-context cancel) unblocks the relay and releases the stream.
+// ctxBlockingReadCloser emits one line, then blocks until the supplied context is cancelled.
 type ctxBlockingReadCloser struct {
 	ctx       context.Context
 	first     []byte
@@ -86,10 +73,6 @@ func (b *ctxBlockingReadCloser) Close() error {
 	return nil
 }
 
-// TestServerConsoleStream exercises the §8 read-side SSE relay end-to-end through
-// the external app-tier router: ownership (owner/admin), the nil-Logs and
-// open-stream failure surface, and the SSE framing itself. The real pod-log
-// follow is integration-only; this drives the handler against a fakeLogStreamer.
 func TestServerConsoleStream(t *testing.T) {
 	owner := &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
 
@@ -212,14 +195,6 @@ func TestServerConsoleStream(t *testing.T) {
 	})
 }
 
-// TestServerConsoleStreamPerPrincipalCap pins the audit-hardening bound: a single
-// principal may hold at most MaxStreamsPerPrincipal concurrent SSE streams, and an
-// attach past that is shed with 429 too_many_streams BEFORE any upstream follow is
-// opened. (Honest scope: this bounds the blast radius of the stalled-stream leak, it
-// does NOT close the leak — the per-write deadline that severs a stalled stream is a
-// separate slice.) With the principal already at its one-stream cap the next attach is
-// refused without reaching the streamer; releasing the held slot lets an identical
-// attach through, proving the 429 was the cap and not something else.
 func TestServerConsoleStreamPerPrincipalCap(t *testing.T) {
 	owner := &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
 	repo := newFakeRepo()
@@ -262,10 +237,7 @@ func TestServerConsoleStreamPerPrincipalCap(t *testing.T) {
 	}
 }
 
-// idleReadCloser is a perfectly quiet log follow: every Read blocks until the
-// context is cancelled, yielding no line at all. It models a Minecraft server
-// that has booted and gone silent (no chat, no log output), which is exactly the
-// case the SSE heartbeat exists to keep alive.
+// idleReadCloser blocks until cancellation without yielding log data.
 type idleReadCloser struct {
 	ctx    context.Context
 	closed chan struct{}
@@ -283,12 +255,7 @@ func (b *idleReadCloser) Close() error {
 	return nil
 }
 
-// signalWriter wraps the recorder so the test learns the moment the relay makes
-// its first body write WITHOUT racing on the recorder's buffer: on an idle stream
-// that first write can only be a heartbeat (no data line will ever arrive), so
-// closing `fired` there lets the test cancel deterministically instead of sleeping
-// a guessed interval. Flush is forwarded because relayLogStream type-asserts
-// http.Flusher and flushes every event.
+// signalWriter signals after the first write so the test can cancel without racing the recorder; Flush remains forwarded.
 type signalWriter struct {
 	http.ResponseWriter
 	fired chan struct{}
@@ -306,12 +273,6 @@ func (s *signalWriter) Flush() {
 	}
 }
 
-// TestServerConsoleHeartbeat proves the §8 relay keeps an idle stream warm: with
-// no log line ever arriving, it must still emit SSE comment heartbeats (so an
-// intermediary's idle timeout — Cloudflare's ~100s — never tears the console
-// down) and must emit NO data event. heartbeatInterval is shrunk so a heartbeat
-// lands within the test window; the first body write is necessarily that
-// heartbeat, so the test waits for it rather than sleeping a fixed duration.
 func TestServerConsoleHeartbeat(t *testing.T) {
 	old := heartbeatInterval
 	heartbeatInterval = 2 * time.Millisecond
@@ -363,10 +324,7 @@ func TestServerConsoleHeartbeat(t *testing.T) {
 	}
 }
 
-// interleaveWriter signals once the relay has written BOTH a data event and a
-// heartbeat, so a test can prove the two coexist on one stream without racing on
-// the recorder. Each relay event is a single Write (fmt.Fprintf / io.WriteString),
-// and the relay is the lone writer, so inspecting p per Write is race-free.
+// interleaveWriter observes data and heartbeat writes from the relay's sole writer, avoiding concurrent recorder reads.
 type interleaveWriter struct {
 	http.ResponseWriter
 	sawData bool
@@ -395,11 +353,6 @@ func (b *interleaveWriter) Flush() {
 	}
 }
 
-// TestServerConsoleHeartbeatInterleavesWithData proves a heartbeat following a
-// real log line does not corrupt it: the source emits one line then goes idle, so
-// the relay writes a data event and then — past the (shrunk) interval — a
-// keep-alive. The select serializes the two writes, so the data event must appear
-// intact (no comment spliced into the middle of `data: …\n\n`).
 func TestServerConsoleHeartbeatInterleavesWithData(t *testing.T) {
 	old := heartbeatInterval
 	heartbeatInterval = 2 * time.Millisecond
@@ -454,11 +407,6 @@ func TestServerConsoleHeartbeatInterleavesWithData(t *testing.T) {
 	}
 }
 
-// TestServerConsoleDisconnectTeardown proves the linchpin of the read-side relay:
-// a client disconnect (request-context cancel) unblocks the follow stream and the
-// deferred Close releases it — no leaked apiserver connection. The source emits
-// one line, then blocks on its context; cancelling the request must make the
-// handler return AND Close the source.
 func TestServerConsoleDisconnectTeardown(t *testing.T) {
 	repo := newFakeRepo()
 	repo.byName["survival"] = &ServerRecord{Name: "survival", OwnerID: "owner1"}
@@ -466,15 +414,7 @@ func TestServerConsoleDisconnectTeardown(t *testing.T) {
 	api.External = staticExternal{p: &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	// The channels are owned by the test, but the source itself is built inside
-	// StreamLogs from the context the handler passes in — NOT from the test's ctx.
-	// This is what actually backs the teardown claim: the source's only
-	// cancellation path is the context the handler threaded through, mirroring the
-	// real K8sLogStreamer (GetLogs(...).Stream(ctx)). If handleServerConsole
-	// streamed under context.Background() instead of r.Context(), this source's
-	// second Read would block on a never-cancelled context, the handler would
-	// never return, and <-done below would time out — the test fails closed on the
-	// exact leak it exists to prevent.
+	// Build the source from the handler-supplied context so context.Background would leave its second read blocked.
 	firstRead := make(chan struct{})
 	closed := make(chan struct{})
 	streamer := &fakeLogStreamer{srcFromCtx: func(streamCtx context.Context) io.ReadCloser {
@@ -504,10 +444,7 @@ func TestServerConsoleDisconnectTeardown(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("relay never read the first log line")
 	}
-	// The first read is not enough: the relay still has to WRITE the event, and
-	// cancelling in that gap raced the write against the teardown (a live CI flake
-	// left the body empty). Wait for the write itself — the signal is closed after
-	// the recorder's Write returns, so the body read below happens-after it.
+	// Wait for the completed write, not just the source read, before cancelling and inspecting the recorder.
 	select {
 	case <-w.data:
 	case <-time.After(2 * time.Second):
@@ -527,10 +464,6 @@ func TestServerConsoleDisconnectTeardown(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("relay did not Close the log source on disconnect")
 	}
-	// Belt-and-suspenders: the context StreamLogs received must itself be Done.
-	// Read after <-done, so the write inside StreamLogs is happens-before this.
-	// Together with the source-from-ctx wiring above, this nails the one
-	// production-critical property — the relay streams under the request context.
 	select {
 	case <-streamer.gotCtx.Done():
 	default:
@@ -541,10 +474,7 @@ func TestServerConsoleDisconnectTeardown(t *testing.T) {
 	}
 }
 
-// firstDataWriter signals once the relay has written a `data:` event into the
-// wrapped recorder, so a test can disconnect only after the event is actually
-// observable in the body — inspecting p per Write is race-free because the relay
-// is the lone writer and each relay event is a single Write.
+// firstDataWriter signals after a complete data-event write, making later recorder reads race-free.
 type firstDataWriter struct {
 	http.ResponseWriter
 	data chan struct{}
@@ -565,12 +495,7 @@ func (b *firstDataWriter) Flush() {
 	}
 }
 
-// lineOnceThenBlockReadCloser yields exactly one line, then blocks every later Read
-// until Close is called. It models a live-but-quiet follow stream: the server printed
-// one line and has since gone silent, so nothing on the SOURCE side can end the relay
-// — the only thing that can is the client side (here, the write deadline firing on a
-// stalled reader). Close unblocks the parked Read so the scan goroutine exits cleanly
-// when relayLogStream tears down, mirroring how src.Close aborts a real pods/log Read.
+// lineOnceThenBlockReadCloser emits one line and blocks until Close so only the client-side deadline can end the relay.
 type lineOnceThenBlockReadCloser struct {
 	line      []byte
 	sentFirst bool // touched only by the single scan goroutine's Read
@@ -607,16 +532,7 @@ func (c *lineOnceThenBlockReadCloser) closed() bool {
 	}
 }
 
-// deadlineStallWriter models a client that connected — the header flush went out — and
-// then stopped reading. Its Write buffers and returns at once (like net/http's bufio-
-// backed *response, a small SSE line never touches the socket at Write); its plain
-// Flush — the one-time header flush — returns immediately; but every deadline-gated
-// FlushError blocks until the write deadline relayLogStream set, then reports
-// os.ErrDeadlineExceeded, exactly how a real socket surfaces a SetWriteDeadline expiry
-// on a stalled reader. http.NewResponseController(w).Flush() prefers FlushError over
-// plain Flush, so the relay's per-event flush travels the blocking path while the
-// header flush does not — which is why the guard has to route flushes through the
-// ResponseController, not the bare http.Flusher whose Flush swallows the error.
+// deadlineStallWriter allows the header flush but blocks FlushError until the deadline, modeling a stalled client socket.
 type deadlineStallWriter struct {
 	mu       sync.Mutex
 	hdr      http.Header
@@ -633,9 +549,7 @@ func (s *deadlineStallWriter) WriteHeader(int)             {}
 func (s *deadlineStallWriter) Write(p []byte) (int, error) { return len(p), nil } // buffered: never blocks
 func (s *deadlineStallWriter) Flush()                      {}                     // header flush: instant, best-effort
 
-// FlushError is where the stalled socket bites: it blocks until the deadline the relay
-// set via SetWriteDeadline, then returns the same error a real write reports when that
-// deadline elapses. With no deadline set it returns nil — a healthy, instant flush.
+// FlushError returns a deadline error when set; without a deadline it flushes immediately.
 func (s *deadlineStallWriter) FlushError() error {
 	s.mu.Lock()
 	d := s.deadline
@@ -663,17 +577,6 @@ func (s *deadlineStallWriter) deadlineSet() bool {
 	return s.sawDL
 }
 
-// TestRelayLogStreamWriteDeadlineSeversStalledReader closes the actual §8 relay leak
-// (audit #1): on a client that connected but stopped reading — request context still
-// live, socket write blocked — the relay must not pin its goroutine and upstream pod-log
-// follow forever. The fix sets a per-write deadline (writeTimeout) via
-// http.ResponseController before each event and abandons the stream when a flush exceeds
-// it. deadlineStallWriter makes the flush block until that deadline then report
-// os.ErrDeadlineExceeded, exactly as a stalled socket does; the source stays open and
-// silent (never EOFs), so the ONLY thing that can end the relay is the deadline. Without
-// the fix (a bare flusher.Flush that swallows the error), the relay would loop forever
-// waiting for a line that never comes and this test would time out — it fails closed on
-// the exact leak it guards.
 func TestRelayLogStreamWriteDeadlineSeversStalledReader(t *testing.T) {
 	orig := writeTimeout
 	writeTimeout = 30 * time.Millisecond
@@ -681,9 +584,7 @@ func TestRelayLogStreamWriteDeadlineSeversStalledReader(t *testing.T) {
 
 	src := newLineOnceThenBlock("boot\n")
 	w := newDeadlineStallWriter()
-	// A LIVE request context: the client has NOT disconnected. r.Context() never fires
-	// here, which is precisely why the write deadline — not a context cancel — has to be
-	// what severs the stalled stream.
+	// Keep the request context live so only the write deadline can terminate the stalled stream.
 	r := httptest.NewRequest("GET", "/api/v1/servers/survival/console", nil)
 
 	done := make(chan struct{})
@@ -709,12 +610,7 @@ func TestRelayLogStreamWriteDeadlineSeversStalledReader(t *testing.T) {
 	}
 }
 
-// deadlineRecordWriter records the write deadlines the relay sets and never blocks on
-// flush — a healthy client whose stream simply ends. It pins the deadline-CLEAR half of
-// the leak guard: SetWriteDeadline stores every value, so the test can read back the
-// LAST one the relay left behind after it returns. sawPositive proves a real per-write
-// deadline was applied during streaming, so a broken fix that never sets a deadline at
-// all cannot pass the clear-check by leaving the field zero throughout.
+// deadlineRecordWriter records applied and cleared deadlines, verifying both active protection and cleanup.
 type deadlineRecordWriter struct {
 	mu           sync.Mutex
 	hdr          http.Header
@@ -748,16 +644,6 @@ func (s *deadlineRecordWriter) finalDeadline() (last time.Time, sawPositive bool
 	return s.lastDeadline, s.sawPositive
 }
 
-// TestRelayLogStreamClearsWriteDeadlineOnReturn pins the keep-alive hygiene half of the
-// §8 leak guard (audit #1 follow-up). Server.WriteTimeout is deliberately UNSET so a
-// healthy long SSE stream is never severed (cmd/felis api.go), and with it unset net/http
-// never resets the connection's write deadline between keep-alive requests. So the
-// per-write deadline the relay sets must be CLEARED when the relay returns — otherwise it
-// leaks onto the NEXT request that reuses this pooled connection and fails that request's
-// first write for no reason. Here a finite source EOFs cleanly; after the relay returns
-// the writer's final deadline must be the zero value, and a positive deadline must have
-// been set first (so a fix that never sets a deadline at all cannot pass by leaving zero
-// the whole time).
 func TestRelayLogStreamClearsWriteDeadlineOnReturn(t *testing.T) {
 	src := &recordReadCloser{r: strings.NewReader("boot\n")}
 	w := newDeadlineRecordWriter()
@@ -826,9 +712,6 @@ func shrinkStreamTimers(t *testing.T, recheck, lifetime time.Duration) {
 	t.Cleanup(func() { streamRecheckEvery, streamMaxLifetime = origRecheck, origLife })
 }
 
-// A stream is authorized when it opens; a session revoked (or a server handed to
-// someone else) afterwards must not keep the console flowing. The relay re-asks
-// on a timer and ends with "event: revoked" once the answer changes.
 func TestServerConsoleStreamEndsWhenAccessIsWithdrawn(t *testing.T) {
 	owner := &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
 	stranger := &Principal{UserID: "someone", Email: "someone@example.net", Role: "user"}
@@ -872,9 +755,6 @@ func TestServerConsoleStreamEndsWhenAccessIsWithdrawn(t *testing.T) {
 	}
 }
 
-// A store outage is no verdict on the caller: the stream keeps going (the lifetime
-// cap still bounds it), and it ends with a plain close, which EventSource answers by
-// reconnecting through the full auth path.
 func TestServerConsoleStreamOutlivesAnAuthOutageUntilItsLifetime(t *testing.T) {
 	shrinkStreamTimers(t, 10*time.Millisecond, 80*time.Millisecond)
 	owner := &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
@@ -907,8 +787,6 @@ func TestServerConsoleStreamOutlivesAnAuthOutageUntilItsLifetime(t *testing.T) {
 	}
 }
 
-// CloseStreams (registered with RegisterOnShutdown) ends an open console at
-// once, and a stream opened after it ends as soon as it starts.
 func TestServerConsoleStreamEndsOnCloseStreams(t *testing.T) {
 	owner := &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
 	repo := newFakeRepo()
@@ -958,8 +836,6 @@ func TestServerConsoleStreamEndsOnCloseStreams(t *testing.T) {
 	}
 }
 
-// A reconnecting EventSource sends back the id of the last line it saw; the
-// handler resumes the follow from that second instead of replaying the backlog.
 func TestServerConsoleStreamResumesFromLastEventID(t *testing.T) {
 	owner := &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
 	repo := newFakeRepo()

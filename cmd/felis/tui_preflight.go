@@ -9,12 +9,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// preflightModel auto-verifies the control plane before the operator does any
-// hands-on configuration: PostgreSQL must be reachable and schema migrations
-// must be applied. Both are expected to already be true after host bootstrap;
-// this stage simply proves it (and self-heals pending migrations) so the rest
-// of the wizard can assume a healthy backend. It is non-interactive — it runs
-// to completion and reports back to the root via preflightDoneMsg.
 type preflightModel struct {
 	db         config.DatabaseConfig
 	rootDomain string
@@ -207,9 +201,7 @@ func (m *preflightModel) checkDB() tea.Cmd {
 
 func (m *preflightModel) checkMigrations() tea.Cmd {
 	return func() tea.Msg {
-		// The sets, not their sizes: a database a newer release migrated can hold as
-		// many rows as this build has migrations, and must stop here rather than be
-		// "healed" by an older binary.
+		// The sets, not their sizes: a database a newer release migrated can hold as many rows as this build has migrations, and must stop here rather than be healed by an older binary.
 		s, err := readSchema(m.db.URL)
 		if err == nil {
 			err = s.Newer()

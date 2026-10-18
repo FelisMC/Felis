@@ -20,16 +20,7 @@ import (
 // watchdog reads it to tell a vulnerability DB that stopped refreshing.
 const defaultBuildToolsStatus = "/var/lib/felis/build-tools/status.json"
 
-// cmdMirrorBuildTools copies the build lane's tools (build.Tools: the kaniko and
-// trivy images, Trivy's vulnerability and Java DBs) and the servers' Java runtime
-// images (build.RuntimeImages) from upstream into the platform registry, where
-// build Jobs and server pods pull them. deploy/bootstrap.sh runs it at
-// install and from felis-build-tools.timer twice a day, which is what keeps the
-// DBs fresh; a root shell can run it the same way to refresh now.
-//
-// It writes as the platform principal through the node's loopback hostPort, the
-// same way the installer pushes, reading the token from the environment or from
-// /etc/felis/secrets.env.
+// Mirror build tools and Java runtimes using platform credentials through the registry loopback port.
 func cmdMirrorBuildTools(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("mirror-build-tools", flag.ContinueOnError)
 	fs.SetOutput(stderr)

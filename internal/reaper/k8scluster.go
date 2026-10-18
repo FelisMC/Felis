@@ -19,33 +19,22 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// WorldPVCName returns the world PVC name for a server. The convention
-// ("world-<name>-0") is owned by internal/naming because the operator, the
-// reaper, and restore all depend on it; this is a thin alias kept so existing
-// reaper call sites read naturally.
 func WorldPVCName(server string) string {
 	return naming.WorldPVCName(server)
 }
 
-// gamePodComponent is the operator's component label on a game server's pod
-// (internal/operator.ComponentValue; k8scluster_test pins the two).
+// gamePodComponent must match internal/operator.ComponentValue.
 const gamePodComponent = "server"
 
-// K8sCluster is the production Cluster backed by a controller-runtime client
-// (spec §4, §18). It reads spec.reaperExempt, stops a server and holds its world
-// volume through the maintenance lock, deletes the world PVC, and removes the
-// MinecraftServer of a server an admin deleted — nothing else.
 type K8sCluster struct {
 	c         client.Client
 	namespace string
 	now       func() time.Time
-	// beat is how often a held lock is rewritten; maintenance.Grace/4 unless a
-	// test shortens it.
+	// beat defaults to maintenance.Grace/4.
 	beat        time.Duration
 	distributed bool
 }
 
-// NewK8sCluster builds a Cluster over c, scoped to namespace.
 func NewK8sCluster(c client.Client, namespace string) *K8sCluster {
 	return &K8sCluster{c: c, namespace: namespace}
 }
@@ -77,13 +66,7 @@ func (k *K8sCluster) Inspect(ctx context.Context, name string) (ServerCRD, error
 	return ServerCRD{Exempt: ms.Spec.ReaperExempt, PVC: ms.WorldPVC(), UID: string(ms.UID)}, nil
 }
 
-// HoldWorld implements Cluster. The lock is the same Annotation felis-api
-// writes before a restore, backup or file-write Job (internal/maintenance): a
-// wake through felis-api, the operator scaling the server up, and another
-// world operation all refuse while it is fresh. With no Job behind it, it
-// holds for maintenance.Grace after each write, so it is rewritten every beat;
-// the held context is cancelled once a rewrite has failed for Grace/2, well
-// before any reader could take the lock as lapsed.
+// HoldWorld renews the lock every beat and cancels its context after Grace/2 without a successful renewal, before lock expiry.
 func (k *K8sCluster) HoldWorld(ctx context.Context, name string) (context.Context, func(), error) {
 	if err := k.lock(ctx, name); err != nil {
 		return nil, nil, err
@@ -101,8 +84,6 @@ func (k *K8sCluster) HoldWorld(ctx context.Context, name string) (context.Contex
 	return held, release, nil
 }
 
-// lock stops the server if it is still meant to run and takes the reap lock
-// once it is fully down and nothing else holds its world.
 func (k *K8sCluster) lock(ctx context.Context, name string) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var ms v1alpha1.MinecraftServer
@@ -146,11 +127,8 @@ func (k *K8sCluster) lock(ctx context.Context, name string) error {
 	})
 }
 
-// errLockLost reports that the lock on the object is no longer the reaper's.
 var errLockLost = errors.New("the reap lock is gone from the server")
 
-// keep rewrites the lock every beat until held ends, and ends held itself once
-// it has not managed to for Grace/2.
 func (k *K8sCluster) keep(held context.Context, cancel context.CancelCauseFunc, name string, done chan<- struct{}) {
 	defer close(done)
 	beat := k.beat
@@ -196,8 +174,6 @@ func (k *K8sCluster) refresh(ctx context.Context, name string) error {
 	})
 }
 
-// unlock drops the lock if it is still the reaper's; a lock left behind lapses
-// after maintenance.Grace on its own.
 func (k *K8sCluster) unlock(ctx context.Context, name string) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var ms v1alpha1.MinecraftServer
@@ -220,7 +196,6 @@ func reapLock(annotations map[string]string) bool {
 	return strings.HasPrefix(annotations[maintenance.Annotation], maintenance.KindReap+"@")
 }
 
-// WorldExists reports whether the world PersistentVolumeClaim exists.
 func (k *K8sCluster) WorldExists(ctx context.Context, pvc string) (bool, error) {
 	var claim corev1.PersistentVolumeClaim
 	err := k.c.Get(ctx, types.NamespacedName{Namespace: k.namespace, Name: pvc}, &claim)
@@ -233,9 +208,7 @@ func (k *K8sCluster) WorldExists(ctx context.Context, pvc string) (bool, error) 
 	return true, nil
 }
 
-// DeletePVC deletes the world PersistentVolumeClaim. A missing PVC is not an
-// error: the reap is idempotent and a re-run after a partial failure must still
-// converge.
+// DeletePVC treats missing volumes as success so partial reaps are idempotent.
 func (k *K8sCluster) DeletePVC(ctx context.Context, pvc string) error {
 	obj := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{Namespace: k.namespace, Name: pvc},
@@ -246,9 +219,7 @@ func (k *K8sCluster) DeletePVC(ctx context.Context, pvc string) error {
 	return nil
 }
 
-// DeleteServer implements Cluster. The read and the delete are one step (the
-// delete carries the resourceVersion read), so the object removed is the one
-// whose uid was checked: a server made again under the name is refused.
+// DeleteServer carries the checked resourceVersion and UID so a recreated same-name object cannot be deleted.
 func (k *K8sCluster) DeleteServer(ctx context.Context, name, uid string) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var ms v1alpha1.MinecraftServer

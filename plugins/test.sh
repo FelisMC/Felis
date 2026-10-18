@@ -1,83 +1,5 @@
 #!/bin/bash
-# Self-tests for the Java plugin layer.
-#
-#     bash plugins/test.sh
-#
-# Five gates, all runnable on any machine with a JDK 25 (Gradle comes from each
-# module's wrapper, sha256-pinned):
-#
-#   1. The hand-written, framework-free test mains under shared/test and
-#      velocity/test. They check what "compiles" cannot: the felis:control codec
-#      round-trips every frame kind (spec §12), no server name can re-aim a
-#      felis-api request path, only the lobby and the login gate may drive
-#      felis:control (and each only with its own frames), a GET is retried once
-#      after a dropped reply or a 502/503/504 and a POST never, the request timeout
-#      cuts a slow call off, felis-link.properties timeouts are validated, the
-#      felis-api call pool refuses instead of growing and a repeating task never
-#      overlaps itself, every felis-api attempt is counted by outcome and the
-#      periodic health line reports only a window's own counts (and stays quiet
-#      when idle), an outage is logged when it starts, every few minutes while it
-#      lasts and when it ends, the link-status outage
-#      fallback fails closed outside its window, a proxy restarted during an API
-#      outage routes on the last saved server list (and only until a fetch
-#      succeeds), a CR marked forwarding=legacy joins the fork's legacy-forwarding
-#      list above the installer's floor, /invite prompts cannot double-fire
-#      or outlive their TTL, the invite card really is a green/red clickable
-#      prompt, the op-login approval card names the account and leaves its
-#      name for the admin to type, and the loader mods' shared /link refuses the
-#      console and an offline-mode server before minting, fetches the code off the
-#      server thread and answers on it, and turns any failure into one line; the
-#      /link reply makes the panel address a link the player can click open.
-#      InviteCardTest, OpApprovalCardTest and LinkCodeCardTest need the
-#      adventure jars the velocity plugin compiles
-#      against; they are fetched from Maven Central below, pinned by version and
-#      checked by digest (a test run against silently-substituted bytes is not a
-#      test of what we ship).
-#
-#   2. Production compile gates: the velocity/paper/limbo plugin jars — the three
-#      bootstrap bakes into the proxy and the game images — are built through each
-#      module's wrapper, the same Gradle the plugin build image runs, with every
-#      dependency checked against the module's gradle/verification-metadata.xml. A
-#      compile break or a swapped artifact is a red check here instead of an
-#      install-time surprise. limbo compiles against the API release the login gate
-#      bundles: deploy/game-stack.lock's LIMBO_VERSION, which bootstrap passes too.
-#
-#   3. The velocity routing self-tests (`./gradlew routingTest`): ServerRegistry,
-#      WaitingRouter, ControlChannel and the /server hand-off run against the real velocity-api with a
-#      fake proxy and a stub felis-api — a refresh registers, moves and drops
-#      backends and lets go of a renamed subdomain, the login gate and host routing
-#      admit only linked players, each wake refusal reaches the player as its own
-#      message (the stub answers a wake from the server's state in felis-api's own
-#      order, so it cannot hand the router an answer the real API never gives),
-#      felis:control acts only for the connection's player and holds its
-#      frame budget, the menu list leads with the player's own servers and falls
-#      back to names alone when felis-api or the call pool cannot answer, and Velocity's own /server steps aside for the backend's while
-#      one another proxy plugin registered stays. They ride the module's verified dependency set, which is why
-#      they live in Gradle rather than in the javac mains above.
-#
-#   4. The lobby self-tests (`./gradlew lobbyTest` in plugins/paper): LobbyGuard
-#      runs against real paper-api events around fake players and worlds, so a
-#      passer-by cannot change the lobby while a builder can, nobody is hurt or
-#      starved, a fall into the void lands at spawn, a join sets adventure mode and
-#      names /menu with a click, and a world rule the server refuses is logged
-#      without taking the menu down with it. MenuTiles decides each menu tile from
-#      the server's status and felis-api's verdict for the player: Join when it is up,
-#      Claim when ownerless, a grey tile with the reason (and no frame) when the
-#      player may not start it, the phase in the player's language.
-#
-#   5. The login gate self-test (`./gradlew loginTest` in plugins/limbo): the whole
-#      login flow on a virtual clock, a fake scheduler and players around the real
-#      LoginFlow and the real felis-api clients against a stub. A linked player goes
-#      straight to the lobby with the release re-sent on its backoff, an unlinked one
-#      gets the code (the minted panel URL, else the console) and is released once
-#      linked, a barred UUID is turned away without a code, an outage at join is
-#      retried for a minute (asking the proxy for the lobby each time) and a refusal
-#      is not, the login and release windows end in their own disconnect, a player
-#      who leaves stops every timer, and a reconnect or a lagging main thread still
-#      runs one loop. Also the readiness endpoint, the env parsing and the book.
-#
-# No test framework: the mains are the same javac one-liners their javadocs document,
-# so a local run and CI run the same bytes.
+# Run Java self-tests on JDK 25 with pinned Gradle wrappers and verified module dependencies.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -85,7 +7,6 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-# --- 1. hermetic test mains ----------------------------------------------------
 
 # adventure-api 4.26.1 is what velocity-api 3.5.1 resolves through its adventure-bom.
 # Pinned with digests because these exact bytes go on the compile/run classpath.
@@ -202,9 +123,7 @@ java -cp "$work/velocity-classes" best.lolicon.felis.velocity.InviteBookTest
 
 echo "==> InviteCardTest (/invite card, velocity)"
 mkdir -p "$work/card-classes"
-# examination-api is on the compile classpath too: adventure-api 4.26.1's Component
-# signatures reference Examinable, so javac needs the class even though the test
-# never names it. adventure-key rides along for ClickEvent/HoverEvent payloads.
+# Adventure signatures require examination-api at compile time; include adventure-key for event payloads.
 javac -cp "$adventure_api:$adventure_key:$examination_api" -d "$work/card-classes" \
   plugins/velocity/src/main/java/best/lolicon/felis/velocity/InviteCard.java \
   plugins/velocity/test/best/lolicon/felis/velocity/InviteCardTest.java
@@ -228,7 +147,6 @@ javac -cp "$adventure_api:$adventure_key:$examination_api" -d "$work/linkcard-cl
 java -cp "$work/linkcard-classes:$adventure_api:$adventure_key:$examination_api" \
   best.lolicon.felis.velocity.LinkCodeCardTest
 
-# --- 2. production compile gates ------------------------------------------------
 
 for module in velocity paper; do
   echo "==> plugins/$module: ./gradlew --no-daemon build"

@@ -5,10 +5,7 @@ import { Button } from "@/components/ui/button";
 import { isChunkLoadError, reloadForNewDeploy } from "@/lib/chunk";
 import { cn } from "@/lib/utils";
 
-// ErrorBoundary keeps one broken render from unmounting the whole panel. The
-// root boundary (main.tsx) covers the providers and the shell; the one around
-// AppShell's Outlet keeps the navigation alive and resets on route change, so a
-// crash on one page never strands the user there.
+// Reset the route boundary on navigation while retaining the shell.
 
 interface Props {
   children: ReactNode;

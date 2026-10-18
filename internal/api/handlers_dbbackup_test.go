@@ -10,10 +10,6 @@ import (
 	"felis.lolicon.best/internal/dbbackup"
 )
 
-// The panel's backup card reads one flag, stale, so these pin when it is set:
-// never backed up, too old, and not for a fresh backup. A store outage must
-// not read as either answer.
-
 func getDBBackup(t *testing.T, api *API) (int, dbBackupView) {
 	t.Helper()
 	w := do(api.ExternalHandler(), "GET", "/api/v1/platform/db-backup", "", nil)
@@ -69,9 +65,6 @@ func TestDBBackupFreshness(t *testing.T) {
 	}
 }
 
-// TestDBBackupDailyDecides: a fresh manual record says nothing about the
-// timer, so the daily bundle it carries decides; a daily record from before
-// daily_at existed is its own daily bundle.
 func TestDBBackupDailyDecides(t *testing.T) {
 	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {

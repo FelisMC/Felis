@@ -1,9 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { claimChunkReload, isChunkLoadError } from "./chunk";
 
-// After a deploy an old tab's lazy import 404s. The panel reloads once to pick up
-// the new chunks; these cases pin which errors count and that a second failure
-// inside the window surfaces instead of looping.
 
 function memory(): Pick<Storage, "getItem" | "setItem"> & { data: Map<string, string> } {
   const data = new Map<string, string>();

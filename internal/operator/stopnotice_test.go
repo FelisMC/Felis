@@ -46,8 +46,6 @@ func replicas(t *testing.T, c client.Client) int32 {
 	return *sts.Spec.Replicas
 }
 
-// A stop with players on the server warns them, holds the pod for the window, then
-// saves and scales down with a last line.
 func TestStopNotice_WarnsPlayersThenStops(t *testing.T) {
 	var saves, said []string
 	prober := fakeProber{players: operator.PlayerCount{Online: 3, Max: 20, Known: true}, saves: &saves, broadcasts: &said}
@@ -98,8 +96,6 @@ func TestStopNotice_WarnsPlayersThenStops(t *testing.T) {
 	}
 }
 
-// Nobody to warn, or no way to warn them: the stop goes ahead on the first pass.
-// A tally the server did not give still counts as maybe-populated.
 func TestStopNotice_OnlyWhenSomeoneMayBeWarned(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -143,8 +139,6 @@ func TestStopNotice_OnlyWhenSomeoneMayBeWarned(t *testing.T) {
 	}
 }
 
-// Starting the server again inside the window calls the stop off: the warned
-// players hear so, the pod stays, and a later stop warns afresh.
 func TestStopNotice_CalledOffByStart(t *testing.T) {
 	var saves, said []string
 	prober := fakeProber{players: operator.PlayerCount{Online: 3, Max: 20, Known: true}, saves: &saves, broadcasts: &said}

@@ -45,9 +45,6 @@ func runSync(t *testing.T, s *Syncer) Result {
 	return res
 }
 
-// TestSyncUploadsCopiesContexts: every submission's context is copied, two
-// identical ones once; a directory without its context and a name that is not
-// a submission id are left out. A second run with nothing new sends nothing.
 func TestSyncUploadsCopiesContexts(t *testing.T) {
 	s, b, _, dir := newUploadsSyncer(t)
 	pack := bytes.Repeat([]byte("modpack"), 5000)
@@ -86,10 +83,6 @@ func TestSyncUploadsCopiesContexts(t *testing.T) {
 	}
 }
 
-// TestSyncUploadsEmptyVolumeKeepsCopies: a volume that comes back empty (a
-// rebuilt host before its restore) records an empty version, keeps every
-// context for UploadHistory, and a restore refuses the empty version until
-// told which one to use. Past the history both go.
 func TestSyncUploadsEmptyVolumeKeepsCopies(t *testing.T) {
 	s, b, clock, dir := newUploadsSyncer(t)
 	putContext(t, dir, "sub-aaa", []byte("pack a"), now.Add(-time.Hour))
@@ -131,8 +124,6 @@ func TestSyncUploadsEmptyVolumeKeepsCopies(t *testing.T) {
 	}
 }
 
-// TestSyncUploadsReplacedContext: a context rewritten in place is copied again;
-// the old bytes stay while the version that names them is kept.
 func TestSyncUploadsReplacedContext(t *testing.T) {
 	s, b, clock, dir := newUploadsSyncer(t)
 	putContext(t, dir, "sub-aaa", []byte("version one"), now.Add(-time.Hour))
@@ -155,8 +146,6 @@ func TestSyncUploadsReplacedContext(t *testing.T) {
 	}
 }
 
-// TestFetchUploadsRestores: a restore writes every context back in place,
-// leaves one that is already right alone, and rewrites one whose bytes differ.
 func TestFetchUploadsRestores(t *testing.T) {
 	s, b, _, dir := newUploadsSyncer(t)
 	a, c := bytes.Repeat([]byte("a"), 70000), []byte("pack c")

@@ -14,15 +14,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-// The shell navigation model, kept as plain data so the "which sections does this
-// identity see" decision is a pure function (visibleSections) that vitest can pin
-// without rendering React. The three sections map onto DESIGN-WEB-3SIDES §2:
-// User-Side is always present (app-tier); Admin-Side and SysAdmin-Side are a
-// separation between server administration and Owner-only platform operations.
-//
-// Hiding a section is UX convenience, NOT a security control: every /admin and
-// /ops data call is independently 403-gated server-side (the RequireAdmin route
-// wrapper is belt-and-suspenders on top of that).
+// Navigation visibility is presentation only; every privileged API route independently enforces access.
 
 export interface NavItem {
   to: string;
@@ -83,13 +75,7 @@ export const NAV_SECTIONS: NavSection[] = [
   },
 ];
 
-/**
- * visibleSections returns the sections a caller with the given admin flag may see.
- * Pure and total: a non-admin (or the fail-closed `false` used while /me is still
- * loading or after it errors) gets exactly the User-Side section; an admin gets all
- * admin sections; an owner additionally gets the owner-gated sections. This is the
- * single decision the sidebar renders from.
- */
+// Unknown or loading identity gets user sections only.
 export function visibleSections(isAdmin: boolean, isOwner: boolean): NavSection[] {
   return NAV_SECTIONS.filter((s) => {
     if (s.ownerOnly) return isOwner;

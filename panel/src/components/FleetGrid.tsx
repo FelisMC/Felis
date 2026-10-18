@@ -5,10 +5,7 @@ import { PHASE_KEY, phaseColor } from "@/components/PhaseBadge";
 import { cn } from "@/lib/utils";
 import type { Phase, MyServerView } from "@/lib/types";
 
-// FleetGrid is the flat stand-in for VoxelFleet when WebGL is unavailable or the
-// 3D chunk failed: the same square layout and phase palette seen from above, so
-// the legend under the card still reads correctly. It lives outside the three.js
-// chunk so it renders even when that chunk cannot load.
+// Keep the flat fallback outside the three.js chunk so it survives WebGL or chunk-load failure.
 
 const TRANSIENT: ReadonlySet<Phase> = new Set<Phase>(["Starting", "Stopping"]);
 

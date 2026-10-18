@@ -9,17 +9,9 @@ import (
 	"time"
 )
 
-// Reauth: once an account has a passkey or a verified email, adding or removing a
-// passkey and changing the email need a factor proven within reauthWindow. These
-// tests drive the real SessionAuth, so the proof is read from the session row the
-// cookie names, exactly as in production.
-
 const opTok = "tok-op"
 
-// reauthFixture is the sessions fixture (steve: a player with a verified email,
-// signed in on the laptop and the phone; alex: a player with no factor) plus a
-// passkey verifier and an operator, pam, with a verified email. Every session
-// starts with no proof on it.
+// reauthFixture starts player and staff sessions without recent proof so each case explicitly establishes its factor.
 func reauthFixture(t *testing.T) *sessionsFixture {
 	t.Helper()
 	f := newSessionsFixture(t)
@@ -64,8 +56,6 @@ func TestSigningInByEmailCodeCountsAsReauth(t *testing.T) {
 	}
 }
 
-// A bind code proves the Minecraft account, and nothing about the account's own
-// passkey or mailbox.
 func TestSigningInByBindCodeIsNoReauth(t *testing.T) {
 	api, repo := seedBindAPI(t)
 	mintBindCode(t, api, repo, "ABCD2345", bindTestUUID, authSourceMojang)
@@ -78,8 +68,6 @@ func TestSigningInByBindCodeIsNoReauth(t *testing.T) {
 	}
 }
 
-// guardedChange is a request the gate covers, the status it gets once the gate
-// lets it through, and a check that it changed nothing when refused.
 type guardedChange struct {
 	name, method, path, body string
 	ok                       int
@@ -100,7 +88,7 @@ var guardedChanges = []guardedChange{
 func TestGuardedChangesNeedARecentReauth(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
-		proof  time.Duration // how long ago the session proved a factor; -1 = never
+		proof  time.Duration // proof age; -1 means no proof
 		wantOK bool
 	}{
 		{"never proved", -1, false},
@@ -135,8 +123,6 @@ func TestGuardedChangesNeedARecentReauth(t *testing.T) {
 	}
 }
 
-// With no passkey and no verified email the session is the account's only way
-// in, so there is nothing a reauth could protect and nothing to give one with.
 func TestAccountWithoutAFactorNeedsNoReauth(t *testing.T) {
 	f := reauthFixture(t)
 	f.api.Mailer = &captureMailer{}
@@ -148,7 +134,6 @@ func TestAccountWithoutAFactorNeedsNoReauth(t *testing.T) {
 	}
 }
 
-// An unverified address is no factor: it never received a code.
 func TestUnverifiedEmailIsNoFactor(t *testing.T) {
 	f := reauthFixture(t)
 	f.repo.staff["alex"].Email = "alex@example.net"
@@ -157,7 +142,6 @@ func TestUnverifiedEmailIsNoFactor(t *testing.T) {
 	}
 }
 
-// A passkey alone is a factor worth guarding.
 func TestPasskeyAloneNeedsReauth(t *testing.T) {
 	f := reauthFixture(t)
 	f.repo.passkeyCreds["x"] = PasskeyCredential{ID: "x", UserID: "u2", CredentialID: "c-x", CreatedAt: frozenNow}
@@ -167,8 +151,6 @@ func TestPasskeyAloneNeedsReauth(t *testing.T) {
 	}
 }
 
-// A Cloudflare Access caller is authenticated by the proxy on every request and
-// has no session to mark.
 func TestAccessCallerNeedsNoReauth(t *testing.T) {
 	repo := newFakeRepo()
 	repo.staff["op"] = &StaffUser{ID: "u1", Username: "op", Role: "admin", Email: "op@example.net", EmailVerified: true}
@@ -210,8 +192,6 @@ func TestReauthStatusNamesTheFactors(t *testing.T) {
 	if !steve.Needed || steve.Until != nil || strings.Join(steve.Factors, ",") != "passkey,email" {
 		t.Fatalf("player status = %+v, want needed with passkey,email", steve)
 	}
-	// An operator's verified email is no factor: signing in as staff by email
-	// also takes in-game approval.
 	pam := getReauthStatus(t, f, opTok)
 	if !pam.Needed || strings.Join(pam.Factors, ",") != "passkey,sign_in" {
 		t.Fatalf("operator status = %+v, want needed with passkey,sign_in", pam)
@@ -229,9 +209,6 @@ func TestReauthStatusNamesTheFactors(t *testing.T) {
 	}
 }
 
-// TestReauthWithoutMailRelay: with no [smtp] relay a verified email is no way in
-// (the email and op-login doors answer 503), so it is neither offered as a factor
-// nor guarded; a passkey still is, and the email start door says why it cannot help.
 func TestReauthWithoutMailRelay(t *testing.T) {
 	f := reauthFixture(t)
 	f.repo.passkeyCreds["p"] = PasskeyCredential{ID: "p", UserID: "u3", CredentialID: "c-p", CreatedAt: frozenNow}
@@ -307,7 +284,6 @@ func TestReauthByEmailCode(t *testing.T) {
 	}
 }
 
-// A code from another step-up (the email change, a migration) does not reauth.
 func TestReauthCodeIsItsOwnPurpose(t *testing.T) {
 	f := reauthFixture(t)
 	mailer := &captureMailer{}
@@ -392,7 +368,6 @@ func TestReauthByPasskey(t *testing.T) {
 	}
 }
 
-// A migration's passkey challenge cannot be spent on a reauth, or the reverse.
 func TestReauthPasskeyChallengeIsItsOwnPurpose(t *testing.T) {
 	f := reauthFixture(t)
 	pv := f.api.Passkey.(*fakePasskeyVerifier)
@@ -407,8 +382,6 @@ func TestReauthPasskeyChallengeIsItsOwnPurpose(t *testing.T) {
 	}
 }
 
-// Proving an address by code is an email reauth, so a first-time setup can go on
-// to its next guarded step.
 func TestVerifyingAnEmailCountsAsReauth(t *testing.T) {
 	f := reauthFixture(t)
 	mailer := &captureMailer{}
@@ -437,8 +410,6 @@ func TestRegisteringAPasskeyCountsAsReauth(t *testing.T) {
 		t.Fatalf("reauth_at = %v, want now", f.reauthAt(alexTok))
 	}
 }
-
-// ---- change notices ----
 
 func noticeFixture(t *testing.T) (*sessionsFixture, *noticeMailer) {
 	t.Helper()
@@ -504,8 +475,6 @@ func TestAddingAPasskeyMailsTheAccount(t *testing.T) {
 	}
 }
 
-// Replacing the address mails the OLD one, which is the mailbox the owner still
-// reads if someone else made the change. The new address is masked.
 func TestChangingTheEmailMailsTheOldAddress(t *testing.T) {
 	f, mailer := noticeFixture(t)
 	if w := do(f.eh, "POST", "/api/v1/account/email/start", `{"email":"steve@new.example"}`, jsonCookie(laptopTok)); w.Code != http.StatusAccepted {
@@ -527,7 +496,6 @@ func TestChangingTheEmailMailsTheOldAddress(t *testing.T) {
 	}
 }
 
-// A first verification and a re-verification of the same address move nothing.
 func TestVerifyingAFirstOrSameEmailMailsNoNotice(t *testing.T) {
 	for _, tc := range []struct {
 		name, tok, address string
@@ -550,12 +518,9 @@ func TestVerifyingAFirstOrSameEmailMailsNoNotice(t *testing.T) {
 	}
 }
 
-// Nothing proves an unverified address belongs to the owner, so nothing is sent
-// there.
 func TestPasskeyNoticeSkipsAnUnverifiedAddress(t *testing.T) {
 	f, mailer := noticeFixture(t)
 	f.repo.staff["alex"].Email = "alex@example.net"
-	// Two passkeys, so removing one is allowed without a verified email.
 	f.repo.passkeyCreds["x"] = PasskeyCredential{ID: "x", UserID: "u2", CredentialID: "c-x", CreatedAt: frozenNow}
 	f.repo.passkeyCreds["y"] = PasskeyCredential{ID: "y", UserID: "u2", CredentialID: "c-y", CreatedAt: frozenNow}
 	f.setReauth(alexTok, f.api.now())

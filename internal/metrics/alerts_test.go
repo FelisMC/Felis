@@ -35,8 +35,6 @@ func readYAML(t *testing.T, path string, into any) {
 	}
 }
 
-// TestPrometheusRuleMatchesPlainRules: the PrometheusRule twin carries exactly
-// the groups of the promtool-tested plain file.
 func TestPrometheusRuleMatchesPlainRules(t *testing.T) {
 	var plain, twin map[string]any
 	readYAML(t, "../../deploy/alerts/felis-alerts.yaml", &plain)
@@ -47,9 +45,6 @@ func TestPrometheusRuleMatchesPlainRules(t *testing.T) {
 	}
 }
 
-// TestAlertRulesUseRealMetrics: every felis_* series a rule reads is one this
-// package exports (or the backup timer's textfile series), so a renamed metric
-// cannot leave an alert silently watching nothing.
 func TestAlertRulesUseRealMetrics(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	if err := Register(reg); err != nil {

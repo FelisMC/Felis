@@ -15,38 +15,21 @@ import (
 	"unicode"
 )
 
-// writerMark names the host that writes the bucket. A rehearsal on a spare
-// machine restores the production host's /etc/felis, [offsite] and its key
-// included: without the record the spare would copy its bundles into the
-// production prefix and prune the production host's by DBKeep. The writer
-// rewrites it on every run; a host restored from its backup finds another
-// host named there and stands by, writing nothing, until `felis offsite
-// take-over`.
+// writerMark prevents a restored spare host from overwriting and pruning production backups until explicit take-over.
 const writerMark = "felis-writer"
 
-// WriterLive is how recently the writer must have run for a standby host to
-// count it as alive. Both run hourly, so a writer seen within it is one that
-// ran in the last two hours.
 const WriterLive = 3 * time.Hour
 
-// HostIDFile is the file, next to the status file, holding this host's id. It
-// is written when the host first writes the bucket and never leaves the host
-// (a bundle carries /etc/felis only), so a host restored from a bundle has
-// none.
+// HostIDFile stays outside backup bundles so restored hosts receive a distinct writer identity.
 const HostIDFile = "host-id"
 
 var (
-	// ErrStandby is a run refused because another host writes the bucket and
-	// this one never has.
-	ErrStandby = errors.New("offsite: another host writes this bucket")
-	// ErrDisplaced is a run refused because another host took the bucket
-	// over from this one.
+	ErrStandby   = errors.New("offsite: another host writes this bucket")
 	ErrDisplaced = errors.New("offsite: another host took this bucket over")
 )
 
 const takeOverHint = "sudo felis offsite take-over -yes (https://docs.felismc.com/en/operations/backup#take-over)"
 
-// Writer is the felis-writer record.
 type Writer struct {
 	HostID string    `json:"host_id"`
 	Host   string    `json:"host"`
@@ -57,12 +40,9 @@ func (w *Writer) String() string {
 	return fmt.Sprintf("host %s (id %s)", w.Host, w.HostID)
 }
 
-// WriterError is a run refused because another host writes the bucket.
 type WriterError struct {
-	// Kind is ErrStandby or ErrDisplaced.
 	Kind error
-	// Writer is the host named in the bucket; nil for a bucket that holds
-	// another host's copies and names no writer.
+	// Writer=nil can mean the bucket contains another host's backups without a writer record.
 	Writer *Writer
 }
 
@@ -82,33 +62,22 @@ func (e *WriterError) Error() string {
 
 func (e *WriterError) Unwrap() error { return e.Kind }
 
-// Role is what a host's next run does with the bucket.
 type Role int
 
 const (
-	// RoleWrites: the bucket names this host.
 	RoleWrites Role = iota + 1
-	// RoleClaims: the bucket names no host, and this one records itself.
 	RoleClaims
-	// RoleStandby: another host writes the bucket, and this one never has.
 	RoleStandby
-	// RoleDisplaced: another host took the bucket over from this one.
 	RoleDisplaced
 )
 
-// Lease is this host's side of felis-writer.
 type Lease struct {
-	// IDFile is this host's id (HostIDFile next to the status file).
 	IDFile string
-	// Host is this host's name, shown to the others.
-	Host string
-	// Inherited is a host that copied to the bucket before writers were
-	// recorded: a status file an older release wrote. It claims a bucket
-	// that names no writer.
+	Host   string
+	// Inherited permits a legacy writer to claim a bucket without an existing writer record.
 	Inherited bool
 }
 
-// BucketWriter reads the felis-writer record, nil when there is none.
 func BucketWriter(ctx context.Context, b Bucket) (*Writer, error) {
 	rc, err := b.Get(ctx, writerMark)
 	if errors.Is(err, ErrNotFound) {
@@ -130,9 +99,7 @@ func BucketWriter(ctx context.Context, b Bucket) (*Writer, error) {
 	return &w, nil
 }
 
-// Plan says what this host's next run does with the bucket, and the host the
-// bucket names (nil for none). empty is a bucket holding no sealed object
-// (CheckKey's KeyUnused), which any host may claim.
+// Plan allows any host to claim a bucket containing no sealed objects.
 func (l Lease) Plan(ctx context.Context, b Bucket, empty bool) (Role, *Writer, error) {
 	w, err := BucketWriter(ctx, b)
 	if err != nil {
@@ -156,9 +123,7 @@ func (l Lease) Plan(ctx context.Context, b Bucket, empty bool) (Role, *Writer, e
 	}
 }
 
-// Acquire is Plan before a run writes anything: a host that writes or claims
-// the bucket records itself there at now; one that stands by or was displaced
-// gets a *WriterError and writes nothing.
+// Acquire records the writer before copying; standby and displaced hosts return WriterError without writes.
 func (l Lease) Acquire(ctx context.Context, b Bucket, empty bool, now time.Time) error {
 	role, w, err := l.Plan(ctx, b, empty)
 	if err != nil {
@@ -173,9 +138,7 @@ func (l Lease) Acquire(ctx context.Context, b Bucket, empty bool, now time.Time)
 	return l.record(ctx, b, now)
 }
 
-// TakeOver records this host as the bucket's writer whatever the bucket named,
-// and returns the writer it replaced (nil for none). That host's next run is
-// refused with ErrDisplaced.
+// TakeOver replaces the writer unconditionally; the prior host receives ErrDisplaced on its next run.
 func (l Lease) TakeOver(ctx context.Context, b Bucket, now time.Time) (*Writer, error) {
 	prev, err := BucketWriter(ctx, b)
 	if err != nil {
@@ -184,10 +147,7 @@ func (l Lease) TakeOver(ctx context.Context, b Bucket, now time.Time) (*Writer, 
 	return prev, l.record(ctx, b, now)
 }
 
-// record writes this host into felis-writer, creating its id first: a host
-// whose id is on disk but not in the bucket claims the bucket on its next run,
-// where one named in the bucket without an id on disk would stand by for
-// itself.
+// Persist the local writer ID before the bucket record so failures cannot make the host stand by for its own unknown identity.
 func (l Lease) record(ctx context.Context, b Bucket, now time.Time) error {
 	id, err := l.ID()
 	if err != nil {
@@ -209,7 +169,6 @@ func (l Lease) record(ctx context.Context, b Bucket, now time.Time) error {
 	return nil
 }
 
-// ID is this host's id, "" when it has never written a bucket.
 func (l Lease) ID() (string, error) {
 	raw, err := os.ReadFile(l.IDFile)
 	if errors.Is(err, os.ErrNotExist) {
@@ -244,8 +203,6 @@ func (l Lease) newID() (string, error) {
 	return id, nil
 }
 
-// printable keeps a host name fit for a message: at most 64 printable runes,
-// "unknown" for none.
 func printable(s string) string {
 	s = strings.Map(func(r rune) rune {
 		if unicode.IsPrint(r) {

@@ -14,12 +14,9 @@ import (
 
 var testNow = time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
-// ---- in-memory fakes ----
-
 type fakeStore struct {
-	builds map[string]*Build
-	images map[string]Image
-	// call recorders
+	builds    map[string]*Build
+	images    map[string]Image
 	admitted  []Image
 	finished  []string // "id:status"
 	removeErr error
@@ -93,7 +90,7 @@ func (f *fakeStore) ListUnfinishedBuilds(_ context.Context) ([]Build, error) {
 			out = append(out, *b)
 		}
 	}
-	// Oldest first, like the SQL; the frozen test clock ties, so the id breaks it.
+	// oldest first; the frozen test clock ties, so the id breaks them
 	sort.Slice(out, func(i, j int) bool {
 		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
 			return out[i].CreatedAt.Before(out[j].CreatedAt)
@@ -165,8 +162,7 @@ type fakeJobs struct {
 	phase     JobPhase
 	phaseErr  error
 	createErr error
-	// Per-job overrides of phase / phaseErr, keyed by Job name.
-	phases    map[string]JobPhase
+	phases    map[string]JobPhase // per-job overrides keyed by Job name
 	phaseErrs map[string]error
 
 	created   []JobParams
@@ -196,8 +192,6 @@ func (f *fakeJobs) CancelBuildJob(_ context.Context, jobName string) error {
 	return nil
 }
 
-// newBuilder wires a Builder over fresh fakes with a frozen clock and a
-// deterministic id generator.
 func newBuilder() (*Builder, *fakeStore, *fakeJobs) {
 	st := newFakeStore()
 	jb := &fakeJobs{phase: JobPending}
@@ -226,8 +220,6 @@ func goodRequest() Request {
 	}
 }
 
-// ---- submission ----
-
 func TestSubmitCreatesPendingBuildAndStartsJob(t *testing.T) {
 	b, st, jb := newBuilder()
 	bld, err := b.Submit(context.Background(), goodRequest())
@@ -246,8 +238,7 @@ func TestSubmitCreatesPendingBuildAndStartsJob(t *testing.T) {
 	if len(jb.created) != 1 {
 		t.Fatalf("CreateBuildJob calls = %d, want 1", len(jb.created))
 	}
-	// The Job must be parameterised with the weak build SA and the namespace,
-	// never the api identity — this is the §16 red line, asserted at the seam.
+	// The Job must run as the weak build SA, never the api identity.
 	p := jb.created[0]
 	if p.ServiceAccount != defaultServiceAccount {
 		t.Errorf("job SA = %q, want %q", p.ServiceAccount, defaultServiceAccount)
@@ -278,10 +269,6 @@ func TestSubmitRejectsExternalRegistryTarget(t *testing.T) {
 	}
 }
 
-// The platform's own images and the scanner's DB mirrors live under felis/ and
-// mirror/; the registry gate refuses the build principal there, and Validate turns
-// that into a 400 before a Job spends minutes building an image it cannot push.
-// A context digest must be a real sha256 and needs a fetch step to enforce it.
 func TestValidateContextDigest(t *testing.T) {
 	cfg := Config{RegistryURL: "registry.felis.svc:5000", ContextOrigin: "http://felis-api-internal:8081"}
 	req := Request{ImageRef: "registry.felis.svc:5000/user-uploads/sub-1:latest", Dockerfile: "FROM scratch",
@@ -301,8 +288,6 @@ func TestValidateContextDigest(t *testing.T) {
 	}
 }
 
-// The fetch step hands the service token to the context URL's host, so an
-// http(s) context must be an upload on the internal face (build-supply-chain-13).
 func TestValidateConfinesHTTPContextsToTheInternalFace(t *testing.T) {
 	cfg := Config{RegistryURL: "registry.felis.svc:5000", ContextOrigin: "http://felis-api-internal.felis.svc.cluster.local:8081/"}
 	req := goodRequest()
@@ -399,13 +384,10 @@ func TestSubmitMarksBuildFailedWhenJobCreationFails(t *testing.T) {
 	if bld == nil || bld.Status != StatusFailed {
 		t.Fatalf("build should be marked failed, got %+v", bld)
 	}
-	// The persisted row must not be left pending forever.
 	if got := st.builds[bld.ID]; got == nil || got.Status != StatusFailed {
 		t.Errorf("persisted status = %v, want failed", got)
 	}
 }
-
-// ---- the scan gate (Job phase -> DB) ----
 
 func TestSyncSucceededAdmitsImageWithAddedBy(t *testing.T) {
 	b, st, jb := newBuilder()
@@ -438,8 +420,6 @@ func TestSyncSucceededAdmitsImageWithAddedBy(t *testing.T) {
 }
 
 func TestSyncFailedDoesNotAdmitImage(t *testing.T) {
-	// A failed Job is exactly the CRITICAL-CVE case: trivy --exit-code 1 fails
-	// the Pod, so the gate is enforced as the Job verdict (spec §16).
 	b, st, jb := newBuilder()
 	bld, _ := b.Submit(context.Background(), goodRequest())
 
@@ -479,8 +459,6 @@ func TestSyncIsIdempotentOnTerminalBuild(t *testing.T) {
 	if _, err := b.Sync(context.Background(), bld.ID); err != nil {
 		t.Fatalf("first Sync: %v", err)
 	}
-	// Flip the phase to a value that would admit again; a terminal build must
-	// not be re-reconciled.
 	before := len(st.admitted)
 	if _, err := b.Sync(context.Background(), bld.ID); err != nil {
 		t.Fatalf("second Sync: %v", err)
@@ -505,8 +483,6 @@ func TestSyncAllAdvancesUnfinishedBuilds(t *testing.T) {
 	}
 }
 
-// Builds past MaxConcurrent wait pending and start oldest first as running ones
-// finish (build-supply-chain-12).
 func TestSubmitQueuesPastMaxConcurrent(t *testing.T) {
 	b, st, jb := newBuilder()
 	b.Config.MaxConcurrent = 1
@@ -527,11 +503,9 @@ func TestSubmitQueuesPastMaxConcurrent(t *testing.T) {
 		t.Fatalf("jobs created = %d, want 1", len(jb.created))
 	}
 
-	// A queued build is not a phantom: Sync leaves it alone.
 	if got, err := b.Sync(ctx, queued[0].ID); err != nil || got.Status != StatusPending {
 		t.Fatalf("Sync(queued) = %+v, %v; want still pending", got, err)
 	}
-	// Nothing frees up while the first runs.
 	if _, err := b.SyncAll(ctx); err != nil || len(jb.created) != 1 {
 		t.Fatalf("SyncAll while full: err %v, jobs %d", err, len(jb.created))
 	}
@@ -550,7 +524,6 @@ func TestSubmitQueuesPastMaxConcurrent(t *testing.T) {
 	}
 }
 
-// One build whose Job cannot be read does not stall the others.
 func TestSyncAllContinuesPastOneBuildsError(t *testing.T) {
 	b, st, jb := newBuilder()
 	b.Config.MaxConcurrent = 3
@@ -575,14 +548,6 @@ func TestSyncAllContinuesPastOneBuildsError(t *testing.T) {
 	}
 }
 
-// TestImageBuildFailuresMetricCountsFailedBuilds asserts felis_image_build_failures_total
-// (spec §23) advances exactly once per failed build from BOTH terminal-failure
-// producers, and never on a successful build. There are two distinct Inc sites —
-// finishAt (the Sync verdict) and Submit's job-creation bypass — so each is
-// exercised separately; the success case is the negative control proving the
-// StatusFailed guard discriminates rather than firing on every terminal write.
-// Deltas are read around each action because the counter is a process-global
-// singleton these package tests share (they run sequentially).
 func TestImageBuildFailuresMetricCountsFailedBuilds(t *testing.T) {
 	read := func() float64 { return testutil.ToFloat64(metrics.ImageBuildFailuresTotal) }
 
@@ -625,8 +590,6 @@ func TestImageBuildFailuresMetricCountsFailedBuilds(t *testing.T) {
 	})
 }
 
-// ---- cancellation ----
-
 func TestCancelDeletesJobAndMarksCancelled(t *testing.T) {
 	b, _, jb := newBuilder()
 	bld, _ := b.Submit(context.Background(), goodRequest())
@@ -653,8 +616,6 @@ func TestCancelTerminalBuildFails(t *testing.T) {
 		t.Errorf("Cancel on terminal build err = %v, want ErrAlreadyTerminal", err)
 	}
 }
-
-// ---- external admission ----
 
 func TestAddExternalImageIsEnabledAndRecorded(t *testing.T) {
 	b, st, _ := newBuilder()
@@ -688,26 +649,18 @@ func TestRemoveImage(t *testing.T) {
 	}
 }
 
-// ---- whitelist admission for the create-server form (spec §15) ----
-
 func TestImageMatches(t *testing.T) {
 	cases := []struct {
 		ref, pattern string
 		want         bool
 	}{
-		// exact match
 		{"registry.felis.svc:5000/mc:1.0", "registry.felis.svc:5000/mc:1.0", true},
-		// exact mismatch on tag
 		{"registry.felis.svc:5000/mc:1.0", "registry.felis.svc:5000/mc:2.0", false},
-		// tag wildcard admits any concrete tag on the repo
 		{"registry.felis.svc:5000/mc:1.0", "registry.felis.svc:5000/mc:*", true},
 		{"registry.felis.svc:5000/mc:anything", "registry.felis.svc:5000/mc:*", true},
-		// wildcard does not cross repos
 		{"registry.felis.svc:5000/other:1", "registry.felis.svc:5000/mc:*", false},
-		// a registry-port colon is not a tag separator: an untagged ref under a
-		// ported host has no tag, so a wildcard (which needs a non-empty tag) misses
+		// the registry-port colon is not a tag separator
 		{"registry.felis.svc:5000/mc", "registry.felis.svc:5000/mc:*", false},
-		// a non-wildcard pattern never matches via the prefix branch
 		{"registry.felis.svc:5000/mc:1", "registry.felis.svc:5000/mc", false},
 	}
 	for _, c := range cases {
@@ -734,7 +687,6 @@ func TestImageAdmitted(t *testing.T) {
 		{"registry.felis.svc:5000/unknown:1", false}, // not on the list
 		{"", false},    // empty ref
 		{"   ", false}, // blank ref
-		// A pinned ref is admitted by its name:tag, wildcard or exact.
 		{"registry.felis.svc:5000/exact:1@sha256:" + strings.Repeat("a", 64), true},
 		{"registry.felis.svc:5000/wild:99@sha256:" + strings.Repeat("b", 64), true},
 		{"registry.felis.svc:5000/exact:2@sha256:" + strings.Repeat("a", 64), false},
@@ -752,12 +704,6 @@ func TestImageAdmitted(t *testing.T) {
 	}
 }
 
-// A 'recommended' row (0018) is curation, not capability: it must be admitted by
-// exactly the rule that governs every other source, and it must not become a way
-// to bypass the disable switch. Both halves are pinned here because the failure
-// modes are silent and opposite — make admission source-aware in one direction
-// and the curated images quietly vanish from the create-server form; in the
-// other, a disabled recommendation stays creatable after an admin pulled it.
 func TestRecommendedImageAdmittedLikeAnyOtherSource(t *testing.T) {
 	b, st, _ := newBuilder()
 	st.images["felis-lobby:demo"] = Image{
@@ -784,7 +730,6 @@ func TestRecommendedImageAdmittedLikeAnyOtherSource(t *testing.T) {
 	}
 }
 
-// ListBuilds keeps one page bounded whatever the query string asks for.
 func TestListBuildsBoundsThePage(t *testing.T) {
 	cases := []struct {
 		in   ListOpts
@@ -807,8 +752,6 @@ func TestListBuildsBoundsThePage(t *testing.T) {
 	}
 }
 
-// GetMany answers a whole list's lookups with one store read, keys the rows by
-// id, leaves an unknown id out, and asks nothing of the store for an empty list.
 func TestGetManyIsOneRead(t *testing.T) {
 	b, st, _ := newBuilder()
 	st.builds["bld-1"] = &Build{ID: "bld-1", Status: StatusFailed, Error: "scan found a CRITICAL CVE"}

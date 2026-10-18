@@ -11,9 +11,6 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// TestObjects_EveryDocHasTypeMeta enforces that every rendered object carries an
-// apiVersion and a kind. The build/restore packages build their SAs/NetworkPolicy
-// without TypeMeta, so this guards the stamping in bundle.go specifically.
 func TestObjects_EveryDocHasTypeMeta(t *testing.T) {
 	for _, obj := range Objects(testParams()) {
 		gvk := obj.GetObjectKind().GroupVersionKind()
@@ -24,9 +21,6 @@ func TestObjects_EveryDocHasTypeMeta(t *testing.T) {
 	}
 }
 
-// TestObjects_CarryTheFences checks the bundle ships every NetworkPolicy the
-// security model counts on, each in the namespace it guards. Rendering one is
-// worth nothing if Objects forgets to include it.
 func TestObjects_CarryTheFences(t *testing.T) {
 	want := map[string]string{
 		"felis-default-deny-ingress":  "minecraft",
@@ -51,8 +45,6 @@ func TestObjects_CarryTheFences(t *testing.T) {
 	}
 }
 
-// TestObjects_NamespacesLabeled checks the three namespaces are rendered with the
-// immutable name label the NetworkPolicy namespaceSelectors key on.
 func TestObjects_NamespacesLabeled(t *testing.T) {
 	want := map[string]bool{"felis": false, "minecraft": false, "felis-build": false}
 	for _, obj := range Objects(testParams()) {
@@ -74,11 +66,6 @@ func TestObjects_NamespacesLabeled(t *testing.T) {
 	}
 }
 
-// TestObjects_MinecraftNamespaceEnforcesBaseline pins the PodSecurity labels on the
-// minecraft namespace, and proves nothing the bundle renders into it would be
-// refused by them: no pod template there mounts an inline hostPath or uses a host
-// port. The control namespace (registry hostPort) stays unlabelled, and a layout
-// that folds the minecraft namespace into another one drops the labels.
 func TestObjects_MinecraftNamespaceEnforcesBaseline(t *testing.T) {
 	p := reaperParams()
 	for _, obj := range Objects(p) {
@@ -131,9 +118,6 @@ func TestObjects_MinecraftNamespaceEnforcesBaseline(t *testing.T) {
 	}
 }
 
-// TestWeakJobSAs_Isolated proves the build/restore SAs are present, disable token
-// auto-mounting, and — the key isolation invariant — are referenced by NO
-// RoleBinding anywhere. Their powerlessness is the absence of any binding.
 func TestWeakJobSAs_Isolated(t *testing.T) {
 	objs := Objects(testParams())
 
@@ -172,10 +156,6 @@ func TestWeakJobSAs_Isolated(t *testing.T) {
 	}
 }
 
-// TestRenderYAML_ParsesAndIsFenced renders the full bundle and asserts: every
-// document parses with an apiVersion+kind, the expected kinds are present, and the
-// stream contains no cluster-scoped RBAC (the ClusterRole/ClusterRoleBinding red
-// line, checked on the literal output the way CI would).
 func TestRenderYAML_ParsesAndIsFenced(t *testing.T) {
 	out, err := RenderYAML(testParams())
 	if err != nil {
@@ -211,8 +191,6 @@ func TestRenderYAML_ParsesAndIsFenced(t *testing.T) {
 	}
 }
 
-// TestRenderYAML_Deterministic guards that the render is stable (no map-ordering
-// nondeterminism leaking into the manifest), so a regenerated bundle diffs cleanly.
 func TestRenderYAML_Deterministic(t *testing.T) {
 	a, err := RenderYAML(testParams())
 	if err != nil {
@@ -227,11 +205,6 @@ func TestRenderYAML_Deterministic(t *testing.T) {
 	}
 }
 
-// TestObjects_EveryPodRunsAsARenderedServiceAccount keeps every pod template in the
-// bundle on a ServiceAccount the bundle renders in the same namespace, or on the
-// namespace's default one. A pod naming a missing ServiceAccount is never created:
-// the retention-only reaper once named felis-reaper, which renders only with the
-// reaping shape, so on every stock install its Jobs timed out without a pod.
 func TestObjects_EveryPodRunsAsARenderedServiceAccount(t *testing.T) {
 	retention := testParams()
 	retention.BackupPVC, retention.ArchiveLocalPath = "felis-backups", "/backups"

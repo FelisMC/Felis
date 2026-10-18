@@ -25,75 +25,19 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// `felis breakGlass` is the local break-glass emergency console (spec §B). Its
-// authority is local root, so it legitimately BYPASSES the web Zero-Trust + Passkey
-// path: critical recovery runs direct-to-Postgres. The thin-thread operation it
-// ships here is the one that bootstraps everything else — provision (or reset) the
-// single Owner account and turn local session sign-in on — so that even with the web
-// auth path unconfigured an operator can get into op.console. It is a genuine
-// interactive TUI, NOT a CLI: bare `felis` prints CLI usage, while `felis breakGlass`
-// opens this full-screen console. It refuses to run unless euid is 0 (sudo/root).
-//
-// Root is necessary but NOT sufficient for accountability: root is machine
-// authority, not a human identity, so the console additionally captures WHO is
-// breaking the glass. When a staff account already exists the operator names one
-// and types the one-time code the console mails to its verified address
-// (breakglass_otp.go); that account is then the accountable actor. When no code can
-// be sent or proven, the typed OVERRIDE proceeds as the OS user and the audit row
-// says why. When no staff account exists yet it bootstraps the first Owner and
-// attributes the act to the OS user. The audit row records which of these
-// happened. This attribution is best-effort, not tamper-proof — whoever runs this
-// is root and can edit Postgres directly — but it produces an honest trail for an
-// honest operator, which is the point.
-//
-// When a staff account already exists the console opens on a thin top-level menu
-// (menuModel) so that operations are peers, not tails of one wizard. Two account
-// operations are wired today: (1) provision/reset the Owner — the thin thread above,
-// which also re-enables local session sign-in — and (2) add an Operator: an
-// insert-only mint of an additional staff admin (provisionOperator) that
-// deliberately never touches the global local_auth toggle. On a fresh machine (no
-// Owner yet) the menu is skipped: bootstrapping the first Owner is the only sensible
-// operation, and adding an Operator first would mint a staff account the login gate
-// still rejects. The remaining ops (halt, sync, S3) land in a later phase as further
-// menu peers.
-//
-// An OPTIONAL Cloudflare Tunnel + Access edge (internal/cfsetup) is offered by the
-// first-run SETUP flow (runSetupTUI / the connection chooser), not by this
-// break-glass menu, though its helpers live in this file. It is kept "锦上添花":
-// reachable WITHOUT touching the Owner credential, supported but never required, and
-// gated entirely on the operator's own Cloudflare account. The edge flow's verifiable
-// logic lives in cfsetup (fail-closed policy, ingress, gating, all unit-tested); what
-// this file adds for it is the untested bubbletea shell plus a `tea.ExecProcess`
-// suspension for the interactive `cloudflared tunnel login` browser consent.
+// felis breakGlass: root-only local recovery console that talks directly to Postgres.
 
-// breakGlassOverrideToken is the literal an operator must type to proceed when no
-// admin could be verified by a mailed code. Requiring an explicit, deliberate word (not a
-// bare Enter) keeps the unverified root override from happening by reflex.
+// breakGlassOverrideToken is typed to proceed when no admin was verified by a mailed code.
 const breakGlassOverrideToken = "OVERRIDE"
 
-// ownerStore is the minimal repo surface the break-glass / setup console needs.
-// *api.PGRepo satisfies it; the unit tests drive a fake, so the core logic
-// (recovery, provisioning, accountability audit) is exercised without a
-// database or a terminal.
+// ownerStore is the repo surface the break-glass and setup consoles need.
 type ownerStore interface {
-	// AdminExists reports whether any admin account already exists.
-	// It is the bootstrap-vs-recovery switch.
 	AdminExists(ctx context.Context) (bool, error)
-	// UserByUsername loads a staff login projection.
 	UserByUsername(ctx context.Context, username string) (*api.StaffUser, error)
-	// OwnerUsername names the single active Owner seat, or "" when none exists.
-	// provisionOwner refuses to re-target anything but this username: with the
-	// seat occupied, a fresh name would mint a second owner row (UpsertOwner's
-	// insert arm) while the existing — possibly compromised — seat stays live,
-	// and no supported path can delete an owner row afterwards.
+	// OwnerUsername returns the active Owner seat, or "" when none exists.
 	OwnerUsername(ctx context.Context) (string, error)
 	UpsertOwner(ctx context.Context, id, username, email string) error
-	// InsertOperator mints a NEW Operator staff account. Unlike UpsertOwner it is
-	// insert-only: a username already taken is a conflict (api.ErrConflict), never a
-	// silent reset, so adding an Operator can never clobber the Owner or an existing
-	// Operator. The row is role=admin — an Operator is staff BELOW the single
-	// role=owner identity (migration 0011 adds that role); the two are the only
-	// staff roles.
+	// InsertOperator is insert-only: a taken username returns api.ErrConflict instead of resetting.
 	InsertOperator(ctx context.Context, id, username, email string) error
 	// CompleteOwnerSetup creates or resumes the first panel login atomically.
 	CompleteOwnerSetup(ctx context.Context, newUserID string, now time.Time,
@@ -103,11 +47,6 @@ type ownerStore interface {
 	Audit(ctx context.Context, e api.AuditEntry) error
 }
 
-// cmdBreakGlass is the `felis breakGlass` entrypoint: the root gate, config load,
-// database open, accountability detection, and the interactive TUI. Everything
-// below runBreakGlassTUI is I/O at the edge; the authentication/provisioning/audit
-// logic itself is plain functions over ownerStore so it stays testable off a
-// terminal.
 func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("breakGlass", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -119,10 +58,7 @@ func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	// Root gate. The break-glass console's whole authority model is "you already
-	// have local root", so anything less is refused rather than degraded. On
-	// non-Unix os.Geteuid() returns -1, which also refuses — correct, since this is
-	// a Linux-VM recovery tool.
+	// Local root is the only authority; os.Geteuid() is -1 on non-Unix, which also refuses.
 	if os.Geteuid() != 0 {
 		fmt.Fprintln(stderr, "felis breakGlass: refused — the break-glass emergency console must run as root (try: sudo felis breakGlass)")
 		return 1
@@ -144,17 +80,13 @@ func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 
 	repo := api.NewPGRepo(drv.DB())
 
-	// Decide bootstrap (no admin yet → typed credential mints the first Owner) vs
-	// recovery (an admin exists → the operator proves one with a mailed code) BEFORE the
-	// alt-screen TUI takes over, so a database fault surfaces as a plain error.
+	// Checked before the alt-screen TUI starts so a database fault prints as a plain error.
 	adminExists, err := repo.AdminExists(ctx)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis breakGlass: detect existing admin: %v\n", err)
 		return 1
 	}
 
-	// Recovery mails its code through [smtp]; the relay is opened only if a code is
-	// asked for.
 	host, _ := os.Hostname()
 	recovery := recoveryConfig{open: panelFirstRecoveryMailer(func(ctx context.Context) (*mailsettings.Settings, error) {
 		raw, err := repo.GetSetting(ctx, mailsettings.Key)
@@ -178,14 +110,10 @@ func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	// The TUI runs on the alternate screen, which is torn down on exit and takes its
-	// display with it. Re-print a durable summary to the normal screen so the
-	// outcome — and the one-time setup URL — survives in scrollback long
-	// enough for the operator to log in.
+	// The alt screen vanishes on exit; reprint the outcome and setup URL to the normal screen.
 	if res.provisioned {
 		if res.isOperator {
-			// Adding an Operator does NOT flip local_auth_enabled (performAddOperator),
-			// so the summary must not claim it did — only the Owner thread enables login.
+			// Adding an Operator does not enable local auth.
 			fmt.Fprintf(stdout, "\nfelis breakGlass: Operator account %q provisioned.\n", res.username)
 		} else {
 			fmt.Fprintf(stdout, "\nfelis breakGlass: Owner account %q provisioned; local session sign-in is ENABLED.\n", res.username)
@@ -206,10 +134,7 @@ func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if res.edgeConfigured {
-		// The Cloudflare edge was provisioned. The remaining steps are the operator's
-		// own (set the audience, run the tunnel) — we do NOT edit felis.toml for them:
-		// editing a config we did not write is a hard-to-reverse change, and the aud is
-		// the one value felis-api must adopt to trust the new edge (spec §14).
+		// felis.toml is left alone; the operator sets the Access audience and runs the tunnel.
 		fmt.Fprintf(stdout, "\nfelis breakGlass: Cloudflare Tunnel + Access edge configured.\n")
 		if len(res.edgeRoutedHosts) > 0 {
 			fmt.Fprintf(stdout, "Routed web hostnames: %s\n", strings.Join(res.edgeRoutedHosts, ", "))
@@ -230,8 +155,7 @@ func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(stdout, "\nfelis breakGlass: server %q %s (namespace %s).\n", res.haltServer, verb, res.haltNamespace)
 		if res.haltSystemServer {
-			// login has no fallback (systemservers.go): stopping it takes the whole proxy
-			// front door down, so the summary says so explicitly rather than burying it.
+			// A system server has no fallback: stopping it takes the proxy front door down.
 			fmt.Fprintf(stdout, "WARNING: %q is a system server — the shared front door is down until it is running again.\n", res.haltServer)
 		}
 		if res.haltAuditWarning != "" {
@@ -241,21 +165,13 @@ func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if res.backedUp {
-		// The backup runs through the live felis-api (which audits it), so unlike halt
-		// there is no local audit-warning to surface — a resolve/HTTP failure would have
-		// come back as an error, not a backedUp result.
 		fmt.Fprintf(stdout, "\nfelis breakGlass: backup of %q started (status: %s).\n", res.backupServer, res.backupStatus)
 		fmt.Fprintln(stdout, "A one-shot Job writes the archive asynchronously; it appears in the panel's backups list when finished.")
 	}
 	return 0
 }
 
-// accountableOSUser returns the human who escalated to root, best-effort, for the
-// audit trail. sudo sets SUDO_USER to the invoking account; a direct root shell
-// leaves it empty, in which case we record "root". This is attribution, not proof:
-// the environment can be forged, so sudo's own syslog entry — not this value — is
-// the tamper-evident record. The root gate is the real authority gate; this only
-// answers "which human" for an honest operator.
+// accountableOSUser returns $SUDO_USER, or "root" for a direct root shell; attribution only, the environment can be forged.
 func accountableOSUser() string {
 	if u := strings.TrimSpace(os.Getenv("SUDO_USER")); u != "" {
 		return u
@@ -263,28 +179,18 @@ func accountableOSUser() string {
 	return "root"
 }
 
-// newOwnerID returns a fresh, unguessable id for the Owner row. It mirrors the
-// crypto/rand hex idiom used elsewhere (internal/submit, internal/build): 16 bytes
-// give uuid-equivalent entropy and the value is path/argv-safe lowercase hex. A
-// fresh id per run is fine because UpsertOwner preserves the existing id on a
-// username conflict, so a reset keeps live sessions valid.
+// newOwnerID returns 16 random bytes as hex; UpsertOwner keeps the existing id on a username conflict.
 func newOwnerID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		// crypto/rand only fails on a broken entropy source. Refuse rather than mint a
-		// predictable id for a privileged account.
+		// Never mint a predictable id for a privileged account.
 		return ""
 	}
 	return "usr-" + hex.EncodeToString(b[:])
 }
 
-// provisionOwner mints or resets the single Owner account direct-to-Postgres,
-// passwordless. The account is role=owner with no password — the Owner completes
-// passwordless login setup via the web setup-token flow after `felis setup`.
-// With a seat already occupied the reset must name that seat (ownerSeatTakenError
-// otherwise): the upsert's insert arm would silently mint a SECOND owner, and
-// every owner row is undeletable through the panel, so the tier could never
-// converge back to one.
+// provisionOwner mints or resets the passwordless Owner. An occupied seat must be named (ownerSeatTakenError),
+// otherwise the upsert would mint a second owner that the panel cannot delete.
 func provisionOwner(ctx context.Context, s ownerStore, username, email string) error {
 	username = strings.TrimSpace(username)
 	if username == "" {
@@ -305,11 +211,7 @@ func provisionOwner(ctx context.Context, s ownerStore, username, email string) e
 	return nil
 }
 
-// ownerSeatTakenError refuses an Owner reset that names anything but the
-// occupied seat, naming it so the operator can retype. Is reports
-// api.ErrConflict so the TUI's recoverable-error branch (shared with the
-// operator path's taken-name clash) routes back to the form instead of ending
-// the console.
+// ownerSeatTakenError matches api.ErrConflict so the TUI re-prompts instead of exiting.
 type ownerSeatTakenError struct{ seat string }
 
 func (e *ownerSeatTakenError) Error() string {
@@ -318,13 +220,7 @@ func (e *ownerSeatTakenError) Error() string {
 
 func (e *ownerSeatTakenError) Is(target error) bool { return target == api.ErrConflict }
 
-// provisionOperator mints a NEW Operator staff account direct-to-Postgres. It is
-// role=admin and passwordless — an additional staff admin below the single
-// role=owner identity (migrations 0003 + 0011). UNLIKE provisionOwner, which
-// upserts the single Owner and resets it on a username conflict, this is
-// insert-only: a username already taken returns api.ErrConflict rather than
-// overwriting a live account, so adding an Operator can never silently clobber
-// the Owner's or another Operator's account.
+// provisionOperator inserts a passwordless role=admin account; a taken username returns api.ErrConflict.
 func provisionOperator(ctx context.Context, s ownerStore, username, email string) error {
 	username = strings.TrimSpace(username)
 	if username == "" {
@@ -336,8 +232,6 @@ func provisionOperator(ctx context.Context, s ownerStore, username, email string
 	}
 	if err := s.InsertOperator(ctx, id, username, strings.TrimSpace(email)); err != nil {
 		if errors.Is(err, api.ErrConflict) {
-			// Wrap %w so errors.Is(err, api.ErrConflict) still holds — the TUI can render
-			// a "name already taken" message — while keeping a clear human string.
 			return fmt.Errorf("operator %q already exists: %w", username, err)
 		}
 		return fmt.Errorf("write operator: %w", err)
@@ -345,22 +239,14 @@ func provisionOperator(ctx context.Context, s ownerStore, username, email string
 	return nil
 }
 
-// enableLocalAuth flips the runtime local_auth_enabled toggle on
-// direct-to-Postgres. It is a load-bearing write of break-glass: without it every
-// session-minting door (passkey / email-OTP / bind / op-login) returns 403
-// local_auth_disabled and the freshly provisioned Owner cannot log in, so a
-// successful provisionOwner with local auth off is not a usable thin thread.
+// enableLocalAuth turns local sign-in on; while off, every session-minting endpoint returns 403 local_auth_disabled.
 func enableLocalAuth(ctx context.Context, s ownerStore) error {
-	// The setting is read back with json.Unmarshal into a bool, so the stored jsonb
-	// value must be the literal true.
 	if err := s.SetSetting(ctx, api.LocalAuthEnabledKey, []byte("true")); err != nil {
 		return fmt.Errorf("enable local auth: %w", err)
 	}
 	return nil
 }
 
-// breakGlassOp is a fully-resolved operation the TUI hands to the core once the
-// operator has been identified (bootstrap) or authenticated (recovery / override).
 type breakGlassOp struct {
 	mode           string // "bootstrap" | "recovery" | "root_override"
 	accountable    string // recorded as the audit actor (verified admin, or OS user)
@@ -374,26 +260,18 @@ type breakGlassOp struct {
 	otpSkipDetail  string // root_override: what failed, when something did
 }
 
-// breakGlassOutcome is what performBreakGlass reports back to the TUI.
 type breakGlassOutcome struct {
 	setupTokenURL string // non-empty when setup minted a one-time first-login URL
 	ownerUsername string // panel Owner created or resumed by setup
 	auditErr      error  // non-nil if the accountability row could not be written
 }
 
-// performBreakGlass executes a resolved break-glass operation: provision (or reset)
-// the Owner, enable local session sign-in, then record a best-effort accountability
-// audit row. The Owner is passwordless — the setup-token flow handles first-login
-// setup. The audit write is best-effort: a logging failure is reported via auditErr
-// but does NOT fail the recovery — break-glass must still work when the audit sink
-// is unhappy.
+// performBreakGlass provisions the Owner, enables local sign-in and audits best-effort: an audit failure surfaces as auditErr, not an error.
 func performBreakGlass(ctx context.Context, s ownerStore, op breakGlassOp) (breakGlassOutcome, error) {
 	if err := provisionOwner(ctx, s, op.ownerUsername, op.ownerEmail); err != nil {
 		return breakGlassOutcome{}, err
 	}
-	// Record accountability the instant the account is written — BEFORE enabling
-	// local auth, which can still fail. The audit is best-effort, so doing it first
-	// never blocks the recovery.
+	// Audit before enableLocalAuth, which can still fail.
 	out := breakGlassOutcome{auditErr: auditBreakGlass(ctx, s, op)}
 	if err := enableLocalAuth(ctx, s); err != nil {
 		return breakGlassOutcome{}, err
@@ -401,12 +279,9 @@ func performBreakGlass(ctx context.Context, s ownerStore, op breakGlassOp) (brea
 	return out, nil
 }
 
-// setupTokenTTL bounds how long a one-time setup URL is valid. The operator opens
-// it right after setup completes, so a generous-but-bounded window is enough.
-const setupTokenTTL = 30 * time.Minute
+const setupTokenTTL = 30 * time.Minute // one-time setup URL lifetime
 
-// newSetupToken returns a fresh opaque setup token (256 bits, URL-safe) and its
-// sha-256 hex hash. Only the hash is persisted; the raw value rides in the URL.
+// newSetupToken returns a 256-bit URL-safe token and its sha-256 hex hash; only the hash is stored.
 func newSetupToken() (raw, hash string, err error) {
 	var b [32]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -417,8 +292,6 @@ func newSetupToken() (raw, hash string, err error) {
 	return raw, hex.EncodeToString(sum[:]), nil
 }
 
-// performSetupOwner establishes panel access under the caller's host-root
-// authority. Minecraft identity can be linked later from the authenticated panel.
 func performSetupOwner(ctx context.Context, s ownerStore, panelURL, osUser string) (breakGlassOutcome, error) {
 	base, err := url.Parse(strings.TrimRight(panelURL, "/"))
 	if err != nil || base.Scheme != "https" || base.Host == "" {
@@ -448,12 +321,7 @@ func performSetupOwner(ctx context.Context, s ownerStore, panelURL, osUser strin
 	return out, nil
 }
 
-// auditBreakGlass writes the break-glass accountability row. The actor is the
-// resolved human identity (a verified admin in recovery, the OS user otherwise);
-// the payload carries the full who/what/how so an after-the-fact reader can tell a
-// verified recovery from an unverified root override. It is best-effort — the caller
-// does not fail the recovery if this write fails — and intentionally honest: it
-// records attribution, it does not prove it (a malicious root can edit the row).
+// auditBreakGlass records the accountability row: the actor is the verified admin in recovery, else the OS user.
 func auditBreakGlass(ctx context.Context, s ownerStore, op breakGlassOp) error {
 	blob, err := json.Marshal(breakGlassPayload(op, "owner"))
 	if err != nil {
@@ -467,10 +335,7 @@ func auditBreakGlass(ctx context.Context, s ownerStore, op breakGlassOp) error {
 	})
 }
 
-// breakGlassPayload is the who/how both account audits carry, with the account the
-// run wrote under subjectKey. verified is true only for a run a mailed code proved;
-// such a run names the address the code went to, and an override names why no code
-// proved anyone.
+// breakGlassPayload is the who/how both account audits carry; verified is true only when a mailed code proved the admin.
 func breakGlassPayload(op breakGlassOp, subjectKey string) map[string]any {
 	payload := map[string]any{
 		"mode":     op.mode,
@@ -494,15 +359,7 @@ func breakGlassPayload(op breakGlassOp, subjectKey string) map[string]any {
 	return payload
 }
 
-// performAddOperator mints a NEW Operator account and records a best-effort
-// accountability row. It mirrors performBreakGlass — passwordless — with two
-// deliberate differences. (1) It provisions insert-only (provisionOperator), so it
-// can never reset an existing account the way the Owner upsert does. (2) It does NOT
-// touch local_auth_enabled: adding an Operator presupposes an already-configured,
-// running system (an admin is present to authorize it), so flipping the global auth
-// gate as a side effect of "add a user" would be surprising — that toggle belongs to
-// the Owner break-glass thread alone. The audit is best-effort and written only after
-// a successful provision; a conflict mints nothing, so there is nothing to attribute.
+// performAddOperator inserts an Operator and audits after success; unlike the Owner thread it leaves local_auth_enabled untouched.
 func performAddOperator(ctx context.Context, s ownerStore, op breakGlassOp) (breakGlassOutcome, error) {
 	if err := provisionOperator(ctx, s, op.ownerUsername, op.ownerEmail); err != nil {
 		return breakGlassOutcome{}, err
@@ -511,11 +368,7 @@ func performAddOperator(ctx context.Context, s ownerStore, op breakGlassOp) (bre
 	return out, nil
 }
 
-// auditAddOperator writes the operator-creation accountability row. It mirrors
-// auditBreakGlass — same actor/source/payload shape, so one reader can tell a
-// verified (recovery) add from an unverified (root_override) one — under the distinct
-// break_glass.operator_create action, naming the new account under an "operator" key
-// rather than "owner".
+// auditAddOperator mirrors auditBreakGlass under break_glass.operator_create, naming the account under "operator".
 func auditAddOperator(ctx context.Context, s ownerStore, op breakGlassOp) error {
 	blob, err := json.Marshal(breakGlassPayload(op, "operator"))
 	if err != nil {
@@ -529,14 +382,10 @@ func auditAddOperator(ctx context.Context, s ownerStore, op breakGlassOp) error 
 	})
 }
 
-// breakGlassResult is what the TUI hands back to cmdBreakGlass for the durable
-// post-exit summary. provisioned is false on cancel.
+// breakGlassResult is the TUI outcome printed after exit; provisioned is false on cancel.
 type breakGlassResult struct {
-	provisioned bool
-	// alreadySetUp marks the re-run landing (the status screen): setup ran, found an
-	// Owner, and deliberately changed nothing. Without it a re-run is indistinguishable
-	// from a cancel and reports itself as one.
-	alreadySetUp  bool
+	provisioned   bool
+	alreadySetUp  bool // setup found an Owner and changed nothing; distinguishes a re-run from a cancel
 	isOperator    bool // an Operator was added rather than the Owner provisioned
 	mode          string
 	accountable   string
@@ -548,17 +397,14 @@ type breakGlassResult struct {
 	adminHostname string
 	panelURL      string
 
-	// connection outcome (independent of provisioned)
 	connectMethod     connectMethod
 	connectConfigured bool
 	panelHostname     string
 	reverseProxyGuide string
 
-	// storage backend outcome
 	storageMethod storageMethod
 	storageDetail string
 
-	// halt outcome (break-glass "halt a server" op #31)
 	halted             bool
 	haltServer         string
 	haltNamespace      string
@@ -566,12 +412,10 @@ type breakGlassResult struct {
 	haltSystemServer   bool
 	haltAuditWarning   string
 
-	// backup outcome (break-glass "back up a world now / Sync" op #31 §B4)
 	backedUp     bool
 	backupServer string
 	backupStatus string
 
-	// Cloudflare-specific edge detail (set only when connectMethod is Cloudflare)
 	edgeConfigured  bool
 	edgeAud         string
 	edgeRoutedHosts []string
@@ -589,9 +433,7 @@ const (
 	defaultTunnelName       = "felis"
 	defaultTunnelConfigPath = "/etc/felis/cloudflared.yml"
 
-	// Cloudflare Dashboard prefill URL for the API token this flow actually uses:
-	// Access app/policy management. Tunnel creation and DNS routing are authorized by
-	// the operator's cloudflared browser login, not by this token.
+	// Access app/policy token template; tunnel and DNS rights come from the cloudflared browser login.
 	cloudflareAccessTokenTemplateURL = "https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22access%22%2C%22type%22%3A%22edit%22%7D%5D&accountId=*&zoneId=all"
 	cloudflareAPITokenDocsURL        = "https://developers.cloudflare.com/fundamentals/api/how-to/account-owned-token-template/"
 )
@@ -600,13 +442,11 @@ func runBreakGlassTUI(ctx context.Context, s ownerStore, db config.DatabaseConfi
 	return runConsoleTUI(ctx, s, db, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser, adminExists, consoleModeBreakGlass, recovery)
 }
 
-// runSetupTUI configures deployment before issuing the first panel login link.
 func runSetupTUI(ctx context.Context, s ownerStore, db config.DatabaseConfig, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser string, adminExists bool) (breakGlassResult, error) {
 	return runConsoleRoot(newConsoleRoot(ctx, s, db, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser, adminExists, consoleModeSetup, recoveryConfig{}))
 }
 
-// newConsoleRoot is the console's root model as the host runs it: the summary
-// reads this host's alert route.
+// newConsoleRoot builds the console root model; the summary reads this host's alert route.
 func newConsoleRoot(ctx context.Context, s ownerStore, db config.DatabaseConfig, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser string, adminExists bool, mode consoleMode, recovery recoveryConfig) *rootModel {
 	rm := newRootModel(ctx, s, db, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser, adminExists, mode)
 	rm.recovery = recovery

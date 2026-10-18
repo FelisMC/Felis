@@ -38,20 +38,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-/**
- * LoginFlowTest runs the login gate's whole flow on a virtual clock: a fake Limbo
- * (scheduler and players) around the real LoginFlow, and the real FelisApiClient and
- * LinkClient against a stub felis-api. It checks what a player at the front door
- * gets in each case: a linked player goes straight to the lobby, an unlinked one gets
- * the code and is released once the web console links them, a barred one is turned
- * away, a felis-api outage is retried for its window (asking the proxy for the lobby
- * on each try) and a refusal is not, the login and release windows end in the right
- * disconnect, a player who leaves stops every timer, and a reconnect starts afresh.
- * Then the pieces around it: the readiness endpoint, the env parsing, the book.
- *
- * <p>Run: {@code ./gradlew -PlimboVersion=<LIMBO_VERSION> loginTest} in plugins/limbo
- * (plugins/test.sh does).
- */
+// Drive login flow on a virtual clock with a fake Limbo and stub internal API.
 public final class LoginFlowTest {
 
     private static final String CONSOLE = "https://console.example.test";
@@ -90,7 +77,6 @@ public final class LoginFlowTest {
         System.out.println("LoginFlowTest OK (" + checks + " checks)");
     }
 
-    // ---- the flow ----
 
     private static void automaticWaitDoesNotRequireWebSignIn(Stub stub) {
         stub.requireAccountLink = false;
@@ -323,7 +309,6 @@ public final class LoginFlowTest {
         assertEq("one code once felis-api is back", 1, again.books.size());
     }
 
-    // ---- around the flow ----
 
     private static void readiness() throws Exception {
         Readiness r = Readiness.start(0);
@@ -411,7 +396,6 @@ public final class LoginFlowTest {
         assertEq("a line without an address has no link", List.of(), none);
     }
 
-    // ---- fakes ----
 
     /** Rig is one fresh gate and flow over the shared stub. */
     private static final class Rig {
@@ -439,10 +423,7 @@ public final class LoginFlowTest {
         }
     }
 
-    /**
-     * FakeGate is a Limbo scheduler on a virtual clock (a tick is 50 ms): tasks run on
-     * the test thread in due order when the test advances time, sync and async alike.
-     */
+    /** FakeGate is a Limbo scheduler on a virtual clock (a tick is 50 ms): tasks run on the test thread in due order when the test advances time, sync and async alike. */
     private static final class FakeGate implements LoginFlow.Gate {
         private static final class Task {
             final int id;
@@ -597,10 +578,7 @@ public final class LoginFlowTest {
         }
     }
 
-    /**
-     * Stub is felis-api's internal face as the gate uses it: the blacklist, the link
-     * status and the code mint, with a switch that fails every call with one status.
-     */
+    /** Stub is felis-api's internal face as the gate uses it: the blacklist, the link status and the code mint, with a switch that fails every call with one status. */
     private static final class Stub {
         final HttpServer http;
         final Set<UUID> barred = ConcurrentHashMap.newKeySet();
@@ -686,7 +664,6 @@ public final class LoginFlowTest {
         }
     }
 
-    // ---- helpers ----
 
     private static String plain(Component c) {
         StringBuilder sb = new StringBuilder();

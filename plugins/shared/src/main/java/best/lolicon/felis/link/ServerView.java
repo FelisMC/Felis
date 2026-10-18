@@ -5,24 +5,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 
-/**
- * ServerView is the proxy-side mirror of the felis-api lifecycle view of one
- * MinecraftServer (the {@code ServerInfo} the internal face emits for
- * {@code GET /servers} and the internal status/wake replies). It is an immutable, dependency-free value object so the
- * shared link core stays zero-dependency and source-shareable across all four
- * loaders.
- *
- * <p>The name deliberately avoids {@code ServerInfo}: Velocity already owns
- * {@code com.velocitypowered.api.proxy.server.ServerInfo} (name + address), and
- * the routing code juggles both at once. {@code ServerView} is the felis lifecycle
- * record; {@code ServerInfo} is Velocity's registration handle.
- *
- * <p>{@link #fromJson(Map)} is tolerant: the wake reply carries only a subset of
- * the fields ({@code name}, {@code desiredState}, {@code phase}, {@code ready}),
- * so every accessor degrades to a null/zero default rather than throwing when a
- * field is absent. Routing decisions are driven off {@link #ready()} and
- * {@link #phase()}, which the relevant endpoints always populate.
- */
+// Wake responses are partial, so absent fields become null or zero.
 public final class ServerView {
     private final String name;
     private final String subdomain;
@@ -90,12 +73,7 @@ public final class ServerView {
                 bool(o, "startGaveUp"));
     }
 
-    /**
-     * listFromJson reads the {@code {"servers":[...]}} envelope {@code GET /servers}
-     * answers with, which is also the shape of the proxy's saved server list. Entries
-     * that are not objects are skipped; text that is not such an envelope throws
-     * IllegalArgumentException.
-     */
+    // Skip non-object server entries but reject malformed list envelopes.
     public static List<ServerView> listFromJson(String text) {
         Object root = Json.parse(text);
         if (!(root instanceof Map)) {
@@ -195,11 +173,6 @@ public final class ServerView {
         return playersMax;
     }
 
-    /**
-     * legacyForwarding is true when the server's CR is labelled
-     * {@code felis.lolicon.best/forwarding=legacy}: the proxy forwards its players
-     * BungeeCord-style instead of modern forwarding ({@code LegacyForwarding}).
-     */
     public boolean legacyForwarding() {
         return legacyForwarding;
     }
@@ -209,11 +182,7 @@ public final class ServerView {
         return autoRestarts;
     }
 
-    /**
-     * startGaveUp is true for a Failed server no automatic retry will bring up (the
-     * restarts are spent, or its spec is invalid). A Failed server without it is in
-     * its restart backoff and may still come up on its own.
-     */
+    // Failed servers without startGaveUp may still retry automatically.
     public boolean startGaveUp() {
         return startGaveUp;
     }

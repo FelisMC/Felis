@@ -1,6 +1,5 @@
-# promtool unit tests: `promtool test rules felis-alerts_test.yml`
-# Proves every shipped rule actually fires on its target condition (and stays
-# silent before it).
+# promtool unit tests: promtool test rules felis-alerts_test.yml.
+# Proves every shipped rule fires on its target condition and stays silent before it.
 rule_files:
   - felis-alerts.yaml
 evaluation_interval: 1m

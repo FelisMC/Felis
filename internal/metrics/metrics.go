@@ -1,14 +1,4 @@
-// Package metrics defines and registers the named felis_* Prometheus
-// collectors mandated by spec §23.
-//
-// The collectors are package-level vars so any subsystem (operator, reaper,
-// image builder, prober) can record into them without importing back into a
-// metrics owner and risking an import cycle. Wiring them into a registry is a
-// single Register call that takes a prometheus.Registerer — the same
-// inject-the-interface, fake-at-the-edge pattern used elsewhere in Felis
-// (ownerStore, PVCResolver): production passes controller-runtime's global
-// Registry (served by the operator's :metrics endpoint), tests pass a fresh
-// prometheus.NewRegistry() so assertions never collide with global state.
+// Package metrics defines and registers the felis_* Prometheus collectors.
 package metrics
 
 import (
@@ -17,36 +7,25 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// namespace prefixes every collector, so the exposed names are exactly
-// felis_<name> — matching the metric names spec §23 mandates.
+// Prefix of every collector name, so exposed names are felis_<name>.
 const namespace = "felis"
 
 var (
-	// ServersTotal is the current number of MinecraftServers the operator knows
-	// about, partitioned by desiredState. It is a gauge, not a monotonic counter:
-	// the reconcile loop Set()s it to the live fleet size, so it can fall as
-	// servers are deleted. (The _total suffix follows the name spec §23 fixed.)
+	// Gauge of MinecraftServers by desiredState; it can fall when servers are deleted.
 	ServersTotal = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: namespace,
 		Name:      "servers_total",
 		Help:      "Current number of Minecraft servers known to the operator, by desired state.",
 	}, []string{"state"})
 
-	// ServerPhase is 1 for each server's current phase and absent for every other
-	// phase. role is the server's system role (login, lobby), empty for a user
-	// server, so an alert can single out the login gate; desired is its
-	// desiredState, so a server that is down on purpose can be told from one that
-	// failed to come up. SyncServerPhases republishes it from a full List, so a
-	// deleted server's series goes away instead of freezing at its last phase.
+	// 1 for each server's current phase; role and desired let alerts tell a deliberate stop from a failure.
 	ServerPhase = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: namespace,
 		Name:      "server_phase",
 		Help:      "1 for each Minecraft server's current phase, by server, system role, phase and desired state.",
 	}, []string{"server", "role", "phase", "desired"})
 
-	// StartDurationSeconds observes the wall-clock time from desiredState=Running
-	// to a server reporting ready. Buckets are tuned for Minecraft cold starts
-	// (seconds to a few minutes), not the default sub-second web-latency buckets.
+	// Seconds from desiredState=Running to ready; buckets suit Minecraft cold starts (seconds to minutes).
 	StartDurationSeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Namespace: namespace,
 		Name:      "start_duration_seconds",
@@ -54,81 +33,62 @@ var (
 		Buckets:   []float64{1, 2, 5, 10, 20, 30, 45, 60, 90, 120, 180, 300, 600},
 	})
 
-	// ImageBuildFailuresTotal counts modpack/image build failures (spec §8 lane).
+	// ImageBuildFailuresTotal counts modpack and image build failures.
 	ImageBuildFailuresTotal = prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace: namespace,
 		Name:      "image_build_failures_total",
 		Help:      "Total number of image build failures.",
 	})
 
-	// ReaperWorldsDeletedTotal counts world volumes deleted by the reaper.
 	ReaperWorldsDeletedTotal = prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace: namespace,
 		Name:      "reaper_worlds_deleted_total",
 		Help:      "Total number of world volumes deleted by the reaper.",
 	})
 
-	// OTPLockoutsTotal counts accounts whose email-code door locked after the
-	// daily wrong-code budget was spent, by code purpose. Outside a person
-	// fumbling codes, a lockout means someone is guessing at that account.
+	// OTPLockoutsTotal counts email-code lockouts by purpose; a lockout means someone is guessing at an account.
 	OTPLockoutsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace,
 		Name:      "auth_otp_lockouts_total",
 		Help:      "Email-code doors locked after too many wrong codes, by purpose.",
 	}, []string{"purpose"})
 
-	// MailTotal counts mail the API tried to send, by kind (otp, notice) and
-	// result: sent, failed (the relay refused it) or throttled (the
-	// install-wide mail budget refused it before it reached the relay).
+	// MailTotal counts mail attempts by kind and result: sent, failed or throttled (install-wide budget).
 	MailTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace,
 		Name:      "mail_total",
 		Help:      "Mail the API tried to send, by kind and result (sent, failed, throttled).",
 	}, []string{"kind", "result"})
 
-	// RateLimitedTotal counts requests refused by a volumetric limit, by scope
-	// (auth_door: one client address calling the public sign-in doors too fast).
+	// RateLimitedTotal counts requests rejected by scope.
 	RateLimitedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace,
 		Name:      "rate_limited_total",
 		Help:      "Requests refused by a volumetric rate limit, by scope.",
 	}, []string{"scope"})
 
-	// AuthFailuresTotal counts refused sign-in attempts by door (login_email,
-	// op_login, passkey, passkey_discoverable, setup_redeem, bind_redeem) and
-	// reason (bad_code, no_account, staff_account, bad_credential, ...). A few a
-	// day is people mistyping; a steady stream is guessing or enumeration.
+	// AuthFailuresTotal counts refused sign-ins by door and reason; a steady stream means guessing or enumeration.
 	AuthFailuresTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace,
 		Name:      "auth_failures_total",
 		Help:      "Refused sign-in attempts, by door and reason.",
 	}, []string{"door", "reason"})
 
-	// SessionsRevokedTotal counts sessions ended before expiry, by who ended
-	// them: logout (the holder signing out), self (the holder ending sessions
-	// from their session list), security (the other sessions ended when the
-	// holder removes a passkey or changes email) or admin (the owner revoking a
-	// user's sessions).
+	// SessionsRevokedTotal counts sessions ended before expiry, by who ended them: logout, self, security or admin.
 	SessionsRevokedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace,
 		Name:      "sessions_revoked_total",
 		Help:      "Sessions revoked before expiry, by who revoked them.",
 	}, []string{"by"})
 
-	// AuditWriteFailuresTotal counts audit rows the API failed to write. The
-	// action went through; only its record was lost.
+	// AuditWriteFailuresTotal indicates completed actions whose audit record could not be written.
 	AuditWriteFailuresTotal = prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace: namespace,
 		Name:      "audit_write_failures_total",
 		Help:      "Audit rows the API failed to write.",
 	})
 
-	// BuildInfo is 1 for the process serving it, labelled by component
-	// ("operator", "api") and version. Both processes register every collector,
-	// so this is the one series that says which of them a scrape reached: an
-	// alert on absent(felis_build_info{component="api"}) fires when felis-api is
-	// down or no longer scraped, where every other felis_* series would still be
-	// present from the operator.
+	// BuildInfo is 1 for the serving process, labelled by component and version, so absent(felis_build_info{component="api"}) detects a down api.
 	BuildInfo = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: namespace,
 		Name:      "build_info",
@@ -136,18 +96,13 @@ var (
 	}, []string{"component", "version"})
 )
 
-// SetBuildInfo marks this process as component at version on felis_build_info.
 func SetBuildInfo(component, version string) {
 	BuildInfo.WithLabelValues(component, version).Set(1)
 }
 
-// OTPPurposes are the email-code doors OTPLockoutsTotal is labelled by.
 var OTPPurposes = []string{"onboard_email", "login_email", "op_login", "migrate_confirm"}
 
-// The sign-in alerts watch these counters with increase(). A labelled child
-// that does not exist yet has no sample before its first event, so increase()
-// would miss exactly the first lockout or throttle; every child the alerts use
-// is created at zero up front.
+// Created at zero up front so increase() sees the first event of each label set.
 func init() {
 	for _, kind := range []string{"otp", "notice"} {
 		for _, result := range []string{"sent", "failed", "throttled"} {
@@ -160,16 +115,7 @@ func init() {
 	}
 }
 
-// SyncServerGauge republishes felis_servers_total from a full snapshot of the
-// fleet's per-server states. states holds one entry per MinecraftServer the
-// operator knows about (its desiredState).
-//
-// It Resets the GaugeVec before Setting one child per distinct state, so a state
-// that has drained to zero reports 0 rather than its stale last value. That is
-// the whole reason a periodic full-snapshot is used instead of inc/dec on
-// reconcile transitions: a snapshot is self-correcting and cannot drift on a
-// missed event. Producing the states slice (a cached List of MinecraftServers)
-// is the untestable I/O edge; this Reset+tally+Set logic is pure and unit-tested.
+// SyncServerGauge rebuilds felis_servers_total from a full snapshot; Reset drains states that vanished to 0.
 func SyncServerGauge(states []string) {
 	ServersTotal.Reset()
 	counts := make(map[string]int, len(states))
@@ -181,13 +127,11 @@ func SyncServerGauge(states []string) {
 	}
 }
 
-// ServerPhaseSample is one server's felis_server_phase series.
 type ServerPhaseSample struct {
 	Server, Role, Phase, Desired string
 }
 
-// SyncServerPhases republishes felis_server_phase from a full snapshot of the
-// fleet, Resetting first for the same reason SyncServerGauge does.
+// SyncServerPhases resets before publishing the complete snapshot.
 func SyncServerPhases(samples []ServerPhaseSample) {
 	ServerPhase.Reset()
 	for _, s := range samples {
@@ -195,9 +139,7 @@ func SyncServerPhases(samples []ServerPhaseSample) {
 	}
 }
 
-// Collectors returns every felis_* collector in a stable order. Production and
-// tests register the same slice, so the test asserting the full set is exposed
-// also pins the production surface.
+// Collectors returns every felis_* collector in a stable order.
 func Collectors() []prometheus.Collector {
 	return []prometheus.Collector{
 		ServersTotal,
@@ -215,12 +157,7 @@ func Collectors() []prometheus.Collector {
 	}
 }
 
-// Register wires every felis_* collector into r.
-//
-// It is idempotent: re-registering an already-registered collector (a manager
-// restart in-process, a test that calls Register twice) is tolerated rather
-// than fatal, so a benign double-call never takes the operator down. Any other
-// registration error is returned to the caller to surface at startup.
+// Register adds every collector to r; re-registering an already-registered collector is tolerated.
 func Register(r prometheus.Registerer) error {
 	for _, c := range Collectors() {
 		if err := r.Register(c); err != nil {

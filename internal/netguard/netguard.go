@@ -1,6 +1,4 @@
-// Package netguard holds the dial checks for connections an Owner's settings aim: an
-// upstream Yggdrasil root, a mail relay. felis-api makes them from inside the cluster, so
-// whatever address a setting names is dialled with the pod's reach.
+// Package netguard restricts outbound connections configured through owner settings.
 package netguard
 
 import (
@@ -9,11 +7,7 @@ import (
 	"syscall"
 )
 
-// RefuseLinkLocal is a net.Dialer Control that keeps a connection off link-local,
-// unspecified and multicast addresses. A cloud host serves its metadata, with the
-// instance's credentials, at 169.254.169.254; no relay or auth root lives there, so a
-// setting pointing there is only a way to read them through felis-api. It checks the
-// address actually dialled, after DNS, so a name that resolves there is refused too.
+// RefuseLinkLocal checks the resolved dial address to block link-local, unspecified, and multicast destinations.
 func RefuseLinkLocal(_, address string, _ syscall.RawConn) error {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {

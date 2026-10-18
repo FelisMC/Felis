@@ -1,37 +1,4 @@
-// Package build implements the image build subsystem (spec §16) — "the
-// platform's biggest security surface". A SysAdmin uploads a Dockerfile and a
-// context tarball; felis-api starts an in-cluster Job in which Kaniko builds the
-// image into a tarball, Trivy scans that tarball, and only a clean image is
-// pushed to the internal registry and admitted to the image whitelist.
-//
-// Trust model (spec §16, §22): we trust the SysAdmin at the *ingress* (only an
-// admin through Zero Trust may submit a build) but never trust the *Dockerfile
-// at runtime* — an arbitrary Dockerfile is build-time RCE whose victim is the
-// cluster, not the uploader. So the build Pod runs with a deliberately weak
-// service account in an isolated namespace that can only reach the registry
-// and cannot touch the minecraft namespace, the felis database, or the K8s API
-// (spec §21). Those isolation guarantees live in the Job/NetworkPolicy specs
-// (jobspec.go) and are asserted by unit tests, since no cluster runs here.
-//
-// The Trivy gate is enforced as the build Pod's *exit code*: a kaniko
-// initContainer builds into a tarball (--no-push), a trivy initContainer writes
-// the full report, and scan-gate exits 1 when a finding matches the scan policy
-// (ScanPolicy; HIGH and CRITICAL with a fixed release by default); only then does
-// the push container — the one holding the registry credential — publish it.
-// Therefore "Job Succeeded" is equivalent to "nothing the policy blocks AND
-// pushed", and a rejected image never reaches the registry. The report and a
-// CycloneDX SBOM come back through scan-gate's log and stay on the build (Scan). felis-api observes the Job phase
-// and performs the database writes — the build Pod itself never has database
-// credentials (the weak-SA red line). On success the image is admitted to
-// image_whitelist with enabled=true (recording added_by); on failure the build
-// is marked failed and nothing is admitted (spec §16: the only retained
-// automatic gate).
-//
-// The Builder depends on the Store and Jobs interfaces, so submission, the
-// scan-gate translation, cancellation, and image admission are all unit-tested
-// against in-memory fakes. The Postgres (pgStore) and controller-runtime
-// (k8sJobs) implementations compile here but are exercised only by integration
-// tests against a live database / cluster.
+// Package build runs isolated build/scan Jobs; only the API records results and admits images in the database.
 package build
 
 import (
@@ -46,7 +13,6 @@ import (
 	"felis.lolicon.best/internal/metrics"
 )
 
-// Status mirrors the build_status enum (spec §6).
 type Status string
 
 const (
@@ -57,7 +23,6 @@ const (
 	StatusCancelled Status = "cancelled"
 )
 
-// terminal reports whether a status is final and no longer reconciled.
 func (s Status) terminal() bool {
 	switch s {
 	case StatusSucceeded, StatusFailed, StatusCancelled:
@@ -67,86 +32,42 @@ func (s Status) terminal() bool {
 	}
 }
 
-// JobPhase is the build Pod's lifecycle as observed from the K8s Job, decoupled
-// from any K8s type so the scan-gate translation stays unit-testable.
+// JobPhase is the build Pod's lifecycle as observed from the K8s Job.
 type JobPhase int
 
 const (
-	// JobUnknown means the Job was not found (e.g. GC'd); treated as failed.
-	JobUnknown JobPhase = iota
+	JobUnknown JobPhase = iota // Job not found (e.g. garbage-collected); treated as failed
 	JobPending
 	JobRunning
-	// JobSucceeded means trivy found no CRITICAL CVE AND the image was pushed —
-	// the scan gate passed (spec §16).
-	JobSucceeded
-	// JobFailed means kaniko failed, trivy found a CRITICAL CVE, or the push
-	// failed — the build is rejected and nothing is admitted.
-	JobFailed
+	JobSucceeded // scan gate passed and the image was pushed
+	JobFailed    // kaniko, the scan gate or the push failed; nothing is admitted
 )
 
-// image admission sources (spec §6 image_whitelist.source). The column is plain
-// text, not an enum, so a curated value costs no schema change.
+// Values of image_whitelist.source.
 const (
 	SourceBuilt    = "built"
 	SourceExternal = "external"
-	// SourceRecommended marks a platform-curated whitelist entry: an image Felis
-	// itself ships and vouches for, which the create-server form may surface ahead
-	// of the rest. It is a PRESENTATION marker only — admission still turns solely
-	// on enabled (see ImageAdmitted), so a recommended row is admitted by exactly
-	// the same rule as any other and carries no extra privilege.
-	//
-	// The bar for this marker is joinability, not popularity. Velocity runs
-	// proxy-wide modern forwarding, so a backend that cannot verify the signed
-	// handshake rejects every login the proxy sends it; only an image whose
-	// entrypoint consumes FELIS_FORWARDING_SECRET is actually reachable by a
-	// player (see operator.buildEnv, which injects it into every backend but
-	// cannot make an operator-typed Dockerfile read it). Recommending an arbitrary
-	// public Minecraft image would therefore ship a trap: it builds, schedules,
-	// and goes Ready, then refuses every join. Only the images Felis builds from
-	// deploy/ clear that bar — see 0018_recommended_images.sql for which, and why
-	// the honest set is one image rather than several.
+	// Recommended is display metadata only; enabled controls admission and forwarding support controls joinability.
 	SourceRecommended = "recommended"
 )
 
-// ErrNotFound is returned when a build id / image ref does not exist.
 var ErrNotFound = errors.New("build: not found")
 
-// ErrAlreadyTerminal is returned by Cancel when the build has already finished.
 var ErrAlreadyTerminal = errors.New("build: already in a terminal state")
 
-// ErrInvalid wraps every request-validation failure (bad image ref, missing /
-// oversize Dockerfile, missing context). Callers map it to a 400; it is kept
-// distinct from store/cluster failures so those surface as 500.
+// ErrInvalid wraps request-validation failures; callers map it to 400.
 var ErrInvalid = errors.New("build: invalid request")
 
-// Request is the validated POST /images/build input (spec §16). The dockerfile
-// and context are archived for audit; the target ref must address the internal
-// registry (enforced in Validate).
 type Request struct {
-	// ImageRef is the push target, e.g. registry.felis.svc:5000/foo:1.0. It must
-	// be under the configured internal registry — a build can never push
-	// elsewhere.
-	ImageRef string
-	// Dockerfile is the uploaded build recipe (size-capped).
+	ImageRef   string // push target; must be under the configured internal registry
 	Dockerfile string
-	// ContextRef locates the uploaded tar.gz context in object storage / a PVC
-	// (spec §17: Kaniko pulls it; Git context is intentionally not supported).
-	ContextRef string
-	// ContextDigest is the lowercase hex sha256 of the context tarball an admin
-	// approved. When set, the context-fetch initContainer refuses any other bytes,
-	// so a context replaced after review never reaches Kaniko. It needs an
-	// http(s) ContextRef: a ref Kaniko fetches itself has no fetch step to check.
+	ContextRef string // tar.gz context location, or an http(s) URL on the internal API face
+	// ContextDigest is the lowercase hex sha256 the fetch step enforces; requires an http(s) ContextRef.
 	ContextDigest string
-	// BaseImage is the resolved FROM, recorded for audit only — it is NOT a hard
-	// gate (spec §16: base FROM is not hard-gated; the scan + egress lock cover
-	// poisoned bases).
-	BaseImage string
-	// RequestedBy is the admin Access email, used as the audit actor and the
-	// added_by of any admitted image.
-	RequestedBy string
+	BaseImage     string // base image after FROM, audit only
+	RequestedBy   string // admin email: audit actor and added_by of an admitted image
 }
 
-// Build mirrors an image_builds row (spec §6).
 type Build struct {
 	ID          string     `json:"id"`
 	ImageRef    string     `json:"image_ref"`
@@ -161,13 +82,9 @@ type Build struct {
 	CreatedAt   time.Time  `json:"created_at"`
 	FinishedAt  *time.Time `json:"finished_at,omitempty"`
 
-	// ContextDigest is Request.ContextDigest, kept on the row as the audit record
-	// of which bytes the build was allowed to consume.
-	ContextDigest string `json:"context_digest,omitempty"`
+	ContextDigest string `json:"context_digest,omitempty"` // Request.ContextDigest: the bytes the build was allowed to consume
 }
 
-// Image mirrors an image_whitelist row (spec §6): the dynamic, auditable image
-// admission list that the create-server form reads from.
 type Image struct {
 	ImageRef string    `json:"image_ref"`
 	Source   string    `json:"source"`
@@ -177,169 +94,112 @@ type Image struct {
 	AddedAt  time.Time `json:"added_at"`
 }
 
-// ListOpts selects a page of the build history. Query matches a build id or a
-// status exactly, or any part of the image ref, ignoring case; empty matches all.
+// ListOpts selects a page of the build history. Query matches a build id or status exactly,
+// or any part of the image ref, ignoring case; empty matches all.
 type ListOpts struct {
 	Query  string
 	Limit  int
 	Offset int
 }
 
-// DefaultListLimit and MaxListLimit bound one page of ListBuilds.
 const (
 	DefaultListLimit = 20
 	MaxListLimit     = 100
 )
 
-// Store is the business-layer persistence the Builder depends on (image_builds
-// + image_whitelist). It is an interface so the Builder is tested against an
-// in-memory fake; the Postgres implementation (pgStore) is integration-tested
-// only.
+// Store is the persistence the Builder depends on (image_builds and image_whitelist).
 type Store interface {
-	// CreateBuild inserts a new image_builds row (status pending).
 	CreateBuild(ctx context.Context, b *Build) error
-	// GetBuild loads one build, or ErrNotFound.
+	// GetBuild returns ErrNotFound for an unknown id.
 	GetBuild(ctx context.Context, id string) (*Build, error)
-	// GetBuilds loads the builds among ids that exist, in no particular order and
-	// without their Dockerfile — one query for a whole list's worth of lookups.
+	// GetBuilds returns the builds among ids that exist, unordered and without their Dockerfile.
 	GetBuilds(ctx context.Context, ids []string) ([]Build, error)
-	// SetBuildJob records the Job name and advances status to building.
 	SetBuildJob(ctx context.Context, id, jobName string) error
-	// FinishBuild sets a terminal status, an optional error, and finished_at.
 	FinishBuild(ctx context.Context, id string, status Status, errMsg string, at time.Time) error
-	// ListUnfinishedBuilds returns builds still being reconciled (status pending
-	// or building), oldest first — the work list for SyncAll.
+	// ListUnfinishedBuilds returns pending and building builds, oldest first.
 	ListUnfinishedBuilds(ctx context.Context) ([]Build, error)
-	// ListBuilds returns one page of the build history, newest first, and how
-	// many builds match in all. The rows leave out the Dockerfile (up to
-	// MaxDockerfileBytes each); GetBuild has it.
+	// ListBuilds returns one page, newest first, and the total match count; rows omit the Dockerfile.
 	ListBuilds(ctx context.Context, opts ListOpts) ([]Build, int, error)
-	// AdmitBuiltImage upserts an image_whitelist row with enabled=true and
-	// source=built (the scan-gate success path, spec §16). It records added_by.
+	// AdmitBuiltImage upserts an enabled source=built whitelist row.
 	AdmitBuiltImage(ctx context.Context, img Image) error
-	// SaveScan stores the scan record of a build, replacing an earlier one.
+	// SaveScan replaces any earlier scan record of the build.
 	SaveScan(ctx context.Context, s Scan) error
-	// GetScan loads a build's scan record, or ErrNotFound.
+	// GetScan returns ErrNotFound when the build has no scan.
 	GetScan(ctx context.Context, buildID string) (*Scan, error)
-	// ListImages returns the image whitelist.
 	ListImages(ctx context.Context) ([]Image, error)
-	// AddExternalImage upserts an externally-pushed image (spec §15 external
-	// admission; source=external, no build_id).
+	// AddExternalImage upserts a source=external row with no build_id.
 	AddExternalImage(ctx context.Context, img Image) error
-	// RemoveImage deletes an image_whitelist row, or ErrNotFound.
+	// RemoveImage returns ErrNotFound for an unknown ref.
 	RemoveImage(ctx context.Context, imageRef string) error
 }
 
-// Jobs is the cluster-side build lifecycle the Builder depends on. It is an
-// interface so the scan-gate translation is tested against a fake; the
-// controller-runtime implementation (k8sJobs) is integration-tested only — it
-// requires a live cluster.
 type Jobs interface {
-	// CreateBuildJob starts the Kaniko+Trivy Job for p in the felis-build
-	// namespace and returns the Job name.
 	CreateBuildJob(ctx context.Context, p JobParams) (jobName string, err error)
-	// JobPhase reports the current phase of a previously-created Job.
 	JobPhase(ctx context.Context, jobName string) (JobPhase, error)
-	// CancelBuildJob deletes the Job (and its pods), tolerating not-found.
+	// CancelBuildJob deletes the Job and its pods, tolerating not-found.
 	CancelBuildJob(ctx context.Context, jobName string) error
 }
 
-// JobOutcomes reads what a finished build pod left behind. A nil JobOutcomes
-// keeps Sync to the Job phase alone.
+// JobOutcomes reads what a finished build pod left behind; a nil JobOutcomes keeps Sync to the Job phase alone.
 type JobOutcomes interface {
 	Outcome(ctx context.Context, buildID string) (Outcome, error)
 }
 
-// Outcome is what a finished build pod reports.
 type Outcome struct {
-	// FailedStep is the container whose non-zero exit ended the pod ("" when
-	// none did), with its exit code and termination message.
-	FailedStep string
-	ExitCode   int32
-	Message    string
-	// DeadlineExceeded is set when the Job ran past activeDeadlineSeconds.
-	DeadlineExceeded bool
-	// Scan is scan-gate's envelope, nil when the step never ran or its log held
-	// none; ScanErr then says why a log that should hold one did not.
+	FailedStep       string // container whose non-zero exit ended the pod; "" when none did
+	ExitCode         int32
+	Message          string // termination message
+	DeadlineExceeded bool   // the Job ran past activeDeadlineSeconds
+	// Scan is nil when scan-gate never ran or its log held no envelope; ScanErr then says why.
 	Scan    *ScanEnvelope
 	ScanErr error
 }
 
-// Config parameterises the build subsystem from felis.toml (spec §24 [registry]
-// + safety limits). It is validated by withDefaults before use.
 type Config struct {
-	// Namespace is the isolated build namespace (spec §16: felis-build).
-	Namespace string
-	// ServiceAccount is the weak SA the build Pod runs as. It MUST NOT be the
-	// felis-api SA (spec §16 red line).
+	Namespace string // isolated build namespace
+	// ServiceAccount is the weak SA the build Pod runs as; it must not be the felis-api SA.
 	ServiceAccount string
-	// RegistryURL is the internal registry the build pushes to and Trivy scans
-	// (spec §17). Image refs are validated to be under it.
+	// RegistryURL is the internal registry builds push to; image refs must be under it.
 	RegistryURL string
-	// FelisImage is the platform image whose `fetch-context` entrypoint streams a
-	// submission's context from the internal face into the build Pod. Required
-	// only when a build's ContextRef is an http(s) URL (the submit lane's derived
-	// shape); an install that never builds user submissions can leave it empty.
+	// FelisImage provides the fetch-context entrypoint; needed only for http(s) ContextRefs.
 	FelisImage string
-	// TrivyDBRepository overrides where Trivy fetches its vulnerability DB
-	// (--db-repository). Empty means the platform registry's copy (Tools); with no
-	// RegistryURL it stays empty, which keeps Trivy's upstream default.
+	// TrivyDBRepository overrides --db-repository; empty uses the platform registry's copy when RegistryURL is set.
 	TrivyDBRepository string
-	// TrivyJavaDBRepository overrides where Trivy fetches its Java DB
-	// (--java-db-repository), downloaded lazily for images that contain Java
-	// artifacts — i.e. every real modpack. Defaults like TrivyDBRepository.
+	// TrivyJavaDBRepository overrides --java-db-repository and defaults like TrivyDBRepository.
 	TrivyJavaDBRepository string
-	// KanikoImage / TrivyImage are the executor images. Empty means the platform
-	// registry's copies (Tools).
+	// KanikoImage and TrivyImage default to the platform registry's copies (Tools).
 	KanikoImage string
 	TrivyImage  string
-	// ScanFailOn lists the severities that block an image; empty applies
-	// DefaultScanFailOn. ScanFailUnfixed blocks on findings with no fixed release
-	// too, and ScanAccept names finding ids that never block (ScanPolicy).
+	// ScanFailOn lists blocking severities (empty applies DefaultScanFailOn); see ScanPolicy.
 	ScanFailOn      []string
 	ScanFailUnfixed bool
-	ScanAccept      []string
-	// Deadline caps a build's wall-clock (spec §16: activeDeadlineSeconds).
-	Deadline time.Duration
-	// MaxDockerfileBytes caps the uploaded Dockerfile (spec §16: context size
-	// limits). Zero applies the default.
+	ScanAccept      []string      // finding ids that never block
+	Deadline        time.Duration // activeDeadlineSeconds
+	// MaxDockerfileBytes caps the uploaded Dockerfile; zero applies the default.
 	MaxDockerfileBytes int
-	// CPULimit / MemLimit cap each build container (spec §16: resource limits).
-	CPULimit string
-	MemLimit string
-	// DiskLimit caps the build pod's ephemeral storage: the extracted context,
-	// the base image kaniko unpacks and the image tarball together.
+	CPULimit           string // per build container
+	MemLimit           string // per build container
+	// DiskLimit caps ephemeral storage: extracted context, unpacked base image and image tarball together.
 	DiskLimit string
-	// UserNamespaces selects hostUsers: false for build pods: UserNamespacesOn,
-	// UserNamespacesOff, or UserNamespacesAuto (the default), which follows
-	// UserNamespacesProbe.
+	// UserNamespaces is UserNamespacesOn, UserNamespacesOff or UserNamespacesAuto (default, follows UserNamespacesProbe).
 	UserNamespaces string
-	// UserNamespacesProbe carries ProbeUserNamespaces' verdict to every copy of
-	// this Config; nil or false keeps "auto" off.
+	// UserNamespacesProbe carries ProbeUserNamespaces' verdict to every copy of this Config; nil keeps "auto" off.
 	UserNamespacesProbe *atomic.Bool
-	// RuntimeClass runs build pods under a sandbox RuntimeClass (gVisor, Kata)
-	// when set. The class must exist on the cluster.
-	RuntimeClass string
+	RuntimeClass        string
 
-	// MaxConcurrent caps how many build Jobs run at once. A build submitted past
-	// the cap stays pending, and SyncAll starts queued builds oldest first as
-	// running ones finish. Zero applies the default; MaxConcurrentLimit bounds it.
+	// MaxConcurrent caps running build Jobs; excess builds stay pending until SyncAll starts them. Bounded by MaxConcurrentLimit.
 	MaxConcurrent int
 
-	// ContextOrigin is the scheme://host[:port] of the platform's internal API
-	// face, the only host an http(s) ContextRef may name: the fetch step presents
-	// the service token to it. Empty refuses every http(s) context.
+	// Send context tokens only to ContextOrigin; an empty origin rejects all HTTP contexts.
 	ContextOrigin string
 }
 
-// Values of Config.UserNamespaces.
 const (
 	UserNamespacesAuto = "auto"
 	UserNamespacesOn   = "on"
 	UserNamespacesOff  = "off"
 )
 
-// userNamespaces resolves Config.UserNamespaces for one build.
 func (c Config) userNamespaces() bool {
 	switch c.UserNamespaces {
 	case UserNamespacesOn:
@@ -350,7 +210,6 @@ func (c Config) userNamespaces() bool {
 	return c.UserNamespacesProbe != nil && c.UserNamespacesProbe.Load()
 }
 
-// Defaults applied when a Config field is left zero.
 const (
 	defaultNamespace      = "felis-build"
 	defaultServiceAccount = "felis-build"
@@ -362,13 +221,9 @@ const (
 	defaultMaxConcurrent  = 2
 )
 
-// MaxConcurrentLimit is the highest MaxConcurrent the platform accepts. The
-// build namespace's pod quota (BuildResourceQuota) leaves room for exactly this
-// many build pods plus the user-namespace probe.
+// MaxConcurrentLimit is the highest MaxConcurrent accepted; BuildResourceQuota's pod quota fits this many build pods plus the user-namespace probe.
 const MaxConcurrentLimit = 6
 
-// withDefaults returns a copy of c with zero fields filled, so a partially
-// configured Config (or the zero value, in tests) is always usable.
 func (c Config) withDefaults() Config {
 	if c.Namespace == "" {
 		c.Namespace = defaultNamespace
@@ -376,8 +231,6 @@ func (c Config) withDefaults() Config {
 	if c.ServiceAccount == "" {
 		c.ServiceAccount = defaultServiceAccount
 	}
-	// The executor images and the scan DBs default to the platform registry's
-	// copies (Tools); an explicit felis.toml value wins.
 	if c.KanikoImage == "" {
 		c.KanikoImage = toolRef(c.RegistryURL, "kaniko")
 	}
@@ -420,23 +273,18 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
-// Builder orchestrates the build subsystem. The clock and id generator are
-// injectable for hermetic tests. Its only state is the lock that serializes
-// starting Jobs, so two submissions cannot both take the last free slot.
+// Builder orchestrates builds. Its only state is startMu, which serializes Job starts so two submissions cannot take the last free slot.
 type Builder struct {
 	Store  Store
 	Jobs   Jobs
 	Config Config
-	// Outcomes reads a finished pod's failed step and scan envelope. Nil records
-	// a generic failure and keeps no scan.
+	// Outcomes reads a finished pod's failed step and scan envelope; nil records a generic failure and no scan.
 	Outcomes JobOutcomes
 
 	startMu sync.Mutex
 
-	// Now is the clock, injectable for tests. Defaults to time.Now.
-	Now func() time.Time
-	// IDGen mints build ids. Defaults to a time-based generator.
-	IDGen func() string
+	Now   func() time.Time // defaults to time.Now
+	IDGen func() string    // defaults to a time-based id
 }
 
 func (b *Builder) now() time.Time {
@@ -453,12 +301,7 @@ func (b *Builder) newID() string {
 	return fmt.Sprintf("bld-%d", time.Now().UnixNano())
 }
 
-// Submit validates req, records a pending build, and starts the Kaniko+Trivy
-// Job (spec §16) when fewer than MaxConcurrent builds are running. Past the cap
-// the build is returned pending and waits in the queue SyncAll drains. A started
-// build is returned building; if Job creation fails it is marked failed so it
-// never lingers pending. The caller (felis-api) drives the build to a terminal
-// state by polling Sync / SyncAll.
+// Queue builds beyond concurrency limits; failed Job creation marks them failed.
 func (b *Builder) Submit(ctx context.Context, req Request) (*Build, error) {
 	cfg := b.Config.withDefaults()
 	if err := Validate(req, cfg); err != nil {
@@ -485,14 +328,11 @@ func (b *Builder) Submit(ctx context.Context, req Request) (*Build, error) {
 	defer b.startMu.Unlock()
 	running, err := b.running(ctx)
 	if err != nil || running >= cfg.MaxConcurrent {
-		// Queued. When the count could not be read, SyncAll retries the start.
-		return bld, nil
+		return bld, nil // queued; SyncAll retries the start
 	}
 	return b.start(ctx, bld, cfg)
 }
 
-// running counts builds whose Job has been started and not yet reconciled to a
-// terminal state.
 func (b *Builder) running(ctx context.Context) (int, error) {
 	builds, err := b.Store.ListUnfinishedBuilds(ctx)
 	if err != nil {
@@ -507,17 +347,12 @@ func (b *Builder) running(ctx context.Context) (int, error) {
 	return n, nil
 }
 
-// start creates bld's Job and records it. The caller holds startMu.
+// start requires the caller to hold startMu.
 func (b *Builder) start(ctx context.Context, bld *Build, cfg Config) (*Build, error) {
 	jobName, err := b.Jobs.CreateBuildJob(ctx, b.jobParams(bld, cfg))
 	if err != nil {
-		// The pending row exists; mark it failed so it is not reconciled forever.
 		_ = b.Store.FinishBuild(ctx, bld.ID, StatusFailed, "job creation failed: "+err.Error(), b.now())
-		// felis_image_build_failures_total (spec §23): this terminal-failure path
-		// records the build directly, not via finishAt, so it increments the counter
-		// itself. The FinishBuild error is deliberately ignored (the build is failed
-		// for the caller regardless), so the count tracks the failure event, not the
-		// store write.
+		// Counted here because this path bypasses finishAt; the FinishBuild error is ignored.
 		metrics.ImageBuildFailuresTotal.Inc()
 		bld.Status = StatusFailed
 		bld.Error = "job creation failed: " + err.Error()
@@ -532,7 +367,6 @@ func (b *Builder) start(ctx context.Context, bld *Build, cfg Config) (*Build, er
 	return bld, nil
 }
 
-// jobParams projects a build + config onto the inputs jobspec.go renders.
 func (b *Builder) jobParams(bld *Build, cfg Config) JobParams {
 	return JobParams{
 		BuildID:               bld.ID,
@@ -559,14 +393,11 @@ func (b *Builder) jobParams(bld *Build, cfg Config) JobParams {
 	}
 }
 
-// Get returns a build by id, or ErrNotFound.
 func (b *Builder) Get(ctx context.Context, id string) (*Build, error) {
 	return b.Store.GetBuild(ctx, id)
 }
 
-// GetMany returns the builds among ids that exist, keyed by id, read as stored
-// (no reconcile) and without their Dockerfile. An id with no row is absent from
-// the map.
+// GetMany returns the builds among ids that exist, keyed by id, as stored and without their Dockerfile.
 func (b *Builder) GetMany(ctx context.Context, ids []string) (map[string]Build, error) {
 	out := make(map[string]Build, len(ids))
 	if len(ids) == 0 {
@@ -582,10 +413,6 @@ func (b *Builder) GetMany(ctx context.Context, ids []string) (map[string]Build, 
 	return out, nil
 }
 
-// ListBuilds pages the build history for the admin panel, so every admin sees
-// every build (and can cancel a running one) from any browser. It reads rows as
-// stored: reconcileBuilds advances them in the background, and GET
-// /images/build/{id} reconciles one on demand.
 func (b *Builder) ListBuilds(ctx context.Context, opts ListOpts) ([]Build, int, error) {
 	opts.Query = strings.TrimSpace(opts.Query)
 	if opts.Limit <= 0 {
@@ -596,22 +423,7 @@ func (b *Builder) ListBuilds(ctx context.Context, opts ListOpts) ([]Build, int, 
 	return b.Store.ListBuilds(ctx, opts)
 }
 
-// Sync reconciles one non-terminal build against its Job phase — the scan-gate
-// translation (spec §16). A terminal build is returned unchanged (idempotent).
-//
-//   - JobSucceeded → status=succeeded AND the image is admitted to the whitelist
-//     with enabled=true (the scan found nothing the policy blocks and the push
-//     landed).
-//   - JobFailed / JobUnknown → status=failed, nothing admitted. The error names
-//     what ended the pod: the scan verdict with the blocking finding ids, or the
-//     failed step and its last log lines (failureReason).
-//   - JobPending / JobRunning → no change.
-//
-// A finished pod's scan envelope is stored first (SaveScan), for a blocked build
-// and an admitted one alike.
-//
-// The image admission is performed by felis-api (this code path), never by the
-// build Pod, which holds no database credentials.
+// Store scan results before settling terminal Jobs; success admits the image and failures retain their reasons.
 func (b *Builder) Sync(ctx context.Context, id string) (*Build, error) {
 	bld, err := b.Store.GetBuild(ctx, id)
 	if err != nil {
@@ -622,11 +434,8 @@ func (b *Builder) Sync(ctx context.Context, id string) (*Build, error) {
 	}
 	if bld.JobName == "" {
 		if bld.Status == StatusPending {
-			// Queued behind MaxConcurrent; SyncAll starts it.
-			return bld, nil
+			return bld, nil // queued; SyncAll starts it
 		}
-		// Building with no Job name recorded; treat as failed rather than
-		// reconcile forever against a phantom Job.
 		return b.finish(ctx, bld, StatusFailed, "no build job recorded")
 	}
 
@@ -655,9 +464,7 @@ func (b *Builder) Sync(ctx context.Context, id string) (*Build, error) {
 	switch phase {
 	case JobSucceeded:
 		now := b.now()
-		// Admit the image first; only then mark the build succeeded, so a
-		// succeeded build always has its whitelist row (no admitted-but-not-
-		// recorded window if the second write fails).
+		// Admit before marking succeeded so a succeeded build always has its whitelist row.
 		if err := b.Store.AdmitBuiltImage(ctx, Image{
 			ImageRef: bld.ImageRef,
 			Source:   SourceBuilt,
@@ -676,7 +483,6 @@ func (b *Builder) Sync(ctx context.Context, id string) (*Build, error) {
 	}
 }
 
-// stepNames words each build step for a failure message.
 var stepNames = map[string]string{
 	ContainerGate:     "the egress gate",
 	ContainerFetch:    "fetching the build context",
@@ -687,12 +493,9 @@ var stepNames = map[string]string{
 	ContainerPush:     "the registry push",
 }
 
-// maxFailureMessage bounds the step message a failed build records.
-const maxFailureMessage = 600
+const maxFailureMessage = 600 // bytes
 
-// failureReason is the error a failed build records: the scan verdict when the
-// policy blocked the image, the deadline when the Job ran out of time, or the
-// failed step with the tail of its termination message.
+// failureReason is the error a failed build records: the scan verdict, the deadline, or the failed step with its message tail.
 func (b *Builder) failureReason(out Outcome) string {
 	switch {
 	case out.Scan != nil && out.Scan.Summary.Blocked:
@@ -716,9 +519,7 @@ func (b *Builder) failureReason(out Outcome) string {
 	return msg
 }
 
-// messageTail keeps the last three non-empty lines of a termination message on
-// one line, tabs as spaces and other control characters removed, at most
-// maxFailureMessage bytes.
+// messageTail joins the last three non-empty lines of m on one line with control characters removed, capped at maxFailureMessage bytes.
 func messageTail(m string) string {
 	var lines []string
 	for _, l := range strings.Split(m, "\n") {
@@ -734,17 +535,11 @@ func messageTail(m string) string {
 	return out
 }
 
-// Scan returns a build's scan record, or ErrNotFound when the build has none
-// (it failed before the scan, or finished before scans were kept).
 func (b *Builder) Scan(ctx context.Context, id string) (*Scan, error) {
 	return b.Store.GetScan(ctx, id)
 }
 
-// SyncAll reconciles every running build, then starts queued builds oldest
-// first while fewer than MaxConcurrent run. It returns the count advanced to a
-// terminal state. felis-api calls this periodically (spec §16: the scan gate is
-// observed, not pushed by the build Pod). One build's error does not stop the
-// rest; every error comes back joined.
+// Reconcile running builds, then start queued builds oldest first; collect errors without blocking other builds.
 func (b *Builder) SyncAll(ctx context.Context) (int, error) {
 	builds, err := b.Store.ListUnfinishedBuilds(ctx)
 	if err != nil {
@@ -773,9 +568,8 @@ func (b *Builder) SyncAll(ctx context.Context) (int, error) {
 	return advanced, errors.Join(errs...)
 }
 
-// startQueued starts pending builds, oldest first, while fewer than
-// MaxConcurrent run. It returns how many it failed outright (a Job that could
-// not be created), which count as advanced to a terminal state.
+// startQueued starts pending builds oldest first while fewer than MaxConcurrent run.
+// It returns how many failed outright (Job creation error), which count as advanced.
 func (b *Builder) startQueued(ctx context.Context) (int, error) {
 	cfg := b.Config.withDefaults()
 	b.startMu.Lock()
@@ -812,8 +606,7 @@ func (b *Builder) startQueued(ctx context.Context) (int, error) {
 	return failed, errors.Join(errs...)
 }
 
-// Cancel stops an in-flight build: delete its Job and mark it cancelled. A
-// build that has already finished returns ErrAlreadyTerminal.
+// Cancel deletes the build's Job and marks it cancelled; a finished build returns ErrAlreadyTerminal.
 func (b *Builder) Cancel(ctx context.Context, id string) (*Build, error) {
 	bld, err := b.Store.GetBuild(ctx, id)
 	if err != nil {
@@ -830,8 +623,6 @@ func (b *Builder) Cancel(ctx context.Context, id string) (*Build, error) {
 	return b.finish(ctx, bld, StatusCancelled, "cancelled by administrator")
 }
 
-// finish marks a build terminal at the current clock and returns the updated
-// view without a second round-trip.
 func (b *Builder) finish(ctx context.Context, bld *Build, status Status, msg string) (*Build, error) {
 	return b.finishAt(ctx, bld, status, msg, b.now())
 }
@@ -841,13 +632,7 @@ func (b *Builder) finishAt(ctx context.Context, bld *Build, status Status, msg s
 		return nil, err
 	}
 	if status == StatusFailed {
-		// felis_image_build_failures_total (spec §23) counts builds that reached a
-		// failed terminal state — a failed step or a finding the scan policy
-		// blocks on (scan-gate exits 1), observed here as the Sync
-		// JobFailed/JobUnknown verdict. Cancellations (StatusCancelled) are deliberately not failures.
-		// Incremented only after the failed status is persisted, so the counter
-		// never runs ahead of the store. (Submit's job-creation path records its
-		// failure outside finishAt and increments there.)
+		// Counted after the status is persisted; cancellations are not failures.
 		metrics.ImageBuildFailuresTotal.Inc()
 	}
 	bld.Status = status
@@ -857,14 +642,11 @@ func (b *Builder) finishAt(ctx context.Context, bld *Build, status Status, msg s
 	return bld, nil
 }
 
-// ListImages returns the image whitelist (spec §15 create-server form source).
 func (b *Builder) ListImages(ctx context.Context) ([]Image, error) {
 	return b.Store.ListImages(ctx)
 }
 
-// AddExternalImage admits an externally-pushed image (spec §15). It is enabled
-// immediately; external images bypass the build pipeline but are still recorded
-// with added_by for audit.
+// AddExternalImage admits an externally-pushed image, enabled immediately and recorded with added_by.
 func (b *Builder) AddExternalImage(ctx context.Context, imageRef, addedBy string) (*Image, error) {
 	if err := ValidateImageRef(imageRef); err != nil {
 		return nil, err
@@ -882,21 +664,12 @@ func (b *Builder) AddExternalImage(ctx context.Context, imageRef, addedBy string
 	return &img, nil
 }
 
-// RemoveImage withdraws an image from the whitelist (spec §22: dynamic,
-// auditable). It does not delete the underlying registry blob.
+// RemoveImage withdraws an image from the whitelist without deleting its registry blob.
 func (b *Builder) RemoveImage(ctx context.Context, imageRef string) error {
 	return b.Store.RemoveImage(ctx, imageRef)
 }
 
-// ImageAdmitted reports whether a concrete image reference is on the whitelist
-// and enabled (spec §15: the create-server form may only choose an admitted
-// image). A disabled row never admits. A wildcard whitelist entry
-// ("registry/foo:*") admits any concrete tag on that repo (imageMatches); the
-// caller always passes a concrete ref, never a wildcard. An empty ref is never
-// admitted. A ref pinned to a digest (name:tag@sha256:…, what a server's spec
-// carries once created) is admitted by its name:tag: the digest only fixes which
-// build of that tag runs, so an admin can set a server back to the exact build an
-// earlier image change replaced.
+// Enabled wildcard tags admit matching references; digest pins are checked against their name:tag.
 func (b *Builder) ImageAdmitted(ctx context.Context, imageRef string) (bool, error) {
 	imageRef, _, _ = strings.Cut(imageRef, "@")
 	if strings.TrimSpace(imageRef) == "" {

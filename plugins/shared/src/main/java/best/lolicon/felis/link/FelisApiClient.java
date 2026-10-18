@@ -17,33 +17,8 @@ import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.regex.Pattern;
 
-/**
- * FelisApiClient is the proxy's read/drive client for the felis-api internal face
- * (spec §7, §9). Where {@link LinkClient} mints account-link codes, this client
- * drives domain-autostart routing: it lists the registrable servers, polls a
- * server's lifecycle status, pulls the wake lever, and reports real player
- * joins. It shares the {@link LinkConfig}
- * (same internal base URL + service token) and the same zero-dependency JDK HTTP
- * stack, so it compiles straight into each loader jar with nothing to shade.
- *
- * <p>Every call authenticates with {@code Authorization: Bearer <serviceToken>}
- * and surfaces a non-success status as a {@link LinkException} carrying the HTTP
- * status, so the proxy can branch on it without parsing human text. The one that
- * matters most for routing: {@code wake} → 403 means the autostartPolicy gate
- * refused this UUID (do not enqueue the player); 429 means a wake is already
- * cooling down ("already waking, keep waiting"); 503 means the cluster is at
- * capacity (tell the player to try later — nothing is coming up).
- *
- * <p><b>Path safety.</b> Server names reach this client from plugin messages and
- * chat, so every value spliced into a request path goes through
- * {@link #serverSegment} or {@link #segment}. A name outside the platform's own
- * alphabet ({@code ^[a-z0-9-]{3,32}$}, no leading or trailing dash — the rule
- * {@code naming.ValidateServerName} enforces server-side) is refused before any
- * request is built, and what passes is percent-encoded as well. Without this a
- * WakeRequest for {@code victim/join-event?} became {@code POST
- * …/servers/victim/join-event}, which appends the sender to another tenant's
- * allowlist.
- */
+// API failures preserve HTTP status; wake uses 403 for policy, 429 for cooldown, and 503 for capacity.
+// Validate every path segment before sending requests built from plugin or chat input.
 public final class FelisApiClient {
     // Mirrors internal/naming.serverNameRE plus its no-leading/trailing-dash rule.
     private static final Pattern SERVER_NAME = Pattern.compile("^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$");
@@ -83,14 +58,7 @@ public final class FelisApiClient {
         return ServerView.fromJson(getObject("/api/v1/internal/servers/" + serverSegment(name) + "/status", 200));
     }
 
-    /**
-     * wake pulls the domain-autostart lever for {@code name} on behalf of the
-     * joining player (spec §9.1, §14). The reply (202) carries the current phase
-     * and ready flag so the caller can decide whether to wait. A 403 (policy gate),
-     * 409 {@code maintenance_in_progress} (a restore, backup or file write holds the
-     * world) or {@code world_reclaiming} (the idle reaper is archiving it), 429 (cooldown), or 503 {@code at_capacity} (running cap) arrives as a
-     * LinkException the caller branches on.
-     */
+    // Wake returns asynchronous lifecycle state; expose structured HTTP refusals through LinkException.
     public ServerView wake(String name, UUID mcUuid) throws LinkException {
         Objects.requireNonNull(name, "name");
         Objects.requireNonNull(mcUuid, "mcUuid");
@@ -98,11 +66,7 @@ public final class FelisApiClient {
         return ServerView.fromJson(postObject("/api/v1/internal/servers/" + serverSegment(name) + "/wake", body, 202));
     }
 
-    /**
-     * reportJoin tells felis-api a real player joined {@code name} (spec §7
-     * /internal/.../join-event): it bumps last_active_at against the reaper and
-     * auto-appends the UUID to the allowlist. Expects 204.
-     */
+    /** reportJoin tells felis-api a real player joined name: it bumps last_active_at against the reaper and appends the UUID to the allowlist. Expects 204. */
     public void reportJoin(String name, UUID mcUuid) throws LinkException {
         Objects.requireNonNull(name, "name");
         Objects.requireNonNull(mcUuid, "mcUuid");
@@ -114,16 +78,8 @@ public final class FelisApiClient {
         }
     }
 
-    /**
-     * claim takes ownership of an ownerless server on behalf of a player driving the
-     * felis-paper lobby menu (spec §9.3, §12). It is the first of the menu's two
-     * rules — claim asserts ownership and quota; the autostartPolicy gate is enforced
-     * separately by the {@link #wake} that follows. Identity is the verified
-     * online-mode UUID Velocity derived from the connection, never a client-supplied
-     * value. Expects 200; the refusal cases surface as branchable LinkExceptions:
-     * 412 {@code not_linked}, 403 {@code quota_exceeded}, 409 {@code already_claimed},
-     * 404 unknown server.
-     */
+    // Claim checks ownership and quota; the subsequent wake separately enforces autostart policy.
+    // Use the connection's verified UUID, never client-supplied identity.
     public void claim(String name, UUID mcUuid) throws LinkException {
         Objects.requireNonNull(name, "name");
         Objects.requireNonNull(mcUuid, "mcUuid");
@@ -131,33 +87,17 @@ public final class FelisApiClient {
         Map<?, ?> res = postObject("/api/v1/internal/servers/" + serverSegment(name) + "/claim", body, 200);
         Object claimed = res.get("claimed");
         if (!(claimed instanceof Boolean) || !((Boolean) claimed)) {
-            // A 200 that doesn't affirm the claim is a contract breach, not a refusal —
-            // every refusal (412/403/409/404) already threw above. Fail loud rather
-            // than wake a server the caller doesn't actually own.
+            // A 200 that does not affirm the claim is a contract breach, not a refusal: every refusal already threw above. Fail loud rather than wake a server the caller does not own.
             throw new LinkException(200, "bad_response", "claim returned 200 without claimed=true");
         }
     }
 
-    /**
-     * menuStatus reads the lobby menu projection of one server (spec §12,
-     * {@code GET …/menu}): the §11 lifecycle view plus the ownership-derived
-     * {@code claimable} flag the lobby needs to choose a button. Velocity calls this
-     * for a {@code StatusQuery} and forwards the result downstream as a
-     * {@code StatusUpdate} frame. Expects 200; 404 means the server is unknown.
-     */
     public MenuStatus menuStatus(String name) throws LinkException {
         Objects.requireNonNull(name, "name");
         return MenuStatus.fromJson(getObject("/api/v1/internal/servers/" + serverSegment(name) + "/menu", 200));
     }
 
-    /**
-     * menuAccess reads what one player may start, for every user server at once
-     * ({@code GET /api/v1/internal/player/menu-access/{mc_uuid}} →
-     * {@code {"servers":{"<name>":"<verdict>"}}}): {@code owner}, {@code wake},
-     * {@code owner_only}, {@code allowlist}, {@code retiring} or {@code start_failed}.
-     * Velocity calls it once per menu open. An entry whose value is not a string is
-     * left out, as is the whole map when {@code servers} is missing.
-     */
+    // Drop non-string entries from per-player menu access verdicts.
     public Map<String, String> menuAccess(UUID mcUuid) throws LinkException {
         Objects.requireNonNull(mcUuid, "mcUuid");
         Map<?, ?> obj = getObject("/api/v1/internal/player/menu-access/" + mcUuid, 200);
@@ -172,17 +112,7 @@ public final class FelisApiClient {
         return out;
     }
 
-    /**
-     * linkStatus polls whether the verified UUID has finished web account-link — the
-     * completion leg of the in-game login flow (spec §B3). After the player redeems
-     * the Bind Code on {@code console.<root_domain>} the login limbo polls this until
-     * it flips true, then admits/transfers the player. {@code GET
-     * /api/v1/internal/account/link/status/{mc_uuid}} → {@code {"linked":bool}};
-     * read-only and keyed by the verified UUID, so it consumes nothing and is safe to
-     * poll repeatedly. Anything but {@code linked:true} (including a missing field) is
-     * reported as not-yet-linked — the caller keeps waiting rather than admitting on
-     * an ambiguous body.
-     */
+    // Anything but linked:true, including a missing field, reads as not yet linked: the caller keeps waiting rather than admitting on an ambiguous body.
     public boolean linkStatus(UUID mcUuid) throws LinkException {
         Objects.requireNonNull(mcUuid, "mcUuid");
         Map<?, ?> obj = getObject("/api/v1/internal/account/link/status/" + mcUuid, 200);
@@ -190,17 +120,7 @@ public final class FelisApiClient {
         return linked instanceof Boolean && (Boolean) linked;
     }
 
-    /**
-     * isBlacklisted reports whether a connecting UUID was barred by a
-     * username-collision reclaim (spec §B3): the login limbo checks this on join and
-     * refuses a barred squatter UUID before minting a code. {@code GET
-     * /api/v1/internal/player/blacklist/{mc_uuid}} → {@code {"blacklisted":bool}}. The
-     * bar is keyed by UUID, so the genuine Mojang player (same name, different UUID)
-     * always reads false and passes. A body that does not affirm {@code
-     * blacklisted:true} is treated as not-barred (fail-open on this specific read is
-     * deliberate: the authoritative gate is the mint/link flow, and a transport fault
-     * already surfaces as a LinkException the caller fails closed on).
-     */
+    // Blacklist only explicit UUID matches; transport errors fail closed and mint/link checks remain authoritative.
     public boolean isBlacklisted(UUID mcUuid) throws LinkException {
         Objects.requireNonNull(mcUuid, "mcUuid");
         Map<?, ?> obj = getObject("/api/v1/internal/player/blacklist/" + mcUuid, 200);
@@ -208,19 +128,8 @@ public final class FelisApiClient {
         return barred instanceof Boolean && (Boolean) barred;
     }
 
-    /**
-     * opLoginShow reads whose op.console staff sign-in a pending request is — the first
-     * half of Velocity's {@code /felis web op approve <code>}, shown to the admin before
-     * they vouch. {@code GET /api/v1/internal/op-login/{id}?approver_uuid=<uuid>}:
-     * felis-api refuses unless the approver's verified UUID is linked to an admin or
-     * owner (403 {@code not_admin}), so a player who types the command learns nothing
-     * about a staff account. An id naming no live pending request is 404 {@code
-     * op_login_not_found}. Both arrive as branchable {@link LinkException}s.
-     *
-     * <p>{@code requestId} is interpolated into the request path. It is
-     * percent-encoded here, and the Velocity command also validates its charset
-     * before calling.
-     */
+    // Only linked administrators can inspect pending staff sign-ins.
+    // requestId is percent-encoded here; the Velocity command validates its charset before calling.
     public OpLoginView opLoginShow(String requestId, UUID approverUuid) throws LinkException {
         Objects.requireNonNull(requestId, "requestId");
         Objects.requireNonNull(approverUuid, "approverUuid");
@@ -228,19 +137,7 @@ public final class FelisApiClient {
                 + "?approver_uuid=" + approverUuid, 200));
     }
 
-    /**
-     * opLoginApprove records an in-game administrator's vouch for a pending op.console
-     * staff login — the second factor of the spec §B op-login door, supplied from
-     * Velocity's {@code /felis web op approve <code> <username>}. It POSTs the approver's
-     * verified online-mode UUID and the account name they typed after reading
-     * {@link #opLoginShow} to {@code POST /api/v1/internal/op-login/{id}/approve}.
-     * felis-api refuses unless the UUID is linked to an admin or owner (403 {@code
-     * not_admin}) and unless the name is the request's account (409 {@code
-     * op_login_mismatch}, request left pending). An id naming no live pending request is
-     * 404 {@code op_login_not_found}. All arrive as branchable {@link LinkException}s; a
-     * 200 that does not affirm {@code approved:true} is a contract breach, not a
-     * refusal. Returns the approved account's username and email.
-     */
+    // A successful approval response must affirm approved:true; mismatched account names leave the request pending.
     public OpLoginView opLoginApprove(String requestId, UUID approverUuid, String username) throws LinkException {
         Objects.requireNonNull(requestId, "requestId");
         Objects.requireNonNull(approverUuid, "approverUuid");
@@ -254,19 +151,8 @@ public final class FelisApiClient {
         return OpLoginView.fromJson(res);
     }
 
-    /**
-     * migrateStart opens an account migration for the player who ran {@code /felis
-     * migrate} in-game (spec §B3 inherit, scenario A). It is the internal face of that
-     * command: Velocity has already established the caller's Mojang-verified UUID, so the
-     * initiator is trustworthy, and this POST puts that UUID's linked account into migrate
-     * mode (state {@code initiated}). Only the migration is opened here — the sensitive
-     * proof (web step-up, naming the receiving account, redeeming a code) happens
-     * afterwards on the console. {@code POST /api/v1/internal/account/migrate/start} with
-     * the verified UUID; expects 201. An unlinked UUID has no account to migrate (404
-     * {@code not_linked}); a retired or already-migrating account cannot re-initiate (409
-     * {@code account_retired}). Both surface as branchable {@link LinkException}s; a 201
-     * that does not affirm {@code started:true} is a contract breach, not a refusal.
-     */
+    // Begin migration with the verified in-game UUID; web step-up and code redemption supply further proof.
+    // A 201 migration response must affirm started:true.
     public void migrateStart(UUID mcUuid) throws LinkException {
         Objects.requireNonNull(mcUuid, "mcUuid");
         String body = "{\"mc_uuid\":\"" + mcUuid + "\"}";
@@ -277,14 +163,8 @@ public final class FelisApiClient {
         }
     }
 
-    // ---- transport ----
 
-    /**
-     * serverSegment admits {@code name} into a request path only when it is a
-     * well-formed Felis server name. The refusal carries a 400 so callers that relay
-     * {@code LinkException} messages to a player treat it as a request error, and it
-     * does not echo the input back.
-     */
+    // Reject invalid server segments without echoing untrusted names.
     static String serverSegment(String name) throws LinkException {
         Objects.requireNonNull(name, "name");
         if (!SERVER_NAME.matcher(name).matches()) {
@@ -302,15 +182,8 @@ public final class FelisApiClient {
         return URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20");
     }
 
-    // getObject tries a GET a second time, after a jittered 100-400 ms pause, when the
-    // first attempt failed in a way a retry can fix: the connection was refused or
-    // reset (felis-api restarting, its pod moving) or the answer was 502/503/504. GETs
-    // only read, so repeating one is safe; POSTs (wake, claim, join-event, approvals)
-    // are never repeated, because the first attempt may have landed. A GET that timed
-    // out is not repeated either: felis-api is then slow rather than gone, and a second
-    // full wait would hold the caller twice as long while adding load to an API that
-    // is already behind. The jitter keeps a proxy's queued callers from retrying in
-    // one burst.
+    // Retry safe GETs once for connection failures or 502/503/504; never retry potentially committed POSTs.
+    // Do not retry timed-out GETs; jitter other retries to avoid synchronized bursts.
     private Map<?, ?> getObject(String path, int expect) throws LinkException {
         HttpRequest req = base(path).GET().build();
         try {
@@ -350,9 +223,7 @@ public final class FelisApiClient {
         try {
             uri = URI.create(config.apiBaseUrl() + path);
         } catch (IllegalArgumentException e) {
-            // Unreachable for paths built from the segment helpers above; kept so a
-            // malformed base URL surfaces as a LinkException the callers already
-            // handle rather than an unchecked throw out of a scheduler task.
+            // Unreachable for paths built from the segment helpers; kept so a malformed base URL surfaces as a LinkException rather than an unchecked throw out of a scheduler task.
             throw new LinkException(0, "bad_request", "could not build the felis-api request URL", e);
         }
         return HttpRequest.newBuilder()
@@ -414,9 +285,6 @@ public final class FelisApiClient {
         return (Map<?, ?>) root;
     }
 
-    // parseError mirrors LinkClient: extract the stable {"error":{"code","message"}}
-    // envelope when present, else fall back to the HTTP status. A separate copy here
-    // keeps the routing client independent of LinkClient's private internals.
     private LinkException parseError(int status, String text) {
         String code = "error";
         String message = "felis-api returned HTTP " + status;

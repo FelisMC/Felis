@@ -1,10 +1,7 @@
 import { clientError } from "@/lib/api";
 import { base64urlToBytes, bytesToBase64url } from "@/lib/utils";
 
-/** requestAssertion runs the WebAuthn get() ceremony for the server's request
- *  options (their JSON form: challenge and credential ids base64url) and returns
- *  the assertion in the JSON form the API's finish endpoints decode. Begins that
- *  answer with go-webauthn's {"publicKey": {...}} envelope pass the inner object. */
+// Unwrap go-webauthn's publicKey envelope and convert base64url challenges and credential IDs.
 export async function requestAssertion(options: any) {
   const publicKey: PublicKeyCredentialRequestOptions = {
     ...options,

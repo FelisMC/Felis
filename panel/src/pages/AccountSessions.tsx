@@ -34,9 +34,7 @@ interface Props {
   signingOut: boolean;
 }
 
-/** AccountSessionsCard lists every browser signed in to the caller's account
- *  and signs any of them out. This device can only leave through the ordinary
- *  sign-out, which also drops the cookie and returns to the login page. */
+// The current device signs out through the ordinary session endpoint.
 export function AccountSessionsCard({ version, staff, onSignOut, signingOut }: Props) {
   const { t, i18n } = useTranslation("account");
   const sessions = useAsync(() => api.listMySessions(), [version]);

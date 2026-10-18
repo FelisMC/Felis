@@ -38,9 +38,7 @@ export function UsersPage() {
   const locale = i18n.language;
   const navigate = useNavigate();
 
-  // The box searches on the server a moment after typing stops, and a new
-  // search starts from page one: the page someone was on may not exist in the
-  // new results. Enter or the button applies it at once.
+  // Debounce server-side search and reset pagination; Enter applies immediately.
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("");

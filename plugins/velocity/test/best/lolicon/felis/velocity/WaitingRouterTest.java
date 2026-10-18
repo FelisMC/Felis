@@ -23,19 +23,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
-/**
- * WaitingRouterTest drives the real WaitingRouter, ServerRegistry, FelisApiClient and
- * FelisVelocityPlugin call pool through Velocity's own event objects, against a fake
- * proxy and a stub felis-api: where a connecting host sends a player, what the login
- * gate may release them to and when, how each wake refusal is told apart, how the
- * waiting queue is drained (one status poll per server per tick, only linked players
- * moved), and which joins are reported. Framework free: a failed assertion throws.
- *
- * <p>Not covered here: the 120 s queue timeout (the router reads the wall clock) and a
- * real client's timing, which needs an online-mode account on a live stack.
- *
- * <p>Run: {@code ./gradlew routingTest} in plugins/velocity.
- */
+// Live client timing and the wall-clock queue timeout require integration testing.
 public final class WaitingRouterTest {
 
     private static final String LINK = "GET /api/v1/internal/account/link/status/";
@@ -478,9 +466,7 @@ public final class WaitingRouterTest {
         assertEq("wake answers: queue empty again", 0, router.waitingCount());
     }
 
-    // A modpack's cold start outlasts any fixed wait: the operator gives a start 300 s,
-    // then recreates the pod up to three times with a 1, 2, 4 min backoff. The waiter
-    // follows the server's own progress instead of a clock, and hears how it is going.
+    // Follow startup progress across retries rather than imposing a fixed cold-start timeout.
     private static void longStart() {
         assertEq("long start: queue empty to begin with", 0, router.waitingCount());
         AtomicLong now = new AtomicLong(1_000_000_000L);
@@ -592,10 +578,7 @@ public final class WaitingRouterTest {
         assertEq("both moved (command)", List.of("epsilon"), List.copyOf(command.connects));
         assertEq("only the menu entry tells the lobby", List.of(menu.name + "@epsilon"), List.copyOf(notified));
 
-        // A friend's running server: the menu and /felis go join it without waking it.
-        // The API used to refuse a non-owner's wake of a running ownerOnly server, and
-        // that refusal was all a friend got from the green tile while every entry woke
-        // first.
+        // A non-owner may join an already-running ownerOnly server without a policy-gated wake.
         api.policy.put("beta", "ownerOnly");
         Fakes.FakePlayer friend = player(null, true);
         friend.current = lobby;
@@ -612,7 +595,7 @@ public final class WaitingRouterTest {
         assertEq("running server: nobody refused", false, friend.said("not allowed") || friend2.said("not allowed"));
         api.policy.remove("beta");
 
-        // Asking for the server you stand on is answered at once, case-insensitively.
+        // Asking for the server the player is on is answered at once, case-insensitively.
         Fakes.FakePlayer there = player(null, true);
         there.current = beta;
         router.enqueueFromCommand(there.player, "BETA");
@@ -748,9 +731,7 @@ public final class WaitingRouterTest {
         assertEq("refused transfer: dialled once", 1, full.connects.size());
     }
 
-    // A slow felis-api still gets one authorization per player at a time: the login
-    // gate's re-sent release and a second click wait for the first instead of each
-    // running its own link check and wake.
+    // Serialize authorization per player across duplicate releases and clicks.
     private static void slowApi() throws InterruptedException {
         // The gate sends its release again while the first is still at the link check.
         Fakes.FakePlayer slow = player("upsilon.mc.test", true);
@@ -890,10 +871,7 @@ public final class WaitingRouterTest {
         router.releaseFromLogin(released.player);
         assertEq("release connects to the lobby", List.of("lobby"), List.copyOf(released.connects));
 
-        // A requested server that turns the player away (a ban, the whitelist, full) is
-        // shown with its own reason and the player goes to the lobby at once: the
-        // remembered target sent every retry of the gate into the same refusal, silently,
-        // until the gate gave up two minutes later.
+        // Discard refused remembered targets so login retries do not repeat the same backend rejection.
         Fakes.FakePlayer banned = player("beta.mc.test", true);
         choose(banned);
         gated(banned);
@@ -934,7 +912,6 @@ public final class WaitingRouterTest {
                 stranded.disconnectedWith);
     }
 
-    // ---- helpers ----
 
     private static Fakes.FakePlayer player(String host, boolean linked) {
         int n = nextPlayer++;
@@ -1016,10 +993,6 @@ public final class WaitingRouterTest {
         return n;
     }
 
-    // view is a server as GET /servers lists it: up at its direct address, or down on
-    // the fallback, where the operator writes the fallback server's name ("login")
-    // into the address. The stub API's status route answers the same: ready as listed,
-    // and addr as the address it reports once the server is up.
     private static ServerView view(String name, boolean ready, String addr) {
         api.ready.put(name, ready);
         if (addr != null) {

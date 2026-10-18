@@ -1,15 +1,4 @@
-// Command forwardcheck logs into a Minecraft server the way the Velocity proxy
-// does with modern forwarding, and reports the UUID the server accepted the
-// player under. It is the end-to-end check for server software installed from
-// the runtime image (deploy/software_e2e.sh): a server that takes forwarding
-// must answer velocity:player_info and accept the forwarded UUID; one that does
-// not must log the player in under the offline-mode UUID of the name.
-//
-// The exchange follows Velocity's modern forwarding (VelocityProxyHandler in the
-// Velocity source and the PaperMC "Player information forwarding" docs): the
-// backend sends a login plugin request on velocity:player_info, the proxy
-// answers with an HMAC-SHA256 signature, keyed by the forwarding secret, over
-// the forwarding data (version, client address, UUID, name, properties).
+// Verify signed forwarding preserves the supplied UUID; unsupported servers instead use offline name UUIDs.
 package main
 
 import (

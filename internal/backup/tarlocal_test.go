@@ -91,23 +91,6 @@ func TestTarLocalRoundTrip(t *testing.T) {
 	}
 }
 
-// TestTarLocalRestoreReplacesTarget pins replace semantics (spec §466): after a
-// restore the world must equal the archive, not be merged onto whatever the
-// target already held. It restores over a populated target and asserts that
-//
-//	(a) archive files are present with the archive's content (overwriting stale
-//	    copies),
-//	(b) files the archive did not contain are gone — including a stale chunk
-//	    inside a directory the archive *does* keep, which proves per-file prune
-//	    within a surviving dir and exercises the rel-path normalization, and
-//	(c) a pre-existing lost+found/ with a file inside survives untouched — the
-//	    never-delete invariant for the filesystem artifact a non-root restore
-//	    Pod cannot remove.
-//
-// Honesty: this runs as the test user (which *can* delete anything), so it
-// proves the prune logic and the lost+found skip but does NOT exercise the
-// non-root / FSGroup runtime path. "Restore works as a non-root Pod on a real
-// ext4 PVC" remains code-complete-but-unverified (same bucket as the K8s E2E).
 func TestTarLocalRestoreReplacesTarget(t *testing.T) {
 	src := t.TempDir()
 	dst := t.TempDir()
@@ -194,8 +177,6 @@ func TestTarLocalUnknownPVC(t *testing.T) {
 	}
 }
 
-// TestTarLocalRejectsZipSlip crafts a malicious archive whose entry escapes the
-// target directory and asserts Restore refuses it.
 func TestTarLocalRejectsZipSlip(t *testing.T) {
 	backupRoot := t.TempDir()
 	dst := t.TempDir()
@@ -231,9 +212,6 @@ func TestTarLocalRejectsZipSlip(t *testing.T) {
 	}
 }
 
-// TestTarLocalArchiveIsDurableAndChecksummed pins the write path: the archive
-// lands under its final name only, no .partial is left beside it, and the
-// SHA256 it reports is the one of the bytes on disk, which Verify reads back.
 func TestTarLocalArchiveIsDurableAndChecksummed(t *testing.T) {
 	src, backupRoot := t.TempDir(), t.TempDir()
 	writeTree(t, src, map[string]string{"level.dat": "seed", "region/r.0.0.mca": "chunk"})
@@ -269,9 +247,6 @@ func TestTarLocalArchiveIsDurableAndChecksummed(t *testing.T) {
 	}
 }
 
-// TestTarLocalFailedArchiveLeavesNothing: an Archive that fails part way (here
-// a cancelled context) removes its .partial, so no leftover can pass for an
-// archive.
 func TestTarLocalFailedArchiveLeavesNothing(t *testing.T) {
 	src, backupRoot := t.TempDir(), t.TempDir()
 	writeTree(t, src, map[string]string{"level.dat": "seed"})
@@ -286,10 +261,6 @@ func TestTarLocalFailedArchiveLeavesNothing(t *testing.T) {
 	}
 }
 
-// TestTarLocalKeepsModesAndTimes: a restore gives files and directories back
-// their permission bits (setuid, setgid and sticky dropped) and modification
-// times, and what the archive cannot hold is reported rather than dropped
-// silently.
 func TestTarLocalKeepsModesAndTimes(t *testing.T) {
 	src, dst, backupRoot := t.TempDir(), t.TempDir(), t.TempDir()
 	writeTree(t, src, map[string]string{
@@ -363,8 +334,6 @@ func damage(t *testing.T, ref backup.ArchiveRef, f func([]byte) []byte) {
 	}
 }
 
-// TestTarLocalVerifyFindsCorruption: a flipped byte, a truncated file, a digest
-// that no longer matches and a missing file all come back as ErrCorrupt.
 func TestTarLocalVerifyFindsCorruption(t *testing.T) {
 	src := t.TempDir()
 	writeTree(t, src, map[string]string{"level.dat": "seed", "region/r.0.0.mca": string(make([]byte, 64<<10))})
@@ -417,8 +386,6 @@ func TestTarLocalVerifyFindsCorruption(t *testing.T) {
 	}
 }
 
-// TestTarLocalRestoreRefusesCorruptArchive: the archive is read back before
-// anything is extracted, so a corrupt one leaves the world exactly as it was.
 func TestTarLocalRestoreRefusesCorruptArchive(t *testing.T) {
 	src, dst := t.TempDir(), t.TempDir()
 	writeTree(t, src, map[string]string{"level.dat": "archived", "region/r.0.0.mca": string(make([]byte, 64<<10))})
@@ -442,10 +409,6 @@ func TestTarLocalRestoreRefusesCorruptArchive(t *testing.T) {
 	}
 }
 
-// TestTarLocalSweep removes old .partial files and orphaned archives past the
-// orphan cutoff, reports younger orphans, and leaves everything else: fresh
-// leftovers (an Archive may still be writing, or its record not yet inserted),
-// claimed archives, and files it did not write.
 func TestTarLocalSweep(t *testing.T) {
 	root := t.TempDir()
 	now := time.Now()

@@ -20,9 +20,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-// TestServerMigrateWaitsForNodeMaintenance pins that the CLI refuses migration changes
-// while a host node operation runs, as the API does, and that a host without the
-// node-control service is not blocked.
 func TestServerMigrateWaitsForNodeMaintenance(t *testing.T) {
 	// A short directory: a Unix socket path is capped near 104 bytes, and macOS temp dirs are long.
 	dir, err := os.MkdirTemp("/tmp", "nc")
@@ -61,9 +58,6 @@ func TestServerMigrateWaitsForNodeMaintenance(t *testing.T) {
 	}
 }
 
-// TestHomeControllerReadsTheOperator pins which controller the CLI treats as home: the
-// operator's FELIS_CONTROLLER_NODE, else the only controller, and none when several are
-// labelled and nothing names one.
 func TestHomeControllerReadsTheOperator(t *testing.T) {
 	scheme := runtime.NewScheme()
 	clientgoscheme.AddToScheme(scheme)

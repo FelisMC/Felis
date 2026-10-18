@@ -6,49 +6,21 @@ import (
 	"strings"
 )
 
-// In-app webview guard (spec §B onboarding; passkey/WebAuthn is unusable inside the
-// WeChat and QQ in-app browsers). A player onboards by opening console.<root_domain>
-// — often by scanning the console QR with a phone. If the phone's WeChat or QQ scanner
-// opens the link, it loads inside that app's WebView, where a WebAuthn ceremony
-// silently fails: the player would hit a dead end at the one step (passkey enrollment)
-// the console is built around.
-//
-// So this guard intercepts the top-level HTML navigation from those WebViews and serves
-// an interstitial that steers the player to their SYSTEM browser instead of letting the
-// broken SPA load. It lives here in the Go static server — NOT in the panel SPA — so the
-// frontend is untouched and every navigation that reaches the console (scanned or
-// clicked) is covered at one seam.
-//
-// It is a guide, not a wall: a "continue anyway" link sets an ack cookie so a determined
-// user (or a false-positive UA) is never hard-blocked. Only document navigations are
-// touched — API calls, /config.json, health probes and asset requests pass straight
-// through, so an acknowledged SPA still loads its scripts normally.
+// Guide WeChat/QQ WebViews to a system browser because they cannot complete passkey enrollment.
 
-// webViewAckCookie records that the visitor chose to proceed past the interstitial, so
-// subsequent full page loads in the same WebView are not interrupted again.
 const webViewAckCookie = "felis_ua_ack"
 
-// isInAppWebView reports whether the User-Agent is a WeChat or QQ in-app browser. WeChat
-// WebViews carry "MicroMessenger"; QQ's in-app browser carries "MQQBrowser" and the QQ
-// chat WebView carries a " QQ/<version>" token. Matched case-insensitively. Standalone
-// real browsers (Chrome, Safari, Firefox, even the standalone QQ Browser app) are not
-// matched — the target is specifically the chat-app WebViews where passkey breaks.
 func isInAppWebView(ua string) bool {
 	if ua == "" {
 		return false
 	}
 	l := strings.ToLower(ua)
-	return strings.Contains(l, "micromessenger") || // WeChat WebView
-		strings.Contains(l, "mqqbrowser") || // QQ in-app browser
-		strings.Contains(l, " qq/") // QQ chat WebView token
+	return strings.Contains(l, "micromessenger") ||
+		strings.Contains(l, "mqqbrowser") ||
+		strings.Contains(l, " qq/")
 }
 
-// guardInAppWebView serves the "open in your system browser" interstitial when a WeChat
-// or QQ WebView makes a top-level HTML navigation to the console, returning true when it
-// handled the request. It returns false — letting the normal SPA/static path run — for
-// non-navigations, non-WebView agents, the API/config/health paths, and once the visitor
-// has acknowledged (via the ack cookie or the ua_ack escape hatch, which also plants the
-// cookie so the acknowledgement sticks across reloads).
+// guardInAppWebView intercepts HTML navigation until the visitor acknowledges the warning.
 func guardInAppWebView(w http.ResponseWriter, r *http.Request) bool {
 	if r.Method != http.MethodGet {
 		return false
@@ -57,8 +29,7 @@ func guardInAppWebView(w http.ResponseWriter, r *http.Request) bool {
 	if p == "/healthz" || p == "/readyz" || p == "/config.json" || strings.HasPrefix(p, "/api/") {
 		return false
 	}
-	// Only intercept an actual HTML document navigation, never asset/XHR requests
-	// (those do not send Accept: text/html), so an acknowledged SPA loads normally.
+	// Only intercept HTML documents so assets and API requests remain available.
 	if !strings.Contains(r.Header.Get("Accept"), "text/html") {
 		return false
 	}
@@ -66,10 +37,9 @@ func guardInAppWebView(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	if _, err := r.Cookie(webViewAckCookie); err == nil {
-		return false // already acknowledged
+		return false
 	}
 	if r.URL.Query().Get("ua_ack") == "1" {
-		// The "continue anyway" path: remember the choice and let the SPA load.
 		http.SetCookie(w, &http.Cookie{
 			Name:     webViewAckCookie,
 			Value:    "1",
@@ -85,8 +55,6 @@ func guardInAppWebView(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-// serveWebViewInterstitial writes the guidance page (HTTP 200, self-contained, no external
-// assets or JS so it renders inside a restricted WebView and triggers no dialogs).
 func serveWebViewInterstitial(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
@@ -101,10 +69,7 @@ func serveWebViewInterstitial(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// externalURL rebuilds the absolute URL the visitor should paste into a system browser,
-// with the internal ua_ack hint stripped. The scheme prefers X-Forwarded-Proto (the edge
-// terminates TLS upstream), then the request's own TLS, defaulting to https — the console
-// is an https origin.
+// externalURL strips ua_ack and prefers the edge scheme from X-Forwarded-Proto.
 func externalURL(r *http.Request) string {
 	scheme := "https"
 	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
@@ -119,8 +84,6 @@ func externalURL(r *http.Request) string {
 	return scheme + "://" + r.Host + u.RequestURI()
 }
 
-// ackURL is the same location with the ua_ack escape hatch set — a relative link (same
-// origin), so it works regardless of the external host.
 func ackURL(r *http.Request) string {
 	u := *r.URL
 	q := u.Query()
@@ -129,9 +92,6 @@ func ackURL(r *http.Request) string {
 	return u.RequestURI()
 }
 
-// webViewInterstitialTmpl is the guidance page. html/template escapes the reflected URL
-// values (defusing a reflected-XSS via a crafted path/query) in both text and URL/href
-// contexts.
 var webViewInterstitialTmpl = template.Must(template.New("webview").Parse(`<!DOCTYPE html>
 <html lang="zh">
 <head>

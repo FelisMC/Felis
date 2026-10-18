@@ -8,11 +8,6 @@ import (
 	"testing"
 )
 
-// The owner row is the one identity the panel may never demote, delete, or
-// disable (migration 0011) — only the local break-glass console resets it.
-// These guards became load-bearing the moment provisioning started actually
-// writing role='owner'; before that the owner tier was simply unreachable, so
-// nothing could reach them.
 func TestOwnerAccountProtectedFromPanelMutations(t *testing.T) {
 	owner := &Principal{UserID: "usr-root", Role: "owner", ViaAdminAccess: true}
 	repo := newFakeRepo()
@@ -50,8 +45,6 @@ func TestOwnerAccountProtectedFromPanelMutations(t *testing.T) {
 			t.Fatalf("disable owner: error code = %q, want owner_protected", got)
 		}
 	})
-	// The caller's own row is refused as self_protected even though it is also
-	// an owner: that is the reason the admin can act on.
 	for _, tc := range []struct{ name, method, path, body string }{
 		{"own role", "PATCH", "/api/v1/users/usr-root", `{"role":"admin"}`},
 		{"own delete", "DELETE", "/api/v1/users/usr-root", ""},
@@ -85,10 +78,6 @@ func TestOwnerAccountProtectedFromPanelMutations(t *testing.T) {
 	})
 }
 
-// The caller's own email and passkeys are ways into the caller's account, so
-// changing them through /users/{id} takes the same recent reauth as through
-// /account. Without it a stolen owner session could strip both here, and with no
-// factor left to guard, /account/passkey/register/begin would let it plant its own.
 func TestOwnSignInFactorsNeedReauthUnderUsers(t *testing.T) {
 	owner := &Principal{UserID: "usr-root", Role: "owner", Email: "root@example.net",
 		ViaAdminAccess: true, ViaSession: true, EmailVerified: true}
@@ -131,7 +120,6 @@ func TestOwnSignInFactorsNeedReauthUnderUsers(t *testing.T) {
 			}
 		})
 	}
-	// Another account's factors are the owner's to manage, and a username is no way in.
 	for _, tc := range []struct{ name, method, path, body string }{
 		{"another user's email", "PATCH", "/api/v1/users/u2", `{"email":"alice@new.example"}`},
 		{"another user's passkeys", "DELETE", "/api/v1/users/u2/passkeys", ""},
@@ -156,11 +144,6 @@ func TestOwnSignInFactorsNeedReauthUnderUsers(t *testing.T) {
 	}
 }
 
-// The user-scoped admin sub-resources (quotas, account links) must answer 404
-// for an unknown user id. Before the requireLiveUser guard the quota upsert and
-// the link insert reached the users(id) foreign key and surfaced as an opaque
-// 500 (found live against the drill cluster, audit #30), and the quotas read
-// answered a zero-value "unlimited" view as if the id existed.
 func TestAdminSubresourcesRequireLiveUser(t *testing.T) {
 	owner := &Principal{UserID: "usr-root", Role: "owner", ViaAdminAccess: true}
 	repo := newFakeRepo()
@@ -202,10 +185,6 @@ func TestAdminSubresourcesRequireLiveUser(t *testing.T) {
 	})
 }
 
-// The quotas form replaces all four caps at once, so an owner can lift a cap they
-// set: a missing or null field is unlimited, 0 grants none of it. Before, a null
-// field meant "leave it", the panel sent null for every emptied box, and a cap once
-// set could only be moved, never removed; a negative one was written as is.
 func TestSetQuotasReplacesAllCaps(t *testing.T) {
 	owner := &Principal{UserID: "usr-root", Role: "owner", ViaAdminAccess: true}
 	repo := newFakeRepo()
@@ -264,9 +243,6 @@ func TestSetQuotasReplacesAllCaps(t *testing.T) {
 	put(`{"max_memory_mb":2147483647}`, http.StatusOK)
 }
 
-// A user's own quota of empty caps is unlimited, and wins over the default
-// quota; the Owner returns them to the default by removing it, which the read
-// then tells apart from an own row.
 func TestClearQuotasReturnsTheUserToTheDefault(t *testing.T) {
 	owner := &Principal{UserID: "usr-root", Role: "owner", ViaAdminAccess: true}
 	repo := newFakeRepo()
