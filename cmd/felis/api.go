@@ -426,6 +426,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		go settleRestoreChains(ctx, a, stderr)
 		go settleLiveBackups(ctx, a, stderr)
 		go runSchedules(ctx, a, stderr)
+		go notifyServerEvents(ctx, a, stderr)
 		if backuper != nil {
 			go scheduleBackups(ctx, &api.BackupScheduler{API: a, Store: repo, Jobs: jobStatus, Every: rcfg.ScheduledEvery}, stderr)
 		} else {
@@ -666,6 +667,21 @@ func runSchedules(ctx context.Context, a *api.API, stderr io.Writer) {
 		case <-t.C:
 			if err := a.RunSchedules(ctx); err != nil {
 				fmt.Fprintf(stderr, "felis api: scheduled tasks: %v\n", err)
+			}
+		}
+	}
+}
+
+func notifyServerEvents(ctx context.Context, a *api.API, stderr io.Writer) {
+	t := time.NewTicker(15 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if err := a.NotifyServerEvents(ctx); err != nil {
+				fmt.Fprintf(stderr, "felis api: lifecycle mail: %v\n", err)
 			}
 		}
 	}

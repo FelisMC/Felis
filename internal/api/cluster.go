@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"time"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
@@ -45,6 +46,59 @@ type ServerInfo struct {
 	// Software is nil for a server image.
 	Software *ServerSoftware `json:"software,omitempty"`
 	Startup  *StartupStatus  `json:"startup,omitempty"`
+	// System servers always resume and restart, whatever these say.
+	ResumeAfterHostRestart bool         `json:"resumeAfterHostRestart"`
+	RestartOnCrash         bool         `json:"restartOnCrash"`
+	MaxCrashRestarts       int32        `json:"maxCrashRestarts"`
+	Notify                 ServerNotify `json:"notify"`
+	// RecentCrashes counts crashes in a row, the latest within the last hour.
+	RecentCrashes int32      `json:"recentCrashes,omitempty"`
+	LastCrash     *CrashInfo `json:"lastCrash,omitempty"`
+	// AutoStop says why the platform stopped the server; starting it clears it.
+	AutoStop *AutoStopInfo `json:"autoStop,omitempty"`
+	// CrashStopped servers start only by their owner or an admin, never by a join.
+	CrashStopped bool `json:"crashStopped,omitempty"`
+	// Events, oldest first, are filled in for a single server only.
+	Events []ServerEvent `json:"events,omitempty"`
+}
+
+// ServerNotify picks the lifecycle events mailed to the server's owner.
+type ServerNotify struct {
+	Started  bool `json:"started"`
+	Stopped  bool `json:"stopped"`
+	Problems bool `json:"problems"`
+}
+
+type CrashInfo struct {
+	At       time.Time `json:"at"`
+	Reason   string    `json:"reason,omitempty"`
+	ExitCode int32     `json:"exitCode"`
+}
+
+type AutoStopInfo struct {
+	Reason string    `json:"reason"`
+	At     time.Time `json:"at"`
+}
+
+type ServerEvent struct {
+	Seq      int64     `json:"seq"`
+	Type     string    `json:"type"`
+	At       time.Time `json:"at"`
+	Reason   string    `json:"reason,omitempty"`
+	ExitCode int32     `json:"exitCode,omitempty"`
+	Crashes  int32     `json:"crashes,omitempty"`
+	Limit    int32     `json:"limit,omitempty"`
+	Stopping bool      `json:"stopping,omitempty"`
+}
+
+// ServerEventFeed is one server's lifecycle events for mailing; Mailed is the last seq already handled.
+type ServerEventFeed struct {
+	Name        string
+	DisplayName string
+	System      bool
+	Notify      ServerNotify
+	Mailed      int64
+	Events      []ServerEvent
 }
 
 // CreateServerInput is already validated; new servers start stopped and unowned.
@@ -75,6 +129,13 @@ type ServerSpecPatch struct {
 	// ClearSoftware removes the runtime-software selection when moving to a server image.
 	Software      *v1alpha1.SoftwareSpec
 	ClearSoftware bool
+
+	ResumeAfterHostRestart *bool
+	RestartOnCrash         *bool
+	MaxCrashRestarts       *int32
+	NotifyStarted          *bool
+	NotifyStopped          *bool
+	NotifyProblems         *bool
 }
 
 type Cluster interface {
@@ -99,6 +160,9 @@ type Cluster interface {
 	CreateServer(ctx context.Context, in CreateServerInput) error
 	// PatchServerSpec merge-patches non-nil fields so concurrent operator status updates survive.
 	PatchServerSpec(ctx context.Context, name string, patch ServerSpecPatch) error
+	ServerEventFeeds(ctx context.Context) ([]ServerEventFeed, error)
+	// MarkEventsMailed records that events up to seq were handled.
+	MarkEventsMailed(ctx context.Context, name string, seq int64) error
 }
 
 type ServerSoftware struct {

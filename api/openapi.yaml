@@ -837,7 +837,7 @@ components:
     ServerInfo:
       type: object
       description: Status projection of one server (internal/api/cluster.go ServerInfo).
-      required: [name, subdomain, phase, ready, playersOnline, playersMax, idleStopSeconds]
+      required: [name, subdomain, phase, ready, playersOnline, playersMax, idleStopSeconds, resumeAfterHostRestart, restartOnCrash, maxCrashRestarts, notify]
       properties:
         startup: { $ref: '#/components/schemas/StartupStatus', description: Private runtime and startup diagnostics for authorized server managers. }
         nodeName: { type: string, description: Execution node; legacy servers report the observed node. }
@@ -901,6 +901,100 @@ components:
           description: >-
             Owner and staff only. Present while the owner has given the server up or an
             admin is deleting it; the reaper carries that out on its next run.
+        resumeAfterHostRestart:
+          type: boolean
+          description: Whether a server that was running starts again after its host restarts, for example after a power loss. System servers always resume.
+        restartOnCrash:
+          type: boolean
+          description: Whether the server is restarted after its process exits or stops responding. System servers always restart.
+        maxCrashRestarts:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 20
+          description: >-
+            How many crashes in a row are restarted; the next one stops the server. The count
+            starts over after an hour without a crash. Kept while restartOnCrash is off.
+        notify: { $ref: '#/components/schemas/ServerNotify' }
+        recentCrashes:
+          type: integer
+          format: int32
+          description: Present when non-zero; crashes in a row, the latest within the last hour.
+        lastCrash: { $ref: '#/components/schemas/CrashInfo' }
+        autoStop: { $ref: '#/components/schemas/AutoStopInfo' }
+        crashStopped:
+          type: boolean
+          description: Present and true when the server stopped after crashing; a join does not wake it, only its owner or an admin starts it.
+        events:
+          type: array
+          description: The latest lifecycle events, oldest first; present on single-server reads only.
+          items: { $ref: '#/components/schemas/ServerEvent' }
+
+    ServerNotify:
+      type: object
+      description: The lifecycle events mailed to the server's owner, or to the platform owners while it is unclaimed.
+      required: [started, stopped, problems]
+      properties:
+        started: { type: boolean }
+        stopped: { type: boolean }
+        problems:
+          type: boolean
+          description: Crashes, failed starts and host restarts.
+
+    CrashInfo:
+      type: object
+      description: The latest unexpected exit of the server process.
+      required: [at, exitCode]
+      properties:
+        at: { type: string, format: date-time }
+        reason:
+          type: string
+          description: The container termination reason, such as OOMKilled or Error.
+        exitCode: { type: integer, format: int32 }
+
+    AutoStopInfo:
+      type: object
+      description: Why the platform stopped the server on its own; cleared once it starts again.
+      required: [reason, at]
+      properties:
+        reason:
+          type: string
+          enum: [Idle, Crashed, CrashLimit, HostRestarted]
+          description: Idle after sitting empty, Crashed with restarts off, CrashLimit after too many crashes in a row, HostRestarted when set not to resume.
+        at: { type: string, format: date-time }
+
+    ServerEvent:
+      type: object
+      required: [seq, type, at]
+      properties:
+        seq: { type: integer, format: int64 }
+        type:
+          type: string
+          enum: [Started, Stopped, Crashed, HostRestarted, StartFailed]
+        at: { type: string, format: date-time }
+        reason:
+          type: string
+          description: The stop reason of Stopped, the termination reason of Crashed and the failure reason of StartFailed.
+        exitCode: { type: integer, format: int32 }
+        crashes:
+          type: integer
+          format: int32
+          description: The crash's place in a row of crashes.
+        limit:
+          type: integer
+          format: int32
+          description: The restart limit in force; 0 when restarts were off or for a system server.
+        stopping:
+          type: boolean
+          description: Present and true when the platform stopped the server because of this event.
+
+    ServerNotifyPatch:
+      type: object
+      description: Notification switches to change; omitted ones stay as they are.
+      properties:
+        started: { type: boolean }
+        stopped: { type: boolean }
+        problems: { type: boolean }
 
     FleetServer:
       description: One row of the fleet-wide admin read (internal/api/handlers_user.go fleetServerView).
@@ -2319,8 +2413,9 @@ paths:
         velocity holds no web Principal, so it drives the wake lever with its
         service token, identifying the player by online-mode UUID. Gated by the
         server's autostartPolicy and the per-server wake cooldown. A server whose
-        start failed with its automatic retries spent answers 409 start_failed: a
-        join never resets the retry budget, so velocity queues no one for it.
+        start failed with its automatic retries spent, or that stopped after
+        crashing, answers 409 start_failed: a join never resets the retry budget,
+        so velocity queues no one for it.
       x-felis-face: [internal]
       x-felis-tier: service
       x-felis-callers: [velocity]
@@ -2361,8 +2456,9 @@ paths:
           description: >-
             Nothing was started. maintenance_in_progress: a restore, backup or
             file write holds the server's world volume. start_failed: the last
-            start failed and its automatic retries are spent (ServerInfo.startGaveUp);
-            the server stays down until a person starts it from the panel.
+            start failed and its automatic retries are spent (ServerInfo.startGaveUp),
+            or the server stopped after crashing (ServerInfo.crashStopped); it stays
+            down until a person starts it from the panel.
             server_retiring: the owner gave the server up or an admin is deleting it;
             it stays down until the reaper archives it. world_reclaiming: the idle
             reaper is archiving the world; afterwards the server is released with an
@@ -2492,7 +2588,7 @@ paths:
         linked player, so the lobby shows Join there whatever the verdict. The
         verdicts follow the internal wake's gates without the transient ones
         (cooldown, running-server cap): `retiring` (given up or being deleted),
-        `start_failed` (automatic restarts spent), `owner` (the player's own),
+        `start_failed` (automatic restarts spent, or stopped after crashing), `owner` (the player's own),
         `wake` (the autostart policy admits the player), `owner_only`, and
         `allowlist` (the player is not on the list).
       x-felis-face: [internal]
@@ -3048,7 +3144,9 @@ paths:
           description: >-
             Nothing was started. maintenance_in_progress: a restore, backup or file
             write holds the server's world volume. server_retiring: the server is
-            given up or being deleted (ServerInfo.retiring).
+            given up or being deleted (ServerInfo.retiring). start_failed: the server
+            stopped after crashing (ServerInfo.crashStopped) and only its owner or an
+            admin may start it.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -4921,8 +5019,9 @@ paths:
       summary: Change a server you own.
       description: >-
         The owner's spec change: display name, who may wake it, idle stop, memory and
-        CPU (growth is held to the owner's quota, 403 quota_exceeded), and its server
-        software, under the same rules as the admin patch.
+        CPU (growth is held to the owner's quota, 403 quota_exceeded), its server
+        software, crash restarts, resuming after a host restart and lifecycle mail,
+        under the same rules as the admin patch.
       x-felis-face: [external]
       x-felis-tier: app
       security: [{ sessionCookie: [] }]
@@ -4944,6 +5043,10 @@ paths:
                 software: { $ref: '#/components/schemas/SoftwareRequest' }
                 confirmSoftwareChange: { type: boolean }
                 acceptEula: { type: boolean }
+                resumeAfterHostRestart: { type: boolean }
+                restartOnCrash: { type: boolean }
+                maxCrashRestarts: { type: integer, format: int32, minimum: 1, maximum: 20, description: Outside 1 to 20 is 400 bad_crash_restarts. }
+                notify: { $ref: '#/components/schemas/ServerNotifyPatch' }
       responses:
         '200':
           description: Patched.
@@ -9766,6 +9869,21 @@ paths:
                     leaving a server image also needs acceptEula.
                 confirmSoftwareChange: { type: boolean }
                 acceptEula: { type: boolean }
+                resumeAfterHostRestart:
+                  type: boolean
+                  description: Not for system servers (400), which always resume.
+                restartOnCrash:
+                  type: boolean
+                  description: Not for system servers (400), which always restart.
+                maxCrashRestarts:
+                  type: integer
+                  format: int32
+                  minimum: 1
+                  maximum: 20
+                  description: Crashes in a row restarted before the server stops; outside 1 to 20 is 400 bad_crash_restarts.
+                notify:
+                  allOf: [{ $ref: '#/components/schemas/ServerNotifyPatch' }]
+                  description: Not for system servers (400), whose problems the platform watchdog reports.
       responses:
         '200':
           description: Patched.

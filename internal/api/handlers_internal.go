@@ -138,6 +138,10 @@ func (a *API) handleInternalWake(w http.ResponseWriter, r *http.Request) {
 			"the server failed to start and its automatic retries are spent; its owner can retry from the panel"))
 		return
 	}
+	if info.CrashStopped {
+		writeError(w, r, errCrashStopped)
+		return
+	}
 	policy, _, err := a.readWakePolicy(r.Context())
 	if err != nil {
 		writeError(w, r, err)
@@ -179,6 +183,10 @@ func (a *API) handleInternalWake(w http.ResponseWriter, r *http.Request) {
 		"phase": info.Phase, "ready": info.Ready,
 	})
 }
+
+// errCrashStopped shares start_failed with spent start retries, so the proxy and lobby menu show the same notice.
+var errCrashStopped = newError(http.StatusConflict, "start_failed",
+	"the server stopped after crashing and no longer restarts on its own; its owner can start it from the panel")
 
 var errWorldReclaiming = newError(http.StatusConflict, "world_reclaiming",
 	"this server sat idle too long and its world is being archived; afterwards it is released with an empty world")
@@ -325,7 +333,7 @@ func (a *API) handleInternalMenuAccess(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case own.Retire != nil:
 			verdicts[info.Name] = menuRetiring
-		case info.StartGaveUp && info.DesiredState == string(v1alpha1.DesiredRunning):
+		case info.StartGaveUp && info.DesiredState == string(v1alpha1.DesiredRunning), info.CrashStopped:
 			verdicts[info.Name] = menuStartFailed
 		case standing.userID != "" && standing.userID == own.OwnerID:
 			verdicts[info.Name] = menuOwner

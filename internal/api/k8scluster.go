@@ -2,9 +2,11 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -84,6 +86,7 @@ func (k *K8sCluster) GetServer(ctx context.Context, name string) (*ServerInfo, e
 		return nil, err
 	}
 	info := serverInfo(&ms)
+	info.Events = serverEvents(ms.Status.Events)
 	if ms.Spec.DesiredState != v1alpha1.DesiredStopped && ms.Status.Phase != v1alpha1.PhaseStarting && ms.Status.Phase != v1alpha1.PhaseFailed && ms.Status.Phase != v1alpha1.PhaseRunning {
 		return info, nil
 	}
@@ -444,6 +447,24 @@ func (k *K8sCluster) PatchServerSpec(ctx context.Context, name string, p ServerS
 	if p.Resources != nil {
 		ms.Spec.Resources = *p.Resources
 	}
+	if p.ResumeAfterHostRestart != nil {
+		ms.Spec.Recovery.ResumeAfterHostRestart = p.ResumeAfterHostRestart
+	}
+	if p.RestartOnCrash != nil {
+		ms.Spec.Recovery.RestartOnCrash = p.RestartOnCrash
+	}
+	if p.MaxCrashRestarts != nil {
+		ms.Spec.Recovery.MaxCrashRestarts = *p.MaxCrashRestarts
+	}
+	if p.NotifyStarted != nil {
+		ms.Spec.Notify.Started = *p.NotifyStarted
+	}
+	if p.NotifyStopped != nil {
+		ms.Spec.Notify.Stopped = *p.NotifyStopped
+	}
+	if p.NotifyProblems != nil {
+		ms.Spec.Notify.Problems = p.NotifyProblems
+	}
 	if p.IdleStopSeconds != nil {
 		// Retain a disabled idle duration to distinguish an explicit choice from an unset setting during convergence.
 		if *p.IdleStopSeconds == 0 {
@@ -498,7 +519,98 @@ func serverInfo(ms *v1alpha1.MinecraftServer) *ServerInfo {
 		ReaperExempt:     ms.Spec.ReaperExempt,
 		Resources:        *ms.Spec.Resources.DeepCopy(),
 		Software:         serverSoftware(ms.Spec.Software),
+
+		ResumeAfterHostRestart: ms.Spec.Recovery.ResumesAfterHostRestart(),
+		RestartOnCrash:         ms.Spec.Recovery.RestartsOnCrash(),
+		MaxCrashRestarts:       maxCrashRestarts(ms.Spec.Recovery),
+		Notify:                 serverNotify(ms.Spec.Notify),
+		RecentCrashes:          recentCrashes(&ms.Status),
+		LastCrash:              crashInfo(ms.Status.LastCrash),
+		AutoStop:               autoStopInfo(ms.Status.AutoStop),
+		CrashStopped:           v1alpha1.CrashStopped(&ms.Status),
 	}
+}
+
+// maxCrashRestarts keeps the limit visible while restarts are off, so turning them back on shows it.
+func maxCrashRestarts(r v1alpha1.RecoverySpec) int32 {
+	if r.MaxCrashRestarts > 0 {
+		return r.MaxCrashRestarts
+	}
+	return v1alpha1.DefaultMaxCrashRestarts
+}
+
+func serverNotify(n v1alpha1.NotifySpec) ServerNotify {
+	return ServerNotify{Started: n.Started, Stopped: n.Stopped, Problems: n.ProblemsOn()}
+}
+
+func recentCrashes(s *v1alpha1.MinecraftServerStatus) int32 {
+	if s.LastCrash == nil || time.Since(s.LastCrash.At.Time) > v1alpha1.CrashWindow {
+		return 0
+	}
+	return s.Crashes
+}
+
+func crashInfo(c *v1alpha1.CrashRecord) *CrashInfo {
+	if c == nil {
+		return nil
+	}
+	return &CrashInfo{At: c.At.Time, Reason: c.Reason, ExitCode: c.ExitCode}
+}
+
+func autoStopInfo(a *v1alpha1.AutoStop) *AutoStopInfo {
+	if a == nil {
+		return nil
+	}
+	return &AutoStopInfo{Reason: a.Reason, At: a.At.Time}
+}
+
+func serverEvents(in []v1alpha1.ServerEvent) []ServerEvent {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]ServerEvent, len(in))
+	for i, e := range in {
+		out[i] = ServerEvent{Seq: e.Seq, Type: e.Type, At: e.At.Time, Reason: e.Reason, ExitCode: e.ExitCode, Crashes: e.Crashes, Limit: e.Limit, Stopping: e.Stopping}
+	}
+	return out
+}
+
+// AnnotationEventsMailed holds the last lifecycle event seq felis-api has mailed.
+const AnnotationEventsMailed = v1alpha1.GroupName + "/events-mailed"
+
+func (k *K8sCluster) ServerEventFeeds(ctx context.Context) ([]ServerEventFeed, error) {
+	var list v1alpha1.MinecraftServerList
+	if err := k.fleet().List(ctx, &list, client.InNamespace(k.namespace)); err != nil {
+		return nil, err
+	}
+	out := make([]ServerEventFeed, 0, len(list.Items))
+	for i := range list.Items {
+		ms := &list.Items[i]
+		if len(ms.Status.Events) == 0 {
+			continue
+		}
+		mailed, _ := strconv.ParseInt(ms.Annotations[AnnotationEventsMailed], 10, 64)
+		out = append(out, ServerEventFeed{
+			Name: ms.Name, DisplayName: ms.Spec.DisplayName, System: ms.Labels[v1alpha1.LabelSystemRole] != "",
+			Notify: serverNotify(ms.Spec.Notify), Mailed: mailed, Events: serverEvents(ms.Status.Events),
+		})
+	}
+	return out, nil
+}
+
+func (k *K8sCluster) MarkEventsMailed(ctx context.Context, name string, seq int64) error {
+	body, err := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": map[string]string{AnnotationEventsMailed: strconv.FormatInt(seq, 10)}}})
+	if err != nil {
+		return err
+	}
+	ms := &v1alpha1.MinecraftServer{ObjectMeta: metav1.ObjectMeta{Namespace: k.namespace, Name: name}}
+	if err := k.c.Patch(ctx, ms, client.RawPatch(types.MergePatchType, body)); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ErrNotFound
+		}
+		return err
+	}
+	return nil
 }
 
 func idleStopSeconds(ms *v1alpha1.MinecraftServer) int32 {

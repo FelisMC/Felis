@@ -646,6 +646,33 @@ func (p *PGRepo) ServerOwners(ctx context.Context) (map[string]ServerOwnership, 
 	return out, rows.Err()
 }
 
+func (p *PGRepo) ServerNoticeRecipients(ctx context.Context, server string) ([]string, error) {
+	var owner sql.NullString
+	err := p.db.QueryRowContext(ctx, `SELECT owner_id FROM servers WHERE name = $1 AND deleted_at IS NULL`, server).Scan(&owner)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	const active = `email_verified AND COALESCE(email, '') <> '' AND NOT disabled AND deleted_at IS NULL`
+	q, args := `SELECT email FROM users WHERE role = 'owner' AND `+active+` ORDER BY email`, []any{}
+	if owner.String != "" {
+		q, args = `SELECT email FROM users WHERE id = $1 AND `+active, []any{owner.String}
+	}
+	rows, err := p.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var email string
+		if err := rows.Scan(&email); err != nil {
+			return nil, err
+		}
+		out = append(out, email)
+	}
+	return out, rows.Err()
+}
+
 // SeedServer may leave a losing alias when same-name creates race across the database and cluster writes.
 func (p *PGRepo) SeedServer(ctx context.Context, name, subdomain string, cpuMilli, memoryMB, storageMB int) error {
 	tx, err := p.db.BeginTx(ctx, nil)

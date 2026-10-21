@@ -338,6 +338,11 @@ type ownerPatchRequest struct {
 	Software              *softwareRequest `json:"software,omitempty"`
 	ConfirmSoftwareChange bool             `json:"confirmSoftwareChange,omitempty"`
 	AcceptEULA            bool             `json:"acceptEula,omitempty"`
+
+	ResumeAfterHostRestart *bool               `json:"resumeAfterHostRestart,omitempty"`
+	RestartOnCrash         *bool               `json:"restartOnCrash,omitempty"`
+	MaxCrashRestarts       *int32              `json:"maxCrashRestarts,omitempty"`
+	Notify                 *notifyPatchRequest `json:"notify,omitempty"`
 }
 
 func (a *API) handleOwnerPatchServer(w http.ResponseWriter, r *http.Request) {
@@ -369,6 +374,11 @@ func (a *API) handleOwnerPatchServer(w http.ResponseWriter, r *http.Request) {
 		Software:              body.Software,
 		ConfirmSoftwareChange: body.ConfirmSoftwareChange,
 		AcceptEULA:            body.AcceptEULA,
+
+		ResumeAfterHostRestart: body.ResumeAfterHostRestart,
+		RestartOnCrash:         body.RestartOnCrash,
+		MaxCrashRestarts:       body.MaxCrashRestarts,
+		Notify:                 body.Notify,
 	}
 	if body.CPU != nil {
 		patch.Resources = &patchResourceRequest{CPU: body.CPU}

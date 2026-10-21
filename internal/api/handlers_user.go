@@ -37,6 +37,10 @@ func (a *API) handleWake(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	if info.CrashStopped && !p.IsAdmin() && (rec == nil || rec.OwnerID == "" || rec.OwnerID != p.UserID) {
+		writeError(w, r, errCrashStopped)
+		return
+	}
 	// A server pending retirement stays stopped until the reaper archives it; a start would change the archived world.
 	if rec != nil && rec.Retire != nil {
 		writeError(w, r, errServerRetiring)
@@ -696,6 +700,21 @@ type patchServerRequest struct {
 	AcceptEULA            bool             `json:"acceptEula,omitempty"`
 	// Storage is recognized only to return storage_immutable; this build does not orchestrate PVC expansion.
 	Storage *string `json:"storage,omitempty"`
+
+	ResumeAfterHostRestart *bool               `json:"resumeAfterHostRestart,omitempty"`
+	RestartOnCrash         *bool               `json:"restartOnCrash,omitempty"`
+	MaxCrashRestarts       *int32              `json:"maxCrashRestarts,omitempty"`
+	Notify                 *notifyPatchRequest `json:"notify,omitempty"`
+}
+
+type notifyPatchRequest struct {
+	Started  *bool `json:"started,omitempty"`
+	Stopped  *bool `json:"stopped,omitempty"`
+	Problems *bool `json:"problems,omitempty"`
+}
+
+func (r patchServerRequest) setsRecovery() bool {
+	return r.ResumeAfterHostRestart != nil || r.RestartOnCrash != nil || r.MaxCrashRestarts != nil || r.Notify != nil
 }
 
 const (
@@ -725,10 +744,14 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "system services must remain public and exempt from idle stop"))
 		return
 	}
+	if naming.IsSystemServer(name) && body.setsRecovery() {
+		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "system services always restart and resume, and their problems go to the platform watchdog"))
+		return
+	}
 
 	if body.DisplayName == nil && body.AutostartPolicy == nil && body.Image == nil &&
 		body.Memory == nil && body.Resources == nil && body.Storage == nil && body.IdleStopSeconds == nil &&
-		body.Software == nil {
+		body.Software == nil && !body.setsRecovery() {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
 			"patch must set at least one field"))
 		return
@@ -787,6 +810,28 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 		}
 		patch.IdleStopSeconds = body.IdleStopSeconds
 		changed = append(changed, "idleStopSeconds")
+	}
+
+	if body.ResumeAfterHostRestart != nil {
+		patch.ResumeAfterHostRestart = body.ResumeAfterHostRestart
+		changed = append(changed, "resumeAfterHostRestart")
+	}
+	if body.RestartOnCrash != nil {
+		patch.RestartOnCrash = body.RestartOnCrash
+		changed = append(changed, "restartOnCrash")
+	}
+	if body.MaxCrashRestarts != nil {
+		if n := *body.MaxCrashRestarts; n < 1 || n > v1alpha1.MaxCrashRestartsLimit {
+			writeError(w, r, newError(http.StatusBadRequest, "bad_crash_restarts",
+				"maxCrashRestarts must be between 1 and %d", v1alpha1.MaxCrashRestartsLimit))
+			return
+		}
+		patch.MaxCrashRestarts = body.MaxCrashRestarts
+		changed = append(changed, "maxCrashRestarts")
+	}
+	if n := body.Notify; n != nil && (n.Started != nil || n.Stopped != nil || n.Problems != nil) {
+		patch.NotifyStarted, patch.NotifyStopped, patch.NotifyProblems = n.Started, n.Stopped, n.Problems
+		changed = append(changed, "notify")
 	}
 
 	if body.Image != nil {

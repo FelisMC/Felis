@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -33,6 +34,8 @@ type fakeRepo struct {
 	mine         map[string][]MyServerView
 	owners       map[string]ServerOwnership // name -> claim state; unclaimed has empty OwnerID
 	ownersErr    error
+	noticeTo     map[string][]string // server -> lifecycle mail recipients
+	noticeToErr  error
 	claimOK      map[string]bool // name -> claim succeeds; absent name -> ErrNotFound
 	// claimQuotaRefuse refuses a name whose advisory pre-check already passed.
 	claimQuotaRefuse       map[string]bool
@@ -758,6 +761,9 @@ func (f *fakeRepo) ServerOwners(_ context.Context) (map[string]ServerOwnership, 
 		return nil, f.ownersErr
 	}
 	return f.owners, nil
+}
+func (f *fakeRepo) ServerNoticeRecipients(_ context.Context, server string) ([]string, error) {
+	return f.noticeTo[server], f.noticeToErr
 }
 func (f *fakeRepo) SeedServer(_ context.Context, name, subdomain string, _, _, _ int) error {
 	if f.seedErr != nil {
@@ -1627,6 +1633,8 @@ type fakeCluster struct {
 	acquired    []string // "name:kind" per admitted AcquireMaintenance
 	released    []string // names per ReleaseMaintenance
 	retried     []string // names per RetryStart
+	feeds       []ServerEventFeed
+	mailed      map[string]int64 // MarkEventsMailed: name -> seq
 }
 
 func newFakeCluster() *fakeCluster {
@@ -1654,6 +1662,23 @@ func (c *fakeCluster) ListServers(_ context.Context) ([]ServerInfo, error) {
 	return c.list, nil
 }
 func (c *fakeCluster) Ping(_ context.Context) error { return c.pingErr }
+
+func (c *fakeCluster) ServerEventFeeds(context.Context) ([]ServerEventFeed, error) {
+	out := slices.Clone(c.feeds)
+	for i := range out {
+		if seq, ok := c.mailed[out[i].Name]; ok {
+			out[i].Mailed = seq
+		}
+	}
+	return out, nil
+}
+func (c *fakeCluster) MarkEventsMailed(_ context.Context, name string, seq int64) error {
+	if c.mailed == nil {
+		c.mailed = map[string]int64{}
+	}
+	c.mailed[name] = seq
+	return nil
+}
 
 func (c *fakeCluster) WorldVolumeExists(_ context.Context, n string) (bool, error) {
 	if c.orphanWorld[n] {
@@ -1765,6 +1790,24 @@ func (c *fakeCluster) PatchServerSpec(_ context.Context, n string, p ServerSpecP
 	}
 	if p.IdleStopSeconds != nil {
 		info.IdleStopSeconds = *p.IdleStopSeconds
+	}
+	if p.ResumeAfterHostRestart != nil {
+		info.ResumeAfterHostRestart = *p.ResumeAfterHostRestart
+	}
+	if p.RestartOnCrash != nil {
+		info.RestartOnCrash = *p.RestartOnCrash
+	}
+	if p.MaxCrashRestarts != nil {
+		info.MaxCrashRestarts = *p.MaxCrashRestarts
+	}
+	if p.NotifyStarted != nil {
+		info.Notify.Started = *p.NotifyStarted
+	}
+	if p.NotifyStopped != nil {
+		info.Notify.Stopped = *p.NotifyStopped
+	}
+	if p.NotifyProblems != nil {
+		info.Notify.Problems = *p.NotifyProblems
 	}
 	if p.DisplayName != nil {
 		info.DisplayName = *p.DisplayName

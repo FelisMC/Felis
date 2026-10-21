@@ -207,6 +207,8 @@ type Repo interface {
 	MyServers(ctx context.Context, userID string) ([]MyServerView, error)
 	// ServerOwners omits deleted servers and uses empty OwnerID for unclaimed ones.
 	ServerOwners(ctx context.Context) (map[string]ServerOwnership, error)
+	// ServerNoticeRecipients is the owner's verified email, or every Owner-role account's for an unclaimed server; inactive accounts get none.
+	ServerNoticeRecipients(ctx context.Context, server string) ([]string, error)
 	AllBackups(ctx context.Context, opts BackupListOpts) ([]BackupView, int, error)
 	// BackupsForUser scopes to former ownership recorded at archive time.
 	BackupsForUser(ctx context.Context, userID string, opts BackupListOpts) ([]BackupView, int, error)
