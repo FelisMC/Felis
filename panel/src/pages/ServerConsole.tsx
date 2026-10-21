@@ -21,6 +21,7 @@ import { SoftwareCard } from "@/components/SoftwareCard";
 import { ForwardingDialog } from "@/components/ForwardingDialog";
 import { PowerButton } from "@/components/PowerButton";
 import { RetireCard, RetireNotice } from "@/components/Retirement";
+import { RecoveryNotice, ServerEventsCard } from "@/components/ServerEvents";
 import { parseFormatting, type Formatted } from "@/lib/mcformat";
 import { cn } from "@/lib/utils";
 import { InlineError, MessageLine } from "@/components/MessageLine";
@@ -293,6 +294,7 @@ export function ServerConsole() {
           {data.retiring && (
             <RetireNotice name={name} retiring={data.retiring} isAdmin={isAdmin} onChanged={reload} />
           )}
+          {!error && <RecoveryNotice data={data} />}
 
           {!error && startup && (
             <div role="status" className="shrink-0 space-y-2 rounded-xl border border-border bg-card p-4 text-sm">
@@ -354,6 +356,10 @@ export function ServerConsole() {
                   currentIdleStopSeconds={data.idleStopSeconds}
                   playerCountUnknown={data.playerCountUnknown}
                   currentSoftware={data.software}
+                  currentResume={data.resumeAfterHostRestart}
+                  currentCrashRestart={data.restartOnCrash}
+                  currentMaxCrashRestarts={data.maxCrashRestarts}
+                  currentNotify={data.notify}
                   onUpdated={reload}
                 />
               )}
@@ -432,6 +438,8 @@ export function ServerConsole() {
                 </div>
                 <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
               </Link>
+
+              {data.events && data.events.length > 0 && <ServerEventsCard events={data.events} />}
 
               {/* Giving the server up (owner) or deleting it (admin) closes the
                   sidebar. A system server is never retired, and one already on its

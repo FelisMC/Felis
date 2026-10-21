@@ -21,11 +21,12 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { api, humanizeError } from "@/lib/api";
 import { formatBytes, splitImageRef } from "@/lib/format";
 import { DISPLAY_NAME_MAX } from "@/lib/naming";
 import { useAsync } from "@/lib/hooks";
-import type { AutostartPolicy, ServerSoftware } from "@/lib/types";
+import type { AutostartPolicy, ServerNotify, ServerSoftware } from "@/lib/types";
 import { InlineError } from "@/components/MessageLine";
 import { uploadFile } from "@/components/files/uploadFile";
 import { SegmentedControl } from "@/components/SegmentedControl";
@@ -90,7 +91,23 @@ interface EditServerForm {
   cpu: string;
   /** Idle auto-stop seconds as a Select value; "0" is Never. */
   idleStop: string;
+  resume: boolean;
+  crashRestart: boolean;
+  /** The crash restart limit as typed. */
+  maxCrash: string;
+  notify: ServerNotify;
 }
+
+const MAX_CRASH_RESTARTS = 20;
+
+/** crashLimit parses a typed restart limit; null outside 1–20. */
+function crashLimit(text: string): number | null {
+  const n = Number(text.trim());
+  return /^\d+$/.test(text.trim()) && n >= 1 && n <= MAX_CRASH_RESTARTS ? n : null;
+}
+
+const DEFAULT_NOTIFY: ServerNotify = { started: false, stopped: false, problems: true };
+const NOTIFY_KEYS = ["problems", "started", "stopped"] as const;
 
 interface Props {
   serverName: string;
@@ -106,6 +123,10 @@ interface Props {
   playerCountUnknown?: boolean;
   /** What the server runs from the runtime image; absent for a server image. */
   currentSoftware?: ServerSoftware;
+  currentResume?: boolean;
+  currentCrashRestart?: boolean;
+  currentMaxCrashRestarts?: number;
+  currentNotify?: ServerNotify;
   /** owner edits a server the caller owns (PATCH /me/servers/{name}): no image,
    *  memory and CPU within their quota. admin is the staff patch. */
   mode?: "admin" | "owner";
@@ -137,10 +158,17 @@ export function EditServerDialog({
   currentIdleStopSeconds = 0,
   playerCountUnknown = false,
   currentSoftware,
+  currentResume = true,
+  currentCrashRestart = true,
+  currentMaxCrashRestarts = 3,
+  currentNotify = DEFAULT_NOTIFY,
   mode = "admin",
   onUpdated,
 }: Props) {
   const currentIdleStop = String(currentIdleStopSeconds);
+  const currentMaxCrash = String(currentMaxCrashRestarts);
+  // The status poll hands a new object each time, so the form follows the values.
+  const { started: notifyStarted, stopped: notifyStopped, problems: notifyProblems } = currentNotify;
   const { t } = useTranslation("servers");
   const [open, setOpen] = useState(false);
   const admin = mode === "admin";
@@ -167,6 +195,10 @@ export function EditServerDialog({
     memory: currentMemoryGiB,
     cpu: currentCpu,
     idleStop: currentIdleStop,
+    resume: currentResume,
+    crashRestart: currentCrashRestart,
+    maxCrash: currentMaxCrash,
+    notify: { started: notifyStarted, stopped: notifyStopped, problems: notifyProblems },
   });
 
   const [error, setError] = useState<string | null>(null);
@@ -190,6 +222,10 @@ export function EditServerDialog({
         memory: currentMemoryGiB,
         cpu: currentCpu,
         idleStop: currentIdleStop,
+        resume: currentResume,
+        crashRestart: currentCrashRestart,
+        maxCrash: currentMaxCrash,
+        notify: { started: notifyStarted, stopped: notifyStopped, problems: notifyProblems },
       });
       setError(null);
       setImageConfirmed(false);
@@ -200,7 +236,8 @@ export function EditServerDialog({
       setEula(false);
       setJarFile(null);
     }
-  }, [open, currentDisplayName, currentPolicy, currentImage, currentMemoryGiB, currentCpu, currentIdleStop, softwareKey]);
+  }, [open, currentDisplayName, currentPolicy, currentImage, currentMemoryGiB, currentCpu, currentIdleStop, softwareKey,
+    currentResume, currentCrashRestart, currentMaxCrash, notifyStarted, notifyStopped, notifyProblems]);
 
   function set<K extends keyof EditServerForm>(k: K, v: EditServerForm[K]) {
     setForm((f) => ({ ...f, [k]: v }));
@@ -232,7 +269,15 @@ export function EditServerDialog({
   const memoryOk = memoryGiB !== null && memoryGiB >= 1;
   const memoryChanged = memoryGiB === null ? form.memory.trim() !== currentMemoryGiB : memoryGiB !== parseGiB(currentMemoryGiB);
 
+  const maxCrash = crashLimit(form.maxCrash);
+  const maxCrashChanged = form.crashRestart && form.maxCrash.trim() !== currentMaxCrash;
+  const notifyChanges = NOTIFY_KEYS.filter((k) => form.notify[k] !== currentNotify[k]);
+  const recoveryChanged =
+    !systemService &&
+    (form.resume !== currentResume || form.crashRestart !== currentCrashRestart || maxCrashChanged || notifyChanges.length > 0);
+
   const hasChanges =
+    recoveryChanged ||
     displayName !== currentDisplayName ||
     form.autostartPolicy !== currentPolicy ||
     imageChanged ||
@@ -247,6 +292,7 @@ export function EditServerDialog({
     hasChanges &&
     cpuOk &&
     (!memoryChanged || memoryOk) &&
+    (!maxCrashChanged || maxCrash !== null) &&
     !submitting &&
     (!imageChanged || imageConfirmed) &&
     (!softwareMoves || softwareConfirmed) &&
@@ -282,6 +328,16 @@ export function EditServerDialog({
       }
       if (!systemService && form.idleStop !== currentIdleStop) {
         payload.idleStopSeconds = Number(form.idleStop);
+      }
+      if (!systemService) {
+        if (form.resume !== currentResume) payload.resumeAfterHostRestart = form.resume;
+        if (form.crashRestart !== currentCrashRestart) payload.restartOnCrash = form.crashRestart;
+        if (maxCrashChanged && maxCrash !== null) payload.maxCrashRestarts = maxCrash;
+        if (notifyChanges.length > 0) {
+          const notify: Partial<ServerNotify> = {};
+          for (const k of notifyChanges) notify[k] = form.notify[k];
+          payload.notify = notify;
+        }
       }
 
       // The jar goes first: the software then names a file that is there.
@@ -556,6 +612,70 @@ export function EditServerDialog({
               </p>
             )}
           </div>
+
+          {!systemService && (
+            <fieldset className="grid gap-3 rounded-md border border-border p-3">
+              <legend className="px-1 text-sm font-medium">{t("edit_server_recovery")}</legend>
+              <label htmlFor="es-resume" className="flex cursor-pointer items-center justify-between gap-4 text-sm">
+                <span className="space-y-0.5">
+                  <span className="block">{t("edit_server_resume")}</span>
+                  <span className="block text-xs leading-relaxed text-muted-foreground">{t("edit_server_resume_hint")}</span>
+                </span>
+                <Switch id="es-resume" checked={form.resume} onCheckedChange={(v) => set("resume", v)} />
+              </label>
+              <label htmlFor="es-crash-restart" className="flex cursor-pointer items-center justify-between gap-4 border-t border-border/60 pt-3 text-sm">
+                <span className="space-y-0.5">
+                  <span className="block">{t("edit_server_crash_restart")}</span>
+                  <span className="block text-xs leading-relaxed text-muted-foreground">{t("edit_server_crash_restart_hint")}</span>
+                </span>
+                <Switch id="es-crash-restart" checked={form.crashRestart} onCheckedChange={(v) => set("crashRestart", v)} />
+              </label>
+              {form.crashRestart ? (
+                <div className="grid gap-1.5">
+                  <div className="flex items-center gap-2 text-sm">
+                    <Label htmlFor="es-crash-max">{t("edit_server_crash_max")}</Label>
+                    <Input
+                      id="es-crash-max"
+                      inputMode="numeric"
+                      className="h-8 w-16 text-center"
+                      value={form.maxCrash}
+                      onChange={(e) => set("maxCrash", e.target.value)}
+                      aria-invalid={maxCrashChanged && maxCrash === null}
+                      aria-describedby="es-crash-max-hint"
+                    />
+                    <span className="text-muted-foreground">{t("edit_server_crash_max_unit")}</span>
+                  </div>
+                  <p id="es-crash-max-hint" className={maxCrashChanged && maxCrash === null ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>
+                    {maxCrashChanged && maxCrash === null
+                      ? t("edit_server_crash_max_invalid", { max: MAX_CRASH_RESTARTS })
+                      : t("edit_server_crash_max_hint")}
+                  </p>
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground">{t("edit_server_crash_off_hint")}</p>
+              )}
+            </fieldset>
+          )}
+
+          {!systemService && (
+            <fieldset className="grid gap-2.5 rounded-md border border-border p-3">
+              <legend className="px-1 text-sm font-medium">{t("edit_server_notify")}</legend>
+              {NOTIFY_KEYS.map((k) => (
+                <label key={k} className="flex cursor-pointer items-start gap-2.5 text-sm">
+                  <Checkbox
+                    className="mt-0.5"
+                    checked={form.notify[k]}
+                    onChange={(e) => set("notify", { ...form.notify, [k]: e.target.checked })}
+                  />
+                  <span className="space-y-0.5">
+                    <span className="block">{t(`edit_server_notify_${k}`)}</span>
+                    {k === "problems" && <span className="block text-xs text-muted-foreground">{t("edit_server_notify_problems_hint")}</span>}
+                  </span>
+                </label>
+              ))}
+              <p className="text-xs text-muted-foreground">{t("edit_server_notify_hint")}</p>
+            </fieldset>
+          )}
 
           {uploaded !== null && jarUpload && (
             <p role="status" className="text-xs text-muted-foreground">

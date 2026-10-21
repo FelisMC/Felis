@@ -144,3 +144,62 @@ describe("EditServerDialog request body", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 });
+
+describe("EditServerDialog recovery and mail", () => {
+  it("sends only the recovery switch that changed and says what a crash then does", async () => {
+    const user = await openDialog();
+    const restart = screen.getByRole("switch", { name: /Restart after a crash/ });
+    expect(restart.getAttribute("aria-checked")).toBe("true");
+    expect((screen.getByLabelText("Restart at most") as HTMLInputElement).value).toBe("3");
+    await user.click(restart);
+    expect(screen.queryByLabelText("Restart at most")).toBeNull();
+    expect(screen.getByText(/stays stopped until it is started by hand/)).toBeTruthy();
+    await user.click(save());
+
+    expect(calls.patchServer).toHaveBeenCalledWith("survival", { restartOnCrash: false });
+  });
+
+  it("turns resuming after a host restart off", async () => {
+    const user = await openDialog();
+    await user.click(screen.getByRole("switch", { name: /Resume after a host restart/ }));
+    await user.click(save());
+
+    expect(calls.patchServer).toHaveBeenCalledWith("survival", { resumeAfterHostRestart: false });
+  });
+
+  it("refuses a restart limit outside 1 to 20", async () => {
+    const user = await openDialog();
+    const limit = screen.getByLabelText("Restart at most") as HTMLInputElement;
+    for (const bad of ["0", "21", "2.5", "x"]) {
+      await user.clear(limit);
+      await user.type(limit, bad);
+      expect(screen.getByText("Enter a whole number from 1 to 20."), bad).toBeTruthy();
+      expect(save().disabled, bad).toBe(true);
+    }
+    await user.clear(limit);
+    await user.type(limit, "5");
+    await user.click(save());
+
+    expect(calls.patchServer).toHaveBeenCalledWith("survival", { maxCrashRestarts: 5 });
+  });
+
+  it("sends the mail switches that changed", async () => {
+    const user = await openDialog();
+    const problems = screen.getByRole("checkbox", { name: /Problems/ }) as HTMLInputElement;
+    expect(problems.checked).toBe(true);
+    await user.click(screen.getByRole("checkbox", { name: "Server stopped" }));
+    await user.click(problems);
+    await user.click(save());
+
+    expect(calls.patchServer).toHaveBeenCalledWith("survival", { notify: { problems: false, stopped: true } });
+  });
+
+  it("shows a system service no recovery or mail settings", async () => {
+    const user = userEvent.setup();
+    render(<EditServerDialog serverName="lobby" systemService currentImage="registry.example.test/lobby:1" onUpdated={onUpdated} />);
+    await user.click(screen.getByRole("button", { name: /Edit Server Config/ }));
+    await screen.findByRole("dialog");
+    expect(screen.queryByRole("switch", { name: /Restart after a crash/ })).toBeNull();
+    expect(screen.queryByText("Email notifications")).toBeNull();
+  });
+});

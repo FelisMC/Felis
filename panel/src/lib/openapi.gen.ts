@@ -344,7 +344,7 @@ export interface paths {
         put?: never;
         /**
          * Domain-autostart wake driven by velocity for a joining player (spec §9.1).
-         * @description velocity holds no web Principal, so it drives the wake lever with its service token, identifying the player by online-mode UUID. Gated by the server's autostartPolicy and the per-server wake cooldown. A server whose start failed with its automatic retries spent answers 409 start_failed: a join never resets the retry budget, so velocity queues no one for it.
+         * @description velocity holds no web Principal, so it drives the wake lever with its service token, identifying the player by online-mode UUID. Gated by the server's autostartPolicy and the per-server wake cooldown. A server whose start failed with its automatic retries spent, or that stopped after crashing, answers 409 start_failed: a join never resets the retry budget, so velocity queues no one for it.
          */
         post: operations["internalWake"];
         delete?: never;
@@ -416,7 +416,7 @@ export interface paths {
         };
         /**
          * What one player may start, for every user server — the lobby menu's per-player verdicts.
-         * @description One call per menu open; each tile's live state stays in the shared per-server projection (…/menu). A server that is up is open to every linked player, so the lobby shows Join there whatever the verdict. The verdicts follow the internal wake's gates without the transient ones (cooldown, running-server cap): `retiring` (given up or being deleted), `start_failed` (automatic restarts spent), `owner` (the player's own), `wake` (the autostart policy admits the player), `owner_only`, and `allowlist` (the player is not on the list).
+         * @description One call per menu open; each tile's live state stays in the shared per-server projection (…/menu). A server that is up is open to every linked player, so the lobby shows Join there whatever the verdict. The verdicts follow the internal wake's gates without the transient ones (cooldown, running-server cap): `retiring` (given up or being deleted), `start_failed` (automatic restarts spent, or stopped after crashing), `owner` (the player's own), `wake` (the autostart policy admits the player), `owner_only`, and `allowlist` (the player is not on the list).
          */
         get: operations["internalMenuAccess"];
         put?: never;
@@ -1346,7 +1346,7 @@ export interface paths {
         head?: never;
         /**
          * Change a server you own.
-         * @description The owner's spec change: display name, who may wake it, idle stop, memory and CPU (growth is held to the owner's quota, 403 quota_exceeded), and its server software, under the same rules as the admin patch.
+         * @description The owner's spec change: display name, who may wake it, idle stop, memory and CPU (growth is held to the owner's quota, 403 quota_exceeded), its server software, crash restarts, resuming after a host restart and lifecycle mail, under the same rules as the admin patch.
          */
         patch: operations["patchMyServer"];
         trace?: never;
@@ -3959,6 +3959,83 @@ export interface components {
             software?: components["schemas"]["ServerSoftware"];
             /** @description Owner and staff only. Present while the owner has given the server up or an admin is deleting it; the reaper carries that out on its next run. */
             retiring?: components["schemas"]["RetireState"];
+            /** @description Whether a server that was running starts again after its host restarts, for example after a power loss. System servers always resume. */
+            resumeAfterHostRestart: boolean;
+            /** @description Whether the server is restarted after its process exits or stops responding. System servers always restart. */
+            restartOnCrash: boolean;
+            /**
+             * Format: int32
+             * @description How many crashes in a row are restarted; the next one stops the server. The count starts over after an hour without a crash. Kept while restartOnCrash is off.
+             */
+            maxCrashRestarts: number;
+            notify: components["schemas"]["ServerNotify"];
+            /**
+             * Format: int32
+             * @description Present when non-zero; crashes in a row, the latest within the last hour.
+             */
+            recentCrashes?: number;
+            lastCrash?: components["schemas"]["CrashInfo"];
+            autoStop?: components["schemas"]["AutoStopInfo"];
+            /** @description Present and true when the server stopped after crashing; a join does not wake it, only its owner or an admin starts it. */
+            crashStopped?: boolean;
+            /** @description The latest lifecycle events, oldest first; present on single-server reads only. */
+            events?: components["schemas"]["ServerEvent"][];
+        };
+        /** @description The lifecycle events mailed to the server's owner, or to the platform owners while it is unclaimed. */
+        ServerNotify: {
+            started: boolean;
+            stopped: boolean;
+            /** @description Crashes, failed starts and host restarts. */
+            problems: boolean;
+        };
+        /** @description The latest unexpected exit of the server process. */
+        CrashInfo: {
+            /** Format: date-time */
+            at: string;
+            /** @description The container termination reason, such as OOMKilled or Error. */
+            reason?: string;
+            /** Format: int32 */
+            exitCode: number;
+        };
+        /** @description Why the platform stopped the server on its own; cleared once it starts again. */
+        AutoStopInfo: {
+            /**
+             * @description Idle after sitting empty, Crashed with restarts off, CrashLimit after too many crashes in a row, HostRestarted when set not to resume.
+             * @enum {string}
+             */
+            reason: "Idle" | "Crashed" | "CrashLimit" | "HostRestarted";
+            /** Format: date-time */
+            at: string;
+        };
+        ServerEvent: {
+            /** Format: int64 */
+            seq: number;
+            /** @enum {string} */
+            type: "Started" | "Stopped" | "Crashed" | "HostRestarted" | "StartFailed";
+            /** Format: date-time */
+            at: string;
+            /** @description The stop reason of Stopped, the termination reason of Crashed and the failure reason of StartFailed. */
+            reason?: string;
+            /** Format: int32 */
+            exitCode?: number;
+            /**
+             * Format: int32
+             * @description The crash's place in a row of crashes.
+             */
+            crashes?: number;
+            /**
+             * Format: int32
+             * @description The restart limit in force; 0 when restarts were off or for a system server.
+             */
+            limit?: number;
+            /** @description Present and true when the platform stopped the server because of this event. */
+            stopping?: boolean;
+        };
+        /** @description Notification switches to change; omitted ones stay as they are. */
+        ServerNotifyPatch: {
+            started?: boolean;
+            stopped?: boolean;
+            problems?: boolean;
         };
         /** @description One row of the fleet-wide admin read (internal/api/handlers_user.go fleetServerView). */
         FleetServer: components["schemas"]["ServerInfo"] & {
@@ -5428,7 +5505,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            /** @description Nothing was started. maintenance_in_progress: a restore, backup or file write holds the server's world volume. start_failed: the last start failed and its automatic retries are spent (ServerInfo.startGaveUp); the server stays down until a person starts it from the panel. server_retiring: the owner gave the server up or an admin is deleting it; it stays down until the reaper archives it. world_reclaiming: the idle reaper is archiving the world; afterwards the server is released with an empty world. */
+            /** @description Nothing was started. maintenance_in_progress: a restore, backup or file write holds the server's world volume. start_failed: the last start failed and its automatic retries are spent (ServerInfo.startGaveUp), or the server stopped after crashing (ServerInfo.crashStopped); it stays down until a person starts it from the panel. server_retiring: the owner gave the server up or an admin is deleting it; it stays down until the reaper archives it. world_reclaiming: the idle reaper is archiving the world; afterwards the server is released with an empty world. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -6081,7 +6158,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            /** @description Nothing was started. maintenance_in_progress: a restore, backup or file write holds the server's world volume. server_retiring: the server is given up or being deleted (ServerInfo.retiring). */
+            /** @description Nothing was started. maintenance_in_progress: a restore, backup or file write holds the server's world volume. server_retiring: the server is given up or being deleted (ServerInfo.retiring). start_failed: the server stopped after crashing (ServerInfo.crashStopped) and only its owner or an admin may start it. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -7910,6 +7987,14 @@ export interface operations {
                     software?: components["schemas"]["SoftwareRequest"];
                     confirmSoftwareChange?: boolean;
                     acceptEula?: boolean;
+                    resumeAfterHostRestart?: boolean;
+                    restartOnCrash?: boolean;
+                    /**
+                     * Format: int32
+                     * @description Outside 1 to 20 is 400 bad_crash_restarts.
+                     */
+                    maxCrashRestarts?: number;
+                    notify?: components["schemas"]["ServerNotifyPatch"];
                 };
             };
         };
@@ -13081,6 +13166,17 @@ export interface operations {
                     software?: components["schemas"]["SoftwareRequest"];
                     confirmSoftwareChange?: boolean;
                     acceptEula?: boolean;
+                    /** @description Not for system servers (400), which always resume. */
+                    resumeAfterHostRestart?: boolean;
+                    /** @description Not for system servers (400), which always restart. */
+                    restartOnCrash?: boolean;
+                    /**
+                     * Format: int32
+                     * @description Crashes in a row restarted before the server stops; outside 1 to 20 is 400 bad_crash_restarts.
+                     */
+                    maxCrashRestarts?: number;
+                    /** @description Not for system servers (400), whose problems the platform watchdog reports. */
+                    notify?: components["schemas"]["ServerNotifyPatch"];
                 };
             };
         };

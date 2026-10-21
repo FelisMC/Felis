@@ -399,3 +399,68 @@ describe("startup diagnostics and stale state", () => {
     } finally { vi.useRealTimers(); }
   });
 });
+
+describe("ServerConsole crashes and host restarts", () => {
+  const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
+
+  it("explains a server stopped for crashing too often, with the latest cause", async () => {
+    calls.status.mockResolvedValue(status({
+      phase: "Stopped", desiredState: "Stopped", maxCrashRestarts: 3, crashStopped: true,
+      autoStop: { reason: "CrashLimit", at: ago(5) },
+      lastCrash: { at: ago(5), reason: "OOMKilled", exitCode: 137 },
+    }));
+    renderConsole();
+
+    const notice = await screen.findByRole("status", { name: "The server kept crashing and is no longer restarted" });
+    expect(within(notice).getByText(/limit of 3 restarts/)).toBeTruthy();
+    expect(within(notice).getByText(/Out of memory; the process was killed/)).toBeTruthy();
+    expect(within(notice).getByText(/Players joining do not wake this server/)).toBeTruthy();
+  });
+
+  it("explains a server held back after a host restart", async () => {
+    calls.status.mockResolvedValue(status({
+      phase: "Stopped", desiredState: "Stopped", autoStop: { reason: "HostRestarted", at: ago(60) },
+    }));
+    renderConsole();
+
+    const notice = await screen.findByRole("status", { name: "The server did not resume after a host restart" });
+    expect(within(notice).getByText(/resuming after a host restart turned off/)).toBeTruthy();
+  });
+
+  it("says nothing about an idle stop or a stop that was started again", async () => {
+    calls.status.mockResolvedValue(status({ phase: "Stopped", desiredState: "Stopped", autoStop: { reason: "Idle", at: ago(3) } }));
+    renderConsole();
+    await screen.findByRole("button", { name: /Edit Server Config/ });
+    expect(screen.queryByRole("status", { name: /crash|host restart/ })).toBeNull();
+  });
+
+  it("counts recent crashes of a server that is running again", async () => {
+    calls.status.mockResolvedValue(status({
+      phase: "Running", desiredState: "Running", ready: true, restartOnCrash: true, maxCrashRestarts: 3,
+      recentCrashes: 2, lastCrash: { at: ago(2), reason: "Error", exitCode: 1 },
+    }));
+    renderConsole();
+
+    expect(await screen.findByText(/Crashed 2 times in a row within the last hour and was restarted each time \(limit 3\)/)).toBeTruthy();
+    expect(screen.getByText(/exit code 1/)).toBeTruthy();
+  });
+
+  it("lists the latest events, newest first", async () => {
+    calls.status.mockResolvedValue(status({
+      phase: "Running", desiredState: "Running", ready: true,
+      events: [
+        { seq: 1, type: "HostRestarted", at: ago(90) },
+        { seq: 2, type: "Started", at: ago(88) },
+        { seq: 3, type: "Crashed", at: ago(10), reason: "Error", exitCode: 1, crashes: 1, limit: 3 },
+      ],
+    }));
+    renderConsole();
+
+    const list = within(await screen.findByRole("region", { name: "Activity" })).getAllByRole("listitem");
+    expect(list.map((li) => li.textContent)).toEqual([
+      expect.stringContaining("The process exited unexpectedly (exit code 1); restarted (crash 1 in a row, limit 3)"),
+      expect.stringContaining("Server started"),
+      expect.stringContaining("The host restarted; the server resumed"),
+    ]);
+  });
+});

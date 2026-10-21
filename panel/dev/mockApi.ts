@@ -22,6 +22,7 @@ import type {
   MyServerView,
   Phase,
   ServerJob,
+  ServerNotify,
   ServerStatus,
   WhitelistImage,
   Submission,
@@ -288,6 +289,14 @@ function initialState(): MockState {
         // tag@digest, as felis-api stores it
         image:
           "registry.felis.svc:5000/paper-1.21:demo@sha256:3b637d68843f53750a2e3c2d29c0346b6f81ffd22db2902b80bd5048ee04cc09",
+        recentCrashes: 1,
+        lastCrash: { at: minutesAgo(18), reason: "Error", exitCode: 1 },
+        events: [
+          { seq: 1, type: "HostRestarted", at: minutesAgo(26 * 60) },
+          { seq: 2, type: "Started", at: minutesAgo(26 * 60 - 2) },
+          { seq: 3, type: "Crashed", at: minutesAgo(18), reason: "Error", exitCode: 1, crashes: 1, limit: 3 },
+          { seq: 4, type: "Started", at: minutesAgo(17) },
+        ],
       }),
       server("lobby", "Hub Lobby", "Running", "linked", {
         playersOnline: 28,
@@ -302,6 +311,17 @@ function initialState(): MockState {
       server("creative", "Creative Lab", "Stopped", "user", {
         autostartPolicy: "public",
         playersMax: 16,
+        recentCrashes: 4,
+        lastCrash: { at: minutesAgo(42), reason: "OOMKilled", exitCode: 137 },
+        autoStop: { reason: "CrashLimit", at: minutesAgo(42) },
+        crashStopped: true,
+        events: [
+          { seq: 7, type: "Crashed", at: minutesAgo(50), reason: "OOMKilled", exitCode: 137, crashes: 1, limit: 3 },
+          { seq: 8, type: "Crashed", at: minutesAgo(48), reason: "OOMKilled", exitCode: 137, crashes: 2, limit: 3 },
+          { seq: 9, type: "Crashed", at: minutesAgo(45), reason: "OOMKilled", exitCode: 137, crashes: 3, limit: 3 },
+          { seq: 10, type: "Crashed", at: minutesAgo(42), reason: "OOMKilled", exitCode: 137, crashes: 4, limit: 3, stopping: true },
+          { seq: 11, type: "Stopped", at: minutesAgo(41), reason: "CrashLimit" },
+        ],
       }),
       server("modded", "Modded Testbed", "Starting", "owner", {
         autostartPolicy: "allowlist",
@@ -578,10 +598,16 @@ function server(
     playersMax: 20,
     autostartPolicy: "ownerOnly",
     idleStopSeconds: 900,
+    resumeAfterHostRestart: true,
+    restartOnCrash: true,
+    maxCrashRestarts: 3,
+    notify: { started: false, stopped: false, problems: true },
     owner,
     ...overrides,
   };
 }
+
+const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
 
 // mockScan returns the stored scan of a seeded build.
 function mockScan(b: Build): BuildScan | null {
@@ -834,6 +860,10 @@ function statusView(serverInfo: MockServer, accountInfo: MockAccount): ServerSta
     playersOnline: wire.playersOnline,
     playersMax: wire.playersMax,
     idleStopSeconds: 0,
+    resumeAfterHostRestart: false,
+    restartOnCrash: false,
+    maxCrashRestarts: 0,
+    notify: { started: false, stopped: false, problems: false },
   };
 }
 
@@ -1033,6 +1063,7 @@ async function patchMockServer(ctx: SessionContext, serverInfo: MockServer, owne
     displayName?: string; autostartPolicy?: AutostartPolicy; idleStopSeconds?: number; memory?: string;
     cpu?: string; image?: string; confirmImageChange?: boolean; resources?: { cpu?: string };
     software?: SoftwareRequest; confirmSoftwareChange?: boolean; acceptEula?: boolean;
+    resumeAfterHostRestart?: boolean; restartOnCrash?: boolean; maxCrashRestarts?: number; notify?: Partial<ServerNotify>;
   }>(ctx.req);
   const changed: string[] = [];
   const next: Partial<MockServer> = {};
@@ -1113,9 +1144,33 @@ async function patchMockServer(ctx: SessionContext, serverInfo: MockServer, owne
     next.idleStopSeconds = body.idleStopSeconds;
     changed.push("idleStopSeconds");
   }
+  const recovery = body.resumeAfterHostRestart !== undefined || body.restartOnCrash !== undefined || body.maxCrashRestarts !== undefined || body.notify !== undefined;
+  if (recovery && serverInfo.reaperExempt) {
+    sendError(ctx.res, 400, "bad_request", "system services always restart and resume, and their problems go to the platform watchdog");
+    return;
+  }
+  if (body.maxCrashRestarts !== undefined) {
+    if (!Number.isInteger(body.maxCrashRestarts) || body.maxCrashRestarts < 1 || body.maxCrashRestarts > 20) {
+      sendError(ctx.res, 400, "bad_crash_restarts", "maxCrashRestarts must be between 1 and 20");
+      return;
+    }
+    next.maxCrashRestarts = body.maxCrashRestarts;
+    changed.push("maxCrashRestarts");
+  }
+  if (body.resumeAfterHostRestart !== undefined) {
+    next.resumeAfterHostRestart = body.resumeAfterHostRestart;
+    changed.push("resumeAfterHostRestart");
+  }
+  if (body.restartOnCrash !== undefined) {
+    next.restartOnCrash = body.restartOnCrash;
+    changed.push("restartOnCrash");
+  }
+  if (body.notify) {
+    next.notify = { ...serverInfo.notify, ...body.notify };
+    changed.push("notify");
+  }
   Object.assign(serverInfo, next);
-  if (ownerPatch) sendJSON(ctx.res, 200, { name: serverInfo.name, patched: changed });
-  else sendJSON(ctx.res, 200, { name: serverInfo.name, desiredState: serverInfo.desiredState });
+  sendJSON(ctx.res, 200, { name: serverInfo.name, patched: changed });
 }
 
 // handleMockSoftware serves the software catalog, the caller's quota, self-service server creation and the default quota.
@@ -2894,6 +2949,7 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
       sendError(ctx.res, 409, "not_running", "start the server before restarting it");
       return true;
     }
+    Object.assign(serverInfo, { autoStop: undefined, crashStopped: undefined, recentCrashes: undefined });
     setPhase(serverInfo, "Starting");
     sendJSON(ctx.res, 202, { name: serverInfo.name, desiredState: "Running" });
     return true;

@@ -16,6 +16,7 @@ import type {
   CreateServerRequest,
   SelfCreateRequest,
   SelfServiceQuotaSettings,
+  ServerNotify,
   ServerQuota,
   SoftwareRequest,
   SoftwareType,
@@ -621,6 +622,10 @@ export const api = rejectingSync({
     software?: SoftwareRequest;
     confirmSoftwareChange?: boolean;
     acceptEula?: boolean;
+    resumeAfterHostRestart?: boolean;
+    restartOnCrash?: boolean;
+    maxCrashRestarts?: number;
+    notify?: Partial<ServerNotify>;
   }) => request<{ name: string; patched: string[] }>("PATCH", urlPath`/me/servers/${name}`, req),
 
   // The Owner's default quota: the caps of every user without one of their own.
@@ -653,8 +658,14 @@ export const api = rejectingSync({
       memory?: string;
       memoryRequest?: string;
     };
+    resumeAfterHostRestart?: boolean;
+    restartOnCrash?: boolean;
+    /** Crashes in a row restarted before the server stops (1–20). */
+    maxCrashRestarts?: number;
+    /** Notification switches to change; the others stay. */
+    notify?: Partial<ServerNotify>;
   }) =>
-    request<{ name: string; desiredState: string }>(
+    request<{ name: string; patched: string[] }>(
       "PATCH",
       urlPath`/servers/${name}`,
       req,

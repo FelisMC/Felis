@@ -83,6 +83,59 @@ export interface ServerStatus {
   software?: ServerSoftware;
   /** A pending retirement. Owner and admin view only. */
   retiring?: RetireState;
+  /** Whether a server that was running starts again after its host restarts. */
+  resumeAfterHostRestart: boolean;
+  /** Whether the server is restarted after its process exits or stops responding. */
+  restartOnCrash: boolean;
+  /** Crashes in a row restarted before the server stops (1–20); kept while restarts are off. */
+  maxCrashRestarts: number;
+  notify: ServerNotify;
+  /** Crashes in a row, the latest within the last hour. */
+  recentCrashes?: number;
+  lastCrash?: CrashInfo;
+  /** Why the platform stopped the server on its own; cleared once it starts. */
+  autoStop?: AutoStopInfo;
+  /** Stopped after crashing: only its owner or an admin starts it. */
+  crashStopped?: boolean;
+  /** The latest lifecycle events, oldest first. */
+  events?: ServerEvent[];
+}
+
+/** The lifecycle events mailed to the server's owner. */
+export interface ServerNotify {
+  started: boolean;
+  stopped: boolean;
+  /** Crashes, failed starts and host restarts. */
+  problems: boolean;
+}
+
+export interface CrashInfo {
+  at: string;
+  /** The container termination reason, such as OOMKilled. */
+  reason?: string;
+  exitCode: number;
+}
+
+export type AutoStopReason = "Idle" | "Crashed" | "CrashLimit" | "HostRestarted";
+
+export interface AutoStopInfo {
+  reason: AutoStopReason;
+  at: string;
+}
+
+export type ServerEventType = "Started" | "Stopped" | "Crashed" | "HostRestarted" | "StartFailed";
+
+export interface ServerEvent {
+  seq: number;
+  type: ServerEventType;
+  at: string;
+  reason?: string;
+  exitCode?: number;
+  crashes?: number;
+  /** The restart limit in force; 0 when restarts were off. */
+  limit?: number;
+  /** The platform stopped the server because of this event. */
+  stopping?: boolean;
 }
 
 /** The kinds of server software a server can run from the runtime image. */
