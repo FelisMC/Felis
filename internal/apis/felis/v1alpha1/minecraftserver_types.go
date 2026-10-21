@@ -1,6 +1,8 @@
 package v1alpha1
 
 import (
+	"time"
+
 	"felis.lolicon.best/internal/naming"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -177,6 +179,10 @@ type MinecraftServerSpec struct {
 	// Startup bounds how long Starting may last before Failed.
 	Startup StartupSpec `json:"startup,omitempty"`
 	Idle    IdleSpec    `json:"idle,omitempty"`
+	// Recovery decides what follows a crash or a host restart; system servers always resume and restart.
+	Recovery RecoverySpec `json:"recovery,omitempty"`
+	// Notify picks the lifecycle events mailed to the server's owner.
+	Notify NotifySpec `json:"notify,omitempty"`
 }
 
 // SoftwareSpec is the server software of a runtime-image server (see
@@ -293,6 +299,124 @@ type IdleSpec struct {
 	EmptySecondsBeforeStop int32 `json:"emptySecondsBeforeStop,omitempty"`
 }
 
+// DefaultMaxCrashRestarts is the crash restart limit when none is set.
+const DefaultMaxCrashRestarts int32 = 3
+
+// MaxCrashRestartsLimit is the highest crash restart limit.
+const MaxCrashRestartsLimit int32 = 20
+
+// CrashWindow is how long without a crash starts the count over.
+const CrashWindow = time.Hour
+
+// RecoverySpec decides what follows an unexpected exit of the server process or a restart of its host.
+type RecoverySpec struct {
+	// ResumeAfterHostRestart starts a server that was running again after its host restarts; nil means true.
+	ResumeAfterHostRestart *bool `json:"resumeAfterHostRestart,omitempty"`
+	// RestartOnCrash restarts the process after it exits or stops responding; nil means true.
+	RestartOnCrash *bool `json:"restartOnCrash,omitempty"`
+	// MaxCrashRestarts is how many crashes in a row are restarted before the server is stopped; zero means DefaultMaxCrashRestarts.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=20
+	MaxCrashRestarts int32 `json:"maxCrashRestarts,omitempty"`
+}
+
+func (r RecoverySpec) ResumesAfterHostRestart() bool {
+	return r.ResumeAfterHostRestart == nil || *r.ResumeAfterHostRestart
+}
+
+func (r RecoverySpec) RestartsOnCrash() bool {
+	return r.RestartOnCrash == nil || *r.RestartOnCrash
+}
+
+// CrashRestartLimit is zero when crashes are not restarted.
+func (r RecoverySpec) CrashRestartLimit() int32 {
+	switch {
+	case !r.RestartsOnCrash():
+		return 0
+	case r.MaxCrashRestarts > 0:
+		return r.MaxCrashRestarts
+	}
+	return DefaultMaxCrashRestarts
+}
+
+// NotifySpec picks the lifecycle events mailed to the server's owner.
+type NotifySpec struct {
+	Started bool `json:"started,omitempty"`
+	Stopped bool `json:"stopped,omitempty"`
+	// Problems covers crashes, failed starts and host restarts; nil means true.
+	Problems *bool `json:"problems,omitempty"`
+}
+
+func (n NotifySpec) ProblemsOn() bool {
+	return n.Problems == nil || *n.Problems
+}
+
+// Reasons the operator stopped a server on its own.
+const (
+	StopIdle        = "Idle"
+	StopCrashed     = "Crashed"
+	StopCrashLimit  = "CrashLimit"
+	StopHostRestart = "HostRestarted"
+)
+
+// AutoStop records why the operator stopped the server.
+type AutoStop struct {
+	Reason string      `json:"reason"`
+	At     metav1.Time `json:"at"`
+	// Generation is the spec generation the stop produced; desiredState Running at a later one means a person started the server.
+	Generation int64 `json:"generation"`
+}
+
+// CrashStopped reports a server stopped after crashing, which only a person starts again.
+func CrashStopped(s *MinecraftServerStatus) bool {
+	return s.AutoStop != nil && (s.AutoStop.Reason == StopCrashed || s.AutoStop.Reason == StopCrashLimit)
+}
+
+// RunStatus is what the operator last saw of the server's pod and host.
+type RunStatus struct {
+	PodUID string `json:"podUID,omitempty"`
+	// Restarts is the container restart count of PodUID; growth means the process exited.
+	Restarts int32  `json:"restarts,omitempty"`
+	Node     string `json:"node,omitempty"`
+	// BootID identifies the boot of Node; a different one means the host restarted.
+	BootID string `json:"bootID,omitempty"`
+}
+
+// CrashRecord describes the latest unexpected exit.
+type CrashRecord struct {
+	At metav1.Time `json:"at"`
+	// Reason is the container termination reason, such as OOMKilled or Error.
+	Reason   string `json:"reason,omitempty"`
+	ExitCode int32  `json:"exitCode"`
+}
+
+// Lifecycle event types.
+const (
+	EventStarted       = "Started"
+	EventStopped       = "Stopped"
+	EventCrashed       = "Crashed"
+	EventHostRestarted = "HostRestarted"
+	EventStartFailed   = "StartFailed"
+)
+
+// MaxServerEvents bounds status.events.
+const MaxServerEvents = 20
+
+// ServerEvent is one lifecycle event; felis-api mails it and the panel lists it.
+type ServerEvent struct {
+	Seq  int64       `json:"seq"`
+	Type string      `json:"type"`
+	At   metav1.Time `json:"at"`
+	// Reason is the stop reason of Stopped, the termination reason of Crashed and the failure reason of StartFailed.
+	Reason   string `json:"reason,omitempty"`
+	ExitCode int32  `json:"exitCode,omitempty"`
+	// Crashes is the crash's place in a row of crashes; Limit is the restart limit then in force.
+	Crashes int32 `json:"crashes,omitempty"`
+	Limit   int32 `json:"limit,omitempty"`
+	// Stopping marks an event the operator stops the server for.
+	Stopping bool `json:"stopping,omitempty"`
+}
+
 // MinecraftServerStatus is the observed state.
 type MinecraftServerStatus struct {
 	NodeName string `json:"nodeName,omitempty"`
@@ -319,6 +443,13 @@ type MinecraftServerStatus struct {
 	// LastAutoRestartAt is when the operator last recreated the pod.
 	LastAutoRestartAt  *metav1.Time `json:"lastAutoRestartAt,omitempty"`
 	ObservedGeneration int64        `json:"observedGeneration,omitempty"`
+	Run                RunStatus    `json:"run,omitempty"`
+	// Crashes counts crashes in a row; it starts over after CrashWindow without one and when a person starts the server.
+	Crashes   int32        `json:"crashes,omitempty"`
+	LastCrash *CrashRecord `json:"lastCrash,omitempty"`
+	AutoStop  *AutoStop    `json:"autoStop,omitempty"`
+	// Events are the latest lifecycle events, oldest first.
+	Events []ServerEvent `json:"events,omitempty"`
 	// Conditions are the standard metav1 conditions (Ready, RconReached, ...).
 	// +patchMergeKey=type
 	// +patchStrategy=merge

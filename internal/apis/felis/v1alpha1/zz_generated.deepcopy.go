@@ -99,6 +99,18 @@ func (in *MinecraftServerSpec) DeepCopyInto(out *MinecraftServerSpec) {
 	out.Lifecycle = in.Lifecycle
 	out.Startup = in.Startup
 	out.Idle = in.Idle
+	if in.Recovery.ResumeAfterHostRestart != nil {
+		b := *in.Recovery.ResumeAfterHostRestart
+		out.Recovery.ResumeAfterHostRestart = &b
+	}
+	if in.Recovery.RestartOnCrash != nil {
+		b := *in.Recovery.RestartOnCrash
+		out.Recovery.RestartOnCrash = &b
+	}
+	if in.Notify.Problems != nil {
+		b := *in.Notify.Problems
+		out.Notify.Problems = &b
+	}
 }
 
 // DeepCopy returns a deep copy of the receiver.
@@ -130,6 +142,19 @@ func (in *MinecraftServerStatus) DeepCopyInto(out *MinecraftServerStatus) {
 	}
 	if in.LastAutoRestartAt != nil {
 		out.LastAutoRestartAt = in.LastAutoRestartAt.DeepCopy()
+	}
+	if in.LastCrash != nil {
+		c := *in.LastCrash
+		out.LastCrash = &c
+	}
+	if in.AutoStop != nil {
+		a := *in.AutoStop
+		out.AutoStop = &a
+	}
+	if in.Events != nil {
+		l := make([]ServerEvent, len(in.Events))
+		copy(l, in.Events)
+		out.Events = l
 	}
 	if in.Conditions != nil {
 		l := make([]metav1.Condition, len(in.Conditions))

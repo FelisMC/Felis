@@ -108,6 +108,11 @@ func cmdOperator(args []string, _, stderr io.Writer) int {
 	}
 	if os.Getenv("FELIS_DISTRIBUTED") == "true" {
 		r.Nodes = mgr.GetAPIReader()
+		r.BootID = operator.NodeBootID(r.Nodes)
+	} else if boot, err := operator.LocalBootID(); err == nil {
+		r.BootID = boot
+	} else {
+		fmt.Fprintf(stderr, "felis operator: host restarts will count as crashes: %v\n", err)
 	}
 	if err := r.SetupWithManager(mgr); err != nil {
 		fmt.Fprintf(stderr, "felis operator: setup controller: %v\n", err)

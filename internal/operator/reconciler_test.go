@@ -707,6 +707,7 @@ func TestIdleAutoStop_CalledBackStopStartsAFreshRun(t *testing.T) {
 		t.Fatalf("phase = %s, want Stopping while the pod is still up", s.Status.Phase)
 	}
 	s.Spec.DesiredState = v1alpha1.DesiredRunning
+	s.Generation++ // the API server bumps it on a spec change; the fake client does not
 	if err := c.Update(context.Background(), s); err != nil {
 		t.Fatalf("wake: %v", err)
 	}

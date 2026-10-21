@@ -92,7 +92,9 @@ type Reconciler struct {
 	// Secrets avoids a Secret informer; nil falls back to the embedded client.
 	Secrets client.Reader
 	// Pods avoids a Pod informer; nil falls back to the embedded client.
-	Pods     client.Reader
+	Pods client.Reader
+	// BootID tells host restarts from crashes; nil leaves every restart a crash.
+	BootID   BootIDFunc
 	Recorder record.EventRecorder // nil disables Events
 	Watch    *ReconcileWatch      // nil disables liveness tracking
 
@@ -142,6 +144,7 @@ func (r *Reconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		desired = v1alpha1.DesiredStopped
 	}
 	prevPhase, prevRestarts := server.Status.Phase, server.Status.AutoRestarts
+	prevGaveUp := v1alpha1.StartGaveUp(&server.Status)
 	for _, annotation := range []string{v1alpha1.AnnotationStartRetry, v1alpha1.AnnotationRestart} {
 		if _, ok := server.Annotations[annotation]; ok {
 			if err := r.takeRestartRequest(ctx, &server, desired, annotation); err != nil {
@@ -159,6 +162,9 @@ func (r *Reconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	if err == nil {
 		r.recordTransition(ctx, &server, prevPhase, prevRestarts)
+		if r.noteLifecycle(&server, prevPhase, prevGaveUp) {
+			err = r.patchStatus(ctx, &server)
+		}
 	}
 	return res, err
 }
@@ -218,6 +224,13 @@ func (r *Reconciler) event(server *v1alpha1.MinecraftServer, eventType, reason, 
 }
 
 func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.MinecraftServer) (ctrl.Result, error) {
+	if a := server.Status.AutoStop; a != nil {
+		if server.Generation < a.Generation {
+			return ctrl.Result{}, r.applyAutoStop(ctx, server)
+		}
+		server.Status.AutoStop = nil
+		server.Status.Crashes = 0
+	}
 	if server.Status.StopNoticeAt != nil {
 		if err := r.callOffStop(ctx, server); err != nil {
 			return ctrl.Result{}, err
@@ -236,16 +249,21 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 		return ctrl.Result{RequeueAfter: requeueMaintenance}, nil
 	}
 
+	pod, err := r.gamePod(ctx, server)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if stopping, err := r.observeRun(ctx, server, pod); err != nil || stopping {
+		return ctrl.Result{}, err
+	}
+
 	if r.Nodes != nil {
 		node := server.Spec.NodeName
-		var pod corev1.Pod
-		if err := r.podReader().Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: server.Name + "-0"}, &pod); err == nil {
+		if pod != nil {
 			server.Status.NodeName = pod.Spec.NodeName
 			if node == "" {
 				node = pod.Spec.NodeName
 			}
-		} else if !apierrors.IsNotFound(err) {
-			return ctrl.Result{}, err
 		}
 		if node == "" {
 			node = r.ControllerNode
@@ -404,9 +422,7 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 					// Preserve EmptySince while live backup delays stopping so shutdown follows thaw.
 					return ctrl.Result{RequeueAfter: liveBackupPoll}, nil
 				}
-				patch := client.MergeFrom(server.DeepCopy())
-				server.Spec.DesiredState = v1alpha1.DesiredStopped
-				if err := r.Patch(ctx, server, patch); err != nil {
+				if err := r.stopFor(ctx, server, v1alpha1.StopIdle); err != nil {
 					return ctrl.Result{}, err
 				}
 				msg := fmt.Sprintf("no players online for %ds; set desiredState to Stopped", server.Spec.Idle.EmptySecondsBeforeStop)

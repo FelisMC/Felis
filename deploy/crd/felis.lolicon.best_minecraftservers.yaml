@@ -146,6 +146,19 @@ spec:
                   stopped:
                     type: string
                 type: object
+              notify:
+                description: Notify picks the lifecycle events mailed to the server's
+                  owner.
+                properties:
+                  problems:
+                    description: Problems covers crashes, failed starts and host restarts;
+                      nil means true.
+                    type: boolean
+                  started:
+                    type: boolean
+                  stopped:
+                    type: boolean
+                type: object
               onlineMode:
                 description: |-
                   OnlineMode mirrors server.properties online-mode. Wake/claim semantics
@@ -186,6 +199,26 @@ spec:
                 description: ReaperExempt opts this server out of the world reaper
                   entirely (spec §18).
                 type: boolean
+              recovery:
+                description: Recovery decides what follows a crash or a host restart;
+                  system servers always resume and restart.
+                properties:
+                  maxCrashRestarts:
+                    description: MaxCrashRestarts is how many crashes in a row are restarted
+                      before the server is stopped; zero means 3.
+                    format: int32
+                    maximum: 20
+                    minimum: 0
+                    type: integer
+                  restartOnCrash:
+                    description: RestartOnCrash restarts the process after it exits
+                      or stops responding; nil means true.
+                    type: boolean
+                  resumeAfterHostRestart:
+                    description: ResumeAfterHostRestart starts a server that was running
+                      again after its host restarts; nil means true.
+                    type: boolean
+                type: object
               resources:
                 description: Resources are the container resource requests/limits.
                 properties:
@@ -372,6 +405,88 @@ spec:
             properties:
               nodeName:
                 type: string
+              autoStop:
+                description: AutoStop records why the operator stopped the server.
+                properties:
+                  at:
+                    format: date-time
+                    type: string
+                  generation:
+                    format: int64
+                    type: integer
+                  reason:
+                    type: string
+                required:
+                - at
+                - generation
+                - reason
+                type: object
+              crashes:
+                description: Crashes counts crashes in a row; it starts over after
+                  an hour without one and when a person starts the server.
+                format: int32
+                type: integer
+              events:
+                description: Events are the latest lifecycle events, oldest first.
+                items:
+                  properties:
+                    at:
+                      format: date-time
+                      type: string
+                    crashes:
+                      format: int32
+                      type: integer
+                    exitCode:
+                      format: int32
+                      type: integer
+                    limit:
+                      format: int32
+                      type: integer
+                    reason:
+                      type: string
+                    seq:
+                      format: int64
+                      type: integer
+                    stopping:
+                      type: boolean
+                    type:
+                      type: string
+                  required:
+                  - at
+                  - seq
+                  - type
+                  type: object
+                maxItems: 20
+                type: array
+              lastCrash:
+                description: LastCrash describes the latest unexpected exit.
+                properties:
+                  at:
+                    format: date-time
+                    type: string
+                  exitCode:
+                    format: int32
+                    type: integer
+                  reason:
+                    type: string
+                required:
+                - at
+                - exitCode
+                type: object
+              run:
+                description: Run is what the operator last saw of the server's pod
+                  and host.
+                properties:
+                  bootID:
+                    type: string
+                  node:
+                    type: string
+                  podUID:
+                    type: string
+                  restarts:
+                    format: int32
+                    type: integer
+                type: object
               autoRestarts:
                 description: |-
                   AutoRestarts counts how often the operator recreated the pod of a start
