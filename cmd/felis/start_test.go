@@ -71,7 +71,7 @@ func newStartHost(t *testing.T, timers []string, enabled ...string) (*startHost,
 	return h, dir
 }
 
-func controlPlane(t *testing.T, objs ...client.Object) func() (client.Client, error) {
+func startCluster(t *testing.T, objs ...client.Object) func() (client.Client, error) {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
@@ -110,7 +110,7 @@ func TestStartBringsTheClusterUpFirstThenWhatIsEnabled(t *testing.T) {
 		"k3s.service", "felis-node-control.service", "felis-velocity.service", "felis-db-backup.timer", "felis-watchdog.timer")
 	env := startEnv{
 		unitDir: dir, run: h.run, controlNS: "felis", poll: time.Millisecond,
-		cluster: controlPlane(t, readyNode("ctrl-1"), deployment("felis-api", 1), deployment("felis-operator", 1)),
+		cluster: startCluster(t, readyNode("ctrl-1"), deployment("felis-api", 1), deployment("felis-operator", 1)),
 	}
 	var out bytes.Buffer
 	if code := runStart(context.Background(), env, &out); code != 0 {
@@ -135,7 +135,7 @@ func TestStartSaysWhatDidNotComeUpAndWhereToLook(t *testing.T) {
 	h.broken["felis-velocity.service"] = true
 	env := startEnv{
 		unitDir: dir, run: h.run, controlNS: "felis", poll: time.Millisecond,
-		cluster: controlPlane(t, readyNode("ctrl-1"), deployment("felis-api", 1), deployment("felis-operator", 0)),
+		cluster: startCluster(t, readyNode("ctrl-1"), deployment("felis-api", 1), deployment("felis-operator", 0)),
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
