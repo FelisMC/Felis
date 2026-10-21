@@ -45,6 +45,7 @@ Commands:
   converge          Fill in fields a newer desired spec added to already-installed system servers
   rotate-token      Replace a generated credential and restart what reads it (velocity|limbo|build|ops|registry|forwarding|db; prints the plan, -yes applies; requires root/sudo)
   domain            Move the install to a new root domain on every surface that carries it, or check each one (set|check; requires root/sudo)
+  start             Start every Felis service this host is set to run at boot, cluster first, and wait for the control plane (requires root/sudo)
   status            Print the platform at a glance: node, control plane, proxy, servers, backups, host, open alerts (requires root/sudo)
   doctor            Run every health check once, grouped by area, with where to look next; mails nothing (requires root/sudo)
   support-bundle    Collect status, doctor, logs and cluster state into one redacted tar.gz to share when asking for help (requires root/sudo)
@@ -104,6 +105,7 @@ var commands = map[string]func(args []string, stdout, stderr io.Writer) int{
 	"version":            cmdVersion,
 	"update":             cmdUpdate,
 	"watchdog":           cmdWatchdog,
+	"start":              cmdStart,
 	"status":             cmdStatus,
 	"doctor":             cmdDoctor,
 	"support-bundle":     cmdSupportBundle,
