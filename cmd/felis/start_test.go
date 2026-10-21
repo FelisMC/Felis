@@ -20,8 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-// startHost stands in for systemd: which units are enabled, which fail to
-// start, and what each start call asked for.
+// startHost fakes systemctl.
 type startHost struct {
 	enabled map[string]bool
 	broken  map[string]bool
@@ -98,8 +97,6 @@ func deployment(name string, ready int32) *appsv1.Deployment {
 	}
 }
 
-// A controller comes back the way a reboot brings it: k3s first, then every
-// other unit set to start at boot. A unit the owner turned off stays off.
 func TestStartBringsTheClusterUpFirstThenWhatIsEnabled(t *testing.T) {
 	timers := []string{"felis-db-backup.timer", "felis-offsite.timer", "felis-watchdog.timer"}
 	h, dir := newStartHost(t, timers,
@@ -152,7 +149,6 @@ func TestStartSaysWhatDidNotComeUpAndWhereToLook(t *testing.T) {
 	}
 }
 
-// Without k3s nothing waits on the API; the host's own services still start.
 func TestStartGoesOnWhenTheClusterDoesNotStart(t *testing.T) {
 	h, dir := newStartHost(t, nil, "k3s.service", "felis-velocity.service")
 	h.broken["k3s.service"] = true
@@ -170,7 +166,6 @@ func TestStartGoesOnWhenTheClusterDoesNotStart(t *testing.T) {
 	}
 }
 
-// A worker runs the k3s agent and no control plane of its own.
 func TestStartOnAWorkerWaitsForNoControlPlane(t *testing.T) {
 	h, dir := newStartHost(t, nil, "k3s-agent.service", "felis-node-control.service")
 	env := startEnv{unitDir: dir, run: h.run, controlNS: "felis", poll: time.Millisecond,

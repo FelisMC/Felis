@@ -18,13 +18,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// The cluster comes up first: the control plane, the proxy's backends and the
-// node tasks all run on it.
+// Started before everything else.
 var clusterServices = []string{"k3s.service", "k3s-agent.service"}
 
-// The other long-running units the installer may set to start at boot, in the
-// order they depend on each other: replicated storage and the controller VIP,
-// then what serves players and the panel.
+// Long-running units in dependency order.
 var hostStartServices = []string{
 	"iscsid.service",
 	"keepalived.service",
@@ -42,8 +39,6 @@ type startEnv struct {
 	poll      time.Duration
 }
 
-// felis start brings up every unit this host is set to start at boot, so a host
-// whose services were stopped or failed comes back the way a reboot brings it.
 func cmdStart(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("start", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -156,7 +151,6 @@ func startHint(part, ns string) string {
 	return fmt.Sprintf("journalctl -u %s -n 100 --no-pager", part)
 }
 
-// waitForNode waits for the API server to answer and a node to be Ready.
 func waitForNode(ctx context.Context, env startEnv, out io.Writer) (client.Client, error) {
 	began := time.Now()
 	var last error
@@ -192,8 +186,7 @@ func nodeReady(n corev1.Node) bool {
 	return false
 }
 
-// waitForControlPlane waits for every Deployment in the control namespace to
-// have the replicas it asks for ready, and returns the ones that never did.
+// waitForControlPlane returns the Deployments that never became ready.
 func waitForControlPlane(ctx context.Context, env startEnv, cl client.Client, out io.Writer) []string {
 	var deps appsv1.DeploymentList
 	for {
