@@ -81,6 +81,13 @@ func controlPlane(t *testing.T, objs ...client.Object) func() (client.Client, er
 	return func() (client.Client, error) { return cl, nil }
 }
 
+func noCluster(t *testing.T, why string) func() (client.Client, error) {
+	return func() (client.Client, error) {
+		t.Fatal(why)
+		return nil, nil
+	}
+}
+
 func readyNode(name string) *corev1.Node {
 	return &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
@@ -152,8 +159,7 @@ func TestStartSaysWhatDidNotComeUpAndWhereToLook(t *testing.T) {
 func TestStartGoesOnWhenTheClusterDoesNotStart(t *testing.T) {
 	h, dir := newStartHost(t, nil, "k3s.service", "felis-velocity.service")
 	h.broken["k3s.service"] = true
-	env := startEnv{unitDir: dir, run: h.run, controlNS: "felis", poll: time.Millisecond,
-		cluster: func() (client.Client, error) { t.Fatal("asked the API of a cluster that did not start"); return nil, nil }}
+	env := startEnv{unitDir: dir, run: h.run, controlNS: "felis", poll: time.Millisecond, cluster: noCluster(t, "asked the API of a cluster that did not start")}
 	var out bytes.Buffer
 	if code := runStart(context.Background(), env, &out); code != 1 {
 		t.Fatalf("exit %d, want 1:\n%s", code, out.String())
@@ -168,8 +174,7 @@ func TestStartGoesOnWhenTheClusterDoesNotStart(t *testing.T) {
 
 func TestStartOnAWorkerWaitsForNoControlPlane(t *testing.T) {
 	h, dir := newStartHost(t, nil, "k3s-agent.service", "felis-node-control.service")
-	env := startEnv{unitDir: dir, run: h.run, controlNS: "felis", poll: time.Millisecond,
-		cluster: func() (client.Client, error) { t.Fatal("a worker has no control plane to wait for"); return nil, nil }}
+	env := startEnv{unitDir: dir, run: h.run, controlNS: "felis", poll: time.Millisecond, cluster: noCluster(t, "a worker has no control plane to wait for")}
 	var out bytes.Buffer
 	if code := runStart(context.Background(), env, &out); code != 0 {
 		t.Fatalf("exit %d:\n%s", code, out.String())
