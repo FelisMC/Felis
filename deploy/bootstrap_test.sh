@@ -211,6 +211,7 @@ run_jre() { # machine pinned-sha
   MACHINE="$1" SHA="$2" TARBALL="$jtar/jre.tar.gz" JRE_DIR="$jdir/jre" FELIS_JRE_VERSION=25 \
   JRE_PINNED_FEATURE=25 JRE_PINNED_RELEASE=25.0.9+1 JRE_PINNED_SHA256_X64="$2" JRE_PINNED_SHA256_AARCH64="$2" bash -c '
     set -Eeuo pipefail
+    umask 077
     die() { printf "DIE: %s\n" "$*"; exit 1; }
     log() { printf "LOG: %s\n" "$*"; }
     ok() { printf "OK: %s\n" "$*"; }
@@ -227,7 +228,10 @@ out="$(run_jre aarch64 "$jsha")"
 expect "the pinned JRE is downloaded from its GitHub release" \
   "URL https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.9%2B1/OpenJDK25U-jre_aarch64_linux_hotspot_25.0.9_1.tar.gz" "$out"
 expect "the pinned JRE installs" "OK: JRE at $jdir/jre/bin/java (Temurin 25.0.9+1)" "$out"
+expect "the proxy can traverse a JRE installed under umask 077" "755" "$(stat -c %a "$jdir/jre")"
+chmod 0700 "$jdir/jre"
 expect "a rerun of the pinned JRE is a no-op" "OK: Temurin 25.0.9+1 JRE already installed" "$(run_jre x86_64 "$jsha")"
+expect "a rerun repairs an installer-managed JRE's directory permissions" "755" "$(stat -c %a "$jdir/jre")"
 printf 'IMPLEMENTOR="Eclipse Adoptium"\nIMPLEMENTOR_VERSION="Temurin-25.0.1+8"\n' > "$jdir/jre/release"
 out="$(run_jre x86_64 "$jsha")"
 expect "an older installer-managed JRE moves to the pin" "LOG: moving the proxy's JRE to Temurin 25.0.9+1" "$out"

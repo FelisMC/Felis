@@ -3108,6 +3108,7 @@ install_jre() {
   # Update installer-managed JRE pins while preserving externally supplied runtimes.
   if [ -x "${JRE_DIR}/bin/java" ]; then
     if grep -qxF "IMPLEMENTOR_VERSION=\"Temurin-${release}\"" "${JRE_DIR}/release" 2>/dev/null; then
+      chmod 0755 "$JRE_DIR"
       ok "Temurin ${release} JRE already installed at ${JRE_DIR}"
       return 0
     fi
@@ -3134,6 +3135,7 @@ install_jre() {
   # The tarball has a single versioned top-level directory (jdk-25+36-jre/); strip it so
   # the path in the systemd unit never carries a build number.
   tar -C "${JRE_DIR}.new" --strip-components=1 -xzf "${tmp}/jre.tar.gz" || die "failed to unpack the JRE"
+  chmod 0755 "${JRE_DIR}.new"
   [ -x "${JRE_DIR}.new/bin/java" ] || die "unpacked JRE has no bin/java"
   [ ! -e "$JRE_DIR" ] || mv "$JRE_DIR" "${JRE_DIR}.old"
   mv "${JRE_DIR}.new" "$JRE_DIR"
