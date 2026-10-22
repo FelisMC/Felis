@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import i18next from "i18next";
 import { RetireCard, RetireNotice } from "./Retirement";
 
-const calls = vi.hoisted(() => ({ retireServer: vi.fn(), cancelRetire: vi.fn(), emergencyStop: vi.fn() }));
+const calls = vi.hoisted(() => ({ retireServer: vi.fn(), cancelRetire: vi.fn(), emergencyStop: vi.fn(), kill: vi.fn() }));
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
   return { ...actual, api: { ...actual.api, ...calls } };
@@ -18,9 +18,41 @@ beforeEach(() => {
   calls.retireServer.mockReset();
   calls.cancelRetire.mockReset();
   calls.emergencyStop.mockReset();
+  calls.kill.mockReset();
 });
 
 describe("RetireCard", () => {
+  it("requires confirmation before force stop and allows cancelling", async () => {
+    calls.kill.mockResolvedValue({ desiredState: "Stopped" });
+    const onChanged = vi.fn();
+    render(<RetireCard name="survival" label="World" isAdmin={false} canKill onChanged={onChanged} />);
+    await userEvent.click(screen.getByRole("button", { name: t("servers:more_actions") }));
+    expect(screen.queryByRole("button", { name: t("servers:emergency_stop") })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: t("servers:kill") }));
+    expect(screen.getByText(t("servers:kill_warning"))).toBeTruthy();
+    expect(screen.getByRole("heading", { name: t("servers:kill_title", { name: "World" }) })).toBeTruthy();
+    expect(calls.kill).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: t("common:cancel") }));
+    expect(calls.kill).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: t("servers:kill") }));
+    await userEvent.click(screen.getByRole("button", { name: t("servers:kill") }));
+    expect(calls.kill).toHaveBeenCalledExactlyOnceWith("survival");
+    expect(onChanged).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("keeps a refused force stop open with its reason", async () => {
+    calls.kill.mockRejectedValue({ status: 403, code: "forbidden", message: "raw" });
+    const onChanged = vi.fn();
+    render(<RetireCard name="survival" label="World" isAdmin canKill onChanged={onChanged} />);
+    await userEvent.click(screen.getByRole("button", { name: t("servers:more_actions") }));
+    await userEvent.click(screen.getByRole("button", { name: t("servers:kill") }));
+    await userEvent.click(screen.getByRole("button", { name: t("servers:kill") }));
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", t("errors:forbidden"));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+
   it("requires exact confirmation and reports acceptance without claiming shutdown", async () => {
     calls.emergencyStop.mockResolvedValue({ desiredState: "Stopped" });
     const onChanged = vi.fn();

@@ -33,6 +33,7 @@ interface Props {
    *  editor) never offers a wake or a retry, and a server it cannot place gets
    *  a Stop too. */
   stopOnly?: boolean;
+  allowRestart?: boolean;
   /** Called after the wake or stop was accepted, so the parent refetches. */
   onChanged: () => void;
   size?: "sm" | "default";
@@ -54,14 +55,15 @@ export function PowerButton({
   playerCountUnknown,
   retiring,
   stopOnly = false,
+  allowRestart = false,
   onChanged,
   size = "sm",
   className,
 }: Props) {
   const { t } = useTranslation("servers");
-  const [busy, setBusy] = useState<"wake" | "stop" | null>(null);
-  const [submitted, setSubmitted] = useState<"wake" | "stop" | null>(null);
-  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState<"wake" | "stop" | "restart" | null>(null);
+  const [submitted, setSubmitted] = useState<"wake" | "stop" | "restart" | null>(null);
+  const [confirming, setConfirming] = useState<"stop" | "restart" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const changed = useRef(onChanged);
   useEffect(() => {
@@ -71,7 +73,7 @@ export function PowerButton({
   const pending = pendingPower({ phase, desiredState });
   const on = desiredState ? desiredState === "Running" : isUp(phase);
 
-  const caughtUp = submitted === "wake" ? on && !failed : submitted === "stop" ? !on : true;
+  const caughtUp = submitted === "wake" ? on && !failed : submitted === "stop" ? !on : submitted === "restart" ? phase !== "Running" : true;
   useEffect(() => {
     if (submitted === null) return;
     if (caughtUp) {
@@ -86,13 +88,13 @@ export function PowerButton({
     };
   }, [submitted, caughtUp]);
 
-  async function run(kind: "wake" | "stop") {
+  async function run(kind: "wake" | "stop" | "restart") {
     if (busy) return;
     setBusy(kind);
     setError(null);
     try {
-      await (kind === "wake" ? api.wake(name) : api.stop(name));
-      setConfirming(false);
+      await api[kind](name);
+      setConfirming(null);
       setSubmitted(kind);
       onChanged();
     } catch (e) {
@@ -112,10 +114,10 @@ export function PowerButton({
     </Button>
   );
   // inProgress is a server on its way somewhere with nothing to press meanwhile.
-  const inProgress = (kind: "wake" | "stop") => (
+  const inProgress = (kind: "wake" | "stop" | "restart") => (
     <Button size={size} variant={kind === "stop" ? "outline" : "default"} disabled>
       {spinner}
-      {kind === "wake" ? t("waking") : t("stopping")}
+      {kind === "wake" ? t("waking") : kind === "restart" ? t("restarting") : t("stopping")}
     </Button>
   );
 
@@ -154,17 +156,30 @@ export function PowerButton({
       <div role="alert" className="flex flex-wrap items-center justify-end gap-2">
         <span className="text-xs font-medium text-foreground">
           {players > 0
-            ? t("stop_confirm_players", { count: players })
-            : t("stop_confirm_unknown")}
+            ? t(`${confirming}_confirm_players`, { count: players })
+            : t(`${confirming}_confirm_unknown`)}
         </span>
-        <Button size={size} variant="ghost" onClick={() => setConfirming(false)} disabled={busy !== null}>
+        <Button size={size} variant="ghost" onClick={() => setConfirming(null)} disabled={busy !== null}>
           {t("common:cancel")}
         </Button>
-        {stopButton("destructive", () => void run("stop"))}
+        <Button size={size} variant="destructive" onClick={() => void run(confirming)} disabled={busy !== null}>
+          {busy === confirming ? spinner : confirming === "restart" ? <RotateCcw /> : <Square />}
+          {busy === confirming ? t(confirming === "restart" ? "restarting" : "stopping") : t(confirming)}
+        </Button>
       </div>
     );
   } else {
-    control = stopButton("destructive", () => (askFirst ? setConfirming(true) : void run("stop")));
+    control = (
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        {allowRestart && !stopOnly && phase === "Running" && (
+          <Button size={size} variant="outline" onClick={() => (askFirst ? setConfirming("restart") : void run("restart"))} disabled={busy !== null}>
+            {busy === "restart" ? spinner : <RotateCcw />}
+            {busy === "restart" ? t("restarting") : t("restart")}
+          </Button>
+        )}
+        {stopButton("destructive", () => (askFirst ? setConfirming("stop") : void run("stop")))}
+      </div>
+    );
   }
 
   return (

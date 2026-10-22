@@ -11,6 +11,11 @@ export type Phase =
 
 export type AutostartPolicy = "ownerOnly" | "public" | "allowlist";
 
+export interface ServerPowerResult {
+  name: string;
+  desiredState: "Running" | "Stopped";
+}
+
 // Pending retirement prevents waking or claiming until the reaper completes it.
 export interface RetireState {
   requested_at: string;

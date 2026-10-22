@@ -266,7 +266,7 @@ export function ServerConsole() {
             title={data.displayName || data.name}
             subtitle={cfg ? <CopyAddress address={joinAddress(data.subdomain, cfg)} /> : undefined}
             actions={
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center justify-end gap-2">
                 {error ? (
                   <span role="status" className="text-sm font-medium text-destructive">{t("status_stale")}</span>
                 ) : startupBlocked ? (
@@ -284,6 +284,7 @@ export function ServerConsole() {
                   playersOnline={data.playersOnline}
                   playerCountUnknown={data.playerCountUnknown}
                   retiring={data.retiring}
+                  allowRestart={owned}
                   onChanged={reload}
                 />}
               </div>
@@ -444,8 +445,8 @@ export function ServerConsole() {
               {/* Giving the server up (owner) or deleting it (admin) closes the
                   sidebar. A system server is never retired, and one already on its
                   way out shows the notice above with the way back instead. */}
-              {owned && (isOwner || (!data.reaperExempt && !data.retiring)) && (
-                <RetireCard name={name} label={data.displayName || data.name} isAdmin={isAdmin} isOwner={isOwner} canRetire={!data.reaperExempt && !data.retiring} onChanged={reload} />
+              {owned && (isOwner || data.phase !== "Stopped" || (!data.reaperExempt && !data.retiring)) && (
+                <RetireCard name={name} label={data.displayName || data.name} isAdmin={isAdmin} isOwner={isOwner} canKill={!error && (data.phase !== "Stopped" || data.desiredState === "Running")} canRetire={!data.reaperExempt && !data.retiring} onChanged={reload} />
               )}
             </div>
           </div>

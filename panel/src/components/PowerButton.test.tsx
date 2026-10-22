@@ -6,10 +6,10 @@ import i18next from "i18next";
 import type { Phase } from "@/lib/types";
 import { PowerButton, SUBMITTED_HOLD_MS, SUBMITTED_RECHECK_MS } from "./PowerButton";
 
-const { wake, stop } = vi.hoisted(() => ({ wake: vi.fn(), stop: vi.fn() }));
+const { wake, stop, restart } = vi.hoisted(() => ({ wake: vi.fn(), stop: vi.fn(), restart: vi.fn() }));
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
-  return { ...actual, api: { ...actual.api, wake, stop } };
+  return { ...actual, api: { ...actual.api, wake, stop, restart } };
 });
 
 const t = (key: string, opts?: Record<string, unknown>) => i18next.t(key, opts);
@@ -17,6 +17,7 @@ const t = (key: string, opts?: Record<string, unknown>) => i18next.t(key, opts);
 beforeEach(() => {
   wake.mockReset();
   stop.mockReset();
+  restart.mockReset();
 });
 
 // A fake-timer test that fails must not leave the clock frozen for the rest.
@@ -137,6 +138,43 @@ describe("PowerButton", () => {
     expect(screen.getByRole("button", { name: t("servers:retry_start") })).toHaveProperty("disabled", true);
     resolve();
     await vi.waitFor(() => expect(onChanged).toHaveBeenCalledOnce());
+  });
+});
+
+describe("PowerButton restart", () => {
+  it.each([{ playersOnline: 3, key: "restart_confirm_players" }, { playerCountUnknown: true, key: "restart_confirm_unknown" }])("confirms before restarting with $key", async ({ key, ...players }) => {
+    restart.mockResolvedValue(undefined);
+    const onChanged = vi.fn();
+    const { rerender } = render(<PowerButton name="survival" phase="Running" desiredState="Running" allowRestart {...players} onChanged={onChanged} />);
+    await userEvent.click(screen.getByRole("button", { name: t("servers:restart") }));
+    expect(screen.getByText(t(`servers:${key}`, { count: 3 }))).toBeTruthy();
+    expect(restart).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: t("common:cancel") }));
+    expect(restart).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: t("servers:restart") }));
+    await userEvent.click(screen.getByRole("button", { name: t("servers:restart") }));
+    expect(restart).toHaveBeenCalledExactlyOnceWith("survival");
+    expect(stop).not.toHaveBeenCalled();
+    expect(onChanged).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: t("servers:restarting") })).toHaveProperty("disabled", true);
+    rerender(<PowerButton name="survival" phase="Starting" desiredState="Running" allowRestart onChanged={onChanged} />);
+    expect(screen.queryByRole("button", { name: t("servers:restart") })).toBeNull();
+    expect(screen.getByRole("button", { name: t("servers:stop") })).toHaveProperty("disabled", false);
+  });
+
+  it.each(["Stopped", "Starting", "Stopping", "Failed", "Unknown"] as const)("does not offer restart while %s", (phase) => {
+    render(<PowerButton name="survival" phase={phase} desiredState="Running" allowRestart onChanged={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: t("servers:restart") })).toBeNull();
+  });
+
+  it("restarts an empty server and reports a refused request", async () => {
+    restart.mockRejectedValue({ status: 409, code: "not_running", message: "raw" });
+    const onChanged = vi.fn();
+    render(<PowerButton name="survival" phase="Running" desiredState="Running" playersOnline={0} allowRestart onChanged={onChanged} />);
+    await userEvent.click(screen.getByRole("button", { name: t("servers:restart") }));
+    expect(restart).toHaveBeenCalledExactlyOnceWith("survival");
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(onChanged).not.toHaveBeenCalled();
   });
 });
 

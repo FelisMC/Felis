@@ -2962,13 +2962,13 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
     sendJSON(ctx.res, 202, { name: serverInfo.name, desiredState: "Stopped" });
     return true;
   }
-  if (is("POST", ctx) && ctx.parts[4] === "stop") {
+  if (is("POST", ctx) && (ctx.parts[4] === "stop" || ctx.parts[4] === "kill")) {
     if (!canManage(ctx.account, serverInfo)) {
       sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
       return true;
     }
     setPhase(serverInfo, "Stopped");
-    sendJSON(ctx.res, 200, { name: serverInfo.name, desiredState: "Stopped" });
+    sendJSON(ctx.res, 202, { name: serverInfo.name, desiredState: "Stopped" });
     return true;
   }
   if (is("POST", ctx) && ctx.parts[4] === "command") {

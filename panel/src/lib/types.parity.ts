@@ -1,6 +1,6 @@
 // Check hand-written wire types against generated OpenAPI schemas at compile time.
 // Compare key sets, optionality, and documented values, including enums.
-import type { components } from "./openapi.gen";
+import type { components, operations } from "./openapi.gen";
 import type * as T from "./types";
 
 type S = components["schemas"];
@@ -21,6 +21,7 @@ type Parity<Panel, Docs> = [Exclude<keyof Panel, keyof Docs>, Exclude<keyof Docs
 type Holds<X extends true> = X;
 
 export type WireParity = [
+  Holds<Parity<T.ServerPowerResult, operations["wake" | "stop" | "restart" | "kill"]["responses"][202]["content"]["application/json"]>>,
   Holds<Parity<T.ServerStatus, S["ServerInfo"]>>,
   Holds<Parity<T.MailSettings, S["MailSettings"]>>,
   Holds<Parity<T.MailSettingsRequest, S["MailSettingsRequest"]>>,

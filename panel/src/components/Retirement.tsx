@@ -96,7 +96,7 @@ export function RetireNotice({
   );
 }
 
-type Mode = "release" | "delete" | "stop";
+type Mode = "release" | "delete" | "stop" | "kill";
 
 // Require the typed server name before submitting retirement.
 export function RetireCard({
@@ -105,6 +105,7 @@ export function RetireCard({
   isAdmin,
   isOwner = false,
   canRetire = true,
+  canKill = false,
   onChanged,
 }: {
   name: string;
@@ -113,6 +114,7 @@ export function RetireCard({
   isAdmin: boolean;
   isOwner?: boolean;
   canRetire?: boolean;
+  canKill?: boolean;
   onChanged: () => void;
 }) {
   const { t } = useTranslation("servers");
@@ -128,16 +130,19 @@ export function RetireCard({
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>{t("more_actions")}</DialogTitle>
-            <DialogDescription>{canRetire ? (isAdmin ? t("retire_card_desc_admin") : t("retire_card_desc")) : t("emergency_stop_warning")}</DialogDescription>
+            <DialogDescription>{t("more_actions_desc")}</DialogDescription>
           </DialogHeader>
           <div className="flex flex-wrap gap-2">
+            {canKill && <Button variant="destructive" onClick={() => setMode("kill")}>{t("kill")}</Button>}
             {isOwner && <Button variant="outline" onClick={() => setMode("stop")}>{t("emergency_stop")}</Button>}
             {canRetire && <Button variant="outline" onClick={() => setMode("release")}>{t("retire_release")}</Button>}
             {canRetire && isAdmin && <Button variant="destructive" onClick={() => setMode("delete")}>{t("retire_delete")}</Button>}
           </div>
         </DialogContent>
       </Dialog>
-      {mode && (
+      {mode === "kill" ? (
+        <KillDialog name={name} label={label} onClose={() => setMode(null)} onDone={() => { setMode(null); setOpen(false); onChanged(); }} />
+      ) : mode && (
         <RetireDialog
           name={name}
           label={label}
@@ -151,6 +156,39 @@ export function RetireCard({
   );
 }
 
+function KillDialog({ name, label, onClose, onDone }: { name: string; label: string; onClose: () => void; onDone: () => void }) {
+  const { t } = useTranslation("servers");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function confirm() {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.kill(name);
+      onDone();
+    } catch (e) {
+      setError(humanizeError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open && !busy) onClose(); }}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{t("kill_title", { name: label })}</DialogTitle>
+          <DialogDescription>{t("kill_warning")}</DialogDescription>
+        </DialogHeader>
+        {error && <MessageLine kind="error" message={error} compact />}
+        <ConfirmFooter onCancel={onClose} onConfirm={() => void confirm()} loading={busy} cancelLabel={t("common:cancel")} confirmLabel={t("kill")} />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function RetireDialog({
   name,
   label,
@@ -161,7 +199,7 @@ function RetireDialog({
 }: {
   name: string;
   label: string;
-  mode: Mode;
+  mode: Exclude<Mode, "kill">;
   isAdmin: boolean;
   onClose: () => void;
   onDone: () => void;

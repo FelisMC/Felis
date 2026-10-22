@@ -17,6 +17,7 @@ import type {
   SelfCreateRequest,
   SelfServiceQuotaSettings,
   ServerNotify,
+  ServerPowerResult,
   ServerQuota,
   SoftwareRequest,
   SoftwareType,
@@ -418,13 +419,16 @@ export const api = rejectingSync({
   status: (name: string) => send<ServerStatus>(urlPath`/servers/${name}/status`, { method: "GET", signal: AbortSignal.timeout(12_000) }),
 
   wake: (name: string) =>
-    request<{ name: string; desiredState: string }>("POST", urlPath`/servers/${name}/wake`),
+    request<ServerPowerResult>("POST", urlPath`/servers/${name}/wake`),
 
   stop: (name: string) =>
-    request<{ name: string; desiredState: string }>("POST", urlPath`/servers/${name}/stop`),
+    request<ServerPowerResult>("POST", urlPath`/servers/${name}/stop`),
 
   restart: (name: string) =>
-    request<{ name: string; desiredState: string }>("POST", urlPath`/servers/${name}/restart`),
+    request<ServerPowerResult>("POST", urlPath`/servers/${name}/restart`),
+
+  kill: (name: string) =>
+    request<ServerPowerResult>("POST", urlPath`/servers/${name}/kill`),
 
   claim: (name: string) =>
     request<{ name: string; claimed: boolean }>("POST", urlPath`/servers/${name}/claim`),
