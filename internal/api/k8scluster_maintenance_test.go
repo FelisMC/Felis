@@ -118,6 +118,32 @@ func TestKillPersistsIntentAndBlocksRacingStart(t *testing.T) {
 	}
 }
 
+func TestFileAccessMaintenanceGates(t *testing.T) {
+	for _, kind := range []string{maintenance.KindBackup, maintenance.KindRestore, maintenance.KindMigration, maintenance.KindFileWrite, maintenance.KindConfigWrite, maintenance.KindExport} {
+		t.Run(kind, func(t *testing.T) {
+			ms := stoppedServer()
+			ms.Spec.DesiredState = v1alpha1.DesiredRunning
+			ms.Status.Phase = v1alpha1.PhaseRunning
+			ms.Annotations = map[string]string{maintenance.Annotation: maintenance.LockValue(kind, lockNow)}
+			k, _ := lockCluster(t, ms)
+			err := k.CheckFileAccess(context.Background(), ms.Name)
+			blocked := kind == maintenance.KindBackup || kind == maintenance.KindRestore || kind == maintenance.KindMigration
+			if errors.Is(err, ErrMaintenanceInProgress) != blocked || (!blocked && err != nil) {
+				t.Fatalf("file access during %s: %v, blocked=%v", kind, err, blocked)
+			}
+		})
+	}
+	t.Run("a file Job cannot hide an active backup", func(t *testing.T) {
+		ms := stoppedServer()
+		file := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "a-file", Namespace: ms.Namespace, Labels: map[string]string{maintenance.LabelServer: ms.Name, maintenance.LabelManagedBy: "felis-files", maintenance.LabelFilesMode: "upload"}}}
+		backup := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "z-backup", Namespace: ms.Namespace, Labels: map[string]string{maintenance.LabelServer: ms.Name, maintenance.LabelManagedBy: "felis-backup"}}}
+		k, _ := lockCluster(t, ms, file, backup)
+		if err := k.CheckFileAccess(context.Background(), ms.Name); !errors.Is(err, ErrMaintenanceInProgress) {
+			t.Fatalf("active backup did not block file access: %v", err)
+		}
+	})
+}
+
 func lockCluster(t *testing.T, objs ...client.Object) (*K8sCluster, client.Client) {
 	t.Helper()
 	scheme := runtime.NewScheme()

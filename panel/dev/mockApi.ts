@@ -3126,8 +3126,7 @@ async function readRawBody(req: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-// handleFilesMock mirrors the file routes: owner-or-admin, the stopped gate, then
-// the op. Each real call is a Job that takes seconds; the pause stands in for it.
+// File Jobs share a running game's volume; lifecycle transitions and maintenance still gate access.
 async function handleFilesMock(ctx: SessionContext, serverInfo: MockServer): Promise<boolean> {
   const route = ctx.parts.slice(4).join("/");
   const known = ["GET files", "GET file", "PUT file", "DELETE file", "POST files/mkdir", "POST files/rename", "PUT files/upload"];
@@ -3144,8 +3143,12 @@ async function handleFilesMock(ctx: SessionContext, serverInfo: MockServer): Pro
   const url = new URL(ctx.req.url ?? "/", "http://localhost");
   const liveConfig = ["login", "lobby"].includes(serverInfo.name) &&
     ["GET file", "PUT file"].includes(key) && url.searchParams.get("path") === "felis-experience.json";
-  if (!liveConfig && serverInfo.phase !== "Stopped") {
-    sendError(ctx.res, 409, "not_stopped", "stop the server before editing its files");
+  if (!liveConfig && serverInfo.phase !== "Stopped" && !(serverInfo.phase === "Running" && serverInfo.desiredState === "Running")) {
+    sendError(ctx.res, 409, "server_transitioning", "wait for the server to finish starting or stopping before working with its files");
+    return true;
+  }
+  if ((ctx.state.jobs[serverInfo.name] ?? []).some((job) => job.then_restore === "pending" || (job.state === "running" && (job.kind === "backup" || job.kind === "restore")))) {
+    sendError(ctx.res, 409, "maintenance_in_progress", "backup or restore holds this server's world");
     return true;
   }
   const tree = filesOf(ctx.state, serverInfo.name);
@@ -3164,7 +3167,7 @@ async function handleFilesMock(ctx: SessionContext, serverInfo: MockServer): Pro
         .filter(([k]) => k !== "" && parentPath(k) === p)
         .map(([k, n]) => ({ name: k.slice(p === "" ? 0 : p.length + 1), size: n.is_dir ? 4096 : n.data.length, is_dir: n.is_dir, mod_time: n.mod_time }))
         .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-      sendJSON(ctx.res, 200, { path: p, entries, truncated: false });
+      sendJSON(ctx.res, 200, { path: p, entries, truncated: false, free_bytes: null });
       return true;
     }
     case "GET file": {

@@ -487,7 +487,7 @@ func (a *API) handleDownloadFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	release, ok := a.acquireWorld(w, r, name, maintenance.KindExport, "stop the server before downloading its files")
+	release, ok := a.acquireFileWorld(w, r, name, maintenance.KindExport, "wait for the server to stop or finish starting before downloading its files")
 	if !ok {
 		reg.drop(e)
 		return

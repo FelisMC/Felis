@@ -229,6 +229,14 @@ func TestStartCreatesTheJob(t *testing.T) {
 		if args := job.Spec.Template.Spec.Containers[0].Args; !slices.Equal(args[len(args)-len(tc.tail):], tc.tail) {
 			t.Errorf("%s: args = %v, want them to end %v", tc.r.Mode, args, tc.tail)
 		}
+		wantUID := int64(0)
+		if tc.r.Mode == ModeFiles {
+			wantUID = 1000
+		}
+		sc := job.Spec.Template.Spec.SecurityContext
+		if sc.RunAsUser == nil || *sc.RunAsUser != wantUID || sc.RunAsGroup == nil || *sc.RunAsGroup != wantUID || sc.FSGroup != nil {
+			t.Errorf("%s: export identity = %+v, want uid/gid %d without fsGroup", tc.r.Mode, sc, wantUID)
+		}
 	}
 }
 

@@ -45,8 +45,10 @@ type fakeFileEditor struct {
 	sum       string
 
 	// op is what StartUpload and StartUnzip answer (started), ops what Ops does.
-	op  fileedit.OpState
-	ops []fileedit.OpState
+	op       fileedit.OpState
+	ops      []fileedit.OpState
+	opsCalls int
+	opsErr   error
 }
 
 func TestFileBrowserStaysOnInternalFaceWithScopedAuthentication(t *testing.T) {
@@ -135,9 +137,9 @@ func (f *fakeFileEditor) started(op, path string) fileedit.OpState {
 }
 
 func (f *fakeFileEditor) Ops(_ context.Context, server string) ([]fileedit.OpState, error) {
-	f.calls++
+	f.opsCalls++
 	f.gotServer = server
-	return f.ops, f.err
+	return f.ops, f.opsErr
 }
 
 // fileRouteHeader is the headers a file route's body goes with: raw bytes and
@@ -171,7 +173,7 @@ func mkFiles(t *testing.T) (*API, *fakeRepo, *fakeCluster, *fakeFileEditor) {
 	return api, repo, cl, files
 }
 
-func TestRunningSystemExperienceFile(t *testing.T) {
+func TestStartingSystemExperienceFile(t *testing.T) {
 	for _, name := range []string{"login", "lobby"} {
 		for _, tc := range []struct {
 			method, suffix, body string
@@ -187,7 +189,7 @@ func TestRunningSystemExperienceFile(t *testing.T) {
 		} {
 			t.Run(name+" "+tc.method+tc.suffix, func(t *testing.T) {
 				a, _, cl, files := mkFiles(t)
-				cl.byName[name] = &ServerInfo{Name: name, Phase: "Running", Ready: true, DesiredState: "Running"}
+				cl.byName[name] = &ServerInfo{Name: name, Phase: "Starting", DesiredState: "Running"}
 				a.External = staticExternal{p: &Principal{UserID: "owner1", Role: "owner", ViaAdminAccess: true}}
 				w := do(a.ExternalHandler(), tc.method, "/api/v1/servers/"+name+tc.suffix, tc.body, jsonHeader)
 				if tc.allowed {
@@ -197,7 +199,7 @@ func TestRunningSystemExperienceFile(t *testing.T) {
 					if tc.method == "PUT" && (len(cl.acquired) != 1 || cl.acquired[0] != name+":"+maintenance.KindConfigWrite) {
 						t.Fatalf("wrong lock: %v", cl.acquired)
 					}
-				} else if w.Code != http.StatusConflict || decodeErr(t, w) != "not_stopped" || files.calls != 0 {
+				} else if w.Code != http.StatusConflict || decodeErr(t, w) != "server_transitioning" || files.calls != 0 {
 					t.Fatalf("world gate: status=%d calls=%d body=%s", w.Code, files.calls, w.Body.String())
 				}
 			})
@@ -214,7 +216,7 @@ func TestRunningSystemExperienceFile(t *testing.T) {
 	})
 }
 
-func TestFileEditorStoppedGate(t *testing.T) {
+func TestFileEditorStateGate(t *testing.T) {
 	owner := &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
 
 	routes := []struct {
@@ -234,27 +236,52 @@ func TestFileEditorStoppedGate(t *testing.T) {
 
 	states := []struct {
 		name         string
+		phase        string
 		ready        bool
 		desiredState v1alpha1.DesiredState
+		maintenance  string
+		allowed      bool
 	}{
-		{"running", true, v1alpha1.DesiredRunning},
-		{"starting", false, v1alpha1.DesiredRunning},
+		{"running", "Running", true, v1alpha1.DesiredRunning, "", true},
+		{"stopped", "Stopped", false, v1alpha1.DesiredStopped, "", true},
+		{"starting", "Starting", false, v1alpha1.DesiredRunning, "", false},
+		{"stopping", "Stopping", false, v1alpha1.DesiredStopped, "", false},
+		{"backup", "Running", true, v1alpha1.DesiredRunning, maintenance.KindBackup, false},
+		{"restore", "Running", true, v1alpha1.DesiredRunning, maintenance.KindRestore, false},
+		{"migration", "Stopped", false, v1alpha1.DesiredStopped, maintenance.KindMigration, false},
 	}
 
 	for _, rt := range routes {
 		for _, st := range states {
-			t.Run(fmt.Sprintf("%s on a %s server -> 409 not_stopped", rt.name, st.name), func(t *testing.T) {
+			t.Run(fmt.Sprintf("%s on a %s server", rt.name, st.name), func(t *testing.T) {
 				api, _, cl, files := mkFiles(t)
+				cl.byName["survival"].Phase = st.phase
 				cl.byName["survival"].Ready = st.ready
 				cl.byName["survival"].DesiredState = string(st.desiredState)
+				if st.maintenance != "" {
+					cl.fileAccessErr = &MaintenanceBusyError{Kind: st.maintenance}
+				}
 				api.External = staticExternal{p: owner}
 
 				w := do(api.ExternalHandler(), rt.method, rt.path, rt.body, fileRouteHeader(rt.name, rt.body))
-				if w.Code != http.StatusConflict || decodeErr(t, w) != "not_stopped" {
+				if st.allowed {
+					if w.Code >= 400 || files.calls != 1 {
+						t.Fatalf("code=%d calls=%d body=%s", w.Code, files.calls, w.Body.String())
+					}
+					if st.phase == "Running" && (len(cl.acquired) != 0 || len(cl.released) != 0) {
+						t.Fatalf("live operation took a maintenance lock: acquired=%v released=%v", cl.acquired, cl.released)
+					}
+					return
+				}
+				code := "server_transitioning"
+				if st.maintenance != "" {
+					code = "maintenance_in_progress"
+				}
+				if w.Code != http.StatusConflict || decodeErr(t, w) != code {
 					t.Fatalf("code = %d body %s", w.Code, w.Body.String())
 				}
 				if files.calls != 0 {
-					t.Fatal("a running server holds the RWO world PVC — the file Job must never be created")
+					t.Fatal("a refused file operation created a Job")
 				}
 			})
 		}
@@ -298,14 +325,13 @@ func TestFileOpsBeforeTheFirstStart(t *testing.T) {
 		})
 	}
 
-	// The stopped gate comes first: a running server is refused without a claim.
-	t.Run("a running server without a world volume is refused untouched", func(t *testing.T) {
+	t.Run("a transitioning server without a world volume is refused untouched", func(t *testing.T) {
 		api, _, cl, files := mkFiles(t)
 		cl.noWorld["survival"] = true
 		cl.byName["survival"].DesiredState = string(v1alpha1.DesiredRunning)
 		api.External = staticExternal{p: owner}
 		w := do(api.ExternalHandler(), "GET", "/api/v1/servers/survival/files?path=config", "", nil)
-		if w.Code != http.StatusConflict || decodeErr(t, w) != "not_stopped" {
+		if w.Code != http.StatusConflict || decodeErr(t, w) != "server_transitioning" {
 			t.Fatalf("code = %d body %s", w.Code, w.Body.String())
 		}
 		if len(cl.ensured) != 0 || files.calls != 0 {

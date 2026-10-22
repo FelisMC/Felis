@@ -607,8 +607,10 @@ func exportConfig(cfg *config.Config, image, backupPVC string) worldexport.Confi
 
 func fileEditConfig(cfg *config.Config, image string) fileedit.Config {
 	return fileedit.Config{
-		Namespace: cfg.K8s.Namespace,
-		Image:     image,
+		Namespace:  cfg.K8s.Namespace,
+		Image:      image,
+		RunAsUser:  1000,
+		RunAsGroup: 1000,
 	}
 }
 

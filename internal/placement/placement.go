@@ -65,6 +65,9 @@ func Resolve(r client.Reader, namespace string, controller ...string) Resolver {
 			return World{}, err
 		}
 		node := s.Spec.NodeName
+		if s.Status.Phase == v1alpha1.PhaseRunning && s.Status.NodeName != "" {
+			node = s.Status.NodeName
+		}
 		if node == "" {
 			node = s.Status.NodeName
 		}

@@ -207,55 +207,112 @@ describe("ServerFiles editor", () => {
 });
 
 describe("ServerFiles on a running server", () => {
-  it("lists the files once the server has stopped, without a reload", async () => {
+  it("lists files while running and keeps following server state", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     mocks.status.mockResolvedValue({ ...stopped, phase: "Running", desiredState: "Running", ready: true });
     renderFiles();
-    expect(await screen.findByText(t("files:stopped_required_title"))).toBeTruthy();
-    expect(screen.queryByText("server.properties")).toBeNull();
+    expect(await screen.findByText(t("files:live_warning"))).toBeTruthy();
+    expect(await screen.findByText("server.properties")).toBeTruthy();
+    expect(screen.queryByText(t("files:stopped_required_title"))).toBeNull();
 
     mocks.status.mockResolvedValue(stopped);
     await act(() => vi.advanceTimersByTimeAsync(STATUS_POLL_FAST_MS));
     expect(await screen.findByText("server.properties")).toBeTruthy();
     expect(screen.queryByText(t("files:stopped_required_title"))).toBeNull();
 
-    // Stopped is what it waited for: nothing more to reread.
     const reads = mocks.status.mock.calls.length;
     await act(() => vi.advanceTimersByTimeAsync(STATUS_POLL_FAST_MS * 3));
-    expect(mocks.status.mock.calls.length).toBe(reads);
+    expect(mocks.status.mock.calls.length).toBeGreaterThan(reads);
   });
 
-  it("asks before stopping a server with players on it", async () => {
-    mocks.stop.mockResolvedValue(undefined);
-    mocks.status.mockResolvedValue({ ...stopped, phase: "Running", desiredState: "Running", ready: true, playersOnline: 2 });
-    renderFiles();
-
-    await userEvent.click(await screen.findByRole("button", { name: t("servers:stop") }));
+  it("saves configuration while running without acknowledging world changes", async () => {
+    mocks.status.mockResolvedValue({ ...stopped, phase: "Running", desiredState: "Running", ready: true });
+    mocks.writeServerFile.mockResolvedValue({ path: "server.properties", status: "written", sha256: "new" });
+    const { dialog, editor } = await openEditor();
+    await userEvent.type(editor, "motd=changed");
+    await userEvent.click(within(dialog).getByRole("button", { name: t("files:save") }));
+    expect(mocks.writeServerFile).toHaveBeenCalledOnce();
     expect(mocks.stop).not.toHaveBeenCalled();
-    expect(screen.getByText(i18next.t("servers:stop_confirm_players", { count: 2 }))).toBeTruthy();
-
-    const reads = mocks.status.mock.calls.length;
-    await userEvent.click(screen.getByRole("button", { name: t("servers:stop") }));
-    expect(mocks.stop).toHaveBeenCalledWith("lobby");
-    // The page rereads at once to follow the stop.
-    await waitFor(() => expect(mocks.status.mock.calls.length).toBeGreaterThan(reads));
   });
 
-  it("asks when the player count cannot be read", async () => {
-    mocks.status.mockResolvedValue({
-      ...stopped,
-      phase: "Running",
-      desiredState: "Running",
-      ready: true,
-      playersOnline: 0,
-      playerCountUnknown: true,
-    });
+  it("requires a checkbox before deleting a custom world's parent directory", async () => {
+    mocks.status.mockResolvedValue({ ...stopped, phase: "Running", desiredState: "Running", ready: true });
+    mocks.readServerFile.mockResolvedValue({ path: "server.properties", content: btoa("level-name=maps/custom\n"), sha256: "abc" });
+    mocks.listServerFiles.mockResolvedValue({ path: "", entries: [{ name: "maps", size: 0, is_dir: true, mod_time: "2026-09-01T00:00:00Z" }] });
+    mocks.deleteServerFile.mockResolvedValue(undefined);
     renderFiles();
+    await userEvent.click(await screen.findByRole("button", { name: i18next.t("files:delete_item", { name: "maps" }) }));
+    const dialog = screen.getByRole("dialog");
+    const confirm = within(dialog).getByRole("button", { name: t("files:delete") });
+    expect(confirm).toHaveProperty("disabled", true);
+    expect(mocks.deleteServerFile).not.toHaveBeenCalled();
+    await userEvent.click(within(dialog).getByRole("checkbox", { name: t("files:live_world_confirm") }));
+    expect(confirm).toHaveProperty("disabled", false);
+    await userEvent.click(confirm);
+    expect(mocks.deleteServerFile).toHaveBeenCalledExactlyOnceWith("lobby", "maps");
+  });
 
-    await userEvent.click(await screen.findByRole("button", { name: t("servers:stop") }));
+  it("requires acknowledgement before saving a text file inside the world", async () => {
+    mocks.status.mockResolvedValue({ ...stopped, phase: "Running", desiredState: "Running", ready: true });
+    mocks.writeServerFile.mockResolvedValue({ status: "written", sha256: "new" });
+    renderFiles();
+    await userEvent.click(await screen.findByRole("button", { name: i18next.t("files:open_folder", { name: "world" }) }));
+    await userEvent.click(await screen.findByText("server.properties"));
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.type(await within(dialog).findByRole("textbox"), "motd=changed");
+    const save = within(dialog).getByRole("button", { name: t("files:save") });
+    expect(save).toHaveProperty("disabled", true);
+    expect(mocks.writeServerFile).not.toHaveBeenCalled();
+    await userEvent.click(within(dialog).getByRole("checkbox", { name: t("files:live_world_confirm") }));
+    await userEvent.click(save);
+    expect(mocks.writeServerFile).toHaveBeenCalledWith("lobby", "world/server.properties", expect.any(String), "abc");
+  });
 
-    expect(mocks.stop).not.toHaveBeenCalled();
-    expect(screen.getByText(t("servers:stop_confirm_unknown"))).toBeTruthy();
+  it("keeps the running world's acknowledgement after changing level-name", async () => {
+    mocks.status.mockResolvedValue({ ...stopped, phase: "Running", desiredState: "Running", ready: true });
+    mocks.readServerFile.mockResolvedValue({ path: "server.properties", content: btoa("level-name=old-world\n"), sha256: "abc" });
+    mocks.listServerFiles.mockResolvedValue({ path: "", entries: [
+      { name: "server.properties", size: 20, is_dir: false, mod_time: "" },
+      { name: "old-world", size: 0, is_dir: true, mod_time: "" },
+    ] });
+    mocks.writeServerFile.mockResolvedValue({ status: "written", sha256: "new" });
+    const { dialog, editor } = await openEditor();
+    await userEvent.clear(editor);
+    await userEvent.type(editor, "level-name=new-world");
+    mocks.readServerFile.mockResolvedValue({ path: "server.properties", content: btoa("level-name=new-world\n"), sha256: "new" });
+    await userEvent.click(within(dialog).getByRole("button", { name: t("files:save") }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await userEvent.click(screen.getByRole("button", { name: i18next.t("files:delete_item", { name: "old-world" }) }));
+    expect(within(screen.getByRole("dialog")).getByRole("button", { name: t("files:delete") })).toHaveProperty("disabled", true);
+    expect(mocks.deleteServerFile).not.toHaveBeenCalled();
+  });
+
+  it("refuses world uploads until the checkbox is selected", async () => {
+    mocks.status.mockResolvedValue({ ...stopped, phase: "Running", desiredState: "Running", ready: true });
+    mocks.uploadServerFile.mockResolvedValue({ status: "uploaded", sha256: "new" });
+    renderFiles();
+    await userEvent.click(await screen.findByRole("button", { name: i18next.t("files:open_folder", { name: "world" }) }));
+    const files = [new File(["notes"], "notes.txt")];
+    fireEvent.change(screen.getByTestId("upload-input"), { target: { files } });
+    expect(await screen.findByText(t("files:live_world_confirm_required"))).toBeTruthy();
+    expect(mocks.uploadServerFile).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("checkbox", { name: t("files:live_world_confirm") }));
+    fireEvent.change(screen.getByTestId("upload-input"), { target: { files } });
+    await waitFor(() => expect(mocks.uploadServerFile).toHaveBeenCalledWith("lobby", "world/notes.txt", files[0], false, expect.any(Object)));
+  });
+
+  it("requires acknowledgement before extracting an archive while running", async () => {
+    mocks.status.mockResolvedValue({ ...stopped, phase: "Running", desiredState: "Running", ready: true });
+    mocks.listServerFiles.mockResolvedValue({ path: "", entries: [{ name: "world.zip", size: 10, is_dir: false, mod_time: "" }] });
+    mocks.unzipServerFile.mockResolvedValue({ op: fileOp({ state: "succeeded" }) });
+    renderFiles();
+    const extract = await screen.findByRole("button", { name: i18next.t("files:unzip_item", { name: "world.zip" }) });
+    await userEvent.click(extract);
+    expect(await screen.findByText(t("files:live_world_confirm_required"))).toBeTruthy();
+    expect(mocks.unzipServerFile).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("checkbox", { name: t("files:live_world_confirm") }));
+    await userEvent.click(extract);
+    expect(mocks.unzipServerFile).toHaveBeenCalledExactlyOnceWith("lobby", "world.zip", false);
   });
 
   it("offers a failed start a stop, sent without asking, and nothing that would start it", async () => {
@@ -909,6 +966,32 @@ describe("ServerFiles uploads", () => {
       await waitFor(() => expect(mocks.listServerFiles.mock.calls.length).toBe(before + 1));
       expect(before).toBe(lists + 1); // the refresh
       expect(localStorage.getItem(KEY)).toBeNull();
+    });
+
+    it("asks for world confirmation if the server starts before parts are committed", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      let release!: (value: ReturnType<typeof at>) => void;
+      mocks.putServerFileUploadPart.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+      mocks.commitServerFileUpload.mockResolvedValue({ op: fileOp({ op: "upload", path: "world/world.zip", state: "succeeded" }) });
+      renderFiles();
+      await userEvent.click(await screen.findByRole("button", { name: i18next.t("files:open_folder", { name: "world" }) }));
+      pick(sized("world.zip", SIZE));
+      await waitFor(() => expect(mocks.beginServerFileUpload).toHaveBeenCalledWith("lobby", "world/world.zip", SIZE));
+      await waitFor(() => expect(mocks.putServerFileUploadPart).toHaveBeenCalledOnce());
+
+      mocks.status.mockResolvedValue({ ...stopped, phase: "Running", desiredState: "Running", ready: true });
+      await act(() => vi.advanceTimersByTimeAsync(STATUS_POLL_FAST_MS));
+      await screen.findByText(t("files:live_warning"));
+      await act(async () => release(at(PART)));
+      expect(await within(queue()).findByText(t("files:live_world_confirm_required"))).toBeTruthy();
+      expect(mocks.commitServerFileUpload).not.toHaveBeenCalled();
+
+      mocks.getServerFileUpload.mockResolvedValue({ ...at(SIZE), path: "world/world.zip" });
+      await userEvent.click(screen.getByRole("checkbox", { name: t("files:live_world_confirm") }));
+      await userEvent.click(within(queue()).getByRole("button", { name: t("files:upload_retry") }));
+      expect(await within(queue()).findByText(t("files:upload_done"))).toBeTruthy();
+      expect(mocks.commitServerFileUpload).toHaveBeenCalledExactlyOnceWith("lobby", "s1", false);
+      expect(mocks.putServerFileUploadPart).toHaveBeenCalledTimes(3);
     });
 
     it("says why the Job landing it failed, and offers a retry", async () => {

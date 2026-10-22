@@ -1186,6 +1186,8 @@ export function humanizeError(e: unknown): string {
 
   const err = e as Partial<ApiError>;
   switch (err.code) {
+    case "server_transitioning":
+      return t("server_transitioning");
     // Session doors: every passwordless door 403s this when local sessions are disabled on a Zero-Trust-only deployment.
     case "node_operation_busy":
       return t("node_operation_busy");

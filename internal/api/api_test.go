@@ -1614,28 +1614,29 @@ func (f *fakeRestorer) Restore(_ context.Context, name, ref string) error {
 }
 
 type fakeCluster struct {
-	byName      map[string]*ServerInfo
-	bySub       map[string]*ServerInfo
-	list        []ServerInfo
-	listErr     error
-	desired     map[string]v1alpha1.DesiredState
-	created     map[string]CreateServerInput // name -> the validated input it was created from
-	patched     map[string]ServerSpecPatch   // name -> the validated spec patch it received
-	noWorld     map[string]bool              // servers modeled without a world volume
-	ensured     []string                     // EnsureWorldVolume calls
-	orphanWorld map[string]bool              // names with a world volume but no server (CR deleted by hand)
-	createErr   error
-	pingErr     error
-	patchErr    error            // PatchServerSpec fails with it after finding the server
-	goneOnPatch bool             // PatchServerSpec finds the server deleted since it was read
-	maintErr    map[string]error // AcquireMaintenance result per server
-	wakeErr     map[string]error
-	acquired    []string // "name:kind" per admitted AcquireMaintenance
-	released    []string // names per ReleaseMaintenance
-	retried     []string // names per RetryStart
-	killed      []string
-	feeds       []ServerEventFeed
-	mailed      map[string]int64 // MarkEventsMailed: name -> seq
+	byName        map[string]*ServerInfo
+	bySub         map[string]*ServerInfo
+	list          []ServerInfo
+	listErr       error
+	desired       map[string]v1alpha1.DesiredState
+	created       map[string]CreateServerInput // name -> the validated input it was created from
+	patched       map[string]ServerSpecPatch   // name -> the validated spec patch it received
+	noWorld       map[string]bool              // servers modeled without a world volume
+	ensured       []string                     // EnsureWorldVolume calls
+	orphanWorld   map[string]bool              // names with a world volume but no server (CR deleted by hand)
+	createErr     error
+	pingErr       error
+	patchErr      error            // PatchServerSpec fails with it after finding the server
+	goneOnPatch   bool             // PatchServerSpec finds the server deleted since it was read
+	maintErr      map[string]error // AcquireMaintenance result per server
+	fileAccessErr error
+	wakeErr       map[string]error
+	acquired      []string // "name:kind" per admitted AcquireMaintenance
+	released      []string // names per ReleaseMaintenance
+	retried       []string // names per RetryStart
+	killed        []string
+	feeds         []ServerEventFeed
+	mailed        map[string]int64 // MarkEventsMailed: name -> seq
 }
 
 func newFakeCluster() *fakeCluster {
@@ -1726,6 +1727,10 @@ func (c *fakeCluster) KillServer(ctx context.Context, n string) error {
 	}
 	c.killed = append(c.killed, n)
 	return nil
+}
+
+func (c *fakeCluster) CheckFileAccess(context.Context, string) error {
+	return c.fileAccessErr
 }
 
 func TestRestartAuthorization(t *testing.T) {

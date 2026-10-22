@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import {
   AlertTriangle,
@@ -23,12 +23,14 @@ import { useTranslation } from "react-i18next";
 import { BackLink } from "@/components/BackLink";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { MessageLine } from "@/components/MessageLine";
 import { InlineConfirm } from "@/components/InlineConfirm";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { NameDialog } from "@/components/files/NameDialog";
 import { FileOps } from "@/components/files/FileOps";
 import { UploadQueue } from "@/components/files/UploadQueue";
+import { touchesWorld, worldDirectories } from "@/components/files/worldPaths";
 import { useFileOps } from "@/components/files/useFileOps";
 import { useUploads } from "@/components/files/useUploads";
 import { holderText, useWorldJobs } from "@/components/files/useWorldJobs";
@@ -100,7 +102,7 @@ type Naming =
   | { kind: "file" | "folder"; dir: string }
   | { kind: "rename"; dir: string; entry: ServerFileEntry };
 
-/** World-volume file manager; every call needs a fully stopped server (409 not_stopped), so the page gates up front. */
+/** File operations are available while running; world changes require an explicit acknowledgement. */
 export function ServerFiles() {
   const { name = "" } = useParams();
   const [params] = useSearchParams();
@@ -116,6 +118,39 @@ export function ServerFiles() {
   const pending = ownershipPending(tierLoading, isAdmin, mineQ.data, mineQ.error);
   const owned = canManage(isAdmin, mineQ.data, name);
   const stopped = statusQ.data?.phase === "Stopped";
+  const live = statusQ.data?.phase === "Running" && statusQ.data.desiredState === "Running";
+  const accessible = stopped || live;
+  const [worldConfirmed, setWorldConfirmed] = useState(false);
+  useEffect(() => setWorldConfirmed(false), [name, live]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- Each server run starts a separate directory cache.
+  const knownWorldDirs = useMemo(() => new Set<string>(), [name, live]);
+  const worldQ = useAsync(async () => {
+    if (!owned || !live) return null;
+    const file = await api.readServerFile(name, "server.properties");
+    const text = decodeText(base64ToBytes(file.content));
+    if (text === null) return null;
+    // Changing level-name takes effect on restart, so retain previously observed world directories.
+    for (const dir of worldDirectories(text)) knownWorldDirs.add(dir);
+    return [...knownWorldDirs];
+  }, [name, owned, live, knownWorldDirs]);
+  const { reload: reloadWorlds } = worldQ;
+  const worldDirs = worldQ.loading || worldQ.error ? null : worldQ.data;
+
+  function needsWorldConfirmation(paths: readonly string[]): boolean {
+    if (!live || worldConfirmed) return false;
+    return paths.length === 0 || !worldDirs || paths.some((p) => touchesWorld(p, worldDirs));
+  }
+
+  function requireWorldConfirmation(paths: readonly string[]) {
+    if (needsWorldConfirmation(paths)) throw new Error(t("live_world_confirm_required"));
+  }
+
+  function worldConfirmation(id: string) {
+    return <label htmlFor={id} className="flex items-start gap-2 text-sm">
+      <Checkbox id={id} checked={worldConfirmed} onChange={(e) => setWorldConfirmed(e.target.checked)} />
+      <span>{t("live_world_confirm")}</span>
+    </label>;
+  }
 
   const [dir, setDir] = useState(params.get("path") ?? "");
   const [entries, setEntries] = useState<ServerFileEntry[] | null>(null);
@@ -164,16 +199,14 @@ export function ServerFiles() {
 
   // Exclude dir from dependencies because load changes it; including it would duplicate directory fetches.
   useEffect(() => {
-    if (owned && stopped) void load(dir);
+    if (owned && accessible) void load(dir);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [owned, stopped, load]);
+  }, [owned, accessible, load]);
   useEffect(() => {
-    if (!stopped) folders.current.clear();
-  }, [stopped]);
+    if (!accessible) folders.current.clear();
+  }, [accessible]);
 
-  // While the server is not stopped, poll the phase so the first successful
-  // stop flips the page from the notice to the listing without a manual reload.
-  usePolling(statusQ.reload, stopped ? null : STATUS_POLL_FAST_MS);
+  usePolling(statusQ.reload, STATUS_POLL_FAST_MS);
 
   // Send the read SHA-256 on save to reject concurrent edits with file_changed.
   const [open, setOpen] = useState<{
@@ -282,6 +315,7 @@ export function ServerFiles() {
     setMsg(null);
     setOpen({ ...open, error: null });
     try {
+      requireWorldConfirmation([open.path]);
       await api.writeServerFile(
         name,
         open.path,
@@ -292,6 +326,7 @@ export function ServerFiles() {
       setConfirmDiscard(false);
       setOpen(null);
       void load(dir);
+      if (open.path === "server.properties") reloadWorlds();
     } catch (e) {
       if ((e as { code?: string }).code === "file_changed") {
         setOpen({ ...open, conflict: true, error: null });
@@ -312,14 +347,16 @@ export function ServerFiles() {
     setConflictsOpen(true);
   }
   function opEnded(op: FileOp) {
-    if (op.state === "succeeded") void load(dir);
-    else if (op.op === "unzip" && op.error?.code === "file_exists" && startedHere.current.has(op.id)) {
+    if (op.state === "succeeded") {
+      void load(dir);
+      reloadWorlds();
+    } else if (op.op === "unzip" && op.error?.code === "file_exists" && startedHere.current.has(op.id)) {
       showConflicts(op);
     }
   }
-  const fileOps = useFileOps(name, owned && stopped, opEnded);
+  const fileOps = useFileOps(name, owned && accessible, opEnded);
   // Backups, restores, exports and downloads also hold the world, whoever started them.
-  const worldJobs = useWorldJobs(name, owned && stopped, () => void load(dir));
+  const worldJobs = useWorldJobs(name, owned && accessible, () => void load(dir));
   const held = worldJobs.holder;
   useEffect(() => {
     if (held !== null) folders.current.clear();
@@ -342,6 +379,7 @@ export function ServerFiles() {
       landedSince.current = true;
     },
     onOp: fileOps.ignore,
+    beforeUpload: (path) => requireWorldConfirmation([path]),
     hold: fileOps.running || downloading !== null || unzipping !== null || held !== null,
     free,
   });
@@ -360,7 +398,8 @@ export function ServerFiles() {
     if (uploads.busy || !landedSince.current) return;
     landedSince.current = false;
     void load(dir);
-  }, [uploads.busy, dir, load]);
+    reloadWorlds();
+  }, [uploads.busy, dir, load, reloadWorlds]);
   useUnsavedGuard(uploads.busy);
   // A file dropped outside the list would be opened by the browser, taking the queue with it; the list claims its own drops first.
   useEffect(() => {
@@ -395,6 +434,10 @@ export function ServerFiles() {
 
   function addFiles(files: readonly File[]) {
     if (files.length === 0) return;
+    if (needsWorldConfirmation(files.map((file) => joinPath(dir, file.name)))) {
+      setMsg({ kind: "error", text: t("live_world_confirm_required") });
+      return;
+    }
     setMsg(null);
     uploads.add(files, dir, entries);
   }
@@ -423,7 +466,9 @@ export function ServerFiles() {
   async function createFile(n: string) {
     if (!naming) return;
     const p = joinPath(naming.dir, n);
+    requireWorldConfirmation([p]);
     const r = await api.createServerFile(name, p, "");
+    if (p === "server.properties") reloadWorlds();
     setConfirmDiscard(false);
     setOpen({ path: p, text: "", original: "", editable: true, sha256: r.sha256 ?? "", conflict: false, error: null });
     void load(naming.dir);
@@ -432,6 +477,7 @@ export function ServerFiles() {
   async function makeFolder(n: string) {
     if (!naming) return;
     const p = joinPath(naming.dir, n);
+    requireWorldConfirmation([p]);
     await api.mkdirServerFolder(name, p);
     setMsg({ kind: "success", text: t("folder_created", { path: p }) });
     void load(naming.dir);
@@ -439,6 +485,7 @@ export function ServerFiles() {
 
   async function renameEntry(n: string) {
     if (naming?.kind !== "rename") return;
+    requireWorldConfirmation([joinPath(naming.dir, naming.entry.name), joinPath(naming.dir, n)]);
     await api.renameServerFile(name, joinPath(naming.dir, naming.entry.name), joinPath(naming.dir, n));
     setMsg({ kind: "success", text: t("renamed", { from: naming.entry.name, to: n }) });
     void load(naming.dir);
@@ -447,7 +494,9 @@ export function ServerFiles() {
   async function deleteEntry() {
     if (!deleting) return;
     const p = joinPath(dir, deleting.name);
+    requireWorldConfirmation([p]);
     await api.deleteServerFile(name, p);
+    if (p === "server.properties") reloadWorlds();
     setMsg({ kind: "success", text: t("deleted", { path: p }) });
     void load(dir);
   }
@@ -456,6 +505,7 @@ export function ServerFiles() {
   // overwrite the op stops before touching anything when a file would be
   // replaced, and names those files.
   async function unzip(p: string, overwrite: boolean) {
+    requireWorldConfirmation([]);
     const { op } = await api.unzipServerFile(name, p, overwrite);
     startedHere.current.add(op.id);
     fileOps.started(op);
@@ -585,6 +635,10 @@ export function ServerFiles() {
         <NotYours title={t("not_yours_title")} body={t("not_yours_body")} />
       ) : (
         <div className="space-y-4">
+          {live && <div role="status" className="space-y-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm">
+            <p>{t("live_warning")}</p>
+            {worldConfirmation("files-world-confirm")}
+          </div>}
           {msg && <MessageLine kind={msg.kind} message={msg.text} />}
           {statusQ.error != null && (
             <MessageLine
@@ -592,7 +646,7 @@ export function ServerFiles() {
               message={t("status_refresh_failed", { reason: humanizeError(statusQ.error) })}
             />
           )}
-          {!stopped ? (
+          {!accessible ? (
             <Card>
               <CardContent className="flex flex-col items-center gap-3 py-14 text-center">
                 <Square className="h-7 w-7 text-muted-foreground/70" />
@@ -745,6 +799,7 @@ export function ServerFiles() {
                       onClick={() => {
                         void load(dir);
                         fileOps.refresh();
+                        reloadWorlds();
                       }}
                       disabled={listLoading}
                       aria-label={t("refresh")}
@@ -961,6 +1016,7 @@ export function ServerFiles() {
           )}
           {open && (
             <>
+              {live && open.editable && (!worldDirs || touchesWorld(open.path, worldDirs)) && worldConfirmation("editor-world-confirm")}
               {open.conflict && (
                 <div
                   role="alert"
@@ -992,7 +1048,7 @@ export function ServerFiles() {
                       size="sm"
                       variant="destructive"
                       onClick={() => void handleSave(true)}
-                      disabled={saving || reloading || tooLarge}
+                      disabled={saving || reloading || tooLarge || needsWorldConfirmation([open.path])}
                       title={t("conflict_overwrite_hint")}
                     >
                       {saving ? (
@@ -1055,7 +1111,7 @@ export function ServerFiles() {
                     </Button>
                     {open.editable && <Button
                       onClick={() => void handleSave()}
-                      disabled={saving || reloading || open.conflict || !open.editable || !dirty || tooLarge}
+                      disabled={saving || reloading || open.conflict || !open.editable || !dirty || tooLarge || needsWorldConfirmation([open.path])}
                     >
                       {saving ? (
                         <Loader2 className="h-4 w-4 animate-spin" />
@@ -1089,7 +1145,9 @@ export function ServerFiles() {
             problemText(nameProblem(v, entries, naming.kind === "rename" ? naming.entry.name : undefined))
           }
           onSubmit={naming.kind === "file" ? createFile : naming.kind === "folder" ? makeFolder : renameEntry}
-        />
+        >
+          {live && worldConfirmation("name-world-confirm")}
+        </NameDialog>
       )}
 
       <ConfirmDialog
@@ -1099,7 +1157,10 @@ export function ServerFiles() {
         description={t(deleting?.is_dir ? "delete_folder_body" : "delete_file_body")}
         confirmLabel={t("delete")}
         onConfirm={deleteEntry}
-      />
+        confirmDisabled={deleting !== null && needsWorldConfirmation([joinPath(dir, deleting.name)])}
+      >
+        {live && deleting && (!worldDirs || touchesWorld(joinPath(dir, deleting.name), worldDirs)) && worldConfirmation("delete-world-confirm")}
+      </ConfirmDialog>
 
       <ConfirmDialog
         open={conflictsOpen}
@@ -1111,7 +1172,9 @@ export function ServerFiles() {
         description={t("unzip_conflicts_body")}
         confirmLabel={t("unzip_overwrite")}
         onConfirm={overwriteConflicts}
+        confirmDisabled={needsWorldConfirmation([])}
       >
+        {live && worldConfirmation("unzip-world-confirm")}
         <ConflictList op={conflicts} />
       </ConfirmDialog>
     </>

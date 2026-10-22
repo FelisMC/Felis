@@ -42,14 +42,14 @@ interface Options {
   onLanded: (dir: string) => void;
   /** Runs with the id of each op a file sent in parts is landed by. */
   onOp?: (id: string) => void;
+  beforeUpload?: (path: string) => void;
   /** Holds the queue: nothing new starts while it is true. */
   hold?: boolean;
   /** Bytes free on the world volume, from the latest listing. */
   free?: number | null;
 }
 
-// Serialize uploads because each landing Job holds the world lock.
-export function useUploads(server: string, { onLanded, onOp, hold = false, free = null }: Options) {
+export function useUploads(server: string, { onLanded, onOp, beforeUpload, hold = false, free = null }: Options) {
   const [items, setItems] = useState<UploadItem[]>([]);
   const current = useRef(items);
   current.current = items;
@@ -61,8 +61,8 @@ export function useUploads(server: string, { onLanded, onOp, hold = false, free 
   const cancelled = useRef<number | null>(null);
   // The session each file sent in parts went up in, by item.
   const sessions = useRef(new Map<number, { path: string; id: string }>());
-  const hooks = useRef({ onLanded, onOp });
-  hooks.current = { onLanded, onOp };
+  const hooks = useRef({ onLanded, onOp, beforeUpload });
+  hooks.current = { onLanded, onOp, beforeUpload };
   const room = useRef(free);
   room.current = free;
 
@@ -93,6 +93,7 @@ export function useUploads(server: string, { onLanded, onOp, hold = false, free 
         signal,
         onProgress: (sent) => patch(it.id, { sent }),
         onSession: (id) => sessions.current.set(it.id, { path, id }),
+        beforeCommit: () => hooks.current.beforeUpload?.(path),
       });
       hooks.current.onOp?.(op.id);
       patch(it.id, { sent: it.file.size });
@@ -127,13 +128,15 @@ export function useUploads(server: string, { onLanded, onOp, hold = false, free 
       abort.current = null;
     };
     const path = joinPath(next.dir, next.file.name);
-    const sending =
-      next.file.size > ONE_REQUEST_BYTES
+    const sending = Promise.resolve().then(async () => {
+      hooks.current.beforeUpload?.(path);
+      await (next.file.size > ONE_REQUEST_BYTES
         ? sendLarge(next, path, ctrl.signal)
         : api.uploadServerFile(server, path, next.file, next.overwrite, {
             signal: ctrl.signal,
             onProgress: (sent) => patch(next.id, { sent }),
-          });
+          }));
+    });
     sending.then(
       () => {
         settle();

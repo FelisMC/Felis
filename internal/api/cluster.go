@@ -154,6 +154,7 @@ type Cluster interface {
 	RetryStart(ctx context.Context, name string) error
 	RestartServer(ctx context.Context, name string) error
 	KillServer(ctx context.Context, name string) error
+	CheckFileAccess(ctx context.Context, name string) error
 	// AcquireMaintenance atomically checks the stopped state and locks against wakes; only system-config writes may run live.
 	AcquireMaintenance(ctx context.Context, name, kind string) error
 	// ReleaseMaintenance is idempotent and runs after Job creation succeeds or fails.

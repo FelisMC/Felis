@@ -398,6 +398,29 @@ func (k *K8sCluster) ReleaseMaintenance(ctx context.Context, name string) error 
 	return k.c.Patch(ctx, &ms, patch)
 }
 
+func (k *K8sCluster) CheckFileAccess(ctx context.Context, name string) error {
+	var ms v1alpha1.MinecraftServer
+	if err := k.getServer(ctx, name, &ms); err != nil {
+		return err
+	}
+	var jobs batchv1.JobList
+	if err := k.c.List(ctx, &jobs, client.InNamespace(k.namespace), client.MatchingLabels{maintenance.LabelServer: name}); err != nil {
+		return err
+	}
+	blocksFiles := func(kind string) bool {
+		return kind != maintenance.KindFileWrite && kind != maintenance.KindConfigWrite && kind != maintenance.KindExport
+	}
+	for i := range jobs.Items {
+		if kind, held := maintenance.Holder(name, nil, jobs.Items[i:i+1], k.clock()); held && blocksFiles(kind) {
+			return &MaintenanceBusyError{Kind: kind}
+		}
+	}
+	if kind, held := maintenance.Holder(name, ms.Annotations, nil, k.clock()); held && blocksFiles(kind) {
+		return &MaintenanceBusyError{Kind: kind}
+	}
+	return nil
+}
+
 // maintenanceHolder uses direct Job reads so a Job created before lock release is visible.
 func (k *K8sCluster) maintenanceHolder(ctx context.Context, ms *v1alpha1.MinecraftServer) (string, bool, error) {
 	var jobs batchv1.JobList

@@ -13,7 +13,7 @@ import (
 	"felis.lolicon.best/internal/maintenance"
 )
 
-// Upload sessions reserve the full size on staging disk; background landing and unzip Jobs hold the world-volume lock.
+// Upload sessions reserve the full size on staging disk until their landing Job finishes.
 
 // fileSessionView includes ordered part digests so a resumed upload can verify the local file has not changed.
 type fileSessionView struct {
@@ -58,7 +58,7 @@ type beginFileUploadRequest struct {
 	Size *int64 `json:"size"`
 }
 
-// handleBeginFileUpload requires a stopped server; later parts may arrive while running, but commit must wait.
+// Upload admission checks server state; later parts use the session's owner and server scope.
 func (a *API) handleBeginFileUpload(w http.ResponseWriter, r *http.Request) {
 	name, ok := a.authorizeFileOp(w, r)
 	if !ok {
@@ -158,7 +158,7 @@ type startFileOpRequest struct {
 	Overwrite bool `json:"overwrite"`
 }
 
-// handleCommitFileUpload locks the world before Seal so a concurrent commit cannot rotate a running Job's fetch token.
+// Serialize session admission before checking active Jobs or rotating the fetch token.
 func (a *API) handleCommitFileUpload(w http.ResponseWriter, r *http.Request) {
 	name, ok := a.authorizeFileOp(w, r)
 	if !ok {
@@ -183,11 +183,27 @@ func (a *API) handleCommitFileUpload(w http.ResponseWriter, r *http.Request) {
 		writeFileSessionError(w, r, err)
 		return
 	}
-	release, ok := a.acquireWorld(w, r, name, maintenance.KindFileWrite, "stop the server before editing its files")
+	if _, busy := a.fileCommits.LoadOrStore(id, struct{}{}); busy {
+		writeFileSessionError(w, r, fileedit.ErrUploadBusy)
+		return
+	}
+	defer a.fileCommits.Delete(id)
+	release, ok := a.acquireFileWorld(w, r, name, maintenance.KindFileWrite, "wait for the server to stop or finish starting before editing its files")
 	if !ok {
 		return
 	}
 	defer release()
+	ops, err := a.Files.Ops(r.Context(), name)
+	if err != nil {
+		writeFileEditError(w, r, err)
+		return
+	}
+	for _, op := range ops {
+		if op.Op == fileedit.OpUpload && op.State == fileedit.OpRunning && op.Path == s.Path {
+			writeFileSessionError(w, r, fileedit.ErrUploadBusy)
+			return
+		}
+	}
 	staged, err := a.FileStage.Seal(user, name, id)
 	if err != nil {
 		writeFileSessionError(w, r, err)
@@ -228,7 +244,7 @@ func (a *API) handleUnzipFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	release, ok := a.acquireWorld(w, r, name, maintenance.KindFileWrite, "stop the server before editing its files")
+	release, ok := a.acquireFileWorld(w, r, name, maintenance.KindFileWrite, "wait for the server to stop or finish starting before editing its files")
 	if !ok {
 		return
 	}

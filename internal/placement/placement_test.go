@@ -86,11 +86,12 @@ func TestResolveFindsTheWorldsNode(t *testing.T) {
 	ran := &v1alpha1.MinecraftServer{ObjectMeta: metav1.ObjectMeta{Name: "ran", Namespace: "mc"}, Status: v1alpha1.MinecraftServerStatus{NodeName: "c"}}
 	home := &v1alpha1.MinecraftServer{ObjectMeta: metav1.ObjectMeta{Name: "home", Namespace: "mc"}}
 	lost := &v1alpha1.MinecraftServer{ObjectMeta: metav1.ObjectMeta{Name: "lost", Namespace: "mc"}, Spec: v1alpha1.MinecraftServerSpec{NodeName: "gone"}}
-	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pinned, ran, home, lost,
+	live := &v1alpha1.MinecraftServer{ObjectMeta: metav1.ObjectMeta{Name: "live", Namespace: "mc"}, Spec: v1alpha1.MinecraftServerSpec{NodeName: "w"}, Status: v1alpha1.MinecraftServerStatus{Phase: v1alpha1.PhaseRunning, NodeName: "c"}}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pinned, ran, home, lost, live,
 		node("a", RoleController, true), node("c", RoleController, true), node("w", RoleWorker, true, LabelApproved, "true"), node("gone", RoleWorker, false, LabelApproved, "true")).Build()
 	resolve := Resolve(cl, "mc", "a")
 	ctx := context.Background()
-	for server, want := range map[string]string{"pinned": "w", "ran": "c", "home": "a"} {
+	for server, want := range map[string]string{"pinned": "w", "ran": "c", "home": "a", "live": "c"} {
 		w, err := resolve(ctx, server)
 		if err != nil || w.Node != want || w.Claim == "" {
 			t.Errorf("%s = %+v (%v), want node %s", server, w, err, want)

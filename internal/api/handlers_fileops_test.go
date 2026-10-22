@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -209,6 +211,29 @@ func TestFileUploadSession(t *testing.T) {
 		}
 	})
 
+	t.Run("a running landing Job keeps its token when committed again", func(t *testing.T) {
+		api, _, cl, files := mkFiles(t)
+		api.External = staticExternal{p: fileOwner}
+		cl.byName["survival"].Phase = "Running"
+		cl.byName["survival"].DesiredState = "Running"
+		s := beginSession(t, api, 3)
+		doPart(api.ExternalHandler(), partAt(s.ID, 0), "abc", 3)
+		if w := commit(api, s.ID, `{}`); w.Code != http.StatusAccepted {
+			t.Fatalf("first commit: %d %s", w.Code, w.Body.String())
+		}
+		files.ops = []fileedit.OpState{{ID: "active", Op: fileedit.OpUpload, Path: sessionPath, State: fileedit.OpRunning}}
+		if w := commit(api, s.ID, `{}`); w.Code != http.StatusConflict || decodeErr(t, w) != "upload_busy" || files.calls != 1 {
+			t.Fatalf("repeated commit: %d calls=%d %s", w.Code, files.calls, w.Body.String())
+		}
+		if w := fetchStaged(api, files.gotSource); w.Code != http.StatusOK || w.Body.String() != "abc" {
+			t.Fatalf("active token: %d %s", w.Code, w.Body.String())
+		}
+		files.ops[0].State = fileedit.OpFailed
+		if w := commit(api, s.ID, `{}`); w.Code != http.StatusAccepted || files.calls != 2 {
+			t.Fatalf("retry after failed Job: %d calls=%d %s", w.Code, files.calls, w.Body.String())
+		}
+	})
+
 	t.Run("a Job that never fetched is committed again with a fresh token", func(t *testing.T) {
 		api, repo, _, files := mkFiles(t)
 		api.External = staticExternal{p: fileOwner}
@@ -396,14 +421,12 @@ func TestFileUploadSession(t *testing.T) {
 		}
 	})
 
-	// The parts need only the account and the server: starting the server midway
-	// costs the upload nothing but the commit.
-	t.Run("parts, status and cancel go on while the server runs", func(t *testing.T) {
+	t.Run("parts, status and cancel go on while the server starts", func(t *testing.T) {
 		api, _, cl, files := mkFiles(t)
 		api.External = staticExternal{p: fileOwner}
 		h := api.ExternalHandler()
 		s := beginSession(t, api, 3)
-		cl.byName["survival"].Ready = true
+		cl.byName["survival"].Phase = "Starting"
 		cl.byName["survival"].DesiredState = string(v1alpha1.DesiredRunning)
 		if w := doPart(h, partAt(s.ID, 0), "abc", 3); w.Code != http.StatusOK {
 			t.Fatalf("part: code = %d (%s)", w.Code, w.Body.String())
@@ -411,7 +434,7 @@ func TestFileUploadSession(t *testing.T) {
 		if w := status(api, s.ID); w.Code != http.StatusOK {
 			t.Fatalf("status: code = %d (%s)", w.Code, w.Body.String())
 		}
-		if w := commit(api, s.ID, `{}`); w.Code != http.StatusConflict || decodeErr(t, w) != "not_stopped" || files.calls != 0 {
+		if w := commit(api, s.ID, `{}`); w.Code != http.StatusConflict || decodeErr(t, w) != "server_transitioning" || files.calls != 0 {
 			t.Fatalf("commit: code = %d calls = %d (%s)", w.Code, files.calls, w.Body.String())
 		}
 		if w := do(h, "DELETE", sessionsRoute+"/"+s.ID, "", nil); w.Code != http.StatusNoContent {
@@ -582,6 +605,57 @@ func (b *brokenWriter) Header() http.Header         { return b.header }
 func (b *brokenWriter) WriteHeader(code int)        { b.code = code }
 func (b *brokenWriter) Write(p []byte) (int, error) { return 0, errors.New("connection reset") }
 
+type pausedFileOps struct {
+	*fakeFileEditor
+	entered chan struct{}
+	resume  <-chan struct{}
+}
+
+func (f *pausedFileOps) Ops(ctx context.Context, server string) ([]fileedit.OpState, error) {
+	f.entered <- struct{}{}
+	<-f.resume
+	return f.fakeFileEditor.Ops(ctx, server)
+}
+
+func TestConcurrentFileUploadCommit(t *testing.T) {
+	api, _, cl, files := mkFiles(t)
+	api.External = staticExternal{p: fileOwner}
+	cl.byName["survival"].Phase = "Running"
+	cl.byName["survival"].DesiredState = "Running"
+	s := beginSession(t, api, 3)
+	doPart(api.ExternalHandler(), partAt(s.ID, 0), "abc", 3)
+	resume := make(chan struct{})
+	release := sync.OnceFunc(func() { close(resume) })
+	defer release()
+	paused := &pausedFileOps{fakeFileEditor: files, entered: make(chan struct{}, 2), resume: resume}
+	api.Files = paused
+	commit := func(done chan<- *httptest.ResponseRecorder) {
+		done <- do(api.ExternalHandler(), "POST", sessionsRoute+"/"+s.ID+"/commit", `{}`, jsonHeader)
+	}
+	first, second := make(chan *httptest.ResponseRecorder, 1), make(chan *httptest.ResponseRecorder, 1)
+	go commit(first)
+	<-paused.entered
+	go commit(second)
+	var repeated *httptest.ResponseRecorder
+	select {
+	case repeated = <-second:
+	case <-paused.entered:
+		t.Error("a second commit reached the executor while the first was still starting")
+	case <-time.After(2 * time.Second):
+		t.Error("a second commit did not return upload_busy")
+	}
+	release()
+	if w := <-first; w.Code != http.StatusAccepted {
+		t.Fatalf("first commit: %d %s", w.Code, w.Body.String())
+	}
+	if repeated == nil {
+		repeated = <-second
+	}
+	if repeated.Code != http.StatusConflict || decodeErr(t, repeated) != "upload_busy" || files.calls != 1 {
+		t.Fatalf("concurrent commit: %d calls=%d %s", repeated.Code, files.calls, repeated.Body.String())
+	}
+}
+
 func TestFileOpsWorldGates(t *testing.T) {
 	routes := []struct{ name, target, body string }{
 		{"begin", sessionsRoute + "?path=a.jar", `{"size":3}`},
@@ -592,12 +666,21 @@ func TestFileOpsWorldGates(t *testing.T) {
 		name, code string
 		set        func(*fakeCluster)
 	}{
-		{"running", "not_stopped", func(c *fakeCluster) {
-			c.byName["survival"].Ready = true
+		{"stopping", "server_transitioning", func(c *fakeCluster) {
+			c.byName["survival"].Phase = "Stopping"
+		}},
+		{"starting", "server_transitioning", func(c *fakeCluster) {
+			c.byName["survival"].Phase = "Starting"
 			c.byName["survival"].DesiredState = string(v1alpha1.DesiredRunning)
 		}},
-		{"starting", "not_stopped", func(c *fakeCluster) {
-			c.byName["survival"].DesiredState = string(v1alpha1.DesiredRunning)
+		{"backup", "maintenance_in_progress", func(c *fakeCluster) {
+			c.fileAccessErr = &MaintenanceBusyError{Kind: maintenance.KindBackup}
+		}},
+		{"restore", "maintenance_in_progress", func(c *fakeCluster) {
+			c.fileAccessErr = &MaintenanceBusyError{Kind: maintenance.KindRestore}
+		}},
+		{"migration", "maintenance_in_progress", func(c *fakeCluster) {
+			c.fileAccessErr = &MaintenanceBusyError{Kind: maintenance.KindMigration}
 		}},
 	}
 	for _, rt := range routes {
@@ -616,6 +699,34 @@ func TestFileOpsWorldGates(t *testing.T) {
 				stageEmpty(t, api)
 			})
 		}
+	}
+}
+
+func TestRunningFileUploadAndUnzip(t *testing.T) {
+	for _, op := range []string{fileedit.OpUpload, fileedit.OpUnzip} {
+		t.Run(op, func(t *testing.T) {
+			api, _, cl, files := mkFiles(t)
+			api.External = staticExternal{p: fileOwner}
+			cl.byName["survival"].Phase = "Running"
+			cl.byName["survival"].DesiredState = string(v1alpha1.DesiredRunning)
+			cl.byName["survival"].Ready = true
+			files.op = fileedit.OpState{ID: "live-op", Op: op, Path: sessionPath, State: fileedit.OpRunning, Started: opStarted}
+			target := unzipRoute + "?path=world.zip"
+			if op == fileedit.OpUpload {
+				session := beginSession(t, api, 3)
+				if w := doPart(api.ExternalHandler(), partAt(session.ID, 0), "abc", 3); w.Code != http.StatusOK {
+					t.Fatalf("part: %d %s", w.Code, w.Body.String())
+				}
+				target = sessionsRoute + "/" + session.ID + "/commit"
+			}
+			w := do(api.ExternalHandler(), "POST", target, `{}`, jsonHeader)
+			if w.Code != http.StatusAccepted || files.calls != 1 || files.gotOp != op {
+				t.Fatalf("live %s: code=%d calls=%d op=%q body=%s", op, w.Code, files.calls, files.gotOp, w.Body.String())
+			}
+			if len(cl.acquired) != 0 || len(cl.released) != 0 {
+				t.Fatalf("live operation took a lock: acquired=%v released=%v", cl.acquired, cl.released)
+			}
+		})
 	}
 }
 
@@ -819,21 +930,21 @@ func TestFileOps(t *testing.T) {
 		cl.byName["survival"].Ready = true
 		cl.byName["survival"].DesiredState = string(v1alpha1.DesiredRunning)
 		cl.noWorld["survival"] = true
-		if w := list(api); w.Code != http.StatusOK || files.calls != 1 {
-			t.Fatalf("code = %d calls = %d (%s)", w.Code, files.calls, w.Body.String())
+		if w := list(api); w.Code != http.StatusOK || files.opsCalls != 1 {
+			t.Fatalf("code = %d calls = %d (%s)", w.Code, files.opsCalls, w.Body.String())
 		}
 	})
 
 	t.Run("who may look", func(t *testing.T) {
 		api, repo, _, files := mkFiles(t)
 		api.External = staticExternal{p: fileStranger}
-		if w := list(api); w.Code != http.StatusForbidden || files.calls != 0 {
-			t.Fatalf("stranger: code = %d calls = %d", w.Code, files.calls)
+		if w := list(api); w.Code != http.StatusForbidden || files.opsCalls != 0 {
+			t.Fatalf("stranger: code = %d calls = %d", w.Code, files.opsCalls)
 		}
 		repo.byName["survival"].OwnerID = "someone-else"
 		api.External = staticExternal{p: fileAdmin}
-		if w := list(api); w.Code != http.StatusOK || files.calls != 1 {
-			t.Fatalf("admin: code = %d calls = %d (%s)", w.Code, files.calls, w.Body.String())
+		if w := list(api); w.Code != http.StatusOK || files.opsCalls != 1 {
+			t.Fatalf("admin: code = %d calls = %d (%s)", w.Code, files.opsCalls, w.Body.String())
 		}
 		api.External = staticExternal{p: fileOwner}
 		if w := do(api.ExternalHandler(), "GET", strings.Replace(opsRoute, "survival", "missing", 1), "", nil); w.Code != http.StatusNotFound {
@@ -847,7 +958,7 @@ func TestFileOps(t *testing.T) {
 	t.Run("no executor -> 503, a failing one -> 500", func(t *testing.T) {
 		api, _, _, files := mkFiles(t)
 		api.External = staticExternal{p: fileOwner}
-		files.err = errors.New("the cluster said no")
+		files.opsErr = errors.New("the cluster said no")
 		if w := list(api); w.Code != http.StatusInternalServerError {
 			t.Fatalf("failing: code = %d (%s)", w.Code, w.Body.String())
 		}

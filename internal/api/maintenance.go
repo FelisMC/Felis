@@ -57,3 +57,19 @@ func (a *API) acquireWorld(w http.ResponseWriter, r *http.Request, name, kind, n
 		}
 	}, true
 }
+
+func (a *API) acquireFileWorld(w http.ResponseWriter, r *http.Request, name, kind, notStopped string) (func(), bool) {
+	info, err := a.Cluster.GetServer(r.Context(), name)
+	if err != nil {
+		a.writeLookupError(w, r, err)
+		return nil, false
+	}
+	if info.Phase != "Running" || info.DesiredState != "Running" {
+		return a.acquireWorld(w, r, name, kind, notStopped)
+	}
+	if err := a.Cluster.CheckFileAccess(r.Context(), name); err != nil {
+		a.writeLookupError(w, r, maintenanceError(err, notStopped))
+		return nil, false
+	}
+	return func() {}, true
+}

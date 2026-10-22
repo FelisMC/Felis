@@ -1,4 +1,4 @@
-import { useRef, useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -20,6 +20,7 @@ interface Props {
   onOpenChange: (open: boolean) => void;
   title: string;
   description?: string;
+  children?: ReactNode;
   label: string;
   confirmLabel: string;
   /** What the field starts with. A rename starts from the old name, selected up
@@ -38,6 +39,7 @@ export function NameDialog({
   onOpenChange,
   title,
   description,
+  children,
   label,
   confirmLabel,
   initial = "",
@@ -118,6 +120,7 @@ export function NameDialog({
             )}
           </div>
           {error && <MessageLine kind="error" message={error} compact />}
+          {children}
           <DialogFooter>
             <Button type="button" variant="outline" size="sm" onClick={() => setOpen(false)} disabled={busy}>
               {t("cancel")}

@@ -2098,8 +2098,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List a directory in a server's world volume (owner-or-admin; server must be stopped).
-         * @description Lists one directory inside the server's world volume — the repair lever for a server that will not boot because a config file is wrong. A server that has never started gets its world volume here, the one its first start then mounts, so files can be put in place before that start. The world PVC is RWO and held by a running server, so the server must be fully stopped first (409 not_stopped otherwise). The listing runs as a one-shot Job whose output is read back through pods/log, so the call is synchronous but takes seconds rather than milliseconds. Paths are resolved inside the world root by os.Root, so "..", an absolute path, and a symlink leaving the root are all refused with 400 bad_path. Listings are capped; truncated reports that the cap was hit.
+         * List a directory in a running or stopped server's world volume (owner-or-admin).
+         * @description Lists one directory inside the server's world volume — the repair lever for a server that will not boot because a config file is wrong. A server that has never started gets its world volume here, the one its first start then mounts, so files can be put in place before that start. Running servers share the RWO volume with file Jobs on the game pod's node, using uid/gid 1000. Starting or stopping returns 409 server_transitioning; backup, restore or migration returns 409 maintenance_in_progress. The listing runs as a Job whose output is read back through pods/log, so the call is synchronous but takes seconds rather than milliseconds. Paths are resolved inside the world root by os.Root, so "..", an absolute path, and a symlink leaving the root are all refused with 400 bad_path. Listings are capped; truncated reports that the cap was hit.
          */
         get: operations["listServerFiles"];
         put?: never;
@@ -2119,18 +2119,18 @@ export interface paths {
         };
         /**
          * Read a file from a server's world volume (owner-or-admin).
-         * @description Returns one file's bytes, base64-encoded, from inside the server's world volume. Same stopped-gate and os.Root containment as the directory listing, except staff may read login/lobby's felis-experience.json while running. Reads are capped at 1 MiB; a larger file is 413 rather than a truncated read, because a config editor that silently returned half a file would let a subsequent save destroy the other half.
+         * @description Returns one file's bytes, base64-encoded, from inside the server's world volume. Same lifecycle gates and os.Root containment as the directory listing; staff may also read login/lobby's felis-experience.json during startup. Reads are capped at 1 MiB; a larger file is 413 rather than a truncated read, because a config editor that silently returned half a file would let a subsequent save destroy the other half.
          */
         get: operations["readServerFile"];
         /**
          * Write a file in a server's world volume (owner-or-admin).
-         * @description Replaces a file's contents, creating the file if absent but never creating its parent directories. Content is base64 so arbitrary bytes (CRLF endings, a BOM) survive intact. Writes are capped at 256 KiB — the Job spec carries the content, and etcd bounds the object — so a larger body is 413. Same stopped-gate and os.Root containment as the read; a write through a symlink leaving the world root is refused. The replacement is atomic (a synced temporary sibling renamed over the file, keeping its mode), so a failed write leaves the old file whole. With expect_sha256 the write lands only if the file still has that hash; otherwise 409 file_changed. content_sha256 is the SHA-256 of the content: content that hashes otherwise changed on the way and is refused (400 digest_mismatch) before a Job starts, and the Job checks the bytes it received the same way before writing. Staff may save login/lobby's startup-only felis-experience.json while running; restart to apply. That config cannot be a symlink. Audited as file.write.
+         * @description Replaces a file's contents, creating the file if absent but never creating its parent directories. Content is base64 so arbitrary bytes (CRLF endings, a BOM) survive intact. Writes are capped at 256 KiB — the Job spec carries the content, and etcd bounds the object — so a larger body is 413. Same lifecycle gates and os.Root containment as the read; a write through a symlink leaving the world root is refused. The replacement is atomic (a synced temporary sibling renamed over the file, keeping its mode), so a failed write leaves the old file whole. With expect_sha256 the write lands only if the file still has that hash; otherwise 409 file_changed. content_sha256 is the SHA-256 of the content: content that hashes otherwise changed on the way and is refused (400 digest_mismatch) before a Job starts, and the Job checks the bytes it received the same way before writing. Staff may save login/lobby's startup-only felis-experience.json while running; restart to apply. That config cannot be a symlink. Stopped writes hold a maintenance lock against startup; running writes take no admission lock and do not prevent shutdown. The panel requires an additional checkbox before modifying world directories while running. Audited as file.write.
          */
         put: operations["writeServerFile"];
         post?: never;
         /**
-         * Delete a file or folder in a server's world volume (owner-or-admin; server must be stopped).
-         * @description Deletes a file, a symlink (never what it points at) or a folder with everything in it. The world root itself is refused (400 bad_path). Same stopped-gate, world lock and os.Root containment as a write. The panel confirms first; this route does not. Audited as file.delete.
+         * Delete a file or folder in a running or stopped server's world volume (owner-or-admin).
+         * @description Deletes a file, a symlink (never what it points at) or a folder with everything in it. The world root itself is refused (400 bad_path). Same lifecycle gates, stopped-write lock and os.Root containment as a write. The panel confirms first; this route does not. Audited as file.delete.
          */
         delete: operations["deleteServerFile"];
         options?: never;
@@ -2148,8 +2148,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Make a folder in a server's world volume (owner-or-admin; server must be stopped).
-         * @description Makes one folder. Its parent must already exist (404), and nothing may be at the path yet (409 file_exists). Same stopped-gate, world lock and os.Root containment as a write. Audited as file.mkdir.
+         * Make a folder in a running or stopped server's world volume (owner-or-admin).
+         * @description Makes one folder. Its parent must already exist (404), and nothing may be at the path yet (409 file_exists). Same lifecycle gates, stopped-write lock and os.Root containment as a write. Audited as file.mkdir.
          */
         post: operations["makeServerFolder"];
         delete?: never;
@@ -2168,8 +2168,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Move or rename a file or folder in a server's world volume (owner-or-admin; server must be stopped).
-         * @description Moves the file or folder at path to to. It never replaces: an existing destination is 409 file_exists, and a missing destination folder is 404. server.properties, config/paper-global.yml and config/ cannot be moved under any name they are reached by (400 bad_path), because elsewhere the read path would no longer withhold their secrets. Same stopped-gate, world lock and os.Root containment as a write. Audited as file.rename.
+         * Move or rename a file or folder in a running or stopped server's world volume (owner-or-admin).
+         * @description Moves the file or folder at path to to. It never replaces: an existing destination is 409 file_exists, and a missing destination folder is 404. server.properties, config/paper-global.yml and config/ cannot be moved under any name they are reached by (400 bad_path), because elsewhere the read path would no longer withhold their secrets. Same lifecycle gates, stopped-write lock and os.Root containment as a write. Audited as file.rename.
          */
         post: operations["renameServerFile"];
         delete?: never;
@@ -2188,7 +2188,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Start downloading one file or folder of a stopped server's world (owner-or-admin).
+         * Start downloading one file or folder of a running or stopped server's world (owner-or-admin).
          * @description An export (poll GET /exports/{ticket}, then open its download): a Job reads the file, or zips the folder, from the world volume read-only and hands it to felis-api, which streams it to the browser. A file saves under its own name with its length; a folder as NAME.zip, streamed without one, with symbolic links, devices and sockets left out. config/paper-global.yml, the cluster's forwarding secret, is refused as a file and left out of a folder, and server.properties goes out with its rcon.password and forwarding-secrets redacted; both are matched by the file itself, so a link to either under another name is guarded too. The server cannot start until the download has ended. Two file downloads per user at a time, 4 across the install, 30 per user per hour, counted apart from world and backup exports. Audited as file.download.
          */
         post: operations["downloadServerFile"];
@@ -2207,8 +2207,8 @@ export interface paths {
         };
         get?: never;
         /**
-         * Upload a file into a server's world volume (owner-or-admin; server must be stopped).
-         * @description Lands the raw request body as the file at path, up to 64 MiB — a plugin jar, a datapack, a world region; a bigger file goes up as an upload session (POST …/files/uploads). Content-Length is required (411 length_required). An existing file is 409 file_exists unless overwrite=true; a folder at the path is 400 bad_path either way. The body is staged on felis-api's disk first and then fetched by the file Job with a one-time token, so the world lock is taken only after the body has arrived and a slow upload holds off no backup. The file lands atomically: a synced temporary sibling is checked against the staged size and SHA-256, then renamed into place, so a failed upload leaves the old file whole. The body carries its SHA-256 as Content-Digest; felis-api checks it as the body arrives, and the Job checks the same digest again as it fetches the staged copy, so every hop between the browser and the world volume is verified. Same stopped-gate and os.Root containment as a write. Audited as file.upload.
+         * Upload a file into a running or stopped server's world volume (owner-or-admin).
+         * @description Lands the raw request body as the file at path, up to 64 MiB — a plugin jar, a datapack, a world region; a bigger file goes up as an upload session (POST …/files/uploads). Content-Length is required (411 length_required). An existing file is 409 file_exists unless overwrite=true; a folder at the path is 400 bad_path either way. The body is staged on felis-api's disk first and then fetched by the file Job with a one-time token, so the world lock is taken only after the body has arrived and a slow upload holds off no backup. The file lands atomically: a synced temporary sibling is checked against the staged size and SHA-256, then renamed into place, so a failed upload leaves the old file whole. The body carries its SHA-256 as Content-Digest; felis-api checks it as the body arrives, and the Job checks the same digest again as it fetches the staged copy, so every hop between the browser and the world volume is verified. Same lifecycle gates and os.Root containment as a write. Audited as file.upload.
          */
         put: operations["uploadServerFile"];
         post?: never;
@@ -2228,7 +2228,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Begin an upload session for a file too big for one request (owner-or-admin; server must be stopped).
+         * Begin an upload session for a running or stopped server (owner-or-admin).
          * @description A file of any size goes up in parts: this begins a session for path and the file's size, PUT …/uploads/{id}?offset= sends each part (at most part_max_bytes, 32 MiB, so each fits the edge's body limit), and POST …/uploads/{id}/commit lands it. There is no size ceiling but felis-api's staging disk, and room for the whole file is reserved here, so an upload that begins is one the disk can finish (507 upload_staging_full otherwise). A session belongs to the account and server it was begun for, answers no one else, and is dropped after 6 hours untouched. Four sessions per account at a time. Sessions do not survive a felis-api restart.
          */
         post: operations["beginServerFileUpload"];
@@ -2252,7 +2252,7 @@ export interface paths {
         get: operations["getServerFileUpload"];
         /**
          * Send one part of an upload session (owner-or-admin, the account that began it).
-         * @description The raw body is appended at offset, which must be where the session ends. Content-Length and the part's own Content-Digest are required, and the part is taken whole or not at all: one cut short, or one whose bytes do not hash to its digest, leaves the session where it was. Parts go one at a time (409 upload_busy while one arrives). Needs no stopped server, so starting the server midway costs only the commit's refusal until it is stopped again.
+         * @description The raw body is appended at offset, which must be where the session ends. Content-Length and the part's own Content-Digest are required, and the part is taken whole or not at all: one cut short, or one whose bytes do not hash to its digest, leaves the session where it was. Parts go one at a time (409 upload_busy while one arrives). Parts can be sent during server transitions; committing waits for the server to be running or stopped.
          */
         put: operations["putServerFileUploadPart"];
         post?: never;
@@ -2273,7 +2273,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Land a finished upload session in the world volume (owner-or-admin; server must be stopped).
+         * Land a finished upload session in a running or stopped server's world volume (owner-or-admin).
          * @description Starts the Job that fetches the session's bytes from felis-api and lands them at its path, checked against their size and SHA-256 and renamed into place, so a failed landing leaves the old file whole. It answers at once with the op; GET …/files/ops reports how it ends (file_exists when a file is at the path and overwrite is not true). The Job holds the world volume while it runs, so the server cannot start meanwhile. A Job that fails before it has every byte leaves the session to commit again; once the bytes have gone to the Job the session is gone. Audited as file.upload.
          */
         post: operations["commitServerFileUpload"];
@@ -2293,7 +2293,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Extract a .zip into the folder holding it (owner-or-admin; server must be stopped).
+         * Extract a .zip into the folder holding it on a running or stopped server (owner-or-admin).
          * @description Starts a Job that extracts the archive into a temporary folder beside it and moves the result into place, and answers at once with the op; GET …/files/ops reports how it ends. Nothing changes unless every entry is safe: an entry leaving the folder, an absolute path, or a link ends archive_unsafe or archive_symlink; an entry whose size differs from what the archive declares ends archive_invalid; a file where the archive has a folder, or the reverse, ends type_conflict. Without overwrite an archive that would replace any file ends file_exists with the files it would replace, for the caller to confirm and run again with overwrite. Names stored in GBK, as Windows zips in a Chinese locale have them, are read as such. The Job holds the world volume while it runs. Audited as file.unzip.
          */
         post: operations["unzipServerFile"];
@@ -9851,7 +9851,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Server is not stopped (its world PVC is still mounted). */
+            /** @description Startup or shutdown is in progress (server_transitioning), or backup, restore or migration holds the world (maintenance_in_progress). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -9926,7 +9926,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Server is not stopped (except startup-only system experience config). */
+            /** @description Startup or shutdown is in progress (except system experience config), or backup, restore or migration holds the world. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -10031,7 +10031,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description The file changed since expect_sha256 was read (file_changed), something is already at the path with create_only (file_exists), the server is not stopped (not_stopped), or a restore, backup or file change already holds its world volume (maintenance_in_progress). */
+            /** @description The file changed since expect_sha256 was read (file_changed), something is already at the path with create_only (file_exists), the server is changing state (server_transitioning or not_stopped), or backup, restore, migration or a stopped-server file change holds its world volume (maintenance_in_progress). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -10117,7 +10117,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Server is not stopped (not_stopped), or a restore, backup or file change already holds its world volume (maintenance_in_progress). */
+            /** @description Startup or shutdown is in progress (server_transitioning or not_stopped), or backup, restore, migration or a stopped-server file change holds the world (maintenance_in_progress). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -10185,7 +10185,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Something is already at the path (file_exists), the server is not stopped (not_stopped), or a restore, backup or file change already holds its world volume (maintenance_in_progress). */
+            /** @description Something is already at the path (file_exists), the server is changing state (server_transitioning or not_stopped), or backup, restore, migration or a stopped-server file change holds the world (maintenance_in_progress). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -10261,7 +10261,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Something is already at to (file_exists), the server is not stopped (not_stopped), or a restore, backup or file change already holds its world volume (maintenance_in_progress). */
+            /** @description Something is already at to (file_exists), the server is changing state (server_transitioning or not_stopped), or backup, restore, migration or a stopped-server file change holds the world (maintenance_in_progress). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -10327,7 +10327,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Server is not stopped (not_stopped), or a restore, backup, file change or another export already holds its world volume (maintenance_in_progress). */
+            /** @description Startup or shutdown is in progress (server_transitioning or not_stopped), or backup, restore, migration or another stopped-server operation holds the world (maintenance_in_progress). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -10412,7 +10412,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description A file is already at the path and overwrite is not true (file_exists), the server is not stopped (not_stopped), or a restore, backup or file change already holds its world volume (maintenance_in_progress). */
+            /** @description A file already exists without overwrite (file_exists), the server is changing state (server_transitioning or not_stopped), or backup, restore, migration or another stopped-server operation holds the world (maintenance_in_progress). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -10513,7 +10513,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Server is not stopped (not_stopped). */
+            /** @description Startup, shutdown, backup, restore or migration is in progress (server_transitioning or maintenance_in_progress). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -10775,7 +10775,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Not every byte has arrived (upload_incomplete; the world lock is not asked for), a part is still arriving (upload_busy), the server is not stopped (not_stopped), or a restore, backup, file change or export already holds its world volume, this session's earlier commit included (maintenance_in_progress). */
+            /** @description Not every byte has arrived (upload_incomplete; the world lock is not asked for), a part, another commit or an earlier landing Job is active (upload_busy), the server is changing state (server_transitioning or not_stopped), or backup, restore, migration or another stopped-server operation holds the world (maintenance_in_progress). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -10836,7 +10836,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Server is not stopped (not_stopped), or a restore, backup, file change or export already holds its world volume (maintenance_in_progress). */
+            /** @description Startup or shutdown is in progress (server_transitioning or not_stopped), or backup, restore, migration or another stopped-server operation holds the world (maintenance_in_progress). */
             409: {
                 headers: {
                     [name: string]: unknown;

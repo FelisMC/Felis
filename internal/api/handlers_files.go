@@ -162,7 +162,7 @@ func (a *API) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 	if liveExperienceFile(r, name) {
 		kind = maintenance.KindConfigWrite
 	}
-	release, ok := a.acquireWorld(w, r, name, kind, "stop the server before editing its files")
+	release, ok := a.acquireFileWorld(w, r, name, kind, "wait for the server to stop or finish starting before editing its files")
 	if !ok {
 		return
 	}
@@ -198,7 +198,7 @@ func (a *API) handleMkdir(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	release, ok := a.acquireWorld(w, r, name, maintenance.KindFileWrite, "stop the server before editing its files")
+	release, ok := a.acquireFileWorld(w, r, name, maintenance.KindFileWrite, "wait for the server to stop or finish starting before editing its files")
 	if !ok {
 		return
 	}
@@ -222,7 +222,7 @@ func (a *API) handleDeleteFile(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	release, ok := a.acquireWorld(w, r, name, maintenance.KindFileWrite, "stop the server before editing its files")
+	release, ok := a.acquireFileWorld(w, r, name, maintenance.KindFileWrite, "wait for the server to stop or finish starting before editing its files")
 	if !ok {
 		return
 	}
@@ -259,7 +259,7 @@ func (a *API) handleRenameFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "the to field is required"))
 		return
 	}
-	release, ok := a.acquireWorld(w, r, name, maintenance.KindFileWrite, "stop the server before editing its files")
+	release, ok := a.acquireFileWorld(w, r, name, maintenance.KindFileWrite, "wait for the server to stop or finish starting before editing its files")
 	if !ok {
 		return
 	}
@@ -328,7 +328,7 @@ func (a *API) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 	}
 	defer drop()
 
-	release, ok := a.acquireWorld(w, r, name, maintenance.KindFileWrite, "stop the server before editing its files")
+	release, ok := a.acquireFileWorld(w, r, name, maintenance.KindFileWrite, "wait for the server to stop or finish starting before editing its files")
 	if !ok {
 		return
 	}
@@ -452,7 +452,7 @@ func (a *API) auditFile(r *http.Request, action, server, path string, extra map[
 
 var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// authorizeFileOp requires owner or staff access and a stopped server, except for startup-only system-plugin config.
+// File access permits stable running servers while backup, restore and migration still hold the world.
 func (a *API) authorizeFileOp(w http.ResponseWriter, r *http.Request) (string, bool) {
 	name, ok := a.authorizeServerFiles(w, r)
 	if !ok {
@@ -464,9 +464,14 @@ func (a *API) authorizeFileOp(w http.ResponseWriter, r *http.Request) (string, b
 		a.writeLookupError(w, r, err)
 		return "", false
 	}
-	if !liveExperienceFile(r, name) && (info.Ready || info.DesiredState != string(v1alpha1.DesiredStopped)) {
-		writeError(w, r, newError(http.StatusConflict, "not_stopped",
-			"stop the server before working with its files"))
+	running := info.Phase == string(v1alpha1.PhaseRunning) && info.DesiredState == string(v1alpha1.DesiredRunning)
+	if !running && !liveExperienceFile(r, name) && (info.Ready || info.DesiredState != string(v1alpha1.DesiredStopped) || info.Phase == string(v1alpha1.PhaseStarting) || info.Phase == string(v1alpha1.PhaseStopping)) {
+		writeError(w, r, newError(http.StatusConflict, "server_transitioning",
+			"wait for the server to finish starting or stopping before working with its files"))
+		return "", false
+	}
+	if err := a.Cluster.CheckFileAccess(r.Context(), name); err != nil {
+		a.writeLookupError(w, r, maintenanceError(err, ""))
 		return "", false
 	}
 
@@ -489,7 +494,7 @@ func (a *API) authorizeFileOp(w http.ResponseWriter, r *http.Request) (string, b
 	return name, true
 }
 
-// Live edits are limited to startup-only system-plugin settings; other file operations require a stopped server.
+// Startup-only system-plugin settings remain accessible during server transitions.
 func liveExperienceFile(r *http.Request, name string) bool {
 	return naming.IsSystemServer(name) && strings.HasSuffix(r.URL.Path, "/file") &&
 		(r.Method == http.MethodGet || r.Method == http.MethodPut) &&

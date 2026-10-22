@@ -112,6 +112,7 @@ export interface SendOptions {
   /** Bytes the server holds plus the part in flight. */
   onProgress?: (sent: number) => void;
   onSession?: (id: string) => void;
+  beforeCommit?: () => void;
   /** Stops sending; the session stays remembered for a later resume. */
   signal?: AbortSignal;
   /** Test seam. */
@@ -173,6 +174,7 @@ export async function sendInParts(server: string, path: string, file: File, opts
       offset = null;
     }
   }
+  opts.beforeCommit?.();
   return commit(server, path, id!, opts.overwrite, sleep, signal);
 }
 
@@ -224,7 +226,7 @@ async function holdsTheFile(
   return start === at.received;
 }
 
-// After a lost commit response, maintenance_in_progress or upload_not_found can identify the already-created operation.
+// After a lost commit response, a busy or landed session can identify the already-created operation.
 async function commit(
   server: string,
   path: string,
@@ -239,7 +241,7 @@ async function commit(
       return (await api.commitServerFileUpload(server, id, overwrite)).op;
     } catch (e) {
       const c = code(e);
-      if (lost && (c === "maintenance_in_progress" || c === "upload_not_found")) {
+      if (lost && (c === "maintenance_in_progress" || c === "upload_busy" || c === "upload_not_found")) {
         const { ops } = await api.listServerFileOps(server);
         const op = ops.find(
           (o) => o.op === "upload" && o.path === path && (c === "upload_not_found" || o.state === "running"),

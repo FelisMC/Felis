@@ -377,9 +377,19 @@ describe("sendInParts", () => {
   });
 
   describe("a commit whose answer was lost", () => {
-    it("takes the running upload of this path as its answer when the world is held", async () => {
+    it("retains sent parts when the final write requires a new confirmation", async () => {
+      const confirmation = new Error("World changes require confirmation");
+      const beforeCommit = vi.fn(() => { throw confirmation; });
+      await expect(sendInParts("lobby", "world.zip", file(), opts({ beforeCommit }))).rejects.toBe(confirmation);
+      expect(beforeCommit).toHaveBeenCalledOnce();
+      expect(mocks.putServerFileUploadPart).toHaveBeenCalled();
+      expect(mocks.commitServerFileUpload).not.toHaveBeenCalled();
+      expect(stored().id).toBe("s1");
+    });
+
+    it.each([held, { status: 409, code: "upload_busy", message: "landing" }])("recovers the running upload of this path after $code", async (busy) => {
       const landing = op({ id: "op9" });
-      mocks.commitServerFileUpload.mockRejectedValueOnce(netErr).mockRejectedValueOnce(held);
+      mocks.commitServerFileUpload.mockRejectedValueOnce(netErr).mockRejectedValueOnce(busy);
       mocks.listServerFileOps.mockResolvedValue({
         ops: [op({ id: "other", path: "else.zip" }), op({ id: "old", state: "failed" }), landing],
       });

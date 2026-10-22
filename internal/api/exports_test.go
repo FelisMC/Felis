@@ -915,6 +915,19 @@ func TestFileDownloadGate(t *testing.T) {
 		}
 	})
 
+	for _, path := range []string{"server.properties", "world&dir=true"} {
+		t.Run("download while running "+path, func(t *testing.T) {
+			a, _, cl, ex := fileDownloadFixture()
+			cl.byName["survival"].Phase = "Running"
+			cl.byName["survival"].DesiredState = "Running"
+			cl.byName["survival"].Ready = true
+			beginExport(t, a.ExternalHandler(), fileDownloadPath+path, "owner1")
+			if len(ex.reqs) != 1 || len(cl.acquired) != 0 || len(cl.released) != 0 {
+				t.Fatalf("live download: jobs=%d acquired=%v released=%v", len(ex.reqs), cl.acquired, cl.released)
+			}
+		})
+	}
+
 	busy := func(_ *API, c *fakeCluster) {
 		c.maintErr["survival"] = &MaintenanceBusyError{Kind: maintenance.KindFileWrite}
 	}
@@ -927,8 +940,8 @@ func TestFileDownloadGate(t *testing.T) {
 	}{
 		{name: "stranger", user: "stranger", query: "a.yml", code: http.StatusForbidden, errCode: "forbidden"},
 		{name: "principal without an account", user: "nouser", query: "a.yml", code: http.StatusForbidden, errCode: "forbidden"},
-		{name: "running", user: "owner1", query: "a.yml", edit: func(_ *API, c *fakeCluster) { c.byName["survival"].Ready = true },
-			code: http.StatusConflict, errCode: "not_stopped", msg: "stop the server before working with its files"},
+		{name: "transitioning", user: "owner1", query: "a.yml", edit: func(_ *API, c *fakeCluster) { c.byName["survival"].Phase = "Starting" },
+			code: http.StatusConflict, errCode: "server_transitioning", msg: "wait for the server to finish starting or stopping before working with its files"},
 		{name: "no file editor", user: "owner1", query: "a.yml", edit: func(a *API, _ *fakeCluster) { a.Files = nil },
 			code: http.StatusServiceUnavailable, errCode: "files_unavailable"},
 		{name: "no path", user: "owner1", query: "", code: http.StatusBadRequest, errCode: "bad_request"},

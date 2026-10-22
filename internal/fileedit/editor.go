@@ -50,7 +50,7 @@ type Config struct {
 	Timeout  time.Duration
 	CPULimit string
 	MemLimit string
-	// Root with DAC_OVERRIDE reaches game-owned mode-0600 files; CHOWN restores written-file ownership and zero FSGroup is omitted.
+	// Zero FSGroup is omitted to avoid changing ownership across the mounted game volume.
 	RunAsUser  int64
 	RunAsGroup int64
 	FSGroup    int64

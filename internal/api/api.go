@@ -106,6 +106,8 @@ type API struct {
 
 	Now func() time.Time
 
+	fileCommits sync.Map
+
 	cooldownOnce sync.Once
 	cooldown     *cooldownLimiter
 

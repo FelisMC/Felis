@@ -86,6 +86,9 @@ func New(cs kubernetes.Interface, cfg Config) *Exporter {
 
 func (e *Exporter) Start(ctx context.Context, r Request) (string, error) {
 	c := e.cfg
+	if r.Mode == ModeFiles {
+		c.RunAsUser, c.RunAsGroup, c.FSGroup = 1000, 1000, 0
+	}
 	claim := naming.WorldPVCName(r.Server)
 	node := ""
 	if c.ResolveWorld != nil && r.Mode != ModeBackup {
