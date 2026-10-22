@@ -157,10 +157,6 @@ type zipFile struct {
 	size int64
 }
 
-func planUnzip(entries []*zip.File) (unzipPlan, Result) {
-	return planEntries(zipEntries(entries))
-}
-
 func planEntries(walk archiveWalk) (unzipPlan, Result) {
 	p := unzipPlan{isDir: map[string]bool{}, walk: walk}
 	res := walk(func(entry archiveEntry) Result {

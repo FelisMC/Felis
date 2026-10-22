@@ -88,7 +88,7 @@ func openArchive(f *os.File, name string, size int64) (archiveWalk, Result) {
 			if header.Typeflag == tar.TypeSymlink || header.Typeflag == tar.TypeLink {
 				return Result{Code: CodeArchiveSymlink, Entry: header.Name, Error: "archives containing links are not extracted"}
 			}
-			if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA && header.Typeflag != tar.TypeDir {
+			if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeDir {
 				return Result{Code: CodeArchiveUnsafe, Entry: header.Name, Error: "archive contains a special file"}
 			}
 			entry := archiveEntry{name: strings.ReplaceAll(header.Name, `\`, "/"), archive: true, mode: header.FileInfo().Mode(), size: header.Size, open: func() (io.ReadCloser, error) { return io.NopCloser(reader), nil }}
