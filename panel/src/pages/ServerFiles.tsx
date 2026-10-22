@@ -433,12 +433,12 @@ export function ServerFiles() {
   const [unzipping, setUnzipping] = useState<string | null>(null);
   const [startingTask, setStartingTask] = useState(false);
   const alive = useRef(true);
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    alive.current = true;
+    return () => {
       alive.current = false;
-    },
-    [],
-  );
+    };
+  }, []);
 
   // The listing is reread once the queue has drained, since every listing is a Job.
   const landedSince = useRef(false);
@@ -989,7 +989,7 @@ export function ServerFiles() {
                     </Button>
                   </form>
                   {searchActive && <Button size="sm" variant="ghost" onClick={() => void load(dir)}>{t("clear_search")}</Button>}
-                  {clipboard?.server === name && <Button size="sm" variant="outline" disabled={changing}
+                  {clipboard?.server === name && <Button size="sm" variant="outline" disabled={changing || listLoading}
                     onClick={() => beginTask({ kind: "transfer", op: clipboard.op, paths: clipboard.paths, to: dir })}>
                     {t("paste_count", { count: clipboard.paths.length })}
                   </Button>}

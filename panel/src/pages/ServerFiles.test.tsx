@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { createHash } from "node:crypto";
+import { StrictMode } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -89,13 +90,14 @@ vi.mock("@/components/files/TextFileEditor", () => ({
 
 const t = (key: string) => i18next.t(key);
 
-function renderFiles() {
+function renderFiles(strict = false) {
   return render(
     <MemoryRouter initialEntries={["/servers/lobby/files"]}>
       <Routes>
         <Route path="/servers/:name/files" element={<ServerFiles />} />
       </Routes>
     </MemoryRouter>,
+    { wrapper: strict ? StrictMode : undefined },
   );
 }
 
@@ -222,6 +224,25 @@ describe("file manager actions", () => {
     expect(mocks.deleteServerFile).not.toHaveBeenCalled();
     await userEvent.click(within(dialog).getByRole("button", { name: t("files:delete") }));
     expect(mocks.deleteServerFile.mock.calls.map((call) => call[1]).sort()).toEqual(["server.properties", "world"]);
+  });
+
+  it("keeps paste disabled until the destination directory finishes loading", async () => {
+    mocks.listServerFiles.mockResolvedValue({ entries: [{ name: "notes.txt", size: 2, is_dir: false, mod_time: "" }, { name: "world", size: 0, is_dir: true, mod_time: "" }] });
+    mocks.transferServerFiles.mockResolvedValue({ op: fileOp({ op: "copy", path: "world", state: "succeeded" }) });
+    renderFiles();
+    await userEvent.click(await screen.findByRole("checkbox", { name: label("select_item", "notes.txt") }));
+    await userEvent.click(screen.getByRole("button", { name: t("files:copy") }));
+    let loaded!: (value: unknown) => void;
+    mocks.listServerFiles.mockReturnValueOnce(new Promise((resolve) => { loaded = resolve; }));
+    await userEvent.click(screen.getByRole("button", { name: label("open_folder", "world") }));
+    const paste = screen.getByRole("button", { name: i18next.t("files:paste_count", { count: 1 }) }) as HTMLButtonElement;
+    expect(paste.disabled).toBe(true);
+    await userEvent.click(paste);
+    expect(mocks.transferServerFiles).not.toHaveBeenCalled();
+    await act(async () => { loaded({ entries: [], truncated: false, free_bytes: null }); });
+    await waitFor(() => expect(paste.disabled).toBe(false));
+    await userEvent.click(paste);
+    expect(mocks.transferServerFiles).toHaveBeenCalledWith("lobby", "copy", ["notes.txt"], "world", false);
   });
 
   it("clears the cut selection after an asynchronous move completes", async () => {
@@ -1673,6 +1694,18 @@ describe("ServerFiles archives and downloads", () => {
     mocks.exportStatus.mockImplementation(async () => ({ state: reads++ < n ? "pending" : "ready" }));
   }
   const exportPoll = () => act(() => vi.advanceTimersByTimeAsync(EXPORT_POLL_MS));
+
+  it("downloads files after StrictMode replays effects", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const clicked = watchLinks();
+    mocks.downloadServerFile.mockResolvedValue({ ticket: "t1", state: "pending", filename: "server.properties" });
+    mocks.exportDownloadURL.mockResolvedValue("/api/v1/exports/t1/download");
+    readyAfter(0);
+    renderFiles(true);
+    await userEvent.click(await screen.findByRole("button", { name: i18next.t("files:download_item", { name: "server.properties" }) }));
+    await exportPoll();
+    await waitFor(() => expect(clicked).toEqual([{ href: "/api/v1/exports/t1/download", download: "server.properties", hidden: true, connected: true }]));
+  });
 
   it("hands a file to the browser once it is ready, holding every change while it is prepared", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
