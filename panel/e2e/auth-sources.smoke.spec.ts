@@ -79,7 +79,9 @@ test("Chinese authentication settings render in both themes", async ({ page, sig
   await expect(page.getByLabel("永久标识")).toHaveValue("littleskin");
   await expectFitsScreen(page);
   await page.screenshot({ path: "/tmp/felis-auth-sources-zh-dark.png", fullPage: true });
-  await page.getByRole("button", { name: "切换主题", exact: true }).click();
+  await page.getByRole("combobox", { name: "主题", exact: true }).click();
+  await page.getByRole("option", { name: "浅色", exact: true }).click();
+  await expect(page.locator("html")).not.toHaveClass(/dark/);
   await expectFitsScreen(page);
   await page.screenshot({ path: "/tmp/felis-auth-sources-zh-light.png", fullPage: true });
 });
