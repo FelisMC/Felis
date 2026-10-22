@@ -13,14 +13,10 @@
     <link rel="manifest" href="/site.webmanifest" />
     <title>Felis · Console</title>
     <script>
-      try {
-        const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-        if (dark) {
-          document.documentElement.classList.add("dark");
-        } else {
-          document.documentElement.classList.remove("dark");
-        }
-      } catch (_) {}
+      let preference;
+      try { preference = window.localStorage.getItem("felis-theme"); } catch (_) {}
+      const dark = preference === "dark" || (preference !== "light" && window.matchMedia?.("(prefers-color-scheme: dark)").matches);
+      document.documentElement.classList.toggle("dark", Boolean(dark));
     </script>
   </head>
   <body>

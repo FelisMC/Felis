@@ -8,22 +8,31 @@ import {
 } from "react";
 
 export type Theme = "light" | "dark";
+export type ThemePreference = Theme | "system";
 
 type ThemeProviderState = {
   /** The resolved, active theme ("light" | "dark") applied to the DOM. */
   theme: Theme;
-  setTheme: (theme: Theme) => void;
-  toggleTheme: () => void;
+  preference: ThemePreference;
+  setTheme: (theme: ThemePreference) => void;
 };
 
 const ThemeContext = createContext<ThemeProviderState>({
   theme: "dark",
+  preference: "system",
   setTheme: () => {},
-  toggleTheme: () => {},
 });
 
 const SYSTEM_DARK_QUERY = "(prefers-color-scheme: dark)";
 
+function savedPreference(): ThemePreference {
+  try {
+    const saved = window.localStorage.getItem("felis-theme");
+    return saved === "light" || saved === "dark" ? saved : "system";
+  } catch {
+    return "system";
+  }
+}
 
 function systemThemeQuery() {
   if (typeof window === "undefined" || !window.matchMedia) return null;
@@ -45,28 +54,29 @@ function applyClass(t: Theme) {
   }
 }
 
-
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>(systemThemeSnapshot);
+  const [preference, setPreference] = useState<ThemePreference>(savedPreference);
+  const [systemTheme, setSystemTheme] = useState<Theme>(systemThemeSnapshot);
+  const theme = preference === "system" ? systemTheme : preference;
 
   const setTheme = useCallback(
-    (next: Theme) => {
-      // Direct DOM write to prevent visual lag on transition.
-      setThemeState(next);
-      applyClass(next);
+    (next: ThemePreference) => {
+      setPreference(next);
+      applyClass(next === "system" ? systemThemeSnapshot() : next);
+      try {
+        window.localStorage.setItem("felis-theme", next);
+      } catch {
+        // Keep the choice for this tab when browser storage is unavailable.
+      }
     },
     [],
   );
-
-  const toggleTheme = useCallback(() => {
-    setTheme(theme === "dark" ? "light" : "dark");
-  }, [theme, setTheme]);
 
   useEffect(() => {
     const mql = systemThemeQuery();
     if (!mql) return;
 
-    const syncSystemTheme = () => setThemeState(mql.matches ? "dark" : "light");
+    const syncSystemTheme = () => setSystemTheme(mql.matches ? "dark" : "light");
     syncSystemTheme();
 
     if (mql.addEventListener) {
@@ -84,8 +94,8 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   }, [theme]);
 
   const value = useMemo<ThemeProviderState>(
-    () => ({ theme, setTheme, toggleTheme }),
-    [theme, setTheme, toggleTheme],
+    () => ({ theme, preference, setTheme }),
+    [theme, preference, setTheme],
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;

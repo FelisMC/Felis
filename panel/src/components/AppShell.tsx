@@ -1,6 +1,6 @@
 import { Suspense, useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
-import { Globe, Sun, Moon, LogOut, WifiOff, Menu, X } from "lucide-react";
+import { Globe, Sun, Moon, Monitor, LogOut, WifiOff, Menu, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import * as SelectPrimitive from "@radix-ui/react-select";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 import { useTier } from "@/lib/tier";
 import { visibleSections, type NavSection } from "@/lib/nav";
 import { Select, SelectContent, SelectItem } from "@/components/ui/select";
-import { useTheme } from "@/lib/theme";
+import { useTheme, type ThemePreference } from "@/lib/theme";
 import { api, CONNECTION_EVENT, isConnectionLost } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { ConfigBanner, VersionBadge } from "@/components/RuntimeStatus";
@@ -137,19 +137,22 @@ function LangToggle() {
 }
 
 function ThemeToggle() {
-  const { theme, toggleTheme } = useTheme();
+  const { preference, setTheme } = useTheme();
   const { t } = useTranslation("common");
 
   return (
-    <button
-      onClick={toggleTheme}
-      className={FOOT_ICON_BTN}
-      aria-label={t("toggle_theme")}
-      title={t("toggle_theme")}
-    >
-      {theme === "light" && <Sun className="h-4 w-4" />}
-      {theme === "dark" && <Moon className="h-4 w-4" />}
-    </button>
+    <Select value={preference} onValueChange={(value) => setTheme(value as ThemePreference)}>
+      <SelectPrimitive.Trigger className={FOOT_ICON_BTN} aria-label={t("toggle_theme")} title={t("toggle_theme")}>
+        {preference === "light" && <Sun className="h-4 w-4" />}
+        {preference === "dark" && <Moon className="h-4 w-4" />}
+        {preference === "system" && <Monitor className="h-4 w-4" />}
+      </SelectPrimitive.Trigger>
+      <SelectContent align="start">
+        <SelectItem value="light">{t("theme_light")}</SelectItem>
+        <SelectItem value="dark">{t("theme_dark")}</SelectItem>
+        <SelectItem value="system">{t("theme_system")}</SelectItem>
+      </SelectContent>
+    </Select>
   );
 }
 
