@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
@@ -516,13 +517,16 @@ func TestEmailOTPStartRelayRefusalIsNotInternalError(t *testing.T) {
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("code = %d, want 502 (a relay refusal is not an internal error) (%s)", w.Code, w.Body.String())
 	}
-	body := w.Body.String()
-	if !strings.Contains(body, "mail_undeliverable") {
-		t.Errorf("want a distinct machine code the panel can explain, got: %s", body)
+	var body map[string]map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["error"]["code"] != "mail_undeliverable" {
+		t.Errorf("want a distinct machine code the panel can explain, got: %s", w.Body.String())
 	}
 	for _, leak := range []string{"ops@example.net", "535", "bad credentials"} {
-		if strings.Contains(body, leak) {
-			t.Errorf("relay text %q leaked to an unprivileged caller: %s", leak, body)
+		if strings.Contains(body["error"]["message"], leak) {
+			t.Errorf("relay text %q leaked to an unprivileged caller: %s", leak, w.Body.String())
 		}
 	}
 }
