@@ -27,6 +27,8 @@ const (
 	AnnotationStartRetry = GroupName + "/start-retry"
 	// AnnotationRestart requests one pod recreation while keeping desiredState Running.
 	AnnotationRestart = GroupName + "/restart"
+	// AnnotationKill requests immediate pod deletion without saving or termination grace.
+	AnnotationKill = GroupName + "/kill"
 	// AnnotationLiveBackup holds the Job and frozen Pod identity; defer idle stop and scale-down while saving is disabled.
 	AnnotationLiveBackup = GroupName + "/live-backup"
 )

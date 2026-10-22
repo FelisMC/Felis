@@ -145,6 +145,11 @@ func (r *Reconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	prevPhase, prevRestarts := server.Status.Phase, server.Status.AutoRestarts
 	prevGaveUp := v1alpha1.StartGaveUp(&server.Status)
+	if _, killing := server.Annotations[v1alpha1.AnnotationKill]; killing {
+		if err := r.takeKillRequest(ctx, &server, desired); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	for _, annotation := range []string{v1alpha1.AnnotationStartRetry, v1alpha1.AnnotationRestart} {
 		if _, ok := server.Annotations[annotation]; ok {
 			if err := r.takeRestartRequest(ctx, &server, desired, annotation); err != nil {
@@ -214,6 +219,37 @@ func (r *Reconciler) takeRestartRequest(ctx context.Context, server *v1alpha1.Mi
 	}
 	patch := client.MergeFrom(server.DeepCopy())
 	delete(server.Annotations, annotation)
+	return r.Patch(ctx, server, patch)
+}
+
+func (r *Reconciler) takeKillRequest(ctx context.Context, server *v1alpha1.MinecraftServer, desired v1alpha1.DesiredState) error {
+	if desired == v1alpha1.DesiredStopped {
+		var sts appsv1.StatefulSet
+		err := r.Get(ctx, client.ObjectKeyFromObject(server), &sts)
+		if err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		// Scale down before deletion so the StatefulSet cannot replace the killed pod.
+		if err == nil && (sts.Spec.Replicas == nil || *sts.Spec.Replicas != 0) {
+			zero := int32(0)
+			sts.Spec.Replicas = &zero
+			if err := r.Update(ctx, &sts); err != nil {
+				return err
+			}
+		}
+		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: server.Name + "-0", Namespace: server.Namespace}}
+		if err := r.Delete(ctx, pod, client.GracePeriodSeconds(0)); client.IgnoreNotFound(err) != nil {
+			return err
+		}
+		if server.Status.StopNoticeAt != nil {
+			server.Status.StopNoticeAt = nil
+			if err := r.patchStatus(ctx, server); err != nil {
+				return err
+			}
+		}
+	}
+	patch := client.MergeFromWithOptions(server.DeepCopy(), client.MergeFromWithOptimisticLock{})
+	delete(server.Annotations, v1alpha1.AnnotationKill)
 	return r.Patch(ctx, server, patch)
 }
 
