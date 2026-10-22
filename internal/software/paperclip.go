@@ -80,9 +80,12 @@ func readZipText(zr *zip.Reader, name string) (string, error) {
 		return "", errZipEntryMissing
 	}
 	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, 1<<20))
+	b, err := io.ReadAll(io.LimitReader(f, MaxJarManifestBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("software: read %s: %w", name, err)
+	}
+	if len(b) > MaxJarManifestBytes {
+		return "", fmt.Errorf("software: %s exceeds %d bytes", name, MaxJarManifestBytes)
 	}
 	return string(b), nil
 }

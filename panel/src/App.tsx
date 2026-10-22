@@ -31,6 +31,9 @@ const ServerBackups = lazyWithReload(() =>
 const ServerFiles = lazyWithReload(() =>
   import("@/pages/ServerFiles").then((m) => ({ default: m.ServerFiles })),
 );
+const ServerExtensions = lazyWithReload(() =>
+  import("@/pages/ServerExtensions").then((m) => ({ default: m.ServerExtensions })),
+);
 const ServerSchedules = lazyWithReload(() =>
   import("@/pages/ServerSchedules").then((m) => ({ default: m.ServerSchedules })),
 );
@@ -107,6 +110,7 @@ export default function App() {
                 <Route path="players" element={<ServerPlayers />} />
                 <Route path="backups" element={<ServerBackups />} />
                 <Route path="files" element={<ServerFiles />} />
+                <Route path="extensions" element={<ServerExtensions />} />
                 <Route path="schedules" element={<ServerSchedules />} />
                 <Route path="luckperms" element={<ServerLuckPerms />} />
               </Route>

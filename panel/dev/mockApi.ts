@@ -46,6 +46,7 @@ import type {
   SoftwareRequest,
   SoftwareType,
   FileOp,
+  ExtensionMetadata,
 } from "../src/lib/types";
 
 type AccountID = string;
@@ -3046,7 +3047,7 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
   if (ctx.parts[4] === "access") {
     return handleAccessMock(ctx, serverInfo);
   }
-  if (ctx.parts[4] === "files" || ctx.parts[4] === "file") {
+  if (ctx.parts[4] === "files" || ctx.parts[4] === "file" || ctx.parts[4] === "extensions") {
     return handleFilesMock(ctx, serverInfo);
   }
 
@@ -3058,6 +3059,7 @@ interface MockFileNode {
   is_dir: boolean;
   data: Buffer;
   mod_time: string;
+  extension_metadata?: ExtensionMetadata[];
 }
 type MockTree = Map<string, MockFileNode>;
 
@@ -3099,10 +3101,22 @@ function seedFiles(serverName: string): MockTree {
   file("plugins/LuckPerms-Bukkit-5.4.141.jar", 1_380_214, 72);
   file("plugins/EssentialsX-2.20.1.jar", 3_120_876, 70);
   file("plugins/Chunky-Bukkit-1.4.28.jar", 412_553, 12);
+  tree.get("plugins/LuckPerms-Bukkit-5.4.141.jar")!.extension_metadata = [{ id: "LuckPerms", name: "LuckPerms", version: "5.4.141", authors: ["Luck"], loaders: ["bukkit", "paper"] }];
+  tree.get("plugins/EssentialsX-2.20.1.jar")!.extension_metadata = [{ id: "Essentials", name: "EssentialsX", version: "2.20.1", authors: ["EssentialsX Team"], loaders: ["bukkit"] }];
+  tree.get("plugins/Chunky-Bukkit-1.4.28.jar")!.extension_metadata = [{ id: "Chunky", name: "Chunky", version: "1.4.28", authors: ["pop4959"], loaders: ["bukkit"] }];
+  file("plugins/broken.jar", "not a ZIP archive", 5);
   dir("plugins/LuckPerms", 72);
   file("plugins/LuckPerms/config.yml", "server: global\nstorage-method: h2\n", 72);
   dir("plugins/Essentials", 70);
   file("plugins/Essentials/config.yml", "ops-name-color: '4'\nnickname-prefix: '~'\n", 70);
+  dir("mods", 24);
+  file("mods/example-mod-1.0.jar.disabled", 1024, 24);
+  tree.get("mods/example-mod-1.0.jar.disabled")!.extension_metadata = [{ id: "example_mod", name: "Example Mod", version: "1.0", authors: ["Example Author"], loaders: ["fabric", "quilt"] }];
+  file("mods/example-pack-1.0.jar", 2048, 24);
+  tree.get("mods/example-pack-1.0.jar")!.extension_metadata = [
+    { id: "example_core", name: "Example Core", version: "1.0", authors: ["Example Team"], loaders: ["forge", "neoforge"] },
+    { id: "example_extras", name: "Example Extras", version: "1.0", authors: ["Example Team"], loaders: ["forge", "neoforge"] },
+  ];
   dir("world", 2);
   file("world/level.dat", 2_431, 2);
   file("world/session.lock", 3, 2);
@@ -3284,7 +3298,7 @@ async function handleFileTaskMock(ctx: SessionContext, server: MockServer, tree:
 // File Jobs share a running game's volume; lifecycle transitions and maintenance still gate access.
 async function handleFilesMock(ctx: SessionContext, serverInfo: MockServer): Promise<boolean> {
   const route = ctx.parts.slice(4).join("/");
-  const known = ["GET files", "GET file", "PUT file", "DELETE file", "POST files/mkdir", "POST files/rename", "PUT files/upload", "GET files/search", "GET files/ops", "POST files/transfer", "POST files/zip", "POST files/from-url", "POST files/unzip", "POST files/download"];
+  const known = ["GET files", "GET file", "PUT file", "DELETE file", "POST files/mkdir", "POST files/rename", "PUT files/upload", "GET files/search", "GET files/ops", "POST files/transfer", "POST files/zip", "POST files/from-url", "POST files/unzip", "POST files/download", "GET extensions"];
   const key = `${ctx.method} ${route}`;
   const fail = (status: number, code: string, message: string): true => {
     sendError(ctx.res, status, code, message);
@@ -3307,6 +3321,24 @@ async function handleFilesMock(ctx: SessionContext, serverInfo: MockServer): Pro
     return true;
   }
   const tree = filesOf(ctx.state, serverInfo.name);
+  if (key === "GET extensions") {
+    const entries = [...tree.entries()].filter(([path, node]) => !node.is_dir && ["plugins", "mods"].includes(parentPath(path)) && /\.jar(?:\.disabled)?$/i.test(path))
+      .sort(([a], [b]) => Number(a.startsWith("mods/")) - Number(b.startsWith("mods/")) || (a < b ? -1 : a > b ? 1 : 0)).map(([path, node]) => {
+        const kind = path.startsWith("plugins/") ? "plugin" : "mod";
+        const metadata = node.extension_metadata ?? [];
+        const filename = path.split("/").pop()!;
+        const base = kind === "mod" ? "config" : "plugins";
+        const names = [...metadata.flatMap((item) => [item.id, item.name]), filename.replace(/\.jar(?:\.disabled)?$/i, "")];
+        const config = names.filter((name) => name !== "" && name !== "." && name !== ".." && !/[\/\\]/.test(name))
+          .map((name) => `${base}/${name}`).find((candidate) => tree.get(candidate)?.is_dir && !/(^|\/)\.felis-(edit|unzip|move|preserved|zip)-[0-9a-fA-F]{12}(\/|$)/.test(candidate))
+          ?? (kind === "mod" && tree.get(base)?.is_dir ? base : undefined);
+        return { path, filename, size: node.data.length, enabled: !/\.disabled$/i.test(path), kind,
+          metadata_status: metadata.length > 0 ? "ok" : "unavailable", metadata,
+          ...(config ? { config_path: config } : {}) };
+      });
+    sendJSON(ctx.res, 200, { entries: entries.slice(0, 500), truncated: entries.length > 500 });
+    return true;
+  }
   if (key === "GET files/ops") {
     sendJSON(ctx.res, 200, { ops: ctx.state.fileOps[serverInfo.name] ?? [] });
     return true;

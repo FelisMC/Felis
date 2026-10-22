@@ -37,6 +37,33 @@ func filesResult(t *testing.T, stdout string) fileedit.Result {
 	return res
 }
 
+func TestCmdFilesListsInstalledExtensions(t *testing.T) {
+	root := uploadRoot(t)
+	var body bytes.Buffer
+	zw := zip.NewWriter(&body)
+	w, err := zw.Create("plugin.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(w, "name: CLIPlugin\nversion: '1.2.3'\nauthor: Test\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "plugins/cli.jar.disabled"), body.Bytes(), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := cmdFiles([]string{"--op", "extensions", "--worlds-root", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d stderr=%q", code, stderr.String())
+	}
+	res := filesResult(t, stdout.String())
+	if res.Code != "" || len(res.Extensions) != 1 || res.Extensions[0].Enabled || res.Extensions[0].MetadataStatus != "ok" || res.Extensions[0].Metadata[0].Name != "CLIPlugin" {
+		t.Fatalf("extensions result: %+v", res)
+	}
+}
+
 // The fixture controls upload GET and landing DELETE responses and records DELETE counts.
 type stagedSource struct {
 	*httptest.Server

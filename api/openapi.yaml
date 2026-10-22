@@ -1316,6 +1316,46 @@ components:
       properties:
         op: { $ref: '#/components/schemas/FileOp' }
 
+    ExtensionMetadata:
+      type: object
+      required: [id, name, authors, loaders]
+      properties:
+        id: { type: string, description: Identity declared by the plugin or mod. }
+        name: { type: string }
+        version: { type: string, description: Omitted when no resolved version is available. }
+        authors:
+          type: array
+          items: { type: string }
+        loaders:
+          type: array
+          items: { type: string, enum: [bukkit, paper, fabric, quilt, forge, neoforge, velocity] }
+          description: Loaders declared by readable manifests; this does not confirm runtime compatibility.
+
+    ServerExtension:
+      type: object
+      required: [path, filename, size, enabled, kind, metadata_status, metadata]
+      properties:
+        path: { type: string, description: File path relative to the server's world root. }
+        filename: { type: string }
+        size: { type: integer, format: int64 }
+        enabled: { type: boolean, description: 'True for .jar, false for .jar.disabled; this describes the filename rather than the running JVM.' }
+        kind: { type: string, enum: [plugin, mod] }
+        metadata_status: { type: string, enum: [ok, unavailable] }
+        metadata:
+          type: array
+          items: { $ref: '#/components/schemas/ExtensionMetadata' }
+          description: One entry per declared mod or plugin; empty when no supported metadata can be read.
+        config_path: { type: string, description: Existing configuration directory relative to the world root; omitted when none was found. }
+
+    ServerExtensionsListing:
+      type: object
+      required: [entries, truncated]
+      properties:
+        entries:
+          type: array
+          items: { $ref: '#/components/schemas/ServerExtension' }
+        truncated: { type: boolean, description: 'The scan reached the 2000-entry per-directory scan limit, 500-file limit or 4 MiB response limit.' }
+
     FileOp:
       type: object
       description: One background file operation (internal/api/handlers_fileops.go fileOpView).
@@ -6696,6 +6736,69 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/servers/{name}/extensions:
+    get:
+      tags: [files]
+      operationId: listServerExtensions
+      summary: List installed plugin and mod files (owner-or-admin).
+      description: >-
+        Scans regular .jar and .jar.disabled files directly inside plugins/ and
+        mods/ on the server's world volume. Missing directories produce an
+        empty list. Symbolic links, subdirectories and operation staging are
+        excluded. Reads plugin.yml, paper-plugin.yml, fabric.mod.json,
+        quilt.mod.json, META-INF/mods.toml, META-INF/neoforge.mods.toml and
+        velocity-plugin.json without executing code or following network URLs.
+        Corrupt archives, unsupported metadata or metadata exceeding the bounds
+        remain listed with metadata_status unavailable. Each manifest is limited
+        to 1 MiB; each directory scan is bounded to 2000 entries, and the response
+        to 500 files and 4 MiB. One archive can
+        declare several mods or loaders. enabled describes the filename; changes
+        made while running usually apply after a restart. Enable, disable,
+        delete and upload through the existing file routes. Uses the same
+        ownership, lifecycle and maintenance gates as the file browser.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Installed plugin and mod files.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerExtensionsListing' }
+        '400':
+          description: Invalid server name or inaccessible file path.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Unknown server.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Server is transitioning or maintenance blocks access.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '502':
+          description: The file task returned damaged content.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          description: The file Job did not finish in time.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   # ------------------------------------------------- server file editor (app) ---
   /api/v1/servers/{name}/files:

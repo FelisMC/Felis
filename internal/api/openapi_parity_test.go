@@ -9,6 +9,7 @@ import (
 
 	"felis.lolicon.best/internal/build"
 	"felis.lolicon.best/internal/distributed"
+	"felis.lolicon.best/internal/fileedit"
 	"felis.lolicon.best/internal/software"
 	"felis.lolicon.best/internal/submit"
 	"felis.lolicon.best/internal/updates"
@@ -33,6 +34,9 @@ func TestOpenAPISchemasMatchWireStructs(t *testing.T) {
 		"ServerInfo":               ServerInfo{},
 		"UsagePoint":               UsagePoint{},
 		"ServerUsage":              ServerUsage{},
+		"ServerExtensionsListing":  fileedit.ExtensionList{},
+		"ServerExtension":          fileedit.Extension{},
+		"ExtensionMetadata":        fileedit.ExtensionMetadata{},
 		"FleetServer":              fleetServerView{},
 		"MyServerView":             MyServerView{},
 		"AllowlistEntry":           AllowlistEntry{},

@@ -40,11 +40,12 @@ type fakeFileEditor struct {
 	// staged bytes while the handler waits.
 	onUpload func(fileedit.UploadSource)
 
-	entries   []fileedit.Entry
-	truncated bool
-	free      int64
-	content   []byte
-	sum       string
+	entries    []fileedit.Entry
+	extensions []fileedit.Extension
+	truncated  bool
+	free       int64
+	content    []byte
+	sum        string
 
 	// op is what StartUpload and StartUnzip answer (started), ops what Ops does.
 	op       fileedit.OpState
@@ -81,6 +82,12 @@ func (f *fakeFileEditor) Search(_ context.Context, server, path, query string) (
 	f.calls++
 	f.gotOp, f.gotServer, f.gotPath, f.gotQuery = "search", server, path, query
 	return fileedit.Listing{Entries: f.entries, Truncated: f.truncated, Free: f.free}, f.err
+}
+
+func (f *fakeFileEditor) Extensions(_ context.Context, server string) (fileedit.ExtensionList, error) {
+	f.calls++
+	f.gotOp, f.gotServer = "extensions", server
+	return fileedit.ExtensionList{Entries: f.extensions, Truncated: f.truncated}, f.err
 }
 
 func (f *fakeFileEditor) StartTransfer(_ context.Context, server, op string, paths []string, to string, overwrite bool) (fileedit.OpState, error) {
@@ -246,6 +253,7 @@ func TestFileEditorStateGate(t *testing.T) {
 		body   string
 	}{
 		{"list", "GET", "/api/v1/servers/survival/files?path=config", ""},
+		{"extensions", "GET", "/api/v1/servers/survival/extensions", ""},
 		{"read", "GET", "/api/v1/servers/survival/file?path=server.properties", ""},
 		{"write", "PUT", "/api/v1/servers/survival/file?path=server.properties", `{"content":"aGk=","content_sha256":"` + hiSum + `"}`},
 		{"mkdir", "POST", "/api/v1/servers/survival/files/mkdir?path=plugins", ""},
@@ -318,6 +326,7 @@ func TestFileOpsBeforeTheFirstStart(t *testing.T) {
 		body   string
 	}{
 		{"list", "GET", "/api/v1/servers/survival/files?path=config", ""},
+		{"extensions", "GET", "/api/v1/servers/survival/extensions", ""},
 		{"read", "GET", "/api/v1/servers/survival/file?path=server.properties", ""},
 		{"write", "PUT", "/api/v1/servers/survival/file?path=server.properties", `{"content":"aGk=","content_sha256":"` + hiSum + `"}`},
 		{"mkdir", "POST", "/api/v1/servers/survival/files/mkdir?path=plugins", ""},
@@ -372,6 +381,7 @@ func TestFileEditorAuthorization(t *testing.T) {
 		body   string
 	}{
 		{"list", "GET", "/api/v1/servers/survival/files", ""},
+		{"extensions", "GET", "/api/v1/servers/survival/extensions", ""},
 		{"read", "GET", "/api/v1/servers/survival/file?path=server.properties", ""},
 		{"write", "PUT", "/api/v1/servers/survival/file?path=server.properties", `{"content":"aGk=","content_sha256":"` + hiSum + `"}`},
 		{"mkdir", "POST", "/api/v1/servers/survival/files/mkdir?path=plugins", ""},

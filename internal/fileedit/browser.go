@@ -52,7 +52,7 @@ func Browse(ctx context.Context, worldRoot, url, token string) error {
 		if err != nil {
 			return err
 		}
-		if command.Op != OpList && command.Op != OpRead && command.Op != OpSearch {
+		if command.Op != OpList && command.Op != OpRead && command.Op != OpSearch && command.Op != OpExtensions {
 			return fmt.Errorf("fileedit: browser refused operation %q", command.Op)
 		}
 		res, err := Execute(worldRoot, Request{Op: command.Op, Path: command.Path, Query: command.Query})

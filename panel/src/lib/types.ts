@@ -565,6 +565,30 @@ export interface FileUploadSession {
   parts: { size: number; sha256: string }[];
 }
 
+export interface ExtensionMetadata {
+  id: string;
+  name: string;
+  version?: string;
+  authors: string[];
+  loaders: string[];
+}
+
+export interface ServerExtension {
+  path: string;
+  filename: string;
+  size: number;
+  enabled: boolean;
+  kind: "plugin" | "mod";
+  metadata_status: "ok" | "unavailable";
+  metadata: ExtensionMetadata[];
+  config_path?: string;
+}
+
+export interface ServerExtensionsListing {
+  entries: ServerExtension[];
+  truncated: boolean;
+}
+
 // done/total are progress bytes; files/bytes report extracted output.
 export interface FileOp {
   id: string;

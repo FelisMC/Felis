@@ -22,25 +22,28 @@ import (
 
 // World owners can upload executable plugins inside their server mount; all paths remain contained by os.Root.
 const (
-	OpList   = "list"
-	OpRead   = "read"
-	OpWrite  = "write"
-	OpMkdir  = "mkdir"
-	OpDelete = "delete"
-	OpRename = "rename"
-	OpUpload = "upload"
-	OpUnzip  = "unzip"
-	OpSearch = "search"
-	OpCopy   = "copy"
-	OpMove   = "move"
-	OpZip    = "zip"
+	OpList       = "list"
+	OpRead       = "read"
+	OpWrite      = "write"
+	OpMkdir      = "mkdir"
+	OpDelete     = "delete"
+	OpRename     = "rename"
+	OpUpload     = "upload"
+	OpUnzip      = "unzip"
+	OpSearch     = "search"
+	OpCopy       = "copy"
+	OpMove       = "move"
+	OpZip        = "zip"
+	OpExtensions = "extensions"
 )
 
-func mutates(op string) bool { return op != OpList && op != OpRead && op != OpSearch }
+func mutates(op string) bool {
+	return op != OpList && op != OpRead && op != OpSearch && op != OpExtensions
+}
 
 func validOp(op string) bool {
 	switch op {
-	case OpList, OpRead, OpWrite, OpMkdir, OpDelete, OpRename, OpUpload, OpUnzip, OpSearch, OpCopy, OpMove, OpZip:
+	case OpList, OpRead, OpWrite, OpMkdir, OpDelete, OpRename, OpUpload, OpUnzip, OpSearch, OpCopy, OpMove, OpZip, OpExtensions:
 		return true
 	}
 	return false
@@ -94,9 +97,10 @@ type Result struct {
 	Code  string `json:"code,omitempty"`
 	Error string `json:"error,omitempty"`
 
-	Entries   []Entry `json:"entries,omitempty"`
-	Content   []byte  `json:"content,omitempty"`
-	Truncated bool    `json:"truncated,omitempty"`
+	Entries    []Entry     `json:"entries,omitempty"`
+	Content    []byte      `json:"content,omitempty"`
+	Truncated  bool        `json:"truncated,omitempty"`
+	Extensions []Extension `json:"extensions,omitempty"`
 	// SHA256 covers on-disk bytes before redaction, or the current file on conflict; use it as the next write's expected hash.
 	SHA256 string `json:"sha256,omitempty"`
 	// ContentSHA256 covers transmitted bytes after redaction.
@@ -164,6 +168,8 @@ func Execute(root string, req Request) (Result, error) {
 		return read(r, path), nil
 	case OpSearch:
 		return search(r, path, req.Query), nil
+	case OpExtensions:
+		return extensions(r), nil
 	case OpWrite:
 		return write(r, path, req.Content, req.ContentSHA256, req.Expect, req.CreateOnly), nil
 	case OpMkdir:

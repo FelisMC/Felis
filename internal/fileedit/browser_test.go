@@ -83,6 +83,10 @@ func TestBrowserReusesWorkerAndReadsCurrentBytes(t *testing.T) {
 	if err := json.Unmarshal(payload, &searched); err != nil || len(searched.Entries) != 1 || searched.Entries[0].Name != "config.yml" {
 		t.Fatalf("browser search: %+v %v", searched, err)
 	}
+	extensionJar(t, root, "plugins/browser.jar", file("plugin.yml", "name: BrowserPlugin\nversion: '1.0'\n"))
+	if got := read(OpExtensions, ""); got.Code != "" || len(got.Extensions) != 1 || got.Extensions[0].MetadataStatus != "ok" || got.Extensions[0].Metadata[0].Name != "BrowserPlugin" {
+		t.Fatalf("browser extensions: %+v", got)
+	}
 
 	if workers.Load() != 1 {
 		t.Fatalf("started %d workers for repeated reads", workers.Load())

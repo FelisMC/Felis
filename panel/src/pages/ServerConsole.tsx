@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useId, useLayoutEffect, type KeyboardEvent } from "react";
 import { Link, useParams } from "react-router-dom";
-import { Terminal, Moon, Shield, ShieldAlert, HelpCircle, Loader2, Users, Archive, FolderOpen, CalendarClock, ChevronRight, type LucideIcon } from "lucide-react";
+import { Terminal, Moon, Shield, ShieldAlert, HelpCircle, Loader2, Users, Archive, FolderOpen, Puzzle, CalendarClock, ChevronRight, type LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
@@ -412,9 +412,7 @@ export function ServerConsole() {
                 <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
               </Link>
 
-              {/* File editor — its own subpage. Files are only reachable while the server
-                  is stopped (the world volume is RWO), so the page itself owns that gate
-                  and offers the stop action; the doorway shows at every phase. */}
+              {/* The file page permits running or stopped servers and owns its access checks. */}
               <Link
                 to={`/servers/${name}/files`}
                 className="group flex items-center gap-3 rounded-xl border border-border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-accent"
@@ -426,6 +424,18 @@ export function ServerConsole() {
                 </div>
                 <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
               </Link>
+
+              {owned && <Link
+                to={`/servers/${name}/extensions`}
+                className="group flex items-center gap-3 rounded-xl border border-border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-accent"
+              >
+                <Puzzle className="h-4 w-4 shrink-0 text-primary" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium">{t("extensions_title")}</p>
+                  <p className="text-sm text-muted-foreground">{t("extensions_link_desc")}</p>
+                </div>
+                <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+              </Link>}
 
               {/* Scheduled tasks — its own subpage. A schedule runs whatever phase the
                   server is in (a start wakes it, a backup stops it first), so the

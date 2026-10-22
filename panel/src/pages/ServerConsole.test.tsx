@@ -6,6 +6,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { ServerConsole } from "./ServerConsole";
 import { STATUS_POLL_FAST_MS, STATUS_POLL_SLOW_MS } from "@/lib/hooks";
 import { humanizeError } from "@/lib/api";
+import i18next from "i18next";
 
 const calls = vi.hoisted(() => ({ status: vi.fn(), myServers: vi.fn(), listImages: vi.fn(), sendCommand: vi.fn(), serverUsage: vi.fn() }));
 const tier = vi.hoisted(() => ({
@@ -60,6 +61,16 @@ function status(over: Record<string, unknown>) {
 }
 
 describe("ServerConsole host recovery", () => {
+  it.each(["admin", "owner", "viewer"])("shows the extensions doorway only for a managing %s", async (role) => {
+    tier.isAdmin = role === "admin";
+    calls.myServers.mockResolvedValue([{ name: "survival", owned: role === "owner" }]);
+    calls.status.mockResolvedValue(status({ phase: "Running", desiredState: "Running" }));
+    renderConsole();
+    await screen.findByTestId("log-stream");
+    const label = i18next.t("servers:extensions_title");
+    if (role === "viewer") expect(screen.queryByText(label)).toBeNull();
+    else expect((await screen.findByText(label)).closest("a")?.getAttribute("href")).toBe("/servers/survival/extensions");
+  });
   it("does not fetch resource usage for a server the caller does not manage", async () => {
     tier.isAdmin = false;
     calls.myServers.mockResolvedValue([{ name: "survival", owned: false }]);

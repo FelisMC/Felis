@@ -58,6 +58,7 @@ import type {
   Schedule,
   ScheduleInput,
   ServerFileEntry,
+  ServerExtensionsListing,
   ServerJob,
   MyServerView,
   ServerStatus,
@@ -759,6 +760,9 @@ export const api = rejectingSync({
       "GET",
       urlPath`/servers/${name}/files` + `?path=${encodeURIComponent(path)}`,
     ),
+
+  listServerExtensions: (name: string) =>
+    request<ServerExtensionsListing>("GET", urlPath`/servers/${name}/extensions`),
 
   searchServerFiles: (name: string, path: string, query: string) =>
     request<{ path: string; entries: ServerFileEntry[]; truncated: boolean; free_bytes: number | null }>(

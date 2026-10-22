@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import {
   AlertTriangle,
@@ -35,7 +35,8 @@ import { FileMenu } from "@/components/files/FileMenu";
 import { droppedFiles } from "@/components/files/folderUpload";
 import { imageMime } from "@/components/files/imagePreview";
 import { Input } from "@/components/ui/input";
-import { touchesWorld, worldDirectories } from "@/components/files/worldPaths";
+import { touchesWorld } from "@/components/files/worldPaths";
+import { useFileWorldConfirmation } from "@/components/files/useFileWorldConfirmation";
 import { useFileOps } from "@/components/files/useFileOps";
 import { useUploads } from "@/components/files/useUploads";
 import { holderText, useWorldJobs } from "@/components/files/useWorldJobs";
@@ -129,30 +130,9 @@ export function ServerFiles() {
   const stopped = statusQ.data?.phase === "Stopped";
   const live = statusQ.data?.phase === "Running" && statusQ.data.desiredState === "Running";
   const accessible = stopped || live;
-  const [worldConfirmed, setWorldConfirmed] = useState(false);
-  useEffect(() => setWorldConfirmed(false), [name, live]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- Each server run starts a separate directory cache.
-  const knownWorldDirs = useMemo(() => new Set<string>(), [name, live]);
-  const worldQ = useAsync(async () => {
-    if (!owned || !live) return null;
-    const file = await api.readServerFile(name, "server.properties");
-    const text = decodeText(base64ToBytes(file.content));
-    if (text === null) return null;
-    // Changing level-name takes effect on restart, so retain previously observed world directories.
-    for (const dir of worldDirectories(text)) knownWorldDirs.add(dir);
-    return [...knownWorldDirs];
-  }, [name, owned, live, knownWorldDirs]);
-  const { reload: reloadWorlds } = worldQ;
-  const worldDirs = worldQ.loading || worldQ.error ? null : worldQ.data;
-
-  function needsWorldConfirmation(paths: readonly string[]): boolean {
-    if (!live || worldConfirmed) return false;
-    return paths.length === 0 || !worldDirs || paths.some((p) => touchesWorld(p, worldDirs));
-  }
-
-  function requireWorldConfirmation(paths: readonly string[]) {
-    if (needsWorldConfirmation(paths)) throw new Error(t("live_world_confirm_required"));
-  }
+  const { confirmed: worldConfirmed, setConfirmed: setWorldConfirmed, directories: worldDirs,
+    needsConfirmation: needsWorldConfirmation, requireConfirmation: requireWorldConfirmation,
+    reload: reloadWorlds } = useFileWorldConfirmation(name, owned, live);
 
   function worldConfirmation(id: string) {
     return <label htmlFor={id} className="flex items-start gap-2 text-sm">

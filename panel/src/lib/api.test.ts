@@ -1810,6 +1810,14 @@ describe("file manager requests", () => {
   beforeEach(() => { cfg.apiBase = ""; });
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
+  it("reads installed extension metadata through the encoded server path", async () => {
+    const listing = { entries: [{ path: "mods/example.jar.disabled", filename: "example.jar.disabled", size: 100, enabled: false, kind: "mod", metadata_status: "unavailable", metadata: [] }], truncated: false };
+    const fetchSpy = fakeFetch(listing);
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await api.listServerExtensions("srv/1")).toEqual(listing);
+    expect(fetchSpy).toHaveBeenCalledWith("/servers/srv%2F1/extensions", expect.objectContaining({ method: "GET", credentials: "include" }));
+  });
+
   it("sends copy, zip, URL and selected downloads with their documented bodies", async () => {
     const fetchSpy = fakeFetch({});
     vi.stubGlobal("fetch", fetchSpy);

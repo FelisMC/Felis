@@ -150,6 +150,17 @@ func (e *Editor) Search(ctx context.Context, server, path, query string) (Listin
 	return Listing{Entries: res.Entries, Truncated: res.Truncated, Free: -1}, nil
 }
 
+func (e *Editor) Extensions(ctx context.Context, server string) (ExtensionList, error) {
+	res, err := e.run(ctx, server, JobParams{Op: OpExtensions})
+	if err != nil {
+		return ExtensionList{}, err
+	}
+	if res.Extensions == nil {
+		res.Extensions = []Extension{}
+	}
+	return ExtensionList{Entries: res.Extensions, Truncated: res.Truncated}, nil
+}
+
 // Read returns the pre-redaction file hash for conditional writes and rejects damaged transmitted content.
 func (e *Editor) Read(ctx context.Context, server, path string) ([]byte, string, error) {
 	res, err := e.run(ctx, server, JobParams{Op: OpRead, Path: path})

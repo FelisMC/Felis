@@ -126,7 +126,7 @@ func TestFilesJobIsolation(t *testing.T) {
 			op    string
 			chown bool
 		}{
-			{OpList, false}, {OpRead, false}, {OpDelete, false}, {OpRename, false},
+			{OpList, false}, {OpRead, false}, {OpExtensions, false}, {OpDelete, false}, {OpRename, false},
 			{OpWrite, true}, {OpMkdir, true}, {OpUpload, true}, {OpUnzip, true},
 		} {
 			j, err := FilesJob(opParams(tc.op))
@@ -205,6 +205,7 @@ func TestFilesJobWorldMountIsReadOnlyForReads(t *testing.T) {
 	}{
 		{OpList, true},
 		{OpRead, true},
+		{OpExtensions, true},
 		{OpWrite, false},
 		{OpMkdir, false},
 		{OpDelete, false},

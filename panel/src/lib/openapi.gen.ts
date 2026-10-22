@@ -2110,6 +2110,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/servers/{name}/extensions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List installed plugin and mod files (owner-or-admin).
+         * @description Scans regular .jar and .jar.disabled files directly inside plugins/ and mods/ on the server's world volume. Missing directories produce an empty list. Symbolic links, subdirectories and operation staging are excluded. Reads plugin.yml, paper-plugin.yml, fabric.mod.json, quilt.mod.json, META-INF/mods.toml, META-INF/neoforge.mods.toml and velocity-plugin.json without executing code or following network URLs. Corrupt archives, unsupported metadata or metadata exceeding the bounds remain listed with metadata_status unavailable. Each manifest is limited to 1 MiB; each directory scan is bounded to 2000 entries, and the response to 500 files and 4 MiB. One archive can declare several mods or loaders. enabled describes the filename; changes made while running usually apply after a restart. Enable, disable, delete and upload through the existing file routes. Uses the same ownership, lifecycle and maintenance gates as the file browser.
+         */
+        get: operations["listServerExtensions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/servers/{name}/files": {
         parameters: {
             query?: never;
@@ -4436,6 +4456,38 @@ export interface components {
         };
         StartedFileOperation: {
             op: components["schemas"]["FileOp"];
+        };
+        ExtensionMetadata: {
+            /** @description Identity declared by the plugin or mod. */
+            id: string;
+            name: string;
+            /** @description Omitted when no resolved version is available. */
+            version?: string;
+            authors: string[];
+            /** @description Loaders declared by readable manifests; this does not confirm runtime compatibility. */
+            loaders: ("bukkit" | "paper" | "fabric" | "quilt" | "forge" | "neoforge" | "velocity")[];
+        };
+        ServerExtension: {
+            /** @description File path relative to the server's world root. */
+            path: string;
+            filename: string;
+            /** Format: int64 */
+            size: number;
+            /** @description True for .jar, false for .jar.disabled; this describes the filename rather than the running JVM. */
+            enabled: boolean;
+            /** @enum {string} */
+            kind: "plugin" | "mod";
+            /** @enum {string} */
+            metadata_status: "ok" | "unavailable";
+            /** @description One entry per declared mod or plugin; empty when no supported metadata can be read. */
+            metadata: components["schemas"]["ExtensionMetadata"][];
+            /** @description Existing configuration directory relative to the world root; omitted when none was found. */
+            config_path?: string;
+        };
+        ServerExtensionsListing: {
+            entries: components["schemas"]["ServerExtension"][];
+            /** @description The scan reached the 2000-entry per-directory scan limit, 500-file limit or 4 MiB response limit. */
+            truncated: boolean;
         };
         /** @description One background file operation (internal/api/handlers_fileops.go fileOpView). */
         FileOp: {
@@ -9989,6 +10041,76 @@ export interface operations {
                 };
             };
             503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    listServerExtensions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Installed plugin and mod files. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServerExtensionsListing"];
+                };
+            };
+            /** @description Invalid server name or inaccessible file path. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Unknown server. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Server is transitioning or maintenance blocks access. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The file task returned damaged content. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+            /** @description The file Job did not finish in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     listServerFiles: {
