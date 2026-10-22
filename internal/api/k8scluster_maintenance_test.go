@@ -80,6 +80,44 @@ func TestSystemConfigSaveAndRestartAdmission(t *testing.T) {
 	}
 }
 
+func TestKillPersistsIntentAndBlocksRacingStart(t *testing.T) {
+	ctx := context.Background()
+	ms := stoppedServer()
+	ms.Spec.DesiredState = v1alpha1.DesiredRunning
+	ms.Status.Phase = v1alpha1.PhaseRunning
+	ms.Annotations = map[string]string{v1alpha1.AnnotationRestart: "restart", "unrelated": "kept"}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "survival-0", Namespace: "minecraft"}}
+	k, c := lockCluster(t, ms, pod)
+	for range 2 {
+		if err := k.KillServer(ctx, ms.Name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var got v1alpha1.MinecraftServer
+	if err := c.Get(ctx, client.ObjectKeyFromObject(ms), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Spec.DesiredState != v1alpha1.DesiredStopped || got.Annotations[v1alpha1.AnnotationKill] == "" || got.Annotations[v1alpha1.AnnotationRestart] != "" || got.Annotations["unrelated"] != "kept" {
+		t.Fatalf("kill intent=%+v", got)
+	}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(pod), &corev1.Pod{}); err != nil {
+		t.Fatalf("API deleted the game pod: %v", err)
+	}
+	if err := k.SetDesiredState(ctx, ms.Name, v1alpha1.DesiredRunning); err == nil {
+		t.Fatal("wake overtook pending force stop")
+	}
+	delete(got.Annotations, v1alpha1.AnnotationKill)
+	if err := c.Update(ctx, &got); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.SetDesiredState(ctx, ms.Name, v1alpha1.DesiredRunning); err != nil {
+		t.Fatalf("wake after kill completed: %v", err)
+	}
+	if err := k.KillServer(ctx, "missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing server: %v", err)
+	}
+}
+
 func lockCluster(t *testing.T, objs ...client.Object) (*K8sCluster, client.Client) {
 	t.Helper()
 	scheme := runtime.NewScheme()

@@ -664,6 +664,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/servers/{name}/kill": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Force stop your own server, or a system service as staff.
+         * @description Records a durable stop request for the operator to delete the game pod with zero termination grace and scale the workload to zero, without saving or warning players. Changes since the last save may be lost. Repeated requests are idempotent. Starting is refused until the operator has processed the request. Audited as server.kill.
+         */
+        post: operations["kill"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/servers/{name}/emergency-stop": {
         parameters: {
             query?: never;
@@ -6158,7 +6178,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            /** @description Nothing was started. maintenance_in_progress: a restore, backup or file write holds the server's world volume. server_retiring: the server is given up or being deleted (ServerInfo.retiring). start_failed: the server stopped after crashing (ServerInfo.crashStopped) and only its owner or an admin may start it. */
+            /** @description Nothing was started. maintenance_in_progress: a restore, backup or file write holds the server's world volume. server_retiring: the server is given up or being deleted (ServerInfo.retiring). start_failed: the server stopped after crashing (ServerInfo.crashStopped) and only its owner or an admin may start it. conflict: a force stop is still being processed. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -6199,6 +6219,36 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Stop accepted. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        name: string;
+                        /** @constant */
+                        desiredState: "Stopped";
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    kill: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Force stop accepted; await operator processing and pod termination. */
             202: {
                 headers: {
                     [name: string]: unknown;
@@ -6283,7 +6333,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            /** @description Server is not running, is retiring, or maintenance is in progress. */
+            /** @description Server is not running, is retiring, maintenance is in progress, or a force stop is pending. */
             409: {
                 headers: {
                     [name: string]: unknown;

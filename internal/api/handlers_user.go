@@ -106,6 +106,19 @@ func (a *API) handleRestart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"name": rec.Name, "desiredState": "Running"})
 }
 
+func (a *API) handleKill(w http.ResponseWriter, r *http.Request) {
+	name, ok := a.authorizeServerFiles(w, r)
+	if !ok {
+		return
+	}
+	if err := a.Cluster.KillServer(r.Context(), name); err != nil {
+		a.writeLookupError(w, r, err)
+		return
+	}
+	a.audit(r, "server.kill", name)
+	writeJSON(w, http.StatusAccepted, map[string]string{"name": name, "desiredState": "Stopped"})
+}
+
 func (a *API) handleStop(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	name := r.PathValue("name")

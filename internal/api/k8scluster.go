@@ -254,6 +254,26 @@ func (k *K8sCluster) RestartServer(ctx context.Context, name string) error {
 	return k.startWith(ctx, name, v1alpha1.AnnotationRestart)
 }
 
+func (k *K8sCluster) KillServer(ctx context.Context, name string) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var ms v1alpha1.MinecraftServer
+		if err := k.getServer(ctx, name, &ms); err != nil {
+			return err
+		}
+		patch := client.MergeFromWithOptions(ms.DeepCopy(), client.MergeFromWithOptimisticLock{})
+		ms.Spec.DesiredState = v1alpha1.DesiredStopped
+		if ms.Annotations == nil {
+			ms.Annotations = map[string]string{}
+		}
+		if _, pending := ms.Annotations[v1alpha1.AnnotationKill]; !pending {
+			ms.Annotations[v1alpha1.AnnotationKill] = k.clock().UTC().Format(time.RFC3339Nano)
+		}
+		delete(ms.Annotations, v1alpha1.AnnotationRestart)
+		delete(ms.Annotations, v1alpha1.AnnotationStartRetry)
+		return k.c.Patch(ctx, &ms, patch)
+	})
+}
+
 func (k *K8sCluster) startWith(ctx context.Context, name, annotation string) error {
 	if k.NodeMaintenanceGuard != nil {
 		if err := k.NodeMaintenanceGuard(ctx); err != nil {
@@ -264,6 +284,9 @@ func (k *K8sCluster) startWith(ctx context.Context, name, annotation string) err
 		var ms v1alpha1.MinecraftServer
 		if err := k.getServer(ctx, name, &ms); err != nil {
 			return err
+		}
+		if _, pending := ms.Annotations[v1alpha1.AnnotationKill]; pending {
+			return newError(http.StatusConflict, "conflict", "wait for force stop to finish before starting")
 		}
 		if annotation == v1alpha1.AnnotationRestart && (ms.Spec.DesiredState != v1alpha1.DesiredRunning || ms.Status.Phase != v1alpha1.PhaseRunning) {
 			return newError(http.StatusConflict, "not_running", "start the server before restarting it")

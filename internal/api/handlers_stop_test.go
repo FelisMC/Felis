@@ -61,3 +61,41 @@ func TestStop(t *testing.T) {
 		}
 	})
 }
+
+func TestKillAuthorization(t *testing.T) {
+	for _, tc := range []struct {
+		name, server, role, user string
+		staff                    bool
+		status                   int
+	}{
+		{"server owner", "survival", "user", "owner1", false, 202},
+		{"administrator", "survival", "admin", "admin1", true, 202},
+		{"ordinary player", "survival", "user", "stranger", false, 403},
+		{"admin without admin access", "survival", "admin", "stranger", false, 403},
+		{"staff system service", "lobby", "admin", "admin1", true, 202},
+		{"player system service", "lobby", "user", "owner1", false, 400},
+		{"missing server", "missing", "user", "owner1", false, 404},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, repo, cl, _ := mkFiles(t)
+			cl.byName["lobby"] = &ServerInfo{Name: "lobby", Phase: "Running", DesiredState: "Running"}
+			a.External = staticExternal{p: &Principal{UserID: tc.user, Role: tc.role, ViaAdminAccess: tc.staff}}
+			w := do(a.ExternalHandler(), "POST", "/api/v1/servers/"+tc.server+"/kill", "", nil)
+			if w.Code != tc.status {
+				t.Fatalf("status=%d want=%d body=%s", w.Code, tc.status, w.Body.String())
+			}
+			if tc.status != http.StatusAccepted {
+				if len(cl.killed) != 0 || len(repo.audits) != 0 {
+					t.Fatal("refused kill changed the server or wrote a success audit")
+				}
+				return
+			}
+			if len(cl.killed) != 1 || cl.killed[0] != tc.server || cl.desired[tc.server] != v1alpha1.DesiredStopped {
+				t.Fatalf("kill=%v desired=%v", cl.killed, cl.desired)
+			}
+			if len(repo.audits) != 1 || repo.audits[0].Action != "server.kill" || repo.audits[0].ServerName != tc.server {
+				t.Fatalf("audits=%+v", repo.audits)
+			}
+		})
+	}
+}

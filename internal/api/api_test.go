@@ -1633,6 +1633,7 @@ type fakeCluster struct {
 	acquired    []string // "name:kind" per admitted AcquireMaintenance
 	released    []string // names per ReleaseMaintenance
 	retried     []string // names per RetryStart
+	killed      []string
 	feeds       []ServerEventFeed
 	mailed      map[string]int64 // MarkEventsMailed: name -> seq
 }
@@ -1717,6 +1718,14 @@ func (c *fakeCluster) RetryStart(ctx context.Context, n string) error {
 }
 func (c *fakeCluster) RestartServer(ctx context.Context, n string) error {
 	return c.RetryStart(ctx, n)
+}
+
+func (c *fakeCluster) KillServer(ctx context.Context, n string) error {
+	if err := c.SetDesiredState(ctx, n, v1alpha1.DesiredStopped); err != nil {
+		return err
+	}
+	c.killed = append(c.killed, n)
+	return nil
 }
 
 func TestRestartAuthorization(t *testing.T) {

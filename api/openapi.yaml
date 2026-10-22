@@ -3146,7 +3146,7 @@ paths:
             write holds the server's world volume. server_retiring: the server is
             given up or being deleted (ServerInfo.retiring). start_failed: the server
             stopped after crashing (ServerInfo.crashStopped) and only its owner or an
-            admin may start it.
+            admin may start it. conflict: a force stop is still being processed.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -3174,6 +3174,42 @@ paths:
       responses:
         '202':
           description: Stop accepted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, desiredState]
+                properties:
+                  name: { type: string }
+                  desiredState: { type: string, const: Stopped }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/servers/{name}/kill:
+    post:
+      tags: [servers]
+      operationId: kill
+      summary: Force stop your own server, or a system service as staff.
+      description: >-
+        Records a durable stop request for the operator to delete the game pod
+        with zero termination grace and scale the workload to zero, without
+        saving or warning players. Changes since the last save may be lost.
+        Repeated requests are idempotent. Starting is refused until the
+        operator has processed the request. Audited as server.kill.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '202':
+          description: Force stop accepted; await operator processing and pod termination.
           content:
             application/json:
               schema:
@@ -3271,7 +3307,7 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          description: Server is not running, is retiring, or maintenance is in progress.
+          description: Server is not running, is retiring, maintenance is in progress, or a force stop is pending.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
