@@ -278,7 +278,7 @@ func TestFilesJobContentEnv(t *testing.T) {
 	// starts, so the largest write must arrive in parts each well under it.
 	t.Run("the largest write is split under the kernel's per-variable limit", func(t *testing.T) {
 		p := testParams(OpWrite)
-		p.Content = make([]byte, MaxWriteBytes)
+		p.Content = make([]byte, MaxInlineWriteBytes)
 		for i := range p.Content {
 			p.Content[i] = byte(i * 7)
 		}

@@ -7,10 +7,12 @@ export function opErrorText(op: FileOp["op"], e: FileOpError): string {
   const t = i18next.getFixedT(null, "files");
   const entry = e.entry ?? "";
   switch (e.code) {
+    case "rollback_incomplete":
+      return t("rollback_incomplete");
     case "file_exists":
       return op === "upload"
         ? t("op_upload_exists")
-        : t("op_unzip_conflicts", { count: e.conflict_count ?? e.conflicts?.length ?? 0 });
+        : t(op === "unzip" ? "op_unzip_conflicts" : "op_task_conflicts", { count: e.conflict_count ?? e.conflicts?.length ?? 0 });
     // A volume with nothing left leaves avail out of the error, the way the Job
     // omits a zero.
     case "volume_full":

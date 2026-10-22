@@ -54,6 +54,7 @@ type JobParams struct {
 	// BackupSHA256 validates the source archive before secrets are removed for export.
 	BackupSHA256 string
 	Path         string
+	Paths        []string
 	Dir          bool
 	TargetURL    string
 	Token        string
@@ -104,10 +105,16 @@ func ExportJob(p JobParams) (*batchv1.Job, error) {
 		}
 		args = append(args, "--worlds-root", p.WorldsRoot)
 		if p.Mode == ModeFiles {
-			if p.Path == "" {
+			if p.Path == "" && len(p.Paths) == 0 {
 				return nil, fmt.Errorf("worldexport: a files export needs a path")
 			}
-			args = append(args, "--path", p.Path)
+			if len(p.Paths) > 0 {
+				for _, name := range p.Paths {
+					args = append(args, "--select", name)
+				}
+			} else {
+				args = append(args, "--path", p.Path)
+			}
 			if p.Dir {
 				args = append(args, "--dir")
 			}

@@ -12,6 +12,7 @@ import {
   FolderOpen,
   FolderPlus,
   Loader2,
+  Search,
   Pencil,
   RefreshCw,
   Save,
@@ -30,6 +31,10 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { NameDialog } from "@/components/files/NameDialog";
 import { FileOps } from "@/components/files/FileOps";
 import { UploadQueue } from "@/components/files/UploadQueue";
+import { FileMenu } from "@/components/files/FileMenu";
+import { droppedFiles } from "@/components/files/folderUpload";
+import { imageMime } from "@/components/files/imagePreview";
+import { Input } from "@/components/ui/input";
 import { touchesWorld, worldDirectories } from "@/components/files/worldPaths";
 import { useFileOps } from "@/components/files/useFileOps";
 import { useUploads } from "@/components/files/useUploads";
@@ -63,8 +68,8 @@ import { formatBytes, formatRelative } from "@/lib/format";
 import type { FileOp, ServerFileEntry } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-const MAX_WRITE_BYTES = 256 * 1024; // mirrors fileedit.MaxWriteBytes; gates the save button
-const MAX_READ_BYTES = 1024 * 1024; // larger files are refused with 413
+const MAX_WRITE_BYTES = 5 * 1024 * 1024;
+const MAX_READ_BYTES = MAX_WRITE_BYTES;
 const TextFileEditor = lazy(() => import("@/components/files/TextFileEditor").then((m) => ({ default: m.TextFileEditor })));
 const BINARY_EXTENSION = /\.(jar|zip|gz|tar|7z|rar|dat|mca|mcr|schem|schematic|nbt|db|sqlite|png|jpe?g|gif|webp|ico|ogg|mp[34]|pdf|class|exe|dll|so|bin)$/i;
 
@@ -94,9 +99,13 @@ function decodeText(bytes: Uint8Array): string | null {
   }
 }
 
-function isZip(name: string): boolean {
-  return name.toLowerCase().endsWith(".zip");
+function isArchive(name: string): boolean {
+  return /\.(zip|tar|tar\.gz|tgz)$/i.test(name);
 }
+
+type FileTask = { kind: "transfer"; op: "copy" | "move"; paths: string[]; to: string }
+  | { kind: "zip"; paths: string[]; to: string }
+  | { kind: "url"; url: string; path: string };
 
 type Naming =
   | { kind: "file" | "folder"; dir: string }
@@ -159,6 +168,14 @@ export function ServerFiles() {
   const [listLoading, setListLoading] = useState(false);
   const [listTarget, setListTarget] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
+  const [checked, setChecked] = useState<ReadonlySet<string>>(new Set());
+  const [clipboard, setClipboard] = useState<{ server: string; op: "copy" | "move"; paths: string[] } | null>(null);
+  const [query, setQuery] = useState("");
+  const [searching, setSearching] = useState(false);
+  const [searchActive, setSearchActive] = useState(false);
+  const [menuPath, setMenuPath] = useState<string | null>(null);
+  const longPress = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressed = useRef(false);
   const folders = useRef(new Map<string, { at: number; listing: Awaited<ReturnType<typeof api.listServerFiles>> }>());
   // null while unknown; 0 is a full volume.
   const [free, setFree] = useState<number | null>(null);
@@ -169,6 +186,7 @@ export function ServerFiles() {
   const load = useCallback(
     async (p: string, cached = false) => {
       const ticket = ++loadSeq.current;
+      setSearching(false);
       if (!cached) folders.current.clear();
       const previous = folders.current.get(`${name}:${p}`);
       setListLoading(true);
@@ -186,6 +204,9 @@ export function ServerFiles() {
         setTruncated(r.truncated === true);
         setFree(r.free_bytes ?? null);
         setDir(p);
+        setSearchActive(false);
+        setChecked(new Set());
+        setMenuPath(null);
       } catch (e) {
         if (ticket !== loadSeq.current) return;
         setEntries(null);
@@ -221,6 +242,10 @@ export function ServerFiles() {
     size?: number;
   } | null>(null);
   const [opening, setOpening] = useState<string | null>(null);
+  const [image, setImage] = useState<{ path: string; url: string } | null>(null);
+  const previewAbort = useRef<AbortController | null>(null);
+  useEffect(() => () => { if (image) URL.revokeObjectURL(image.url); }, [image]);
+  useEffect(() => () => previewAbort.current?.abort(), []);
   const openingSeq = useRef(0);
   useEffect(() => () => { ++openingSeq.current; ++loadSeq.current; }, []);
   const [saving, setSaving] = useState(false);
@@ -238,6 +263,7 @@ export function ServerFiles() {
       return;
     }
     ++openingSeq.current;
+    previewAbort.current?.abort();
     setOpening(null);
     setOpen(null);
   }
@@ -275,6 +301,30 @@ export function ServerFiles() {
     // answers "invalid path".
     if (p === SECRET_CONFIG_PATH) {
       setMsg({ kind: "error", text: t("secret_config_unreadable") });
+      return;
+    }
+    if (/\.(png|jpe?g|gif|webp)$/i.test(entry.name) && entry.size <= MAX_READ_BYTES) {
+      const ticket = ++openingSeq.current;
+      setOpening(p);
+      try {
+        const tk = await api.downloadServerFile(name, p, false);
+        const result = await awaitExport(tk.ticket, () => alive.current && ticket === openingSeq.current);
+        if (!result) return;
+        if (result.state === "failed") throw new Error(t("download_failed"));
+        const controller = new AbortController();
+        previewAbort.current = controller;
+        const blob = await api.previewServerFile(tk.ticket, MAX_READ_BYTES, controller.signal);
+        if (ticket !== openingSeq.current) return;
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        const mime = imageMime(bytes);
+        if (!mime) throw new Error(t("image_invalid"));
+        setImage({ path: p, url: URL.createObjectURL(new Blob([bytes], { type: mime })) });
+        worldJobs.refresh();
+      } catch (e) {
+        if (ticket === openingSeq.current) setMsg({ kind: "error", text: humanizeError(e) });
+      } finally {
+        if (ticket === openingSeq.current) setOpening(null);
+      }
       return;
     }
     const preview = BINARY_EXTENSION.test(entry.name) ? "binary" : entry.size > MAX_READ_BYTES ? "large" : undefined;
@@ -340,17 +390,34 @@ export function ServerFiles() {
 
   // A succeeded op rereads the listing; an extraction stopped at files it would replace asks about them.
   const startedHere = useRef(new Set<string>());
+  const taskRequests = useRef(new Map<string, FileTask>());
   const [conflicts, setConflicts] = useState<FileOp | null>(null);
   const [conflictsOpen, setConflictsOpen] = useState(false);
+  useEffect(() => {
+    startedHere.current.clear();
+    taskRequests.current.clear();
+    setConflicts(null);
+    setConflictsOpen(false);
+    setClipboard(null);
+    setChecked(new Set());
+    setMenuPath(null);
+    setImage(null);
+    previewAbort.current?.abort();
+    setOpen(null);
+    setOpening(null);
+    ++openingSeq.current;
+  }, [name]);
   function showConflicts(op: FileOp) {
     setConflicts(op);
     setConflictsOpen(true);
   }
   function opEnded(op: FileOp) {
     if (op.state === "succeeded") {
+      const request = taskRequests.current.get(op.id);
+      if (request?.kind === "transfer" && request.op === "move") setClipboard(null);
       void load(dir);
       reloadWorlds();
-    } else if (op.op === "unzip" && op.error?.code === "file_exists" && startedHere.current.has(op.id)) {
+    } else if (op.error?.code === "file_exists" && startedHere.current.has(op.id)) {
       showConflicts(op);
     }
   }
@@ -364,6 +431,7 @@ export function ServerFiles() {
 
   const [downloading, setDownloading] = useState<string | null>(null);
   const [unzipping, setUnzipping] = useState<string | null>(null);
+  const [startingTask, setStartingTask] = useState(false);
   const alive = useRef(true);
   useEffect(
     () => () => {
@@ -380,11 +448,11 @@ export function ServerFiles() {
     },
     onOp: fileOps.ignore,
     beforeUpload: (path) => requireWorldConfirmation([path]),
-    hold: fileOps.running || downloading !== null || unzipping !== null || held !== null,
+    hold: fileOps.running || downloading !== null || unzipping !== null || startingTask || held !== null,
     free,
   });
   // Each change is a Job holding the world lock, so any other holder blocks it.
-  const changing = uploads.busy || fileOps.running || downloading !== null || unzipping !== null || held !== null;
+  const changing = uploads.busy || fileOps.running || downloading !== null || unzipping !== null || startingTask || held !== null;
   // Names the current lock holder; queued uploads come last.
   const waitTitle =
     fileOps.running || unzipping !== null
@@ -420,6 +488,11 @@ export function ServerFiles() {
   const [deleting, setDeleting] = useState<ServerFileEntry | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const folderInput = useRef<HTMLInputElement>(null);
+  const [taskDialog, setTaskDialog] = useState<"zip" | "url" | null>(null);
+  const [taskPath, setTaskPath] = useState("");
+  const [sourceURL, setSourceURL] = useState("");
+  const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
   // dragenter and dragleave fire for every child crossed, so the overlay counts depth.
   const [dragDepth, setDragDepth] = useState(0);
 
@@ -432,33 +505,24 @@ export function ServerFiles() {
     return p === null ? null : t(p);
   }
 
-  function addFiles(files: readonly File[]) {
+  function addFiles(files: readonly File[], paths?: readonly string[]) {
     if (files.length === 0) return;
-    if (needsWorldConfirmation(files.map((file) => joinPath(dir, file.name)))) {
+    if (needsWorldConfirmation(files.map((file, index) => joinPath(dir, paths?.[index] || file.webkitRelativePath || file.name)))) {
       setMsg({ kind: "error", text: t("live_world_confirm_required") });
       return;
     }
     setMsg(null);
-    uploads.add(files, dir, entries);
+    uploads.add(files, dir, entries, paths);
   }
 
-  // addDropped queues what was dropped. A folder arrives as an entry the browser
-  // cannot read as a file, so it is named as skipped instead of failing later.
-  function addDropped(data: DataTransfer) {
-    const files: File[] = [];
-    let folders = 0;
-    for (const item of Array.from(data.items ?? [])) {
-      if (item.kind !== "file") continue;
-      if (item.webkitGetAsEntry?.()?.isDirectory) {
-        folders++;
-        continue;
-      }
-      const f = item.getAsFile();
-      if (f) files.push(f);
+  // Finish reading directory entries before adding the complete drop to the queue.
+  async function addDropped(data: DataTransfer) {
+    try {
+      const { files, paths } = await droppedFiles(data);
+      addFiles(files, paths);
+    } catch (e) {
+      setMsg({ kind: "error", text: humanizeError(e) });
     }
-    if (data.items === undefined || data.items.length === 0) files.push(...Array.from(data.files));
-    addFiles(files);
-    if (folders > 0) setMsg({ kind: "error", text: t("upload_no_folders", { count: folders }) });
   }
 
   const draggingFiles = (e: React.DragEvent) => Array.from(e.dataTransfer.types).includes("Files");
@@ -534,17 +598,114 @@ export function ServerFiles() {
 
   async function overwriteConflicts() {
     if (!conflicts) return;
-    await unzip(conflicts.path, true);
+    const request = taskRequests.current.get(conflicts.id);
+    if (request) await runTask(request, true);
+    else await unzip(conflicts.path, true);
     fileOps.dismiss(conflicts.id);
   }
 
+  async function runTask(request: FileTask, overwrite = false) {
+    requireWorldConfirmation(taskTargets(request));
+    setStartingTask(true);
+    try {
+      const { op } = request.kind === "transfer"
+        ? await api.transferServerFiles(name, request.op, request.paths, request.to, overwrite)
+        : request.kind === "zip"
+          ? await api.zipServerFiles(name, request.paths, request.to, overwrite)
+          : await api.fetchServerFile(name, request.url, request.path, overwrite);
+      startedHere.current.add(op.id);
+      taskRequests.current.set(op.id, request);
+      fileOps.started(op);
+      if (op.state !== "running") opEnded(op);
+      setChecked(new Set());
+    } finally {
+      setStartingTask(false);
+    }
+  }
+
+  function taskTargets(request: FileTask) {
+    const targets = request.kind === "transfer"
+      ? request.paths.map((p) => joinPath(request.to, p.split("/").pop()!))
+      : [request.kind === "zip" ? request.to : request.path];
+    return request.kind === "transfer" && request.op === "move" ? [...targets, ...request.paths] : targets;
+  }
+
+  function beginTask(request: FileTask) {
+    setMsg(null);
+    void runTask(request).catch((e) => {
+      heldElsewhere(e);
+      setMsg({ kind: "error", text: humanizeError(e) });
+    });
+  }
+
+  async function submitTask() {
+    const path = taskPath.trim();
+    if (!path) throw new Error(t("name_required"));
+    await runTask(taskDialog === "zip"
+      ? { kind: "zip", paths: [...checked], to: path }
+      : { kind: "url", url: sourceURL.trim(), path });
+  }
+
+  async function searchFiles() {
+    if (!query.trim() || searching) return;
+    const ticket = ++loadSeq.current;
+    setSearching(true);
+    setMsg(null);
+    try {
+      const result = await api.searchServerFiles(name, dir, query.trim());
+      if (ticket !== loadSeq.current) return;
+      setEntries(sortEntries(result.entries));
+      setTruncated(result.truncated);
+      setSearchActive(true);
+      setChecked(new Set());
+    } catch (e) {
+      if (ticket === loadSeq.current) setMsg({ kind: "error", text: humanizeError(e) });
+    } finally {
+      if (ticket === loadSeq.current) setSearching(false);
+    }
+  }
+
+  async function deleteChecked() {
+    const paths = [...checked];
+    requireWorldConfirmation(paths);
+    setStartingTask(true);
+    try {
+      for (const path of paths) {
+        requireWorldConfirmation([path]);
+        await api.deleteServerFile(name, path);
+        setChecked((all) => new Set([...all].filter((p) => p !== path)));
+      }
+      setMsg({ kind: "success", text: t("batch_deleted", { count: paths.length }) });
+    } finally {
+      setStartingTask(false);
+      void load(dir);
+      reloadWorlds();
+    }
+  }
+
+  function copyPaths(op: "copy" | "move", paths: string[]) {
+    setClipboard({ server: name, op, paths });
+    setMsg({ kind: "success", text: t(op === "copy" ? "copied_selection" : "cut_selection", { count: paths.length }) });
+  }
+
+  function selectAll(value: boolean) {
+    setChecked(new Set(value ? (entries ?? []).slice(0, 500).map((entry) => joinPath(dir, entry.name)) : []));
+    if (value && (entries?.length ?? 0) > 500) setMsg({ kind: "error", text: t("selection_limit") });
+  }
+
+  function cancelLongPress() {
+    if (longPress.current !== null) clearTimeout(longPress.current);
+    longPress.current = null;
+  }
+  useEffect(() => () => { if (longPress.current !== null) clearTimeout(longPress.current); }, []);
+
   // Downloads redact RCON passwords and omit forwarding-secret configuration files.
-  async function download(entry: ServerFileEntry) {
-    const p = joinPath(dir, entry.name);
+  async function download(entry?: ServerFileEntry) {
+    const p = entry ? joinPath(dir, entry.name) : "*";
     setMsg(null);
     setDownloading(p);
     try {
-      const tk = await api.downloadServerFile(name, p, entry.is_dir);
+      const tk = entry ? await api.downloadServerFile(name, p, entry.is_dir) : await api.downloadServerFiles(name, [...checked]);
       const s = await awaitExport(tk.ticket, () => alive.current);
       if (s === null) return;
       if (s.state === "failed") {
@@ -695,7 +856,7 @@ export function ServerFiles() {
                 if (!draggingFiles(e)) return;
                 e.preventDefault();
                 setDragDepth(0);
-                addDropped(e.dataTransfer);
+                void addDropped(e.dataTransfer);
               }}
             >
               {dragDepth > 0 && (
@@ -793,6 +954,15 @@ export function ServerFiles() {
                         e.target.value = "";
                       }}
                     />
+                    <Button size="sm" variant="ghost" onClick={() => folderInput.current?.click()} aria-label={t("upload_folder")}>
+                      <FolderPlus className="h-4 w-4" /><span className="hidden md:inline">{t("upload_folder")}</span>
+                    </Button>
+                    <input ref={folderInput} type="file" multiple hidden data-testid="folder-upload-input"
+                      {...{ webkitdirectory: "", directory: "" }}
+                      onChange={(e) => { addFiles(Array.from(e.target.files ?? [])); e.target.value = ""; }} />
+                    <Button size="sm" variant="ghost" disabled={changing} onClick={() => {
+                      setTaskPath(joinPath(dir, "")); setSourceURL(""); setTaskDialog("url");
+                    }}>{t("from_url")}</Button>
                     <Button
                       size="sm"
                       variant="ghost"
@@ -809,6 +979,31 @@ export function ServerFiles() {
                     </Button>
                   </div>
                 </div>
+
+                <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
+                  <form className="flex min-w-0 flex-1 gap-2" onSubmit={(e) => { e.preventDefault(); void searchFiles(); }}>
+                    <Input aria-label={t("search_label")} placeholder={t("search_label")} value={query} maxLength={256}
+                      onChange={(e) => setQuery(e.target.value)} className="h-8 min-w-24" />
+                    <Button size="sm" variant="outline" disabled={!query.trim() || searching || listLoading} type="submit">
+                      {searching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}{t("search")}
+                    </Button>
+                  </form>
+                  {searchActive && <Button size="sm" variant="ghost" onClick={() => void load(dir)}>{t("clear_search")}</Button>}
+                  {clipboard?.server === name && <Button size="sm" variant="outline" disabled={changing}
+                    onClick={() => beginTask({ kind: "transfer", op: clipboard.op, paths: clipboard.paths, to: dir })}>
+                    {t("paste_count", { count: clipboard.paths.length })}
+                  </Button>}
+                </div>
+                {checked.size > 0 && <div className="flex flex-wrap items-center gap-2 border-b border-border bg-primary/5 px-4 py-2">
+                  <span className="mr-auto text-xs">{t("selected_count", { count: checked.size })}</span>
+                  <Button size="sm" variant="ghost" disabled={changing || [...checked].some(isManaged)} onClick={() => copyPaths("copy", [...checked])}>{t("copy")}</Button>
+                  <Button size="sm" variant="ghost" disabled={changing || [...checked].some(isManaged)} onClick={() => copyPaths("move", [...checked])}>{t("cut")}</Button>
+                  <Button size="sm" variant="outline" disabled={changing || checked.has(SECRET_CONFIG_PATH)} onClick={() => void download()}>{t("download_selected")}</Button>
+                  <Button size="sm" variant="outline" disabled={changing || checked.has(SECRET_CONFIG_PATH)} onClick={() => {
+                    setTaskPath(joinPath(dir, "archive.zip")); setTaskDialog("zip");
+                  }}>{t("zip_selected")}</Button>
+                  <Button size="sm" variant="ghost" disabled={changing} onClick={() => setBatchDeleteOpen(true)} className="text-destructive">{t("delete_selected")}</Button>
+                </div>}
 
                 {listLoading && (
                   <div role="status" className="flex items-center gap-2 border-b border-border bg-primary/5 px-4 py-2 text-sm text-muted-foreground">
@@ -844,15 +1039,18 @@ export function ServerFiles() {
                   onClearDone={uploads.clearDone}
                 />
 
-                {entries && entries.length === 0 ? (
+                    {entries && entries.length === 0 ? (
                   <div className="p-4">
-                    <EmptyState title={t("empty_dir_title")} hint={t("empty_dir_hint")} />
+                    <EmptyState title={t(searchActive ? "search_empty" : "empty_dir_title")} hint={searchActive ? undefined : t("empty_dir_hint")} />
                   </div>
                 ) : (
                   <div className="overflow-x-auto">
                     <table className="w-full border-collapse text-sm">
                       <thead>
                         <tr className="border-b border-border bg-muted/40 text-left text-[11px] uppercase tracking-wider text-muted-foreground">
+                          <th className="w-10 px-3 py-2.5"><Checkbox aria-label={t("select_all")}
+                            checked={!!entries?.length && entries.every((entry) => checked.has(joinPath(dir, entry.name)))}
+                            onChange={(e) => selectAll(e.target.checked)} /></th>
                           <th className="px-4 py-2.5 font-medium">{t("col_name")}</th>
                           <th className="px-4 py-2.5 font-medium">{t("col_size")}</th>
                           <th className="hidden px-4 py-2.5 font-medium sm:table-cell">{t("col_modified")}</th>
@@ -869,13 +1067,26 @@ export function ServerFiles() {
                             <tr
                               key={e.name}
                               onClick={() => {
+                                if (longPressed.current) { longPressed.current = false; return; }
                                 setSelected(p);
                                 if (e.is_dir) void load(p, true);
                                 else void openFile(e);
                               }}
+                              onContextMenu={(ev) => { ev.preventDefault(); setMenuPath(p); }}
+                              onTouchStart={() => {
+                                cancelLongPress(); longPressed.current = false;
+                                longPress.current = setTimeout(() => { longPressed.current = true; setMenuPath(p); }, 600);
+                              }}
+                              onTouchMove={cancelLongPress} onTouchEnd={cancelLongPress} onTouchCancel={cancelLongPress}
                               aria-selected={selected === p}
                               className={cn("cursor-pointer transition-colors hover:bg-muted/30", selected === p && "bg-primary/10 ring-1 ring-inset ring-primary/30")}
                             >
+                              <td className="px-3 py-3" onClick={(ev) => ev.stopPropagation()}>
+                                <Checkbox aria-label={t("select_item", { name: e.name })} checked={checked.has(p)} onChange={(ev) => {
+                                  if (ev.target.checked && checked.size >= 500) { setMsg({ kind: "error", text: t("selection_limit") }); return; }
+                                  setChecked((all) => { const next = new Set(all); if (ev.target.checked) next.add(p); else next.delete(p); return next; });
+                                }} />
+                              </td>
                               <td className="px-4 py-3">
                                 {/* The name is a button so the keyboard and a screen
                                     reader reach every row; its click bubbles to the
@@ -909,7 +1120,7 @@ export function ServerFiles() {
                                 {/* The actions stop at their own buttons: a click
                                     here must not also open the row. */}
                                 <div className="flex items-center justify-end gap-0.5" onClick={(ev) => ev.stopPropagation()}>
-                                  {!e.is_dir && isZip(e.name) && (
+                                  {!e.is_dir && isArchive(e.name) && (
                                     <Button
                                       size="sm"
                                       variant="ghost"
@@ -953,7 +1164,7 @@ export function ServerFiles() {
                                     size="sm"
                                     variant="ghost"
                                     className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
-                                    onClick={() => ask({ kind: "rename", dir, entry: e })}
+                                    onClick={() => ask({ kind: "rename", dir: parentOf(p), entry: { ...e, name: p.split("/").pop()! } })}
                                     disabled={managed || changing}
                                     aria-label={t("rename_item", { name: e.name })}
                                     title={
@@ -981,6 +1192,13 @@ export function ServerFiles() {
                                   >
                                     <Trash2 className="h-3.5 w-3.5" />
                                   </Button>
+                                  <FileMenu name={e.name} open={menuPath === p} onOpenChange={(v) => setMenuPath(v ? p : null)} actions={[
+                                    { label: t("copy"), disabled: changing || managed, run: () => copyPaths("copy", [p]) },
+                                    { label: t("cut"), disabled: changing || managed, run: () => copyPaths("move", [p]) },
+                                    { label: t("download_file"), disabled: changing || p === SECRET_CONFIG_PATH, run: () => void download(e) },
+                                    { label: t("rename"), disabled: changing || managed, run: () => ask({ kind: "rename", dir: parentOf(p), entry: { ...e, name: p.split("/").pop()! } }) },
+                                    { label: t("delete"), disabled: changing, run: () => { setDeleting(e); setDeleteOpen(true); } },
+                                  ]} />
                                 </div>
                               </td>
                             </tr>
@@ -992,7 +1210,7 @@ export function ServerFiles() {
                 )}
                 {truncated && (
                   <p className="border-t border-border px-4 py-2 text-xs text-amber-500">
-                    {t("list_truncated")}
+                    {t(searchActive ? "search_truncated" : "list_truncated")}
                   </p>
                 )}
               </CardContent>
@@ -1000,6 +1218,34 @@ export function ServerFiles() {
           )}
         </div>
       )}
+
+      <Dialog open={image !== null} onOpenChange={(v) => { if (!v) setImage(null); }}>
+        <DialogContent className="max-w-4xl">
+          <DialogHeader><DialogTitle className="break-all font-mono text-sm">{image?.path}</DialogTitle></DialogHeader>
+          {image && <img src={image.url} alt={t("image_preview", { path: image.path })} className="mx-auto max-h-[70vh] max-w-full object-contain" />}
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmDialog open={taskDialog !== null} onOpenChange={(v) => { if (!v) setTaskDialog(null); }}
+        title={t(taskDialog === "zip" ? "zip_selected" : "from_url")} confirmLabel={t(taskDialog === "zip" ? "zip_create" : "from_url_start")}
+        confirmVariant="default" onConfirm={submitTask} confirmDisabled={!taskPath.trim() || (taskDialog === "url" && !sourceURL.trim()) || needsWorldConfirmation([taskPath.trim()])}>
+        {taskDialog === "url" && <label className="grid gap-2 text-sm">{t("url_label")}
+          <Input type="url" value={sourceURL} maxLength={8192} onChange={(e) => setSourceURL(e.target.value)} placeholder="https://example.com/file.jar" />
+        </label>}
+        {taskDialog === "url" && <p className="text-xs text-muted-foreground">{t("url_hint")}</p>}
+        <label className="grid gap-2 text-sm">{t("target_path")}
+          <Input value={taskPath} onChange={(e) => setTaskPath(e.target.value)} />
+        </label>
+        <p className="text-xs text-muted-foreground">{t("target_path_hint")}</p>
+        {live && worldConfirmation("task-world-confirm")}
+      </ConfirmDialog>
+
+      <ConfirmDialog open={batchDeleteOpen} onOpenChange={setBatchDeleteOpen} title={t("batch_delete_title", { count: checked.size })}
+        description={t("batch_delete_body")} confirmLabel={t("delete")} onConfirm={deleteChecked}
+        confirmDisabled={checked.size === 0 || needsWorldConfirmation([...checked])}>
+        <ul className="max-h-48 overflow-auto font-mono text-xs">{[...checked].map((path) => <li key={path}>{path}</li>)}</ul>
+        {live && worldConfirmation("batch-delete-world-confirm")}
+      </ConfirmDialog>
 
       {/* File editor dialog */}
       <Dialog open={open !== null || opening !== null} onOpenChange={(v) => !v && requestClose()}>
@@ -1165,16 +1411,17 @@ export function ServerFiles() {
       <ConfirmDialog
         open={conflictsOpen}
         onOpenChange={setConflictsOpen}
-        title={t("unzip_conflicts_title", {
+        title={t(conflicts?.op === "unzip" ? "unzip_conflicts_title" : "task_conflicts_title", {
           name: conflicts?.path.split("/").pop() ?? "",
           count: conflictCount(conflicts),
         })}
-        description={t("unzip_conflicts_body")}
-        confirmLabel={t("unzip_overwrite")}
+        description={t(conflicts?.op === "unzip" ? "unzip_conflicts_body" : "task_conflicts_body")}
+        confirmLabel={t(conflicts?.op === "unzip" ? "unzip_overwrite" : "task_overwrite")}
         onConfirm={overwriteConflicts}
-        confirmDisabled={needsWorldConfirmation([])}
+        confirmDisabled={needsWorldConfirmation(conflicts && taskRequests.current.has(conflicts.id) ? taskTargets(taskRequests.current.get(conflicts.id)!) : []) || (conflicts?.op !== "unzip" && !!conflicts && !taskRequests.current.has(conflicts.id))}
       >
         {live && worldConfirmation("unzip-world-confirm")}
+        {conflicts && conflicts.op !== "unzip" && !taskRequests.current.has(conflicts.id) && <p className="text-sm text-muted-foreground">{t("task_retry_unavailable")}</p>}
         <ConflictList op={conflicts} />
       </ConfirmDialog>
     </>

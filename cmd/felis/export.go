@@ -36,6 +36,8 @@ func cmdExport(args []string, stdout, stderr io.Writer) int {
 	backupRoot := fs.String("backup-root", "/backups", "backup only: mount path of the backup PVC (the ref must resolve under it)")
 	sum := fs.String("sha256", "", "backup only: the sha256 recorded when the archive was written; a mismatch fails the export before its end is sent")
 	worldsRoot := fs.String("worlds-root", "/world", "world and files: mount path of the world PVC")
+	var selected []string
+	fs.Func("select", "files: selected path; repeat for each item", func(value string) error { selected = append(selected, value); return nil })
 	path := fs.String("path", "", "files only: the file or folder to send, relative to the world root")
 	rawArchive := fs.Bool("archive-raw", false, "internal archive transfer: preserve the complete world")
 	dir := fs.Bool("dir", false, "files only: the path is a folder, sent as a zip")
@@ -66,11 +68,15 @@ func cmdExport(args []string, stdout, stderr io.Writer) int {
 			err = exportWorld(ctx, *target, token, *worldsRoot, stdout)
 		}
 	case worldexport.ModeFiles:
-		if *path == "" {
+		if *path == "" && len(selected) == 0 {
 			fmt.Fprintln(stderr, "felis export: --path is required for files")
 			return 2
 		}
-		err = exportFiles(ctx, *target, token, *worldsRoot, *path, *dir, stdout)
+		if len(selected) > 0 {
+			err = exportSelectedFiles(ctx, *target, token, *worldsRoot, selected, stdout)
+		} else {
+			err = exportFiles(ctx, *target, token, *worldsRoot, *path, *dir, stdout)
+		}
 	default:
 		fmt.Fprintf(stderr, "felis export: --mode must be %s, %s or %s\n", worldexport.ModeWorld, worldexport.ModeBackup, worldexport.ModeFiles)
 		return 2
@@ -156,6 +162,17 @@ func exportFiles(ctx context.Context, target, token, root, path string, dir bool
 	return err
 }
 
+func exportSelectedFiles(ctx context.Context, target, token, root string, paths []string, stdout io.Writer) error {
+	d, err := fileedit.OpenSelectedDownload(root, paths)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	err = streamExport(ctx, target, token, d.ContentType, d.Size, func(w io.Writer) error { return d.WriteTo(ctx, w) })
+	reportWithheld(stdout, d.Withheld)
+	return err
+}
+
 func reportWithheld(stdout io.Writer, n int) {
 	if n > 0 {
 		fmt.Fprintf(stdout, "felis export: left out %d files that hold platform secrets\n", n)
@@ -165,7 +182,10 @@ func reportWithheld(stdout io.Writer, n int) {
 // worldFilter guards a live world by file identity, so a link to a guarded
 // file under another name is caught as well.
 func worldFilter(g fileedit.Guard) backup.Filter {
-	return func(_ string, info fs.FileInfo) (bool, func([]byte) []byte) {
+	return func(name string, info fs.FileInfo) (bool, func([]byte) []byte) {
+		if fileedit.InternalPath(name) {
+			return true, nil
+		}
 		return guardAction(g.Rule(info))
 	}
 }

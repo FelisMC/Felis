@@ -53,9 +53,10 @@ type API struct {
 
 	Files FileEditor
 	// FileStage holds uploads until the landing Job fetches them from InternalBaseURL; uploads answer 503 unless both are set.
-	FileStage       *fileedit.Stage
-	FileBrowser     *fileedit.Browser
-	InternalBaseURL string
+	FileStage          *fileedit.Stage
+	FileBrowser        *fileedit.Browser
+	FileDownloadClient *http.Client
+	InternalBaseURL    string
 
 	Exporter  Exporter // starts the Job behind world/backup downloads; the export routes answer 503 unless it and InternalBaseURL are set
 	Schedules ServerSchedules
@@ -332,6 +333,10 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "GET", Pattern: "/api/v1/exports/{ticket}", h: a.handleExportStatus},
 		{Method: "GET", Pattern: "/api/v1/exports/{ticket}/download", h: a.handleExportDownload},
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/files", h: a.handleListFiles},
+		{Method: "GET", Pattern: "/api/v1/servers/{name}/files/search", h: a.handleSearchFiles},
+		{Method: "POST", Pattern: "/api/v1/servers/{name}/files/transfer", h: a.handleTransferFiles},
+		{Method: "POST", Pattern: "/api/v1/servers/{name}/files/zip", h: a.handleZipFiles},
+		{Method: "POST", Pattern: "/api/v1/servers/{name}/files/from-url", h: a.handleFileFromURL},
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/file", h: a.handleReadFile},
 		{Method: "PUT", Pattern: "/api/v1/servers/{name}/file", h: a.handleWriteFile},
 		{Method: "DELETE", Pattern: "/api/v1/servers/{name}/file", h: a.handleDeleteFile},

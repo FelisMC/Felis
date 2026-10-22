@@ -568,7 +568,7 @@ export interface FileUploadSession {
 // done/total are progress bytes; files/bytes report extracted output.
 export interface FileOp {
   id: string;
-  op: "upload" | "unzip";
+  op: "upload" | "unzip" | "copy" | "move" | "zip";
   path: string;
   state: "running" | "succeeded" | "failed";
   started_at: string;
@@ -586,6 +586,7 @@ export interface FileOpError {
   message: string;
   entry?: string;
   conflicts?: string[];
+  recovery_paths?: string[];
   conflict_count?: number;
   need?: number;
   avail?: number;

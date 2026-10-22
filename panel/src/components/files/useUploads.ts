@@ -3,7 +3,7 @@ import i18next from "i18next";
 import { api, humanizeError } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
 import type { FileOpError, ServerFileEntry } from "@/lib/types";
-import { joinPath, nameTooLong } from "./names";
+import { joinPath, nameTooLong, parentOf } from "./names";
 import { opErrorText } from "./opText";
 import { discardSession, forgetSession, sendInParts, watchOp } from "./sessionUpload";
 
@@ -19,6 +19,7 @@ export interface UploadItem {
   file: File;
   /** The folder it lands in, fixed when it was added. */
   dir: string;
+  createParents?: boolean;
   state: UploadState;
   sent: number;
   overwrite: boolean;
@@ -65,6 +66,13 @@ export function useUploads(server: string, { onLanded, onOp, beforeUpload, hold 
   hooks.current = { onLanded, onOp, beforeUpload };
   const room = useRef(free);
   room.current = free;
+  const directories = useRef(new Set<string>());
+  useEffect(() => {
+    directories.current.clear();
+    sessions.current.clear();
+    abort.current?.abort();
+    setItems([]);
+  }, [server]);
 
   const patch = useCallback((id: number, change: Partial<UploadItem>) => {
     setItems((all) => all.map((it) => (it.id === id ? { ...it, ...change } : it)));
@@ -130,6 +138,21 @@ export function useUploads(server: string, { onLanded, onOp, beforeUpload, hold 
     const path = joinPath(next.dir, next.file.name);
     const sending = Promise.resolve().then(async () => {
       hooks.current.beforeUpload?.(path);
+      if (next.createParents) {
+        const parts = next.dir.split("/");
+        for (let i = 1; i <= parts.length; i++) {
+          const dir = parts.slice(0, i).join("/");
+          if (!dir || directories.current.has(dir)) continue;
+          hooks.current.beforeUpload?.(dir);
+          try {
+            await api.mkdirServerFolder(server, dir);
+          } catch (e) {
+            if ((e as { code?: string }).code !== "file_exists") throw e;
+          }
+          directories.current.add(dir);
+        }
+      }
+      hooks.current.beforeUpload?.(path);
       await (next.file.size > ONE_REQUEST_BYTES
         ? sendLarge(next, path, ctrl.signal)
         : api.uploadServerFile(server, path, next.file, next.overwrite, {
@@ -169,14 +192,17 @@ export function useUploads(server: string, { onLanded, onOp, beforeUpload, hold 
   }, [items, hold, server, patch, drop, discard, sendLarge]);
 
   // Check total queued space before sending; existing names require replace or skip.
-  const add = useCallback((files: readonly File[], dir: string, entries: readonly ServerFileEntry[] | null) => {
+  const add = useCallback((files: readonly File[], dir: string, entries: readonly ServerFileEntry[] | null, paths?: readonly string[]) => {
     const t = i18next.getFixedT(null, "files");
     let budget = room.current;
-    const added = files.map((file): UploadItem => {
+    const added = files.map((file, index): UploadItem => {
+      const relative = paths?.[index] || file.webkitRelativePath || file.name;
+      const parent = parentOf(relative);
       const base = {
         id: nextId.current++,
         file,
-        dir,
+        dir: parent ? joinPath(dir, parent) : dir,
+        createParents: parent !== "",
         sent: 0,
         overwrite: false,
         error: null,
@@ -184,10 +210,10 @@ export function useUploads(server: string, { onLanded, onOp, beforeUpload, hold 
         landing: null,
       };
       // The server would refuse it only after the bytes were sent.
-      if (nameTooLong(file.name)) {
+      if (relative.startsWith("/") || relative.split("/").some((p) => p === ".." || p === "." || p === "" || nameTooLong(p))) {
         return { ...base, state: "failed", error: t("upload_name_too_long") };
       }
-      const there = entries?.find((e) => e.name === file.name);
+      const there = parent ? undefined : entries?.find((e) => e.name === file.name);
       if (there?.is_dir) {
         return { ...base, state: "failed", error: t("upload_folder_there") };
       }

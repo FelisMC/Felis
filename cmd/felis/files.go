@@ -18,8 +18,11 @@ import (
 func cmdFiles(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("files", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	op := fs.String("op", "", "operation: list, read, write, mkdir, delete, rename, upload or unzip")
+	op := fs.String("op", "", "operation: list, search, read, write, mkdir, delete, rename, copy, move, zip, upload or unzip")
 	browseURL := fs.String("browse-url", "", "internal command channel for a read-only file browser")
+	query := fs.String("query", "", "search: filename substring")
+	var selected []string
+	fs.Func("select", "selected file or folder; repeat for each path", func(value string) error { selected = append(selected, value); return nil })
 	path := fs.String("path", "", "path to operate on, relative to the world root (empty = the root itself)")
 	worldsRoot := fs.String("worlds-root", "/data", "mount path of the world PVC; every path resolves under it")
 	expect := fs.String("expect-sha256", "", "write only: refuse unless the file's current SHA-256 (hex) is this")
@@ -49,7 +52,7 @@ func cmdFiles(args []string, stdout, stderr io.Writer) int {
 	}
 	limitHeapToCgroup()
 	req := fileedit.Request{
-		Op: *op, Path: *path, To: *to, Expect: *expect, CreateOnly: *createOnly, Overwrite: *overwrite,
+		Op: *op, Path: *path, To: *to, Query: *query, Paths: selected, Expect: *expect, CreateOnly: *createOnly, Overwrite: *overwrite,
 	}
 
 	// Pass base64 content through the environment to keep file secrets out of process argv.
@@ -61,7 +64,15 @@ func cmdFiles(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "felis files: a write needs --sha256")
 			return 2
 		}
-		content, err := fileedit.ContentFromEnv(os.LookupEnv)
+		var content []byte
+		var err error
+		if *sourceURL != "" {
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			content, err = fetchWrite(ctx, *sourceURL, os.Getenv(fileedit.UploadTokenEnv), *size)
+		} else {
+			content, err = fileedit.ContentFromEnv(os.LookupEnv)
+		}
 		if err != nil {
 			fmt.Fprintf(stderr, "felis files: %v\n", err)
 			return 2
@@ -102,6 +113,25 @@ func cmdFiles(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func fetchWrite(ctx context.Context, url, token string, size int64) ([]byte, error) {
+	if token == "" || size < 0 || size > fileedit.MaxWriteBytes {
+		return nil, fmt.Errorf("staged write has invalid size or token")
+	}
+	body, err := fetchUpload(ctx, url, token)
+	if err != nil {
+		return nil, err
+	}
+	defer body.Close()
+	content, err := io.ReadAll(io.LimitReader(body, size+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(content)) != size {
+		return nil, fmt.Errorf("staged write returned %d bytes, expected %d", len(content), size)
+	}
+	return content, nil
 }
 
 // Single-use uploads reject redirects and retain staged data until landing; the Job deadline bounds transfer time.

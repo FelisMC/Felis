@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"flag"
 	"fmt"
 	"io"
@@ -272,15 +274,25 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		fileBrowser = &fileedit.Browser{BaseURL: internalAPIBaseURL()}
 		runner := fileedit.NewK8sRunner(clientset)
 		runner.Browser = fileBrowser
-		files = &fileedit.Editor{
-			Runner: runner,
-			Config: fcfg,
-		}
 		fileStage = &fileedit.Stage{Dir: fileStagingDir()}
 		if err := fileStage.Sweep(); err != nil {
 			fmt.Fprintf(stderr, "felis api: %v — file uploads return 503\n", err)
 			fileStage = nil
 		}
+		if fileStage != nil {
+			fcfg.StageWrite = func(content []byte) (fileedit.UploadSource, func(), error) {
+				sum := sha256.Sum256(content)
+				st, drop, err := fileStage.Put(bytes.NewReader(content), int64(len(content)), sum[:])
+				if err != nil {
+					return fileedit.UploadSource{}, nil, err
+				}
+				return fileedit.UploadSource{
+					URL:   internalAPIBaseURL() + "/api/v1/internal/file-uploads/" + st.ID,
+					Token: st.Token, Size: st.Size, SHA256: st.SHA256,
+				}, drop, nil
+			}
+		}
+		files = &fileedit.Editor{Runner: runner, Config: fcfg}
 	} else {
 		fmt.Fprintln(stderr, "felis api: file editor disabled (needs FELIS_IMAGE) — file endpoints return 503")
 	}

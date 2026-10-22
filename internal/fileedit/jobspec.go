@@ -35,6 +35,8 @@ type JobParams struct {
 	OpID     string
 	Op       string
 	Path     string
+	Query    string
+	Paths    []string
 	Content  []byte
 	// Expect empty writes unconditionally; CreateOnly refuses existing paths.
 	Expect     string
@@ -99,14 +101,14 @@ func FilesJob(p JobParams) (*batchv1.Job, error) {
 	if !validOp(p.Op) {
 		return nil, fmt.Errorf("fileedit: unknown op %q", p.Op)
 	}
-	if len(p.Content) > MaxWriteBytes {
-		return nil, fmt.Errorf("fileedit: content is %d bytes, over the %d limit", len(p.Content), MaxWriteBytes)
+	if len(p.Content) > MaxInlineWriteBytes {
+		return nil, fmt.Errorf("fileedit: content is %d bytes, over the %d limit", len(p.Content), MaxInlineWriteBytes)
 	}
-	if p.Op == OpUpload && (p.SourceURL == "" || p.UploadToken == "") {
+	if (p.Op == OpUpload || p.Op == OpWrite && p.SourceURL != "") && (p.SourceURL == "" || p.UploadToken == "") {
 		return nil, fmt.Errorf("fileedit: an upload needs a source URL and a token")
 	}
-	if p.Async && p.Op != OpUpload && p.Op != OpUnzip {
-		return nil, fmt.Errorf("fileedit: only an upload or an unzip runs in the background, not %s", p.Op)
+	if p.Async && p.Op != OpUpload && p.Op != OpUnzip && p.Op != OpCopy && p.Op != OpMove && p.Op != OpZip {
+		return nil, fmt.Errorf("fileedit: this operation cannot run in the background, not %s", p.Op)
 	}
 	limits, err := resourceLimits(p.CPULimit, p.MemLimit)
 	if err != nil {
@@ -132,12 +134,27 @@ func FilesJob(p JobParams) (*batchv1.Job, error) {
 	// Expected hashes may travel in argv; file content uses the environment channel.
 	switch p.Op {
 	case OpWrite:
-		args = append(args, "--sha256", digest(p.Content))
+		sum := digest(p.Content)
+		if p.SourceURL != "" {
+			sum = p.UploadSHA256
+			args = append(args, "--source-url", p.SourceURL, "--size", strconv.FormatInt(p.UploadSize, 10))
+		}
+		args = append(args, "--sha256", sum)
 		if p.Expect != "" {
 			args = append(args, "--expect-sha256", p.Expect)
 		}
 		if p.CreateOnly {
 			args = append(args, "--create-only")
+		}
+	case OpSearch:
+		args = append(args, "--query", p.Query)
+	case OpCopy, OpMove, OpZip:
+		args = append(args, "--to", p.To)
+		for _, name := range p.Paths {
+			args = append(args, "--select", name)
+		}
+		if p.Overwrite {
+			args = append(args, "--overwrite")
 		}
 	case OpRename:
 		args = append(args, "--to", p.To)
@@ -176,6 +193,10 @@ func FilesJob(p JobParams) (*batchv1.Job, error) {
 	// Split base64 content across environment variables; write content and upload or browser tokens appear only in Jobs that need them.
 	switch p.Op {
 	case OpWrite:
+		if p.SourceURL != "" {
+			container.Env = []corev1.EnvVar{{Name: UploadTokenEnv, Value: p.UploadToken}}
+			break
+		}
 		parts := splitContent(p.Content)
 		container.Env = []corev1.EnvVar{{Name: ContentPartsEnv, Value: strconv.Itoa(len(parts))}}
 		for i, part := range parts {
@@ -254,7 +275,7 @@ func int64Ptr(i int64) *int64 { return &i }
 
 // filesCapabilities permits DAC_OVERRIDE for game-owned private files and CHOWN only for operations that create files.
 func filesCapabilities(op string) []corev1.Capability {
-	if op == OpWrite || op == OpMkdir || op == OpUpload || op == OpUnzip {
+	if op == OpWrite || op == OpMkdir || op == OpUpload || op == OpUnzip || op == OpCopy || op == OpMove || op == OpZip {
 		return []corev1.Capability{"CHOWN", "DAC_OVERRIDE"}
 	}
 	return []corev1.Capability{"DAC_OVERRIDE"}

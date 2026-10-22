@@ -268,3 +268,18 @@ func TestStopDeletesTheJobAndItsPods(t *testing.T) {
 		t.Errorf("stopping a Job already gone: %v", err)
 	}
 }
+
+func TestSelectedFilesExportUsesOneReadOnlyJob(t *testing.T) {
+	p := params(ModeFiles)
+	p.Path = ""
+	p.Paths = []string{"plugins/One.jar", "config"}
+	job, err := ExportJob(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := job.Spec.Template.Spec.Containers[0]
+	args := strings.Join(c.Args, " ")
+	if !strings.Contains(args, "--select plugins/One.jar --select config") || strings.Contains(args, "--path") || !c.VolumeMounts[0].ReadOnly {
+		t.Fatalf("selected export args=%v mounts=%v", c.Args, c.VolumeMounts)
+	}
+}

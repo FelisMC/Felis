@@ -42,7 +42,7 @@ test("binary files show an explanation and download action without requesting te
   await page.getByRole("button", { name: t("files:open_file", { name: "LuckPerms-Bukkit-5.4.141.jar" }), exact: true }).click();
   await expect(page.getByText(t("files:binary_title"), { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: t("files:download_file"), exact: true })).toBeVisible();
-  await expect(page.getByRole("textbox")).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: t("files:file_content") })).toHaveCount(0);
   expect(reads).toBe(0);
   await page.screenshot({ path: "/tmp/felis-files-binary.png", fullPage: true });
 });

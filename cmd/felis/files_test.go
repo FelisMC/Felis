@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -346,5 +347,31 @@ func TestCmdFilesUnzip(t *testing.T) {
 	got, err := os.ReadFile(filepath.Join(root, "maps", "world", "region", "r.0.0.mca"))
 	if err != nil || string(got) != "region!" {
 		t.Fatalf("extracted %q, %v", got, err)
+	}
+}
+
+func TestFilesStagedWriteRetainsConditionalWriteChecks(t *testing.T) {
+	root := t.TempDir()
+	body := bytes.Repeat([]byte("x"), 5<<20)
+	source := stagedUpload(t, "fake-write-token", body)
+	t.Setenv(fileedit.UploadTokenEnv, "fake-write-token")
+	sum := sha256.Sum256(body)
+	args := []string{"--op", "write", "--path", "large.txt", "--worlds-root", root, "--source-url", source.URL + "/u", "--size", strconv.Itoa(len(body)), "--sha256", hex.EncodeToString(sum[:]), "--create-only"}
+	var stdout, stderr bytes.Buffer
+	if code := cmdFiles(args, &stdout, &stderr); code != 0 {
+		t.Fatalf("staged write exit=%d stderr=%s", code, stderr.String())
+	}
+	res := filesResult(t, stdout.String())
+	if res.Code != "" {
+		t.Fatalf("write result=%+v", res)
+	}
+	got, err := os.ReadFile(filepath.Join(root, "large.txt"))
+	if err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("written bytes=%d err=%v", len(got), err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := cmdFiles(args, &stdout, &stderr); code != 0 || filesResult(t, stdout.String()).Code != fileedit.CodeExists {
+		t.Fatalf("create-only staged write exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 }

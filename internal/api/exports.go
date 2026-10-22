@@ -461,16 +461,36 @@ func (a *API) handleDownloadFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, errForbidden)
 		return
 	}
-	path, ok := requirePath(w, r)
-	if !ok {
-		return
-	}
+	path := r.URL.Query().Get("path")
 	dir := r.URL.Query().Get("dir") == "true"
+	var paths []string
 	base := pathpkg.Base(pathpkg.Clean("/" + path))
-	if base == "/" {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_path",
-			"the whole world is not a file download; export the world from the backups page instead"))
-		return
+	if r.ContentLength != 0 {
+		var body struct {
+			Paths []string `json:"paths"`
+		}
+		if err := decodeJSON(w, r, &body); err != nil {
+			writeError(w, r, err)
+			return
+		}
+		if path != "" || r.URL.Query().Has("dir") {
+			writeError(w, r, newError(http.StatusBadRequest, "bad_request", "selected paths cannot be combined with path or dir"))
+			return
+		}
+		if err := selectedFilePaths(body.Paths); err != nil {
+			writeError(w, r, err)
+			return
+		}
+		paths, dir, base = body.Paths, true, name+"-files"
+	} else {
+		if _, ok := requirePath(w, r); !ok {
+			return
+		}
+		if base == "/" {
+			writeError(w, r, newError(http.StatusBadRequest, "bad_path",
+				"the whole world is not a file download; export the world from the backups page instead"))
+			return
+		}
 	}
 	if a.Exporter == nil || a.InternalBaseURL == "" {
 		writeError(w, r, errExportUnavailable())
@@ -493,10 +513,14 @@ func (a *API) handleDownloadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
-	if !a.startExport(w, r, e, token, worldexport.Request{Path: path, Dir: dir}) {
+	if !a.startExport(w, r, e, token, worldexport.Request{Path: path, Dir: dir, Paths: paths}) {
 		return
 	}
-	a.auditFile(r, "file.download", name, path, map[string]any{"dir": dir})
+	extra := map[string]any{"dir": dir}
+	if len(paths) > 0 {
+		extra["paths"] = paths
+	}
+	a.auditFile(r, "file.download", name, path, extra)
 	writeJSON(w, http.StatusAccepted, exportTicketView{Ticket: e.ticket, State: exportPending, Filename: e.filename})
 }
 

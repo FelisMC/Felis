@@ -21,6 +21,7 @@ import (
 // FileEditor edits world-volume files; StartUpload and StartUnzip return before their Jobs finish.
 type FileEditor interface {
 	List(ctx context.Context, server, path string) (fileedit.Listing, error)
+	Search(ctx context.Context, server, path, query string) (fileedit.Listing, error)
 	// Read returns the file hash before redaction.
 	Read(ctx context.Context, server, path string) (content []byte, sha256 string, err error)
 	// Write rejects a changed expect hash or an existing path with createOnly; it returns lowercase SHA-256 hex.
@@ -32,6 +33,8 @@ type FileEditor interface {
 	Upload(ctx context.Context, server, path string, src fileedit.UploadSource, overwrite bool) error
 	StartUpload(ctx context.Context, server, path string, src fileedit.UploadSource, overwrite bool) (fileedit.OpState, error)
 	StartUnzip(ctx context.Context, server, path string, overwrite bool) (fileedit.OpState, error)
+	StartTransfer(ctx context.Context, server, op string, paths []string, to string, overwrite bool) (fileedit.OpState, error)
+	StartZip(ctx context.Context, server string, paths []string, to string, overwrite bool) (fileedit.OpState, error)
 	Ops(ctx context.Context, server string) ([]fileedit.OpState, error)
 }
 
@@ -103,7 +106,7 @@ func (a *API) handleReadFile(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleWriteFile caps content before Job creation to stay below etcd's object-size limit.
+// handleWriteFile checks content and optimistic concurrency before staging large writes.
 func (a *API) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 	name, ok := a.authorizeFileOp(w, r)
 	if !ok {
@@ -115,7 +118,7 @@ func (a *API) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body writeFileRequest
-	if err := decodeJSON(w, r, &body); err != nil {
+	if err := decodeJSONLimit(w, r, &body, (fileedit.MaxWriteBytes+2)/3*4+4096); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -512,6 +515,8 @@ func writeFileEditError(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, r, newError(http.StatusRequestEntityTooLarge, "too_large", "%s", err.Error()))
 	case errors.Is(err, fileedit.ErrConflict):
 		writeError(w, r, newError(http.StatusConflict, "file_changed", "%s", err.Error()))
+	case errors.Is(err, fileedit.ErrStageFull):
+		writeError(w, r, newError(http.StatusInsufficientStorage, "upload_staging_full", "there is no room to stage the file content"))
 	case errors.Is(err, fileedit.ErrNoSpace):
 		writeError(w, r, newError(http.StatusInsufficientStorage, "volume_full", "%s", err.Error()))
 	case errors.Is(err, fileedit.ErrExists):

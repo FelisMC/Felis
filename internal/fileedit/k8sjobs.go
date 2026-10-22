@@ -20,7 +20,7 @@ import (
 // pollInterval uses Pod lists because the API has pods:list but no pods:watch grant.
 const pollInterval = 150 * time.Millisecond
 
-const maxLogBytes = 4 << 20
+const maxLogBytes = 12 << 20
 
 // K8sRunner requires only jobs:create, pods:list and pods/log:get; its typed client supplies the log subresource.
 type K8sRunner struct {

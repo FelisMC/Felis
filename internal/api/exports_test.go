@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -882,7 +883,7 @@ func TestFileDownloadGate(t *testing.T) {
 				t.Fatalf("export request = %+v", r)
 			}
 			r.ID, r.Token, r.TargetURL = "", "", ""
-			if r != tc.want {
+			if !reflect.DeepEqual(r, tc.want) {
 				t.Fatalf("export request = %+v, want %+v", r, tc.want)
 			}
 			if e := a.exportTickets().byTicket[v.Ticket]; e.contentType != tc.contentType || !e.files {
@@ -1231,5 +1232,40 @@ func TestK8sExportJobs(t *testing.T) {
 	}
 	if _, holds := maintenance.JobKind(backupJob); holds {
 		t.Error("a backup export holds the world")
+	}
+}
+
+func TestSelectedFilesDownload(t *testing.T) {
+	a, repo, _, ex := fileDownloadFixture()
+	headers := as("owner1")
+	headers["Content-Type"] = "application/json"
+	w := do(a.ExternalHandler(), "POST", "/api/v1/servers/survival/files/download", `{"paths":["plugins/a.jar","config"]}`, headers)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var ticket exportTicketView
+	if err := json.Unmarshal(w.Body.Bytes(), &ticket); err != nil {
+		t.Fatal(err)
+	}
+	if ticket.Filename != "survival-files.zip" || len(ex.reqs) != 1 || !ex.reqs[0].Dir || !reflect.DeepEqual(ex.reqs[0].Paths, []string{"plugins/a.jar", "config"}) || ex.reqs[0].Path != "" {
+		t.Fatalf("ticket=%+v requests=%+v", ticket, ex.reqs)
+	}
+	if len(repo.audits) != 1 || repo.audits[0].Action != "file.download" || !strings.Contains(string(repo.audits[0].Payload), `"paths":["plugins/a.jar","config"]`) {
+		t.Fatalf("audit=%+v", repo.audits)
+	}
+}
+
+func TestSelectedFilesDownloadRejectsUnsafeAndAmbiguousPaths(t *testing.T) {
+	for _, tc := range []struct{ query, body string }{
+		{"", `{"paths":[]}`}, {"", `{"paths":["../outside"]}`}, {"", `{"paths":["."]}`},
+		{"?path=a.jar", `{"paths":["b.jar"]}`}, {"?dir=true", `{"paths":["b.jar"]}`},
+	} {
+		a, _, _, ex := fileDownloadFixture()
+		headers := as("owner1")
+		headers["Content-Type"] = "application/json"
+		w := do(a.ExternalHandler(), "POST", "/api/v1/servers/survival/files/download"+tc.query, tc.body, headers)
+		if w.Code != http.StatusBadRequest || len(ex.reqs) != 0 {
+			t.Fatalf("status=%d requests=%d body=%s", w.Code, len(ex.reqs), w.Body.String())
+		}
 	}
 }

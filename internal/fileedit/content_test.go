@@ -8,7 +8,7 @@ import (
 )
 
 // maxContentParts is how many ContentEnv parts the largest write needs.
-var maxContentParts = (base64.StdEncoding.EncodedLen(MaxWriteBytes) + contentChunk - 1) / contentChunk
+var maxContentParts = (base64.StdEncoding.EncodedLen(MaxInlineWriteBytes) + contentChunk - 1) / contentChunk
 
 func mapLookup(env map[string]string) func(string) (string, bool) {
 	return func(name string) (string, bool) {
@@ -33,7 +33,7 @@ func TestContentSplitRoundTrip(t *testing.T) {
 		size, parts int
 	}{
 		{0, 0}, {1, 1}, {full, 1}, {full + 1, 2}, {2 * full, 2}, {2*full + 1, 3},
-		{MaxWriteBytes, maxContentParts},
+		{MaxInlineWriteBytes, maxContentParts},
 	} {
 		content := make([]byte, tc.size)
 		for i := range content {

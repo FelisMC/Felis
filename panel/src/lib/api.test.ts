@@ -1805,3 +1805,48 @@ describe("server polling request timeout", () => {
     expect(isConnectionLost()).toBe(true);
   });
 });
+
+describe("file manager requests", () => {
+  beforeEach(() => { cfg.apiBase = ""; });
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+  it("sends copy, zip, URL and selected downloads with their documented bodies", async () => {
+    const fetchSpy = fakeFetch({});
+    vi.stubGlobal("fetch", fetchSpy);
+    await api.transferServerFiles("srv/1", "move", ["plugins/a.jar"], "archive", true);
+    await api.zipServerFiles("srv/1", ["plugins"], "plugins.zip");
+    await api.fetchServerFile("srv/1", "https://example.com/a.jar", "plugins/a.jar");
+    await api.downloadServerFiles("srv/1", ["a.txt", "b.txt"]);
+    const sent = vi.mocked(fetchSpy).mock.calls.map(([url, init]) => [url, JSON.parse(String(init?.body))]);
+    expect(sent).toEqual([
+      ["/servers/srv%2F1/files/transfer", { op: "move", paths: ["plugins/a.jar"], to: "archive", overwrite: true }],
+      ["/servers/srv%2F1/files/zip", { paths: ["plugins"], to: "plugins.zip", overwrite: false }],
+      ["/servers/srv%2F1/files/from-url", { url: "https://example.com/a.jar", path: "plugins/a.jar", overwrite: false }],
+      ["/servers/srv%2F1/files/download", { paths: ["a.txt", "b.txt"] }],
+    ]);
+  });
+
+  it("encodes search paths and queries independently", async () => {
+    const fetchSpy = fakeFetch({ entries: [], truncated: false, path: "plugins/#1" });
+    vi.stubGlobal("fetch", fetchSpy);
+    await api.searchServerFiles("srv", "plugins/#1", "a&b.yml");
+    expect(vi.mocked(fetchSpy).mock.calls[0][0]).toBe("/servers/srv/files/search?path=plugins%2F%231&q=a%26b.yml");
+  });
+
+  it("cancels an image stream when its actual size exceeds the preview limit", async () => {
+    const cancelled = vi.fn();
+    const body = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new Uint8Array(7)); }, cancel: cancelled });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(body)));
+    await expect(api.previewServerFile("ticket", 6)).rejects.toMatchObject({ code: "too_large" });
+    expect(cancelled).toHaveBeenCalledOnce();
+  });
+
+  it("reads a bounded image through the authenticated export download route", async () => {
+    const fetchSpy = vi.fn(async () => new Response(new Uint8Array([71, 73, 70])));
+    vi.stubGlobal("fetch", fetchSpy);
+    const signal = new AbortController().signal;
+    const blob = await api.previewServerFile("t/1", 3, signal);
+    expect(blob.size).toBe(3);
+    expect(fetchSpy).toHaveBeenCalledWith("/exports/t%2F1/download", expect.objectContaining({ method: "GET", credentials: "include", signal }));
+  });
+});

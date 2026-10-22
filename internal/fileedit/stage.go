@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"math"
 	"os"
 	"sync"
 	"syscall"
@@ -87,50 +88,108 @@ func (s *Stage) Put(body io.Reader, size int64, want []byte) (Staged, func(), er
 	if len(want) != sha256.Size {
 		return Staged{}, nil, ErrNoDigest
 	}
-	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
-		return Staged{}, nil, fmt.Errorf("fileedit: create the upload stage: %w", err)
-	}
-	if err := s.reserve(size); err != nil {
-		return Staged{}, nil, err
-	}
-	defer s.unreserve(size)
-
-	f, err := os.CreateTemp(s.Dir, "upload-*")
+	st, path, _, err := s.stage(body, size, want)
 	if err != nil {
-		return Staged{}, nil, fmt.Errorf("fileedit: stage the upload: %w", err)
-	}
-	h := sha256.New()
-	src := &bodyReader{r: body}
-	n, copyErr := io.Copy(io.MultiWriter(f, h), io.LimitReader(src, size+1))
-	closeErr := f.Close()
-	err = stageFailure(src.err, copyErr, closeErr, n, size)
-	if err == nil {
-		err = checkDigest(h.Sum(nil), want)
-	}
-	if err != nil {
-		os.Remove(f.Name())
-		return Staged{}, nil, err
-	}
-
-	st, tokenHash, err := newHandle(h, size)
-	if err != nil {
-		os.Remove(f.Name())
 		return Staged{}, nil, err
 	}
 	s.mu.Lock()
 	if s.items == nil {
 		s.items = map[string]*stagedFile{}
 	}
-	s.items[st.ID] = &stagedFile{path: f.Name(), tokenHash: tokenHash, size: size}
+	s.items[st.ID] = &stagedFile{path: path, tokenHash: sha256.Sum256([]byte(st.Token)), size: st.Size}
 	s.mu.Unlock()
-
-	release := func() {
+	return st, func() {
 		s.mu.Lock()
 		delete(s.items, st.ID)
 		s.mu.Unlock()
+		os.Remove(path)
+	}, nil
+}
+
+// Receive hashes an incoming stream and seals a session for asynchronous landing; size -1 uses the available staging budget.
+func (s *Stage) Receive(user, server, path string, body io.Reader, size int64) (Staged, func(), error) {
+	id, err := randomHex(16)
+	if err != nil {
+		return Staged{}, nil, fmt.Errorf("fileedit: generate an upload id: %w", err)
+	}
+	s.mu.Lock()
+	n := 0
+	for _, ss := range s.sessions {
+		if ss.user == user {
+			n++
+		}
+	}
+	if n >= MaxSessionsPerUser {
+		s.mu.Unlock()
+		return Staged{}, nil, ErrTooManySessions
+	}
+	if s.sessions == nil {
+		s.sessions = map[string]*session{}
+	}
+	s.sessions[id] = &session{user: user, server: server, path: path, busy: true, touched: s.now()}
+	s.mu.Unlock()
+
+	st, file, h, err := s.stage(body, size, nil)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err != nil {
+		delete(s.sessions, id)
+		return Staged{}, nil, err
+	}
+	st.ID = id
+	s.sessions[id] = &session{
+		user: user, server: server, path: path, file: file, size: st.Size, received: st.Size,
+		armed: true, tokenHash: sha256.Sum256([]byte(st.Token)), h: h, touched: s.now(),
+	}
+	return st, func() { _ = s.Drop(user, server, id) }, nil
+}
+
+func (s *Stage) stage(body io.Reader, size int64, want []byte) (Staged, string, hash.Hash, error) {
+	if size < -1 || size == math.MaxInt64 {
+		return Staged{}, "", nil, fmt.Errorf("fileedit: an upload of %d bytes", size)
+	}
+	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
+		return Staged{}, "", nil, fmt.Errorf("fileedit: create the upload stage: %w", err)
+	}
+	budget := size
+	var err error
+	if size < 0 {
+		budget, err = s.reserveAvailable()
+	} else {
+		err = s.reserve(size)
+	}
+	if err != nil {
+		return Staged{}, "", nil, err
+	}
+	defer s.unreserve(budget)
+	f, err := os.CreateTemp(s.Dir, "upload-*")
+	if err != nil {
+		return Staged{}, "", nil, fmt.Errorf("fileedit: stage the upload: %w", err)
+	}
+	h := sha256.New()
+	src := &bodyReader{r: body}
+	n, copyErr := io.Copy(io.MultiWriter(f, h), io.LimitReader(src, budget+1))
+	closeErr := f.Close()
+	expected := size
+	if size < 0 {
+		expected = n
+	}
+	err = stageFailure(src.err, copyErr, closeErr, n, expected)
+	if err == nil && n > budget {
+		err = ErrStageFull
+	}
+	if err == nil && want != nil {
+		err = checkDigest(h.Sum(nil), want)
+	}
+	if err != nil {
+		os.Remove(f.Name())
+		return Staged{}, "", nil, err
+	}
+	st, _, err := newHandle(h, n)
+	if err != nil {
 		os.Remove(f.Name())
 	}
-	return st, release, nil
+	return st, f.Name(), h, err
 }
 
 // stageFailure rejects both short bodies and oversized direct callers, even though net/http caps bodies at Content-Length.
@@ -197,6 +256,28 @@ func (s *Stage) reserve(size int64) error {
 	}
 	s.reserved += size
 	return nil
+}
+
+// Unknown-length streams reserve the remaining budget so concurrent uploads cannot consume their space.
+func (s *Stage) reserveAvailable() (int64, error) {
+	avail, total, err := statfs(s.Dir)
+	if err != nil {
+		return 0, fmt.Errorf("fileedit: measure the upload stage: %w", err)
+	}
+	minFree := s.MinFree
+	if minFree <= 0 {
+		minFree = DefaultStageMinFree
+	}
+	floor := uint64(float64(total) * minFree)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	reserved := uint64(s.reserved)
+	if avail <= floor || avail-floor <= reserved {
+		return 0, ErrStageFull
+	}
+	budget := min(avail-floor-reserved, uint64(math.MaxInt64-1))
+	s.reserved += int64(budget)
+	return int64(budget), nil
 }
 
 func (s *Stage) unreserve(size int64) {

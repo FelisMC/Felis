@@ -15,7 +15,7 @@
   "already_exists": "A server with that name already exists.",
   "world_volume_exists": "A world volume from a server of the same name still exists. Use a different name or request an operator to verify and process the existing volume.",
   "server_retiring": "The server is pending release or deletion at the next daily reclaim run. Startup and claiming are unavailable until the request is cancelled.",
-  "confirm_mismatch": "The entered name does not match the server name.",
+  "confirm_mismatch": "Type the node name to confirm the failover.",
   "system_server": "System servers are managed by the platform and cannot be released or deleted.",
   "world_volume_orphaned": "The server’s MinecraftServer resource was manually deleted, but its world volume remains. An operator must archive and remove the remaining volume before deleting the server record.",
   "cooldown": "The startup cooldown has not elapsed. Retry later.",
@@ -158,7 +158,6 @@
   "node_operation_busy": "Node maintenance is running. Server starts and additional node tasks are temporarily blocked.",
   "node_control_unavailable": "Host node service is unavailable. Inspect felis-node-control.service on the controller.",
   "node_not_lost": "The node is online or is not a worker. Only a lost worker can be failed over.",
-  "confirm_mismatch": "Type the node name to confirm the failover.",
   "bad_heartbeat_url": "The heartbeat URL must be a full address starting with http:// or https://.",
   "eula_required": "A server that runs server software requires accepting the Minecraft End User License Agreement (EULA).",
   "software_unavailable": "Server software is not enabled on this platform.",
@@ -170,6 +169,7 @@
   "software_metadata_unavailable": "The server software's official download site could not be reached, so version information is unavailable. Try again later.",
   "software_change_unconfirmed": "After a software or game version change, the next startup opens the world with the new version. Upgraded chunks are not compatible with older versions. Back up the world and select the confirmation before saving.",
   "self_service_disabled": "This account has no server quota. Ask the platform owner to assign one.",
-  "no_node": "No node can take a new server at the moment. Contact an administrator."
-
+  "no_node": "No node can take a new server at the moment. Contact an administrator.",
+  "bad_url": "The URL must use HTTP or HTTPS and point to a public address. Private, loopback and link-local addresses are not allowed.",
+  "download_failed": "The remote file download failed. Check the URL and remote service status."
 }

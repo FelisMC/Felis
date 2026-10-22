@@ -661,3 +661,16 @@ func TestReadRedactsLimboForwardingSecret(t *testing.T) {
 		}
 	}
 }
+
+func TestTextEditorAcceptsFiveMiB(t *testing.T) {
+	root := t.TempDir()
+	body := bytes.Repeat([]byte("x"), 5<<20)
+	res, err := Execute(root, Request{Op: OpWrite, Path: "large.txt", Content: body})
+	if err != nil || res.Code != "" {
+		t.Fatalf("5 MiB write: %+v %v", res, err)
+	}
+	res, err = Execute(root, Request{Op: OpRead, Path: "large.txt"})
+	if err != nil || res.Code != "" || !bytes.Equal(res.Content, body) {
+		t.Fatalf("5 MiB read: code=%s bytes=%d err=%v", res.Code, len(res.Content), err)
+	}
+}

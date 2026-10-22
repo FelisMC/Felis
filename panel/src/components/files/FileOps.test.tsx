@@ -88,4 +88,13 @@ describe("FileOps", () => {
     expect(within(region).getByText(t("ops_refresh_failed", { reason: humanizeError(broke) }))).toBeTruthy();
     expect(within(region).getByText(t("op_unzip_done", { count: 1, bytes: "8 B" }))).toBeTruthy();
   });
+
+  it("lists every preserved location after an incomplete rollback", () => {
+    const paths = ["plugins/move-recovery-012345abcdef", "plugins/.felis-preserved-012345abcdef"];
+    show([op({ op: "move", state: "failed", error: { code: "rollback_incomplete", message: "backend details", recovery_paths: paths } })]);
+    expect(screen.getByText(t("rollback_incomplete"))).toBeTruthy();
+    const locations = screen.getByRole("list", { name: t("recovery_paths") });
+    expect(within(locations).getAllByRole("listitem").map((item) => item.textContent)).toEqual(paths);
+    expect(screen.queryByText("backend details")).toBeNull();
+  });
 });

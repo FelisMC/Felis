@@ -35,6 +35,12 @@ const mocks = vi.hoisted(() => ({
   deleteServerFileUpload: vi.fn(),
   commitServerFileUpload: vi.fn(),
   serverJobs: vi.fn(),
+  searchServerFiles: vi.fn(),
+  transferServerFiles: vi.fn(),
+  zipServerFiles: vi.fn(),
+  fetchServerFile: vi.fn(),
+  downloadServerFiles: vi.fn(),
+  previewServerFile: vi.fn(),
 }));
 
 vi.mock("@/lib/api", async (importOriginal) => {
@@ -64,6 +70,12 @@ vi.mock("@/lib/api", async (importOriginal) => {
       deleteServerFileUpload: mocks.deleteServerFileUpload,
       commitServerFileUpload: mocks.commitServerFileUpload,
       serverJobs: mocks.serverJobs,
+      searchServerFiles: mocks.searchServerFiles,
+      transferServerFiles: mocks.transferServerFiles,
+      zipServerFiles: mocks.zipServerFiles,
+      fetchServerFile: mocks.fetchServerFile,
+      downloadServerFiles: mocks.downloadServerFiles,
+      previewServerFile: mocks.previewServerFile,
     },
   };
 });
@@ -140,6 +152,12 @@ beforeEach(() => {
     mocks.putServerFileUploadPart,
     mocks.deleteServerFileUpload,
     mocks.commitServerFileUpload,
+    mocks.searchServerFiles,
+    mocks.transferServerFiles,
+    mocks.zipServerFiles,
+    mocks.fetchServerFile,
+    mocks.downloadServerFiles,
+    mocks.previewServerFile,
   ]) {
     m.mockReset();
   }
@@ -157,6 +175,150 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.useRealTimers();
+});
+
+describe("file manager actions", () => {
+  const label = (key: string, name: string) => i18next.t(`files:${key}`, { name });
+
+  it("searches on submit and opens nested results using their full relative path", async () => {
+    mocks.searchServerFiles.mockResolvedValue({ path: "", entries: [{ name: "plugins/example/config.yml", size: 12, is_dir: false, mod_time: "" }], truncated: true });
+    renderFiles();
+    await screen.findByText("world");
+    await userEvent.type(screen.getByRole("textbox", { name: t("files:search_label") }), "config");
+    expect(mocks.searchServerFiles).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: t("files:search") }));
+    expect(mocks.searchServerFiles).toHaveBeenCalledWith("lobby", "", "config");
+    await userEvent.click(await screen.findByText("plugins/example/config.yml"));
+    expect(mocks.readServerFile).toHaveBeenCalledWith("lobby", "plugins/example/config.yml");
+    expect(screen.getByText(t("files:search_truncated"))).toBeTruthy();
+  });
+
+  it("confirms copy conflicts and retries the same sources and destination with overwrite", async () => {
+    mocks.transferServerFiles.mockResolvedValueOnce({ op: fileOp({ op: "copy", path: "world", state: "failed", error: { code: "file_exists", message: "exists", conflicts: ["world/server.properties"], conflict_count: 1 } }) })
+      .mockResolvedValueOnce({ op: fileOp({ id: "copy2", op: "copy", path: "world", state: "succeeded" }) });
+    renderFiles();
+    await userEvent.click(await screen.findByRole("checkbox", { name: label("select_item", "server.properties") }));
+    // Guarded configuration files remain unavailable as clipboard sources.
+    expect((screen.getByRole("button", { name: t("files:copy") }) as HTMLButtonElement).disabled).toBe(true);
+    mocks.listServerFiles.mockResolvedValue({ entries: [{ name: "notes.txt", size: 2, is_dir: false, mod_time: "" }, { name: "world", size: 0, is_dir: true, mod_time: "" }] });
+    await userEvent.click(screen.getByRole("button", { name: t("files:refresh") }));
+    await userEvent.click(await screen.findByRole("checkbox", { name: label("select_item", "notes.txt") }));
+    await userEvent.click(screen.getByRole("button", { name: t("files:copy") }));
+    await userEvent.click(screen.getByRole("button", { name: label("open_folder", "world") }));
+    await userEvent.click(screen.getByRole("button", { name: i18next.t("files:paste_count", { count: 1 }) }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("world/server.properties")).toBeTruthy();
+    await userEvent.click(within(dialog).getByRole("button", { name: t("files:task_overwrite") }));
+    expect(mocks.transferServerFiles.mock.calls).toEqual([["lobby", "copy", ["notes.txt"], "world", false], ["lobby", "copy", ["notes.txt"], "world", true]]);
+  });
+
+  it("deletes selected entries only after confirming the list", async () => {
+    renderFiles();
+    await userEvent.click(await screen.findByRole("checkbox", { name: t("files:select_all") }));
+    await userEvent.click(screen.getByRole("button", { name: t("files:delete_selected") }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("world")).toBeTruthy();
+    expect(within(dialog).getByText("server.properties")).toBeTruthy();
+    expect(mocks.deleteServerFile).not.toHaveBeenCalled();
+    await userEvent.click(within(dialog).getByRole("button", { name: t("files:delete") }));
+    expect(mocks.deleteServerFile.mock.calls.map((call) => call[1]).sort()).toEqual(["server.properties", "world"]);
+  });
+
+  it("clears the cut selection after an asynchronous move completes", async () => {
+    mocks.listServerFiles.mockResolvedValue({ entries: [{ name: "notes.txt", size: 2, is_dir: false, mod_time: "" }, { name: "world", size: 0, is_dir: true, mod_time: "" }] });
+    mocks.transferServerFiles.mockResolvedValue({ op: fileOp({ op: "move", path: "world" }) });
+    renderFiles();
+    await userEvent.click(await screen.findByRole("checkbox", { name: label("select_item", "notes.txt") }));
+    await userEvent.click(screen.getByRole("button", { name: t("files:cut") }));
+    await userEvent.click(screen.getByRole("button", { name: label("open_folder", "world") }));
+    const paste = i18next.t("files:paste_count", { count: 1 });
+    await userEvent.click(screen.getByRole("button", { name: paste }));
+    expect(mocks.transferServerFiles).toHaveBeenCalledWith("lobby", "move", ["notes.txt"], "world", false);
+    opsNow = [fileOp({ op: "move", path: "world", state: "succeeded" })];
+    await userEvent.click(screen.getByRole("button", { name: t("files:refresh") }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: paste })).toBeNull());
+  });
+
+  it("starts URL downloads with a world acknowledgement and preserves the entered path", async () => {
+    mocks.status.mockResolvedValue({ ...stopped, phase: "Running", desiredState: "Running" });
+    mocks.fetchServerFile.mockResolvedValue({ op: fileOp({ op: "upload", path: "world/map.dat", state: "succeeded" }) });
+    renderFiles();
+    await userEvent.click(await screen.findByRole("button", { name: t("files:from_url") }));
+    const dialog = screen.getByRole("dialog");
+    await userEvent.type(within(dialog).getByRole("textbox", { name: t("files:url_label") }), "https://example.com/map.dat");
+    await userEvent.type(within(dialog).getByRole("textbox", { name: t("files:target_path") }), "world/map.dat");
+    const start = within(dialog).getByRole("button", { name: t("files:from_url_start") }) as HTMLButtonElement;
+    expect(start.disabled).toBe(true);
+    await userEvent.click(within(dialog).getByRole("checkbox", { name: t("files:live_world_confirm") }));
+    await userEvent.click(start);
+    expect(mocks.fetchServerFile).toHaveBeenCalledWith("lobby", "https://example.com/map.dat", "world/map.dat", false);
+  });
+
+  it("opens a keyboard menu from right click and closes it with Escape", async () => {
+    renderFiles();
+    const file = await screen.findByRole("button", { name: label("open_file", "server.properties") });
+    fireEvent.contextMenu(file.closest("tr")!);
+    const menu = screen.getByRole("menu", { name: label("more_item", "server.properties") });
+    expect(within(menu).getByRole("menuitem", { name: t("files:copy") })).toBeTruthy();
+    fireEvent.keyDown(menu, { key: "End" });
+    expect(document.activeElement?.textContent).toBe(t("files:delete"));
+    fireEvent.keyDown(menu, { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement?.getAttribute("aria-label")).toBe(label("more_item", "server.properties"));
+  });
+
+  it("opens the menu on a long press without also opening the file", async () => {
+    renderFiles();
+    const file = await screen.findByRole("button", { name: label("open_file", "server.properties") });
+    const row = file.closest("tr")!;
+    vi.useFakeTimers();
+    fireEvent.touchStart(row);
+    act(() => { vi.advanceTimersByTime(600); });
+    expect(screen.getByRole("menu", { name: label("more_item", "server.properties") })).toBeTruthy();
+    fireEvent.touchEnd(row);
+    fireEvent.click(file);
+    expect(mocks.readServerFile).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it.each(["backup.tar", "backup.tar.gz", "backup.tgz"])("extracts %s through the existing archive action", async (name) => {
+    mocks.listServerFiles.mockResolvedValue({ entries: [{ name, size: 1024, is_dir: false, mod_time: "" }] });
+    mocks.unzipServerFile.mockResolvedValue({ op: fileOp({ path: name, state: "succeeded" }) });
+    renderFiles();
+    await userEvent.click(await screen.findByRole("button", { name: label("unzip_item", name) }));
+    expect(mocks.unzipServerFile).toHaveBeenCalledWith("lobby", name, false);
+  });
+
+  it("accepts UTF-8 text up to 5 MiB and blocks larger saves by encoded size", async () => {
+    const { dialog, editor } = await openEditor();
+    fireEvent.change(editor, { target: { value: "a".repeat(5 * 1024 * 1024) } });
+    expect((within(dialog).getByRole("button", { name: t("files:save") }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.change(editor, { target: { value: "界".repeat(Math.floor(5 * 1024 * 1024 / 3) + 1) } });
+    expect((within(dialog).getByRole("button", { name: t("files:save") }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("previews an image through its export ticket and revokes the object URL when closed", async () => {
+    const create = vi.fn(() => "blob:preview");
+    const revoke = vi.fn();
+    const BrowserURL = URL;
+    vi.stubGlobal("URL", class extends BrowserURL { static createObjectURL = create; static revokeObjectURL = revoke; });
+    mocks.listServerFiles.mockResolvedValue({ entries: [{ name: "map.png", size: 8, is_dir: false, mod_time: "" }] });
+    mocks.downloadServerFile.mockResolvedValue({ ticket: "image-ticket", filename: "map.png", state: "pending" });
+    mocks.exportStatus.mockResolvedValue({ state: "ready" });
+    mocks.previewServerFile.mockResolvedValue({ arrayBuffer: async () => new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]).buffer });
+    renderFiles();
+    const file = await screen.findByText("map.png");
+    vi.useFakeTimers();
+    fireEvent.click(file);
+    await act(async () => { await vi.advanceTimersByTimeAsync(EXPORT_POLL_MS); });
+    expect(screen.getByRole("img", { name: i18next.t("files:image_preview", { path: "map.png" }) }).getAttribute("src")).toBe("blob:preview");
+    expect(mocks.readServerFile).not.toHaveBeenCalled();
+    expect(mocks.previewServerFile).toHaveBeenCalledWith("image-ticket", 5 * 1024 * 1024, expect.any(AbortSignal));
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(revoke).toHaveBeenCalledWith("blob:preview");
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
 });
 
 describe("ServerFiles editor", () => {
@@ -384,7 +546,7 @@ describe("ServerFiles opening feedback", () => {
   it.each([
     ["Limbo.jar", 8 * 1024 * 1024, "binary_title"],
     ["spawn.schem", 6000, "binary_title"],
-    ["large.log", 2 * 1024 * 1024, "preview_large_title"],
+    ["large.log", 5 * 1024 * 1024 + 1, "preview_large_title"],
   ])("explains why %s cannot be edited without starting a read Job", async (name, size, title) => {
     mocks.listServerFiles.mockResolvedValue({ entries: [{ name, size, is_dir: false, mod_time: "" }] });
     renderFiles();
@@ -402,7 +564,7 @@ describe("ServerFiles opening feedback", () => {
     renderFiles();
     await userEvent.click(await screen.findByText("server.properties"));
     expect(await screen.findByText(t("files:binary_title"))).toBeTruthy();
-    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.queryByRole("textbox", { name: t("files:file_content") })).toBeNull();
   });
 
   it("reuses recent directories, but an explicit refresh invalidates them", async () => {
@@ -1294,22 +1456,25 @@ describe("ServerFiles uploads", () => {
     expect(within(queue()).queryByRole("button", { name: cancel })).toBeNull();
   });
 
-  it("takes dropped files and names the folders it skipped", async () => {
+  it("recursively uploads a dropped folder and preserves its relative paths", async () => {
     renderFiles();
     const table = await screen.findByRole("table");
+    let read = false;
+    const nested = file("config.yml");
     const dataTransfer = {
       types: ["Files"],
       files: [],
       items: [
-        { kind: "file", webkitGetAsEntry: () => ({ isDirectory: true }), getAsFile: () => null },
-        { kind: "file", webkitGetAsEntry: () => ({ isDirectory: false }), getAsFile: () => file("a.jar") },
+        { kind: "file", webkitGetAsEntry: () => ({ name: "plugin", isDirectory: true, isFile: false, createReader: () => ({ readEntries: (done: (entries: unknown[]) => void) => {
+          done(read ? [] : [{ name: "config.yml", isDirectory: false, isFile: true, file: (got: (file: File) => void) => got(nested) }]); read = true;
+        } }) }) },
       ],
     };
 
     fireEvent.drop(table, { dataTransfer });
 
-    await waitFor(() => expect(sentAs()).toEqual([["a.jar", false]]));
-    expect(screen.getByText(i18next.t("files:upload_no_folders", { count: 1 }))).toBeTruthy();
+    await waitFor(() => expect(sentAs()).toEqual([["plugin/config.yml", false]]));
+    expect(mocks.mkdirServerFolder).toHaveBeenCalledWith("lobby", "plugin");
   });
 
   it("keeps a file dropped beside the list from replacing the page", async () => {

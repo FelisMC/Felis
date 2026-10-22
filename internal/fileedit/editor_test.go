@@ -1,10 +1,12 @@
 package fileedit
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -185,6 +187,7 @@ func TestEditorMapsResultCodes(t *testing.T) {
 		{"escaping path", CodeBadPath, ErrBadPath},
 		{"oversized", CodeTooLarge, ErrTooLarge},
 		{"changed since read", CodeConflict, ErrConflict},
+		{"incomplete rollback", CodeRecovery, ErrConflict},
 		{"volume full", CodeNoSpace, ErrNoSpace},
 		{"already there", CodeExists, ErrExists},
 		{"changed on the way", CodeDigestMismatch, ErrDigestMismatch},
@@ -390,4 +393,41 @@ func TestEditorStartsBackgroundOps(t *testing.T) {
 			t.Fatalf("asked %v, want the default namespace and the server", r.opsArgs[0])
 		}
 	})
+}
+
+func TestLargeWritesUseStagingAndAlwaysReleaseIt(t *testing.T) {
+	for _, runnerErr := range []error{nil, errors.New("worker failed")} {
+		t.Run(fmt.Sprint(runnerErr), func(t *testing.T) {
+			body := bytes.Repeat([]byte("x"), 5<<20)
+			runner := &fakeRunner{payload: mustPayload(t, Result{SHA256: digest(body)}), err: runnerErr}
+			staged, cleaned := false, false
+			editor := &Editor{Runner: runner, Config: Config{Image: "img", StageWrite: func(content []byte) (UploadSource, func(), error) {
+				staged = true
+				if !bytes.Equal(content, body) {
+					t.Fatal("staging received different content")
+				}
+				return UploadSource{URL: "http://internal/staged", Token: "fake-token", Size: int64(len(content)), SHA256: digest(content)}, func() { cleaned = true }, nil
+			}}}
+			_, err := editor.Write(context.Background(), "survival", "large.txt", body, "old-hash", true)
+			if (err != nil) != (runnerErr != nil) || !staged || !cleaned {
+				t.Fatalf("write: err=%v staged=%v cleaned=%v", err, staged, cleaned)
+			}
+			p := runner.got[0]
+			if len(p.Content) != 0 || p.SourceURL == "" || p.UploadToken != "fake-token" || p.UploadSize != 5<<20 || p.UploadSHA256 != digest(body) || p.Expect != "old-hash" || !p.CreateOnly {
+				t.Fatalf("large content was embedded or lost write conditions: %+v", p)
+			}
+			job, err := FilesJob(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := json.Marshal(job)
+			if err != nil || len(encoded) > 16<<10 {
+				t.Fatalf("large content entered the Job: encoded=%d error=%v", len(encoded), err)
+			}
+			env := job.Spec.Template.Spec.Containers[0].Env
+			if len(env) != 1 || env[0].Name != UploadTokenEnv {
+				t.Fatalf("large write env=%v", env)
+			}
+		})
+	}
 }

@@ -752,13 +752,27 @@ export const api = rejectingSync({
   runSchedule: (name: string, id: number) =>
     request<Schedule>("POST", urlPath`/servers/${name}/schedules/${String(id)}/run`),
 
-  // File operations require a fully stopped server and owner/admin access.
+  // File operations require a running or fully stopped server and owner/admin access.
   // File paths use query parameters and binary contents use base64; listings include free space.
   listServerFiles: (name: string, path: string) =>
     request<{ path: string; entries: ServerFileEntry[]; truncated: boolean; free_bytes: number | null }>(
       "GET",
       urlPath`/servers/${name}/files` + `?path=${encodeURIComponent(path)}`,
     ),
+
+  searchServerFiles: (name: string, path: string, query: string) =>
+    request<{ path: string; entries: ServerFileEntry[]; truncated: boolean; free_bytes: number | null }>(
+      "GET", urlPath`/servers/${name}/files/search` + `?path=${encodeURIComponent(path)}&q=${encodeURIComponent(query)}`,
+    ),
+
+  transferServerFiles: (name: string, op: "copy" | "move", paths: string[], to: string, overwrite = false) =>
+    request<{ op: FileOp }>("POST", urlPath`/servers/${name}/files/transfer`, { op, paths, to, overwrite }),
+
+  zipServerFiles: (name: string, paths: string[], to: string, overwrite = false) =>
+    request<{ op: FileOp }>("POST", urlPath`/servers/${name}/files/zip`, { paths, to, overwrite }),
+
+  fetchServerFile: (name: string, url: string, path: string, overwrite = false) =>
+    request<{ op: FileOp }>("POST", urlPath`/servers/${name}/files/from-url`, { url, path, overwrite }),
 
   // Reject oversized or digest-damaged reads so subsequent saves cannot truncate or corrupt the original.
   readServerFile: async (name: string, path: string) => {
@@ -892,6 +906,29 @@ export const api = rejectingSync({
       "POST",
       urlPath`/servers/${name}/files/download` + `?path=${encodeURIComponent(path)}&dir=${dir}`,
     ),
+
+  downloadServerFiles: (name: string, paths: string[]) =>
+    request<ExportTicket>("POST", urlPath`/servers/${name}/files/download`, { paths }),
+
+  previewServerFile: async (ticket: string, maxBytes: number, signal?: AbortSignal) => {
+    const response = await fetchOK(urlPath`/exports/${ticket}/download`, { method: "GET", signal });
+    const reader = response.body?.getReader();
+    if (!reader) throw clientError("read_damaged");
+    const chunks: Uint8Array<ArrayBuffer>[] = [];
+    let size = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.length;
+        if (size > maxBytes) throw clientError("too_large");
+        chunks.push(new Uint8Array(value));
+      }
+      return new Blob(chunks);
+    } finally {
+      await reader.cancel();
+    }
+  },
 
   // Link codes originate in-game; the web client can only redeem them.
   linkStatus: () => request<LinkStatus>("POST", "/account/link/start"),
@@ -1357,6 +1394,10 @@ export function humanizeError(e: unknown): string {
       return t("bad_path");
     case "too_large":
       return t("too_large");
+    case "bad_url":
+      return t("bad_url");
+    case "download_failed":
+      return t("download_failed");
     case "files_timeout":
       return t("files_timeout");
     case "files_unavailable":

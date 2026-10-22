@@ -15,6 +15,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"golang.org/x/text/encoding/simplifiedchinese"
 )
@@ -519,6 +520,10 @@ func TestUnzip(t *testing.T) {
 		root, _ := worldRoot(t)
 		stale := filepath.Join(root, unzipTempPrefix+"0123456789ab")
 		if err := os.MkdirAll(filepath.Join(stale, "new"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		past := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+		if err := os.Chtimes(stale, past, past); err != nil {
 			t.Fatal(err)
 		}
 		// Twelve characters that are not hex, and hex a byte short or long.

@@ -22,7 +22,7 @@ func ThrottledProgress(w io.Writer, every time.Duration, now func() time.Time) f
 	var last time.Time
 	return func(done, total int64) {
 		t := now()
-		if done < total && t.Sub(last) < every {
+		if (total <= 0 || done < total) && t.Sub(last) < every {
 			return
 		}
 		last = t

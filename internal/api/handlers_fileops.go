@@ -235,8 +235,8 @@ func (a *API) handleUnzipFile(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !strings.HasSuffix(strings.ToLower(path), ".zip") {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_path", "only a .zip file can be extracted"))
+	if !extractableArchive(path) {
+		writeError(w, r, newError(http.StatusBadRequest, "bad_path", "only .zip, .tar, .tar.gz and .tgz files can be extracted"))
 		return
 	}
 	var body startFileOpRequest
@@ -299,6 +299,7 @@ type fileOpError struct {
 	Code          string   `json:"code"`
 	Message       string   `json:"message"`
 	Entry         string   `json:"entry,omitempty"`
+	RecoveryPaths []string `json:"recovery_paths,omitempty"`
 	Conflicts     []string `json:"conflicts,omitempty"`
 	ConflictCount int      `json:"conflict_count,omitempty"`
 	Need          int64    `json:"need,omitempty"`
@@ -346,7 +347,8 @@ func opError(op fileedit.OpState) *fileOpError {
 	}
 	return &fileOpError{
 		Code: code, Message: res.Error, Entry: res.Entry,
-		Conflicts: res.Conflicts, ConflictCount: res.ConflictCount, Need: res.Need, Avail: res.Avail,
+		RecoveryPaths: res.RecoveryPaths,
+		Conflicts:     res.Conflicts, ConflictCount: res.ConflictCount, Need: res.Need, Avail: res.Avail,
 	}
 }
 

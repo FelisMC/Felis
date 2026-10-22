@@ -41,12 +41,12 @@ export function FileOps({ ops, error, onDismiss, onConflicts }: Props) {
 
 function OpRow({ op, onDismiss, onConflicts }: { op: FileOp; onDismiss: () => void; onConflicts: () => void }) {
   const { t } = useTranslation("files");
-  const title = t(op.op === "unzip" ? "op_unzip" : "op_upload", { path: op.path });
-  const Kind = op.op === "unzip" ? FileArchive : Upload;
+  const title = t(`op_${op.op}`, { path: op.path });
+  const Kind = op.op === "upload" ? Upload : FileArchive;
   const counted = op.total > 0;
   const percent = counted ? Math.min(100, Math.floor((op.done * 100) / op.total)) : 0;
   const failure = op.error ?? { code: "job_failed", message: "" };
-  const conflicts = op.state === "failed" && op.op === "unzip" && failure.code === "file_exists";
+  const conflicts = op.state === "failed" && failure.code === "file_exists" && op.op !== "upload";
 
   let status: string;
   if (op.state === "running") {
@@ -57,7 +57,7 @@ function OpRow({ op, onDismiss, onConflicts }: { op: FileOp; onDismiss: () => vo
     status =
       op.op === "unzip"
         ? t("op_unzip_done", { count: op.files ?? 0, bytes: formatBytes(op.bytes ?? 0) })
-        : t("op_upload_done");
+        : t(op.op === "upload" ? "op_upload_done" : "op_task_done");
   } else {
     status = opErrorText(op.op, failure);
   }
@@ -84,12 +84,17 @@ function OpRow({ op, onDismiss, onConflicts }: { op: FileOp; onDismiss: () => vo
           </p>
           <p
             className={cn(
-              "mt-0.5 text-xs tabular-nums",
+              "mt-0.5 break-words text-xs tabular-nums",
               op.state === "failed" ? "text-destructive" : "text-muted-foreground",
             )}
           >
             {status}
           </p>
+          {op.state === "failed" && failure.recovery_paths && failure.recovery_paths.length > 0 && (
+            <ul aria-label={t("recovery_paths")} className="mt-1 grid gap-1 break-all font-mono text-xs">
+              {failure.recovery_paths.map((path) => <li key={path}>{path}</li>)}
+            </ul>
+          )}
           {op.state === "running" && (
             <div
               role="progressbar"

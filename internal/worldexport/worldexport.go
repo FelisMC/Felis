@@ -19,6 +19,7 @@ type Request struct {
 	BackupRef    string
 	BackupSHA256 string
 	Path         string
+	Paths        []string
 	Dir          bool
 	ID           string
 	TargetURL    string
@@ -102,7 +103,7 @@ func (e *Exporter) Start(ctx context.Context, r Request) (string, error) {
 		Server: r.Server, ID: r.ID, Mode: r.Mode,
 		NodeName: node,
 		WorldPVC: claim, BackupPVC: c.BackupPVC, BackupRef: r.BackupRef,
-		BackupSHA256: r.BackupSHA256, Path: r.Path, Dir: r.Dir,
+		BackupSHA256: r.BackupSHA256, Path: r.Path, Paths: r.Paths, Dir: r.Dir,
 		TargetURL: r.TargetURL, Token: r.Token,
 		Namespace: c.Namespace, ServiceAccount: c.ServiceAccount, Image: c.Image,
 		BackupRoot: c.BackupRoot, WorldsRoot: c.WorldsRoot, Deadline: c.Deadline,

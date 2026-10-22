@@ -13,6 +13,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"golang.org/x/text/encoding/simplifiedchinese"
@@ -42,9 +43,6 @@ const unzipTempPrefix = ".felis-unzip-"
 // unzip stages and verifies before journaled renames; failures roll back, but termination during placement may leave a partial application.
 func unzip(r *os.Root, rootPath, name string, overwrite bool, progress func(done, total int64)) Result {
 	name = path.Clean(name)
-	if !strings.EqualFold(path.Ext(name), ".zip") {
-		return Result{Code: CodeBadPath, Error: fmt.Sprintf("%s is not a .zip archive", name)}
-	}
 	f, err := r.Open(name)
 	if err != nil {
 		return failure(err, name)
@@ -57,47 +55,44 @@ func unzip(r *os.Root, rootPath, name string, overwrite bool, progress func(done
 	if !info.Mode().IsRegular() {
 		return Result{Code: CodeBadPath, Error: fmt.Sprintf("%s is not a file", name)}
 	}
-	// ErrInsecurePath can include a usable reader; planUnzip enforces path checks independently of GODEBUG.
-	zr, err := zip.NewReader(f, info.Size())
-	if err != nil && !errors.Is(err, zip.ErrInsecurePath) {
-		return Result{Code: CodeArchiveInvalid, Error: fmt.Sprintf("%s is not a readable zip archive: %v", name, err)}
+	if withheld, _ := NewGuard(r).Rule(info); withheld {
+		return Result{Code: CodeBadPath, Error: "protected configuration cannot be opened as an archive"}
 	}
-	p, res := planUnzip(zr.File)
+	walk, res := openArchive(f, name, info.Size())
+	if res.Code != "" {
+		return res
+	}
+	p, res := planEntries(walk)
 	if res.Code != "" {
 		return res
 	}
 
-	dest := path.Dir(name)
+	return applyPlan(r, rootPath, path.Dir(name), p, overwrite, progress)
+}
+
+func applyPlan(r *os.Root, rootPath, dest string, p unzipPlan, overwrite bool, progress func(done, total int64)) Result {
 	present, replaced, res := checkTargets(r, dest, p)
 	if res.Code != "" {
 		return res
 	}
 	if len(replaced) > 0 && !overwrite {
-		list := make([]string, 0, len(replaced))
-		for n := range replaced {
-			list = append(list, path.Join(dest, n))
-		}
-		sort.Strings(list)
-		count, n, size := len(list), 0, 0
-		for n < count && n < MaxConflicts && size+len(list[n]) <= maxConflictBytes {
-			size += len(list[n])
-			n++
-		}
-		list = list[:n]
-		return Result{Code: CodeExists, Conflicts: list, ConflictCount: count, Error: fmt.Sprintf(
-			"%d files in the archive already exist on the server; extract again with overwrite to replace them", count)}
+		return conflictResult(dest, replaced)
 	}
 
 	// Clear abandoned staging copies before measuring free space.
 	sweepUnzipTemps(r, dest)
-	need := p.bytes + int64(len(p.files)+len(p.dirs))*unzipEntryOverhead
+	overhead := int64(len(p.files)+len(p.dirs)) * unzipEntryOverhead
+	if p.bytes > math.MaxInt64-overhead {
+		return Result{Code: CodeArchiveInvalid, Error: "source size is too large"}
+	}
+	need := p.bytes + overhead
 	if avail, _, err := statfs(rootPath); err == nil && uint64(need) > avail {
 		free := int64(math.MaxInt64)
 		if avail < math.MaxInt64 {
 			free = int64(avail)
 		}
 		return Result{Code: CodeNoSpace, Need: need, Avail: free, Error: fmt.Sprintf(
-			"extracting %s needs %d bytes and the server's volume has %d free; nothing was changed", name, need, free)}
+			"the operation needs %d bytes and the server's volume has %d free; nothing was changed", need, free)}
 	}
 
 	var suffix [6]byte
@@ -112,19 +107,44 @@ func unzip(r *os.Root, rootPath, name string, overwrite bool, progress func(done
 			return unzipWriteFailure(err, dest)
 		}
 	}
-	defer func() { _ = r.RemoveAll(tmp) }()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = r.RemoveAll(tmp)
+		}
+	}()
 
 	if res := extractAll(r, staged, p, progress); res.Code != "" {
 		return res
 	}
-	if res := placeAll(r, dest, staged, old, p, present, replaced); res.Code != "" {
+	guard := NewGuard(r)
+	if res, rolledBack := placeAll(r, dest, staged, old, p, present, replaced); res.Code != "" {
+		if !rolledBack {
+			cleanup = false
+			return preservePlacement(r, dest, tmp, staged, old, hex.EncodeToString(suffix[:]), "file-recovery-", guard, res)
+		}
 		return res
 	}
 	return Result{Files: len(p.files), Bytes: p.bytes}
 }
 
+func conflictResult(dest string, replaced map[string]bool) Result {
+	list := make([]string, 0, len(replaced))
+	for name := range replaced {
+		list = append(list, path.Join(dest, name))
+	}
+	sort.Strings(list)
+	count, n, size := len(list), 0, 0
+	for n < count && n < MaxConflicts && size+len(list[n]) <= maxConflictBytes {
+		size += len(list[n])
+		n++
+	}
+	return Result{Code: CodeExists, Conflicts: list[:n], ConflictCount: count, Error: fmt.Sprintf("%d target files already exist; confirm overwrite to replace them", count)}
+}
+
 type unzipPlan struct {
 	files []zipFile
+	walk  archiveWalk
 	// dirs sorts parents before their contents, including implied directories.
 	dirs  []string
 	isDir map[string]bool
@@ -132,51 +152,59 @@ type unzipPlan struct {
 }
 
 type zipFile struct {
-	f    *zip.File
 	name string
 	mode fs.FileMode
+	size int64
 }
 
 func planUnzip(entries []*zip.File) (unzipPlan, Result) {
-	p := unzipPlan{isDir: map[string]bool{}}
-	for _, f := range entries {
-		raw := entryName(f)
+	return planEntries(zipEntries(entries))
+}
+
+func planEntries(walk archiveWalk) (unzipPlan, Result) {
+	p := unzipPlan{isDir: map[string]bool{}, walk: walk}
+	res := walk(func(entry archiveEntry) Result {
+		raw := entry.name
 		name, ok := cleanEntry(raw)
 		if !ok {
-			return p, Result{Code: CodeArchiveUnsafe, Entry: raw, Error: fmt.Sprintf(
+			return Result{Code: CodeArchiveUnsafe, Entry: raw, Error: fmt.Sprintf(
 				"%s leads outside the folder it would be extracted into", raw)}
 		}
-		if name == "__MACOSX" || strings.HasPrefix(name, "__MACOSX/") {
-			continue
+		if entry.archive && (name == "__MACOSX" || strings.HasPrefix(name, "__MACOSX/")) {
+			return Result{}
 		}
-		mode := f.Mode()
+		mode := entry.mode
 		isDir := mode.IsDir() || strings.HasSuffix(raw, "/")
 		switch {
 		case mode&fs.ModeSymlink != 0:
-			return p, Result{Code: CodeArchiveSymlink, Entry: raw, Error: fmt.Sprintf(
+			return Result{Code: CodeArchiveSymlink, Entry: raw, Error: fmt.Sprintf(
 				"%s is a symbolic link; an archive containing links is not extracted", raw)}
 		case isDir:
 			if name != "." {
 				p.isDir[name] = true
 			}
-			continue
+			return Result{}
 		case !mode.IsRegular():
-			return p, Result{Code: CodeArchiveUnsafe, Entry: raw, Error: fmt.Sprintf(
+			return Result{Code: CodeArchiveUnsafe, Entry: raw, Error: fmt.Sprintf(
 				"%s is not a regular file", raw)}
 		case name == ".":
-			return p, Result{Code: CodeArchiveUnsafe, Entry: raw, Error: fmt.Sprintf(
+			return Result{Code: CodeArchiveUnsafe, Entry: raw, Error: fmt.Sprintf(
 				"%s names the destination folder itself", raw)}
-		case f.UncompressedSize64 > uint64(math.MaxInt64-p.bytes):
-			return p, Result{Code: CodeArchiveInvalid, Entry: raw, Error: fmt.Sprintf(
+		case entry.size < 0 || entry.size > math.MaxInt64-p.bytes:
+			return Result{Code: CodeArchiveInvalid, Entry: raw, Error: fmt.Sprintf(
 				"%s declares an impossible size", raw)}
 		}
-		p.bytes += int64(f.UncompressedSize64)
+		p.bytes += entry.size
 		// Preserve executable bits while using normal server permissions for other modes.
 		perm := fs.FileMode(0o644)
 		if mode.Perm()&0o111 != 0 {
 			perm = 0o755
 		}
-		p.files = append(p.files, zipFile{f: f, name: name, mode: perm})
+		p.files = append(p.files, zipFile{name: name, mode: perm, size: entry.size})
+		return Result{}
+	})
+	if res.Code != "" {
+		return p, res
 	}
 	// Sorted duplicates are adjacent, avoiding a second entry-sized set.
 	sort.Slice(p.files, func(i, j int) bool { return p.files[i].name < p.files[j].name })
@@ -297,10 +325,30 @@ func extractAll(r *os.Root, staged string, p unzipPlan, progress func(done, tota
 			progress(done, p.bytes)
 		}
 	}
-	for _, zf := range p.files {
-		if res := extractOne(r, path.Join(staged, zf.name), zf, count); res.Code != "" {
-			return res
+	expected := make(map[string]zipFile, len(p.files))
+	for _, file := range p.files {
+		expected[file.name] = file
+	}
+	res := p.walk(func(entry archiveEntry) Result {
+		name, ok := cleanEntry(entry.name)
+		if !ok {
+			return Result{Code: CodeArchiveUnsafe, Entry: entry.name, Error: "source entry leads outside the destination"}
 		}
+		if entry.mode.IsDir() || entry.archive && (name == "__MACOSX" || strings.HasPrefix(name, "__MACOSX/")) {
+			return Result{}
+		}
+		file, ok := expected[name]
+		if !ok || entry.size != file.size {
+			return Result{Code: CodeConflict, Entry: name, Error: "source changed during the operation"}
+		}
+		delete(expected, name)
+		return extractOne(r, path.Join(staged, name), file, entry.open, count)
+	})
+	if res.Code != "" {
+		return res
+	}
+	if len(expected) != 0 {
+		return Result{Code: CodeConflict, Error: "source changed during the operation"}
 	}
 	for _, d := range p.dirs {
 		syncDir(r, path.Join(staged, d))
@@ -309,12 +357,12 @@ func extractAll(r *os.Root, staged string, p unzipPlan, progress func(done, tota
 	return Result{}
 }
 
-func extractOne(r *os.Root, at string, zf zipFile, count func(int)) Result {
+func extractOne(r *os.Root, at string, zf zipFile, open func() (io.ReadCloser, error), count func(int)) Result {
 	invalid := func(err error) Result {
 		return Result{Code: CodeArchiveInvalid, Entry: zf.name, Error: fmt.Sprintf(
 			"%s in the archive is damaged: %v; nothing was changed", zf.name, err)}
 	}
-	src, err := zf.f.Open()
+	src, err := open()
 	if err != nil {
 		return invalid(err)
 	}
@@ -327,13 +375,18 @@ func extractOne(r *os.Root, at string, zf zipFile, count func(int)) Result {
 		w.Close()
 		return unzipWriteFailure(err, zf.name)
 	}
-	if _, err := io.Copy(countingWriter{w, count}, archiveReader{src}); err != nil {
+	n, err := io.Copy(countingWriter{w, count}, archiveReader{io.LimitReader(src, zf.size+1)})
+	if err != nil {
 		w.Close()
 		var ae *archiveError
 		if errors.As(err, &ae) {
 			return invalid(ae.err)
 		}
 		return unzipWriteFailure(err, zf.name)
+	}
+	if n != zf.size {
+		w.Close()
+		return invalid(fmt.Errorf("read %d bytes, expected %d", n, zf.size))
 	}
 	if err := syncWritten(w); err != nil {
 		w.Close()
@@ -347,7 +400,7 @@ func extractOne(r *os.Root, at string, zf zipFile, count func(int)) Result {
 }
 
 // placeAll moves existing files aside before replacing them so rollback can restore them.
-func placeAll(r *os.Root, dest, staged, old string, p unzipPlan, present, replaced map[string]bool) Result {
+func placeAll(r *os.Root, dest, staged, old string, p unzipPlan, present, replaced map[string]bool) (Result, bool) {
 	kids := map[string][]string{}
 	add := func(name string) {
 		if parent := path.Dir(name); parent == "." || present[parent] {
@@ -361,13 +414,20 @@ func placeAll(r *os.Root, dest, staged, old string, p unzipPlan, present, replac
 		add(zf.name)
 	}
 
-	type move struct{ from, to string }
+	type move struct {
+		from, to string
+		info     fs.FileInfo
+	}
 	var journal []move
 	mv := func(from, to string) error {
+		info, err := r.Lstat(from)
+		if err != nil {
+			return err
+		}
 		if err := renameEntry(r, from, to); err != nil {
 			return err
 		}
-		journal = append(journal, move{from, to})
+		journal = append(journal, move{from: from, to: to, info: info})
 		return nil
 	}
 	var place func(dir string) error
@@ -398,20 +458,36 @@ func placeAll(r *os.Root, dest, staged, old string, p unzipPlan, present, replac
 		}
 		return nil
 	}
+
 	if err := place("."); err != nil {
+		rolledBack := true
 		for i := len(journal) - 1; i >= 0; i-- {
-			_ = r.Rename(journal[i].to, journal[i].from)
+			entry := journal[i]
+			info, statErr := r.Lstat(entry.to)
+			if statErr != nil || !os.SameFile(entry.info, info) {
+				rolledBack = false
+				continue
+			}
+			if err := renameNoReplace(r, entry.to, entry.from); err != nil {
+				rolledBack = false
+			}
 		}
-		return unzipWriteFailure(err, dest)
+		result := unzipWriteFailure(err, dest)
+		if !rolledBack {
+			result.Code = CodeRecovery
+			result.Error = fmt.Sprintf("the operation failed (%v) and could not be fully rolled back", err)
+		}
+		return result, rolledBack
 	}
+
 	syncDir(r, dest)
 	for d := range present {
 		syncDir(r, path.Join(dest, d))
 	}
-	return Result{}
+	return Result{}, true
 }
 
-var renameEntry = func(r *os.Root, from, to string) error { return r.Rename(from, to) }
+var renameEntry = renameNoReplace
 
 func sweepUnzipTemps(r *os.Root, dir string) {
 	d, err := r.Open(dir)
@@ -421,8 +497,13 @@ func sweepUnzipTemps(r *os.Root, dir string) {
 	names, _ := d.Readdirnames(-1)
 	d.Close()
 	for _, n := range names {
-		if isUnzipTemp(n) {
-			_ = r.RemoveAll(path.Join(dir, n))
+		if isUnzipTemp(n) && !hasEntries(r, path.Join(dir, n, "old")) {
+			if _, err := r.Lstat(path.Join(dir, n, recoveryMarker)); !errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			if info, err := r.Stat(path.Join(dir, n)); err == nil && time.Since(info.ModTime()) > defaultAsyncDeadline+time.Hour {
+				_ = r.RemoveAll(path.Join(dir, n))
+			}
 		}
 	}
 }

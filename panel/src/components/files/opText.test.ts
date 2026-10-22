@@ -30,7 +30,7 @@ describe("opErrorText", () => {
   });
 
   it("names the archive entry at fault", () => {
-    expect(opErrorText("unzip", e("archive_invalid"))).toBe("The archive is damaged or is not in ZIP format. This operation did not modify files.");
+    expect(opErrorText("unzip", e("archive_invalid"))).toBe("The archive is damaged or is not a supported ZIP, TAR, TAR.GZ or TGZ archive. This operation did not modify files.");
     expect(opErrorText("unzip", e("archive_invalid", { entry: "world/level.dat" }))).toBe(
       "The size or checksum of archive entry world/level.dat does not match. This operation did not modify files.",
     );
@@ -38,7 +38,7 @@ describe("opErrorText", () => {
       "Archive entry ../../etc/passwd contains an out-of-directory path or a device file. The entire archive was rejected without extraction.",
     );
     expect(opErrorText("unzip", e("archive_symlink", { entry: "world/link" }))).toBe(
-      "Archive entry world/link is a symbolic link. The entire archive was rejected without extraction.",
+      "Archive entry world/link is a symbolic or hard link. The entire archive was rejected without extraction.",
     );
     expect(opErrorText("unzip", e("type_conflict", { entry: "plugins" }))).toBe(
       "Entry plugins conflicts with an existing entry of the same name because one is a file and the other is a folder. Rename or delete the existing plugins before extraction.",
@@ -58,10 +58,16 @@ describe("opErrorText", () => {
     // The message felis-api words a memory kill with.
     const oom = "the file operation ran out of memory (OOMKilled); an archive of this many files has to be split into smaller ones";
     expect(opErrorText("unzip", e("job_failed", { message: oom }))).toBe(
-      "The extraction task terminated because its file list exceeded available memory. Server files were not modified. Split the content into smaller ZIP archives and upload and extract them separately.",
+      "The extraction task terminated due to insufficient memory. Verify server files, then split the content into smaller archives before retrying.",
     );
     expect(opErrorText("upload", e("job_failed", { message: oom }))).toBe(
-      "The background task terminated due to insufficient memory. Server files were not modified. Check task resources before retrying.",
+      "The background task terminated due to insufficient memory. Verify server files and task resources before retrying.",
+    );
+  });
+
+  it("describes incomplete rollback without claiming that files were unchanged", () => {
+    expect(opErrorText("move", e("rollback_incomplete"))).toBe(
+      "The operation could not be fully rolled back. Verify server files and preserved content before retrying. Protected files may require an administrator to recover them.",
     );
   });
 

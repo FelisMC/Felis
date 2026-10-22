@@ -28,6 +28,8 @@ type fakeFileEditor struct {
 	gotOp         string
 	gotServer     string
 	gotPath       string
+	gotPaths      []string
+	gotQuery      string
 	gotContent    []byte
 	gotExpect     string
 	gotCreateOnly bool
@@ -73,6 +75,24 @@ func (f *fakeFileEditor) List(_ context.Context, server, path string) (fileedit.
 	f.calls++
 	f.gotServer, f.gotPath = server, path
 	return fileedit.Listing{Entries: f.entries, Truncated: f.truncated, Free: f.free}, f.err
+}
+
+func (f *fakeFileEditor) Search(_ context.Context, server, path, query string) (fileedit.Listing, error) {
+	f.calls++
+	f.gotOp, f.gotServer, f.gotPath, f.gotQuery = "search", server, path, query
+	return fileedit.Listing{Entries: f.entries, Truncated: f.truncated, Free: f.free}, f.err
+}
+
+func (f *fakeFileEditor) StartTransfer(_ context.Context, server, op string, paths []string, to string, overwrite bool) (fileedit.OpState, error) {
+	f.calls++
+	f.gotOp, f.gotServer, f.gotPaths, f.gotTo, f.gotOverwrite = op, server, paths, to, overwrite
+	return f.started(op, to), f.err
+}
+
+func (f *fakeFileEditor) StartZip(_ context.Context, server string, paths []string, to string, overwrite bool) (fileedit.OpState, error) {
+	f.calls++
+	f.gotOp, f.gotServer, f.gotPaths, f.gotTo, f.gotOverwrite = "zip", server, paths, to, overwrite
+	return f.started("zip", to), f.err
 }
 
 func (f *fakeFileEditor) Read(_ context.Context, server, path string) ([]byte, string, error) {

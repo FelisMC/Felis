@@ -72,6 +72,18 @@ func TestBrowserReusesWorkerAndReadsCurrentBytes(t *testing.T) {
 	if got := read(OpRead, "../outside"); got.Code != CodeBadPath {
 		t.Fatalf("containment: %+v", got)
 	}
+	searchParams := testParams(OpSearch)
+	searchParams.Path = "."
+	searchParams.Query = "CONFIG"
+	payload, err := b.Run(ctx, searchParams, start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var searched Result
+	if err := json.Unmarshal(payload, &searched); err != nil || len(searched.Entries) != 1 || searched.Entries[0].Name != "config.yml" {
+		t.Fatalf("browser search: %+v %v", searched, err)
+	}
+
 	if workers.Load() != 1 {
 		t.Fatalf("started %d workers for repeated reads", workers.Load())
 	}

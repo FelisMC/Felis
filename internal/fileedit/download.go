@@ -5,12 +5,14 @@ import (
 	"bytes"
 	"compress/flate"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path"
+	"strings"
 )
 
 const (
@@ -28,6 +30,7 @@ type Download struct {
 
 	root  *os.Root
 	name  string
+	names []string
 	file  *os.File
 	body  []byte
 	guard Guard
@@ -36,6 +39,9 @@ type Download struct {
 // OpenDownload refuses changed file-versus-folder types and the world root rather than silently downloading different content.
 func OpenDownload(rootPath, name string, dir bool) (*Download, error) {
 	name = path.Clean(name)
+	if InternalPath(name) {
+		return nil, fmt.Errorf("internal operation staging cannot be downloaded")
+	}
 	if name == "." || name == "/" || !fs.ValidPath(name) {
 		return nil, fmt.Errorf("%s is not a file or folder inside the world", name)
 	}
@@ -49,6 +55,33 @@ func OpenDownload(rootPath, name string, dir bool) (*Download, error) {
 		return nil, err
 	}
 	return d, nil
+}
+
+func OpenSelectedDownload(rootPath string, names []string) (*Download, error) {
+	r, err := os.OpenRoot(rootPath)
+	if err != nil {
+		return nil, err
+	}
+	paths, res := selectedPaths(r, names)
+	if res.Code != "" {
+		r.Close()
+		return nil, fmt.Errorf("%s", res.Error)
+	}
+	return &Download{root: r, names: paths, guard: NewGuard(r), Size: -1, ContentType: DownloadZipType}, nil
+}
+
+func InternalPath(name string) bool {
+	for _, part := range strings.Split(name, "/") {
+		for _, prefix := range []string{".felis-edit-", unzipTempPrefix, ".felis-move-", ".felis-preserved-", ".felis-zip-"} {
+			suffix, ok := strings.CutPrefix(part, prefix)
+			if ok && len(suffix) == 12 {
+				if _, err := hex.DecodeString(suffix); err == nil {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func (d *Download) open(dir bool) error {
@@ -70,12 +103,19 @@ func (d *Download) open(dir bool) error {
 		return fmt.Errorf("%s is not a regular file", d.name)
 	}
 	withhold, redact := d.guard.Rule(info)
+	currentWithhold, currentRedact := NewGuard(d.root).Rule(info)
+	withhold, redact = withhold || currentWithhold, redact || currentRedact
 	if withhold {
 		return fmt.Errorf("%s is the file holding the proxy forwarding secret, which is shared cluster-wide, and cannot be downloaded", d.name)
 	}
 	f, err := d.root.Open(d.name)
 	if err != nil {
 		return err
+	}
+	current, err := f.Stat()
+	if err != nil || !os.SameFile(info, current) {
+		f.Close()
+		return fmt.Errorf("%s changed during the download", d.name)
 	}
 	d.ContentType = DownloadFileType
 	if !redact {
@@ -124,62 +164,81 @@ func (d *Download) writeZip(ctx context.Context, w io.Writer) error {
 	zw.RegisterCompressor(zip.Deflate, func(out io.Writer) (io.WriteCloser, error) {
 		return flate.NewWriter(out, flate.BestSpeed)
 	})
-	base := path.Base(d.name)
-	err := fs.WalkDir(d.root.FS(), d.name, func(p string, de fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		entry := base + p[len(d.name):]
-		info, err := de.Info()
-		if err != nil {
-			return err
-		}
-		switch {
-		case de.IsDir():
-			hdr := &zip.FileHeader{Name: entry + "/", Modified: info.ModTime()}
-			hdr.SetMode(info.Mode().Perm() | fs.ModeDir)
-			_, err := zw.CreateHeader(hdr)
-			return err
-		case !de.Type().IsRegular():
-			d.Skipped++
-			return nil
-		}
-		withhold, redact := d.guard.Rule(info)
-		if withhold {
-			d.Withheld++
-			return nil
-		}
-		f, err := d.root.Open(p)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		var src io.Reader = ctxReader{ctx, f}
-		if redact {
-			b, err := io.ReadAll(io.LimitReader(f, MaxReadBytes+1))
+	names := d.names
+	if len(names) == 0 {
+		names = []string{d.name}
+	}
+	for _, name := range names {
+		base := path.Base(name)
+		err := fs.WalkDir(d.root.FS(), name, func(p string, de fs.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
-			if len(b) > MaxReadBytes {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if InternalPath(p) {
+				if de.IsDir() {
+					return fs.SkipDir
+				}
+				d.Skipped++
+				return nil
+			}
+			entry := base + p[len(name):]
+			info, err := de.Info()
+			if err != nil {
+				return err
+			}
+			switch {
+			case de.IsDir():
+				hdr := &zip.FileHeader{Name: entry + "/", Modified: info.ModTime()}
+				hdr.SetMode(info.Mode().Perm() | fs.ModeDir)
+				_, err := zw.CreateHeader(hdr)
+				return err
+			case !de.Type().IsRegular():
+				d.Skipped++
+				return nil
+			}
+			withhold, redact := d.guard.Rule(info)
+			currentWithhold, currentRedact := NewGuard(d.root).Rule(info)
+			withhold, redact = withhold || currentWithhold, redact || currentRedact
+			if withhold {
 				d.Withheld++
 				return nil
 			}
-			src = bytes.NewReader(RedactProps(b))
-		}
-		hdr := &zip.FileHeader{Name: entry, Method: zip.Deflate, Modified: info.ModTime()}
-		hdr.SetMode(info.Mode().Perm())
-		fw, err := zw.CreateHeader(hdr)
+			f, err := d.root.Open(p)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			current, err := f.Stat()
+			if err != nil || !os.SameFile(info, current) {
+				return fmt.Errorf("%s changed during the download", p)
+			}
+			var src io.Reader = ctxReader{ctx, f}
+			if redact {
+				b, err := io.ReadAll(io.LimitReader(f, MaxReadBytes+1))
+				if err != nil {
+					return err
+				}
+				if len(b) > MaxReadBytes {
+					d.Withheld++
+					return nil
+				}
+				src = bytes.NewReader(RedactProps(b))
+			}
+			hdr := &zip.FileHeader{Name: entry, Method: zip.Deflate, Modified: info.ModTime()}
+			hdr.SetMode(info.Mode().Perm())
+			fw, err := zw.CreateHeader(hdr)
+			if err != nil {
+				return err
+			}
+			_, err = io.Copy(fw, src)
+			return err
+		})
 		if err != nil {
 			return err
 		}
-		_, err = io.Copy(fw, src)
-		return err
-	})
-	if err != nil {
-		return err
 	}
 	return zw.Close()
 }

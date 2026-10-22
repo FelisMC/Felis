@@ -2139,12 +2139,12 @@ export interface paths {
         };
         /**
          * Read a file from a server's world volume (owner-or-admin).
-         * @description Returns one file's bytes, base64-encoded, from inside the server's world volume. Same lifecycle gates and os.Root containment as the directory listing; staff may also read login/lobby's felis-experience.json during startup. Reads are capped at 1 MiB; a larger file is 413 rather than a truncated read, because a config editor that silently returned half a file would let a subsequent save destroy the other half.
+         * @description Returns one file's bytes, base64-encoded, from inside the server's world volume. Same lifecycle gates and os.Root containment as the directory listing; staff may also read login/lobby's felis-experience.json during startup. Reads are capped at 5 MiB; a larger file is 413 rather than a truncated read, because a config editor that silently returned half a file would let a subsequent save destroy the other half.
          */
         get: operations["readServerFile"];
         /**
          * Write a file in a server's world volume (owner-or-admin).
-         * @description Replaces a file's contents, creating the file if absent but never creating its parent directories. Content is base64 so arbitrary bytes (CRLF endings, a BOM) survive intact. Writes are capped at 256 KiB — the Job spec carries the content, and etcd bounds the object — so a larger body is 413. Same lifecycle gates and os.Root containment as the read; a write through a symlink leaving the world root is refused. The replacement is atomic (a synced temporary sibling renamed over the file, keeping its mode), so a failed write leaves the old file whole. With expect_sha256 the write lands only if the file still has that hash; otherwise 409 file_changed. content_sha256 is the SHA-256 of the content: content that hashes otherwise changed on the way and is refused (400 digest_mismatch) before a Job starts, and the Job checks the bytes it received the same way before writing. Staff may save login/lobby's startup-only felis-experience.json while running; restart to apply. That config cannot be a symlink. Stopped writes hold a maintenance lock against startup; running writes take no admission lock and do not prevent shutdown. The panel requires an additional checkbox before modifying world directories while running. Audited as file.write.
+         * @description Replaces a file's contents, creating the file if absent but never creating its parent directories. Content is base64 so arbitrary bytes (CRLF endings, a BOM) survive intact. Writes are capped at 5 MiB; larger text is refused with 413. Content larger than 256 KiB uses the internal staged-upload channel rather than the Kubernetes Job object. Same lifecycle gates and os.Root containment as the read; a write through a symlink leaving the world root is refused. The replacement is atomic (a synced temporary sibling renamed over the file, keeping its mode), so a failed write leaves the old file whole. With expect_sha256 the write lands only if the file still has that hash; otherwise 409 file_changed. content_sha256 is the SHA-256 of the content: content that hashes otherwise changed on the way and is refused (400 digest_mismatch) before a Job starts, and the Job checks the bytes it received the same way before writing. Staff may save login/lobby's startup-only felis-experience.json while running; restart to apply. That config cannot be a symlink. Stopped writes hold a maintenance lock against startup; running writes take no admission lock and do not prevent shutdown. The panel requires an additional checkbox before modifying world directories while running. Audited as file.write.
          */
         put: operations["writeServerFile"];
         post?: never;
@@ -2208,8 +2208,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Start downloading one file or folder of a running or stopped server's world (owner-or-admin).
-         * @description An export (poll GET /exports/{ticket}, then open its download): a Job reads the file, or zips the folder, from the world volume read-only and hands it to felis-api, which streams it to the browser. A file saves under its own name with its length; a folder as NAME.zip, streamed without one, with symbolic links, devices and sockets left out. config/paper-global.yml, the cluster's forwarding secret, is refused as a file and left out of a folder, and server.properties goes out with its rcon.password and forwarding-secrets redacted; both are matched by the file itself, so a link to either under another name is guarded too. The server cannot start until the download has ended. Two file downloads per user at a time, 4 across the install, 30 per user per hour, counted apart from world and backup exports. Audited as file.download.
+         * Download a file, folder or selection from a server's world (owner-or-admin).
+         * @description An export (poll GET /exports/{ticket}, then open its download): a Job reads the file, or zips the folder, from the world volume read-only and hands it to felis-api, which streams it to the browser. A file saves under its own name with its length; a folder as NAME.zip, or a JSON paths selection as a zip, streamed without one, with symbolic links, devices and sockets left out. config/paper-global.yml, the cluster's forwarding secret, is refused as a file and left out of a folder, and server.properties goes out with its rcon.password and forwarding-secrets redacted; both are matched by the file itself, so a link to either under another name is guarded too. The server cannot start while a stopped-server download holds the maintenance lock. Two file downloads per user at a time, 4 across the install, 30 per user per hour, counted apart from world and backup exports. Audited as file.download.
          */
         post: operations["downloadServerFile"];
         delete?: never;
@@ -2313,10 +2313,90 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Extract a .zip into the folder holding it on a running or stopped server (owner-or-admin).
-         * @description Starts a Job that extracts the archive into a temporary folder beside it and moves the result into place, and answers at once with the op; GET …/files/ops reports how it ends. Nothing changes unless every entry is safe: an entry leaving the folder, an absolute path, or a link ends archive_unsafe or archive_symlink; an entry whose size differs from what the archive declares ends archive_invalid; a file where the archive has a folder, or the reverse, ends type_conflict. Without overwrite an archive that would replace any file ends file_exists with the files it would replace, for the caller to confirm and run again with overwrite. Names stored in GBK, as Windows zips in a Chinese locale have them, are read as such. The Job holds the world volume while it runs. Audited as file.unzip.
+         * Extract a zip or tar archive into its parent folder (owner-or-admin).
+         * @description Starts a Job that extracts the archive into a temporary folder beside it and moves the result into place, and answers at once with the op; GET …/files/ops reports how it ends. Nothing changes unless every entry is safe: an entry leaving the folder, an absolute path, or a link ends archive_unsafe or archive_symlink; an entry whose size differs from what the archive declares ends archive_invalid; a file where the archive has a folder, or the reverse, ends type_conflict. Without overwrite an archive that would replace any file ends file_exists with the files it would replace, for the caller to confirm and run again with overwrite. Supported formats are .zip, .tar, .tar.gz and .tgz. Names stored in GBK in zip archives are read as such. Tar symbolic and hard links are refused. Stopped-server operations hold a maintenance lock; live operations share the game volume on its node. Audited as file.unzip.
          */
         post: operations["unzipServerFile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/servers/{name}/files/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Search file names below a server directory (owner-or-admin).
+         * @description Matches a case-insensitive file-name substring recursively, at most 16 directory levels below path. Skips region, entities and poi chunk-data directories and does not follow symbolic links. Results contain paths relative to the search directory. At most 500 entries are returned; truncated means further matches were omitted. Uses the same ownership, lifecycle and containment checks as a directory listing.
+         */
+        get: operations["searchServerFiles"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/servers/{name}/files/transfer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Copy or move selected entries within a server (owner-or-admin).
+         * @description Starts a background copy or move into an existing directory. Sources retain their base names. Root, overlapping source selections and a destination inside a source directory are refused. Protected managed configuration cannot be moved. Copying withheld files is refused; server.properties copies redact credentials. Without overwrite, conflicting files are returned as file_exists with a conflict list; retry with overwrite after confirmation. Type conflicts and symbolic links are refused. Stopped-server operations hold a maintenance lock. Audited as file.copy or file.move.
+         */
+        post: operations["transferServerFiles"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/servers/{name}/files/zip": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Pack selected entries into a zip on the server (owner-or-admin).
+         * @description Creates the destination archive atomically, with progress in files/ops. Entries keep their base names. The destination cannot be inside a selected directory or replace a selected source. Existing targets require overwrite after conflict confirmation. Uses the same guarded archive stream as downloads: withheld files are excluded, properties credentials are redacted, and links and special files are skipped. Audited as file.zip.
+         */
+        post: operations["zipServerFiles"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/servers/{name}/files/from-url": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Download a public URL into a server file (owner-or-admin).
+         * @description felis-api fetches the URL into upload staging, computes its SHA-256, then starts the normal upload landing Job. Only HTTP and HTTPS without credentials are accepted. Private, loopback, link-local and other non-public targets are refused, including resolved dial addresses and every redirect. Environment proxies are not used. Download size is bounded by staging-disk free space and concurrent reservations; the upload filesystem keeps its minimum free-space margin. The request waits for fetching to finish, then returns a background upload op. Audited as file.from_url with the source URL and destination path.
+         */
+        post: operations["downloadServerFileURL"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4323,12 +4403,46 @@ export interface components {
             /** @description Replace files already there. */
             overwrite?: boolean;
         };
-        /** @description One background upload or extraction (internal/api/handlers_fileops.go fileOpView). */
+        FileSelection: {
+            /** @description Files or folders relative to the world root; the root itself is refused. Selected paths may total at most 64 KiB of UTF-8 bytes. */
+            paths: string[];
+        };
+        TransferFiles: {
+            /** @enum {string} */
+            op: "copy" | "move";
+            paths: string[];
+            /** @description Existing destination directory; empty selects the world root. */
+            to: string;
+            /** @description Replace conflicting files after reviewing the conflict list. */
+            overwrite?: boolean;
+        };
+        ZipFiles: {
+            paths: string[];
+            /** @description Destination .zip file relative to the world root. */
+            to: string;
+            /** @description Replace an existing archive after reviewing the conflict. */
+            overwrite?: boolean;
+        };
+        DownloadFileURL: {
+            /**
+             * Format: uri
+             * @description Public HTTP or HTTPS URL without credentials.
+             */
+            url: string;
+            /** @description Destination file relative to the world root. */
+            path: string;
+            /** @description Replace an existing destination file. */
+            overwrite?: boolean;
+        };
+        StartedFileOperation: {
+            op: components["schemas"]["FileOp"];
+        };
+        /** @description One background file operation (internal/api/handlers_fileops.go fileOpView). */
         FileOp: {
             id: string;
             /** @enum {string} */
-            op: "upload" | "unzip";
-            /** @description The file landed */
+            op: "upload" | "unzip" | "copy" | "move" | "zip";
+            /** @description The source archive or destination path. */
             path: string;
             /** @enum {string} */
             state: "running" | "succeeded" | "failed";
@@ -4349,21 +4463,23 @@ export interface components {
              * @description Bytes in all; 0 before the first report.
              */
             total: number;
-            /** @description Files an extraction wrote. Omitted otherwise. */
+            /** @description Files processed. Omitted when zero. */
             files?: number;
             /**
              * Format: int64
-             * @description Bytes an extraction wrote. Omitted otherwise.
+             * @description Bytes written. Omitted when zero.
              */
             bytes?: number;
             error?: components["schemas"]["FileOpError"];
         };
-        /** @description Why an op failed (internal/api/handlers_fileops.go fileOpError). code is what the synchronous file routes answer for the same refusal (file_exists, volume_full, file_changed, not_found, bad_path), an extraction's own (archive_invalid, archive_unsafe, archive_symlink, type_conflict), or job_failed for a Job that ended without saying why. */
+        /** @description Why an op failed (internal/api/handlers_fileops.go fileOpError). code is what the synchronous file routes answer for the same refusal (file_exists, volume_full, file_changed, not_found, bad_path), an extraction's own (archive_invalid, archive_unsafe, archive_symlink, type_conflict), rollback_incomplete when retained files need review, or job_failed for a Job that ended without saying why. */
         FileOpError: {
             code: string;
             message: string;
             /** @description The archive entry refused */
             entry?: string;
+            /** @description Retained directories after incomplete rollback; protected backups require administrator recovery. Omitted when none remain. */
+            recovery_paths?: string[];
             /** @description On file_exists from an extraction, the first 200 files it would replace, sorted. */
             conflicts?: string[];
             /** @description How many files it would replace in all. */
@@ -4720,7 +4836,7 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
-        /** @description The JSON body is over 1 MiB (too_large). */
+        /** @description The JSON body exceeds the operation's limit (too_large); normally 1 MiB, with a larger limit for base64 file writes. */
         TooLarge: {
             headers: {
                 [name: string]: unknown;
@@ -10143,7 +10259,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description The world volume has no room for the write (volume_full); the file is unchanged. */
+            /** @description The world volume has no room for the write (volume_full), or a large write would exhaust upload staging (upload_staging_full); the file is unchanged. */
             507: {
                 headers: {
                     [name: string]: unknown;
@@ -10368,9 +10484,9 @@ export interface operations {
     };
     downloadServerFile: {
         parameters: {
-            query: {
-                /** @description File or folder to download, relative to the world root. The root itself is refused. */
-                path: string;
+            query?: {
+                /** @description File or folder to download when no JSON selection is supplied. The root itself is refused. */
+                path?: string;
                 /** @description true when path is a folder, which is sent as a zip. The Job refuses a path that is not what dir says. */
                 dir?: "true" | "false";
             };
@@ -10380,7 +10496,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["FileSelection"];
+            };
+        };
         responses: {
             /** @description Download started. */
             202: {
@@ -10874,7 +10994,7 @@ export interface operations {
     unzipServerFile: {
         parameters: {
             query: {
-                /** @description The .zip to extract, relative to the world root. */
+                /** @description The .zip, .tar, .tar.gz or .tgz to extract, relative to the world root. */
                 path: string;
             };
             header?: never;
@@ -10900,7 +11020,7 @@ export interface operations {
                     };
                 };
             };
-            /** @description Missing path or malformed body (bad_request), a path not ending in .zip (bad_path), or a malformed server name (bad_name). */
+            /** @description Missing path or malformed body (bad_request), an unsupported archive extension (bad_path), or a malformed server name (bad_name). */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -10930,6 +11050,278 @@ export interface operations {
                 };
             };
             503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    searchServerFiles: {
+        parameters: {
+            query: {
+                path?: string;
+                q: string;
+            };
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Search results. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        path: string;
+                        truncated: boolean;
+                        /** Format: int64 */
+                        free_bytes: number | null;
+                        entries: {
+                            name: string;
+                            /** Format: int64 */
+                            size: number;
+                            is_dir: boolean;
+                            /** Format: date-time */
+                            mod_time: string;
+                        }[];
+                    };
+                };
+            };
+            /** @description Invalid path, server name or search query. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Unknown server or search directory. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Server is transitioning or maintenance blocks file access. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+            /** @description The file Job did not finish in time. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    transferServerFiles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TransferFiles"];
+            };
+        };
+        responses: {
+            /** @description Transfer started; poll files/ops for progress and conflicts. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StartedFileOperation"];
+                };
+            };
+            /** @description Invalid operation, selection, destination or server name. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Unknown server. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Server is transitioning or maintenance blocks the operation. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    zipServerFiles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ZipFiles"];
+            };
+        };
+        responses: {
+            /** @description Archive operation started. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StartedFileOperation"];
+                };
+            };
+            /** @description Invalid selection, destination or server name. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Unknown server. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Server is transitioning or maintenance blocks the operation. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    downloadServerFileURL: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DownloadFileURL"];
+            };
+        };
+        responses: {
+            /** @description URL fetched and upload landing started. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StartedFileOperation"];
+                };
+            };
+            /** @description Invalid or non-public URL (bad_url), path, or response body (upload_incomplete). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Unknown server. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Server is transitioning or maintenance blocks the operation. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The account has reached its concurrent upload limit. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Fetching the source failed (download_failed). */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+            /** @description Downloading would exhaust the staging-space budget (upload_staging_full). */
+            507: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     listServerFileOps: {

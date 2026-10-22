@@ -777,7 +777,7 @@ func TestFileUnzip(t *testing.T) {
 			code             int
 			errCode          string
 		}{
-			{"not a zip", "maps/a.tar.gz", `{}`, http.StatusBadRequest, "bad_path"},
+			{"unsupported archive", "maps/a.rar", `{}`, http.StatusBadRequest, "bad_path"},
 			{"zip only inside the name", "maps/a.zip.bak", `{}`, http.StatusBadRequest, "bad_path"},
 			{"no path", "", `{}`, http.StatusBadRequest, "bad_request"},
 			{"no body", "maps/a.zip", "", http.StatusBadRequest, "bad_request"},
@@ -867,7 +867,9 @@ func TestFileOps(t *testing.T) {
 		killed.Reason = "BackoffLimitExceeded"
 		oom := base("j", fileedit.OpUnzip, fileedit.OpFailed)
 		oom.Reason = "OOMKilled"
-		files.ops = []fileedit.OpState{running, unzipped, uploaded, exists, full, changed, unsafe, deadline, killed, oom}
+		recovery := base("k", fileedit.OpMove, fileedit.OpFailed)
+		recovery.Result = &fileedit.Result{Code: fileedit.CodeRecovery, Error: "rollback needs review", RecoveryPaths: []string{"target/move-recovery-example"}}
+		files.ops = []fileedit.OpState{running, unzipped, uploaded, exists, full, changed, unsafe, deadline, killed, oom, recovery}
 
 		w := list(api)
 		if w.Code != http.StatusOK || files.gotServer != "survival" {
@@ -908,6 +910,8 @@ func TestFileOps(t *testing.T) {
 				"the file operation stopped before it could report how it went (BackoffLimitExceeded); run it again", nil)),
 			op("j", "unzip", "failed", failure("job_failed",
 				"the file operation ran out of memory (OOMKilled); an archive of this many files has to be split into smaller ones", nil)),
+			op("k", "move", "failed", failure("rollback_incomplete", "rollback needs review", map[string]any{
+				"recovery_paths": []any{"target/move-recovery-example"}})),
 		}}
 		if got := fileAnswer(t, w); !reflect.DeepEqual(got, want) {
 			gotJSON, _ := json.MarshalIndent(got, "", " ")

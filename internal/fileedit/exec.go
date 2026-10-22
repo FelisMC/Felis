@@ -30,13 +30,17 @@ const (
 	OpRename = "rename"
 	OpUpload = "upload"
 	OpUnzip  = "unzip"
+	OpSearch = "search"
+	OpCopy   = "copy"
+	OpMove   = "move"
+	OpZip    = "zip"
 )
 
-func mutates(op string) bool { return op != OpList && op != OpRead }
+func mutates(op string) bool { return op != OpList && op != OpRead && op != OpSearch }
 
 func validOp(op string) bool {
 	switch op {
-	case OpList, OpRead, OpWrite, OpMkdir, OpDelete, OpRename, OpUpload, OpUnzip:
+	case OpList, OpRead, OpWrite, OpMkdir, OpDelete, OpRename, OpUpload, OpUnzip, OpSearch, OpCopy, OpMove, OpZip:
 		return true
 	}
 	return false
@@ -48,6 +52,7 @@ const (
 	CodeNotFound = "not_found"
 	CodeTooLarge = "too_large"
 	CodeConflict = "conflict"
+	CodeRecovery = "rollback_incomplete"
 	// CodeNoSpace preserves the original file because replacement is atomic.
 	CodeNoSpace        = "no_space"
 	CodeExists         = "exists"
@@ -69,10 +74,11 @@ const UploadTokenEnv = "FELIS_UPLOAD_TOKEN"
 
 // Write size bounds the Job spec, read and listing limits bound pod-log memory, and one-request uploads stay below the edge body limit.
 const (
-	MaxWriteBytes  = 256 << 10
-	MaxReadBytes   = 1 << 20
-	MaxEntries     = 2000
-	MaxUploadBytes = 64 << 20
+	MaxInlineWriteBytes = 256 << 10
+	MaxWriteBytes       = 5 << 20
+	MaxReadBytes        = 5 << 20
+	MaxEntries          = 2000
+	MaxUploadBytes      = 64 << 20
 )
 
 type Entry struct {
@@ -100,6 +106,7 @@ type Result struct {
 	Conflicts     []string `json:"conflicts,omitempty"`
 	ConflictCount int      `json:"conflict_count,omitempty"`
 	Entry         string   `json:"entry,omitempty"`
+	RecoveryPaths []string `json:"recovery_paths,omitempty"`
 	// Need and Avail are bytes; listings use Avail=-1 when free space is unknown.
 	Need  int64 `json:"need,omitempty"`
 	Avail int64 `json:"avail,omitempty"`
@@ -108,9 +115,11 @@ type Result struct {
 }
 
 type Request struct {
-	Op   string
-	Path string
-	To   string
+	Op    string
+	Path  string
+	To    string
+	Query string
+	Paths []string
 	// Expect conditions writes on the current file hash; ContentSHA256 verifies incoming bytes before any modification.
 	Content       []byte
 	Expect        string
@@ -145,11 +154,16 @@ func Execute(root string, req Request) (Result, error) {
 		path = "."
 	}
 
+	if InternalPath(path) || InternalPath(req.To) {
+		return Result{Code: CodeBadPath, Error: "internal operation staging is not accessible"}, nil
+	}
 	switch req.Op {
 	case OpList:
 		return list(r, root, path), nil
 	case OpRead:
 		return read(r, path), nil
+	case OpSearch:
+		return search(r, path, req.Query), nil
 	case OpWrite:
 		return write(r, path, req.Content, req.ContentSHA256, req.Expect, req.CreateOnly), nil
 	case OpMkdir:
@@ -163,6 +177,10 @@ func Execute(root string, req Request) (Result, error) {
 			return Result{}, errors.New("an upload needs a source")
 		}
 		return upload(r, root, path, *req.Upload, req.Overwrite, req.Progress)
+	case OpCopy, OpMove:
+		return transfer(r, root, req), nil
+	case OpZip:
+		return packZip(r, root, req), nil
 	case OpUnzip:
 		return unzip(r, root, path, req.Overwrite, req.Progress), nil
 	default:
@@ -190,6 +208,9 @@ func list(r *os.Root, rootPath, path string) Result {
 
 	entries := make([]Entry, 0, len(dirents))
 	for _, de := range dirents {
+		if InternalPath(de.Name()) {
+			continue
+		}
 		e := Entry{Name: de.Name(), IsDir: de.IsDir()}
 		// Retain names with zero size and time when an entry disappears between ReadDir and Info.
 		if info, err := de.Info(); err == nil {
@@ -238,9 +259,12 @@ func read(r *os.Root, name string) Result {
 	}
 
 	// LimitReader also bounds files that grow after Stat.
-	b, err := io.ReadAll(io.LimitReader(f, MaxReadBytes))
+	b, err := io.ReadAll(io.LimitReader(f, MaxReadBytes+1))
 	if err != nil {
 		return failure(err, name)
+	}
+	if len(b) > MaxReadBytes {
+		return Result{Code: CodeTooLarge, Error: "the file grew beyond the editor limit"}
 	}
 	content := b
 	if redact {

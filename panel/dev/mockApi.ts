@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { isIP } from "node:net";
 import { gzipSync } from "node:zlib";
+import { mockArchive, mockZip } from "./fileArchives";
 import type { Plugin } from "vite";
 import type {
   AuthSourceConfig,
@@ -43,6 +45,7 @@ import type {
   SoftwareBuild,
   SoftwareRequest,
   SoftwareType,
+  FileOp,
 } from "../src/lib/types";
 
 type AccountID = string;
@@ -117,6 +120,8 @@ interface MockState {
   selfService: SelfServiceQuotaSettings;
   host: MockHost;
   files: Record<string, MockTree>; // per-server world volume, seeded on first visit
+  fileOps: Record<string, FileOp[]>;
+  fileExports: Record<string, { owner: string; filename: string; data: Buffer; contentType: string; expires: number; spent?: boolean }>;
 }
 
 // MockHost stands in for the node-control service; its tasks finish at once.
@@ -516,6 +521,8 @@ function initialState(): MockState {
       managed: false,
     },
     files: {},
+    fileOps: {},
+    fileExports: {},
   };
 }
 
@@ -1578,6 +1585,19 @@ async function handleMockHost(ctx: SessionContext): Promise<boolean> {
 }
 
 async function handleSession(ctx: SessionContext): Promise<boolean> {
+  if (ctx.parts[2] === "exports" && ctx.parts[3] && ctx.method === "GET") {
+    const item = ctx.state.fileExports[ctx.parts[3]];
+    if (!item || item.owner !== ctx.account.id) sendError(ctx.res, 404, "not_found", "no such export");
+    else if (item.spent || item.expires < Date.now()) sendError(ctx.res, 410, "export_expired", "ticket expired");
+    else if (ctx.parts[4] === "download") {
+      item.spent = true;
+      ctx.res.setHeader("Content-Type", item.contentType);
+      ctx.res.setHeader("Content-Length", item.data.length);
+      ctx.res.setHeader("Content-Disposition", `attachment; filename="${item.filename.replaceAll('"', "")}"`);
+      ctx.res.end(item.data);
+    } else sendJSON(ctx.res, 200, { state: "ready" });
+    return true;
+  }
   if (await handleMockHost(ctx)) return true;
   if (await handleMockSoftware(ctx)) return true;
   switch (route(ctx)) {
@@ -3041,8 +3061,8 @@ interface MockFileNode {
 }
 type MockTree = Map<string, MockFileNode>;
 
-const MOCK_MAX_WRITE = 256 * 1024;
-const MOCK_MAX_READ = 1024 * 1024;
+const MOCK_MAX_WRITE = 5 * 1024 * 1024;
+const MOCK_MAX_READ = MOCK_MAX_WRITE;
 const MOCK_MAX_UPLOAD = 64 * 1024 * 1024;
 const MOCK_SECRET_CONFIG = "config/paper-global.yml";
 const MOCK_MANAGED = new Set([MOCK_SECRET_CONFIG, "config", "server.properties"]);
@@ -3125,7 +3145,7 @@ function cleanFilePath(ctx: SessionContext, raw: string | null, allowRoot = fals
     sendError(ctx.res, 400, "bad_request", "path is required");
     return null;
   }
-  if (raw.startsWith("/") || raw.split("/").includes("..")) {
+  if (raw.startsWith("/") || raw.split("/").includes("..") || raw.includes("\0") || Buffer.byteLength(raw) > 4096 || raw.split("/").some((part) => Buffer.byteLength(part) > 255)) {
     sendError(ctx.res, 400, "bad_path", `${raw} escapes the world root`);
     return null;
   }
@@ -3147,10 +3167,124 @@ async function readRawBody(req: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
+function sendMockFileOp(ctx: SessionContext, server: string, kind: FileOp["op"], path: string, error?: FileOp["error"], files = 0, bytes = 0): true {
+  const now = new Date().toISOString();
+  const op: FileOp = { id: `file-${Date.now()}-${Math.random().toString(36).slice(2)}`, op: kind, path, state: error ? "failed" : "succeeded", started_at: now, finished_at: now, done: bytes, total: bytes, files, bytes, ...(error ? { error } : {}) };
+  ctx.state.fileOps[server] = [op, ...(ctx.state.fileOps[server] ?? [])].slice(0, 30);
+  sendJSON(ctx.res, 202, { op });
+  return true;
+}
+
+function landMockFiles(ctx: SessionContext, server: string, kind: FileOp["op"], path: string, tree: MockTree, targets: MockTree, overwrite: boolean, remove: string[] = []): true {
+  const conflicts: string[] = [];
+  for (const [name, item] of targets) {
+    for (let parent = parentPath(name); parent; parent = parentPath(parent)) {
+      if (tree.has(parent) && !tree.get(parent)!.is_dir) return sendMockFileOp(ctx, server, kind, path, { code: "type_conflict", message: "parent is a file", entry: parent });
+    }
+    const existing = tree.get(name);
+    if (existing && existing.is_dir !== item.is_dir) return sendMockFileOp(ctx, server, kind, path, { code: "type_conflict", message: "file and folder conflict", entry: name });
+    if (existing && !item.is_dir) conflicts.push(name);
+  }
+  if (conflicts.length && !overwrite) return sendMockFileOp(ctx, server, kind, path, { code: "file_exists", message: "destination files exist", conflicts: conflicts.slice(0, 200), conflict_count: conflicts.length });
+  for (const source of remove) for (const key of [...tree.keys()]) if (key === source || key.startsWith(`${source}/`)) tree.delete(key);
+  for (const [name, item] of targets) {
+    const parts = name.split("/");
+    for (let i = 1; i < parts.length; i++) {
+      const parent = parts.slice(0, i).join("/");
+      if (!tree.has(parent)) tree.set(parent, { is_dir: true, data: Buffer.alloc(0), mod_time: item.mod_time });
+    }
+    tree.set(name, item);
+  }
+  const files = [...targets.values()].filter((item) => !item.is_dir);
+  return sendMockFileOp(ctx, server, kind, path, undefined, files.length, files.reduce((sum, item) => sum + item.data.length, 0));
+}
+
+function publicMockHost(host: string): boolean {
+  if (host.startsWith("::ffff:")) {
+    const words = host.slice(7).split(":").map((part) => parseInt(part, 16));
+    if (words.length === 2) host = [words[0] >> 8, words[0] & 255, words[1] >> 8, words[1] & 255].join(".");
+  }
+  if (isIP(host) === 6) return /^[23][0-9a-f]{0,3}:/.test(host) && !/^2001:(?:0:|:|db8:)|^2002:/.test(host);
+  if (isIP(host) === 0) return !/(^|\.)localhost$/.test(host.replace(/\.$/, ""));
+  const [a, b, c] = host.split(".").map(Number);
+  return !(a === 0 || a === 10 || a === 127 || a >= 224 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) || (a === 192 && (b === 168 || (b === 0 && (c === 0 || c === 2)) || (b === 88 && c === 99))) ||
+    (a === 198 && (b === 18 || b === 19 || (b === 51 && c === 100))) || (a === 203 && b === 0 && c === 113));
+}
+
+async function handleFileTaskMock(ctx: SessionContext, server: MockServer, tree: MockTree, key: string): Promise<true> {
+  const fail = (status: number, code: string, message: string): true => { sendError(ctx.res, status, code, message); return true; };
+  const body = await readJSON<{ op?: "copy" | "move"; paths?: string[]; to?: string; url?: string; path?: string; overwrite?: boolean }>(ctx.req);
+  const url = new URL(ctx.req.url ?? "/", "http://localhost");
+  const now = new Date().toISOString();
+  if (key === "POST files/from-url") {
+    const path = cleanFilePath(ctx, body.path ?? null);
+    if (path === null) return true;
+    let source: URL;
+    try { source = new URL(body.url ?? ""); } catch { return fail(400, "bad_url", "invalid URL"); }
+    const host = source.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    if (!["http:", "https:"].includes(source.protocol) || source.username || source.password || (source.port && Number(source.port) < 1) || !host || !publicMockHost(host) || Buffer.byteLength(body.url ?? "") > 8192) return fail(400, "bad_url", "public HTTP or HTTPS URL required");
+    if (!tree.get(parentPath(path))?.is_dir) return fail(404, "not_found", "destination folder not found");
+    if (MOCK_MANAGED.has(path)) return fail(400, "bad_path", "managed path");
+    return landMockFiles(ctx, server.name, "upload", path, tree, new Map([[path, { is_dir: false, data: Buffer.from(`Mock download from ${source.href}\n`), mod_time: now }]]), body.overwrite === true);
+  }
+  let paths: string[];
+  const batch = Object.hasOwn(body, "paths");
+  if (key === "POST files/download" && !batch) {
+    const path = cleanFilePath(ctx, url.searchParams.get("path"));
+    if (path === null) return true;
+    paths = [path];
+  } else {
+    if (key === "POST files/download" && (url.searchParams.has("path") || url.searchParams.has("dir"))) return fail(400, "bad_request", "selected paths cannot be combined with path or dir");
+    if (!Array.isArray(body.paths) || body.paths.length < 1 || body.paths.length > 500 || body.paths.some((p) => typeof p !== "string")) return fail(400, "bad_request", "select 1 to 500 paths");
+    paths = [];
+    for (const raw of body.paths) { const path = cleanFilePath(ctx, raw); if (path === null) return true; paths.push(path); }
+    if (paths.reduce((total, path) => total + Buffer.byteLength(path), 0) > 64 * 1024) return fail(400, "bad_request", "selected paths exceed 65536 bytes");
+    const basenames = paths.map((path) => path.split("/").pop());
+    if (new Set(basenames).size !== paths.length || paths.some((path) => paths.some((other) => path !== other && path.startsWith(`${other}/`)))) return fail(400, "bad_path", "selected paths must have distinct names without overlapping folders");
+  }
+  if (paths.some((path) => !tree.has(path))) return fail(404, "not_found", "selected entry not found");
+  const selected = [...tree.entries()].filter(([path]) => paths.some((root) => path === root || path.startsWith(`${root}/`)) && path !== MOCK_SECRET_CONFIG);
+  const safeData = (path: string, data: Buffer) => path === "server.properties" ? Buffer.from(data.toString().replace(/^rcon\.password=.*$/gm, "rcon.password=[redacted by felis]")) : data;
+  if (key === "POST files/download" || key === "POST files/zip") {
+    if (paths.includes(MOCK_SECRET_CONFIG)) return fail(400, "bad_path", "proxy secret cannot be downloaded");
+    const data = mockZip(selected.map(([path, node]) => {
+      const root = paths.find((name) => path === name || path.startsWith(`${name}/`))!;
+      return { path: root.split("/").pop()! + path.slice(root.length), data: safeData(path, node.data), directory: node.is_dir };
+    }));
+    if (key === "POST files/zip") {
+      const to = cleanFilePath(ctx, body.to ?? null);
+      if (to === null) return true;
+      if (!to.toLowerCase().endsWith(".zip") || paths.some((p) => to === p || to.startsWith(`${p}/`)) || MOCK_MANAGED.has(to)) return fail(400, "bad_path", "invalid archive destination");
+      if (!tree.get(parentPath(to))?.is_dir) return fail(404, "not_found", "destination folder not found");
+      return landMockFiles(ctx, server.name, "zip", to, tree, new Map([[to, { is_dir: false, data, mod_time: now }]]), body.overwrite === true);
+    }
+    const one = !batch && url.searchParams.get("dir") !== "true";
+    if (!batch && tree.get(paths[0])!.is_dir === one) return fail(400, "bad_path", "file or folder type changed");
+    const filename = batch ? `${server.name}-files.zip` : paths[0].split("/").pop()! + (one ? "" : ".zip");
+    const ticket = `export-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    ctx.state.fileExports[ticket] = { owner: ctx.account.id, filename, data: one ? safeData(paths[0], tree.get(paths[0])!.data) : data, contentType: one ? "application/octet-stream" : "application/zip", expires: Date.now() + 90_000 };
+    sendJSON(ctx.res, 202, { ticket, state: "pending", filename });
+    return true;
+  }
+  if (!["copy", "move"].includes(body.op ?? "")) return fail(400, "bad_request", "copy or move is required");
+  const to = cleanFilePath(ctx, body.to ?? null, true);
+  if (to === null) return true;
+  if (!tree.get(to)?.is_dir) return fail(400, "bad_path", "destination is not a folder");
+  if (paths.some((p) => MOCK_MANAGED.has(p) || p === to || to.startsWith(`${p}/`))) return fail(400, "bad_path", "managed or recursive source");
+  const targets: MockTree = new Map();
+  for (const root of paths) {
+    const target = [to, root.split("/").pop()].filter(Boolean).join("/");
+    if (target === root) return fail(400, "bad_path", "source and destination match");
+    for (const [path, node] of selected) if (path === root || path.startsWith(`${root}/`)) targets.set(target + path.slice(root.length), { ...node, data: safeData(path, node.data), mod_time: now });
+  }
+  return landMockFiles(ctx, server.name, body.op!, to, tree, targets, body.overwrite === true, body.op === "move" ? paths : []);
+}
+
 // File Jobs share a running game's volume; lifecycle transitions and maintenance still gate access.
 async function handleFilesMock(ctx: SessionContext, serverInfo: MockServer): Promise<boolean> {
   const route = ctx.parts.slice(4).join("/");
-  const known = ["GET files", "GET file", "PUT file", "DELETE file", "POST files/mkdir", "POST files/rename", "PUT files/upload"];
+  const known = ["GET files", "GET file", "PUT file", "DELETE file", "POST files/mkdir", "POST files/rename", "PUT files/upload", "GET files/search", "GET files/ops", "POST files/transfer", "POST files/zip", "POST files/from-url", "POST files/unzip", "POST files/download"];
   const key = `${ctx.method} ${route}`;
   const fail = (status: number, code: string, message: string): true => {
     sendError(ctx.res, status, code, message);
@@ -3173,7 +3307,14 @@ async function handleFilesMock(ctx: SessionContext, serverInfo: MockServer): Pro
     return true;
   }
   const tree = filesOf(ctx.state, serverInfo.name);
-  const p = cleanFilePath(ctx, url.searchParams.get("path"), key === "GET files");
+  if (key === "GET files/ops") {
+    sendJSON(ctx.res, 200, { ops: ctx.state.fileOps[serverInfo.name] ?? [] });
+    return true;
+  }
+  if (["POST files/transfer", "POST files/zip", "POST files/from-url", "POST files/download"].includes(key)) {
+    return handleFileTaskMock(ctx, serverInfo, tree, key);
+  }
+  const p = cleanFilePath(ctx, url.searchParams.get("path"), key === "GET files" || key === "GET files/search");
   if (p === null) return true;
   await new Promise((r) => setTimeout(r, 350));
   const now = new Date().toISOString();
@@ -3181,6 +3322,42 @@ async function handleFilesMock(ctx: SessionContext, serverInfo: MockServer): Pro
   const parent = tree.get(parentPath(p));
 
   switch (key) {
+    case "GET files/search": {
+      const query = url.searchParams.get("q")?.trim();
+      if (!query || Buffer.byteLength(query) > 256) return fail(400, "bad_request", "query is required and must not exceed 256 bytes");
+      if (!node?.is_dir) return fail(400, "bad_path", "search path is not a directory");
+      const prefix = p ? `${p}/` : "";
+      const entries = [...tree.entries()].filter(([path]) => {
+        if (!path.startsWith(prefix) || path === p) return false;
+        const relative = path.slice(prefix.length).split("/");
+        return relative.length <= 17 && !relative.slice(0, -1).some((part) => ["region", "entities", "poi"].includes(part)) && relative.at(-1)!.toLowerCase().includes(query.toLowerCase());
+      }).map(([path, entry]) => ({ name: path.slice(prefix.length), is_dir: entry.is_dir, size: entry.data.length, mod_time: entry.mod_time }));
+      sendJSON(ctx.res, 200, { path: p, entries: entries.slice(0, 500), truncated: entries.length > 500, free_bytes: null });
+      return true;
+    }
+    case "POST files/unzip": {
+      if (!node || node.is_dir) return fail(404, "not_found", "archive does not exist");
+      const body = await readJSON<{ overwrite?: boolean }>(ctx.req);
+      let files;
+      try { files = mockArchive(node.data, p); }
+      catch (e) {
+        const code = e instanceof Error && ["archive_invalid", "archive_symlink", "archive_unsafe"].includes(e.message) ? e.message : "archive_invalid";
+        sendMockFileOp(ctx, serverInfo.name, "unzip", p, { code, message: "archive refused" }); return true;
+      }
+      const root = parentPath(p);
+      const targets = new Map<string, MockFileNode>();
+      for (const file of files) {
+        if (file.path.startsWith("/") || file.path.includes("\\") || file.path.split("/").includes("..")) {
+          sendMockFileOp(ctx, serverInfo.name, "unzip", p, { code: "archive_unsafe", message: "unsafe archive entry", entry: file.path }); return true;
+        }
+        const path = [root, file.path.replace(/\/$/, "")].filter(Boolean).join("/");
+        if (MOCK_MANAGED.has(path)) {
+          sendMockFileOp(ctx, serverInfo.name, "unzip", p, { code: "bad_path", message: "managed path", entry: file.path }); return true;
+        }
+        targets.set(path, { is_dir: !!file.directory, data: file.data, mod_time: now });
+      }
+      return landMockFiles(ctx, serverInfo.name, "unzip", p, tree, targets, body.overwrite === true);
+    }
     case "GET files": {
       if (!node) return fail(404, "not_found", `${p} does not exist`);
       if (!node.is_dir) return fail(400, "bad_path", `${p} is not a directory`);

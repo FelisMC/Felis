@@ -3,6 +3,7 @@ package fileedit
 import (
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // stubStatfs makes every staging disk report avail of total bytes free.
@@ -302,5 +304,151 @@ func TestStageSweep(t *testing.T) {
 		t.Fatalf("Put after Sweep: %v", err)
 	} else {
 		release()
+	}
+}
+
+func TestReceiveSealsAndCleansAStream(t *testing.T) {
+	for _, size := range []int64{-1, 3} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			s := roomyStage(t)
+			st, drop, err := s.Receive("owner", "survival", "plugins/a.jar", strings.NewReader("jar"), size)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer drop()
+			if st.Size != 3 || st.SHA256 != digest([]byte("jar")) {
+				t.Fatalf("received %+v", st)
+			}
+			f, n, err := s.Open(st.ID, st.Token)
+			if err != nil {
+				t.Fatal(err)
+			}
+			b, err := io.ReadAll(f)
+			f.Close()
+			if err != nil || n != 3 || string(b) != "jar" {
+				t.Fatalf("received %q (%d): %v", b, n, err)
+			}
+			if _, _, err := s.Open(st.ID, st.Token); !errors.Is(err, ErrNotStaged) {
+				t.Fatalf("token was reusable: %v", err)
+			}
+			retry, err := s.Seal("owner", "survival", st.ID)
+			if err != nil || retry.SHA256 != st.SHA256 {
+				t.Fatalf("retry = %+v, %v", retry, err)
+			}
+			if err := s.Landed(st.ID, retry.Token); err != nil || len(stagedNames(t, s)) != 0 {
+				t.Fatalf("landing left staged content: %v", err)
+			}
+		})
+	}
+}
+
+func TestReceiveBoundsUnknownLengthAndReleasesItsReservation(t *testing.T) {
+	stubStatfs(t, 1000, 1200)
+	s := &Stage{Dir: t.TempDir(), MinFree: 0.5}
+	for _, tc := range []struct {
+		body io.Reader
+		err  error
+	}{
+		{strings.NewReader(strings.Repeat("x", 401)), ErrStageFull},
+		{io.MultiReader(strings.NewReader("x"), errReader{io.ErrUnexpectedEOF}), ErrShortUpload},
+	} {
+		if _, _, err := s.Receive("owner", "survival", "a", tc.body, -1); !errors.Is(err, tc.err) {
+			t.Fatalf("received err = %v, want %v", err, tc.err)
+		}
+		if len(stagedNames(t, s)) != 0 {
+			t.Fatal("failed reception retained bytes")
+		}
+	}
+	st, drop, err := s.Receive("owner", "survival", "a", strings.NewReader(strings.Repeat("x", 400)), -1)
+	if err != nil || st.Size != 400 {
+		t.Fatalf("the full budget after errors: size = %d, err = %v", st.Size, err)
+	}
+	drop()
+	if len(stagedNames(t, s)) != 0 {
+		t.Fatal("cancel retained bytes")
+	}
+}
+
+func TestReceiveReservesSpaceAgainstConcurrentUploads(t *testing.T) {
+	stubStatfs(t, 1000, 1200)
+	s := &Stage{Dir: t.TempDir(), MinFree: 0.5}
+	pr, pw := io.Pipe()
+	done := make(chan error, 1)
+	go func() {
+		_, drop, err := s.Receive("owner", "survival", "a", pr, -1)
+		if err == nil {
+			drop()
+		}
+		done <- err
+	}()
+	if _, err := pw.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Put(strings.NewReader("x"), 1, sumOf("x")); !errors.Is(err, ErrStageFull) {
+		t.Fatalf("a second upload took the stream's reservation: %v", err)
+	}
+	pw.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	_, drop, err := s.Put(strings.NewReader("x"), 1, sumOf("x"))
+	if err != nil {
+		t.Fatalf("reservation was not released: %v", err)
+	}
+	drop()
+}
+
+func TestReceiveExpiresUnlandedFilesAndSharesTheSessionLimit(t *testing.T) {
+	s := roomyStage(t)
+	now := time.Now()
+	s.Now = func() time.Time { return now }
+	for i := 0; i < MaxSessionsPerUser; i++ {
+		if _, _, err := s.Receive("owner", "survival", "a", strings.NewReader("x"), -1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := s.Receive("owner", "survival", "a", strings.NewReader("x"), -1); !errors.Is(err, ErrTooManySessions) {
+		t.Fatalf("session limit = %v", err)
+	}
+	if len(stagedNames(t, s)) != MaxSessionsPerUser {
+		t.Fatal("the refused reception retained a file")
+	}
+	now = now.Add(SessionIdle + time.Second)
+	if n := s.Expire(); n != MaxSessionsPerUser || len(stagedNames(t, s)) != 0 {
+		t.Fatalf("expired %d files", n)
+	}
+}
+
+func TestReceiveCountsInFlightSessionsBeforeReading(t *testing.T) {
+	s := roomyStage(t)
+	for i := 0; i < MaxSessionsPerUser-1; i++ {
+		if _, err := s.Begin("owner", "survival", "a", 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pr, pw := io.Pipe()
+	done := make(chan error, 1)
+	go func() {
+		_, drop, err := s.Receive("owner", "survival", "a", pr, 1)
+		if err == nil {
+			drop()
+		}
+		done <- err
+	}()
+	if _, err := pw.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	unread := &eofReader{r: strings.NewReader("x")}
+	if _, _, err := s.Receive("owner", "survival", "b", unread, 1); !errors.Is(err, ErrTooManySessions) || unread.read {
+		t.Fatalf("full session quota read body=%v, err=%v", unread.read, err)
+	}
+	pw.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if _, drop, err := s.Receive("owner", "survival", "b", strings.NewReader("x"), 1); err != nil {
+		t.Fatal(err)
+	} else {
+		drop()
 	}
 }

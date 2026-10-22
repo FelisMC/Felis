@@ -38,6 +38,7 @@ type Runner interface {
 }
 
 type Config struct {
+	StageWrite   func(content []byte) (UploadSource, func(), error)
 	ResolveWorld placement.Resolver
 	Namespace    string
 	// ServiceAccount needs filesystem access only and no Kubernetes RBAC grants.
@@ -138,6 +139,17 @@ func (e *Editor) List(ctx context.Context, server, path string) (Listing, error)
 	return Listing{Entries: res.Entries, Truncated: res.Truncated, Free: res.Avail}, nil
 }
 
+func (e *Editor) Search(ctx context.Context, server, path, query string) (Listing, error) {
+	res, err := e.run(ctx, server, JobParams{Op: OpSearch, Path: path, Query: query})
+	if err != nil {
+		return Listing{}, err
+	}
+	if res.Entries == nil {
+		res.Entries = []Entry{}
+	}
+	return Listing{Entries: res.Entries, Truncated: res.Truncated, Free: -1}, nil
+}
+
 // Read returns the pre-redaction file hash for conditional writes and rejects damaged transmitted content.
 func (e *Editor) Read(ctx context.Context, server, path string) ([]byte, string, error) {
 	res, err := e.run(ctx, server, JobParams{Op: OpRead, Path: path})
@@ -155,9 +167,23 @@ func (e *Editor) Read(ctx context.Context, server, path string) ([]byte, string,
 
 // Write creates missing files but not parents, compares nonempty expect hashes and rejects existing paths with createOnly.
 func (e *Editor) Write(ctx context.Context, server, path string, content []byte, expect string, createOnly bool) (string, error) {
-	res, err := e.run(ctx, server, JobParams{
-		Op: OpWrite, Path: path, Content: content, Expect: expect, CreateOnly: createOnly,
-	})
+	if len(content) > MaxWriteBytes {
+		return "", ErrTooLarge
+	}
+	p := JobParams{Op: OpWrite, Path: path, Content: content, Expect: expect, CreateOnly: createOnly}
+	if len(content) > MaxInlineWriteBytes {
+		if e.Config.StageWrite == nil {
+			return "", fmt.Errorf("fileedit: large writes need staging")
+		}
+		src, cleanup, err := e.Config.StageWrite(content)
+		if err != nil {
+			return "", err
+		}
+		defer cleanup()
+		p.Content = nil
+		p.SourceURL, p.UploadToken, p.UploadSize, p.UploadSHA256 = src.URL, src.Token, src.Size, src.SHA256
+	}
+	res, err := e.run(ctx, server, p)
 	if err != nil {
 		return "", err
 	}
@@ -288,6 +314,17 @@ func (e *Editor) StartUnzip(ctx context.Context, server, path string, overwrite 
 	return e.start(ctx, server, JobParams{Op: OpUnzip, Path: path, Overwrite: overwrite})
 }
 
+func (e *Editor) StartTransfer(ctx context.Context, server, op string, paths []string, to string, overwrite bool) (OpState, error) {
+	if op != OpCopy && op != OpMove {
+		return OpState{}, ErrBadPath
+	}
+	return e.start(ctx, server, JobParams{Op: op, Path: to, Paths: paths, To: to, Overwrite: overwrite})
+}
+
+func (e *Editor) StartZip(ctx context.Context, server string, paths []string, to string, overwrite bool) (OpState, error) {
+	return e.start(ctx, server, JobParams{Op: OpZip, Path: to, Paths: paths, To: to, Overwrite: overwrite})
+}
+
 func (e *Editor) Ops(ctx context.Context, server string) ([]OpState, error) {
 	return e.Runner.Ops(ctx, e.Config.withDefaults().Namespace, server)
 }
@@ -324,7 +361,7 @@ func resultError(res Result) error {
 		return fmt.Errorf("%w: %s", ErrBadPath, res.Error)
 	case CodeTooLarge:
 		return fmt.Errorf("%w: %s", ErrTooLarge, res.Error)
-	case CodeConflict:
+	case CodeConflict, CodeRecovery:
 		return fmt.Errorf("%w: %s", ErrConflict, res.Error)
 	case CodeNoSpace:
 		return fmt.Errorf("%w: %s", ErrNoSpace, res.Error)

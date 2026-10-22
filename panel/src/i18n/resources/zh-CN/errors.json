@@ -15,7 +15,7 @@
   "already_exists": "同名服务器已存在。",
   "world_volume_exists": "同名服务器的世界卷仍存在。请使用其他名称，或由运维确认并处理旧世界卷。",
   "server_retiring": "服务器已进入放弃或删除流程，将在下一次每日回收时处理。撤销请求前无法启动或认领。",
-  "confirm_mismatch": "输入的名称和服务器名称不一致。",
+  "confirm_mismatch": "请输入节点名称以确认故障切换。",
   "system_server": "系统服务器由平台管理，不允许放弃或删除。",
   "world_volume_orphaned": "服务器的 MinecraftServer 资源已被手动删除，但世界卷仍存在。请由运维归档并删除残留世界卷，再删除服务器记录。",
   "cooldown": "启动冷却中——请稍后再试。",
@@ -158,7 +158,6 @@
   "node_operation_busy": "节点维护正在执行，暂不允许启动服务器或创建另一项节点任务。",
   "node_control_unavailable": "主机节点执行服务不可用。请检查主控上的 felis-node-control.service。",
   "node_not_lost": "该节点仍然在线，或者它不是 Worker 节点。只有失联的 Worker 节点可以故障切换。",
-  "confirm_mismatch": "请输入节点名称以确认故障切换。",
   "bad_heartbeat_url": "心跳地址须为以 http:// 或 https:// 开头的完整网址。",
   "eula_required": "使用服务端软件的服务器须先同意 Minecraft 最终用户许可协议（EULA）。",
   "software_unavailable": "当前平台未启用服务端软件。",
@@ -170,6 +169,7 @@
   "software_metadata_unavailable": "无法连接服务端软件的官方下载站，暂时无法读取版本信息。请稍后重试。",
   "software_change_unconfirmed": "更换核心或游戏版本后，世界将在下次启动时由新版本打开，升级后的区块不支持旧版本。请先备份世界并勾选确认，再保存配置。",
   "self_service_disabled": "当前账户没有建服配额。请联系平台所有者分配配额。",
-  "no_node": "当前没有可承载新服务器的节点。请联系管理员。"
-
+  "no_node": "当前没有可承载新服务器的节点。请联系管理员。",
+  "bad_url": "网址必须使用 HTTP 或 HTTPS，并指向公开地址。内网、回环及链路本地地址不可用。",
+  "download_failed": "远程文件下载失败。请检查网址及远程服务状态。"
 }
