@@ -52,7 +52,7 @@ jobs:
           base="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo v0.0.0)"
           FELIS_RELEASE_ARCHES=amd64 deploy/build-release-artifacts.sh "${base}+g$(git rev-parse --short HEAD)" dist
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-assets
           path: dist/
@@ -126,7 +126,7 @@ jobs:
           k -n felis logs deploy/felis-postgres --tail=60 || true
           sudo journalctl -u k3s -u felis-velocity --no-pager -n 120 || true
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: e2e-install-logs
@@ -176,7 +176,7 @@ jobs:
           sudo -E /usr/local/bin/k3s kubectl -n felis logs deploy/felis-postgres --tail=60 || true
           sudo journalctl -u k3s -u felis-velocity -u docker --no-pager -n 120 || true
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: e2e-readme-logs
@@ -254,7 +254,7 @@ jobs:
           # The release ran the database on the host; the upgrade moves it into k3s.
           sudo journalctl -u k3s -u felis-velocity -u postgresql --no-pager -n 120 || true
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: e2e-upgrade-logs
@@ -294,7 +294,7 @@ jobs:
           sudo -E /usr/local/bin/k3s kubectl get pods -A -o wide || true
           sudo journalctl -u k3s -u felis-velocity -u docker --no-pager -n 120 || true
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: e2e-source-logs
