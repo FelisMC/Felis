@@ -491,5 +491,14 @@
   "autostop_host_next": "Select Wake when the server is needed; a player joining also wakes it under its autostart policy.",
   "recent_crashes": "Crashed {{n}} times in a row within the last hour and was restarted each time (limit {{max}}). Latest: {{cause}}, {{when}}.",
   "recent_crashes_any": "Crashed {{n}} times in a row within the last hour. Latest: {{cause}}, {{when}}.",
-  "events_title": "Activity"
+  "events_title": "Activity",
+  "usage_title": "Resource usage",
+  "usage_cpu": "CPU",
+  "usage_memory": "Memory",
+  "usage_window": "Sampled every 15 seconds · Last hour",
+  "usage_cpu_curve": "CPU usage over the last hour",
+  "usage_memory_curve": "Memory usage over the last hour",
+  "usage_cpu_basis": "CPU percentages use the server limit; unlimited CPU is shown in millicores. Memory is the working set.",
+  "usage_unavailable": "Current metrics are unavailable. Values update automatically when sampling resumes.",
+  "usage_stopped": "The server is not running. The last hour of history is retained."
 }

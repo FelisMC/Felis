@@ -324,6 +324,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		Repo:            repo,
 		Cluster:         cluster,
 		Console:         api.NewK8sConsole(cl, cfg.K8s.Namespace),
+		Usage:           api.NewUsageSampler(cluster.ReadPodUsage),
 		Logs:            api.NewK8sLogStreamer(clientset, cfg.K8s.Namespace),
 		BuildLogs:       api.NewK8sBuildLogStreamer(clientset, cfg.Registry.BuildNamespace),
 		Internal:        internalAuth,
@@ -422,6 +423,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	}
 	// These loops run only in the felis-api instance holding the lease (leadLoops).
 	loops := func(ctx context.Context) {
+		go sampleUsage(ctx, a, stderr)
 		go reconcileBuilds(ctx, builder, stderr)
 		go settleRestoreChains(ctx, a, stderr)
 		go settleLiveBackups(ctx, a, stderr)

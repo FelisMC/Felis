@@ -810,12 +810,25 @@ function visibleServers(state: MockState, accountInfo: MockAccount): MyServerVie
     .map((serverInfo) => myServerView(serverInfo, accountInfo));
 }
 
+function mockUsage(server: MockServer) {
+  if (server.phase !== "Running" || server.desiredState !== "Running") return { current: null, history: [] };
+  const now = Date.now();
+  const history = Array.from({ length: 240 }, (_, i) => ({ at: new Date(now - (239 - i) * 15_000).toISOString(), cpuMilli: 250, memoryBytes: 512 * 2 ** 20 }));
+  return { current: history.at(-1)!, history };
+}
+
+function mockCurrentUsage(server: MockServer) {
+  const { current } = mockUsage(server);
+  return current ? { cpuMilli: current.cpuMilli, memoryBytes: current.memoryBytes } : {};
+}
+
 // fleetView mirrors the Go fleetServerView (GET /fleet).
 function fleetView(state: MockState, accountInfo: MockAccount): FleetServer[] {
   return state.servers.map((s, i) => {
     const { owner, ...wire } = s;
     return {
       ...wire,
+      ...mockCurrentUsage(s),
       endpointMode: "domain",
       endpointAddress: s.ready ? `10.43.0.${10 + i}:25565` : undefined,
       playersOnline: s.ready ? s.playersOnline : 0,
@@ -839,6 +852,9 @@ function myServerView(serverInfo: MockServer, accountInfo: MockAccount): MyServe
     playersMax: serverInfo.playersMax,
     displayName: serverInfo.displayName,
     ...(owned && {
+      cpu: serverInfo.cpu,
+      memory: serverInfo.memory,
+      ...mockCurrentUsage(serverInfo),
       desiredState: serverInfo.desiredState,
       autostartPolicy: serverInfo.autostartPolicy,
       playerCountUnknown: serverInfo.playerCountUnknown,
@@ -850,7 +866,7 @@ function myServerView(serverInfo: MockServer, accountInfo: MockAccount): MyServe
 // statusView returns the full projection to an owner or admin, the public subset to anyone else.
 function statusView(serverInfo: MockServer, accountInfo: MockAccount): ServerStatus {
   const { owner: _owner, ...wire } = serverInfo;
-  if (canManage(accountInfo, serverInfo)) return wire;
+  if (canManage(accountInfo, serverInfo)) return { ...wire, ...mockCurrentUsage(serverInfo) };
   return {
     name: wire.name,
     subdomain: wire.subdomain,
@@ -2921,6 +2937,11 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
 
   if (is("GET", ctx) && ctx.parts[4] === "status") {
     sendJSON(ctx.res, 200, statusView(serverInfo, ctx.account));
+    return true;
+  }
+  if (is("GET", ctx) && ctx.parts[4] === "usage") {
+    if (!canManage(ctx.account, serverInfo)) sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
+    else sendJSON(ctx.res, 200, mockUsage(serverInfo));
     return true;
   }
   if (is("PATCH", ctx) && !ctx.parts[4]) {

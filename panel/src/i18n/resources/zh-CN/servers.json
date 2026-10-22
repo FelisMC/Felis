@@ -489,5 +489,14 @@
   "autostop_host_next": "需要时点击“启动”；玩家加入游戏时也会按自动启动策略唤醒。",
   "recent_crashes": "最近 1 小时内连续崩溃 {{n}} 次，均已自动重启（上限 {{max}} 次）。最近一次：{{cause}}，{{when}}。",
   "recent_crashes_any": "最近 1 小时内连续崩溃 {{n}} 次。最近一次：{{cause}}，{{when}}。",
-  "events_title": "运行记录"
+  "events_title": "运行记录",
+  "usage_title": "资源占用",
+  "usage_cpu": "CPU",
+  "usage_memory": "内存",
+  "usage_window": "每 15 秒采样 · 最近 1 小时",
+  "usage_cpu_curve": "最近 1 小时 CPU 占用曲线",
+  "usage_memory_curve": "最近 1 小时内存占用曲线",
+  "usage_cpu_basis": "CPU 百分比按服务器限额计算；未设置限额时显示毫核。内存为实际工作集。",
+  "usage_unavailable": "当前指标不可用，采样恢复后自动更新。",
+  "usage_stopped": "服务器未运行，保留最近 1 小时的曲线。"
 }

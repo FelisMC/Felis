@@ -867,6 +867,8 @@ components:
           description: The pod memory limit (the server's memory as an admin picks it), a Kubernetes quantity such as 4Gi.
         storageSize: { type: string }
         cpu: { type: string }
+        cpuMilli: { type: integer, format: int64, description: Current CPU usage in millicores; owner and admin only, omitted when unavailable. }
+        memoryBytes: { type: integer, format: int64, description: Current memory working set in bytes; owner and admin only, omitted when unavailable. }
         idleStopSeconds:
           type: integer
           format: int32
@@ -1064,11 +1066,38 @@ components:
         can_wake:
           type: boolean
           description: False once the owner or an admin took the wake right away.
+    UsagePoint:
+      type: object
+      required: [at, cpuMilli, memoryBytes]
+      properties:
+        at: { type: string, format: date-time }
+        cpuMilli: { type: integer, format: int64, minimum: 0 }
+        memoryBytes: { type: integer, format: int64, minimum: 0 }
+
+    ServerUsage:
+      type: object
+      required: [current, history]
+      properties:
+        current:
+          anyOf:
+            - { $ref: '#/components/schemas/UsagePoint' }
+            - { type: 'null' }
+          description: Null while stopped, before the first sample, or when metrics are unavailable or older than 45 seconds.
+        history:
+          type: array
+          maxItems: 240
+          items: { $ref: '#/components/schemas/UsagePoint' }
+          description: Oldest first, covering the last hour; held in memory and cleared when the API instance changes.
+
     MyServerView:
       type: object
       description: One row of the caller's server list (internal/api/repo.go MyServerView).
       required: [name, subdomain, owned, claimable, playersOnline, playersMax]
       properties:
+        cpu: { type: string, description: CPU limit; owned rows only. }
+        memory: { type: string, description: Memory limit; owned rows only. }
+        cpuMilli: { type: integer, format: int64, description: Current CPU usage in millicores; owned rows only, omitted when unavailable. }
+        memoryBytes: { type: integer, format: int64, description: Current memory working set in bytes; owned rows only, omitted when unavailable. }
         name: { type: string }
         subdomain: { type: string }
         owned: { type: boolean }
@@ -4052,6 +4081,36 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ServerInfo' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/servers/{name}/usage:
+    get:
+      tags: [servers]
+      operationId: serverUsage
+      summary: Current CPU and memory usage and the last hour of samples (owner or admin).
+      description: >-
+        Samples running game pods every 15 seconds through metrics-server. CPU is
+        measured in millicores and memory is the working set in bytes. At most 240
+        samples are retained in memory for one hour; API instance changes restart
+        the history. Unavailable or stopped current usage is null, never a zero estimate.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Current usage and recent history.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerUsage' }
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':

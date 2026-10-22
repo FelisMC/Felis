@@ -1198,6 +1198,7 @@ run_k3s() { # installed-version pinned-version [FELIS_UPGRADE_DEPS]
     write_k3s_config() { :; }
     write_k3s_service_dropin() { :; }
     strip_k3s_kubeconfig_mode_flag() { :; }
+    enable_k3s_metrics_server() { :; }
     run_k3s_installer() { printf "INSTALLER: %s\n" "$FELIS_K3S_VERSION"; }
     stage_k3s_airgap_images() { echo STAGE; }
     systemctl() { :; }
@@ -3525,13 +3526,51 @@ case "$(awk '/^run_k3s_installer\(\) \{/,/^}/' "$BS")" in
   *) echo "FAIL: no run_k3s_installer found in $BS"; fails=$((fails + 1)) ;;
 esac
 
+metricblock="$(awk '/^enable_k3s_metrics_server\(\) \{/,/^}/' "$BS")"
+[ -n "$metricblock" ] || { echo "FAIL: no enable_k3s_metrics_server found in $BS"; exit 1; }
+run_enable_metrics() {
+  UNIT="$kdir/k3s.service" bash -c '
+    set -Eeuo pipefail
+    log() { :; }
+    remember_temp() { :; }
+    systemctl() { echo "SYSTEMCTL: $*"; }
+    K3S_UNIT_FILE="$UNIT" K3S_RESTART_NEEDED=0
+    '"$metricblock"'
+    enable_k3s_metrics_server
+    echo "RESTART=$K3S_RESTART_NEEDED"'
+}
+cat > "$kdir/k3s.service" <<EOF
+ExecStart=/usr/local/bin/k3s \\
+    server \\
+    '--disable' \\
+    'traefik' \\
+    '--disable' \\
+    'metrics-server' \\
+    '--disable' \\
+    'servicelb' \\
+
+EOF
+out="$(run_enable_metrics)"
+expect "enabling bundled metrics reloads the unit" "SYSTEMCTL: daemon-reload" "$out"
+expect "enabling bundled metrics requests one restart" "RESTART=1" "$out"
+case "$(cat "$kdir/k3s.service")" in *metrics-server*) echo "FAIL legacy metrics disable remains"; fails=$((fails + 1)) ;; esac
+expect "other disabled components stay disabled" "'traefik'" "$(cat "$kdir/k3s.service")"
+expect "the service load balancer stays disabled" "'servicelb'" "$(cat "$kdir/k3s.service")"
+expect "enabling metrics twice does not restart k3s" "RESTART=0" "$(run_enable_metrics)"
+printf "ExecStart=/usr/local/bin/k3s \\\\\n    server \\\\\n    '--disable=metrics-server' \\\\\n" > "$kdir/k3s.service"
+expect "the combined legacy metrics flag also enables metrics" "RESTART=1" "$(run_enable_metrics)"
+case "$(awk '/^run_k3s_installer\(\) \{/,/^}/' "$BS")" in
+  *'--disable metrics-server'*) echo "FAIL fresh installs disable metrics-server"; fails=$((fails + 1)) ;;
+  *) echo "PASS fresh installs retain bundled metrics-server" ;;
+esac
+
 iblock="$(awk '/^install_k3s\(\) \{/,/^}/' "$BS")"
 [ -n "$iblock" ] || { echo "FAIL: no install_k3s found in $BS"; exit 1; }
 iblock="$iblock
 $(awk '/^version_newer\(\) \{/,/^}/' "$BS")
 $(awk '/^k3s_upgrade_allowed\(\) \{/,/^}/' "$BS")"
 run_install_k3s() { # Arguments: installed version, config changed, dependency upgrades, service changed, service present.
-  INSTALLED="$1" CHANGED="$2" UPGRADE="${3:-0}" SVC_CHANGED="${4:-0}" UNIT="${5:-1}" KDIR="$kdir" bash -c '
+  INSTALLED="$1" CHANGED="$2" UPGRADE="${3:-0}" SVC_CHANGED="${4:-0}" UNIT="${5:-1}" METRICS_CHANGED="${6:-0}" KDIR="$kdir" bash -c '
     set -Eeuo pipefail
     ok() { echo "OK: $*"; }; log() { echo "LOG: $*"; }; warn() { echo "WARN: $*"; }
     die() { echo "DIE: $*"; exit 1; }
@@ -3549,6 +3588,7 @@ run_install_k3s() { # Arguments: installed version, config changed, dependency u
     write_k3s_config() { [ "$CHANGED" = 0 ] || K3S_RESTART_NEEDED=1; }
     write_k3s_service_dropin() { echo "SERVICE-DROPIN"; [ "$SVC_CHANGED" = 0 ] || K3S_RESTART_NEEDED=1; }
     strip_k3s_kubeconfig_mode_flag() { :; }
+    enable_k3s_metrics_server() { [ "$METRICS_CHANGED" = 0 ] || K3S_RESTART_NEEDED=1; }
     run_k3s_installer() {
       echo "INSTALLER${1:+ $1}"
       [ "${1:-}" = --keep-binary ] || { printf "#!/bin/sh\n" > "$K3S_BIN"; command chmod +x "$K3S_BIN"; }
@@ -3567,6 +3607,7 @@ CHMOD: 0600 /etc/rancher/k3s/k3s.yaml" "$out"
 out="$(run_install_k3s v1.36.4+k3s1 0)"
 case "$out" in *"restart k3s"*) echo "FAIL unchanged k3s settings must not restart k3s"; fails=$((fails + 1)) ;; *) echo "PASS unchanged k3s settings restart nothing" ;; esac
 expect "a new service environment alone restarts a running k3s" "SYSTEMCTL: restart k3s" "$(run_install_k3s v1.36.4+k3s1 0 0 1)"
+expect "enabling metrics alone restarts an installed k3s" "SYSTEMCTL: restart k3s" "$(run_install_k3s v1.36.4+k3s1 0 0 0 1 1)"
 out="$(run_install_k3s "" 1)"
 expect "a fresh host runs the k3s installer and waits for the node" "INSTALLER
 SYSTEMCTL: enable --now k3s" "$out"

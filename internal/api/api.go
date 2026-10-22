@@ -23,6 +23,7 @@ type API struct {
 	NodeControl  NodeControl
 	Repo         Repo
 	Cluster      Cluster
+	Usage        *UsageSampler
 	Internal     InternalAuth
 	External     ExternalAuth
 
@@ -312,6 +313,7 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "DELETE", Pattern: "/api/v1/servers/{name}/retirement", h: a.handleCancelRetire},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/restart", h: a.handleRestart},
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/status", h: a.handleStatus},
+		{Method: "GET", Pattern: "/api/v1/servers/{name}/usage", h: a.handleUsage},
 		{Method: "GET", Pattern: "/api/v1/me", SetupAllowed: true, h: a.handleMe},
 		{Method: "GET", Pattern: "/api/v1/me/servers", SetupAllowed: true, h: a.handleMyServers},
 		{Method: "GET", Pattern: "/api/v1/software", h: a.handleSoftwareCatalog},

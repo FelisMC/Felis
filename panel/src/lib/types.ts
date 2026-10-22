@@ -24,6 +24,10 @@ export interface RetireState {
 
 // Only /me/servers reports ownership and claimability; private lifecycle fields appear on owned rows.
 export interface MyServerView {
+  cpu?: string;
+  memory?: string;
+  cpuMilli?: number;
+  memoryBytes?: number;
   name: string;
   subdomain: string;
   /** Whether the caller owns it. */
@@ -68,6 +72,8 @@ export interface ServerStatus {
   memory?: string;
   storageSize?: string;
   cpu?: string;
+  cpuMilli?: number;
+  memoryBytes?: number;
   /** Seconds empty before idle auto-stop; 0 when the server never idles out. */
   idleStopSeconds: number;
   /** True while the operator cannot read the player count; idle stop waits. */
@@ -104,6 +110,17 @@ export interface ServerStatus {
   crashStopped?: boolean;
   /** The latest lifecycle events, oldest first. */
   events?: ServerEvent[];
+}
+
+export interface UsagePoint {
+  at: string;
+  cpuMilli: number;
+  memoryBytes: number;
+}
+
+export interface ServerUsage {
+  current: UsagePoint | null;
+  history: UsagePoint[];
 }
 
 /** The lifecycle events mailed to the server's owner. */

@@ -31,6 +31,8 @@ func TestOpenAPISchemasMatchWireStructs(t *testing.T) {
 
 	pairs := map[string]any{
 		"ServerInfo":               ServerInfo{},
+		"UsagePoint":               UsagePoint{},
+		"ServerUsage":              ServerUsage{},
 		"FleetServer":              fleetServerView{},
 		"MyServerView":             MyServerView{},
 		"AllowlistEntry":           AllowlistEntry{},

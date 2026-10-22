@@ -86,6 +86,13 @@ beforeEach(() => {
 });
 
 describe("ServersPage fleet ownership", () => {
+  it("shows CPU against its limit and memory usage in desktop columns", async () => {
+    calls.fleet.mockResolvedValue([row("survival", { phase: "Running", owned: true, cpu: "2", memory: "2Gi", cpuMilli: 500, memoryBytes: 512 * 1024 ** 2 })]);
+    renderPage();
+    const server = await tableRow("survival");
+    expect(server.getByText("25.0%")).toBeTruthy();
+    expect(server.getByText("512 MiB / 2.0 GiB")).toBeTruthy();
+  });
   it("trusts the server's ownership and claim flags over the owner text", async () => {
     calls.fleet.mockResolvedValue([
       // The caller has no email: its own server shows the username, which never

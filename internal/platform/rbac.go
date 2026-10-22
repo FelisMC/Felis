@@ -69,6 +69,7 @@ func APIMinecraftRole(p Params) *rbacv1.Role {
 		rule([]string{groupApps}, []string{"statefulsets/scale"}, []string{"update"}),
 		rule([]string{groupCore}, []string{"pods"}, []string{"list"}),
 		rule([]string{groupCore}, []string{"pods/log"}, []string{"get"}),
+		rule([]string{"metrics.k8s.io"}, []string{"pods"}, []string{"list"}),
 	}
 	if p.Distributed {
 		rules = append(rules, rule([]string{groupCore}, []string{"persistentvolumeclaims"}, []string{"create", "list"}), rule([]string{groupApps}, []string{"statefulsets"}, []string{"get", "delete"}))

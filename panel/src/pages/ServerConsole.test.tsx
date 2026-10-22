@@ -7,7 +7,7 @@ import { ServerConsole } from "./ServerConsole";
 import { STATUS_POLL_FAST_MS, STATUS_POLL_SLOW_MS } from "@/lib/hooks";
 import { humanizeError } from "@/lib/api";
 
-const calls = vi.hoisted(() => ({ status: vi.fn(), myServers: vi.fn(), listImages: vi.fn(), sendCommand: vi.fn() }));
+const calls = vi.hoisted(() => ({ status: vi.fn(), myServers: vi.fn(), listImages: vi.fn(), sendCommand: vi.fn(), serverUsage: vi.fn() }));
 const tier = vi.hoisted(() => ({
   loading: false,
   identity: { user_id: "admin-1", email: "admin@example.test", role: "admin" },
@@ -41,6 +41,8 @@ beforeEach(() => {
   calls.listImages.mockReset();
   calls.listImages.mockResolvedValue([]);
   calls.sendCommand.mockReset();
+  calls.serverUsage.mockReset();
+  calls.serverUsage.mockResolvedValue({ current: null, history: [] });
 });
 
 function renderConsole() {
@@ -58,6 +60,15 @@ function status(over: Record<string, unknown>) {
 }
 
 describe("ServerConsole host recovery", () => {
+  it("does not fetch resource usage for a server the caller does not manage", async () => {
+    tier.isAdmin = false;
+    calls.myServers.mockResolvedValue([{ name: "survival", owned: false }]);
+    calls.status.mockResolvedValue(status({ phase: "Running", desiredState: "Running" }));
+    renderConsole();
+    await screen.findByTestId("log-stream");
+    expect(screen.queryByLabelText("Resource usage")).toBeNull();
+    expect(calls.serverUsage).not.toHaveBeenCalled();
+  });
   it("offers host recovery even when the first API read fails", async () => {
     tier.isOwner = true;
     calls.status.mockRejectedValue(new Error("API offline"));

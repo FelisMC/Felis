@@ -61,6 +61,21 @@ func contains(haystack []string, needle string) bool {
 	return false
 }
 
+func TestAPIRole_MetricsAreNamespacedAndReadOnly(t *testing.T) {
+	r := APIMinecraftRole(testParams())
+	if r.Namespace != "minecraft" || !hasRule(r, "metrics.k8s.io", "pods", "list") {
+		t.Fatal("API cannot sample game pod usage")
+	}
+	if grantsResource(r, "metrics.k8s.io", "nodes") {
+		t.Fatal("per-server metrics must not require node metrics")
+	}
+	for _, verb := range []string{"create", "update", "patch", "delete", "watch", "get"} {
+		if hasRule(r, "metrics.k8s.io", "pods", verb) {
+			t.Fatalf("unneeded metric permission: %s", verb)
+		}
+	}
+}
+
 func TestAPIRole_CreatesJobsInBothNamespaces(t *testing.T) {
 	rbac := ControlPlaneRBAC(testParams())
 

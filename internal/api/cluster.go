@@ -28,6 +28,8 @@ type ServerInfo struct {
 	Memory      string `json:"memory,omitempty"`
 	StorageSize string `json:"storageSize,omitempty"`
 	CPU         string `json:"cpu,omitempty"`
+	CPUMilli    *int64 `json:"cpuMilli,omitempty"`
+	MemoryBytes *int64 `json:"memoryBytes,omitempty"`
 	// IdleStopSeconds=0 disables idle shutdown.
 	IdleStopSeconds int32 `json:"idleStopSeconds"`
 	// PlayerCountUnknown suspends idle shutdown until RCON can read the count.

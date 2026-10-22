@@ -1,5 +1,6 @@
 import type {
   HostOverview,
+  ServerUsage,
   NodeControlRequest,
   NodeControlTask,
   AccessResult,
@@ -417,6 +418,7 @@ export const api = rejectingSync({
 
   emergencyStop: (name: string, confirm: string) => send<{ name: string; desiredState: string }>(urlPath`/servers/${name}/emergency-stop`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm }), signal: AbortSignal.timeout(20_000) }),
   status: (name: string) => send<ServerStatus>(urlPath`/servers/${name}/status`, { method: "GET", signal: AbortSignal.timeout(12_000) }),
+  serverUsage: (name: string) => send<ServerUsage>(urlPath`/servers/${name}/usage`, { method: "GET", signal: AbortSignal.timeout(12_000) }),
 
   wake: (name: string) =>
     request<ServerPowerResult>("POST", urlPath`/servers/${name}/wake`),

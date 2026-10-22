@@ -1669,7 +1669,7 @@ install_k3s() {
       installer_ran=1
     fi
   else
-    log "installing k3s ${FELIS_K3S_VERSION} into ${K3S_BIN_DIR} (no traefik/servicelb/metrics-server)"
+    log "installing k3s ${FELIS_K3S_VERSION} into ${K3S_BIN_DIR} (no traefik/servicelb)"
     stage_k3s_airgap_images
     run_k3s_installer
     installer_ran=1
@@ -1677,6 +1677,7 @@ install_k3s() {
 
   [ -x "$K3S_BIN" ] || die "k3s installation completed but ${K3S_BIN} is missing"
   strip_k3s_kubeconfig_mode_flag
+  enable_k3s_metrics_server
 
   systemctl enable --now k3s
   # The installer restarts k3s itself; otherwise a changed drop-in or unit takes a
@@ -1834,6 +1835,35 @@ strip_k3s_kubeconfig_mode_flag() {
   log "dropped --write-kubeconfig-mode from ${unit}; the admin kubeconfig becomes root-only"
 }
 
+enable_k3s_metrics_server() {
+  local unit="$K3S_UNIT_FILE" tmp
+  [ -f "$unit" ] && grep -q -- 'metrics-server' "$unit" || return 0
+  tmp="$(mktemp)"
+  remember_temp "$tmp"
+  awk -v quote="'" '
+    function token(line) {
+      gsub(quote, "", line)
+      gsub(/["\\[:space:]]/, "", line)
+      return line
+    }
+    token($0) == "--disable=metrics-server" { next }
+    token($0) == "--disable" {
+      flag = $0
+      if (getline > 0) {
+        if (token($0) != "metrics-server") { print flag; print }
+      } else { print flag }
+      next
+    }
+    { print }
+  ' "$unit" > "$tmp"
+  if cmp -s "$tmp" "$unit"; then rm -f "$tmp"; return 0; fi
+  cat "$tmp" > "$unit"
+  rm -f "$tmp"
+  systemctl daemon-reload
+  K3S_RESTART_NEEDED=1
+  log "enabled metrics-server in ${unit}"
+}
+
 # Use the selected release installer; --keep-binary skips replacement while retaining policy and service setup.
 run_k3s_installer() { # [--keep-binary]
   local skip=""
@@ -1842,7 +1872,7 @@ run_k3s_installer() { # [--keep-binary]
     INSTALL_K3S_SKIP_DOWNLOAD="$skip" \
     INSTALL_K3S_VERSION="$FELIS_K3S_VERSION" \
     INSTALL_K3S_BIN_DIR="$K3S_BIN_DIR" \
-    INSTALL_K3S_EXEC="--disable traefik --disable servicelb --disable metrics-server" \
+    INSTALL_K3S_EXEC="--disable traefik --disable servicelb" \
     sh -
 }
 

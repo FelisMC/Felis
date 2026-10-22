@@ -48,6 +48,7 @@ import { joinAddress, type RuntimeConfig } from "@/lib/config";
 import { matchScore } from "@/lib/fuzzy";
 import type { AutostartPolicy, FleetServer, Phase, MyServerView, RetireState } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { cpuUsage, memoryUsage } from "@/lib/resourceUsage";
 
 const REFRESH_MS = 10_000;
 
@@ -106,6 +107,10 @@ function compareBy(key: SortKey): (a: UnifiedServer, b: UnifiedServer) => number
 }
 
 interface UnifiedServer {
+  cpu?: string;
+  memory?: string;
+  cpuMilli?: number;
+  memoryBytes?: number;
   nodeName?: string;
   name: string;
   subdomain: string;
@@ -168,6 +173,7 @@ export function ServersPage() {
     if (!data) return [];
     if (isAdmin) {
       return (data as FleetServer[]).map((s) => ({
+        cpu: s.cpu, memory: s.memory, cpuMilli: s.cpuMilli, memoryBytes: s.memoryBytes,
         name: s.name,
         nodeName: s.nodeName,
         displayName: s.displayName,
@@ -191,6 +197,7 @@ export function ServersPage() {
       }));
     } else {
       return (data as MyServerView[]).map((s) => ({
+        cpu: s.cpu, memory: s.memory, cpuMilli: s.cpuMilli, memoryBytes: s.memoryBytes,
         name: s.name,
         displayName: s.displayName,
         subdomain: s.subdomain,
@@ -470,6 +477,8 @@ export function ServersPage() {
                         <th className="px-4 py-2.5 font-medium">{t("fleet_col_status")}</th>
                         {isAdmin && <th className="px-4 py-2.5 font-medium">{t("fleet_col_owner")}</th>}
                         <th className="px-4 py-2.5 font-medium">{t("fleet_col_players")}</th>
+                        <th className="px-4 py-2.5 font-medium">{t("servers:usage_cpu")}</th>
+                        <th className="px-4 py-2.5 font-medium">{t("servers:usage_memory")}</th>
                         <th className="px-4 py-2.5 font-medium">{t("fleet_col_policy")}</th>
                         {isAdmin && <th className="px-4 py-2.5 font-medium">{t("fleet_col_endpoint")}</th>}
                         <th className="px-4 py-2.5 text-right font-medium">
@@ -723,6 +732,8 @@ function ServerRow({
       <td className="whitespace-nowrap px-4 py-3 align-middle text-left">
         <PlayersLabel server={server} />
       </td>
+      <td className="whitespace-nowrap px-4 py-3 tabular-nums">{cpuUsage(server.cpuMilli, server.cpu)}</td>
+      <td className="whitespace-nowrap px-4 py-3 tabular-nums">{memoryUsage(server.memoryBytes, server.memory)}</td>
       <td className="whitespace-nowrap px-4 py-3 align-middle text-left">
         {server.autostartPolicy ? (
           <span className="text-foreground">

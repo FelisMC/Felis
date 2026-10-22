@@ -34,6 +34,10 @@ type MyServerView struct {
 	PlayerCountUnknown bool         `json:"playerCountUnknown,omitempty"`
 	AutoRestarts       int32        `json:"autoRestarts,omitempty"`
 	StartGaveUp        bool         `json:"startGaveUp,omitempty"`
+	CPU                string       `json:"cpu,omitempty"`
+	Memory             string       `json:"memory,omitempty"`
+	CPUMilli           *int64       `json:"cpuMilli,omitempty"`
+	MemoryBytes        *int64       `json:"memoryBytes,omitempty"`
 	Retiring           *RetireState `json:"retiring,omitempty"`
 }
 

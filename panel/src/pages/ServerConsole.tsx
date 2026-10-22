@@ -18,6 +18,7 @@ import { CopyAddress } from "@/components/CopyAddress";
 import type { Phase, AutostartPolicy } from "@/lib/types";
 import { EditServerDialog } from "@/components/EditServerDialog";
 import { SoftwareCard } from "@/components/SoftwareCard";
+import { ResourceUsage } from "@/components/ResourceUsage";
 import { ForwardingDialog } from "@/components/ForwardingDialog";
 import { PowerButton } from "@/components/PowerButton";
 import { RetireCard, RetireNotice } from "@/components/Retirement";
@@ -297,6 +298,7 @@ export function ServerConsole() {
           )}
           {!error && <RecoveryNotice data={data} />}
 
+          {owned && <ResourceUsage key={name} name={name} running={!error && data.phase === "Running" && data.desiredState === "Running"} cpu={data.cpu} memory={data.memory} />}
           {!error && startup && (
             <div role="status" className="shrink-0 space-y-2 rounded-xl border border-border bg-card p-4 text-sm">
               <p className="flex items-center gap-2 font-medium">{startupBlocked ? <ShieldAlert className="h-4 w-4 text-amber-500" /> : <Loader2 className="h-4 w-4 animate-spin text-primary" />}{t(`startup_${startup.stage}`)}</p>

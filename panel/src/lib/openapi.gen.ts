@@ -1010,6 +1010,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/servers/{name}/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Current CPU and memory usage and the last hour of samples (owner or admin).
+         * @description Samples running game pods every 15 seconds through metrics-server. CPU is measured in millicores and memory is the working set in bytes. At most 240 samples are retained in memory for one hour; API instance changes restart the history. Unavailable or stopped current usage is null, never a zero estimate.
+         */
+        get: operations["serverUsage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/options": {
         parameters: {
             query?: never;
@@ -3958,6 +3978,16 @@ export interface components {
             storageSize?: string;
             cpu?: string;
             /**
+             * Format: int64
+             * @description Current CPU usage in millicores; owner and admin only
+             */
+            cpuMilli?: number;
+            /**
+             * Format: int64
+             * @description Current memory working set in bytes; owner and admin only
+             */
+            memoryBytes?: number;
+            /**
              * Format: int32
              * @description Seconds the server may sit empty before idle auto-stop scales it down; 0 when it never idles out (off, RCON disabled, or a system server).
              */
@@ -4090,8 +4120,36 @@ export interface components {
             /** @description False once the owner or an admin took the wake right away. */
             can_wake: boolean;
         };
+        UsagePoint: {
+            /** Format: date-time */
+            at: string;
+            /** Format: int64 */
+            cpuMilli: number;
+            /** Format: int64 */
+            memoryBytes: number;
+        };
+        ServerUsage: {
+            /** @description Null while stopped, before the first sample, or when metrics are unavailable or older than 45 seconds. */
+            current: components["schemas"]["UsagePoint"] | null;
+            /** @description Oldest first, covering the last hour; held in memory and cleared when the API instance changes. */
+            history: components["schemas"]["UsagePoint"][];
+        };
         /** @description One row of the caller's server list (internal/api/repo.go MyServerView). */
         MyServerView: {
+            /** @description CPU limit; owned rows only. */
+            cpu?: string;
+            /** @description Memory limit; owned rows only. */
+            memory?: string;
+            /**
+             * Format: int64
+             * @description Current CPU usage in millicores; owned rows only
+             */
+            cpuMilli?: number;
+            /**
+             * Format: int64
+             * @description Current memory working set in bytes; owned rows only
+             */
+            memoryBytes?: number;
             name: string;
             subdomain: string;
             owned: boolean;
@@ -7044,6 +7102,32 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ServerInfo"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    serverUsage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current usage and recent history. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServerUsage"];
                 };
             };
             400: components["responses"]["BadRequest"];

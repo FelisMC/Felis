@@ -232,6 +232,8 @@ func (a *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The internal face (no principal) is the platform itself; externally, only the owner and staff get the full record.
+	withUsage := a.usageInfo(*info)
+	info = &withUsage
 	if p := principalFromContext(r.Context()); p != nil {
 		rec, err := a.Repo.ServerByName(r.Context(), name)
 		if err != nil && !errors.Is(err, ErrNotFound) {
@@ -303,6 +305,9 @@ func (a *API) handleMyServers(w http.ResponseWriter, r *http.Request) {
 				v.Phase = info.Phase
 			}
 			if v.Owned {
+				info = a.usageInfo(info)
+				v.CPU, v.Memory = info.CPU, info.Memory
+				v.CPUMilli, v.MemoryBytes = info.CPUMilli, info.MemoryBytes
 				v.DesiredState = info.DesiredState
 				v.AutostartPolicy = info.AutostartPolicy
 				v.PlayerCountUnknown = info.PlayerCountUnknown
@@ -329,6 +334,7 @@ func (a *API) handleFleet(w http.ResponseWriter, r *http.Request) {
 	unknown := err != nil
 	views := make([]fleetServerView, len(servers))
 	for i, s := range servers {
+		s = a.usageInfo(s)
 		o, known := owners[s.Name]
 		system := naming.IsSystemServer(s.Name)
 		s.Retiring = o.Retire

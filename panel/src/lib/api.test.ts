@@ -1787,15 +1787,15 @@ describe("world export wire shapes", () => {
   });
 });
 
-describe("server status timeout", () => {
+describe("server polling request timeout", () => {
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
-  it("bounds a stalled status request and reports an unavailable connection", async () => {
+  it.each([{ label: "status", read: api.status }, { label: "usage", read: api.serverUsage }])("bounds a stalled $label request and reports an unavailable connection", async ({ read }) => {
     const controller = new AbortController();
     const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(controller.signal);
     vi.stubGlobal("fetch", vi.fn((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
       init.signal!.addEventListener("abort", () => reject(init.signal!.reason));
     })));
-    const request = api.status("survival");
+    const request = read("survival");
     const result = expect(request).rejects.toMatchObject({ code: "network_error", status: 0 });
     await Promise.resolve();
     await Promise.resolve();
