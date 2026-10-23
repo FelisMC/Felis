@@ -18,9 +18,10 @@ import (
 func cmdFiles(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("files", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	op := fs.String("op", "", "operation: list, search, extensions, read, write, mkdir, delete, rename, copy, move, zip, upload, unzip, paper-global-read or paper-global-patch")
+	op := fs.String("op", "", "operation: list, search, extensions, log-tail, read, write, mkdir, delete, rename, copy, move, zip, upload, unzip, paper-global-read or paper-global-patch")
 	browseURL := fs.String("browse-url", "", "internal command channel for a read-only file browser")
 	query := fs.String("query", "", "search: filename substring")
+	cursor := fs.String("cursor", "", "log-tail: cursor for the preceding page")
 	var selected []string
 	fs.Func("select", "selected file or folder; repeat for each path", func(value string) error { selected = append(selected, value); return nil })
 	path := fs.String("path", "", "path to operate on, relative to the world root (empty = the root itself)")
@@ -52,7 +53,7 @@ func cmdFiles(args []string, stdout, stderr io.Writer) int {
 	}
 	limitHeapToCgroup()
 	req := fileedit.Request{
-		Op: *op, Path: *path, To: *to, Query: *query, Paths: selected, Expect: *expect, CreateOnly: *createOnly, Overwrite: *overwrite,
+		Op: *op, Path: *path, To: *to, Query: *query, Cursor: *cursor, Paths: selected, Expect: *expect, CreateOnly: *createOnly, Overwrite: *overwrite,
 	}
 
 	// Pass base64 content through the environment to keep file secrets out of process argv.

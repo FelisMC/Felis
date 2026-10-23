@@ -57,7 +57,7 @@ func rconStamp(password []byte) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// PodTemplateAnnotation excludes the Felis init image so release updates do not restart running game servers.
+// PodTemplateAnnotation excludes platform image and stdin changes so upgrades wait for the next start.
 const PodTemplateAnnotation = "felis.lolicon.best/pod-template"
 
 func podTemplateStamp(tmpl *corev1.PodTemplateSpec, felisImage string) (string, error) {
@@ -65,6 +65,11 @@ func podTemplateStamp(tmpl *corev1.PodTemplateSpec, felisImage string) (string, 
 	for i := range t.Spec.InitContainers {
 		if felisImage != "" && t.Spec.InitContainers[i].Image == felisImage {
 			t.Spec.InitContainers[i].Image = ""
+		}
+	}
+	for i := range t.Spec.Containers {
+		if t.Spec.Containers[i].Name == containerName {
+			t.Spec.Containers[i].Stdin = false
 		}
 	}
 	b, err := json.Marshal(t)
@@ -791,7 +796,7 @@ func (r *Reconciler) rconPassword(ctx context.Context, server *v1alpha1.Minecraf
 	return string(b), nil
 }
 
-// applyStatefulSet preserves a running template when only the Felis init image changed.
+// applyStatefulSet preserves a running template when only platform defaults changed.
 func (r *Reconciler) applyStatefulSet(ctx context.Context, desired *appsv1.StatefulSet) error {
 	stamp, err := podTemplateStamp(&desired.Spec.Template, r.FelisImage)
 	if err != nil {

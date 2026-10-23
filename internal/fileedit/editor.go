@@ -161,6 +161,27 @@ func (e *Editor) Extensions(ctx context.Context, server string) (ExtensionList, 
 	return ExtensionList{Entries: res.Extensions, Truncated: res.Truncated}, nil
 }
 
+func (e *Editor) LogTail(ctx context.Context, server, cursor string) (LogTailPage, error) {
+	if _, err := parseLogTailCursor(cursor); err != nil {
+		return LogTailPage{}, fmt.Errorf("%w: invalid log cursor", ErrBadPath)
+	}
+	res, err := e.run(ctx, server, JobParams{Op: OpLogTail, Cursor: cursor})
+	if err != nil {
+		return LogTailPage{}, err
+	}
+	if res.LogTail == nil {
+		return LogTailPage{}, fmt.Errorf("%w: the file Job returned no log page", ErrReadDamaged)
+	}
+	page := res.LogTail
+	if got := digest(page.Content); got != page.ContentSHA256 {
+		return LogTailPage{}, fmt.Errorf("%w: they hash to %s, sent as %q", ErrReadDamaged, got, page.ContentSHA256)
+	}
+	if page.Content == nil {
+		page.Content = []byte{}
+	}
+	return *page, nil
+}
+
 // Read returns the pre-redaction file hash for conditional writes and rejects damaged transmitted content.
 func (e *Editor) Read(ctx context.Context, server, path string) ([]byte, string, error) {
 	res, err := e.run(ctx, server, JobParams{Op: OpRead, Path: path})

@@ -108,6 +108,7 @@ func TestJobKindMatchesTheExecutors(t *testing.T) {
 		{"installed extensions", filesJob(t, "survival", fileedit.OpExtensions), "", false},
 		{"protected configuration read", filesJob(t, "survival", fileedit.OpPaperGlobalRead), "", false},
 		{"protected configuration patch", filesJob(t, "survival", fileedit.OpPaperGlobalPatch), KindFileWrite, true},
+		{"stopped console logs", filesJob(t, "survival", fileedit.OpLogTail), "", false},
 		{"world export", exportJob(t, "survival", worldexport.ModeWorld), KindExport, true},
 		{"backup export", exportJob(t, "survival", worldexport.ModeBackup), "", false},
 		{"files export", exportJob(t, "survival", worldexport.ModeFiles), KindExport, true},

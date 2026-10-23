@@ -1,12 +1,17 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"felis.lolicon.best/internal/software"
 	"github.com/BurntSushi/toml"
@@ -40,6 +45,65 @@ func TestLaunchArgv(t *testing.T) {
 	want = []string{"java", "-Xmx2G", "@user_jvm_args.txt", "@libraries/net/minecraftforge/forge/1.20.1-47.4.10/unix_args.txt", "nogui"}
 	if !reflect.DeepEqual(forge, want) {
 		t.Errorf("forge launch = %q\nwant %q", forge, want)
+	}
+}
+
+func TestLaunchPassesStdinToJava(t *testing.T) {
+	if os.Getenv("FELIS_TEST_LAUNCH_HELPER") == "1" {
+		os.Exit(cmdLaunch([]string{"--data", os.Getenv("FELIS_TEST_LAUNCH_DATA")}, os.Stdout, os.Stderr))
+	}
+	root := t.TempDir()
+	data, javaHome := filepath.Join(root, "data"), filepath.Join(root, "java")
+	for _, dir := range []string{filepath.Join(data, software.ManagedDir), filepath.Join(javaHome, "bin")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	spec := software.Spec{Type: software.Custom, Java: 21, Jar: "test.jar"}
+	rawSpec, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := json.Marshal(software.Record{
+		Format: software.PlanFormat,
+		Plan:   software.Plan{Format: software.PlanFormat, Spec: spec},
+		Launch: software.Launch{Jar: spec.Jar, GameArgs: []string{"nogui"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(data, software.RecordPath), record, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	java := "#!/bin/sh\nprintf '%s\\n' \"$$\" > \"$FELIS_TEST_JAVA_PID\"\ncat > \"$FELIS_TEST_JAVA_INPUT\"\n"
+	if err := os.WriteFile(filepath.Join(javaHome, "bin", "java"), []byte(java), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, self, "-test.run=^TestLaunchPassesStdinToJava$")
+	const input = "say runtime console 世界\nlist\n"
+	cmd.Stdin = strings.NewReader(input)
+	pidPath, inputPath := filepath.Join(root, "java.pid"), filepath.Join(root, "java.stdin")
+	cmd.Env = []string{
+		"PATH=" + os.Getenv("PATH"), "JAVA_HOME=" + javaHome, softwareEnv + "=" + string(rawSpec),
+		"FELIS_TEST_LAUNCH_HELPER=1", "FELIS_TEST_LAUNCH_DATA=" + data,
+		"FELIS_TEST_JAVA_PID=" + pidPath, "FELIS_TEST_JAVA_INPUT=" + inputPath,
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("launch failed: %v\n%s", err, out)
+	}
+	pid, err := os.ReadFile(pidPath)
+	if err != nil || strings.TrimSpace(string(pid)) != strconv.Itoa(cmd.Process.Pid) {
+		t.Fatalf("runtime did not exec Java: pid=%q err=%v", pid, err)
+	}
+	stdin, err := os.ReadFile(inputPath)
+	if err != nil || string(stdin) != input {
+		t.Fatalf("runtime Java stdin = %q, err=%v", stdin, err)
 	}
 }
 

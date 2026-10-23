@@ -56,7 +56,7 @@ func ControlPlaneRBAC(p Params) RBAC {
 	return rbac
 }
 
-// APIMinecraftRole permits Pod lists and logs without pods:get; informer-backed MinecraftServer reads additionally need watch.
+// APIMinecraftRole permits Pod lists, logs and stdin attachment without pods:get.
 func APIMinecraftRole(p Params) *rbacv1.Role {
 	p = p.withDefaults()
 	rules := []rbacv1.PolicyRule{
@@ -69,6 +69,7 @@ func APIMinecraftRole(p Params) *rbacv1.Role {
 		rule([]string{groupApps}, []string{"statefulsets/scale"}, []string{"update"}),
 		rule([]string{groupCore}, []string{"pods"}, []string{"list"}),
 		rule([]string{groupCore}, []string{"pods/log"}, []string{"get"}),
+		rule([]string{groupCore}, []string{"pods/attach"}, []string{"create"}),
 		rule([]string{"metrics.k8s.io"}, []string{"pods"}, []string{"list"}),
 	}
 	if p.Distributed {

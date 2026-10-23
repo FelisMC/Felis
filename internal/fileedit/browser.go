@@ -52,10 +52,10 @@ func Browse(ctx context.Context, worldRoot, url, token string) error {
 		if err != nil {
 			return err
 		}
-		if command.Op != OpList && command.Op != OpRead && command.Op != OpSearch && command.Op != OpExtensions && command.Op != OpPaperGlobalRead {
+		if command.Op != OpList && command.Op != OpRead && command.Op != OpSearch && command.Op != OpExtensions && command.Op != OpPaperGlobalRead && command.Op != OpLogTail {
 			return fmt.Errorf("fileedit: browser refused operation %q", command.Op)
 		}
-		res, err := Execute(worldRoot, Request{Op: command.Op, Path: command.Path, Query: command.Query})
+		res, err := Execute(worldRoot, Request{Op: command.Op, Path: command.Path, Query: command.Query, Cursor: command.Cursor})
 		answer = BrowseAnswer{ID: command.ID}
 		if err != nil {
 			answer.Error = err.Error()
@@ -86,10 +86,11 @@ type Browser struct {
 }
 
 type BrowseCommand struct {
-	ID    string `json:"id"`
-	Op    string `json:"op"`
-	Path  string `json:"path"`
-	Query string `json:"query,omitempty"`
+	ID     string `json:"id"`
+	Op     string `json:"op"`
+	Path   string `json:"path"`
+	Query  string `json:"query,omitempty"`
+	Cursor string `json:"cursor,omitempty"`
 }
 
 type BrowseAnswer struct {
@@ -177,7 +178,7 @@ func (b *Browser) Run(ctx context.Context, p JobParams, start func(context.Conte
 	s.pending = p.OpID
 	s.mu.Unlock()
 	select {
-	case s.commands <- BrowseCommand{ID: p.OpID, Op: p.Op, Path: p.Path, Query: p.Query}:
+	case s.commands <- BrowseCommand{ID: p.OpID, Op: p.Op, Path: p.Path, Query: p.Query, Cursor: p.Cursor}:
 	case <-ctx.Done():
 		b.close(s)
 		return nil, ctx.Err()

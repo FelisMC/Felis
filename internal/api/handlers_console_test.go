@@ -1,10 +1,19 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
+
+	"felis.lolicon.best/internal/apis/felis/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/remotecommand"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func TestConsoleCommand(t *testing.T) {
@@ -16,7 +25,7 @@ func TestConsoleCommand(t *testing.T) {
 		repo := newFakeRepo()
 		repo.byName["survival"] = &ServerRecord{Name: "survival", OwnerID: "owner1"}
 		cl := newFakeCluster()
-		cl.byName["survival"] = &ServerInfo{Name: "survival", Phase: "Running", Ready: true}
+		cl.byName["survival"] = &ServerInfo{Name: "survival", Phase: "Running", Ready: true, DesiredState: "Running"}
 		console := &fakeConsole{reply: "There are 3 of a max of 20 players online"}
 		api := newTestAPI(repo, cl)
 		api.Console = console
@@ -31,13 +40,14 @@ func TestConsoleCommand(t *testing.T) {
 			t.Fatalf("code = %d body %s", w.Code, w.Body.String())
 		}
 		var resp struct {
-			Name   string `json:"name"`
-			Output string `json:"output"`
+			Name      string `json:"name"`
+			Output    string `json:"output"`
+			Transport string `json:"transport"`
 		}
 		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 			t.Fatalf("body not JSON: %v (%s)", err, w.Body.String())
 		}
-		if resp.Name != "survival" || resp.Output != console.reply {
+		if resp.Name != "survival" || resp.Output != console.reply || resp.Transport != "rcon" {
 			t.Fatalf("unexpected response %+v", resp)
 		}
 		if console.gotName != "survival" || console.gotCommand != "list" {
@@ -45,6 +55,47 @@ func TestConsoleCommand(t *testing.T) {
 		}
 		if len(repo.audits) != 1 || repo.audits[0].Action != "console.command" || repo.audits[0].Actor != "owner1@example.net" {
 			t.Fatalf("audit not written as expected: %+v", repo.audits)
+		}
+	})
+
+	t.Run("starting container does not require readiness", func(t *testing.T) {
+		api, _, cl, console := mk()
+		cl.byName["survival"].Phase, cl.byName["survival"].Ready = "Starting", false
+		api.External = staticExternal{p: owner}
+		w := do(api.ExternalHandler(), "POST", "/api/v1/servers/survival/command", `{"command":"list"}`, nil)
+		if w.Code != http.StatusOK || console.calls != 1 || len(cl.ensured) != 0 || len(cl.acquired) != 0 {
+			t.Fatalf("startup input: status=%d calls=%d ensured=%v lock=%v body=%s", w.Code, console.calls, cl.ensured, cl.acquired, w.Body.String())
+		}
+	})
+
+	t.Run("stop requested is rejected even while ready", func(t *testing.T) {
+		api, _, cl, console := mk()
+		cl.byName["survival"].DesiredState = "Stopped"
+		api.External = staticExternal{p: owner}
+		w := do(api.ExternalHandler(), "POST", "/api/v1/servers/survival/command", `{"command":"list"}`, nil)
+		if w.Code != http.StatusConflict || decodeErr(t, w) != "not_running" || console.calls != 0 || len(cl.ensured) != 0 {
+			t.Fatalf("stopping input: status=%d calls=%d body=%s", w.Code, console.calls, w.Body.String())
+		}
+	})
+
+	t.Run("maintenance does not create a volume or send a command", func(t *testing.T) {
+		api, _, cl, console := mk()
+		cl.fileAccessErr = &MaintenanceBusyError{Kind: "backup"}
+		cl.noWorld["survival"] = true
+		api.External = staticExternal{p: owner}
+		w := do(api.ExternalHandler(), "POST", "/api/v1/servers/survival/command", `{"command":"list"}`, nil)
+		if w.Code != http.StatusConflict || decodeErr(t, w) != "maintenance_in_progress" || console.calls != 0 || len(cl.ensured) != 0 || len(cl.acquired) != 0 {
+			t.Fatalf("maintenance input: status=%d calls=%d ensured=%v lock=%v body=%s", w.Code, console.calls, cl.ensured, cl.acquired, w.Body.String())
+		}
+	})
+
+	t.Run("lost reply is unknown and never says to retry blindly", func(t *testing.T) {
+		api, repo, _, console := mk()
+		console.err = ErrConsoleOutcomeUnknown
+		api.External = staticExternal{p: owner}
+		w := do(api.ExternalHandler(), "POST", "/api/v1/servers/survival/command", `{"command":"list"}`, nil)
+		if w.Code != http.StatusBadGateway || decodeErr(t, w) != "command_outcome_unknown" || console.calls != 1 || len(repo.audits) != 1 || repo.audits[0].Action != "console.command.uncertain" {
+			t.Fatalf("uncertain command: status=%d calls=%d audits=%v body=%s", w.Code, console.calls, repo.audits, w.Body.String())
 		}
 	})
 
@@ -94,7 +145,7 @@ func TestConsoleCommand(t *testing.T) {
 		}
 	})
 
-	t.Run("not ready -> 409 not_running, no RCON call", func(t *testing.T) {
+	t.Run("stopped phase -> 409 not_running, no console call", func(t *testing.T) {
 		api, _, cl, console := mk()
 		cl.byName["survival"].Ready = false
 		cl.byName["survival"].Phase = "Stopped"
@@ -104,7 +155,7 @@ func TestConsoleCommand(t *testing.T) {
 			t.Fatalf("code = %d body %s", w.Code, w.Body.String())
 		}
 		if console.calls != 0 {
-			t.Fatal("a non-ready server must not reach RCON")
+			t.Fatal("a stopped server must not reach the console")
 		}
 	})
 
@@ -188,4 +239,38 @@ func TestConsoleCommand(t *testing.T) {
 			t.Fatalf("code = %d body %s", w.Code, w.Body.String())
 		}
 	})
+}
+
+func TestConsoleCommandStartupSubmitsStdinWithoutRCON(t *testing.T) {
+	k, ms := newConsoleTestBackend(t, []corev1.Pod{consoleTestPod("survival")})
+	if err := k.c.Get(context.Background(), client.ObjectKeyFromObject(ms), ms); err != nil {
+		t.Fatal(err)
+	}
+	ms.Status.Phase = v1alpha1.PhaseStarting
+	if err := k.c.Status().Update(context.Background(), ms); err != nil {
+		t.Fatal(err)
+	}
+	calls, submitted := 0, ""
+	k.executor = func(*rest.Config, string, *url.URL) (remotecommand.Executor, error) {
+		calls++
+		return consoleExecutorFunc(func(_ context.Context, o remotecommand.StreamOptions) error {
+			line, err := io.ReadAll(o.Stdin)
+			submitted = string(line)
+			return err
+		}), nil
+	}
+	repo, cl := newFakeRepo(), newFakeCluster()
+	repo.byName["survival"] = &ServerRecord{Name: "survival", OwnerID: "owner1"}
+	cl.byName["survival"] = &ServerInfo{Name: "survival", Phase: "Starting", DesiredState: "Running"}
+	a := newTestAPI(repo, cl)
+	a.Console = k
+	a.External = staticExternal{p: &Principal{UserID: "owner1", Role: "user"}}
+	w := do(a.ExternalHandler(), "POST", "/api/v1/servers/survival/command", `{"command":"/list"}`, nil)
+	var got ConsoleCommandResult
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("body=%s: %v", w.Body.String(), err)
+	}
+	if w.Code != http.StatusOK || got.Name != "survival" || got.Transport != "stdin" || got.Output != "" || submitted != "list\n" || calls != 1 || len(cl.ensured) != 0 || len(cl.acquired) != 0 {
+		t.Fatalf("startup submission: status=%d result=%+v input=%q calls=%d ensured=%v locks=%v", w.Code, got, submitted, calls, cl.ensured, cl.acquired)
+	}
 }

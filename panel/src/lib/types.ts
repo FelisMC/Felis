@@ -123,6 +123,20 @@ export interface ServerUsage {
   history: UsagePoint[];
 }
 
+export interface ConsoleHistoryPage {
+  content: string;
+  content_sha256: string;
+  next_cursor?: string;
+  has_more: boolean;
+  byte_limited: boolean;
+}
+
+export interface ConsoleCommandResult {
+  name: string;
+  output: string;
+  transport: "rcon" | "stdin";
+}
+
 /** The lifecycle events mailed to the server's owner. */
 export interface ServerNotify {
   started: boolean;

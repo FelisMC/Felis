@@ -2,13 +2,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
 import { ServerConsole } from "./ServerConsole";
 import { STATUS_POLL_FAST_MS, STATUS_POLL_SLOW_MS } from "@/lib/hooks";
 import { humanizeError } from "@/lib/api";
 import i18next from "i18next";
+import type { ConsoleCommandResult } from "@/lib/types";
 
-const calls = vi.hoisted(() => ({ status: vi.fn(), myServers: vi.fn(), listImages: vi.fn(), sendCommand: vi.fn(), serverUsage: vi.fn() }));
+const calls = vi.hoisted(() => ({ status: vi.fn(), myServers: vi.fn(), listImages: vi.fn(), sendCommand: vi.fn(), serverUsage: vi.fn(), serverConsoleHistory: vi.fn() }));
 const tier = vi.hoisted(() => ({
   loading: false,
   identity: { user_id: "admin-1", email: "admin@example.test", role: "admin" },
@@ -27,7 +28,7 @@ vi.mock("@/lib/api", async (importActual) => {
   const actual = await importActual<typeof import("@/lib/api")>();
   return { ...actual, api: { ...actual.api, ...calls } };
 });
-// The live log is a WebSocket; here it only matters whether the page shows it.
+// The live SSE log's connection is exercised separately.
 vi.mock("@/components/LogConsole", async (importActual) => ({
   ...await importActual<typeof import("@/components/LogConsole")>(),
   LogConsole: () => <div data-testid="log-stream" />,
@@ -44,6 +45,8 @@ beforeEach(() => {
   calls.sendCommand.mockReset();
   calls.serverUsage.mockReset();
   calls.serverUsage.mockResolvedValue({ current: null, history: [] });
+  calls.serverConsoleHistory.mockReset();
+  calls.serverConsoleHistory.mockResolvedValue({ content: "", content_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", has_more: false, byte_limited: false });
 });
 
 function renderConsole() {
@@ -111,11 +114,11 @@ describe("ServerConsole failed start", () => {
     expect(screen.getByText("Timed out · retrying")).toBeTruthy();
   });
 
-  it("asks nothing of the owner once a failed server is being stopped", async () => {
+  it("shows the saved log without failed-start actions once a failed server is stopped", async () => {
     calls.status.mockResolvedValue(status({ desiredState: "Stopped" }));
     renderConsole();
 
-    expect(await screen.findByTestId("log-stream")).toBeTruthy();
+    expect(await screen.findByRole("region", { name: i18next.t("servers:log_history_title") })).toBeTruthy();
     expect(screen.queryByRole("status", { name: /failed to start|timed out/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /Retry start/ })).toBeNull();
   });
@@ -146,6 +149,78 @@ describe("ServerConsole doorways", () => {
   });
 });
 
+describe("ServerConsole saved logs", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it.each([
+    ["Stopped", "Stopped", false, true],
+    ["Failed", "Stopped", false, true],
+    ["Running", "Stopped", false, false],
+    ["Starting", "Stopped", false, false],
+    ["Stopping", "Stopped", false, false],
+    ["Stopped", "Running", false, false],
+    ["Stopped", "Stopped", true, false],
+    ["Failed", "Running", false, false],
+  ])("gates saved logs for phase %s, desired %s and readiness %s", async (phase, desiredState, ready, expected) => {
+    calls.status.mockResolvedValue(status({ phase, desiredState, ready }));
+    renderConsole();
+    await screen.findByRole("heading", { name: "survival" });
+    const region = { name: i18next.t("servers:log_history_title") };
+    if (expected) {
+      expect(await screen.findByRole("region", region)).toBeTruthy();
+      expect(calls.serverConsoleHistory).toHaveBeenCalledExactlyOnceWith("survival", undefined);
+      expect(screen.queryByRole("textbox")).toBeNull();
+    } else {
+      expect(screen.queryByRole("region", region)).toBeNull();
+      expect(calls.serverConsoleHistory).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each(["admin", "owner", "viewer"])("permits saved log reads only for a managing %s", async (role) => {
+    tier.isAdmin = role === "admin";
+    calls.myServers.mockResolvedValue([{ name: "survival", owned: role === "owner" }]);
+    calls.status.mockResolvedValue(status({ phase: "Stopped", desiredState: "Stopped" }));
+    renderConsole();
+    await screen.findByRole("heading", { name: "survival" });
+    if (role === "viewer") {
+      await waitFor(() => expect(calls.myServers).toHaveBeenCalled());
+      expect(calls.serverConsoleHistory).not.toHaveBeenCalled();
+    } else {
+      await screen.findByRole("region", { name: i18next.t("servers:log_history_title") });
+      expect(calls.serverConsoleHistory).toHaveBeenCalledExactlyOnceWith("survival", undefined);
+    }
+  });
+
+  it("does not poll saved logs and ignores a pending response after the server starts", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let resolve!: (page: { content: string; content_sha256: string; has_more: boolean; byte_limited: boolean }) => void;
+    calls.serverConsoleHistory.mockImplementation(() => new Promise((done) => { resolve = done; }));
+    calls.status.mockResolvedValue(status({ phase: "Stopped", desiredState: "Stopped" }));
+    renderConsole();
+    await screen.findByRole("region", { name: i18next.t("servers:log_history_title") });
+    await act(() => vi.advanceTimersByTimeAsync(STATUS_POLL_SLOW_MS * 3));
+    expect(calls.serverConsoleHistory).toHaveBeenCalledTimes(1);
+    calls.status.mockResolvedValue(status({ phase: "Running", desiredState: "Running", ready: true }));
+    await act(() => vi.advanceTimersByTimeAsync(STATUS_POLL_SLOW_MS));
+    expect(await screen.findByTestId("log-stream")).toBeTruthy();
+    await act(async () => { resolve({ content: btoa("late stopped log\n"), content_sha256: "a".repeat(64), has_more: false, byte_limited: false }); });
+    expect(screen.queryByText("late stopped log")).toBeNull();
+    expect(screen.queryByRole("region", { name: i18next.t("servers:log_history_title") })).toBeNull();
+  });
+
+  it("removes saved log access when cached server status becomes stale", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    calls.status.mockResolvedValue(status({ phase: "Stopped", desiredState: "Stopped" }));
+    renderConsole();
+    await screen.findByRole("region", { name: i18next.t("servers:log_history_title") });
+    calls.status.mockRejectedValue({ code: "upstream", status: 503 });
+    await act(() => vi.advanceTimersByTimeAsync(STATUS_POLL_SLOW_MS));
+    await screen.findByText(/Cannot confirm the current server state/);
+    expect(screen.queryByRole("region", { name: i18next.t("servers:log_history_title") })).toBeNull();
+    expect(calls.serverConsoleHistory).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("ServerConsole following the server", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -157,7 +232,7 @@ describe("ServerConsole following the server", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     calls.status.mockResolvedValue(status({ phase: "Stopped", desiredState: "Stopped" }));
     renderConsole();
-    expect(await screen.findByText("Server is asleep")).toBeTruthy();
+    expect(await screen.findByRole("region", { name: i18next.t("servers:log_history_title") })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Wake" })).toBeTruthy();
 
     // Nothing is due, so it rereads at the slow pace.
@@ -167,7 +242,7 @@ describe("ServerConsole following the server", () => {
     await advance(1_000);
     expect(await screen.findByTestId("log-stream")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy();
-    expect(screen.queryByText("Server is asleep")).toBeNull();
+    expect(screen.queryByRole("region", { name: i18next.t("servers:log_history_title") })).toBeNull();
   });
 
   it("shows a wake at once and rereads fast until the pod is up", async () => {
@@ -243,13 +318,14 @@ describe("ServerConsole retirement", () => {
     expect(await screen.findByText("Server is asleep")).toBeTruthy();
     await waitFor(() => expect(calls.myServers).toHaveBeenCalled());
     expect(giveUp()).toBeNull();
+    expect(calls.serverConsoleHistory).not.toHaveBeenCalled();
   });
 
   it("offers nothing for a system server", async () => {
     calls.status.mockResolvedValue(stopped({ reaperExempt: true }));
     renderConsole();
 
-    expect(await screen.findByText("Server is asleep")).toBeTruthy();
+    expect(await screen.findByRole("region", { name: i18next.t("servers:log_history_title") })).toBeTruthy();
     expect(giveUp()).toBeNull();
     expect(del()).toBeNull();
   });
@@ -273,8 +349,10 @@ describe("ServerConsole command line", () => {
 
   beforeEach(() => {
     calls.status.mockResolvedValue(status({ phase: "Running", desiredState: "Running", ready: true }));
-    calls.sendCommand.mockResolvedValue({ output: "There are 0 of a max of 20 players online.\n" });
+    calls.sendCommand.mockResolvedValue({ name: "survival", output: "There are 0 of a max of 20 players online.\n", transport: "rcon" });
+    localStorage.clear();
   });
+  afterEach(() => vi.useRealTimers());
 
   async function commandLine() {
     renderConsole();
@@ -294,7 +372,7 @@ describe("ServerConsole command line", () => {
   });
 
   it("renders Minecraft and ANSI formatting in command replies without interpreting markup", async () => {
-    calls.sendCommand.mockResolvedValue({ output: "§eHelp: §fIndex §lBold§r\n§x§1§2§3§4§5§6Hex\n\x1b[31m<b>unsafe</b>\x1b[0m" });
+    calls.sendCommand.mockResolvedValue({ name: "survival", transport: "rcon", output: "§eHelp: §fIndex §lBold§r\n§x§1§2§3§4§5§6Hex\n\x1b[31m<b>unsafe</b>\x1b[0m" });
     const box = await commandLine();
     await userEvent.type(box, "help{Enter}");
     const help = await screen.findByText("Help:");
@@ -326,6 +404,145 @@ describe("ServerConsole command line", () => {
     await user.type(box, "list{Enter}");
 
     expect(await screen.findByText(humanizeError(refusal))).toBeTruthy();
+    expect(box.value).toBe("list");
+  });
+
+  it.each([
+    ["Starting", "Running", false, true],
+    ["Running", "Running", false, true],
+    ["Running", "Running", true, true],
+    ["Running", "Stopped", true, false],
+    ["Stopped", "Running", false, false],
+    ["Stopped", "Stopped", false, false],
+    ["Stopping", "Running", false, false],
+    ["Failed", "Running", false, false],
+  ])("gates input for phase %s, desired %s and readiness %s", async (phase, desiredState, ready, expected) => {
+    calls.status.mockResolvedValue(status({ phase, desiredState, ready, startup: phase === "Starting" ? { stage: "scheduling", logsAvailable: false } : undefined }));
+    renderConsole();
+    await screen.findByRole("heading", { name: "survival" });
+    if (expected) expect(await screen.findByRole("textbox", { name: "Server command" })).toBeTruthy();
+    else expect(screen.queryByRole("textbox", { name: "Server command" })).toBeNull();
+    expect(calls.sendCommand).not.toHaveBeenCalled();
+  });
+
+  it.each(["admin", "owner", "viewer"])("allows command input only for a managing %s", async (role) => {
+    tier.isAdmin = role === "admin";
+    calls.myServers.mockResolvedValue([{ name: "survival", owned: role === "owner" }]);
+    renderConsole();
+    await screen.findByRole("heading", { name: "survival" });
+    if (role === "viewer") {
+      await waitFor(() => expect(calls.myServers).toHaveBeenCalled());
+      expect(screen.queryByRole("textbox", { name: "Server command" })).toBeNull();
+      expect(calls.sendCommand).not.toHaveBeenCalled();
+    } else expect(await screen.findByRole("textbox", { name: "Server command" })).toBeTruthy();
+  });
+
+  it("submits during startup before logs are available and reports stdin submission without claiming a reply", async () => {
+    calls.status.mockResolvedValue(status({ phase: "Starting", desiredState: "Running", ready: false, startup: { stage: "booting", logsAvailable: false } }));
+    calls.sendCommand.mockResolvedValue({ name: "survival", output: "", transport: "stdin" });
+    const box = await commandLine();
+    expect(screen.getByText("Logs unavailable")).toBeTruthy();
+    await userEvent.type(box, "say starting");
+    await userEvent.click(screen.getByRole("button", { name: i18next.t("servers:command_send") }));
+    expect(await screen.findByText(i18next.t("servers:command_sent_stdin"))).toBeTruthy();
+    expect(screen.getByText(/^> say starting/)).toBeTruthy();
+    expect(box.value).toBe("");
+    expect(calls.sendCommand).toHaveBeenCalledExactlyOnceWith("survival", "say starting");
+    expect(screen.queryByText("There are 0 of a max of 20 players online.")).toBeNull();
+  });
+
+  it("reports stdin submission while a running server has no RCON reply", async () => {
+    calls.sendCommand.mockResolvedValue({ name: "survival", output: "", transport: "stdin" });
+    const box = await commandLine();
+    await userEvent.type(box, "list{Enter}");
+    expect(await screen.findByText(i18next.t("servers:command_sent_stdin"))).toBeTruthy();
+    expect(box.value).toBe("");
+    expect(calls.sendCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps an uncertain command visible and never resends it during status polling", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    calls.sendCommand.mockRejectedValue({ status: 502, code: "command_outcome_unknown", message: "the command may have executed" });
+    const box = await commandLine();
+    fireEvent.change(box, { target: { value: "say uncertain" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect((await screen.findByRole("alert")).textContent).toBe(i18next.t("errors:command_outcome_unknown"));
+    expect(box.value).toBe("say uncertain");
+    expect(screen.getByText(/^> say uncertain/)).toBeTruthy();
+    await act(() => vi.advanceTimersByTimeAsync(STATUS_POLL_SLOW_MS * 2));
+    expect(calls.sendCommand).toHaveBeenCalledExactlyOnceWith("survival", "say uncertain");
+    expect(screen.queryByText(i18next.t("servers:command_sent_stdin"))).toBeNull();
+  });
+
+  it("keeps the pending command visible and refuses simultaneous or auto-repeated submissions", async () => {
+    let resolve!: (result: ConsoleCommandResult) => void;
+    calls.sendCommand.mockImplementation(() => new Promise<ConsoleCommandResult>((done) => { resolve = done; }));
+    const box = await commandLine();
+    fireEvent.change(box, { target: { value: "list" } });
+    fireEvent.keyDown(box, { key: "Enter", repeat: true });
+    expect(calls.sendCommand).not.toHaveBeenCalled();
+    fireEvent.keyDown(box, { key: "Enter" });
+    fireEvent.keyDown(box, { key: "Enter" });
+    fireEvent.click(screen.getByRole("button", { name: i18next.t("servers:command_send") }));
+    expect(calls.sendCommand).toHaveBeenCalledTimes(1);
+    expect(box.value).toBe("list");
+    expect(box.disabled).toBe(true);
+    expect(screen.getByText(i18next.t("servers:command_sending"))).toBeTruthy();
+    await act(async () => { resolve({ name: "survival", output: "Reply", transport: "rcon" }); });
+    expect(await screen.findByText("Reply")).toBeTruthy();
+    expect(box.disabled).toBe(false);
+    expect(box.value).toBe("");
+  });
+
+  it("removes input when status becomes stale and ignores a pending reply", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let resolve!: (result: ConsoleCommandResult) => void;
+    calls.sendCommand.mockImplementation(() => new Promise<ConsoleCommandResult>((done) => { resolve = done; }));
+    const box = await commandLine();
+    fireEvent.change(box, { target: { value: "list" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    calls.status.mockRejectedValue({ code: "upstream_unavailable", status: 503 });
+    await act(() => vi.advanceTimersByTimeAsync(STATUS_POLL_SLOW_MS));
+    await screen.findByText(/Cannot confirm the current server state/);
+    expect(screen.queryByRole("textbox", { name: "Server command" })).toBeNull();
+    await act(async () => { resolve({ name: "survival", output: "Stale reply", transport: "rcon" }); });
+    expect(screen.queryByText("Stale reply")).toBeNull();
+    expect(calls.sendCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps late command replies out of the saved-log mode after a stop", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let resolve!: (result: ConsoleCommandResult) => void;
+    calls.sendCommand.mockImplementation(() => new Promise<ConsoleCommandResult>((done) => { resolve = done; }));
+    const box = await commandLine();
+    fireEvent.change(box, { target: { value: "list" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    calls.status.mockResolvedValue(status({ phase: "Stopped", desiredState: "Stopped", ready: false }));
+    await act(() => vi.advanceTimersByTimeAsync(STATUS_POLL_SLOW_MS));
+    expect(await screen.findByRole("region", { name: i18next.t("servers:log_history_title") })).toBeTruthy();
+    expect(screen.queryByRole("textbox", { name: "Server command" })).toBeNull();
+    await act(async () => { resolve({ name: "survival", output: "Late live reply", transport: "rcon" }); });
+    expect(screen.queryByText("Late live reply")).toBeNull();
+  });
+
+  it("does not move an in-flight command or its result to another server", async () => {
+    let resolve!: (result: ConsoleCommandResult) => void;
+    calls.status.mockImplementation((name: string) => Promise.resolve(status({ name, phase: "Running", desiredState: "Running", ready: true })));
+    calls.sendCommand.mockImplementation(() => new Promise<ConsoleCommandResult>((done) => { resolve = done; }));
+    render(<MemoryRouter initialEntries={["/servers/survival"]}>
+      <Link to="/servers/second">Switch server</Link>
+      <Routes><Route path="/servers/:name" element={<ServerConsole />} /></Routes>
+    </MemoryRouter>);
+    const first = await screen.findByRole("textbox", { name: "Server command" });
+    fireEvent.change(first, { target: { value: "say old server" } });
+    fireEvent.keyDown(first, { key: "Enter" });
+    await userEvent.click(screen.getByRole("link", { name: "Switch server" }));
+    await screen.findByRole("heading", { name: "second" });
+    const second = await screen.findByRole("textbox", { name: "Server command" });
+    expect(second).toHaveProperty("value", "");
+    await act(async () => { resolve({ name: "survival", output: "First server reply", transport: "rcon" }); });
+    expect(screen.queryByText("First server reply")).toBeNull();
+    expect(calls.sendCommand).toHaveBeenCalledExactlyOnceWith("survival", "say old server");
   });
 
   it("sends nothing on the Enter that picks an input-method candidate", async () => {

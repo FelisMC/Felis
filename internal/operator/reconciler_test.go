@@ -2,7 +2,11 @@ package operator_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -1243,6 +1247,59 @@ func TestFelisUpgradeReachesAServerOnItsNextStart(t *testing.T) {
 	reconcile(t, r, "survival")
 	if sts := getSTS(t, c, "survival"); sts.Spec.Replicas == nil || *sts.Spec.Replicas != 1 {
 		t.Fatalf("replicas = %v, want 1 after start", sts.Spec.Replicas)
+	}
+	expectInitImages(t, c, felisV2)
+}
+
+func TestStdinUpgradeWaitsForNextStart(t *testing.T) {
+	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Known: true}}, runningServer(), rconSecret())
+	r.FelisImage = felisV1
+	reconcile(t, r, "survival")
+	markPodReady(t, c, "survival")
+	reconcile(t, r, "survival")
+
+	legacy := getSTS(t, c, "survival")
+	legacy.Spec.Template.Spec.Containers[0].Stdin = false
+	projection := legacy.Spec.Template.DeepCopy()
+	for i := range projection.Spec.InitContainers {
+		if projection.Spec.InitContainers[i].Image == felisV1 {
+			projection.Spec.InitContainers[i].Image = ""
+		}
+	}
+	b, err := json.Marshal(projection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(b)
+	stamp := hex.EncodeToString(sum[:8])
+	legacy.Annotations[operator.PodTemplateAnnotation] = stamp
+	if err := c.Update(context.Background(), legacy); err != nil {
+		t.Fatal(err)
+	}
+
+	r.FelisImage = felisV2
+	reconcile(t, r, "survival")
+	upgraded := getSTS(t, c, "survival")
+	if !reflect.DeepEqual(upgraded.Spec.Template, legacy.Spec.Template) || upgraded.Annotations[operator.PodTemplateAnnotation] != stamp {
+		t.Fatal("platform upgrade changed a running server's template")
+	}
+	if upgraded.Spec.Replicas == nil || *upgraded.Spec.Replicas != 1 {
+		t.Fatal("platform upgrade scaled the running server")
+	}
+
+	stopRunningServer(t, r, c)
+	markPodTerminated(t, c, "survival")
+	reconcile(t, r, "survival")
+	server := getServer(t, c, "survival")
+	server.Spec.DesiredState = v1alpha1.DesiredRunning
+	if err := c.Update(context.Background(), server); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, r, "survival")
+	restarted := getSTS(t, c, "survival")
+	game := restarted.Spec.Template.Spec.Containers[0]
+	if !game.Stdin || game.StdinOnce || game.TTY || restarted.Spec.Replicas == nil || *restarted.Spec.Replicas != 1 {
+		t.Fatal("the next start did not enable reusable stdin without a TTY")
 	}
 	expectInitImages(t, c, felisV2)
 }

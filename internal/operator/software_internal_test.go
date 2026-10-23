@@ -57,6 +57,9 @@ func TestSoftwareServerPodOrder(t *testing.T) {
 		t.Errorf("FELIS_ARTIFACT_CACHE = %+v", e)
 	}
 	main := pod.Containers[0]
+	if !main.Stdin || main.StdinOnce || main.TTY {
+		t.Fatalf("runtime stdin=%v stdinOnce=%v tty=%v", main.Stdin, main.StdinOnce, main.TTY)
+	}
 	if !slices.Equal(main.Command, []string{"/felis/bin/felis", "launch", "--data", "/data"}) || main.WorkingDir != "/data" {
 		t.Errorf("server container command %v in %s, want felis launch in /data", main.Command, main.WorkingDir)
 	}

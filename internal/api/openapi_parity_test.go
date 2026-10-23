@@ -39,6 +39,8 @@ func TestOpenAPISchemasMatchWireStructs(t *testing.T) {
 		"ExtensionMetadata":        fileedit.ExtensionMetadata{},
 		"PaperGlobalConfig":        fileedit.PaperGlobalConfig{},
 		"PaperGlobalPatch":         paperGlobalPatchRequest{},
+		"ConsoleHistoryPage":       fileedit.LogTailPage{},
+		"ConsoleCommandResult":     ConsoleCommandResult{},
 		"FleetServer":              fleetServerView{},
 		"MyServerView":             MyServerView{},
 		"AllowlistEntry":           AllowlistEntry{},

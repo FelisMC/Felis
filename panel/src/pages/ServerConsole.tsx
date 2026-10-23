@@ -1,13 +1,15 @@
-import { useState, useRef, useCallback, useId, useLayoutEffect, type KeyboardEvent } from "react";
+import { useState, useRef, useCallback, useEffect, useId, useLayoutEffect, type KeyboardEvent } from "react";
 import { Link, useParams } from "react-router-dom";
-import { Terminal, Moon, Shield, ShieldAlert, HelpCircle, Loader2, Users, Archive, FolderOpen, Puzzle, CalendarClock, ChevronRight, type LucideIcon } from "lucide-react";
+import { Terminal, Moon, Shield, ShieldAlert, HelpCircle, Loader2, SendHorizontal, Users, Archive, FolderOpen, Puzzle, CalendarClock, ChevronRight, type LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { BackLink } from "@/components/BackLink";
 import { MAX_AUTO_RESTARTS, PhaseBadge, pendingPower, shownPhase, startFailure, type StartFailure } from "@/components/PhaseBadge";
 import { PageHeader } from "@/components/PageHeader";
 import { FormattedText, LogConsole } from "@/components/LogConsole";
+import { ConsoleHistory } from "@/components/ConsoleHistory";
 import { Loading, ErrorState } from "@/components/States";
 import { api, consoleStreamURL, humanizeError } from "@/lib/api";
 import { STATUS_POLL_FAST_MS, STATUS_POLL_SLOW_MS, useAsync, useConfig, usePolling } from "@/lib/hooks";
@@ -123,20 +125,24 @@ function CommandInput({ name }: { name: string }) {
   const [command, setCommand] = useState("");
   const [sending, setSending] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  // Keep the raw command response visible because it contains the only confirmation or refusal.
-  const [last, setLast] = useState<{ cmd: string; out: Formatted } | null>(null);
+  const [last, setLast] = useState<{ cmd: string; state: "pending" | "rcon" | "stdin" | "failed"; out?: Formatted } | null>(null);
+  const inFlight = useRef(false);
+  const generation = useRef(0);
   const historyRef = useRef<string[]>(loadHistory(name));
   const cursorRef = useRef(-1);
   // What was typed before stepping up into the history.
   const draftRef = useRef("");
   const inputRef = useRef<HTMLInputElement>(null);
   const composingRef = useRef(false);
+  useEffect(() => () => { generation.current += 1; inFlight.current = false; }, []);
 
   const send = useCallback(async (text: string) => {
-    if (!text || sending) return;
+    if (!text || inFlight.current) return;
+    inFlight.current = true;
+    const ticket = ++generation.current;
     setSending(true);
     setErr(null);
-    setCommand("");
+    setLast({ cmd: text, state: "pending" });
     const h = historyRef.current;
     if (h.length === 0 || h[h.length - 1] !== text) {
       if (h.length >= MAX_HISTORY) h.shift();
@@ -146,13 +152,17 @@ function CommandInput({ name }: { name: string }) {
     cursorRef.current = h.length;
     try {
       const res = await api.sendCommand(name, text);
-      setLast({ cmd: text, out: parseFormatting((res.output ?? "").trim()) });
+      if (ticket !== generation.current) return;
+      setCommand("");
+      setLast({ cmd: text, state: res.transport, out: res.transport === "rcon" ? parseFormatting(res.output.trim()) : undefined });
     } catch (ex) {
-      setErr(humanizeError(ex));
+      if (ticket !== generation.current) return;
+      setLast({ cmd: text, state: "failed" });
+      setErr((ex as { code?: string }).code === "not_running" ? t("command_not_running") : humanizeError(ex));
     } finally {
-      setSending(false);
+      if (ticket === generation.current) { inFlight.current = false; setSending(false); }
     }
-  }, [name, sending]);
+  }, [name, t]);
 
   useLayoutEffect(() => {
     if (!sending) inputRef.current?.focus();
@@ -163,7 +173,7 @@ function CommandInput({ name }: { name: string }) {
     const h = historyRef.current;
     if (e.key === "Enter") {
       e.preventDefault();
-      send(command.trim());
+      if (!e.repeat) void send(command.trim());
       return;
     }
     if (h.length === 0) return;
@@ -194,7 +204,9 @@ function CommandInput({ name }: { name: string }) {
       {last && (
         <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2 font-mono text-xs text-zinc-300">
           <span className="text-zinc-500">{"> " + last.cmd + "\n"}</span>
-          <FormattedText formatted={last.out} />
+          {last.state === "pending" && <span role="status">{t("command_sending")}</span>}
+          {last.state === "stdin" && <span role="status">{t("command_sent_stdin")}</span>}
+          {last.out && <FormattedText formatted={last.out} />}
         </pre>
       )}
       <div className="flex items-center gap-2 rounded-md border border-zinc-700 bg-zinc-900 px-3 font-mono text-xs text-zinc-200">
@@ -202,6 +214,7 @@ function CommandInput({ name }: { name: string }) {
         <input
           ref={inputRef}
           value={command}
+          disabled={sending}
           onChange={(e) => { setCommand(e.target.value); cursorRef.current = -1; }}
           onKeyDown={onKeyDown}
           onCompositionStart={() => { composingRef.current = true; }}
@@ -209,10 +222,15 @@ function CommandInput({ name }: { name: string }) {
           aria-label={t("command_label")}
           placeholder={t("command_placeholder")}
           autoComplete="off"
+          enterKeyHint="send"
           spellCheck={false}
-          className="flex-1 bg-transparent py-1.5 text-zinc-200 placeholder:text-zinc-500 focus:outline-none"
+          className="min-w-0 flex-1 bg-transparent py-2 text-base text-zinc-200 placeholder:text-zinc-500 focus:outline-none sm:text-xs"
         />
-        {sending && <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0 text-zinc-500" />}
+        <Button type="button" size="icon" variant="ghost" aria-label={t("command_send")} title={t("command_send")}
+          disabled={sending || !command.trim()} onClick={() => void send(command.trim())}
+          className="h-9 w-9 shrink-0 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100">
+          {sending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <SendHorizontal className="h-3.5 w-3.5" />}
+        </Button>
       </div>
       <InlineError message={err} className="text-xs" />
     </div>
@@ -242,6 +260,8 @@ export function ServerConsole() {
     [isAdmin, name],
   );
   const owned = canManage(isAdmin, mine, name);
+  const savedLogs = owned && !error && data?.desiredState === "Stopped" && !data.ready && !["Running", "Starting", "Stopping"].includes(data.phase);
+  const commandable = owned && !error && data?.desiredState === "Running" && ["Starting", "Running"].includes(data.phase);
 
   // Stream Starting and Failed Pods as well as Running Pods so startup failures remain diagnosable.
   const streamable = data?.phase === "Running" || ((data?.phase === "Starting" || data?.phase === "Failed") && data.startup?.logsAvailable !== false);
@@ -312,7 +332,9 @@ export function ServerConsole() {
             <div className="lg:col-span-3 flex flex-col lg:min-h-0 min-h-0 h-full">
               <Card className="dark flex flex-col flex-1 lg:min-h-0 min-h-0 overflow-hidden bg-black text-zinc-50 border-zinc-800">
                 <CardContent className="p-0 flex-1 flex flex-col lg:min-h-0 min-h-0 bg-black">
-                  {!streamable ? (
+                  {savedLogs ? (
+                    <ConsoleHistory key={name} name={name} />
+                  ) : !streamable ? (
                     <div className="flex-1 flex flex-col justify-center p-6 bg-black">
                       <NotStreaming phase={error ? "Unknown" : shownPhase(data)} waitingForContainer={!error && data.startup?.logsAvailable === false} />
                     </div>
@@ -327,17 +349,15 @@ export function ServerConsole() {
                         url={consoleStreamURL(cfg.apiBase, name)}
                         className="border-0 rounded-none bg-transparent"
                       />
-                      {!error && data.phase === "Running" && (
-                        <div className="p-3 bg-zinc-900/40 border-t border-zinc-800">
-                          <CommandInput name={name} />
-                        </div>
-                      )}
                     </div>
                   ) : (
                     <div className="p-6 bg-black">
                       <Loading />
                     </div>
                   )}
+                  {commandable && <div className="border-t border-zinc-800 bg-zinc-900/40 p-3">
+                    <CommandInput key={name} name={name} />
+                  </div>}
                 </CardContent>
               </Card>
             </div>

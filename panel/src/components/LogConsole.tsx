@@ -35,6 +35,12 @@ export function FormattedText({ formatted }: { formatted: Formatted }) {
     : formatted.text;
 }
 
+export function LogRow({ line }: { line: Pick<LogLine, "text" | "segments" | "level"> }) {
+  return <div className={cn("whitespace-pre-wrap break-all", LEVEL_CLASS[line.level])}>
+    <FormattedText formatted={line.text ? line : { text: "\u00A0" }} />
+  </div>;
+}
+
 // Match only INFO lifecycle messages; RCON failures and command output remain visible.
 const RCON_LIFECYCLE = /^(?:\[\d{2}:\d{2}:\d{2} INFO\]|\[\d{2}:\d{2}:\d{2}(?:\.\d+)?\] \[[^\]]+\/INFO\]): Thread RCON Client \/\S+ (?:started|shutting down)$/;
 
@@ -44,9 +50,7 @@ const LogChunk = memo(function LogChunk({ lines }: { lines: LogLine[] }) {
   return (
     <div className="[content-visibility:auto] [contain-intrinsic-size:auto_1950px]">
       {lines.map((line) => (
-        <div key={line.seq} className={cn("whitespace-pre-wrap break-all", LEVEL_CLASS[line.level])}>
-          <FormattedText formatted={line.text ? line : { text: "\u00A0" }} />
-        </div>
+        <LogRow key={line.seq} line={line} />
       ))}
     </div>
   );

@@ -1316,6 +1316,14 @@ components:
       properties:
         op: { $ref: '#/components/schemas/FileOp' }
 
+    ConsoleCommandResult:
+      type: object
+      required: [name, output, transport]
+      properties:
+        name: { type: string }
+        output: { type: string, description: RCON reply; empty when a line was submitted through stdin. }
+        transport: { type: string, enum: [rcon, stdin], description: 'stdin confirms submission only; command results remain in the console log.' }
+
     ExtensionMetadata:
       type: object
       required: [id, name, authors, loaders]
@@ -1439,6 +1447,28 @@ components:
           type: string
           pattern: '^[0-9a-f]{64}$'
           description: Required hash returned by a read; this endpoint never saves without conflict detection.
+
+    ConsoleHistoryPage:
+      type: object
+      required: [content, content_sha256, has_more, byte_limited]
+      properties:
+        content:
+          type: string
+          format: byte
+          maxLength: 349528
+          description: Base64-encoded bytes in chronological order from a contiguous part of logs/latest.log.
+        content_sha256:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: SHA-256 of the decoded content bytes, including the digest of empty content for an empty page.
+        next_cursor:
+          type: string
+          maxLength: 256
+          description: Opaque cursor for the preceding page; omitted when no earlier bytes remain.
+        has_more: { type: boolean, description: Earlier log bytes remain before this page. }
+        byte_limited:
+          type: boolean
+          description: The 256 KiB page bound was reached before collecting 200 lines; a long line may span pages.
 
     FileOp:
       type: object
@@ -3570,8 +3600,20 @@ paths:
     post:
       tags: [console]
       operationId: command
-      summary: Run a console command via RCON (spec §8 write). Owner/admin only.
-      description: The RCON password is never accepted or returned (spec §286).
+      summary: Submit a console command during startup or running (owner-or-admin).
+      description: >-
+        Requires desiredState Running and phase Starting or Running, but not
+        readiness. Maintenance blocks input without creating a world volume.
+        Commands are single-line and limited to 1024 UTF-8 bytes. RCON is tried
+        first for its reply. Only failure before command execution starts may
+        fall back once to the running game container's stdin. The fixed attach
+        sends one line without a TTY and without reading stdout or stderr.
+        Commands to one server are serialized and waiting is cancelable. Once
+        execution starts, loss of a reply or interrupted delivery returns
+        command_outcome_unknown and never automatically sends a second command.
+        A stdin success confirms submission, not completion; check the console
+        log for results. An older Pod without stdin needs a normal restart.
+        RCON passwords are never accepted or returned.
       x-felis-face: [external]
       x-felis-tier: app
       security: [{ sessionCookie: [] }]
@@ -3588,15 +3630,10 @@ paths:
                 command: { type: string }
       responses:
         '200':
-          description: Command output.
+          description: RCON reply or acknowledgment that a line was submitted through stdin.
           content:
             application/json:
-              schema:
-                type: object
-                required: [name, output]
-                properties:
-                  name: { type: string }
-                  output: { type: string }
+              schema: { $ref: '#/components/schemas/ConsoleCommandResult' }
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -3606,12 +3643,17 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          description: Server not running.
+          description: Server is not starting or running with desiredState Running, or maintenance blocks input.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+        '502':
+          description: The command may already have executed (command_outcome_unknown); inspect logs before sending it again. No automatic fallback or retry occurred.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /api/v1/servers/{name}/console:
     get:
@@ -3657,6 +3699,75 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/servers/{name}/console/history:
+    get:
+      tags: [console]
+      operationId: serverConsoleHistory
+      summary: Read stored logs from a fully stopped server (owner-or-admin).
+      description: >-
+        Reads the last 200 lines of logs/latest.log from the world volume with
+        at most 256 KiB per page. Use next_cursor to load the preceding page
+        while has_more is true; page bytes are contiguous and a long line may
+        span pages when byte_limited is true. The log may exceed the text
+        editor's 5 MiB limit. A missing volume or log returns empty content
+        on the first request without creating a volume; if a cursor was
+        supplied it returns 409 file_changed and requires a fresh read.
+        The server must have desiredState Stopped
+        and ready false, with phase outside Running, Starting and Stopping.
+        Backup, restore, migration and other conflicting maintenance still
+        block access. Replaced or truncated logs return 409 file_changed;
+        reload from the last page. Symbolic links and aliases of protected
+        configuration are refused. Filesystem access uses a read-only file
+        task without RCON or a live game Pod. Responses use Cache-Control
+        no-store. The running console SSE route is unchanged.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque next_cursor returned by the preceding request; at most 256 bytes.
+          schema: { type: string, maxLength: 256 }
+      responses:
+        '200':
+          description: Stored log page; empty when no stored log exists.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConsoleHistoryPage' }
+        '400':
+          description: Invalid server name or cursor, or a protected log path (bad_path).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Unknown server.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Server is not fully stopped, maintenance blocks access, or the log changed since the cursor was issued.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '502':
+          description: The returned file task content did not match its digest (read_damaged).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          description: The stored log read did not finish in time (files_timeout).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /api/v1/servers/{name}/access/whitelist:
     get:

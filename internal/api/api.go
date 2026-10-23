@@ -299,6 +299,7 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/claim", h: a.handleClaim},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/command", h: a.handleCommand},
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/console", h: a.handleServerConsole},
+		{Method: "GET", Pattern: "/api/v1/servers/{name}/console/history", h: a.handleConsoleHistory},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/access/whitelist", h: a.handleAccessWhitelist},
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/access/whitelist", h: a.handleAccessWhitelistList},
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/access/players", h: a.handleAccessPlayers},

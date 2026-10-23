@@ -42,15 +42,19 @@ func (a *API) handleCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The server may become unavailable after readiness was checked; the command still maps connection failures to 503.
+	// The transport checks again after its per-server lock; readiness is not required during startup.
 	info, err := a.Cluster.GetServer(r.Context(), name)
 	if err != nil {
 		a.writeLookupError(w, r, err)
 		return
 	}
-	if !info.Ready {
+	if info.DesiredState != "Running" || info.Phase != "Running" && info.Phase != "Starting" {
 		writeError(w, r, newError(http.StatusConflict, "not_running",
-			"server is not running; wake it before sending console commands"))
+			"start the server before sending console commands"))
+		return
+	}
+	if err := a.Cluster.CheckFileAccess(r.Context(), name); err != nil {
+		a.writeLookupError(w, r, maintenanceError(err, ""))
 		return
 	}
 
@@ -60,11 +64,19 @@ func (a *API) handleCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	output, err := a.Console.RunCommand(r.Context(), name, command)
+	result, err := a.Console.SubmitCommand(r.Context(), name, command)
 	switch {
+	case errors.Is(err, ErrConsoleOutcomeUnknown):
+		a.audit(r, "console.command.uncertain", name)
+		writeError(w, r, newError(http.StatusBadGateway, "command_outcome_unknown",
+			"the command may already have executed; check the console log before sending it again"))
+		return
+	case errors.Is(err, ErrConsoleNotRunning):
+		writeError(w, r, newError(http.StatusConflict, "not_running", "the server stopped accepting console input"))
+		return
 	case errors.Is(err, ErrConsoleUnavailable):
 		writeError(w, r, newError(http.StatusServiceUnavailable, "console_unavailable",
-			"server console is currently unreachable; wake the server and retry"))
+			"no writable game console is available; wait for startup or restart the server after updating"))
 		return
 	case err != nil:
 		a.writeLookupError(w, r, err)
@@ -72,5 +84,5 @@ func (a *API) handleCommand(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.audit(r, "console.command", name)
-	writeJSON(w, http.StatusOK, map[string]any{"name": name, "output": output})
+	writeJSON(w, http.StatusOK, result)
 }

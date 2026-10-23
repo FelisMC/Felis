@@ -210,6 +210,7 @@ func TestFilesJobWorldMountIsReadOnlyForReads(t *testing.T) {
 		{OpExtensions, true},
 		{OpPaperGlobalRead, true},
 		{OpPaperGlobalPatch, false},
+		{OpLogTail, true},
 		{OpWrite, false},
 		{OpMkdir, false},
 		{OpDelete, false},
@@ -259,6 +260,20 @@ func TestFilesJobPaperGlobalPatchUsesInlineContent(t *testing.T) {
 	p.Path = "different.yml"
 	if _, err := FilesJob(p); err == nil {
 		t.Fatal("protected read accepted a caller-supplied path")
+	}
+}
+
+func TestFilesJobPassesLogCursor(t *testing.T) {
+	p := testParams(OpLogTail)
+	p.Cursor = base64.RawURLEncoding.EncodeToString([]byte(`{"v":1,"d":1,"i":2,"s":100,"m":3,"b":40}`))
+	job, err := FilesJob(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := job.Spec.Template.Spec.Containers[0].Args
+	at := slices.Index(args, "--cursor")
+	if at < 0 || at+1 >= len(args) || args[at+1] != p.Cursor || job.Labels[LabelMode] != OpLogTail {
+		t.Fatalf("log cursor was not forwarded: args=%q mode=%q", args, job.Labels[LabelMode])
 	}
 }
 

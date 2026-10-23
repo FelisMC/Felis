@@ -93,6 +93,27 @@ func TestBrowserReusesWorkerAndReadsCurrentBytes(t *testing.T) {
 	} else {
 		assertPaperGlobalSafe(t, got)
 	}
+	if err := os.Mkdir(filepath.Join(root, "logs"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, logTailPath), []byte(strings.Repeat("entry\n", 201)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	first := read(OpLogTail, "")
+	if first.Code != "" || first.LogTail == nil || !first.LogTail.HasMore || string(first.LogTail.Content) != strings.Repeat("entry\n", 200) {
+		t.Fatalf("browser latest log page: %+v", first)
+	}
+	logParams := testParams(OpLogTail)
+	logParams.Cursor = first.LogTail.NextCursor
+	logParams.OpID, _ = newOpID()
+	payload, err = b.Run(ctx, logParams, start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var older Result
+	if err := json.Unmarshal(payload, &older); err != nil || older.Code != "" || older.LogTail == nil || older.LogTail.HasMore || string(older.LogTail.Content) != "entry\n" {
+		t.Fatalf("browser older log page: %+v %v", older, err)
+	}
 
 	if workers.Load() != 1 {
 		t.Fatalf("started %d workers for repeated reads", workers.Load())

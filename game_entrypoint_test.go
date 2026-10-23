@@ -1,11 +1,14 @@
 package felis
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Login rewrites its player cap every boot; lobby seeds it only when absent.
@@ -33,7 +36,8 @@ func runEntrypoint(t *testing.T, name, runtimeVar string, files []string, props 
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(bin, "java"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+	java := "#!/bin/sh\nprintf '%s\\n' \"$$\" > \"$FELIS_TEST_JAVA_PID\"\ncat > \"$FELIS_TEST_JAVA_INPUT\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "java"), []byte(java), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -52,10 +56,24 @@ func runEntrypoint(t *testing.T, name, runtimeVar string, files []string, props 
 		t.Fatal(err)
 	}
 
-	cmd := exec.Command("sh", path)
-	cmd.Env = append([]string{"PATH=" + bin + ":" + os.Getenv("PATH"), "FELIS_FORWARDING_SECRET=fwd-test"}, env...)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "sh", path)
+	const input = "say console input 世界\nlist\n"
+	cmd.Stdin = strings.NewReader(input)
+	pidPath, inputPath := filepath.Join(root, "java.pid"), filepath.Join(root, "java.stdin")
+	cmd.Env = append([]string{"PATH=" + bin + ":" + os.Getenv("PATH"), "FELIS_FORWARDING_SECRET=fwd-test",
+		"FELIS_TEST_JAVA_PID=" + pidPath, "FELIS_TEST_JAVA_INPUT=" + inputPath}, env...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("%s failed: %v\n%s", name, err, out)
+	}
+	pid, err := os.ReadFile(pidPath)
+	if err != nil || strings.TrimSpace(string(pid)) != strconv.Itoa(cmd.Process.Pid) {
+		t.Fatalf("%s did not exec Java in the entrypoint process: pid=%q err=%v", name, pid, err)
+	}
+	stdin, err := os.ReadFile(inputPath)
+	if err != nil || string(stdin) != input {
+		t.Fatalf("%s Java stdin = %q, err=%v", name, stdin, err)
 	}
 	got, err := os.ReadFile(filepath.Join(data, "server.properties"))
 	if err != nil {
@@ -108,6 +126,21 @@ func TestLobbyEntrypointWritesTheRconPasswordVerbatim(t *testing.T) {
 }
 
 var limboImage = []string{"Limbo.jar", "plugins/felis-limbo.jar"}
+
+func TestGameEntrypointsPassStdinToJava(t *testing.T) {
+	for _, tc := range []struct {
+		name, runtime string
+		files         []string
+	}{
+		{"paper", `RUNTIME_DIR="/paper"`, []string{"paper.jar"}},
+		{"lobby", `RUNTIME_DIR="/paper"`, lobbyImage},
+		{"limbo", `RUNTIME_DIR="/limbo"`, limboImage},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runEntrypoint(t, "deploy/"+tc.name+"/entrypoint.sh", tc.runtime, tc.files, "")
+		})
+	}
+}
 
 func TestLimboEntrypointNeverCapsTheGate(t *testing.T) {
 	t.Run("over a cap left on the volume", func(t *testing.T) {

@@ -30,6 +30,7 @@ type fakeFileEditor struct {
 	gotPath       string
 	gotPaths      []string
 	gotQuery      string
+	gotCursor     string
 	gotContent    []byte
 	gotExpect     string
 	gotCreateOnly bool
@@ -43,6 +44,7 @@ type fakeFileEditor struct {
 
 	entries     []fileedit.Entry
 	extensions  []fileedit.Extension
+	logTail     fileedit.LogTailPage
 	truncated   bool
 	free        int64
 	content     []byte
@@ -102,6 +104,12 @@ func (f *fakeFileEditor) PatchPaperGlobal(_ context.Context, server string, valu
 	f.calls++
 	f.gotOp, f.gotServer, f.gotValues, f.gotExpect = "paper-global-patch", server, values, expect
 	return f.paperGlobal, f.err
+}
+
+func (f *fakeFileEditor) LogTail(_ context.Context, server, cursor string) (fileedit.LogTailPage, error) {
+	f.calls++
+	f.gotOp, f.gotServer, f.gotCursor = "log-tail", server, cursor
+	return f.logTail, f.err
 }
 
 func (f *fakeFileEditor) StartTransfer(_ context.Context, server, op string, paths []string, to string, overwrite bool) (fileedit.OpState, error) {

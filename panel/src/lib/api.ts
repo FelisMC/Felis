@@ -1,6 +1,8 @@
 import type {
   HostOverview,
   ServerUsage,
+  ConsoleHistoryPage,
+  ConsoleCommandResult,
   NodeControlRequest,
   NodeControlTask,
   AccessResult,
@@ -79,6 +81,16 @@ import type {
 import { loadConfig } from "./config";
 import { base64Sha256, sha256Of } from "./digest";
 import i18next from "i18next";
+
+async function verifyContentDigest(content: string, expected: string): Promise<void> {
+  let got: string | undefined;
+  try {
+    got = await base64Sha256(content);
+  } catch {
+    // Malformed base64 is reported as a damaged transfer.
+  }
+  if (!got || got !== expected) throw clientError("read_damaged");
+}
 
 // Send session cookies; the panel never receives service tokens or RCON passwords.
 
@@ -445,9 +457,15 @@ export const api = rejectingSync({
 
   cancelRetire: (name: string) => request<void>("DELETE", urlPath`/servers/${name}/retirement`),
 
-  // Commands strip a leading slash, reject control characters, and have a 1000-byte limit.
+  // Commands strip a leading slash, reject control characters, and have a 1024-byte limit.
   sendCommand: (name: string, command: string) =>
-    request<{ output: string }>("POST", urlPath`/servers/${name}/command`, { command }),
+    request<ConsoleCommandResult>("POST", urlPath`/servers/${name}/command`, { command }),
+
+  serverConsoleHistory: async (name: string, cursor?: string) => {
+    const page = await request<ConsoleHistoryPage>("GET", urlPath`/servers/${name}/console/history` + (cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""));
+    await verifyContentDigest(page.content, page.content_sha256);
+    return page;
+  },
 
   // Structured access operations require a running server; the backend validates command fields.
   // The reply's output is the raw RCON text, surfaced verbatim as confirmation.
@@ -792,13 +810,7 @@ export const api = rejectingSync({
       "GET",
       urlPath`/servers/${name}/file` + `?path=${encodeURIComponent(path)}`,
     );
-    let got = "";
-    try {
-      got = await base64Sha256(r.content);
-    } catch {
-      /* not base64 at all: damaged too */
-    }
-    if (got !== r.content_sha256) throw clientError("read_damaged");
+    await verifyContentDigest(r.content, r.content_sha256);
     return r;
   },
 
@@ -1341,6 +1353,8 @@ export function humanizeError(e: unknown): string {
       return t("not_running");
     case "console_unavailable":
       return t("console_unavailable");
+    case "command_outcome_unknown":
+      return t("command_outcome_unknown");
     case "luckperms_missing":
       return t("luckperms_missing");
     case "no_backup":

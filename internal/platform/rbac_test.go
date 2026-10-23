@@ -76,6 +76,34 @@ func TestAPIRole_MetricsAreNamespacedAndReadOnly(t *testing.T) {
 	}
 }
 
+func TestAPIRole_StdinAttachIsNamespaceScopedCreateOnly(t *testing.T) {
+	for _, distributed := range []bool{false, true} {
+		p := testParams()
+		p.ControlNamespace, p.MinecraftNamespace, p.BuildNamespace = "control-custom", "games-custom", "build-custom"
+		p.Distributed = distributed
+		grants := 0
+		for _, role := range ControlPlaneRBAC(p).Roles {
+			if grantsResource(role, groupCore, "pods/exec") {
+				t.Errorf("%s must not execute arbitrary container commands", role.Name)
+			}
+			for _, rule := range role.Rules {
+				if !contains(rule.Resources, "pods/attach") {
+					continue
+				}
+				grants++
+				if role.Name != "felis-api" || role.Kind != "Role" || role.Namespace != p.MinecraftNamespace ||
+					len(rule.APIGroups) != 1 || rule.APIGroups[0] != groupCore ||
+					len(rule.Resources) != 1 || len(rule.Verbs) != 1 || rule.Verbs[0] != "create" {
+					t.Errorf("distributed=%v: excessive attach grant in %s/%s: %+v", distributed, role.Namespace, role.Name, rule)
+				}
+			}
+		}
+		if grants != 1 {
+			t.Errorf("distributed=%v: got %d attach grants, want only the game API role", distributed, grants)
+		}
+	}
+}
+
 func TestAPIRole_CreatesJobsInBothNamespaces(t *testing.T) {
 	rbac := ControlPlaneRBAC(testParams())
 

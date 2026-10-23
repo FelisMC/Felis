@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"sync"
 	"time"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
@@ -10,40 +12,91 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/remotecommand"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// Console returns ErrNotFound or ErrConsoleUnavailable; RCON passwords must never appear in arguments or returned output.
+// Console separates reply-dependent RCON calls from interactive submissions.
 type Console interface {
 	RunCommand(ctx context.Context, name, command string) (string, error)
+	SubmitCommand(ctx context.Context, name, command string) (ConsoleCommandResult, error)
+}
+
+type ConsoleCommandResult struct {
+	Name      string `json:"name"`
+	Output    string `json:"output"`
+	Transport string `json:"transport"`
+}
+
+type consoleRCON interface {
+	ExecuteContext(context.Context, string) (string, error)
+	SetDeadline(time.Time) error
+	Close() error
 }
 
 type K8sConsole struct {
-	c         client.Client
-	namespace string
-	timeout   time.Duration
+	c             client.Client
+	clientset     kubernetes.Interface
+	config        *rest.Config
+	namespace     string
+	timeout       time.Duration
+	submitTimeout time.Duration
+	dial          func(string, string, time.Duration) (consoleRCON, error)
+	executor      func(*rest.Config, string, *url.URL) (remotecommand.Executor, error)
+	mu            sync.Mutex
+	slots         map[string]*consoleSlot
 }
 
-func NewK8sConsole(c client.Client, namespace string) *K8sConsole {
-	return &K8sConsole{c: c, namespace: namespace, timeout: 5 * time.Second}
+func NewK8sConsole(c client.Client, cs kubernetes.Interface, config *rest.Config, namespace string) *K8sConsole {
+	return &K8sConsole{
+		c: c, clientset: cs, config: config, namespace: namespace,
+		timeout: 5 * time.Second, submitTimeout: 10 * time.Second,
+		dial: func(addr, password string, timeout time.Duration) (consoleRCON, error) {
+			return rcon.Dial(addr, password, timeout)
+		},
+		executor: remotecommand.NewSPDYExecutor,
+	}
 }
 
 // RunCommand hides dial, authentication and Secret errors behind ErrConsoleUnavailable.
 func (k *K8sConsole) RunCommand(ctx context.Context, name, command string) (string, error) {
+	ms, err := k.consoleServer(ctx, name)
+	if err != nil {
+		return "", err
+	}
+	conn, err := k.connectRCON(ctx, ms)
+	if err != nil {
+		return "", ErrConsoleUnavailable
+	}
+	defer conn.Close()
+	out, err := conn.ExecuteContext(ctx, command)
+	if err != nil {
+		return "", ErrConsoleUnavailable
+	}
+	return out, nil
+}
+
+func (k *K8sConsole) consoleServer(ctx context.Context, name string) (*v1alpha1.MinecraftServer, error) {
 	var ms v1alpha1.MinecraftServer
 	if err := k.c.Get(ctx, types.NamespacedName{Namespace: k.namespace, Name: name}, &ms); err != nil {
 		if apierrors.IsNotFound(err) {
-			return "", ErrNotFound
+			return nil, ErrNotFound
 		}
-		return "", err
+		return nil, ErrConsoleUnavailable
 	}
-	if !ms.Spec.Rcon.Enabled {
-		return "", ErrConsoleUnavailable
+	return &ms, nil
+}
+
+func (k *K8sConsole) connectRCON(ctx context.Context, ms *v1alpha1.MinecraftServer) (consoleRCON, error) {
+	if ctx.Err() != nil || !ms.Spec.Rcon.Enabled {
+		return nil, ErrConsoleUnavailable
 	}
 
-	password, err := k.rconPassword(ctx, &ms)
+	password, err := k.rconPassword(ctx, ms)
 	if err != nil {
-		return "", ErrConsoleUnavailable
+		return nil, ErrConsoleUnavailable
 	}
 
 	timeout := k.timeout
@@ -51,28 +104,30 @@ func (k *K8sConsole) RunCommand(ctx context.Context, name, command string) (stri
 		timeout = 5 * time.Second
 	}
 	if dl, ok := ctx.Deadline(); ok {
-		if remaining := time.Until(dl); remaining > 0 && remaining < timeout {
+		if remaining := time.Until(dl); remaining <= 0 {
+			return nil, ErrConsoleUnavailable
+		} else if remaining < timeout {
 			timeout = remaining
 		}
 	}
 
-	conn, err := rcon.Dial(rconEndpoint(&ms), password, timeout)
+	conn, err := k.dial(rconEndpoint(ms), password, timeout)
 	if err != nil {
-		return "", ErrConsoleUnavailable
+		return nil, ErrConsoleUnavailable
 	}
-	defer conn.Close()
+	if ctx.Err() != nil {
+		conn.Close()
+		return nil, ErrConsoleUnavailable
+	}
 	// Honor longer caller timeouts so large-world save-all flushes can finish.
 	if dl, ok := ctx.Deadline(); ok {
 		if err := conn.SetDeadline(dl); err != nil {
-			return "", ErrConsoleUnavailable
+			conn.Close()
+			return nil, ErrConsoleUnavailable
 		}
 	}
 
-	out, err := conn.ExecuteContext(ctx, command)
-	if err != nil {
-		return "", ErrConsoleUnavailable
-	}
-	return out, nil
+	return conn, nil
 }
 
 // rconEndpoint must match the operator's rconAddress convention.

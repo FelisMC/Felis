@@ -52,6 +52,7 @@ const (
 	FilesModeSearch          = "search"
 	FilesModeExtensions      = "extensions"
 	FilesModePaperGlobalRead = "paper-global-read"
+	FilesModeLogTail         = "log-tail"
 )
 
 const (
@@ -68,7 +69,7 @@ func JobKind(j *batchv1.Job) (string, bool) {
 	case "felis-backup":
 		return KindBackup, true
 	case "felis-files":
-		if mode := j.Labels[LabelFilesMode]; mode != FilesModeList && mode != FilesModeRead && mode != FilesModeSearch && mode != FilesModeExtensions && mode != FilesModePaperGlobalRead {
+		if mode := j.Labels[LabelFilesMode]; mode != FilesModeList && mode != FilesModeRead && mode != FilesModeSearch && mode != FilesModeExtensions && mode != FilesModePaperGlobalRead && mode != FilesModeLogTail {
 			return KindFileWrite, true
 		}
 	case "felis-export":

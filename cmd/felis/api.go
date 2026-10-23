@@ -335,7 +335,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	a := &api.API{
 		Repo:            repo,
 		Cluster:         cluster,
-		Console:         api.NewK8sConsole(cl, cfg.K8s.Namespace),
+		Console:         api.NewK8sConsole(cl, clientset, restCfg, cfg.K8s.Namespace),
 		Usage:           api.NewUsageSampler(cluster.ReadPodUsage),
 		Logs:            api.NewK8sLogStreamer(clientset, cfg.K8s.Namespace),
 		BuildLogs:       api.NewK8sBuildLogStreamer(clientset, cfg.Registry.BuildNamespace),

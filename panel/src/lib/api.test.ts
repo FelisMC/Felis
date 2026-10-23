@@ -50,6 +50,64 @@ describe("protected Paper global wire shape", () => {
   });
 });
 
+describe("saved console history wire shape", () => {
+  beforeEach(() => { vi.restoreAllMocks(); cfg.apiBase = ""; });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("requests the first history page and verifies its binary content digest", async () => {
+    const body = { content: "AAEC", content_sha256: hexOf(new Uint8Array([0, 1, 2])), next_cursor: "older", has_more: true, byte_limited: false };
+    const fetchSpy = fakeFetch(body);
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await api.serverConsoleHistory("survival")).toEqual(body);
+    const [url, options] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(String(url)).toBe("/servers/survival/console/history");
+    expect(options).toMatchObject({ method: "GET", credentials: "include" });
+  });
+
+  it("encodes an opaque earlier-page cursor as a query value", async () => {
+    const fetchSpy = fakeFetch({ content: "", content_sha256: hexOf(""), has_more: false, byte_limited: false });
+    vi.stubGlobal("fetch", fetchSpy);
+    await api.serverConsoleHistory("survival", "cursor/+=?");
+    expect(String((fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0])).toBe("/servers/survival/console/history?cursor=cursor%2F%2B%3D%3F");
+  });
+
+  it.each([
+    ["AAED", hexOf(new Uint8Array([0, 1, 2]))],
+    ["AA=E", hexOf(new Uint8Array([0, 1, 2]))],
+    ["AAEC", undefined],
+    ["", ""],
+  ])("rejects damaged history content %s", async (content, content_sha256) => {
+    vi.stubGlobal("fetch", fakeFetch({ content, content_sha256, has_more: false, byte_limited: false }));
+    await expect(api.serverConsoleHistory("survival")).rejects.toMatchObject({ code: "read_damaged" });
+  });
+});
+
+describe("console command wire shape", () => {
+  beforeEach(() => { vi.restoreAllMocks(); cfg.apiBase = ""; });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each([
+    { name: "survival", output: "RCON reply", transport: "rcon" },
+    { name: "survival", output: "", transport: "stdin" },
+  ])("preserves $transport submission semantics", async (result) => {
+    const fetchSpy = fakeFetch(result);
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await api.sendCommand("survival", "list")).toEqual(result);
+    const [url, options] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(url).toBe("/servers/survival/command");
+    expect(options.method).toBe("POST");
+    expect(JSON.parse(options.body)).toEqual({ command: "list" });
+  });
+
+  it("propagates uncertain outcomes without retrying the command", async () => {
+    const fetchSpy = fakeFetch({ error: { code: "command_outcome_unknown", message: "check the log before sending it again" } }, { ok: false, status: 502 });
+    vi.stubGlobal("fetch", fetchSpy);
+    await expect(api.sendCommand("survival", "say once")).rejects.toMatchObject({ status: 502, code: "command_outcome_unknown" });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(humanizeError({ status: 502, code: "command_outcome_unknown" })).toContain("Check the console log");
+  });
+});
+
 describe("api.me wire shape", () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => vi.unstubAllGlobals());

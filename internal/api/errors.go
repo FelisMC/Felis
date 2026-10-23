@@ -11,11 +11,13 @@ import (
 )
 
 var (
-	ErrNotFound           = errors.New("not found")
-	ErrConflict           = errors.New("conflict")
-	ErrQuotaExceeded      = errors.New("server quota exhausted")
-	ErrLinkCodeInvalid    = errors.New("link code invalid or expired")
-	ErrConsoleUnavailable = errors.New("server console is unavailable")
+	ErrNotFound              = errors.New("not found")
+	ErrConflict              = errors.New("conflict")
+	ErrQuotaExceeded         = errors.New("server quota exhausted")
+	ErrLinkCodeInvalid       = errors.New("link code invalid or expired")
+	ErrConsoleUnavailable    = errors.New("server console is unavailable")
+	ErrConsoleNotRunning     = errors.New("server is not accepting console input")
+	ErrConsoleOutcomeUnknown = errors.New("console command outcome is unknown")
 	// ErrOTPInvalid conceals whether the code is unknown or the guess is wrong.
 	ErrOTPInvalid = errors.New("email code invalid or expired")
 	ErrOTPLocked  = errors.New("email code locked: too many attempts")

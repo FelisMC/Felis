@@ -35,17 +35,18 @@ const (
 	OpMove             = "move"
 	OpZip              = "zip"
 	OpExtensions       = "extensions"
+	OpLogTail          = "log-tail"
 	OpPaperGlobalRead  = "paper-global-read"
 	OpPaperGlobalPatch = "paper-global-patch"
 )
 
 func mutates(op string) bool {
-	return op != OpList && op != OpRead && op != OpSearch && op != OpExtensions && op != OpPaperGlobalRead
+	return op != OpList && op != OpRead && op != OpSearch && op != OpExtensions && op != OpPaperGlobalRead && op != OpLogTail
 }
 
 func validOp(op string) bool {
 	switch op {
-	case OpList, OpRead, OpWrite, OpMkdir, OpDelete, OpRename, OpUpload, OpUnzip, OpSearch, OpCopy, OpMove, OpZip, OpExtensions, OpPaperGlobalRead, OpPaperGlobalPatch:
+	case OpList, OpRead, OpWrite, OpMkdir, OpDelete, OpRename, OpUpload, OpUnzip, OpSearch, OpCopy, OpMove, OpZip, OpExtensions, OpPaperGlobalRead, OpPaperGlobalPatch, OpLogTail:
 		return true
 	}
 	return false
@@ -104,6 +105,7 @@ type Result struct {
 	Truncated   bool               `json:"truncated,omitempty"`
 	Extensions  []Extension        `json:"extensions,omitempty"`
 	PaperGlobal *PaperGlobalConfig `json:"paper_global,omitempty"`
+	LogTail     *LogTailPage       `json:"log_tail,omitempty"`
 	// SHA256 covers on-disk bytes before redaction, or the current file on conflict; use it as the next write's expected hash.
 	SHA256 string `json:"sha256,omitempty"`
 	// ContentSHA256 covers transmitted bytes after redaction.
@@ -122,11 +124,12 @@ type Result struct {
 }
 
 type Request struct {
-	Op    string
-	Path  string
-	To    string
-	Query string
-	Paths []string
+	Op     string
+	Path   string
+	To     string
+	Query  string
+	Cursor string
+	Paths  []string
 	// Expect conditions writes on the current file hash; ContentSHA256 verifies incoming bytes before any modification.
 	Content       []byte
 	Expect        string
@@ -175,6 +178,8 @@ func Execute(root string, req Request) (Result, error) {
 		return extensions(r), nil
 	case OpPaperGlobalRead, OpPaperGlobalPatch:
 		return paperGlobal(r, req), nil
+	case OpLogTail:
+		return logTail(r, req.Cursor), nil
 	case OpWrite:
 		return write(r, path, req.Content, req.ContentSHA256, req.Expect, req.CreateOnly), nil
 	case OpMkdir:

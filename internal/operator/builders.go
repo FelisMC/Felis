@@ -207,6 +207,7 @@ func buildStatefulSetWith(server *v1alpha1.MinecraftServer, replicas int32, o po
 	container := corev1.Container{
 		Name:      containerName,
 		Image:     server.Spec.Image,
+		Stdin:     true,
 		Resources: server.Spec.Resources,
 		Env:       buildEnv(server),
 		Ports: []corev1.ContainerPort{

@@ -2973,6 +2973,9 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
     else await patchMockServer(ctx, serverInfo, false);
     return true;
   }
+  if (is("GET", ctx) && ctx.parts[4] === "console" && ctx.parts[5] === "history" && ctx.parts.length === 6) {
+    return handleConsoleHistoryMock(ctx, serverInfo);
+  }
   if (is("GET", ctx) && ctx.parts[4] === "console") {
     if (!canManage(ctx.account, serverInfo)) {
       sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
@@ -3021,7 +3024,7 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
       sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
       return true;
     }
-    handleCommandMock(ctx, serverInfo);
+    await handleCommandMock(ctx, serverInfo);
     return true;
   }
   if (ctx.parts[4] === "retirement" && (is("PUT", ctx) || is("DELETE", ctx))) {
@@ -3074,6 +3077,8 @@ const MOCK_MAX_READ = MOCK_MAX_WRITE;
 const MOCK_MAX_UPLOAD = 64 * 1024 * 1024;
 const MOCK_SECRET_CONFIG = "config/paper-global.yml";
 const MOCK_MANAGED = new Set([MOCK_SECRET_CONFIG, "config", "server.properties"]);
+const MOCK_LOG_FILE_IDS = new WeakMap<MockFileNode, number>();
+let mockLogFileID = 0;
 const MOCK_REDACTED_VALUE = "<redacted by felis>";
 const MOCK_SECRET_PROPERTY = /^([ \t\f]*(rcon\.password|forwarding-secrets)=)([^\r\n]*)/gm;
 
@@ -3232,6 +3237,75 @@ async function handlePaperGlobalMock(ctx: SessionContext, server: MockServer): P
   } catch (error) {
     return fail(error instanceof YamlConfigParseError || error instanceof TypeError ? 400 : 500, error instanceof YamlConfigParseError || error instanceof TypeError ? "bad_path" : "internal");
   }
+}
+
+function handleConsoleHistoryMock(ctx: SessionContext, server: MockServer): true {
+  ctx.res.setHeader("Cache-Control", "no-store");
+  const fail = (status: number, code: string, message: string): true => { sendError(ctx.res, status, code, message); return true; };
+  if (!canManage(ctx.account, server)) return fail(403, "forbidden", "server is not owned by this account");
+  const encoded = new URL(ctx.req.url!, "http://localhost").searchParams.get("cursor") ?? "";
+  if (Buffer.byteLength(encoded) > 256) return fail(400, "bad_path", "invalid log cursor");
+  if (server.desiredState !== "Stopped" || server.ready || ["Running", "Starting", "Stopping"].includes(server.phase)) {
+    return fail(409, "server_transitioning", "saved logs require a fully stopped server");
+  }
+  if ((ctx.state.jobs[server.name] ?? []).some((job) => job.then_restore === "pending" || (job.state === "running" && ["backup", "restore", "migration", "reap"].includes(job.kind)))) {
+    return fail(409, "maintenance_in_progress", "another operation holds this server's files");
+  }
+  let cursor: [string, number, number, string, number] | undefined;
+  if (encoded) {
+    try {
+      const raw = Buffer.from(encoded, "base64url");
+      const parsed: unknown = JSON.parse(raw.toString());
+      if (raw.toString("base64url") !== encoded || !Array.isArray(parsed) || parsed.length !== 5 ||
+        typeof parsed[0] !== "string" || !Number.isSafeInteger(parsed[1]) || !Number.isSafeInteger(parsed[2]) || typeof parsed[3] !== "string" ||
+        !Number.isSafeInteger(parsed[4]) || parsed[1] < 1 || parsed[2] < 0 || parsed[4] < 0 || parsed[4] > parsed[2]) throw new Error("invalid cursor");
+      cursor = parsed as [string, number, number, string, number];
+    } catch {
+      return fail(400, "bad_path", "invalid log cursor");
+    }
+  }
+  const node = filesOf(ctx.state, server.name).get("logs/latest.log");
+  if (node?.is_dir) return fail(400, "bad_path", "the log must be a regular file");
+  if (!node && cursor) return fail(409, "file_changed", "the log file changed; refresh its latest page");
+  if (node && !MOCK_LOG_FILE_IDS.has(node)) MOCK_LOG_FILE_IDS.set(node, ++mockLogFileID);
+  if (cursor && (cursor[0] !== server.name || cursor[1] !== MOCK_LOG_FILE_IDS.get(node!) || cursor[2] !== node!.data.length || cursor[3] !== node!.mod_time)) {
+    return fail(409, "file_changed", "the log file changed; refresh its latest page");
+  }
+  const bytes = node?.data ?? Buffer.alloc(0);
+  const before = cursor?.[4] ?? bytes.length;
+  let start = Math.max(0, before - 256 * 1024);
+  let content = bytes.subarray(start, before);
+  let byte_limited = false;
+  if (content.length) {
+    const completeStart = start === 0 || bytes[start - 1] === 10 || (bytes[start - 1] === 13 && content[0] !== 10);
+    let end = content.length;
+    if (content[end - 1] === 10) { end--; if (end > 0 && content[end - 1] === 13) end--; }
+    else if (content[end - 1] === 13) end--;
+    let lines = 1;
+    let boundary = -1;
+    for (let i = end - 1; i >= 0; i--) {
+      if (content[i] !== 10 && content[i] !== 13) continue;
+      if (lines++ === 200) { boundary = i + 1; break; }
+      if (content[i] === 10 && i > 0 && content[i - 1] === 13) i--;
+    }
+    if (boundary >= 0) {
+      start += boundary;
+      content = content.subarray(boundary);
+    } else {
+      byte_limited = !completeStart || (start > 0 && lines < 200);
+      if (!completeStart) {
+        let at = content.findIndex((byte) => byte === 10 || byte === 13);
+        if (at >= 0) {
+          at++;
+          if (content[at - 1] === 13 && content[at] === 10) at++;
+          if (at < content.length) { start += at; content = content.subarray(at); }
+        }
+      }
+    }
+  }
+  const next_cursor = start > 0 ? Buffer.from(JSON.stringify([server.name, MOCK_LOG_FILE_IDS.get(node!), bytes.length, node!.mod_time, start])).toString("base64url") : undefined;
+  sendJSON(ctx.res, 200, { content: content.toString("base64"), content_sha256: mockSha(content), has_more: start > 0, byte_limited, ...(next_cursor ? { next_cursor } : {}) });
+  return true;
 }
 
 function parentPath(p: string): string {
@@ -3935,23 +4009,29 @@ async function handleCommandMock(
   ctx: SessionContext,
   serverInfo: MockServer,
 ): Promise<void> {
-  const body = await readJSON<{ command?: string }>(ctx.req);
-  const cmd = body.command?.trim();
-  if (!cmd) {
-    sendError(ctx.res, 400, "bad_request", "command is required");
+  let body: { command?: unknown };
+  try { body = await readJSON(ctx.req); }
+  catch { sendError(ctx.res, 400, "bad_request", "invalid command request"); return; }
+  const cmd = typeof body?.command === "string" ? body.command.trim().replace(/^\//, "").trim() : "";
+  if (!cmd || Object.keys(body).some((key) => key !== "command") || Buffer.byteLength(cmd) > 1024 || /[\x00-\x1f]/.test(cmd)) {
+    sendError(ctx.res, 400, "bad_request", "command must be a single line of at most 1024 bytes");
     return;
   }
-  if (serverInfo.phase !== "Running") {
+  if (serverInfo.desiredState !== "Running" || !["Starting", "Running"].includes(serverInfo.phase)) {
     sendError(
       ctx.res,
       409,
-      "conflict",
+      "not_running",
       "server is not running; wake it before sending console commands",
     );
     return;
   }
-  const reply = mockCommandReply(cmd);
-  sendJSON(ctx.res, 200, { output: reply });
+  if ((ctx.state.jobs[serverInfo.name] ?? []).some((job) => job.then_restore === "pending" || (job.state === "running" && ["backup", "restore", "migration", "reap"].includes(job.kind)))) {
+    sendError(ctx.res, 409, "maintenance_in_progress", "another operation holds this server's world");
+    return;
+  }
+  const transport = serverInfo.phase === "Running" && serverInfo.ready ? "rcon" : "stdin";
+  sendJSON(ctx.res, 200, { name: serverInfo.name, output: transport === "rcon" ? mockCommandReply(cmd) : "", transport });
 }
 
 function mockCommandReply(cmd: string): string {

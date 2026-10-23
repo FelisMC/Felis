@@ -39,6 +39,26 @@ func TestMigratedWorldPlacementAndFailClosedGate(t *testing.T) {
 	}
 }
 
+func TestGameContainerKeepsStdinOpenWithoutTTY(t *testing.T) {
+	for _, role := range []string{"", naming.SystemLobbyServer, naming.SystemLoginServer} {
+		server := &v1alpha1.MinecraftServer{}
+		server.Labels = map[string]string{v1alpha1.LabelSystemRole: role}
+		sts, err := buildStatefulSet(server, 1, "felis:test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		game := sts.Spec.Template.Spec.Containers[0]
+		if !game.Stdin || game.StdinOnce || game.TTY {
+			t.Errorf("role %q: stdin=%v stdinOnce=%v tty=%v", role, game.Stdin, game.StdinOnce, game.TTY)
+		}
+		for _, init := range sts.Spec.Template.Spec.InitContainers {
+			if init.Stdin || init.StdinOnce || init.TTY {
+				t.Errorf("role %q: init container %s accepts terminal input", role, init.Name)
+			}
+		}
+	}
+}
+
 // findEnv returns the env var with the given name, or nil.
 func findEnv(env []corev1.EnvVar, name string) *corev1.EnvVar {
 	for i := range env {

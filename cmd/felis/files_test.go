@@ -122,6 +122,39 @@ func TestCmdFilesPaperGlobalUsesFilteredInlinePatches(t *testing.T) {
 	}
 }
 
+func TestCmdFilesReadsOlderLogPages(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "logs"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "logs/latest.log"), []byte("oldest\r\n"+strings.Repeat("latest\r\n", 200)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := cmdFiles([]string{"--op", "log-tail", "--path", "other.log", "--worlds-root", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d stderr=%q", code, stderr.String())
+	}
+	first := filesResult(t, stdout.String())
+	if first.Code != "" || first.LogTail == nil || !first.LogTail.HasMore || string(first.LogTail.Content) != strings.Repeat("latest\r\n", 200) {
+		t.Fatalf("latest log page: %+v", first)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := cmdFiles([]string{"--op", "log-tail", "--cursor", first.LogTail.NextCursor, "--worlds-root", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d stderr=%q", code, stderr.String())
+	}
+	older := filesResult(t, stdout.String())
+	sum := sha256.Sum256([]byte("oldest\r\n"))
+	if older.Code != "" || older.LogTail == nil || older.LogTail.HasMore || older.LogTail.NextCursor != "" || older.LogTail.ByteLimited || string(older.LogTail.Content) != "oldest\r\n" || older.LogTail.ContentSHA256 != hex.EncodeToString(sum[:]) {
+		t.Fatalf("older log page: %+v", older)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := cmdFiles([]string{"--op", "log-tail", "--cursor", "invalid?", "--worlds-root", root}, &stdout, &stderr); code != 0 || filesResult(t, stdout.String()).Code != fileedit.CodeBadPath {
+		t.Fatalf("invalid log cursor: exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
 // The fixture controls upload GET and landing DELETE responses and records DELETE counts.
 type stagedSource struct {
 	*httptest.Server

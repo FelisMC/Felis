@@ -36,6 +36,7 @@ type JobParams struct {
 	Op       string
 	Path     string
 	Query    string
+	Cursor   string
 	Paths    []string
 	Content  []byte
 	// Expect empty writes unconditionally; CreateOnly refuses existing paths.
@@ -151,6 +152,10 @@ func FilesJob(p JobParams) (*batchv1.Job, error) {
 		}
 	case OpSearch:
 		args = append(args, "--query", p.Query)
+	case OpLogTail:
+		if p.Cursor != "" {
+			args = append(args, "--cursor", p.Cursor)
+		}
 	case OpCopy, OpMove, OpZip:
 		args = append(args, "--to", p.To)
 		for _, name := range p.Paths {

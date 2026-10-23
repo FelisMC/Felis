@@ -751,8 +751,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Run a console command via RCON (spec §8 write). Owner/admin only.
-         * @description The RCON password is never accepted or returned (spec §286).
+         * Submit a console command during startup or running (owner-or-admin).
+         * @description Requires desiredState Running and phase Starting or Running, but not readiness. Maintenance blocks input without creating a world volume. Commands are single-line and limited to 1024 UTF-8 bytes. RCON is tried first for its reply. Only failure before command execution starts may fall back once to the running game container's stdin. The fixed attach sends one line without a TTY and without reading stdout or stderr. Commands to one server are serialized and waiting is cancelable. Once execution starts, loss of a reply or interrupted delivery returns command_outcome_unknown and never automatically sends a second command. A stdin success confirms submission, not completion; check the console log for results. An older Pod without stdin needs a normal restart. RCON passwords are never accepted or returned.
          */
         post: operations["command"];
         delete?: never;
@@ -770,6 +770,26 @@ export interface paths {
         };
         /** Stream the running pod's log over SSE (spec §8 read, §262). Owner/admin only. */
         get: operations["serverConsole"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/servers/{name}/console/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read stored logs from a fully stopped server (owner-or-admin).
+         * @description Reads the last 200 lines of logs/latest.log from the world volume with at most 256 KiB per page. Use next_cursor to load the preceding page while has_more is true; page bytes are contiguous and a long line may span pages when byte_limited is true. The log may exceed the text editor's 5 MiB limit. A missing volume or log returns empty content on the first request without creating a volume; if a cursor was supplied it returns 409 file_changed and requires a fresh read. The server must have desiredState Stopped and ready false, with phase outside Running, Starting and Stopping. Backup, restore, migration and other conflicting maintenance still block access. Replaced or truncated logs return 409 file_changed; reload from the last page. Symbolic links and aliases of protected configuration are refused. Filesystem access uses a read-only file task without RCON or a live game Pod. Responses use Cache-Control no-store. The running console SSE route is unchanged.
+         */
+        get: operations["serverConsoleHistory"];
         put?: never;
         post?: never;
         delete?: never;
@@ -4481,6 +4501,16 @@ export interface components {
         StartedFileOperation: {
             op: components["schemas"]["FileOp"];
         };
+        ConsoleCommandResult: {
+            name: string;
+            /** @description RCON reply; empty when a line was submitted through stdin. */
+            output: string;
+            /**
+             * @description stdin confirms submission only; command results remain in the console log.
+             * @enum {string}
+             */
+            transport: "rcon" | "stdin";
+        };
         ExtensionMetadata: {
             /** @description Identity declared by the plugin or mod. */
             id: string;
@@ -4562,6 +4592,21 @@ export interface components {
             values: components["schemas"]["PaperGlobalPatchValues"];
             /** @description Required hash returned by a read; this endpoint never saves without conflict detection. */
             expect_sha256: string;
+        };
+        ConsoleHistoryPage: {
+            /**
+             * Format: byte
+             * @description Base64-encoded bytes in chronological order from a contiguous part of logs/latest.log.
+             */
+            content: string;
+            /** @description SHA-256 of the decoded content bytes, including the digest of empty content for an empty page. */
+            content_sha256: string;
+            /** @description Opaque cursor for the preceding page; omitted when no earlier bytes remain. */
+            next_cursor?: string;
+            /** @description Earlier log bytes remain before this page. */
+            has_more: boolean;
+            /** @description The 256 KiB page bound was reached before collecting 200 lines; a long line may span pages. */
+            byte_limited: boolean;
         };
         /** @description One background file operation (internal/api/handlers_fileops.go fileOpView). */
         FileOp: {
@@ -6717,24 +6762,30 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Command output. */
+            /** @description RCON reply or acknowledgment that a line was submitted through stdin. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        name: string;
-                        output: string;
-                    };
+                    "application/json": components["schemas"]["ConsoleCommandResult"];
                 };
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            /** @description Server not running. */
+            /** @description Server is not starting or running with desiredState Running, or maintenance blocks input. */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The command may already have executed (command_outcome_unknown); inspect logs before sending it again. No automatic fallback or retry occurred. */
+            502: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6798,6 +6849,79 @@ export interface operations {
                 };
             };
             503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    serverConsoleHistory: {
+        parameters: {
+            query?: {
+                /** @description Opaque next_cursor returned by the preceding request; at most 256 bytes. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stored log page; empty when no stored log exists. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConsoleHistoryPage"];
+                };
+            };
+            /** @description Invalid server name or cursor, or a protected log path (bad_path). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Unknown server. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Server is not fully stopped, maintenance blocks access, or the log changed since the cursor was issued. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The returned file task content did not match its digest (read_damaged). */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+            /** @description The stored log read did not finish in time (files_timeout). */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     accessWhitelistList: {
