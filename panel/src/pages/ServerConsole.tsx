@@ -270,7 +270,7 @@ export function ServerConsole() {
   const startupBlocked = startup?.stage === "failed" || startup?.reason === "Unschedulable";
 
   return (
-    <div className="flex flex-col lg:flex-1 lg:min-h-[35rem] gap-4 min-h-0">
+    <div className="flex shrink-0 flex-col lg:flex-1 lg:shrink lg:min-h-[35rem] gap-4 min-h-0">
       <div>
         <BackLink to="/servers" label={t("my_servers_breadcrumb")} />
       </div>
@@ -327,11 +327,11 @@ export function ServerConsole() {
               <p className="text-xs text-muted-foreground">{t(startup.stage === "failed" ? "startup_failed_hint" : "startup_hint")}</p>
             </div>
           )}
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-4 lg:grid-rows-[minmax(0,1fr)] flex-1 lg:min-h-0 min-h-0">
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-4 lg:grid-rows-[minmax(0,1fr)] lg:flex-1 lg:min-h-0">
             {/* Left/Main column: Console */}
-            <div className="lg:col-span-3 flex flex-col lg:min-h-0 min-h-0 h-full">
-              <Card className="dark flex flex-col flex-1 lg:min-h-0 min-h-0 overflow-hidden bg-black text-zinc-50 border-zinc-800">
-                <CardContent className="p-0 flex-1 flex flex-col lg:min-h-0 min-h-0 bg-black">
+            <div className="lg:col-span-3 flex flex-col lg:min-h-0 lg:h-full">
+              <Card className="dark flex flex-col lg:flex-1 lg:min-h-0 overflow-hidden bg-black text-zinc-50 border-zinc-800">
+                <CardContent className="p-0 lg:flex-1 flex flex-col lg:min-h-0 bg-black">
                   {savedLogs ? (
                     <ConsoleHistory key={name} name={name} />
                   ) : !streamable ? (
@@ -339,7 +339,7 @@ export function ServerConsole() {
                       <NotStreaming phase={error ? "Unknown" : shownPhase(data)} waitingForContainer={!error && data.startup?.logsAvailable === false} />
                     </div>
                   ) : cfg ? (
-                    <div className="flex-1 flex flex-col lg:min-h-0 min-h-0 bg-black">
+                    <div className="h-[55vh] flex flex-col lg:h-auto lg:flex-1 lg:min-h-0 bg-black">
                       {failure && (
                         <FailedStartNotice failure={failure} autoRestarts={data.autoRestarts ?? 0} />
                       )}
@@ -355,7 +355,7 @@ export function ServerConsole() {
                       <Loading />
                     </div>
                   )}
-                  {commandable && <div className="border-t border-zinc-800 bg-zinc-900/40 p-3">
+                  {commandable && <div className="shrink-0 border-t border-zinc-800 bg-zinc-900/40 p-3">
                     <CommandInput key={name} name={name} />
                   </div>}
                 </CardContent>

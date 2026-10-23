@@ -77,8 +77,8 @@ export function ConsoleHistory({ name }: { name: string }) {
   const changed = (error as { code?: string } | null)?.code === "file_changed";
 
   return (
-    <section aria-label={t("log_history_title")} className="flex min-h-0 flex-1 flex-col bg-black text-zinc-200">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-800 bg-zinc-900/60 px-3 py-2">
+    <section aria-label={t("log_history_title")} className="flex flex-col bg-black text-zinc-200 lg:min-h-0 lg:flex-1">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-zinc-800 bg-zinc-900/60 px-3 py-2">
         <div className="min-w-0 text-xs"><span className="font-medium">{t("log_history_title")}</span><code className="ml-2 text-zinc-400">logs/latest.log</code></div>
         <Button size="sm" variant="ghost" onClick={() => void load()} disabled={loading}
           className="text-zinc-300 hover:bg-zinc-800 hover:text-zinc-50">
@@ -91,7 +91,7 @@ export function ConsoleHistory({ name }: { name: string }) {
       </div>}
       {data?.page.byte_limited && <p className="px-3 pt-3 text-xs text-amber-300">{t("log_history_byte_limit")}</p>}
       <div ref={viewport} role="region" aria-label={t("log_history_content")} tabIndex={0}
-        className="h-[55vh] min-h-48 overflow-y-auto px-3 py-2 font-mono text-xs leading-relaxed lg:h-0 lg:flex-1">
+        className="h-[55vh] min-h-48 shrink-0 overflow-y-auto px-3 py-2 font-mono text-xs leading-relaxed lg:h-0 lg:flex-1 lg:shrink">
         {data?.page.has_more && !error && <div className="mb-3 flex justify-center">
           <Button size="sm" variant="outline" disabled={loading} onClick={() => void load(data.page.next_cursor)}
             className="border-zinc-700 bg-transparent text-zinc-200 hover:bg-zinc-800 hover:text-zinc-50">
