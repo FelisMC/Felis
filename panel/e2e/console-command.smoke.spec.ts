@@ -20,15 +20,18 @@ test("server owners can submit during startup and the console distinguishes stdi
   await input.fill("list");
   const replied = page.waitForResponse((response) => response.request().method() === "POST" && response.url().endsWith("/servers/survival/command"));
   await input.press("Enter");
-  expect(await (await replied).json()).toEqual({ name: "survival", output: "There are 2 of a max 20 players online: mock_player, test_player", transport: "rcon" });
-  await expect(page.getByText("There are 2 of a max 20 players online: mock_player, test_player", { exact: true })).toBeVisible();
+  const rconOutput = "There are 2 of a max 20 players online: mock_player, test_player";
+  expect(await (await replied).json()).toEqual({ name: "survival", output: rconOutput, transport: "rcon" });
+  const rconReply = page.locator("pre").filter({ hasText: rconOutput });
+  await expect(rconReply).toBeVisible();
+  await expect(rconReply).toHaveText("> list\n" + rconOutput);
   await expect(page.getByText(t("servers:command_sent_stdin"), { exact: true })).toHaveCount(0);
 
   await page.route("**/api/v1/servers/survival/command", (route) => route.fulfill({ json: { name: "survival", output: "", transport: "stdin" } }));
   await input.fill("say fallback");
   await page.getByRole("button", { name: t("servers:command_send"), exact: true }).click();
   await expect(page.getByText(t("servers:command_sent_stdin"), { exact: true })).toBeVisible();
-  await expect(page.getByText("There are 2 of a max 20 players online: mock_player, test_player", { exact: true })).toHaveCount(0);
+  await expect(rconReply).toHaveCount(0);
   await expect(input).toHaveValue("");
   await expectFitsScreen(page);
 });

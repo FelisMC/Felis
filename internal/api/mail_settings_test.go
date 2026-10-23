@@ -109,7 +109,11 @@ func TestMailSettingsSaveChecksTheRelayAndOverridesFelisToml(t *testing.T) {
 	if _, saved := f.repo.settings[mailsettings.Key]; saved {
 		t.Fatal("a relay that failed its check was saved")
 	}
-	if strings.Contains(w.Body.String(), "535") {
+	var reply map[string]map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &reply); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(reply["error"]["message"], "535") {
 		t.Errorf("the relay's own reply reached the panel: %s", w.Body.String())
 	}
 
