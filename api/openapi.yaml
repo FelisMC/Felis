@@ -1356,6 +1356,90 @@ components:
           items: { $ref: '#/components/schemas/ServerExtension' }
         truncated: { type: boolean, description: 'The scan reached the 2000-entry per-directory scan limit, 500-file limit or 4 MiB response limit.' }
 
+    PaperGlobalValues:
+      type: object
+      additionalProperties: false
+      maxProperties: 20
+      description: >-
+        Supported scalar settings in config/paper-global.yml. Each dotted ID
+        names the corresponding nested YAML path. Missing settings are omitted;
+        no default values are inserted. Proxy forwarding, identity and
+        authentication settings are never exposed or editable here. Existing
+        values may exceed the limits applied to explicitly changed fields.
+      properties:
+        chunk-loading-advanced.auto-config-send-distance: { type: boolean }
+        chunk-loading-advanced.player-max-concurrent-chunk-generates: { type: integer }
+        chunk-loading-advanced.player-max-concurrent-chunk-loads: { type: integer }
+        chunk-loading-basic.player-max-chunk-generate-rate: { type: number }
+        chunk-loading-basic.player-max-chunk-load-rate: { type: number }
+        chunk-loading-basic.player-max-chunk-send-rate: { type: number }
+        collisions.enable-player-collisions: { type: boolean }
+        collisions.send-full-pos-for-hard-colliding-entities: { type: boolean }
+        commands.suggest-player-names-when-null-tab-completions: { type: boolean }
+        console.enable-brigadier-completions: { type: boolean }
+        console.enable-brigadier-highlighting: { type: boolean }
+        messages.use-display-name-in-quit-message: { type: boolean }
+        messages.no-permission: { type: string }
+        messages.kick.connection-throttle: { type: string }
+        player-auto-save.max-per-tick: { type: integer }
+        player-auto-save.rate: { type: integer }
+        scoreboards.save-empty-scoreboard-teams: { type: boolean }
+        scoreboards.track-plugin-scoreboards: { type: boolean }
+        watchdog.early-warning-delay: { type: integer }
+        watchdog.early-warning-every: { type: integer }
+
+    PaperGlobalPatchValues:
+      description: >-
+        Only explicitly changed fields already present with a compatible type
+        may be patched. Missing mappings or settings are never created. Changed
+        values are validated against these limits.
+        Strings must contain no NUL and occupy at most 4096 UTF-8 bytes.
+      allOf:
+        - { $ref: '#/components/schemas/PaperGlobalValues' }
+        - type: object
+          properties:
+            chunk-loading-advanced.player-max-concurrent-chunk-generates: { type: integer, minimum: -1, maximum: 2147483647 }
+            chunk-loading-advanced.player-max-concurrent-chunk-loads: { type: integer, minimum: -1, maximum: 2147483647 }
+            chunk-loading-basic.player-max-chunk-generate-rate: { $ref: '#/components/schemas/PaperGlobalChunkRate' }
+            chunk-loading-basic.player-max-chunk-load-rate: { $ref: '#/components/schemas/PaperGlobalChunkRate' }
+            chunk-loading-basic.player-max-chunk-send-rate: { $ref: '#/components/schemas/PaperGlobalChunkRate' }
+            messages.no-permission: { type: string, maxLength: 4096 }
+            messages.kick.connection-throttle: { type: string, maxLength: 4096 }
+            player-auto-save.max-per-tick: { type: integer, minimum: -1, maximum: 2147483647 }
+            player-auto-save.rate: { type: integer, minimum: -1, maximum: 2147483647 }
+            watchdog.early-warning-delay: { type: integer, minimum: 0, maximum: 2147483647 }
+            watchdog.early-warning-every: { type: integer, minimum: 0, maximum: 2147483647 }
+
+    PaperGlobalChunkRate:
+      description: Finite chunks-per-second rate; -1 disables the limit.
+      anyOf:
+        - { type: number, enum: [-1] }
+        - { type: number, minimum: 0 }
+
+    PaperGlobalConfig:
+      type: object
+      additionalProperties: false
+      required: [values, sha256]
+      properties:
+        values: { $ref: '#/components/schemas/PaperGlobalValues' }
+        sha256:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: SHA-256 of the complete on-disk YAML before any filtering; required for a later patch.
+
+    PaperGlobalPatch:
+      type: object
+      additionalProperties: false
+      required: [values, expect_sha256]
+      properties:
+        values:
+          $ref: '#/components/schemas/PaperGlobalPatchValues'
+          description: Only explicitly changed existing compatible fields; null, deletion and creating missing settings are unsupported. An empty object makes no change.
+        expect_sha256:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: Required hash returned by a read; this endpoint never saves without conflict detection.
+
     FileOp:
       type: object
       description: One background file operation (internal/api/handlers_fileops.go fileOpView).
@@ -6796,6 +6880,148 @@ paths:
           $ref: '#/components/responses/ServiceUnavailable'
         '504':
           description: The file Job did not finish in time.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/servers/{name}/config/paper-global:
+    get:
+      tags: [files]
+      operationId: readServerPaperGlobal
+      summary: Read approved Paper global settings (owner-or-admin).
+      description: >-
+        Returns only the supported scalar settings from the fixed
+        config/paper-global.yml path and the raw file SHA-256. The full YAML,
+        comments, unknown settings and proxies block never leave the file task.
+        The ordinary file read and download routes continue to withhold this
+        file and its aliases. Uses the file browser's stable running or stopped
+        lifecycle and maintenance gates. Files are bounded to 5 MiB. Symbolic
+        links, YAML aliases, anchors, merge keys, duplicate keys,
+        complex mapping keys and multiple YAML documents are rejected with a
+        safe diagnostic. Missing settings stay absent instead of being replaced
+        by defaults. Responses are not cached.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Supported settings and the complete file hash.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaperGlobalConfig' }
+        '400':
+          description: Invalid server name or YAML that cannot safely be edited through this form (bad_path).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: The server or fixed configuration file does not exist.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Server is transitioning, maintenance blocks file access, or the configuration changed while being read (file_changed).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '413':
+          description: The YAML file exceeds the 5 MiB editor limit.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '502':
+          description: The file task returned damaged content (read_damaged).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          description: The file task did not finish in time (files_timeout).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    patch:
+      tags: [files]
+      operationId: patchServerPaperGlobal
+      summary: Patch approved Paper global settings (owner-or-admin).
+      description: >-
+        Accepts only explicitly changed supported scalar fields already present
+        with a compatible type, and a mandatory expect_sha256 from a previous
+        read. Missing settings return 400 bad_path and leave the file unchanged;
+        mappings and leaf settings are never created. Requests are limited to
+        64 KiB; paths, raw YAML, unknown fields, null and deletion are unsupported.
+        The file task checks the raw file hash and patches its YAML node tree,
+        preserving comments, unknown data and the proxies block. YAML formatting
+        may be normalized; a patch that changes no semantic values leaves the
+        original bytes untouched. The complete file is replaced atomically;
+        stale hashes, deletion or replacement return 409 file_changed instead
+        of overwriting a newer file. The same YAML and link restrictions as GET
+        apply, and files with hard-link aliases cannot be patched. Uses the
+        file editor's ownership, lifecycle and maintenance gates.
+        Stopped writes hold the world-volume lock; stable running writes share
+        the mounted volume. Changes usually apply on restart. Audits record the
+        action and fixed path without recording configuration values.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PaperGlobalPatch' }
+      responses:
+        '200':
+          description: Supported settings after the patch and the resulting raw file hash.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaperGlobalConfig' }
+        '400':
+          description: Invalid request, unsupported or absent field, incompatible scalar value, inaccessible path or unsafe YAML (bad_request or bad_path).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: The server or fixed configuration file does not exist.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: The raw file changed (file_changed), the server is transitioning, or maintenance holds its world volume.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '413':
+          description: The request exceeds 64 KiB or the YAML exceeds 5 MiB (too_large).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '502':
+          description: The file task returned damaged content (read_damaged).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          description: The file task did not finish in time (files_timeout).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '507':
+          description: The volume is full; the original configuration is preserved (volume_full).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

@@ -36,16 +36,18 @@ type fakeFileEditor struct {
 	gotTo         string
 	gotSource     fileedit.UploadSource
 	gotOverwrite  bool
+	gotValues     map[string]any
 	// onUpload, when set, runs inside Upload the way the real Job fetches the
 	// staged bytes while the handler waits.
 	onUpload func(fileedit.UploadSource)
 
-	entries    []fileedit.Entry
-	extensions []fileedit.Extension
-	truncated  bool
-	free       int64
-	content    []byte
-	sum        string
+	entries     []fileedit.Entry
+	extensions  []fileedit.Extension
+	truncated   bool
+	free        int64
+	content     []byte
+	sum         string
+	paperGlobal fileedit.PaperGlobalConfig
 
 	// op is what StartUpload and StartUnzip answer (started), ops what Ops does.
 	op       fileedit.OpState
@@ -88,6 +90,18 @@ func (f *fakeFileEditor) Extensions(_ context.Context, server string) (fileedit.
 	f.calls++
 	f.gotOp, f.gotServer = "extensions", server
 	return fileedit.ExtensionList{Entries: f.extensions, Truncated: f.truncated}, f.err
+}
+
+func (f *fakeFileEditor) ReadPaperGlobal(_ context.Context, server string) (fileedit.PaperGlobalConfig, error) {
+	f.calls++
+	f.gotOp, f.gotServer = "paper-global-read", server
+	return f.paperGlobal, f.err
+}
+
+func (f *fakeFileEditor) PatchPaperGlobal(_ context.Context, server string, values map[string]any, expect string) (fileedit.PaperGlobalConfig, error) {
+	f.calls++
+	f.gotOp, f.gotServer, f.gotValues, f.gotExpect = "paper-global-patch", server, values, expect
+	return f.paperGlobal, f.err
 }
 
 func (f *fakeFileEditor) StartTransfer(_ context.Context, server, op string, paths []string, to string, overwrite bool) (fileedit.OpState, error) {
@@ -192,7 +206,7 @@ func mkFiles(t *testing.T) (*API, *fakeRepo, *fakeCluster, *fakeFileEditor) {
 	cl := newFakeCluster()
 	cl.byName["survival"] = &ServerInfo{Name: "survival", Phase: "Stopped",
 		Ready: false, DesiredState: string(v1alpha1.DesiredStopped)}
-	files := &fakeFileEditor{}
+	files := &fakeFileEditor{paperGlobal: fileedit.PaperGlobalConfig{Values: map[string]any{}, SHA256: testSum}}
 	api := newTestAPI(repo, cl)
 	api.Files = files
 	api.FileStage = &fileedit.Stage{Dir: t.TempDir(), MinFree: 1e-9}
@@ -254,6 +268,8 @@ func TestFileEditorStateGate(t *testing.T) {
 	}{
 		{"list", "GET", "/api/v1/servers/survival/files?path=config", ""},
 		{"extensions", "GET", "/api/v1/servers/survival/extensions", ""},
+		{"paper-global-read", "GET", paperGlobalPath, ""},
+		{"paper-global-patch", "PATCH", paperGlobalPath, paperGlobalPatchBody},
 		{"read", "GET", "/api/v1/servers/survival/file?path=server.properties", ""},
 		{"write", "PUT", "/api/v1/servers/survival/file?path=server.properties", `{"content":"aGk=","content_sha256":"` + hiSum + `"}`},
 		{"mkdir", "POST", "/api/v1/servers/survival/files/mkdir?path=plugins", ""},
@@ -327,6 +343,8 @@ func TestFileOpsBeforeTheFirstStart(t *testing.T) {
 	}{
 		{"list", "GET", "/api/v1/servers/survival/files?path=config", ""},
 		{"extensions", "GET", "/api/v1/servers/survival/extensions", ""},
+		{"paper-global-read", "GET", paperGlobalPath, ""},
+		{"paper-global-patch", "PATCH", paperGlobalPath, paperGlobalPatchBody},
 		{"read", "GET", "/api/v1/servers/survival/file?path=server.properties", ""},
 		{"write", "PUT", "/api/v1/servers/survival/file?path=server.properties", `{"content":"aGk=","content_sha256":"` + hiSum + `"}`},
 		{"mkdir", "POST", "/api/v1/servers/survival/files/mkdir?path=plugins", ""},
@@ -382,6 +400,8 @@ func TestFileEditorAuthorization(t *testing.T) {
 	}{
 		{"list", "GET", "/api/v1/servers/survival/files", ""},
 		{"extensions", "GET", "/api/v1/servers/survival/extensions", ""},
+		{"paper-global-read", "GET", paperGlobalPath, ""},
+		{"paper-global-patch", "PATCH", paperGlobalPath, paperGlobalPatchBody},
 		{"read", "GET", "/api/v1/servers/survival/file?path=server.properties", ""},
 		{"write", "PUT", "/api/v1/servers/survival/file?path=server.properties", `{"content":"aGk=","content_sha256":"` + hiSum + `"}`},
 		{"mkdir", "POST", "/api/v1/servers/survival/files/mkdir?path=plugins", ""},

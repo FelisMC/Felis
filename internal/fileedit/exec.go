@@ -22,28 +22,30 @@ import (
 
 // World owners can upload executable plugins inside their server mount; all paths remain contained by os.Root.
 const (
-	OpList       = "list"
-	OpRead       = "read"
-	OpWrite      = "write"
-	OpMkdir      = "mkdir"
-	OpDelete     = "delete"
-	OpRename     = "rename"
-	OpUpload     = "upload"
-	OpUnzip      = "unzip"
-	OpSearch     = "search"
-	OpCopy       = "copy"
-	OpMove       = "move"
-	OpZip        = "zip"
-	OpExtensions = "extensions"
+	OpList             = "list"
+	OpRead             = "read"
+	OpWrite            = "write"
+	OpMkdir            = "mkdir"
+	OpDelete           = "delete"
+	OpRename           = "rename"
+	OpUpload           = "upload"
+	OpUnzip            = "unzip"
+	OpSearch           = "search"
+	OpCopy             = "copy"
+	OpMove             = "move"
+	OpZip              = "zip"
+	OpExtensions       = "extensions"
+	OpPaperGlobalRead  = "paper-global-read"
+	OpPaperGlobalPatch = "paper-global-patch"
 )
 
 func mutates(op string) bool {
-	return op != OpList && op != OpRead && op != OpSearch && op != OpExtensions
+	return op != OpList && op != OpRead && op != OpSearch && op != OpExtensions && op != OpPaperGlobalRead
 }
 
 func validOp(op string) bool {
 	switch op {
-	case OpList, OpRead, OpWrite, OpMkdir, OpDelete, OpRename, OpUpload, OpUnzip, OpSearch, OpCopy, OpMove, OpZip, OpExtensions:
+	case OpList, OpRead, OpWrite, OpMkdir, OpDelete, OpRename, OpUpload, OpUnzip, OpSearch, OpCopy, OpMove, OpZip, OpExtensions, OpPaperGlobalRead, OpPaperGlobalPatch:
 		return true
 	}
 	return false
@@ -97,10 +99,11 @@ type Result struct {
 	Code  string `json:"code,omitempty"`
 	Error string `json:"error,omitempty"`
 
-	Entries    []Entry     `json:"entries,omitempty"`
-	Content    []byte      `json:"content,omitempty"`
-	Truncated  bool        `json:"truncated,omitempty"`
-	Extensions []Extension `json:"extensions,omitempty"`
+	Entries     []Entry            `json:"entries,omitempty"`
+	Content     []byte             `json:"content,omitempty"`
+	Truncated   bool               `json:"truncated,omitempty"`
+	Extensions  []Extension        `json:"extensions,omitempty"`
+	PaperGlobal *PaperGlobalConfig `json:"paper_global,omitempty"`
 	// SHA256 covers on-disk bytes before redaction, or the current file on conflict; use it as the next write's expected hash.
 	SHA256 string `json:"sha256,omitempty"`
 	// ContentSHA256 covers transmitted bytes after redaction.
@@ -170,6 +173,8 @@ func Execute(root string, req Request) (Result, error) {
 		return search(r, path, req.Query), nil
 	case OpExtensions:
 		return extensions(r), nil
+	case OpPaperGlobalRead, OpPaperGlobalPatch:
+		return paperGlobal(r, req), nil
 	case OpWrite:
 		return write(r, path, req.Content, req.ContentSHA256, req.Expect, req.CreateOnly), nil
 	case OpMkdir:
@@ -382,6 +387,10 @@ const NameMax = 255
 
 // land writes and syncs a temporary sibling before rename so failures preserve either the old or complete new file.
 func land(r *os.Root, name, target string, mode fs.FileMode, fill func(io.Writer) error) (Result, error) {
+	return landChecked(r, name, target, mode, fill, nil)
+}
+
+func landChecked(r *os.Root, name, target string, mode fs.FileMode, fill func(io.Writer) error, check func() Result) (Result, error) {
 	var suffix [6]byte
 	if _, err := rand.Read(suffix[:]); err != nil {
 		return Result{Code: CodeBadPath, Error: fmt.Sprintf("generate a temporary name: %v", err)}, nil
@@ -420,6 +429,11 @@ func land(r *os.Root, name, target string, mode fs.FileMode, fill func(io.Writer
 	}
 	// Return ownership to the game UID so the server can rewrite the file; prepare-data repairs leftovers on restart.
 	_ = ownWritten(r, tmp)
+	if check != nil {
+		if res := check(); res.Code != "" {
+			return res, nil
+		}
+	}
 	if err := r.Rename(tmp, target); err != nil {
 		return writeFailure(err, name), nil
 	}

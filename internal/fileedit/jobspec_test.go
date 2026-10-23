@@ -22,6 +22,8 @@ func opParams(op string) JobParams {
 		p.To = "server.properties.bak"
 	case OpUpload:
 		p.SourceURL, p.UploadToken = "http://felis-api-internal.felis.svc:8081/api/v1/internal/file-uploads/0a", "tok"
+	case OpPaperGlobalRead, OpPaperGlobalPatch:
+		p.Path = ""
 	}
 	return p
 }
@@ -206,6 +208,8 @@ func TestFilesJobWorldMountIsReadOnlyForReads(t *testing.T) {
 		{OpList, true},
 		{OpRead, true},
 		{OpExtensions, true},
+		{OpPaperGlobalRead, true},
+		{OpPaperGlobalPatch, false},
 		{OpWrite, false},
 		{OpMkdir, false},
 		{OpDelete, false},
@@ -227,6 +231,34 @@ func TestFilesJobWorldMountIsReadOnlyForReads(t *testing.T) {
 					tc.op, gotMount, gotVol, tc.wantReadOnly)
 			}
 		})
+	}
+}
+
+func TestFilesJobPaperGlobalPatchUsesInlineContent(t *testing.T) {
+	p := opParams(OpPaperGlobalPatch)
+	p.Content = []byte(`{"console.enable-brigadier-completions":true}`)
+	p.Expect = digest([]byte("original"))
+	job, err := FilesJob(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	container := job.Spec.Template.Spec.Containers[0]
+	args := strings.Join(container.Args, " ")
+	if !strings.Contains(args, "--sha256 "+digest(p.Content)) || !strings.Contains(args, "--expect-sha256 "+p.Expect) || strings.Contains(args, string(p.Content)) {
+		t.Fatalf("patch argv: %q", args)
+	}
+	decoded, err := ContentFromEnv(envLookup(container.Env))
+	if err != nil || !bytes.Equal(decoded, p.Content) || container.VolumeMounts[0].ReadOnly {
+		t.Fatalf("patch content channel: error=%v readonly=%v", err, container.VolumeMounts[0].ReadOnly)
+	}
+	p.Content = bytes.Repeat([]byte("x"), MaxPaperGlobalPatchBytes+1)
+	if _, err := FilesJob(p); err == nil {
+		t.Fatal("oversized protected patch was rendered")
+	}
+	p = opParams(OpPaperGlobalRead)
+	p.Path = "different.yml"
+	if _, err := FilesJob(p); err == nil {
+		t.Fatal("protected read accepted a caller-supplied path")
 	}
 }
 

@@ -18,7 +18,7 @@ import (
 func cmdFiles(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("files", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	op := fs.String("op", "", "operation: list, search, extensions, read, write, mkdir, delete, rename, copy, move, zip, upload or unzip")
+	op := fs.String("op", "", "operation: list, search, extensions, read, write, mkdir, delete, rename, copy, move, zip, upload, unzip, paper-global-read or paper-global-patch")
 	browseURL := fs.String("browse-url", "", "internal command channel for a read-only file browser")
 	query := fs.String("query", "", "search: filename substring")
 	var selected []string
@@ -57,6 +57,17 @@ func cmdFiles(args []string, stdout, stderr io.Writer) int {
 
 	// Pass base64 content through the environment to keep file secrets out of process argv.
 	switch *op {
+	case fileedit.OpPaperGlobalPatch:
+		if *sourceURL != "" || *sum == "" {
+			fmt.Fprintln(stderr, "felis files: a protected configuration patch needs inline content and --sha256")
+			return 2
+		}
+		content, err := fileedit.ContentFromEnv(os.LookupEnv)
+		if err != nil {
+			fmt.Fprintln(stderr, "felis files: invalid protected configuration patch input")
+			return 2
+		}
+		req.Content, req.ContentSHA256 = content, *sum
 	case fileedit.OpWrite:
 		// The content's SHA-256 comes with it, so bytes that changed on the way
 		// to this Job are refused rather than written (Request.ContentSHA256).

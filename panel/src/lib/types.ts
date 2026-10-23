@@ -589,6 +589,39 @@ export interface ServerExtensionsListing {
   truncated: boolean;
 }
 
+export interface PaperGlobalValues {
+  "chunk-loading-advanced.auto-config-send-distance"?: boolean;
+  "chunk-loading-advanced.player-max-concurrent-chunk-generates"?: number;
+  "chunk-loading-advanced.player-max-concurrent-chunk-loads"?: number;
+  "chunk-loading-basic.player-max-chunk-generate-rate"?: number;
+  "chunk-loading-basic.player-max-chunk-load-rate"?: number;
+  "chunk-loading-basic.player-max-chunk-send-rate"?: number;
+  "collisions.enable-player-collisions"?: boolean;
+  "collisions.send-full-pos-for-hard-colliding-entities"?: boolean;
+  "commands.suggest-player-names-when-null-tab-completions"?: boolean;
+  "console.enable-brigadier-completions"?: boolean;
+  "console.enable-brigadier-highlighting"?: boolean;
+  "messages.use-display-name-in-quit-message"?: boolean;
+  "messages.no-permission"?: string;
+  "messages.kick.connection-throttle"?: string;
+  "player-auto-save.max-per-tick"?: number;
+  "player-auto-save.rate"?: number;
+  "scoreboards.save-empty-scoreboard-teams"?: boolean;
+  "scoreboards.track-plugin-scoreboards"?: boolean;
+  "watchdog.early-warning-delay"?: number;
+  "watchdog.early-warning-every"?: number;
+}
+
+export interface PaperGlobalConfig {
+  values: PaperGlobalValues;
+  sha256: string;
+}
+
+export interface PaperGlobalPatch {
+  values: PaperGlobalValues;
+  expect_sha256: string;
+}
+
 // done/total are progress bytes; files/bytes report extracted output.
 export interface FileOp {
   id: string;

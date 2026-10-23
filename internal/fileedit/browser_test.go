@@ -87,6 +87,12 @@ func TestBrowserReusesWorkerAndReadsCurrentBytes(t *testing.T) {
 	if got := read(OpExtensions, ""); got.Code != "" || len(got.Extensions) != 1 || got.Extensions[0].MetadataStatus != "ok" || got.Extensions[0].Metadata[0].Name != "BrowserPlugin" {
 		t.Fatalf("browser extensions: %+v", got)
 	}
+	putTransferFile(t, root, secretConfigPath, fakePaperGlobal)
+	if got := read(OpPaperGlobalRead, ""); got.Code != "" || got.PaperGlobal == nil || len(got.PaperGlobal.Values) != 20 || got.PaperGlobal.SHA256 != digest([]byte(fakePaperGlobal)) {
+		t.Fatalf("browser filtered configuration: code=%q", got.Code)
+	} else {
+		assertPaperGlobalSafe(t, got)
+	}
 
 	if workers.Load() != 1 {
 		t.Fatalf("started %d workers for repeated reads", workers.Load())
@@ -211,5 +217,30 @@ func TestBrowseRefusesMutation(t *testing.T) {
 	p.BrowserToken = "token"
 	if _, err := FilesJob(p); err == nil {
 		t.Fatal("writable browser Job was allowed")
+	}
+}
+
+func TestBrowseRefusesPaperGlobalPatch(t *testing.T) {
+	root := paperGlobalFixture(t, fakePaperGlobal)
+	var exchanges atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if exchanges.Add(1) > 1 {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		json.NewEncoder(w).Encode(BrowseCommand{ID: "x", Op: OpPaperGlobalPatch})
+	}))
+	defer srv.Close()
+	if err := Browse(context.Background(), root, srv.URL, "token"); err == nil {
+		t.Fatal("read-only worker accepted a protected configuration patch")
+	}
+	p := opParams(OpPaperGlobalPatch)
+	p.BrowserURL, p.BrowserToken = srv.URL, "token"
+	if _, err := FilesJob(p); err == nil {
+		t.Fatal("protected configuration patch used a read-only browser Job")
+	}
+	content, err := os.ReadFile(filepath.Join(root, secretConfigPath))
+	if err != nil || string(content) != fakePaperGlobal {
+		t.Fatal("refused browser patch changed the configuration")
 	}
 }

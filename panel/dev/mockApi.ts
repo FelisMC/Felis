@@ -3,6 +3,9 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { isIP } from "node:net";
 import { gzipSync } from "node:zlib";
 import { mockArchive, mockZip } from "./fileArchives";
+import { getYamlScalar, readYamlConfig, setYamlScalar, YamlConfigParseError } from "../src/components/files/yamlConfig";
+import { PAPER_GLOBAL_FIELDS } from "../src/components/files/paperGlobalFields";
+import { configProblem, type ConfigFieldSpec } from "../src/components/files/configFields";
 import type { Plugin } from "vite";
 import type {
   AuthSourceConfig,
@@ -3047,6 +3050,9 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
   if (ctx.parts[4] === "access") {
     return handleAccessMock(ctx, serverInfo);
   }
+  if (ctx.parts.slice(4).join("/") === "config/paper-global") {
+    return handlePaperGlobalMock(ctx, serverInfo);
+  }
   if (ctx.parts[4] === "files" || ctx.parts[4] === "file" || ctx.parts[4] === "extensions") {
     return handleFilesMock(ctx, serverInfo);
   }
@@ -3107,8 +3113,9 @@ function seedFiles(serverName: string): MockTree {
   file("bukkit.yml", "settings:\n  allow-end: true\n  warn-on-overload: true\nspawn-limits:\n  monsters: 70\n", 300);
   file("spigot.yml", "settings:\n  debug: false\n  restart-on-crash: true\n", 300);
   dir("config", 300);
-  file(MOCK_SECRET_CONFIG, "# Do not hand-edit: felis rewrites this file on every boot.\n", 30);
+  file(MOCK_SECRET_CONFIG, "# Global configuration\nproxies:\n  velocity:\n    enabled: true\n    online-mode: true\n    secret: mock-forwarding-secret\nchunk-loading-advanced:\n  auto-config-send-distance: true\n  player-max-concurrent-chunk-generates: 0\n  player-max-concurrent-chunk-loads: 0\nchunk-loading-basic:\n  player-max-chunk-generate-rate: -1.0\n  player-max-chunk-load-rate: 100.0\n  player-max-chunk-send-rate: 75.0\ncollisions:\n  enable-player-collisions: true\n  send-full-pos-for-hard-colliding-entities: true\ncommands:\n  suggest-player-names-when-null-tab-completions: true\nconsole:\n  enable-brigadier-completions: true\n  enable-brigadier-highlighting: true\nmessages:\n  use-display-name-in-quit-message: false\n  no-permission: '<red>You do not have permission.</red>'\n  kick:\n    connection-throttle: 'Connection throttled. Please wait.'\nplayer-auto-save:\n  max-per-tick: -1\n  rate: -1\nscoreboards:\n  save-empty-scoreboard-teams: true\n  track-plugin-scoreboards: false\nwatchdog:\n  early-warning-delay: 10000\n  early-warning-every: 5000\n", 30);
   file("config/paper-world-defaults.yml", "entities:\n  spawning:\n    per-player-mob-spawns: true\n", 300);
+  file("purpur.yml", "settings:\n  use-alternate-keepalive: false\n  server-mod-name: Purpur\n  messages:\n    afk-broadcast-away: '%s is now AFK'\nworld-settings:\n  default:\n    gameplay-mechanics:\n      player:\n        idle-timeout:\n          kick-if-idle: false\n", 300);
   dir("plugins", 72);
   file("plugins/LuckPerms-Bukkit-5.4.141.jar", 1_380_214, 72);
   file("plugins/EssentialsX-2.20.1.jar", 3_120_876, 70);
@@ -3156,6 +3163,75 @@ function filesOf(state: MockState, serverName: string): MockTree {
     state.files[serverName] = tree;
   }
   return tree;
+}
+
+function paperGlobalScalar(field: ConfigFieldSpec, value: unknown): boolean {
+  if (field.type === "boolean") return typeof value === "boolean";
+  if (field.type === "text") return typeof value === "string";
+  if (field.type === "integer") return typeof value === "bigint" && Number.isFinite(Number(value));
+  return (typeof value === "number" || typeof value === "bigint") && Number.isFinite(Number(value));
+}
+
+async function handlePaperGlobalMock(ctx: SessionContext, server: MockServer): Promise<boolean> {
+  if (!is("GET", ctx) && !is("PATCH", ctx)) return false;
+  ctx.res.setHeader("Cache-Control", "no-store");
+  const fail = (status: number, code: string): true => { sendError(ctx.res, status, code, "the protected configuration could not be read or saved"); return true; };
+  if (!canManage(ctx.account, server)) return fail(403, "forbidden");
+  const running = server.phase === "Running" && server.desiredState === "Running";
+  if (!running && (server.ready || server.desiredState !== "Stopped" || ["Starting", "Stopping"].includes(server.phase))) return fail(409, "server_transitioning");
+  const jobs = ctx.state.jobs[server.name] ?? [];
+  if (jobs.some((job) => job.then_restore === "pending" || (job.state === "running" && ["backup", "restore", "migration", "reap"].includes(job.kind)))) return fail(409, "maintenance_in_progress");
+  let patch: Record<string, unknown> | undefined;
+  let expected: string | undefined;
+  if (is("PATCH", ctx)) {
+    const bytes = await readRawBody(ctx.req);
+    if (bytes.length > 64 * 1024) return fail(413, "too_large");
+    let body: unknown;
+    try { body = JSON.parse(bytes.toString()); } catch { return fail(400, "bad_request"); }
+    if (!body || typeof body !== "object" || Array.isArray(body)) return fail(400, "bad_request");
+    const request = body as Record<string, unknown>;
+    if (Object.keys(request).some((key) => !["values", "expect_sha256"].includes(key)) || typeof request.expect_sha256 !== "string" || !/^[0-9a-f]{64}$/.test(request.expect_sha256) ||
+      !request.values || typeof request.values !== "object" || Array.isArray(request.values)) return fail(400, "bad_request");
+    patch = request.values as Record<string, unknown>;
+    expected = request.expect_sha256;
+    for (const [key, value] of Object.entries(patch)) {
+      const field = PAPER_GLOBAL_FIELDS.find((item) => item.path.join(".") === key);
+      const matches = field?.type === "boolean" ? typeof value === "boolean" : field?.type === "text" ? typeof value === "string" : typeof value === "number";
+      if (!field || !matches || configProblem(field, String(value))) return fail(400, "bad_request");
+    }
+    if (!running && (jobs.some((job) => job.state === "running" && job.kind !== "export_backup") || (ctx.state.fileOps[server.name] ?? []).some((op) => op.state === "running"))) return fail(409, "maintenance_in_progress");
+  }
+  const tree = filesOf(ctx.state, server.name);
+  const node = tree.get(MOCK_SECRET_CONFIG);
+  if (!node) return fail(404, "not_found");
+  if (node.is_dir) return fail(400, "bad_path");
+  if (node.data.length > MOCK_MAX_READ) return fail(413, "too_large");
+  if (expected && mockSha(node.data) !== expected) return fail(409, "file_changed");
+  try {
+    let text = new TextDecoder("utf-8", { fatal: true }).decode(node.data);
+    let document = readYamlConfig(text, "1.2");
+    for (const key of Object.keys(patch ?? {})) {
+      const field = PAPER_GLOBAL_FIELDS.find((item) => item.path.join(".") === key)!;
+      if (!paperGlobalScalar(field, getYamlScalar(document, field.path))) return fail(400, "bad_path");
+    }
+    for (const [key, value] of Object.entries(patch ?? {})) {
+      const field = PAPER_GLOBAL_FIELDS.find((item) => item.path.join(".") === key)!;
+      text = setYamlScalar(text, field.path, field.type === "integer" ? BigInt(value as number) : value as string | number | boolean, "1.2");
+    }
+    const content = Buffer.from(text);
+    if (content.length > MOCK_MAX_WRITE) return fail(413, "too_large");
+    if (text !== node.data.toString()) tree.set(MOCK_SECRET_CONFIG, { is_dir: false, data: content, mod_time: new Date().toISOString() });
+    document = readYamlConfig(text, "1.2");
+    const values: Record<string, boolean | number | string> = {};
+    for (const field of PAPER_GLOBAL_FIELDS) {
+      const value = getYamlScalar(document, field.path);
+      if (paperGlobalScalar(field, value)) values[field.path.join(".")] = typeof value === "bigint" ? Number(value) : value as boolean | number | string;
+    }
+    sendJSON(ctx.res, 200, { values, sha256: mockSha(content) });
+    return true;
+  } catch (error) {
+    return fail(error instanceof YamlConfigParseError || error instanceof TypeError ? 400 : 500, error instanceof YamlConfigParseError || error instanceof TypeError ? "bad_path" : "internal");
+  }
 }
 
 function parentPath(p: string): string {

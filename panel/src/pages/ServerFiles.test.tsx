@@ -42,6 +42,8 @@ const mocks = vi.hoisted(() => ({
   fetchServerFile: vi.fn(),
   downloadServerFiles: vi.fn(),
   previewServerFile: vi.fn(),
+  serverPaperGlobal: vi.fn(),
+  patchServerPaperGlobal: vi.fn(),
 }));
 
 vi.mock("@/lib/api", async (importOriginal) => {
@@ -77,6 +79,8 @@ vi.mock("@/lib/api", async (importOriginal) => {
       fetchServerFile: mocks.fetchServerFile,
       downloadServerFiles: mocks.downloadServerFiles,
       previewServerFile: mocks.previewServerFile,
+      serverPaperGlobal: mocks.serverPaperGlobal,
+      patchServerPaperGlobal: mocks.patchServerPaperGlobal,
     },
   };
 });
@@ -126,6 +130,8 @@ const fileOp = (over: Partial<FileOp> = {}): FileOp => ({
 const stopped = { name: "lobby", subdomain: "lobby", phase: "Stopped", desiredState: "Stopped", ready: false };
 
 beforeEach(() => {
+  mocks.serverPaperGlobal.mockReset().mockResolvedValue({ values: { "watchdog.early-warning-delay": 10000 }, sha256: "a".repeat(64) });
+  mocks.patchServerPaperGlobal.mockReset().mockResolvedValue({ values: { "watchdog.early-warning-delay": 12000 }, sha256: "b".repeat(64) });
   mocks.writeServerFile.mockReset();
   mocks.listServerFiles.mockReset();
   mocks.listServerFiles.mockImplementation((_name: string, path: string) =>
@@ -445,6 +451,74 @@ describe("ServerFiles properties form", () => {
     expect(mocks.writeServerFile).toHaveBeenCalledTimes(1);
     await userEvent.click(overwrite);
     expect(mocks.writeServerFile).toHaveBeenLastCalledWith("lobby", "server.properties", btoa("motd=mine\n"), undefined);
+  });
+});
+
+describe("ServerFiles YAML forms", () => {
+  function protectedListing() {
+    mocks.listServerFiles.mockImplementation((_name: string, path: string) => Promise.resolve({ path, truncated: false, entries: path === "config"
+      ? [{ name: "paper-global.yml", size: 900, is_dir: false, mod_time: "" }]
+      : [{ name: "config", size: 0, is_dir: true, mod_time: "" }],
+    }));
+  }
+
+  it("retains ordinary YAML conflict and draft state across modes and reloads the latest SHA", async () => {
+    const original = "# kept\nspawn-limits:\n  monsters: 70\n";
+    mocks.listServerFiles.mockResolvedValue({ entries: [{ name: "bukkit.yml", size: original.length, is_dir: false, mod_time: "" }] });
+    mocks.readServerFile.mockResolvedValue({ content: btoa(original), sha256: "first-sha" });
+    mocks.writeServerFile.mockRejectedValueOnce({ code: "file_changed" }).mockResolvedValueOnce({ status: "written" });
+    renderFiles();
+    await userEvent.click(await screen.findByText("bukkit.yml"));
+    const dialog = await screen.findByRole("dialog");
+    const label = t("files:config_field_bukkit_monsters");
+    fireEvent.change(await within(dialog).findByRole("textbox", { name: label }), { target: { value: "42" } });
+    await userEvent.click(within(dialog).getByRole("button", { name: t("files:save") }));
+    expect(await within(dialog).findByText(t("files:conflict_title"))).toBeTruthy();
+    await userEvent.click(within(dialog).getByRole("radio", { name: t("files:properties_text") }));
+    const raw = await within(dialog).findByRole("textbox", { name: t("files:file_content") });
+    expect(raw).toHaveProperty("value", original.replace("70", "42"));
+    expect(within(dialog).getByText(t("files:conflict_title"))).toBeTruthy();
+    mocks.readServerFile.mockResolvedValue({ content: btoa(original.replace("70", "71")), sha256: "latest-sha" });
+    await userEvent.click(within(dialog).getByRole("button", { name: t("files:conflict_reload") }));
+    await waitFor(() => expect(raw).toHaveProperty("value", original.replace("70", "71")));
+    await userEvent.click(within(dialog).getByRole("radio", { name: t("files:properties_form") }));
+    const input = await within(dialog).findByRole("textbox", { name: label });
+    expect(input).toHaveProperty("value", "71");
+    fireEvent.change(input, { target: { value: "45" } });
+    await userEvent.click(within(dialog).getByRole("button", { name: t("files:save") }));
+    expect(mocks.writeServerFile).toHaveBeenLastCalledWith("lobby", "bukkit.yml", btoa(original.replace("70", "45")), "latest-sha");
+  });
+
+  it("requires acknowledgement when config is a running world before patching protected settings", async () => {
+    protectedListing();
+    mocks.status.mockResolvedValue({ ...stopped, phase: "Running", desiredState: "Running", ready: true });
+    mocks.readServerFile.mockResolvedValue({ path: "server.properties", content: btoa("level-name=config\n"), sha256: "properties-sha" });
+    renderFiles();
+    await userEvent.click(await screen.findByRole("button", { name: i18next.t("files:open_folder", { name: "config" }) }));
+    await userEvent.click(await screen.findByText("paper-global.yml"));
+    const dialog = await screen.findByRole("dialog");
+    const input = await within(dialog).findByRole("textbox", { name: t("files:config_field_global_watchdog_delay") });
+    fireEvent.change(input, { target: { value: "12000" } });
+    const save = within(dialog).getByRole("button", { name: t("files:save") });
+    expect(save).toHaveProperty("disabled", true);
+    fireEvent.keyDown(input, { key: "s", ctrlKey: true });
+    expect(mocks.patchServerPaperGlobal).not.toHaveBeenCalled();
+    await userEvent.click(within(dialog).getByRole("checkbox", { name: t("files:live_world_confirm") }));
+    await userEvent.click(save);
+    expect(mocks.patchServerPaperGlobal).toHaveBeenCalledExactlyOnceWith("lobby", { "watchdog.early-warning-delay": 12000 }, "a".repeat(64));
+    expect(mocks.writeServerFile).not.toHaveBeenCalled();
+    expect(mocks.readServerFile.mock.calls.map((call) => call[1])).toEqual(["server.properties"]);
+  });
+
+  it("does not start a protected read while another operation holds the stopped world's files", async () => {
+    protectedListing();
+    jobsNow = [{ name: "backup", kind: "backup", state: "running" }];
+    renderFiles();
+    await screen.findByText(t("files:wait_for_backup"));
+    await userEvent.click(await screen.findByRole("button", { name: i18next.t("files:open_folder", { name: "config" }) }));
+    await userEvent.click(await screen.findByText("paper-global.yml"));
+    expect(mocks.serverPaperGlobal).not.toHaveBeenCalled();
+    expect(screen.queryByRole("heading", { name: t("files:paper_global_title") })).toBeNull();
   });
 });
 
@@ -885,7 +959,7 @@ describe("ServerFiles changes", () => {
     expect(mocks.readServerFile).not.toHaveBeenCalled();
   });
 
-  it("says why the proxy secret's file does not open, and reads nothing", async () => {
+  it("opens the protected scalar form without reading raw proxy configuration", async () => {
     mocks.listServerFiles.mockImplementation((_name: string, path: string) =>
       Promise.resolve({
         path,
@@ -899,11 +973,13 @@ describe("ServerFiles changes", () => {
     renderFiles();
     await userEvent.click(await screen.findByRole("button", { name: i18next.t("files:open_folder", { name: "config" }) }));
 
+    expect(button("rename_item", "paper-global.yml").disabled).toBe(true);
     await userEvent.click(await screen.findByText("paper-global.yml"));
 
-    expect(screen.getByText(t("files:secret_config_unreadable"))).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: t("files:paper_global_title") })).toBeTruthy();
+    expect(mocks.serverPaperGlobal).toHaveBeenCalledExactlyOnceWith("lobby");
+    expect(screen.queryByRole("radio", { name: t("files:properties_text") })).toBeNull();
     expect(mocks.readServerFile).not.toHaveBeenCalled();
-    expect(button("rename_item", "paper-global.yml").disabled).toBe(true);
   });
 
   it("lists folders first and numbers in counting order", async () => {

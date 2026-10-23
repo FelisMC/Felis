@@ -316,6 +316,8 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/status", h: a.handleStatus},
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/usage", h: a.handleUsage},
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/extensions", h: a.handleExtensions},
+		{Method: "GET", Pattern: "/api/v1/servers/{name}/config/paper-global", h: a.handleReadPaperGlobal},
+		{Method: "PATCH", Pattern: "/api/v1/servers/{name}/config/paper-global", h: a.handlePatchPaperGlobal},
 		{Method: "GET", Pattern: "/api/v1/me", SetupAllowed: true, h: a.handleMe},
 		{Method: "GET", Pattern: "/api/v1/me/servers", SetupAllowed: true, h: a.handleMyServers},
 		{Method: "GET", Pattern: "/api/v1/software", h: a.handleSoftwareCatalog},

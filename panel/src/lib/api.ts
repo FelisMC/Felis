@@ -59,6 +59,8 @@ import type {
   ScheduleInput,
   ServerFileEntry,
   ServerExtensionsListing,
+  PaperGlobalConfig,
+  PaperGlobalValues,
   ServerJob,
   MyServerView,
   ServerStatus,
@@ -763,6 +765,12 @@ export const api = rejectingSync({
 
   listServerExtensions: (name: string) =>
     request<ServerExtensionsListing>("GET", urlPath`/servers/${name}/extensions`),
+
+  serverPaperGlobal: (name: string) =>
+    request<PaperGlobalConfig>("GET", urlPath`/servers/${name}/config/paper-global`),
+
+  patchServerPaperGlobal: (name: string, values: PaperGlobalValues, expect: string) =>
+    request<PaperGlobalConfig>("PATCH", urlPath`/servers/${name}/config/paper-global`, { values, expect_sha256: expect }),
 
   searchServerFiles: (name: string, path: string, query: string) =>
     request<{ path: string; entries: ServerFileEntry[]; truncated: boolean; free_bytes: number | null }>(

@@ -18,6 +18,7 @@ require (
 	github.com/minio/minio-go/v7 v7.2.1
 	github.com/prometheus/client_golang v1.19.1
 	github.com/prometheus/client_model v0.6.1
+	go.yaml.in/yaml/v3 v3.0.4
 	golang.org/x/text v0.42.0
 	k8s.io/api v0.31.3
 	k8s.io/apimachinery v0.31.3
@@ -92,7 +93,6 @@ require (
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
-	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/exp v0.0.0-20231006140011-7918f672742d // indirect
 	golang.org/x/net v0.60.0 // indirect

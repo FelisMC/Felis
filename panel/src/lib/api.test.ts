@@ -25,6 +25,31 @@ function fakeFetch(body: unknown, init?: { ok?: boolean; status?: number }) {
   })) as unknown as typeof fetch;
 }
 
+describe("protected Paper global wire shape", () => {
+  beforeEach(() => { vi.restoreAllMocks(); cfg.apiBase = ""; });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("reads only filtered values and the complete-file digest", async () => {
+    const body = { values: { "messages.no-permission": "Refused" }, sha256: "a".repeat(64) };
+    const fetchSpy = fakeFetch(body);
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await api.serverPaperGlobal("lobby")).toEqual(body);
+    expect((fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([
+      "/servers/lobby/config/paper-global", expect.objectContaining({ method: "GET", credentials: "include" }),
+    ]);
+  });
+
+  it("patches only explicit values and always includes the expected digest", async () => {
+    const fetchSpy = fakeFetch({ values: { "messages.no-permission": "Changed" }, sha256: "b".repeat(64) });
+    vi.stubGlobal("fetch", fetchSpy);
+    await api.patchServerPaperGlobal("lobby", { "messages.no-permission": "Changed" }, "a".repeat(64));
+    const [url, options] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(url).toBe("/servers/lobby/config/paper-global");
+    expect(options.method).toBe("PATCH");
+    expect(JSON.parse(options.body)).toEqual({ values: { "messages.no-permission": "Changed" }, expect_sha256: "a".repeat(64) });
+  });
+});
+
 describe("api.me wire shape", () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => vi.unstubAllGlobals());

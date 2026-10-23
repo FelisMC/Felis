@@ -2130,6 +2130,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/servers/{name}/config/paper-global": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read approved Paper global settings (owner-or-admin).
+         * @description Returns only the supported scalar settings from the fixed config/paper-global.yml path and the raw file SHA-256. The full YAML, comments, unknown settings and proxies block never leave the file task. The ordinary file read and download routes continue to withhold this file and its aliases. Uses the file browser's stable running or stopped lifecycle and maintenance gates. Files are bounded to 5 MiB. Symbolic links, YAML aliases, anchors, merge keys, duplicate keys, complex mapping keys and multiple YAML documents are rejected with a safe diagnostic. Missing settings stay absent instead of being replaced by defaults. Responses are not cached.
+         */
+        get: operations["readServerPaperGlobal"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Patch approved Paper global settings (owner-or-admin).
+         * @description Accepts only explicitly changed supported scalar fields already present with a compatible type, and a mandatory expect_sha256 from a previous read. Missing settings return 400 bad_path and leave the file unchanged; mappings and leaf settings are never created. Requests are limited to 64 KiB; paths, raw YAML, unknown fields, null and deletion are unsupported. The file task checks the raw file hash and patches its YAML node tree, preserving comments, unknown data and the proxies block. YAML formatting may be normalized; a patch that changes no semantic values leaves the original bytes untouched. The complete file is replaced atomically; stale hashes, deletion or replacement return 409 file_changed instead of overwriting a newer file. The same YAML and link restrictions as GET apply, and files with hard-link aliases cannot be patched. Uses the file editor's ownership, lifecycle and maintenance gates. Stopped writes hold the world-volume lock; stable running writes share the mounted volume. Changes usually apply on restart. Audits record the action and fixed path without recording configuration values.
+         */
+        patch: operations["patchServerPaperGlobal"];
+        trace?: never;
+    };
     "/api/v1/servers/{name}/files": {
         parameters: {
             query?: never;
@@ -4488,6 +4512,56 @@ export interface components {
             entries: components["schemas"]["ServerExtension"][];
             /** @description The scan reached the 2000-entry per-directory scan limit, 500-file limit or 4 MiB response limit. */
             truncated: boolean;
+        };
+        /** @description Supported scalar settings in config/paper-global.yml. Each dotted ID names the corresponding nested YAML path. Missing settings are omitted; no default values are inserted. Proxy forwarding, identity and authentication settings are never exposed or editable here. Existing values may exceed the limits applied to explicitly changed fields. */
+        PaperGlobalValues: {
+            "chunk-loading-advanced.auto-config-send-distance"?: boolean;
+            "chunk-loading-advanced.player-max-concurrent-chunk-generates"?: number;
+            "chunk-loading-advanced.player-max-concurrent-chunk-loads"?: number;
+            "chunk-loading-basic.player-max-chunk-generate-rate"?: number;
+            "chunk-loading-basic.player-max-chunk-load-rate"?: number;
+            "chunk-loading-basic.player-max-chunk-send-rate"?: number;
+            "collisions.enable-player-collisions"?: boolean;
+            "collisions.send-full-pos-for-hard-colliding-entities"?: boolean;
+            "commands.suggest-player-names-when-null-tab-completions"?: boolean;
+            "console.enable-brigadier-completions"?: boolean;
+            "console.enable-brigadier-highlighting"?: boolean;
+            "messages.use-display-name-in-quit-message"?: boolean;
+            "messages.no-permission"?: string;
+            "messages.kick.connection-throttle"?: string;
+            "player-auto-save.max-per-tick"?: number;
+            "player-auto-save.rate"?: number;
+            "scoreboards.save-empty-scoreboard-teams"?: boolean;
+            "scoreboards.track-plugin-scoreboards"?: boolean;
+            "watchdog.early-warning-delay"?: number;
+            "watchdog.early-warning-every"?: number;
+        };
+        /** @description Only explicitly changed fields already present with a compatible type may be patched. Missing mappings or settings are never created. Changed values are validated against these limits. Strings must contain no NUL and occupy at most 4096 UTF-8 bytes. */
+        PaperGlobalPatchValues: components["schemas"]["PaperGlobalValues"] & {
+            "chunk-loading-advanced.player-max-concurrent-chunk-generates"?: number;
+            "chunk-loading-advanced.player-max-concurrent-chunk-loads"?: number;
+            "chunk-loading-basic.player-max-chunk-generate-rate"?: components["schemas"]["PaperGlobalChunkRate"];
+            "chunk-loading-basic.player-max-chunk-load-rate"?: components["schemas"]["PaperGlobalChunkRate"];
+            "chunk-loading-basic.player-max-chunk-send-rate"?: components["schemas"]["PaperGlobalChunkRate"];
+            "messages.no-permission"?: string;
+            "messages.kick.connection-throttle"?: string;
+            "player-auto-save.max-per-tick"?: number;
+            "player-auto-save.rate"?: number;
+            "watchdog.early-warning-delay"?: number;
+            "watchdog.early-warning-every"?: number;
+        };
+        /** @description Finite chunks-per-second rate; -1 disables the limit. */
+        PaperGlobalChunkRate: -1 | number;
+        PaperGlobalConfig: {
+            values: components["schemas"]["PaperGlobalValues"];
+            /** @description SHA-256 of the complete on-disk YAML before any filtering; required for a later patch. */
+            sha256: string;
+        };
+        PaperGlobalPatch: {
+            /** @description Only explicitly changed existing compatible fields; null, deletion and creating missing settings are unsupported. An empty object makes no change. */
+            values: components["schemas"]["PaperGlobalPatchValues"];
+            /** @description Required hash returned by a read; this endpoint never saves without conflict detection. */
+            expect_sha256: string;
         };
         /** @description One background file operation (internal/api/handlers_fileops.go fileOpView). */
         FileOp: {
@@ -10104,6 +10178,177 @@ export interface operations {
             503: components["responses"]["ServiceUnavailable"];
             /** @description The file Job did not finish in time. */
             504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    readServerPaperGlobal: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Supported settings and the complete file hash. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaperGlobalConfig"];
+                };
+            };
+            /** @description Invalid server name or YAML that cannot safely be edited through this form (bad_path). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description The server or fixed configuration file does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Server is transitioning, maintenance blocks file access, or the configuration changed while being read (file_changed). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The YAML file exceeds the 5 MiB editor limit. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The file task returned damaged content (read_damaged). */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+            /** @description The file task did not finish in time (files_timeout). */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    patchServerPaperGlobal: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PaperGlobalPatch"];
+            };
+        };
+        responses: {
+            /** @description Supported settings after the patch and the resulting raw file hash. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaperGlobalConfig"];
+                };
+            };
+            /** @description Invalid request, unsupported or absent field, incompatible scalar value, inaccessible path or unsafe YAML (bad_request or bad_path). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description The server or fixed configuration file does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The raw file changed (file_changed), the server is transitioning, or maintenance holds its world volume. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The request exceeds 64 KiB or the YAML exceeds 5 MiB (too_large). */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The file task returned damaged content (read_damaged). */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+            /** @description The file task did not finish in time (files_timeout). */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The volume is full; the original configuration is preserved (volume_full). */
+            507: {
                 headers: {
                     [name: string]: unknown;
                 };

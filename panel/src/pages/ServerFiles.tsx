@@ -33,6 +33,9 @@ import { FileOps } from "@/components/files/FileOps";
 import { UploadQueue } from "@/components/files/UploadQueue";
 import { FileMenu } from "@/components/files/FileMenu";
 import { ServerPropertiesEditor } from "@/components/files/ServerPropertiesEditor";
+import { YamlConfigEditor } from "@/components/files/YamlConfigEditor";
+import { YAML_FIELDS } from "@/components/files/yamlFields";
+import { PaperGlobalConfigDialog } from "@/components/files/PaperGlobalConfigDialog";
 import { droppedFiles } from "@/components/files/folderUpload";
 import { imageMime } from "@/components/files/imagePreview";
 import { Input } from "@/components/ui/input";
@@ -231,8 +234,9 @@ export function ServerFiles() {
   useEffect(() => () => { ++openingSeq.current; ++loadSeq.current; }, []);
   const [saving, setSaving] = useState(false);
   const [reloading, setReloading] = useState(false);
-  const [propertiesValid, setPropertiesValid] = useState(true);
-  const invalidProperties = open?.path === "server.properties" && !propertiesValid;
+  const [configValid, setConfigValid] = useState(true);
+  const invalidConfig = !!open && (open.path === "server.properties" || !!YAML_FIELDS[open.path]) && !configValid;
+  const [paperGlobalOpen, setPaperGlobalOpen] = useState(false);
   // Closing an editor with unsaved text (Esc, the overlay, ✕, Cancel) asks
   // first; leaving the page asks through the browser.
   const [confirmDiscard, setConfirmDiscard] = useState(false);
@@ -280,10 +284,13 @@ export function ServerFiles() {
     const p = joinPath(dir, entry.name);
     setSelected(p);
     setMsg(null);
-    // The read path refuses this one outright; saying why beats a Job that
-    // answers "invalid path".
     if (p === SECRET_CONFIG_PATH) {
-      setMsg({ kind: "error", text: t("secret_config_unreadable") });
+      if (!owned || pending) return;
+      if (!accessible || statusQ.error || changing) {
+        setMsg({ kind: "error", text: changing ? waitTitle : t("paper_global_unavailable") });
+        return;
+      }
+      setPaperGlobalOpen(true);
       return;
     }
     if (/\.(png|jpe?g|gif|webp)$/i.test(entry.name) && entry.size <= MAX_READ_BYTES) {
@@ -343,7 +350,7 @@ export function ServerFiles() {
   // handleSave writes the editor's text. `overwrite` drops the precondition,
   // which is what "Overwrite anyway" on a conflict means.
   async function handleSave(overwrite = false) {
-    if (!open?.editable || saving || reloading || (!overwrite && open.conflict) || !dirty || tooLarge || invalidProperties) return;
+    if (!open?.editable || saving || reloading || (!overwrite && open.conflict) || !dirty || tooLarge || invalidConfig) return;
     setSaving(true);
     setMsg(null);
     setOpen({ ...open, error: null });
@@ -387,6 +394,7 @@ export function ServerFiles() {
     setImage(null);
     previewAbort.current?.abort();
     setOpen(null);
+    setPaperGlobalOpen(false);
     setOpening(null);
     ++openingSeq.current;
   }, [name]);
@@ -1277,7 +1285,7 @@ export function ServerFiles() {
                       size="sm"
                       variant="destructive"
                       onClick={() => void handleSave(true)}
-                      disabled={saving || reloading || tooLarge || invalidProperties || needsWorldConfirmation([open.path])}
+                      disabled={saving || reloading || tooLarge || invalidConfig || needsWorldConfirmation([open.path])}
                       title={t("conflict_overwrite_hint")}
                     >
                       {saving ? (
@@ -1294,7 +1302,11 @@ export function ServerFiles() {
               {open.editable && open.path === "server.properties" ? (
                 <ServerPropertiesEditor key={open.path} server={name} value={open.text} original={open.original}
                   onChange={(text) => setOpen({ ...open, text })} onSave={() => void handleSave()}
-                  onValidityChange={setPropertiesValid} disabled={saving || reloading} />
+                  onValidityChange={setConfigValid} disabled={saving || reloading} />
+              ) : open.editable && YAML_FIELDS[open.path] ? (
+                <YamlConfigEditor key={open.path} path={open.path} value={open.text} original={open.original}
+                  onChange={(text) => setOpen({ ...open, text })} onSave={() => void handleSave()}
+                  onValidityChange={setConfigValid} disabled={saving || reloading} />
               ) : open.editable ? (
                 <Suspense fallback={<Loading />}>
                   <TextFileEditor path={open.path} value={open.text} label={t("file_content")}
@@ -1344,7 +1356,7 @@ export function ServerFiles() {
                     </Button>
                     {open.editable && <Button
                       onClick={() => void handleSave()}
-                      disabled={saving || reloading || open.conflict || !open.editable || !dirty || tooLarge || invalidProperties || needsWorldConfirmation([open.path])}
+                      disabled={saving || reloading || open.conflict || !open.editable || !dirty || tooLarge || invalidConfig || needsWorldConfirmation([open.path])}
                     >
                       {saving ? (
                         <Loader2 className="h-4 w-4 animate-spin" />
@@ -1360,6 +1372,18 @@ export function ServerFiles() {
           )}
         </DialogContent>
       </Dialog>
+
+      {paperGlobalOpen && <PaperGlobalConfigDialog key={name} name={name}
+        onClose={() => setPaperGlobalOpen(false)}
+        onSaved={() => {
+          setPaperGlobalOpen(false);
+          setMsg({ kind: "success", text: t("saved", { path: SECRET_CONFIG_PATH }) });
+          void load(dir);
+        }}
+        disabled={pending || !owned || !accessible || !!statusQ.error || changing}
+        needsWorldConfirmation={needsWorldConfirmation([SECRET_CONFIG_PATH])}
+        beforeSave={() => requireWorldConfirmation([SECRET_CONFIG_PATH])}
+        worldConfirmation={live && (!worldDirs || touchesWorld(SECRET_CONFIG_PATH, worldDirs)) && worldConfirmation("paper-global-world-confirm")} />}
 
       {naming && (
         <NameDialog

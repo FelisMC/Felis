@@ -59,6 +59,8 @@ func filesJob(t *testing.T, server, op string) batchv1.Job {
 		p.To = "server.properties.bak"
 	case fileedit.OpUpload:
 		p.SourceURL, p.UploadToken = "http://felis-api-internal.felis.svc.cluster.local:8081/x", "t"
+	case fileedit.OpPaperGlobalRead, fileedit.OpPaperGlobalPatch:
+		p.Path = ""
 	}
 	j, err := fileedit.FilesJob(p)
 	if err != nil {
@@ -104,6 +106,8 @@ func TestJobKindMatchesTheExecutors(t *testing.T) {
 		{"file list", filesJob(t, "survival", fileedit.OpList), "", false},
 		{"file search", filesJob(t, "survival", fileedit.OpSearch), "", false},
 		{"installed extensions", filesJob(t, "survival", fileedit.OpExtensions), "", false},
+		{"protected configuration read", filesJob(t, "survival", fileedit.OpPaperGlobalRead), "", false},
+		{"protected configuration patch", filesJob(t, "survival", fileedit.OpPaperGlobalPatch), KindFileWrite, true},
 		{"world export", exportJob(t, "survival", worldexport.ModeWorld), KindExport, true},
 		{"backup export", exportJob(t, "survival", worldexport.ModeBackup), "", false},
 		{"files export", exportJob(t, "survival", worldexport.ModeFiles), KindExport, true},

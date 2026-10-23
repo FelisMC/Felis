@@ -104,6 +104,9 @@ func FilesJob(p JobParams) (*batchv1.Job, error) {
 	if len(p.Content) > MaxInlineWriteBytes {
 		return nil, fmt.Errorf("fileedit: content is %d bytes, over the %d limit", len(p.Content), MaxInlineWriteBytes)
 	}
+	if (p.Op == OpPaperGlobalRead || p.Op == OpPaperGlobalPatch) && (p.Path != "" || p.To != "" || p.SourceURL != "" || len(p.Content) > MaxPaperGlobalPatchBytes) {
+		return nil, fmt.Errorf("fileedit: invalid protected configuration operation")
+	}
 	if (p.Op == OpUpload || p.Op == OpWrite && p.SourceURL != "") && (p.SourceURL == "" || p.UploadToken == "") {
 		return nil, fmt.Errorf("fileedit: an upload needs a source URL and a token")
 	}
@@ -133,7 +136,7 @@ func FilesJob(p JobParams) (*batchv1.Job, error) {
 	}
 	// Expected hashes may travel in argv; file content uses the environment channel.
 	switch p.Op {
-	case OpWrite:
+	case OpWrite, OpPaperGlobalPatch:
 		sum := digest(p.Content)
 		if p.SourceURL != "" {
 			sum = p.UploadSHA256
@@ -192,7 +195,7 @@ func FilesJob(p JobParams) (*batchv1.Job, error) {
 
 	// Split base64 content across environment variables; write content and upload or browser tokens appear only in Jobs that need them.
 	switch p.Op {
-	case OpWrite:
+	case OpWrite, OpPaperGlobalPatch:
 		if p.SourceURL != "" {
 			container.Env = []corev1.EnvVar{{Name: UploadTokenEnv, Value: p.UploadToken}}
 			break
@@ -275,7 +278,7 @@ func int64Ptr(i int64) *int64 { return &i }
 
 // filesCapabilities permits DAC_OVERRIDE for game-owned private files and CHOWN only for operations that create files.
 func filesCapabilities(op string) []corev1.Capability {
-	if op == OpWrite || op == OpMkdir || op == OpUpload || op == OpUnzip || op == OpCopy || op == OpMove || op == OpZip {
+	if op == OpWrite || op == OpPaperGlobalPatch || op == OpMkdir || op == OpUpload || op == OpUnzip || op == OpCopy || op == OpMove || op == OpZip {
 		return []corev1.Capability{"CHOWN", "DAC_OVERRIDE"}
 	}
 	return []corev1.Capability{"DAC_OVERRIDE"}

@@ -23,6 +23,8 @@ type FileEditor interface {
 	List(ctx context.Context, server, path string) (fileedit.Listing, error)
 	Search(ctx context.Context, server, path, query string) (fileedit.Listing, error)
 	Extensions(ctx context.Context, server string) (fileedit.ExtensionList, error)
+	ReadPaperGlobal(ctx context.Context, server string) (fileedit.PaperGlobalConfig, error)
+	PatchPaperGlobal(ctx context.Context, server string, values map[string]any, expect string) (fileedit.PaperGlobalConfig, error)
 	// Read returns the file hash before redaction.
 	Read(ctx context.Context, server, path string) (content []byte, sha256 string, err error)
 	// Write rejects a changed expect hash or an existing path with createOnly; it returns lowercase SHA-256 hex.

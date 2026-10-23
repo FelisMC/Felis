@@ -64,6 +64,64 @@ func TestCmdFilesListsInstalledExtensions(t *testing.T) {
 	}
 }
 
+func TestCmdFilesPaperGlobalUsesFilteredInlinePatches(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "config"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "config/paper-global.yml")
+	original := "# retained\nproxies:\n  velocity:\n    secret: fake-cli-private\nconsole:\n  enable-brigadier-completions: false # retained switch\nmessages:\n  no-permission: Denied\n"
+	if err := os.WriteFile(path, []byte(original), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := cmdFiles([]string{"--op", "paper-global-read", "--worlds-root", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("filtered read exit=%d stderr=%q", code, stderr.String())
+	}
+	first := filesResult(t, stdout.String())
+	if first.Code != "" || first.PaperGlobal == nil || len(first.PaperGlobal.Values) != 2 || first.PaperGlobal.Values["console.enable-brigadier-completions"] != false || strings.Contains(stdout.String()+stderr.String(), "fake-cli-private") {
+		t.Fatal("CLI read was not a filtered configuration view")
+	}
+	content := []byte(`{"console.enable-brigadier-completions":true}`)
+	sum := sha256.Sum256(content)
+	t.Setenv(fileedit.ContentPartsEnv, "1")
+	t.Setenv(fileedit.ContentEnv+"_0", base64.StdEncoding.EncodeToString(content))
+	args := []string{"--op", "paper-global-patch", "--worlds-root", root, "--sha256", hex.EncodeToString(sum[:]), "--expect-sha256", first.PaperGlobal.SHA256}
+	stdout.Reset()
+	stderr.Reset()
+	if code := cmdFiles(args, &stdout, &stderr); code != 0 {
+		t.Fatalf("filtered patch exit=%d stderr=%q", code, stderr.String())
+	}
+	patched := filesResult(t, stdout.String())
+	stored, err := os.ReadFile(path)
+	storedSum := sha256.Sum256(stored)
+	if err != nil || patched.Code != "" || patched.PaperGlobal == nil || patched.PaperGlobal.SHA256 != hex.EncodeToString(storedSum[:]) || patched.PaperGlobal.Values["console.enable-brigadier-completions"] != true || strings.Contains(stdout.String()+stderr.String(), "fake-cli-private") {
+		t.Fatal("CLI patch failed or exposed private data")
+	}
+	for _, retained := range []string{"secret: fake-cli-private", "# retained switch", "no-permission: Denied"} {
+		if !bytes.Contains(stored, []byte(retained)) {
+			t.Fatalf("CLI patch lost retained content %q", retained)
+		}
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := cmdFiles(args, &stdout, &stderr); code != 0 || filesResult(t, stdout.String()).Code != fileedit.CodeConflict {
+		t.Fatalf("stale patch exit=%d stderr=%q", code, stderr.String())
+	}
+	current, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(current, stored) {
+		t.Fatal("stale CLI patch modified the file")
+	}
+	if err := os.WriteFile(path, []byte("private: *fake-cli-private\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := cmdFiles([]string{"--op", "paper-global-read", "--worlds-root", root}, &stdout, &stderr); code != 0 || filesResult(t, stdout.String()).Code != fileedit.CodeBadPath || strings.Contains(stdout.String()+stderr.String(), "fake-cli-private") {
+		t.Fatalf("unsafe YAML diagnostic exit=%d", code)
+	}
+}
+
 // The fixture controls upload GET and landing DELETE responses and records DELETE counts.
 type stagedSource struct {
 	*httptest.Server
