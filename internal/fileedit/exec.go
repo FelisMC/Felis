@@ -285,20 +285,25 @@ const (
 	redactedValue   = "<redacted by felis>"
 )
 
-// redactSecretProps hides RCON and Limbo keys; entrypoints restore the real values on boot if placeholders are saved.
+// redactSecretProps hides RCON and forwarding keys; unchanged placeholders retain their stored values on write.
 func redactSecretProps(name string, content []byte) []byte {
 	if path.Clean(name) != propsPath {
 		return content
 	}
-	lines := bytes.Split(content, []byte("\n"))
-	for i, line := range lines {
-		for _, key := range []string{rconPasswordKey, "forwarding-secrets"} {
-			if bytes.HasPrefix(bytes.TrimSpace(line), []byte(key+"=")) {
-				lines[i] = []byte(key + "=" + redactedValue)
-			}
+	var redacted bytes.Buffer
+	redacted.Grow(len(content))
+	for line := range propertyLines(content) {
+		key, value := secretProperty(line)
+		if key == "" {
+			redacted.Write(line)
+			continue
 		}
+		start := bytes.IndexByte(line, '=') + 1
+		redacted.Write(line[:start])
+		redacted.WriteString(redactedValue)
+		redacted.Write(line[start+len(value):])
 	}
-	return bytes.Join(lines, []byte("\n"))
+	return redacted.Bytes()
 }
 
 // write checks the expected file hash and incoming content digest before atomic replacement; it never creates parent directories.
@@ -324,6 +329,10 @@ func write(r *os.Root, name string, content []byte, sum, expect string, createOn
 		if res := checkUnchanged(r, name, target, expect); res.Code != "" {
 			return res
 		}
+	}
+	content, res = preserveSecretProps(r, name, target, content, expect)
+	if res.Code != "" {
+		return res
 	}
 	res, _ = land(r, name, target, mode, func(w io.Writer) error {
 		_, err := w.Write(content)

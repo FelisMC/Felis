@@ -3068,6 +3068,18 @@ const MOCK_MAX_READ = MOCK_MAX_WRITE;
 const MOCK_MAX_UPLOAD = 64 * 1024 * 1024;
 const MOCK_SECRET_CONFIG = "config/paper-global.yml";
 const MOCK_MANAGED = new Set([MOCK_SECRET_CONFIG, "config", "server.properties"]);
+const MOCK_REDACTED_VALUE = "<redacted by felis>";
+const MOCK_SECRET_PROPERTY = /^([ \t\f]*(rcon\.password|forwarding-secrets)=)([^\r\n]*)/gm;
+
+function redactMockProperties(content: Buffer): Buffer {
+  return Buffer.from(content.toString().replace(MOCK_SECRET_PROPERTY, `$1${MOCK_REDACTED_VALUE}`));
+}
+
+function preserveMockProperties(content: Buffer, original: Buffer): Buffer {
+  const values = new Map<string, string>([...original.toString().matchAll(MOCK_SECRET_PROPERTY)].map((match) => [match[2], match[3]]));
+  return Buffer.from(content.toString().replace(MOCK_SECRET_PROPERTY, (line, prefix: string, key: string, value: string) =>
+    value === MOCK_REDACTED_VALUE && values.has(key) ? prefix + values.get(key) : line));
+}
 
 // seedFiles is a Paper server's volume after a few days of play: the configs an
 // owner edits, plugin jars, a world and its logs. Sizes are real-looking, the
@@ -3085,7 +3097,7 @@ function seedFiles(serverName: string): MockTree {
   dir("", 0);
   file(
     "server.properties",
-    `#Minecraft server properties\nmotd=${serverName}\nmax-players=20\nonline-mode=false\ndifficulty=normal\ngamemode=survival\npvp=true\nview-distance=10\nspawn-protection=16\nenable-rcon=true\nrcon.password=[redacted by felis]\n`,
+    `#Minecraft server properties\nmotd=${serverName}\nmax-players=${serverName === "login" ? "-1" : "20"}\nonline-mode=false\ndifficulty=normal\ngamemode=survival\npvp=true\nview-distance=10\nsimulation-distance=10\nentity-broadcast-range-percentage=100\nwhite-list=false\nspawn-protection=16\nserver-port=25565\nenable-rcon=true\nrcon.port=25575\nrcon.password=${MOCK_REDACTED_VALUE}\n${serverName === "login" ? `bungeecord=false\nbungee-guard=false\nvelocity-modern=true\nforwarding-secrets=${MOCK_REDACTED_VALUE}\n` : ""}`,
     30,
   );
   file("eula.txt", "eula=true\n", 400);
@@ -3259,7 +3271,7 @@ async function handleFileTaskMock(ctx: SessionContext, server: MockServer, tree:
   }
   if (paths.some((path) => !tree.has(path))) return fail(404, "not_found", "selected entry not found");
   const selected = [...tree.entries()].filter(([path]) => paths.some((root) => path === root || path.startsWith(`${root}/`)) && path !== MOCK_SECRET_CONFIG);
-  const safeData = (path: string, data: Buffer) => path === "server.properties" ? Buffer.from(data.toString().replace(/^rcon\.password=.*$/gm, "rcon.password=[redacted by felis]")) : data;
+  const safeData = (path: string, data: Buffer) => path === "server.properties" ? redactMockProperties(data) : data;
   if (key === "POST files/download" || key === "POST files/zip") {
     if (paths.includes(MOCK_SECRET_CONFIG)) return fail(400, "bad_path", "proxy secret cannot be downloaded");
     const data = mockZip(selected.map(([path, node]) => {
@@ -3405,13 +3417,14 @@ async function handleFilesMock(ctx: SessionContext, serverInfo: MockServer): Pro
       if (!node) return fail(404, "not_found", `${p} does not exist`);
       if (node.is_dir) return fail(400, "bad_path", `${p} is a directory, not a file`);
       if (node.data.length > MOCK_MAX_READ) return fail(413, "too_large", `${p} is larger than the editor reads`);
-      sendJSON(ctx.res, 200, { path: p, content: node.data.toString("base64"), sha256: mockSha(node.data), content_sha256: mockSha(node.data) });
+      const content = p === "server.properties" ? redactMockProperties(node.data) : node.data;
+      sendJSON(ctx.res, 200, { path: p, content: content.toString("base64"), sha256: mockSha(node.data), content_sha256: mockSha(content) });
       return true;
     }
     case "PUT file": {
       const body = await readJSON<{ content?: string; expect_sha256?: string; create_only?: boolean }>(ctx.req);
       if (typeof body.content !== "string") return fail(400, "bad_request", "content is required");
-      const data = Buffer.from(body.content, "base64");
+      let data: Buffer = Buffer.from(body.content, "base64");
       if (data.length > MOCK_MAX_WRITE) return fail(413, "too_large", "the content is larger than the editor writes");
       if (!parent?.is_dir) return fail(404, "not_found", `folder ${parentPath(p)} does not exist`);
       if (node?.is_dir) return fail(400, "bad_path", `${p} is a directory`);
@@ -3419,6 +3432,8 @@ async function handleFilesMock(ctx: SessionContext, serverInfo: MockServer): Pro
       if (body.expect_sha256 && (!node || mockSha(node.data) !== body.expect_sha256)) {
         return fail(409, "file_changed", `${p} changed since it was read`);
       }
+      if (p === "server.properties" && node) data = preserveMockProperties(data, node.data);
+      if (data.length > MOCK_MAX_WRITE) return fail(413, "too_large", "preserving redacted values exceeds the editor limit");
       tree.set(p, { is_dir: false, data, mod_time: now });
       sendJSON(ctx.res, 200, { path: p, status: "written", sha256: mockSha(data) });
       return true;

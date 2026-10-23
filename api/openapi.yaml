@@ -6982,7 +6982,12 @@ paths:
         digest_mismatch) before a Job starts, and the Job checks the bytes it received
         the same way before writing. Staff may save login/lobby's startup-only
         felis-experience.json while running; restart to apply. That config cannot
-        be a symlink. Stopped writes hold a maintenance lock against startup;
+        be a symlink. In server.properties, unchanged redaction placeholders for
+        rcon.password and forwarding-secrets retain the current on-disk values.
+        Content digests cover the submitted bytes; the returned sha256 covers the
+        resulting file. Placeholder restoration refuses files with hard links to
+        avoid leaving credential copies outside the protected file identity.
+        Stopped writes hold a maintenance lock against startup;
         running writes take no admission lock and do not prevent shutdown.
         The panel requires an additional checkbox before modifying world directories
         while running. Audited as file.write.

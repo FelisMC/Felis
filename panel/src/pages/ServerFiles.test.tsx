@@ -105,7 +105,8 @@ async function openEditor() {
   renderFiles();
   await userEvent.click(await screen.findByText("server.properties"));
   const dialog = await screen.findByRole("dialog");
-  return { dialog, editor: await within(dialog).findByRole("textbox") as HTMLTextAreaElement };
+  await userEvent.click(await within(dialog).findByRole("radio", { name: t("files:properties_text") }));
+  return { dialog, editor: await within(dialog).findByRole("textbox", { name: t("files:file_content") }) as HTMLTextAreaElement };
 }
 
 let opsNow: FileOp[] = [];
@@ -386,6 +387,64 @@ describe("ServerFiles editor", () => {
     window.dispatchEvent(dirty);
 
     expect(dirty.defaultPrevented).toBe(true);
+  });
+});
+
+describe("ServerFiles properties form", () => {
+  it("opens unchanged properties in the form and blocks invalid saves including keyboard shortcuts", async () => {
+    renderFiles();
+    await userEvent.click(await screen.findByText("server.properties"));
+    const dialog = await screen.findByRole("dialog");
+    const input = await within(dialog).findByRole("textbox", { name: t("files:properties_field_view_distance") });
+    const save = within(dialog).getByRole("button", { name: t("files:save") });
+    expect(save).toHaveProperty("disabled", true);
+    fireEvent.change(input, { target: { value: "33" } });
+    expect(within(dialog).getByRole("alert").textContent).toBe(i18next.t("files:properties_invalid_integer", { min: 3, max: 32 }));
+    fireEvent.keyDown(input, { key: "s", ctrlKey: true });
+    expect(save).toHaveProperty("disabled", true);
+    expect(mocks.writeServerFile).not.toHaveBeenCalled();
+    fireEvent.change(input, { target: { value: "32" } });
+    fireEvent.keyDown(input, { key: "s", ctrlKey: true });
+    await waitFor(() => expect(mocks.writeServerFile).toHaveBeenCalledExactlyOnceWith("lobby", "server.properties", btoa("motd=hi\nview-distance=32\n"), "abc"));
+  });
+
+  it.each(["form", "text"])("loads the latest conflicting file in %s mode and uses its new SHA on the next save", async (mode) => {
+    renderFiles();
+    await userEvent.click(await screen.findByText("server.properties"));
+    const dialog = await screen.findByRole("dialog");
+    if (mode === "text") await userEvent.click(await within(dialog).findByRole("radio", { name: t("files:properties_text") }));
+    const label = t(mode === "form" ? "files:properties_field_motd" : "files:file_content");
+    const edit = async (value: string) => fireEvent.change(await within(dialog).findByRole("textbox", { name: label }), { target: { value: mode === "form" ? value : `motd=${value}\n` } });
+    await edit("mine");
+    mocks.writeServerFile.mockRejectedValueOnce({ code: "file_changed" });
+    await userEvent.click(within(dialog).getByRole("button", { name: t("files:save") }));
+    expect(await within(dialog).findByText(t("files:conflict_title"))).toBeTruthy();
+    expect(within(dialog).getByRole("button", { name: t("files:save") })).toHaveProperty("disabled", true);
+    mocks.readServerFile.mockResolvedValue({ content: btoa("# newer\nmotd=theirs\n"), sha256: "new-sha" });
+    await userEvent.click(within(dialog).getByRole("button", { name: t("files:conflict_reload") }));
+    await waitFor(() => expect(within(dialog).getByRole("textbox", { name: label })).toHaveProperty("value", mode === "form" ? "theirs" : "# newer\nmotd=theirs\n"));
+    expect(within(dialog).queryByText(t("files:conflict_title"))).toBeNull();
+    expect(within(dialog).getByRole("button", { name: t("files:save") })).toHaveProperty("disabled", true);
+    await edit("after reload");
+    await userEvent.click(within(dialog).getByRole("button", { name: t("files:save") }));
+    expect(mocks.writeServerFile).toHaveBeenLastCalledWith("lobby", "server.properties", btoa(mode === "form" ? "# newer\nmotd=after reload\n" : "motd=after reload\n"), "new-sha");
+  });
+
+  it.each(["form", "text"])("requires explicit overwrite after a conflict in %s mode", async (mode) => {
+    renderFiles();
+    await userEvent.click(await screen.findByText("server.properties"));
+    const dialog = await screen.findByRole("dialog");
+    if (mode === "text") await userEvent.click(await within(dialog).findByRole("radio", { name: t("files:properties_text") }));
+    const input = await within(dialog).findByRole("textbox", { name: t(mode === "form" ? "files:properties_field_motd" : "files:file_content") });
+    fireEvent.change(input, { target: { value: mode === "form" ? "mine" : "motd=mine\n" } });
+    mocks.writeServerFile.mockRejectedValueOnce({ code: "file_changed" });
+    await userEvent.click(within(dialog).getByRole("button", { name: t("files:save") }));
+    const overwrite = await within(dialog).findByRole("button", { name: t("files:conflict_overwrite") });
+    expect(input).toHaveProperty("value", mode === "form" ? "mine" : "motd=mine\n");
+    fireEvent.keyDown(input, { key: "s", ctrlKey: true });
+    expect(mocks.writeServerFile).toHaveBeenCalledTimes(1);
+    await userEvent.click(overwrite);
+    expect(mocks.writeServerFile).toHaveBeenLastCalledWith("lobby", "server.properties", btoa("motd=mine\n"), undefined);
   });
 });
 

@@ -32,6 +32,7 @@ import { NameDialog } from "@/components/files/NameDialog";
 import { FileOps } from "@/components/files/FileOps";
 import { UploadQueue } from "@/components/files/UploadQueue";
 import { FileMenu } from "@/components/files/FileMenu";
+import { ServerPropertiesEditor } from "@/components/files/ServerPropertiesEditor";
 import { droppedFiles } from "@/components/files/folderUpload";
 import { imageMime } from "@/components/files/imagePreview";
 import { Input } from "@/components/ui/input";
@@ -230,6 +231,8 @@ export function ServerFiles() {
   useEffect(() => () => { ++openingSeq.current; ++loadSeq.current; }, []);
   const [saving, setSaving] = useState(false);
   const [reloading, setReloading] = useState(false);
+  const [propertiesValid, setPropertiesValid] = useState(true);
+  const invalidProperties = open?.path === "server.properties" && !propertiesValid;
   // Closing an editor with unsaved text (Esc, the overlay, ✕, Cancel) asks
   // first; leaving the page asks through the browser.
   const [confirmDiscard, setConfirmDiscard] = useState(false);
@@ -340,7 +343,7 @@ export function ServerFiles() {
   // handleSave writes the editor's text. `overwrite` drops the precondition,
   // which is what "Overwrite anyway" on a conflict means.
   async function handleSave(overwrite = false) {
-    if (!open?.editable || saving || (!overwrite && open.conflict) || !dirty || tooLarge) return;
+    if (!open?.editable || saving || reloading || (!overwrite && open.conflict) || !dirty || tooLarge || invalidProperties) return;
     setSaving(true);
     setMsg(null);
     setOpen({ ...open, error: null });
@@ -1274,7 +1277,7 @@ export function ServerFiles() {
                       size="sm"
                       variant="destructive"
                       onClick={() => void handleSave(true)}
-                      disabled={saving || reloading || tooLarge || needsWorldConfirmation([open.path])}
+                      disabled={saving || reloading || tooLarge || invalidProperties || needsWorldConfirmation([open.path])}
                       title={t("conflict_overwrite_hint")}
                     >
                       {saving ? (
@@ -1288,7 +1291,11 @@ export function ServerFiles() {
                 </div>
               )}
               {open.error && <MessageLine kind="error" message={open.error} />}
-              {open.editable ? (
+              {open.editable && open.path === "server.properties" ? (
+                <ServerPropertiesEditor key={open.path} server={name} value={open.text} original={open.original}
+                  onChange={(text) => setOpen({ ...open, text })} onSave={() => void handleSave()}
+                  onValidityChange={setPropertiesValid} disabled={saving || reloading} />
+              ) : open.editable ? (
                 <Suspense fallback={<Loading />}>
                   <TextFileEditor path={open.path} value={open.text} label={t("file_content")}
                     onChange={(text) => setOpen({ ...open, text })} onSave={() => void handleSave()} />
@@ -1337,7 +1344,7 @@ export function ServerFiles() {
                     </Button>
                     {open.editable && <Button
                       onClick={() => void handleSave()}
-                      disabled={saving || reloading || open.conflict || !open.editable || !dirty || tooLarge || needsWorldConfirmation([open.path])}
+                      disabled={saving || reloading || open.conflict || !open.editable || !dirty || tooLarge || invalidProperties || needsWorldConfirmation([open.path])}
                     >
                       {saving ? (
                         <Loader2 className="h-4 w-4 animate-spin" />
