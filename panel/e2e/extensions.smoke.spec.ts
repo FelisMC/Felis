@@ -49,11 +49,12 @@ test("installed extensions show metadata and reuse file actions for state, confi
 
 test("a non-owner sees no installed extension data", async ({ page, signIn }) => {
   await signIn("user");
+  expect((await page.request.get("/api/v1/servers/claim-me/status")).status()).toBe(200);
   let scans = 0;
-  page.on("request", (request) => { if (request.url().endsWith("/api/v1/servers/survival/extensions")) scans++; });
-  await page.goto("/servers/survival/extensions");
+  page.on("request", (request) => { if (request.url().endsWith("/api/v1/servers/claim-me/extensions")) scans++; });
+  await page.goto("/servers/claim-me/extensions");
   await expect(page.getByText(t("servers:extensions_not_yours_title"), { exact: true })).toBeVisible();
   await expect(page.getByRole("article")).toHaveCount(0);
   expect(scans).toBe(0);
-  expect((await page.request.get("/api/v1/servers/survival/extensions")).status()).toBe(403);
+  expect((await page.request.get("/api/v1/servers/claim-me/extensions")).status()).toBe(403);
 });
