@@ -388,7 +388,7 @@ func applySoftware(pod *corev1.PodSpec, server *v1alpha1.MinecraftServer, o podO
 	pod.InitContainers = inits
 
 	main := &pod.Containers[0]
-	main.Command = []string{felisBinCopy, "launch", "--data", dataMountPath}
+	main.Command = []string{felisBinCopy, "launch", "--data", dataMountPath, "--"}
 	main.WorkingDir = dataMountPath
 	main.Env = append(main.Env, corev1.EnvVar{Name: envSoftware, Value: spec})
 	main.VolumeMounts = append(main.VolumeMounts, binRO)

@@ -23,7 +23,7 @@ const (
 	LabelSystemRole = GroupName + "/system-role"
 	// Legacy forwarding trusts the game port; its label affects routing without restarting the backend.
 	LabelForwarding = GroupName + "/forwarding"
-	// AnnotationStartRetry asks the operator to restart a Failed server with a fresh restart budget; its value is the RFC 3339 request time, removed once taken.
+	// AnnotationStartRetry asks for a fresh Failed-start budget and retains the pinned Pod identity until consumed.
 	AnnotationStartRetry = GroupName + "/start-retry"
 	// AnnotationRestart requests one pod recreation while keeping desiredState Running.
 	AnnotationRestart = GroupName + "/restart"
@@ -256,8 +256,11 @@ type StorageSpec struct {
 	StorageClassName string `json:"storageClassName,omitempty"`
 }
 
-// LifecycleSpec tunes graceful shutdown: the operator runs save-all flush over RCON first, then the grace period bounds the server's own shutdown save after SIGTERM.
+// LifecycleSpec runs saving and configured commands over RCON before SIGTERM starts the pod grace period.
 type LifecycleSpec struct {
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:items:MaxLength=1024
+	StopCommands []string `json:"stopCommands,omitempty"`
 	// TerminationGracePeriodSeconds is the pod grace period (default 300).
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=3600

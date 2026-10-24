@@ -125,6 +125,12 @@ spec:
               lifecycle:
                 description: Lifecycle tunes graceful shutdown (spec §7).
                 properties:
+                  stopCommands:
+                    items:
+                      maxLength: 1024
+                      type: string
+                    maxItems: 16
+                    type: array
                   terminationGracePeriodSeconds:
                     description: TerminationGracePeriodSeconds is the pod grace period
                       (default 300).

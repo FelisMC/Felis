@@ -25,6 +25,63 @@ function fakeFetch(body: unknown, init?: { ok?: boolean; status?: number }) {
   })) as unknown as typeof fetch;
 }
 
+describe("private startup settings wire shape", () => {
+  beforeEach(() => { vi.restoreAllMocks(); cfg.apiBase = ""; });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("reads the separate private settings endpoint with the session", async () => {
+    const body = {
+      java_flags: ["-Dmode=demo"], args: ["--message", "hello world", "", "first\nsecond"],
+      env: [{ name: "PLUGIN_VALUE", value: "" }], stop_commands: [],
+    };
+    const fetchSpy = fakeFetch(body);
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await api.getStartupSettings("creative")).toEqual(body);
+    expect((fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([
+      "/servers/creative/startup-settings", expect.objectContaining({ method: "GET", credentials: "include" }),
+    ]);
+  });
+
+  it.each(["owner", "admin"])("preserves array entries and omission through the %s patch", async (lane) => {
+    const fetchSpy = fakeFetch({ name: "creative", patched: ["args", "env", "stop_commands"] });
+    vi.stubGlobal("fetch", fetchSpy);
+    const body = {
+      args: ["--message=hello world", "", "first\nsecond", null],
+      env: [{ name: "PLUGIN_VALUE", value: "  first = value\nsecond  " }], stop_commands: [],
+    };
+    if (lane === "owner") await api.patchMyServer("creative", body);
+    else await api.patchServer("creative", body);
+    const [url, options] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(url).toBe(lane === "owner" ? "/me/servers/creative" : "/servers/creative");
+    expect(options.method).toBe("PATCH");
+    expect(JSON.parse(options.body)).toEqual(body);
+    expect(JSON.parse(options.body)).not.toHaveProperty("java_flags");
+  });
+
+  it("preserves explicit nullable arrays for the backend's existing decoder", async () => {
+    const fetchSpy = fakeFetch({ name: "creative", patched: ["displayName"] });
+    vi.stubGlobal("fetch", fetchSpy);
+    await api.patchMyServer("creative", { displayName: "Creative", java_flags: null, args: null, env: null, stop_commands: null });
+    const options = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1];
+    expect(JSON.parse(options.body)).toEqual({ displayName: "Creative", java_flags: null, args: null, env: null, stop_commands: null });
+  });
+
+  it("localizes invalid settings without echoing private backend text", async () => {
+    const i18next = (await import("i18next")).default;
+    const error = { status: 400, code: "bad_startup_settings", message: "private-env-sentinel" };
+    try {
+      await i18next.changeLanguage("en-US");
+      expect(humanizeError(error)).toMatch(/UTF-8 byte limits/);
+      expect(humanizeError(error)).not.toContain(error.message);
+      await i18next.changeLanguage("zh-CN");
+      expect(humanizeError(error)).toContain("UTF-8 字节限制");
+      expect(humanizeError(error)).not.toContain(error.message);
+    } finally {
+      await i18next.changeLanguage("en-US");
+    }
+  });
+});
+
 describe("protected Paper global wire shape", () => {
   beforeEach(() => { vi.restoreAllMocks(); cfg.apiBase = ""; });
   afterEach(() => vi.unstubAllGlobals());

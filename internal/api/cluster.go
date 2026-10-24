@@ -128,6 +128,10 @@ type ServerSpecPatch struct {
 	JavaMemory      *string
 	Resources       *corev1.ResourceRequirements
 	IdleStopSeconds *int32
+	JavaFlags       *[]string
+	Args            *[]string
+	Env             *[]v1alpha1.EnvVar
+	StopCommands    *[]string
 	// ClearSoftware removes the runtime-software selection when moving to a server image.
 	Software      *v1alpha1.SoftwareSpec
 	ClearSoftware bool
@@ -145,6 +149,7 @@ type Cluster interface {
 	Ping(ctx context.Context) error
 
 	GetServer(ctx context.Context, name string) (*ServerInfo, error)
+	GetStartupSettings(ctx context.Context, name string) (*ServerStartupSettings, error)
 	WorldVolumeExists(ctx context.Context, name string) (bool, error)
 	// EnsureWorldVolume creates a missing PVC with the operator's size and class so its StatefulSet can adopt it.
 	EnsureWorldVolume(ctx context.Context, name string) error

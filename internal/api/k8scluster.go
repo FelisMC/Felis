@@ -116,6 +116,14 @@ func (k *K8sCluster) GetServer(ctx context.Context, name string) (*ServerInfo, e
 	return info, nil
 }
 
+func (k *K8sCluster) GetStartupSettings(ctx context.Context, name string) (*ServerStartupSettings, error) {
+	var ms v1alpha1.MinecraftServer
+	if err := k.getServer(ctx, name, &ms); err != nil {
+		return nil, err
+	}
+	return serverStartupSettings(&ms.Spec), nil
+}
+
 // WorldVolumeExists returns (false, nil) for a missing PVC.
 func (k *K8sCluster) WorldVolumeExists(ctx context.Context, name string) (bool, error) {
 	var ms v1alpha1.MinecraftServer
@@ -314,6 +322,10 @@ func (k *K8sCluster) startWith(ctx context.Context, name, annotation string) err
 		if held {
 			return &MaintenanceBusyError{Kind: kind}
 		}
+		if ms.Spec.DesiredState == v1alpha1.DesiredRunning &&
+			(ms.Annotations[v1alpha1.AnnotationRestart] != "" || ms.Annotations[v1alpha1.AnnotationStartRetry] != "") {
+			return nil
+		}
 		patch := client.MergeFromWithOptions(ms.DeepCopy(), client.MergeFromWithOptimisticLock{})
 		ms.Spec.DesiredState = v1alpha1.DesiredRunning
 		delete(ms.Annotations, maintenance.Annotation)
@@ -464,65 +476,83 @@ func (k *K8sCluster) clock() time.Time {
 }
 
 func (k *K8sCluster) PatchServerSpec(ctx context.Context, name string, p ServerSpecPatch) error {
-	var ms v1alpha1.MinecraftServer
-	if err := k.c.Get(ctx, types.NamespacedName{Namespace: k.namespace, Name: name}, &ms); err != nil {
-		if apierrors.IsNotFound(err) {
-			return ErrNotFound
-		}
-		return err
-	}
-	patch := client.MergeFrom(ms.DeepCopy())
-	if p.DisplayName != nil {
-		ms.Spec.DisplayName = *p.DisplayName
-	}
-	if p.AutostartPolicy != nil {
-		ms.Spec.AutostartPolicy = *p.AutostartPolicy
-	}
-	if p.Image != nil {
-		ms.Spec.Image = *p.Image
-	}
-	if p.Software != nil {
-		s := *p.Software
-		ms.Spec.Software = &s
-	} else if p.ClearSoftware {
-		ms.Spec.Software = nil
-	}
-	if p.JavaMemory != nil {
-		ms.Spec.JavaMemory = *p.JavaMemory
-	}
-	if p.Resources != nil {
-		ms.Spec.Resources = *p.Resources
-	}
-	if p.ResumeAfterHostRestart != nil {
-		ms.Spec.Recovery.ResumeAfterHostRestart = p.ResumeAfterHostRestart
-	}
-	if p.RestartOnCrash != nil {
-		ms.Spec.Recovery.RestartOnCrash = p.RestartOnCrash
-	}
-	if p.MaxCrashRestarts != nil {
-		ms.Spec.Recovery.MaxCrashRestarts = *p.MaxCrashRestarts
-	}
-	if p.NotifyStarted != nil {
-		ms.Spec.Notify.Started = *p.NotifyStarted
-	}
-	if p.NotifyStopped != nil {
-		ms.Spec.Notify.Stopped = *p.NotifyStopped
-	}
-	if p.NotifyProblems != nil {
-		ms.Spec.Notify.Problems = p.NotifyProblems
-	}
-	if p.IdleStopSeconds != nil {
-		// Retain a disabled idle duration to distinguish an explicit choice from an unset setting during convergence.
-		if *p.IdleStopSeconds == 0 {
-			ms.Spec.Idle.AutoStopEnabled = false
-			if ms.Spec.Idle.EmptySecondsBeforeStop <= 0 {
-				ms.Spec.Idle.EmptySecondsBeforeStop = v1alpha1.DefaultEmptySecondsBeforeStop
+	startup := p.setsStartupSettings()
+	apply := func() error {
+		var ms v1alpha1.MinecraftServer
+		if err := k.c.Get(ctx, types.NamespacedName{Namespace: k.namespace, Name: name}, &ms); err != nil {
+			if apierrors.IsNotFound(err) {
+				return ErrNotFound
 			}
-		} else {
-			ms.Spec.Idle = v1alpha1.IdleSpec{AutoStopEnabled: true, EmptySecondsBeforeStop: *p.IdleStopSeconds}
+			return err
 		}
+		original := ms.DeepCopy()
+		patch := client.MergeFrom(original)
+		if startup {
+			patch = client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{})
+			if err := applyStartupSettings(&ms.Spec, p); err != nil {
+				return err
+			}
+		}
+		if p.DisplayName != nil {
+			ms.Spec.DisplayName = *p.DisplayName
+		}
+		if p.AutostartPolicy != nil {
+			ms.Spec.AutostartPolicy = *p.AutostartPolicy
+		}
+		if p.Image != nil {
+			ms.Spec.Image = *p.Image
+		}
+		if p.Software != nil {
+			s := *p.Software
+			ms.Spec.Software = &s
+		} else if p.ClearSoftware {
+			ms.Spec.Software = nil
+		}
+		if p.JavaMemory != nil {
+			ms.Spec.JavaMemory = *p.JavaMemory
+		}
+		if p.Resources != nil {
+			ms.Spec.Resources = *p.Resources
+		}
+		if p.ResumeAfterHostRestart != nil {
+			ms.Spec.Recovery.ResumeAfterHostRestart = p.ResumeAfterHostRestart
+		}
+		if p.RestartOnCrash != nil {
+			ms.Spec.Recovery.RestartOnCrash = p.RestartOnCrash
+		}
+		if p.MaxCrashRestarts != nil {
+			ms.Spec.Recovery.MaxCrashRestarts = *p.MaxCrashRestarts
+		}
+		if p.NotifyStarted != nil {
+			ms.Spec.Notify.Started = *p.NotifyStarted
+		}
+		if p.NotifyStopped != nil {
+			ms.Spec.Notify.Stopped = *p.NotifyStopped
+		}
+		if p.NotifyProblems != nil {
+			ms.Spec.Notify.Problems = p.NotifyProblems
+		}
+		if p.IdleStopSeconds != nil {
+			// Retain a disabled idle duration to distinguish an explicit choice from an unset setting during convergence.
+			if *p.IdleStopSeconds == 0 {
+				ms.Spec.Idle.AutoStopEnabled = false
+				if ms.Spec.Idle.EmptySecondsBeforeStop <= 0 {
+					ms.Spec.Idle.EmptySecondsBeforeStop = v1alpha1.DefaultEmptySecondsBeforeStop
+				}
+			} else {
+				ms.Spec.Idle = v1alpha1.IdleSpec{AutoStopEnabled: true, EmptySecondsBeforeStop: *p.IdleStopSeconds}
+			}
+		}
+		return k.c.Patch(ctx, &ms, patch)
 	}
-	return k.c.Patch(ctx, &ms, patch)
+	if !startup {
+		return apply()
+	}
+	err := retry.RetryOnConflict(retry.DefaultRetry, apply)
+	if apierrors.IsConflict(err) {
+		return ErrConflict
+	}
+	return err
 }
 
 func serverInfo(ms *v1alpha1.MinecraftServer) *ServerInfo {

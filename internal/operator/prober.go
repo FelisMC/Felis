@@ -24,6 +24,7 @@ type PlayerCount struct {
 type Prober interface {
 	Probe(ctx context.Context, addr, password string) (PlayerCount, error)
 	Save(ctx context.Context, addr, password string) error
+	Commands(ctx context.Context, addr, password string, commands []string) error
 	Broadcast(ctx context.Context, addr, password, text string) error
 }
 
@@ -34,6 +35,8 @@ type RconProber struct {
 
 // defaultSaveTimeout bounds the explicit flush; timeout still permits normal SIGTERM shutdown saving within pod grace.
 const defaultSaveTimeout = 30 * time.Second
+
+const stopCommandsTimeout = 30 * time.Second
 
 func boundTimeout(ctx context.Context, d, def time.Duration) time.Duration {
 	if d <= 0 {
@@ -79,6 +82,29 @@ func (p RconProber) Save(ctx context.Context, addr, password string) error {
 	}
 	_, err = conn.Execute("save-all flush")
 	return err
+}
+
+func (p RconProber) Commands(ctx context.Context, addr, password string, commands []string) error {
+	if len(commands) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, stopCommandsTimeout)
+	defer cancel()
+	conn, err := rcon.DialContext(ctx, addr, password, boundTimeout(ctx, p.Timeout, 5*time.Second))
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	deadline, _ := ctx.Deadline()
+	if err := conn.SetDeadline(deadline); err != nil {
+		return err
+	}
+	for _, command := range commands {
+		if _, err := conn.ExecuteContext(ctx, command); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (p RconProber) Broadcast(ctx context.Context, addr, password, text string) error {

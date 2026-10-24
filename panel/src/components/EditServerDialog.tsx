@@ -1,6 +1,6 @@
 import { Checkbox } from "@/components/ui/checkbox";
-import { useState, useEffect } from "react";
-import { Settings, ChevronRight, AlertTriangle } from "lucide-react";
+import { useState, useEffect, useRef, useCallback, useId } from "react";
+import { Settings, ChevronRight, AlertTriangle, Loader2, Plus, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ConfirmFooter } from "@/components/ConfirmFooter";
 import {
@@ -20,13 +20,14 @@ import {
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { api, humanizeError } from "@/lib/api";
 import { formatBytes, splitImageRef } from "@/lib/format";
 import { DISPLAY_NAME_MAX } from "@/lib/naming";
 import { useAsync } from "@/lib/hooks";
-import type { AutostartPolicy, ServerNotify, ServerSoftware } from "@/lib/types";
+import type { AutostartPolicy, Phase, ServerNotify, ServerSoftware, ServerStartupSettings } from "@/lib/types";
 import { InlineError } from "@/components/MessageLine";
 import { uploadFile } from "@/components/files/uploadFile";
 import { SegmentedControl } from "@/components/SegmentedControl";
@@ -108,11 +109,41 @@ function crashLimit(text: string): number | null {
 
 const DEFAULT_NOTIFY: ServerNotify = { started: false, stopped: false, problems: true };
 const NOTIFY_KEYS = ["problems", "started", "stopped"] as const;
+const STARTUP_KEYS = ["java_flags", "args", "env", "stop_commands"] as const;
+const STARTUP_LISTS = [{ key: "java_flags", max: 128 }, { key: "args", max: 128 }, { key: "stop_commands", max: 16 }] as const;
+
+function StartupArgumentList({ label, hint, values, max, onChange }: {
+  label: string; hint: string; values: string[]; max: number; onChange: (values: string[]) => void;
+}) {
+  const { t } = useTranslation("servers");
+  const id = useId();
+  return <fieldset className="min-w-0 space-y-2 rounded-md border border-border p-3">
+    <legend className="px-1 text-sm font-medium">{label}</legend>
+    <p id={`${id}-hint`} className="text-xs leading-relaxed text-muted-foreground">{hint}</p>
+    {values.map((value, index) => <div key={index} className="flex min-w-0 items-start gap-2">
+      <div className="min-w-0 flex-1 space-y-1">
+        <Label htmlFor={`${id}-${index}`} className="text-xs">{t("edit_startup_item", { label, number: index + 1 })}</Label>
+        <Textarea id={`${id}-${index}`} rows={2} className="min-h-16 font-mono text-base sm:text-sm" value={value}
+          aria-describedby={`${id}-hint`} spellCheck={false}
+          onChange={(event) => onChange(values.map((item, at) => at === index ? event.target.value : item))} />
+      </div>
+      <Button type="button" variant="ghost" size="icon" className="mt-5 shrink-0"
+        aria-label={t("edit_startup_remove_item", { label, number: index + 1 })} onClick={() => onChange(values.filter((_, at) => at !== index))}>
+        <Trash2 className="h-4 w-4" />
+      </Button>
+    </div>)}
+    <Button type="button" variant="outline" size="sm" disabled={values.length >= max} onClick={() => onChange([...values, ""])}>
+      <Plus className="h-4 w-4" />{t("edit_startup_add_item", { label })}
+    </Button>
+    <p className="text-xs text-muted-foreground">{t("edit_startup_count", { count: values.length, max })}</p>
+  </fieldset>;
+}
 
 interface Props {
   serverName: string;
   systemService?: boolean;
   currentDisplayName?: string;
+  currentPhase?: Phase;
   currentPolicy?: AutostartPolicy;
   currentImage?: string;
   currentMemory?: string;
@@ -150,6 +181,7 @@ export function EditServerDialog({
   serverName,
   systemService = false,
   currentDisplayName = "",
+  currentPhase,
   currentPolicy = "ownerOnly",
   currentImage = "",
   currentMemory = "",
@@ -206,6 +238,58 @@ export function EditServerDialog({
   // An image change moves the world to another build for good, so saving one waits
   // for this acknowledgement (the API refuses it with image_change_unconfirmed).
   const [imageConfirmed, setImageConfirmed] = useState(false);
+  const startupId = useId();
+  const [startupOpen, setStartupOpen] = useState(false);
+  const [startup, setStartup] = useState<{ name: string; original: ServerStartupSettings; draft: ServerStartupSettings } | null>(null);
+  const [startupLoading, setStartupLoading] = useState(false);
+  const [startupError, setStartupError] = useState<string | null>(null);
+  const startupGeneration = useRef(0);
+  const startupBusy = useRef(false);
+  const saveGeneration = useRef(0);
+  const saving = useRef(false);
+  const resetSession = useCallback(() => {
+    startupGeneration.current += 1;
+    saveGeneration.current += 1;
+    startupBusy.current = false;
+    saving.current = false;
+    setStartupOpen(false);
+    setStartup(null);
+    setStartupError(null);
+    setStartupLoading(false);
+    setSubmitting(false);
+    setUploaded(null);
+  }, []);
+  const changeOpen = useCallback((next: boolean) => { resetSession(); setOpen(next); }, [resetSession]);
+  useEffect(() => {
+    changeOpen(false);
+    return () => { startupGeneration.current += 1; saveGeneration.current += 1; };
+  }, [serverName, changeOpen]);
+
+  const currentStartup = startup?.name === serverName ? startup : null;
+  const startupChanges: Partial<ServerStartupSettings> = currentStartup ? Object.fromEntries(STARTUP_KEYS
+    .filter((key) => JSON.stringify(currentStartup.draft[key]) !== JSON.stringify(currentStartup.original[key]))
+    .map((key) => [key, currentStartup.draft[key]])) : {};
+  const launchChanged = ["java_flags", "args", "env"].some((key) => key in startupChanges);
+
+  async function loadStartup() {
+    if (startupBusy.current) return;
+    startupBusy.current = true;
+    const ticket = ++startupGeneration.current;
+    setStartupLoading(true);
+    setStartupError(null);
+    try {
+      const value = await api.getStartupSettings(serverName);
+      if (ticket === startupGeneration.current) setStartup({ name: serverName, original: value, draft: value });
+    } catch (reason) {
+      if (ticket === startupGeneration.current) setStartupError(humanizeError(reason));
+    } finally {
+      if (ticket === startupGeneration.current) { startupBusy.current = false; setStartupLoading(false); }
+    }
+  }
+
+  function setStartupField<K extends keyof ServerStartupSettings>(key: K, value: ServerStartupSettings[K]) {
+    setStartup((previous) => previous?.name === serverName ? { ...previous, draft: { ...previous.draft, [key]: value } } : previous);
+  }
 
   // The console polls the status and hands a new software object each time, so
   // the form follows what the server runs by value: a poll alone never clears
@@ -277,6 +361,7 @@ export function EditServerDialog({
     (form.resume !== currentResume || form.crashRestart !== currentCrashRestart || maxCrashChanged || notifyChanges.length > 0);
 
   const hasChanges =
+    Object.keys(startupChanges).length > 0 ||
     recoveryChanged ||
     displayName !== currentDisplayName ||
     form.autostartPolicy !== currentPolicy ||
@@ -299,10 +384,13 @@ export function EditServerDialog({
     (!softwareChanged || !!currentSoftware || eula);
 
   async function submit() {
+    if (!canSubmit || saving.current) return;
+    saving.current = true;
+    const ticket = ++saveGeneration.current;
     setSubmitting(true);
     setError(null);
     try {
-      const payload: Parameters<typeof api.patchServer>[1] = {};
+      const payload: Parameters<typeof api.patchServer>[1] = { ...startupChanges };
 
       if (displayName !== currentDisplayName) {
         payload.displayName = displayName;
@@ -343,7 +431,10 @@ export function EditServerDialog({
       // The jar goes first: the software then names a file that is there.
       if (jarUpload) {
         setUploaded(0);
-        await uploadFile(serverName, software.jar.trim(), jarUpload, { overwrite: true, onProgress: setUploaded });
+        await uploadFile(serverName, software.jar.trim(), jarUpload, { overwrite: true, onProgress: (sent) => {
+          if (ticket === saveGeneration.current) setUploaded(sent);
+        } });
+        if (ticket !== saveGeneration.current) return;
       }
       if (Object.keys(payload).length > 0) {
         if (admin) {
@@ -353,20 +444,20 @@ export function EditServerDialog({
           await api.patchMyServer(serverName, { ...rest, ...(resources ? { cpu: resources.cpu } : {}) });
         }
       }
-      setOpen(false);
+      if (ticket !== saveGeneration.current) return;
+      changeOpen(false);
       onUpdated();
     } catch (e) {
-      setError(humanizeError(e));
+      if (ticket === saveGeneration.current) setError(humanizeError(e));
     } finally {
-      setSubmitting(false);
-      setUploaded(null);
+      if (ticket === saveGeneration.current) { saving.current = false; setSubmitting(false); setUploaded(null); }
     }
   }
 
   const policies = policyOptions(t);
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={changeOpen}>
       <DialogTrigger asChild>
         {/* Unified Sidebar Link/Card style trigger */}
         <button
@@ -677,6 +768,56 @@ export function EditServerDialog({
             </fieldset>
           )}
 
+          <section className="min-w-0 rounded-md border border-border">
+            <Button type="button" variant="ghost" className="w-full justify-between px-3" aria-expanded={startupOpen} aria-controls={startupId}
+              onClick={() => {
+                setStartupOpen(!startupOpen);
+                if (!startupOpen && !currentStartup) void loadStartup();
+              }}>
+              {t("edit_startup_title")}<ChevronRight className={`h-4 w-4 shrink-0 transition-transform ${startupOpen ? "rotate-90" : ""}`} />
+            </Button>
+            {startupOpen && <div id={startupId} className="min-w-0 space-y-3 border-t border-border p-3">
+              <p className="text-xs leading-relaxed text-muted-foreground">{t("edit_startup_hint")}</p>
+              {startupLoading && <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />{t("edit_startup_loading")}</p>}
+              {startupError && <div className="space-y-2">
+                <InlineError message={startupError} />
+                <Button type="button" variant="outline" size="sm" disabled={startupLoading} onClick={() => void loadStartup()}>{t("edit_startup_retry")}</Button>
+              </div>}
+              {currentStartup && <fieldset disabled={submitting} className="min-w-0 space-y-3">
+                {STARTUP_LISTS.map(({ key, max }) => <StartupArgumentList key={key} label={t(`edit_startup_${key}`)} hint={t(`edit_startup_${key}_hint`)}
+                  values={currentStartup.draft[key]} max={max} onChange={(value) => setStartupField(key, value)} />)}
+                <fieldset className="min-w-0 space-y-3 rounded-md border border-border p-3">
+                  <legend className="px-1 text-sm font-medium">{t("edit_startup_env")}</legend>
+                  <p id={`${startupId}-env-hint`} className="text-xs leading-relaxed text-muted-foreground">{t("edit_startup_env_hint")}</p>
+                  {currentStartup.draft.env.map((entry, index) => <div key={index} className="min-w-0 space-y-2 rounded-md border border-border p-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-medium">{t("edit_startup_env_item", { number: index + 1 })}</span>
+                      <Button type="button" variant="ghost" size="icon" aria-label={t("edit_startup_env_remove", { number: index + 1 })}
+                        onClick={() => setStartupField("env", currentStartup.draft.env.filter((_, at) => at !== index))}>
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                    <div className="grid min-w-0 gap-2 sm:grid-cols-2">
+                      <div className="min-w-0 space-y-1">
+                        <Label htmlFor={`${startupId}-env-name-${index}`}>{t("edit_startup_env_name", { number: index + 1 })}</Label>
+                        <Input id={`${startupId}-env-name-${index}`} value={entry.name} autoComplete="off" spellCheck={false} className="font-mono text-base sm:text-sm"
+                          aria-describedby={`${startupId}-env-hint`} onChange={(event) => setStartupField("env", currentStartup.draft.env.map((item, at) => at === index ? { ...item, name: event.target.value } : item))} />
+                      </div>
+                      <div className="min-w-0 space-y-1">
+                        <Label htmlFor={`${startupId}-env-value-${index}`}>{t("edit_startup_env_value", { number: index + 1 })}</Label>
+                        <Textarea id={`${startupId}-env-value-${index}`} value={entry.value} rows={2} className="min-h-16 font-mono text-base sm:text-sm" spellCheck={false}
+                          aria-describedby={`${startupId}-env-hint`} onChange={(event) => setStartupField("env", currentStartup.draft.env.map((item, at) => at === index ? { ...item, value: event.target.value } : item))} />
+                      </div>
+                    </div>
+                  </div>)}
+                  <Button type="button" variant="outline" size="sm" disabled={currentStartup.draft.env.length >= 64}
+                    onClick={() => setStartupField("env", [...currentStartup.draft.env, { name: "", value: "" }])}><Plus className="h-4 w-4" />{t("edit_startup_env_add")}</Button>
+                  <p className="text-xs text-muted-foreground">{t("edit_startup_count", { count: currentStartup.draft.env.length, max: 64 })}</p>
+                </fieldset>
+              </fieldset>}
+            </div>}
+          </section>
+          {launchChanged && (currentPhase === "Starting" || currentPhase === "Running") && <p role="status" className="text-xs text-amber-700 dark:text-amber-300">{t("edit_startup_restart_hint")}</p>}
           {uploaded !== null && jarUpload && (
             <p role="status" className="text-xs text-muted-foreground">
               {t("create_server_uploading", { sent: formatBytes(uploaded), total: formatBytes(jarUpload.size) })}
@@ -686,7 +827,7 @@ export function EditServerDialog({
         </div>
 
         <ConfirmFooter
-          onCancel={() => setOpen(false)}
+          onCancel={() => changeOpen(false)}
           onConfirm={submit}
           disabled={!canSubmit}
           loading={submitting}

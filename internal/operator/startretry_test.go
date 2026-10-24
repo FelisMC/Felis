@@ -73,7 +73,9 @@ func TestStartRetryRevivesAServerThatGaveUp(t *testing.T) {
 	srv := runningServer()
 	srv.Spec.Startup.TimeoutSeconds = 30
 	srv.Spec.Motd.Failed = "broken"
-	r, c := newReconciler(t, fakeProber{}, srv, rconSecret(), gamePod())
+	srv.Spec.Lifecycle.StopCommands = []string{"say before normal stop"}
+	var saves, commands []string
+	r, c := newReconciler(t, fakeProber{saves: &saves, commands: &commands}, srv, rconSecret(), gamePod())
 	base := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
 	clock := base
 	r.Now = func() metav1.Time { return metav1.NewTime(clock) }
@@ -124,6 +126,9 @@ func TestStartRetryRevivesAServerThatGaveUp(t *testing.T) {
 	}
 	if s := at(2*time.Hour + 90*time.Second); s.Status.AutoRestarts != 1 || podPresent(t, c) {
 		t.Fatalf("retried start: restarts=%d pod=%v, want the first automatic restart", s.Status.AutoRestarts, podPresent(t, c))
+	}
+	if len(saves) != 0 || len(commands) != 0 {
+		t.Fatal("failed-start retry ran normal stop hooks")
 	}
 }
 

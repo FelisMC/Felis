@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -95,19 +97,25 @@ func TestParseListReply(t *testing.T) {
 // serveFakeRcon accepts one RCON connection, accepts any password, and answers
 // each command after delay. Every command body is sent on the returned channel.
 func serveFakeRcon(t *testing.T, delay time.Duration) (string, <-chan string) {
+	return serveCommandsRcon(t, 0, delay, "")
+}
+
+func serveCommandsRcon(t *testing.T, authDelay, commandDelay time.Duration, dropCommand string) (string, <-chan string) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 	t.Cleanup(func() { ln.Close() })
-	cmds := make(chan string, 4)
+	cmds := make(chan string, 16)
 	go func() {
+		defer close(cmds)
 		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
 		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
 		for {
 			var hdr [12]byte
 			if _, err := io.ReadFull(conn, hdr[:]); err != nil {
@@ -122,10 +130,15 @@ func serveFakeRcon(t *testing.T, delay time.Duration) (string, <-chan string) {
 			}
 			reply := ""
 			if typ == 3 { // auth: answer with an auth response carrying the same id
+				time.Sleep(authDelay)
 				typ = 2
-			} else {
-				cmds <- string(rest[:len(rest)-2])
-				time.Sleep(delay)
+			} else if typ == 2 {
+				command := string(rest[:len(rest)-2])
+				cmds <- command
+				if command == dropCommand {
+					return
+				}
+				time.Sleep(commandDelay)
 				typ, reply = 0, "Saved the game"
 			}
 			out := binary.LittleEndian.AppendUint32(nil, uint32(4+4+len(reply)+2))
@@ -138,6 +151,62 @@ func serveFakeRcon(t *testing.T, delay time.Duration) (string, <-chan string) {
 		}
 	}()
 	return ln.Addr().String(), cmds
+}
+
+func TestRconProberCommandsPreserveOrder(t *testing.T) {
+	addr, received := serveCommandsRcon(t, 0, 0, "")
+	commands := []string{"say before stop", "save-off", "say ready"}
+	if err := (RconProber{}).Commands(context.Background(), addr, "fake-password", commands); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for command := range received {
+		got = append(got, command)
+	}
+	if !slices.Equal(got, commands) {
+		t.Fatalf("commands = %q, want %q", got, commands)
+	}
+}
+
+func TestRconProberCommandsStopAfterTransportFailure(t *testing.T) {
+	addr, received := serveCommandsRcon(t, 0, 0, "second")
+	if err := (RconProber{}).Commands(context.Background(), addr, "fake-password", []string{"first", "second", "third"}); err == nil {
+		t.Fatal("command connection failure was ignored")
+	}
+	var got []string
+	for command := range received {
+		got = append(got, command)
+	}
+	if !slices.Equal(got, []string{"first", "second"}) {
+		t.Fatalf("commands after failure = %q", got)
+	}
+}
+
+func TestRconProberCommandsShareAuthenticationAndCommandBudget(t *testing.T) {
+	for _, authDelay := range []time.Duration{100 * time.Millisecond, time.Second} {
+		t.Run(authDelay.String(), func(t *testing.T) {
+			addr, _ := serveCommandsRcon(t, authDelay, 100*time.Millisecond, "")
+			ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+			defer cancel()
+			start := time.Now()
+			err := (RconProber{}).Commands(ctx, addr, "fake-password", []string{"first", "second", "third"})
+			var timeout net.Error
+			if !errors.Is(err, context.DeadlineExceeded) && (!errors.As(err, &timeout) || !timeout.Timeout()) {
+				t.Fatalf("Commands error = %v, want deadline exceeded", err)
+			}
+			if elapsed := time.Since(start); elapsed > 750*time.Millisecond {
+				t.Fatalf("command group exceeded its total budget: %v", elapsed)
+			}
+		})
+	}
+}
+
+func TestRconProberCommandsEmptySkipsDial(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := (RconProber{}).Commands(ctx, "invalid address", "fake-password", nil); err != nil {
+		t.Fatalf("empty commands attempted a connection: %v", err)
+	}
 }
 
 func TestRconProberSaveFlushes(t *testing.T) {

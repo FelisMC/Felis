@@ -23,6 +23,9 @@ type Holds<X extends true> = X;
 export type WireParity = [
   Holds<Parity<T.ServerPowerResult, operations["wake" | "stop" | "restart" | "kill"]["responses"][202]["content"]["application/json"]>>,
   Holds<Parity<T.ServerStatus, S["ServerInfo"]>>,
+  Holds<Parity<T.StartupEnvVar, S["StartupEnvVar"]>>,
+  Holds<Parity<T.ServerStartupSettings, S["ServerStartupSettings"]>>,
+  Holds<Parity<T.StartupSettingsPatch, S["ServerStartupSettingsPatch"]>>,
   Holds<Parity<T.UsagePoint, S["UsagePoint"]>>,
   Holds<Parity<T.ServerUsage, S["ServerUsage"]>>,
   Holds<Parity<T.ConsoleHistoryPage, S["ConsoleHistoryPage"]>>,

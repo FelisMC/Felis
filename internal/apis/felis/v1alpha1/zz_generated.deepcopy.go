@@ -97,6 +97,11 @@ func (in *MinecraftServerSpec) DeepCopyInto(out *MinecraftServerSpec) {
 	out.Storage = in.Storage
 	in.Resources.DeepCopyInto(&out.Resources)
 	out.Lifecycle = in.Lifecycle
+	if in.Lifecycle.StopCommands != nil {
+		l := make([]string, len(in.Lifecycle.StopCommands))
+		copy(l, in.Lifecycle.StopCommands)
+		out.Lifecycle.StopCommands = l
+	}
 	out.Startup = in.Startup
 	out.Idle = in.Idle
 	if in.Recovery.ResumeAfterHostRestart != nil {

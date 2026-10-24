@@ -21,6 +21,8 @@ import type {
   SelfServiceQuotaSettings,
   ServerNotify,
   ServerPowerResult,
+  ServerStartupSettings,
+  StartupSettingsPatch,
   ServerQuota,
   SoftwareRequest,
   SoftwareType,
@@ -434,6 +436,7 @@ export const api = rejectingSync({
   emergencyStop: (name: string, confirm: string) => send<{ name: string; desiredState: string }>(urlPath`/servers/${name}/emergency-stop`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm }), signal: AbortSignal.timeout(20_000) }),
   status: (name: string) => send<ServerStatus>(urlPath`/servers/${name}/status`, { method: "GET", signal: AbortSignal.timeout(12_000) }),
   serverUsage: (name: string) => send<ServerUsage>(urlPath`/servers/${name}/usage`, { method: "GET", signal: AbortSignal.timeout(12_000) }),
+  getStartupSettings: (name: string) => request<ServerStartupSettings>("GET", urlPath`/servers/${name}/startup-settings`),
 
   wake: (name: string) =>
     request<ServerPowerResult>("POST", urlPath`/servers/${name}/wake`),
@@ -640,7 +643,7 @@ export const api = rejectingSync({
   myServerQuota: () => request<ServerQuota>("GET", "/me/server-quota"),
   createMyServer: (req: SelfCreateRequest) =>
     request<{ name: string; subdomain: string; desiredState: string }>("POST", "/me/servers", req),
-  patchMyServer: (name: string, req: {
+  patchMyServer: (name: string, req: StartupSettingsPatch & {
     displayName?: string;
     autostartPolicy?: AutostartPolicy;
     idleStopSeconds?: number;
@@ -660,7 +663,7 @@ export const api = rejectingSync({
   setSelfServiceQuota: (body: Omit<SelfServiceQuotaSettings, "revision"> & { revision: string }) =>
     request<SelfServiceQuotaSettings>("PUT", "/settings/self-service", body),
 
-  patchServer: (name: string, req: {
+  patchServer: (name: string, req: StartupSettingsPatch & {
     /** Trimmed server-side; an empty one clears it. */
     displayName?: string;
     autostartPolicy?: AutostartPolicy;
@@ -1401,6 +1404,8 @@ export function humanizeError(e: unknown): string {
       return t("bad_subdomain");
     case "bad_display_name":
       return t("bad_display_name");
+    case "bad_startup_settings":
+      return t("bad_startup_settings");
     case "at_capacity":
       return t("at_capacity");
     case "storage_immutable":

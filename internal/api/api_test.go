@@ -1621,9 +1621,11 @@ type fakeCluster struct {
 	desired       map[string]v1alpha1.DesiredState
 	created       map[string]CreateServerInput // name -> the validated input it was created from
 	patched       map[string]ServerSpecPatch   // name -> the validated spec patch it received
-	noWorld       map[string]bool              // servers modeled without a world volume
-	ensured       []string                     // EnsureWorldVolume calls
-	orphanWorld   map[string]bool              // names with a world volume but no server (CR deleted by hand)
+	startupSpecs  map[string]v1alpha1.MinecraftServerSpec
+	startupReads  []string
+	noWorld       map[string]bool // servers modeled without a world volume
+	ensured       []string        // EnsureWorldVolume calls
+	orphanWorld   map[string]bool // names with a world volume but no server (CR deleted by hand)
 	createErr     error
 	pingErr       error
 	patchErr      error            // PatchServerSpec fails with it after finding the server
@@ -1642,7 +1644,7 @@ type fakeCluster struct {
 func newFakeCluster() *fakeCluster {
 	return &fakeCluster{byName: map[string]*ServerInfo{}, bySub: map[string]*ServerInfo{},
 		desired: map[string]v1alpha1.DesiredState{}, created: map[string]CreateServerInput{},
-		patched: map[string]ServerSpecPatch{}, noWorld: map[string]bool{},
+		patched: map[string]ServerSpecPatch{}, startupSpecs: map[string]v1alpha1.MinecraftServerSpec{}, noWorld: map[string]bool{},
 		maintErr: map[string]error{}, wakeErr: map[string]error{}}
 }
 func (c *fakeCluster) GetServer(_ context.Context, n string) (*ServerInfo, error) {
@@ -1650,6 +1652,14 @@ func (c *fakeCluster) GetServer(_ context.Context, n string) (*ServerInfo, error
 		return s, nil
 	}
 	return nil, ErrNotFound
+}
+func (c *fakeCluster) GetStartupSettings(_ context.Context, n string) (*ServerStartupSettings, error) {
+	c.startupReads = append(c.startupReads, n)
+	if _, ok := c.byName[n]; !ok {
+		return nil, ErrNotFound
+	}
+	spec := c.startupSpecs[n]
+	return serverStartupSettings(&spec), nil
 }
 func (c *fakeCluster) GetBySubdomain(_ context.Context, s string) (*ServerInfo, error) {
 	if v, ok := c.bySub[s]; ok {
@@ -1797,6 +1807,13 @@ func (c *fakeCluster) PatchServerSpec(_ context.Context, n string, p ServerSpecP
 	}
 	if c.patchErr != nil {
 		return c.patchErr
+	}
+	if p.setsStartupSettings() {
+		spec := c.startupSpecs[n]
+		if err := applyStartupSettings(&spec, p); err != nil {
+			return err
+		}
+		c.startupSpecs[n] = spec
 	}
 	c.patched[n] = p
 	if p.AutostartPolicy != nil {

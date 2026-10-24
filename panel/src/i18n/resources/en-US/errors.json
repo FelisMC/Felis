@@ -59,6 +59,7 @@
   "bad_name": "Invalid server name. Use 3–32 lowercase letters, digits, or hyphens, excluding reserved names.",
   "bad_subdomain": "Invalid subdomain. Use 3–32 lowercase letters, digits, or hyphens, excluding reserved names.",
   "bad_display_name": "Invalid display name. Use at most 64 visible characters or spaces, excluding line breaks, tabs, and control characters.",
+  "bad_startup_settings": "Invalid startup settings. Check the entry counts, UTF-8 byte limits, environment variable names and reserved variables. JVM flags must contain one argument per entry and cannot override heap sizing or load argument files.",
   "at_capacity": "The cluster’s running-server limit has been reached. Retry after another server stops.",
   "storage_immutable": "Storage capacity cannot be changed online.",
   "bad_idle_stop": "Idle stop must be between 1 minute and 24 hours, or Never.",

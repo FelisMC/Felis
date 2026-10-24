@@ -293,7 +293,7 @@ export function LobbyPage() {
               ))}
             </CardContent>
           </Card>
-          {data && <EditServerDialog serverName={name} systemService currentDisplayName={data.displayName} currentPolicy={data.autostartPolicy} currentImage={data.image} currentMemory={data.memory} currentStorage={data.storageSize} currentCpu={data.cpu} currentIdleStopSeconds={0} onUpdated={status.reload} />}
+          {data && <EditServerDialog serverName={name} currentPhase={data.phase} systemService currentDisplayName={data.displayName} currentPolicy={data.autostartPolicy} currentImage={data.image} currentMemory={data.memory} currentStorage={data.storageSize} currentCpu={data.cpu} currentIdleStopSeconds={0} onUpdated={status.reload} />}
           {name === "lobby" && <BuilderAccess ready={data?.ready ?? false} />}
         </div>
       </div>

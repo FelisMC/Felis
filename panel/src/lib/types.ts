@@ -16,6 +16,25 @@ export interface ServerPowerResult {
   desiredState: "Running" | "Stopped";
 }
 
+export interface StartupEnvVar {
+  name: string;
+  value: string;
+}
+
+export interface ServerStartupSettings {
+  java_flags: string[];
+  args: string[];
+  env: StartupEnvVar[];
+  stop_commands: string[];
+}
+
+export interface StartupSettingsPatch {
+  java_flags?: string[] | null;
+  args?: (string | null)[] | null;
+  env?: { name: string; value?: string | null }[] | null;
+  stop_commands?: string[] | null;
+}
+
 // Pending retirement prevents waking or claiming until the reaper completes it.
 export interface RetireState {
   requested_at: string;

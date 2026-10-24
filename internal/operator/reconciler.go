@@ -157,8 +157,8 @@ func (r *Reconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	for _, annotation := range []string{v1alpha1.AnnotationStartRetry, v1alpha1.AnnotationRestart} {
 		if _, ok := server.Annotations[annotation]; ok {
-			if err := r.takeRestartRequest(ctx, &server, desired, annotation); err != nil {
-				return ctrl.Result{}, err
+			if wait, err := r.takeRestartRequest(ctx, &server, desired, annotation); err != nil || wait {
+				return ctrl.Result{RequeueAfter: requeueStarting}, err
 			}
 		}
 	}
@@ -199,32 +199,6 @@ func (r *Reconciler) recordTransition(ctx context.Context, server *v1alpha1.Mine
 	}
 	log.FromContext(ctx).Info("phase changed", "from", from, "to", phase, "reason", reason, "message", msg)
 	r.event(server, eventType, reason, fmt.Sprintf("%s → %s: %s", from, phase, msg))
-}
-
-// Persist restart status before removing its request annotation so interrupted passes retry instead of losing the restart.
-func (r *Reconciler) takeRestartRequest(ctx context.Context, server *v1alpha1.MinecraftServer, desired v1alpha1.DesiredState, annotation string) error {
-	explicit := annotation == v1alpha1.AnnotationRestart
-	if desired == v1alpha1.DesiredRunning && (server.Status.Phase == v1alpha1.PhaseFailed || (explicit && server.Status.Phase == v1alpha1.PhaseRunning)) {
-		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: server.Name + "-0", Namespace: server.Namespace}}
-		if err := r.Delete(ctx, pod); client.IgnoreNotFound(err) != nil {
-			return err
-		}
-		server.Status.AutoRestarts = 0
-		server.Status.StartRequestedAt = nil
-		reason, message := "StartRetried", "start requested again after it failed; recreated the pod"
-		if explicit {
-			reason, message = "RestartRequested", "restart requested; recreated the pod"
-		}
-		r.markStarting(server, reason, message)
-		if err := r.patchStatus(ctx, server); err != nil {
-			return err
-		}
-		log.FromContext(ctx).Info(message)
-		r.event(server, corev1.EventTypeNormal, reason, message)
-	}
-	patch := client.MergeFrom(server.DeepCopy())
-	delete(server.Annotations, annotation)
-	return r.Patch(ctx, server, patch)
 }
 
 func (r *Reconciler) takeKillRequest(ctx context.Context, server *v1alpha1.MinecraftServer, desired v1alpha1.DesiredState) error {
@@ -350,23 +324,10 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 		return ctrl.Result{RequeueAfter: requeueSecret}, nil
 	}
 
-	placed := server.DeepCopy()
-	if placed.Spec.NodeName == "" {
-		placed.Spec.NodeName = r.ControllerNode
-	}
-	desired, err := buildStatefulSetWith(placed, 1, podOptions{FelisImage: r.FelisImage, GateProbe: r.EgressProbe, ArtifactCache: r.ArtifactCache})
+	desired, err := r.desiredStatefulSet(server, passwordStamp)
 	if err != nil {
 		r.markFailed(server, "InvalidSpec", err.Error())
 		return ctrl.Result{}, r.patchStatus(ctx, server)
-	}
-	if r.floats(server) {
-		desired.Spec.Template.Spec.NodeSelector = map[string]string{placement.LabelRole: placement.RoleController}
-	}
-	if passwordStamp != "" {
-		if desired.Spec.Template.Annotations == nil {
-			desired.Spec.Template.Annotations = map[string]string{}
-		}
-		desired.Spec.Template.Annotations[RconSecretAnnotation] = passwordStamp
 	}
 	if err := controllerutil.SetControllerReference(server, desired, r.Scheme); err != nil {
 		return ctrl.Result{}, err
@@ -380,7 +341,7 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 		return ctrl.Result{}, err
 	}
 
-	if current.Status.ReadyReplicas < 1 {
+	if current.Status.ReadyReplicas < 1 || (pod != nil && pod.DeletionTimestamp != nil) {
 		if replaced, err := r.replaceStalePod(ctx, server, &current); err != nil {
 			return ctrl.Result{}, err
 		} else if replaced {
@@ -613,16 +574,24 @@ func (r *Reconciler) saveBeforeStop(ctx context.Context, server *v1alpha1.Minecr
 	logger := ctrl.LoggerFrom(ctx)
 	password, err := r.rconPassword(ctx, server)
 	if err != nil {
-		logger.Info("skipping pre-stop world save: RCON password unavailable", "error", err.Error())
+		logger.Info("skipping pre-stop world save: RCON password unavailable")
 		return
 	}
 	start := time.Now()
 	if err := r.Prober.Save(ctx, rconAddress(server), password); err != nil {
 		logger.Info("pre-stop world save failed; stopping anyway, the server saves again on SIGTERM",
-			"error", err.Error(), "elapsed", time.Since(start).Round(time.Millisecond).String())
+			"elapsed", time.Since(start).Round(time.Millisecond).String())
+	} else {
+		logger.Info("pre-stop world save done", "elapsed", time.Since(start).Round(time.Millisecond).String())
+	}
+	if len(server.Spec.Lifecycle.StopCommands) == 0 {
 		return
 	}
-	logger.Info("pre-stop world save done", "elapsed", time.Since(start).Round(time.Millisecond).String())
+	start = time.Now()
+	if err := r.Prober.Commands(ctx, rconAddress(server), password, server.Spec.Lifecycle.StopCommands); err != nil {
+		logger.Info("pre-stop commands failed; stopping anyway", "count", len(server.Spec.Lifecycle.StopCommands),
+			"elapsed", time.Since(start).Round(time.Millisecond).String())
+	}
 }
 
 // maintenanceHold gates only Pods about to be created, not workloads already scaled up.
@@ -796,7 +765,7 @@ func (r *Reconciler) rconPassword(ctx context.Context, server *v1alpha1.Minecraf
 	return string(b), nil
 }
 
-// applyStatefulSet preserves a running template when only platform defaults changed.
+// applyStatefulSet defers startup settings and platform defaults until the next start.
 func (r *Reconciler) applyStatefulSet(ctx context.Context, desired *appsv1.StatefulSet) error {
 	stamp, err := podTemplateStamp(&desired.Spec.Template, r.FelisImage)
 	if err != nil {
@@ -818,8 +787,17 @@ func (r *Reconciler) applyStatefulSet(ctx context.Context, desired *appsv1.State
 	running := existing.Spec.Replicas != nil && *existing.Spec.Replicas > 0
 	existing.Labels = desired.Labels
 	existing.Spec.Replicas = desired.Spec.Replicas
-	if running && existing.Annotations[PodTemplateAnnotation] == stamp {
-		return r.Update(ctx, &existing)
+	if running {
+		deferred := existing.Annotations[PodTemplateAnnotation] == stamp
+		if !deferred {
+			deferred, err = deferStartupTemplate(&existing, desired, r.FelisImage)
+			if err != nil {
+				return err
+			}
+		}
+		if deferred {
+			return r.Update(ctx, &existing)
+		}
 	}
 	existing.Spec.Template = desired.Spec.Template
 	if existing.Annotations == nil {

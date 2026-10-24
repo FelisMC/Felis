@@ -1030,6 +1030,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/servers/{name}/startup-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read private saved startup settings (server owner or administrator).
+         * @description Reads saved JVM flags, game arguments, user environment variables and stop commands without reading Pod environments or Secrets. Platform-managed environment variables are excluded. Available while stopped, starting or running. These private values are not included in server status, fleet listings or the user's server list.
+         */
+        get: operations["getStartupSettings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/servers/{name}/usage": {
         parameters: {
             query?: never;
@@ -1406,7 +1426,7 @@ export interface paths {
         head?: never;
         /**
          * Change a server you own.
-         * @description The owner's spec change: display name, who may wake it, idle stop, memory and CPU (growth is held to the owner's quota, 403 quota_exceeded), its server software, crash restarts, resuming after a host restart and lifecycle mail, under the same rules as the admin patch.
+         * @description The owner's spec change: display name, who may wake it, idle stop, memory and CPU (growth is held to the owner's quota, 403 quota_exceeded), its server software, crash restarts, resuming after a host restart and lifecycle mail, and private startup settings, under the same rules as the admin patch.
          */
         patch: operations["patchMyServer"];
         trace?: never;
@@ -4086,6 +4106,32 @@ export interface components {
             fenceTask?: components["schemas"]["NodeControlTask"];
             /** @description Why no fence task could be started now; it is retried in the background. */
             fenceError?: string;
+        };
+        StartupEnvVar: {
+            name: string;
+            value: string;
+        };
+        /** @description Private saved startup settings for the server's owner and administrators. Environment variables managed by the platform or runtime are excluded. Empty arrays and empty environment values are always present. Existing values are returned without applying the current patch validation rules. */
+        ServerStartupSettings: {
+            java_flags: string[];
+            args: string[];
+            env: components["schemas"]["StartupEnvVar"][];
+            stop_commands: string[];
+        };
+        /** @description Each supplied non-null array replaces that saved setting; an empty array clears it. Omitted or null arrays retain their current values. All changes are atomic. The resulting settings, including retained values, may contain at most 65536 UTF-8 bytes in total, counting flags, arguments, user environment names and values, and normalized stop commands. Invalid settings return 400 bad_startup_settings without changing any server fields. Saving does not change the desired state or restart the running server. Startup flags, arguments and user environment changes apply on the next start or restart. */
+        ServerStartupSettingsPatch: {
+            /** @description At most 128 single JVM arguments, each at most 1024 UTF-8 bytes without whitespace, control characters or NUL. Heap sizing is derived from memory: prefixes -Xmx, -Xms, -mx, -ms, -XX:MaxHeapSize, -XX:InitialHeapSize and -XX:MinHeapSize are forbidden, as are -XX:VMOptionsFile, -XX:Flags and argument-file entries starting with @. */
+            java_flags?: string[] | null;
+            /** @description At most 128 game arguments, each at most 2048 UTF-8 bytes without NUL. Entries are preserved individually, including empty strings, spaces, line breaks and leading dashes. A null array entry decodes as an empty argument. */
+            args?: (string | null)[] | null;
+            /** @description At most 64 user variables with unique case-sensitive names. Names are at most 128 ASCII bytes; values are at most 4096 UTF-8 bytes without NUL and may contain spaces or line breaks. Replacement preserves managed environment entries and their order. Names beginning FELIS_ and the fixed runtime names JAVA_MEMORY, JAVA_FLAGS, JAVA_HOME, JRE_HOME, JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS, _JAVA_OPTIONS, CLASSPATH, RCON_PORT, RCON_PASSWORD, FABRIC_PROXY_SECRET, FABRIC_PROXY_HACK_MESSAGE_CHAIN, PATH, HOME, BASH_ENV, ENV, SHELLOPTS, BASHOPTS, IFS, CDPATH, GLOBIGNORE, LD_PRELOAD, LD_LIBRARY_PATH, LD_AUDIT, GCONV_PATH and GLIBC_TUNABLES cannot be supplied. */
+            env?: {
+                name: string;
+                /** @description Omitted or null means the empty string. */
+                value?: string | null;
+            }[] | null;
+            /** @description At most 16 commands, each at most 1024 UTF-8 bytes before normalization and without NUL. Leading and trailing Unicode whitespace and one leading slash are removed; the result must be nonempty and contain no characters below U+0020. On normal stop, commands run sequentially after the save attempt and before shutdown, with one 30-second total budget including connection and authentication. A failure still allows shutdown. Scaling retries may repeat commands; execution is best effort. */
+            stop_commands?: string[] | null;
         };
         /** @description Status projection of one server (internal/api/cluster.go ServerInfo). */
         ServerInfo: {
@@ -7476,6 +7522,34 @@ export interface operations {
             404: components["responses"]["NotFound"];
         };
     };
+    getStartupSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Saved settings; all four arrays and each environment name and value are present. */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServerStartupSettings"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
     serverUsage: {
         parameters: {
             query?: never;
@@ -8476,6 +8550,18 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    /** @description At most 128 single JVM arguments, each at most 1024 UTF-8 bytes without whitespace, control characters or NUL. Heap sizing is derived from memory: prefixes -Xmx, -Xms, -mx, -ms, -XX:MaxHeapSize, -XX:InitialHeapSize and -XX:MinHeapSize are forbidden, as are -XX:VMOptionsFile, -XX:Flags and argument-file entries starting with @. */
+                    java_flags?: string[] | null;
+                    /** @description At most 128 game arguments, each at most 2048 UTF-8 bytes without NUL. Entries are preserved individually, including empty strings, spaces, line breaks and leading dashes. A null array entry decodes as an empty argument. */
+                    args?: (string | null)[] | null;
+                    /** @description At most 64 user variables with unique case-sensitive names. Names are at most 128 ASCII bytes; values are at most 4096 UTF-8 bytes without NUL and may contain spaces or line breaks. Replacement preserves managed environment entries and their order. Names beginning FELIS_ and the fixed runtime names JAVA_MEMORY, JAVA_FLAGS, JAVA_HOME, JRE_HOME, JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS, _JAVA_OPTIONS, CLASSPATH, RCON_PORT, RCON_PASSWORD, FABRIC_PROXY_SECRET, FABRIC_PROXY_HACK_MESSAGE_CHAIN, PATH, HOME, BASH_ENV, ENV, SHELLOPTS, BASHOPTS, IFS, CDPATH, GLOBIGNORE, LD_PRELOAD, LD_LIBRARY_PATH, LD_AUDIT, GCONV_PATH and GLIBC_TUNABLES cannot be supplied. */
+                    env?: {
+                        name: string;
+                        /** @description Omitted or null means the empty string. */
+                        value?: string | null;
+                    }[] | null;
+                    /** @description At most 16 commands, each at most 1024 UTF-8 bytes before normalization and without NUL. Leading and trailing Unicode whitespace and one leading slash are removed; the result must be nonempty and contain no characters below U+0020. On normal stop, commands run sequentially after the save attempt and before shutdown, with one 30-second total budget including connection and authentication. A failure still allows shutdown. Scaling retries may repeat commands; execution is best effort. */
+                    stop_commands?: string[] | null;
                     displayName?: string;
                     /** @enum {string} */
                     autostartPolicy?: "ownerOnly" | "public" | "allowlist";
@@ -14156,6 +14242,18 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    /** @description At most 128 single JVM arguments, each at most 1024 UTF-8 bytes without whitespace, control characters or NUL. Heap sizing is derived from memory: prefixes -Xmx, -Xms, -mx, -ms, -XX:MaxHeapSize, -XX:InitialHeapSize and -XX:MinHeapSize are forbidden, as are -XX:VMOptionsFile, -XX:Flags and argument-file entries starting with @. */
+                    java_flags?: string[] | null;
+                    /** @description At most 128 game arguments, each at most 2048 UTF-8 bytes without NUL. Entries are preserved individually, including empty strings, spaces, line breaks and leading dashes. A null array entry decodes as an empty argument. */
+                    args?: (string | null)[] | null;
+                    /** @description At most 64 user variables with unique case-sensitive names. Names are at most 128 ASCII bytes; values are at most 4096 UTF-8 bytes without NUL and may contain spaces or line breaks. Replacement preserves managed environment entries and their order. Names beginning FELIS_ and the fixed runtime names JAVA_MEMORY, JAVA_FLAGS, JAVA_HOME, JRE_HOME, JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS, _JAVA_OPTIONS, CLASSPATH, RCON_PORT, RCON_PASSWORD, FABRIC_PROXY_SECRET, FABRIC_PROXY_HACK_MESSAGE_CHAIN, PATH, HOME, BASH_ENV, ENV, SHELLOPTS, BASHOPTS, IFS, CDPATH, GLOBIGNORE, LD_PRELOAD, LD_LIBRARY_PATH, LD_AUDIT, GCONV_PATH and GLIBC_TUNABLES cannot be supplied. */
+                    env?: {
+                        name: string;
+                        /** @description Omitted or null means the empty string. */
+                        value?: string | null;
+                    }[] | null;
+                    /** @description At most 16 commands, each at most 1024 UTF-8 bytes before normalization and without NUL. Leading and trailing Unicode whitespace and one leading slash are removed; the result must be nonempty and contain no characters below U+0020. On normal stop, commands run sequentially after the save attempt and before shutdown, with one 30-second total budget including connection and authentication. A failure still allows shutdown. Scaling retries may repeat commands; execution is best effort. */
+                    stop_commands?: string[] | null;
                     /** @description Trimmed. An empty name clears it, and the server goes by its name again. At most 64 characters, all visible ones or spaces (400 bad_display_name otherwise). */
                     displayName?: string;
                     autostartPolicy?: string;

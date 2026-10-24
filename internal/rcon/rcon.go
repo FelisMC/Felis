@@ -77,6 +77,32 @@ func Dial(addr, password string, timeout time.Duration) (*Conn, error) {
 	return c, nil
 }
 
+// DialContext bounds connection and authentication together and releases cancellation after the handshake.
+func DialContext(ctx context.Context, addr, password string, timeout time.Duration) (*Conn, error) {
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	netConn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	c := &Conn{conn: netConn}
+	stop := context.AfterFunc(ctx, func() { _ = netConn.Close() })
+	err = c.auth(password)
+	stopped := stop()
+	if !stopped || ctx.Err() != nil {
+		netConn.Close()
+		return nil, ctx.Err()
+	}
+	if err != nil {
+		netConn.Close()
+		return nil, err
+	}
+	return c, nil
+}
+
 func (c *Conn) SetDeadline(t time.Time) error {
 	c.deadline = t
 	return c.conn.SetDeadline(t)

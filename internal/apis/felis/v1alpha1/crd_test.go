@@ -3,6 +3,7 @@ package v1alpha1_test
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"k8s.io/kube-openapi/pkg/validation/spec"
@@ -97,6 +98,38 @@ func TestCRDBoundsNumericFields(t *testing.T) {
 			}
 			if !tc.ok && err == nil {
 				t.Fatal("accepted an out-of-range value")
+			}
+		})
+	}
+}
+
+func TestCRDBoundsStopCommands(t *testing.T) {
+	schema := crdSchema(t)
+	cases := []struct {
+		name     string
+		commands any
+		ok       bool
+	}{
+		{"empty", []string{}, true},
+		{"at item limit", make([]string, 16), true},
+		{"past item limit", make([]string, 17), false},
+		{"at length limit", []string{strings.Repeat("x", 1024)}, true},
+		{"past length limit", []string{strings.Repeat("x", 1025)}, false},
+		{"non-string item", []any{1}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(server("lifecycle", map[string]any{"stopCommands": tc.commands}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var obj any
+			if err := json.Unmarshal(raw, &obj); err != nil {
+				t.Fatal(err)
+			}
+			err = validate.AgainstSchema(schema, obj, strfmt.Default)
+			if (err == nil) != tc.ok {
+				t.Fatalf("validation error = %v, want valid=%v", err, tc.ok)
 			}
 		})
 	}

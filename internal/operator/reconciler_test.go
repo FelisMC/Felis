@@ -38,6 +38,9 @@ type fakeProber struct {
 	// broadcasts, when set, records each Broadcast's text.
 	broadcasts   *[]string
 	broadcastErr error
+	commands     *[]string
+	commandsErr  error
+	steps        *[]string
 }
 
 func (f fakeProber) Probe(context.Context, string, string) (operator.PlayerCount, error) {
@@ -45,10 +48,23 @@ func (f fakeProber) Probe(context.Context, string, string) (operator.PlayerCount
 }
 
 func (f fakeProber) Save(_ context.Context, addr, _ string) error {
+	if f.steps != nil {
+		*f.steps = append(*f.steps, "save")
+	}
 	if f.saves != nil {
 		*f.saves = append(*f.saves, addr)
 	}
 	return f.saveErr
+}
+
+func (f fakeProber) Commands(_ context.Context, _, _ string, commands []string) error {
+	if f.steps != nil {
+		*f.steps = append(*f.steps, "commands")
+	}
+	if f.commands != nil {
+		*f.commands = append(*f.commands, commands...)
+	}
+	return f.commandsErr
 }
 
 func (f fakeProber) Broadcast(_ context.Context, _, _, text string) error {

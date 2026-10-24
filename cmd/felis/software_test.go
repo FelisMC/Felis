@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -50,7 +51,8 @@ func TestLaunchArgv(t *testing.T) {
 
 func TestLaunchPassesStdinToJava(t *testing.T) {
 	if os.Getenv("FELIS_TEST_LAUNCH_HELPER") == "1" {
-		os.Exit(cmdLaunch([]string{"--data", os.Getenv("FELIS_TEST_LAUNCH_DATA")}, os.Stdout, os.Stderr))
+		args := append([]string{"--data", os.Getenv("FELIS_TEST_LAUNCH_DATA"), "--"}, flag.Args()...)
+		os.Exit(cmdLaunch(args, os.Stdout, os.Stderr))
 	}
 	root := t.TempDir()
 	data, javaHome := filepath.Join(root, "data"), filepath.Join(root, "java")
@@ -75,7 +77,7 @@ func TestLaunchPassesStdinToJava(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(data, software.RecordPath), record, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	java := "#!/bin/sh\nprintf '%s\\n' \"$$\" > \"$FELIS_TEST_JAVA_PID\"\ncat > \"$FELIS_TEST_JAVA_INPUT\"\n"
+	java := "#!/bin/sh\nprintf '%s\\n' \"$$\" > \"$FELIS_TEST_JAVA_PID\"\nprintf '%s\\000' \"$@\" > \"$FELIS_TEST_JAVA_ARGS\"\ncat > \"$FELIS_TEST_JAVA_INPUT\"\n"
 	if err := os.WriteFile(filepath.Join(javaHome, "bin", "java"), []byte(java), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -85,14 +87,17 @@ func TestLaunchPassesStdinToJava(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, self, "-test.run=^TestLaunchPassesStdinToJava$")
+	extra := []string{"--port", "25566", "--universe", "world with spaces", "--data", "server argument with spaces"}
+	cmd := exec.CommandContext(ctx, self, append([]string{"-test.run=^TestLaunchPassesStdinToJava$", "--"}, extra...)...)
 	const input = "say runtime console 世界\nlist\n"
 	cmd.Stdin = strings.NewReader(input)
 	pidPath, inputPath := filepath.Join(root, "java.pid"), filepath.Join(root, "java.stdin")
+	argsPath := filepath.Join(root, "java.args")
 	cmd.Env = []string{
 		"PATH=" + os.Getenv("PATH"), "JAVA_HOME=" + javaHome, softwareEnv + "=" + string(rawSpec),
 		"FELIS_TEST_LAUNCH_HELPER=1", "FELIS_TEST_LAUNCH_DATA=" + data,
 		"FELIS_TEST_JAVA_PID=" + pidPath, "FELIS_TEST_JAVA_INPUT=" + inputPath,
+		"FELIS_TEST_JAVA_ARGS=" + argsPath,
 	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("launch failed: %v\n%s", err, out)
@@ -104,6 +109,11 @@ func TestLaunchPassesStdinToJava(t *testing.T) {
 	stdin, err := os.ReadFile(inputPath)
 	if err != nil || string(stdin) != input {
 		t.Fatalf("runtime Java stdin = %q, err=%v", stdin, err)
+	}
+	argv, err := os.ReadFile(argsPath)
+	want := append([]string{"-jar", spec.Jar, "nogui"}, extra...)
+	if err != nil || string(argv) != strings.Join(want, "\x00")+"\x00" {
+		t.Fatalf("runtime Java argv = %q, err=%v", argv, err)
 	}
 }
 

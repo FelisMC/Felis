@@ -17,13 +17,15 @@ import (
 )
 
 func gamePod() *corev1.Pod {
-	return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "survival-0", Namespace: "minecraft"}}
+	return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "survival-0", Namespace: "minecraft", UID: "original-pod"}}
 }
 
 func TestTimedOutStartRecreatesThePodWithBackoff(t *testing.T) {
 	srv := runningServer()
 	srv.Spec.Startup.TimeoutSeconds = 30
-	r, c := newReconciler(t, fakeProber{}, srv, rconSecret(), gamePod())
+	srv.Spec.Lifecycle.StopCommands = []string{"say before normal stop"}
+	var saves, commands []string
+	r, c := newReconciler(t, fakeProber{saves: &saves, commands: &commands}, srv, rconSecret(), gamePod())
 	base := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
 	clock := base
 	r.Now = func() metav1.Time { return metav1.NewTime(clock) }
@@ -79,12 +81,17 @@ func TestTimedOutStartRecreatesThePodWithBackoff(t *testing.T) {
 	if !v1alpha1.StartGaveUp(&s.Status) {
 		t.Fatal("after three attempts: not reported as given up")
 	}
+	if len(saves) != 0 || len(commands) != 0 {
+		t.Fatal("automatic start recovery ran normal stop hooks")
+	}
 }
 
 func TestReadinessTimeoutRecreatesThePod(t *testing.T) {
 	srv := runningServer()
 	srv.Spec.Startup.ReadinessTimeoutSeconds = 30
-	r, c := newReconciler(t, fakeProber{err: errors.New("connection refused")}, srv, rconSecret(), gamePod())
+	srv.Spec.Lifecycle.StopCommands = []string{"say before normal stop"}
+	var saves, commands []string
+	r, c := newReconciler(t, fakeProber{err: errors.New("connection refused"), saves: &saves, commands: &commands}, srv, rconSecret(), gamePod())
 	base := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
 	clock := base
 	r.Now = func() metav1.Time { return metav1.NewTime(clock) }
@@ -105,6 +112,9 @@ func TestReadinessTimeoutRecreatesThePod(t *testing.T) {
 	if !apierrors.IsNotFound(err) || s.Status.AutoRestarts != 1 || s.Status.Phase != v1alpha1.PhaseStarting {
 		t.Fatalf("due: pod err=%v restarts=%d phase=%s", err, s.Status.AutoRestarts, s.Status.Phase)
 	}
+	if len(saves) != 0 || len(commands) != 0 {
+		t.Fatal("automatic readiness recovery ran normal stop hooks")
+	}
 }
 
 // switchProber fails while *down is true, so one server can miss and recover.
@@ -118,6 +128,8 @@ func (p switchProber) Probe(context.Context, string, string) (operator.PlayerCou
 }
 
 func (switchProber) Save(context.Context, string, string) error { return nil }
+
+func (switchProber) Commands(context.Context, string, string, []string) error { return nil }
 
 func (switchProber) Broadcast(context.Context, string, string, string) error { return nil }
 

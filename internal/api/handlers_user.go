@@ -713,6 +713,10 @@ type patchServerRequest struct {
 	Memory             *string               `json:"memory,omitempty"`
 	Resources          *patchResourceRequest `json:"resources,omitempty"`
 	IdleStopSeconds    *int32                `json:"idleStopSeconds,omitempty"`
+	JavaFlags          *[]string             `json:"java_flags,omitempty"`
+	Args               *[]string             `json:"args,omitempty"`
+	Env                *[]v1alpha1.EnvVar    `json:"env,omitempty"`
+	StopCommands       *[]string             `json:"stop_commands,omitempty"`
 	// Software type or Minecraft-version changes require confirmation; moving from a server image also requires EULA acceptance.
 	Software              *softwareRequest `json:"software,omitempty"`
 	ConfirmSoftwareChange bool             `json:"confirmSoftwareChange,omitempty"`
@@ -770,7 +774,8 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 
 	if body.DisplayName == nil && body.AutostartPolicy == nil && body.Image == nil &&
 		body.Memory == nil && body.Resources == nil && body.Storage == nil && body.IdleStopSeconds == nil &&
-		body.Software == nil && !body.setsRecovery() {
+		body.Software == nil && !body.setsRecovery() &&
+		body.JavaFlags == nil && body.Args == nil && body.Env == nil && body.StopCommands == nil {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
 			"patch must set at least one field"))
 		return
@@ -793,6 +798,20 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 		info, err := a.Cluster.GetServer(r.Context(), name)
 		cur = info
 		return info, err
+	}
+
+	patch.JavaFlags, patch.Args, patch.Env, patch.StopCommands = body.JavaFlags, body.Args, body.Env, body.StopCommands
+	if body.JavaFlags != nil {
+		changed = append(changed, "java_flags")
+	}
+	if body.Args != nil {
+		changed = append(changed, "args")
+	}
+	if body.Env != nil {
+		changed = append(changed, "env")
+	}
+	if body.StopCommands != nil {
+		changed = append(changed, "stop_commands")
 	}
 
 	if body.DisplayName != nil {

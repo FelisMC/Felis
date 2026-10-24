@@ -21,6 +21,7 @@ func TestKillSkipsSavingAndShutdownGrace(t *testing.T) {
 		t.Run(string(phase), func(t *testing.T) {
 			srv := runningServer()
 			srv.Spec.DesiredState = v1alpha1.DesiredStopped
+			srv.Spec.Lifecycle.StopCommands = []string{"say before normal stop"}
 			srv.Annotations = map[string]string{v1alpha1.AnnotationKill: "request"}
 			srv.Status.Phase, srv.Status.Ready = phase, true
 			now := fixedNow()
@@ -28,8 +29,8 @@ func TestKillSkipsSavingAndShutdownGrace(t *testing.T) {
 			one := int32(1)
 			sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: srv.Name, Namespace: srv.Namespace},
 				Spec: appsv1.StatefulSetSpec{Replicas: &one}, Status: appsv1.StatefulSetStatus{Replicas: 1, ReadyReplicas: 1}}
-			var saves, broadcasts []string
-			r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Known: true, Online: 3}, saves: &saves, broadcasts: &broadcasts}, srv, sts, gamePod(), rconSecret())
+			var saves, broadcasts, commands []string
+			r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Known: true, Online: 3}, saves: &saves, broadcasts: &broadcasts, commands: &commands}, srv, sts, gamePod(), rconSecret())
 			deletes, failDelete := 0, true
 			r.Client = interceptor.NewClient(c.(client.WithWatch), interceptor.Funcs{
 				Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
@@ -66,8 +67,8 @@ func TestKillSkipsSavingAndShutdownGrace(t *testing.T) {
 				t.Fatalf("pod survived force stop: %v", err)
 			}
 			reconcile(t, r, srv.Name)
-			if deletes != 2 || len(saves) != 0 || len(broadcasts) != 0 {
-				t.Fatalf("delete=%d saves=%v broadcasts=%v", deletes, saves, broadcasts)
+			if deletes != 2 || len(saves) != 0 || len(broadcasts) != 0 || len(commands) != 0 {
+				t.Fatalf("delete=%d saves=%d broadcasts=%d commands=%d", deletes, len(saves), len(broadcasts), len(commands))
 			}
 			current := getSTS(t, c, srv.Name)
 			current.Status = appsv1.StatefulSetStatus{}

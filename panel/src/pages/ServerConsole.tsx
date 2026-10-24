@@ -368,6 +368,7 @@ export function ServerConsole() {
               {(isAdmin || owned) && (
                 <EditServerDialog
                   serverName={name}
+                  currentPhase={data.phase}
                   mode={isAdmin ? "admin" : "owner"}
                   systemService={name === "login" || name === "lobby"}
                   currentDisplayName={data.displayName}

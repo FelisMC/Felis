@@ -835,6 +835,90 @@ components:
         fenceTask: { $ref: '#/components/schemas/NodeControlTask' }
         fenceError: { type: string, description: Why no fence task could be started now; it is retried in the background. }
 
+    StartupEnvVar:
+      type: object
+      required: [name, value]
+      properties:
+        name: { type: string }
+        value: { type: string }
+
+    ServerStartupSettings:
+      type: object
+      description: >-
+        Private saved startup settings for the server's owner and administrators.
+        Environment variables managed by the platform or runtime are excluded.
+        Empty arrays and empty environment values are always present. Existing
+        values are returned without applying the current patch validation rules.
+      required: [java_flags, args, env, stop_commands]
+      properties:
+        java_flags: { type: array, items: { type: string } }
+        args: { type: array, items: { type: string } }
+        env: { type: array, items: { $ref: '#/components/schemas/StartupEnvVar' } }
+        stop_commands: { type: array, items: { type: string } }
+
+    ServerStartupSettingsPatch:
+      type: object
+      description: >-
+        Each supplied non-null array replaces that saved setting; an empty array
+        clears it. Omitted or null arrays retain their current values. All changes
+        are atomic. The resulting settings, including retained values, may contain
+        at most 65536 UTF-8 bytes in total, counting flags, arguments, user environment
+        names and values, and normalized stop commands. Invalid settings return
+        400 bad_startup_settings without changing any server fields. Saving does
+        not change the desired state or restart the running server. Startup flags,
+        arguments and user environment changes apply on the next start or restart.
+      properties: &StartupSettingsPatchProperties
+        java_flags:
+          type: [array, 'null']
+          maxItems: 128
+          items: { type: string, minLength: 1, maxLength: 1024 }
+          description: >-
+            At most 128 single JVM arguments, each at most 1024 UTF-8 bytes without
+            whitespace, control characters or NUL. Heap sizing is derived from
+            memory: prefixes -Xmx, -Xms, -mx, -ms, -XX:MaxHeapSize,
+            -XX:InitialHeapSize and -XX:MinHeapSize are forbidden, as are
+            -XX:VMOptionsFile, -XX:Flags and argument-file entries starting with @.
+        args:
+          type: [array, 'null']
+          maxItems: 128
+          items: { type: [string, 'null'], maxLength: 2048 }
+          description: >-
+            At most 128 game arguments, each at most 2048 UTF-8 bytes without NUL.
+            Entries are preserved individually, including empty strings, spaces,
+            line breaks and leading dashes. A null array entry decodes as an empty argument.
+        env:
+          type: [array, 'null']
+          maxItems: 64
+          items:
+            type: object
+            required: [name]
+            properties:
+              name: { type: string, maxLength: 128, pattern: '^[A-Za-z_][A-Za-z0-9_]*$' }
+              value: { type: [string, 'null'], maxLength: 4096, description: Omitted or null means the empty string. }
+          description: >-
+            At most 64 user variables with unique case-sensitive names. Names are
+            at most 128 ASCII bytes; values are at most 4096 UTF-8 bytes without NUL
+            and may contain spaces or line breaks. Replacement preserves managed
+            environment entries and their order. Names beginning FELIS_ and the
+            fixed runtime names JAVA_MEMORY, JAVA_FLAGS, JAVA_HOME, JRE_HOME,
+            JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS, _JAVA_OPTIONS, CLASSPATH,
+            RCON_PORT, RCON_PASSWORD, FABRIC_PROXY_SECRET,
+            FABRIC_PROXY_HACK_MESSAGE_CHAIN, PATH, HOME, BASH_ENV, ENV, SHELLOPTS,
+            BASHOPTS, IFS, CDPATH, GLOBIGNORE, LD_PRELOAD, LD_LIBRARY_PATH, LD_AUDIT,
+            GCONV_PATH and GLIBC_TUNABLES cannot be supplied.
+        stop_commands:
+          type: [array, 'null']
+          maxItems: 16
+          items: { type: string, minLength: 1, maxLength: 1024 }
+          description: >-
+            At most 16 commands, each at most 1024 UTF-8 bytes before normalization
+            and without NUL. Leading and trailing Unicode whitespace and one
+            leading slash are removed; the result must be nonempty and contain no
+            characters below U+0020. On normal stop, commands run sequentially
+            after the save attempt and before shutdown, with one 30-second total
+            budget including connection and authentication. A failure still allows
+            shutdown. Scaling retries may repeat commands; execution is best effort.
+
     ServerInfo:
       type: object
       description: Status projection of one server (internal/api/cluster.go ServerInfo).
@@ -4381,6 +4465,37 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /api/v1/servers/{name}/startup-settings:
+    get:
+      tags: [servers]
+      operationId: getStartupSettings
+      summary: Read private saved startup settings (server owner or administrator).
+      description: >-
+        Reads saved JVM flags, game arguments, user environment variables and stop
+        commands without reading Pod environments or Secrets. Platform-managed
+        environment variables are excluded. Available while stopped, starting or
+        running. These private values are not included in server status, fleet
+        listings or the user's server list.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Saved settings; all four arrays and each environment name and value are present.
+          headers:
+            Cache-Control:
+              schema: { type: string, const: no-store }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerStartupSettings' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
   /api/v1/servers/{name}/usage:
     get:
       tags: [servers]
@@ -5407,7 +5522,7 @@ paths:
         The owner's spec change: display name, who may wake it, idle stop, memory and
         CPU (growth is held to the owner's quota, 403 quota_exceeded), its server
         software, crash restarts, resuming after a host restart and lifecycle mail,
-        under the same rules as the admin patch.
+        and private startup settings, under the same rules as the admin patch.
       x-felis-face: [external]
       x-felis-tier: app
       security: [{ sessionCookie: [] }]
@@ -5421,6 +5536,7 @@ paths:
               type: object
               description: Only the supplied fields are patched; an empty patch is rejected.
               properties:
+                <<: *StartupSettingsPatchProperties
                 displayName: { type: string, maxLength: 64 }
                 autostartPolicy: { type: string, enum: [ownerOnly, public, allowlist] }
                 idleStopSeconds: { type: integer, format: int32 }
@@ -10664,6 +10780,7 @@ paths:
               type: object
               description: Only the supplied fields are patched; an empty patch is rejected.
               properties:
+                <<: *StartupSettingsPatchProperties
                 displayName:
                   type: string
                   maxLength: 64

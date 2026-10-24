@@ -315,6 +315,7 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "DELETE", Pattern: "/api/v1/servers/{name}/retirement", h: a.handleCancelRetire},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/restart", h: a.handleRestart},
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/status", h: a.handleStatus},
+		{Method: "GET", Pattern: "/api/v1/servers/{name}/startup-settings", h: a.handleStartupSettings},
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/usage", h: a.handleUsage},
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/extensions", h: a.handleExtensions},
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/config/paper-global", h: a.handleReadPaperGlobal},

@@ -29,6 +29,8 @@ import type {
   ServerJob,
   ServerNotify,
   ServerStatus,
+  ServerStartupSettings,
+  StartupSettingsPatch,
   WhitelistImage,
   Submission,
   UserView,
@@ -105,6 +107,7 @@ interface AccessState {
 interface MockState {
   accounts: Record<AccountID, MockAccount>;
   servers: MockServer[];
+  startupSettings: Map<string, ServerStartupSettings>;
   images: WhitelistImage[];
   access: Record<string, AccessState>;
   backups: BackupView[];
@@ -277,6 +280,18 @@ function mockBackups(): BackupView[] {
 
 function initialState(): MockState {
   return {
+    startupSettings: new Map([
+      ["survival", {
+        java_flags: ["-Dmode=old"], args: ["--universe", "world with spaces", "", "first line\nsecond line"],
+        env: [
+          { name: "FELIS_MANAGED_VALUE", value: "mock-managed-value" },
+          { name: "JAVA_HOME", value: "/opt/felis/jre" },
+          { name: "PLUGIN_MODE", value: "mock fake value" },
+          { name: "PLUGIN_TEXT", value: "first line\nsecond line" },
+        ],
+        stop_commands: ["say mock stopping"],
+      }],
+    ]),
     accounts: {
       owner: account("owner", "owner", true, false),
       user: account("user", "user", false, false),
@@ -1085,13 +1100,89 @@ function fitsQuota(q: Omit<ServerQuota, "canCreate" | "reason">, add: { servers:
     (l.max_storage_gb == null || u.storage_mb + add.storage_mb <= l.max_storage_gb * 1024);
 }
 
+const STARTUP_KEYS = ["java_flags", "args", "env", "stop_commands"] as const;
+const RESERVED_STARTUP_ENV = new Set([
+  "JAVA_MEMORY", "JAVA_FLAGS", "JAVA_HOME", "JRE_HOME", "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS", "CLASSPATH",
+  "RCON_PORT", "RCON_PASSWORD", "FABRIC_PROXY_SECRET", "FABRIC_PROXY_HACK_MESSAGE_CHAIN",
+  "PATH", "HOME", "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "IFS", "CDPATH", "GLOBIGNORE",
+  "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "GCONV_PATH", "GLIBC_TUNABLES",
+]);
+
+function reservedStartupEnv(name: string): boolean {
+  return name.startsWith("FELIS_") || RESERVED_STARTUP_ENV.has(name);
+}
+
+function mockStartupSettings(state: MockState, name: string): ServerStartupSettings {
+  return state.startupSettings.get(name) ?? { java_flags: [], args: [], env: [], stop_commands: [] };
+}
+
+function trimStartupCommand(command: string): string {
+  const trim = (value: string) => value.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "");
+  return trim(trim(command).replace(/^\//, ""));
+}
+
+function patchStartupSettings(current: ServerStartupSettings, patch: StartupSettingsPatch): ServerStartupSettings | "bad_request" | "bad_startup_settings" {
+  const next = structuredClone(current);
+  const text = (value: string, limit: number) => Buffer.byteLength(value) <= limit && !value.includes("\0");
+  for (const key of ["java_flags", "args", "stop_commands"] as const) {
+    const value = patch[key];
+    if (value == null) continue;
+    if (!Array.isArray(value) || value.some((item) => item !== null && typeof item !== "string")) return "bad_request";
+    next[key] = value.map((item) => Buffer.from(item ?? "").toString("utf8"));
+  }
+  if (patch.env != null) {
+    if (!Array.isArray(patch.env)) return "bad_request";
+    const env: ServerStartupSettings["env"] = [];
+    for (const item of patch.env) {
+      if (item === null) return "bad_startup_settings";
+      if (typeof item !== "object" || Array.isArray(item) || Object.keys(item).some((key) => key !== "name" && key !== "value")) return "bad_request";
+      if ((item.name != null && typeof item.name !== "string") || (item.value != null && typeof item.value !== "string")) return "bad_request";
+      const name = Buffer.from(item.name ?? "").toString("utf8");
+      if (reservedStartupEnv(name)) return "bad_startup_settings";
+      env.push({ name, value: Buffer.from(item.value ?? "").toString("utf8") });
+    }
+    next.env = [...current.env.filter((entry) => reservedStartupEnv(entry.name)), ...env];
+  }
+  if (patch.stop_commands != null) {
+    if (next.stop_commands.some((command) => !text(command, 1024))) return "bad_startup_settings";
+    next.stop_commands = next.stop_commands.map(trimStartupCommand);
+  }
+  const env = next.env.filter((entry) => !reservedStartupEnv(entry.name));
+  if (next.java_flags.length > 128 || next.args.length > 128 || env.length > 64 || next.stop_commands.length > 16) return "bad_startup_settings";
+  const heapPrefixes = ["-Xmx", "-Xms", "-mx", "-ms", "-XX:MaxHeapSize", "-XX:InitialHeapSize", "-XX:MinHeapSize", "-XX:VMOptionsFile", "-XX:Flags", "@"];
+  if (next.java_flags.some((flag) => !text(flag, 1024) || !flag || /[\p{White_Space}\p{Cc}]/u.test(flag) || heapPrefixes.some((prefix) => flag.startsWith(prefix)))) return "bad_startup_settings";
+  if (next.args.some((arg) => !text(arg, 2048))) return "bad_startup_settings";
+  const names = new Set<string>();
+  for (const entry of env) {
+    if (Buffer.byteLength(entry.name) > 128 || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(entry.name) || names.has(entry.name) || !text(entry.value, 4096)) return "bad_startup_settings";
+    names.add(entry.name);
+  }
+  if (next.stop_commands.some((raw) => !text(raw, 1024) || !trimStartupCommand(raw) || /[\u0000-\u001f]/.test(trimStartupCommand(raw)))) return "bad_startup_settings";
+  const total = [...next.java_flags, ...next.args, ...next.stop_commands, ...env.flatMap((entry) => [entry.name, entry.value])]
+    .reduce((sum, value) => sum + Buffer.byteLength(value), 0);
+  return total <= 65536 ? next : "bad_startup_settings";
+}
+
 async function patchMockServer(ctx: SessionContext, serverInfo: MockServer, ownerPatch: boolean): Promise<void> {
   const body = await readJSON<{
     displayName?: string; autostartPolicy?: AutostartPolicy; idleStopSeconds?: number; memory?: string;
     cpu?: string; image?: string; confirmImageChange?: boolean; resources?: { cpu?: string };
     software?: SoftwareRequest; confirmSoftwareChange?: boolean; acceptEula?: boolean;
     resumeAfterHostRestart?: boolean; restartOnCrash?: boolean; maxCrashRestarts?: number; notify?: Partial<ServerNotify>;
-  }>(ctx.req);
+  } & StartupSettingsPatch>(ctx.req).catch(() => null);
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    sendError(ctx.res, 400, "bad_request", "invalid request body");
+    return;
+  }
+  const allowed = new Set<string>([
+    ...STARTUP_KEYS, "displayName", "autostartPolicy", "idleStopSeconds", "memory", "software",
+    "confirmSoftwareChange", "acceptEula", "resumeAfterHostRestart", "restartOnCrash", "maxCrashRestarts", "notify",
+    ...(ownerPatch ? ["cpu"] : ["image", "confirmImageChange", "resources", "storage"]),
+  ]);
+  if (Object.keys(body).some((key) => !allowed.has(key))) {
+    sendError(ctx.res, 400, "bad_request", "unknown server patch field");
+    return;
+  }
   const changed: string[] = [];
   const next: Partial<MockServer> = {};
   if (body.image !== undefined && body.software) {
@@ -1196,7 +1287,22 @@ async function patchMockServer(ctx: SessionContext, serverInfo: MockServer, owne
     next.notify = { ...serverInfo.notify, ...body.notify };
     changed.push("notify");
   }
+  const startupKeys = STARTUP_KEYS.filter((key) => body[key] != null);
+  let startup: ServerStartupSettings | undefined;
+  if (startupKeys.length) {
+    const prepared = patchStartupSettings(mockStartupSettings(ctx.state, serverInfo.name), body);
+    if (typeof prepared === "string") {
+      sendError(ctx.res, 400, prepared, "invalid startup settings");
+      return;
+    }
+    startup = prepared;
+    changed.push(...startupKeys);
+  } else if (Object.keys(body).every((key) => STARTUP_KEYS.some((setting) => setting === key))) {
+    sendError(ctx.res, 400, "bad_request", "no server fields were supplied");
+    return;
+  }
   Object.assign(serverInfo, next);
+  if (startup) ctx.state.startupSettings.set(serverInfo.name, startup);
   sendJSON(ctx.res, 200, { name: serverInfo.name, patched: changed });
 }
 
@@ -2966,6 +3072,15 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
   if (is("GET", ctx) && ctx.parts[4] === "usage") {
     if (!canManage(ctx.account, serverInfo)) sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
     else sendJSON(ctx.res, 200, mockUsage(serverInfo));
+    return true;
+  }
+  if (is("GET", ctx) && ctx.parts[4] === "startup-settings" && ctx.parts.length === 5) {
+    if (!canManage(ctx.account, serverInfo)) sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
+    else {
+      const settings = mockStartupSettings(ctx.state, serverInfo.name);
+      ctx.res.setHeader("Cache-Control", "no-store");
+      sendJSON(ctx.res, 200, { ...settings, env: settings.env.filter((entry) => !reservedStartupEnv(entry.name)) });
+    }
     return true;
   }
   if (is("PATCH", ctx) && !ctx.parts[4]) {

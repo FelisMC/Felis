@@ -60,7 +60,7 @@ func TestSoftwareServerPodOrder(t *testing.T) {
 	if !main.Stdin || main.StdinOnce || main.TTY {
 		t.Fatalf("runtime stdin=%v stdinOnce=%v tty=%v", main.Stdin, main.StdinOnce, main.TTY)
 	}
-	if !slices.Equal(main.Command, []string{"/felis/bin/felis", "launch", "--data", "/data"}) || main.WorkingDir != "/data" {
+	if !slices.Equal(main.Command, []string{"/felis/bin/felis", "launch", "--data", "/data", "--"}) || main.WorkingDir != "/data" {
 		t.Errorf("server container command %v in %s, want felis launch in /data", main.Command, main.WorkingDir)
 	}
 	if findEnv(main.Env, envSoftware) == nil || findEnv(main.Env, "RCON_PASSWORD") == nil {
