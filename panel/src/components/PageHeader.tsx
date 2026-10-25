@@ -34,7 +34,7 @@ export function PageHeader({ icon: Icon, title, subtitle, actions, tabs, classNa
           {subtitle && <div className="text-sm text-muted-foreground mt-0.5">{subtitle}</div>}
         </div>
       </div>
-      {actions && <div className="flex items-center gap-3 shrink-0">{actions}</div>}
+      {actions && <div className="flex min-w-0 max-w-full shrink-0 flex-wrap items-center gap-3">{actions}</div>}
     </div>
   );
   // In the header strip the tabs sit on its bottom border: the negative margin takes back the

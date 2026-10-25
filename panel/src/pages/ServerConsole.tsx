@@ -287,7 +287,7 @@ export function ServerConsole() {
             title={data.displayName || data.name}
             subtitle={cfg ? <CopyAddress address={joinAddress(data.subdomain, cfg)} /> : undefined}
             actions={
-              <div className="flex flex-wrap items-center justify-end gap-2">
+              <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
                 {error ? (
                   <span role="status" className="text-sm font-medium text-destructive">{t("status_stale")}</span>
                 ) : startupBlocked ? (
