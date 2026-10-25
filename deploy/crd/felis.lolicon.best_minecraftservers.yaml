@@ -90,6 +90,27 @@ spec:
                   FallbackServer is the Velocity server name traffic routes to while this
                   server is stopped or starting.
                 type: string
+              extraPorts:
+                type: array
+                maxItems: 5
+                x-kubernetes-list-type: map
+                x-kubernetes-list-map-keys:
+                - protocol
+                - port
+                items:
+                  type: object
+                  required:
+                  - protocol
+                  - port
+                  properties:
+                    protocol:
+                      type: string
+                      enum: [TCP, UDP]
+                    port:
+                      type: integer
+                      format: int32
+                      minimum: 1
+                      maximum: 65535
               idle:
                 description: Idle configures empty-server auto-stop (spec §8).
                 properties:
@@ -406,9 +427,35 @@ spec:
             - image
             - subdomain
             type: object
+            x-kubernetes-validations:
+            - rule: "!has(self.extraPorts) || self.extraPorts.all(p, p.protocol != 'TCP' || (p.port != 25565 && p.port != 25575 && (!has(self.rcon) || !has(self.rcon.port) || p.port != self.rcon.port) && (!has(self.startup) || !has(self.startup.healthHTTPPort) || p.port != self.startup.healthHTTPPort)))"
+              message: Extra ports cannot expose a managed TCP port.
           status:
             description: MinecraftServerStatus is the observed state (spec §4 status.*).
             properties:
+              extraPorts:
+                type: array
+                maxItems: 5
+                items:
+                  type: object
+                  required:
+                  - protocol
+                  - port
+                  - nodePort
+                  properties:
+                    protocol:
+                      type: string
+                      enum: [TCP, UDP]
+                    port:
+                      type: integer
+                      format: int32
+                      minimum: 1
+                      maximum: 65535
+                    nodePort:
+                      type: integer
+                      format: int32
+                      minimum: 1
+                      maximum: 65535
               nodeName:
                 type: string
               autoStop:

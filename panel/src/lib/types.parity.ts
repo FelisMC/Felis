@@ -29,6 +29,8 @@ export type WireParity = [
   Holds<Parity<T.UsagePoint, S["UsagePoint"]>>,
   Holds<Parity<T.ServerUsage, S["ServerUsage"]>>,
   Holds<Parity<T.ServerDiskUsage, S["ServerDiskUsage"]>>,
+  Holds<Parity<T.ServerExtraPortRequest, S["ExtraPortRequest"]>>,
+  Holds<Parity<T.ServerExtraPort, S["ServerExtraPort"]>>,
   Holds<Parity<T.ConsoleHistoryPage, S["ConsoleHistoryPage"]>>,
   Holds<Parity<T.ConsoleCommandResult, S["ConsoleCommandResult"]>>,
   Holds<Parity<T.MailSettings, S["MailSettings"]>>,

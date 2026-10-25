@@ -139,6 +139,24 @@ describe("ServerConsole failed start", () => {
 });
 
 describe("ServerConsole edit dialog", () => {
+  it.each(["admin", "owner", "viewer"])("shows extra ports and passes the current values only to a managing %s", async (role) => {
+    tier.isAdmin = role === "admin";
+    calls.myServers.mockResolvedValue([{ name: "survival", owned: role === "owner" }]);
+    calls.status.mockResolvedValue(status({ phase: "Running", desiredState: "Running", extraPorts: [{ protocol: "UDP", port: 24454, nodePort: 31001, address: "203.0.113.10:31001" }], extraPortsPending: true }));
+    renderConsole();
+    await screen.findByTestId("log-stream");
+    const region = { name: i18next.t("servers:extra_ports_title") };
+    if (role === "viewer") {
+      expect(screen.queryByRole("region", region)).toBeNull();
+      return;
+    }
+    const ports = await screen.findByRole("region", region);
+    expect(within(ports).getByText("203.0.113.10:31001")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: /Edit Server Config/ }));
+    expect(screen.getByRole("spinbutton", { name: i18next.t("servers:extra_ports_internal", { number: 1 }) })).toHaveProperty("value", "24454");
+    expect(within(screen.getByRole("dialog")).getByText(i18next.t("servers:extra_ports_pending"))).toBeTruthy();
+  });
+
   it("offers the server's memory limit as the current memory, not the JVM heap", async () => {
     calls.status.mockResolvedValue(
       status({ phase: "Stopped", desiredState: "Stopped", memory: "4Gi", javaMemory: "3072M", cpu: "2" }),

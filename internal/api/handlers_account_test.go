@@ -241,7 +241,7 @@ func TestLinkVerifyTakesOverDeletedLinkOnly(t *testing.T) {
 	repo := newFakeRepo()
 	repo.seedUser(UserView{ID: "u-gone", Username: "gone", Email: "gone@example.net", Role: "user"})
 	repo.seedUser(UserView{ID: "u-locked", Username: "locked", Email: "locked@example.net", Role: "user"})
-	if err := repo.DeleteUser(ctx, "u-gone", "test"); err != nil {
+	if err := repo.DeleteUser(ctx, "u-gone", "test", func(context.Context, string) error { return nil }); err != nil {
 		t.Fatalf("DeleteUser: %v", err)
 	}
 	repo.links[mcGone] = "u-gone" // a retired source's link outlives the account

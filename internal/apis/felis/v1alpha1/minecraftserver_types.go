@@ -165,6 +165,11 @@ type MinecraftServerSpec struct {
 	Args []string `json:"args,omitempty"`
 	// Env are extra environment variables injected into the server container.
 	Env []EnvVar `json:"env,omitempty"`
+	// +kubebuilder:validation:MaxItems=5
+	// +listType=map
+	// +listMapKey=protocol
+	// +listMapKey=port
+	ExtraPorts []ExtraPort `json:"extraPorts,omitempty"`
 
 	// OnlineMode mirrors server.properties online-mode; wake and claim rules hold only when the proxy enforces online-mode=true.
 	OnlineMode bool `json:"onlineMode,omitempty"`
@@ -455,6 +460,8 @@ type MinecraftServerStatus struct {
 	AutoStop  *AutoStop    `json:"autoStop,omitempty"`
 	// Events are the latest lifecycle events, oldest first.
 	Events []ServerEvent `json:"events,omitempty"`
+	// +kubebuilder:validation:MaxItems=5
+	ExtraPorts []AllocatedExtraPort `json:"extraPorts,omitempty"`
 	// Conditions are the standard metav1 conditions (Ready, RconReached, ...).
 	// +patchMergeKey=type
 	// +patchStrategy=merge

@@ -1736,13 +1736,16 @@ func (p *PGRepo) userView(ctx context.Context, userID string) (*UserView, error)
 	return &v, nil
 }
 
-func (p *PGRepo) DeleteUser(ctx context.Context, userID, _ string) error {
+func (p *PGRepo) DeleteUser(ctx context.Context, userID, _ string, clearPorts func(context.Context, string) error) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, userID); err != nil {
+		return err
+	}
 	var exists bool
 	if err := tx.QueryRowContext(ctx,
 		`SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL)`,
@@ -1751,6 +1754,29 @@ func (p *PGRepo) DeleteUser(ctx context.Context, userID, _ string) error {
 	}
 	if !exists {
 		return ErrNotFound
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT name FROM servers WHERE owner_id = $1 AND deleted_at IS NULL ORDER BY name FOR UPDATE`, userID)
+	if err != nil {
+		return err
+	}
+	var servers []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return err
+		}
+		servers = append(servers, name)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, name := range servers {
+		if err := clearPorts(ctx, name); err != nil {
+			return err
+		}
 	}
 
 	if _, err := tx.ExecContext(ctx,
@@ -1782,6 +1808,28 @@ func (p *PGRepo) DeleteUser(ctx context.Context, userID, _ string) error {
 		return err
 	}
 
+	return tx.Commit()
+}
+
+func (p *PGRepo) PatchServerPorts(ctx context.Context, name, ownerID string, apply func() error) error {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var owner string
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(owner_id, '') FROM servers WHERE name = $1 AND deleted_at IS NULL FOR UPDATE`, name).Scan(&owner); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if ownerID != "" && owner != ownerID {
+		return errForbidden
+	}
+	if err := apply(); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 

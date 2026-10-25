@@ -482,6 +482,34 @@ UFW_STATUS="Status: inactive" run_uninstall "default felis minecraft" --yes >/de
 [ -z "$(deletes)" ] && echo "PASS an inactive ufw is left alone" \
   || { echo "FAIL an inactive ufw: deleted <$(deletes)>"; fails=$((fails + 1)); }
 
+extra_cleanup="$(awk '/^remove_firewalld_rules\(\) \{/,/^}/' "$US")"
+run_extra_port_cleanup() {
+  K3S_MODE="$1" FIREWALLD="$2" bash -c '
+    FELIS_PANEL_NODEPORT=30443 POD_CIDR=10.42.0.0/16 SERVICE_CIDR=10.43.0.0/16
+    systemctl() { [ "$FIREWALLD" = 1 ]; }
+    ok() { :; }
+    firewall-cmd() {
+      case "$*" in
+        "--permanent --query-port=30000-32767/tcp"|"--permanent --query-port=30000-32767/udp") return 0 ;;
+        *--query-*|*--list-rich-rules*) return 1 ;;
+        *) echo "FW $*" >&2 ;;
+      esac
+    }
+    '"$extra_cleanup"'
+    remove_firewalld_rules 25565 ""
+  '
+}
+out="$(run_extra_port_cleanup remove 1 2>&1)"
+expect "removed k3s closes additional TCP ports" "FW --permanent --remove-port=30000-32767/tcp" "$out"
+expect "removed k3s closes additional UDP ports" "FW --permanent --remove-port=30000-32767/udp" "$out"
+out="$(run_extra_port_cleanup keep 1 2>&1)"
+case "$out" in
+  *30000-32767*) echo "FAIL retained k3s lost its native port range"; fails=$((fails + 1)) ;;
+  *) echo "PASS retained k3s keeps its native port range" ;;
+esac
+out="$(run_extra_port_cleanup remove 0 2>&1)"
+[ -z "$out" ] || { echo "FAIL inactive firewalld was changed: <$out>"; fails=$((fails + 1)); }
+
 # The database's cluster and the move's marker are where bootstrap put them, or keep-data
 # and purge act on a directory that is not there.
 paths="$(FELIS_UNINSTALL_SOURCED=1 bash -c '. "$0"; printf "%s %s\n" "$PG_DATA_DIR" "$PG_MOVED_MARKER"' "$US")"

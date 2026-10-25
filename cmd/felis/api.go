@@ -320,6 +320,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	}
 	cluster := api.NewK8sCluster(cl, cfg.K8s.Namespace).WithServerCache(serverCache, serversSynced).WithDistributed(distribution != nil, os.Getenv("FELIS_CONTROLLER_NODE"))
 	cluster.DiskWorldResolver = worldResolver
+	cluster.ExtraPortsPublicIP = cfg.Velocity.PublicIP
 	if distribution != nil {
 		distribution.Record = func(ctx context.Context, b distributed.Backup) error {
 			keep, retention, ok := backupPolicy(b.Reason, archive.Reaper(ctx))

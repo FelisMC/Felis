@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"math"
 	"net/http"
@@ -200,8 +201,18 @@ func (a *API) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 			"the owner account cannot be deleted from the panel"))
 		return
 	}
+	clearPorts := func(ctx context.Context, name string) error {
+		info, err := a.Cluster.GetServer(ctx, name)
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return a.Cluster.ClearExtraPorts(ctx, name, info.UID)
+	}
 
-	if err := a.Repo.DeleteUser(r.Context(), id, p.Email); err != nil {
+	if err := a.Repo.DeleteUser(r.Context(), id, p.Email, clearPorts); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			writeError(w, r, newError(http.StatusNotFound, "not_found", "user not found"))
 			return

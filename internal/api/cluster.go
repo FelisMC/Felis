@@ -10,6 +10,7 @@ import (
 
 // ServerInfo projects CRD lifecycle state; business ownership and quotas remain in Postgres.
 type ServerInfo struct {
+	UID             string `json:"-"`
 	NodeName        string `json:"nodeName,omitempty"`
 	Name            string `json:"name"`
 	Subdomain       string `json:"subdomain"`
@@ -25,13 +26,15 @@ type ServerInfo struct {
 	Image           string `json:"image,omitempty"`
 	JavaMemory      string `json:"javaMemory,omitempty"`
 	// Memory is the pod limit; JavaMemory is the heap derived from it.
-	Memory      string           `json:"memory,omitempty"`
-	StorageSize string           `json:"storageSize,omitempty"`
-	CPU         string           `json:"cpu,omitempty"`
-	CPUMilli    *int64           `json:"cpuMilli,omitempty"`
-	MemoryBytes *int64           `json:"memoryBytes,omitempty"`
-	Disk        *ServerDiskUsage `json:"disk,omitempty"`
-	DiskFull    bool             `json:"diskFull,omitempty"`
+	Memory            string            `json:"memory,omitempty"`
+	StorageSize       string            `json:"storageSize,omitempty"`
+	CPU               string            `json:"cpu,omitempty"`
+	CPUMilli          *int64            `json:"cpuMilli,omitempty"`
+	MemoryBytes       *int64            `json:"memoryBytes,omitempty"`
+	Disk              *ServerDiskUsage  `json:"disk,omitempty"`
+	DiskFull          bool              `json:"diskFull,omitempty"`
+	ExtraPorts        []ServerExtraPort `json:"extraPorts,omitempty"`
+	ExtraPortsPending bool              `json:"extraPortsPending,omitempty"`
 	// IdleStopSeconds=0 disables idle shutdown.
 	IdleStopSeconds int32 `json:"idleStopSeconds"`
 	// PlayerCountUnknown suspends idle shutdown until RCON can read the count.
@@ -134,6 +137,7 @@ type ServerSpecPatch struct {
 	Args            *[]string
 	Env             *[]v1alpha1.EnvVar
 	StopCommands    *[]string
+	ExtraPorts      *[]v1alpha1.ExtraPort
 	// ClearSoftware removes the runtime-software selection when moving to a server image.
 	Software      *v1alpha1.SoftwareSpec
 	ClearSoftware bool
@@ -171,6 +175,7 @@ type Cluster interface {
 	CreateServer(ctx context.Context, in CreateServerInput) error
 	// PatchServerSpec merge-patches non-nil fields so concurrent operator status updates survive.
 	PatchServerSpec(ctx context.Context, name string, patch ServerSpecPatch) error
+	ClearExtraPorts(ctx context.Context, name, uid string) error
 	ServerEventFeeds(ctx context.Context) ([]ServerEventFeed, error)
 	// MarkEventsMailed records that events up to seq were handled.
 	MarkEventsMailed(ctx context.Context, name string, seq int64) error

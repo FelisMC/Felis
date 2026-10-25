@@ -174,5 +174,7 @@
   "self_service_disabled": "This account has no server quota. Ask the platform owner to assign one.",
   "no_node": "No node can take a new server at the moment. Contact an administrator.",
   "bad_url": "The URL must use HTTP or HTTPS and point to a public address. Private, loopback and link-local addresses are not allowed.",
-  "download_failed": "The remote file download failed. Check the URL and remote service status."
+  "download_failed": "The remote file download failed. Check the URL and remote service status.",
+  "bad_extra_ports": "Additional port settings are invalid. Check protocols, port ranges, duplicate entries and managed port restrictions.",
+  "extra_ports_pending": "Additional ports are being removed. Wait for the configuration to finish before trying again."
 }

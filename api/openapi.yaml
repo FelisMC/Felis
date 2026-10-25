@@ -919,6 +919,24 @@ components:
             budget including connection and authentication. A failure still allows
             shutdown. Scaling retries may repeat commands; execution is best effort.
 
+    ExtraPortRequest:
+      type: object
+      additionalProperties: false
+      required: [protocol, port]
+      properties:
+        protocol: { type: string, enum: [TCP, UDP] }
+        port: { type: integer, format: int32, minimum: 1, maximum: 65535 }
+
+    ServerExtraPort:
+      type: object
+      description: An additional port requested by the server manager, with its confirmed external mapping when available.
+      required: [protocol, port]
+      properties:
+        protocol: { type: string, enum: [TCP, UDP] }
+        port: { type: integer, format: int32, minimum: 1, maximum: 65535 }
+        nodePort: { type: integer, format: int32, description: Allocated external port; absent until the configuration is confirmed. }
+        address: { type: string, description: Direct node IP and external port, with IPv6 brackets when needed; absent when unavailable. }
+
     ServerDiskUsage:
       type: object
       description: Last successful measurement of allocated world-volume bytes; available while stopped and private to the server owner and administrators.
@@ -941,6 +959,12 @@ components:
       description: Status projection of one server (internal/api/cluster.go ServerInfo).
       required: [name, subdomain, phase, ready, playersOnline, playersMax, idleStopSeconds, resumeAfterHostRestart, restartOnCrash, maxCrashRestarts, notify]
       properties:
+        extraPorts:
+          type: array
+          maxItems: 5
+          items: { $ref: '#/components/schemas/ServerExtraPort' }
+          description: Additional ports; private to the server owner and administrators.
+        extraPortsPending: { type: boolean, description: The requested additional-port configuration is not yet confirmed as applied. }
         disk: { $ref: '#/components/schemas/ServerDiskUsage' }
         diskFull: { type: boolean, description: Startup is blocked by the disk quota; a successful fresh sample below the quota is required to release an existing full-disk block. }
         startup: { $ref: '#/components/schemas/StartupStatus', description: Private runtime and startup diagnostics for authorized server managers. }
@@ -1198,6 +1222,12 @@ components:
       description: One row of the caller's server list (internal/api/repo.go MyServerView).
       required: [name, subdomain, owned, claimable, playersOnline, playersMax]
       properties:
+        extraPorts:
+          type: array
+          maxItems: 5
+          items: { $ref: '#/components/schemas/ServerExtraPort' }
+          description: Additional ports; owned rows only.
+        extraPortsPending: { type: boolean, description: The requested additional-port configuration is not yet confirmed as applied; owned rows only. }
         disk: { $ref: '#/components/schemas/ServerDiskUsage' }
         diskFull: { type: boolean, description: Startup is blocked by the disk quota; a successful fresh sample below the quota is required to release an existing full-disk block. }
         cpu: { type: string, description: CPU limit; owned rows only. }
@@ -5560,6 +5590,16 @@ paths:
               description: Only the supplied fields are patched; an empty patch is rejected.
               properties:
                 <<: *StartupSettingsPatchProperties
+                extraPorts:
+                  type: [array, 'null']
+                  maxItems: 5
+                  items: { $ref: '#/components/schemas/ExtraPortRequest' }
+                  description: >-
+                    Additional TCP or UDP ports. Omit or use null to keep the current
+                    list, or use an empty array to remove it. Duplicate protocol/port
+                    pairs and managed game, RCON or health TCP ports are rejected with
+                    400 bad_extra_ports. External ports are allocated by the platform.
+                    Changes apply while running or stopped without restarting the game.
                 displayName: { type: string, maxLength: 64 }
                 autostartPolicy: { type: string, enum: [ownerOnly, public, allowlist] }
                 idleStopSeconds: { type: integer, format: int32 }
@@ -8928,6 +8968,11 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          description: Additional-port cleanup is pending or the inspected server identity changed; ownership is retained.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /api/v1/users/{id}/disable:
     post:
@@ -10804,6 +10849,16 @@ paths:
               description: Only the supplied fields are patched; an empty patch is rejected.
               properties:
                 <<: *StartupSettingsPatchProperties
+                extraPorts:
+                  type: [array, 'null']
+                  maxItems: 5
+                  items: { $ref: '#/components/schemas/ExtraPortRequest' }
+                  description: >-
+                    Additional TCP or UDP ports. Omit or use null to keep the current
+                    list, or use an empty array to remove it. Duplicate protocol/port
+                    pairs and managed game, RCON or health TCP ports are rejected with
+                    400 bad_extra_ports. External ports are allocated by the platform.
+                    Changes apply while running or stopped without restarting the game.
                 displayName:
                   type: string
                   maxLength: 64

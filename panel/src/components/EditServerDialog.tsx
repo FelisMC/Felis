@@ -27,7 +27,7 @@ import { api, humanizeError } from "@/lib/api";
 import { formatBytes, splitImageRef } from "@/lib/format";
 import { DISPLAY_NAME_MAX } from "@/lib/naming";
 import { useAsync } from "@/lib/hooks";
-import type { AutostartPolicy, Phase, ServerNotify, ServerSoftware, ServerStartupSettings } from "@/lib/types";
+import type { AutostartPolicy, Phase, ServerExtraPort, ServerNotify, ServerSoftware, ServerStartupSettings } from "@/lib/types";
 import { InlineError } from "@/components/MessageLine";
 import { uploadFile } from "@/components/files/uploadFile";
 import { SegmentedControl } from "@/components/SegmentedControl";
@@ -111,6 +111,8 @@ const DEFAULT_NOTIFY: ServerNotify = { started: false, stopped: false, problems:
 const NOTIFY_KEYS = ["problems", "started", "stopped"] as const;
 const STARTUP_KEYS = ["java_flags", "args", "env", "stop_commands"] as const;
 const STARTUP_LISTS = [{ key: "java_flags", max: 128 }, { key: "args", max: 128 }, { key: "stop_commands", max: 16 }] as const;
+const MAX_EXTRA_PORTS = 5;
+type ExtraPortDraft = { protocol: ServerExtraPort["protocol"]; port: string };
 
 function StartupArgumentList({ label, hint, values, max, onChange }: {
   label: string; hint: string; values: string[]; max: number; onChange: (values: string[]) => void;
@@ -158,6 +160,8 @@ interface Props {
   currentCrashRestart?: boolean;
   currentMaxCrashRestarts?: number;
   currentNotify?: ServerNotify;
+  currentExtraPorts?: ServerExtraPort[];
+  currentExtraPortsPending?: boolean;
   /** owner edits a server the caller owns (PATCH /me/servers/{name}): no image,
    *  memory and CPU within their quota. admin is the staff patch. */
   mode?: "admin" | "owner";
@@ -194,6 +198,8 @@ export function EditServerDialog({
   currentCrashRestart = true,
   currentMaxCrashRestarts = 3,
   currentNotify = DEFAULT_NOTIFY,
+  currentExtraPorts,
+  currentExtraPortsPending = false,
   mode = "admin",
   onUpdated,
 }: Props) {
@@ -238,6 +244,9 @@ export function EditServerDialog({
   // An image change moves the world to another build for good, so saving one waits
   // for this acknowledgement (the API refuses it with image_change_unconfirmed).
   const [imageConfirmed, setImageConfirmed] = useState(false);
+  const portsId = useId();
+  const portsKey = JSON.stringify((currentExtraPorts ?? []).map(({ protocol, port }) => ({ protocol, port })));
+  const [ports, setPorts] = useState<{ name: string; original: string; draft: ExtraPortDraft[] } | null>(null);
   const startupId = useId();
   const [startupOpen, setStartupOpen] = useState(false);
   const [startup, setStartup] = useState<{ name: string; original: ServerStartupSettings; draft: ServerStartupSettings } | null>(null);
@@ -258,12 +267,31 @@ export function EditServerDialog({
     setStartupLoading(false);
     setSubmitting(false);
     setUploaded(null);
+    setPorts(null);
   }, []);
   const changeOpen = useCallback((next: boolean) => { resetSession(); setOpen(next); }, [resetSession]);
   useEffect(() => {
     changeOpen(false);
     return () => { startupGeneration.current += 1; saveGeneration.current += 1; };
   }, [serverName, changeOpen]);
+
+  useEffect(() => {
+    if (!open) return;
+    setPorts((previous) => previous?.name === serverName ? previous : {
+      name: serverName, original: portsKey,
+      draft: (JSON.parse(portsKey) as ServerExtraPort[]).map(({ protocol, port }) => ({ protocol, port: String(port) })),
+    });
+  }, [open, serverName, portsKey]);
+  const currentPorts = ports?.name === serverName ? ports : null;
+  const extraPorts = (currentPorts?.draft ?? []).map(({ protocol, port }) => ({ protocol, port: Number(port) }));
+  const extraPortsChanged = currentPorts !== null && JSON.stringify(extraPorts) !== currentPorts.original;
+  const extraPortsOk = extraPorts.length <= MAX_EXTRA_PORTS &&
+    extraPorts.every(({ protocol, port }) => Number.isInteger(port) && port >= 1 && port <= 65535 && !(protocol === "TCP" && [25565, 25575].includes(port))) &&
+    new Set(extraPorts.map(({ protocol, port }) => `${protocol}:${port}`)).size === extraPorts.length;
+
+  function setPortDraft(draft: ExtraPortDraft[]) {
+    setPorts((previous) => previous?.name === serverName ? { ...previous, draft } : previous);
+  }
 
   const currentStartup = startup?.name === serverName ? startup : null;
   const startupChanges: Partial<ServerStartupSettings> = currentStartup ? Object.fromEntries(STARTUP_KEYS
@@ -361,6 +389,7 @@ export function EditServerDialog({
     (form.resume !== currentResume || form.crashRestart !== currentCrashRestart || maxCrashChanged || notifyChanges.length > 0);
 
   const hasChanges =
+    extraPortsChanged ||
     Object.keys(startupChanges).length > 0 ||
     recoveryChanged ||
     displayName !== currentDisplayName ||
@@ -378,6 +407,7 @@ export function EditServerDialog({
     cpuOk &&
     (!memoryChanged || memoryOk) &&
     (!maxCrashChanged || maxCrash !== null) &&
+    (!extraPortsChanged || extraPortsOk) &&
     !submitting &&
     (!imageChanged || imageConfirmed) &&
     (!softwareMoves || softwareConfirmed) &&
@@ -391,6 +421,7 @@ export function EditServerDialog({
     setError(null);
     try {
       const payload: Parameters<typeof api.patchServer>[1] = { ...startupChanges };
+      if (extraPortsChanged) payload.extraPorts = extraPorts;
 
       if (displayName !== currentDisplayName) {
         payload.displayName = displayName;
@@ -767,6 +798,33 @@ export function EditServerDialog({
               <p className="text-xs text-muted-foreground">{t("edit_server_notify_hint")}</p>
             </fieldset>
           )}
+
+          <fieldset disabled={submitting} className="min-w-0 space-y-3 rounded-md border border-border p-3">
+            <legend className="px-1 text-sm font-medium">{t("extra_ports_title")}</legend>
+            <p id={`${portsId}-hint`} className="text-xs leading-relaxed text-muted-foreground">{t("extra_ports_edit_hint")}</p>
+            {currentExtraPortsPending && <p role="status" className="text-xs text-muted-foreground">{t("extra_ports_pending")}</p>}
+            {currentPorts && currentPorts.draft.map((entry, index) => <div key={index} className="grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-end gap-2">
+              <div className="min-w-0 space-y-1">
+                <Label htmlFor={`${portsId}-protocol-${index}`} className="block text-xs">{t("extra_ports_protocol", { number: index + 1 })}</Label>
+                <Select value={entry.protocol} disabled={submitting} onValueChange={(value) => setPortDraft(currentPorts.draft.map((item, at) => at === index ? { ...item, protocol: value as ServerExtraPort["protocol"] } : item))}>
+                  <SelectTrigger id={`${portsId}-protocol-${index}`} aria-describedby={`${portsId}-hint`}><SelectValue /></SelectTrigger>
+                  <SelectContent><SelectItem value="TCP">TCP</SelectItem><SelectItem value="UDP">UDP</SelectItem></SelectContent>
+                </Select>
+              </div>
+              <div className="min-w-0 space-y-1">
+                <Label htmlFor={`${portsId}-port-${index}`} className="block text-xs">{t("extra_ports_internal", { number: index + 1 })}</Label>
+                <Input id={`${portsId}-port-${index}`} type="number" inputMode="numeric" min={1} max={65535} step={1} value={entry.port}
+                  aria-invalid={extraPortsChanged && !extraPortsOk} aria-describedby={`${portsId}-hint${extraPortsChanged && !extraPortsOk ? ` ${portsId}-error` : ""}`}
+                  onChange={(event) => setPortDraft(currentPorts.draft.map((item, at) => at === index ? { ...item, port: event.target.value } : item))} />
+              </div>
+              <Button type="button" variant="ghost" size="icon" aria-label={t("extra_ports_remove", { number: index + 1 })}
+                onClick={() => setPortDraft(currentPorts.draft.filter((_, at) => at !== index))}><Trash2 className="h-4 w-4" /></Button>
+            </div>)}
+            <Button type="button" variant="outline" size="sm" disabled={!currentPorts || currentPorts.draft.length >= MAX_EXTRA_PORTS}
+              onClick={() => currentPorts && setPortDraft([...currentPorts.draft, { protocol: "TCP", port: "" }])}><Plus className="h-4 w-4" />{t("extra_ports_add")}</Button>
+            <p className="text-xs text-muted-foreground">{t("extra_ports_count", { count: currentPorts?.draft.length ?? 0, max: MAX_EXTRA_PORTS })}</p>
+            {extraPortsChanged && !extraPortsOk && <p id={`${portsId}-error`} className="text-xs text-destructive">{t("extra_ports_invalid")}</p>}
+          </fieldset>
 
           <section className="min-w-0 rounded-md border border-border">
             <Button type="button" variant="ghost" className="w-full justify-between px-3" aria-expanded={startupOpen} aria-controls={startupId}

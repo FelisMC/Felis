@@ -30,6 +30,7 @@ import type {
   ServerJob,
   ServerNotify,
   ServerStatus,
+  ServerExtraPort,
   ServerStartupSettings,
   StartupSettingsPatch,
   WhitelistImage,
@@ -905,6 +906,8 @@ function myServerView(serverInfo: MockServer, accountInfo: MockAccount): MyServe
     displayName: serverInfo.displayName,
     diskFull: disk.diskFull,
     ...(owned && {
+      extraPorts: serverInfo.extraPorts,
+      extraPortsPending: serverInfo.extraPortsPending,
       disk: disk.disk,
       cpu: serverInfo.cpu,
       memory: serverInfo.memory,
@@ -1193,19 +1196,47 @@ function patchStartupSettings(current: ServerStartupSettings, patch: StartupSett
   return total <= 65536 ? next : "bad_startup_settings";
 }
 
+function prepareMockExtraPorts(state: MockState, server: MockServer, raw: unknown): ServerExtraPort[] | "bad_request" | "bad_extra_ports" {
+  if (!Array.isArray(raw)) return "bad_request";
+  if (raw.length > 5) return "bad_extra_ports";
+  const keys = new Set<string>();
+  const occupied = new Set([30443, ...state.servers.flatMap((entry) => entry.extraPorts?.flatMap((port) => port.nodePort ? [port.nodePort] : []) ?? [])]);
+  const ports: ServerExtraPort[] = [];
+  for (const item of raw) {
+    if (item !== null && (typeof item !== "object" || Array.isArray(item))) return "bad_request";
+    const fields = (item ?? {}) as Record<string, unknown>;
+    if (Object.keys(fields).some((key) => key !== "protocol" && key !== "port")) return "bad_request";
+    const protocol = fields.protocol ?? "";
+    const port = fields.port ?? 0;
+    if (typeof protocol !== "string" || typeof port !== "number" || !Number.isInteger(port) || port < -2147483648 || port > 2147483647) return "bad_request";
+    if ((protocol !== "TCP" && protocol !== "UDP") || port < 1 || port > 65535 ||
+      (protocol === "TCP" && (port === 25565 || port === 25575)) || keys.has(`${protocol}:${port}`)) return "bad_extra_ports";
+    keys.add(`${protocol}:${port}`);
+    let nodePort = server.extraPorts?.find((entry) => entry.protocol === protocol && entry.port === port)?.nodePort ?? ports.find((entry) => entry.port === port)?.nodePort;
+    if (nodePort === undefined) {
+      for (let candidate = 30000; candidate <= 32767; candidate++) {
+        if (!occupied.has(candidate)) { nodePort = candidate; occupied.add(candidate); break; }
+      }
+    }
+    ports.push({ protocol, port, ...(nodePort !== undefined && { nodePort, address: `203.0.113.10:${nodePort}` }) });
+  }
+  return ports;
+}
+
 async function patchMockServer(ctx: SessionContext, serverInfo: MockServer, ownerPatch: boolean): Promise<void> {
   const body = await readJSON<{
     displayName?: string; autostartPolicy?: AutostartPolicy; idleStopSeconds?: number; memory?: string;
     cpu?: string; image?: string; confirmImageChange?: boolean; resources?: { cpu?: string };
     software?: SoftwareRequest; confirmSoftwareChange?: boolean; acceptEula?: boolean;
     resumeAfterHostRestart?: boolean; restartOnCrash?: boolean; maxCrashRestarts?: number; notify?: Partial<ServerNotify>;
+    extraPorts?: unknown;
   } & StartupSettingsPatch>(ctx.req).catch(() => null);
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     sendError(ctx.res, 400, "bad_request", "invalid request body");
     return;
   }
   const allowed = new Set<string>([
-    ...STARTUP_KEYS, "displayName", "autostartPolicy", "idleStopSeconds", "memory", "software",
+    ...STARTUP_KEYS, "extraPorts", "displayName", "autostartPolicy", "idleStopSeconds", "memory", "software",
     "confirmSoftwareChange", "acceptEula", "resumeAfterHostRestart", "restartOnCrash", "maxCrashRestarts", "notify",
     ...(ownerPatch ? ["cpu"] : ["image", "confirmImageChange", "resources", "storage"]),
   ]);
@@ -1215,6 +1246,16 @@ async function patchMockServer(ctx: SessionContext, serverInfo: MockServer, owne
   }
   const changed: string[] = [];
   const next: Partial<MockServer> = {};
+  if (body.extraPorts != null) {
+    const ports = prepareMockExtraPorts(ctx.state, serverInfo, body.extraPorts);
+    if (typeof ports === "string") {
+      sendError(ctx.res, 400, ports, "invalid additional port settings");
+      return;
+    }
+    next.extraPorts = ports;
+    next.extraPortsPending = ports.some((port) => port.nodePort === undefined) || undefined;
+    changed.push("extraPorts");
+  }
   if (body.image !== undefined && body.software) {
     sendError(ctx.res, 400, "bad_request", "give either an image or server software, not both");
     return;
@@ -1327,7 +1368,7 @@ async function patchMockServer(ctx: SessionContext, serverInfo: MockServer, owne
     }
     startup = prepared;
     changed.push(...startupKeys);
-  } else if (Object.keys(body).every((key) => STARTUP_KEYS.some((setting) => setting === key))) {
+  } else if (!changed.length && Object.keys(body).every((key) => key === "extraPorts" || STARTUP_KEYS.some((setting) => setting === key))) {
     sendError(ctx.res, 400, "bad_request", "no server fields were supplied");
     return;
   }

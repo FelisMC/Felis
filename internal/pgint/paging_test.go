@@ -194,7 +194,7 @@ func TestListUsersTotalFollowsFilters(t *testing.T) {
 	if err := repo.SetUserDisabled(ctx, bob.ID, true); err != nil {
 		t.Fatalf("SetUserDisabled: %v", err)
 	}
-	if err := repo.DeleteUser(ctx, gone.ID, "pgint"); err != nil {
+	if err := repo.DeleteUser(ctx, gone.ID, "pgint", func(context.Context, string) error { return nil }); err != nil {
 		t.Fatalf("DeleteUser: %v", err)
 	}
 	var live int

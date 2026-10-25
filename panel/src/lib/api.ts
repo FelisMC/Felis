@@ -22,6 +22,7 @@ import type {
   ServerNotify,
   ServerPowerResult,
   ServerStartupSettings,
+  ServerExtraPortRequest,
   StartupSettingsPatch,
   ServerQuota,
   SoftwareRequest,
@@ -644,6 +645,7 @@ export const api = rejectingSync({
   createMyServer: (req: SelfCreateRequest) =>
     request<{ name: string; subdomain: string; desiredState: string }>("POST", "/me/servers", req),
   patchMyServer: (name: string, req: StartupSettingsPatch & {
+    extraPorts?: ServerExtraPortRequest[] | null;
     displayName?: string;
     autostartPolicy?: AutostartPolicy;
     idleStopSeconds?: number;
@@ -664,6 +666,7 @@ export const api = rejectingSync({
     request<SelfServiceQuotaSettings>("PUT", "/settings/self-service", body),
 
   patchServer: (name: string, req: StartupSettingsPatch & {
+    extraPorts?: ServerExtraPortRequest[] | null;
     /** Trimmed server-side; an empty one clears it. */
     displayName?: string;
     autostartPolicy?: AutostartPolicy;

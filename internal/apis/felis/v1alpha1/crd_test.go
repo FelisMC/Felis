@@ -134,3 +134,72 @@ func TestCRDBoundsStopCommands(t *testing.T) {
 		})
 	}
 }
+
+func TestCRDBoundsExtraPorts(t *testing.T) {
+	schema := crdSchema(t)
+	port := func(protocol string, number int) map[string]any {
+		return map[string]any{"protocol": protocol, "port": number}
+	}
+	cases := []struct {
+		name  string
+		ports any
+		valid bool
+	}{
+		{"empty", []any{}, true},
+		{"both protocols", []any{port("TCP", 24454), port("UDP", 24454)}, true},
+		{"five entries", []any{port("TCP", 1), port("TCP", 2), port("TCP", 3), port("TCP", 4), port("UDP", 65535)}, true},
+		{"six entries", []any{port("TCP", 1), port("TCP", 2), port("TCP", 3), port("TCP", 4), port("TCP", 5), port("TCP", 6)}, false},
+		{"missing protocol", []any{map[string]any{"port": 24454}}, false},
+		{"missing port", []any{map[string]any{"protocol": "UDP"}}, false},
+		{"SCTP", []any{port("SCTP", 24454)}, false},
+		{"zero", []any{port("UDP", 0)}, false},
+		{"too high", []any{port("TCP", 65536)}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			object := server("", nil)
+			object["spec"].(map[string]any)["extraPorts"] = tc.ports
+			raw, err := json.Marshal(object)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded any
+			if err := json.Unmarshal(raw, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			if err := validate.AgainstSchema(schema, decoded, strfmt.Default); (err == nil) != tc.valid {
+				t.Fatalf("validation error = %v, want valid=%v", err, tc.valid)
+			}
+		})
+	}
+	properties := schema.Properties["spec"]
+	ports := properties.Properties["extraPorts"]
+	keys, err := json.Marshal(ports.Extensions["x-kubernetes-list-map-keys"])
+	if err != nil || string(keys) != `["protocol","port"]` || ports.Extensions["x-kubernetes-list-type"] != "map" {
+		t.Fatal("extra port list must reject duplicate protocol/port pairs")
+	}
+	rules, err := json.Marshal(properties.Extensions["x-kubernetes-validations"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, managed := range []string{"25565", "25575", "self.rcon.port", "self.startup.healthHTTPPort"} {
+		if !strings.Contains(string(rules), managed) {
+			t.Fatalf("CRD has no managed port constraint for %s", managed)
+		}
+	}
+	allocated := schema.Properties["status"].Properties["extraPorts"]
+	for _, number := range []int{0, 65536} {
+		object := map[string]any{"protocol": "UDP", "port": 24454, "nodePort": number}
+		raw, err := json.Marshal([]any{object})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded any
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		if err := validate.AgainstSchema(&allocated, decoded, strfmt.Default); err == nil {
+			t.Fatal("CRD accepted an invalid allocated NodePort")
+		}
+	}
+}

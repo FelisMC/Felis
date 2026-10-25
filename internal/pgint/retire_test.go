@@ -298,7 +298,7 @@ func TestRetireReaperStore(t *testing.T) {
 
 	// Releasing the world finishes a give-up; a deletion stays pending.
 	for _, n := range []string{given, doomed} {
-		if err := st.ReleaseWorld(ctx, n, now); err != nil {
+		if err := st.ReleaseWorld(ctx, n, now, func(string) error { return nil }); err != nil {
 			t.Fatalf("ReleaseWorld(%s): %v", n, err)
 		}
 	}
@@ -356,6 +356,8 @@ func (c *fleetCluster) DeletePVC(_ context.Context, pvc string) error {
 	c.deletedPVC = append(c.deletedPVC, pvc)
 	return nil
 }
+
+func (c *fleetCluster) ClearExtraPorts(context.Context, string, string) error { return nil }
 
 func (c *fleetCluster) DeleteServer(_ context.Context, name, uid string) error {
 	if c.uids[name] != uid {

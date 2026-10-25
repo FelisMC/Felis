@@ -40,6 +40,8 @@ func (c *reclaimCluster) HoldWorld(ctx context.Context, _ string) (context.Conte
 
 func (c *reclaimCluster) WorldExists(context.Context, string) (bool, error) { return true, nil }
 
+func (c *reclaimCluster) ClearExtraPorts(context.Context, string, string) error { return nil }
+
 // DeleteServer is only reached by a retirement, which these tests do not ask for.
 func (c *reclaimCluster) DeleteServer(_ context.Context, name, _ string) error {
 	return errors.New("unexpected deletion of " + name)
@@ -83,7 +85,7 @@ func TestReclaimRestartsReaperClock(t *testing.T) {
 		"bk-"+suffix(t), name, first.ID, "/archives/"+name+"-old.tar.gz", reapedAt, reapedAt.Add(90*reaper.Day)); err != nil {
 		t.Fatalf("seed the old archive: %v", err)
 	}
-	if err := st.ReleaseWorld(ctx, name, reapedAt); err != nil {
+	if err := st.ReleaseWorld(ctx, name, reapedAt, func(string) error { return nil }); err != nil {
 		t.Fatalf("ReleaseWorld: %v", err)
 	}
 	// Leftover warning stamps must not survive into the next ownership.
@@ -398,7 +400,7 @@ func TestReleasedWorldKeepsItsSize(t *testing.T) {
 	if ok, err := repo.ClaimServer(ctx, name, first.ID); err != nil || !ok {
 		t.Fatalf("first claim = (%v, %v)", ok, err)
 	}
-	if err := st.ReleaseWorld(ctx, name, time.Now()); err != nil {
+	if err := st.ReleaseWorld(ctx, name, time.Now(), func(string) error { return nil }); err != nil {
 		t.Fatalf("ReleaseWorld: %v", err)
 	}
 	var owner sql.NullString

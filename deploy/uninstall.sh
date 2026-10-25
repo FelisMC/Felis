@@ -259,7 +259,7 @@ remove_firewalld_rules() { # game-port nano-port
   local game="$1" nano="$2" port rule changed=0
   local ports=("${game}/tcp" "${FELIS_PANEL_NODEPORT}/tcp")
   [ -n "$nano" ] && ports+=("${nano}/tcp")
-  [ "$K3S_MODE" = remove ] && ports+=("6443/tcp")
+  [ "$K3S_MODE" = remove ] && ports+=("6443/tcp" "30000-32767/tcp" "30000-32767/udp")
   for port in "${ports[@]}"; do
     if firewall-cmd --permanent --query-port="$port" >/dev/null 2>&1; then
       firewall-cmd --permanent --remove-port="$port" >/dev/null

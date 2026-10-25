@@ -18,6 +18,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -99,6 +100,8 @@ type Reconciler struct {
 	// Pods avoids a Pod informer; nil falls back to the embedded client.
 	Pods    client.Reader
 	Volumes client.Reader
+	// ExtraResources confirms port cleanup against the API server before ownership can be released.
+	ExtraResources client.Reader
 	// BootID tells host restarts from crashes; nil leaves every restart a crash.
 	BootID   BootIDFunc
 	Recorder record.EventRecorder // nil disables Events
@@ -117,10 +120,14 @@ func (r *Reconciler) now() metav1.Time {
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.ExtraResources == nil {
+		r.ExtraResources = mgr.GetAPIReader()
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.MinecraftServer{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
+		Owns(&networkingv1.NetworkPolicy{}).
 		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrentReconciles}).
 		Complete(r)
 }
@@ -180,6 +187,12 @@ func (r *Reconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		r.recordTransition(ctx, &server, prevPhase, prevRestarts)
 		if r.noteLifecycle(&server, prevPhase, prevGaveUp) {
 			err = r.patchStatus(ctx, &server)
+		}
+	}
+	if extraErr := r.reconcileExtraPorts(ctx, &server); extraErr != nil {
+		log.FromContext(ctx).Error(extraErr, "could not synchronize extra ports")
+		if res.RequeueAfter == 0 || res.RequeueAfter > extraPortsRetry {
+			res.RequeueAfter = extraPortsRetry
 		}
 	}
 	return res, err

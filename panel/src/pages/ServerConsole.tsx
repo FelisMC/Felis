@@ -21,6 +21,7 @@ import type { Phase, AutostartPolicy } from "@/lib/types";
 import { EditServerDialog } from "@/components/EditServerDialog";
 import { SoftwareCard } from "@/components/SoftwareCard";
 import { ResourceUsage } from "@/components/ResourceUsage";
+import { ExtraPortsCard } from "@/components/ExtraPortsCard";
 import { ForwardingDialog } from "@/components/ForwardingDialog";
 import { PowerButton } from "@/components/PowerButton";
 import { RetireCard, RetireNotice } from "@/components/Retirement";
@@ -366,6 +367,7 @@ export function ServerConsole() {
              {/* Right/Sidebar column: Navigation */}
             <div className="flex flex-col gap-4 lg:col-span-1 lg:min-h-0 lg:overflow-y-auto shrink-0">
               {data.software && <SoftwareCard software={data.software} />}
+              {owned && <ExtraPortsCard ports={data.extraPorts ?? []} pending={data.extraPortsPending} />}
               {(isAdmin || owned) && (
                 <EditServerDialog
                   serverName={name}
@@ -385,6 +387,8 @@ export function ServerConsole() {
                   currentCrashRestart={data.restartOnCrash}
                   currentMaxCrashRestarts={data.maxCrashRestarts}
                   currentNotify={data.notify}
+                  currentExtraPorts={data.extraPorts}
+                  currentExtraPortsPending={data.extraPortsPending}
                   onUpdated={reload}
                 />
               )}

@@ -619,6 +619,8 @@ done
 
 k3fblock="$(awk '/^configure_k3s_firewall\(\) \{/,/^}/' "$BS")"
 [ -n "$k3fblock" ] || { echo "FAIL: no configure_k3s_firewall found in $BS"; exit 1; }
+exfblock="$(awk '/^configure_extra_ports_firewall\(\) \{/,/^}/' "$BS")"
+[ -n "$exfblock" ] || { echo "FAIL: no configure_extra_ports_firewall found in $BS"; exit 1; }
 vfblock="$(awk '/^configure_velocity_firewall\(\) \{/,/^}/' "$BS")"
 [ -n "$vfblock" ] || { echo "FAIL: no configure_velocity_firewall found in $BS"; exit 1; }
 run_host_fw() { # ufw-state firewalld(0|1)
@@ -629,6 +631,7 @@ run_host_fw() { # ufw-state firewalld(0|1)
     firewall-cmd() { printf "FW: %s\n" "$*"; }
     '"$ufw_stub"'
     '"$ublock"'
+    '"$exfblock"'
     '"$k3fblock"'
     '"$vfblock"'
     configure_k3s_firewall
@@ -639,6 +642,8 @@ expect "ufw admits the pods" "UFW: allow from 10.42.0.0/16 comment felis-k3s-pod
 expect "ufw admits the services" "UFW: allow from 10.43.0.0/16 comment felis-k3s-services" "$out"
 expect "ufw opens the panel NodePort" "UFW: allow 30443/tcp comment felis-panel" "$out"
 expect "ufw opens the game port" "UFW: allow 25565/tcp comment felis-proxy" "$out"
+expect "ufw admits additional TCP ports" "UFW: allow 30000:32767/tcp comment felis-k3s-extra-ports" "$out"
+expect "ufw admits additional UDP ports" "UFW: allow 30000:32767/udp comment felis-k3s-extra-ports" "$out"
 case "$out" in
   *"UFW: allow 6443"*) echo "FAIL ufw must not open the API server to the network:"; echo "$out"; fails=$((fails + 1)) ;;
   *) echo "PASS ufw keeps the API server closed to the network" ;;
@@ -653,6 +658,8 @@ case "$out" in
   *) echo "PASS an inactive ufw is left alone" ;;
 esac
 expect "  while firewalld still gets the pods" "FW: --permanent --zone=trusted --add-source=10.42.0.0/16" "$out"
+expect "firewalld admits additional TCP ports" "FW: --permanent --add-port=30000-32767/tcp" "$out"
+expect "firewalld admits additional UDP ports" "FW: --permanent --add-port=30000-32767/udp" "$out"
 
 expect "a routable bind with no proxy CIDR is warned about" "WARNING: bound to 10.0.0.5:8081 with no FELIS_NANO_PROXY_CIDR" \
   "$(run_summary 10.0.0.5:8081)"
@@ -5161,6 +5168,7 @@ expect "worker is quarantined" 'felis.lolicon.best/unapproved=true:NoSchedule' "
 expect "worker mirror preserves logical references and points at the cluster service" \
   'http://${WORKER_REGISTRY_IP}:5000' "$worker"
 expect "worker disables registry endpoint fallback" 'disable-default-registry-endpoint: true' "$worker"
+expect "worker install admits additional ports" 'configure_extra_ports_firewall' "$worker"
 for forbidden in deploy_bundle install_cloudflared install_velocity run_migrations load_or_make_secrets; do
   case "$worker" in
     *"$forbidden"*) echo "FAIL worker invokes $forbidden"; fails=$((fails + 1));;
@@ -5316,6 +5324,7 @@ run_worker_upgrade() { # $1 installed k3s version, $2 FROM_TUI, $3 node name, $4
     detect_node_ip() { :; }
     bootstrap_from_tui() { [ "${FELIS_BOOTSTRAP_FROM_TUI:-}" = 1 ]; }
     acquire_felis_binary() { echo ACQUIRE; }
+    configure_extra_ports_firewall() { echo EXTRA_PORTS_FIREWALL; }
     stage_k3s_airgap_images() { echo AIRGAP; }
     curl() { echo "CURL $*"; return "$CURL_RC"; }
     sh() { echo "INSTALL version=$INSTALL_K3S_VERSION exec=$INSTALL_K3S_EXEC"; }
@@ -5329,6 +5338,7 @@ run_worker_upgrade() { # $1 installed k3s version, $2 FROM_TUI, $3 node name, $4
 out="$(run_worker_upgrade v1.36.4+k3s1 1 worker-b)"
 expect "a worker update reinstalls the firewall with the current peers" "FELIS node firewall --peers 192.0.2.20/32,203.0.113.10/32 --controller-ip 203.0.113.10:6443" "$out"
 expect "  and installs the controller's felis binary" "ACQUIRE" "$out"
+expect "worker update refreshes additional-port openings" "EXTRA_PORTS_FIREWALL" "$out"
 expect "  and leaves k3s alone at the controller's version" "already runs k3s v1.36.4+k3s1" "$out"
 case "$out" in *CURL*) echo "FAIL a worker at the controller's k3s version must not reinstall k3s"; fails=$((fails + 1)) ;; esac
 out="$(run_worker_upgrade v1.35.2+k3s1 1 worker-b)"

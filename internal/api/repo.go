@@ -21,26 +21,28 @@ type RetireState struct {
 
 // MyServerView exposes detailed lifecycle fields only for owned rows; other status fields are best effort.
 type MyServerView struct {
-	Name               string           `json:"name"`
-	Subdomain          string           `json:"subdomain"`
-	Owned              bool             `json:"owned"`
-	Claimable          bool             `json:"claimable"`
-	Phase              string           `json:"phase,omitempty"`
-	PlayersOnline      int32            `json:"playersOnline"`
-	PlayersMax         int32            `json:"playersMax"`
-	DisplayName        string           `json:"displayName,omitempty"`
-	DesiredState       string           `json:"desiredState,omitempty"`
-	AutostartPolicy    string           `json:"autostartPolicy,omitempty"`
-	PlayerCountUnknown bool             `json:"playerCountUnknown,omitempty"`
-	AutoRestarts       int32            `json:"autoRestarts,omitempty"`
-	StartGaveUp        bool             `json:"startGaveUp,omitempty"`
-	CPU                string           `json:"cpu,omitempty"`
-	Memory             string           `json:"memory,omitempty"`
-	CPUMilli           *int64           `json:"cpuMilli,omitempty"`
-	MemoryBytes        *int64           `json:"memoryBytes,omitempty"`
-	Disk               *ServerDiskUsage `json:"disk,omitempty"`
-	DiskFull           bool             `json:"diskFull,omitempty"`
-	Retiring           *RetireState     `json:"retiring,omitempty"`
+	Name               string            `json:"name"`
+	Subdomain          string            `json:"subdomain"`
+	Owned              bool              `json:"owned"`
+	Claimable          bool              `json:"claimable"`
+	Phase              string            `json:"phase,omitempty"`
+	PlayersOnline      int32             `json:"playersOnline"`
+	PlayersMax         int32             `json:"playersMax"`
+	DisplayName        string            `json:"displayName,omitempty"`
+	DesiredState       string            `json:"desiredState,omitempty"`
+	AutostartPolicy    string            `json:"autostartPolicy,omitempty"`
+	PlayerCountUnknown bool              `json:"playerCountUnknown,omitempty"`
+	AutoRestarts       int32             `json:"autoRestarts,omitempty"`
+	StartGaveUp        bool              `json:"startGaveUp,omitempty"`
+	CPU                string            `json:"cpu,omitempty"`
+	Memory             string            `json:"memory,omitempty"`
+	CPUMilli           *int64            `json:"cpuMilli,omitempty"`
+	MemoryBytes        *int64            `json:"memoryBytes,omitempty"`
+	Disk               *ServerDiskUsage  `json:"disk,omitempty"`
+	DiskFull           bool              `json:"diskFull,omitempty"`
+	ExtraPorts         []ServerExtraPort `json:"extraPorts,omitempty"`
+	ExtraPortsPending  bool              `json:"extraPortsPending,omitempty"`
+	Retiring           *RetireState      `json:"retiring,omitempty"`
 }
 
 type ServerOwnership struct {
@@ -234,6 +236,8 @@ type Repo interface {
 	UpdateServerResources(ctx context.Context, name string, cpuMilli, memoryMB, storageMB int) error
 	// ResizeServer serializes with claims, caps growth and returns previous values; absent live rows are unchanged.
 	ResizeServer(ctx context.Context, name string, cpuMilli, memoryMB int) (prev ResourceSpec, err error)
+	// PatchServerPorts holds the server row and checks a nonempty owner before applying the cluster patch.
+	PatchServerPorts(ctx context.Context, name, ownerID string, apply func() error) error
 	Audit(ctx context.Context, e AuditEntry) error
 
 	// CreateEmailOTP supersedes live codes for the same (user,purpose), storing only the hash.
@@ -310,7 +314,7 @@ type Repo interface {
 	CreateUser(ctx context.Context, input CreateUserInput, createdBy string) (*UserView, error)
 	UpdateUser(ctx context.Context, userID string, patch UpdateUserInput, updatedBy string) (*UserView, error)
 	// DeleteUser soft-deletes and revokes sessions, releases servers and removes credentials while retaining the audit identity.
-	DeleteUser(ctx context.Context, userID, deletedBy string) error
+	DeleteUser(ctx context.Context, userID, deletedBy string, clearPorts func(context.Context, string) error) error
 	// SetUserDisabled flips the disabled flag of a live user, revoking every session when disabling; ErrNotFound if unknown or deleted.
 	SetUserDisabled(ctx context.Context, userID string, disabled bool) error
 

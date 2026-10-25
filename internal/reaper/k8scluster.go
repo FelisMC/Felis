@@ -13,8 +13,10 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -239,6 +241,36 @@ func (k *K8sCluster) DeleteServer(ctx context.Context, name, uid string) error {
 		}
 		return err
 	})
+}
+
+func (k *K8sCluster) ClearExtraPorts(ctx context.Context, name, uid string) error {
+	err := wait.PollUntilContextTimeout(ctx, 250*time.Millisecond, 15*time.Second, true, func(ctx context.Context) (bool, error) {
+		var ms v1alpha1.MinecraftServer
+		if err := k.get(ctx, name, &ms); err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return true, nil
+			}
+			return false, err
+		}
+		if uid == "" || string(ms.UID) != uid {
+			return false, fmt.Errorf("%w: server identity changed before extra port cleanup", ErrNotQuiet)
+		}
+		if len(ms.Spec.ExtraPorts) > 0 {
+			patch := client.MergeFromWithOptions(ms.DeepCopy(), client.MergeFromWithOptimisticLock{})
+			ms.Spec.ExtraPorts = nil
+			err := k.c.Patch(ctx, &ms, patch)
+			if apierrors.IsConflict(err) {
+				return false, nil
+			}
+			return false, err
+		}
+		condition := meta.FindStatusCondition(ms.Status.Conditions, v1alpha1.ConditionExtraPortsReady)
+		return condition != nil && condition.Status == metav1.ConditionTrue && condition.ObservedGeneration >= ms.Generation && len(ms.Status.ExtraPorts) == 0, nil
+	})
+	if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+		return fmt.Errorf("%w: extra port cleanup is pending", ErrNotQuiet)
+	}
+	return err
 }
 
 func (k *K8sCluster) get(ctx context.Context, name string, ms *v1alpha1.MinecraftServer) error {

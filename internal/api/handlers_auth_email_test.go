@@ -675,7 +675,7 @@ func TestDeadAccountsCannotLogInOrKeepSessions(t *testing.T) {
 	uuid := "11111111-2222-3333-4444-555555555555"
 	repo.links[uuid] = "u-dead"
 	repo.passkeyCreds["pk-1"] = PasskeyCredential{ID: "pk-1", UserID: "u-dead", CredentialID: "cred-1"}
-	if err := repo.DeleteUser(ctx, "u-dead", "test"); err != nil {
+	if err := repo.DeleteUser(ctx, "u-dead", "test", func(context.Context, string) error { return nil }); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if w := do(eh, "POST", "/api/v1/auth/email/verify", `{"email":"dead@example.net","code":"000000"}`, jsonHeader); w.Code != http.StatusBadRequest || decodeErr(t, w) != "invalid_code" {

@@ -167,6 +167,109 @@ describe("EditServerDialog request body", () => {
   });
 });
 
+describe("EditServerDialog extra ports", () => {
+  const portInput = (number = 1) => screen.getByRole("spinbutton", { name: t("extra_ports_internal", { number }) });
+  const initialPorts = [{ protocol: "TCP" as const, port: 8123, nodePort: 31001, address: "203.0.113.10:31001" }];
+
+  it.each(["admin", "owner"] as const)("saves only requested protocol and internal ports through the %s endpoint", async (mode) => {
+    const user = await openDialog({ mode, currentExtraPorts: initialPorts, currentPhase: "Running" });
+    expect(save().disabled).toBe(true);
+    fireEvent.change(portInput(), { target: { value: "8124" } });
+    await user.click(screen.getByRole("button", { name: t("extra_ports_add") }));
+    await user.click(screen.getByRole("combobox", { name: t("extra_ports_protocol", { number: 2 }) }));
+    await user.click(screen.getByRole("option", { name: "UDP" }));
+    fireEvent.change(portInput(2), { target: { value: "8124" } });
+    expect(save().disabled).toBe(false);
+    expect(screen.getByText(t("extra_ports_edit_hint"))).toBeTruthy();
+    await user.click(save());
+    const request = mode === "admin" ? calls.patchServer : calls.patchMyServer;
+    expect(request).toHaveBeenCalledExactlyOnceWith("survival", { extraPorts: [{ protocol: "TCP", port: 8124 }, { protocol: "UDP", port: 8124 }] });
+    expect(calls.getStartupSettings).not.toHaveBeenCalled();
+  });
+
+  it("sends an empty list only after every port is removed", async () => {
+    const user = await openDialog({ mode: "owner", currentExtraPorts: initialPorts });
+    await user.click(screen.getByRole("button", { name: t("extra_ports_remove", { number: 1 }) }));
+    await user.click(save());
+    expect(calls.patchMyServer).toHaveBeenCalledExactlyOnceWith("survival", { extraPorts: [] });
+  });
+
+  it("omits unchanged ports when saving another setting", async () => {
+    const user = await openDialog({ currentExtraPorts: initialPorts });
+    fireEvent.change(cpuInput(), { target: { value: "2" } });
+    await user.click(save());
+    expect(calls.patchServer).toHaveBeenCalledExactlyOnceWith("survival", { resources: { cpu: "2" } });
+  });
+
+  it.each(["", "0", "65536", "1.5", "25565", "25575"])("rejects an invalid or reserved TCP port %j", async (value) => {
+    await openDialog({ currentExtraPorts: initialPorts });
+    fireEvent.change(portInput(), { target: { value } });
+    expect(save().disabled).toBe(true);
+    expect(portInput().getAttribute("aria-invalid")).toBe("true");
+    expect(screen.getByText(t("extra_ports_invalid"))).toBeTruthy();
+    expect(calls.patchServer).not.toHaveBeenCalled();
+  });
+
+  it("refuses duplicate protocol and port pairs", async () => {
+    const user = await openDialog({ currentExtraPorts: initialPorts });
+    await user.click(screen.getByRole("button", { name: t("extra_ports_add") }));
+    fireEvent.change(portInput(2), { target: { value: "8123" } });
+    expect(save().disabled).toBe(true);
+    expect(screen.getByText(t("extra_ports_invalid"))).toBeTruthy();
+  });
+
+  it("limits the editor to five ports and allows another after deletion", async () => {
+    const user = await openDialog({ currentExtraPorts: Array.from({ length: 5 }, (_, at) => ({ protocol: "UDP" as const, port: 24454 + at })) });
+    const add = screen.getByRole("button", { name: t("extra_ports_add") });
+    expect(add).toHaveProperty("disabled", true);
+    await user.click(screen.getByRole("button", { name: t("extra_ports_remove", { number: 3 }) }));
+    expect(add).toHaveProperty("disabled", false);
+    await user.click(add);
+    expect(screen.getAllByRole("spinbutton")).toHaveLength(5);
+    expect(add).toHaveProperty("disabled", true);
+  });
+
+  it("retains a port draft across polling and reloads current values on reopening", async () => {
+    const user = userEvent.setup();
+    const rendered = render(<EditServerDialog serverName="survival" currentExtraPorts={initialPorts} onUpdated={onUpdated} />);
+    await user.click(screen.getByRole("button", { name: /Edit Server Config/ }));
+    fireEvent.change(portInput(), { target: { value: "9000" } });
+    rendered.rerender(<EditServerDialog serverName="survival" currentExtraPorts={[{ protocol: "UDP", port: 24454 }]} currentExtraPortsPending onUpdated={onUpdated} />);
+    expect(portInput()).toHaveProperty("value", "9000");
+    expect(screen.getByRole("combobox", { name: t("extra_ports_protocol", { number: 1 }) }).textContent).toBe("TCP");
+    expect(screen.getByText(t("extra_ports_pending"))).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await user.click(screen.getByRole("button", { name: /Edit Server Config/ }));
+    expect(portInput()).toHaveProperty("value", "24454");
+    expect(save().disabled).toBe(true);
+    expect(calls.patchServer).not.toHaveBeenCalled();
+  });
+
+  it("does not carry a port draft to another server", async () => {
+    const user = userEvent.setup();
+    const rendered = render(<EditServerDialog serverName="survival" currentExtraPorts={initialPorts} onUpdated={onUpdated} />);
+    await user.click(screen.getByRole("button", { name: /Edit Server Config/ }));
+    fireEvent.change(portInput(), { target: { value: "9000" } });
+    rendered.rerender(<EditServerDialog serverName="creative" currentExtraPorts={[{ protocol: "UDP", port: 24454 }]} onUpdated={onUpdated} />);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await user.click(screen.getByRole("button", { name: /Edit Server Config/ }));
+    expect(portInput()).toHaveProperty("value", "24454");
+    expect(save().disabled).toBe(true);
+  });
+
+  it("preserves the draft after the backend rejects a managed health port", async () => {
+    const failure = { status: 400, code: "bad_extra_ports" };
+    calls.patchServer.mockRejectedValueOnce(failure);
+    const user = await openDialog({ currentExtraPorts: initialPorts });
+    fireEvent.change(portInput(), { target: { value: "8124" } });
+    await user.click(save());
+    expect((await screen.findByRole("alert")).textContent).toBe(humanizeError(failure));
+    expect(portInput()).toHaveProperty("value", "8124");
+    expect(save().disabled).toBe(false);
+    expect(onUpdated).not.toHaveBeenCalled();
+  });
+});
+
 describe("EditServerDialog private startup settings", () => {
   it("loads only on expansion and preserves empty and multiline arguments without making a change", async () => {
     const user = await openDialog();

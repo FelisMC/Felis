@@ -95,7 +95,8 @@ func OperatorRole(p Params) *rbacv1.Role {
 		rule([]string{groupFelis}, []string{"minecraftservers"}, []string{"get", "list", "watch", "patch"}),
 		rule([]string{groupFelis}, []string{"minecraftservers/status"}, []string{"update"}),
 		rule([]string{groupApps}, []string{"statefulsets"}, []string{"get", "list", "watch", "create", "update"}),
-		rule([]string{groupCore}, []string{"services"}, []string{"get", "list", "watch", "create", "update"}),
+		rule([]string{groupCore}, []string{"services"}, []string{"get", "list", "watch", "create", "update", "delete"}),
+		rule([]string{"networking.k8s.io"}, []string{"networkpolicies"}, []string{"get", "list", "watch", "create", "update", "delete"}),
 		// Secret get and create are uncached and name-scoped in use; no list, watch, update or delete is needed.
 		rule([]string{groupCore}, []string{"secrets"}, []string{"get", "create"}),
 		rule([]string{groupBatch}, []string{"jobs"}, []string{"list"}),

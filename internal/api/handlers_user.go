@@ -311,6 +311,7 @@ func (a *API) handleMyServers(w http.ResponseWriter, r *http.Request) {
 				v.CPU, v.Memory = info.CPU, info.Memory
 				v.CPUMilli, v.MemoryBytes = info.CPUMilli, info.MemoryBytes
 				v.Disk = info.Disk
+				v.ExtraPorts, v.ExtraPortsPending = info.ExtraPorts, info.ExtraPortsPending
 				v.DesiredState = info.DesiredState
 				v.AutostartPolicy = info.AutostartPolicy
 				v.PlayerCountUnknown = info.PlayerCountUnknown
@@ -720,6 +721,7 @@ type patchServerRequest struct {
 	Args               *[]string             `json:"args,omitempty"`
 	Env                *[]v1alpha1.EnvVar    `json:"env,omitempty"`
 	StopCommands       *[]string             `json:"stop_commands,omitempty"`
+	ExtraPorts         *[]v1alpha1.ExtraPort `json:"extraPorts,omitempty"`
 	// Software type or Minecraft-version changes require confirmation; moving from a server image also requires EULA acceptance.
 	Software              *softwareRequest `json:"software,omitempty"`
 	ConfirmSoftwareChange bool             `json:"confirmSoftwareChange,omitempty"`
@@ -778,7 +780,7 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 	if body.DisplayName == nil && body.AutostartPolicy == nil && body.Image == nil &&
 		body.Memory == nil && body.Resources == nil && body.Storage == nil && body.IdleStopSeconds == nil &&
 		body.Software == nil && !body.setsRecovery() &&
-		body.JavaFlags == nil && body.Args == nil && body.Env == nil && body.StopCommands == nil {
+		body.JavaFlags == nil && body.Args == nil && body.Env == nil && body.StopCommands == nil && body.ExtraPorts == nil {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
 			"patch must set at least one field"))
 		return
@@ -804,6 +806,10 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 	}
 
 	patch.JavaFlags, patch.Args, patch.Env, patch.StopCommands = body.JavaFlags, body.Args, body.Env, body.StopCommands
+	patch.ExtraPorts = body.ExtraPorts
+	if body.ExtraPorts != nil {
+		changed = append(changed, "extraPorts")
+	}
 	if body.JavaFlags != nil {
 		changed = append(changed, "java_flags")
 	}
@@ -983,6 +989,17 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 		newResources = resources
 		resUpdated = true
 	}
+	applyPatch := func() error {
+		apply := func() error { return a.Cluster.PatchServerSpec(r.Context(), name, patch) }
+		if patch.ExtraPorts == nil || naming.IsSystemServer(name) {
+			return apply()
+		}
+		ownerID := ""
+		if p := principalFromContext(r.Context()); p != nil && !p.IsAdmin() {
+			ownerID = p.UserID
+		}
+		return a.Repo.PatchServerPorts(r.Context(), name, ownerID, apply)
+	}
 
 	// Resize the quota cache under the owner's claim lock before cluster writes; shrink-only changes remain allowed above quota.
 	if resUpdated && !naming.IsSystemServer(name) {
@@ -999,7 +1016,7 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 			writeError(w, r, err)
 			return
 		}
-		if err := a.Cluster.PatchServerSpec(r.Context(), name, patch); err != nil {
+		if err := applyPatch(); err != nil {
 			// On cluster-write failure restore the cache from the cluster or, if unreadable, its previous values.
 			ctx := context.WithoutCancel(r.Context())
 			if _, rerr := a.claimResources(ctx, name); rerr != nil {
@@ -1012,7 +1029,7 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 			return
 		}
 	} else {
-		if err := a.Cluster.PatchServerSpec(r.Context(), name, patch); err != nil {
+		if err := applyPatch(); err != nil {
 			a.writeLookupError(w, r, err)
 			return
 		}
@@ -1024,7 +1041,13 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 	case patch.Image != nil:
 		a.auditImageChange(r, name, imageFrom, *patch.Image)
 	default:
-		a.audit(r, "server.patch", name)
+		if patch.ExtraPorts != nil {
+			p := principalFromContext(r.Context())
+			a.auditEntry(r, AuditEntry{Actor: auditActor(p), ActorUserID: p.UserID, Action: "server.patch", ServerName: name,
+				Payload: auditPayload(map[string]any{"fields": changed})})
+		} else {
+			a.audit(r, "server.patch", name)
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name":    name,

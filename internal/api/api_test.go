@@ -1180,9 +1180,21 @@ func (f *fakeRepo) UpdateUser(_ context.Context, userID string, patch UpdateUser
 	return nil, ErrNotFound
 }
 
-func (f *fakeRepo) DeleteUser(_ context.Context, userID, _ string) error {
+func (f *fakeRepo) DeleteUser(ctx context.Context, userID, _ string, clearPorts func(context.Context, string) error) error {
 	for i, su := range f.seededUsers {
 		if su.view.ID == userID {
+			for name, record := range f.byName {
+				if record.OwnerID == userID {
+					if err := clearPorts(ctx, name); err != nil {
+						return err
+					}
+				}
+			}
+			for _, record := range f.byName {
+				if record.OwnerID == userID {
+					record.OwnerID = ""
+				}
+			}
 			f.seededUsers = append(f.seededUsers[:i], f.seededUsers[i+1:]...)
 			f.deletedIDs[userID] = true
 			// Deletion severs the login credential and MC-UUID claim.
@@ -1201,6 +1213,17 @@ func (f *fakeRepo) DeleteUser(_ context.Context, userID, _ string) error {
 		}
 	}
 	return ErrNotFound
+}
+
+func (f *fakeRepo) PatchServerPorts(_ context.Context, name, ownerID string, apply func() error) error {
+	record, ok := f.byName[name]
+	if !ok {
+		return ErrNotFound
+	}
+	if ownerID != "" && record.OwnerID != ownerID {
+		return errForbidden
+	}
+	return apply()
 }
 
 func (f *fakeRepo) SetUserDisabled(_ context.Context, userID string, disabled bool) error {
@@ -1623,6 +1646,8 @@ type fakeCluster struct {
 	patched       map[string]ServerSpecPatch   // name -> the validated spec patch it received
 	startupSpecs  map[string]v1alpha1.MinecraftServerSpec
 	startupReads  []string
+	clearedPorts  []string
+	clearPortsErr error
 	noWorld       map[string]bool // servers modeled without a world volume
 	ensured       []string        // EnsureWorldVolume calls
 	orphanWorld   map[string]bool // names with a world volume but no server (CR deleted by hand)
@@ -1808,12 +1833,23 @@ func (c *fakeCluster) PatchServerSpec(_ context.Context, n string, p ServerSpecP
 	if c.patchErr != nil {
 		return c.patchErr
 	}
-	if p.setsStartupSettings() {
+	if p.setsStartupSettings() || p.ExtraPorts != nil {
 		spec := c.startupSpecs[n]
-		if err := applyStartupSettings(&spec, p); err != nil {
-			return err
+		if p.setsStartupSettings() {
+			if err := applyStartupSettings(&spec, p); err != nil {
+				return err
+			}
+		}
+		if p.ExtraPorts != nil {
+			spec.ExtraPorts = append([]v1alpha1.ExtraPort(nil), (*p.ExtraPorts)...)
+		}
+		if err := v1alpha1.ValidateExtraPorts(spec); err != nil && p.ExtraPorts != nil {
+			return newError(http.StatusBadRequest, "bad_extra_ports", "%s", err)
 		}
 		c.startupSpecs[n] = spec
+		if p.ExtraPorts != nil {
+			info.ExtraPorts, info.ExtraPortsPending = serverExtraPorts(&v1alpha1.MinecraftServer{Spec: spec})
+		}
 	}
 	c.patched[n] = p
 	if p.AutostartPolicy != nil {
@@ -1864,6 +1900,25 @@ func (c *fakeCluster) PatchServerSpec(_ context.Context, n string, p ServerSpecP
 			info.CPU = q.String()
 		}
 	}
+	return nil
+}
+
+func (c *fakeCluster) ClearExtraPorts(_ context.Context, name, uid string) error {
+	c.clearedPorts = append(c.clearedPorts, name+"/"+uid)
+	if c.clearPortsErr != nil {
+		return c.clearPortsErr
+	}
+	info, ok := c.byName[name]
+	if !ok {
+		return nil
+	}
+	if uid == "" || info.UID != uid {
+		return ErrConflict
+	}
+	spec := c.startupSpecs[name]
+	spec.ExtraPorts = nil
+	c.startupSpecs[name] = spec
+	info.ExtraPorts, info.ExtraPortsPending = nil, false
 	return nil
 }
 

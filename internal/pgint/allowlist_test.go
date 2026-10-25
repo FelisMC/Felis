@@ -146,12 +146,12 @@ func TestWakeAllowlistLifecycle(t *testing.T) {
 	}{
 		{"claim", func() {}, claim},
 		{"reaper release", func() { join(name, linked) }, func() {
-			if err := reaper.NewPGStore(db).ReleaseWorld(ctx, name, time.Now()); err != nil {
+			if err := reaper.NewPGStore(db).ReleaseWorld(ctx, name, time.Now(), func(string) error { return nil }); err != nil {
 				t.Fatalf("ReleaseWorld: %v", err)
 			}
 		}},
 		{"account deletion", func() { claim(); join(name, linked) }, func() {
-			if err := repo.DeleteUser(ctx, owner.ID, "pgint"); err != nil {
+			if err := repo.DeleteUser(ctx, owner.ID, "pgint", func(context.Context, string) error { return nil }); err != nil {
 				t.Fatalf("DeleteUser: %v", err)
 			}
 		}},

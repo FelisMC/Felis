@@ -1622,7 +1622,23 @@ ufw_active() {
 }
 
 # Tag idempotent ufw rules with felis- comments so uninstall can identify them.
+configure_extra_ports_firewall() {
+  local protocol
+  if ufw_active; then
+    for protocol in tcp udp; do
+      ufw allow "30000:32767/${protocol}" comment felis-k3s-extra-ports >/dev/null
+    done
+  fi
+  command -v firewall-cmd >/dev/null 2>&1 || return 0
+  systemctl is-active --quiet firewalld || return 0
+  for protocol in tcp udp; do
+    firewall-cmd --permanent --add-port="30000-32767/${protocol}"
+  done
+  firewall-cmd --reload
+}
+
 configure_k3s_firewall() {
+  configure_extra_ports_firewall
   if ufw_active; then
     log "configuring ufw for k3s"
     ufw allow from "$POD_CIDR" comment felis-k3s-pods >/dev/null
@@ -5705,6 +5721,7 @@ EOF_MIRROR
   chmod 0600 "$K3S_REGISTRIES_FILE"
   HOST_BIN_IN_USE=1
   "$HOST_BIN" node firewall --peers "$WORKER_PEERS" --controller-ip "${WORKER_SERVER#https://}" --pod-cidr "$POD_CIDR" --node-port "$FELIS_PANEL_NODEPORT"
+  configure_extra_ports_firewall
   if [ ! -x "$K3S_BIN" ]; then
     stage_k3s_airgap_images
     curl -sfL --retry 5 --retry-delay 2 "https://raw.githubusercontent.com/k3s-io/k3s/${FELIS_K3S_VERSION}/install.sh" | \
@@ -5734,6 +5751,7 @@ main_worker_upgrade() {
   acquire_felis_binary
   HOST_BIN_IN_USE=1
   "$HOST_BIN" node firewall --peers "$WORKER_PEERS" --controller-ip "${WORKER_SERVER#https://}" --pod-cidr "$POD_CIDR" --node-port "$FELIS_PANEL_NODEPORT"
+  configure_extra_ports_firewall
   if [ "$("$K3S_BIN" --version 2>/dev/null | awk 'NR==1 {print $3}')" = "$FELIS_K3S_VERSION" ]; then
     ok "worker $WORKER_NAME already runs k3s $FELIS_K3S_VERSION"
   else

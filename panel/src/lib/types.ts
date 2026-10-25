@@ -48,8 +48,20 @@ export interface ServerDiskUsage {
   stale: boolean;
 }
 
+export interface ServerExtraPortRequest {
+  protocol: "TCP" | "UDP";
+  port: number;
+}
+
+export interface ServerExtraPort extends ServerExtraPortRequest {
+  nodePort?: number;
+  address?: string;
+}
+
 // Only /me/servers reports ownership and claimability; private lifecycle fields appear on owned rows.
 export interface MyServerView {
+  extraPorts?: ServerExtraPort[];
+  extraPortsPending?: boolean;
   disk?: ServerDiskUsage;
   diskFull?: boolean;
   cpu?: string;
@@ -80,6 +92,8 @@ export interface MyServerView {
 
 // Public status may omit private fields; ownership gates must use /me/servers.
 export interface ServerStatus {
+  extraPorts?: ServerExtraPort[];
+  extraPortsPending?: boolean;
   disk?: ServerDiskUsage;
   diskFull?: boolean;
   startup?: { stage: "creating" | "scheduling" | "preparing" | "booting" | "failed"; reason?: string; message?: string; startedAt?: string; logsAvailable: boolean };

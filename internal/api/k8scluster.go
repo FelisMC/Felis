@@ -30,6 +30,7 @@ import (
 type K8sCluster struct {
 	NodeMaintenanceGuard func(context.Context) error
 	DiskWorldResolver    placement.Resolver
+	ExtraPortsPublicIP   string
 	distributed          bool
 	controller           string
 	c                    client.Client
@@ -87,6 +88,7 @@ func (k *K8sCluster) GetServer(ctx context.Context, name string) (*ServerInfo, e
 		return nil, err
 	}
 	info := serverInfo(&ms, k.clock())
+	k.extraPortAddresses(ctx, &ms, info)
 	info.Events = serverEvents(ms.Status.Events)
 	if ms.Spec.DesiredState != v1alpha1.DesiredStopped && ms.Status.Phase != v1alpha1.PhaseStarting && ms.Status.Phase != v1alpha1.PhaseFailed && ms.Status.Phase != v1alpha1.PhaseRunning {
 		return info, nil
@@ -481,6 +483,7 @@ func (k *K8sCluster) clock() time.Time {
 
 func (k *K8sCluster) PatchServerSpec(ctx context.Context, name string, p ServerSpecPatch) error {
 	startup := p.setsStartupSettings()
+	checked := startup || p.ExtraPorts != nil
 	apply := func() error {
 		var ms v1alpha1.MinecraftServer
 		if err := k.c.Get(ctx, types.NamespacedName{Namespace: k.namespace, Name: name}, &ms); err != nil {
@@ -491,8 +494,10 @@ func (k *K8sCluster) PatchServerSpec(ctx context.Context, name string, p ServerS
 		}
 		original := ms.DeepCopy()
 		patch := client.MergeFrom(original)
-		if startup {
+		if checked {
 			patch = client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{})
+		}
+		if startup {
 			if err := applyStartupSettings(&ms.Spec, p); err != nil {
 				return err
 			}
@@ -547,9 +552,15 @@ func (k *K8sCluster) PatchServerSpec(ctx context.Context, name string, p ServerS
 				ms.Spec.Idle = v1alpha1.IdleSpec{AutoStopEnabled: true, EmptySecondsBeforeStop: *p.IdleStopSeconds}
 			}
 		}
+		if p.ExtraPorts != nil {
+			ms.Spec.ExtraPorts = append([]v1alpha1.ExtraPort(nil), (*p.ExtraPorts)...)
+			if err := v1alpha1.ValidateExtraPorts(ms.Spec); err != nil {
+				return newError(http.StatusBadRequest, "bad_extra_ports", "%s", err)
+			}
+		}
 		return k.c.Patch(ctx, &ms, patch)
 	}
-	if !startup {
+	if !checked {
 		return apply()
 	}
 	err := retry.RetryOnConflict(retry.DefaultRetry, apply)
@@ -573,27 +584,31 @@ func serverInfo(ms *v1alpha1.MinecraftServer, now time.Time) *ServerInfo {
 		node = ms.Status.NodeName
 	}
 	disk, diskFull := serverDiskUsage(ms, now)
+	extraPorts, extraPortsPending := serverExtraPorts(ms)
 	return &ServerInfo{
-		Name:            ms.Name,
-		NodeName:        node,
-		Subdomain:       ms.Spec.Subdomain,
-		Phase:           string(ms.Status.Phase),
-		Ready:           ms.Status.Ready,
-		AutostartPolicy: string(ms.Spec.AutostartPolicy),
-		DesiredState:    string(ms.Spec.DesiredState),
-		EndpointMode:    string(ms.Status.Endpoint.Mode),
-		EndpointAddress: ms.Status.Endpoint.Address,
-		PlayersOnline:   ms.Status.Players.Online,
-		PlayersMax:      ms.Status.Players.Max,
-		DisplayName:     ms.Spec.DisplayName,
-		Image:           ms.Spec.Image,
-		JavaMemory:      ms.Spec.JavaMemory,
-		Memory:          memStr,
-		StorageSize:     ms.Spec.Storage.Size,
-		Disk:            disk,
-		DiskFull:        diskFull,
-		CPU:             cpuStr,
-		IdleStopSeconds: idleStopSeconds(ms),
+		UID:               string(ms.UID),
+		Name:              ms.Name,
+		NodeName:          node,
+		Subdomain:         ms.Spec.Subdomain,
+		Phase:             string(ms.Status.Phase),
+		Ready:             ms.Status.Ready,
+		AutostartPolicy:   string(ms.Spec.AutostartPolicy),
+		DesiredState:      string(ms.Spec.DesiredState),
+		EndpointMode:      string(ms.Status.Endpoint.Mode),
+		EndpointAddress:   ms.Status.Endpoint.Address,
+		PlayersOnline:     ms.Status.Players.Online,
+		PlayersMax:        ms.Status.Players.Max,
+		DisplayName:       ms.Spec.DisplayName,
+		Image:             ms.Spec.Image,
+		JavaMemory:        ms.Spec.JavaMemory,
+		Memory:            memStr,
+		StorageSize:       ms.Spec.Storage.Size,
+		Disk:              disk,
+		DiskFull:          diskFull,
+		ExtraPorts:        extraPorts,
+		ExtraPortsPending: extraPortsPending,
+		CPU:               cpuStr,
+		IdleStopSeconds:   idleStopSeconds(ms),
 		PlayerCountUnknown: ms.Status.Phase == v1alpha1.PhaseRunning &&
 			meta.IsStatusConditionFalse(ms.Status.Conditions, v1alpha1.ConditionPlayersCounted),
 		LegacyForwarding: ms.Labels[v1alpha1.LabelForwarding] == v1alpha1.ForwardingLegacy,

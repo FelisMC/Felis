@@ -167,7 +167,7 @@ type Store interface {
 	InsertBackup(ctx context.Context, rec BackupRecord) error
 
 	// ReleaseWorld clears ownership, warnings and wake grants while preserving the server row and pending deletion.
-	ReleaseWorld(ctx context.Context, name string, at time.Time) error
+	ReleaseWorld(ctx context.Context, name string, at time.Time, clearPorts func(string) error) error
 
 	// DeleteServerRow soft-deletes only a pending deletion, leaving a newly recreated server unchanged.
 	DeleteServerRow(ctx context.Context, name string, at time.Time) error
@@ -206,6 +206,7 @@ type Cluster interface {
 	DeletePVC(ctx context.Context, pvc string) error
 	// DeleteServer requires the inspected UID and treats absence as success, leaving a same-name replacement untouched.
 	DeleteServer(ctx context.Context, name, uid string) error
+	ClearExtraPorts(ctx context.Context, name, uid string) error
 }
 
 // Warner failures never block reaping; stamp warning delivery only after a successful send so later runs can retry.
@@ -451,8 +452,8 @@ func (r *Reaper) finishReap(ctx context.Context, now time.Time, c Candidate, crd
 			return err
 		}
 	} else {
-		if err := r.Store.ReleaseWorld(ctx, c.Name, now); err != nil {
-			return fmt.Errorf("release world: %w", err)
+		if err := r.releaseWorld(ctx, now, c, crd); err != nil {
+			return err
 		}
 		if err := r.Store.Audit(ctx, AuditRecord{Action: ActionReapWorld, ServerName: c.Name, FormerOwner: c.OwnerID}); err != nil {
 			r.log().Error("reaper: audit reap_world failed", "server", c.Name, "err", err)
@@ -483,8 +484,8 @@ func (r *Reaper) reapNoWorld(ctx context.Context, now time.Time, c Candidate, cr
 		}
 		return nil
 	}
-	if err := r.Store.ReleaseWorld(ctx, c.Name, now); err != nil {
-		return fmt.Errorf("release world: %w", err)
+	if err := r.releaseWorld(ctx, now, c, crd); err != nil {
+		return err
 	}
 	if err := r.Store.Audit(ctx, AuditRecord{Action: ActionReapWorld, ServerName: c.Name, FormerOwner: c.OwnerID}); err != nil {
 		r.log().Error("reaper: audit reap_world failed", "server", c.Name, "err", err)
@@ -495,8 +496,8 @@ func (r *Reaper) reapNoWorld(ctx context.Context, now time.Time, c Candidate, cr
 
 func (r *Reaper) retire(ctx context.Context, now time.Time, c Candidate, crd ServerCRD, sum *Summary) error {
 	if !c.RetireDelete {
-		if err := r.Store.ReleaseWorld(ctx, c.Name, now); err != nil {
-			return fmt.Errorf("release world: %w", err)
+		if err := r.releaseWorld(ctx, now, c, crd); err != nil {
+			return err
 		}
 		if err := r.Store.Audit(ctx, AuditRecord{Action: ActionReleaseWorld, ServerName: c.Name, FormerOwner: c.OwnerID}); err != nil {
 			r.log().Error("reaper: audit release_world failed", "server", c.Name, "err", err)
@@ -510,6 +511,18 @@ func (r *Reaper) retire(ctx context.Context, now time.Time, c Candidate, crd Ser
 		return fmt.Errorf("delete server: %w", err)
 	}
 	return r.deleteRow(ctx, now, c, sum)
+}
+
+func (r *Reaper) releaseWorld(ctx context.Context, now time.Time, c Candidate, crd ServerCRD) error {
+	if err := r.Store.ReleaseWorld(ctx, c.Name, now, func(owner string) error {
+		if owner != c.OwnerID {
+			return fmt.Errorf("%w: server ownership changed before extra port cleanup", ErrNotQuiet)
+		}
+		return r.Cluster.ClearExtraPorts(ctx, c.Name, crd.UID)
+	}); err != nil {
+		return fmt.Errorf("release world: %w", err)
+	}
+	return nil
 }
 
 // forgetServer refuses unarchived leftover PVCs when no CRD remains to hold the world safely for archival.

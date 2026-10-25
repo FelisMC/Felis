@@ -4133,6 +4133,26 @@ export interface components {
             /** @description At most 16 commands, each at most 1024 UTF-8 bytes before normalization and without NUL. Leading and trailing Unicode whitespace and one leading slash are removed; the result must be nonempty and contain no characters below U+0020. On normal stop, commands run sequentially after the save attempt and before shutdown, with one 30-second total budget including connection and authentication. A failure still allows shutdown. Scaling retries may repeat commands; execution is best effort. */
             stop_commands?: string[] | null;
         };
+        ExtraPortRequest: {
+            /** @enum {string} */
+            protocol: "TCP" | "UDP";
+            /** Format: int32 */
+            port: number;
+        };
+        /** @description An additional port requested by the server manager, with its confirmed external mapping when available. */
+        ServerExtraPort: {
+            /** @enum {string} */
+            protocol: "TCP" | "UDP";
+            /** Format: int32 */
+            port: number;
+            /**
+             * Format: int32
+             * @description Allocated external port; absent until the configuration is confirmed.
+             */
+            nodePort?: number;
+            /** @description Direct node IP and external port */
+            address?: string;
+        };
         /** @description Last successful measurement of allocated world-volume bytes; available while stopped and private to the server owner and administrators. */
         ServerDiskUsage: {
             /** Format: int64 */
@@ -4146,6 +4166,10 @@ export interface components {
         };
         /** @description Status projection of one server (internal/api/cluster.go ServerInfo). */
         ServerInfo: {
+            /** @description Additional ports; private to the server owner and administrators. */
+            extraPorts?: components["schemas"]["ServerExtraPort"][];
+            /** @description The requested additional-port configuration is not yet confirmed as applied. */
+            extraPortsPending?: boolean;
             disk?: components["schemas"]["ServerDiskUsage"];
             /** @description Startup is blocked by the disk quota; a successful fresh sample below the quota is required to release an existing full-disk block. */
             diskFull?: boolean;
@@ -4340,6 +4364,10 @@ export interface components {
         };
         /** @description One row of the caller's server list (internal/api/repo.go MyServerView). */
         MyServerView: {
+            /** @description Additional ports; owned rows only. */
+            extraPorts?: components["schemas"]["ServerExtraPort"][];
+            /** @description The requested additional-port configuration is not yet confirmed as applied; owned rows only. */
+            extraPortsPending?: boolean;
             disk?: components["schemas"]["ServerDiskUsage"];
             /** @description Startup is blocked by the disk quota; a successful fresh sample below the quota is required to release an existing full-disk block. */
             diskFull?: boolean;
@@ -8579,6 +8607,8 @@ export interface operations {
                     }[] | null;
                     /** @description At most 16 commands, each at most 1024 UTF-8 bytes before normalization and without NUL. Leading and trailing Unicode whitespace and one leading slash are removed; the result must be nonempty and contain no characters below U+0020. On normal stop, commands run sequentially after the save attempt and before shutdown, with one 30-second total budget including connection and authentication. A failure still allows shutdown. Scaling retries may repeat commands; execution is best effort. */
                     stop_commands?: string[] | null;
+                    /** @description Additional TCP or UDP ports. Omit or use null to keep the current list, or use an empty array to remove it. Duplicate protocol/port pairs and managed game, RCON or health TCP ports are rejected with 400 bad_extra_ports. External ports are allocated by the platform. Changes apply while running or stopped without restarting the game. */
+                    extraPorts?: components["schemas"]["ExtraPortRequest"][] | null;
                     displayName?: string;
                     /** @enum {string} */
                     autostartPolicy?: "ownerOnly" | "public" | "allowlist";
@@ -12296,6 +12326,15 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+            /** @description Additional-port cleanup is pending or the inspected server identity changed; ownership is retained. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     patchUser: {
@@ -14271,6 +14310,8 @@ export interface operations {
                     }[] | null;
                     /** @description At most 16 commands, each at most 1024 UTF-8 bytes before normalization and without NUL. Leading and trailing Unicode whitespace and one leading slash are removed; the result must be nonempty and contain no characters below U+0020. On normal stop, commands run sequentially after the save attempt and before shutdown, with one 30-second total budget including connection and authentication. A failure still allows shutdown. Scaling retries may repeat commands; execution is best effort. */
                     stop_commands?: string[] | null;
+                    /** @description Additional TCP or UDP ports. Omit or use null to keep the current list, or use an empty array to remove it. Duplicate protocol/port pairs and managed game, RCON or health TCP ports are rejected with 400 bad_extra_ports. External ports are allocated by the platform. Changes apply while running or stopped without restarting the game. */
+                    extraPorts?: components["schemas"]["ExtraPortRequest"][] | null;
                     /** @description Trimmed. An empty name clears it, and the server goes by its name again. At most 64 characters, all visible ones or spaces (400 bad_display_name otherwise). */
                     displayName?: string;
                     autostartPolicy?: string;

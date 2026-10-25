@@ -114,6 +114,8 @@ type fakeCluster struct {
 
 	deletedServers  []string // name/uid of each DeleteServer
 	deleteServerErr error
+	clearPortsErr   error
+	clearedPorts    []string
 }
 
 func (c *fakeCluster) HoldWorld(ctx context.Context, name string) (context.Context, func(), error) {
@@ -176,6 +178,20 @@ func (c *fakeCluster) DeleteServer(ctx context.Context, name, uid string) error 
 	c.deletedServers = append(c.deletedServers, name+"/"+uid)
 	delete(c.crds, name)
 	c.rec.add("deleteServer")
+	return nil
+}
+
+func (c *fakeCluster) ClearExtraPorts(ctx context.Context, name, uid string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if c.clearPortsErr != nil {
+		return c.clearPortsErr
+	}
+	if current, ok := c.crds[name]; ok && current.UID != uid {
+		return errors.New("server identity changed before extra port cleanup")
+	}
+	c.clearedPorts = append(c.clearedPorts, name+"/"+uid)
 	return nil
 }
 
@@ -247,8 +263,11 @@ func (s *fakeStore) InsertBackup(_ context.Context, rec BackupRecord) error {
 	return nil
 }
 
-func (s *fakeStore) ReleaseWorld(_ context.Context, name string, at time.Time) error {
+func (s *fakeStore) ReleaseWorld(_ context.Context, name string, at time.Time, clearPorts func(string) error) error {
 	c := s.byName[name]
+	if err := clearPorts(c.OwnerID); err != nil {
+		return err
+	}
 	c.OwnerID = ""
 	c.LastActiveAt = at
 	c.Warned3dAt = time.Time{}

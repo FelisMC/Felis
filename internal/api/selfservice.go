@@ -330,18 +330,19 @@ func (a *API) handleSelfCreateServer(w http.ResponseWriter, r *http.Request) {
 }
 
 type ownerPatchRequest struct {
-	DisplayName           *string            `json:"displayName,omitempty"`
-	AutostartPolicy       *string            `json:"autostartPolicy,omitempty"`
-	IdleStopSeconds       *int32             `json:"idleStopSeconds,omitempty"`
-	Memory                *string            `json:"memory,omitempty"`
-	CPU                   *string            `json:"cpu,omitempty"`
-	Software              *softwareRequest   `json:"software,omitempty"`
-	ConfirmSoftwareChange bool               `json:"confirmSoftwareChange,omitempty"`
-	AcceptEULA            bool               `json:"acceptEula,omitempty"`
-	JavaFlags             *[]string          `json:"java_flags,omitempty"`
-	Args                  *[]string          `json:"args,omitempty"`
-	Env                   *[]v1alpha1.EnvVar `json:"env,omitempty"`
-	StopCommands          *[]string          `json:"stop_commands,omitempty"`
+	DisplayName           *string               `json:"displayName,omitempty"`
+	AutostartPolicy       *string               `json:"autostartPolicy,omitempty"`
+	IdleStopSeconds       *int32                `json:"idleStopSeconds,omitempty"`
+	Memory                *string               `json:"memory,omitempty"`
+	CPU                   *string               `json:"cpu,omitempty"`
+	Software              *softwareRequest      `json:"software,omitempty"`
+	ConfirmSoftwareChange bool                  `json:"confirmSoftwareChange,omitempty"`
+	AcceptEULA            bool                  `json:"acceptEula,omitempty"`
+	JavaFlags             *[]string             `json:"java_flags,omitempty"`
+	Args                  *[]string             `json:"args,omitempty"`
+	Env                   *[]v1alpha1.EnvVar    `json:"env,omitempty"`
+	StopCommands          *[]string             `json:"stop_commands,omitempty"`
+	ExtraPorts            *[]v1alpha1.ExtraPort `json:"extraPorts,omitempty"`
 
 	ResumeAfterHostRestart *bool               `json:"resumeAfterHostRestart,omitempty"`
 	RestartOnCrash         *bool               `json:"restartOnCrash,omitempty"`
@@ -382,6 +383,7 @@ func (a *API) handleOwnerPatchServer(w http.ResponseWriter, r *http.Request) {
 		Args:                  body.Args,
 		Env:                   body.Env,
 		StopCommands:          body.StopCommands,
+		ExtraPorts:            body.ExtraPorts,
 
 		ResumeAfterHostRestart: body.ResumeAfterHostRestart,
 		RestartOnCrash:         body.RestartOnCrash,

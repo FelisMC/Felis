@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -76,15 +77,32 @@ func (s *PGStore) InsertBackup(ctx context.Context, rec BackupRecord) error {
 }
 
 // ReleaseWorld preserves resource sizes, clears wake grants and completes release requests while retaining pending deletions.
-func (s *PGStore) ReleaseWorld(ctx context.Context, name string, at time.Time) error {
+func (s *PGStore) ReleaseWorld(ctx context.Context, name string, at time.Time, clearPorts func(string) error) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var owner string
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(owner_id, '') FROM servers WHERE name = $1 AND deleted_at IS NULL FOR UPDATE`, name).Scan(&owner); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	if err := clearPorts(owner); err != nil {
+		return err
+	}
 	const q = `WITH released AS (
 		UPDATE servers
 		SET owner_id = NULL, last_active_at = $2, warned_3d_at = NULL, warned_1d_at = NULL,
 		    retire_requested_at = CASE WHEN retire_delete THEN retire_requested_at END
 		WHERE name = $1 AND deleted_at IS NULL RETURNING name)
 		DELETE FROM server_allowlist WHERE server_name IN (SELECT name FROM released)`
-	_, err := s.db.ExecContext(ctx, q, name, at)
-	return err
+	if _, err := tx.ExecContext(ctx, q, name, at); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *PGStore) DeleteServerRow(ctx context.Context, name string, at time.Time) error {

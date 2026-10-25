@@ -193,6 +193,18 @@ func TestAPIRole_MinecraftPowersExact(t *testing.T) {
 
 func TestOperatorRole_ScopeExact(t *testing.T) {
 	op := roleByName(t, ControlPlaneRBAC(testParams()).Roles, "felis-operator")
+	for _, resource := range []struct{ group, name string }{{groupCore, "services"}, {"networking.k8s.io", "networkpolicies"}} {
+		for _, verb := range []string{"get", "list", "watch", "create", "update", "delete"} {
+			if !hasRule(op, resource.group, resource.name, verb) {
+				t.Errorf("operator needs %s:%s for additional ports", resource.name, verb)
+			}
+		}
+		for _, verb := range []string{"patch", "deletecollection", "*"} {
+			if hasRule(op, resource.group, resource.name, verb) {
+				t.Errorf("unneeded additional-port grant: %s:%s", resource.name, verb)
+			}
+		}
+	}
 
 	// Watched types need list+watch because reads go through informers.
 	for _, v := range []string{"get", "list", "watch"} {

@@ -92,6 +92,10 @@ func (in *MinecraftServerSpec) DeepCopyInto(out *MinecraftServerSpec) {
 		copy(l, in.Env)
 		out.Env = l
 	}
+	if in.ExtraPorts != nil {
+		out.ExtraPorts = make([]ExtraPort, len(in.ExtraPorts))
+		copy(out.ExtraPorts, in.ExtraPorts)
+	}
 	out.Motd = in.Motd
 	out.Rcon = in.Rcon
 	out.Storage = in.Storage
@@ -131,6 +135,10 @@ func (in *MinecraftServerSpec) DeepCopy() *MinecraftServerSpec {
 // DeepCopyInto copies the receiver into out.
 func (in *MinecraftServerStatus) DeepCopyInto(out *MinecraftServerStatus) {
 	*out = *in
+	if in.ExtraPorts != nil {
+		out.ExtraPorts = make([]AllocatedExtraPort, len(in.ExtraPorts))
+		copy(out.ExtraPorts, in.ExtraPorts)
+	}
 	out.Endpoint = in.Endpoint
 	out.Players = in.Players
 	if in.ReadySignalAt != nil {

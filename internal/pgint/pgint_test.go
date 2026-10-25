@@ -731,7 +731,7 @@ func TestAdminSubresourcesRequireLiveUser(t *testing.T) {
 		t.Fatalf("LinkAccount(live): %v", err)
 	}
 
-	if err := repo.DeleteUser(ctx, u.ID, "pgint"); err != nil {
+	if err := repo.DeleteUser(ctx, u.ID, "pgint", func(context.Context, string) error { return nil }); err != nil {
 		t.Fatalf("DeleteUser: %v", err)
 	}
 	if _, err := repo.SetQuotas(ctx, u.ID, api.QuotaInput{MaxServers: &three}, "pgint"); !errors.Is(err, api.ErrNotFound) {
@@ -797,7 +797,7 @@ func TestDeadAccountsAreLockedOutInPG(t *testing.T) {
 		"cred-"+suffix(t), u.ID, "cid-"+suffix(t)); err != nil {
 		t.Fatalf("seed passkey: %v", err)
 	}
-	if err := repo.DeleteUser(ctx, u.ID, "pgint"); err != nil {
+	if err := repo.DeleteUser(ctx, u.ID, "pgint", func(context.Context, string) error { return nil }); err != nil {
 		t.Fatalf("DeleteUser: %v", err)
 	}
 	if _, err := repo.UserByEmail(ctx, addr); !errors.Is(err, api.ErrNotFound) {
