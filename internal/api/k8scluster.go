@@ -29,6 +29,7 @@ import (
 // K8sCluster caches fleet reads but uses direct reads before mutations so writes do not act on stale informer state.
 type K8sCluster struct {
 	NodeMaintenanceGuard func(context.Context) error
+	DiskWorldResolver    placement.Resolver
 	distributed          bool
 	controller           string
 	c                    client.Client
@@ -85,7 +86,7 @@ func (k *K8sCluster) GetServer(ctx context.Context, name string) (*ServerInfo, e
 		}
 		return nil, err
 	}
-	info := serverInfo(&ms)
+	info := serverInfo(&ms, k.clock())
 	info.Events = serverEvents(ms.Status.Events)
 	if ms.Spec.DesiredState != v1alpha1.DesiredStopped && ms.Status.Phase != v1alpha1.PhaseStarting && ms.Status.Phase != v1alpha1.PhaseFailed && ms.Status.Phase != v1alpha1.PhaseRunning {
 		return info, nil
@@ -179,7 +180,7 @@ func (k *K8sCluster) GetBySubdomain(ctx context.Context, subdomain string) (*Ser
 	}
 	for i := range list.Items {
 		if list.Items[i].Spec.Subdomain == subdomain {
-			return serverInfo(&list.Items[i]), nil
+			return serverInfo(&list.Items[i], k.clock()), nil
 		}
 	}
 	return nil, ErrNotFound
@@ -192,7 +193,7 @@ func (k *K8sCluster) ListServers(ctx context.Context) ([]ServerInfo, error) {
 	}
 	out := make([]ServerInfo, 0, len(list.Items))
 	for i := range list.Items {
-		out = append(out, *serverInfo(&list.Items[i]))
+		out = append(out, *serverInfo(&list.Items[i], k.clock()))
 	}
 	return out, nil
 }
@@ -321,6 +322,9 @@ func (k *K8sCluster) startWith(ctx context.Context, name, annotation string) err
 		}
 		if held {
 			return &MaintenanceBusyError{Kind: kind}
+		}
+		if err := k.checkDiskQuota(ctx, &ms); err != nil {
+			return err
 		}
 		if ms.Spec.DesiredState == v1alpha1.DesiredRunning &&
 			(ms.Annotations[v1alpha1.AnnotationRestart] != "" || ms.Annotations[v1alpha1.AnnotationStartRetry] != "") {
@@ -555,7 +559,7 @@ func (k *K8sCluster) PatchServerSpec(ctx context.Context, name string, p ServerS
 	return err
 }
 
-func serverInfo(ms *v1alpha1.MinecraftServer) *ServerInfo {
+func serverInfo(ms *v1alpha1.MinecraftServer, now time.Time) *ServerInfo {
 	var cpuStr, memStr string
 	if limit, ok := ms.Spec.Resources.Limits[corev1.ResourceCPU]; ok {
 		cpuStr = limit.String()
@@ -568,6 +572,7 @@ func serverInfo(ms *v1alpha1.MinecraftServer) *ServerInfo {
 	if node == "" {
 		node = ms.Status.NodeName
 	}
+	disk, diskFull := serverDiskUsage(ms, now)
 	return &ServerInfo{
 		Name:            ms.Name,
 		NodeName:        node,
@@ -585,6 +590,8 @@ func serverInfo(ms *v1alpha1.MinecraftServer) *ServerInfo {
 		JavaMemory:      ms.Spec.JavaMemory,
 		Memory:          memStr,
 		StorageSize:     ms.Spec.Storage.Size,
+		Disk:            disk,
+		DiskFull:        diskFull,
 		CPU:             cpuStr,
 		IdleStopSeconds: idleStopSeconds(ms),
 		PlayerCountUnknown: ms.Status.Phase == v1alpha1.PhaseRunning &&
@@ -740,4 +747,4 @@ func (k *K8sCluster) EnsureWorldVolume(ctx context.Context, name string) error {
 }
 
 // defaultWorldSize must match the operator's defaultStorageSize.
-const defaultWorldSize = "8Gi"
+const defaultWorldSize = v1alpha1.DefaultWorldStorageSize

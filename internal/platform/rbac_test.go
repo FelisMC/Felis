@@ -224,9 +224,13 @@ func TestOperatorRole_ScopeExact(t *testing.T) {
 			t.Errorf("operator status rule must be update-only, found %s", v)
 		}
 	}
-	// Hard exclusions.
-	if grantsResource(op, groupCore, "persistentvolumeclaims") {
-		t.Error("operator must NOT touch core/persistentvolumeclaims")
+	if !hasRule(op, groupCore, "persistentvolumeclaims", "get") {
+		t.Error("operator must read the world PVC identity before applying a disk sample")
+	}
+	for _, verb := range []string{"list", "watch", "create", "update", "patch", "delete"} {
+		if hasRule(op, groupCore, "persistentvolumeclaims", verb) {
+			t.Errorf("operator volume identity access must be get-only, found %s", verb)
+		}
 	}
 	// Events: the recorder creates one and patches its count on a repeat.
 	for _, v := range []string{"create", "patch"} {

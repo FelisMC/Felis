@@ -22,7 +22,7 @@ func opParams(op string) JobParams {
 		p.To = "server.properties.bak"
 	case OpUpload:
 		p.SourceURL, p.UploadToken = "http://felis-api-internal.felis.svc:8081/api/v1/internal/file-uploads/0a", "tok"
-	case OpPaperGlobalRead, OpPaperGlobalPatch:
+	case OpPaperGlobalRead, OpPaperGlobalPatch, OpDiskUsage:
 		p.Path = ""
 	}
 	return p
@@ -211,6 +211,7 @@ func TestFilesJobWorldMountIsReadOnlyForReads(t *testing.T) {
 		{OpPaperGlobalRead, true},
 		{OpPaperGlobalPatch, false},
 		{OpLogTail, true},
+		{OpDiskUsage, true},
 		{OpWrite, false},
 		{OpMkdir, false},
 		{OpDelete, false},
@@ -232,6 +233,34 @@ func TestFilesJobWorldMountIsReadOnlyForReads(t *testing.T) {
 					tc.op, gotMount, gotVol, tc.wantReadOnly)
 			}
 		})
+	}
+}
+
+func TestDiskUsageJobHasBoundedOneShotResources(t *testing.T) {
+	p := opParams(OpDiskUsage)
+	p.NodeName, p.WorldPVC = "worker", "world-survival-ha"
+	job, err := FilesJob(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := job.Spec.Template.Spec
+	container := spec.Containers[0]
+	if job.Spec.ActiveDeadlineSeconds == nil || *job.Spec.ActiveDeadlineSeconds != 75 || container.Resources.Limits.Cpu().MilliValue() != 100 || container.Resources.Limits.Memory().Value() != 96<<20 {
+		t.Fatal("disk sampling did not use its bounded resources")
+	}
+	if len(container.Env) != 0 || len(spec.Volumes) != 1 || spec.Volumes[0].PersistentVolumeClaim.ClaimName != "world-survival-ha" || spec.NodeSelector["felis.node-restriction.kubernetes.io/identity"] != "worker" {
+		t.Fatal("disk sampling changed its world or received credentials")
+	}
+	for _, alter := range []func(*JobParams){
+		func(p *JobParams) { p.Path = "config" },
+		func(p *JobParams) { p.BrowserURL, p.BrowserToken = "http://internal", "token" },
+		func(p *JobParams) { p.Async = true },
+	} {
+		invalid := p
+		alter(&invalid)
+		if _, err := FilesJob(invalid); err == nil {
+			t.Fatal("disk sampling accepted a path or reusable/asynchronous worker")
+		}
 	}
 }
 

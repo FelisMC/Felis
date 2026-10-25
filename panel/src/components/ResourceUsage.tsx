@@ -1,10 +1,31 @@
-import { Activity } from "lucide-react";
+import { Activity, HardDrive } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent } from "@/components/ui/card";
 import { api } from "@/lib/api";
 import { useAsync, usePolling } from "@/lib/hooks";
+import { formatAbsolute, formatBytes } from "@/lib/format";
 import { cpuUsage, memoryLimit, memoryUsage } from "@/lib/resourceUsage";
-import type { UsagePoint } from "@/lib/types";
+import type { ServerDiskUsage, UsagePoint } from "@/lib/types";
+
+export function DiskUsage({ disk, diskFull = false }: { disk?: ServerDiskUsage; diskFull?: boolean }) {
+  const { t, i18n } = useTranslation("servers");
+  const fraction = disk ? disk.usedBytes / disk.limitBytes : 0;
+  const value = disk ? t("disk_value", { used: formatBytes(disk.usedBytes), limit: formatBytes(disk.limitBytes) }) : "—";
+  return <section aria-label={t("disk_title")} className="min-w-0 space-y-2">
+    <div className="flex flex-wrap items-baseline justify-between gap-2 text-sm">
+      <h3 className="flex items-center gap-2 font-medium"><HardDrive className="h-4 w-4 text-muted-foreground" />{t("disk_title")}</h3>
+      <p className="tabular-nums">{value}</p>
+    </div>
+    {disk ? <>
+      <div role="meter" aria-label={t("disk_title")} aria-valuemin={0} aria-valuemax={disk.limitBytes} aria-valuenow={Math.min(disk.usedBytes, disk.limitBytes)} aria-valuetext={value} className="h-2 overflow-hidden rounded-full bg-muted">
+        <div className={`h-full rounded-full ${diskFull ? "bg-destructive" : fraction >= 0.9 ? "bg-amber-500" : "bg-primary"}`} style={{ width: `${Math.min(100, fraction * 100)}%` }} />
+      </div>
+      <p className="text-xs text-muted-foreground">{t(disk.stale ? "disk_stale" : "disk_sampled")} <time dateTime={disk.sampledAt}>{formatAbsolute(disk.sampledAt, i18n.language)}</time></p>
+    </> : <p className="text-xs text-muted-foreground">{t("disk_unknown")}</p>}
+    {diskFull ? <p role="status" className="text-xs text-destructive">{t("disk_full_blocked")}</p>
+      : fraction >= 0.9 && <p role="status" className="text-xs text-amber-700 dark:text-amber-400">{t("disk_warning")}</p>}
+  </section>;
+}
 
 function UsageChart({ history, metric, label, limit }: { history: UsagePoint[]; metric: "cpuMilli" | "memoryBytes"; label: string; limit: number }) {
   const now = Date.now();
@@ -27,7 +48,7 @@ function UsageChart({ history, metric, label, limit }: { history: UsagePoint[]; 
   </svg>;
 }
 
-export function ResourceUsage({ name, running, cpu, memory }: { name: string; running: boolean; cpu?: string; memory?: string }) {
+export function ResourceUsage({ name, running, cpu, memory, disk, diskFull }: { name: string; running: boolean; cpu?: string; memory?: string; disk?: ServerDiskUsage; diskFull?: boolean }) {
   const { t } = useTranslation("servers");
   const { data, error, reload } = useAsync(() => api.serverUsage(name), [name], { coalesce: true });
   usePolling(reload, 15_000);
@@ -51,6 +72,7 @@ export function ResourceUsage({ name, running, cpu, memory }: { name: string; ru
         </div>
       </dl>
       <p aria-live="polite" className="text-xs text-muted-foreground">{t(!running ? "usage_stopped" : !current ? "usage_unavailable" : "usage_cpu_basis")}</p>
+      <div className="border-t border-border pt-3"><DiskUsage disk={disk} diskFull={diskFull} /></div>
     </CardContent>
   </Card>;
 }

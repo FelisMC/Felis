@@ -88,7 +88,7 @@ func APIBuildRole(p Params) *rbacv1.Role {
 	})
 }
 
-// OperatorRole follows cached workload reads but uncached Secret, Pod and maintenance-Job reads; it has no PVC or finalizer grants.
+// OperatorRole keeps Secret, Pod, volume-identity and maintenance-Job reads uncached and has no finalizer grants.
 func OperatorRole(p Params) *rbacv1.Role {
 	p = p.withDefaults()
 	return role(p.MinecraftNamespace, "felis-operator", ComponentOperator, []rbacv1.PolicyRule{
@@ -101,6 +101,7 @@ func OperatorRole(p Params) *rbacv1.Role {
 		rule([]string{groupBatch}, []string{"jobs"}, []string{"list"}),
 		// Pod get and delete use the uncached reader by name for bounded startup retries and stale-template replacement.
 		rule([]string{groupCore}, []string{"pods"}, []string{"get", "delete"}),
+		rule([]string{groupCore}, []string{"persistentvolumeclaims"}, []string{"get"}),
 		rule([]string{groupCore}, []string{"events"}, []string{"create", "patch"}),
 	})
 }

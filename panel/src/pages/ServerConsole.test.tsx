@@ -77,11 +77,25 @@ describe("ServerConsole host recovery", () => {
   it("does not fetch resource usage for a server the caller does not manage", async () => {
     tier.isAdmin = false;
     calls.myServers.mockResolvedValue([{ name: "survival", owned: false }]);
-    calls.status.mockResolvedValue(status({ phase: "Running", desiredState: "Running" }));
+    calls.status.mockResolvedValue(status({ phase: "Running", desiredState: "Running", disk: { usedBytes: 100, limitBytes: 1000, sampledAt: "2026-10-24T00:00:00Z", stale: false } }));
     renderConsole();
     await screen.findByTestId("log-stream");
     expect(screen.queryByLabelText("Resource usage")).toBeNull();
+    expect(screen.queryByRole("region", { name: i18next.t("servers:disk_title") })).toBeNull();
     expect(calls.serverUsage).not.toHaveBeenCalled();
+  });
+
+  it("shows a stopped server's disk sample and refreshes its startup restriction", async () => {
+    const disk = { usedBytes: 1200, limitBytes: 1000, sampledAt: "2026-10-24T00:00:00Z", stale: true };
+    calls.status.mockResolvedValue(status({ phase: "Stopped", desiredState: "Stopped", disk, diskFull: true }));
+    renderConsole();
+    const usage = await screen.findByRole("region", { name: i18next.t("servers:disk_title") });
+    expect(within(usage).getByText("1.2 KiB / 1000 B")).toBeTruthy();
+    expect(screen.getByRole("button", { name: i18next.t("servers:wake") })).toHaveProperty("disabled", true);
+    calls.status.mockResolvedValue(status({ phase: "Stopped", desiredState: "Stopped", disk: { ...disk, usedBytes: 100, stale: false }, diskFull: false }));
+    fireEvent(document, new Event("visibilitychange"));
+    await waitFor(() => expect(screen.getByRole("button", { name: i18next.t("servers:wake") })).toHaveProperty("disabled", false));
+    expect(within(usage).getByText("100 B / 1000 B")).toBeTruthy();
   });
   it("offers host recovery even when the first API read fails", async () => {
     tier.isOwner = true;

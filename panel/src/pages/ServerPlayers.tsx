@@ -91,6 +91,7 @@ export function ServerPlayers() {
             failure={failure}
             autoRestarts={data.autoRestarts}
             retiring={data.retiring}
+            diskFull={data.diskFull}
             onWoken={reload}
           />
           {/* The wake list is Felis's own record, so it stays manageable while the

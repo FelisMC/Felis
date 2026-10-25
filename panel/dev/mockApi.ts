@@ -6,6 +6,7 @@ import { mockArchive, mockZip } from "./fileArchives";
 import { getYamlScalar, readYamlConfig, setYamlScalar, YamlConfigParseError } from "../src/components/files/yamlConfig";
 import { PAPER_GLOBAL_FIELDS } from "../src/components/files/paperGlobalFields";
 import { configProblem, type ConfigFieldSpec } from "../src/components/files/configFields";
+import { memoryLimit } from "../src/lib/resourceUsage";
 import type { Plugin } from "vite";
 import type {
   AuthSourceConfig,
@@ -279,7 +280,7 @@ function mockBackups(): BackupView[] {
 }
 
 function initialState(): MockState {
-  return {
+  const state: MockState = {
     startupSettings: new Map([
       ["survival", {
         java_flags: ["-Dmode=old"], args: ["--universe", "world with spaces", "", "first line\nsecond line"],
@@ -543,6 +544,10 @@ function initialState(): MockState {
     fileOps: {},
     fileExports: {},
   };
+  for (const server of state.servers) {
+    server.disk = { usedBytes: 64 * 2 ** 20, limitBytes: memoryLimit(server.storageSize || "8Gi")!, sampledAt: new Date().toISOString(), stale: false };
+  }
+  return state;
 }
 
 // generatedServers pads the fleet past one page (page size 20) with deterministic data.
@@ -848,12 +853,32 @@ function mockCurrentUsage(server: MockServer) {
   return current ? { cpuMilli: current.cpuMilli, memoryBytes: current.memoryBytes } : {};
 }
 
+function mockDiskUsage(server: MockServer) {
+  const limitBytes = memoryLimit(server.storageSize || "8Gi");
+  if (!server.disk || !limitBytes || !Number.isFinite(limitBytes)) return { disk: undefined, diskFull: server.diskFull };
+  const disk = { ...server.disk, limitBytes: Math.ceil(limitBytes) };
+  const age = Date.now() - Date.parse(disk.sampledAt);
+  disk.stale = disk.stale || !Number.isFinite(age) || age < 0 || age > 180_000;
+  if (Number.isFinite(age) && age >= 0 && disk.usedBytes >= disk.limitBytes) server.diskFull = true;
+  else if (!disk.stale) server.diskFull = undefined;
+  if (server.diskFull && server.desiredState === "Running") {
+    const at = new Date().toISOString();
+    server.autoStop = { reason: "DiskFull", at };
+    const events = server.events ?? [];
+    server.events = [...events, { seq: (events.at(-1)?.seq ?? 0) + 1, type: "DiskFull" as const, at, stopping: true }].slice(-20);
+    setPhase(server, "Stopped");
+  }
+  return { disk, diskFull: server.diskFull };
+}
+
 // fleetView mirrors the Go fleetServerView (GET /fleet).
 function fleetView(state: MockState, accountInfo: MockAccount): FleetServer[] {
   return state.servers.map((s, i) => {
+    const disk = mockDiskUsage(s);
     const { owner, ...wire } = s;
     return {
       ...wire,
+      ...disk,
       ...mockCurrentUsage(s),
       endpointMode: "domain",
       endpointAddress: s.ready ? `10.43.0.${10 + i}:25565` : undefined,
@@ -868,6 +893,7 @@ function fleetView(state: MockState, accountInfo: MockAccount): FleetServer[] {
 
 function myServerView(serverInfo: MockServer, accountInfo: MockAccount): MyServerView {
   const owned = canManage(accountInfo, serverInfo);
+  const disk = mockDiskUsage(serverInfo);
   return {
     name: serverInfo.name,
     subdomain: serverInfo.subdomain,
@@ -877,7 +903,9 @@ function myServerView(serverInfo: MockServer, accountInfo: MockAccount): MyServe
     playersOnline: serverInfo.playersOnline,
     playersMax: serverInfo.playersMax,
     displayName: serverInfo.displayName,
+    diskFull: disk.diskFull,
     ...(owned && {
+      disk: disk.disk,
       cpu: serverInfo.cpu,
       memory: serverInfo.memory,
       ...mockCurrentUsage(serverInfo),
@@ -891,14 +919,16 @@ function myServerView(serverInfo: MockServer, accountInfo: MockAccount): MyServe
 
 // statusView returns the full projection to an owner or admin, the public subset to anyone else.
 function statusView(serverInfo: MockServer, accountInfo: MockAccount): ServerStatus {
+  const disk = mockDiskUsage(serverInfo);
   const { owner: _owner, ...wire } = serverInfo;
-  if (canManage(accountInfo, serverInfo)) return { ...wire, ...mockCurrentUsage(serverInfo) };
+  if (canManage(accountInfo, serverInfo)) return { ...wire, ...disk, ...mockCurrentUsage(serverInfo) };
   return {
     name: wire.name,
     subdomain: wire.subdomain,
     displayName: wire.displayName,
     phase: wire.phase,
     ready: wire.ready,
+    diskFull: wire.diskFull,
     playersOnline: wire.playersOnline,
     playersMax: wire.playersMax,
     idleStopSeconds: 0,
@@ -3106,6 +3136,10 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
     }
     if (serverInfo.retiring) {
       sendError(ctx.res, 409, "server_retiring", "this server is being given up or deleted; cancel that first");
+      return true;
+    }
+    if (mockDiskUsage(serverInfo).diskFull) {
+      sendError(ctx.res, 409, "disk_full", "remove files and wait for a new measurement below the disk quota");
       return true;
     }
     if (ctx.parts[4] === "restart" && serverInfo.phase !== "Running") {

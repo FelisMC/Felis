@@ -29,6 +29,7 @@ interface Props {
   /** A pending retirement: nothing starts the server until it is cancelled, so
    *  the control gives way to a badge saying why. */
   retiring?: RetireState;
+  diskFull?: boolean;
   /** Offer only ways down: a page that needs the server stopped (the file
    *  editor) never offers a wake or a retry, and a server it cannot place gets
    *  a Stop too. */
@@ -54,6 +55,7 @@ export function PowerButton({
   playersOnline,
   playerCountUnknown,
   retiring,
+  diskFull = false,
   stopOnly = false,
   allowRestart = false,
   onChanged,
@@ -73,7 +75,7 @@ export function PowerButton({
   const pending = pendingPower({ phase, desiredState });
   const on = desiredState ? desiredState === "Running" : isUp(phase);
 
-  const caughtUp = submitted === "wake" ? on && !failed : submitted === "stop" ? !on : submitted === "restart" ? phase !== "Running" : true;
+  const caughtUp = (diskFull && submitted !== "stop") || (submitted === "wake" ? on && !failed : submitted === "stop" ? !on : submitted === "restart" ? phase !== "Running" : true);
   useEffect(() => {
     if (submitted === null) return;
     if (caughtUp) {
@@ -89,7 +91,7 @@ export function PowerButton({
   }, [submitted, caughtUp]);
 
   async function run(kind: "wake" | "stop" | "restart") {
-    if (busy) return;
+    if (busy || (diskFull && kind !== "stop")) return;
     setBusy(kind);
     setError(null);
     try {
@@ -132,7 +134,7 @@ export function PowerButton({
     // Retry and stop stay side by side: a row of actions that wraps moves them as one.
     control = (
       <div className="flex items-center justify-end gap-2">
-        <Button size={size} onClick={() => void run("wake")} disabled={busy !== null}>
+        <Button size={size} onClick={() => void run("wake")} disabled={busy !== null || diskFull}>
           {busy === "wake" ? spinner : <RotateCcw />}
           {busy === "wake" ? t("retrying_start") : t("retry_start")}
         </Button>
@@ -146,7 +148,7 @@ export function PowerButton({
     control = inProgress("wake");
   } else if (!stopOnly && !on) {
     control = (
-      <Button size={size} onClick={() => void run("wake")} disabled={busy !== null}>
+      <Button size={size} onClick={() => void run("wake")} disabled={busy !== null || diskFull}>
         {busy === "wake" ? spinner : <Play />}
         {busy === "wake" ? t("waking") : t("wake")}
       </Button>
@@ -162,7 +164,7 @@ export function PowerButton({
         <Button size={size} variant="ghost" onClick={() => setConfirming(null)} disabled={busy !== null}>
           {t("common:cancel")}
         </Button>
-        <Button size={size} variant="destructive" onClick={() => void run(confirming)} disabled={busy !== null}>
+        <Button size={size} variant="destructive" onClick={() => void run(confirming)} disabled={busy !== null || (diskFull && confirming === "restart")}>
           {busy === confirming ? spinner : confirming === "restart" ? <RotateCcw /> : <Square />}
           {busy === confirming ? t(confirming === "restart" ? "restarting" : "stopping") : t(confirming)}
         </Button>
@@ -172,7 +174,7 @@ export function PowerButton({
     control = (
       <div className="flex flex-wrap items-center justify-end gap-2">
         {allowRestart && !stopOnly && phase === "Running" && (
-          <Button size={size} variant="outline" onClick={() => (askFirst ? setConfirming("restart") : void run("restart"))} disabled={busy !== null}>
+          <Button size={size} variant="outline" onClick={() => (askFirst ? setConfirming("restart") : void run("restart"))} disabled={busy !== null || diskFull}>
             {busy === "restart" ? spinner : <RotateCcw />}
             {busy === "restart" ? t("restarting") : t("restart")}
           </Button>
@@ -185,6 +187,7 @@ export function PowerButton({
   return (
     <div className={cn("flex flex-col items-end gap-1", className)}>
       {control}
+      {diskFull && !stopOnly && !retiring && <p role="status" className="max-w-xs text-right text-xs text-destructive">{t("disk_full_blocked")}</p>}
       {error && (
         <p role="alert" className="max-w-xs text-right text-xs text-destructive">
           {error}

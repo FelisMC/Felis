@@ -16,10 +16,44 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 
 	"felis.lolicon.best/internal/fileedit"
 )
+
+func TestCmdFilesSamplesWorldDiskUsage(t *testing.T) {
+	root := t.TempDir()
+	name := filepath.Join(root, "server.properties")
+	if err := os.WriteFile(name, []byte("rcon.password=fake-private-value\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var want int64
+	for _, path := range []string{root, name} {
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			t.Fatal("allocated blocks unavailable")
+		}
+		want += stat.Blocks * 512
+	}
+	var stdout, stderr bytes.Buffer
+	if code := cmdFiles([]string{"--op", "disk-usage", "--worlds-root", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("disk usage exit=%d stderr=%q", code, stderr.String())
+	}
+	res := filesResult(t, stdout.String())
+	if res.Code != "" || res.UsedBytes == nil || *res.UsedBytes != want || strings.Contains(stdout.String()+stderr.String(), "fake-private") {
+		t.Fatalf("CLI disk usage result=%+v want=%d", res, want)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := cmdFiles([]string{"--op", "disk-usage", "--path", "server.properties", "--worlds-root", root}, &stdout, &stderr); code != 0 || filesResult(t, stdout.String()).Code != fileedit.CodeBadPath || filesResult(t, stdout.String()).UsedBytes != nil {
+		t.Fatal("disk usage CLI accepted a path")
+	}
+}
 
 // filesResult is the Result a `felis files` run printed on its marked line,
 // the last it prints.

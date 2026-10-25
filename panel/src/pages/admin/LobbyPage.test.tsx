@@ -102,6 +102,20 @@ describe("LobbyPage", () => {
     await waitFor(() => expect(calls.restart).toHaveBeenCalledWith("lobby"));
   });
 
+  it("disables experience restarts while full without preventing settings edits", async () => {
+    calls.status.mockResolvedValue({ name: "lobby", phase: "Running", desiredState: "Running", ready: true, playersOnline: 0, diskFull: true });
+    page();
+    fireEvent.change(await readyField("English menu title"), { target: { value: "After cleanup" } });
+    await userEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    await screen.findByText("Saved. Settings apply on the next start or restart.");
+    const restart = screen.getByRole("button", { name: "Restart & apply" });
+    expect(restart).toHaveProperty("disabled", true);
+    await userEvent.click(restart);
+    expect(calls.restart).not.toHaveBeenCalled();
+    expect(calls.writeServerFile).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: "Stop" })).toHaveProperty("disabled", false);
+  });
+
   it("confirms a restart when players are online and keeps failures visible", async () => {
     calls.status.mockResolvedValue({ name: "lobby", phase: "Running", desiredState: "Running", ready: true, playersOnline: 2 });
     calls.restart.mockRejectedValue({ status: 409, code: "maintenance_in_progress", message: "busy" });

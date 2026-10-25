@@ -715,7 +715,7 @@ export interface paths {
         put?: never;
         /**
          * Restart your own running server, or a system service as staff.
-         * @description Records a durable request for the operator to gracefully recreate the game pod. Desired state remains Running. A concurrent stop supersedes the request; maintenance blocks admission.
+         * @description Records a durable request for the operator to gracefully recreate the game pod. Desired state remains Running. A concurrent stop supersedes the request; maintenance blocks admission. A full disk quota returns 409 disk_full until a successful fresh sample is below the quota.
          */
         post: operations["restart"];
         delete?: never;
@@ -4133,8 +4133,22 @@ export interface components {
             /** @description At most 16 commands, each at most 1024 UTF-8 bytes before normalization and without NUL. Leading and trailing Unicode whitespace and one leading slash are removed; the result must be nonempty and contain no characters below U+0020. On normal stop, commands run sequentially after the save attempt and before shutdown, with one 30-second total budget including connection and authentication. A failure still allows shutdown. Scaling retries may repeat commands; execution is best effort. */
             stop_commands?: string[] | null;
         };
+        /** @description Last successful measurement of allocated world-volume bytes; available while stopped and private to the server owner and administrators. */
+        ServerDiskUsage: {
+            /** Format: int64 */
+            usedBytes: number;
+            /** Format: int64 */
+            limitBytes: number;
+            /** Format: date-time */
+            sampledAt: string;
+            /** @description The measurement is not confirmed as current, including when it is more than three minutes old or a new below-quota result is awaiting confirmation after cleanup. Use diskFull to determine whether startup is blocked. An unavailable or incomplete scan never replaces the previous successful measurement with zero. */
+            stale: boolean;
+        };
         /** @description Status projection of one server (internal/api/cluster.go ServerInfo). */
         ServerInfo: {
+            disk?: components["schemas"]["ServerDiskUsage"];
+            /** @description Startup is blocked by the disk quota; a successful fresh sample below the quota is required to release an existing full-disk block. */
+            diskFull?: boolean;
             /** @description Private runtime and startup diagnostics for authorized server managers. */
             startup?: components["schemas"]["StartupStatus"];
             /** @description Execution node; legacy servers report the observed node. */
@@ -4225,7 +4239,7 @@ export interface components {
         ServerNotify: {
             started: boolean;
             stopped: boolean;
-            /** @description Crashes, failed starts and host restarts. */
+            /** @description Crashes, failed starts, host restarts and disk quota warnings. */
             problems: boolean;
         };
         /** @description The latest unexpected exit of the server process. */
@@ -4240,10 +4254,10 @@ export interface components {
         /** @description Why the platform stopped the server on its own; cleared once it starts again. */
         AutoStopInfo: {
             /**
-             * @description Idle after sitting empty, Crashed with restarts off, CrashLimit after too many crashes in a row, HostRestarted when set not to resume.
+             * @description Idle after sitting empty, Crashed with restarts off, CrashLimit after too many crashes in a row, HostRestarted when set not to resume, or DiskFull after reaching the disk quota.
              * @enum {string}
              */
-            reason: "Idle" | "Crashed" | "CrashLimit" | "HostRestarted";
+            reason: "Idle" | "Crashed" | "CrashLimit" | "HostRestarted" | "DiskFull";
             /** Format: date-time */
             at: string;
         };
@@ -4251,7 +4265,7 @@ export interface components {
             /** Format: int64 */
             seq: number;
             /** @enum {string} */
-            type: "Started" | "Stopped" | "Crashed" | "HostRestarted" | "StartFailed";
+            type: "Started" | "Stopped" | "Crashed" | "HostRestarted" | "StartFailed" | "DiskWarning" | "DiskFull";
             /** Format: date-time */
             at: string;
             /** @description The stop reason of Stopped, the termination reason of Crashed and the failure reason of StartFailed. */
@@ -4326,6 +4340,9 @@ export interface components {
         };
         /** @description One row of the caller's server list (internal/api/repo.go MyServerView). */
         MyServerView: {
+            disk?: components["schemas"]["ServerDiskUsage"];
+            /** @description Startup is blocked by the disk quota; a successful fresh sample below the quota is required to release an existing full-disk block. */
+            diskFull?: boolean;
             /** @description CPU limit; owned rows only. */
             cpu?: string;
             /** @description Memory limit; owned rows only. */
@@ -5916,7 +5933,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            /** @description Nothing was started. maintenance_in_progress: a restore, backup or file write holds the server's world volume. start_failed: the last start failed and its automatic retries are spent (ServerInfo.startGaveUp), or the server stopped after crashing (ServerInfo.crashStopped); it stays down until a person starts it from the panel. server_retiring: the owner gave the server up or an admin is deleting it; it stays down until the reaper archives it. world_reclaiming: the idle reaper is archiving the world; afterwards the server is released with an empty world. */
+            /** @description Nothing was started. maintenance_in_progress: a restore, backup or file write holds the server's world volume. start_failed: the last start failed and its automatic retries are spent (ServerInfo.startGaveUp), or the server stopped after crashing (ServerInfo.crashStopped); it stays down until a person starts it from the panel. server_retiring: the owner gave the server up or an admin is deleting it; it stays down until the reaper archives it. world_reclaiming: the idle reaper is archiving the world; afterwards the server is released with an empty world. disk_full: the server reached its disk quota and has not yet received a successful fresh measurement below that quota. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -6569,7 +6586,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            /** @description Nothing was started. maintenance_in_progress: a restore, backup or file write holds the server's world volume. server_retiring: the server is given up or being deleted (ServerInfo.retiring). start_failed: the server stopped after crashing (ServerInfo.crashStopped) and only its owner or an admin may start it. conflict: a force stop is still being processed. */
+            /** @description Nothing was started. maintenance_in_progress: a restore, backup or file write holds the server's world volume. server_retiring: the server is given up or being deleted (ServerInfo.retiring). start_failed: the server stopped after crashing (ServerInfo.crashStopped) and only its owner or an admin may start it. conflict: a force stop is still being processed. disk_full: a successful fresh disk measurement below the quota is required. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -6724,7 +6741,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            /** @description Server is not running, is retiring, maintenance is in progress, or a force stop is pending. */
+            /** @description Server is not running, is retiring, maintenance is in progress, a force stop is pending, or the disk quota blocks startup (disk_full). */
             409: {
                 headers: {
                     [name: string]: unknown;

@@ -82,6 +82,7 @@ function ExperienceSettings({ name, server, onDirtyChange, onChanged }: { name: 
   }
 
   async function restart() {
+    if (server?.diskFull) return;
     setRestarting(true);
     setMessage(null);
     try {
@@ -150,14 +151,15 @@ function ExperienceSettings({ name, server, onDirtyChange, onChanged }: { name: 
       <Card className={cn(needsRestart && "border-amber-500/30 bg-amber-500/5")}><CardFooter className="border-t-0">
         <p className={cn("text-xs", needsRestart ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground")}>{t(dirty ? "unsaved" : needsRestart ? "restart_required" : "apply_on_start")}</p>
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" disabled={!draft || !running || dirty || saving || restarting} onClick={() => {
+          <Button variant="outline" disabled={!draft || !running || dirty || saving || restarting || server?.diskFull} onClick={() => {
             if ((server?.playersOnline ?? 0) > 0 || server?.playerCountUnknown) setConfirmRestart(true);
             else void restart().catch((error) => setMessage({ kind: "error", text: humanizeError(error) }));
           }}><RotateCw className={cn(restarting && "animate-spin")} />{t(restarting ? "restarting" : "restart")}</Button>
           <Button onClick={() => void save()} disabled={!draft || !dirty || saving || restarting || !experienceValid(draft.values, groups)}><Save className="h-4 w-4" />{t(saving ? "saving" : "save")}</Button>
         </div>
       </CardFooter></Card>
-      <ConfirmDialog open={confirmRestart} onOpenChange={setConfirmRestart} title={t("restart_title")} description={t("restart_hint")} confirmLabel={t("restart")} onConfirm={restart} />
+      {server?.diskFull && <p role="status" className="text-xs text-destructive">{t("servers:disk_full_blocked")}</p>}
+      <ConfirmDialog open={confirmRestart} onOpenChange={setConfirmRestart} title={t("restart_title")} description={t("restart_hint")} confirmLabel={t("restart")} confirmDisabled={server?.diskFull} onConfirm={restart} />
     </div>
   );
 }
@@ -274,7 +276,7 @@ export function LobbyPage() {
       {status.error != null && <ErrorState error={status.error} onRetry={status.reload} />}
       <Card className="flex flex-wrap items-center justify-between gap-3 p-5">
         <div className="min-w-0 space-y-2"><div className="flex flex-wrap items-center gap-3"><h2 className="text-sm font-semibold">{data?.displayName || t(name)}</h2>{data ? <PhaseBadge phase={shownPhase(data)} /> : status.loading && <span role="status" className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" />{t("common:loading")}</span>}</div><p className="break-all text-xs text-muted-foreground">{data?.image || "\u00a0"}</p></div>
-        {data && <PowerButton name={name} phase={data.phase} desiredState={data.desiredState} failed={startFailure(data) !== null} playersOnline={data.playersOnline} playerCountUnknown={data.playerCountUnknown} onChanged={status.reload} />}
+        {data && <PowerButton name={name} phase={data.phase} desiredState={data.desiredState} failed={startFailure(data) !== null} playersOnline={data.playersOnline} playerCountUnknown={data.playerCountUnknown} diskFull={data.diskFull} onChanged={status.reload} />}
       </Card>
       <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <ExperienceSettings key={name} name={name} server={data} onDirtyChange={setDirty} onChanged={status.reload} />

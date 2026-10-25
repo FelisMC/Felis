@@ -21,11 +21,16 @@ export function eventText(t: T, ev: ServerEvent): string {
       if (ev.reason === "Idle") return t("event_stopped_idle");
       if (ev.reason === "Crashed" || ev.reason === "CrashLimit") return t("event_stopped_crash");
       if (ev.reason === "HostRestarted") return t("event_stopped_host");
+      if (ev.reason === "DiskFull") return t("event_stopped_disk");
       return t("event_stopped");
     case "HostRestarted":
       return t(ev.stopping ? "event_host_stop" : "event_host_resume");
     case "StartFailed":
       return t("event_start_failed");
+    case "DiskWarning":
+      return t("event_disk_warning");
+    case "DiskFull":
+      return t("event_disk_full");
     case "Crashed": {
       const cause = crashCause(t, ev.reason, ev.exitCode ?? 0);
       if (!ev.stopping) {
@@ -36,7 +41,7 @@ export function eventText(t: T, ev: ServerEvent): string {
   }
 }
 
-const PROBLEM: ReadonlySet<ServerEvent["type"]> = new Set(["Crashed", "HostRestarted", "StartFailed"]);
+const PROBLEM: ReadonlySet<ServerEvent["type"]> = new Set(["Crashed", "HostRestarted", "StartFailed", "DiskWarning", "DiskFull"]);
 
 /** RecoveryNotice explains a stop the platform made on its own, or crashes of a server still running. */
 export function RecoveryNotice({ data }: { data: ServerStatus }) {
@@ -47,9 +52,11 @@ export function RecoveryNotice({ data }: { data: ServerStatus }) {
   const when = (iso: string) => formatRelative(iso, Date.now(), i18n.language);
 
   if (stop && stop.reason !== "Idle") {
-    const crashed = stop.reason !== "HostRestarted";
-    const title = t(crashed ? (stop.reason === "CrashLimit" ? "autostop_crash_limit_title" : "autostop_crashed_title") : "autostop_host_title");
-    const body = crashed
+    const disk = stop.reason === "DiskFull";
+    const crashed = !disk && stop.reason !== "HostRestarted";
+    const at = disk ? stop.at : crash?.at ?? stop.at;
+    const title = t(disk ? "autostop_disk_title" : crashed ? (stop.reason === "CrashLimit" ? "autostop_crash_limit_title" : "autostop_crashed_title") : "autostop_host_title");
+    const body = disk ? t("autostop_disk_body", { when: when(stop.at) }) : crashed
       ? t(stop.reason === "CrashLimit" ? "autostop_crash_limit_body" : "autostop_crashed_body", {
           cause: crash ? crashCause(t, crash.reason, crash.exitCode) : t("crash_cause_unknown"),
           when: when(crash?.at ?? stop.at),
@@ -62,8 +69,8 @@ export function RecoveryNotice({ data }: { data: ServerStatus }) {
         <PowerOff className="mt-0.5 h-5 w-5 shrink-0 text-red-600 dark:text-red-400" />
         <div className="min-w-0 space-y-1">
           <p id={titleId} className="font-medium text-foreground">{title}</p>
-          <p className="text-muted-foreground" title={formatAbsolute(crash?.at ?? stop.at, i18n.language)}>{body}</p>
-          <p className="text-xs text-muted-foreground">{t(crashed ? "autostop_crash_next" : "autostop_host_next")}</p>
+          <p className="text-muted-foreground" title={formatAbsolute(at, i18n.language)}>{body}</p>
+          <p className="text-xs text-muted-foreground">{t(disk ? (data.diskFull ? "disk_full_blocked" : "autostop_disk_next") : crashed ? "autostop_crash_next" : "autostop_host_next")}</p>
         </div>
       </div>
     );

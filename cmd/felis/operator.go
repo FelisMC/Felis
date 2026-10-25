@@ -103,6 +103,7 @@ func cmdOperator(args []string, _, stderr io.Writer) int {
 		// And pods: pod-0 is read by name, so the Role grants pods:get and no
 		// namespace-wide pod informer runs.
 		Pods:     mgr.GetAPIReader(),
+		Volumes:  mgr.GetAPIReader(),
 		Recorder: mgr.GetEventRecorderFor("felis-operator"),
 		Watch:    watch,
 	}

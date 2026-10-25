@@ -86,6 +86,16 @@ beforeEach(() => {
 });
 
 describe("ServersPage fleet ownership", () => {
+  it.each([true, false])("uses the public disk restriction to disable waking from the list (admin=%s)", async (isAdmin) => {
+    tier.isAdmin = isAdmin;
+    calls.fleet.mockResolvedValue([row("survival", { owned: true, diskFull: true })]);
+    calls.myServers.mockResolvedValue([
+      { name: "survival", subdomain: "survival", owned: true, claimable: false, phase: "Stopped", playersOnline: 0, playersMax: 20, diskFull: true },
+    ] satisfies MyServerView[]);
+    renderPage();
+    const server = await tableRow("survival");
+    expect(server.getByRole("button", { name: "Wake" })).toHaveProperty("disabled", true);
+  });
   it("shows CPU against its limit and memory usage in desktop columns", async () => {
     calls.fleet.mockResolvedValue([row("survival", { phase: "Running", owned: true, cpu: "2", memory: "2Gi", cpuMilli: 500, memoryBytes: 512 * 1024 ** 2 })]);
     renderPage();

@@ -36,17 +36,18 @@ const (
 	OpZip              = "zip"
 	OpExtensions       = "extensions"
 	OpLogTail          = "log-tail"
+	OpDiskUsage        = "disk-usage"
 	OpPaperGlobalRead  = "paper-global-read"
 	OpPaperGlobalPatch = "paper-global-patch"
 )
 
 func mutates(op string) bool {
-	return op != OpList && op != OpRead && op != OpSearch && op != OpExtensions && op != OpPaperGlobalRead && op != OpLogTail
+	return op != OpList && op != OpRead && op != OpSearch && op != OpExtensions && op != OpPaperGlobalRead && op != OpLogTail && op != OpDiskUsage
 }
 
 func validOp(op string) bool {
 	switch op {
-	case OpList, OpRead, OpWrite, OpMkdir, OpDelete, OpRename, OpUpload, OpUnzip, OpSearch, OpCopy, OpMove, OpZip, OpExtensions, OpPaperGlobalRead, OpPaperGlobalPatch, OpLogTail:
+	case OpList, OpRead, OpWrite, OpMkdir, OpDelete, OpRename, OpUpload, OpUnzip, OpSearch, OpCopy, OpMove, OpZip, OpExtensions, OpPaperGlobalRead, OpPaperGlobalPatch, OpLogTail, OpDiskUsage:
 		return true
 	}
 	return false
@@ -106,6 +107,7 @@ type Result struct {
 	Extensions  []Extension        `json:"extensions,omitempty"`
 	PaperGlobal *PaperGlobalConfig `json:"paper_global,omitempty"`
 	LogTail     *LogTailPage       `json:"log_tail,omitempty"`
+	UsedBytes   *int64             `json:"used_bytes,omitempty"`
 	// SHA256 covers on-disk bytes before redaction, or the current file on conflict; use it as the next write's expected hash.
 	SHA256 string `json:"sha256,omitempty"`
 	// ContentSHA256 covers transmitted bytes after redaction.
@@ -180,6 +182,11 @@ func Execute(root string, req Request) (Result, error) {
 		return paperGlobal(r, req), nil
 	case OpLogTail:
 		return logTail(r, req.Cursor), nil
+	case OpDiskUsage:
+		if req.Path != "" || req.To != "" {
+			return Result{Code: CodeBadPath, Error: "disk usage is sampled only at the world root"}, nil
+		}
+		return diskUsage(r), nil
 	case OpWrite:
 		return write(r, path, req.Content, req.ContentSHA256, req.Expect, req.CreateOnly), nil
 	case OpMkdir:

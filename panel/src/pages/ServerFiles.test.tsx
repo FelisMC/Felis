@@ -189,6 +189,20 @@ afterEach(() => {
 describe("file manager actions", () => {
   const label = (key: string, name: string) => i18next.t(`files:${key}`, { name });
 
+  it("keeps file downloads and confirmed deletion available when the quota is full", async () => {
+    mocks.status.mockResolvedValue({ ...stopped, diskFull: true, disk: { usedBytes: 1200, limitBytes: 1000, sampledAt: "2026-10-24T00:00:00Z", stale: true } });
+    mocks.deleteServerFile.mockResolvedValue(undefined);
+    renderFiles();
+    await screen.findByText("server.properties");
+    expect(screen.getByRole("meter", { name: t("servers:disk_title") })).toBeTruthy();
+    expect(screen.getByText(t("files:disk_cleanup_hint"))).toBeTruthy();
+    expect(screen.getByRole("button", { name: label("download_item", "server.properties") })).toHaveProperty("disabled", false);
+    await userEvent.click(screen.getByRole("button", { name: label("delete_item", "world") }));
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: t("files:delete") }));
+    expect(mocks.deleteServerFile).toHaveBeenCalledExactlyOnceWith("lobby", "world");
+  });
+
   it("searches on submit and opens nested results using their full relative path", async () => {
     mocks.searchServerFiles.mockResolvedValue({ path: "", entries: [{ name: "plugins/example/config.yml", size: 12, is_dir: false, mod_time: "" }], truncated: true });
     renderFiles();

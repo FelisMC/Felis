@@ -62,6 +62,7 @@ import {
 } from "@/components/ui/dialog";
 import { PhaseBadge, shownPhase, startFailure } from "@/components/PhaseBadge";
 import { PowerButton } from "@/components/PowerButton";
+import { DiskUsage } from "@/components/ResourceUsage";
 import { Loading, ErrorState, NotYours, EmptyState } from "@/components/States";
 import { PageHeader } from "@/components/PageHeader";
 import { api, humanizeError } from "@/lib/api";
@@ -787,6 +788,10 @@ export function ServerFiles() {
         <NotYours title={t("not_yours_title")} body={t("not_yours_body")} />
       ) : (
         <div className="space-y-4">
+          <Card><CardContent className="space-y-2 p-4">
+            <DiskUsage disk={statusQ.error && statusQ.data.disk ? { ...statusQ.data.disk, stale: true } : statusQ.data.disk} diskFull={statusQ.data.diskFull} />
+            {statusQ.data.diskFull && <p className="text-xs text-muted-foreground">{t("disk_cleanup_hint")}</p>}
+          </CardContent></Card>
           {live && <div role="status" className="space-y-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm">
             <p>{t("live_warning")}</p>
             {worldConfirmation("files-world-confirm")}
@@ -816,6 +821,7 @@ export function ServerFiles() {
                   playersOnline={statusQ.data.playersOnline}
                   playerCountUnknown={statusQ.data.playerCountUnknown}
                   retiring={statusQ.data.retiring}
+                  diskFull={statusQ.data.diskFull}
                   stopOnly
                   onChanged={statusQ.reload}
                   className="items-center"

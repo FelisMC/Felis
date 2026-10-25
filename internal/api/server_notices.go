@@ -66,7 +66,7 @@ func (a *API) mailServerEvents(ctx context.Context, f *ServerEventFeed, now time
 
 func isProblem(ev ServerEvent) bool {
 	switch ev.Type {
-	case v1alpha1.EventCrashed, v1alpha1.EventHostRestarted, v1alpha1.EventStartFailed:
+	case v1alpha1.EventCrashed, v1alpha1.EventHostRestarted, v1alpha1.EventStartFailed, v1alpha1.EventDiskWarning, v1alpha1.EventDiskFull:
 		return true
 	}
 	return false
@@ -116,11 +116,15 @@ func eventRank(ev ServerEvent) int {
 	switch {
 	case ev.Stopping:
 		return 5
+	case ev.Type == v1alpha1.EventDiskFull:
+		return 5
 	case ev.Type == v1alpha1.EventStartFailed:
 		return 4
 	case ev.Type == v1alpha1.EventCrashed:
 		return 3
 	case ev.Type == v1alpha1.EventHostRestarted:
+		return 2
+	case ev.Type == v1alpha1.EventDiskWarning:
 		return 2
 	case ev.Type == v1alpha1.EventStopped:
 		return 1
@@ -162,6 +166,10 @@ func renderServerNotice(f *ServerEventFeed, events []ServerEvent, panel string) 
 
 func eventHeadline(ev ServerEvent) (zh, en string) {
 	switch ev.Type {
+	case v1alpha1.EventDiskWarning:
+		return "磁盘配额接近上限", "is nearing its disk quota"
+	case v1alpha1.EventDiskFull:
+		return "磁盘配额已满", "reached its disk quota"
 	case v1alpha1.EventStarted:
 		return "已启动", "started"
 	case v1alpha1.EventStopped:
@@ -182,6 +190,13 @@ func eventHeadline(ev ServerEvent) (zh, en string) {
 
 func eventLine(ev ServerEvent) (zh, en string) {
 	switch ev.Type {
+	case v1alpha1.EventDiskWarning:
+		return "世界卷用量已达到磁盘配额的 90%，请及时清理文件。", "The world volume has used at least 90% of its disk quota; remove unneeded files."
+	case v1alpha1.EventDiskFull:
+		if ev.Stopping {
+			return "世界卷已达到磁盘配额，正在正常停服。清理文件并等待成功采样后可重新启动。", "The world volume reached its disk quota and is stopping normally. Remove files and wait for a successful usage sample before starting again."
+		}
+		return "世界卷已达到磁盘配额，暂不能启动。清理文件并等待成功采样后可重新启动。", "The world volume reached its disk quota and cannot start. Remove files and wait for a successful usage sample before starting again."
 	case v1alpha1.EventStarted:
 		return "服务器已启动。", "The server started."
 	case v1alpha1.EventStopped:
@@ -192,6 +207,8 @@ func eventLine(ev ServerEvent) (zh, en string) {
 			return "服务器在崩溃后停止。", "The server stopped after crashing."
 		case v1alpha1.StopHostRestart:
 			return "服务器在主机重启后保持停止。", "The server stayed stopped after a host restart."
+		case v1alpha1.StopDiskFull:
+			return "服务器已因磁盘配额满而停止。", "The server stopped because its disk quota was full."
 		}
 		return "服务器已停止。", "The server stopped."
 	case v1alpha1.EventStartFailed:

@@ -919,11 +919,30 @@ components:
             budget including connection and authentication. A failure still allows
             shutdown. Scaling retries may repeat commands; execution is best effort.
 
+    ServerDiskUsage:
+      type: object
+      description: Last successful measurement of allocated world-volume bytes; available while stopped and private to the server owner and administrators.
+      required: [usedBytes, limitBytes, sampledAt, stale]
+      properties:
+        usedBytes: { type: integer, format: int64, minimum: 0 }
+        limitBytes: { type: integer, format: int64, minimum: 1 }
+        sampledAt: { type: string, format: date-time }
+        stale:
+          type: boolean
+          description: >-
+            The measurement is not confirmed as current, including when it is
+            more than three minutes old or a new below-quota result is awaiting
+            confirmation after cleanup. Use diskFull to determine whether startup
+            is blocked. An unavailable or incomplete scan never replaces the
+            previous successful measurement with zero.
+
     ServerInfo:
       type: object
       description: Status projection of one server (internal/api/cluster.go ServerInfo).
       required: [name, subdomain, phase, ready, playersOnline, playersMax, idleStopSeconds, resumeAfterHostRestart, restartOnCrash, maxCrashRestarts, notify]
       properties:
+        disk: { $ref: '#/components/schemas/ServerDiskUsage' }
+        diskFull: { type: boolean, description: Startup is blocked by the disk quota; a successful fresh sample below the quota is required to release an existing full-disk block. }
         startup: { $ref: '#/components/schemas/StartupStatus', description: Private runtime and startup diagnostics for authorized server managers. }
         nodeName: { type: string, description: Execution node; legacy servers report the observed node. }
         name: { type: string }
@@ -1026,7 +1045,7 @@ components:
         stopped: { type: boolean }
         problems:
           type: boolean
-          description: Crashes, failed starts and host restarts.
+          description: Crashes, failed starts, host restarts and disk quota warnings.
 
     CrashInfo:
       type: object
@@ -1046,8 +1065,8 @@ components:
       properties:
         reason:
           type: string
-          enum: [Idle, Crashed, CrashLimit, HostRestarted]
-          description: Idle after sitting empty, Crashed with restarts off, CrashLimit after too many crashes in a row, HostRestarted when set not to resume.
+          enum: [Idle, Crashed, CrashLimit, HostRestarted, DiskFull]
+          description: Idle after sitting empty, Crashed with restarts off, CrashLimit after too many crashes in a row, HostRestarted when set not to resume, or DiskFull after reaching the disk quota.
         at: { type: string, format: date-time }
 
     ServerEvent:
@@ -1057,7 +1076,7 @@ components:
         seq: { type: integer, format: int64 }
         type:
           type: string
-          enum: [Started, Stopped, Crashed, HostRestarted, StartFailed]
+          enum: [Started, Stopped, Crashed, HostRestarted, StartFailed, DiskWarning, DiskFull]
         at: { type: string, format: date-time }
         reason:
           type: string
@@ -1179,6 +1198,8 @@ components:
       description: One row of the caller's server list (internal/api/repo.go MyServerView).
       required: [name, subdomain, owned, claimable, playersOnline, playersMax]
       properties:
+        disk: { $ref: '#/components/schemas/ServerDiskUsage' }
+        diskFull: { type: boolean, description: Startup is blocked by the disk quota; a successful fresh sample below the quota is required to release an existing full-disk block. }
         cpu: { type: string, description: CPU limit; owned rows only. }
         memory: { type: string, description: Memory limit; owned rows only. }
         cpuMilli: { type: integer, format: int64, description: Current CPU usage in millicores; owned rows only, omitted when unavailable. }
@@ -2785,7 +2806,8 @@ paths:
             server_retiring: the owner gave the server up or an admin is deleting it;
             it stays down until the reaper archives it. world_reclaiming: the idle
             reaper is archiving the world; afterwards the server is released with an
-            empty world.
+            empty world. disk_full: the server reached its disk quota and has not yet
+            received a successful fresh measurement below that quota.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -3470,6 +3492,7 @@ paths:
             given up or being deleted (ServerInfo.retiring). start_failed: the server
             stopped after crashing (ServerInfo.crashStopped) and only its owner or an
             admin may start it. conflict: a force stop is still being processed.
+            disk_full: a successful fresh disk measurement below the quota is required.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -3604,7 +3627,7 @@ paths:
       description: >-
         Records a durable request for the operator to gracefully recreate the
         game pod. Desired state remains Running. A concurrent stop supersedes
-        the request; maintenance blocks admission.
+        the request; maintenance blocks admission. A full disk quota returns 409 disk_full until a successful fresh sample is below the quota.
       x-felis-face: [external]
       x-felis-tier: app
       security: [{ sessionCookie: [] }]
@@ -3630,7 +3653,7 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          description: Server is not running, is retiring, maintenance is in progress, or a force stop is pending.
+          description: Server is not running, is retiring, maintenance is in progress, a force stop is pending, or the disk quota blocks startup (disk_full).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

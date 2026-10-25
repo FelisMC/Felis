@@ -260,6 +260,7 @@ func publicServerInfo(s *ServerInfo) *ServerInfo {
 		Ready:         s.Ready,
 		PlayersOnline: s.PlayersOnline,
 		PlayersMax:    s.PlayersMax,
+		DiskFull:      s.DiskFull,
 	}
 }
 
@@ -301,6 +302,7 @@ func (a *API) handleMyServers(w http.ResponseWriter, r *http.Request) {
 			v.PlayersOnline = info.PlayersOnline
 			v.PlayersMax = info.PlayersMax
 			v.DisplayName = info.DisplayName
+			v.DiskFull = info.DiskFull
 			if info.Phase != "" {
 				v.Phase = info.Phase
 			}
@@ -308,6 +310,7 @@ func (a *API) handleMyServers(w http.ResponseWriter, r *http.Request) {
 				info = a.usageInfo(info)
 				v.CPU, v.Memory = info.CPU, info.Memory
 				v.CPUMilli, v.MemoryBytes = info.CPUMilli, info.MemoryBytes
+				v.Disk = info.Disk
 				v.DesiredState = info.DesiredState
 				v.AutostartPolicy = info.AutostartPolicy
 				v.PlayerCountUnknown = info.PlayerCountUnknown

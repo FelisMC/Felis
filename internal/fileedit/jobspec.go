@@ -87,6 +87,15 @@ func filesLabels(p JobParams) map[string]string {
 }
 
 func FilesJob(p JobParams) (*batchv1.Job, error) {
+	if p.Op == OpDiskUsage {
+		if p.BrowserURL != "" || p.Path != "" || p.To != "" {
+			return nil, fmt.Errorf("fileedit: disk usage requires a one-shot world-root Job")
+		}
+		if p.Deadline <= 0 || p.Deadline > diskUsageJobDeadline {
+			p.Deadline = diskUsageJobDeadline
+		}
+		p.CPULimit, p.MemLimit = diskUsageCPU, diskUsageMemory
+	}
 	if p.BrowserURL != "" && (mutates(p.Op) || p.BrowserToken == "" || p.Async) {
 		return nil, fmt.Errorf("fileedit: a browser must be read-only and have a token")
 	}

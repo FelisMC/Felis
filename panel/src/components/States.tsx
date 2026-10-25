@@ -206,6 +206,7 @@ export interface NotRunningProps {
   autoRestarts?: number;
   /** A pending retirement: the page offers no wake, only why. */
   retiring?: RetireState;
+  diskFull?: boolean;
   /** Called once the wake was accepted, so the page refetches its status. */
   onWoken: () => void;
 }
@@ -219,6 +220,7 @@ export function NotRunning({
   failure = null,
   autoRestarts = 0,
   retiring,
+  diskFull,
   onWoken,
 }: NotRunningProps) {
   const { t } = useTranslation("servers");
@@ -262,6 +264,7 @@ export function NotRunning({
           desiredState={desiredState}
           failed={failure !== null}
           retiring={retiring}
+          diskFull={diskFull}
           onChanged={onWoken}
           className="items-center"
         />

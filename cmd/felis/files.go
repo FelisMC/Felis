@@ -18,7 +18,7 @@ import (
 func cmdFiles(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("files", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	op := fs.String("op", "", "operation: list, search, extensions, log-tail, read, write, mkdir, delete, rename, copy, move, zip, upload, unzip, paper-global-read or paper-global-patch")
+	op := fs.String("op", "", "operation: list, search, extensions, log-tail, disk-usage, read, write, mkdir, delete, rename, copy, move, zip, upload, unzip, paper-global-read or paper-global-patch")
 	browseURL := fs.String("browse-url", "", "internal command channel for a read-only file browser")
 	query := fs.String("query", "", "search: filename substring")
 	cursor := fs.String("cursor", "", "log-tail: cursor for the preceding page")

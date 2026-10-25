@@ -21,24 +21,26 @@ type RetireState struct {
 
 // MyServerView exposes detailed lifecycle fields only for owned rows; other status fields are best effort.
 type MyServerView struct {
-	Name               string       `json:"name"`
-	Subdomain          string       `json:"subdomain"`
-	Owned              bool         `json:"owned"`
-	Claimable          bool         `json:"claimable"`
-	Phase              string       `json:"phase,omitempty"`
-	PlayersOnline      int32        `json:"playersOnline"`
-	PlayersMax         int32        `json:"playersMax"`
-	DisplayName        string       `json:"displayName,omitempty"`
-	DesiredState       string       `json:"desiredState,omitempty"`
-	AutostartPolicy    string       `json:"autostartPolicy,omitempty"`
-	PlayerCountUnknown bool         `json:"playerCountUnknown,omitempty"`
-	AutoRestarts       int32        `json:"autoRestarts,omitempty"`
-	StartGaveUp        bool         `json:"startGaveUp,omitempty"`
-	CPU                string       `json:"cpu,omitempty"`
-	Memory             string       `json:"memory,omitempty"`
-	CPUMilli           *int64       `json:"cpuMilli,omitempty"`
-	MemoryBytes        *int64       `json:"memoryBytes,omitempty"`
-	Retiring           *RetireState `json:"retiring,omitempty"`
+	Name               string           `json:"name"`
+	Subdomain          string           `json:"subdomain"`
+	Owned              bool             `json:"owned"`
+	Claimable          bool             `json:"claimable"`
+	Phase              string           `json:"phase,omitempty"`
+	PlayersOnline      int32            `json:"playersOnline"`
+	PlayersMax         int32            `json:"playersMax"`
+	DisplayName        string           `json:"displayName,omitempty"`
+	DesiredState       string           `json:"desiredState,omitempty"`
+	AutostartPolicy    string           `json:"autostartPolicy,omitempty"`
+	PlayerCountUnknown bool             `json:"playerCountUnknown,omitempty"`
+	AutoRestarts       int32            `json:"autoRestarts,omitempty"`
+	StartGaveUp        bool             `json:"startGaveUp,omitempty"`
+	CPU                string           `json:"cpu,omitempty"`
+	Memory             string           `json:"memory,omitempty"`
+	CPUMilli           *int64           `json:"cpuMilli,omitempty"`
+	MemoryBytes        *int64           `json:"memoryBytes,omitempty"`
+	Disk               *ServerDiskUsage `json:"disk,omitempty"`
+	DiskFull           bool             `json:"diskFull,omitempty"`
+	Retiring           *RetireState     `json:"retiring,omitempty"`
 }
 
 type ServerOwnership struct {

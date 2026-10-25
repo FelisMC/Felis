@@ -107,6 +107,7 @@ function compareBy(key: SortKey): (a: UnifiedServer, b: UnifiedServer) => number
 }
 
 interface UnifiedServer {
+  diskFull?: boolean;
   cpu?: string;
   memory?: string;
   cpuMilli?: number;
@@ -181,6 +182,7 @@ export function ServersPage() {
         phase: s.phase,
         ready: s.ready,
         desiredState: s.desiredState,
+        diskFull: s.diskFull,
         autostartPolicy: s.autostartPolicy,
         playersOnline: s.playersOnline,
         playersMax: s.playersMax,
@@ -204,6 +206,7 @@ export function ServersPage() {
         phase: s.phase ?? "Unknown",
         ready: s.phase === "Running",
         desiredState: s.desiredState,
+        diskFull: s.diskFull,
         autostartPolicy: s.autostartPolicy,
         playersOnline: s.playersOnline,
         playersMax: s.playersMax,
@@ -616,6 +619,7 @@ function ServerActions({
             playersOnline={server.playersOnline}
             playerCountUnknown={server.playerCountUnknown}
             retiring={server.retiring}
+            diskFull={server.diskFull}
             onChanged={onChanged}
           />
         )}

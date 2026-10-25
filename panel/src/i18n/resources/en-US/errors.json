@@ -5,6 +5,7 @@
   "invalid_code": "The binding code is invalid or expired. Obtain a new code.",
   "already_linked": "That Minecraft account is already linked to another user.",
   "bad_mc_uuid": "Invalid Minecraft UUID format. Example: 069a79f4-44e9-4726-a5be-fca90e38aaf5. Hyphens are optional.",
+  "disk_full": "The server has reached its disk quota. Remove unnecessary files and wait for a new measurement below the quota before starting it.",
   "quota_exceeded": "This exceeds the quota (servers, CPU, memory or storage).",
   "already_claimed": "This server has been claimed by another account.",
   "image_not_whitelisted": "That image is not on the whitelist.",

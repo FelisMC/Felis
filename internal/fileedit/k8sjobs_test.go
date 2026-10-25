@@ -2,11 +2,15 @@ package fileedit
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,11 +25,21 @@ import (
 )
 
 func TestRunReadsResultBeforePodTermination(t *testing.T) {
-	for _, op := range []string{OpList, OpRead} {
+	for _, op := range []string{OpList, OpRead, OpDiskUsage} {
 		t.Run(op, func(t *testing.T) {
+			want := `{"entries":[]}`
+			if op == OpDiskUsage {
+				want = `{"used_bytes":4096}`
+			}
 			closed := make(chan struct{})
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
+				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/jobs"):
+					if op != OpDiskUsage {
+						t.Error("a regular file operation checked the disk sampling queue")
+					}
+					w.Header().Set("Content-Type", "application/json")
+					io.WriteString(w, `{"apiVersion":"batch/v1","kind":"JobList","items":[]}`)
 				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/jobs"):
 					w.Header().Set("Content-Type", "application/json")
 					io.WriteString(w, `{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"files-test"}}`)
@@ -39,7 +53,7 @@ func TestRunReadsResultBeforePodTermination(t *testing.T) {
 					if r.URL.Query().Get("follow") != "true" {
 						t.Error("result log was not streamed")
 					}
-					io.WriteString(w, "diagnostic line\n"+ResultPrefix+`{"entries":[]}`+"\n")
+					io.WriteString(w, "diagnostic line\n"+ResultPrefix+want+"\n")
 					w.(http.Flusher).Flush()
 					// The log stays open and the Pod stays Running. Run must return
 					// on the result line and close the stream, not await either EOF.
@@ -57,9 +71,16 @@ func TestRunReadsResultBeforePodTermination(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
-			got, err := NewK8sRunner(cs).Run(ctx, testParams(op))
-			if err != nil || string(got) != `{"entries":[]}` {
+			runner := NewK8sRunner(cs)
+			if op == OpDiskUsage {
+				runner.Browser = &Browser{}
+			}
+			got, err := runner.Run(ctx, opParams(op))
+			if err != nil || string(got) != want {
 				t.Fatalf("Run = %s, %v", got, err)
+			}
+			if runner.Browser != nil && len(runner.Browser.sessions) != 0 {
+				t.Fatal("disk sampling consumed a browser slot")
 			}
 			select {
 			case <-closed:
@@ -78,6 +99,274 @@ func TestAwaitPodKeepsWritesWaitingForTermination(t *testing.T) {
 	defer cancel()
 	if got, err := NewK8sRunner(fake.NewSimpleClientset(pod)).awaitPod(ctx, p); err == nil || got != nil {
 		t.Fatalf("a running writer was treated as finished: %v, %v", got, err)
+	}
+}
+
+func diskQueueJob(t *testing.T, status batchv1.JobStatus) *batchv1.Job {
+	t.Helper()
+	p := opParams(OpDiskUsage)
+	p.Server, p.OpID, p.WorldPVC = "other-server", "previous-leader", "world-other-server-0"
+	job, err := FilesJob(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job.Status = status
+	return job
+}
+
+func TestDiskSamplingWaitsForPreviousJobAcrossServers(t *testing.T) {
+	terminating := int32(1)
+	for _, tc := range []struct {
+		name    string
+		status  batchv1.JobStatus
+		blocked bool
+	}{
+		{"pending before controller observation", batchv1.JobStatus{}, true},
+		{"active", batchv1.JobStatus{Active: 1}, true},
+		{"success count without terminal condition", batchv1.JobStatus{Succeeded: 1}, true},
+		{"failure count without terminal condition", batchv1.JobStatus{Failed: 1}, true},
+		{"success criteria met", batchv1.JobStatus{Conditions: []batchv1.JobCondition{cond(batchv1.JobSuccessCriteriaMet, corev1.ConditionTrue, "")}}, true},
+		{"failure target", batchv1.JobStatus{Conditions: []batchv1.JobCondition{cond(batchv1.JobFailureTarget, corev1.ConditionTrue, "")}}, true},
+		{"false complete condition", batchv1.JobStatus{Conditions: []batchv1.JobCondition{cond(batchv1.JobComplete, corev1.ConditionFalse, "")}}, true},
+		{"complete with active pod", batchv1.JobStatus{Active: 1, Conditions: []batchv1.JobCondition{cond(batchv1.JobComplete, corev1.ConditionTrue, "")}}, true},
+		{"failed with terminating pod", batchv1.JobStatus{Terminating: &terminating, Conditions: []batchv1.JobCondition{cond(batchv1.JobFailed, corev1.ConditionTrue, "")}}, true},
+		{"complete", batchv1.JobStatus{Conditions: []batchv1.JobCondition{cond(batchv1.JobComplete, corev1.ConditionTrue, "")}}, false},
+		{"failed", batchv1.JobStatus{Conditions: []batchv1.JobCondition{cond(batchv1.JobFailed, corev1.ConditionTrue, "")}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, method := range []string{"Run", "Start"} {
+				t.Run(method, func(t *testing.T) {
+					cs := fake.NewSimpleClientset(diskQueueJob(t, tc.status))
+					createReached := errors.New("create reached")
+					cs.PrependReactor("create", "jobs", func(k8stesting.Action) (bool, runtime.Object, error) {
+						return true, nil, createReached
+					})
+					runner := NewK8sRunner(cs)
+					p := opParams(OpDiskUsage)
+					budget := time.Second
+					if tc.blocked {
+						budget = 10 * time.Millisecond
+					}
+					ctx, cancel := context.WithTimeout(context.Background(), budget)
+					defer cancel()
+					var payload []byte
+					var err error
+					if method == "Start" {
+						err = runner.Start(ctx, p)
+					} else {
+						payload, err = runner.Run(ctx, p)
+					}
+					want := createReached
+					if tc.blocked {
+						want = context.DeadlineExceeded
+					}
+					if !errors.Is(err, want) || payload != nil {
+						t.Fatalf("queue admission: payload=%s error=%v want=%v", payload, err, want)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestDiskSamplingQueueIgnoresOtherNamespacesAndOperations(t *testing.T) {
+	for _, alter := range []func(*batchv1.Job){
+		func(job *batchv1.Job) { job.Namespace = "another-namespace" },
+		func(job *batchv1.Job) { job.Labels[LabelMode] = OpRead },
+		func(job *batchv1.Job) { job.Labels[LabelManagedBy] = "another-controller" },
+	} {
+		old := diskQueueJob(t, batchv1.JobStatus{Active: 1})
+		alter(old)
+		cs := fake.NewSimpleClientset(old)
+		createReached := errors.New("create reached")
+		cs.PrependReactor("create", "jobs", func(k8stesting.Action) (bool, runtime.Object, error) {
+			return true, nil, createReached
+		})
+		payload, err := NewK8sRunner(cs).Run(context.Background(), opParams(OpDiskUsage))
+		if !errors.Is(err, createReached) || payload != nil {
+			t.Fatalf("unrelated Job blocked disk sampling: payload=%s error=%v", payload, err)
+		}
+	}
+}
+
+func TestDiskSamplingQueueListFailureCreatesNoJob(t *testing.T) {
+	cs := fake.NewSimpleClientset()
+	unavailable := errors.New("job listing unavailable")
+	cs.PrependReactor("list", "jobs", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, unavailable
+	})
+	payload, err := NewK8sRunner(cs).Run(context.Background(), opParams(OpDiskUsage))
+	if !errors.Is(err, unavailable) || payload != nil {
+		t.Fatalf("list failure: payload=%s error=%v", payload, err)
+	}
+	for _, action := range cs.Actions() {
+		if action.GetVerb() == "create" {
+			t.Fatal("an unverifiable queue admitted a new Job")
+		}
+	}
+}
+
+func TestDiskSamplingQueueChecksEveryJobPage(t *testing.T) {
+	var pages atomic.Int32
+	old := diskQueueJob(t, batchv1.JobStatus{})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/apis/batch/v1/namespaces/minecraft/jobs" {
+			t.Error("queue inspection requested another resource")
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		selector := r.URL.Query().Get("labelSelector")
+		if strings.Contains(selector, LabelServer) || strings.Contains(selector, LabelOpID) || !strings.Contains(selector, LabelMode+"="+OpDiskUsage) || r.URL.Query().Get("limit") != "100" {
+			t.Error("queue inspection did not cover every server with bounded pages")
+		}
+		page := pages.Add(1)
+		job := old.DeepCopy()
+		list := &batchv1.JobList{TypeMeta: metav1.TypeMeta{APIVersion: "batch/v1", Kind: "JobList"}}
+		if page == 1 {
+			job.Status.Conditions = []batchv1.JobCondition{cond(batchv1.JobComplete, corev1.ConditionTrue, "")}
+			list.Continue = "next-page"
+		} else if r.URL.Query().Get("continue") != "next-page" {
+			t.Error("queue inspection omitted its continuation token")
+		}
+		list.Items = []batchv1.Job{*job}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(list)
+		if page == 2 {
+			cancel()
+		}
+	}))
+	defer srv.Close()
+	cs, err := kubernetes.NewForConfig(&rest.Config{Host: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := NewK8sRunner(cs).checkDiskUsageJobs(ctx, "minecraft"); !errors.Is(err, context.Canceled) || pages.Load() != 2 {
+		t.Fatalf("unfinished Job on a later page was missed: pages=%d err=%v", pages.Load(), err)
+	}
+}
+
+func TestDiskSamplingLogFailureDoesNotOverlapNextLeader(t *testing.T) {
+	var mu sync.Mutex
+	var old *batchv1.Job
+	creates := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/jobs"):
+			list := &batchv1.JobList{TypeMeta: metav1.TypeMeta{APIVersion: "batch/v1", Kind: "JobList"}, Items: []batchv1.Job{}}
+			if old != nil {
+				list.Items = append(list.Items, *old)
+			}
+			json.NewEncoder(w).Encode(list)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/jobs"):
+			job := &batchv1.Job{}
+			if err := json.NewDecoder(r.Body).Decode(job); err != nil {
+				t.Error("invalid Job body")
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			old = job
+			creates++
+			job.TypeMeta = metav1.TypeMeta{APIVersion: "batch/v1", Kind: "Job"}
+			json.NewEncoder(w).Encode(job)
+		case strings.HasSuffix(r.URL.Path, "/pods"):
+			io.WriteString(w, `{"apiVersion":"v1","kind":"PodList","items":[{"metadata":{"name":"sampling-pod"},"status":{"phase":"Running","containerStatuses":[{"name":"files","state":{"running":{}}}]}}]}`)
+		case strings.HasSuffix(r.URL.Path, "/log"):
+			w.WriteHeader(http.StatusForbidden)
+		default:
+			t.Error("unexpected cluster request")
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	cs, err := kubernetes.NewForConfig(&rest.Config{Host: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	p := opParams(OpDiskUsage)
+	if payload, err := NewK8sRunner(cs).Run(ctx, p); err == nil || payload != nil {
+		t.Fatal("unreadable result was treated as a successful sample")
+	}
+	p.Server, p.OpID, p.WorldPVC = "another-server", "new-leader", "world-another-server-0"
+	wait, release := context.WithTimeout(ctx, 10*time.Millisecond)
+	if payload, err := NewK8sRunner(cs).Run(wait, p); !errors.Is(err, context.DeadlineExceeded) || payload != nil {
+		release()
+		t.Fatalf("replacement leader overlapped an unfinished Job: payload=%s err=%v", payload, err)
+	}
+	release()
+	mu.Lock()
+	if creates != 1 || old == nil {
+		mu.Unlock()
+		t.Fatal("more than one sampling Job was created before termination")
+	}
+	old.Status.Conditions = []batchv1.JobCondition{cond(batchv1.JobFailed, corev1.ConditionTrue, "")}
+	mu.Unlock()
+	if payload, err := NewK8sRunner(cs).Run(ctx, p); err == nil || errors.Is(err, context.DeadlineExceeded) || payload != nil {
+		t.Fatalf("finished Job prevented the next attempt: payload=%s err=%v", payload, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if creates != 2 {
+		t.Fatalf("created %d Jobs after the first terminated, want 2", creates)
+	}
+}
+
+func TestDiskSamplingQueueContinuesAfterCrossServerTermination(t *testing.T) {
+	old := diskQueueJob(t, batchv1.JobStatus{Active: 1})
+	cs := fake.NewSimpleClientset(old.DeepCopy())
+	observed := make(chan struct{})
+	created := make(chan struct{}, 1)
+	snapshot := &batchv1.JobList{Items: []batchv1.Job{*old.DeepCopy()}}
+	first := true
+	cs.PrependReactor("list", "jobs", func(k8stesting.Action) (bool, runtime.Object, error) {
+		if first {
+			first = false
+			close(observed)
+			return true, snapshot, nil
+		}
+		return false, nil, nil
+	})
+	cs.PrependReactor("create", "jobs", func(k8stesting.Action) (bool, runtime.Object, error) {
+		created <- struct{}{}
+		return false, nil, nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- NewK8sRunner(cs).Start(ctx, opParams(OpDiskUsage)) }()
+	select {
+	case <-observed:
+	case <-ctx.Done():
+		t.Fatal("the prior Job was not inspected")
+	}
+	select {
+	case <-created:
+		t.Fatal("a second Job was created before the first terminated")
+	default:
+	}
+	old.Status.Active = 0
+	old.Status.Conditions = []batchv1.JobCondition{cond(batchv1.JobComplete, corev1.ConditionTrue, "")}
+	if _, err := cs.BatchV1().Jobs(old.Namespace).UpdateStatus(ctx, old, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("healthy queue did not advance after termination: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("healthy queue stalled after the first Job terminated")
+	}
+	select {
+	case <-created:
+	default:
+		t.Fatal("the next server's sampling Job was not created")
 	}
 }
 

@@ -62,6 +62,12 @@ describe("NotRunning", () => {
     expect(screen.getByRole("button", { name: "Wake" })).toHaveProperty("disabled", false);
   });
 
+  it("keeps wake unavailable when the disk quota blocks the server", () => {
+    render(<NotRunning title="Server is asleep" body="Wake it to manage players." serverName="survival" phase="Stopped" desiredState="Stopped" diskFull onWoken={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "Wake" })).toHaveProperty("disabled", true);
+    expect(wake).not.toHaveBeenCalled();
+  });
+
   it("says a woken server is starting and offers nothing to press", () => {
     for (const [phase, desired] of [
       ["Stopped", "Running"],

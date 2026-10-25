@@ -22,7 +22,7 @@ const pollInterval = 150 * time.Millisecond
 
 const maxLogBytes = 12 << 20
 
-// K8sRunner requires only jobs:create, pods:list and pods/log:get; its typed client supplies the log subresource.
+// K8sRunner uses namespace-scoped Jobs and Pod logs without giving file Jobs Kubernetes credentials.
 type K8sRunner struct {
 	cs      kubernetes.Interface
 	Browser *Browser
@@ -34,19 +34,16 @@ func NewK8sRunner(cs kubernetes.Interface) *K8sRunner {
 
 // Run may stream reads early but waits for mutation termination to preserve world-lock ordering; create collisions remain errors.
 func (k *K8sRunner) Run(ctx context.Context, p JobParams) ([]byte, error) {
-	if k.Browser != nil && !mutates(p.Op) {
+	if k.Browser != nil && !mutates(p.Op) && p.Op != OpDiskUsage {
 		payload, err := k.Browser.Run(ctx, p, k.Start)
 		// Use bounded one-shot reads when reusable browser workers are at capacity.
 		if !errors.Is(err, errBrowserFull) {
 			return payload, err
 		}
 	}
-	job, err := FilesJob(p)
+	job, err := k.createJob(ctx, p)
 	if err != nil {
 		return nil, err
-	}
-	if _, err := k.cs.BatchV1().Jobs(p.Namespace).Create(ctx, job, metav1.CreateOptions{}); err != nil {
-		return nil, fmt.Errorf("fileedit: create file job: %w", err)
 	}
 
 	pod, err := k.awaitPod(ctx, p)
@@ -140,14 +137,63 @@ func tail(log string) string {
 }
 
 func (k *K8sRunner) Start(ctx context.Context, p JobParams) error {
+	_, err := k.createJob(ctx, p)
+	return err
+}
+
+func (k *K8sRunner) createJob(ctx context.Context, p JobParams) (*batchv1.Job, error) {
 	job, err := FilesJob(p)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	if p.Op == OpDiskUsage {
+		if err := k.checkDiskUsageJobs(ctx, p.Namespace); err != nil {
+			return nil, err
+		}
 	}
 	if _, err := k.cs.BatchV1().Jobs(p.Namespace).Create(ctx, job, metav1.CreateOptions{}); err != nil {
-		return fmt.Errorf("fileedit: create file job: %w", err)
+		return nil, fmt.Errorf("fileedit: create file job: %w", err)
 	}
-	return nil
+	return job, nil
+}
+
+func (k *K8sRunner) checkDiskUsageJobs(ctx context.Context, namespace string) error {
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+	options := metav1.ListOptions{LabelSelector: LabelManagedBy + "=" + managedByValue + "," + LabelMode + "=" + OpDiskUsage, Limit: 100}
+	for {
+		jobs, err := k.cs.BatchV1().Jobs(namespace).List(ctx, options)
+		if err != nil {
+			return fmt.Errorf("fileedit: check unfinished disk usage Jobs: %w", err)
+		}
+		unfinished := false
+		for _, job := range jobs.Items {
+			terminal := false
+			for _, condition := range job.Status.Conditions {
+				if condition.Status == corev1.ConditionTrue && (condition.Type == batchv1.JobComplete || condition.Type == batchv1.JobFailed) {
+					terminal = true
+				}
+			}
+			// SuccessCriteriaMet and FailureTarget can precede the last Pod's termination.
+			if !terminal || job.Status.Active > 0 || job.Status.Terminating != nil && *job.Status.Terminating > 0 {
+				unfinished = true
+				break
+			}
+		}
+		if unfinished {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-ticker.C:
+			}
+			options.Continue = ""
+			continue
+		}
+		if jobs.Continue == "" {
+			return ctx.Err()
+		}
+		options.Continue = jobs.Continue
+	}
 }
 
 const maxOps = 10

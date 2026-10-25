@@ -41,8 +41,17 @@ export interface RetireState {
   delete: boolean;
 }
 
+export interface ServerDiskUsage {
+  usedBytes: number;
+  limitBytes: number;
+  sampledAt: string;
+  stale: boolean;
+}
+
 // Only /me/servers reports ownership and claimability; private lifecycle fields appear on owned rows.
 export interface MyServerView {
+  disk?: ServerDiskUsage;
+  diskFull?: boolean;
   cpu?: string;
   memory?: string;
   cpuMilli?: number;
@@ -71,6 +80,8 @@ export interface MyServerView {
 
 // Public status may omit private fields; ownership gates must use /me/servers.
 export interface ServerStatus {
+  disk?: ServerDiskUsage;
+  diskFull?: boolean;
   startup?: { stage: "creating" | "scheduling" | "preparing" | "booting" | "failed"; reason?: string; message?: string; startedAt?: string; logsAvailable: boolean };
   nodeName?: string;
   name: string;
@@ -171,14 +182,14 @@ export interface CrashInfo {
   exitCode: number;
 }
 
-export type AutoStopReason = "Idle" | "Crashed" | "CrashLimit" | "HostRestarted";
+export type AutoStopReason = "Idle" | "Crashed" | "CrashLimit" | "HostRestarted" | "DiskFull";
 
 export interface AutoStopInfo {
   reason: AutoStopReason;
   at: string;
 }
 
-export type ServerEventType = "Started" | "Stopped" | "Crashed" | "HostRestarted" | "StartFailed";
+export type ServerEventType = "Started" | "Stopped" | "Crashed" | "HostRestarted" | "StartFailed" | "DiskWarning" | "DiskFull";
 
 export interface ServerEvent {
   seq: number;

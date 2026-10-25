@@ -316,11 +316,11 @@ func TestServerInfoCarriesStartGaveUp(t *testing.T) {
 		}
 		return ms
 	}
-	retrying := serverInfo(failed("retrying", 1))
+	retrying := serverInfo(failed("retrying", 1), time.Now())
 	if retrying.StartGaveUp || retrying.AutoRestarts != 1 {
 		t.Fatalf("retrying: startGaveUp=%v autoRestarts=%d, want false 1", retrying.StartGaveUp, retrying.AutoRestarts)
 	}
-	spent := serverInfo(failed("spent", v1alpha1.MaxAutoRestarts))
+	spent := serverInfo(failed("spent", v1alpha1.MaxAutoRestarts), time.Now())
 	b, err := json.Marshal(spent)
 	if err != nil {
 		t.Fatal(err)
@@ -337,7 +337,7 @@ func TestServerInfoCarriesReaperExempt(t *testing.T) {
 		ms   *v1alpha1.MinecraftServer
 		want bool
 	}{{lobby, true}, {testServer("plain", "plain"), false}} {
-		info := serverInfo(tc.ms)
+		info := serverInfo(tc.ms, time.Now())
 		b, err := json.Marshal(info)
 		if err != nil {
 			t.Fatal(err)

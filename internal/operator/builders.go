@@ -38,7 +38,7 @@ const (
 	ComponentValue = "server"
 
 	defaultGraceSeconds int64  = 300
-	defaultStorageSize  string = "8Gi"
+	defaultStorageSize  string = v1alpha1.DefaultWorldStorageSize
 )
 
 // selectorFor contains only immutable server identity labels.

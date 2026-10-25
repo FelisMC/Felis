@@ -1,6 +1,7 @@
 {
   "title": "Server Files",
   "back_to_console": "Back to console",
+  "disk_cleanup_hint": "Download any files to keep, then delete unneeded files. The next successful disk sample updates the startup restriction.",
   "root": "World root",
   "up": "Up",
   "refresh": "Refresh",

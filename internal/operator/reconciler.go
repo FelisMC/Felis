@@ -97,7 +97,8 @@ type Reconciler struct {
 	// Secrets avoids a Secret informer; nil falls back to the embedded client.
 	Secrets client.Reader
 	// Pods avoids a Pod informer; nil falls back to the embedded client.
-	Pods client.Reader
+	Pods    client.Reader
+	Volumes client.Reader
 	// BootID tells host restarts from crashes; nil leaves every restart a crash.
 	BootID   BootIDFunc
 	Recorder record.EventRecorder // nil disables Events
@@ -154,6 +155,11 @@ func (r *Reconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		if err := r.takeKillRequest(ctx, &server, desired); err != nil {
 			return ctrl.Result{}, err
 		}
+	}
+	if blocked, err := r.reconcileDiskQuota(ctx, &server); err != nil {
+		return ctrl.Result{}, err
+	} else if blocked && desired == v1alpha1.DesiredRunning {
+		return ctrl.Result{RequeueAfter: requeueStopping}, nil
 	}
 	for _, annotation := range []string{v1alpha1.AnnotationStartRetry, v1alpha1.AnnotationRestart} {
 		if _, ok := server.Annotations[annotation]; ok {

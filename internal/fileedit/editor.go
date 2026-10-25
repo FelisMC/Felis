@@ -161,6 +161,17 @@ func (e *Editor) Extensions(ctx context.Context, server string) (ExtensionList, 
 	return ExtensionList{Entries: res.Extensions, Truncated: res.Truncated}, nil
 }
 
+func (e *Editor) DiskUsage(ctx context.Context, server string) (int64, error) {
+	res, err := e.run(ctx, server, JobParams{Op: OpDiskUsage})
+	if err != nil {
+		return 0, err
+	}
+	if res.UsedBytes == nil || *res.UsedBytes < 0 {
+		return 0, fmt.Errorf("%w: the file Job returned no valid disk usage", ErrReadDamaged)
+	}
+	return *res.UsedBytes, nil
+}
+
 func (e *Editor) LogTail(ctx context.Context, server, cursor string) (LogTailPage, error) {
 	if _, err := parseLogTailCursor(cursor); err != nil {
 		return LogTailPage{}, fmt.Errorf("%w: invalid log cursor", ErrBadPath)
@@ -262,6 +273,9 @@ func (e *Editor) run(ctx context.Context, server string, p JobParams) (Result, e
 	}
 
 	cfg := e.Config.withDefaults()
+	if p.Op == OpDiskUsage {
+		cfg.Timeout = min(cfg.Timeout, diskUsageTimeout)
+	}
 	p, err := cfg.params(server, p)
 	if err != nil {
 		return Result{}, err

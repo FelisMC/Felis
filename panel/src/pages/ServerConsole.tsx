@@ -305,6 +305,7 @@ export function ServerConsole() {
                   playersOnline={data.playersOnline}
                   playerCountUnknown={data.playerCountUnknown}
                   retiring={data.retiring}
+                  diskFull={data.diskFull}
                   allowRestart={owned}
                   onChanged={reload}
                 />}
@@ -318,7 +319,7 @@ export function ServerConsole() {
           )}
           {!error && <RecoveryNotice data={data} />}
 
-          {owned && <ResourceUsage key={name} name={name} running={!error && data.phase === "Running" && data.desiredState === "Running"} cpu={data.cpu} memory={data.memory} />}
+          {owned && <ResourceUsage key={name} name={name} running={!error && data.phase === "Running" && data.desiredState === "Running"} cpu={data.cpu} memory={data.memory} disk={error && data.disk ? { ...data.disk, stale: true } : data.disk} diskFull={data.diskFull} />}
           {!error && startup && (
             <div role="status" className="shrink-0 space-y-2 rounded-xl border border-border bg-card p-4 text-sm">
               <p className="flex items-center gap-2 font-medium">{startupBlocked ? <ShieldAlert className="h-4 w-4 text-amber-500" /> : <Loader2 className="h-4 w-4 animate-spin text-primary" />}{t(`startup_${startup.stage}`)}</p>

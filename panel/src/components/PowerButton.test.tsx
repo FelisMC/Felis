@@ -356,3 +356,46 @@ describe("PowerButton on a page that needs the server down", () => {
     expect(screen.getByText(t("servers:stop_confirm_players", { count: 2 }))).toBeTruthy();
   });
 });
+
+describe("PowerButton disk quota restriction", () => {
+  it.each([
+    { phase: "Stopped", desiredState: "Stopped", failed: false, action: "wake" },
+    { phase: "Failed", desiredState: "Running", failed: true, action: "retry_start" },
+    { phase: "Running", desiredState: "Running", failed: false, action: "restart" },
+  ] as const)("blocks $action while the disk quota is full", async ({ phase, desiredState, failed, action }) => {
+    render(<PowerButton name="survival" phase={phase} desiredState={desiredState} failed={failed} allowRestart diskFull onChanged={vi.fn()} />);
+    const start = screen.getByRole("button", { name: t(`servers:${action}`) });
+    expect(start).toHaveProperty("disabled", true);
+    await userEvent.click(start);
+    expect(wake).not.toHaveBeenCalled();
+    expect(restart).not.toHaveBeenCalled();
+    expect(screen.getByText(t("servers:disk_full_blocked"))).toBeTruthy();
+    if (phase !== "Stopped") expect(screen.getByRole("button", { name: t("servers:stop") })).toHaveProperty("disabled", false);
+  });
+
+  it("disables an open restart confirmation when a full sample arrives", async () => {
+    const props = { name: "survival", phase: "Running" as const, desiredState: "Running" as const, playersOnline: 2, allowRestart: true, onChanged: vi.fn() };
+    const { rerender } = render(<PowerButton {...props} />);
+    await userEvent.click(screen.getByRole("button", { name: t("servers:restart") }));
+    rerender(<PowerButton {...props} diskFull />);
+    expect(screen.getByRole("button", { name: t("servers:restart") })).toHaveProperty("disabled", true);
+    await userEvent.click(screen.getByRole("button", { name: t("servers:restart") }));
+    expect(restart).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: t("common:cancel") }));
+    await userEvent.click(screen.getByRole("button", { name: t("servers:stop") }));
+    await userEvent.click(screen.getByRole("button", { name: t("servers:stop") }));
+    expect(stop).toHaveBeenCalledExactlyOnceWith("survival");
+  });
+
+  it("clears a submitted wake on a full status and allows waking after recovery", async () => {
+    const props = { name: "survival", phase: "Stopped" as const, desiredState: "Stopped" as const, onChanged: vi.fn() };
+    const { rerender } = render(<PowerButton {...props} />);
+    await userEvent.click(screen.getByRole("button", { name: t("servers:wake") }));
+    expect(screen.getByRole("button", { name: t("servers:waking") })).toBeTruthy();
+    rerender(<PowerButton {...props} diskFull />);
+    expect(screen.getByRole("button", { name: t("servers:wake") })).toHaveProperty("disabled", true);
+    rerender(<PowerButton {...props} diskFull={false} />);
+    await userEvent.click(screen.getByRole("button", { name: t("servers:wake") }));
+    expect(wake).toHaveBeenCalledTimes(2);
+  });
+});

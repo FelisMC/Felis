@@ -25,11 +25,13 @@ type ServerInfo struct {
 	Image           string `json:"image,omitempty"`
 	JavaMemory      string `json:"javaMemory,omitempty"`
 	// Memory is the pod limit; JavaMemory is the heap derived from it.
-	Memory      string `json:"memory,omitempty"`
-	StorageSize string `json:"storageSize,omitempty"`
-	CPU         string `json:"cpu,omitempty"`
-	CPUMilli    *int64 `json:"cpuMilli,omitempty"`
-	MemoryBytes *int64 `json:"memoryBytes,omitempty"`
+	Memory      string           `json:"memory,omitempty"`
+	StorageSize string           `json:"storageSize,omitempty"`
+	CPU         string           `json:"cpu,omitempty"`
+	CPUMilli    *int64           `json:"cpuMilli,omitempty"`
+	MemoryBytes *int64           `json:"memoryBytes,omitempty"`
+	Disk        *ServerDiskUsage `json:"disk,omitempty"`
+	DiskFull    bool             `json:"diskFull,omitempty"`
 	// IdleStopSeconds=0 disables idle shutdown.
 	IdleStopSeconds int32 `json:"idleStopSeconds"`
 	// PlayerCountUnknown suspends idle shutdown until RCON can read the count.

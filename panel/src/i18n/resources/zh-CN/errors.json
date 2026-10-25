@@ -5,6 +5,7 @@
   "invalid_code": "绑定码无效或已过期，请重新获取。",
   "already_linked": "该 Minecraft 账户已关联至其他用户。",
   "bad_mc_uuid": "Minecraft UUID 格式无效。示例：069a79f4-44e9-4726-a5be-fca90e38aaf5，可省略连字符。",
+  "disk_full": "服务器磁盘用量已达到配额。请清理文件，等待新的用量统计确认低于配额后再启动。",
   "quota_exceeded": "超出配额上限（服务器数量、CPU、内存或存储）。",
   "already_claimed": "该服务器已被其他账户认领。",
   "image_not_whitelisted": "该镜像未在白名单中。",

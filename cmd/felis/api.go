@@ -266,6 +266,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 
 	// The file editor needs only FELIS_IMAGE; the upload stage starts empty because a previous process's staged files are orphaned.
 	var files api.FileEditor
+	var diskFiles *fileedit.Editor
 	var fileStage *fileedit.Stage
 	var fileBrowser *fileedit.Browser
 	if felisImage != "" {
@@ -292,7 +293,8 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 				}, drop, nil
 			}
 		}
-		files = &fileedit.Editor{Runner: runner, Config: fcfg}
+		diskFiles = &fileedit.Editor{Runner: runner, Config: fcfg}
+		files = diskFiles
 	} else {
 		fmt.Fprintln(stderr, "felis api: file editor disabled (needs FELIS_IMAGE) — file endpoints return 503")
 	}
@@ -317,6 +319,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	cluster := api.NewK8sCluster(cl, cfg.K8s.Namespace).WithServerCache(serverCache, serversSynced).WithDistributed(distribution != nil, os.Getenv("FELIS_CONTROLLER_NODE"))
+	cluster.DiskWorldResolver = worldResolver
 	if distribution != nil {
 		distribution.Record = func(ctx context.Context, b distributed.Backup) error {
 			keep, retention, ok := backupPolicy(b.Reason, archive.Reaper(ctx))
@@ -436,6 +439,9 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	// These loops run only in the felis-api instance holding the lease (leadLoops).
 	loops := func(ctx context.Context) {
 		go sampleUsage(ctx, a, stderr)
+		if diskFiles != nil {
+			go sampleDiskUsage(ctx, cluster, diskFiles, stderr)
+		}
 		go reconcileBuilds(ctx, builder, stderr)
 		go settleRestoreChains(ctx, a, stderr)
 		go settleLiveBackups(ctx, a, stderr)
