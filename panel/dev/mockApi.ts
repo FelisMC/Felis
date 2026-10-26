@@ -3131,15 +3131,15 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
     sendError(ctx.res, 400, "bad_name", "system service is reserved for staff");
     return true;
   }
+  if (is("GET", ctx) && ctx.parts[4] === "status") {
+    sendJSON(ctx.res, 200, statusView(serverInfo, ctx.account));
+    return true;
+  }
   if (!canSee(ctx.account, serverInfo)) {
     sendError(ctx.res, 403, "forbidden", "server is not visible to this account");
     return true;
   }
 
-  if (is("GET", ctx) && ctx.parts[4] === "status") {
-    sendJSON(ctx.res, 200, statusView(serverInfo, ctx.account));
-    return true;
-  }
   if (is("GET", ctx) && ctx.parts[4] === "usage") {
     if (!canManage(ctx.account, serverInfo)) sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
     else sendJSON(ctx.res, 200, mockUsage(serverInfo));
