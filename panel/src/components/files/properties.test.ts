@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { getProperty, PropertiesParseError, readProperties, setProperty } from "./properties";
 
-// Semantic fixtures follow https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Properties.html#load(java.io.Reader).
+// Expected values follow java.util.Properties.load semantics.
 describe("Java properties reading", () => {
   it("reads all current values with the last duplicate taking effect", () => {
     expect(readProperties("motd=first\nmax-players=20\nmotd=last\n")).toEqual(new Map([

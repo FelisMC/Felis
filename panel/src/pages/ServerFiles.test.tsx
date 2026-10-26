@@ -221,7 +221,7 @@ describe("file manager actions", () => {
       .mockResolvedValueOnce({ op: fileOp({ id: "copy2", op: "copy", path: "world", state: "succeeded" }) });
     renderFiles();
     await userEvent.click(await screen.findByRole("checkbox", { name: label("select_item", "server.properties") }));
-    // Guarded configuration files remain unavailable as clipboard sources.
+    // Guarded files such as server.properties cannot be copied.
     expect((screen.getByRole("button", { name: t("files:copy") }) as HTMLButtonElement).disabled).toBe(true);
     mocks.listServerFiles.mockResolvedValue({ entries: [{ name: "notes.txt", size: 2, is_dir: false, mod_time: "" }, { name: "world", size: 0, is_dir: true, mod_time: "" }] });
     await userEvent.click(screen.getByRole("button", { name: t("files:refresh") }));

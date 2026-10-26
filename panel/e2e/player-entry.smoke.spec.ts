@@ -52,5 +52,4 @@ test("entry policy keeps its form visible, saves direct routing and retains Limb
   await expect.poll(offset).toBeLessThan(2);
   await page.getByRole("radio", { name: `${t("admin:entry_lobby")} ${t("admin:entry_lobby_hint")}` }).click();
   await expect.poll(offset).toBeLessThan(2);
-  await page.screenshot({ path: "/tmp/felis-player-entry.png" });
 });

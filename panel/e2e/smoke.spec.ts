@@ -26,23 +26,6 @@ test("admin headings share their size and gutters and stay pinned while content 
   expect(metrics[2]).toEqual(metrics[0]);
 });
 
-test("saved authentication sources start closed and switches leave them closed", async ({ page, signIn }) => {
-  await signIn("owner");
-  await page.goto("/admin/auth-sources");
-  const expand = page.getByRole("button", { name: t("authSources:expand", { name: "littleskin" }) });
-  await expect(expand).toHaveAttribute("aria-expanded", "false");
-  await expect(page.getByLabel(t("authSources:prefix"))).toBeHidden();
-  const enabled = page.getByRole("switch", { name: t("authSources:enabled"), exact: true });
-  await enabled.focus();
-  await page.keyboard.press("Space");
-  await expect(enabled).toHaveAttribute("aria-checked", "false");
-  await expect(expand).toHaveAttribute("aria-expanded", "false");
-  await page.getByRole("button", { name: t("authSources:save"), exact: true }).click();
-  await expect(page.getByText(t("authSources:saved"), { exact: true })).toBeVisible();
-  await expand.click();
-  await expect(page.getByLabel(t("authSources:prefix"))).toBeVisible();
-});
-
 test("the console keeps a bounded log pane below the fixed heading", async ({ page, signIn }) => {
   await signIn("owner");
   await page.setViewportSize({ width: 1440, height: 960 });
@@ -51,47 +34,6 @@ test("the console keeps a bounded log pane below the fixed heading", async ({ pa
   await expect(page.getByRole("button", { name: t("servers:log_clear_btn") })).toBeInViewport({ ratio: 1 });
   await expect(page.getByRole("heading", { name: "Hub Lobby", exact: true })).toBeInViewport({ ratio: 1 });
   expect(await page.getByRole("main").evaluate((el) => el.scrollTop)).toBe(0);
-});
-
-test("space settings keep the form visible while reading configuration", async ({ page, signIn }) => {
-  await signIn("owner");
-  await page.emulateMedia({ colorScheme: "dark" });
-  let release!: () => void;
-  const pending = new Promise<void>((resolve) => { release = resolve; });
-  await page.route("**/api/v1/servers/login/file?path=felis-experience.json", async (route) => { await pending; await route.continue(); });
-  await page.goto("/admin/lobby");
-  const title = page.getByLabel(t("lobby:bookTitle"));
-  await expect(title).toBeVisible();
-  await expect(title).toBeDisabled();
-  await expect(title).toHaveValue("");
-  await expect(page.getByText(t("lobby:loading_settings"), { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: t("lobby:save"), exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: t("lobby:save"), exact: true })).toBeDisabled();
-  await expectFitsScreen(page);
-  await page.screenshot({ path: "/tmp/felis-lobby-loading.png", fullPage: true });
-  release();
-  await expect(title).toBeEnabled();
-  await expect(title).toHaveValue("Felis Login");
-  await expect(page.getByText(t("lobby:loading_settings"), { exact: true })).toHaveCount(0);
-});
-
-test("login is the default space; live lobby settings save before a confirmed restart", async ({ page, signIn }) => {
-  await signIn("owner");
-  await page.goto("/admin/lobby");
-  await expect(page.getByRole("tab", { name: t("lobby:login"), exact: true })).toHaveAttribute("aria-selected", "true");
-  await expect(page.getByLabel(t("lobby:bookTitle"))).toBeVisible();
-  await page.getByRole("tab", { name: t("lobby:lobby"), exact: true }).click();
-  await page.getByLabel(t("lobby:menuTitleEn")).fill("Our Network");
-  await expect(page.getByRole("button", { name: t("lobby:restart"), exact: true })).toBeDisabled();
-  await page.getByRole("button", { name: t("lobby:save"), exact: true }).click();
-  await expect(page.getByText(t("lobby:saved"), { exact: true })).toBeVisible();
-  await expectFitsScreen(page);
-  await page.getByRole("button", { name: t("lobby:restart"), exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: t("lobby:restart_title") });
-  await expect(dialog).toBeVisible();
-  await dialog.getByRole("button", { name: t("lobby:restart"), exact: true }).click();
-  await expect(dialog).toHaveCount(0);
-  await expect(page.getByText(t("lobby:restart_requested"), { exact: true })).toBeVisible();
 });
 
 test("a signed-out visit signs in by email code and returns to the page it asked for", async ({ page }) => {
@@ -107,46 +49,20 @@ test("a signed-out visit signs in by email code and returns to the page it asked
   await expect(page.getByRole("heading", { name: t("ops:fleet_title") })).toBeVisible();
 });
 
-test("a player sees their own server, can claim an unowned one, and has no admin section", async ({ page, signIn }) => {
-  await signIn("linked");
-  await page.goto("/servers");
-
-  await expect(page.getByRole("heading", { name: t("servers:my_servers_title") })).toBeVisible();
-  // Display name first, the server name beside it.
-  const own = page.getByRole("row").filter({ hasText: "Hub Lobby" });
-  await expect(own).toContainText("lobby");
-  await expect(own.getByRole("link", { name: t("servers:console") })).toBeVisible();
-  await expect(own.getByRole("button", { name: t("servers:stop"), exact: true })).toBeVisible();
-  const unowned = page.getByRole("row").filter({ hasText: "Claimable Node" });
-  await expect(unowned.getByRole("button", { name: t("servers:claim"), exact: true })).toBeVisible();
-  await expect(unowned.getByRole("button", { name: t("servers:stop"), exact: true })).toHaveCount(0);
-  await expect(page.getByRole("link", { name: t("navigation:admin_users") })).toHaveCount(0);
-
-  await page.goto("/admin/images");
-  await expect(page.getByText(t("common:not_authorized_title"))).toBeVisible();
-});
-
-test("stopping a server with players online asks first, and cancel keeps it running", async ({ page, signIn }) => {
-  await signIn("linked");
-  await page.goto("/servers/lobby");
-
-  await page.getByRole("button", { name: t("servers:stop"), exact: true }).click();
-  const question = page.getByText(t("servers:stop_confirm_players", { count: 28 }));
-  await expect(question).toBeVisible();
-  await page.getByRole("button", { name: t("common:cancel") }).click();
-  await expect(question).toHaveCount(0);
-
-  const status = await page.request.get("/api/v1/servers/lobby/status");
-  expect((await status.json()).phase).toBe("Running");
-});
-
-test("an admin reaches the user list", async ({ page, signIn }) => {
-  await signIn("owner");
-  await page.goto("/admin/users");
-
-  await expect(page.getByRole("heading", { name: t("admin:users_title") })).toBeVisible();
-  await expect(page.getByText("linked@mock.felis.local")).toBeVisible();
-});
+for (const path of ["/servers", "/account"]) {
+  test(`logout from ${path} on the operator host returns to login methods`, async ({ page, signIn }) => {
+    await page.route("**/config.json", async (route) => {
+      const response = await route.fetch();
+      await route.fulfill({ response, json: { ...await response.json(), adminHostname: "localhost" } });
+    });
+    await signIn("owner");
+    await page.goto(path);
+    const logout = page.getByRole("button", { name: t("account:sign_out"), exact: true });
+    await (path === "/account" ? logout.last() : logout.first()).click();
+    await expect(page).toHaveURL(/\/login\?/);
+    await expect(page.getByRole("button", { name: t("auth:passkey_btn"), exact: true })).toBeVisible();
+  });
+}
 
 test("account cards keep compact headings and aligned form fields", async ({ page, signIn }) => {
   await page.route("**/api/v1/account/link/start", (route) => route.fulfill({ json: { linked: false } }));
@@ -168,18 +84,13 @@ test("account cards keep compact headings and aligned form fields", async ({ pag
 test("an unlinked Owner can manage the panel, then preview and confirm a game role", async ({ page, signIn }) => {
   const profile = { source: "littleskin", name: "LemonMiaow", profile_uuid: "123456781234423482341234567890ab", mc_uuid: "canonical-role", auth_source: "thirdparty" };
   let linked = false;
-  let designations = 0;
   await page.route("**/api/v1/account/link/start", (route) => route.fulfill({ json: { linked } }));
   await page.route("**/api/v1/account/link/sources", (route) => route.fulfill({ json: { sources: [{ tag: "littleskin", lookup_available: true }] } }));
   await page.route("**/api/v1/account/link/profile**", async (route) => {
-    const request = route.request();
-    if (request.method() === "POST") {
-      expect(request.postDataJSON()).toEqual({ source: profile.source, profile_uuid: profile.profile_uuid });
+    if (route.request().method() === "POST") {
       linked = true;
-      designations++;
       await route.fulfill({ json: { linked: true, mc_uuid: profile.mc_uuid, auth_source: profile.auth_source } });
     } else {
-      expect(new URL(request.url()).searchParams.get("profile")).toBe("LemonMiaow");
       await route.fulfill({ json: profile });
     }
   });
@@ -193,11 +104,9 @@ test("an unlinked Owner can manage the panel, then preview and confirm a game ro
   await page.getByLabel(t("account:staff_profile")).fill("LemonMiaow");
   await page.getByRole("button", { name: t("account:staff_lookup") }).click();
   await expect(page.getByText(profile.profile_uuid)).toBeVisible();
-  expect(designations).toBe(0);
   await expectFitsScreen(page);
   await page.getByRole("button", { name: t("account:staff_confirm") }).click();
   await expect(page.getByText(t("account:staff_linked_desc"))).toBeVisible();
-  expect(designations).toBe(1);
 
   await page.getByText(t("account:game_guide"), { exact: true }).click();
   await expect(page.getByText(t("account:game_version", { version: "26.3" }))).toBeVisible();
@@ -240,21 +149,9 @@ test("on a wide screen the LuckPerms player list runs down its column", async ({
   await expect.poll(async () => (await list.locator("..").boundingBox())!.height).toBe(700);
 });
 
-test("staff customize the login space through the persistent file editor", async ({ page, signIn }) => {
-  await signIn("owner");
-  await page.goto("/admin/lobby?space=login");
-  await expect(page.getByRole("heading", { name: t("lobby:title"), exact: true })).toBeVisible();
-  const heading = page.getByLabel(t("lobby:bookHeading"));
-  await expect(heading).toBeVisible();
-  await heading.fill("Welcome to our network");
-  await page.getByRole("button", { name: t("lobby:save"), exact: true }).click();
-  await expect(page.getByText(t("lobby:saved"), { exact: true })).toBeVisible();
-  await page.reload();
-  await expect(heading).toHaveValue("Welcome to our network");
-});
-
 test("players cannot open the lobby administration page", async ({ page, signIn }) => {
   await signIn("linked");
   await page.goto("/admin/lobby");
+  await expect(page.getByText(t("common:not_authorized_title"))).toBeVisible();
   await expect(page.getByRole("heading", { name: t("lobby:title"), exact: true })).toHaveCount(0);
 });

@@ -28,7 +28,6 @@ vi.mock("@/lib/api", async (importActual) => {
   const actual = await importActual<typeof import("@/lib/api")>();
   return { ...actual, api: { ...actual.api, ...calls } };
 });
-// The live SSE log's connection is exercised separately.
 vi.mock("@/components/LogConsole", async (importActual) => ({
   ...await importActual<typeof import("@/components/LogConsole")>(),
   LogConsole: () => <div data-testid="log-stream" />,

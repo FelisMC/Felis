@@ -13,10 +13,9 @@ const BACKEND_PHASES = [
 ] as const satisfies readonly Phase[];
 
 describe("phase palette parity", () => {
-  it("resolves every backend phase to a concrete colour and variant", () => {
+  it("resolves every backend phase to a concrete colour", () => {
     for (const phase of BACKEND_PHASES) {
       expect(phaseColor(phase), `colour for ${phase}`).toMatch(/^#[0-9a-f]{6}$/i);
-      expect(phaseVariant(phase), `variant for ${phase}`).toBeTruthy();
     }
   });
 

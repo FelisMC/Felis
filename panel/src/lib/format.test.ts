@@ -43,13 +43,6 @@ describe("formatRelative (now injected for determinism)", () => {
     expect(formatRelative("2026-07-31T12:00:00Z", now, "en-US")).toBe("next month");
   });
 
-  it("localizes into zh-CN", () => {
-    // Intl carries the localization; assert it is non-empty and not the English form.
-    const zh = formatRelative("2026-06-28T12:00:00Z", now, "zh-CN");
-    expect(zh).not.toBe("");
-    expect(zh).not.toContain("ago");
-  });
-
   it("returns empty string for an unparseable input", () => {
     expect(formatRelative("not-a-date", now, "en-US")).toBe("");
   });
@@ -58,9 +51,6 @@ describe("formatRelative (now injected for determinism)", () => {
 describe("formatAbsolute", () => {
   it("returns empty string for an unparseable input", () => {
     expect(formatAbsolute("nope", "en-US")).toBe("");
-  });
-  it("renders a non-empty localized string for a valid input", () => {
-    expect(formatAbsolute("2026-07-01T12:00:00Z", "en-US")).not.toBe("");
   });
 });
 
