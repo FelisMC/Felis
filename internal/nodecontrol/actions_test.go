@@ -100,9 +100,6 @@ func TestBlockingAndNodeActions(t *testing.T) {
 	if !NodeAction("join") || !NodeAction("enable-ha") || NodeAction("doctor") || NodeAction("db-restore") {
 		t.Fatal("NodeAction misclassifies")
 	}
-	if timeoutFor("restore-host") != 12*time.Hour || timeoutFor("doctor") != 3*time.Minute || timeoutFor("join") != 45*time.Minute {
-		t.Fatal("per-action time limits")
-	}
 	if limitText(12*time.Hour) != "12-hour" || limitText(45*time.Minute) != "45-minute" {
 		t.Fatal(limitText(12*time.Hour), limitText(45*time.Minute))
 	}

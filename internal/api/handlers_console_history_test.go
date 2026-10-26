@@ -116,7 +116,7 @@ func TestConsoleHistoryMaintenanceGate(t *testing.T) {
 	for _, kind := range []string{maintenance.KindFileWrite, maintenance.KindConfigWrite, maintenance.KindExport} {
 		t.Run(kind+" permits reads", func(t *testing.T) {
 			a, _, cl, files := newHistoryAPI(t)
-			// CheckFileAccess permits reads while these holders still reject a new write lock.
+			// These holders refuse a write lock but still permit reads.
 			cl.maintErr["survival"] = &MaintenanceBusyError{Kind: kind}
 			w := do(a.ExternalHandler(), "GET", consoleHistoryRoute, "", nil)
 			if w.Code != http.StatusOK || files.calls != 1 || len(cl.acquired) != 0 || len(cl.ensured) != 0 {

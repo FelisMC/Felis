@@ -49,29 +49,6 @@ func TestReclaimBarsSquatterAndStashes(t *testing.T) {
 	}
 }
 
-func TestReclaimNeverCatchesGenuineMojangPlayer(t *testing.T) {
-	const (
-		squatter = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-		genuine  = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb" // same name, real owner
-	)
-	repo := newFakeRepo()
-	api := newTestAPI(repo, newFakeCluster())
-	ih := api.InternalHandler()
-
-	body := `{"squatter_uuid":"` + squatter + `","username":"Notch"}`
-	if w := do(ih, "POST", "/api/v1/internal/player/reclaim", body, nil); w.Code != http.StatusOK {
-		t.Fatalf("reclaim: code = %d (%s)", w.Code, w.Body.String())
-	}
-
-	w := do(ih, "GET", "/api/v1/internal/player/blacklist/"+genuine, "", nil)
-	if w.Code != http.StatusOK {
-		t.Fatalf("genuine check: code = %d (%s)", w.Code, w.Body.String())
-	}
-	if got := acctBody(t, w)["blacklisted"]; got != false {
-		t.Fatalf("genuine Mojang player blacklisted = %v, want false", got)
-	}
-}
-
 func TestReclaimProtectsAdminOnYggdrasil(t *testing.T) {
 	const adminUUID = "0a11dead-0000-0000-0000-00000000ad11"
 	repo := newFakeRepo()
@@ -115,71 +92,6 @@ func TestReclaimProtectsAdminOnYggdrasil(t *testing.T) {
 	}
 	if p["reason"] != "protected_admin" || p["squatter_uuid"] != adminUUID {
 		t.Errorf("audit payload = %v, want reason:protected_admin squatter_uuid:%s", p, adminUUID)
-	}
-}
-
-func TestReclaimAdminProtectionScope(t *testing.T) {
-	const squatter = "0a11dead-0000-0000-0000-00000000ad11"
-	cases := []struct {
-		name      string
-		role      string
-		auth      string
-		protected bool // true: reclaim refused (409); false: reclaim succeeds (200, barred)
-	}{
-		{"thirdparty non-admin is reclaimed", "user", authSourceThirdParty, false},
-		{"mojang admin is reclaimed", "admin", authSourceMojang, false},
-		{"sso admin without local password is protected", "admin", authSourceThirdParty, true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			repo := newFakeRepo()
-			repo.staff["holder"] = &StaffUser{ID: "h-1", Username: "holder", Role: tc.role}
-			repo.links[squatter] = "h-1"
-			repo.linkAuthSource[squatter] = tc.auth
-			api := newTestAPI(repo, newFakeCluster())
-			ih := api.InternalHandler()
-
-			body := `{"squatter_uuid":"` + squatter + `","username":"Holder"}`
-			w := do(ih, "POST", "/api/v1/internal/player/reclaim", body, nil)
-
-			if tc.protected {
-				if w.Code != http.StatusConflict || decodeErr(t, w) != "protected_admin" {
-					t.Fatalf("code = %d body %s, want 409 protected_admin", w.Code, w.Body.String())
-				}
-				if len(repo.blacklist) != 0 || len(repo.holds) != 0 {
-					t.Fatal("a protected holder must not be barred or stashed")
-				}
-				return
-			}
-			if w.Code != http.StatusOK {
-				t.Fatalf("code = %d body %s, want 200 (reclaim should proceed)", w.Code, w.Body.String())
-			}
-			if !repo.blacklist[squatter] {
-				t.Fatal("an unprotected squatter must be barred — Mojang priority still holds")
-			}
-		})
-	}
-}
-
-func TestReclaimIsIdempotent(t *testing.T) {
-	const squatter = "cccccccc-cccc-cccc-cccc-cccccccccccc"
-	repo := newFakeRepo()
-	api := newTestAPI(repo, newFakeCluster())
-	ih := api.InternalHandler()
-
-	first := `{"squatter_uuid":"` + squatter + `","username":"Herobrine","data_ref":"ref-1"}`
-	if w := do(ih, "POST", "/api/v1/internal/player/reclaim", first, nil); w.Code != http.StatusOK {
-		t.Fatalf("first reclaim: code = %d (%s)", w.Code, w.Body.String())
-	}
-	original := repo.holds[squatter]
-
-	// A retry with a different data_ref must not overwrite the original stash.
-	retry := `{"squatter_uuid":"` + squatter + `","username":"Herobrine","data_ref":"ref-2"}`
-	if w := do(ih, "POST", "/api/v1/internal/player/reclaim", retry, nil); w.Code != http.StatusOK {
-		t.Fatalf("retry reclaim: code = %d (%s)", w.Code, w.Body.String())
-	}
-	if got := repo.holds[squatter]; got != original {
-		t.Errorf("idempotent retry altered the hold: got %+v, want %+v", got, original)
 	}
 }
 

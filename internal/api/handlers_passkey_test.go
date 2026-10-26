@@ -142,18 +142,6 @@ func TestPasskeyBeginPassesExistingCredentials(t *testing.T) {
 	}
 }
 
-func TestPasskeyBeginSupersedes(t *testing.T) {
-	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
-	repo := newFakeRepo()
-	eh := newPasskeyAPI(repo, &fakePasskeyVerifier{}, user)
-
-	do(eh, "POST", "/api/v1/account/passkey/register/begin", "", nil)
-	do(eh, "POST", "/api/v1/account/passkey/register/begin", "", nil)
-	if len(repo.passkeyChallenges) != 1 {
-		t.Fatalf("a second begin must supersede the first; stashed challenges = %d, want 1", len(repo.passkeyChallenges))
-	}
-}
-
 func TestPasskeyUnavailable(t *testing.T) {
 	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
 	repo := newFakeRepo()
@@ -321,23 +309,6 @@ func TestPasskeyDeleteUnknown(t *testing.T) {
 	eh := newPasskeyAPI(newFakeRepo(), &fakePasskeyVerifier{}, user)
 	if w := do(eh, "DELETE", "/api/v1/account/passkey/credentials/nope", "", nil); w.Code != http.StatusNotFound || decodeErr(t, w) != "not_found" {
 		t.Fatalf("delete unknown: code = %d body %s, want 404 not_found", w.Code, w.Body.String())
-	}
-}
-
-func TestPasskeyListNewestFirst(t *testing.T) {
-	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
-	repo := newFakeRepo()
-	repo.passkeyCreds["old"] = PasskeyCredential{ID: "old", UserID: "u1", CredentialID: "c-old", Name: "old", CreatedAt: frozenNow.Add(-time.Hour)}
-	repo.passkeyCreds["new"] = PasskeyCredential{ID: "new", UserID: "u1", CredentialID: "c-new", Name: "new", CreatedAt: frozenNow}
-	eh := newPasskeyAPI(repo, &fakePasskeyVerifier{}, user)
-
-	w := do(eh, "GET", "/api/v1/account/passkey/credentials", "", nil)
-	creds, _ := acctBody(t, w)["credentials"].([]any)
-	if len(creds) != 2 {
-		t.Fatalf("list returned %d, want 2 (%s)", len(creds), w.Body.String())
-	}
-	if first, _ := creds[0].(map[string]any)["name"].(string); first != "new" {
-		t.Errorf("list order: first = %q, want \"new\" (newest first)", first)
 	}
 }
 

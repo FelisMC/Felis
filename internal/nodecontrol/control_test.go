@@ -207,20 +207,6 @@ func TestCancellationFinishesTask(t *testing.T) {
 	}
 }
 
-func TestHostSocketConnectivity(t *testing.T) {
-	socket := os.Getenv("FELIS_TEST_NODE_CONTROL_SOCKET")
-	if socket == "" {
-		t.Skip("live host socket not supplied")
-	}
-	tasks, err := NewClient(socket).List(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if tasks == nil {
-		t.Fatal("host returned no task list")
-	}
-}
-
 func TestHARequests(t *testing.T) {
 	if err := (Request{Action: "enable-ha", ConfirmMaintenance: true}).Validate(); err != nil {
 		t.Fatalf("enable-ha = %v", err)

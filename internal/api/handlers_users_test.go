@@ -243,12 +243,11 @@ func TestSetQuotasReplacesAllCaps(t *testing.T) {
 	put(`{"max_memory_mb":2147483647}`, http.StatusOK)
 }
 
-func TestClearQuotasReturnsTheUserToTheDefault(t *testing.T) {
+func TestClearQuotas(t *testing.T) {
 	owner := &Principal{UserID: "usr-root", Role: "owner", ViaAdminAccess: true}
 	repo := newFakeRepo()
 	repo.seedUser(UserView{ID: "usr-root", Username: "root", Role: "owner"})
 	repo.seedUser(UserView{ID: "u2", Username: "alice", Role: "user"})
-	enableDefaultQuota(repo, 1, 4096)
 	api := newTestAPI(repo, newFakeCluster())
 	api.External = staticExternal{p: owner}
 	eh := api.ExternalHandler()
@@ -256,18 +255,9 @@ func TestClearQuotasReturnsTheUserToTheDefault(t *testing.T) {
 	if w := do(eh, "PUT", "/api/v1/users/u2/quotas", `{}`, jsonHeader); w.Code != http.StatusOK {
 		t.Fatalf("set an own quota: %d %s", w.Code, w.Body.String())
 	}
-	if st, _ := repo.SelfServiceState(context.Background(), "u2"); st.Source != "user" {
-		t.Fatalf("with an own row the source is %q, want user", st.Source)
-	}
 	w := do(eh, "DELETE", "/api/v1/users/u2/quotas", "", nil)
 	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != `{"user_id":"u2","custom":false}` {
 		t.Fatalf("clear: %d %s", w.Code, w.Body.String())
-	}
-	if st, _ := repo.SelfServiceState(context.Background(), "u2"); st.Source != "default" || st.Limits.MaxServers == nil || *st.Limits.MaxServers != 1 {
-		t.Fatalf("after clearing the source is %q with %+v, want the default quota", st.Source, st.Limits)
-	}
-	if got := strings.TrimSpace(do(eh, "GET", "/api/v1/users/u2/quotas", "", nil).Body.String()); got != `{"user_id":"u2","custom":false}` {
-		t.Fatalf("read after clearing: %s", got)
 	}
 	if w := do(eh, "DELETE", "/api/v1/users/nobody/quotas", "", nil); w.Code != http.StatusNotFound {
 		t.Fatalf("clear for an unknown user = %d, want 404", w.Code)

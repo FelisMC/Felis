@@ -14,7 +14,7 @@ import (
 	"felis.lolicon.best/internal/operator"
 )
 
-// runHost drives a running server whose pod the test restarts by hand, as the kubelet would.
+// runHost runs one server and plays the kubelet's part in restarting its pod.
 type runHost struct {
 	t      *testing.T
 	r      *operator.Reconciler
@@ -47,7 +47,7 @@ func newRunHost(t *testing.T, edit func(*v1alpha1.MinecraftServer)) *runHost {
 	return h
 }
 
-// exit makes the kubelet restart the game container after it ended with code.
+// exit simulates a kubelet restart after the game exits with code.
 func (h *runHost) exit(reason string, code int32) *v1alpha1.MinecraftServer {
 	h.t.Helper()
 	var pod corev1.Pod
@@ -71,7 +71,7 @@ func (h *runHost) pass() *v1alpha1.MinecraftServer {
 	return getServer(h.t, h.c, "survival")
 }
 
-// start does what the panel's Start does, including the generation bump of the API server.
+// start mimics the panel's Start, bumping Generation as the API server would.
 func (h *runHost) start() {
 	h.t.Helper()
 	s := getServer(h.t, h.c, "survival")
@@ -289,7 +289,7 @@ func TestLifecycleEventsFollowStartsAndStops(t *testing.T) {
 
 func TestEventsKeepTheLatestTwenty(t *testing.T) {
 	h := newRunHost(t, func(s *v1alpha1.MinecraftServer) { s.Spec.Recovery.MaxCrashRestarts = v1alpha1.MaxCrashRestartsLimit })
-	// Started, then 21 crashes, the last of which stops the server.
+	// The 21st crash exceeds the restart limit and stops the server.
 	var s *v1alpha1.MinecraftServer
 	for range 21 {
 		h.clock = h.clock.Add(time.Second)

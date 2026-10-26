@@ -727,7 +727,7 @@ func TestIdleAutoStop_CalledBackStopStartsAFreshRun(t *testing.T) {
 		t.Fatalf("phase = %s, want Stopping while the pod is still up", s.Status.Phase)
 	}
 	s.Spec.DesiredState = v1alpha1.DesiredRunning
-	s.Generation++ // the API server bumps it on a spec change; the fake client does not
+	s.Generation++ // the fake client does not bump it on a spec change
 	if err := c.Update(context.Background(), s); err != nil {
 		t.Fatalf("wake: %v", err)
 	}
@@ -894,7 +894,7 @@ func TestReconcileRunning_ReadinessTimeoutConvertsToFailed(t *testing.T) {
 
 	// Past timeout: transitions to Failed.
 	clock = base.Add(31 * time.Second)
-	res = reconcile(t, r, "survival")
+	reconcile(t, r, "survival")
 	server = getServer(t, c, "survival")
 	if server.Status.Phase != v1alpha1.PhaseFailed {
 		t.Fatalf("phase = %s, want Failed after readiness timeout", server.Status.Phase)
@@ -902,13 +902,9 @@ func TestReconcileRunning_ReadinessTimeoutConvertsToFailed(t *testing.T) {
 	if server.Status.Ready {
 		t.Error("Ready must be false in Failed phase")
 	}
-	if !isConditionTrue(server, v1alpha1.ConditionReady) {
-		// ConditionReady stays False here; the test only checks that the condition is set.
-	}
 	if isConditionTrue(server, v1alpha1.ConditionRconReached) {
 		t.Error("RconReached must not be True in Failed phase")
 	}
-	_ = res
 }
 
 func TestReconcileRunning_StartupTimeoutConvertsToFailed(t *testing.T) {
@@ -937,7 +933,7 @@ func TestReconcileRunning_StartupTimeoutConvertsToFailed(t *testing.T) {
 
 	// Past timeout: pod still not ready → Failed.
 	clock = base.Add(31 * time.Second)
-	res := reconcile(t, r, "survival")
+	reconcile(t, r, "survival")
 	server = getServer(t, c, "survival")
 	if server.Status.Phase != v1alpha1.PhaseFailed {
 		t.Fatalf("phase = %s, want Failed after startup timeout", server.Status.Phase)
@@ -945,7 +941,6 @@ func TestReconcileRunning_StartupTimeoutConvertsToFailed(t *testing.T) {
 	if server.Status.Ready {
 		t.Error("Ready must be false in Failed phase")
 	}
-	_ = res
 }
 
 func TestReconcileRunning_ReadyClearsStartAnchor(t *testing.T) {

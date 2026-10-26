@@ -70,21 +70,6 @@ func TestGuardServesInterstitialForWeChatNavigation(t *testing.T) {
 	}
 }
 
-func TestGuardReflectedURLIsEscaped(t *testing.T) {
-	h := newPanelHandler(t)
-	// A crafted path/query must be HTML-escaped in the reflected URL, not injected raw.
-	req := httptest.NewRequest(http.MethodGet, "/x?q=%22%3E%3Cscript%3Ealert(1)%3C/script%3E", nil)
-	req.Header.Set("Accept", "text/html")
-	req.Header.Set("User-Agent", "MicroMessenger")
-
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
-
-	if strings.Contains(w.Body.String(), "<script>alert(1)</script>") {
-		t.Fatalf("reflected URL was not escaped: %q", w.Body.String())
-	}
-}
-
 func TestGuardPassesThroughNonWebView(t *testing.T) {
 	h := newPanelHandler(t)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)

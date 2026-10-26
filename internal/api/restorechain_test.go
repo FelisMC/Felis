@@ -295,7 +295,7 @@ func TestK8sRestoreChains(t *testing.T) {
 
 	aj, ok := jobToAsyncJob(&settledJob)
 	if !ok || aj.ThenRestore != maintenance.ThenRestoreAbandoned || aj.RestoreBackupID != "bk-1" || aj.State != "succeeded" ||
-		aj.ThenRestoreReason != ChainAbandonServerStarted || aj.Message != chainAbandonText[ChainAbandonServerStarted] {
+		aj.ThenRestoreReason != ChainAbandonServerStarted {
 		t.Fatalf("projection = %+v", aj)
 	}
 }

@@ -29,9 +29,9 @@ func TestBackupPolicyPerReason(t *testing.T) {
 		retention time.Duration
 	}{
 		{"manual", 5, 30 * reaper.Day},
-		{"pre_restore", preRestoreKeep, 30 * reaper.Day},
+		{"pre_restore", 3, 30 * reaper.Day},
 		{"scheduled", 7, 90 * reaper.Day},
-		{"replica", replicaKeep, replicaRetention},
+		{"replica", 2, 48 * time.Hour},
 	} {
 		keep, retention, ok := backupPolicy(tc.reason, rcfg)
 		if !ok || keep != tc.keep || retention != tc.retention {

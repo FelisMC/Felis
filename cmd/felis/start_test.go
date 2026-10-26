@@ -20,7 +20,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-// startHost fakes systemctl.
 type startHost struct {
 	enabled map[string]bool
 	broken  map[string]bool

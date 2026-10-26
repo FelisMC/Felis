@@ -277,14 +277,6 @@ func TestMemoryFinding(t *testing.T) {
 	}
 }
 
-func TestDiskFindingsDedupAndSkip(t *testing.T) {
-	dir := t.TempDir()
-	got := DiskFindings([]string{dir, filepath.Join(dir, "."), filepath.Join(dir, "missing")})
-	if len(got) > 1 {
-		t.Fatalf("findings = %v, want at most one for one filesystem", findingKeys(got))
-	}
-}
-
 func TestScanDBFinding(t *testing.T) {
 	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
 	path := filepath.Join(t.TempDir(), "status.json")

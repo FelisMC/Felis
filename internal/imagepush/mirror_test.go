@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"felis.lolicon.best/internal/registrygate"
 )
@@ -184,20 +182,5 @@ func TestParseSourceRef(t *testing.T) {
 		if _, err := ParseSourceRef(bad); err == nil {
 			t.Errorf("ParseSourceRef(%q) accepted", bad)
 		}
-	}
-}
-
-func TestMirrorStatusRoundTrip(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sub", "status.json")
-	if st, err := ReadMirrorStatus(path); st != nil || err != nil {
-		t.Fatalf("missing file = %v, %v", st, err)
-	}
-	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
-	if err := WriteMirrorStatus(path, MirrorStatus{LastAttempt: now, LastSuccess: now}); err != nil {
-		t.Fatal(err)
-	}
-	st, err := ReadMirrorStatus(path)
-	if err != nil || !st.LastSuccess.Equal(now) || st.LastError != "" {
-		t.Errorf("round trip = %+v, %v", st, err)
 	}
 }

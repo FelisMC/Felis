@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -82,7 +83,7 @@ func TestUpAppliesAllPendingInOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Up: %v", err)
 	}
-	if got := strings.Trim(strings.Join(intsToStrings(applied), ","), ""); got != "1,2,3" {
+	if !slices.Equal(applied, []int{1, 2, 3}) {
 		t.Errorf("applied = %v, want [1 2 3]", applied)
 	}
 	if !d.locked || !d.unlocked || !d.ensured {
@@ -125,36 +126,6 @@ func TestUpStopsOnErrorButStillUnlocks(t *testing.T) {
 	if !d.unlocked {
 		t.Error("advisory lock must be released even when a migration fails")
 	}
-}
-
-func intsToStrings(in []int) []string {
-	out := make([]string, len(in))
-	for i, v := range in {
-		out[i] = itoa(v)
-	}
-	return out
-}
-
-func itoa(v int) string {
-	if v == 0 {
-		return "0"
-	}
-	neg := v < 0
-	if neg {
-		v = -v
-	}
-	var buf [20]byte
-	i := len(buf)
-	for v > 0 {
-		i--
-		buf[i] = byte('0' + v%10)
-		v /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
 }
 
 func TestUpRefusesADatabaseANewerBuildMigrated(t *testing.T) {

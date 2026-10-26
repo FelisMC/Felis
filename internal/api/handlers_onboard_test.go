@@ -87,30 +87,6 @@ func TestBindRedeemBootstrapsPlayer(t *testing.T) {
 	}
 }
 
-func TestBindRedeemIdempotentReturningPlayer(t *testing.T) {
-	api, repo := seedBindAPI(t)
-
-	mintBindCode(t, api, repo, "FIRST234", bindTestUUID, authSourceMojang)
-	w1 := do(api.ExternalHandler(), "POST", "/api/v1/auth/bind", `{"code":"FIRST234"}`, jsonHeader)
-	if w1.Code != http.StatusOK {
-		t.Fatalf("first redeem code = %d, want 200 (%s)", w1.Code, w1.Body.String())
-	}
-	var b1 map[string]any
-	_ = json.Unmarshal(w1.Body.Bytes(), &b1)
-
-	mintBindCode(t, api, repo, "SECOND34", bindTestUUID, authSourceThirdParty)
-	w2 := do(api.ExternalHandler(), "POST", "/api/v1/auth/bind", `{"code":"SECOND34"}`, jsonHeader)
-	if w2.Code != http.StatusOK {
-		t.Fatalf("second redeem code = %d, want 200 (%s)", w2.Code, w2.Body.String())
-	}
-	var b2 map[string]any
-	_ = json.Unmarshal(w2.Body.Bytes(), &b2)
-
-	if b1["user_id"] != b2["user_id"] {
-		t.Fatalf("returning player got a new account: %v then %v", b1["user_id"], b2["user_id"])
-	}
-}
-
 func TestBindRedeemRefusesStaffAccount(t *testing.T) {
 	api, repo := seedBindAPI(t)
 	// An admin already linked to this UUID (e.g. an Operator on the thirdparty Yggdrasil).

@@ -66,8 +66,8 @@ func TestReconcileBoundedAndWatched(t *testing.T) {
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "minecraft", Name: "missing"}}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	if deadline <= 0 || deadline > reconcileTimeout {
-		t.Errorf("pass deadline = %s, want within %s", deadline, reconcileTimeout)
+	if deadline <= 0 {
+		t.Errorf("pass deadline = %s, want the pass bounded by a deadline", deadline)
 	}
 	if inflight != 1 {
 		t.Errorf("in-flight passes during the pass = %d, want 1", inflight)

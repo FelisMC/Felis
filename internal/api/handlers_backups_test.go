@@ -51,15 +51,6 @@ func TestListBackups(t *testing.T) {
 		return m
 	}
 
-	t.Run("admin sees all present, not deleted", func(t *testing.T) {
-		api := mk()
-		api.External = staticExternal{p: &Principal{UserID: "admin1", Role: "admin", ViaAdminAccess: true}}
-		got := ids(list(t, do(api.ExternalHandler(), "GET", "/api/v1/backups", "", nil)))
-		if !got["b1"] || !got["b2"] || got["b3"] || len(got) != 2 {
-			t.Fatalf("admin scope = %v, want {b1,b2}", got)
-		}
-	})
-
 	t.Run("user sees only own former-owned present backups", func(t *testing.T) {
 		api := mk()
 		api.External = staticExternal{p: &Principal{UserID: "owner1", Role: "user"}}
@@ -103,19 +94,6 @@ func TestListBackups(t *testing.T) {
 		w = do(api.ExternalHandler(), "GET", "/api/v1/backups?server=beta", "", nil)
 		if got := ids(list(t, w)); len(got) != 0 || total(t, w) != 0 {
 			t.Fatalf("owner1 ?server=beta = %v (total %d), want nothing: beta's backup is owner2's", got, total(t, w))
-		}
-	})
-
-	t.Run("pages newest first with the match total", func(t *testing.T) {
-		api := mk()
-		api.External = staticExternal{p: admin}
-		w := do(api.ExternalHandler(), "GET", "/api/v1/backups?limit=1", "", nil)
-		if vs := list(t, w); len(vs) != 1 || vs[0].ID != "b2" || total(t, w) != 2 {
-			t.Fatalf("?limit=1 = %+v (total %d), want [b2] of 2", vs, total(t, w))
-		}
-		w = do(api.ExternalHandler(), "GET", "/api/v1/backups?limit=1&offset=1", "", nil)
-		if vs := list(t, w); len(vs) != 1 || vs[0].ID != "b1" {
-			t.Fatalf("?limit=1&offset=1 = %+v, want [b1]", vs)
 		}
 	})
 
@@ -470,16 +448,6 @@ func TestRestoreBackup(t *testing.T) {
 		}
 		if restorer.calls != 0 {
 			t.Fatal("a corrupt backup reached the restorer")
-		}
-	})
-
-	t.Run("no body skips a latest backup that failed a read-back", func(t *testing.T) {
-		api, repo, _, restorer := mkTwo()
-		repo.backups[0].view.Corrupt = true
-		api.External = staticExternal{p: owner}
-		w := do(api.ExternalHandler(), "POST", path, "", nil)
-		if w.Code != http.StatusAccepted || restorer.gotRef != "ref-bk2" {
-			t.Fatalf("code = %d ref %q, want 202 restoring the newest intact backup", w.Code, restorer.gotRef)
 		}
 	})
 

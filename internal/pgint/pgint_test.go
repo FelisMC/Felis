@@ -824,6 +824,31 @@ func TestDeadAccountsAreLockedOutInPG(t *testing.T) {
 	}
 }
 
+func TestSetUserEmailClearsVerification(t *testing.T) {
+	ctx := context.Background()
+	u := newUser(t, "user", "reemail")
+	now := mustNow()
+	if err := repo.CreateEmailOTP(ctx, "re-"+suffix(t), u.ID, "old-"+suffix(t)+"@example.net", "h", "onboard_email", now.Add(5*time.Minute)); err != nil {
+		t.Fatalf("CreateEmailOTP: %v", err)
+	}
+	if _, err := repo.VerifyEmailOTP(ctx, u.ID, "onboard_email", "h", now); err != nil {
+		t.Fatalf("VerifyEmailOTP: %v", err)
+	}
+
+	addr := "new-" + suffix(t) + "@example.net"
+	if err := repo.SetUserEmail(ctx, u.ID, addr); err != nil {
+		t.Fatalf("SetUserEmail: %v", err)
+	}
+	var email string
+	var verified bool
+	if err := db.QueryRowContext(ctx, `SELECT email, email_verified FROM users WHERE id = $1`, u.ID).Scan(&email, &verified); err != nil {
+		t.Fatalf("read user: %v", err)
+	}
+	if email != addr || verified {
+		t.Fatalf("after SetUserEmail: email=%q verified=%v, want %q unverified", email, verified, addr)
+	}
+}
+
 func TestLastPasskeyGuardInPG(t *testing.T) {
 	ctx := context.Background()
 	seed := func(t *testing.T, userID string) string {
@@ -1379,6 +1404,27 @@ func TestRedeemPlayerBindCodeContract(t *testing.T) {
 		t.Fatalf("staff redeem = %v, want ErrPlayerBindForbidden", err)
 	}
 	assertLinkCodeUnconsumed(t, staffRedeem)
+
+	retired := newUser(t, "user", "bound-retired")
+	mcRetired := testUUID(t)
+	retiredLink := "bc6-" + suffix(t)
+	if err := repo.CreateLinkCode(ctx, retiredLink, mcRetired, "mojang", now.Add(10*time.Minute)); err != nil {
+		t.Fatalf("CreateLinkCode (retired): %v", err)
+	}
+	if _, _, err := repo.VerifyLinkCode(ctx, retired.ID, retiredLink, now); err != nil {
+		t.Fatalf("link retired uuid: %v", err)
+	}
+	if err := repo.SetUserDisabled(ctx, retired.ID, true); err != nil {
+		t.Fatalf("SetUserDisabled: %v", err)
+	}
+	retiredRedeem := "bc7-" + suffix(t)
+	if err := repo.CreateLinkCode(ctx, retiredRedeem, mcRetired, "mojang", now.Add(10*time.Minute)); err != nil {
+		t.Fatalf("CreateLinkCode (retired redeem): %v", err)
+	}
+	if _, _, _, err := repo.RedeemPlayerBindCode(ctx, "player-v-"+suffix(t), retiredRedeem, now); !errors.Is(err, api.ErrPlayerAccountRetired) {
+		t.Fatalf("disabled redeem = %v, want ErrPlayerAccountRetired", err)
+	}
+	assertLinkCodeUnconsumed(t, retiredRedeem)
 
 	expCode := "bc5-" + suffix(t)
 	if err := repo.CreateLinkCode(ctx, expCode, testUUID(t), "mojang", now.Add(-time.Minute)); err != nil {

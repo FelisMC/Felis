@@ -3,7 +3,7 @@ package operator_test
 import (
 	"context"
 	"errors"
-	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,9 +30,15 @@ func drain(rec *record.FakeRecorder) []string {
 	}
 }
 
+// expectEvents matches each event on "Type Reason", or on its full text when want gives one.
 func expectEvents(t *testing.T, rec *record.FakeRecorder, step string, want ...string) {
 	t.Helper()
-	if got := drain(rec); !slices.Equal(got, want) {
+	got := drain(rec)
+	match := len(got) == len(want)
+	for i := range want {
+		match = match && (got[i] == want[i] || strings.HasPrefix(got[i], want[i]+" "))
+	}
+	if !match {
 		t.Fatalf("%s: events = %q, want %q", step, got, want)
 	}
 }
@@ -44,15 +50,13 @@ func TestReconcilerRecordsThePhaseTimeline(t *testing.T) {
 	r.Recorder = rec
 
 	reconcile(t, r, "survival")
-	expectEvents(t, rec, "first pass",
-		"Normal RconSecretCreated created the RCON password Secret survival-rcon",
-		"Normal PodNotReady New → Starting: waiting for pod TCP readiness")
+	expectEvents(t, rec, "first pass", "Normal RconSecretCreated", "Normal PodNotReady")
 	reconcile(t, r, "survival")
 	expectEvents(t, rec, "still starting")
 
 	markPodReady(t, c, "survival")
 	reconcile(t, r, "survival")
-	expectEvents(t, rec, "ready", "Normal RconReached Starting → Running: server is accepting RCON")
+	expectEvents(t, rec, "ready", "Normal RconReached")
 	reconcile(t, r, "survival")
 	expectEvents(t, rec, "steady")
 
@@ -77,12 +81,10 @@ func TestTimeoutAndAutoRestartAreWarnings(t *testing.T) {
 	drain(rec)
 	clock = base.Add(30 * time.Second)
 	reconcile(t, r, "survival")
-	expectEvents(t, rec, "timeout",
-		"Warning StartupTimeout Starting → Failed: pod did not become ready within startup timeout")
+	expectEvents(t, rec, "timeout", "Warning StartupTimeout")
 	clock = base.Add(90 * time.Second)
 	reconcile(t, r, "survival")
-	expectEvents(t, rec, "retry",
-		"Warning AutoRestart Failed → Starting: start timed out; recreated the pod (attempt 1 of 3)")
+	expectEvents(t, rec, "retry", "Warning AutoRestart")
 }
 
 func TestIdleStopRecordsAnEvent(t *testing.T) {

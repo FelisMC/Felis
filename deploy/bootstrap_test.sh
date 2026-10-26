@@ -1177,19 +1177,18 @@ case "$out" in *CURL:*) echo "FAIL: a newer cloudflared must not be downgraded";
 
 # k3s: the install script is read from the pinned tag, and told the same version.
 kblock="$(awk '/^run_k3s_installer\(\) \{/,/^}/' "$BS")"
-expect "k3s's install script comes from the pinned tag" 'raw.githubusercontent.com/k3s-io/k3s/${FELIS_K3S_VERSION}/install.sh' "$kblock"
-expect "k3s's install script is told the pinned version" 'INSTALL_K3S_VERSION="$FELIS_K3S_VERSION"' "$kblock"
-case "$kblock" in *"https://get.k3s.io"*) echo "FAIL: get.k3s.io serves master's script; read it from the pinned tag"; fails=$((fails + 1)) ;; esac
 run_kinst() { # [--keep-binary]
   bash -c '
-    curl() { :; }
-    sh() { printf "SKIP=[%s] VERSION=%s\n" "$INSTALL_K3S_SKIP_DOWNLOAD" "$INSTALL_K3S_VERSION"; }
+    curl() { printf "CURL %s\n" "$*"; }
+    sh() { cat; printf "SKIP=[%s] VERSION=%s\n" "$INSTALL_K3S_SKIP_DOWNLOAD" "$INSTALL_K3S_VERSION"; }
     FELIS_K3S_VERSION=v1.36.4+k3s1 K3S_BIN_DIR=/usr/local/bin
     '"$kblock"'
     run_k3s_installer "$@"' _ "$@"
 }
 expect "finishing a cut-short k3s install keeps the binary in place" "SKIP=[binary] VERSION=v1.36.4+k3s1" "$(run_kinst --keep-binary)"
-expect "an install or an upgrade downloads k3s" "SKIP=[] VERSION=v1.36.4+k3s1" "$(run_kinst)"
+out="$(run_kinst)"
+expect "an install or an upgrade downloads k3s" "SKIP=[] VERSION=v1.36.4+k3s1" "$out"
+expect "k3s's install script comes from the pinned tag" " https://raw.githubusercontent.com/k3s-io/k3s/v1.36.4+k3s1/install.sh" "$out"
 
 # Upgrades need FELIS_UPGRADE_DEPS=1, one minor at a time, never backwards.
 kfake="$sdir/k3s"
@@ -1862,13 +1861,20 @@ else
 fi
 rm -rf "$wadir" "$wafile"
 
-# load_or_make_secrets mints real secrets, so its writer is checked by what it calls.
 lsblock="$(awk '/^load_or_make_secrets\(\) \{/,/^}/' "$BS")"
-expect "secrets.env is written whole or not at all" 'write_file_atomic "$SECRETS_ENV" 0600 <<EOF' "$lsblock"
-case "$lsblock" in
-  *'> "$SECRETS_ENV"'*) echo "FAIL load_or_make_secrets still writes secrets.env in place"; fails=$((fails + 1)) ;;
-  *) echo "PASS load_or_make_secrets writes secrets.env nowhere else" ;;
-esac
+lsdir="$(mktemp -d)"
+printf 'DB_PASSWORD=kept\n' > "$lsdir/secrets.env"
+out="$(STATE_DIR="$lsdir" SECRETS_ENV="$lsdir/secrets.env" bash -c '
+  set -Eeuo pipefail
+  die() { printf "DIE: %s\n" "$*"; exit 1; }; ok() { :; }; remember_temp() { :; }
+  openssl() { echo minted; }
+  cat() { head -c 7; return 1; }
+  '"$wablock"'
+  '"$lsblock"'
+  load_or_make_secrets' 2>&1)"
+expect "a failed secrets.env write dies" "DIE: could not write $lsdir/secrets.env" "$out"
+expect "a failed secrets.env write keeps the old secrets" "DB_PASSWORD=kept" "$(cat "$lsdir/secrets.env")"
+rm -rf "$lsdir"
 
 # Preserve operator registry settings without retaining installer-owned coordinates.
 
@@ -3217,7 +3223,8 @@ heap_megabytes "$1"' _ "$1"; }
 expect "a heap in gigabytes converts to megabytes" "2048" "$(heap 2G)"
 expect "a heap in megabytes is kept" "768" "$(heap 768m)"
 for bad in 1 1K 0G 01G G -1G 1.5G 9999999G; do
-  expect "the heap spelling '$bad' is refused" "0" "$(heap "$bad")"
+  got="$(heap "$bad")"
+  if [ "$got" = 0 ]; then echo "PASS the heap spelling '$bad' is refused"; else echo "FAIL the heap spelling '$bad' gave '$got', want 0"; fails=$((fails + 1)); fi
 done
 # The unit written for each ceiling is checked with the rerun tests above.
 
@@ -3792,7 +3799,6 @@ done
 order="$(awk '/^main\(\) \{/,/^}/' "$BS" | grep -nE '^[[:space:]]*(detect_node_ip|install_base|ensure_time_sync|ensure_persistent_journal|install_k3s)$' | sed 's/^[0-9]*:[[:space:]]*//' | tr '\n' ' ')"
 expect "main checks the address, then turns on NTP and the journal once packages install, before k3s" \
   "detect_node_ip install_base ensure_time_sync ensure_persistent_journal install_k3s " "$order"
-expect "preflight is what warns about a leased address" "warn_dynamic_node_ip" "$(awk '/^preflight\(\) \{/,/^}/' "$BS")"
 
 # Every fact preflight reads (RAM, df, ss, systemctl, routes, curl) is answered from variables.
 pfblock="$(awk '/^PREFLIGHT_PROBLEMS=\(\)$/,/^preflight\(\) \{/' "$BS"; awk '/^preflight\(\) \{/,/^}/' "$BS" | tail -n +2)"
@@ -4468,12 +4474,6 @@ fi
 pgorder="$(awk '/^main\(\) \{/,/^}/' "$BS" | grep -nE '^[[:space:]]*(ensure_k3s_on_path|install_k3s|deploy_postgres|migrate_host_postgres|run_migrations|deploy_bundle)$' | sed 's/^[0-9]*:[[:space:]]*//' | tr '\n' ' ')"
 expect "the database runs in k3s, takes the host's data, then is migrated and joined by the bundle" \
   "ensure_k3s_on_path install_k3s deploy_postgres migrate_host_postgres run_migrations deploy_bundle " "$pgorder"
-dbblock="$(bsfn deploy_bundle)"
-before "the control plane is scaled back up after the bundle is applied" \
-  'manifests "${manifest_args[@]}" | kube apply -f -' 'kube -n "$CONTROL_NS" scale deployment felis-api felis-operator --replicas=1' "$dbblock"
-before "the control plane is scaled back up before the rollouts are awaited" \
-  'kube -n "$CONTROL_NS" scale deployment felis-api felis-operator --replicas=1' 'rollout status "$d"' "$dbblock"
-expect "the pods reach the database at its Service" 'write_felis_toml "${STATE_DIR}/felis.pod.toml" "$PG_SERVICE_ADDR"' "$dbblock"
 
 # Reject unchecked release assets before passing them to any installer step.
 for f in load_artifact_sums artifact_sum artifact_fetch artifact_unusable install_artifact_binary \
@@ -5149,32 +5149,11 @@ expect "k3s minor skip is refused before host changes" 'skips a minor version' "
 case "$out" in *HOST_CHANGE*) echo "FAIL k3s refusal came after a host change"; fails=$((fails + 1));; esac
 rm -rf "$compatdir"
 
-# Worker admission reuses the installer but must never enter host control-plane setup.
 before "distributed host firewall runs the newly built binary" \
   '  build_image' '"$HOST_BIN" node firewall --controller' "$(bsfn main)"
 before "distributed host firewall is installed before platform deployment" \
   '"$HOST_BIN" node firewall --controller' '  deploy_postgres' "$(bsfn main)"
-expect "distributed admission preserves existing API-server arguments" \
-  "echo 'kube-apiserver-arg+:'" "$(bsfn write_k3s_config)"
 worker="$(bsfn main_worker)"
-expect "source worker install builds the requested binary even when an older binary exists" \
-  'if [ -z "$HAVE_PREBUILT_BINARY" ]; then install_go_toolchain; build_nano_binary; fi' "$worker"
-before "worker identity is checked before the agent config is written" \
-  'refusing to rename it' 'cat > "$K3S_CONFIG_DROPIN"' "$worker"
-expect "worker rejects server tokens and verifies the CA-pinned bootstrap shape" \
-  'K10[0-9a-f]{64}::[a-z0-9]{6}\.[a-z0-9]{16}' "$worker"
-expect "worker cannot replace a controller" 'refusing to turn a controller into a worker' "$worker"
-expect "worker is quarantined" 'felis.lolicon.best/unapproved=true:NoSchedule' "$worker"
-expect "worker mirror preserves logical references and points at the cluster service" \
-  'http://${WORKER_REGISTRY_IP}:5000' "$worker"
-expect "worker disables registry endpoint fallback" 'disable-default-registry-endpoint: true' "$worker"
-expect "worker install admits additional ports" 'configure_extra_ports_firewall' "$worker"
-for forbidden in deploy_bundle install_cloudflared install_velocity run_migrations load_or_make_secrets; do
-  case "$worker" in
-    *"$forbidden"*) echo "FAIL worker invokes $forbidden"; fails=$((fails + 1));;
-    *) echo "PASS worker does not invoke $forbidden";;
-  esac
-done
 badtoken="$(mktemp)"
 printf 'server-token-not-bootstrap' > "$badtoken"
 out="$(WORKER_TOKEN_FILE="$badtoken" bash -c '

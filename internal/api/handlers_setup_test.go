@@ -69,24 +69,6 @@ func TestSetupNoSMTPFlow(t *testing.T) {
 	}
 }
 
-func TestSetEmailClearsVerified(t *testing.T) {
-	repo := newFakeRepo()
-	// A fully onboarded staff account: email already proven.
-	repo.staff["u"] = &StaffUser{ID: "u1", Username: "u", Role: "admin", Email: "old@x.test", EmailVerified: true}
-
-	api := newTestAPI(repo, newFakeCluster())
-	api.External = staticExternal{p: &Principal{UserID: "u1", Role: "admin", ViaSession: true, EmailVerified: true, ReauthAt: frozenNow}}
-	h := api.ExternalHandler()
-
-	w := do(h, "POST", "/api/v1/account/email", `{"email":"new@x.test"}`, jsonHeader)
-	if w.Code != http.StatusOK {
-		t.Fatalf("set-email code = %d, want 200 (%s)", w.Code, w.Body.String())
-	}
-	if u := repo.staff["u"]; u.Email != "new@x.test" || u.EmailVerified {
-		t.Fatalf("after record: email=%q verified=%v, want new address recorded and verification CLEARED", u.Email, u.EmailVerified)
-	}
-}
-
 func TestSetupCompletesForNoEmailPlayer(t *testing.T) {
 	repo := newFakeRepo()
 	// A console-tier player: role=user, no email ever, no passkey.

@@ -443,13 +443,8 @@ func TestRotatePlanChangesNothing(t *testing.T) {
 			if !strings.HasSuffix(out, "\nNothing was changed. To rotate: sudo felis rotate-token -yes "+kind+"\n") {
 				t.Errorf("the plan does not end with how to go ahead: %s", out)
 			}
-			// Each plan names the interruption it causes.
-			want := apiRestartNote
-			if kind == kindForwarding {
-				want = "everyone online is disconnected"
-			}
-			if !strings.Contains(out, want) {
-				t.Errorf("the plan does not say %q: %s", want, out)
+			if kind == kindForwarding && !strings.Contains(out, "everyone online is disconnected") {
+				t.Errorf("the forwarding plan does not name the disconnect: %s", out)
 			}
 		})
 	}

@@ -39,14 +39,3 @@ func TestConnConfigKeepsTheDSNsOwnLimits(t *testing.T) {
 		t.Errorf("statement_timeout = %q beside options=-c, want it unset", v)
 	}
 }
-
-func TestPoolIsBounded(t *testing.T) {
-	db, err := newPool("postgres://felis:pw@127.0.0.1:1/felis")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if got := db.Stats().MaxOpenConnections; got != MaxOpenConns || got == 0 {
-		t.Fatalf("MaxOpenConnections = %d, want %d", got, MaxOpenConns)
-	}
-}

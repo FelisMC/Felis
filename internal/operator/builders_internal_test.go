@@ -30,12 +30,13 @@ func TestMigratedWorldPlacementAndFailClosedGate(t *testing.T) {
 	if !found {
 		t.Fatal("active PVC not mounted")
 	}
-	for _, c := range sts.Spec.Template.Spec.InitContainers {
-		if c.Name == "egress-gate" {
-			if slices.Contains(c.Command, "--fail-open") || !slices.Contains(c.Command, "--positive-probe") {
-				t.Fatal("distributed gate can fail open")
-			}
-		}
+	inits := sts.Spec.Template.Spec.InitContainers
+	i := slices.IndexFunc(inits, func(c corev1.Container) bool { return c.Name == "egress-gate" })
+	if i < 0 {
+		t.Fatal("egress-gate init container missing")
+	}
+	if slices.Contains(inits[i].Command, "--fail-open") || !slices.Contains(inits[i].Command, "--positive-probe") {
+		t.Fatal("distributed gate can fail open")
 	}
 }
 

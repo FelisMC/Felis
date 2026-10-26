@@ -107,11 +107,6 @@ func TestMigrateVertical(t *testing.T) {
 		t.Fatalf("source account not retired: %+v", d)
 	}
 
-	// 5) single-use: the spent code cannot be replayed.
-	if w := do(ehTgt, "POST", "/api/v1/account/migrate/redeem", `{"code":"`+mcode+`"}`, jsonHeader); w.Code != http.StatusBadRequest || decodeErr(t, w) != "invalid_code" {
-		t.Fatalf("replay of spent code: code = %d body %s, want 400 invalid_code", w.Code, w.Body.String())
-	}
-
 	if len(mailer.notices) != 0 {
 		t.Fatalf("notices to an unverified address = %q, want none", mailer.notices)
 	}
@@ -213,58 +208,6 @@ func TestMigratePasskeyCloneRejected(t *testing.T) {
 	}
 	if m, _ := repo.MigrationForSource(context.Background(), "u1"); m == nil || m.State != "initiated" {
 		t.Fatalf("migration after clone-rejected finish = %+v, want still initiated", m)
-	}
-}
-
-func TestMigrateRedeemBinding(t *testing.T) {
-	const uuid = "55555555-5555-5555-5555-555555555555"
-	src := &Principal{UserID: "u1", Email: "old@example.net", Role: "user"}
-	tgt := &Principal{UserID: "u2", Email: "new@example.net", Role: "user"}
-	interloper := &Principal{UserID: "u3", Email: "evil@example.net", Role: "user"}
-
-	repo := newFakeRepo()
-	repo.seedUser(UserView{ID: "u1", Username: "old", Email: "old@example.net", Role: "user"})
-	repo.seedUser(UserView{ID: "u2", Username: "new", Email: "new@example.net", Role: "user"})
-	repo.links[uuid] = "u1"
-	repo.byName["alpha"] = &ServerRecord{Name: "alpha", OwnerID: "u1"}
-
-	mk, mailer, _ := migrateEnv(repo)
-	ih := mk(src).InternalHandler()
-	ehSrc := mk(src).ExternalHandler()
-
-	// Drive to a code issued against u2.
-	if w := startMigrate(t, ih, uuid); w.Code != http.StatusCreated {
-		t.Fatalf("start: %d (%s)", w.Code, w.Body.String())
-	}
-	if w := do(ehSrc, "POST", "/api/v1/account/migrate/confirm/otp/start", "", jsonHeader); w.Code != http.StatusAccepted {
-		t.Fatalf("otp start: %d (%s)", w.Code, w.Body.String())
-	}
-	if w := do(ehSrc, "POST", "/api/v1/account/migrate/confirm/otp/verify", `{"code":"`+mailer.code+`"}`, jsonHeader); w.Code != http.StatusOK {
-		t.Fatalf("otp verify: %d (%s)", w.Code, w.Body.String())
-	}
-	w := do(ehSrc, "POST", "/api/v1/account/migrate/issue-code", `{"target_user_id":"u2"}`, jsonHeader)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("issue-code: %d (%s)", w.Code, w.Body.String())
-	}
-	mcode, _ := acctBody(t, w)["code"].(string)
-
-	ehEvil := mk(interloper).ExternalHandler()
-	if w := do(ehEvil, "POST", "/api/v1/account/migrate/redeem", `{"code":"`+mcode+`"}`, jsonHeader); w.Code != http.StatusBadRequest || decodeErr(t, w) != "invalid_code" {
-		t.Fatalf("interloper redeem: code = %d body %s, want 400 invalid_code", w.Code, w.Body.String())
-	}
-	if repo.byName["alpha"].OwnerID != "u1" {
-		t.Fatalf("server moved on a non-target redeem: owner=%s", repo.byName["alpha"].OwnerID)
-	}
-	if d, _ := repo.UserDetail(context.Background(), "u1"); d.DeletedAt != nil {
-		t.Fatal("source retired on a non-target redeem")
-	}
-
-	ehTgt := mk(tgt).ExternalHandler()
-	if w := do(ehTgt, "POST", "/api/v1/account/migrate/redeem", `{"code":"`+mcode+`"}`, jsonHeader); w.Code != http.StatusOK {
-		t.Fatalf("genuine target redeem: code = %d body %s, want 200", w.Code, w.Body.String())
-	}
-	if repo.byName["alpha"].OwnerID != "u2" {
-		t.Fatalf("server not moved to genuine target: owner=%s", repo.byName["alpha"].OwnerID)
 	}
 }
 

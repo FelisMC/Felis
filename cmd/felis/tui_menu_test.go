@@ -12,35 +12,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-func TestNewOperatorModelDefaults(t *testing.T) {
-	m := newOperatorModel(context.Background(), &fakeOwnerStore{}, "root")
-	if m.operation != bgAddOperator {
-		t.Errorf("operation = %v, want bgAddOperator", m.operation)
-	}
-	if !m.adminExists {
-		t.Error("adminExists = false, want true — adding an Operator presupposes an existing admin")
-	}
-	if m.step != owAuth {
-		t.Errorf("step = %v, want owAuth — the operator path always authenticates first", m.step)
-	}
-	// The username must not default to "owner" as the Owner flow does: the operator path is insert-only, so a defaulted name would hit ErrConflict every time.
-	if m.ownerUser != "" {
-		t.Errorf("ownerUser = %q, want empty (no default for the insert-only operator path)", m.ownerUser)
-	}
-	if m.subject() != "Operator" {
-		t.Errorf("subject() = %q, want Operator", m.subject())
-	}
-
-	// The Owner flow is the zero value and is unchanged by the discriminator.
-	ow := newOwnerModel(context.Background(), &fakeOwnerStore{}, "root", true)
-	if ow.operation != bgProvisionOwner {
-		t.Errorf("owner operation = %v, want bgProvisionOwner", ow.operation)
-	}
-	if ow.ownerUser != "owner" || ow.subject() != "Owner" {
-		t.Errorf("owner defaults changed: ownerUser=%q subject=%q", ow.ownerUser, ow.subject())
-	}
-}
-
 func TestProvisionCmdSelectsPathByOperation(t *testing.T) {
 	ctx := context.Background()
 

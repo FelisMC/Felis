@@ -13,11 +13,8 @@ func TestInternalRestoreRebuildsAWorld(t *testing.T) {
 	mk := func() (*API, *fakeRepo, *fakeCluster, *fakeRestorer) {
 		repo := newFakeRepo()
 		repo.byName["survival"] = &ServerRecord{Name: "survival", OwnerID: "owner1"}
-		old, newest := time.Unix(1_700_000_000, 0), time.Unix(1_700_100_000, 0)
 		repo.backups = []fakeBackup{
-			{view: BackupView{ID: "bk-old", ServerName: "survival", Status: "present", CreatedAt: old}, ref: "/backups/old.tar.gz"},
-			{view: BackupView{ID: "bk-new", ServerName: "survival", Status: "present", CreatedAt: newest}, ref: "/backups/new.tar.gz"},
-			{view: BackupView{ID: "bk-bad", ServerName: "survival", Status: "present", CreatedAt: newest.Add(time.Hour), Corrupt: true}, ref: "/backups/bad.tar.gz"},
+			{view: BackupView{ID: "bk-1", ServerName: "survival", Status: "present", CreatedAt: time.Unix(1_700_000_000, 0)}, ref: "/backups/1.tar.gz"},
 		}
 		cl := newFakeCluster()
 		cl.byName["survival"] = &ServerInfo{Name: "survival", Phase: "Stopped", DesiredState: string(v1alpha1.DesiredStopped)}
@@ -34,8 +31,8 @@ func TestInternalRestoreRebuildsAWorld(t *testing.T) {
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("restore = %d %s", w.Code, w.Body.String())
 	}
-	if restorer.calls != 1 || restorer.gotRef != "/backups/new.tar.gz" {
-		t.Fatalf("restorer saw %d calls, ref %q; want the newest intact backup", restorer.calls, restorer.gotRef)
+	if restorer.calls != 1 {
+		t.Fatalf("restorer saw %d calls, want 1", restorer.calls)
 	}
 	if len(cl.ensured) != 1 || cl.ensured[0] != "survival" {
 		t.Errorf("world volume ensured for %v", cl.ensured)

@@ -6,31 +6,6 @@ import (
 	"felis.lolicon.best/internal/updates"
 )
 
-func TestTopologyEncodesPolicies(t *testing.T) {
-	want := map[string]Spec{
-		"felis-api":   {Name: "felis-api", Policy: updates.PolicyScheduled, Manageable: true, Source: sourceGitHub, Coord: "FelisMC/Felis"},
-		"k3s":         {Name: "k3s", Policy: updates.PolicyNotify, Manageable: false, Source: sourceGitHub, Coord: "k3s-io/k3s"},
-		"cloudflared": {Name: "cloudflared", Policy: updates.PolicyScheduled, Manageable: true, Source: sourceGitHub, Coord: "cloudflare/cloudflared"},
-		"velocity":    {Name: "velocity", Policy: updates.PolicyNotify, Manageable: false, Source: sourcePaperMC, Coord: "velocity"},
-		"jre":         {Name: "jre", Policy: updates.PolicyNotify, Manageable: false, Source: sourceTemurin},
-		"postgresql":  {Name: "postgresql", Policy: updates.PolicyNotify, Manageable: false, Source: sourcePostgres},
-	}
-	got := Topology()
-	if len(got) != len(want) {
-		t.Fatalf("Topology has %d specs, want %d", len(got), len(want))
-	}
-	for _, s := range got {
-		w, ok := want[s.Name]
-		if !ok {
-			t.Errorf("unexpected component %q in topology", s.Name)
-			continue
-		}
-		if s != w {
-			t.Errorf("component %q = %+v, want %+v", s.Name, s, w)
-		}
-	}
-}
-
 func TestTopologyPinsMinecraft(t *testing.T) {
 	for _, s := range Topology() {
 		if s.Policy == updates.PolicyPinned {

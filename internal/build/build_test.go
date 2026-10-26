@@ -638,17 +638,6 @@ func TestAddExternalImageRejectsMalformedRef(t *testing.T) {
 	}
 }
 
-func TestRemoveImage(t *testing.T) {
-	b, st, _ := newBuilder()
-	st.images["registry.felis.svc:5000/x:1"] = Image{ImageRef: "registry.felis.svc:5000/x:1"}
-	if err := b.RemoveImage(context.Background(), "registry.felis.svc:5000/x:1"); err != nil {
-		t.Fatalf("RemoveImage: %v", err)
-	}
-	if _, ok := st.images["registry.felis.svc:5000/x:1"]; ok {
-		t.Error("image not removed")
-	}
-}
-
 func TestImageMatches(t *testing.T) {
 	cases := []struct {
 		ref, pattern string

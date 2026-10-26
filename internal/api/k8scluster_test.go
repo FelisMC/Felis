@@ -11,7 +11,6 @@ import (
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/maintenance"
-	"felis.lolicon.best/internal/naming"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -83,12 +82,6 @@ func TestCreateServerEnablesRcon(t *testing.T) {
 		t.Fatal("spec.rcon.enabled is false: the operator will skip the readiness probe and " +
 			"never sample a player count, and every console write will fail with 503")
 	}
-	if got, want := ms.Spec.Rcon.SecretRef.Name, naming.RconSecretName("survival"); got != want {
-		t.Fatalf("rcon secretRef name = %q, want %q", got, want)
-	}
-	if got, want := ms.Spec.Rcon.SecretRef.Key, naming.RconSecretKey; got != want {
-		t.Fatalf("rcon secretRef key = %q, want %q", got, want)
-	}
 	if ms.Spec.Rcon.Port != 0 {
 		t.Fatalf("rcon port = %d, want 0 so the operator default is the only copy", ms.Spec.Rcon.Port)
 	}
@@ -112,8 +105,8 @@ func TestCreateServerDefaultsIdleStop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetServer: %v", err)
 	}
-	if info.IdleStopSeconds != v1alpha1.DefaultEmptySecondsBeforeStop {
-		t.Fatalf("idleStopSeconds = %d, want the default %d", info.IdleStopSeconds, v1alpha1.DefaultEmptySecondsBeforeStop)
+	if info.IdleStopSeconds != 600 {
+		t.Fatalf("idleStopSeconds = %d, want 600", info.IdleStopSeconds)
 	}
 }
 

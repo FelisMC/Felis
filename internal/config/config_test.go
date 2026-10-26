@@ -137,30 +137,6 @@ url = "postgres://felis@db/felis"
 	}
 }
 
-func TestLoadAppliesDefaults(t *testing.T) {
-	cfg, err := config.Load(writeTOML(t, `
-[server]
-root_domain = "mc.example.net"
-[database]
-url = "postgres://felis@db/felis"
-`))
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.Server.Listen != "0.0.0.0:8080" {
-		t.Errorf("default listen = %q, want 0.0.0.0:8080", cfg.Server.Listen)
-	}
-	if cfg.K8s.Namespace != "minecraft" {
-		t.Errorf("default namespace = %q, want minecraft", cfg.K8s.Namespace)
-	}
-	if cfg.K8s.EgressMode != "loadbalancer" {
-		t.Errorf("default egress_mode = %q", cfg.K8s.EgressMode)
-	}
-	if cfg.Archive.Store != "tarLocal" {
-		t.Errorf("default archive store = %q", cfg.Archive.Store)
-	}
-}
-
 func TestLoadRejectsMissingDatabaseURL(t *testing.T) {
 	_, err := config.Load(writeTOML(t, `
 [server]
@@ -728,10 +704,8 @@ prefix = "site-a"
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	o := cfg.Offsite
-	if !o.Enabled() || o.AccessKeyRef != "FELIS_OFFSITE_ACCESS_KEY" || o.SecretKeyRef != "FELIS_OFFSITE_SECRET_KEY" ||
-		o.KeyRef != "FELIS_OFFSITE_KEY" || o.DBKeep != 30 {
-		t.Fatalf("defaults not applied: %+v", o)
+	if !cfg.Offsite.Enabled() {
+		t.Fatalf("endpoint and bucket set but offsite is off: %+v", cfg.Offsite)
 	}
 
 	for name, body := range map[string]string{

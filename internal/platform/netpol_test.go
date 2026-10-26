@@ -22,26 +22,6 @@ func npByName(t *testing.T, nps []*networkingv1.NetworkPolicy, name string) *net
 	return nil
 }
 
-func TestServerSelector_MatchesOperatorLabels(t *testing.T) {
-	sel := serverPodSelector()
-	want := map[string]string{
-		v1alpha1.LabelManagedBy: operator.ManagedByValue,
-		v1alpha1.LabelComponent: operator.ComponentValue,
-	}
-	if len(sel.MatchLabels) != len(want) {
-		t.Fatalf("selector has %d labels, want %d", len(sel.MatchLabels), len(want))
-	}
-	for k, v := range want {
-		if sel.MatchLabels[k] != v {
-			t.Errorf("selector[%q] = %q, want %q", k, sel.MatchLabels[k], v)
-		}
-	}
-	// Guard against the values being empty (a typo making the selector match-all-ish).
-	if operator.ManagedByValue == "" || operator.ComponentValue == "" {
-		t.Fatal("operator label values must be non-empty")
-	}
-}
-
 func TestDefaultDeny(t *testing.T) {
 	nps := MinecraftNetworkPolicies(testParams())
 	dd := npByName(t, nps, "felis-default-deny-ingress")

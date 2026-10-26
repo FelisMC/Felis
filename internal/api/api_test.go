@@ -34,7 +34,7 @@ type fakeRepo struct {
 	mine         map[string][]MyServerView
 	owners       map[string]ServerOwnership // name -> claim state; unclaimed has empty OwnerID
 	ownersErr    error
-	noticeTo     map[string][]string // server -> lifecycle mail recipients
+	noticeTo     map[string][]string
 	noticeToErr  error
 	claimOK      map[string]bool // name -> claim succeeds; absent name -> ErrNotFound
 	// claimQuotaRefuse refuses a name whose advisory pre-check already passed.
@@ -1642,25 +1642,25 @@ type fakeCluster struct {
 	list          []ServerInfo
 	listErr       error
 	desired       map[string]v1alpha1.DesiredState
-	created       map[string]CreateServerInput // name -> the validated input it was created from
-	patched       map[string]ServerSpecPatch   // name -> the validated spec patch it received
+	created       map[string]CreateServerInput
+	patched       map[string]ServerSpecPatch
 	startupSpecs  map[string]v1alpha1.MinecraftServerSpec
 	startupReads  []string
 	clearedPorts  []string
 	clearPortsErr error
-	noWorld       map[string]bool // servers modeled without a world volume
-	ensured       []string        // EnsureWorldVolume calls
-	orphanWorld   map[string]bool // names with a world volume but no server (CR deleted by hand)
+	noWorld       map[string]bool
+	ensured       []string
+	orphanWorld   map[string]bool // names with a world volume but no server
 	createErr     error
 	pingErr       error
-	patchErr      error            // PatchServerSpec fails with it after finding the server
+	patchErr      error
 	goneOnPatch   bool             // PatchServerSpec finds the server deleted since it was read
 	maintErr      map[string]error // AcquireMaintenance result per server
 	fileAccessErr error
 	wakeErr       map[string]error
 	acquired      []string // "name:kind" per admitted AcquireMaintenance
-	released      []string // names per ReleaseMaintenance
-	retried       []string // names per RetryStart
+	released      []string
+	retried       []string
 	killed        []string
 	feeds         []ServerEventFeed
 	mailed        map[string]int64 // MarkEventsMailed: name -> seq

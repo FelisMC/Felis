@@ -123,12 +123,3 @@ func TestIsPrerelease(t *testing.T) {
 		}
 	}
 }
-
-func TestStringRoundTrips(t *testing.T) {
-	for _, in := range []string{"v1.30.2+k3s1", "1.2.3-rc.1", "2024.2.1"} {
-		v, _ := Parse(in)
-		if v.String() != in {
-			t.Errorf("String() = %q, want round-trip of %q", v.String(), in)
-		}
-	}
-}

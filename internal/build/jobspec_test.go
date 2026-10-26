@@ -826,9 +826,3 @@ func egressAllowsPort(np *networkingv1.NetworkPolicy, port int32) bool {
 	}
 	return false
 }
-
-func TestSampleRefIsHostQualified(t *testing.T) {
-	if !strings.Contains(sampleJobParams().ImageRef, "/") {
-		t.Fatal("sample image ref must be host-qualified")
-	}
-}

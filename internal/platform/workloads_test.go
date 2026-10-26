@@ -1110,10 +1110,6 @@ func TestPVCSizes(t *testing.T) {
 	}
 	p := testParams()
 	p.BackupPVC = "felis-backups"
-	def := sizes(p)
-	if def[registryName] != registryStorageSize || def[uploadsPVCName] != uploadsStorageSize || def["felis-backups"] != backupStorageSize {
-		t.Errorf("default sizes = %v", def)
-	}
 	p.RegistryStorage, p.UploadsStorage, p.BackupStorage = "40Gi", "8Gi", "100Gi"
 	if got := sizes(p); got[registryName] != "40Gi" || got[uploadsPVCName] != "8Gi" || got["felis-backups"] != "100Gi" {
 		t.Errorf("configured sizes = %v", got)

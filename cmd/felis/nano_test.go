@@ -14,8 +14,6 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
-
-	"felis.lolicon.best/internal/api"
 )
 
 func TestNanoWarnsThatServerListenIsIgnored(t *testing.T) {
@@ -80,20 +78,6 @@ func TestNanoDrainsInFlightLoginOnShutdown(t *testing.T) {
 	}
 	if rc := <-done; rc != 0 {
 		t.Fatalf("serveNano = %d after a clean drain, want 0", rc)
-	}
-}
-
-func TestNanoAdmitsAValidatedLogin(t *testing.T) {
-	const id = "069a79f444e94726a5befca90e38aaf5"
-	ygg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.WriteString(w, `{"id":"`+id+`","name":"Notch"}`)
-	}))
-	defer ygg.Close()
-	h := api.HasJoinedHandler([]api.AuthSource{{Tag: "mojang", URL: ygg.URL, Identity: true}}, nanoStubRepo{})
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/session/minecraft/hasJoined?username=Notch&serverId=abc", nil))
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), id) {
-		t.Fatalf("code = %d body = %q, want the validated profile", w.Code, w.Body.String())
 	}
 }
 

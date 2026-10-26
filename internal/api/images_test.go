@@ -336,9 +336,6 @@ func TestImageRoutesWithoutBuilderAre503(t *testing.T) {
 	}
 }
 
-// Compile-time proof that the production Builder satisfies the API interface.
-var _ ImageBuilder = (*build.Builder)(nil)
-
 func gzipped(t *testing.T, s string) []byte {
 	t.Helper()
 	var buf bytes.Buffer

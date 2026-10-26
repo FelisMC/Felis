@@ -116,7 +116,6 @@ func TestSystemServersKeepTheirRecovery(t *testing.T) {
 	}
 }
 
-// noticeAPI mails lifecycle events of survival, owned by owner@example.net, at a fixed clock.
 func noticeAPI(t *testing.T, notify ServerNotify, events ...ServerEvent) (*API, *fakeCluster, *noticeMailer, *time.Time) {
 	t.Helper()
 	repo := newFakeRepo()

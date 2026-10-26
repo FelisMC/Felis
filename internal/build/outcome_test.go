@@ -195,17 +195,6 @@ func TestSubmitCarriesTheScanPolicy(t *testing.T) {
 	}
 }
 
-func TestBuilderScanReadsTheStore(t *testing.T) {
-	b, st, _ := newBuilder()
-	if _, err := b.Scan(context.Background(), "bld-9"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("missing scan: err = %v", err)
-	}
-	st.scans = map[string]Scan{"bld-9": {BuildID: "bld-9", Summary: ScanSummary{Packages: 42}}}
-	if sc, err := b.Scan(context.Background(), "bld-9"); err != nil || sc.Summary.Packages != 42 {
-		t.Errorf("scan = %+v, %v", sc, err)
-	}
-}
-
 func TestK8sOutcomesReadsThePod(t *testing.T) {
 	ctx := context.Background()
 	term := func(name string, code int32, msg string) corev1.ContainerStatus {

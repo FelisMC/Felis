@@ -26,6 +26,9 @@ func openTree(t *testing.T) *os.Root {
 		}
 	}
 	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "host.conf"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Symlink(outside, filepath.Join(dir, "plugins", "escape")); err != nil {
 		t.Fatal(err)
 	}

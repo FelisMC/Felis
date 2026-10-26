@@ -67,7 +67,7 @@ func TestGetStartupSettingsReadsLiteralCRWithoutPodOrSecretAccess(t *testing.T) 
 		{Name: "PLUGIN_LITERAL", Value: "${FELIS_SERVICE_TOKEN}"},
 		{Name: "PLUGIN_EMPTY", Value: ""},
 	}
-	// The client registers only MinecraftServer objects, so Pod or Secret reads cannot satisfy this getter.
+	// Only MinecraftServer is registered, so the settings must come from the spec.
 	k, _, _ := newStartupSettingsCluster(t, spec)
 	got, err := k.GetStartupSettings(context.Background(), "login")
 	if err != nil {

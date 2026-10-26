@@ -161,19 +161,28 @@ func TestWriteForwardingFileModes(t *testing.T) {
 		t.Skip("POSIX file modes not represented on Windows")
 	}
 	dir := t.TempDir()
+	paths := []string{
+		filepath.Join(dir, "config", "paper-global.yml"),
+		filepath.Join(dir, "server.properties"),
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range paths {
+		if err := os.WriteFile(p, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := writePaperForwarding(dir, "x"); err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range []string{
-		filepath.Join(dir, "config", "paper-global.yml"),
-		filepath.Join(dir, "server.properties"),
-	} {
+	for _, p := range paths {
 		fi, err := os.Stat(p)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if fi.Mode().Perm() != fwdFileMode {
-			t.Errorf("%s mode = %o, want %o", p, fi.Mode().Perm(), fwdFileMode)
+		if fi.Mode().Perm() != 0o644 {
+			t.Errorf("%s mode = %o, want 644", p, fi.Mode().Perm())
 		}
 	}
 }

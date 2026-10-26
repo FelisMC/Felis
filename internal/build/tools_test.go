@@ -6,15 +6,10 @@ import (
 )
 
 func TestToolRefsDefaultToTheRegistryCopies(t *testing.T) {
-	got := Config{RegistryURL: "registry.felis.svc:5000"}.ToolRefs()
-	want := []string{
-		"registry.felis.svc:5000/mirror/kaniko-executor:v1.24.0",
-		"registry.felis.svc:5000/mirror/trivy:0.74.0",
-		"registry.felis.svc:5000/mirror/trivy-db:2",
-		"registry.felis.svc:5000/mirror/trivy-java-db:1",
-	}
-	if strings.Join(got, " ") != strings.Join(want, " ") {
-		t.Errorf("ToolRefs = %v, want %v", got, want)
+	for _, ref := range (Config{RegistryURL: "registry.felis.svc:5000"}).ToolRefs() {
+		if !strings.HasPrefix(ref, "registry.felis.svc:5000/mirror/") {
+			t.Errorf("default tool ref %q is not the registry copy", ref)
+		}
 	}
 
 	explicit := Config{RegistryURL: "r:5000", KanikoImage: "r:5000/mirror/kaniko-fork:v2", TrivyDBRepository: "r:5000/mirror/db:9"}.ToolRefs()

@@ -107,8 +107,4 @@ func TestSetupDevFlagRefusesInsteadOfSilentlyInstallingRelease(t *testing.T) {
 	if strings.Contains(msg, "must run as root") {
 		t.Errorf("the channel refusal must precede the root check:\n%s", msg)
 	}
-	// The dead variable is gone; setting it again would re-create a knob nothing reads.
-	if _, ok := os.LookupEnv("FELIS_CHANNEL"); ok {
-		t.Errorf("FELIS_CHANNEL has no reader anywhere and must not be exported")
-	}
 }

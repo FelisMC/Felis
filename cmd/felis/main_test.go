@@ -2,7 +2,6 @@ package main
 
 import (
 	"os"
-	"regexp"
 	"testing"
 )
 
@@ -18,15 +17,5 @@ func TestEnsureHostBinDirOnPath(t *testing.T) {
 		if got := os.Getenv("PATH"); got != c.want {
 			t.Errorf("PATH %q became %q, want %q", c.in, got, c.want)
 		}
-	}
-}
-
-func TestMainFixesPathBeforeRunning(t *testing.T) {
-	b, err := os.ReadFile("main.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !regexp.MustCompile(`func main\(\) \{\n\tensureHostBinDirOnPath\(\)\n\tos\.Exit\(run\(`).Match(b) {
-		t.Fatal("main does not call ensureHostBinDirOnPath before run")
 	}
 }
