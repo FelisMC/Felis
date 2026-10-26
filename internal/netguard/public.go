@@ -27,7 +27,7 @@ var nonPublic = []netip.Prefix{
 	netip.MustParsePrefix("2002::/16"),
 }
 
-// RefusePrivate checks the actual dial address for public downloads, including IPv4-mapped IPv6.
+// RefusePrivate checks the actual dial address of public downloads.
 func RefusePrivate(_, address string, _ syscall.RawConn) error {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {

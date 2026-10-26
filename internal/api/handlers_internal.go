@@ -184,7 +184,7 @@ func (a *API) handleInternalWake(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// errCrashStopped shares start_failed with spent start retries, so the proxy and lobby menu show the same notice.
+// errCrashStopped reuses start_failed so the proxy and lobby show one notice.
 var errCrashStopped = newError(http.StatusConflict, "start_failed",
 	"the server stopped after crashing and no longer restarts on its own; its owner can start it from the panel")
 

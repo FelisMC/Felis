@@ -215,7 +215,7 @@ type Repo interface {
 	MyServers(ctx context.Context, userID string) ([]MyServerView, error)
 	// ServerOwners omits deleted servers and uses empty OwnerID for unclaimed ones.
 	ServerOwners(ctx context.Context) (map[string]ServerOwnership, error)
-	// ServerNoticeRecipients is the owner's verified email, or every Owner-role account's for an unclaimed server; inactive accounts get none.
+	// ServerNoticeRecipients is the owner's verified email, or every Owner's if unclaimed.
 	ServerNoticeRecipients(ctx context.Context, server string) ([]string, error)
 	AllBackups(ctx context.Context, opts BackupListOpts) ([]BackupView, int, error)
 	// BackupsForUser scopes to former ownership recorded at archive time.
@@ -236,7 +236,7 @@ type Repo interface {
 	UpdateServerResources(ctx context.Context, name string, cpuMilli, memoryMB, storageMB int) error
 	// ResizeServer serializes with claims, caps growth and returns previous values; absent live rows are unchanged.
 	ResizeServer(ctx context.Context, name string, cpuMilli, memoryMB int) (prev ResourceSpec, err error)
-	// PatchServerPorts holds the server row and checks a nonempty owner before applying the cluster patch.
+	// PatchServerPorts locks the server row and checks a nonempty ownerID before apply.
 	PatchServerPorts(ctx context.Context, name, ownerID string, apply func() error) error
 	Audit(ctx context.Context, e AuditEntry) error
 

@@ -58,7 +58,7 @@ func rconStamp(password []byte) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// PodTemplateAnnotation excludes platform image and stdin changes so upgrades wait for the next start.
+// PodTemplateAnnotation ignores platform image and stdin so upgrades await a start.
 const PodTemplateAnnotation = "felis.lolicon.best/pod-template"
 
 func podTemplateStamp(tmpl *corev1.PodTemplateSpec, felisImage string) (string, error) {
@@ -100,9 +100,9 @@ type Reconciler struct {
 	// Pods avoids a Pod informer; nil falls back to the embedded client.
 	Pods    client.Reader
 	Volumes client.Reader
-	// ExtraResources confirms port cleanup against the API server before ownership can be released.
+	// ExtraResources reads uncached to confirm port cleanup before ownership release.
 	ExtraResources client.Reader
-	// BootID tells host restarts from crashes; nil leaves every restart a crash.
+	// A nil BootID counts every restart as a crash.
 	BootID   BootIDFunc
 	Recorder record.EventRecorder // nil disables Events
 	Watch    *ReconcileWatch      // nil disables liveness tracking
@@ -784,7 +784,7 @@ func (r *Reconciler) rconPassword(ctx context.Context, server *v1alpha1.Minecraf
 	return string(b), nil
 }
 
-// applyStatefulSet defers startup settings and platform defaults until the next start.
+// While running, startup settings and platform defaults wait for the next start.
 func (r *Reconciler) applyStatefulSet(ctx context.Context, desired *appsv1.StatefulSet) error {
 	stamp, err := podTemplateStamp(&desired.Spec.Template, r.FelisImage)
 	if err != nil {

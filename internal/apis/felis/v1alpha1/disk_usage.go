@@ -22,7 +22,7 @@ const (
 	DefaultWorldStorageSize     = "8Gi"
 )
 
-// DiskUsageSample contains only successful scans bound to the server and mounted claim identities.
+// DiskUsageSample records a successful scan tied to the server and claim UIDs.
 type DiskUsageSample struct {
 	ServerUID types.UID `json:"serverUID"`
 	PVCName   string    `json:"pvcName"`
@@ -69,7 +69,7 @@ func DiskSampleFresh(sample DiskUsageSample, now time.Time) bool {
 	return !sample.SampledAt.After(now) && !sample.SampledAt.Before(now.Add(-DiskUsageMaxAge))
 }
 
-// DiskQuotaReason keeps a full-disk block until a fresh successful scan of the current claim releases it.
+// DiskQuotaReason holds DiskFull until a fresh scan of the current claim clears it.
 func DiskQuotaReason(server *MinecraftServer, pvcUID types.UID, now time.Time) string {
 	sample, ok := ServerDiskSample(server)
 	limit := DiskQuotaBytes(server)

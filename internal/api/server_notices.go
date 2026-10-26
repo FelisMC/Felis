@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	// serverNoticeMaxAge drops events that waited this long, such as those from before mail was set up.
+	// Events older than serverNoticeMaxAge are marked handled without mail.
 	serverNoticeMaxAge = time.Hour
 	// crashMailHold lets a crash settle so the restart outcome lands in the same mail.
 	crashMailHold = 3 * time.Minute
@@ -21,7 +21,6 @@ const (
 
 var errMailBudget = errors.New("mail budget spent")
 
-// NotifyServerEvents mails new lifecycle events to server owners; one server's failure leaves the others unaffected.
 func (a *API) NotifyServerEvents(ctx context.Context) error {
 	feeds, err := a.Cluster.ServerEventFeeds(ctx)
 	if err != nil {

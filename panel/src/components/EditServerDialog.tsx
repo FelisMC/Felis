@@ -94,14 +94,12 @@ interface EditServerForm {
   idleStop: string;
   resume: boolean;
   crashRestart: boolean;
-  /** The crash restart limit as typed. */
   maxCrash: string;
   notify: ServerNotify;
 }
 
 const MAX_CRASH_RESTARTS = 20;
 
-/** crashLimit parses a typed restart limit; null outside 1–20. */
 function crashLimit(text: string): number | null {
   const n = Number(text.trim());
   return /^\d+$/.test(text.trim()) && n >= 1 && n <= MAX_CRASH_RESTARTS ? n : null;

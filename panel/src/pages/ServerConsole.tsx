@@ -438,7 +438,7 @@ export function ServerConsole() {
                 <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
               </Link>
 
-              {/* The file page permits running or stopped servers and owns its access checks. */}
+              {/* The file page does its own access checks, so this link shows in every phase. */}
               <Link
                 to={`/servers/${name}/files`}
                 className="group flex items-center gap-3 rounded-xl border border-border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-accent"

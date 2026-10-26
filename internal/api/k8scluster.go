@@ -542,7 +542,7 @@ func (k *K8sCluster) PatchServerSpec(ctx context.Context, name string, p ServerS
 			ms.Spec.Notify.Problems = p.NotifyProblems
 		}
 		if p.IdleStopSeconds != nil {
-			// Retain a disabled idle duration to distinguish an explicit choice from an unset setting during convergence.
+			// Keep a duration when disabling so an explicit off differs from unset.
 			if *p.IdleStopSeconds == 0 {
 				ms.Spec.Idle.AutoStopEnabled = false
 				if ms.Spec.Idle.EmptySecondsBeforeStop <= 0 {
@@ -629,7 +629,7 @@ func serverInfo(ms *v1alpha1.MinecraftServer, now time.Time) *ServerInfo {
 	}
 }
 
-// maxCrashRestarts keeps the limit visible while restarts are off, so turning them back on shows it.
+// maxCrashRestarts reports the limit even while restarts are off.
 func maxCrashRestarts(r v1alpha1.RecoverySpec) int32 {
 	if r.MaxCrashRestarts > 0 {
 		return r.MaxCrashRestarts
@@ -673,7 +673,6 @@ func serverEvents(in []v1alpha1.ServerEvent) []ServerEvent {
 	return out
 }
 
-// AnnotationEventsMailed holds the last lifecycle event seq felis-api has mailed.
 const AnnotationEventsMailed = v1alpha1.GroupName + "/events-mailed"
 
 func (k *K8sCluster) ServerEventFeeds(ctx context.Context) ([]ServerEventFeed, error) {

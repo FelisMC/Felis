@@ -106,7 +106,7 @@ func (s *Stage) Put(body io.Reader, size int64, want []byte) (Staged, func(), er
 	}, nil
 }
 
-// Receive hashes an incoming stream and seals a session for asynchronous landing; size -1 uses the available staging budget.
+// A size of -1 makes Receive reserve the remaining staging budget.
 func (s *Stage) Receive(user, server, path string, body io.Reader, size int64) (Staged, func(), error) {
 	id, err := randomHex(16)
 	if err != nil {
@@ -258,7 +258,6 @@ func (s *Stage) reserve(size int64) error {
 	return nil
 }
 
-// Unknown-length streams reserve the remaining budget so concurrent uploads cannot consume their space.
 func (s *Stage) reserveAvailable() (int64, error) {
 	avail, total, err := statfs(s.Dir)
 	if err != nil {

@@ -3647,7 +3647,7 @@ async function handleFileTaskMock(ctx: SessionContext, server: MockServer, tree:
   return landMockFiles(ctx, server.name, body.op!, to, tree, targets, body.overwrite === true, body.op === "move" ? paths : []);
 }
 
-// File Jobs share a running game's volume; lifecycle transitions and maintenance still gate access.
+// File access stays open while running and closes during transitions and maintenance.
 async function handleFilesMock(ctx: SessionContext, serverInfo: MockServer): Promise<boolean> {
   const route = ctx.parts.slice(4).join("/");
   const known = ["GET files", "GET file", "PUT file", "DELETE file", "POST files/mkdir", "POST files/rename", "PUT files/upload", "GET files/search", "GET files/ops", "POST files/transfer", "POST files/zip", "POST files/from-url", "POST files/unzip", "POST files/download", "GET extensions"];

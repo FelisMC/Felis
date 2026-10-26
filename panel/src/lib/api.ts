@@ -461,7 +461,7 @@ export const api = rejectingSync({
 
   cancelRetire: (name: string) => request<void>("DELETE", urlPath`/servers/${name}/retirement`),
 
-  // Commands strip a leading slash, reject control characters, and have a 1024-byte limit.
+  // The server strips a leading slash and rejects control chars or >1024 bytes.
   sendCommand: (name: string, command: string) =>
     request<ConsoleCommandResult>("POST", urlPath`/servers/${name}/command`, { command }),
 
@@ -695,7 +695,7 @@ export const api = rejectingSync({
     restartOnCrash?: boolean;
     /** Crashes in a row restarted before the server stops (1–20). */
     maxCrashRestarts?: number;
-    /** Notification switches to change; the others stay. */
+    /** Only the given switches change. */
     notify?: Partial<ServerNotify>;
   }) =>
     request<{ name: string; patched: string[] }>(
@@ -779,7 +779,6 @@ export const api = rejectingSync({
   runSchedule: (name: string, id: number) =>
     request<Schedule>("POST", urlPath`/servers/${name}/schedules/${String(id)}/run`),
 
-  // File operations require a running or fully stopped server and owner/admin access.
   // File paths use query parameters and binary contents use base64; listings include free space.
   listServerFiles: (name: string, path: string) =>
     request<{ path: string; entries: ServerFileEntry[]; truncated: boolean; free_bytes: number | null }>(

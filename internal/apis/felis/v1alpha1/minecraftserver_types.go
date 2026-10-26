@@ -23,7 +23,7 @@ const (
 	LabelSystemRole = GroupName + "/system-role"
 	// Legacy forwarding trusts the game port; its label affects routing without restarting the backend.
 	LabelForwarding = GroupName + "/forwarding"
-	// AnnotationStartRetry asks for a fresh Failed-start budget and retains the pinned Pod identity until consumed.
+	// AnnotationStartRetry resets the Failed-start budget and pins the Pod until consumed.
 	AnnotationStartRetry = GroupName + "/start-retry"
 	// AnnotationRestart requests one pod recreation while keeping desiredState Running.
 	AnnotationRestart = GroupName + "/restart"
@@ -186,10 +186,9 @@ type MinecraftServerSpec struct {
 	// Startup bounds how long Starting may last before Failed.
 	Startup StartupSpec `json:"startup,omitempty"`
 	Idle    IdleSpec    `json:"idle,omitempty"`
-	// Recovery decides what follows a crash or a host restart; system servers always resume and restart.
+	// Recovery is ignored by system servers, which always resume and restart.
 	Recovery RecoverySpec `json:"recovery,omitempty"`
-	// Notify picks the lifecycle events mailed to the server's owner.
-	Notify NotifySpec `json:"notify,omitempty"`
+	Notify   NotifySpec   `json:"notify,omitempty"`
 }
 
 // SoftwareSpec is the server software of a runtime-image server (see
@@ -261,7 +260,7 @@ type StorageSpec struct {
 	StorageClassName string `json:"storageClassName,omitempty"`
 }
 
-// LifecycleSpec runs saving and configured commands over RCON before SIGTERM starts the pod grace period.
+// LifecycleSpec runs a save and StopCommands over RCON before sending SIGTERM.
 type LifecycleSpec struct {
 	// +kubebuilder:validation:MaxItems=16
 	// +kubebuilder:validation:items:MaxLength=1024
@@ -309,22 +308,19 @@ type IdleSpec struct {
 	EmptySecondsBeforeStop int32 `json:"emptySecondsBeforeStop,omitempty"`
 }
 
-// DefaultMaxCrashRestarts is the crash restart limit when none is set.
 const DefaultMaxCrashRestarts int32 = 3
 
-// MaxCrashRestartsLimit is the highest crash restart limit.
 const MaxCrashRestartsLimit int32 = 20
 
 // CrashWindow is how long without a crash starts the count over.
 const CrashWindow = time.Hour
 
-// RecoverySpec decides what follows an unexpected exit of the server process or a restart of its host.
 type RecoverySpec struct {
-	// ResumeAfterHostRestart starts a server that was running again after its host restarts; nil means true.
+	// ResumeAfterHostRestart defaults to true when nil.
 	ResumeAfterHostRestart *bool `json:"resumeAfterHostRestart,omitempty"`
-	// RestartOnCrash restarts the process after it exits or stops responding; nil means true.
+	// RestartOnCrash also covers hangs and defaults to true when nil.
 	RestartOnCrash *bool `json:"restartOnCrash,omitempty"`
-	// MaxCrashRestarts is how many crashes in a row are restarted before the server is stopped; zero means DefaultMaxCrashRestarts.
+	// MaxCrashRestarts is the consecutive crash limit, DefaultMaxCrashRestarts if zero.
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=20
 	MaxCrashRestarts int32 `json:"maxCrashRestarts,omitempty"`
@@ -338,7 +334,6 @@ func (r RecoverySpec) RestartsOnCrash() bool {
 	return r.RestartOnCrash == nil || *r.RestartOnCrash
 }
 
-// CrashRestartLimit is zero when crashes are not restarted.
 func (r RecoverySpec) CrashRestartLimit() int32 {
 	switch {
 	case !r.RestartsOnCrash():
@@ -349,11 +344,10 @@ func (r RecoverySpec) CrashRestartLimit() int32 {
 	return DefaultMaxCrashRestarts
 }
 
-// NotifySpec picks the lifecycle events mailed to the server's owner.
 type NotifySpec struct {
 	Started bool `json:"started,omitempty"`
 	Stopped bool `json:"stopped,omitempty"`
-	// Problems covers crashes, failed starts and host restarts; nil means true.
+	// Problems, on when nil, covers crashes, failed starts, host restarts and disk alerts.
 	Problems *bool `json:"problems,omitempty"`
 }
 
@@ -361,7 +355,6 @@ func (n NotifySpec) ProblemsOn() bool {
 	return n.Problems == nil || *n.Problems
 }
 
-// Reasons the operator stopped a server on its own.
 const (
 	StopIdle        = "Idle"
 	StopCrashed     = "Crashed"
@@ -369,30 +362,27 @@ const (
 	StopHostRestart = "HostRestarted"
 )
 
-// AutoStop records why the operator stopped the server.
 type AutoStop struct {
 	Reason string      `json:"reason"`
 	At     metav1.Time `json:"at"`
-	// Generation is the spec generation the stop produced; desiredState Running at a later one means a person started the server.
+	// Running at a generation past Generation means a person started the server.
 	Generation int64 `json:"generation"`
 }
 
-// CrashStopped reports a server stopped after crashing, which only a person starts again.
+// A CrashStopped server starts again only when a person starts it.
 func CrashStopped(s *MinecraftServerStatus) bool {
 	return s.AutoStop != nil && (s.AutoStop.Reason == StopCrashed || s.AutoStop.Reason == StopCrashLimit)
 }
 
-// RunStatus is what the operator last saw of the server's pod and host.
 type RunStatus struct {
 	PodUID string `json:"podUID,omitempty"`
-	// Restarts is the container restart count of PodUID; growth means the process exited.
+	// Restarts is the container restart count of PodUID.
 	Restarts int32  `json:"restarts,omitempty"`
 	Node     string `json:"node,omitempty"`
-	// BootID identifies the boot of Node; a different one means the host restarted.
+	// BootID is the boot ID of Node, which changes when the host restarts.
 	BootID string `json:"bootID,omitempty"`
 }
 
-// CrashRecord describes the latest unexpected exit.
 type CrashRecord struct {
 	At metav1.Time `json:"at"`
 	// Reason is the container termination reason, such as OOMKilled or Error.
@@ -400,7 +390,6 @@ type CrashRecord struct {
 	ExitCode int32  `json:"exitCode"`
 }
 
-// Lifecycle event types.
 const (
 	EventStarted       = "Started"
 	EventStopped       = "Stopped"
@@ -409,21 +398,19 @@ const (
 	EventStartFailed   = "StartFailed"
 )
 
-// MaxServerEvents bounds status.events.
 const MaxServerEvents = 20
 
-// ServerEvent is one lifecycle event; felis-api mails it and the panel lists it.
 type ServerEvent struct {
 	Seq  int64       `json:"seq"`
 	Type string      `json:"type"`
 	At   metav1.Time `json:"at"`
-	// Reason is the stop reason of Stopped, the termination reason of Crashed and the failure reason of StartFailed.
+	// Reason is the stop, termination or failure reason for Stopped, Crashed or StartFailed.
 	Reason   string `json:"reason,omitempty"`
 	ExitCode int32  `json:"exitCode,omitempty"`
-	// Crashes is the crash's place in a row of crashes; Limit is the restart limit then in force.
+	// Crashes is this crash's streak count and Limit the restart limit at the time.
 	Crashes int32 `json:"crashes,omitempty"`
 	Limit   int32 `json:"limit,omitempty"`
-	// Stopping marks an event the operator stops the server for.
+	// Stopping marks an event that made the operator stop the server.
 	Stopping bool `json:"stopping,omitempty"`
 }
 
@@ -454,11 +441,11 @@ type MinecraftServerStatus struct {
 	LastAutoRestartAt  *metav1.Time `json:"lastAutoRestartAt,omitempty"`
 	ObservedGeneration int64        `json:"observedGeneration,omitempty"`
 	Run                RunStatus    `json:"run,omitempty"`
-	// Crashes counts crashes in a row; it starts over after CrashWindow without one and when a person starts the server.
+	// Crashes counts consecutive crashes, reset after a quiet CrashWindow or a manual start.
 	Crashes   int32        `json:"crashes,omitempty"`
 	LastCrash *CrashRecord `json:"lastCrash,omitempty"`
 	AutoStop  *AutoStop    `json:"autoStop,omitempty"`
-	// Events are the latest lifecycle events, oldest first.
+	// Events are oldest first, at most MaxServerEvents.
 	Events []ServerEvent `json:"events,omitempty"`
 	// +kubebuilder:validation:MaxItems=5
 	ExtraPorts []AllocatedExtraPort `json:"extraPorts,omitempty"`

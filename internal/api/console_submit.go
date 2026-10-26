@@ -20,7 +20,7 @@ type consoleSlot struct {
 	token chan struct{}
 }
 
-// Waiting submissions remain cancelable and slots disappear after the last holder or waiter leaves.
+// acquireSubmit serializes submissions per server and honors ctx while waiting.
 func (k *K8sConsole) acquireSubmit(ctx context.Context, name string) (func(), error) {
 	k.mu.Lock()
 	if k.slots == nil {
@@ -59,7 +59,7 @@ func consoleAcceptsInput(ms *v1alpha1.MinecraftServer) bool {
 		(ms.Status.Phase == v1alpha1.PhaseStarting || ms.Status.Phase == v1alpha1.PhaseRunning)
 }
 
-// SubmitCommand may fall back only before ExecuteContext starts; losing a reply never sends a second command.
+// SubmitCommand uses stdin only when RCON cannot connect, so nothing runs twice.
 func (k *K8sConsole) SubmitCommand(ctx context.Context, name, command string) (ConsoleCommandResult, error) {
 	command, err := normalizeConsoleCommand(command)
 	if err != nil {
@@ -93,7 +93,7 @@ func (k *K8sConsole) SubmitCommand(ctx context.Context, name, command string) (C
 	if ctx.Err() != nil {
 		return ConsoleCommandResult{}, ErrConsoleUnavailable
 	}
-	// A handshake can take seconds; recheck the same server before either transport sends input.
+	// The handshake can take seconds, so recheck the server before sending input.
 	current, err := k.consoleServer(ctx, name)
 	if err != nil {
 		return ConsoleCommandResult{}, err

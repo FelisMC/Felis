@@ -110,7 +110,6 @@ func (a *API) handleReadFile(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleWriteFile checks content and optimistic concurrency before staging large writes.
 func (a *API) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 	name, ok := a.authorizeFileOp(w, r)
 	if !ok {
@@ -459,7 +458,7 @@ func (a *API) auditFile(r *http.Request, action, server, path string, extra map[
 
 var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// File access permits stable running servers while backup, restore and migration still hold the world.
+// File ops need a running or fully stopped server not held by maintenance.
 func (a *API) authorizeFileOp(w http.ResponseWriter, r *http.Request) (string, bool) {
 	name, ok := a.authorizeServerFiles(w, r)
 	if !ok {
@@ -501,7 +500,7 @@ func (a *API) authorizeFileOp(w http.ResponseWriter, r *http.Request) (string, b
 	return name, true
 }
 
-// Startup-only system-plugin settings remain accessible during server transitions.
+// Startup-only system-plugin settings stay editable during transitions.
 func liveExperienceFile(r *http.Request, name string) bool {
 	return naming.IsSystemServer(name) && strings.HasSuffix(r.URL.Path, "/file") &&
 		(r.Method == http.MethodGet || r.Method == http.MethodPut) &&

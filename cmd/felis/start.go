@@ -18,10 +18,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// Started before everything else.
 var clusterServices = []string{"k3s.service", "k3s-agent.service"}
 
-// Long-running units in dependency order.
 var hostStartServices = []string{
 	"iscsid.service",
 	"keepalived.service",
@@ -186,7 +184,6 @@ func nodeReady(n corev1.Node) bool {
 	return false
 }
 
-// waitForControlPlane returns the Deployments that never became ready.
 func waitForControlPlane(ctx context.Context, env startEnv, cl client.Client, out io.Writer) []string {
 	var deps appsv1.DeploymentList
 	for {

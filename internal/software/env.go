@@ -2,7 +2,6 @@ package software
 
 import "strings"
 
-// IsReservedEnv identifies variables controlled by the platform or its runtime launcher.
 func IsReservedEnv(name string) bool {
 	if strings.HasPrefix(name, "FELIS_") {
 		return true

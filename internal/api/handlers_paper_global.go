@@ -85,7 +85,7 @@ func writePaperGlobalConfig(w http.ResponseWriter, config fileedit.PaperGlobalCo
 	writeJSON(w, http.StatusOK, config)
 }
 
-// YAML diagnostics can include stored scalar values; only safe sentinel text may cross this boundary.
+// YAML errors may echo stored values, so only sentinel errors reach the client.
 func writePaperGlobalError(w http.ResponseWriter, r *http.Request, err error) {
 	for _, safe := range []error{
 		fileedit.ErrNotFound, fileedit.ErrBadPath, fileedit.ErrTooLarge,

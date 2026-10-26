@@ -88,7 +88,7 @@ func APIBuildRole(p Params) *rbacv1.Role {
 	})
 }
 
-// OperatorRole keeps Secret, Pod, volume-identity and maintenance-Job reads uncached and has no finalizer grants.
+// OperatorRole reads Secrets, Pods, PVCs and Jobs uncached and grants no finalizers.
 func OperatorRole(p Params) *rbacv1.Role {
 	p = p.withDefaults()
 	return role(p.MinecraftNamespace, "felis-operator", ComponentOperator, []rbacv1.PolicyRule{

@@ -77,7 +77,7 @@ func Dial(addr, password string, timeout time.Duration) (*Conn, error) {
 	return c, nil
 }
 
-// DialContext bounds connection and authentication together and releases cancellation after the handshake.
+// DialContext applies ctx and timeout to dial plus auth, then detaches ctx.
 func DialContext(ctx context.Context, addr, password string, timeout time.Duration) (*Conn, error) {
 	if timeout > 0 {
 		var cancel context.CancelFunc

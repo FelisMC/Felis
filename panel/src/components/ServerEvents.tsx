@@ -43,7 +43,7 @@ export function eventText(t: T, ev: ServerEvent): string {
 
 const PROBLEM: ReadonlySet<ServerEvent["type"]> = new Set(["Crashed", "HostRestarted", "StartFailed", "DiskWarning", "DiskFull"]);
 
-/** RecoveryNotice explains a stop the platform made on its own, or crashes of a server still running. */
+/** RecoveryNotice explains a platform-made stop or recent crashes of a running server. */
 export function RecoveryNotice({ data }: { data: ServerStatus }) {
   const { t, i18n } = useTranslation("servers");
   const titleId = useId();

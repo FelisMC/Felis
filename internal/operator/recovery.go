@@ -15,10 +15,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-// BootIDFunc returns the current boot ID of a node.
 type BootIDFunc func(ctx context.Context, node string) (string, error)
 
-// NodeBootID reads boot IDs from Node status.
 func NodeBootID(nodes client.Reader) BootIDFunc {
 	return func(ctx context.Context, node string) (string, error) {
 		var n corev1.Node
@@ -29,7 +27,7 @@ func NodeBootID(nodes client.Reader) BootIDFunc {
 	}
 }
 
-// LocalBootID answers with the boot ID of the host the operator runs on, for single-node installs.
+// LocalBootID serves the operator host's boot ID, for single-node installs.
 func LocalBootID() (BootIDFunc, error) {
 	b, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
 	if err != nil {
@@ -51,7 +49,7 @@ func (r *Reconciler) gamePod(ctx context.Context, server *v1alpha1.MinecraftServ
 	return &pod, nil
 }
 
-// observeRun counts crashes and notices host restarts; stopping means the server is being stopped for one.
+// observeRun reports stopping when a crash or host restart stops the server.
 func (r *Reconciler) observeRun(ctx context.Context, server *v1alpha1.MinecraftServer, pod *corev1.Pod) (stopping bool, err error) {
 	if pod == nil || pod.Spec.NodeName == "" || pod.DeletionTimestamp != nil {
 		return false, nil
@@ -74,7 +72,7 @@ func (r *Reconciler) observeRun(ctx context.Context, server *v1alpha1.MinecraftS
 	case prev.PodUID != "":
 		exits = run.Restarts
 	}
-	// A host restart always restarts or replaces the container, so an unchanged pod needs no boot ID read.
+	// Host restarts always change the container, so unchanged pods skip the boot ID read.
 	if run.PodUID == prev.PodUID && run.Restarts == prev.Restarts && run.Node == prev.Node && prev.BootID != "" {
 		return false, nil
 	}
@@ -143,7 +141,7 @@ func (r *Reconciler) observeRun(ctx context.Context, server *v1alpha1.MinecraftS
 	return true, r.stopFor(ctx, server, reason)
 }
 
-// stopFor saves the reason before turning desiredState to Stopped, so a lost spec patch is retried.
+// stopFor records AutoStop first so a lost desiredState patch is retried.
 func (r *Reconciler) stopFor(ctx context.Context, server *v1alpha1.MinecraftServer, reason string) error {
 	server.Status.AutoStop = &v1alpha1.AutoStop{Reason: reason, At: r.now(), Generation: server.Generation + 1}
 	if err := r.patchStatus(ctx, server); err != nil {
@@ -171,7 +169,7 @@ func (r *Reconciler) addEvent(server *v1alpha1.MinecraftServer, ev v1alpha1.Serv
 	server.Status.Events = events
 }
 
-// noteLifecycle records Started, Stopped and StartFailed on phase changes and reports whether it added one.
+// noteLifecycle reports whether a phase change added a lifecycle event.
 func (r *Reconciler) noteLifecycle(server *v1alpha1.MinecraftServer, prevPhase v1alpha1.Phase, prevGaveUp bool) bool {
 	phase := server.Status.Phase
 	if phase == prevPhase {

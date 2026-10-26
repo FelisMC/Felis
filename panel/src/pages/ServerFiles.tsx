@@ -117,7 +117,7 @@ type Naming =
   | { kind: "file" | "folder"; dir: string }
   | { kind: "rename"; dir: string; entry: ServerFileEntry };
 
-/** File operations are available while running; world changes require an explicit acknowledgement. */
+/** World changes on a running server need an explicit acknowledgement. */
 export function ServerFiles() {
   const { name = "" } = useParams();
   const [params] = useSearchParams();
@@ -507,7 +507,6 @@ export function ServerFiles() {
     uploads.add(files, dir, entries, paths);
   }
 
-  // Finish reading directory entries before adding the complete drop to the queue.
   async function addDropped(data: DataTransfer) {
     try {
       const { files, paths } = await droppedFiles(data);

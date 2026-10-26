@@ -75,7 +75,7 @@ func (k *K8sCluster) DiskUsageTarget(ctx context.Context, name string) (DiskUsag
 	return DiskUsageTarget{Name: name, ServerUID: server.UID, PVCName: world.Claim, PVCUID: claim.UID, Node: world.Node}, nil
 }
 
-// PublishDiskUsage changes only the annotation, preserving the operator's exclusively owned status.
+// PublishDiskUsage writes only an annotation because the operator owns status.
 func (k *K8sCluster) PublishDiskUsage(ctx context.Context, target DiskUsageTarget, usedBytes int64, sampledAt time.Time) error {
 	if usedBytes < 0 || sampledAt.IsZero() || sampledAt.After(k.clock()) {
 		return errors.New("invalid disk usage sample")

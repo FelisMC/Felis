@@ -36,7 +36,7 @@ func sampleDiskUsage(ctx context.Context, cluster diskUsageCluster, files diskUs
 	}
 }
 
-// One queue bounds volume scans across the leader's entire fleet, including stopped servers.
+// collectDiskUsage scans every server, stopped ones too, one volume at a time.
 func collectDiskUsage(ctx context.Context, cluster diskUsageCluster, files diskUsageReader, stderr io.Writer) error {
 	read, cancel := context.WithTimeout(ctx, 10*time.Second)
 	servers, err := cluster.ListServers(read)

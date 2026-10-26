@@ -22,7 +22,7 @@ const pollInterval = 150 * time.Millisecond
 
 const maxLogBytes = 12 << 20
 
-// K8sRunner uses namespace-scoped Jobs and Pod logs without giving file Jobs Kubernetes credentials.
+// K8sRunner gives file Jobs no Kubernetes credentials.
 type K8sRunner struct {
 	cs      kubernetes.Interface
 	Browser *Browser

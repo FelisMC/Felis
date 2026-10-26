@@ -226,7 +226,7 @@ async function holdsTheFile(
   return start === at.received;
 }
 
-// After a lost commit response, a busy or landed session can identify the already-created operation.
+// After a lost commit reply, a busy or landed session reveals the created op.
 async function commit(
   server: string,
   path: string,

@@ -42,7 +42,7 @@ func (a *API) handleCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The transport checks again after its per-server lock; readiness is not required during startup.
+	// The transport repeats this check under its per-server lock.
 	info, err := a.Cluster.GetServer(r.Context(), name)
 	if err != nil {
 		a.writeLookupError(w, r, err)

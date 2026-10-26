@@ -194,7 +194,7 @@ func transfer(r *os.Root, rootPath string, req Request) Result {
 	return moveSelected(r, dest, names, p, req.Overwrite, req.Progress)
 }
 
-// moveSelected moves source inodes instead of deleting a copied tree that may have changed during the operation.
+// moveSelected renames source inodes, keeping writes made during the move.
 func moveSelected(r *os.Root, dest string, names []string, p unzipPlan, overwrite bool, progress func(int64, int64)) Result {
 	present, replaced, res := checkTargets(r, dest, p)
 	if res.Code != "" {

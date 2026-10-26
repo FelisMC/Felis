@@ -13,7 +13,7 @@ import (
 	"felis.lolicon.best/internal/maintenance"
 )
 
-// Upload sessions reserve the full size on staging disk until their landing Job finishes.
+// Upload sessions reserve their full size on staging disk until landing ends.
 
 // fileSessionView includes ordered part digests so a resumed upload can verify the local file has not changed.
 type fileSessionView struct {
@@ -58,7 +58,7 @@ type beginFileUploadRequest struct {
 	Size *int64 `json:"size"`
 }
 
-// Upload admission checks server state; later parts use the session's owner and server scope.
+// Later parts reuse the session's scope, so only admission checks server state.
 func (a *API) handleBeginFileUpload(w http.ResponseWriter, r *http.Request) {
 	name, ok := a.authorizeFileOp(w, r)
 	if !ok {
@@ -158,7 +158,7 @@ type startFileOpRequest struct {
 	Overwrite bool `json:"overwrite"`
 }
 
-// Serialize session admission before checking active Jobs or rotating the fetch token.
+// Claim the session before checking running Jobs or rotating its fetch token.
 func (a *API) handleCommitFileUpload(w http.ResponseWriter, r *http.Request) {
 	name, ok := a.authorizeFileOp(w, r)
 	if !ok {

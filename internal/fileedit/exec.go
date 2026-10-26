@@ -302,7 +302,7 @@ const (
 	redactedValue   = "<redacted by felis>"
 )
 
-// redactSecretProps hides RCON and forwarding keys; unchanged placeholders retain their stored values on write.
+// redactSecretProps masks RCON and forwarding secrets, which writes restore if unchanged.
 func redactSecretProps(name string, content []byte) []byte {
 	if path.Clean(name) != propsPath {
 		return content

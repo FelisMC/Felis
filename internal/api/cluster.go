@@ -61,7 +61,7 @@ type ServerInfo struct {
 	// RecentCrashes counts crashes in a row, the latest within the last hour.
 	RecentCrashes int32      `json:"recentCrashes,omitempty"`
 	LastCrash     *CrashInfo `json:"lastCrash,omitempty"`
-	// AutoStop says why the platform stopped the server; starting it clears it.
+	// AutoStop says why the platform stopped the server and clears on start.
 	AutoStop *AutoStopInfo `json:"autoStop,omitempty"`
 	// CrashStopped servers start only by their owner or an admin, never by a join.
 	CrashStopped bool `json:"crashStopped,omitempty"`
@@ -69,7 +69,6 @@ type ServerInfo struct {
 	Events []ServerEvent `json:"events,omitempty"`
 }
 
-// ServerNotify picks the lifecycle events mailed to the server's owner.
 type ServerNotify struct {
 	Started  bool `json:"started"`
 	Stopped  bool `json:"stopped"`
@@ -98,7 +97,7 @@ type ServerEvent struct {
 	Stopping bool      `json:"stopping,omitempty"`
 }
 
-// ServerEventFeed is one server's lifecycle events for mailing; Mailed is the last seq already handled.
+// ServerEventFeed.Mailed is the last event seq already mailed or skipped.
 type ServerEventFeed struct {
 	Name        string
 	DisplayName string
@@ -177,7 +176,6 @@ type Cluster interface {
 	PatchServerSpec(ctx context.Context, name string, patch ServerSpecPatch) error
 	ClearExtraPorts(ctx context.Context, name, uid string) error
 	ServerEventFeeds(ctx context.Context) ([]ServerEventFeed, error)
-	// MarkEventsMailed records that events up to seq were handled.
 	MarkEventsMailed(ctx context.Context, name string, seq int64) error
 }
 

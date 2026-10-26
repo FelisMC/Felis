@@ -51,7 +51,7 @@ type Config struct {
 	Timeout  time.Duration
 	CPULimit string
 	MemLimit string
-	// Zero FSGroup is omitted to avoid changing ownership across the mounted game volume.
+	// Zero FSGroup is omitted so the game volume's ownership is left alone.
 	RunAsUser  int64
 	RunAsGroup int64
 	FSGroup    int64
