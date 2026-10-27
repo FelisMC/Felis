@@ -2560,7 +2560,7 @@ export interface paths {
         put?: never;
         /**
          * Add a scheduled task to a server (owner-or-admin).
-         * @description The task belongs to the server's current owner: once the server has another owner felis-api disables it instead of running it, until somebody saves it again. felis-api checks the tasks every 15 seconds; a run it was down for is started late, up to 10 minutes, and dropped as missed after that. A command runs only on a running server, a restart only restarts a running one, and a start goes through the running-server cap and a pending retirement like a wake. Audited as schedule.create; each run as schedule.run by scheduler.
+         * @description The task belongs to the server's current owner: once the server has another owner felis-api disables it instead of running it, until somebody saves it again. felis-api checks the tasks every 15 seconds; a run it was down for is started late, up to 10 minutes, and dropped as missed after that. The steps run in order. A command step runs only on a running server, otherwise the run is skipped; a start, stop, restart or kill whose goal already holds is skipped when it is the only step and passed over in a longer task. A start goes through the running-server cap and a pending retirement like a wake. A task with run_once_at runs once and then disables itself; one with max_runs disables itself after that many runs. Audited as schedule.create; each run as schedule.run by scheduler.
          */
         post: operations["createServerSchedule"];
         delete?: never;
@@ -2579,7 +2579,7 @@ export interface paths {
         get?: never;
         /**
          * Change a scheduled task (owner-or-admin).
-         * @description Replaces the task's settings and recomputes its next run. The task passes to the server's current owner. Refused while a run is in progress. Audited as schedule.update.
+         * @description Replaces the task's settings and recomputes its next run. The task passes to the server's current owner. Enabling a disabled task sets its run_count back to 0. Refused while a run is in progress. Audited as schedule.update.
          */
         put: operations["updateServerSchedule"];
         post?: never;
@@ -2604,7 +2604,7 @@ export interface paths {
         put?: never;
         /**
          * Run a scheduled task now (owner-or-admin).
-         * @description Starts a run at once, without the players' warning, whether the task is enabled or not; its next scheduled run stays where it was. The answer is the task after the run's first step: a command, stop or start has finished, and a restart or backup goes on in the background (run_state). Audited as schedule.run_now, and the run itself as schedule.run.
+         * @description Starts a run at once, without the players' warning, whether the task is enabled or not; its next scheduled run stays where it was. The run counts toward max_runs. The answer is the task after the run's first step has begun: a step that waits (a delay, a stop, a restart, a backup) goes on in the background (run_state, run_step). Audited as schedule.run_now, and the run itself as schedule.run.
          */
         post: operations["runServerSchedule"];
         delete?: never;
@@ -4479,33 +4479,49 @@ export interface components {
             /** @description Owned rows only. Present while the server is given up or being deleted. */
             retiring?: components["schemas"]["RetireState"];
         };
-        /** @description One scheduled task of a server (internal/api/schedules.go Schedule). It runs at minute_of_day on the weekdays, or with every_minutes set at every multiple of it since midnight on those days, in timezone. */
+        /** @description One step of a scheduled task (internal/api/schedules.go ScheduleStep). */
+        ScheduleStep: {
+            /**
+             * @description command sends a console command, delay waits, start, stop, restart and kill change the power state, and backup backs the world up. A running server is backed up live when that is possible, and otherwise stopped for the backup and started again afterwards; a stopped server stays stopped.
+             * @enum {string}
+             */
+            type: "command" | "delay" | "start" | "stop" | "restart" | "kill" | "backup";
+            /** @description Only on a command step. One line of at most 1024 bytes; a leading slash is dropped. */
+            command?: string;
+            /** @description Only on a delay step. */
+            seconds?: number;
+        };
+        /** @description One scheduled task of a server (internal/api/schedules.go Schedule). A run carries out the steps in order. It starts at minute_of_day on the weekdays, or with every_minutes set at every multiple of it since midnight on those days, in timezone; with run_once_at set it starts once, at that moment. */
         Schedule: {
             /** Format: int64 */
             id: number;
             server: string;
             /** @description Free text naming the task; may be empty. */
             label: string;
+            /** @description Carried out in order. A step that fails ends the run as failed and skips the rest; a server the run had stopped is started again. After a start or restart with steps behind it the run waits up to 15 minutes for the server to be ready, and after a stop or kill for it to be fully stopped. A command whose outcome is unknown is not sent again. */
+            steps: components["schemas"]["ScheduleStep"][];
             /**
-             * @description backup of a running server stops it, takes a backup (pruned with the daily restore points, [archive] scheduled_keep) and starts it again; of a stopped server it leaves the server stopped.
-             * @enum {string}
-             */
-            action: "command" | "restart" | "stop" | "start" | "backup";
-            /** @description The console command of a command task */
-            command: string;
-            /**
-             * @description 0 runs once a day at minute_of_day. A restart, stop, start or backup repeats at most every 60 minutes.
+             * @description 0 runs once a day at minute_of_day, and for a one-time task. A task with a start, stop, restart, kill or backup step repeats at most every 60 minutes.
              * @enum {integer}
              */
-            every_minutes: 0 | 15 | 30 | 60 | 120 | 180 | 240 | 360 | 480 | 720;
-            /** @description Minutes after local midnight; 0 when every_minutes is set. */
+            every_minutes: 0 | 1 | 5 | 10 | 15 | 30 | 60 | 120 | 180 | 240 | 360 | 480 | 720;
+            /** @description Minutes after local midnight; 0 when every_minutes or run_once_at is set. */
             minute_of_day: number;
-            /** @description Bitmask of the days it runs on: bit 0 Sunday to bit 6 Saturday. */
+            /** @description Bitmask of the days it runs on: bit 0 Sunday to bit 6 Saturday. 127 for a one-time task. */
             weekdays: number;
             /** @description IANA zone the times are in */
             timezone: string;
             /**
-             * @description How long before a restart, stop or backup the players on the server are told (say); 0 for none, and always 0 for a command or start.
+             * Format: date-time
+             * @description The moment a one-time task runs; null for a repeating task. A one-time task disables itself after its run.
+             */
+            run_once_at: string | null;
+            /** @description The number of runs after which the task disables itself; 0 for no limit. */
+            max_runs: number;
+            /** @description Runs started since the task was created or last enabled; a run by hand counts and a missed run does not. */
+            run_count: number;
+            /**
+             * @description How long before a run that stops, restarts, kills or backs up the server the players on it are told (say); 0 for none, and always 0 for a task without such a step. The wording follows the first such step.
              * @enum {integer}
              */
             warn_minutes: 0 | 1 | 5 | 10 | 15 | 30;
@@ -4516,14 +4532,16 @@ export interface components {
              */
             next_run_at: string | null;
             /**
-             * @description What a run in progress is doing; empty when none is.
+             * @description What the run in progress is doing at step run_step; empty when none is. claimed is carrying the step out, delaying waiting out a delay, stopping waiting for the server to stop, backup_stopping stopping it for a backup, backup_waiting waiting for the world to be free for the backup, backing_up backing it up, backup_restart backing it up before the server is started again, starting starting the server, and settling waiting for it to be ready before the next step.
              * @enum {string}
              */
-            run_state: "" | "claimed" | "stopping" | "backing_up" | "starting";
+            run_state: "" | "claimed" | "delaying" | "stopping" | "backup_stopping" | "backup_waiting" | "backing_up" | "backup_restart" | "starting" | "settling";
+            /** @description Index, from 0, of the step in progress; meaningful while run_state is not empty. */
+            run_step: number;
             /** Format: date-time */
             last_run_at: string | null;
             /**
-             * @description How the last run ended; empty before the first and during a run. missed is a run felis-api was down for, dropped once it was 10 minutes late.
+             * @description How the last run ended; empty before the first and during a run. missed is a run felis-api was down for, dropped once it was 10 minutes late. skipped is a command on a server that was not running, or a task of one step whose goal already held.
              * @enum {string}
              */
             last_result: "" | "ok" | "skipped" | "failed" | "missed";
@@ -4535,16 +4553,29 @@ export interface components {
         };
         ScheduleInput: {
             label?: string;
-            /** @enum {string} */
-            action: "command" | "restart" | "stop" | "start" | "backup";
-            /** @description Required for a command task and refused for the others. One line; a leading slash is dropped. */
-            command?: string;
-            /** @enum {integer} */
-            every_minutes?: 0 | 15 | 30 | 60 | 120 | 180 | 240 | 360 | 480 | 720;
+            /** @description One to ten steps, at least one that is not a delay and at most one backup. */
+            steps: components["schemas"]["ScheduleStep"][];
+            /**
+             * @description Only 0 or at least 60 with a start, stop, restart, kill or backup step; 0 with run_once_at.
+             * @enum {integer}
+             */
+            every_minutes?: 0 | 1 | 5 | 10 | 15 | 30 | 60 | 120 | 180 | 240 | 360 | 480 | 720;
+            /** @description Ignored with run_once_at; 0 when every_minutes is set. */
             minute_of_day?: number;
+            /** @description Ignored with run_once_at. */
             weekdays: number;
             timezone: string;
-            /** @enum {integer} */
+            /**
+             * Format: date-time
+             * @description Makes a one-time task. Must lie in the future while the task is enabled; every_minutes and max_runs must be 0.
+             */
+            run_once_at?: string | null;
+            /** @description Default 0 for no limit. Above run_count while the task is enabled. */
+            max_runs?: number;
+            /**
+             * @description Above 0 only with a stop, restart, kill or backup step.
+             * @enum {integer}
+             */
             warn_minutes?: 0 | 1 | 5 | 10 | 15 | 30;
             /** @description Default true. */
             enabled?: boolean;

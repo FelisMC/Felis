@@ -311,9 +311,9 @@ func TestScheduleRunnerBacksUpARunningServerLive(t *testing.T) {
 	console := &scriptedConsole{replies: map[string]string{}, fail: map[string]bool{}}
 	b := &liveScheduledBackuper{}
 	r.a.Cluster, r.a.Console, r.a.Backuper = lc, console, b
-	id := r.schedule(ScheduleBackup, schedT0)
+	id := r.schedule([]string{StepBackup}, schedT0)
 	r.tick(t)
-	r.step(t, id, runBackingUp)
+	r.step(t, id, phaseBackingUp)
 	if len(b.live) != 1 || b.reasons[0] != backupjob.ReasonScheduled || r.cl.desired["survival"] != "" {
 		t.Fatalf("live %v reasons %v, desired %q", b.live, b.reasons, r.cl.desired["survival"])
 	}
@@ -332,19 +332,19 @@ func TestScheduleRunnerBacksUpARunningServerLive(t *testing.T) {
 	lc.fakeCluster = r.cl
 	console = &scriptedConsole{replies: map[string]string{}, fail: map[string]bool{"save-off": true}}
 	r.a.Cluster, r.a.Console, r.a.Backuper = lc, console, &liveScheduledBackuper{}
-	id = r.schedule(ScheduleBackup, schedT0)
+	id = r.schedule([]string{StepBackup}, schedT0)
 	r.tick(t)
-	r.step(t, id, runStopping)
+	r.step(t, id, phaseBackupStopping)
 	if r.cl.desired["survival"] != v1alpha1.DesiredStopped {
 		t.Errorf("the fallback did not stop the server: %q", r.cl.desired["survival"])
 	}
 }
 
 func TestScheduleWarningSaysTheServerStaysUp(t *testing.T) {
-	if got := scheduleWarning(ScheduleBackup, 5, true); !strings.Contains(got, "saving pauses for a few seconds") {
+	if got := scheduleWarning(StepBackup, 5, true); !strings.Contains(got, "saving pauses for a few seconds") {
 		t.Errorf("live warning = %q", got)
 	}
-	if got := scheduleWarning(ScheduleBackup, 5, false); !strings.Contains(got, "Server pauses for a backup") {
+	if got := scheduleWarning(StepBackup, 5, false); !strings.Contains(got, "Server pauses for a backup") {
 		t.Errorf("stop warning = %q", got)
 	}
 }

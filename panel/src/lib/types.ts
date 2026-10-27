@@ -406,13 +406,31 @@ export interface ExportStatus {
 }
 
 
-export type ScheduleAction = "command" | "restart" | "stop" | "start" | "backup";
-// Zero means daily; maintenance actions repeat at most hourly.
-export type ScheduleEveryMinutes = 0 | 15 | 30 | 60 | 120 | 180 | 240 | 360 | 480 | 720;
-/** How long before a restart, stop or backup the players are told in game. */
+export type ScheduleStepType = "command" | "delay" | "start" | "stop" | "restart" | "kill" | "backup";
+/** One step of a run; `command` and `seconds` belong to the command and delay steps only. */
+export interface ScheduleStep {
+  type: ScheduleStepType;
+  /** Without a slash. */
+  command?: string;
+  /** 1–3600. */
+  seconds?: number;
+}
+// Zero means daily, or once for a one-time task; steps that change the power state repeat at most hourly.
+export type ScheduleEveryMinutes = 0 | 1 | 5 | 10 | 15 | 30 | 60 | 120 | 180 | 240 | 360 | 480 | 720;
+/** How long before a run that takes the server down the players are told in game. */
 export type ScheduleWarnMinutes = 0 | 1 | 5 | 10 | 15 | 30;
-/** The step of a run in progress; empty when none is. */
-export type ScheduleRunState = "" | "claimed" | "stopping" | "backing_up" | "starting";
+/** What the run in progress is doing at step `run_step`; empty when none is. */
+export type ScheduleRunState =
+  | ""
+  | "claimed"
+  | "delaying"
+  | "stopping"
+  | "backup_stopping"
+  | "backup_waiting"
+  | "backing_up"
+  | "backup_restart"
+  | "starting"
+  | "settling";
 /** How the last run ended; empty before the first and during a run. */
 export type ScheduleResult = "" | "ok" | "skipped" | "failed" | "missed";
 
@@ -421,18 +439,23 @@ export interface Schedule {
   id: number;
   server: string;
   label: string;
-  action: ScheduleAction;
-  /** The console command of a command task, without a slash; empty otherwise. */
-  command: string;
+  steps: ScheduleStep[];
   every_minutes: ScheduleEveryMinutes;
   minute_of_day: number;
   weekdays: number;
   timezone: string;
+  /** The moment a one-time task runs; null for a repeating task. */
+  run_once_at: string | null;
+  /** Runs after which the task disables itself; 0 for no limit. */
+  max_runs: number;
+  run_count: number;
   warn_minutes: ScheduleWarnMinutes;
   enabled: boolean;
   /** Null while disabled. */
   next_run_at: string | null;
   run_state: ScheduleRunState;
+  /** Index of the step in progress, from 0. */
+  run_step: number;
   last_run_at: string | null;
   last_result: ScheduleResult;
   last_detail: string;
@@ -443,12 +466,13 @@ export interface Schedule {
 // Commands strip a leading slash; enabled defaults to true.
 export interface ScheduleInput {
   label?: string;
-  action: ScheduleAction;
-  command?: string;
+  steps: ScheduleStep[];
   every_minutes?: ScheduleEveryMinutes;
   minute_of_day?: number;
   weekdays: number;
   timezone: string;
+  run_once_at?: string | null;
+  max_runs?: number;
   warn_minutes?: ScheduleWarnMinutes;
   enabled?: boolean;
 }

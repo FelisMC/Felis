@@ -55,6 +55,7 @@ func TestOpenAPISchemasMatchWireStructs(t *testing.T) {
 		"FileOp":                   fileOpView{},
 		"FileOpError":              fileOpError{},
 		"Schedule":                 Schedule{},
+		"ScheduleStep":             ScheduleStep{},
 		"Build":                    build.Build{},
 		"Image":                    build.Image{},
 		"BuildScan":                buildScanView{},

@@ -1,9 +1,11 @@
 import { Checkbox } from "@/components/ui/checkbox";
-import { useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
   AlertTriangle,
   Archive,
+  ArrowDown,
+  ArrowUp,
   CalendarClock,
   CheckCircle2,
   Clock,
@@ -12,6 +14,7 @@ import {
   Loader2,
   Megaphone,
   MinusCircle,
+  OctagonX,
   Pencil,
   Play,
   Plus,
@@ -19,7 +22,9 @@ import {
   PowerOff,
   RotateCw,
   Terminal,
+  Timer,
   Trash2,
+  X,
   XCircle,
   type LucideIcon,
 } from "lucide-react";
@@ -48,31 +53,42 @@ import { formatAbsolute, formatRelative } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type {
   Schedule,
-  ScheduleAction,
   ScheduleEveryMinutes,
   ScheduleInput,
   ScheduleResult,
+  ScheduleStep,
+  ScheduleStepType,
   ScheduleWarnMinutes,
 } from "@/lib/types";
 
 // The choices internal/api/schedules.go accepts (scheduleInput.apply).
-const EVERY_OPTIONS: ScheduleEveryMinutes[] = [15, 30, 60, 120, 180, 240, 360, 480, 720];
+const EVERY_OPTIONS: ScheduleEveryMinutes[] = [1, 5, 10, 15, 30, 60, 120, 180, 240, 360, 480, 720];
 const WARN_OPTIONS: ScheduleWarnMinutes[] = [0, 1, 5, 10, 15, 30];
 const MAX_LABEL = 64; // runes
 const MAX_COMMAND_BYTES = 1024; // maxConsoleCommandLen, after the leading "/" goes
+const MAX_STEPS = 10;
+const MAX_DELAY_SECONDS = 3600;
+const MAX_RUNS = 10000;
+const HOURLY = 60; // minPowerEveryMinutes
+const DEFAULT_DELAY_SECONDS = "60";
 
-// Picker order: the common chores first.
-const ACTIONS: ScheduleAction[] = ["restart", "backup", "command", "stop", "start"];
-const ACTION_ICONS: Record<ScheduleAction, LucideIcon> = {
+const STEP_TYPES: ScheduleStepType[] = ["command", "delay", "start", "stop", "restart", "kill", "backup"];
+const STEP_ICONS: Record<ScheduleStepType, LucideIcon> = {
   command: Terminal,
-  restart: RotateCw,
-  stop: PowerOff,
+  delay: Timer,
   start: Power,
+  stop: PowerOff,
+  restart: RotateCw,
+  kill: OctagonX,
   backup: Archive,
 };
-// The actions that take the server down: only these may warn the players first,
-// and running one by hand disconnects them without that warning.
-const WARNS = new Set<ScheduleAction>(["restart", "stop", "backup"]);
+// A task with one of these steps may warn the players first, and running it by hand skips that warning.
+const WARNS = new Set<ScheduleStepType>(["stop", "restart", "kill", "backup"]);
+// A task with one of these steps repeats at most hourly.
+const POWERS = new Set<ScheduleStepType>(["start", "stop", "restart", "kill", "backup"]);
+
+const warns = (steps: { type: ScheduleStepType }[]) => steps.some((s) => WARNS.has(s.type));
+const powers = (steps: { type: ScheduleStepType }[]) => steps.some((s) => POWERS.has(s.type));
 
 // Weekday bitmask, bit N = Go's time.Weekday N (0 = Sunday).
 const ALL_DAYS = 127;
@@ -101,7 +117,15 @@ const DETAIL_KEYS: Record<string, string> = {
   "the server console could not be reached": "detail_console",
   "the cluster is at its running-server cap": "detail_cap",
   "the server is being given up or deleted": "detail_retiring",
+  "the server did not stop within 15 minutes": "detail_stop_timeout",
+  "another operation kept the world busy for 15 minutes": "detail_world_busy",
+  "the server failed to start": "detail_start_failed",
+  "the server did not become ready within 15 minutes": "detail_ready_timeout",
+  "the backup did not finish within 45 minutes": "detail_backup_timeout",
+  "the backup Job is gone before it could be checked; see the Backups page": "detail_backup_gone",
 };
+// A failed run's detail ends with this when the run started the server again.
+const RESTARTED = "; the server was started again";
 
 const RESULT_STYLE: Record<Exclude<ScheduleResult, "">, { icon: LucideIcon; className: string }> = {
   ok: { icon: CheckCircle2, className: "text-emerald-600 dark:text-emerald-400" },
@@ -110,18 +134,42 @@ const RESULT_STYLE: Record<Exclude<ScheduleResult, "">, { icon: LucideIcon; clas
   missed: { icon: AlertTriangle, className: "text-amber-600 dark:text-amber-400" },
 };
 
+/** StepDraft is one step of the form; `key` keeps its row steady while steps move. */
+interface StepDraft {
+  key: number;
+  type: ScheduleStepType;
+  command: string;
+  seconds: string;
+}
+
 /** Form is the create/edit dialog's state; toInput turns it into the wire body. */
 interface Form {
-  action: ScheduleAction;
-  command: string;
-  mode: "daily" | "interval";
+  steps: StepDraft[];
+  mode: "daily" | "interval" | "once";
   time: string; // HH:MM, for mode "daily"
   every: ScheduleEveryMinutes; // for mode "interval"
   weekdays: number;
+  once: string; // YYYY-MM-DDTHH:MM on the wall clock of `timezone`, for mode "once"
+  maxRuns: string; // blank for no limit
   timezone: string;
   warn: ScheduleWarnMinutes;
   label: string;
   enabled: boolean;
+}
+
+let lastStepKey = 0;
+
+function draftOf(step: ScheduleStep): StepDraft {
+  return { key: ++lastStepKey, type: step.type, command: step.command ?? "", seconds: step.seconds ? String(step.seconds) : "" };
+}
+
+const draftsOf = (steps: ScheduleStep[]) => steps.map(draftOf);
+
+// toStep sends a command as typed: felis-api trims it and drops a leading "/" itself.
+function toStep(d: StepDraft): ScheduleStep {
+  if (d.type === "command") return { type: "command", command: d.command };
+  if (d.type === "delay") return { type: "delay", seconds: Number(d.seconds) };
+  return { type: d.type };
 }
 
 function browserZone(): string {
@@ -133,14 +181,63 @@ function hhmm(minutes: number): string {
   return `${pad(Math.floor(minutes / 60))}:${pad(minutes % 60)}`;
 }
 
+function knownZone(zone: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: zone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// wallAsUTC reads the clock of `zone` at an instant as if it were UTC.
+function wallAsUTC(at: number, zone: string): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: zone,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    hour: "numeric",
+    minute: "numeric",
+    second: "numeric",
+  }).formatToParts(at);
+  const n = (type: string) => Number(parts.find((p) => p.type === type)?.value);
+  return Date.UTC(n("year"), n("month") - 1, n("day"), n("hour"), n("minute"), n("second"));
+}
+
+// localInput writes an instant as the datetime-local value on the clock of `zone`.
+function localInput(iso: string, zone: string): string {
+  const at = Date.parse(iso);
+  if (Number.isNaN(at) || !knownZone(zone)) return "";
+  const w = new Date(wallAsUTC(at, zone));
+  const pad = (n: number, width = 2) => String(n).padStart(width, "0");
+  return `${pad(w.getUTCFullYear(), 4)}-${pad(w.getUTCMonth() + 1)}-${pad(w.getUTCDate())}T${pad(w.getUTCHours())}:${pad(w.getUTCMinutes())}`;
+}
+
+const LOCAL_INPUT = /^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d)$/;
+
+// instantAt is the instant at which the clock of `zone` reads a datetime-local value; null when it names none.
+function instantAt(local: string, zone: string): number | null {
+  const m = LOCAL_INPUT.exec(local);
+  if (!m || !knownZone(zone)) return null;
+  const [year, month, day, hour, minute] = m.slice(1).map(Number);
+  const wall = Date.UTC(year, month - 1, day, hour, minute);
+  // A second pass settles the offset when the first guess lands across a DST change.
+  const first = wall - (wallAsUTC(wall, zone) - wall);
+  const at = wall - (wallAsUTC(first, zone) - first);
+  return Number.isFinite(at) ? at : null;
+}
+
 function newForm(over: Partial<Form> = {}): Form {
   return {
-    action: "restart",
-    command: "",
+    steps: draftsOf([{ type: "restart" }]),
     mode: "daily",
     time: "04:00",
     every: 60,
     weekdays: ALL_DAYS,
+    once: "",
+    maxRuns: "",
     timezone: browserZone(),
     warn: 5,
     label: "",
@@ -151,12 +248,13 @@ function newForm(over: Partial<Form> = {}): Form {
 
 function fromSchedule(s: Schedule): Form {
   return {
-    action: s.action,
-    command: s.command,
-    mode: s.every_minutes ? "interval" : "daily",
+    steps: draftsOf(s.steps),
+    mode: s.run_once_at ? "once" : s.every_minutes ? "interval" : "daily",
     time: hhmm(s.minute_of_day),
     every: s.every_minutes || 60,
     weekdays: s.weekdays,
+    once: s.run_once_at ? localInput(s.run_once_at, s.timezone) : "",
+    maxRuns: s.max_runs ? String(s.max_runs) : "",
     timezone: s.timezone,
     warn: s.warn_minutes,
     label: s.label,
@@ -164,30 +262,34 @@ function fromSchedule(s: Schedule): Form {
   };
 }
 
+// settle clears what the steps cannot keep: only a step that takes the server down warns,
+// and only a task with no such step repeats more often than hourly.
+function settle(f: Form): Form {
+  return {
+    ...f,
+    warn: warns(f.steps) ? f.warn : 0,
+    every: powers(f.steps) && f.every < HOURLY ? HOURLY : f.every,
+  };
+}
+
 // toInput sends the fields as typed: felis-api trims them and drops a
 // command's leading "/" itself, so what it stores is what it validated.
 function toInput(f: Form): ScheduleInput {
   const [h, m] = f.time.split(":").map(Number);
+  const once = f.mode === "once";
+  const at = once ? instantAt(f.once, f.timezone) : null;
   return {
     label: f.label,
-    action: f.action,
-    command: f.action === "command" ? f.command : "",
+    steps: f.steps.map(toStep),
     every_minutes: f.mode === "interval" ? f.every : 0,
     minute_of_day: f.mode === "daily" ? h * 60 + m : 0,
-    weekdays: f.weekdays,
+    weekdays: once ? ALL_DAYS : f.weekdays,
     timezone: f.timezone,
+    run_once_at: at === null ? null : new Date(at).toISOString(),
+    max_runs: once ? 0 : Number(f.maxRuns || 0),
     warn_minutes: f.warn,
     enabled: f.enabled,
   };
-}
-
-function knownZone(zone: string): boolean {
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: zone });
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 // zoneList is what the time zone field suggests: the browser's zone first.
@@ -201,25 +303,41 @@ function zoneList(browser: string): string[] {
   return [browser, ...all.filter((z) => z !== browser)];
 }
 
-type Field = "command" | "time" | "days" | "timezone" | "label";
-
-// problems mirrors scheduleInput.apply, so a form the server would refuse
-// cannot be sent. The server stays the judge: whatever slips through comes back
-// as a message in the dialog.
-function problems(f: Form, t: TFunction): Partial<Record<Field, string>> {
-  const out: Partial<Record<Field, string>> = {};
-  if (f.action === "command") {
-    const command = f.command.trim().replace(/^\//, "").trim();
-    if (!command) out.command = t("err_command_required");
-    else if (new TextEncoder().encode(command).length > MAX_COMMAND_BYTES) {
-      out.command = t("err_command_long", { max: MAX_COMMAND_BYTES });
+// problems mirrors the server's checks, keyed by field name or step-<key>.
+function problems(f: Form, t: TFunction, now: number, usedRuns: number): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const s of f.steps) {
+    if (s.type === "command") {
+      const command = s.command.trim().replace(/^\//, "").trim();
+      if (!command) out[`step-${s.key}`] = t("err_command_required");
+      else if (new TextEncoder().encode(command).length > MAX_COMMAND_BYTES) {
+        out[`step-${s.key}`] = t("err_command_long", { max: MAX_COMMAND_BYTES });
+      }
+    } else if (s.type === "delay") {
+      const seconds = Number(s.seconds);
+      if (!/^\d+$/.test(s.seconds) || seconds < 1 || seconds > MAX_DELAY_SECONDS) {
+        out[`step-${s.key}`] = t("err_delay", { max: MAX_DELAY_SECONDS });
+      }
     }
   }
+  if (!f.steps.some((s) => s.type !== "delay")) out.steps = t("err_steps_action");
+  else if (f.steps.filter((s) => s.type === "backup").length > 1) out.steps = t("err_steps_backup");
+
   if (f.mode === "daily" && !/^\d\d:\d\d$/.test(f.time)) out.time = t("err_time_required");
-  if (f.weekdays === 0) out.days = t("err_days");
+  if (f.mode !== "once") {
+    if (f.weekdays === 0) out.days = t("err_days");
+    const runs = f.maxRuns.trim();
+    if (runs && (!/^\d+$/.test(runs) || Number(runs) > MAX_RUNS)) out.maxRuns = t("err_max_runs", { max: MAX_RUNS });
+    else if (f.enabled && Number(runs) > 0 && Number(runs) <= usedRuns) out.maxRuns = t("err_max_runs_used", { count: usedRuns });
+  }
   const zone = f.timezone.trim();
   if (!zone) out.timezone = t("err_timezone_required");
   else if (!knownZone(zone)) out.timezone = t("err_timezone");
+  if (f.mode === "once") {
+    const at = out.timezone ? null : instantAt(f.once, zone);
+    if (!f.once || (at === null && !out.timezone)) out.once = t("err_once_required");
+    else if (at !== null && f.enabled && at <= now) out.once = t("err_once_past");
+  }
   if ([...f.label.trim()].length > MAX_LABEL) out.label = t("err_label_long", { max: MAX_LABEL });
   return out;
 }
@@ -248,8 +366,12 @@ function optionText(minutes: number, t: TFunction): string {
 }
 
 // summary is the one-line "when" of a schedule: "Every day at 04:00",
-// "Every 30 minutes · Weekdays".
+// "Every 30 minutes · Weekdays", "Once on 2026-11-01 04:00".
 function summary(s: Schedule, t: TFunction): string {
+  if (s.run_once_at) {
+    const when = localInput(s.run_once_at, s.timezone).replace("T", " ");
+    return t("when_once", { when: when || s.run_once_at });
+  }
   const days = daysText(s.weekdays, t);
   if (!s.every_minutes) return t("when_daily", { days, time: hhmm(s.minute_of_day) });
   const every = everyText(s.every_minutes, t);
@@ -263,8 +385,46 @@ function runTimes(every: number): string {
   return times.length <= 4 ? times.join(", ") : `${times.slice(0, 3).join(", ")} … ${times[times.length - 1]}`;
 }
 
+function stepName(step: ScheduleStep, t: TFunction): string {
+  return step.type === "delay" ? t("step_delay_of", { count: step.seconds ?? 0 }) : t(`step_${step.type}`);
+}
+
+// stepsText is "Console command → Delay 60 seconds → Restart".
+function stepsText(steps: ScheduleStep[], t: TFunction): string {
+  return steps.map((step) => stepName(step, t)).join(t("step_sep"));
+}
+
 function titleOf(s: Schedule, t: TFunction): string {
-  return s.label || t(`action_${s.action}`);
+  return s.label || stepsText(s.steps, t);
+}
+
+// progress is what a run in progress is doing: "Step 2 of 3: Waiting for the server to stop…".
+function progress(s: Schedule, t: TFunction): string {
+  const state = t(`run_state_${s.run_state}`);
+  return s.steps.length > 1 ? t("run_progress", { step: s.run_step + 1, total: s.steps.length, state }) : state;
+}
+
+// detailText shows a fixed runner detail in the panel's language and any other detail as it came.
+function detailText(s: Schedule, t: TFunction): string {
+  const restarted = s.last_detail.endsWith(RESTARTED);
+  const base = restarted ? s.last_detail.slice(0, -RESTARTED.length) : s.last_detail;
+  const key = DETAIL_KEYS[base];
+  if (key) return restarted ? `${t(key)} ${t("detail_restarted")}` : t(key);
+  if (restarted) return s.last_detail;
+  return s.last_result === "ok" && s.last_detail ? t("reply", { text: s.last_detail }) : s.last_detail;
+}
+
+function commandsOf(steps: ScheduleStep[]): string[] {
+  return steps.filter((step) => step.type === "command").map((step) => step.command ?? "");
+}
+
+/** Disabled buttons take no pointer events, so the reason rides a wrapper. */
+function Why({ why, children }: { why?: string; children: React.ReactNode }) {
+  return (
+    <span title={why} className="inline-flex">
+      {children}
+    </span>
+  );
 }
 
 function FieldNote({ error, hint }: { error?: string; hint?: string }) {
@@ -293,25 +453,73 @@ function ScheduleDialog({
   const [form, setForm] = useState(initial);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const focusAfter = useRef<string | null>(null);
   const browser = browserZone();
   const zones = useMemo(() => zoneList(browser), [browser]);
-  const bad = problems(form, t);
+  const bad = problems(form, t, Date.now(), editing?.enabled ? editing.run_count : 0);
   const labelLength = [...form.label.trim()].length;
+  const stepId = (key: number, part: string) => `${id}-step-${key}-${part}`;
+
+  // Moving or removing a step re-renders the row the keyboard was on, so focus is placed again.
+  useEffect(() => {
+    const target = focusAfter.current;
+    focusAfter.current = null;
+    if (target) document.getElementById(target)?.focus();
+  }, [form.steps]);
 
   function set<K extends keyof Form>(key: K, value: Form[K]) {
     setForm((f) => ({ ...f, [key]: value }));
   }
 
-  // Only a restart, stop or backup warns, and only a command repeats more
-  // often than hourly: a switch clears what the new action cannot keep.
-  function setAction(action: ScheduleAction) {
-    setForm((f) => ({
-      ...f,
-      action,
-      warn: WARNS.has(action) ? f.warn : 0,
-      every: action === "command" || f.every >= 60 ? f.every : 60,
-    }));
+  function setSteps(update: (steps: StepDraft[]) => StepDraft[]) {
+    setForm((f) => settle({ ...f, steps: update(f.steps) }));
   }
+
+  function setStep(key: number, patch: Partial<StepDraft>) {
+    setSteps((steps) => steps.map((s) => (s.key === key ? { ...s, ...patch } : s)));
+  }
+
+  function setType(key: number, type: ScheduleStepType) {
+    setSteps((steps) =>
+      steps.map((s) =>
+        s.key === key ? { ...s, type, seconds: type === "delay" && !s.seconds ? DEFAULT_DELAY_SECONDS : s.seconds } : s,
+      ),
+    );
+  }
+
+  function addStep() {
+    const step = draftOf({ type: "command" });
+    focusAfter.current = stepId(step.key, "type");
+    setSteps((steps) => (steps.length < MAX_STEPS ? [...steps, step] : steps));
+  }
+
+  function removeStep(key: number) {
+    focusAfter.current = `${id}-add-step`;
+    setSteps((steps) => (steps.length > 1 ? steps.filter((s) => s.key !== key) : steps));
+  }
+
+  function moveStep(index: number, by: -1 | 1) {
+    const to = index + by;
+    const last = form.steps.length - 1;
+    if (to < 0 || to > last) return;
+    // The button just pressed is disabled at the end of the list, so focus takes the opposite one.
+    const atEnd = by < 0 ? to === 0 : to === last;
+    focusAfter.current = stepId(form.steps[index].key, (by < 0) !== atEnd ? "up" : "down");
+    setSteps((steps) => {
+      const next = [...steps];
+      [next[index], next[to]] = [next[to], next[index]];
+      return next;
+    });
+  }
+
+  const templates: [string, () => ScheduleStep[]][] = [
+    [
+      "tpl_remind_restart",
+      () => [{ type: "command", command: t("tpl_remind_restart_command") }, { type: "delay", seconds: 60 }, { type: "restart" }],
+    ],
+    ["tpl_stop_backup_start", () => [{ type: "stop" }, { type: "backup" }, { type: "start" }]],
+    ["tpl_save_backup", () => [{ type: "command", command: "save-all" }, { type: "backup" }]],
+  ];
 
   async function save() {
     setSaving(true);
@@ -329,7 +537,7 @@ function ScheduleDialog({
     }
   }
 
-  const everyOptions = form.action === "command" ? EVERY_OPTIONS : EVERY_OPTIONS.filter((m) => m >= 60);
+  const everyOptions = powers(form.steps) ? EVERY_OPTIONS.filter((m) => m >= HOURLY) : EVERY_OPTIONS;
 
   return (
     <Dialog
@@ -345,67 +553,138 @@ function ScheduleDialog({
         </DialogHeader>
 
         <div className="grid gap-5">
-          <fieldset className="grid gap-2">
-            <legend className="mb-2 text-sm font-medium">{t("field_action")}</legend>
-            <div className="grid gap-2 sm:grid-cols-2">
-              {ACTIONS.map((a) => {
-                const Icon = ACTION_ICONS[a];
-                const checked = form.action === a;
+          <fieldset className="grid gap-3">
+            <legend className="mb-2 text-sm font-medium">{t("field_steps")}</legend>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-xs text-muted-foreground">{t("templates_label")}</span>
+              {templates.map(([key, steps]) => (
+                <Button key={key} type="button" size="sm" variant="outline" onClick={() => setSteps(() => draftsOf(steps()))}>
+                  {t(key)}
+                </Button>
+              ))}
+            </div>
+            <ol className="grid gap-2">
+              {form.steps.map((step, index) => {
+                const n = index + 1;
+                const Icon = STEP_ICONS[step.type];
+                const note = bad[`step-${step.key}`];
                 return (
-                  <label
-                    key={a}
-                    className={cn(
-                      "flex cursor-pointer items-start gap-3 rounded-md border p-3 text-sm transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring",
-                      checked ? "border-primary/60 bg-primary/5" : "border-border hover:bg-accent",
-                    )}
+                  <li
+                    key={step.key}
+                    className="grid gap-2 rounded-md border border-border p-3 sm:grid-cols-[1.5rem_11rem_minmax(0,1fr)_auto] sm:items-start"
                   >
-                    <input
-                      type="radio"
-                      className="sr-only"
-                      name={`${id}-action`}
-                      value={a}
-                      checked={checked}
-                      onChange={() => setAction(a)}
-                      aria-labelledby={`${id}-action-${a}`}
-                      aria-describedby={`${id}-action-${a}-desc`}
-                    />
-                    <Icon className={cn("mt-0.5 h-4 w-4 shrink-0", checked ? "text-primary" : "text-muted-foreground")} />
-                    <span className="grid gap-0.5">
-                      <span id={`${id}-action-${a}`} className="font-medium">
-                        {t(`action_${a}`)}
-                      </span>
-                      <span id={`${id}-action-${a}-desc`} className="text-xs text-muted-foreground">
-                        {t(`action_${a}_desc`)}
-                      </span>
+                    <span className="hidden h-9 items-center text-xs font-medium tabular-nums text-muted-foreground sm:flex" aria-hidden="true">
+                      {n}
                     </span>
-                  </label>
+                    <Select value={step.type} onValueChange={(v) => setType(step.key, v as ScheduleStepType)}>
+                      <SelectTrigger id={stepId(step.key, "type")} aria-label={t("step_type_label", { n })}>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {STEP_TYPES.map((type) => (
+                          <SelectItem key={type} value={type}>
+                            {t(`step_${type}`)}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <div className="grid gap-1">
+                      {step.type === "command" && (
+                        <Input
+                          className="font-mono"
+                          value={step.command}
+                          onChange={(e) => setStep(step.key, { command: e.target.value })}
+                          placeholder={t("command_placeholder")}
+                          aria-label={t("step_command_label", { n })}
+                          autoComplete="off"
+                          spellCheck={false}
+                          aria-invalid={!!note}
+                        />
+                      )}
+                      {step.type === "delay" && (
+                        <div className="flex items-center gap-2">
+                          <Input
+                            type="number"
+                            inputMode="numeric"
+                            min={1}
+                            max={MAX_DELAY_SECONDS}
+                            step={1}
+                            className="w-28"
+                            value={step.seconds}
+                            onChange={(e) => setStep(step.key, { seconds: e.target.value })}
+                            aria-label={t("step_seconds_label", { n })}
+                            aria-invalid={!!note}
+                          />
+                          <span className="text-sm text-muted-foreground">{t("seconds_unit")}</span>
+                        </div>
+                      )}
+                      {step.type !== "command" && step.type !== "delay" && (
+                        <p className="flex items-start gap-1.5 py-2 text-xs text-muted-foreground">
+                          <Icon className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                          {t(`step_${step.type}_desc`)}
+                        </p>
+                      )}
+                      <FieldNote error={note} hint={step.type === "command" ? t("command_hint") : undefined} />
+                    </div>
+                    <div className="flex gap-1 sm:justify-end">
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        id={stepId(step.key, "up")}
+                        aria-label={t("step_up", { n })}
+                        disabled={index === 0}
+                        onClick={() => moveStep(index, -1)}
+                      >
+                        <ArrowUp />
+                      </Button>
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        id={stepId(step.key, "down")}
+                        aria-label={t("step_down", { n })}
+                        disabled={index === form.steps.length - 1}
+                        onClick={() => moveStep(index, 1)}
+                      >
+                        <ArrowDown />
+                      </Button>
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        aria-label={t("step_remove", { n })}
+                        disabled={form.steps.length === 1}
+                        onClick={() => removeStep(step.key)}
+                      >
+                        <X />
+                      </Button>
+                    </div>
+                  </li>
                 );
               })}
-            </div>
+            </ol>
+            <FieldNote error={bad.steps} hint={t("steps_hint", { max: MAX_STEPS })} />
+            <Why why={form.steps.length >= MAX_STEPS ? t("steps_limit", { max: MAX_STEPS }) : undefined}>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                id={`${id}-add-step`}
+                disabled={form.steps.length >= MAX_STEPS}
+                onClick={addStep}
+              >
+                <Plus />
+                {t("add_step")}
+              </Button>
+            </Why>
           </fieldset>
-
-          {form.action === "command" && (
-            <div className="grid gap-2">
-              <Label htmlFor={`${id}-command`}>{t("field_command")}</Label>
-              <Input
-                id={`${id}-command`}
-                className="font-mono"
-                value={form.command}
-                onChange={(e) => set("command", e.target.value)}
-                placeholder={t("command_placeholder")}
-                autoComplete="off"
-                spellCheck={false}
-                aria-invalid={!!bad.command}
-              />
-              <FieldNote error={bad.command} hint={t("command_hint")} />
-            </div>
-          )}
 
           <fieldset className="grid gap-3">
             <legend className="mb-2 text-sm font-medium">{t("field_when")}</legend>
             <SegmentedControl label={t("field_when")} value={form.mode} onChange={(m) => set("mode", m)}
-              segments={(["daily", "interval"] as const).map((m) => ({ key: m, label: t(`mode_${m}`) }))} />
-            {form.mode === "daily" ? (
+              segments={(["daily", "interval", "once"] as const).map((m) => ({ key: m, label: t(`mode_${m}`) }))} />
+            {form.mode === "daily" && (
               <div className="grid gap-2">
                 <Label htmlFor={`${id}-time`}>{t("field_time")}</Label>
                 <Input
@@ -418,7 +697,8 @@ function ScheduleDialog({
                 />
                 <FieldNote error={bad.time} />
               </div>
-            ) : (
+            )}
+            {form.mode === "interval" && (
               <div className="grid gap-2">
                 <Label htmlFor={`${id}-every`}>{t("field_every")}</Label>
                 <Select value={String(form.every)} onValueChange={(v) => set("every", Number(v) as ScheduleEveryMinutes)}>
@@ -435,53 +715,69 @@ function ScheduleDialog({
                 </Select>
                 <p className="text-xs text-muted-foreground">
                   {t("interval_preview", { times: runTimes(form.every) })}
-                  {form.action !== "command" && ` ${t("interval_hourly_limit")}`}
+                  {powers(form.steps) && ` ${t("interval_hourly_limit")}`}
                 </p>
+              </div>
+            )}
+            {form.mode === "once" && (
+              <div className="grid gap-2">
+                <Label htmlFor={`${id}-once`}>{t("field_once")}</Label>
+                <Input
+                  id={`${id}-once`}
+                  type="datetime-local"
+                  className="w-56"
+                  value={form.once}
+                  onChange={(e) => set("once", e.target.value)}
+                  aria-invalid={!!bad.once}
+                />
+                <FieldNote error={bad.once} hint={t("once_hint")} />
               </div>
             )}
           </fieldset>
 
-          <fieldset className="grid gap-2">
-            <legend className="mb-2 text-sm font-medium">{t("field_days")}</legend>
-            <div className="flex flex-wrap gap-1.5">
-              {weekOrder(t).map((d) => {
-                const on = (form.weekdays & (1 << d)) !== 0;
-                return (
-                  <button
-                    key={d}
+          {form.mode !== "once" && (
+            <fieldset className="grid gap-2">
+              <legend className="mb-2 text-sm font-medium">{t("field_days")}</legend>
+              <div className="flex flex-wrap gap-1.5">
+                {weekOrder(t).map((d) => {
+                  const on = (form.weekdays & (1 << d)) !== 0;
+                  return (
+                    <button
+                      key={d}
+                      type="button"
+                      aria-pressed={on}
+                      aria-label={t(`day_full_${d}`)}
+                      onClick={() => set("weekdays", form.weekdays ^ (1 << d))}
+                      className={cn(
+                        "h-9 min-w-10 rounded-md border px-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                        on
+                          ? "border-primary bg-primary text-primary-foreground"
+                          : "border-input text-muted-foreground hover:bg-accent hover:text-foreground",
+                      )}
+                    >
+                      {t(`day_chip_${d}`)}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {DAY_PRESETS.map(([mask, key]) => (
+                  <Button
+                    key={key}
                     type="button"
-                    aria-pressed={on}
-                    aria-label={t(`day_full_${d}`)}
-                    onClick={() => set("weekdays", form.weekdays ^ (1 << d))}
-                    className={cn(
-                      "h-9 min-w-10 rounded-md border px-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                      on
-                        ? "border-primary bg-primary text-primary-foreground"
-                        : "border-input text-muted-foreground hover:bg-accent hover:text-foreground",
-                    )}
+                    size="sm"
+                    variant={form.weekdays === mask ? "default" : "ghost"}
+                    className="h-7"
+                    aria-pressed={form.weekdays === mask}
+                    onClick={() => set("weekdays", mask)}
                   >
-                    {t(`day_chip_${d}`)}
-                  </button>
-                );
-              })}
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {DAY_PRESETS.map(([mask, key]) => (
-                <Button
-                  key={key}
-                  type="button"
-                  size="sm"
-                  variant={form.weekdays === mask ? "default" : "ghost"}
-                  className="h-7"
-                  aria-pressed={form.weekdays === mask}
-                  onClick={() => set("weekdays", mask)}
-                >
-                  {t(key)}
-                </Button>
-              ))}
-            </div>
-            <FieldNote error={bad.days} />
-          </fieldset>
+                    {t(key)}
+                  </Button>
+                ))}
+              </div>
+              <FieldNote error={bad.days} />
+            </fieldset>
+          )}
 
           <div className="grid gap-2">
             <Label htmlFor={`${id}-zone`}>{t("field_timezone")}</Label>
@@ -515,7 +811,27 @@ function ScheduleDialog({
             )}
           </div>
 
-          {WARNS.has(form.action) && (
+          {form.mode !== "once" && (
+            <div className="grid gap-2">
+              <Label htmlFor={`${id}-max-runs`}>{t("field_max_runs")}</Label>
+              <Input
+                id={`${id}-max-runs`}
+                type="number"
+                inputMode="numeric"
+                min={0}
+                max={MAX_RUNS}
+                step={1}
+                className="w-36"
+                value={form.maxRuns}
+                placeholder={t("max_runs_placeholder")}
+                onChange={(e) => set("maxRuns", e.target.value)}
+                aria-invalid={!!bad.maxRuns}
+              />
+              <FieldNote error={bad.maxRuns} hint={t("max_runs_hint")} />
+            </div>
+          )}
+
+          {warns(form.steps) && (
             <div className="grid gap-2">
               <Label htmlFor={`${id}-warn`}>{t("field_warn")}</Label>
               <Select value={String(form.warn)} onValueChange={(v) => set("warn", Number(v) as ScheduleWarnMinutes)}>
@@ -534,7 +850,7 @@ function ScheduleDialog({
             </div>
           )}
 
-          {form.action === "backup" && (
+          {form.steps.some((s) => s.type === "backup") && (
             <p className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
               <Info className="mt-px h-3.5 w-3.5 shrink-0" />
               {t("backup_note")}
@@ -593,15 +909,6 @@ function ScheduleDialog({
   );
 }
 
-/** Disabled buttons take no pointer events, so the reason rides a wrapper. */
-function Why({ why, children }: { why?: string; children: React.ReactNode }) {
-  return (
-    <span title={why} className="inline-flex">
-      {children}
-    </span>
-  );
-}
-
 /** ScheduleRow is one schedule: what, when, how the last run went, and its
  *  actions. A run in progress locks it (the API answers 409 schedule_running). */
 function ScheduleRow({
@@ -626,17 +933,14 @@ function ScheduleRow({
   onDelete: () => void;
 }) {
   const { t } = useTranslation("schedules");
-  const Icon = ACTION_ICONS[s.action];
+  const lead = s.steps.find((step) => step.type !== "delay") ?? s.steps[0];
+  const Icon = lead ? STEP_ICONS[lead.type] : Terminal;
   const title = titleOf(s, t);
+  const commands = commandsOf(s.steps);
   const busy = s.run_state !== "";
   const why = busy ? t("busy_hint") : undefined;
   const result = s.last_result ? RESULT_STYLE[s.last_result] : null;
-  const detailKey = DETAIL_KEYS[s.last_detail];
-  const detail = detailKey
-    ? t(detailKey)
-    : s.last_result === "ok" && s.last_detail
-      ? t("reply", { text: s.last_detail })
-      : s.last_detail;
+  const detail = detailText(s, t);
 
   return (
     <li className="flex flex-col gap-3 p-4 sm:flex-row sm:items-start sm:justify-between">
@@ -651,8 +955,9 @@ function ScheduleRow({
         </div>
         <div className="min-w-0 flex-1 space-y-1.5">
           <div className="flex flex-wrap items-center gap-1.5">
-            <p className={cn("min-w-0 truncate text-sm font-medium", !s.enabled && "text-muted-foreground")}>{title}</p>
-            {s.label && <Badge variant="muted">{t(`action_${s.action}`)}</Badge>}
+            <p className={cn("min-w-0 truncate text-sm font-medium", !s.enabled && "text-muted-foreground")} title={title}>
+              {title}
+            </p>
             {!s.enabled && <Badge variant="muted">{t("off_badge")}</Badge>}
             {s.warn_minutes > 0 && (
               <Badge variant="outline" className="gap-1 font-normal text-muted-foreground">
@@ -663,10 +968,11 @@ function ScheduleRow({
             {busy && (
               <Badge className="gap-1">
                 <Loader2 className="h-3 w-3 animate-spin" />
-                {t(`run_state_${s.run_state}`)}
+                {progress(s, t)}
               </Badge>
             )}
           </div>
+          {s.label && <p className="text-xs text-muted-foreground">{stepsText(s.steps, t)}</p>}
           <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
             <span className="inline-flex items-center gap-1.5">
               <Clock className="h-3.5 w-3.5 shrink-0" />
@@ -678,12 +984,15 @@ function ScheduleRow({
                 {s.timezone}
               </span>
             )}
+            {s.max_runs > 0 && (
+              <span className="text-xs">{t("runs_progress", { count: s.run_count, max: s.max_runs })}</span>
+            )}
           </p>
-          {s.action === "command" && (
-            <code className="block w-fit max-w-full truncate rounded bg-muted px-1.5 py-0.5 font-mono text-xs" title={s.command}>
-              {s.command}
+          {commands.map((command, i) => (
+            <code key={i} className="block w-fit max-w-full truncate rounded bg-muted px-1.5 py-0.5 font-mono text-xs" title={command}>
+              {command}
             </code>
-          )}
+          ))}
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
             {s.next_run_at ? (
               <span title={formatAbsolute(s.next_run_at, locale)}>
@@ -809,13 +1118,18 @@ export function ServerSchedules() {
     setEditor({ editing: null, form: newForm(over) });
   }
 
-  // The switch saves the schedule as it is with `enabled` flipped: a PUT takes
-  // the whole input, and it also hands the schedule to the current owner.
+  // The switch resaves the whole schedule with `enabled` flipped, and a one-time task whose moment has passed opens the editor instead.
   async function toggle(s: Schedule) {
+    if (!s.enabled && s.run_once_at && Date.parse(s.run_once_at) <= Date.now()) {
+      setMsg(null);
+      setEditor({ editing: s, form: { ...fromSchedule(s), enabled: true } });
+      return;
+    }
     setToggling(s.id);
     setMsg(null);
     try {
-      await api.updateSchedule(name, s.id, toInput({ ...fromSchedule(s), enabled: !s.enabled }));
+      const input = { ...toInput({ ...fromSchedule(s), enabled: !s.enabled }), run_once_at: s.run_once_at };
+      await api.updateSchedule(name, s.id, input);
       setMsg({ kind: "success", text: t(s.enabled ? "toggled_off" : "toggled_on", { name: titleOf(s, t) }) });
       listQ.reload();
     } catch (e) {
@@ -850,13 +1164,18 @@ export function ServerSchedules() {
   const browser = browserZone();
   const list = listQ.data;
   const full = !!list && list.schedules.length >= list.limit;
-  const templates: [string, LucideIcon, Partial<Form>][] = [
-    ["template_restart", RotateCw, {}],
-    ["template_backup", Archive, { action: "backup", time: "05:00" }],
+  const templates: [string, LucideIcon, () => Partial<Form>][] = [
+    ["template_restart", RotateCw, () => ({})],
+    ["template_backup", Archive, () => ({ steps: draftsOf([{ type: "backup" }]), time: "05:00" })],
     [
       "template_announce",
       Megaphone,
-      { action: "command", command: t("template_announce_command"), mode: "interval", every: 30, warn: 0 },
+      () => ({
+        steps: draftsOf([{ type: "command", command: t("template_announce_command") }]),
+        mode: "interval",
+        every: 30,
+        warn: 0,
+      }),
     ],
   ];
 
@@ -910,7 +1229,7 @@ export function ServerSchedules() {
           <EmptyState title={t("empty_title")} hint={t("empty_hint")}>
             <div className="flex flex-wrap justify-center gap-2 px-4">
               {templates.map(([key, Icon, over]) => (
-                <Button key={key} size="sm" variant="outline" onClick={() => openCreate(over)}>
+                <Button key={key} size="sm" variant="outline" onClick={() => openCreate(over())}>
                   <Icon className="h-4 w-4" />
                   {t(key)}
                 </Button>
@@ -948,7 +1267,8 @@ export function ServerSchedules() {
             </p>
             <ul className="list-disc space-y-1 pl-5">
               <li>{t("note_timing")}</li>
-              <li>{t("note_state")}</li>
+              <li>{t("note_steps")}</li>
+              <li>{t("note_skip")}</li>
               <li>{t("note_owner")}</li>
               <li>{t("note_run_now")}</li>
             </ul>
@@ -1007,23 +1327,26 @@ export function ServerSchedules() {
           title={t("run_title", { name: titleOf(runTarget, t) })}
           description={
             <>
-              <span className="block">{t(`run_body_${runTarget.action}`)}</span>
-              {runTarget.action === "command" && (
-                <code className="mt-2 block break-all rounded bg-muted px-2 py-1 font-mono text-xs text-foreground">
-                  {runTarget.command}
+              <span className="block">{t("run_body", { steps: stepsText(runTarget.steps, t) })}</span>
+              {commandsOf(runTarget.steps).map((command, i) => (
+                <code key={i} className="mt-2 block break-all rounded bg-muted px-2 py-1 font-mono text-xs text-foreground">
+                  {command}
                 </code>
-              )}
-              {WARNS.has(runTarget.action) && (
+              ))}
+              {warns(runTarget.steps) && (
                 <span className="mt-3 flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2.5 text-amber-700 dark:text-amber-300">
                   <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                   {t("run_kick")}
                 </span>
               )}
+              {runTarget.max_runs > 0 && (
+                <span className="mt-3 block">{t("run_counts", { max: runTarget.max_runs })}</span>
+              )}
               <span className="mt-3 block">{t("run_keeps_next")}</span>
             </>
           }
           confirmLabel={t("run_confirm")}
-          confirmVariant={WARNS.has(runTarget.action) ? "destructive" : "default"}
+          confirmVariant={warns(runTarget.steps) ? "destructive" : "default"}
           onConfirm={async () => {
             await api.runSchedule(name, runTarget.id);
             setMsg({ kind: "success", text: t("run_started", { name: titleOf(runTarget, t) }) });

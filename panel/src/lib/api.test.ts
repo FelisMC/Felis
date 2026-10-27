@@ -1710,12 +1710,13 @@ describe("scheduled task wire shapes", () => {
 
   const input = {
     label: "Nightly",
-    action: "restart" as const,
-    command: "",
+    steps: [{ type: "restart" as const }],
     every_minutes: 0 as const,
     minute_of_day: 240,
     weekdays: 127,
     timezone: "Asia/Shanghai",
+    run_once_at: null,
+    max_runs: 0,
     warn_minutes: 5 as const,
     enabled: true,
   };

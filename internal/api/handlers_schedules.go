@@ -60,8 +60,12 @@ func (a *API) writeScheduleError(w http.ResponseWriter, r *http.Request, err err
 
 func (a *API) auditSchedule(r *http.Request, action string, s *Schedule) {
 	p := principalFromContext(r.Context())
+	types := make([]string, len(s.Steps))
+	for i, st := range s.Steps {
+		types[i] = st.Type
+	}
 	e := AuditEntry{Actor: auditActor(p), Action: action, ServerName: s.Server,
-		Payload: auditPayload(map[string]any{"schedule": s.ID, "action": s.Action})}
+		Payload: auditPayload(map[string]any{"schedule": s.ID, "steps": types})}
 	if p != nil {
 		e.ActorUserID = p.UserID
 	}
@@ -95,7 +99,7 @@ func (a *API) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s := &Schedule{Server: rec.Name, OwnerID: rec.OwnerID, CreatedBy: auditActor(principalFromContext(r.Context()))}
-	if err := in.apply(s); err != nil {
+	if err := in.apply(s, a.now()); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -128,8 +132,16 @@ func (a *API) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 		a.writeScheduleError(w, r, err)
 		return
 	}
-	if err := in.apply(s); err != nil {
+	wasEnabled := s.Enabled
+	if err := in.apply(s, a.now()); err != nil {
 		writeError(w, r, err)
+		return
+	}
+	if !wasEnabled {
+		s.RunCount = 0
+	}
+	if s.Enabled && s.MaxRuns > 0 && s.RunCount >= s.MaxRuns {
+		writeError(w, r, badSchedule("this schedule already ran %d times; set max_runs above that or disable it", s.RunCount))
 		return
 	}
 	s.OwnerID, s.NextRunAt = rec.OwnerID, a.firstRun(s)
@@ -196,7 +208,8 @@ func (a *API) handleRunSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.auditSchedule(r, "schedule.run_now", s)
-	if err := a.beginRun(ctx, s); err != nil {
+	markClaimed(s, now)
+	if err := a.beginStep(ctx, s); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -212,5 +225,5 @@ func (a *API) firstRun(s *Schedule) *time.Time {
 	if !s.Enabled {
 		return nil
 	}
-	return ptrTime(s.nextRun(a.now()))
+	return s.upcoming(a.now())
 }

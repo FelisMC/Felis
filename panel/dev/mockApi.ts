@@ -55,6 +55,8 @@ import type {
   SoftwareType,
   FileOp,
   ExtensionMetadata,
+  Schedule,
+  ScheduleInput,
 } from "../src/lib/types";
 
 type AccountID = string;
@@ -113,6 +115,7 @@ interface MockState {
   startupSettings: Map<string, ServerStartupSettings>;
   images: WhitelistImage[];
   access: Record<string, AccessState>;
+  schedules: Record<string, Schedule[]>;
   backups: BackupView[];
   jobs: Record<string, ServerJob[]>; // backup/restore jobs by server, newest first
   builds: Build[];
@@ -368,6 +371,7 @@ function initialState(): MockState {
       }),
       ...generatedServers(),
     ],
+    schedules: {},
     access: {
       // 25 whitelisted names: past one page (10) and the search threshold (8)
       survival: {
@@ -3262,6 +3266,9 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
     sendJSON(ctx.res, 200, { server: serverInfo.name, jobs: ctx.state.jobs[serverInfo.name] ?? [] });
     return true;
   }
+  if (ctx.parts[4] === "schedules") {
+    return await handleSchedulesMock(ctx, serverInfo);
+  }
   if (ctx.parts[4] === "access") {
     return handleAccessMock(ctx, serverInfo);
   }
@@ -3275,6 +3282,78 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
   return false;
 }
 
+
+function mockSchedule(ctx: SessionContext, server: string, id: number, input: ScheduleInput, prev?: Schedule): Schedule {
+  const enabled = input.enabled ?? true;
+  return {
+    id,
+    server,
+    label: input.label ?? "",
+    steps: input.steps,
+    every_minutes: input.every_minutes ?? 0,
+    minute_of_day: input.minute_of_day ?? 0,
+    weekdays: input.weekdays,
+    timezone: input.timezone,
+    run_once_at: input.run_once_at ?? null,
+    max_runs: input.max_runs ?? 0,
+    run_count: prev?.run_count ?? 0,
+    warn_minutes: input.warn_minutes ?? 0,
+    enabled,
+    next_run_at: enabled ? (input.run_once_at ?? new Date(Date.now() + 3600_000).toISOString()) : null,
+    run_state: "",
+    run_step: 0,
+    last_run_at: prev?.last_run_at ?? null,
+    last_result: prev?.last_result ?? "",
+    last_detail: prev?.last_detail ?? "",
+    created_by: prev?.created_by ?? `user:${ctx.account.id}`,
+    created_at: prev?.created_at ?? new Date().toISOString(),
+  };
+}
+
+async function handleSchedulesMock(ctx: SessionContext, serverInfo: MockServer): Promise<boolean> {
+  if (!canManage(ctx.account, serverInfo)) {
+    sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
+    return true;
+  }
+  const list = (ctx.state.schedules[serverInfo.name] ??= []);
+  if (ctx.parts.length === 5) {
+    if (is("GET", ctx)) {
+      sendJSON(ctx.res, 200, { server: serverInfo.name, schedules: list, limit: 20 });
+      return true;
+    }
+    if (is("POST", ctx)) {
+      const created = mockSchedule(ctx, serverInfo.name, list.reduce((max, s) => Math.max(max, s.id), 0) + 1, await readJSON<ScheduleInput>(ctx.req));
+      list.push(created);
+      sendJSON(ctx.res, 201, created);
+      return true;
+    }
+    return false;
+  }
+  const index = list.findIndex((s) => String(s.id) === ctx.parts[5]);
+  if (index < 0) {
+    sendError(ctx.res, 404, "not_found", "schedule not found");
+    return true;
+  }
+  const current = list[index];
+  if (ctx.parts.length === 7 && ctx.parts[6] === "run" && is("POST", ctx)) {
+    list[index] = { ...current, run_count: current.run_count + 1, last_run_at: new Date().toISOString(), last_result: "ok", last_detail: "" };
+    sendJSON(ctx.res, 202, list[index]);
+    return true;
+  }
+  if (ctx.parts.length !== 6) return false;
+  if (is("PUT", ctx)) {
+    list[index] = mockSchedule(ctx, serverInfo.name, current.id, await readJSON<ScheduleInput>(ctx.req), current);
+    sendJSON(ctx.res, 200, list[index]);
+    return true;
+  }
+  if (is("DELETE", ctx)) {
+    list.splice(index, 1);
+    ctx.res.statusCode = 204;
+    ctx.res.end();
+    return true;
+  }
+  return false;
+}
 
 interface MockFileNode {
   is_dir: boolean;

@@ -13,8 +13,8 @@ import (
 	"felis.lolicon.best/internal/api"
 )
 
-func newSchedule(server, owner, action string, next *time.Time) *api.Schedule {
-	return &api.Schedule{Server: server, OwnerID: owner, Label: "每晚", Action: action, MinuteOfDay: 240,
+func newSchedule(server, owner, step string, next *time.Time) *api.Schedule {
+	return &api.Schedule{Server: server, OwnerID: owner, Label: "每晚", Steps: []api.ScheduleStep{{Type: step}}, MinuteOfDay: 240,
 		Weekdays: 0x7f, Timezone: "Asia/Shanghai", WarnMinutes: 5, Enabled: next != nil, NextRunAt: next,
 		CreatedBy: "pgint"}
 }
@@ -22,7 +22,7 @@ func newSchedule(server, owner, action string, next *time.Time) *api.Schedule {
 func mustCreateSchedule(t *testing.T, s *api.Schedule) *api.Schedule {
 	t.Helper()
 	if err := repo.CreateSchedule(context.Background(), s, 20); err != nil {
-		t.Fatalf("CreateSchedule(%s on %s): %v", s.Action, s.Server, err)
+		t.Fatalf("CreateSchedule(%v on %s): %v", s.Steps, s.Server, err)
 	}
 	return s
 }
@@ -44,9 +44,9 @@ func runView(s *api.Schedule) string {
 		}
 		return p.UTC().Format(time.RFC3339)
 	}
-	return fmt.Sprintf("state=%q resume=%v step=%s last=%s result=%q detail=%q next=%s warned=%s enabled=%v",
-		s.RunState, s.RunResume, ts(s.RunStepAt), ts(s.LastRunAt), s.LastResult, s.LastDetail,
-		ts(s.NextRunAt), ts(s.WarnedFor), s.Enabled)
+	return fmt.Sprintf("state=%d:%q resume=%v step=%s last=%s result=%q detail=%q next=%s warned=%s enabled=%v runs=%d",
+		s.RunStep, s.RunState, s.RunResume, ts(s.RunStepAt), ts(s.LastRunAt), s.LastResult, s.LastDetail,
+		ts(s.NextRunAt), ts(s.WarnedFor), s.Enabled, s.RunCount)
 }
 
 func applied(t *testing.T, what string, ok bool, err error, want bool) {
@@ -66,43 +66,43 @@ func TestScheduleStoreCRUD(t *testing.T) {
 	seedOwnedServer(t, gone, u.ID, true)
 	next := mustNow().Add(time.Hour).Truncate(time.Second)
 
-	s := mustCreateSchedule(t, newSchedule(name, u.ID, api.ScheduleRestart, &next))
+	s := mustCreateSchedule(t, newSchedule(name, u.ID, api.StepRestart, &next))
 	if s.ID == 0 || time.Since(s.CreatedAt) > time.Minute {
 		t.Fatalf("created %+v", s)
 	}
 	settings := func(s *api.Schedule) string {
-		return fmt.Sprintf("%d %s owner=%q label=%q %s cmd=%q every=%d at=%d days=%d tz=%s warn=%d by=%s created=%s",
-			s.ID, s.Server, s.OwnerID, s.Label, s.Action, s.Command, s.EveryMinutes, s.MinuteOfDay, s.Weekdays,
-			s.Timezone, s.WarnMinutes, s.CreatedBy, s.CreatedAt.UTC().Format(time.RFC3339Nano))
+		return fmt.Sprintf("%d %s owner=%q label=%q steps=%v every=%d at=%d days=%d tz=%s once=%v max=%d warn=%d by=%s created=%s",
+			s.ID, s.Server, s.OwnerID, s.Label, s.Steps, s.EveryMinutes, s.MinuteOfDay, s.Weekdays,
+			s.Timezone, s.RunOnceAt, s.MaxRuns, s.WarnMinutes, s.CreatedBy, s.CreatedAt.UTC().Format(time.RFC3339Nano))
 	}
 	got := mustGetSchedule(t, name, s.ID)
 	if settings(got) != settings(s) {
 		t.Fatalf("read back %s\nwant %s", settings(got), settings(s))
 	}
-	if v, want := runView(got), `state="" resume=false step=- last=- result="" detail="" next=`+next.UTC().Format(time.RFC3339)+` warned=- enabled=true`; v != want {
+	if v, want := runView(got), `state=0:"" resume=false step=- last=- result="" detail="" next=`+next.UTC().Format(time.RFC3339)+` warned=- enabled=true runs=0`; v != want {
 		t.Fatalf("read back %s\nwant %s", v, want)
 	}
 	if _, err := repo.GetSchedule(ctx, other, s.ID); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("GetSchedule on another server = %v, want ErrNotFound", err)
 	}
 
-	unowned := mustCreateSchedule(t, newSchedule(other, "", api.ScheduleStop, nil))
+	unowned := mustCreateSchedule(t, newSchedule(other, "", api.StepStop, nil))
 	if g := mustGetSchedule(t, other, unowned.ID); g.OwnerID != "" || g.Enabled || g.NextRunAt != nil {
 		t.Fatalf("unowned, disabled schedule read back %+v", g)
 	}
-	if err := repo.CreateSchedule(ctx, newSchedule(gone, u.ID, api.ScheduleStop, nil), 20); !errors.Is(err, api.ErrNotFound) {
+	if err := repo.CreateSchedule(ctx, newSchedule(gone, u.ID, api.StepStop, nil), 20); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("CreateSchedule on a deleted server = %v, want ErrNotFound", err)
 	}
-	if err := repo.CreateSchedule(ctx, newSchedule("nope-"+sfx, u.ID, api.ScheduleStop, nil), 20); !errors.Is(err, api.ErrNotFound) {
+	if err := repo.CreateSchedule(ctx, newSchedule("nope-"+sfx, u.ID, api.StepStop, nil), 20); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("CreateSchedule on an unknown server = %v, want ErrNotFound", err)
 	}
 
 	// The limit counts the server's own rows only.
-	mustCreateSchedule(t, newSchedule(name, u.ID, api.ScheduleStop, nil))
-	if err := repo.CreateSchedule(ctx, newSchedule(name, u.ID, api.ScheduleStart, nil), 2); !errors.Is(err, api.ErrScheduleLimit) {
+	mustCreateSchedule(t, newSchedule(name, u.ID, api.StepStop, nil))
+	if err := repo.CreateSchedule(ctx, newSchedule(name, u.ID, api.StepStart, nil), 2); !errors.Is(err, api.ErrScheduleLimit) {
 		t.Fatalf("third schedule under a limit of 2 = %v, want ErrScheduleLimit", err)
 	}
-	if err := repo.CreateSchedule(ctx, newSchedule(other, u.ID, api.ScheduleStart, nil), 2); err != nil {
+	if err := repo.CreateSchedule(ctx, newSchedule(other, u.ID, api.StepStart, nil), 2); err != nil {
 		t.Fatalf("second schedule of the other server under a limit of 2 = %v", err)
 	}
 
@@ -111,14 +111,15 @@ func TestScheduleStoreCRUD(t *testing.T) {
 		t.Fatalf("WarnScheduleRun = %v, %v", ok, err)
 	}
 	upd := mustGetSchedule(t, name, s.ID)
-	upd.OwnerID, upd.Label, upd.Action, upd.Command = "", "", api.ScheduleCommand, "say hi"
-	upd.EveryMinutes, upd.MinuteOfDay, upd.Weekdays, upd.Timezone, upd.WarnMinutes = 30, 0, 0x41, "UTC", 0
+	sayHi := []api.ScheduleStep{{Type: api.StepCommand, Command: "say hi"}, {Type: api.StepDelay, Seconds: 30}, {Type: api.StepKill}}
+	upd.OwnerID, upd.Label, upd.Steps = "", "", sayHi
+	upd.EveryMinutes, upd.MinuteOfDay, upd.Weekdays, upd.Timezone, upd.WarnMinutes, upd.MaxRuns = 30, 0, 0x41, "UTC", 0, 7
 	upd.Enabled, upd.NextRunAt = false, nil
 	if err := repo.UpdateSchedule(ctx, upd); err != nil {
 		t.Fatalf("UpdateSchedule: %v", err)
 	}
 	g := mustGetSchedule(t, name, s.ID)
-	if g.OwnerID != "" || g.Label != "" || g.Action != api.ScheduleCommand || g.Command != "say hi" || g.EveryMinutes != 30 ||
+	if g.OwnerID != "" || g.Label != "" || fmt.Sprint(g.Steps) != fmt.Sprint(sayHi) || g.MaxRuns != 7 || g.EveryMinutes != 30 ||
 		g.MinuteOfDay != 0 || g.Weekdays != 0x41 || g.Timezone != "UTC" || g.WarnMinutes != 0 || g.Enabled ||
 		g.NextRunAt != nil || g.WarnedFor != nil {
 		t.Fatalf("after update %+v", g)
@@ -139,7 +140,7 @@ func TestScheduleStoreCRUD(t *testing.T) {
 	if err := repo.DeleteSchedule(ctx, name, s.ID); !errors.Is(err, api.ErrScheduleRunning) {
 		t.Fatalf("DeleteSchedule while running = %v, want ErrScheduleRunning", err)
 	}
-	ok, err = repo.FinishScheduleRun(ctx, s.ID, "claimed", api.ScheduleOK, "")
+	ok, err = repo.FinishScheduleRun(ctx, s.ID, claimed, api.ScheduleOK, "", nil, now)
 	applied(t, "finish", ok, err, true)
 	if err := repo.DeleteSchedule(ctx, other, s.ID); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("DeleteSchedule under another server = %v, want ErrNotFound", err)
@@ -156,6 +157,8 @@ func TestScheduleStoreCRUD(t *testing.T) {
 	}
 }
 
+var claimed = api.RunPos{Step: 0, Phase: "claimed"}
+
 func mustClaim(t *testing.T, id int64, due, next *time.Time, now time.Time) (bool, error) {
 	t.Helper()
 	return repo.ClaimScheduleRun(context.Background(), id, due, next, now)
@@ -168,7 +171,7 @@ func TestScheduleStoreRunCAS(t *testing.T) {
 	seedOwnedServer(t, name, u.ID, false)
 	t0 := mustNow().Truncate(time.Second)
 	due, next, later := t0.Add(-time.Minute), t0.Add(23*time.Hour), t0.Add(47*time.Hour)
-	s := mustCreateSchedule(t, newSchedule(name, u.ID, api.ScheduleBackup, &due))
+	s := mustCreateSchedule(t, newSchedule(name, u.ID, api.StepBackup, &due))
 	ts := func(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 
 	// Warned once for the run due then.
@@ -189,25 +192,28 @@ func TestScheduleStoreRunCAS(t *testing.T) {
 	ok, err = mustClaim(t, s.ID, nil, nil, t0)
 	applied(t, "claim on request during a run", ok, err, false)
 	if got, want := runView(mustGetSchedule(t, name, s.ID)),
-		fmt.Sprintf(`state="claimed" resume=false step=%s last=%s result="" detail="" next=%s warned=- enabled=true`, ts(t0), ts(t0), ts(next)); got != want {
+		fmt.Sprintf(`state=0:"claimed" resume=false step=%s last=%s result="" detail="" next=%s warned=- enabled=true runs=1`, ts(t0), ts(t0), ts(next)); got != want {
 		t.Fatalf("after claim %s\nwant %s", got, want)
 	}
 
 	// Advance from the wrong step loses; the right one keeps the outcome so far
 	// unless it brings one.
 	t1 := t0.Add(time.Minute)
-	ok, err = repo.AdvanceScheduleRun(ctx, s.ID, "stopping", "backing_up", true, "", "", t1)
+	stopping, starting := api.RunPos{Step: 0, Phase: "backup_stopping"}, api.RunPos{Step: 0, Phase: "starting"}
+	ok, err = repo.AdvanceScheduleRun(ctx, s.ID, stopping, api.RunPos{Step: 0, Phase: "backup_restart"}, true, "", "", t1)
+	applied(t, "advance from the wrong phase", ok, err, false)
+	ok, err = repo.AdvanceScheduleRun(ctx, s.ID, api.RunPos{Step: 1, Phase: "claimed"}, stopping, true, "", "", t1)
 	applied(t, "advance from the wrong step", ok, err, false)
-	ok, err = repo.AdvanceScheduleRun(ctx, s.ID, "claimed", "stopping", true, "", "", t1)
+	ok, err = repo.AdvanceScheduleRun(ctx, s.ID, claimed, stopping, true, "", "", t1)
 	applied(t, "advance", ok, err, true)
 	t2 := t1.Add(time.Minute)
-	ok, err = repo.AdvanceScheduleRun(ctx, s.ID, "stopping", "starting", true, api.ScheduleFailed, "the backup failed: x", t2)
+	ok, err = repo.AdvanceScheduleRun(ctx, s.ID, stopping, starting, true, api.ScheduleFailed, "the backup failed: x", t2)
 	applied(t, "advance with an outcome", ok, err, true)
 	t3 := t2.Add(time.Minute)
-	ok, err = repo.AdvanceScheduleRun(ctx, s.ID, "starting", "starting", true, "", "", t3)
+	ok, err = repo.AdvanceScheduleRun(ctx, s.ID, starting, starting, true, "", "", t3)
 	applied(t, "advance without one", ok, err, true)
 	if got, want := runView(mustGetSchedule(t, name, s.ID)),
-		fmt.Sprintf(`state="starting" resume=true step=%s last=%s result="failed" detail="the backup failed: x" next=%s warned=- enabled=true`, ts(t3), ts(t0), ts(next)); got != want {
+		fmt.Sprintf(`state=0:"starting" resume=true step=%s last=%s result="failed" detail="the backup failed: x" next=%s warned=- enabled=true runs=1`, ts(t3), ts(t0), ts(next)); got != want {
 		t.Fatalf("after advancing %s\nwant %s", got, want)
 	}
 	if _, err := db.ExecContext(ctx, `UPDATE server_schedules SET run_step_at = NULL WHERE id = $1`, s.ID); err == nil ||
@@ -216,21 +222,21 @@ func TestScheduleStoreRunCAS(t *testing.T) {
 	}
 
 	// Finish from the wrong step, or from none, loses.
-	ok, err = repo.FinishScheduleRun(ctx, s.ID, "stopping", api.ScheduleOK, "")
-	applied(t, "finish from the wrong step", ok, err, false)
-	ok, err = repo.FinishScheduleRun(ctx, s.ID, "starting", api.ScheduleFailed, "done")
+	ok, err = repo.FinishScheduleRun(ctx, s.ID, stopping, api.ScheduleOK, "", nil, t3)
+	applied(t, "finish from the wrong phase", ok, err, false)
+	ok, err = repo.FinishScheduleRun(ctx, s.ID, starting, api.ScheduleFailed, "done", &later, t3)
 	applied(t, "finish", ok, err, true)
-	ok, err = repo.FinishScheduleRun(ctx, s.ID, "", api.ScheduleOK, "")
+	ok, err = repo.FinishScheduleRun(ctx, s.ID, api.RunPos{}, api.ScheduleOK, "", nil, t3)
 	applied(t, "finish an idle schedule", ok, err, false)
 	if got, want := runView(mustGetSchedule(t, name, s.ID)),
-		fmt.Sprintf(`state="" resume=false step=- last=%s result="failed" detail="done" next=%s warned=- enabled=true`, ts(t0), ts(next)); got != want {
+		fmt.Sprintf(`state=0:"" resume=false step=- last=%s result="failed" detail="done" next=%s warned=- enabled=true runs=1`, ts(t0), ts(next)); got != want {
 		t.Fatalf("after finishing %s\nwant %s", got, want)
 	}
 
 	// A run on request leaves the next run alone and works while disabled.
 	ok, err = mustClaim(t, s.ID, nil, nil, t3)
 	applied(t, "claim on request", ok, err, true)
-	if g := mustGetSchedule(t, name, s.ID); g.NextRunAt == nil || !g.NextRunAt.Equal(next) || g.RunState != "claimed" || g.LastResult != "" {
+	if g := mustGetSchedule(t, name, s.ID); g.NextRunAt == nil || !g.NextRunAt.Equal(next) || g.RunState != "claimed" || g.LastResult != "" || g.RunCount != 2 {
 		t.Fatalf("after a claim on request %s", runView(g))
 	}
 	ok, err = repo.DisableSchedule(ctx, s.ID, "x")
@@ -239,20 +245,20 @@ func TestScheduleStoreRunCAS(t *testing.T) {
 	applied(t, "warn during a run", ok, err, false)
 	ok, err = mustClaim(t, s.ID, &next, &later, t3)
 	applied(t, "claim the due run during a run on request", ok, err, false)
-	ok, err = repo.MissScheduleRun(ctx, s.ID, next, later, "x")
+	ok, err = repo.MissScheduleRun(ctx, s.ID, next, &later, "x")
 	applied(t, "miss during a run", ok, err, false)
-	ok, err = repo.FinishScheduleRun(ctx, s.ID, "claimed", api.ScheduleOK, "")
+	ok, err = repo.FinishScheduleRun(ctx, s.ID, claimed, api.ScheduleOK, "", nil, t3)
 	applied(t, "finish the run on request", ok, err, true)
 
 	// Missed: only the run due then, recorded at its due time.
-	ok, err = repo.MissScheduleRun(ctx, s.ID, due, later, "x")
+	ok, err = repo.MissScheduleRun(ctx, s.ID, due, &later, "x")
 	applied(t, "miss a stale due time", ok, err, false)
 	ok, err = repo.WarnScheduleRun(ctx, s.ID, next)
 	applied(t, "warn the next run", ok, err, true)
-	ok, err = repo.MissScheduleRun(ctx, s.ID, next, later, "felis-api was down")
+	ok, err = repo.MissScheduleRun(ctx, s.ID, next, &later, "felis-api was down")
 	applied(t, "miss", ok, err, true)
 	if got, want := runView(mustGetSchedule(t, name, s.ID)),
-		fmt.Sprintf(`state="" resume=false step=- last=%s result="missed" detail="felis-api was down" next=%s warned=- enabled=true`, ts(next), ts(later)); got != want {
+		fmt.Sprintf(`state=0:"" resume=false step=- last=%s result="missed" detail="felis-api was down" next=%s warned=- enabled=true runs=2`, ts(next), ts(later)); got != want {
 		t.Fatalf("after a miss %s\nwant %s", got, want)
 	}
 
@@ -262,7 +268,7 @@ func TestScheduleStoreRunCAS(t *testing.T) {
 	ok, err = repo.DisableSchedule(ctx, s.ID, "again")
 	applied(t, "second disable", ok, err, false)
 	if got, want := runView(mustGetSchedule(t, name, s.ID)),
-		fmt.Sprintf(`state="" resume=false step=- last=%s result="skipped" detail="new owner" next=- warned=- enabled=false`, ts(next)); got != want {
+		fmt.Sprintf(`state=0:"" resume=false step=- last=%s result="skipped" detail="new owner" next=- warned=- enabled=false runs=2`, ts(next)); got != want {
 		t.Fatalf("after disabling %s\nwant %s", got, want)
 	}
 	if _, err := db.ExecContext(ctx, `UPDATE server_schedules SET next_run_at = $2 WHERE id = $1`, s.ID, later); err != nil {
@@ -270,7 +276,7 @@ func TestScheduleStoreRunCAS(t *testing.T) {
 	}
 	ok, err = mustClaim(t, s.ID, &later, &later, t3)
 	applied(t, "claim a disabled schedule's due run", ok, err, false)
-	ok, err = repo.MissScheduleRun(ctx, s.ID, later, later, "x")
+	ok, err = repo.MissScheduleRun(ctx, s.ID, later, &later, "x")
 	applied(t, "miss a disabled schedule's run", ok, err, false)
 	ok, err = repo.WarnScheduleRun(ctx, s.ID, later)
 	applied(t, "warn a disabled schedule's run", ok, err, false)
@@ -289,18 +295,18 @@ func TestDueSchedules(t *testing.T) {
 	at := func(m int) *time.Time { p := t0.Add(time.Duration(m) * time.Minute); return &p }
 	horizon := *at(30)
 
-	late := mustCreateSchedule(t, newSchedule(live, u.ID, api.ScheduleStop, at(20)))
-	early := mustCreateSchedule(t, newSchedule(live, u.ID, api.ScheduleStart, at(-5)))
-	edge := mustCreateSchedule(t, newSchedule(unowned, "", api.ScheduleStop, at(30)))
-	mustCreateSchedule(t, newSchedule(live, u.ID, api.ScheduleStop, at(31)))     // beyond the horizon
-	off := mustCreateSchedule(t, newSchedule(live, u.ID, api.ScheduleStop, nil)) // disabled, yet due
+	late := mustCreateSchedule(t, newSchedule(live, u.ID, api.StepStop, at(20)))
+	early := mustCreateSchedule(t, newSchedule(live, u.ID, api.StepStart, at(-5)))
+	edge := mustCreateSchedule(t, newSchedule(unowned, "", api.StepStop, at(30)))
+	mustCreateSchedule(t, newSchedule(live, u.ID, api.StepStop, at(31)))     // beyond the horizon
+	off := mustCreateSchedule(t, newSchedule(live, u.ID, api.StepStop, nil)) // disabled, yet due
 	mustExec(t, `UPDATE server_schedules SET next_run_at = $2 WHERE id = $1`, off.ID, *at(-2))
-	running := mustCreateSchedule(t, newSchedule(live, u.ID, api.ScheduleRestart, nil)) // disabled, but running
+	running := mustCreateSchedule(t, newSchedule(live, u.ID, api.StepRestart, nil)) // disabled, but running
 	ok, err := mustClaim(t, running.ID, nil, nil, t0)
 	applied(t, "claim", ok, err, true)
 	// Deleted server: its schedules wait for SeedServer or the row's end.
-	mustExec(t, `INSERT INTO server_schedules (server_name, owner_id, action, timezone, next_run_at, created_by)
-		VALUES ($1, $2, 'stop', 'UTC', $3, 'pgint')`, gone, u.ID, *at(-1))
+	mustExec(t, `INSERT INTO server_schedules (server_name, owner_id, steps, timezone, next_run_at, created_by)
+		VALUES ($1, $2, '[{"type":"stop"}]', 'UTC', $3, 'pgint')`, gone, u.ID, *at(-1))
 
 	due, err := repo.DueSchedules(ctx, horizon)
 	if err != nil {
@@ -339,7 +345,7 @@ func TestSchedulesFollowTheServer(t *testing.T) {
 	if err := repo.SeedServer(ctx, name, sub, 100, 128, 1024); err != nil {
 		t.Fatal(err)
 	}
-	s := mustCreateSchedule(t, newSchedule(name, u.ID, api.ScheduleStop, nil))
+	s := mustCreateSchedule(t, newSchedule(name, u.ID, api.StepStop, nil))
 	if err := repo.SeedServer(ctx, name, sub, 100, 128, 1024); err != nil {
 		t.Fatal(err)
 	}
@@ -354,9 +360,9 @@ func TestSchedulesFollowTheServer(t *testing.T) {
 	mine, theirs := "sm-"+sfx, "st-"+sfx
 	seedOwnedServer(t, mine, src.ID, false)
 	seedOwnedServer(t, theirs, other.ID, false)
-	moved := mustCreateSchedule(t, newSchedule(mine, src.ID, api.ScheduleStop, nil))
-	stale := mustCreateSchedule(t, newSchedule(mine, other.ID, api.ScheduleStop, nil)) // saved by a previous owner
-	kept := mustCreateSchedule(t, newSchedule(theirs, src.ID, api.ScheduleStop, nil))  // src's, on a server src lost
+	moved := mustCreateSchedule(t, newSchedule(mine, src.ID, api.StepStop, nil))
+	stale := mustCreateSchedule(t, newSchedule(mine, other.ID, api.StepStop, nil)) // saved by a previous owner
+	kept := mustCreateSchedule(t, newSchedule(theirs, src.ID, api.StepStop, nil))  // src's, on a server src lost
 	t0 := mustNow().Truncate(time.Second)
 	if err := repo.StartMigration(ctx, "schmig-"+sfx, src.ID, t0); err != nil {
 		t.Fatal(err)
@@ -380,3 +386,127 @@ func TestSchedulesFollowTheServer(t *testing.T) {
 		}
 	}
 }
+
+func TestScheduleRunBudget(t *testing.T) {
+	ctx := context.Background()
+	u := newUser(t, "user", "sch-budget")
+	name := "scb-" + suffix(t)
+	seedOwnedServer(t, name, u.ID, false)
+	t0 := mustNow().Truncate(time.Second)
+	due, next, later := t0.Add(-time.Minute), t0.Add(time.Hour), t0.Add(2*time.Hour)
+	claimAndFinish := func(t *testing.T, s *api.Schedule, due, next *time.Time) *api.Schedule {
+		t.Helper()
+		ok, err := mustClaim(t, s.ID, due, next, t0)
+		applied(t, "claim", ok, err, true)
+		ok, err = repo.FinishScheduleRun(ctx, s.ID, claimed, api.ScheduleOK, "", next, t0)
+		applied(t, "finish", ok, err, true)
+		return mustGetSchedule(t, name, s.ID)
+	}
+
+	t.Run("max_runs disables the schedule with the record of its last run", func(t *testing.T) {
+		s := newSchedule(name, u.ID, api.StepStop, &due)
+		s.MaxRuns = 2
+		mustCreateSchedule(t, s)
+		g := claimAndFinish(t, s, &due, &next)
+		if !g.Enabled || g.NextRunAt == nil || !g.NextRunAt.Equal(next) || g.RunCount != 1 {
+			t.Fatalf("after the first run %s", runView(g))
+		}
+		ok, err := mustClaim(t, s.ID, &next, &later, t0)
+		applied(t, "claim the last run", ok, err, true)
+		if g := mustGetSchedule(t, name, s.ID); g.NextRunAt != nil || !g.Enabled {
+			t.Fatalf("the last run left %s", runView(g))
+		}
+		ok, err = repo.FinishScheduleRun(ctx, s.ID, claimed, api.ScheduleOK, "", &later, t0)
+		applied(t, "finish the last run", ok, err, true)
+		if g := mustGetSchedule(t, name, s.ID); g.Enabled || g.NextRunAt != nil || g.RunCount != 2 || g.LastResult != api.ScheduleOK {
+			t.Fatalf("after the last run %s", runView(g))
+		}
+	})
+
+	t.Run("a run on request counts", func(t *testing.T) {
+		s := newSchedule(name, u.ID, api.StepStop, &next)
+		s.MaxRuns = 1
+		mustCreateSchedule(t, s)
+		g := claimAndFinish(t, s, nil, nil)
+		if g.Enabled || g.NextRunAt != nil || g.RunCount != 1 {
+			t.Fatalf("after a run on request %s", runView(g))
+		}
+	})
+
+	t.Run("a one-time schedule runs once", func(t *testing.T) {
+		s := newSchedule(name, u.ID, api.StepRestart, &due)
+		s.RunOnceAt = &due
+		mustCreateSchedule(t, s)
+		g := claimAndFinish(t, s, &due, nil)
+		if g.Enabled || g.NextRunAt != nil || g.RunOnceAt == nil || !g.RunOnceAt.Equal(due) {
+			t.Fatalf("after the one-time run %s", runView(g))
+		}
+	})
+
+	t.Run("a missed one-time schedule is disabled; a missed repeating one is not counted", func(t *testing.T) {
+		once := newSchedule(name, u.ID, api.StepStop, &due)
+		once.RunOnceAt = &due
+		mustCreateSchedule(t, once)
+		ok, err := repo.MissScheduleRun(ctx, once.ID, due, nil, "felis-api was down")
+		applied(t, "miss the one-time run", ok, err, true)
+		if g := mustGetSchedule(t, name, once.ID); g.Enabled || g.NextRunAt != nil || g.LastResult != api.ScheduleMissed {
+			t.Fatalf("after missing the one-time run %s", runView(g))
+		}
+		rep := newSchedule(name, u.ID, api.StepStop, &due)
+		rep.MaxRuns = 1
+		mustCreateSchedule(t, rep)
+		ok, err = repo.MissScheduleRun(ctx, rep.ID, due, &next, "felis-api was down")
+		applied(t, "miss", ok, err, true)
+		if g := mustGetSchedule(t, name, rep.ID); !g.Enabled || g.RunCount != 0 {
+			t.Fatalf("a missed run counted %s", runView(g))
+		}
+	})
+
+	t.Run("a run that outlasts its next slot moves to the given one", func(t *testing.T) {
+		s := mustCreateSchedule(t, newSchedule(name, u.ID, api.StepStop, &due))
+		ok, err := mustClaim(t, s.ID, &due, ptrTo(t0.Add(-30*time.Second)), t0)
+		applied(t, "claim", ok, err, true)
+		ok, err = repo.FinishScheduleRun(ctx, s.ID, claimed, api.ScheduleOK, "", &next, t0)
+		applied(t, "finish", ok, err, true)
+		if g := mustGetSchedule(t, name, s.ID); g.NextRunAt == nil || !g.NextRunAt.Equal(next) {
+			t.Fatalf("after a long run %s", runView(g))
+		}
+	})
+
+	t.Run("re-enabling starts a fresh budget; an enabled save keeps the count", func(t *testing.T) {
+		s := newSchedule(name, u.ID, api.StepStop, &next)
+		s.MaxRuns = 1
+		mustCreateSchedule(t, s)
+		g := claimAndFinish(t, s, nil, nil)
+		g.Enabled, g.NextRunAt = true, &later
+		if err := repo.UpdateSchedule(ctx, g); err != nil {
+			t.Fatal(err)
+		}
+		if g := mustGetSchedule(t, name, s.ID); !g.Enabled || g.RunCount != 0 {
+			t.Fatalf("after re-enabling %s", runView(g))
+		}
+		if _, err := db.ExecContext(ctx, `UPDATE server_schedules SET run_count = 4, max_runs = 9 WHERE id = $1`, s.ID); err != nil {
+			t.Fatal(err)
+		}
+		g = mustGetSchedule(t, name, s.ID)
+		g.Label = "renamed"
+		if err := repo.UpdateSchedule(ctx, g); err != nil {
+			t.Fatal(err)
+		}
+		if g := mustGetSchedule(t, name, s.ID); g.RunCount != 4 {
+			t.Fatalf("an enabled save reset the count %s", runView(g))
+		}
+	})
+
+	t.Run("steps must be a nonempty array of at most ten", func(t *testing.T) {
+		s := mustCreateSchedule(t, newSchedule(name, u.ID, api.StepStop, nil))
+		for _, steps := range []string{`[]`, `{}`, `[` + strings.Repeat(`{"type":"stop"},`, 10) + `{"type":"stop"}]`} {
+			if _, err := db.ExecContext(ctx, `UPDATE server_schedules SET steps = $2 WHERE id = $1`, s.ID, steps); err == nil ||
+				!strings.Contains(err.Error(), "check") {
+				t.Fatalf("steps %s = %v, want a check violation", steps, err)
+			}
+		}
+	})
+}
+
+func ptrTo(t time.Time) *time.Time { return &t }
