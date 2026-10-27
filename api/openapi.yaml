@@ -339,6 +339,19 @@ components:
         revision: { type: string }
         managed: { type: boolean }
 
+    DefaultLanguageSettings:
+      type: object
+      required: [language, revision]
+      properties:
+        language: { type: string, enum: ['', zh-CN, en-US], description: "Default panel language; an empty value follows the browser language." }
+        revision: { type: string, description: Opaque revision; stale or concurrent writes return 409. }
+
+    PanelLanguage:
+      type: object
+      required: [language]
+      properties:
+        language: { type: string, enum: ['', zh-CN, en-US], description: "Default panel language for visitors who have not chosen one; empty when none is set or the setting cannot be read." }
+
     ArchivePolicySettings:
       type: object
       description: >-
@@ -5358,6 +5371,29 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
+  /api/v1/panel/language:
+    get:
+      tags: [auth]
+      operationId: getPanelLanguage
+      summary: Read the platform default panel language.
+      description: >-
+        Public, pre-session read the panel makes on load for visitors who have not chosen
+        a language. A language the user selected in the panel takes precedence. When the
+        setting cannot be read, the response carries an empty language so the panel keeps
+        the browser language.
+      x-felis-face: [external]
+      x-felis-tier: public
+      security: []
+      responses:
+        '200':
+          description: The default language, or an empty string to follow the browser.
+          headers:
+            Cache-Control:
+              schema: { type: string, const: no-store }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PanelLanguage' }
+
   /api/v1/auth/logout:
     post:
       tags: [auth]
@@ -6047,6 +6083,50 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '409':
           description: The policy changed; reload before saving.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/settings/default-language:
+    get:
+      tags: [account]
+      operationId: getDefaultLanguage
+      summary: Read the platform default panel language (Owner).
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: Current default language and revision.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DefaultLanguageSettings' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    put:
+      tags: [account]
+      operationId: setDefaultLanguage
+      summary: Save the platform default panel language (Owner).
+      description: Applies to new visitors and to users who have not chosen a language in the panel. Email language is unaffected.
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DefaultLanguageSettings' }
+      responses:
+        '200':
+          description: Saved language and new revision.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DefaultLanguageSettings' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: The default language changed; reload before saving.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

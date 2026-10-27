@@ -11,6 +11,7 @@ import { MailSettingsCard } from "@/components/MailSettingsCard";
 import { RetentionCard } from "@/components/RetentionCard";
 import { HeartbeatCard } from "@/components/HeartbeatCard";
 import { FailoverPolicyCard } from "@/components/FailoverPolicyCard";
+import { DefaultLanguageCard } from "@/components/DefaultLanguageCard";
 import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/PageHeader";
 import { MessageLine } from "@/components/MessageLine";
@@ -94,6 +95,7 @@ export function PlatformSettingsPage() {
         <Button disabled={!dirty || !valid || busy} onClick={() => void save()}>{saving ? <Loader2 className="animate-spin" /> : <Save />}{t("platform_save")}</Button>
       </div>
     </CardFooter></Card>
+    <DefaultLanguageCard />
     </div>
     <div role="tabpanel" id="platform-panel-notices" aria-labelledby="platform-tab-notices" hidden={tab !== "notices"} className="space-y-6">
     <MailSettingsCard />

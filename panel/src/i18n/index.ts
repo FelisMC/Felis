@@ -31,7 +31,7 @@ import zhBackups from "./resources/zh-CN/backups.json";
 import zhSubmissions from "./resources/zh-CN/submissions.json";
 import zhFiles from "./resources/zh-CN/files.json";
 import zhSchedules from "./resources/zh-CN/schedules.json";
-import { panelLanguage, SUPPORTED_LANGUAGES } from "./language";
+import { LANGUAGE_STORAGE_KEY, panelLanguage, SUPPORTED_LANGUAGES } from "./language";
 
 // Exported so a test can boot a fresh instance with the same detection.
 export const i18nOptions: InitOptions = {
@@ -79,8 +79,8 @@ export const i18nOptions: InitOptions = {
   },
   detection: {
     order: ["localStorage", "navigator"],
-    caches: ["localStorage"],
-    lookupLocalStorage: "felis-lang",
+    caches: [],
+    lookupLocalStorage: LANGUAGE_STORAGE_KEY,
     convertDetectedLanguage: panelLanguage,
   },
 };

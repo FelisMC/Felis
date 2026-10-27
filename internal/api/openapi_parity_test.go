@@ -69,6 +69,8 @@ func TestOpenAPISchemasMatchWireStructs(t *testing.T) {
 		"QuotaLimits":              QuotaInput{},
 		"ServerQuota":              serverQuotaView{},
 		"SelfServiceQuotaSettings": selfServiceQuotaView{},
+		"DefaultLanguageSettings":  defaultLanguageView{},
+		"PanelLanguage":            panelLanguageView{},
 		"ServerSoftware":           ServerSoftware{},
 		"SoftwareRequest":          softwareRequest{},
 		"SoftwareVersion":          software.Version{},

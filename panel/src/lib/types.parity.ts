@@ -39,6 +39,8 @@ export type WireParity = [
   Holds<Parity<T.FailoverPolicySettings, S["FailoverPolicySettings"]>>,
   Holds<Parity<T.ArchivePolicySettings, S["ArchivePolicySettings"]>>,
   Holds<Parity<T.HeartbeatSettings, S["HeartbeatSettings"]>>,
+  Holds<Parity<T.DefaultLanguageSettings, S["DefaultLanguageSettings"]>>,
+  Holds<Parity<T.PanelLanguage, S["PanelLanguage"]>>,
   Holds<Parity<T.FailoverBackup, S["FailoverBackup"]>>,
   Holds<Parity<T.FailoverServer, S["FailoverServer"]>>,
   Holds<Parity<T.FailoverPlan, S["FailoverPlan"]>>,

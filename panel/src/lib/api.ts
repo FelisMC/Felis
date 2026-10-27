@@ -44,6 +44,8 @@ import type {
   MailSettings,
   MailSettingsRequest,
   WakePolicySettings,
+  DefaultLanguageSettings,
+  PanelLanguage,
   FailoverPolicySettings,
   ArchivePolicy,
   ArchivePolicySettings,
@@ -972,6 +974,9 @@ export const api = rejectingSync({
 
   getWakePolicy: () => request<WakePolicySettings>("GET", "/settings/wake-policy"),
   setWakePolicy: (policy: Omit<WakePolicySettings, "managed">) => request<WakePolicySettings>("PUT", "/settings/wake-policy", policy),
+  getDefaultLanguage: () => request<DefaultLanguageSettings>("GET", "/settings/default-language"),
+  setDefaultLanguage: (settings: DefaultLanguageSettings) => request<DefaultLanguageSettings>("PUT", "/settings/default-language", settings),
+  getPanelLanguage: () => request<PanelLanguage>("GET", "/panel/language"),
   getHeartbeat: () => request<HeartbeatSettings>("GET", "/settings/heartbeat"),
   setHeartbeat: (url: string, revision: string) => request<HeartbeatSettings>("PUT", "/settings/heartbeat", { url, revision }),
   clearHeartbeat: () => request<HeartbeatSettings>("DELETE", "/settings/heartbeat"),

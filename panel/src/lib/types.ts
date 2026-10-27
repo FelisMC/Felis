@@ -998,6 +998,20 @@ export interface WakePolicySettings {
   managed: boolean;
 }
 
+/** An empty language follows the browser. */
+export type PanelLanguageSetting = "" | "zh-CN" | "en-US";
+
+/** The platform default panel language (GET/PUT /settings/default-language). */
+export interface DefaultLanguageSettings {
+  language: PanelLanguageSetting;
+  revision: string;
+}
+
+/** The public default panel language (GET /panel/language). */
+export interface PanelLanguage {
+  language: PanelLanguageSetting;
+}
+
 /** The watchdog heartbeat setting (GET/PUT/DELETE /settings/heartbeat): only the URL's
  *  scheme and host are shown. */
 export interface HeartbeatSettings {

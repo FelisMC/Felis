@@ -12,6 +12,7 @@ import type {
   AuthSourceConfig,
   AuthSourcesSettings,
   WakePolicySettings,
+  DefaultLanguageSettings,
   MailSettings,
   MailSettingsRequest,
   ArchivePolicySettings,
@@ -120,6 +121,7 @@ interface MockState {
   updateWindow: { start: string | null; end: string | null };
   authSources: AuthSourcesSettings;
   wakePolicy: WakePolicySettings;
+  defaultLanguage: DefaultLanguageSettings;
   mailSettings: MailSettings;
   mailPassword: string;
   archivePolicy: ArchivePolicySettings;
@@ -522,6 +524,7 @@ function initialState(): MockState {
     updateWindow: { start: null, end: null },
     entryPolicy: { mode: "domain", defaultServer: "", requireAccountLink: true, offlineAction: "wake", waitingSpace: "lobby", fallbackServer: "", revision: "initial" },
     wakePolicy: { maxRunningServers: 0, wakeCooldownSeconds: 30, revision: "initial", managed: false },
+    defaultLanguage: { language: "", revision: "initial" },
     mailSettings: { source: "host", host: "smtp.mock.felis.local", port: 587, from: "noreply@mock.felis.local", username: "noreply@mock.felis.local", password_set: true, require_tls: true, max_per_hour: 0, revision: "" },
     mailPassword: "mock",
     archivePolicy: hostArchivePolicy(),
@@ -1591,6 +1594,9 @@ async function handlePublic(ctx: RequestContext): Promise<boolean> {
     case "GET auth/owner-status":
       sendJSON(ctx.res, 200, { owner_bound: true });
       return true;
+    case "GET panel/language":
+      sendJSON(ctx.res, 200, { language: ctx.state.defaultLanguage.language });
+      return true;
     case "POST auth/email/start": {
       const body = await readJSON<{ email?: string }>(ctx.req);
       if (!body.email || !body.email.includes("@")) {
@@ -1809,6 +1815,22 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
         else {
           ctx.state.wakePolicy = { ...body, revision: createHash("sha256").update(JSON.stringify(body)).digest("hex"), managed: true };
           sendJSON(ctx.res, 200, ctx.state.wakePolicy);
+        }
+      }
+      return true;
+    }
+    case "GET settings/default-language":
+    case "PUT settings/default-language": {
+      if (!isOwner(ctx.account.role)) {
+        sendError(ctx.res, 403, "forbidden", "Owner account required");
+      } else if (is("GET", ctx)) {
+        sendJSON(ctx.res, 200, ctx.state.defaultLanguage);
+      } else {
+        const body = await readJSON<DefaultLanguageSettings>(ctx.req);
+        if (body.revision !== ctx.state.defaultLanguage.revision) sendError(ctx.res, 409, "conflict", "default language changed; reload before saving");
+        else {
+          ctx.state.defaultLanguage = { language: body.language, revision: createHash("sha256").update(JSON.stringify({ language: body.language })).digest("hex") };
+          sendJSON(ctx.res, 200, ctx.state.defaultLanguage);
         }
       }
       return true;

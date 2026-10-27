@@ -10,6 +10,7 @@ import { visibleSections, type NavSection } from "@/lib/nav";
 import { Select, SelectContent, SelectItem } from "@/components/ui/select";
 import { useTheme, type ThemePreference } from "@/lib/theme";
 import { api, CONNECTION_EVENT, isConnectionLost } from "@/lib/api";
+import { chooseLanguage } from "@/i18n/language";
 import { Button } from "@/components/ui/button";
 import { ConfigBanner, VersionBadge } from "@/components/RuntimeStatus";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
@@ -120,7 +121,7 @@ function LangToggle() {
   const { t, i18n } = useTranslation("common");
 
   return (
-    <Select value={i18n.language} onValueChange={(v) => i18n.changeLanguage(v)}>
+    <Select value={i18n.language} onValueChange={(v) => void chooseLanguage(i18n, v)}>
       <SelectPrimitive.Trigger
         className={FOOT_ICON_BTN}
         aria-label={t("change_language")}

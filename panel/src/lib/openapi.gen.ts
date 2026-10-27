@@ -1330,6 +1330,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/panel/language": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the platform default panel language.
+         * @description Public, pre-session read the panel makes on load for visitors who have not chosen a language. A language the user selected in the panel takes precedence. When the setting cannot be read, the response carries an empty language so the panel keeps the browser language.
+         */
+        get: operations["getPanelLanguage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/logout": {
         parameters: {
             query?: never;
@@ -1713,6 +1733,27 @@ export interface paths {
          * @description Atomically persists an override shared by all replicas. The admission limit applies to panel, in-game and scheduled starts without restarting. It does not stop existing servers or reserve memory. Wake cooldown applies to panel and in-game wakes.
          */
         put: operations["setWakePolicy"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settings/default-language": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the platform default panel language (Owner). */
+        get: operations["getDefaultLanguage"];
+        /**
+         * Save the platform default panel language (Owner).
+         * @description Applies to new visitors and to users who have not chosen a language in the panel. Email language is unaffected.
+         */
+        put: operations["setDefaultLanguage"];
         post?: never;
         delete?: never;
         options?: never;
@@ -3678,6 +3719,22 @@ export interface components {
             wakeCooldownSeconds: number;
             revision: string;
             managed: boolean;
+        };
+        DefaultLanguageSettings: {
+            /**
+             * @description Default panel language; an empty value follows the browser language.
+             * @enum {string}
+             */
+            language: "" | "zh-CN" | "en-US";
+            /** @description Opaque revision; stale or concurrent writes return 409. */
+            revision: string;
+        };
+        PanelLanguage: {
+            /**
+             * @description Default panel language for visitors who have not chosen one; empty when none is set or the setting cannot be read.
+             * @enum {string}
+             */
+            language: "" | "zh-CN" | "en-US";
         };
         /** @description The backup and audit retention in force. source is panel when the Owner saved it here, host when felis.toml's [archive] and [audit] stand. */
         ArchivePolicySettings: {
@@ -8388,6 +8445,27 @@ export interface operations {
             503: components["responses"]["ServiceUnavailable"];
         };
     };
+    getPanelLanguage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The default language, or an empty string to follow the browser. */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PanelLanguage"];
+                };
+            };
+        };
+    };
     logout: {
         parameters: {
             query?: never;
@@ -9231,6 +9309,64 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             /** @description The policy changed; reload before saving. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getDefaultLanguage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current default language and revision. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DefaultLanguageSettings"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    setDefaultLanguage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DefaultLanguageSettings"];
+            };
+        };
+        responses: {
+            /** @description Saved language and new revision. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DefaultLanguageSettings"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description The default language changed; reload before saving. */
             409: {
                 headers: {
                     [name: string]: unknown;

@@ -39,7 +39,7 @@ describe("the panel language on a first visit", () => {
 
     expect(i18n.language).toBe("zh-CN");
     expect(i18n.t("common:loading")).toBe(i18n.getFixedT("zh-CN")("common:loading"));
-    expect(localStorage.getItem("felis-lang")).toBe("zh-CN");
+    expect(localStorage.getItem("felis-lang")).toBeNull();
   });
 
   it.each([[["en-GB"]], [["en-US", "zh-CN"]], [["fr-FR", "de"]], [[]]])(

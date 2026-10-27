@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
+import i18next from "i18next";
 import { MemoryRouter } from "react-router-dom";
 import { PlatformSettingsPage } from "./PlatformSettingsPage";
 import type { WakePolicySettings } from "@/lib/types";
-const calls = vi.hoisted(() => ({ getEntryPolicy: vi.fn(), setEntryPolicy: vi.fn(), fleet: vi.fn(), getWakePolicy: vi.fn(), setWakePolicy: vi.fn(), nodes: vi.fn(), nodeTasks: vi.fn(), nodeTask: vi.fn(), startNodeTask: vi.fn(), retryNodeTask: vi.fn(), getMailSettings: vi.fn(), getArchivePolicy: vi.fn(), getFailoverPolicy: vi.fn(), getHeartbeat: vi.fn(), hostOverview: vi.fn(), getSelfServiceQuota: vi.fn(), setSelfServiceQuota: vi.fn() }));
+const calls = vi.hoisted(() => ({ getEntryPolicy: vi.fn(), setEntryPolicy: vi.fn(), fleet: vi.fn(), getWakePolicy: vi.fn(), setWakePolicy: vi.fn(), getDefaultLanguage: vi.fn(), setDefaultLanguage: vi.fn(), nodes: vi.fn(), nodeTasks: vi.fn(), nodeTask: vi.fn(), startNodeTask: vi.fn(), retryNodeTask: vi.fn(), getMailSettings: vi.fn(), getArchivePolicy: vi.fn(), getFailoverPolicy: vi.fn(), getHeartbeat: vi.fn(), hostOverview: vi.fn(), getSelfServiceQuota: vi.fn(), setSelfServiceQuota: vi.fn() }));
 vi.mock("@/lib/api", async (original) => ({ ...await original<typeof import("@/lib/api")>(), api: calls }));
 const runtime = vi.hoisted(() => ({ distributed: false, fallback: false, apiBase: "/api/v1", rootDomain: "example.test" }));
 vi.mock("@/lib/hooks", async (original) => ({ ...await original<typeof import("@/lib/hooks")>(), useConfig: () => runtime }));
@@ -15,6 +16,11 @@ const cooldown = () => screen.getByRole("spinbutton", { name: "Wake cooldown (0â
 function page(tab?: string) { render(<MemoryRouter initialEntries={[tab ? `/admin/platform?tab=${tab}` : "/admin/platform"]}><PlatformSettingsPage /></MemoryRouter>); }
 const overview = { host: "ctl-a", at: "2026-10-12T00:00:00Z", version: "v1", disks: [], units: [], proxy: {}, alerts: [], databaseBackups: [], offsite: { configured: false, keyKept: false },
   settings: { dbBackupTime: "03:30", dbBackupKeep: 14, velocityXmx: "1G" }, connection: { mode: "local", panelHost: "console.example.test", adminHost: "op.console.example.test" }, storage: { mode: "local" }, rootDomain: "example.test" };
+beforeAll(() => {
+  Element.prototype.hasPointerCapture ??= () => false;
+  Element.prototype.releasePointerCapture ??= () => {};
+  Element.prototype.scrollIntoView ??= () => {};
+});
 beforeEach(() => {
   vi.clearAllMocks();
   runtime.distributed = false;
@@ -31,6 +37,8 @@ beforeEach(() => {
   calls.hostOverview.mockResolvedValue(overview);
   calls.getSelfServiceQuota.mockResolvedValue({ enabled: false, max_servers: null, max_cpu_milli: null, max_memory_mb: null, max_storage_gb: null, revision: "" });
   calls.setWakePolicy.mockImplementation(async (body) => ({ ...body, revision: "saved", managed: true }));
+  calls.getDefaultLanguage.mockResolvedValue({ language: "", revision: "language-initial" });
+  calls.setDefaultLanguage.mockImplementation(async (body) => ({ ...body, revision: "language-saved" }));
 });
 describe("platform policy", () => {
   it("keeps the form visible during loading without offering placeholder values as saved configuration", async () => {
@@ -63,6 +71,26 @@ describe("platform policy", () => {
   });
 });
 
+describe("default interface language", () => {
+  it("saves the selected language with the revision that was read and keeps the draft after a conflict", async () => {
+    const user = userEvent.setup();
+    page();
+    const field = await screen.findByRole("combobox", { name: i18next.t("admin:default_language_label") });
+    await waitFor(() => expect(field).toHaveProperty("disabled", false));
+    await user.click(field);
+    await user.click(await screen.findByRole("option", { name: "English" }));
+    const save = screen.getByRole("button", { name: i18next.t("admin:default_language_save") });
+    calls.setDefaultLanguage.mockRejectedValueOnce({ status: 409, code: "conflict", message: "changed" });
+    await user.click(save);
+    await screen.findByText(i18next.t("errors:conflict"));
+    expect(field.textContent).toContain("English");
+    await user.click(save);
+    await screen.findByText(i18next.t("admin:default_language_saved"));
+    expect(calls.setDefaultLanguage).toHaveBeenLastCalledWith({ language: "en-US", revision: "language-initial" });
+    expect(save).toHaveProperty("disabled", true);
+  });
+});
+
 describe("page reload", () => {
   it("rereads every card from the header button and waits while a card holds unsaved changes", async () => {
     runtime.distributed = true;
@@ -71,7 +99,7 @@ describe("page reload", () => {
     const lobby = screen.getByRole("radio", { name: /^Lobby/ });
     await waitFor(() => expect(lobby).toHaveProperty("disabled", false));
     const reload = screen.getByRole("button", { name: "Reload" });
-    const reads = [calls.getWakePolicy, calls.getEntryPolicy, calls.fleet, calls.getMailSettings, calls.getArchivePolicy, calls.getHeartbeat, calls.getFailoverPolicy, calls.nodes, calls.nodeTasks, calls.hostOverview];
+    const reads = [calls.getWakePolicy, calls.getDefaultLanguage, calls.getEntryPolicy, calls.fleet, calls.getMailSettings, calls.getArchivePolicy, calls.getHeartbeat, calls.getFailoverPolicy, calls.nodes, calls.nodeTasks, calls.hostOverview];
     await waitFor(() => { for (const read of reads) expect(read).toHaveBeenCalled(); });
     const before = reads.map((read) => read.mock.calls.length);
     await userEvent.click(reload);
