@@ -9,6 +9,7 @@ import i18next from "i18next";
 import { ServerFiles } from "./ServerFiles";
 import { humanizeError } from "@/lib/api";
 import { ONE_REQUEST_BYTES } from "@/components/files/useUploads";
+import { ToastProvider } from "@/components/Toaster";
 import { OP_POLL_MS } from "@/components/files/sessionUpload";
 import { EXPORT_POLL_MS } from "@/lib/download";
 import { STATUS_POLL_FAST_MS } from "@/lib/hooks";
@@ -96,11 +97,13 @@ const t = (key: string) => i18next.t(key);
 
 function renderFiles(strict = false) {
   return render(
-    <MemoryRouter initialEntries={["/servers/lobby/files"]}>
-      <Routes>
-        <Route path="/servers/:name/files" element={<ServerFiles />} />
-      </Routes>
-    </MemoryRouter>,
+    <ToastProvider>
+      <MemoryRouter initialEntries={["/servers/lobby/files"]}>
+        <Routes>
+          <Route path="/servers/:name/files" element={<ServerFiles />} />
+        </Routes>
+      </MemoryRouter>
+    </ToastProvider>,
     { wrapper: strict ? StrictMode : undefined },
   );
 }
@@ -279,6 +282,19 @@ describe("file manager actions", () => {
     opsNow = [fileOp({ op: "move", path: "world", state: "succeeded" })];
     await userEvent.click(screen.getByRole("button", { name: t("files:refresh") }));
     await waitFor(() => expect(screen.queryByRole("button", { name: paste })).toBeNull());
+  });
+
+  it("announces a move that finishes after this page started it", async () => {
+    mocks.listServerFiles.mockResolvedValue({ entries: [{ name: "notes.txt", size: 2, is_dir: false, mod_time: "" }, { name: "world", size: 0, is_dir: true, mod_time: "" }] });
+    mocks.transferServerFiles.mockResolvedValue({ op: fileOp({ op: "move", path: "world" }) });
+    renderFiles();
+    await userEvent.click(await screen.findByRole("checkbox", { name: label("select_item", "notes.txt") }));
+    await userEvent.click(screen.getByRole("button", { name: t("files:cut") }));
+    await userEvent.click(screen.getByRole("button", { name: label("open_folder", "world") }));
+    await userEvent.click(screen.getByRole("button", { name: i18next.t("files:paste_count", { count: 1 }) }));
+    opsNow = [fileOp({ op: "move", path: "world", state: "succeeded" })];
+    await userEvent.click(screen.getByRole("button", { name: t("files:refresh") }));
+    expect(await within(screen.getByRole("region", { name: t("common:notifications") })).findByText(t("files:op_finished_move"))).toBeTruthy();
   });
 
   it("starts URL downloads with a world acknowledgement and preserves the entered path", async () => {

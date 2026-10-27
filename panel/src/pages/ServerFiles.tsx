@@ -26,6 +26,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { MessageLine } from "@/components/MessageLine";
+import { useToast } from "@/components/Toaster";
 import { InlineConfirm } from "@/components/InlineConfirm";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { NameDialog } from "@/components/files/NameDialog";
@@ -43,6 +44,7 @@ import { touchesWorld } from "@/components/files/worldPaths";
 import { useFileWorldConfirmation } from "@/components/files/useFileWorldConfirmation";
 import { useFileOps } from "@/components/files/useFileOps";
 import { useUploads } from "@/components/files/useUploads";
+import { opErrorText } from "@/components/files/opText";
 import { holderText, useWorldJobs } from "@/components/files/useWorldJobs";
 import {
   SECRET_CONFIG_PATH,
@@ -117,11 +119,20 @@ type Naming =
   | { kind: "file" | "folder"; dir: string }
   | { kind: "rename"; dir: string; entry: ServerFileEntry };
 
+const OP_FINISHED_KEY = {
+  copy: "op_finished_copy",
+  move: "op_finished_move",
+  zip: "op_finished_zip",
+  unzip: "op_finished_unzip",
+  upload: "op_finished_upload",
+} as const;
+
 /** World changes on a running server need an explicit acknowledgement. */
 export function ServerFiles() {
   const { name = "" } = useParams();
   const [params] = useSearchParams();
   const { t, i18n } = useTranslation("files");
+  const toast = useToast();
   const locale = i18n.language;
   const { isAdmin, loading: tierLoading } = useTier();
 
@@ -409,8 +420,11 @@ export function ServerFiles() {
       if (request?.kind === "transfer" && request.op === "move") setClipboard(null);
       void load(dir);
       reloadWorlds();
+      toast.success(t(OP_FINISHED_KEY[op.op]));
     } else if (op.error?.code === "file_exists" && startedHere.current.has(op.id)) {
       showConflicts(op);
+    } else {
+      toast.error(opErrorText(op.op, op.error ?? { code: "job_failed", message: "" }));
     }
   }
   const fileOps = useFileOps(name, owned && accessible, opEnded);
@@ -433,10 +447,10 @@ export function ServerFiles() {
   }, []);
 
   // The listing is reread once the queue has drained, since every listing is a Job.
-  const landedSince = useRef(false);
+  const landedCount = useRef(0);
   const uploads = useUploads(name, {
     onLanded: () => {
-      landedSince.current = true;
+      landedCount.current += 1;
     },
     onOp: fileOps.ignore,
     beforeUpload: (path) => requireWorldConfirmation([path]),
@@ -455,11 +469,13 @@ export function ServerFiles() {
           ? t(holderText(held))
           : t("wait_for_uploads");
   useEffect(() => {
-    if (uploads.busy || !landedSince.current) return;
-    landedSince.current = false;
+    if (uploads.busy || landedCount.current === 0) return;
+    const count = landedCount.current;
+    landedCount.current = 0;
     void load(dir);
     reloadWorlds();
-  }, [uploads.busy, dir, load, reloadWorlds]);
+    toast.success(t("upload_batch_done", { count }));
+  }, [uploads.busy, dir, load, reloadWorlds, t, toast]);
   useUnsavedGuard(uploads.busy);
   // A file dropped outside the list would be opened by the browser, taking the queue with it; the list claims its own drops first.
   useEffect(() => {

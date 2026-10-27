@@ -8,6 +8,7 @@ import { RequireAuth } from "@/components/RequireAuth";
 import { RequireOwner } from "@/components/RequireOwner";
 import { SetupRequiredRedirect } from "@/components/SetupRequiredRedirect";
 import { Loading } from "@/components/States";
+import { ToastProvider } from "@/components/Toaster";
 import { ValidParam } from "@/components/ValidParam";
 import { SERVER_NAME_PARAM, USER_ID_PARAM } from "@/lib/params";
 import { Login } from "@/pages/Login";
@@ -72,6 +73,7 @@ const AuthSourcesPage = lazyWithReload(() => import("@/pages/admin/AuthSourcesPa
 export default function App() {
   return (
     <ThemeProvider>
+      <ToastProvider>
       <TierProvider>
         <BrowserRouter>
         <SetupRequiredRedirect />
@@ -144,6 +146,7 @@ export default function App() {
         </Routes>
       </BrowserRouter>
     </TierProvider>
+      </ToastProvider>
   </ThemeProvider>
   );
 }

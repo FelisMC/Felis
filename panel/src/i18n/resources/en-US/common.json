@@ -43,5 +43,7 @@
   "copy_address": "Copy address {{address}}",
   "address_copied": "Copied",
   "address_copy_failed": "Selected — copy it from the menu",
-  "refresh_failed": "Refresh failed. The last successfully retrieved status is displayed."
+  "refresh_failed": "Refresh failed. The last successfully retrieved status is displayed.",
+  "notifications": "Notifications",
+  "dismiss_notification": "Dismiss notification"
 }
