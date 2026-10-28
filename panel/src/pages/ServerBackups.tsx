@@ -17,7 +17,6 @@ import {
   XCircle,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { BackLink } from "@/components/BackLink";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -31,9 +30,9 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { PhaseBadge, pendingPower, shownPhase, startFailure } from "@/components/PhaseBadge";
+import { pendingPower, shownPhase, startFailure } from "@/components/PhaseBadge";
 import { Loading, ErrorState, EmptyState, NotYours, RefreshError } from "@/components/States";
-import { PageHeader } from "@/components/PageHeader";
+import { TabHeader } from "@/components/TabHeader";
 import { Pagination } from "@/components/Pagination";
 import { api, humanizeError } from "@/lib/api";
 import { awaitExport, saveDownload } from "@/lib/download";
@@ -686,14 +685,10 @@ export function ServerBackups() {
     }
   }
 
-  const back = (
-    <BackLink to={`/servers/${name}`} label={t("back_to_console")} />
-  );
 
   if (statusQ.loading && !statusQ.data) {
     return (
       <>
-        {back}
         <Loading />
       </>
     );
@@ -701,12 +696,11 @@ export function ServerBackups() {
   if (statusQ.error && !statusQ.data) {
     return (
       <>
-        {back}
         <ErrorState error={statusQ.error} onRetry={statusQ.reload} />
       </>
     );
   }
-  if (!statusQ.data) return back;
+  if (!statusQ.data) return null;
 
   const now = Date.now();
   const locale = i18n.language;
@@ -722,10 +716,8 @@ export function ServerBackups() {
   );
 
   const header = (
-    <PageHeader
-      icon={Archive}
-      title={statusQ.data.displayName || statusQ.data.name}
-      subtitle={t("title")}
+    <TabHeader
+      description={t("servers:backups_link_desc")}
       actions={
         <div className="flex items-center gap-2">
           {owned && (
@@ -778,16 +770,13 @@ export function ServerBackups() {
               {backingUp ? t("backup_in_progress") : t("backup_now")}
             </Button>
           )}
-          <PhaseBadge phase={phase} failure={startFailure(statusQ.data)} autoRestarts={statusQ.data.autoRestarts} />
         </div>
       }
-      className="mb-6"
     />
   );
 
   return (
     <>
-      {back}
       {header}
       {!!statusQ.error && <RefreshError error={statusQ.error} className="mb-4" />}
       {pending ? (

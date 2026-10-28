@@ -2,7 +2,6 @@ import { useState } from "react";
 import { useParams } from "react-router-dom";
 import { Shield, Users, Search, Plus, Trash2, Undo, History, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { BackLink } from "@/components/BackLink";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -15,9 +14,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { PhaseBadge, shownPhase, startFailure } from "@/components/PhaseBadge";
+import { shownPhase, startFailure } from "@/components/PhaseBadge";
 import { Loading, ErrorState, NotYours, NotRunning, RefreshError } from "@/components/States";
-import { PageHeader } from "@/components/PageHeader";
+import { TabHeader } from "@/components/TabHeader";
 import { api, humanizeError } from "@/lib/api";
 import { STATUS_POLL_SLOW_MS, STATUS_POLL_FAST_MS, useAsync, usePolling } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
@@ -323,14 +322,10 @@ export function ServerLuckPerms() {
     }
   };
 
-  const back = (
-    <BackLink to={`/servers/${name}`} label={t("luckperms_back_to_console")} />
-  );
 
   if (loading && !data) {
     return (
       <>
-        {back}
         <Loading />
       </>
     );
@@ -338,31 +333,21 @@ export function ServerLuckPerms() {
   if (error && !data) {
     return (
       <>
-        {back}
         <ErrorState error={error} onRetry={reload} />
       </>
     );
   }
-  if (!data) return back;
+  if (!data) return null;
 
   const pending = ownershipPending(tierLoading, isAdmin, mine, mineError);
   const owned = canManage(isAdmin, mine, name);
   const phase = shownPhase(data);
   const failure = startFailure(data);
 
-  const header = (
-    <PageHeader
-      icon={Shield}
-      title={data.displayName || data.name}
-      subtitle={t("luckperms_desc")}
-      actions={<PhaseBadge phase={phase} failure={failure} autoRestarts={data.autoRestarts} />}
-      className="mb-6"
-    />
-  );
+  const header = <TabHeader description={t("servers:luckperms_desc")} />;
 
   return (
     <>
-      {back}
       {header}
       {error && <RefreshError error={error} className="mb-4" />}
       {pending ? (

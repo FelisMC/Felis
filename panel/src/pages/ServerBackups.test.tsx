@@ -227,7 +227,6 @@ describe("ServerBackups back up now", () => {
     renderPage();
     await screen.findByText("Page 1 of 3");
     expect(backUp().disabled).toBe(true);
-    expect(screen.getByText("Starting")).toBeTruthy();
   });
 
   it.each([

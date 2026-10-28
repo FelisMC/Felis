@@ -42,6 +42,12 @@ const ServerSchedules = lazyWithReload(() =>
 const ServerLuckPerms = lazyWithReload(() =>
   import("@/pages/ServerLuckPerms").then((m) => ({ default: m.ServerLuckPerms })),
 );
+const ServerLayout = lazyWithReload(() =>
+  import("@/pages/ServerLayout").then((m) => ({ default: m.ServerLayout })),
+);
+const ServerSettings = lazyWithReload(() =>
+  import("@/pages/ServerSettings").then((m) => ({ default: m.ServerSettings })),
+);
 const Account = lazyWithReload(() => import("@/pages/Account").then((m) => ({ default: m.Account })));
 const MySubmissionsPage = lazyWithReload(() =>
   import("@/pages/MySubmissionsPage").then((m) => ({ default: m.MySubmissionsPage })),
@@ -111,13 +117,16 @@ export default function App() {
                 path="servers/:name"
                 element={<ValidParam param="name" pattern={SERVER_NAME_PARAM} />}
               >
-                <Route index element={<ServerConsole />} />
-                <Route path="players" element={<ServerPlayers />} />
-                <Route path="backups" element={<ServerBackups />} />
-                <Route path="files" element={<ServerFiles />} />
-                <Route path="extensions" element={<ServerExtensions />} />
-                <Route path="schedules" element={<ServerSchedules />} />
-                <Route path="luckperms" element={<ServerLuckPerms />} />
+                <Route element={<ServerLayout />}>
+                  <Route index element={<ServerConsole />} />
+                  <Route path="players" element={<ServerPlayers />} />
+                  <Route path="backups" element={<ServerBackups />} />
+                  <Route path="files" element={<ServerFiles />} />
+                  <Route path="extensions" element={<ServerExtensions />} />
+                  <Route path="schedules" element={<ServerSchedules />} />
+                  <Route path="luckperms" element={<ServerLuckPerms />} />
+                  <Route path="settings" element={<ServerSettings />} />
+                </Route>
               </Route>
               <Route path="submissions" element={<MySubmissionsPage />} />
               <Route path="account" element={<Account />} />

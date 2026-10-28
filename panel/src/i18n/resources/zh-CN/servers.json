@@ -624,5 +624,18 @@
   "edit_server_tags_characters": "标签不得包含逗号或控制字符。",
   "edit_server_tags_full": "每台服务器最多 {{max}} 个标签。",
   "edit_server_owner": "所有者",
-  "edit_server_owner_change": "更改所有者"
+  "edit_server_owner_change": "更改所有者",
+  "server_tabs": "服务器功能",
+  "tab_console": "控制台",
+  "tab_files": "文件",
+  "tab_players": "玩家",
+  "tab_backups": "备份",
+  "tab_schedules": "计划任务",
+  "tab_extensions": "插件与模组",
+  "tab_luckperms": "LuckPerms",
+  "tab_settings": "设置",
+  "header_players": "在线 {{online}}/{{max}}",
+  "settings_none_title": "没有可修改的设置",
+  "settings_none_hint": "这台服务器的设置由其所有者或管理员管理。",
+  "settings_danger_zone": "危险操作"
 }

@@ -630,5 +630,18 @@
   "edit_server_tags_characters": "A tag must not contain commas or control characters.",
   "edit_server_tags_full": "A server takes at most {{max}} tags.",
   "edit_server_owner": "Owner",
-  "edit_server_owner_change": "Change owner"
+  "edit_server_owner_change": "Change owner",
+  "server_tabs": "Server sections",
+  "tab_console": "Console",
+  "tab_files": "Files",
+  "tab_players": "Players",
+  "tab_backups": "Backups",
+  "tab_schedules": "Schedules",
+  "tab_extensions": "Plugins and mods",
+  "tab_luckperms": "LuckPerms",
+  "tab_settings": "Settings",
+  "header_players": "{{online}}/{{max}} online",
+  "settings_none_title": "No settings to change",
+  "settings_none_hint": "This server's settings are managed by its owner or an admin.",
+  "settings_danger_zone": "Danger zone"
 }

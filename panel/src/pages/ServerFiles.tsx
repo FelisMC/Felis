@@ -9,7 +9,6 @@ import {
   FilePlus,
   FileText,
   Folder,
-  FolderOpen,
   FolderPlus,
   Loader2,
   Search,
@@ -21,7 +20,6 @@ import {
   Upload,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { BackLink } from "@/components/BackLink";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -62,11 +60,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { PhaseBadge, shownPhase, startFailure } from "@/components/PhaseBadge";
+import { startFailure } from "@/components/PhaseBadge";
 import { PowerButton } from "@/components/PowerButton";
 import { DiskUsage } from "@/components/ResourceUsage";
 import { Loading, ErrorState, NotYours, EmptyState } from "@/components/States";
-import { PageHeader } from "@/components/PageHeader";
+import { TabHeader } from "@/components/TabHeader";
 import { api, humanizeError } from "@/lib/api";
 import { STATUS_POLL_FAST_MS, useAsync, usePolling, useUnsavedGuard } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
@@ -755,11 +753,9 @@ export function ServerFiles() {
     }
   }
 
-  const back = <BackLink to={`/servers/${name}`} label={t("back_to_console")} />;
   if (statusQ.loading && !statusQ.data) {
     return (
       <>
-        {back}
         <Loading />
       </>
     );
@@ -769,12 +765,11 @@ export function ServerFiles() {
   if (statusQ.error && !statusQ.data) {
     return (
       <>
-        {back}
         <ErrorState error={statusQ.error} onRetry={statusQ.reload} />
       </>
     );
   }
-  if (!statusQ.data) return back;
+  if (!statusQ.data) return null;
 
   const now = Date.now();
   const segments = dir === "" ? [] : dir.split("/");
@@ -788,19 +783,10 @@ export function ServerFiles() {
       {statusQ.data.diskFull && <p className="text-xs text-muted-foreground">{t("disk_cleanup_hint")}</p>}
     </div>
   );
-  const header = (
-    <PageHeader
-      icon={FolderOpen}
-      title={statusQ.data.displayName || statusQ.data.name}
-      subtitle={t("title")}
-      actions={<PhaseBadge phase={shownPhase(statusQ.data)} />}
-      className="mb-6"
-    />
-  );
+  const header = <TabHeader description={t("servers:files_link_desc")} />;
 
   return (
     <>
-      {back}
       {header}
       {pending ? (
         <Loading />

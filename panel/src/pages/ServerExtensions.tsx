@@ -1,12 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { FolderOpen, Loader2, Puzzle, RefreshCw, Trash2, Upload } from "lucide-react";
+import { FolderOpen, Loader2, RefreshCw, Trash2, Upload } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { BackLink } from "@/components/BackLink";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { MessageLine } from "@/components/MessageLine";
-import { PageHeader } from "@/components/PageHeader";
-import { PhaseBadge, shownPhase } from "@/components/PhaseBadge";
+import { TabHeader } from "@/components/TabHeader";
 import { EmptyState, ErrorState, Loading, NotYours, RefreshError } from "@/components/States";
 import { UploadQueue } from "@/components/files/UploadQueue";
 import { useFileOps } from "@/components/files/useFileOps";
@@ -132,14 +130,11 @@ function InstalledExtensions({ name }: { name: string }) {
   }
 
   const entries = listing.data?.entries ?? [];
-  const back = <BackLink to={`/servers/${name}`} label={t("files:back_to_console")} />;
-  if (status.loading && !status.data) return <>{back}<Loading /></>;
-  if (status.error && !status.data) return <>{back}<ErrorState error={status.error} onRetry={status.reload} /></>;
-  if (!status.data) return back;
+  if (status.loading && !status.data) return <Loading />;
+  if (status.error && !status.data) return <ErrorState error={status.error} onRetry={status.reload} />;
+  if (!status.data) return null;
   return <>
-    {back}
-    <PageHeader icon={Puzzle} title={status.data.displayName || status.data.name} subtitle={t("extensions_title")}
-      actions={<PhaseBadge phase={shownPhase(status.data)} />} className="mb-6" />
+    <TabHeader description={t("servers:extensions_link_desc")} />
     {pending ? <Loading /> : mine.error ? <ErrorState error={mine.error} onRetry={mine.reload} /> : !owned ?
       <NotYours title={t("extensions_not_yours_title")} body={t("extensions_not_yours_body")} /> :
       <div className="space-y-4">

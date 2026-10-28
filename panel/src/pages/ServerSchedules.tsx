@@ -30,7 +30,6 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
-import { BackLink } from "@/components/BackLink";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -41,9 +40,8 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ConfirmFooter } from "@/components/ConfirmFooter";
 import { InlineError, MessageLine } from "@/components/MessageLine";
-import { PhaseBadge, shownPhase, startFailure } from "@/components/PhaseBadge";
 import { EmptyState, ErrorState, Loading, NotYours, RefreshError } from "@/components/States";
-import { PageHeader } from "@/components/PageHeader";
+import { TabHeader } from "@/components/TabHeader";
 import { SegmentedControl } from "@/components/SegmentedControl";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync, usePolling, STATUS_POLL_FAST_MS, STATUS_POLL_SLOW_MS } from "@/lib/hooks";
@@ -1139,12 +1137,10 @@ export function ServerSchedules() {
     }
   }
 
-  const back = <BackLink to={`/servers/${name}`} label={t("back_to_console")} />;
 
   if (statusQ.loading && !statusQ.data) {
     return (
       <>
-        {back}
         <Loading />
       </>
     );
@@ -1152,12 +1148,11 @@ export function ServerSchedules() {
   if (statusQ.error && !statusQ.data) {
     return (
       <>
-        {back}
         <ErrorState error={statusQ.error} onRetry={statusQ.reload} />
       </>
     );
   }
-  if (!statusQ.data) return back;
+  if (!statusQ.data) return null;
 
   const now = Date.now();
   const locale = i18n.language;
@@ -1180,10 +1175,8 @@ export function ServerSchedules() {
   ];
 
   const header = (
-    <PageHeader
-      icon={CalendarClock}
-      title={statusQ.data.displayName || statusQ.data.name}
-      subtitle={t("title")}
+    <TabHeader
+      description={t("servers:schedules_link_desc")}
       actions={
         <div className="flex items-center gap-2">
           {owned && list && (
@@ -1194,14 +1187,8 @@ export function ServerSchedules() {
               </Button>
             </Why>
           )}
-          <PhaseBadge
-            phase={shownPhase(statusQ.data)}
-            failure={startFailure(statusQ.data)}
-            autoRestarts={statusQ.data.autoRestarts}
-          />
         </div>
       }
-      className="mb-6"
     />
   );
 
@@ -1280,7 +1267,6 @@ export function ServerSchedules() {
 
   return (
     <>
-      {back}
       {header}
       {!!statusQ.error && <RefreshError error={statusQ.error} className="mb-4" />}
       {pending ? (

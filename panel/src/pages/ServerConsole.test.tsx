@@ -4,6 +4,9 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
 import { ServerConsole } from "./ServerConsole";
+import { ServerLayout } from "./ServerLayout";
+import { ServerSettings } from "./ServerSettings";
+import { ValidParam } from "@/components/ValidParam";
 import { STATUS_POLL_FAST_MS, STATUS_POLL_SLOW_MS } from "@/lib/hooks";
 import { humanizeError } from "@/lib/api";
 import i18next from "i18next";
@@ -48,12 +51,20 @@ beforeEach(() => {
   calls.serverConsoleHistory.mockResolvedValue({ content: "", content_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", has_more: false, byte_limited: false });
 });
 
-function renderConsole() {
+// The routes App mounts: the layout keyed by the name, the console as its index and the settings tab.
+const serverRoutes = (
+  <Route path="/servers/:name" element={<ValidParam param="name" pattern={/^[a-z0-9-]+$/} />}>
+    <Route element={<ServerLayout />}>
+      <Route index element={<ServerConsole />} />
+      <Route path="settings" element={<ServerSettings />} />
+    </Route>
+  </Route>
+);
+
+function renderConsole(path = "/servers/survival") {
   render(
-    <MemoryRouter initialEntries={["/servers/survival"]}>
-      <Routes>
-        <Route path="/servers/:name" element={<ServerConsole />} />
-      </Routes>
+    <MemoryRouter initialEntries={[path]}>
+      <Routes>{serverRoutes}</Routes>
     </MemoryRouter>,
   );
 }
@@ -142,10 +153,11 @@ describe("ServerConsole edit dialog", () => {
     tier.isAdmin = role === "admin";
     calls.myServers.mockResolvedValue([{ name: "survival", owned: role === "owner" }]);
     calls.status.mockResolvedValue(status({ phase: "Running", desiredState: "Running", extraPorts: [{ protocol: "UDP", port: 24454, nodePort: 31001, address: "203.0.113.10:31001" }], extraPortsPending: true }));
-    renderConsole();
-    await screen.findByTestId("log-stream");
+    renderConsole("/servers/survival/settings");
+    await screen.findByRole("navigation", { name: "Server sections" });
     const region = { name: i18next.t("servers:extra_ports_title") };
     if (role === "viewer") {
+      await waitFor(() => expect(calls.myServers).toHaveBeenCalled());
       expect(screen.queryByRole("region", region)).toBeNull();
       return;
     }
@@ -160,7 +172,7 @@ describe("ServerConsole edit dialog", () => {
     calls.status.mockResolvedValue(
       status({ phase: "Stopped", desiredState: "Stopped", memory: "4Gi", javaMemory: "3072M", cpu: "2" }),
     );
-    renderConsole();
+    renderConsole("/servers/survival/settings");
 
     await userEvent.setup().click(await screen.findByRole("button", { name: /Edit Server Config/ }));
     const memory = (await screen.findByLabelText("Memory")) as HTMLInputElement;
@@ -171,12 +183,12 @@ describe("ServerConsole edit dialog", () => {
 });
 
 describe("ServerConsole doorways", () => {
-  it("links to the server's scheduled tasks while it is stopped", async () => {
+  it("links to the server's scheduled tasks from the section tabs while it is stopped", async () => {
     calls.status.mockResolvedValue(status({ phase: "Stopped", desiredState: "Stopped" }));
     renderConsole();
 
-    const link = await screen.findByRole("link", { name: /^Scheduled tasks/ });
-    expect(link.getAttribute("href")).toBe("/servers/survival/schedules");
+    const tabs = within(await screen.findByRole("navigation", { name: "Server sections" }));
+    expect(tabs.getByRole("link", { name: "Schedules" }).getAttribute("href")).toBe("/servers/survival/schedules");
   });
 });
 
@@ -320,7 +332,7 @@ describe("ServerConsole retirement", () => {
     tier.isAdmin = false;
     calls.myServers.mockResolvedValue(mine(true));
     calls.status.mockResolvedValue(stopped());
-    renderConsole();
+    renderConsole("/servers/survival/settings");
 
     const more = await screen.findByRole("button", { name: "More actions" });
     expect(giveUp()).toBeNull();
@@ -331,7 +343,7 @@ describe("ServerConsole retirement", () => {
 
   it("offers an admin both", async () => {
     calls.status.mockResolvedValue(stopped());
-    renderConsole();
+    renderConsole("/servers/survival/settings");
 
     const more = await screen.findByRole("button", { name: "More actions" });
     expect(del()).toBeNull();
@@ -344,19 +356,18 @@ describe("ServerConsole retirement", () => {
     tier.isAdmin = false;
     calls.myServers.mockResolvedValue(mine(false));
     calls.status.mockResolvedValue(stopped());
-    renderConsole();
+    renderConsole("/servers/survival/settings");
 
-    expect(await screen.findByText("Server is asleep")).toBeTruthy();
+    await screen.findByRole("navigation", { name: "Server sections" });
     await waitFor(() => expect(calls.myServers).toHaveBeenCalled());
     expect(giveUp()).toBeNull();
-    expect(calls.serverConsoleHistory).not.toHaveBeenCalled();
   });
 
   it("offers nothing for a system server", async () => {
     calls.status.mockResolvedValue(stopped({ reaperExempt: true }));
-    renderConsole();
+    renderConsole("/servers/survival/settings");
 
-    expect(await screen.findByRole("region", { name: i18next.t("servers:log_history_title") })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /Edit Server Config/ })).toBeTruthy();
     expect(giveUp()).toBeNull();
     expect(del()).toBeNull();
   });
@@ -371,6 +382,8 @@ describe("ServerConsole retirement", () => {
     expect(screen.getByRole("button", { name: "Cancel request" })).toBeTruthy();
     expect(screen.getByText("Given up")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Wake" })).toBeNull();
+    await userEvent.click(screen.getByRole("link", { name: "Settings" }));
+    await screen.findByRole("button", { name: /Edit Server Config/ });
     expect(giveUp()).toBeNull();
   });
 });
@@ -562,7 +575,7 @@ describe("ServerConsole command line", () => {
     calls.sendCommand.mockImplementation(() => new Promise<ConsoleCommandResult>((done) => { resolve = done; }));
     render(<MemoryRouter initialEntries={["/servers/survival"]}>
       <Link to="/servers/second">Switch server</Link>
-      <Routes><Route path="/servers/:name" element={<ServerConsole />} /></Routes>
+      <Routes>{serverRoutes}</Routes>
     </MemoryRouter>);
     const first = await screen.findByRole("textbox", { name: "Server command" });
     fireEvent.change(first, { target: { value: "say old server" } });
@@ -646,8 +659,6 @@ describe("startup diagnostics and stale state", () => {
     expect(await screen.findByText("Waiting for resources and scheduling")).toBeTruthy();
     expect(screen.getByText(/Insufficient schedulable memory/)).toBeTruthy();
     expect(screen.queryByTestId("log-stream")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Delete server" })).toBeNull();
-    expect(screen.getByRole("button", { name: "More actions" })).toBeTruthy();
   });
   it("does not claim a live startup state when the API is unavailable, and recovers automatically", async () => {
     calls.status.mockResolvedValue(status({ phase: "Starting", desiredState: "Running", startup: { stage: "booting", logsAvailable: true } }));
@@ -700,7 +711,7 @@ describe("ServerConsole crashes and host restarts", () => {
   it("says nothing about an idle stop or a stop that was started again", async () => {
     calls.status.mockResolvedValue(status({ phase: "Stopped", desiredState: "Stopped", autoStop: { reason: "Idle", at: ago(3) } }));
     renderConsole();
-    await screen.findByRole("button", { name: /Edit Server Config/ });
+    await screen.findByRole("link", { name: "Console" });
     expect(screen.queryByRole("status", { name: /crash|host restart/ })).toBeNull();
   });
 
