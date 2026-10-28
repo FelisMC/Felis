@@ -28,6 +28,8 @@ import { formatBytes, splitImageRef } from "@/lib/format";
 import { DISPLAY_NAME_MAX } from "@/lib/naming";
 import { MAX_SERVER_TAGS, MAX_SERVER_TAG_LENGTH, mergeTags, tagIssue } from "@/lib/tags";
 import { useAsync } from "@/lib/hooks";
+import { useTier } from "@/lib/tier";
+import { AssignServerDialog } from "@/components/AssignServerDialog";
 import type { AutostartPolicy, Phase, ServerExtraPort, ServerNotify, ServerSoftware, ServerStartupSettings } from "@/lib/types";
 import { InlineError } from "@/components/MessageLine";
 import { uploadFile } from "@/components/files/uploadFile";
@@ -214,6 +216,18 @@ export function EditServerDialog({
   const [open, setOpen] = useState(false);
   const admin = mode === "admin";
   const images = useAsync(() => (admin ? api.listImages() : Promise.resolve([])), [admin]);
+  const { isOwner } = useTier();
+  const showOwner = isOwner && !systemService;
+  const [assignOpen, setAssignOpen] = useState(false);
+  // The fleet is the only read that names a server's owner.
+  const fleet = useAsync(() => (showOwner && open ? api.fleet() : Promise.resolve(null)), [showOwner, open]);
+  const ownerRow = fleet.data?.find((s) => s.name === serverName);
+  const ownerName = ownerRow?.owner ?? "";
+  let ownerLabel = ownerName;
+  if (!ownerLabel) {
+    if (fleet.loading && !fleet.data) ownerLabel = "—";
+    else ownerLabel = t(ownerRow && !ownerRow.ownerUnknown ? "ops:fleet_unclaimed" : "ops:fleet_owner_unknown");
+  }
   // What runs the server: server software on the runtime image, or a whitelisted
   // server image (staff only). Changing software is opened on purpose, so a
   // plain settings edit never sends one.
@@ -617,6 +631,27 @@ export function EditServerDialog({
                   ? t(`edit_server_tags_${tagError}`, { length: MAX_SERVER_TAG_LENGTH, max: MAX_SERVER_TAGS })
                   : t("edit_server_tags_hint", { length: MAX_SERVER_TAG_LENGTH, max: MAX_SERVER_TAGS })}
               </p>
+            </div>
+          )}
+
+          {showOwner && (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border p-2.5 text-sm">
+              <div className="min-w-0">
+                <p className="text-xs text-muted-foreground">{t("edit_server_owner")}</p>
+                <p className="truncate font-medium">{ownerLabel}</p>
+              </div>
+              <Button type="button" variant="outline" size="sm" onClick={() => setAssignOpen(true)}>
+                {t("edit_server_owner_change")}
+              </Button>
+              <AssignServerDialog
+                open={assignOpen}
+                onOpenChange={setAssignOpen}
+                server={{ name: serverName, label: currentDisplayName || serverName, owner: ownerName }}
+                onAssigned={() => {
+                  fleet.reload();
+                  onUpdated();
+                }}
+              />
             </div>
           )}
 

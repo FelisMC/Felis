@@ -21,6 +21,7 @@ import type {
   SelfCreateRequest,
   SelfServiceQuotaSettings,
   ServerNotify,
+  ServerAssignment,
   ServerPowerResult,
   ServerTags,
   ServerStartupSettings,
@@ -478,6 +479,13 @@ export const api = rejectingSync({
   // Replaces the whole tag set; the response carries the set as stored.
   setServerTags: (name: string, tags: string[]) =>
     request<ServerTags>("PUT", urlPath`/servers/${name}/tags`, { tags }),
+
+  // Owner only. The preview names the current owner and the quota caps the account would pass.
+  previewServerAssignment: (name: string, userId: string) =>
+    request<ServerAssignment>("GET", urlPath`/servers/${name}/assignment` + `?user_id=${encodeURIComponent(userId)}`),
+
+  assignServer: (name: string, body: { user_id: string; allow_over_quota: boolean }) =>
+    request<ServerAssignment>("POST", urlPath`/servers/${name}/assignment`, body),
 
   // The server strips a leading slash and rejects control chars or >1024 bytes.
   sendCommand: (name: string, command: string) =>
@@ -1359,6 +1367,11 @@ export function humanizeError(e: unknown): string {
       return t("quota_exceeded");
     case "already_claimed":
       return t("already_claimed");
+    // Assigning a server to an account (owner only).
+    case "already_owner":
+      return t("already_owner");
+    case "unknown_user":
+      return t("unknown_user");
     case "image_not_whitelisted":
       return t("image_not_whitelisted");
     // Changing a pinned server image requires confirmation and a registry-held digest.

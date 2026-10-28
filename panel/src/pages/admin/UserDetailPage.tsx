@@ -21,6 +21,7 @@ import {
   AlertTriangle,
   Fingerprint,
   Lock,
+  Server,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -46,6 +47,7 @@ import {
 import { Loading, ErrorState, NotFound } from "@/components/States";
 import { PageHeader } from "@/components/PageHeader";
 import { UserQuotaCard } from "@/components/UserQuotaCard";
+import { AssignServerDialog, userIdentity } from "@/components/AssignServerDialog";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
@@ -65,6 +67,7 @@ export function UserDetailPage() {
     () => api.getUser(id!),
     [id],
   );
+  const [assigning, setAssigning] = useState(false);
 
   if (loading && !user) return <Loading />;
   if (error && (error as Partial<ApiError>).status === 404) {
@@ -117,7 +120,14 @@ export function UserDetailPage() {
           </div>
         )}
         actions={(
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* A disabled button gets no hover events, so the tooltip sits on a wrapper. */}
+            <span title={user.disabled ? t("assign_disabled_user") : undefined}>
+              <Button variant="outline" size="sm" className="gap-1.5" disabled={user.disabled} onClick={() => setAssigning(true)}>
+                <Server className="h-4 w-4" />
+                {t("assign_title")}
+              </Button>
+            </span>
             <UserStatusBadge disabled={user.disabled} />
             <RoleBadge role={user.role} />
           </div>
@@ -138,6 +148,13 @@ export function UserDetailPage() {
 
       {/* Danger zone */}
       <DangerZone user={user} isSelf={identity?.user_id === id} onChanged={reload} navigate={navigate} />
+
+      <AssignServerDialog
+        open={assigning}
+        onOpenChange={setAssigning}
+        user={{ id: user.id, label: user.username, identity: userIdentity(user) }}
+        onAssigned={reload}
+      />
     </div>
   );
 }

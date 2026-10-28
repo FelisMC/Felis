@@ -2238,6 +2238,28 @@ components:
             On the holder's own list only, true on the session the request came in
             on. Absent otherwise.
 
+    QuotaExcess:
+      type: object
+      description: One quota cap the new owner passes with this server; storage is counted in MB.
+      required: [resource, limit, after]
+      properties:
+        resource: { type: string, enum: [servers, cpu_milli, memory_mb, storage_mb] }
+        limit: { type: integer, description: The cap in force. }
+        after: { type: integer, description: The new owner's total including this server. }
+
+    ServerAssignment:
+      type: object
+      required: [name, owner_id, over]
+      properties:
+        name: { type: string }
+        owner_id:
+          type: string
+          description: The current owner in a preview (empty when unclaimed), the new owner after an assignment.
+        over:
+          type: array
+          description: The caps the new owner passes; empty when the server fits the quota.
+          items: { $ref: '#/components/schemas/QuotaExcess' }
+
     APIToken:
       type: object
       description: >-
@@ -3954,6 +3976,76 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '412':
           description: Account not linked (the pointer /account/link/start emits).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/servers/{name}/assignment:
+    get:
+      tags: [admin-servers]
+      operationId: previewServerAssignment
+      summary: Show what giving the server to an account would change (Owner).
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - { name: user_id, in: query, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The current owner and the quota caps the account would pass.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerAssignment' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: already_owner or server_retiring.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    post:
+      tags: [admin-servers]
+      operationId: assignServer
+      summary: Give the server to an account (Owner).
+      description: >
+        Works like a claim by that account: the wake list and the tags are cleared
+        and the server counts towards the new owner's quota. A server that passes
+        the quota is refused with 409 quota_exceeded unless allow_over_quota is
+        true. Audited as server.assign with owner_from, owner_to and over_quota.
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id: { type: string }
+                allow_over_quota: { type: boolean, default: false }
+      responses:
+        '200':
+          description: The new owner and the caps it now passes.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerAssignment' }
+        '400':
+          description: bad_request, bad_name (including the reserved system services), or unknown_user when the account is missing or disabled.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: already_owner, server_retiring, or quota_exceeded without allow_over_quota.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

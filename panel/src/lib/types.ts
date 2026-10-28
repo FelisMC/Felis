@@ -389,6 +389,21 @@ export interface ServerTags {
   tags: string[];
 }
 
+/** One quota cap an assignment passes; storage is counted in MB. */
+export interface QuotaExcess {
+  resource: "servers" | "cpu_milli" | "memory_mb" | "storage_mb";
+  limit: number;
+  after: number;
+}
+
+/** GET and POST /servers/{name}/assignment: `owner_id` is the current owner in a
+ *  preview (empty when unclaimed) and the new owner after an assignment. */
+export interface ServerAssignment {
+  name: string;
+  owner_id: string;
+  over: QuotaExcess[];
+}
+
 // Restore by eligible backup identity; tolerate unknown reason/status values from unvalidated JSON.
 export interface BackupView {
   id: string;

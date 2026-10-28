@@ -8,7 +8,9 @@ import { EditServerDialog } from "./EditServerDialog";
 import { humanizeError } from "@/lib/api";
 import type { ServerStartupSettings } from "@/lib/types";
 
-const calls = vi.hoisted(() => ({ listImages: vi.fn(), patchServer: vi.fn(), patchMyServer: vi.fn(), setServerTags: vi.fn(), getStartupSettings: vi.fn() }));
+const tier = vi.hoisted(() => ({ isOwner: false }));
+const calls = vi.hoisted(() => ({ listImages: vi.fn(), patchServer: vi.fn(), patchMyServer: vi.fn(), setServerTags: vi.fn(), getStartupSettings: vi.fn(), fleet: vi.fn(), listUsers: vi.fn() }));
+vi.mock("@/lib/tier", () => ({ useTier: () => tier }));
 vi.mock("@/lib/api", async (importActual) => {
   const actual = await importActual<typeof import("@/lib/api")>();
   return { ...actual, api: { ...actual.api, ...calls } };
@@ -43,6 +45,10 @@ beforeEach(() => {
   calls.patchMyServer.mockReset();
   calls.setServerTags.mockReset();
   calls.getStartupSettings.mockReset();
+  calls.fleet.mockReset();
+  calls.listUsers.mockReset();
+  calls.listUsers.mockResolvedValue({ users: [], total: 0 });
+  tier.isOwner = false;
   onUpdated.mockReset();
   calls.listImages.mockResolvedValue([]);
   calls.patchServer.mockResolvedValue({ name: "survival", patched: [] });
@@ -623,5 +629,38 @@ describe("EditServerDialog tags", () => {
     await user.click(screen.getByRole("button", { name: /Edit Server Config/ }));
     await screen.findByRole("dialog");
     expect(screen.queryByRole("textbox", { name: t("edit_server_tags") })).toBeNull();
+  });
+});
+
+describe("EditServerDialog owner row", () => {
+  const changeOwner = () => screen.queryByRole("button", { name: t("edit_server_owner_change") });
+
+  it("shows the platform owner who holds the server and opens the assignment from it", async () => {
+    tier.isOwner = true;
+    calls.fleet.mockResolvedValue([{ name: "survival", owner: "alice@example.test" }]);
+    const user = await openDialog();
+
+    expect(await screen.findByText("alice@example.test")).toBeTruthy();
+    await user.click(changeOwner()!);
+    expect(await screen.findByRole("dialog", { name: i18next.t("admin:assign_title") })).toBeTruthy();
+  });
+
+  it("keeps the row from an admin who is not the platform owner", async () => {
+    await openDialog({ mode: "admin" });
+
+    expect(changeOwner()).toBeNull();
+    expect(screen.queryByText(t("edit_server_owner"))).toBeNull();
+    expect(calls.fleet).not.toHaveBeenCalled();
+  });
+
+  it("keeps the row from a system service even for the platform owner", async () => {
+    tier.isOwner = true;
+    const user = userEvent.setup();
+    render(<EditServerDialog serverName="lobby" systemService currentImage="registry.example.test/lobby:1" onUpdated={onUpdated} />);
+    await user.click(screen.getByRole("button", { name: /Edit Server Config/ }));
+    await screen.findByRole("dialog");
+
+    expect(changeOwner()).toBeNull();
+    expect(calls.fleet).not.toHaveBeenCalled();
   });
 });

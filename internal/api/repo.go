@@ -245,6 +245,10 @@ type Repo interface {
 	MyServers(ctx context.Context, userID string) ([]MyServerView, error)
 	// ServerOwners omits deleted servers and uses empty OwnerID for unclaimed ones.
 	ServerOwners(ctx context.Context) (map[string]ServerOwnership, error)
+	// AssignPreview reports the current owner and the caps userID would pass with one more server of size res.
+	AssignPreview(ctx context.Context, name, userID string, res ResourceSpec) (owner string, over []QuotaExcess, err error)
+	// AssignServer gives name to userID as a claim would, refusing ErrQuotaExceeded unless allowOver; it returns the previous owner.
+	AssignServer(ctx context.Context, name, userID string, res ResourceSpec, allowOver bool) (previous string, over []QuotaExcess, err error)
 	// ServerTags lists the tags of live servers that have any.
 	ServerTags(ctx context.Context) (map[string][]string, error)
 	// SetServerTags replaces the whole tag set; the caller has validated it, and ErrNotFound means no live server.

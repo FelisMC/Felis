@@ -204,20 +204,27 @@ func (a *API) handleClaim(w http.ResponseWriter, r *http.Request) {
 
 // claimResources refreshes sizes from the cluster because release clears the resource cache.
 func (a *API) claimResources(ctx context.Context, name string) (ResourceSpec, error) {
-	info, err := a.Cluster.GetServer(ctx, name)
+	res, err := a.serverResources(ctx, name)
 	if err != nil {
 		return ResourceSpec{}, err
-	}
-	storage, _ := resource.ParseQuantity(info.StorageSize)
-	res := ResourceSpec{
-		CPUMilli:  quantityToMilli(info.Resources.Limits[corev1.ResourceCPU]),
-		MemoryMB:  quantityToMB(info.Resources.Limits[corev1.ResourceMemory]),
-		StorageMB: quantityToMB(storage),
 	}
 	if err := a.Repo.UpdateServerResources(ctx, name, res.CPUMilli, res.MemoryMB, res.StorageMB); err != nil {
 		return ResourceSpec{}, err
 	}
 	return res, nil
+}
+
+func (a *API) serverResources(ctx context.Context, name string) (ResourceSpec, error) {
+	info, err := a.Cluster.GetServer(ctx, name)
+	if err != nil {
+		return ResourceSpec{}, err
+	}
+	storage, _ := resource.ParseQuantity(info.StorageSize)
+	return ResourceSpec{
+		CPUMilli:  quantityToMilli(info.Resources.Limits[corev1.ResourceCPU]),
+		MemoryMB:  quantityToMB(info.Resources.Limits[corev1.ResourceMemory]),
+		StorageMB: quantityToMB(storage),
+	}, nil
 }
 
 func (a *API) handleStatus(w http.ResponseWriter, r *http.Request) {

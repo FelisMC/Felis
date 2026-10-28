@@ -741,6 +741,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/servers/{name}/assignment": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Show what giving the server to an account would change (Owner). */
+        get: operations["previewServerAssignment"];
+        put?: never;
+        /**
+         * Give the server to an account (Owner).
+         * @description Works like a claim by that account: the wake list and the tags are cleared and the server counts towards the new owner's quota. A server that passes the quota is refused with 409 quota_exceeded unless allow_over_quota is true. Audited as server.assign with owner_from, owner_to and over_quota.
+         */
+        post: operations["assignServer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/servers/{name}/command": {
         parameters: {
             query?: never;
@@ -5489,6 +5510,22 @@ export interface components {
             /** @description On the holder's own list only, true on the session the request came in on. Absent otherwise. */
             current?: boolean;
         };
+        /** @description One quota cap the new owner passes with this server; storage is counted in MB. */
+        QuotaExcess: {
+            /** @enum {string} */
+            resource: "servers" | "cpu_milli" | "memory_mb" | "storage_mb";
+            /** @description The cap in force. */
+            limit: number;
+            /** @description The new owner's total including this server. */
+            after: number;
+        };
+        ServerAssignment: {
+            name: string;
+            /** @description The current owner in a preview (empty when unclaimed), the new owner after an assignment. */
+            owner_id: string;
+            /** @description The caps the new owner passes; empty when the server fits the quota. */
+            over: components["schemas"]["QuotaExcess"][];
+        };
         /** @description One live personal API key as its owner sees it. The key itself is returned only once, in the response that creates it. */
         APIToken: {
             id: string;
@@ -7290,6 +7327,94 @@ export interface operations {
             };
             /** @description Account not linked (the pointer /account/link/start emits). */
             412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    previewServerAssignment: {
+        parameters: {
+            query: {
+                user_id: string;
+            };
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The current owner and the quota caps the account would pass. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServerAssignment"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description already_owner or server_retiring. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    assignServer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    user_id: string;
+                    /** @default false */
+                    allow_over_quota?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description The new owner and the caps it now passes. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServerAssignment"];
+                };
+            };
+            /** @description bad_request, bad_name (including the reserved system services), or unknown_user when the account is missing or disabled. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description already_owner, server_retiring, or quota_exceeded without allow_over_quota. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

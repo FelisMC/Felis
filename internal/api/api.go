@@ -303,6 +303,8 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/kill", h: a.handleKill},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/emergency-stop", h: a.handleEmergencyStop, Admin: true, Owner: true},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/claim", h: a.handleClaim},
+		{Method: "GET", Pattern: "/api/v1/servers/{name}/assignment", Owner: true, Admin: true, h: a.handleAssignPreview},
+		{Method: "POST", Pattern: "/api/v1/servers/{name}/assignment", Owner: true, Admin: true, h: a.handleAssignServer},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/command", h: a.handleCommand},
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/console", h: a.handleServerConsole},
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/console/history", h: a.handleConsoleHistory},

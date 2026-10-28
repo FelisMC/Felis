@@ -628,5 +628,7 @@
   "edit_server_tag_remove": "Remove tag {{tag}}",
   "edit_server_tags_length": "A tag has 1 to {{length}} characters.",
   "edit_server_tags_characters": "A tag must not contain commas or control characters.",
-  "edit_server_tags_full": "A server takes at most {{max}} tags."
+  "edit_server_tags_full": "A server takes at most {{max}} tags.",
+  "edit_server_owner": "Owner",
+  "edit_server_owner_change": "Change owner"
 }

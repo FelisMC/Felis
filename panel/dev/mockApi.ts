@@ -47,6 +47,7 @@ import type {
   PatchUserRequest,
   QuotaView,
   QuotaInput,
+  QuotaExcess,
   SessionView,
   HostOverview,
   NodeControlRequest,
@@ -2467,7 +2468,7 @@ async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
 
   if (is("GET", ctx) && !userIdOrAction) {
     const url = new URL(ctx.req.url ?? "/", "http://localhost");
-    const search = url.searchParams.get("search")?.toLowerCase() || "";
+    const search = (url.searchParams.get("search") ?? url.searchParams.get("query"))?.toLowerCase() || "";
     const page = parseInt(url.searchParams.get("page") || "1", 10);
     const limit = parseInt(url.searchParams.get("limit") || "10", 10);
 
@@ -3404,6 +3405,10 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
   }
   if (ctx.parts[4] === "retirement" && (is("PUT", ctx) || is("DELETE", ctx))) {
     await handleRetirementMock(ctx, serverInfo);
+    return true;
+  }
+  if (ctx.parts[4] === "assignment" && (is("GET", ctx) || is("POST", ctx))) {
+    await handleAssignmentMock(ctx, serverInfo);
     return true;
   }
   if (is("PUT", ctx) && ctx.parts[4] === "tags") {
@@ -4539,6 +4544,34 @@ async function handleRetirementMock(ctx: SessionContext, serverInfo: MockServer)
     delete: (serverInfo.retiring?.delete ?? false) || body.delete === true,
   };
   sendJSON(ctx.res, 202, { name: serverInfo.name, retiring: serverInfo.retiring });
+}
+
+// The seeded "user" account is the one an assignment pushes over its server cap.
+function assignmentExcess(accountKey: string): QuotaExcess[] {
+  return accountKey === "user" ? [{ resource: "servers", limit: 1, after: 2 }] : [];
+}
+
+async function handleAssignmentMock(ctx: SessionContext, serverInfo: MockServer): Promise<void> {
+  if (!isOwner(ctx.account.role)) {
+    sendError(ctx.res, 403, "forbidden", "owner account required");
+    return;
+  }
+  const current = serverInfo.owner ? `mock-${serverInfo.owner}` : "";
+  if (is("GET", ctx)) {
+    const userId = new URL(ctx.req.url ?? "/", "http://localhost").searchParams.get("user_id") ?? "";
+    sendJSON(ctx.res, 200, { name: serverInfo.name, owner_id: current, over: assignmentExcess(userId.replace(/^mock-/, "")) });
+    return;
+  }
+  const body = await readJSON<{ user_id: string; allow_over_quota?: boolean }>(ctx.req);
+  const accountKey = body.user_id.replace(/^mock-/, "");
+  const over = assignmentExcess(accountKey);
+  if (over.length > 0 && !body.allow_over_quota) {
+    sendError(ctx.res, 409, "quota_exceeded", "the server exceeds the new owner's quota; confirm to assign it anyway");
+    return;
+  }
+  serverInfo.owner = accountKey;
+  serverInfo.tags = undefined;
+  sendJSON(ctx.res, 200, { name: serverInfo.name, owner_id: body.user_id, over });
 }
 
 function claimServer(ctx: SessionContext, serverInfo: MockServer): void {

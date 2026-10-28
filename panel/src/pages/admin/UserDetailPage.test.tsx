@@ -16,6 +16,9 @@ const calls = vi.hoisted(() => ({
   listUserSessions: vi.fn(),
   revokeUserSession: vi.fn(),
   revokeUserSessions: vi.fn(),
+  fleet: vi.fn(),
+  previewServerAssignment: vi.fn(),
+  assignServer: vi.fn(),
 }));
 vi.mock("@/lib/tier", () => ({
   useTier: () => ({ loading: false, identity: { user_id: "owner-1", role: "owner" }, isAdmin: true, isOwner: true }),
@@ -101,6 +104,46 @@ describe("UserDetailPage", () => {
 
     expect(await screen.findByText(`第三方 Yggdrasil · ${zhVerified}`)).toBeTruthy();
     expect(await screen.findByText(zhExpires, { exact: false })).toBeTruthy();
+  });
+
+  describe("assigning a server", () => {
+    const assignButton = () => screen.getByRole("button", { name: i18next.t("admin:assign_title") }) as HTMLButtonElement;
+    const server = (name: string, over: Record<string, unknown>) => ({ name, subdomain: name, phase: "Stopped", ready: false, playersOnline: 0, playersMax: 20, ...over });
+
+    it("gives the server to this account and refreshes the page", async () => {
+      calls.getUser.mockResolvedValue(USER);
+      calls.fleet.mockResolvedValue([
+        server("survival", { owner: "owner@example.test" }),
+        server("owned", { owner: "steve@example.test" }),
+        server("lobby", { system: true }),
+      ]);
+      calls.previewServerAssignment.mockResolvedValue({ name: "survival", owner_id: "owner-1", over: [] });
+      calls.assignServer.mockResolvedValue({ name: "survival", owner_id: "u-1", over: [] });
+      renderPage();
+      const user = userEvent.setup();
+
+      await user.click(await screen.findByRole("button", { name: i18next.t("admin:assign_title") }));
+      const dialog = await screen.findByRole("dialog");
+      expect(await within(dialog).findByRole("button", { name: /survival/ })).toBeTruthy();
+      expect(within(dialog).queryByRole("button", { name: /owned/ })).toBeNull();
+      expect(within(dialog).queryByRole("button", { name: /lobby/ })).toBeNull();
+
+      await user.click(within(dialog).getByRole("button", { name: /survival/ }));
+      const confirm = await within(dialog).findByRole("button", { name: i18next.t("admin:assign_confirm") });
+      await waitFor(() => expect((confirm as HTMLButtonElement).disabled).toBe(false));
+      await user.click(confirm);
+
+      expect(calls.assignServer).toHaveBeenCalledExactlyOnceWith("survival", { user_id: "u-1", allow_over_quota: false });
+      await waitFor(() => expect(calls.getUser).toHaveBeenCalledTimes(2));
+    });
+
+    it("is not offered for a disabled account", async () => {
+      calls.getUser.mockResolvedValue({ ...USER, disabled: true });
+      renderPage();
+
+      await screen.findByText("steve");
+      expect(assignButton().disabled).toBe(true);
+    });
   });
 
   describe("sessions card", () => {

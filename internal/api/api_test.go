@@ -38,6 +38,8 @@ type fakeRepo struct {
 	noticeTo     map[string][]string
 	noticeToErr  error
 	claimOK      map[string]bool // name -> claim succeeds; absent name -> ErrNotFound
+	assignOver   []QuotaExcess
+	assignErr    error
 	// claimQuotaRefuse refuses a name whose advisory pre-check already passed.
 	claimQuotaRefuse       map[string]bool
 	migrateQuotaRefuse     map[string]bool
@@ -748,6 +750,22 @@ func (f *fakeRepo) ClaimServer(_ context.Context, n, u string) (bool, error) {
 		return false, ErrQuotaExceeded // mirrors the atomic gate losing the race
 	}
 	return ok, nil
+}
+func (f *fakeRepo) AssignPreview(_ context.Context, name, _ string, _ ResourceSpec) (string, []QuotaExcess, error) {
+	return f.owners[name].OwnerID, f.assignOver, f.assignErr
+}
+func (f *fakeRepo) AssignServer(ctx context.Context, name, userID string, res ResourceSpec, allowOver bool) (string, []QuotaExcess, error) {
+	previous, over, err := f.AssignPreview(ctx, name, userID, res)
+	switch {
+	case err != nil:
+		return previous, nil, err
+	case len(over) > 0 && !allowOver:
+		return previous, over, ErrQuotaExceeded
+	}
+	o := f.owners[name]
+	o.OwnerID = userID
+	f.owners[name] = o
+	return previous, over, nil
 }
 func (f *fakeRepo) RecordJoin(_ context.Context, n, uuid string) error {
 	if _, ok := f.byName[n]; !ok {
