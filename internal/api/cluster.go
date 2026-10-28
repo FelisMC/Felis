@@ -48,6 +48,8 @@ type ServerInfo struct {
 	ReaperExempt bool `json:"reaperExempt,omitempty"`
 	// Retiring is joined from Postgres; the cluster does not set it.
 	Retiring *RetireState `json:"retiring,omitempty"`
+	// Tags are joined from Postgres for the owner and staff; the cluster does not set them.
+	Tags []string `json:"tags,omitempty"`
 	// Resources stays off the wire and supplies unchanged values when patching the spec.
 	Resources corev1.ResourceRequirements `json:"-"`
 	// Software is nil for a server image.

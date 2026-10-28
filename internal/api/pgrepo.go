@@ -40,19 +40,25 @@ func (p *PGRepo) ServerBySubdomain(ctx context.Context, subdomain string) (*Serv
 
 func (p *PGRepo) ServerByName(ctx context.Context, name string) (*ServerRecord, error) {
 	const q = `SELECT s.name, COALESCE(sa.subdomain, ''), COALESCE(s.owner_id, ''), COALESCE(s.cached_phase, ''),
-		s.retire_requested_at, s.retire_delete
+		s.retire_requested_at, s.retire_delete, to_jsonb(s.tags)
 		FROM servers s LEFT JOIN server_aliases sa ON sa.server_name = s.name
 		WHERE s.name = $1 AND s.deleted_at IS NULL`
 	var r ServerRecord
 	var retireAt sql.NullTime
 	var retireDelete bool
-	switch err := p.db.QueryRowContext(ctx, q, name).Scan(&r.Name, &r.Subdomain, &r.OwnerID, &r.CachedPhase, &retireAt, &retireDelete); {
+	var rawTags []byte
+	switch err := p.db.QueryRowContext(ctx, q, name).Scan(&r.Name, &r.Subdomain, &r.OwnerID, &r.CachedPhase, &retireAt, &retireDelete, &rawTags); {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil, ErrNotFound
 	case err != nil:
 		return nil, err
 	}
+	tags, err := decodeServerTags(rawTags)
+	if err != nil {
+		return nil, err
+	}
 	r.Retire = retireState(retireAt, retireDelete)
+	r.Tags = tags
 	return &r, nil
 }
 
@@ -413,7 +419,7 @@ func (p *PGRepo) ClaimServer(ctx context.Context, name, userID string) (bool, er
 	}
 
 	res, err := tx.ExecContext(ctx,
-		`UPDATE servers SET owner_id = $2, claimed_at = now(), last_active_at = now(), warned_3d_at = NULL, warned_1d_at = NULL
+		`UPDATE servers SET owner_id = $2, claimed_at = now(), last_active_at = now(), warned_3d_at = NULL, warned_1d_at = NULL, tags = '{}'
 		 WHERE name = $1 AND owner_id IS NULL AND deleted_at IS NULL AND retire_requested_at IS NULL`,
 		name, userID)
 	if err != nil {
@@ -599,7 +605,7 @@ func (p *PGRepo) RecordJoin(ctx context.Context, name, mcUUID string) error {
 func (p *PGRepo) MyServers(ctx context.Context, userID string) ([]MyServerView, error) {
 	const q = `SELECT s.name, COALESCE(sa.subdomain, ''),
 		COALESCE(s.owner_id = $1, false) AS owned, (s.owner_id IS NULL AND s.retire_requested_at IS NULL) AS claimable,
-		COALESCE(s.cached_phase, ''), s.retire_requested_at, s.retire_delete
+		COALESCE(s.cached_phase, ''), s.retire_requested_at, s.retire_delete, to_jsonb(s.tags)
 		FROM servers s LEFT JOIN server_aliases sa ON sa.server_name = s.name
 		WHERE s.deleted_at IS NULL AND (s.owner_id = $1 OR s.owner_id IS NULL)
 		ORDER BY s.name`
@@ -613,11 +619,15 @@ func (p *PGRepo) MyServers(ctx context.Context, userID string) ([]MyServerView, 
 		var v MyServerView
 		var retireAt sql.NullTime
 		var retireDelete bool
-		if err := rows.Scan(&v.Name, &v.Subdomain, &v.Owned, &v.Claimable, &v.Phase, &retireAt, &retireDelete); err != nil {
+		var rawTags []byte
+		if err := rows.Scan(&v.Name, &v.Subdomain, &v.Owned, &v.Claimable, &v.Phase, &retireAt, &retireDelete, &rawTags); err != nil {
 			return nil, err
 		}
 		if v.Owned {
 			v.Retiring = retireState(retireAt, retireDelete)
+			if v.Tags, err = decodeServerTags(rawTags); err != nil {
+				return nil, err
+			}
 		}
 		out = append(out, v)
 	}
@@ -688,7 +698,7 @@ func (p *PGRepo) SeedServer(ctx context.Context, name, subdomain string, cpuMill
 		`INSERT INTO servers (name, cached_cpu_milli, cached_memory_mb, cached_storage_mb) VALUES ($1, $2, $3, $4)
 		 ON CONFLICT (name) DO UPDATE SET owner_id = NULL, claimed_at = NULL, last_active_at = now(),
 		   warned_3d_at = NULL, warned_1d_at = NULL, cached_phase = NULL, created_at = now(), deleted_at = NULL,
-		   retire_requested_at = NULL, retire_delete = false,
+		   retire_requested_at = NULL, retire_delete = false, tags = '{}',
 		   cached_cpu_milli = EXCLUDED.cached_cpu_milli, cached_memory_mb = EXCLUDED.cached_memory_mb,
 		   cached_storage_mb = EXCLUDED.cached_storage_mb`,
 		name, cpuMilli, memoryMB, storageMB); err != nil {

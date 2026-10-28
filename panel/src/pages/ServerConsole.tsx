@@ -375,6 +375,7 @@ export function ServerConsole() {
                   mode={isAdmin ? "admin" : "owner"}
                   systemService={name === "login" || name === "lobby"}
                   currentDisplayName={data.displayName}
+                  currentTags={data.tags}
                   currentPolicy={data.autostartPolicy as AutostartPolicy}
                   currentImage={data.image}
                   currentMemory={data.memory}

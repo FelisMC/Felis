@@ -1010,6 +1010,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/servers/{name}/tags": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Replace the tags of a server (owner or admin).
+         * @description Tags group servers in the server list and filter it. The request replaces the whole set. Only the database changes; the cluster is not touched. A malformed tag is bad_tags. A system service cannot carry tags (system_server). Audited as server.tags.
+         */
+        put: operations["setServerTags"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/servers/{name}/status": {
         parameters: {
             query?: never;
@@ -4340,6 +4360,8 @@ export interface components {
             software?: components["schemas"]["ServerSoftware"];
             /** @description Owner and staff only. Present while the owner has given the server up or an admin is deleting it; the reaper carries that out on its next run. */
             retiring?: components["schemas"]["RetireState"];
+            /** @description Owner and staff only. Present when the server carries tags. */
+            tags?: string[];
             /** @description Whether a server that was running starts again after its host restarts, for example after a power loss. System servers always resume. */
             resumeAfterHostRestart: boolean;
             /** @description Whether the server is restarted after its process exits or stops responding. System servers always restart. */
@@ -4524,6 +4546,18 @@ export interface components {
             startGaveUp?: boolean;
             /** @description Owned rows only. Present while the server is given up or being deleted. */
             retiring?: components["schemas"]["RetireState"];
+            /** @description Owned rows only. Present when the server carries tags. */
+            tags?: string[];
+        };
+        /** @description The complete tag set of a server (internal/api/handlers_tags.go serverTagsRequest). */
+        ServerTagsRequest: {
+            /** @description Each tag has 1 to 20 characters after surrounding space is removed and no comma or control character. Tags that differ only in letter case count as one and keep their first spelling. At most 6 tags remain. An empty list removes every tag. */
+            tags: string[];
+        };
+        /** @description The tag set a server holds after a change (internal/api/handlers_tags.go serverTagsView). */
+        ServerTags: {
+            name: string;
+            tags: string[];
         };
         /** @description One step of a scheduled task (internal/api/schedules.go ScheduleStep). */
         ScheduleStep: {
@@ -7673,6 +7707,61 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+        };
+    };
+    setServerTags: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ServerTagsRequest"];
+            };
+        };
+        responses: {
+            /** @description The tags the server now holds. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServerTags"];
+                };
+            };
+            /** @description bad_tags: a tag is empty, longer than 20 characters or holds a comma or control character, or more than 6 distinct tags were sent. bad_request: the body is malformed or has no tags field. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description Neither the owner of the server nor an admin. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description system_server: a system service has no record to hold tags. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     status: {

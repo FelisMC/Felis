@@ -13,6 +13,7 @@ type ServerRecord struct {
 	// CachedPhase is non-authoritative.
 	CachedPhase string
 	Retire      *RetireState // nil when no retirement is pending
+	Tags        []string     // set by ServerByName only
 }
 
 type RetireState struct {
@@ -44,6 +45,7 @@ type MyServerView struct {
 	ExtraPorts         []ServerExtraPort `json:"extraPorts,omitempty"`
 	ExtraPortsPending  bool              `json:"extraPortsPending,omitempty"`
 	Retiring           *RetireState      `json:"retiring,omitempty"`
+	Tags               []string          `json:"tags,omitempty"`
 }
 
 type ServerOwnership struct {
@@ -243,6 +245,10 @@ type Repo interface {
 	MyServers(ctx context.Context, userID string) ([]MyServerView, error)
 	// ServerOwners omits deleted servers and uses empty OwnerID for unclaimed ones.
 	ServerOwners(ctx context.Context) (map[string]ServerOwnership, error)
+	// ServerTags lists the tags of live servers that have any.
+	ServerTags(ctx context.Context) (map[string][]string, error)
+	// SetServerTags replaces the whole tag set; the caller has validated it, and ErrNotFound means no live server.
+	SetServerTags(ctx context.Context, name string, tags []string) error
 	// ServerNoticeRecipients is the owner's verified email, or every Owner's if unclaimed.
 	ServerNoticeRecipients(ctx context.Context, server string) ([]string, error)
 	AllBackups(ctx context.Context, opts BackupListOpts) ([]BackupView, int, error)

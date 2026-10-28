@@ -315,6 +315,7 @@ function initialState(): MockState {
         playersOnline: 12,
         playersMax: 20,
         autostartPolicy: "public",
+        tags: ["PvP", "Survival"],
         memory: "4Gi",
         javaMemory: "3072M",
         storageSize: "20Gi",
@@ -342,6 +343,7 @@ function initialState(): MockState {
       }),
       server("creative", "Creative Lab", "Stopped", "user", {
         autostartPolicy: "public",
+        tags: ["Creative"],
         playersMax: 16,
         recentCrashes: 4,
         lastCrash: { at: minutesAgo(42), reason: "OOMKilled", exitCode: 137 },
@@ -357,6 +359,7 @@ function initialState(): MockState {
       }),
       server("modded", "Modded Testbed", "Starting", "owner", {
         autostartPolicy: "allowlist",
+        tags: ["Modded", "PvP"],
         playersMax: 12,
       }),
       server("broken", "Broken Node", "Failed", "user", {
@@ -576,6 +579,7 @@ function generatedServers(): MockServer[] {
           playersOnline: phase === "Running" ? 1 + ((i * 3) % max) : 0,
           playersMax: max,
           autostartPolicy: policies[i % policies.length],
+          ...(n === 1 && { tags: [theme] }),
         }),
       );
       i++;
@@ -924,6 +928,7 @@ function myServerView(serverInfo: MockServer, accountInfo: MockAccount): MyServe
       autostartPolicy: serverInfo.autostartPolicy,
       playerCountUnknown: serverInfo.playerCountUnknown,
       retiring: serverInfo.retiring,
+      tags: serverInfo.tags,
     }),
   };
 }
@@ -3274,6 +3279,16 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
   }
   if (ctx.parts[4] === "retirement" && (is("PUT", ctx) || is("DELETE", ctx))) {
     await handleRetirementMock(ctx, serverInfo);
+    return true;
+  }
+  if (is("PUT", ctx) && ctx.parts[4] === "tags") {
+    if (!canManage(ctx.account, serverInfo)) {
+      sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
+      return true;
+    }
+    const { tags } = await readJSON<{ tags: string[] }>(ctx.req);
+    serverInfo.tags = tags.length > 0 ? tags : undefined;
+    sendJSON(ctx.res, 200, { name: serverInfo.name, tags });
     return true;
   }
   if (is("POST", ctx) && ctx.parts[4] === "claim") {

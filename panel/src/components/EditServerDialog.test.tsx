@@ -1,14 +1,14 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
 import { StrictMode, type ComponentProps } from "react";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import i18next from "i18next";
 import { EditServerDialog } from "./EditServerDialog";
 import { humanizeError } from "@/lib/api";
 import type { ServerStartupSettings } from "@/lib/types";
 
-const calls = vi.hoisted(() => ({ listImages: vi.fn(), patchServer: vi.fn(), patchMyServer: vi.fn(), getStartupSettings: vi.fn() }));
+const calls = vi.hoisted(() => ({ listImages: vi.fn(), patchServer: vi.fn(), patchMyServer: vi.fn(), setServerTags: vi.fn(), getStartupSettings: vi.fn() }));
 vi.mock("@/lib/api", async (importActual) => {
   const actual = await importActual<typeof import("@/lib/api")>();
   return { ...actual, api: { ...actual.api, ...calls } };
@@ -41,11 +41,13 @@ beforeEach(() => {
   calls.listImages.mockReset();
   calls.patchServer.mockReset();
   calls.patchMyServer.mockReset();
+  calls.setServerTags.mockReset();
   calls.getStartupSettings.mockReset();
   onUpdated.mockReset();
   calls.listImages.mockResolvedValue([]);
   calls.patchServer.mockResolvedValue({ name: "survival", patched: [] });
   calls.patchMyServer.mockResolvedValue({ name: "survival", patched: [] });
+  calls.setServerTags.mockResolvedValue({ name: "survival", tags: [] });
   calls.getStartupSettings.mockResolvedValue(startupValue());
 });
 
@@ -532,5 +534,94 @@ describe("EditServerDialog recovery and mail", () => {
     await screen.findByRole("dialog");
     expect(screen.queryByRole("switch", { name: /Restart after a crash/ })).toBeNull();
     expect(screen.queryByText("Email notifications")).toBeNull();
+  });
+});
+
+describe("EditServerDialog tags", () => {
+  const tagBox = () => screen.getByRole("textbox", { name: t("edit_server_tags") }) as HTMLInputElement;
+  const shownTags = () =>
+    within(screen.getByRole("list", { name: t("tags_label") }))
+      .getAllByRole("listitem")
+      .map((li) => li.textContent);
+
+  it.each(["admin", "owner"] as const)("saves a changed tag set alone through the tags endpoint (%s)", async (mode) => {
+    const user = await openDialog({ mode, currentTags: ["PvP"] });
+    expect(save().disabled).toBe(true);
+    await user.type(tagBox(), "Hub{Enter}");
+    expect(shownTags()).toEqual(["PvP", "Hub"]);
+    await user.click(save());
+
+    expect(calls.setServerTags).toHaveBeenCalledExactlyOnceWith("survival", ["PvP", "Hub"]);
+    expect(calls.patchServer).not.toHaveBeenCalled();
+    expect(calls.patchMyServer).not.toHaveBeenCalled();
+    expect(onUpdated).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the tags alone when only another setting changed", async () => {
+    const user = await openDialog({ currentTags: ["PvP"] });
+    fireEvent.change(cpuInput(), { target: { value: "2" } });
+    await user.click(save());
+
+    expect(calls.patchServer).toHaveBeenCalledWith("survival", { resources: { cpu: "2" } });
+    expect(calls.setServerTags).not.toHaveBeenCalled();
+  });
+
+  it("ends a tag at a comma and drops a repeat in another letter case", async () => {
+    const user = await openDialog({ currentTags: ["PvP"] });
+    await user.type(tagBox(), "pvp,Survival,");
+
+    expect(shownTags()).toEqual(["PvP", "Survival"]);
+    expect(tagBox().value).toBe("");
+  });
+
+  it("removes a tag", async () => {
+    const user = await openDialog({ currentTags: ["PvP", "Survival"] });
+    await user.click(screen.getByRole("button", { name: t("edit_server_tag_remove", { tag: "PvP" }) }));
+    await user.click(save());
+
+    expect(calls.setServerTags).toHaveBeenCalledExactlyOnceWith("survival", ["Survival"]);
+  });
+
+  it("saves a tag that was typed but not added", async () => {
+    const user = await openDialog({ currentTags: [] });
+    await user.type(tagBox(), "Hub");
+    await user.click(save());
+
+    expect(calls.setServerTags).toHaveBeenCalledExactlyOnceWith("survival", ["Hub"]);
+  });
+
+  it("refuses a tag the API would refuse", async () => {
+    const user = await openDialog({ currentTags: [] });
+    await user.type(tagBox(), "x".repeat(21));
+    expect(screen.getByText(t("edit_server_tags_length", { length: 20 }))).toBeTruthy();
+    expect(tagBox().getAttribute("aria-invalid")).toBe("true");
+    expect(save().disabled).toBe(true);
+    expect((screen.getByRole("button", { name: t("edit_server_tags_add") }) as HTMLButtonElement).disabled).toBe(true);
+
+    await user.clear(tagBox());
+    await user.paste("a\u0007b");
+    expect(screen.getByText(t("edit_server_tags_characters"))).toBeTruthy();
+    expect(save().disabled).toBe(true);
+    expect(calls.setServerTags).not.toHaveBeenCalled();
+  });
+
+  it("takes at most six tags, and a repeat adds none", async () => {
+    const user = await openDialog({ currentTags: ["a", "b", "c", "d", "e", "f"] });
+    await user.type(tagBox(), "g");
+    expect(screen.getByText(t("edit_server_tags_full", { max: 6 }))).toBeTruthy();
+    expect(save().disabled).toBe(true);
+
+    await user.clear(tagBox());
+    await user.type(tagBox(), "A");
+    expect(screen.queryByText(t("edit_server_tags_full", { max: 6 }))).toBeNull();
+    expect(save().disabled).toBe(true);
+  });
+
+  it("offers a system service no tags", async () => {
+    const user = userEvent.setup();
+    render(<EditServerDialog serverName="lobby" systemService currentImage="registry.example.test/lobby:1" onUpdated={onUpdated} />);
+    await user.click(screen.getByRole("button", { name: /Edit Server Config/ }));
+    await screen.findByRole("dialog");
+    expect(screen.queryByRole("textbox", { name: t("edit_server_tags") })).toBeNull();
   });
 });

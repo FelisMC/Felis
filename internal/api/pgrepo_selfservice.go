@@ -114,7 +114,7 @@ func (p *PGRepo) SeedOwnedServer(ctx context.Context, name, subdomain, userID st
 		 VALUES ($1, $2, now(), $3, $4, $5)
 		 ON CONFLICT (name) DO UPDATE SET owner_id = EXCLUDED.owner_id, claimed_at = now(), last_active_at = now(),
 		   warned_3d_at = NULL, warned_1d_at = NULL, cached_phase = NULL, created_at = now(), deleted_at = NULL,
-		   retire_requested_at = NULL, retire_delete = false,
+		   retire_requested_at = NULL, retire_delete = false, tags = '{}',
 		   cached_cpu_milli = EXCLUDED.cached_cpu_milli, cached_memory_mb = EXCLUDED.cached_memory_mb,
 		   cached_storage_mb = EXCLUDED.cached_storage_mb`,
 		name, userID, res.CPUMilli, res.MemoryMB, res.StorageMB); err != nil {

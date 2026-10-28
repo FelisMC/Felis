@@ -1,6 +1,6 @@
 import { Checkbox } from "@/components/ui/checkbox";
 import { useState, useEffect, useRef, useCallback, useId } from "react";
-import { Settings, ChevronRight, AlertTriangle, Loader2, Plus, Trash2 } from "lucide-react";
+import { Settings, ChevronRight, AlertTriangle, Loader2, Plus, Trash2, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ConfirmFooter } from "@/components/ConfirmFooter";
 import {
@@ -26,6 +26,7 @@ import { Switch } from "@/components/ui/switch";
 import { api, humanizeError } from "@/lib/api";
 import { formatBytes, splitImageRef } from "@/lib/format";
 import { DISPLAY_NAME_MAX } from "@/lib/naming";
+import { MAX_SERVER_TAGS, MAX_SERVER_TAG_LENGTH, mergeTags, tagIssue } from "@/lib/tags";
 import { useAsync } from "@/lib/hooks";
 import type { AutostartPolicy, Phase, ServerExtraPort, ServerNotify, ServerSoftware, ServerStartupSettings } from "@/lib/types";
 import { InlineError } from "@/components/MessageLine";
@@ -86,6 +87,7 @@ function policyOptions(t: (key: string) => string): { value: AutostartPolicy; la
 
 interface EditServerForm {
   displayName: string;
+  tags: string[];
   autostartPolicy: AutostartPolicy;
   image: string;
   memory: string;
@@ -106,6 +108,7 @@ function crashLimit(text: string): number | null {
 }
 
 const DEFAULT_NOTIFY: ServerNotify = { started: false, stopped: false, problems: true };
+const NO_TAGS: string[] = [];
 const NOTIFY_KEYS = ["problems", "started", "stopped"] as const;
 const STARTUP_KEYS = ["java_flags", "args", "env", "stop_commands"] as const;
 const STARTUP_LISTS = [{ key: "java_flags", max: 128 }, { key: "args", max: 128 }, { key: "stop_commands", max: 16 }] as const;
@@ -143,6 +146,7 @@ interface Props {
   serverName: string;
   systemService?: boolean;
   currentDisplayName?: string;
+  currentTags?: string[];
   currentPhase?: Phase;
   currentPolicy?: AutostartPolicy;
   currentImage?: string;
@@ -183,6 +187,7 @@ export function EditServerDialog({
   serverName,
   systemService = false,
   currentDisplayName = "",
+  currentTags = NO_TAGS,
   currentPhase,
   currentPolicy = "ownerOnly",
   currentImage = "",
@@ -224,8 +229,12 @@ export function EditServerDialog({
 
   // Memory is edited in GiB, as typed text.
   const currentMemoryGiB = quantityGiB(currentMemory);
+  // The status poll hands a new array each time, so the form follows the tags by value.
+  const tagsKey = JSON.stringify(currentTags);
+  const [tagDraft, setTagDraft] = useState("");
   const [form, setForm] = useState<EditServerForm>({
     displayName: currentDisplayName,
+    tags: currentTags,
     autostartPolicy: currentPolicy,
     image: currentImage,
     memory: currentMemoryGiB,
@@ -327,6 +336,7 @@ export function EditServerDialog({
     if (open) {
       setForm({
         displayName: currentDisplayName,
+        tags: JSON.parse(tagsKey) as string[],
         autostartPolicy: currentPolicy,
         image: currentImage,
         memory: currentMemoryGiB,
@@ -337,6 +347,7 @@ export function EditServerDialog({
         maxCrash: currentMaxCrash,
         notify: { started: notifyStarted, stopped: notifyStopped, problems: notifyProblems },
       });
+      setTagDraft("");
       setError(null);
       setImageConfirmed(false);
       setSource(softwareKey ? "software" : "image");
@@ -346,7 +357,7 @@ export function EditServerDialog({
       setEula(false);
       setJarFile(null);
     }
-  }, [open, currentDisplayName, currentPolicy, currentImage, currentMemoryGiB, currentCpu, currentIdleStop, softwareKey,
+  }, [open, currentDisplayName, tagsKey, currentPolicy, currentImage, currentMemoryGiB, currentCpu, currentIdleStop, softwareKey,
     currentResume, currentCrashRestart, currentMaxCrash, notifyStarted, notifyStopped, notifyProblems]);
 
   function set<K extends keyof EditServerForm>(k: K, v: EditServerForm[K]) {
@@ -361,6 +372,36 @@ export function EditServerDialog({
   const displayName = form.displayName.trim();
   const cpu = form.cpu.trim();
   const cpuOk = cpuValid(cpu);
+
+  // A tag typed but not yet added is saved with the others, so Save never drops it.
+  const pendingTag = tagDraft.trim();
+  const pendingIssue = pendingTag === "" ? null : tagIssue(pendingTag);
+  const nextTags = pendingTag !== "" && pendingIssue === null ? mergeTags(form.tags, [pendingTag]) : form.tags;
+  const tagError = pendingIssue ?? (nextTags.length > MAX_SERVER_TAGS ? "full" : null);
+  const tagsChanged = tagError === null && JSON.stringify(nextTags) !== tagsKey;
+
+  function addPendingTag() {
+    if (pendingTag === "" || tagError !== null) return;
+    set("tags", nextTags);
+    setTagDraft("");
+  }
+
+  // A comma ends a tag: the finished ones are added, the rest stays in the box.
+  function changeTagDraft(value: string) {
+    if (!value.includes(",")) {
+      setTagDraft(value);
+      return;
+    }
+    const parts = value.split(",");
+    const finished = parts.slice(0, -1).map((part) => part.trim()).filter((part) => part !== "");
+    const merged = mergeTags(form.tags, finished);
+    if (finished.some((part) => tagIssue(part) !== null) || merged.length > MAX_SERVER_TAGS) {
+      setTagDraft(value.replaceAll(",", " "));
+      return;
+    }
+    set("tags", merged);
+    setTagDraft(parts[parts.length - 1]);
+  }
 
   // Software changes may irreversibly upgrade worlds and require acknowledgement; leaving an image also requires EULA acceptance.
   const pickingSoftware = source === "software" && (changingSoftware || !currentSoftware);
@@ -390,6 +431,7 @@ export function EditServerDialog({
     extraPortsChanged ||
     Object.keys(startupChanges).length > 0 ||
     recoveryChanged ||
+    tagsChanged ||
     displayName !== currentDisplayName ||
     form.autostartPolicy !== currentPolicy ||
     imageChanged ||
@@ -403,6 +445,7 @@ export function EditServerDialog({
   const canSubmit =
     hasChanges &&
     cpuOk &&
+    tagError === null &&
     (!memoryChanged || memoryOk) &&
     (!maxCrashChanged || maxCrash !== null) &&
     (!extraPortsChanged || extraPortsOk) &&
@@ -457,6 +500,10 @@ export function EditServerDialog({
         }
       }
 
+      if (tagsChanged) {
+        await api.setServerTags(serverName, nextTags);
+        if (ticket !== saveGeneration.current) return;
+      }
       // The jar goes first: the software then names a file that is there.
       if (jarUpload) {
         setUploaded(0);
@@ -522,6 +569,56 @@ export function EditServerDialog({
               onChange={(e) => set("displayName", e.target.value)}
             />
           </div>
+
+          {!systemService && (
+            <div className="grid gap-2">
+              <Label htmlFor="es-tags">{t("edit_server_tags")}</Label>
+              {form.tags.length > 0 && (
+                <ul aria-label={t("tags_label")} className="flex flex-wrap gap-1.5">
+                  {form.tags.map((tag) => (
+                    <li
+                      key={tag}
+                      className="inline-flex max-w-full items-center gap-1 rounded-full border border-border bg-muted/50 py-0.5 pl-2.5 pr-1 text-xs"
+                    >
+                      <span className="truncate">{tag}</span>
+                      <button
+                        type="button"
+                        aria-label={t("edit_server_tag_remove", { tag })}
+                        onClick={() => set("tags", form.tags.filter((other) => other !== tag))}
+                        className="shrink-0 rounded-full p-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="flex gap-2">
+                <Input
+                  id="es-tags"
+                  placeholder={t("edit_server_tags_placeholder")}
+                  value={tagDraft}
+                  autoComplete="off"
+                  onChange={(e) => changeTagDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key !== "Enter") return;
+                    e.preventDefault();
+                    if (!e.nativeEvent.isComposing) addPendingTag();
+                  }}
+                  aria-invalid={tagError !== null}
+                  aria-describedby="es-tags-hint"
+                />
+                <Button type="button" variant="outline" disabled={pendingTag === "" || tagError !== null} onClick={addPendingTag}>
+                  {t("edit_server_tags_add")}
+                </Button>
+              </div>
+              <p id="es-tags-hint" className={tagError ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>
+                {tagError
+                  ? t(`edit_server_tags_${tagError}`, { length: MAX_SERVER_TAG_LENGTH, max: MAX_SERVER_TAGS })
+                  : t("edit_server_tags_hint", { length: MAX_SERVER_TAG_LENGTH, max: MAX_SERVER_TAGS })}
+              </p>
+            </div>
+          )}
 
           {admin && !systemService && (
             <SegmentedControl

@@ -242,10 +242,10 @@ func (a *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 		if !a.isOwnerOrAdmin(p, rec) {
 			info = publicServerInfo(info)
-		} else if rec != nil && rec.Retire != nil {
-			withRetire := *info
-			withRetire.Retiring = rec.Retire
-			info = &withRetire
+		} else if rec != nil && (rec.Retire != nil || len(rec.Tags) > 0) {
+			joined := *info
+			joined.Retiring, joined.Tags = rec.Retire, rec.Tags
+			info = &joined
 		}
 	}
 	writeJSON(w, http.StatusOK, info)
@@ -336,12 +336,16 @@ func (a *API) handleFleet(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	owners, err := a.Repo.ServerOwners(r.Context())
 	unknown := err != nil
+	tags, err := a.Repo.ServerTags(r.Context())
+	if err != nil {
+		log.Printf("api: fleet tags (request_id=%s): %v", requestIDFromContext(r.Context()), err)
+	}
 	views := make([]fleetServerView, len(servers))
 	for i, s := range servers {
 		s = a.usageInfo(s)
 		o, known := owners[s.Name]
 		system := naming.IsSystemServer(s.Name)
-		s.Retiring = o.Retire
+		s.Retiring, s.Tags = o.Retire, tags[s.Name]
 		views[i] = fleetServerView{ServerInfo: s, Owner: o.Owner, System: system,
 			Owned:        o.OwnerID != "" && o.OwnerID == p.UserID,
 			Claimable:    known && o.OwnerID == "" && o.Retire == nil && !system,

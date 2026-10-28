@@ -88,6 +88,8 @@ export interface MyServerView {
   startGaveUp?: boolean;
   /** A pending retirement; present on the caller's own rows only. */
   retiring?: RetireState;
+  /** Present on the caller's own rows only. */
+  tags?: string[];
 }
 
 // Public status may omit private fields; ownership gates must use /me/servers.
@@ -138,6 +140,8 @@ export interface ServerStatus {
   software?: ServerSoftware;
   /** A pending retirement. Owner and admin view only. */
   retiring?: RetireState;
+  /** Owner and admin view only. */
+  tags?: string[];
   resumeAfterHostRestart: boolean;
   /** Covers exits and hangs of the server process. */
   restartOnCrash: boolean;
@@ -351,6 +355,15 @@ export interface FleetServer extends ServerStatus {
   ownerUnknown?: boolean;
   // System-server rows are read-only because per-server routes reject reserved names.
   system?: boolean;
+}
+
+export interface ServerTagsRequest {
+  tags: string[];
+}
+
+export interface ServerTags {
+  name: string;
+  tags: string[];
 }
 
 // Restore by eligible backup identity; tolerate unknown reason/status values from unvalidated JSON.

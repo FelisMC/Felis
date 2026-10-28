@@ -314,6 +314,7 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "PUT", Pattern: "/api/v1/servers/{name}/allowlist/{uuid}", h: a.handleAllowlistSetWake},
 		{Method: "PUT", Pattern: "/api/v1/servers/{name}/retirement", h: a.handleRetire},
 		{Method: "DELETE", Pattern: "/api/v1/servers/{name}/retirement", h: a.handleCancelRetire},
+		{Method: "PUT", Pattern: "/api/v1/servers/{name}/tags", h: a.handleSetServerTags},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/restart", h: a.handleRestart},
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/status", h: a.handleStatus},
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/startup-settings", h: a.handleStartupSettings},

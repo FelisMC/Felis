@@ -1,13 +1,22 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, beforeAll, afterEach } from "vitest";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import i18next from "i18next";
 import { MemoryRouter } from "react-router-dom";
+import { ToastProvider } from "@/components/Toaster";
 import type { FleetServer, MyServerView } from "@/lib/types";
 import { ServersPage } from "./ServersPage";
 
 const tier = vi.hoisted(() => ({ isAdmin: true, identity: { email: "admin@example.test" } }));
-const calls = vi.hoisted(() => ({ fleet: vi.fn(), myServers: vi.fn(), nodes: vi.fn() }));
+const calls = vi.hoisted(() => ({
+  fleet: vi.fn(),
+  myServers: vi.fn(),
+  nodes: vi.fn(),
+  wake: vi.fn(),
+  stop: vi.fn(),
+  restart: vi.fn(),
+}));
 const runtime = vi.hoisted(() => ({ distributed: false }));
 
 vi.mock("@/lib/tier", () => ({ useTier: () => tier }));
@@ -65,12 +74,16 @@ async function tableOrder() {
 
 function renderPage() {
   render(
-    <MemoryRouter>
-      <ServersPage />
-    </MemoryRouter>,
+    <ToastProvider>
+      <MemoryRouter>
+        <ServersPage />
+      </MemoryRouter>
+    </ToastProvider>,
   );
   return userEvent.setup();
 }
+
+const t = (key: string, options: Record<string, string | number> = {}) => i18next.t(key, options);
 
 async function sortBy(user: ReturnType<typeof userEvent.setup>, option: string) {
   await user.click(screen.getByRole("combobox", { name: "Sort order" }));
@@ -83,6 +96,9 @@ beforeEach(() => {
   calls.nodes.mockReset();
   calls.fleet.mockReset();
   calls.myServers.mockReset();
+  calls.wake.mockReset();
+  calls.stop.mockReset();
+  calls.restart.mockReset();
 });
 
 describe("ServersPage fleet ownership", () => {
@@ -497,5 +513,165 @@ describe("ServersPage refresh", () => {
     expect(calls.nodes).toHaveBeenCalledTimes(1);
     await user.click(screen.getByRole("button", { name: "Refresh now" }));
     await waitFor(() => expect(calls.nodes).toHaveBeenCalledTimes(2));
+  });
+});
+
+describe("ServersPage page size", () => {
+  const key = "felis-servers-page-size";
+  const names = Array.from({ length: 21 }, (_, i) => `srv-${String(i + 1).padStart(2, "0")}`);
+
+  it("shows the chosen number to a page and keeps the choice for the next visit", async () => {
+    calls.fleet.mockResolvedValue(names.map((n) => row(n, {})));
+    const user = renderPage();
+    expect(await tableOrder()).toEqual(names.slice(0, 20));
+
+    await user.click(screen.getByRole("combobox", { name: t("servers:page_size_label") }));
+    await user.click(await screen.findByRole("option", { name: t("servers:page_size_option", { size: 50 }) }));
+    expect(await tableOrder()).toEqual(names);
+    expect(screen.queryByText("Page 1 of 2")).toBeNull();
+    expect(localStorage.getItem(key)).toBe("50");
+
+    cleanup();
+    renderPage();
+    expect(await tableOrder()).toEqual(names);
+  });
+
+  it("starts at twenty when the stored size is not one on offer", async () => {
+    localStorage.setItem(key, "7");
+    calls.fleet.mockResolvedValue(names.map((n) => row(n, {})));
+    renderPage();
+    expect(await tableOrder()).toEqual(names.slice(0, 20));
+  });
+});
+
+describe("ServersPage tags", () => {
+  const filter = () => screen.getByRole("group", { name: t("servers:tags_label") });
+
+  it("shows a server's tags under its name", async () => {
+    calls.fleet.mockResolvedValue([row("alpha", { tags: ["PvP", "Survival"] }), row("bravo", {})]);
+    renderPage();
+
+    const alpha = await tableRow("alpha");
+    expect(alpha.getAllByRole("listitem").map((li) => li.textContent)).toEqual(["PvP", "Survival"]);
+    expect((await tableRow("bravo")).queryByRole("listitem")).toBeNull();
+  });
+
+  it("shows only the servers that carry every selected tag, whatever the letter case", async () => {
+    calls.fleet.mockResolvedValue([
+      row("alpha", { tags: ["PvP", "Survival"] }),
+      row("bravo", { tags: ["pvp"] }),
+      row("charlie", { tags: ["Survival"] }),
+      row("delta", {}),
+    ]);
+    const user = renderPage();
+    expect(await tableOrder()).toEqual(["alpha", "bravo", "charlie", "delta"]);
+
+    await user.click(within(filter()).getByRole("button", { name: "PvP" }));
+    expect(within(filter()).getByRole("button", { name: "PvP" }).getAttribute("aria-pressed")).toBe("true");
+    expect(await tableOrder()).toEqual(["alpha", "bravo"]);
+
+    await user.click(within(filter()).getByRole("button", { name: "Survival" }));
+    expect(await tableOrder()).toEqual(["alpha"]);
+
+    await user.click(within(filter()).getByRole("button", { name: "PvP" }));
+    expect(await tableOrder()).toEqual(["alpha", "charlie"]);
+  });
+
+  it("starts again from the first page when the tag filter changes", async () => {
+    const names = Array.from({ length: 25 }, (_, i) => `srv-${String(i + 1).padStart(2, "0")}`);
+    calls.fleet.mockResolvedValue(names.map((n) => row(n, { tags: ["all"] })));
+    const user = renderPage();
+    await tableOrder();
+    await user.click(screen.getByRole("button", { name: /Next/ }));
+    expect(await tableOrder()).toEqual(names.slice(20));
+
+    await user.click(within(filter()).getByRole("button", { name: "all" }));
+    expect(await tableOrder()).toEqual(names.slice(0, 20));
+  });
+});
+
+describe("ServersPage batch actions", () => {
+  const running = (name: string, over: Partial<FleetServer> = {}) =>
+    row(name, { phase: "Running", ready: true, desiredState: "Running", ...over });
+  const bar = () => screen.getByRole("region", { name: t("servers:batch_label") });
+  const selectPage = async (user: ReturnType<typeof userEvent.setup>) => {
+    const table = await screen.findByRole("table");
+    await user.click(within(table).getByRole("checkbox", { name: t("servers:select_page") }));
+  };
+  const isChecked = async (name: string) =>
+    (await tableRow(name)).getByRole<HTMLInputElement>("checkbox", { name: t("servers:select_server", { name }) }).checked;
+  const confirmStop = async (user: ReturnType<typeof userEvent.setup>) => {
+    await user.click(within(bar()).getByRole("button", { name: t("servers:stop") }));
+    return await screen.findByRole("dialog");
+  };
+
+  it("asks once for the whole batch, then stops the servers one after another", async () => {
+    calls.fleet.mockResolvedValue([running("alpha", { playersOnline: 3 }), running("bravo"), running("charlie", { playersOnline: 1 })]);
+    const finish: (() => void)[] = [];
+    calls.stop.mockImplementation(() => new Promise((resolve) => finish.push(() => resolve({}))));
+    const user = renderPage();
+    await selectPage(user);
+    expect(within(bar()).getByText(t("servers:batch_selected", { count: 3 }))).toBeTruthy();
+
+    const dialog = await confirmStop(user);
+    expect(within(dialog).getByText(t("servers:batch_stop_summary", { count: 3 }))).toBeTruthy();
+    expect(within(dialog).getByText(t("servers:batch_player_item", { name: "alpha", count: 3 }))).toBeTruthy();
+    expect(within(dialog).getByText(t("servers:batch_player_item", { name: "charlie", count: 1 }))).toBeTruthy();
+    expect(within(dialog).queryByText(/bravo/)).toBeNull();
+    expect(calls.stop).not.toHaveBeenCalled();
+
+    await user.click(within(dialog).getByRole("button", { name: t("servers:stop") }));
+    await waitFor(() => expect(calls.stop).toHaveBeenCalledTimes(1));
+    expect(calls.stop).toHaveBeenLastCalledWith("alpha");
+    expect(screen.getByText(t("servers:batch_progress", { current: 1, total: 3, name: "alpha" }))).toBeTruthy();
+    for (const [i, name] of ["bravo", "charlie"].entries()) {
+      await act(async () => finish[i]());
+      await waitFor(() => expect(calls.stop).toHaveBeenCalledTimes(i + 2));
+      expect(calls.stop).toHaveBeenLastCalledWith(name);
+    }
+    await act(async () => finish[2]());
+
+    expect(await screen.findByText(t("servers:batch_summary", { done: 3, failed: 0 }))).toBeTruthy();
+    expect(within(bar()).getAllByText(t("servers:batch_result_ok"))).toHaveLength(3);
+    expect(await isChecked("alpha")).toBe(false);
+  });
+
+  it("lists why a server failed and keeps it selected", async () => {
+    calls.fleet.mockResolvedValue([running("alpha"), running("bravo"), running("charlie")]);
+    calls.stop.mockImplementation(async (name: string) => {
+      if (name === "bravo") throw { status: 429, code: "quota_exceeded", message: "raw" };
+      return {};
+    });
+    const user = renderPage();
+    await selectPage(user);
+    const dialog = await confirmStop(user);
+    expect(within(dialog).getByText(t("servers:batch_stop_summary", { count: 3 }))).toBeTruthy();
+    expect(within(dialog).queryByText(t("servers:batch_players_intro"))).toBeNull();
+    await user.click(within(dialog).getByRole("button", { name: t("servers:stop") }));
+
+    expect(await screen.findByText(t("servers:batch_summary", { done: 2, failed: 1 }))).toBeTruthy();
+    const ok = t("servers:batch_result_ok");
+    expect(within(bar()).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      `alpha${ok}`,
+      `bravo${t("errors:quota_exceeded")}`,
+      `charlie${ok}`,
+    ]);
+    expect(within(bar()).getByText(t("servers:batch_selected", { count: 1 }))).toBeTruthy();
+    expect([await isChecked("alpha"), await isChecked("bravo"), await isChecked("charlie")]).toEqual([false, true, false]);
+  });
+
+  it("lets a player select only their own servers", async () => {
+    tier.isAdmin = false;
+    calls.myServers.mockResolvedValue([
+      { name: "mine", subdomain: "mine", owned: true, claimable: false, phase: "Stopped", playersOnline: 0, playersMax: 20 },
+      { name: "free", subdomain: "free", owned: false, claimable: true, phase: "Stopped", playersOnline: 0, playersMax: 20 },
+    ] satisfies MyServerView[]);
+    const user = renderPage();
+    expect(await isChecked("mine")).toBe(false);
+    expect((await tableRow("free")).queryByRole("checkbox")).toBeNull();
+
+    await selectPage(user);
+    expect(await isChecked("mine")).toBe(true);
+    expect(within(bar()).getByText(t("servers:batch_selected", { count: 1 }))).toBeTruthy();
   });
 });

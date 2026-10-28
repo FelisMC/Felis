@@ -21,6 +21,7 @@ import type {
   SelfServiceQuotaSettings,
   ServerNotify,
   ServerPowerResult,
+  ServerTags,
   ServerStartupSettings,
   ServerExtraPortRequest,
   StartupSettingsPatch,
@@ -464,6 +465,10 @@ export const api = rejectingSync({
     request<{ name: string; retiring: RetireState }>("PUT", urlPath`/servers/${name}/retirement`, body),
 
   cancelRetire: (name: string) => request<void>("DELETE", urlPath`/servers/${name}/retirement`),
+
+  // Replaces the whole tag set; the response carries the set as stored.
+  setServerTags: (name: string, tags: string[]) =>
+    request<ServerTags>("PUT", urlPath`/servers/${name}/tags`, { tags }),
 
   // The server strips a leading slash and rejects control chars or >1024 bytes.
   sendCommand: (name: string, command: string) =>

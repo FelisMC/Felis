@@ -47,6 +47,8 @@ func TestOpenAPISchemasMatchWireStructs(t *testing.T) {
 		"ConsoleCommandResult":     ConsoleCommandResult{},
 		"FleetServer":              fleetServerView{},
 		"MyServerView":             MyServerView{},
+		"ServerTagsRequest":        serverTagsRequest{},
+		"ServerTags":               serverTagsView{},
 		"AllowlistEntry":           AllowlistEntry{},
 		"BackupView":               BackupView{},
 		"ExportTicket":             exportTicketView{},

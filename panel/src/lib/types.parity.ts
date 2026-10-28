@@ -54,6 +54,8 @@ export type WireParity = [
   Holds<Parity<T.MyServerView, S["MyServerView"]>>,
   Holds<Parity<T.AllowlistEntry, S["AllowlistEntry"]>>,
   Holds<Parity<T.FleetServer, S["FleetServer"]>>,
+  Holds<Parity<T.ServerTagsRequest, S["ServerTagsRequest"]>>,
+  Holds<Parity<T.ServerTags, S["ServerTags"]>>,
   Holds<Parity<T.ScheduleStep, S["ScheduleStep"]>>,
   Holds<Parity<T.Schedule, S["Schedule"]>>,
   Holds<Parity<T.ScheduleInput, S["ScheduleInput"]>>,

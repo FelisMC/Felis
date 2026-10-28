@@ -764,6 +764,23 @@ func (f *fakeRepo) ServerOwners(_ context.Context) (map[string]ServerOwnership, 
 	}
 	return f.owners, nil
 }
+func (f *fakeRepo) ServerTags(_ context.Context) (map[string][]string, error) {
+	out := map[string][]string{}
+	for name, rec := range f.byName {
+		if len(rec.Tags) > 0 {
+			out[name] = rec.Tags
+		}
+	}
+	return out, nil
+}
+func (f *fakeRepo) SetServerTags(_ context.Context, name string, tags []string) error {
+	rec, ok := f.byName[name]
+	if !ok {
+		return ErrNotFound
+	}
+	rec.Tags = tags
+	return nil
+}
 func (f *fakeRepo) ServerNoticeRecipients(_ context.Context, server string) ([]string, error) {
 	return f.noticeTo[server], f.noticeToErr
 }
