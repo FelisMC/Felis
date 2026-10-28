@@ -14,8 +14,10 @@ type action struct {
 	// Blocking actions hold server starts and world maintenance while running.
 	blocking bool
 	// confirm requires ConfirmMaintenance; confirmIf restricts that requirement to selected parameters.
-	confirm         bool
-	confirmIf       func(Request) bool
+	confirm   bool
+	confirmIf func(Request) bool
+	// detached work runs outside node-control, so a restarted node-control resumes waiting for it.
+	detached        bool
 	timeout         time.Duration
 	params, secrets []string
 	check           func(Request) error
@@ -34,6 +36,7 @@ var (
 	accountPattern  = regexp.MustCompile(`^[a-f0-9]{32}$`)
 	identityPattern = regexp.MustCompile(`^([A-Za-z0-9._%+-]+)?@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}$`)
 	printable       = regexp.MustCompile(`^[\x21\x23-\x26\x28-\x5b\x5d-\x7e]+$`)
+	releasePattern  = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]{1,40})?$`)
 	rotatableKinds  = []string{"velocity", "limbo", "build", "ops", "registry", "forwarding", "db"}
 )
 
@@ -101,6 +104,13 @@ var actions = map[string]action{
 	"converge": {timeout: 10 * time.Minute, params: []string{"userRcon"},
 		confirmIf: func(r Request) bool { return r.Params["userRcon"] == "true" },
 		check:     func(r Request) error { return boolParam(r, "userRcon") }},
+	"update": {blocking: true, confirm: true, detached: true, timeout: 90 * time.Minute, params: []string{"version", "now"},
+		check: func(r Request) error {
+			if !releasePattern.MatchString(r.Params["version"]) {
+				return errors.New("the version must be a published Felis release such as v0.3.0")
+			}
+			return boolParam(r, "now")
+		}},
 	"doctor":         {timeout: 3 * time.Minute},
 	"support-bundle": {timeout: 10 * time.Minute, params: []string{"serverLogs"}, check: func(r Request) error { return boolParam(r, "serverLogs") }},
 	"host-settings": {timeout: 30 * time.Minute, params: []string{"dbBackupTime", "dbBackupKeep", "velocityXmx"},
@@ -114,6 +124,10 @@ func NodeAction(name string) bool {
 		return true
 	}
 	return false
+}
+
+func detached(name string) bool {
+	return actions[name].detached
 }
 
 // Blocking treats unknown actions as holding the gate.

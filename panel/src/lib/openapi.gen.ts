@@ -4298,10 +4298,10 @@ export interface components {
         };
         NodeControlRequest: {
             /**
-             * @description The node lifecycle actions (enable to join-controller) and the platform host tasks the panel runs on the controller host.
+             * @description The node lifecycle actions (enable to join-controller) and the platform host tasks the panel runs on the controller host. update applies the published release in params.version with `felis update --apply` in its own systemd unit; params.now "true" applies it outside the maintenance window. felis-api restarts during an update, and the task keeps running and reports its result once the panel reconnects.
              * @enum {string}
              */
-            action: "enable" | "join" | "approve" | "upgrade" | "fence" | "unfence" | "enable-ha" | "join-controller" | "db-backup" | "db-verify" | "db-delete" | "db-restore" | "offsite-sync" | "offsite-list" | "offsite-check-key" | "offsite-take-over" | "offsite-configure" | "offsite-disable" | "restore-host" | "backup-now" | "rotate-token" | "domain-check" | "domain-set" | "storage-configure" | "connection-configure" | "converge" | "doctor" | "support-bundle" | "host-settings" | "server-forwarding";
+            action: "enable" | "join" | "approve" | "upgrade" | "fence" | "unfence" | "enable-ha" | "join-controller" | "db-backup" | "db-verify" | "db-delete" | "db-restore" | "offsite-sync" | "offsite-list" | "offsite-check-key" | "offsite-take-over" | "offsite-configure" | "offsite-disable" | "restore-host" | "backup-now" | "rotate-token" | "domain-check" | "domain-set" | "storage-configure" | "connection-configure" | "converge" | "doctor" | "support-bundle" | "host-settings" | "server-forwarding" | "update";
             /** @description Stable node name; required for every action except enable and enable-ha. */
             name?: string;
             /** @description Verified root SSH alias or user@host; required for join */

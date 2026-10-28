@@ -18,6 +18,7 @@ import { RefreshContext, useAsync, usePageRefresh, useRefreshSignal } from "@/li
 import { formatAbsolute } from "@/lib/format";
 import { DBBackupCard } from "./DBBackupCard";
 import { UpdateReportCard } from "./UpdateReportCard";
+import { PanelUpdateCard } from "./PanelUpdateCard";
 import { HostStatusCard } from "./maintenance/HostStatusCard";
 import { DatabaseBundlesCard } from "./maintenance/DatabaseBundlesCard";
 import { WorldBackupCard } from "./maintenance/WorldBackupCard";
@@ -37,8 +38,8 @@ function toLocalDatetimeString(dateOrStr: Date | string | null | undefined): str
   return `${YYYY}-${MM}-${DD}T${hh}:${mm}`;
 }
 
-// UpdatesSection is the update tab: the versions the host found and the maintenance
-// window `felis update --apply` waits for. Applying stays on the host.
+// UpdatesSection is the update tab: the versions the host found, the update the owner can
+// start here, and the maintenance window `felis update --apply` waits for.
 function UpdatesSection() {
   const { t, i18n } = useTranslation("admin");
   const locale = i18n.language;
@@ -179,6 +180,8 @@ function UpdatesSection() {
     <div className="space-y-6">
       {/* Installed vs newest upstream versions (read-only, host timer) */}
       <UpdateReportCard />
+
+      <PanelUpdateCard inWindow={windowStatus === "active"} />
 
       {/* Stats Cards Row */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">

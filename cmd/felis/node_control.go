@@ -159,6 +159,9 @@ type nodeExecutor struct {
 	// Overrides for the host tasks (host_tasks.go): the shell the installer runs in, the
 	// host settings file and the support bundle directory; empty means the real ones.
 	shell, settingsFile, supportDir string
+	// runHost and pollEvery stand in for systemd and its polling interval in the update task's tests.
+	runHost   func(context.Context, string, ...string) ([]byte, error)
+	pollEvery time.Duration
 }
 
 func (e nodeExecutor) selfName() string {

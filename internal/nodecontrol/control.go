@@ -74,6 +74,23 @@ type Executor func(context.Context, Request, func(string) error, io.Writer) erro
 
 type outcomeKey struct{}
 
+type taskKey struct{}
+
+// TaskInfo names the running task to its executor; Resumed marks a detached task picked up by a restarted node-control.
+type TaskInfo struct {
+	ID, Log string
+	Resumed bool
+}
+
+func WithTask(ctx context.Context, info TaskInfo) context.Context {
+	return context.WithValue(ctx, taskKey{}, info)
+}
+
+func CurrentTask(ctx context.Context) (TaskInfo, bool) {
+	info, ok := ctx.Value(taskKey{}).(TaskInfo)
+	return info, ok
+}
+
 type outcome struct {
 	mu       sync.Mutex
 	result   json.RawMessage
@@ -134,6 +151,7 @@ func Open(ctx context.Context, dir string, execute Executor) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
+	var resume []Task
 	for _, path := range paths {
 		raw, err := os.ReadFile(path)
 		if err != nil {
@@ -146,7 +164,10 @@ func Open(ctx context.Context, dir string, execute Executor) (*Manager, error) {
 		if !idPattern.MatchString(t.ID) || filepath.Base(path) != t.ID+".json" {
 			return nil, errors.New("invalid stored task ID")
 		}
-		if t.State == "running" {
+		if t.State == "running" && detached(t.Request.Action) && m.active == "" {
+			m.active = t.ID
+			resume = append(resume, t)
+		} else if t.State == "running" {
 			t.State, t.Error = "failed", "Host execution service restarted. Verify the host state before retrying."
 			now := time.Now().UTC()
 			t.FinishedAt = &now
@@ -155,6 +176,10 @@ func Open(ctx context.Context, dir string, execute Executor) (*Manager, error) {
 			}
 		}
 		m.tasks[t.ID] = t
+	}
+	for _, t := range resume {
+		m.wg.Add(1)
+		go m.run(t, nil, true)
 	}
 	return m, nil
 }
@@ -255,18 +280,21 @@ func (m *Manager) Start(r Request, actor string) (Task, error) {
 	m.tasks[t.ID] = t
 	m.active = t.ID
 	m.wg.Add(1)
-	go m.run(t, secrets)
+	go m.run(t, secrets, false)
 	return t, nil
 }
-func (m *Manager) run(t Task, secrets map[string]string) {
+func (m *Manager) run(t Task, secrets map[string]string, resumed bool) {
 	defer m.wg.Done()
 	limit := timeoutFor(t.Request.Action)
 	o := &outcome{}
-	ctx, cancel := context.WithTimeout(context.WithValue(m.ctx, outcomeKey{}, o), limit)
+	logPath := filepath.Join(m.dir, t.ID+".log")
+	ctx := context.WithValue(m.ctx, outcomeKey{}, o)
+	ctx = WithTask(ctx, TaskInfo{ID: t.ID, Log: logPath, Resumed: resumed})
+	ctx, cancel := context.WithDeadline(ctx, t.StartedAt.Add(limit))
 	defer cancel()
 	req := t.Request
 	req.Secrets = secrets
-	log, err := os.OpenFile(filepath.Join(m.dir, t.ID+".log"), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0600)
+	log, err := os.OpenFile(logPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0600)
 	if err == nil {
 		stage := func(s string) error {
 			m.mu.Lock()
@@ -289,6 +317,11 @@ func (m *Manager) run(t Task, secrets map[string]string) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.ctx.Err() != nil && detached(t.Request.Action) {
+		// The detached work outlives this shutdown; the stored task stays running for the next start to resume.
+		m.active = ""
+		return
+	}
 	now := time.Now().UTC()
 	t.FinishedAt = &now
 	t.State = "succeeded"

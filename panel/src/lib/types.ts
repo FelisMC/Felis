@@ -1251,7 +1251,7 @@ export type HostTaskAction =
   | "db-backup" | "db-verify" | "db-delete" | "db-restore"
   | "offsite-sync" | "offsite-list" | "offsite-check-key" | "offsite-take-over" | "offsite-configure" | "offsite-disable" | "restore-host"
   | "backup-now" | "rotate-token" | "domain-check" | "domain-set" | "storage-configure" | "connection-configure"
-  | "converge" | "doctor" | "support-bundle" | "host-settings" | "server-forwarding";
+  | "converge" | "doctor" | "support-bundle" | "host-settings" | "server-forwarding" | "update";
 export interface NodeControlRequest {
   action: NodeLifecycleAction | HostTaskAction;
   name?: string;

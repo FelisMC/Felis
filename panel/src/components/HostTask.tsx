@@ -48,6 +48,7 @@ export function useHostTask(actions: HostTaskAction[]) {
     available: list.data?.available === true,
     loading: list.loading && !list.data,
     listError: list.error,
+    detailError: detail.error,
     task,
     running,
     otherRunning,

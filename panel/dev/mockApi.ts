@@ -150,6 +150,7 @@ interface MockState {
 
 // MockHost stands in for the node-control service; its tasks finish at once.
 interface MockHost {
+  version: string;
   tasks: NodeControlTask[];
   quietUntil?: string;
   settings: HostOverview["settings"];
@@ -180,6 +181,7 @@ const ROOT_DOMAIN = "dev.felis.localhost";
 const API_BASE = "/api/v1";
 const MOCK_LINK_CODE = "LINK1234";
 const MOCK_OTP_CODE = "123456";
+const MOCK_FELIS_LATEST = "v0.5.1";
 const MC_UUID = "00000000-0000-4000-8000-000000000001";
 const RESET_ROUTE = `${API_BASE}/__mock/reset`;
 
@@ -553,6 +555,7 @@ function initialState(): MockState {
     failoverPolicy: { automatic: false, afterMinutes: 15, replicaMinutes: 60, revision: "", managed: false },
     selfService: { enabled: false, max_servers: null, max_cpu_milli: null, max_memory_mb: null, max_storage_gb: null, revision: "" },
     host: {
+      version: "v0.4.0",
       tasks: [],
       settings: { dbBackupTime: "03:30", dbBackupKeep: 14, velocityXmx: "1G" },
       offsite: { configured: false, keyKept: false },
@@ -1680,7 +1683,7 @@ function mockHostOverview(state: MockState): HostOverview {
   const stamp = (d: Date) => d.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
   const h = state.host;
   return {
-    host: "felis-mock", at: new Date().toISOString(), version: "v0.4.0-dev",
+    host: "felis-mock", at: new Date().toISOString(), version: `${h.version}-dev`,
     disks: [{ path: "/var/lib", total: 120 * 2 ** 30, available: 71 * 2 ** 30 }],
     memory: { total: 16 * 2 ** 30, available: 9 * 2 ** 30 },
     units: [
@@ -1734,6 +1737,23 @@ function runMockHostTask(state: MockState, request: NodeControlRequest, actor: s
       break;
     case "support-bundle":
       task.artifact = `/var/lib/felis/support/felis-support-${now.replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}.tar.gz`;
+      break;
+    case "update":
+      task.state = "running";
+      task.stage = "preflight";
+      task.finishedAt = undefined;
+      task.log = "[felis] preflight\n";
+      setTimeout(() => {
+        task.stage = "update";
+        task.log = `${task.log ?? ""}[felis] backing up the database and the deployment state\n`;
+      }, 1500);
+      setTimeout(() => {
+        h.version = p.version;
+        task.state = "succeeded";
+        task.stage = "complete";
+        task.finishedAt = new Date().toISOString();
+        task.log = `${task.log ?? ""}felis update: now at ${p.version} (mock)\n`;
+      }, 5000);
       break;
     case "host-settings":
       h.settings = { ...h.settings, ...(p.dbBackupTime ? { dbBackupTime: p.dbBackupTime } : {}), ...(p.dbBackupKeep ? { dbBackupKeep: Number(p.dbBackupKeep) } : {}), ...(p.velocityXmx ? { velocityXmx: p.velocityXmx } : {}) };
@@ -2112,9 +2132,11 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
       sendJSON(ctx.res, 200, {
         report: {
           checked_at: new Date(Date.now() - 7 * 3600 * 1000).toISOString(),
-          felis: "v0.4.0",
+          felis: ctx.state.host.version,
           components: [
-            { name: "felis-api", current: "v0.4.0", latest: "v0.5.1", state: "available", selector: "panel" },
+            ctx.state.host.version === MOCK_FELIS_LATEST
+              ? { name: "felis-api", current: MOCK_FELIS_LATEST, state: "current", selector: "panel" }
+              : { name: "felis-api", current: ctx.state.host.version, latest: MOCK_FELIS_LATEST, state: "available", selector: "panel" },
             { name: "velocity", current: "3.4.0-SNAPSHOT+b528", state: "current", selector: "velocity" },
             { name: "k3s", current: "v1.36.2+k3s1", state: "current", selector: "k3s" },
             { name: "cloudflared", current: "2026.6.1", latest: "2026.9.0", state: "available", selector: "cloudflared" },

@@ -142,6 +142,8 @@ func (e nodeExecutor) hostTask(ctx context.Context, r nodecontrol.Request, stage
 		return e.hostSettings(ctx, p, stage, out)
 	case "server-forwarding":
 		return e.serverForwarding(ctx, p["server"], p["legacy"] == "true", out)
+	case "update":
+		return e.update(ctx, r, stage, out)
 	}
 	return fmt.Errorf("unsupported host operation %q", r.Action)
 }

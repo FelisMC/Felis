@@ -226,3 +226,64 @@ func TestHARequests(t *testing.T) {
 		}
 	}
 }
+
+func updateRequest() Request {
+	return Request{Action: "update", ConfirmMaintenance: true, Params: map[string]string{"version": "v0.3.0", "now": "true"}}
+}
+
+func TestUpdateRequest(t *testing.T) {
+	if err := updateRequest().Validate(); err != nil {
+		t.Fatalf("a release update was refused: %v", err)
+	}
+	for _, change := range []func(*Request){
+		func(r *Request) { r.ConfirmMaintenance = false },
+		func(r *Request) { r.Params["version"] = "main" },
+		func(r *Request) { r.Params["version"] = "v0.3.0; reboot" },
+		func(r *Request) { r.Params["now"] = "yes" },
+	} {
+		bad := updateRequest()
+		change(&bad)
+		if bad.Validate() == nil {
+			t.Fatalf("accepted %+v", bad)
+		}
+	}
+}
+
+func TestShutdownKeepsADetachedTaskForTheNextStart(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	entered := make(chan struct{})
+	manager, err := Open(ctx, dir, func(ctx context.Context, r Request, stage func(string) error, out io.Writer) error {
+		close(entered)
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := manager.Start(updateRequest(), "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-entered
+	cancel()
+	manager.Wait()
+
+	resumed := make(chan TaskInfo, 1)
+	again, err := Open(context.Background(), dir, func(ctx context.Context, r Request, stage func(string) error, out io.Writer) error {
+		info, _ := CurrentTask(ctx)
+		resumed <- info
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := <-resumed
+	again.Wait()
+	if info.ID != task.ID || !info.Resumed || info.Log != filepath.Join(dir, task.ID+".log") {
+		t.Fatalf("resumed as %+v", info)
+	}
+	if got, err := again.Get(task.ID); err != nil || got.State != "succeeded" {
+		t.Fatal(got, err)
+	}
+}
