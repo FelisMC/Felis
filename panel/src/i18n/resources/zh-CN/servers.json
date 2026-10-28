@@ -549,7 +549,7 @@
   "usage_title": "资源占用",
   "usage_cpu": "CPU",
   "usage_memory": "内存",
-  "usage_window": "CPU 与内存每 15 秒采样 · 最近 1 小时",
+  "usage_window": "最近 1 小时 · 每 15 秒采样",
   "usage_cpu_curve": "最近 1 小时 CPU 占用曲线",
   "usage_memory_curve": "最近 1 小时内存占用曲线",
   "usage_cpu_basis": "CPU 百分比按服务器限额计算；未设置限额时显示毫核。内存为实际工作集。",

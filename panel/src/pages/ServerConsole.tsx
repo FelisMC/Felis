@@ -271,7 +271,7 @@ export function ServerConsole() {
   const startupBlocked = startup?.stage === "failed" || startup?.reason === "Unschedulable";
 
   return (
-    <div className="flex shrink-0 flex-col lg:flex-1 lg:shrink lg:min-h-[35rem] gap-4 min-h-0">
+    <div className="flex shrink-0 flex-col gap-4">
       <div>
         <BackLink to="/servers" label={t("my_servers_breadcrumb")} />
       </div>
@@ -328,7 +328,7 @@ export function ServerConsole() {
               <p className="text-xs text-muted-foreground">{t(startup.stage === "failed" ? "startup_failed_hint" : "startup_hint")}</p>
             </div>
           )}
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-4 lg:grid-rows-[minmax(0,1fr)] lg:flex-1 lg:min-h-[32rem]">
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-4 lg:grid-rows-[minmax(0,1fr)] lg:h-[clamp(32rem,72dvh,56rem)]">
             {/* Left/Main column: Console */}
             <div className="lg:col-span-3 flex flex-col lg:min-h-0 lg:h-full">
               <Card className="dark flex flex-col lg:flex-1 lg:min-h-0 overflow-hidden bg-black text-zinc-50 border-zinc-800">

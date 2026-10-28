@@ -46,5 +46,10 @@
   "refresh_failed": "Refresh failed. The last successfully retrieved status is displayed.",
   "notifications": "Notifications",
   "dismiss_notification": "Dismiss notification",
-  "label_prefix": "{{label}}: "
+  "label_prefix": "{{label}}: ",
+  "chart_collecting": "Collecting data",
+  "chart_since_minutes_one": "{{count}} minute ago",
+  "chart_since_minutes_other": "{{count}} minutes ago",
+  "chart_since_hour": "1 hour ago",
+  "chart_now": "Now"
 }

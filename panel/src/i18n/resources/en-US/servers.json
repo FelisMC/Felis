@@ -551,7 +551,7 @@
   "usage_title": "Resource usage",
   "usage_cpu": "CPU",
   "usage_memory": "Memory",
-  "usage_window": "CPU and memory · Every 15 seconds · Last hour",
+  "usage_window": "Last hour · sampled every 15 seconds",
   "usage_cpu_curve": "CPU usage over the last hour",
   "usage_memory_curve": "Memory usage over the last hour",
   "usage_cpu_basis": "CPU percentages use the server limit; unlimited CPU is shown in millicores. Memory is the working set.",

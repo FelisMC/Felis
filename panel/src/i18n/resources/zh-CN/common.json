@@ -46,5 +46,10 @@
   "refresh_failed": "刷新失败，当前显示上次成功读取的状态。",
   "notifications": "通知",
   "dismiss_notification": "关闭提示",
-  "label_prefix": "{{label}}："
+  "label_prefix": "{{label}}：",
+  "chart_collecting": "正在采集数据",
+  "chart_since_minutes_one": "{{count}} 分钟前",
+  "chart_since_minutes_other": "{{count}} 分钟前",
+  "chart_since_hour": "1 小时前",
+  "chart_now": "现在"
 }

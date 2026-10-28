@@ -783,10 +783,10 @@ export function ServerFiles() {
 
   // A full disk is the thing to fix first, so only then does its card lead the page.
   const diskCard = (
-    <Card><CardContent className="space-y-2 p-4">
+    <div className="space-y-2">
       <DiskUsage disk={statusQ.error && statusQ.data.disk ? { ...statusQ.data.disk, stale: true } : statusQ.data.disk} diskFull={statusQ.data.diskFull} />
       {statusQ.data.diskFull && <p className="text-xs text-muted-foreground">{t("disk_cleanup_hint")}</p>}
-    </CardContent></Card>
+    </div>
   );
   const header = (
     <PageHeader
