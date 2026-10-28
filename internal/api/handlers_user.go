@@ -1041,13 +1041,7 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 	case patch.Image != nil:
 		a.auditImageChange(r, name, imageFrom, *patch.Image)
 	default:
-		if patch.ExtraPorts != nil {
-			p := principalFromContext(r.Context())
-			a.auditEntry(r, AuditEntry{Actor: auditActor(p), ActorUserID: p.UserID, Action: "server.patch", ServerName: name,
-				Payload: auditPayload(map[string]any{"fields": changed})})
-		} else {
-			a.audit(r, "server.patch", name)
-		}
+		a.auditDetail(r, "server.patch", name, map[string]any{"fields": changed})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name":    name,

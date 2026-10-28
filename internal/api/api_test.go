@@ -45,6 +45,8 @@ type fakeRepo struct {
 	resizeErr              error // ResizeServer fails with it (a store outage)
 	quotaChecked           []ResourceSpec
 	audits                 []AuditEntry
+	auditRows              []AuditRecord
+	auditQuery             AuditQuery
 	failAudit              error // Audit fails with it (a store outage)
 	backupRequested        map[string]time.Time
 	joins                  []string
@@ -794,6 +796,21 @@ func (f *fakeRepo) Audit(_ context.Context, e AuditEntry) error {
 		f.backupRequested[e.ServerName] = time.Now()
 	}
 	return nil
+}
+
+func (f *fakeRepo) ListAudit(_ context.Context, q AuditQuery) ([]AuditRecord, error) {
+	f.auditQuery = q
+	var out []AuditRecord
+	for _, r := range f.auditRows {
+		if q.BeforeID == 0 || r.ID < q.BeforeID {
+			out = append(out, r)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID > out[j].ID })
+	if q.Limit > 0 && len(out) > q.Limit {
+		out = out[:q.Limit]
+	}
+	return out, nil
 }
 
 func (f *fakeRepo) LastBackupRequest(_ context.Context, serverName string, since time.Time) (time.Time, error) {

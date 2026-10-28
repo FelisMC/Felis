@@ -49,6 +49,8 @@ import type {
   FailoverPolicySettings,
   ArchivePolicy,
   ArchivePolicySettings,
+  AuditListParams,
+  AuditPage,
   HeartbeatSettings,
   FailoverPlan,
   FailoverResult,
@@ -611,6 +613,14 @@ export const api = rejectingSync({
     if (until) q.set("until", until);
     const query = q.toString();
     return downloadBlob(`/platform/audit-export${query ? `?${query}` : ""}`);
+  },
+  listAudit: (params: AuditListParams = {}) => {
+    const sp = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined && value !== "") sp.set(key, String(value));
+    }
+    const qs = sp.toString();
+    return request<AuditPage>("GET", `/platform/audit${qs ? `?${qs}` : ""}`);
   },
   nodes: () => request<{ nodes: ExecutionNode[] }>("GET", "/nodes").then((r) => r.nodes),
   migration: (name: string) => request<WorldMigration>("GET", `/servers/${encodeURIComponent(name)}/migrations`),

@@ -20,6 +20,7 @@ import { useTranslation } from "react-i18next";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Loading, ErrorState, RefreshError } from "@/components/States";
+import { AuditTable } from "@/components/AuditTable";
 import { shownPhase } from "@/components/PhaseBadge";
 import { StatCard } from "@/components/StatCard";
 import { PageHeader } from "@/components/PageHeader";
@@ -40,6 +41,7 @@ const VoxelFleet = lazyWithReload(() =>
 
 // The dashboard follows the fleet the way the server list does.
 const SERVERS_POLL_MS = 10_000;
+const RECENT_AUDIT_COUNT = 10;
 
 export function Dashboard() {
   const cfg = useConfig();
@@ -98,7 +100,37 @@ export function Dashboard() {
           />
         </>
       )}
+      {isOwner && <RecentAudit />}
     </>
+  );
+}
+
+function RecentAudit() {
+  const { t } = useTranslation("dashboard");
+  const audit = useAsync(() => api.listAudit({ limit: RECENT_AUDIT_COUNT }), []);
+
+  return (
+    <Card className="mt-6">
+      <CardHeader className="flex-row items-center justify-between gap-3">
+        <CardTitle>{t("audit_title")}</CardTitle>
+        <Link to="/admin/audit" className="text-xs font-medium text-primary hover:underline">
+          {t("audit_view_all")}
+        </Link>
+      </CardHeader>
+      <CardContent className="p-0">
+        {audit.data ? (
+          audit.data.entries.length > 0 ? (
+            <AuditTable entries={audit.data.entries} />
+          ) : (
+            <p className="p-5 text-sm text-muted-foreground">{t("audit_empty")}</p>
+          )
+        ) : audit.error ? (
+          <ErrorState error={audit.error} onRetry={audit.reload} />
+        ) : (
+          <Loading />
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 )
 
@@ -64,6 +65,33 @@ type AuditEntry struct {
 	ClientIP    string // empty for internal callers
 	UserAgent   string
 	Payload     []byte // valid JSON or nil (stored as NULL)
+}
+
+// AuditRecord is one stored audit_logs row; columns without a value serialize as null.
+type AuditRecord struct {
+	ID          int64           `json:"id"`
+	CreatedAt   time.Time       `json:"created_at"`
+	Actor       string          `json:"actor"`
+	ActorUserID *string         `json:"actor_user_id"`
+	Source      string          `json:"source"`
+	Action      string          `json:"action"`
+	ServerName  *string         `json:"server_name"`
+	RequestID   *string         `json:"request_id"`
+	ClientIP    *string         `json:"client_ip"`
+	UserAgent   *string         `json:"user_agent"`
+	Payload     json.RawMessage `json:"payload"`
+}
+
+// AuditQuery filters ListAudit; a zero field does not filter, and BeforeID 0 starts at the newest row.
+type AuditQuery struct {
+	Actor    string    // case-insensitive substring
+	Action   string    // prefix
+	Server   string    // exact name
+	Since    time.Time // inclusive
+	Until    time.Time // exclusive
+	Keyword  string    // case-insensitive substring of actor, action, server name or payload text
+	BeforeID int64     // only rows with a smaller id
+	Limit    int
 }
 
 // BackupView is one row of GET /api/v1/backups; it omits backup_ref, the internal storage handle.
@@ -239,6 +267,8 @@ type Repo interface {
 	// PatchServerPorts locks the server row and checks a nonempty ownerID before apply.
 	PatchServerPorts(ctx context.Context, name, ownerID string, apply func() error) error
 	Audit(ctx context.Context, e AuditEntry) error
+	// ListAudit returns rows matching q, newest id first.
+	ListAudit(ctx context.Context, q AuditQuery) ([]AuditRecord, error)
 
 	// CreateEmailOTP supersedes live codes for the same (user,purpose), storing only the hash.
 	CreateEmailOTP(ctx context.Context, id, userID, email, codeHash, purpose string, expiresAt time.Time) error

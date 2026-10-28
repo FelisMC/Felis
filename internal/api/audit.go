@@ -48,14 +48,18 @@ func (a *API) audit(r *http.Request, action, target string) {
 	a.auditEntry(r, e)
 }
 
-func (a *API) auditImageChange(r *http.Request, server, from, to string) {
+// auditDetail is audit with a payload.
+func (a *API) auditDetail(r *http.Request, action, target string, payload map[string]any) {
 	p := principalFromContext(r.Context())
-	e := AuditEntry{Actor: auditActor(p), Action: "server.patch", ServerName: server}
+	e := AuditEntry{Actor: auditActor(p), Action: action, ServerName: target, Payload: auditPayload(payload)}
 	if p != nil {
 		e.ActorUserID = p.UserID
 	}
-	e.Payload = auditPayload(map[string]any{"image_from": from, "image_to": to})
 	a.auditEntry(r, e)
+}
+
+func (a *API) auditImageChange(r *http.Request, server, from, to string) {
+	a.auditDetail(r, "server.patch", server, map[string]any{"image_from": from, "image_to": to})
 }
 
 // auditAccount uses the username because pre-session flows have not yet verified the address.

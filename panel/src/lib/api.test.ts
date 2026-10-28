@@ -1999,3 +1999,15 @@ describe("file manager requests", () => {
     expect(fetchSpy).toHaveBeenCalledWith("/exports/t%2F1/download", expect.objectContaining({ method: "GET", credentials: "include", signal }));
   });
 });
+
+describe("audit list wire shape", () => {
+  beforeEach(() => { vi.restoreAllMocks(); cfg.apiBase = ""; });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("sends only the filters that are set, encoded as query values", async () => {
+    const fetchSpy = fakeFetch({ entries: [], next_cursor: "" });
+    vi.stubGlobal("fetch", fetchSpy);
+    await api.listAudit({ actor: "", q: "100%", since: "2026-10-01T00:00:00.000Z", limit: 10, cursor: "42" });
+    expect(vi.mocked(fetchSpy).mock.calls[0][0]).toBe("/platform/audit?q=100%25&since=2026-10-01T00%3A00%3A00.000Z&limit=10&cursor=42");
+  });
+});

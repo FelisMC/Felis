@@ -1664,6 +1664,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/platform/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Browse the audit log, newest first (Owner). */
+        get: operations["listAudit"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/platform/audit-export": {
         parameters: {
             query?: never;
@@ -3770,6 +3787,35 @@ export interface components {
             replicaMinutes: number;
             revision: string;
             managed: boolean;
+        };
+        /** @description One audit log row (internal/api/repo.go AuditRecord). Columns without a value are null. */
+        AuditEntryView: {
+            /** Format: int64 */
+            id: number;
+            /** Format: date-time */
+            created_at: string;
+            /** @description Display name of the actor. */
+            actor: string;
+            /** @description The account the action is attributed to. */
+            actor_user_id: string | null;
+            /** @description external, or internal:<component> for platform components. */
+            source: string;
+            /** @description Dotted action name such as server.patch. */
+            action: string;
+            /** @description The server concerned; other objects store their identifier here. */
+            server_name: string | null;
+            request_id: string | null;
+            client_ip: string | null;
+            user_agent: string | null;
+            /** @description The detail stored with the action. */
+            payload: {
+                [key: string]: unknown;
+            } | null;
+        };
+        AuditPage: {
+            entries: components["schemas"]["AuditEntryView"][];
+            /** @description Opaque cursor for the next page; empty when no older rows remain. */
+            next_cursor: string;
         };
         MailSettings: {
             /** @enum {string} */
@@ -9166,6 +9212,45 @@ export interface operations {
                 };
                 content?: never;
             };
+        };
+    };
+    listAudit: {
+        parameters: {
+            query?: {
+                /** @description Case-insensitive substring of the actor. */
+                actor?: string;
+                /** @description Prefix of the action name; server. matches every server action. */
+                action?: string;
+                /** @description Exact server name. */
+                server?: string;
+                /** @description Earliest time (inclusive). */
+                since?: string;
+                /** @description Time to stop before (exclusive); must come after since. */
+                until?: string;
+                /** @description Case-insensitive keyword matched against the actor, action, server name and payload text. */
+                q?: string;
+                limit?: number;
+                /** @description The next_cursor of the previous page. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page of audit rows. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
         };
     };
     exportAudit: {

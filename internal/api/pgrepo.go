@@ -3,8 +3,11 @@ package api
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -871,6 +874,73 @@ func (p *PGRepo) Audit(ctx context.Context, e AuditEntry) error {
 		e.Actor, e.Source, e.Action, e.ServerName, e.RequestID, payload,
 		e.ActorUserID, e.ClientIP, e.UserAgent)
 	return err
+}
+
+// likeEscaper makes text literal inside a LIKE pattern, whose default escape character is the backslash.
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
+func (p *PGRepo) ListAudit(ctx context.Context, q AuditQuery) ([]AuditRecord, error) {
+	var (
+		conds []string
+		args  []any
+	)
+	// Each ? in cond becomes the placeholder of v.
+	where := func(cond string, v any) {
+		args = append(args, v)
+		conds = append(conds, strings.ReplaceAll(cond, "?", "$"+strconv.Itoa(len(args))))
+	}
+	if q.Actor != "" {
+		where(`actor ILIKE ?`, "%"+likeEscaper.Replace(q.Actor)+"%")
+	}
+	if q.Action != "" {
+		where(`action LIKE ?`, likeEscaper.Replace(q.Action)+"%")
+	}
+	if q.Server != "" {
+		where(`server_name = ?`, q.Server)
+	}
+	if !q.Since.IsZero() {
+		where(`created_at >= ?`, q.Since)
+	}
+	if !q.Until.IsZero() {
+		where(`created_at < ?`, q.Until)
+	}
+	if q.Keyword != "" {
+		where(`(actor ILIKE ? OR action ILIKE ? OR server_name ILIKE ? OR payload::text ILIKE ?)`,
+			"%"+likeEscaper.Replace(q.Keyword)+"%")
+	}
+	if q.BeforeID > 0 {
+		where(`id < ?`, q.BeforeID)
+	}
+	query := `SELECT id, created_at, actor, actor_user_id, source, action, server_name, request_id,
+		host(client_ip), user_agent, payload::text FROM audit_logs`
+	if len(conds) > 0 {
+		query += ` WHERE ` + strings.Join(conds, ` AND `)
+	}
+	args = append(args, q.Limit)
+	query += ` ORDER BY id DESC LIMIT $` + strconv.Itoa(len(args))
+
+	rows, err := p.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AuditRecord
+	for rows.Next() {
+		var (
+			r       AuditRecord
+			payload *string
+		)
+		if err := rows.Scan(&r.ID, &r.CreatedAt, &r.Actor, &r.ActorUserID, &r.Source, &r.Action,
+			&r.ServerName, &r.RequestID, &r.ClientIP, &r.UserAgent, &payload); err != nil {
+			return nil, err
+		}
+		r.CreatedAt = r.CreatedAt.UTC()
+		if payload != nil {
+			r.Payload = json.RawMessage(*payload)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 func (p *PGRepo) CreateEmailOTP(ctx context.Context, id, userID, email, codeHash, purpose string, expiresAt time.Time) error {

@@ -399,6 +399,32 @@ components:
         revision: { type: string }
         managed: { type: boolean }
 
+    AuditEntryView:
+      type: object
+      description: One audit log row (internal/api/repo.go AuditRecord). Columns without a value are null.
+      required: [id, created_at, actor, actor_user_id, source, action, server_name, request_id, client_ip, user_agent, payload]
+      properties:
+        id: { type: integer, format: int64 }
+        created_at: { type: string, format: date-time }
+        actor: { type: string, description: Display name of the actor. }
+        actor_user_id: { type: string, nullable: true, description: The account the action is attributed to. }
+        source: { type: string, description: "external, or internal:<component> for platform components." }
+        action: { type: string, description: "Dotted action name such as server.patch." }
+        server_name: { type: string, nullable: true, description: The server concerned; other objects store their identifier here. }
+        request_id: { type: string, nullable: true }
+        client_ip: { type: string, nullable: true }
+        user_agent: { type: string, nullable: true }
+        payload: { type: object, nullable: true, additionalProperties: true, description: The detail stored with the action. }
+
+    AuditPage:
+      type: object
+      required: [entries, next_cursor]
+      properties:
+        entries:
+          type: array
+          items: { $ref: '#/components/schemas/AuditEntryView' }
+        next_cursor: { type: string, description: Opaque cursor for the next page; empty when no older rows remain. }
+
     MailSettings:
       type: object
       required: [source, host, port, from, username, password_set, require_tls, max_per_hour, revision]
@@ -5996,6 +6022,32 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { description: Host node execution service is unavailable. }
+  /api/v1/platform/audit:
+    get:
+      operationId: listAudit
+      summary: Browse the audit log, newest first (Owner).
+      tags: [account]
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: actor, in: query, required: false, schema: { type: string }, description: Case-insensitive substring of the actor. }
+        - { name: action, in: query, required: false, schema: { type: string }, description: "Prefix of the action name; server. matches every server action." }
+        - { name: server, in: query, required: false, schema: { type: string }, description: Exact server name. }
+        - { name: since, in: query, required: false, schema: { type: string, format: date-time }, description: Earliest time (inclusive). }
+        - { name: until, in: query, required: false, schema: { type: string, format: date-time }, description: Time to stop before (exclusive); must come after since. }
+        - { name: q, in: query, required: false, schema: { type: string }, description: "Case-insensitive keyword matched against the actor, action, server name and payload text." }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { name: cursor, in: query, required: false, schema: { type: string }, description: The next_cursor of the previous page. }
+      responses:
+        '200':
+          description: One page of audit rows.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuditPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /api/v1/platform/audit-export:
     get:
       operationId: exportAudit

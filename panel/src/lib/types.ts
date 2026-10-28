@@ -1044,6 +1044,38 @@ export interface HeartbeatSettings {
   revision: string;
 }
 
+/** One audit log row (GET /platform/audit). Columns without a value are null. */
+export interface AuditEntry {
+  id: number;
+  created_at: string;
+  actor: string;
+  actor_user_id: string | null;
+  source: string;
+  action: string;
+  server_name: string | null;
+  request_id: string | null;
+  client_ip: string | null;
+  user_agent: string | null;
+  payload: Record<string, unknown> | null;
+}
+
+export interface AuditPage {
+  entries: AuditEntry[];
+  /** Empty when no older rows remain. */
+  next_cursor: string;
+}
+
+export interface AuditListParams {
+  actor?: string;
+  action?: string;
+  server?: string;
+  since?: string;
+  until?: string;
+  q?: string;
+  limit?: number;
+  cursor?: string;
+}
+
 /** The backup and audit retention in force (GET/PUT/DELETE /settings/archive-policy). */
 export interface ArchivePolicy {
   manualKeep: number;

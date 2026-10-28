@@ -32,6 +32,7 @@ func TestHostRoutesAreOwnerOnly(t *testing.T) {
 			{"POST", "/api/v1/platform/host/quiet", `{"until":null}`},
 			{"GET", "/api/v1/settings/node-control/tasks/task/artifact", ""},
 			{"POST", "/api/v1/platform/offsite/key", ""},
+			{"GET", "/api/v1/platform/audit", ""},
 			{"GET", "/api/v1/platform/audit-export", ""},
 		} {
 			if w := do(a.ExternalHandler(), tc.method, tc.path, tc.body, jsonHeader); w.Code != http.StatusForbidden {
@@ -65,6 +66,9 @@ func TestHostRoutesAskForAFreshProof(t *testing.T) {
 	}
 	if w := do(a.ExternalHandler(), "GET", "/api/v1/platform/host", "", nil); w.Code != http.StatusOK || w.Body.String() != hostOverviewFixture {
 		t.Fatalf("overview = %d %s", w.Code, w.Body.String())
+	}
+	if w := do(a.ExternalHandler(), "GET", "/api/v1/platform/audit", "", nil); w.Code != http.StatusOK {
+		t.Fatalf("browsing the audit log without a fresh proof = %d %s", w.Code, w.Body.String())
 	}
 	p.ReauthAt = a.now()
 	if w := do(a.ExternalHandler(), "POST", "/api/v1/platform/offsite/key", "", jsonHeader); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"key":"k"`) || w.Header().Get("Cache-Control") != "no-store" {

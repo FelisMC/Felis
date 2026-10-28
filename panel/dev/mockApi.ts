@@ -16,6 +16,7 @@ import type {
   MailSettings,
   MailSettingsRequest,
   ArchivePolicySettings,
+  AuditEntry,
   HeartbeatSettings,
   FailoverPolicySettings,
   EntryPolicySettings,
@@ -1717,11 +1718,31 @@ function runMockHostTask(state: MockState, request: NodeControlRequest, actor: s
   return task;
 }
 
+const MOCK_AUDIT_KINDS: Pick<AuditEntry, "actor" | "source" | "action" | "server_name" | "payload">[] = [
+  { actor: "owner@mock.felis.local", source: "external", action: "server.patch", server_name: "survival", payload: { image_from: "registry.mock/paper:1.21.1", image_to: "registry.mock/paper:1.21.4" } },
+  { actor: "owner@mock.felis.local", source: "external", action: "server.patch", server_name: "lobby", payload: { fields: ["displayName", "idleStopSeconds"] } },
+  { actor: "velocity", source: "internal:velocity", action: "wake", server_name: "survival", payload: null },
+  { actor: "admin@mock.felis.local", source: "external", action: "backup.create", server_name: "survival", payload: null },
+  { actor: "owner@mock.felis.local", source: "external", action: "platform.audit.export", server_name: null, payload: null },
+  { actor: "linked@mock.felis.local", source: "external", action: "claim", server_name: "creative", payload: null },
+];
+
+// Newest first, seven minutes apart.
+const MOCK_AUDIT: AuditEntry[] = Array.from({ length: 60 }, (_, i) => ({
+  id: 60 - i,
+  created_at: new Date(Date.now() - i * 7 * 60_000).toISOString(),
+  actor_user_id: null,
+  request_id: `mock-req-${60 - i}`,
+  client_ip: "192.0.2.10",
+  user_agent: "Mozilla/5.0 (mock)",
+  ...MOCK_AUDIT_KINDS[i % MOCK_AUDIT_KINDS.length],
+}));
+
 // handleMockHost serves the host-service routes; owner only.
 async function handleMockHost(ctx: SessionContext): Promise<boolean> {
   const key = route(ctx);
   const taskRoute = key.match(/^(GET|POST) settings\/node-control\/tasks\/([a-f0-9]+)(\/retry|\/artifact)?$/);
-  const owned = ["GET settings/node-control", "POST settings/node-control/tasks", "GET platform/host", "POST platform/host/quiet", "POST platform/offsite/key", "GET platform/audit-export"].includes(key);
+  const owned = ["GET settings/node-control", "POST settings/node-control/tasks", "GET platform/host", "POST platform/host/quiet", "POST platform/offsite/key", "GET platform/audit", "GET platform/audit-export"].includes(key);
   if (!taskRoute && !owned) return false;
   if (!isOwner(ctx.account.role)) {
     sendError(ctx.res, 403, "forbidden", "Owner account required");
@@ -1765,6 +1786,14 @@ async function handleMockHost(ctx: SessionContext): Promise<boolean> {
       if (!h.offsite.keyKept) sendError(ctx.res, 404, "not_found", "no off-site key is kept on this host");
       else sendJSON(ctx.res, 200, { key: "bW9jay1vZmZzaXRlLWtleS1rZXB0LW9uLXRoZS1ob3N0IQ==" });
       return true;
+    case "GET platform/audit": {
+      const params = new URL(ctx.req.url ?? "/", "http://localhost").searchParams;
+      const limit = Math.min(Number(params.get("limit")) || 50, 200);
+      const older = MOCK_AUDIT.filter((e) => e.id < (Number(params.get("cursor")) || Infinity));
+      const entries = older.slice(0, limit);
+      sendJSON(ctx.res, 200, { entries, next_cursor: older.length > limit ? String(entries[entries.length - 1].id) : "" });
+      return true;
+    }
     case "GET platform/audit-export":
       ctx.res.statusCode = 200;
       ctx.res.setHeader("Content-Type", "application/x-ndjson");

@@ -3,14 +3,16 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import i18next from "i18next";
-import type { MyServerView, WhitelistImage } from "@/lib/types";
+import type { AuditEntry, MyServerView, WhitelistImage } from "@/lib/types";
 import { Dashboard } from "./Dashboard";
 
-const tier = vi.hoisted(() => ({ isAdmin: false }));
+const tier = vi.hoisted(() => ({ isAdmin: false, isOwner: false }));
 const calls = vi.hoisted(() => ({
   myServers: vi.fn(),
   linkStatus: vi.fn(),
   listImages: vi.fn(),
+  listAudit: vi.fn(),
+  hostOverview: vi.fn(),
   me: vi.fn(),
 }));
 
@@ -54,10 +56,13 @@ function specValue(label: string) {
 
 beforeEach(() => {
   tier.isAdmin = false;
+  tier.isOwner = false;
   for (const fn of Object.values(calls)) fn.mockReset();
   calls.myServers.mockResolvedValue([lobby]);
   calls.linkStatus.mockResolvedValue({ linked: true });
   calls.listImages.mockResolvedValue([]);
+  calls.listAudit.mockResolvedValue({ entries: [], next_cursor: "" });
+  calls.hostOverview.mockImplementation(never);
   calls.me.mockImplementation(never);
 });
 
@@ -156,6 +161,44 @@ describe("Dashboard", () => {
 
     await screen.findByText(t("welcome_title"));
     expect(calls.listImages).not.toHaveBeenCalled();
+  });
+});
+
+describe("Dashboard recent actions", () => {
+  const recent: AuditEntry = {
+    id: 7,
+    created_at: "2026-10-01T00:00:00Z",
+    actor: "owner@example.net",
+    actor_user_id: null,
+    source: "external",
+    action: "server.patch",
+    server_name: "lobby",
+    request_id: null,
+    client_ip: null,
+    user_agent: null,
+    payload: null,
+  };
+
+  it("lists the latest ten for the Owner and links to the whole log", async () => {
+    tier.isAdmin = true;
+    tier.isOwner = true;
+    calls.listAudit.mockResolvedValue({ entries: [recent], next_cursor: "" });
+    renderDashboard();
+
+    expect(await screen.findByText(recent.action)).toBeTruthy();
+    expect(screen.getByText(t("audit_title"))).toBeTruthy();
+    expect(screen.getByText(recent.actor)).toBeTruthy();
+    expect(calls.listAudit).toHaveBeenCalledWith({ limit: 10 });
+    expect(screen.getByRole("link", { name: t("audit_view_all") }).getAttribute("href")).toBe("/admin/audit");
+  });
+
+  it("stays out of an admin's dashboard without asking for the log", async () => {
+    tier.isAdmin = true;
+    renderDashboard();
+
+    await screen.findByText(t("stat_servers"));
+    expect(screen.queryByText(t("audit_title"))).toBeNull();
+    expect(calls.listAudit).not.toHaveBeenCalled();
   });
 });
 

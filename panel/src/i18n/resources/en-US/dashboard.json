@@ -50,5 +50,8 @@
   "fleet_flat_webgl": "WebGL is unavailable. The fleet is displayed in a two-dimensional view.",
   "fleet_flat_error": "The 3D view failed to load. The fleet is displayed in a two-dimensional view.",
   "fleet_flat_empty": "No servers available",
-  "staff_unlinked_desc": "No Minecraft profile is linked. Panel administration is available. Select an authentication source and link a profile from Account before joining the game."
+  "staff_unlinked_desc": "No Minecraft profile is linked. Panel administration is available. Select an authentication source and link a profile from Account before joining the game.",
+  "audit_title": "Recent actions",
+  "audit_view_all": "View all",
+  "audit_empty": "No actions have been recorded."
 }

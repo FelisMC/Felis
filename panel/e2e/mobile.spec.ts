@@ -20,6 +20,7 @@ for (const [account, path] of [
   ["linked", "/account"],
   ["owner", "/servers"],
   ["owner", "/admin/users"],
+  ["owner", "/admin/audit"],
   ["owner", "/admin/auth-sources"],
   ["owner", "/servers/survival/luckperms"],
 ] as const) {

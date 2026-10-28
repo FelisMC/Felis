@@ -26,6 +26,13 @@ describe("visibleSections", () => {
     expect(owner?.items.at(-1)?.to).toBe("/admin/platform");
   });
 
+  it("lists the audit log for the Owner and not for an admin", () => {
+    const links = (isAdmin: boolean, isOwner: boolean) =>
+      visibleSections(isAdmin, isOwner).flatMap((section) => section.items.map((item) => item.to));
+    expect(links(true, false)).not.toContain("/admin/audit");
+    expect(links(true, true)).toContain("/admin/audit");
+  });
+
   it("keeps the User-Side section ungated so it survives both branches", () => {
     const user = NAV_SECTIONS.find((s) => s.id === "user");
     expect(user?.adminOnly).toBe(false);

@@ -68,6 +68,7 @@ const UpdatesPage = lazyWithReload(() =>
 );
 const PlatformSettingsPage = lazyWithReload(() => import("@/pages/admin/PlatformSettingsPage").then((m) => ({ default: m.PlatformSettingsPage })));
 const AuthSourcesPage = lazyWithReload(() => import("@/pages/admin/AuthSourcesPage").then((m) => ({ default: m.AuthSourcesPage })));
+const AuditPage = lazyWithReload(() => import("@/pages/admin/AuditPage").then((m) => ({ default: m.AuditPage })));
 
 // TierProvider fetches /me once at boot.
 export default function App() {
@@ -133,6 +134,7 @@ export default function App() {
                   <Route path="updates" element={<UpdatesPage />} />
                   <Route path="platform" element={<PlatformSettingsPage />} />
                   <Route path="auth-sources" element={<AuthSourcesPage />} />
+                  <Route path="audit" element={<AuditPage />} />
                   <Route path="users" element={<UsersPage />} />
                   <Route path="users/:id" element={<ValidParam param="id" pattern={USER_ID_PARAM} />}>
                     <Route index element={<UserDetailPage />} />

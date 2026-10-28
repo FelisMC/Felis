@@ -128,8 +128,8 @@ func TestPatchServerImageSamePinIsNoChange(t *testing.T) {
 	if !strings.Contains(w.Body.String(), `"patched":[]`) {
 		t.Errorf("body = %s, want an empty patched list", w.Body.String())
 	}
-	if len(repo.audits) != 1 || repo.audits[0].Payload != nil {
-		t.Errorf("audits = %+v, want a plain server.patch", repo.audits)
+	if len(repo.audits) != 1 || string(repo.audits[0].Payload) != `{"fields":[]}` {
+		t.Errorf("audits = %+v, want a server.patch with no fields", repo.audits)
 	}
 }
 

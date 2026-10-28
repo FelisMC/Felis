@@ -11,6 +11,7 @@ import {
   Clock,
   ShieldCheck,
   Settings,
+  ScrollText,
   type LucideIcon,
 } from "lucide-react";
 
@@ -70,6 +71,7 @@ export const NAV_SECTIONS: NavSection[] = [
       { to: "/admin/users", key: "admin_users", icon: Users },
       { to: "/admin/auth-sources", key: "auth_sources", icon: ShieldCheck },
       { to: "/admin/updates", key: "admin_updates", icon: Clock },
+      { to: "/admin/audit", key: "admin_audit", icon: ScrollText },
       { to: "/admin/platform", key: "platform_settings", icon: Settings },
     ],
   },

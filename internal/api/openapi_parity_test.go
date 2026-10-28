@@ -90,6 +90,8 @@ func TestOpenAPISchemasMatchWireStructs(t *testing.T) {
 		"FailoverPolicySettings":   failoverPolicyView{},
 		"ArchivePolicySettings":    ArchivePolicyView{},
 		"HeartbeatSettings":        HeartbeatView{},
+		"AuditEntryView":           AuditRecord{},
+		"AuditPage":                auditPageView{},
 		"ExecutionNode":            distributed.Node{},
 		"WorldMigration":           distributed.Operation{},
 	}

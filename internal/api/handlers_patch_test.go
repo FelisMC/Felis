@@ -47,7 +47,7 @@ func TestPatchServerDisplayName(t *testing.T) {
 		t.Errorf("unexpected extra fields in patch: %+v", p)
 	}
 	if len(repo.audits) != 1 || repo.audits[0].Action != "server.patch" ||
-		repo.audits[0].Actor != "admin@example.net" {
+		repo.audits[0].Actor != "admin@example.net" || string(repo.audits[0].Payload) != `{"fields":["displayName"]}` {
 		t.Fatalf("audit not written as expected: %+v", repo.audits)
 	}
 }
