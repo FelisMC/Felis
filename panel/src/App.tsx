@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ThemeProvider } from "@/lib/theme";
+import { BrandingProvider } from "@/lib/branding";
 import { TierProvider } from "@/lib/tier";
 import { AppShell } from "@/components/AppShell";
 import { RequireAdmin } from "@/components/RequireAdmin";
@@ -74,6 +75,7 @@ const AuditPage = lazyWithReload(() => import("@/pages/admin/AuditPage").then((m
 export default function App() {
   return (
     <ThemeProvider>
+      <BrandingProvider>
       <ToastProvider>
       <TierProvider>
         <BrowserRouter>
@@ -149,6 +151,7 @@ export default function App() {
       </BrowserRouter>
     </TierProvider>
       </ToastProvider>
+      </BrandingProvider>
   </ThemeProvider>
   );
 }

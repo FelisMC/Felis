@@ -2011,3 +2011,18 @@ describe("audit list wire shape", () => {
     expect(vi.mocked(fetchSpy).mock.calls[0][0]).toBe("/platform/audit?q=100%25&since=2026-10-01T00%3A00%3A00.000Z&limit=10&cursor=42");
   });
 });
+
+describe("panel branding wire shape", () => {
+  beforeEach(() => { vi.restoreAllMocks(); cfg.apiBase = ""; });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("sends an uploaded image as the raw request body under its own media type", async () => {
+    const fetchSpy = fakeFetch({ name: "", notice: "", show_powered_by: true, has_logo: true, has_background: false, revision: "r" });
+    vi.stubGlobal("fetch", fetchSpy);
+    const image = new File(["png-bytes"], "logo.png", { type: "image/png" });
+    await api.uploadBrandingImage("logo", image);
+    const [url, options] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(url).toBe("/settings/branding/logo");
+    expect(options).toMatchObject({ method: "PUT", headers: { "Content-Type": "image/png" }, body: image });
+  });
+});

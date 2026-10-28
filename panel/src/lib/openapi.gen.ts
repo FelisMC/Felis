@@ -1370,6 +1370,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/branding": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the panel branding.
+         * @description Public, pre-session read the panel makes on load. When the setting cannot be read, the response carries the defaults (name Felis, no notice, footer credit shown, no images) so the panel still renders. The response is revalidated on each load with its ETag.
+         */
+        get: operations["getBranding"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/branding/logo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the panel logo.
+         * @description The image is cached for a day; its URL changes with the content.
+         */
+        get: operations["getBrandingLogo"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/branding/background": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the sign-in background image.
+         * @description The image is cached for a day; its URL changes with the content.
+         */
+        get: operations["getBrandingBackground"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/logout": {
         parameters: {
             query?: never;
@@ -1793,6 +1853,69 @@ export interface paths {
         put: operations["setDefaultLanguage"];
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settings/branding": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the panel branding settings (Owner). */
+        get: operations["getBrandingSettings"];
+        /**
+         * Save the panel name, notice and footer credit (Owner, fresh reauthentication).
+         * @description Applies to visitors on their next page load. The name and notice are stored without leading or trailing whitespace.
+         */
+        put: operations["setBrandingSettings"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settings/branding/logo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Upload the logo (Owner, fresh reauthentication).
+         * @description The body is the image itself, sent as image/png or image/webp, at most 256 KiB. A PNG may be at most 4096 by 4096 pixels. SVG is not accepted. The file must match its declared type (bad_image).
+         */
+        put: operations["setBrandingLogo"];
+        post?: never;
+        /** Remove the logo (Owner, fresh reauthentication). */
+        delete: operations["clearBrandingLogo"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settings/branding/background": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Upload the sign-in background image (Owner, fresh reauthentication).
+         * @description The body is the image itself, sent as image/png or image/webp, at most 2 MiB. A PNG may be at most 4096 by 4096 pixels. SVG is not accepted. The file must match its declared type (bad_image).
+         */
+        put: operations["setBrandingBackground"];
+        post?: never;
+        /** Remove the sign-in background image (Owner, fresh reauthentication). */
+        delete: operations["clearBrandingBackground"];
         options?: never;
         head?: never;
         patch?: never;
@@ -3772,6 +3895,30 @@ export interface components {
              * @enum {string}
              */
             language: "" | "zh-CN" | "en-US";
+        };
+        /** @description The panel name, the notice above the sign-in form and the footer credit, with whether a logo and a sign-in background image are stored. The images have their own operations and do not change the revision. */
+        BrandingSettings: {
+            /** @description Panel name without leading or trailing whitespace; empty uses the default name Felis. */
+            name: string;
+            /** @description Plain-text notice; line breaks are kept and no other control characters are allowed. */
+            notice: string;
+            /** @description Whether the panel footer credits Felis. */
+            show_powered_by: boolean;
+            has_logo: boolean;
+            has_background: boolean;
+            /** @description Opaque revision of the name, notice and credit; stale or concurrent writes return 409. */
+            revision: string;
+        };
+        /** @description What the panel shows before sign-in. Image URLs carry a content version in the v query parameter. */
+        PublicBranding: {
+            /** @description Panel name; Felis when none is set. */
+            name: string;
+            notice: string;
+            show_powered_by: boolean;
+            /** @description URL of the logo; null when none is set. */
+            logo: string | null;
+            /** @description URL of the sign-in background image; null when none is set. */
+            background: string | null;
         };
         /** @description The backup and audit retention in force. source is panel when the Owner saved it here, host when felis.toml's [archive] and [audit] stand. */
         ArchivePolicySettings: {
@@ -8632,6 +8779,103 @@ export interface operations {
             };
         };
     };
+    getBranding: {
+        parameters: {
+            query?: never;
+            header?: {
+                "If-None-Match"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The branding. */
+            200: {
+                headers: {
+                    ETag?: string;
+                    "Cache-Control"?: "no-cache";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicBranding"];
+                };
+            };
+            /** @description The branding is unchanged since the ETag in If-None-Match. */
+            304: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getBrandingLogo: {
+        parameters: {
+            query?: never;
+            header?: {
+                "If-None-Match"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The logo bytes, as image/png or image/webp. */
+            200: {
+                headers: {
+                    ETag?: string;
+                    "Cache-Control"?: "public, max-age=86400";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": string;
+                    "image/webp": string;
+                };
+            };
+            /** @description The logo is unchanged since the ETag in If-None-Match. */
+            304: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    getBrandingBackground: {
+        parameters: {
+            query?: never;
+            header?: {
+                "If-None-Match"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The background image bytes, as image/png or image/webp. */
+            200: {
+                headers: {
+                    ETag?: string;
+                    "Cache-Control"?: "public, max-age=86400";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": string;
+                    "image/webp": string;
+                };
+            };
+            /** @description The image is unchanged since the ETag in If-None-Match. */
+            304: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
     logout: {
         parameters: {
             query?: never;
@@ -9580,6 +9824,221 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+        };
+    };
+    getBrandingSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current settings and revision. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrandingSettings"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    setBrandingSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    name: string;
+                    notice: string;
+                    show_powered_by: boolean;
+                    revision: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Saved settings and new revision. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrandingSettings"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description The settings changed; reload before saving. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    setBrandingLogo: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "image/png": string;
+                "image/webp": string;
+            };
+        };
+        responses: {
+            /** @description The branding with the logo stored. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrandingSettings"];
+                };
+            };
+            /** @description The body is empty or is not a valid image of the declared type (bad_image). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description The image is larger than 256 KiB (too_large). */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The Content-Type is neither image/png nor image/webp (unsupported_media_type). */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    clearBrandingLogo: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The branding without the logo. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrandingSettings"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    setBrandingBackground: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "image/png": string;
+                "image/webp": string;
+            };
+        };
+        responses: {
+            /** @description The branding with the background image stored. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrandingSettings"];
+                };
+            };
+            /** @description The body is empty or is not a valid image of the declared type (bad_image). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description The image is larger than 2 MiB (too_large). */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The Content-Type is neither image/png nor image/webp (unsupported_media_type). */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    clearBrandingBackground: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The branding without the background image. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrandingSettings"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
         };
     };
     getArchivePolicy: {

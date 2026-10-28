@@ -22,6 +22,7 @@ for (const [account, path] of [
   ["owner", "/admin/users"],
   ["owner", "/admin/audit"],
   ["owner", "/admin/auth-sources"],
+  ["owner", "/admin/platform?tab=branding"],
   ["owner", "/servers/survival/luckperms"],
 ] as const) {
   test(`${path} fits a 375px screen for ${account}`, async ({ page, signIn }) => {

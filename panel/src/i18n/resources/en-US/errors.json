@@ -162,6 +162,7 @@
   "node_control_unavailable": "Host node service is unavailable. Inspect felis-node-control.service on the controller.",
   "node_not_lost": "The node is online or is not a worker. Only a lost worker can be failed over.",
   "bad_heartbeat_url": "The heartbeat URL must be a full address starting with http:// or https://.",
+  "bad_image": "The file is not a valid PNG or WebP image, or a PNG is wider or higher than 4096 pixels.",
   "eula_required": "A server that runs server software requires accepting the Minecraft End User License Agreement (EULA).",
   "software_unavailable": "Server software is not enabled on this platform.",
   "software_not_found": "The selected server software does not offer this version or build. Select another.",

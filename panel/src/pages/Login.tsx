@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useTier } from "@/lib/tier";
+import { useBranding } from "@/lib/branding";
 import { loginReturnPath } from "@/lib/auth";
 import { api, humanizeError } from "@/lib/api";
 import { entryAddress, loadConfig } from "@/lib/config";
@@ -20,6 +21,7 @@ export function Login() {
   const { loading, identity, refresh } = useTier();
   const navigate = useNavigate();
   const { t } = useTranslation("auth");
+  const { name } = useBranding();
   const [searchParams] = useSearchParams();
   const next = loginReturnPath(searchParams.get("next"));
   const sessionEnded = (useLocation().state as { sessionEnded?: boolean } | null)?.sessionEnded === true;
@@ -84,7 +86,7 @@ export function Login() {
   // Wait for identity and owner detection before displaying sign-in choices.
   if (loading || (!identity && ownerBound === undefined)) {
     return (
-      <AuthLayout title={t("common:brand_name")}>
+      <AuthLayout title={name}>
         <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" />
           {t("common:loading")}
@@ -212,7 +214,7 @@ export function Login() {
 
   return (
     <AuthLayout
-      title={t("login_title")}
+      title={name}
       subtitle={t(isOpHost ? "login_subtitle_op" : "login_subtitle")}
     >
       {sessionEnded && (

@@ -47,6 +47,9 @@ import type {
   WakePolicySettings,
   DefaultLanguageSettings,
   PanelLanguage,
+  BrandingImageKind,
+  BrandingSettings,
+  PublicBranding,
   FailoverPolicySettings,
   ArchivePolicy,
   ArchivePolicySettings,
@@ -992,6 +995,12 @@ export const api = rejectingSync({
   getDefaultLanguage: () => request<DefaultLanguageSettings>("GET", "/settings/default-language"),
   setDefaultLanguage: (settings: DefaultLanguageSettings) => request<DefaultLanguageSettings>("PUT", "/settings/default-language", settings),
   getPanelLanguage: () => request<PanelLanguage>("GET", "/panel/language"),
+  getBranding: () => request<PublicBranding>("GET", "/branding"),
+  getBrandingSettings: () => request<BrandingSettings>("GET", "/settings/branding"),
+  setBrandingSettings: (settings: Omit<BrandingSettings, "has_logo" | "has_background">) => request<BrandingSettings>("PUT", "/settings/branding", settings),
+  // The image goes up as the request body; its own type is the Content-Type the server checks.
+  uploadBrandingImage: (kind: BrandingImageKind, image: File) => send<BrandingSettings>(`/settings/branding/${kind}`, { method: "PUT", headers: { "Content-Type": image.type }, body: image }),
+  removeBrandingImage: (kind: BrandingImageKind) => request<BrandingSettings>("DELETE", `/settings/branding/${kind}`),
   getHeartbeat: () => request<HeartbeatSettings>("GET", "/settings/heartbeat"),
   setHeartbeat: (url: string, revision: string) => request<HeartbeatSettings>("PUT", "/settings/heartbeat", { url, revision }),
   clearHeartbeat: () => request<HeartbeatSettings>("DELETE", "/settings/heartbeat"),
@@ -1287,6 +1296,8 @@ export function humanizeError(e: unknown): string {
       return t("node_not_lost");
     case "bad_heartbeat_url":
       return t("bad_heartbeat_url");
+    case "bad_image":
+      return t("bad_image");
     case "local_auth_disabled":
       return t("local_auth_disabled");
     case "staff_account":

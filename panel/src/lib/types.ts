@@ -1049,6 +1049,28 @@ export interface PanelLanguage {
   language: PanelLanguageSetting;
 }
 
+/** The panel name, sign-in notice and footer credit (GET/PUT /settings/branding); the images have their own endpoints. */
+export interface BrandingSettings {
+  /** Empty uses the default name. */
+  name: string;
+  notice: string;
+  show_powered_by: boolean;
+  has_logo: boolean;
+  has_background: boolean;
+  revision: string;
+}
+
+export type BrandingImageKind = "logo" | "background";
+
+/** What the panel shows before sign-in (GET /branding). */
+export interface PublicBranding {
+  name: string;
+  notice: string;
+  show_powered_by: boolean;
+  logo: string | null;
+  background: string | null;
+}
+
 /** The watchdog heartbeat setting (GET/PUT/DELETE /settings/heartbeat): only the URL's
  *  scheme and host are shown. */
 export interface HeartbeatSettings {

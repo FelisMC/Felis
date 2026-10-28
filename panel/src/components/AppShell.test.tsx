@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
 import i18next from "i18next";
 import { AppShell } from "./AppShell";
 import { PageHeader } from "./PageHeader";
-import type { Identity } from "@/lib/types";
+import { DEFAULT_BRANDING } from "@/lib/branding";
+import type { Identity, PublicBranding } from "@/lib/types";
 
 const tier = vi.hoisted(() => ({
   identity: null as Identity | null,
@@ -16,6 +17,11 @@ const tier = vi.hoisted(() => ({
   refresh: () => Promise.resolve(),
 }));
 vi.mock("@/lib/tier", () => ({ useTier: () => tier }));
+const branding = vi.hoisted(() => ({ value: null as PublicBranding | null }));
+vi.mock("@/lib/branding", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/branding")>();
+  return { ...actual, useBranding: () => branding.value ?? actual.DEFAULT_BRANDING };
+});
 vi.mock("@/lib/config", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/config")>();
   return { ...actual, loadConfig: () => Promise.resolve({}) };
@@ -23,6 +29,7 @@ vi.mock("@/lib/config", async (importOriginal) => {
 
 afterEach(() => {
   tier.identity = null;
+  branding.value = null;
   return i18next.changeLanguage("en-US");
 });
 
@@ -88,5 +95,27 @@ describe("AppShell user card", () => {
     const dashes = screen.getAllByText("—");
     expect(dashes).toHaveLength(2);
     expect(screen.queryByText(/^user$/i)).toBeNull();
+  });
+});
+
+describe("AppShell branding", () => {
+  it("shows the configured name and logo in the shell and the browser tab", () => {
+    branding.value = { ...DEFAULT_BRANDING, name: "Acme Cloud", logo: "/api/v1/branding/logo?v=0123456789abcdef" };
+    renderShell();
+    expect(screen.getAllByText("Acme Cloud").length).toBeGreaterThan(0);
+    const logos = screen.getAllByRole("img", { name: "Acme Cloud" });
+    expect(logos.length).toBeGreaterThan(0);
+    for (const logo of logos) expect(logo.getAttribute("src")).toBe("/api/v1/branding/logo?v=0123456789abcdef");
+    expect(document.title).toBe("Acme Cloud · Console");
+  });
+
+  it("credits Felis in the sidebar unless the Owner turned the credit off", () => {
+    const credit = () => screen.queryByRole("link", { name: i18next.t("common:powered_by") });
+    renderShell();
+    expect(credit()?.getAttribute("href")).toBe("https://felismc.com");
+    cleanup();
+    branding.value = { ...DEFAULT_BRANDING, show_powered_by: false };
+    renderShell();
+    expect(credit()).toBeNull();
   });
 });

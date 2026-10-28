@@ -43,6 +43,8 @@ export type WireParity = [
   Holds<Parity<T.AuditPage, S["AuditPage"]>>,
   Holds<Parity<T.DefaultLanguageSettings, S["DefaultLanguageSettings"]>>,
   Holds<Parity<T.PanelLanguage, S["PanelLanguage"]>>,
+  Holds<Parity<T.BrandingSettings, S["BrandingSettings"]>>,
+  Holds<Parity<T.PublicBranding, S["PublicBranding"]>>,
   Holds<Parity<T.FailoverBackup, S["FailoverBackup"]>>,
   Holds<Parity<T.FailoverServer, S["FailoverServer"]>>,
   Holds<Parity<T.FailoverPlan, S["FailoverPlan"]>>,

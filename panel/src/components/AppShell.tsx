@@ -9,6 +9,7 @@ import { useTier } from "@/lib/tier";
 import { visibleSections, type NavSection } from "@/lib/nav";
 import { Select, SelectContent, SelectItem } from "@/components/ui/select";
 import { useTheme, type ThemePreference } from "@/lib/theme";
+import { useBranding } from "@/lib/branding";
 import { api, CONNECTION_EVENT, isConnectionLost } from "@/lib/api";
 import { chooseLanguage } from "@/i18n/language";
 import { Button } from "@/components/ui/button";
@@ -16,7 +17,8 @@ import { ConfigBanner, VersionBadge } from "@/components/RuntimeStatus";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { Loading } from "@/components/States";
 import { ROLE_LABEL_KEY } from "@/components/RoleBadge";
-import { FelisLogo } from "@/components/FelisLogo";
+import { BrandLogo } from "@/components/BrandLogo";
+import { PoweredBy } from "@/components/PoweredBy";
 import { PageHeaderHostContext } from "@/components/PageHeader";
 import { MainScrollContext } from "@/components/MainScroll";
 
@@ -185,6 +187,7 @@ function ConnectionBanner() {
 
 function MobileNav({ sections }: { sections: NavSection[] }) {
   const { t } = useTranslation("common");
+  const { name } = useBranding();
   const { pathname } = useLocation();
   const [open, setOpen] = useState(false);
   useEffect(() => setOpen(false), [pathname]);
@@ -206,8 +209,8 @@ function MobileNav({ sections }: { sections: NavSection[] }) {
         >
           <div className="mb-5 flex items-center justify-between px-2">
             <DialogPrimitive.Title className="flex items-center gap-2 text-lg font-semibold tracking-tight">
-              <FelisLogo />
-              {t("brand_name")}
+              <BrandLogo />
+              {name}
             </DialogPrimitive.Title>
             <DialogPrimitive.Close className={FOOT_ICON_BTN} aria-label={t("close_sr")}>
               <X className="h-4 w-4" />
@@ -227,6 +230,7 @@ function MobileNav({ sections }: { sections: NavSection[] }) {
             {/* The strip's sign-out button grows to a thumb-sized target below md. */}
             <UserStrip />
             <VersionBadge className="mt-2 flex justify-center" />
+            <PoweredBy className="mt-2 block text-xs" />
           </div>
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
@@ -240,6 +244,7 @@ export function AppShell() {
   const { isAdmin, isOwner } = useTier();
   const { pathname } = useLocation();
   const { t, i18n } = useTranslation("navigation");
+  const { name } = useBranding();
   // A new page starts at its top: the content area is one element for every page, so it
   // would otherwise keep the scroll position the last page left it at.
   useEffect(() => {
@@ -251,15 +256,15 @@ export function AppShell() {
   // Sync document metadata with the active language.
   useEffect(() => {
     document.documentElement.lang = i18n.language;
-    document.title = t("common:page_title");
-  }, [i18n.language, t]);
+    document.title = t("common:page_title", { brand: name });
+  }, [i18n.language, t, name]);
 
   return (
     <div className="flex h-screen overflow-hidden">
       <aside className="hidden w-60 shrink-0 flex-col border-r border-border bg-card/40 p-4 md:flex">
         <div className="mb-6 flex items-center gap-2 px-2">
-          <FelisLogo />
-          <span className="text-lg font-semibold tracking-tight">{t("common:brand_name")}</span>
+          <BrandLogo />
+          <span className="text-lg font-semibold tracking-tight">{name}</span>
         </div>
 
         <nav className="flex flex-col">
@@ -281,10 +286,8 @@ export function AppShell() {
           {/* 2. Profile Card */}
           <UserStrip />
 
-          {/* 3. Branding Sign-off (sits tight at the absolute bottom with leading-tight and centered) */}
-          <div className="px-1 text-[10px] text-muted-foreground/50 leading-tight text-center">
-            {t("common:brand_tagline")}
-          </div>
+          {/* 3. Credit, hidden when the Owner switches it off */}
+          <PoweredBy className="px-1 text-[10px] leading-tight" />
         </div>
       </aside>
 
@@ -296,8 +299,8 @@ export function AppShell() {
             <header className="flex h-14 shrink-0 items-center justify-between border-b border-border px-4 md:hidden">
               <div className="flex items-center gap-2">
                 <MobileNav sections={sections} />
-                <FelisLogo />
-                <span className="font-semibold">{t("common:brand_name")}</span>
+                <BrandLogo />
+                <span className="font-semibold">{name}</span>
               </div>
               <div className="flex items-center gap-2">
                 <LangToggle />

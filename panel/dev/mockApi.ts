@@ -13,6 +13,8 @@ import type {
   AuthSourcesSettings,
   WakePolicySettings,
   DefaultLanguageSettings,
+  BrandingImageKind,
+  BrandingSettings,
   MailSettings,
   MailSettingsRequest,
   ArchivePolicySettings,
@@ -126,6 +128,8 @@ interface MockState {
   authSources: AuthSourcesSettings;
   wakePolicy: WakePolicySettings;
   defaultLanguage: DefaultLanguageSettings;
+  branding: BrandingSettings;
+  brandingImages: Partial<Record<BrandingImageKind, { type: string; data: Buffer }>>;
   mailSettings: MailSettings;
   mailPassword: string;
   archivePolicy: ArchivePolicySettings;
@@ -533,6 +537,8 @@ function initialState(): MockState {
     entryPolicy: { mode: "domain", defaultServer: "", requireAccountLink: true, offlineAction: "wake", waitingSpace: "lobby", fallbackServer: "", revision: "initial" },
     wakePolicy: { maxRunningServers: 0, wakeCooldownSeconds: 30, revision: "initial", managed: false },
     defaultLanguage: { language: "", revision: "initial" },
+    branding: { name: "", notice: "", show_powered_by: true, has_logo: false, has_background: false, revision: "initial" },
+    brandingImages: {},
     mailSettings: { source: "host", host: "smtp.mock.felis.local", port: 587, from: "noreply@mock.felis.local", username: "noreply@mock.felis.local", password_set: true, require_tls: true, max_per_hour: 0, revision: "" },
     mailPassword: "mock",
     archivePolicy: hostArchivePolicy(),
@@ -1607,6 +1613,25 @@ async function handlePublic(ctx: RequestContext): Promise<boolean> {
     case "GET panel/language":
       sendJSON(ctx.res, 200, { language: ctx.state.defaultLanguage.language });
       return true;
+    case "GET branding": {
+      const { name, notice, show_powered_by } = ctx.state.branding;
+      const imageURL = (kind: BrandingImageKind) => {
+        const image = ctx.state.brandingImages[kind];
+        return image ? `${API_BASE}/branding/${kind}?v=${mockSha(image.data).slice(0, 16)}` : null;
+      };
+      sendJSON(ctx.res, 200, { name: name || "Felis", notice, show_powered_by, logo: imageURL("logo"), background: imageURL("background") });
+      return true;
+    }
+    case "GET branding/logo":
+    case "GET branding/background": {
+      const image = ctx.state.brandingImages[ctx.parts[3] as BrandingImageKind];
+      if (!image) sendError(ctx.res, 404, "not_found", "no image is set");
+      else {
+        ctx.res.setHeader("Content-Type", image.type);
+        ctx.res.end(image.data);
+      }
+      return true;
+    }
     case "POST auth/email/start": {
       const body = await readJSON<{ email?: string }>(ctx.req);
       if (!body.email || !body.email.includes("@")) {
@@ -1871,6 +1896,38 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
           sendJSON(ctx.res, 200, ctx.state.defaultLanguage);
         }
       }
+      return true;
+    }
+    case "GET settings/branding":
+    case "PUT settings/branding": {
+      if (!isOwner(ctx.account.role)) {
+        sendError(ctx.res, 403, "forbidden", "Owner account required");
+      } else if (is("GET", ctx)) {
+        sendJSON(ctx.res, 200, ctx.state.branding);
+      } else {
+        const body = await readJSON<Omit<BrandingSettings, "has_logo" | "has_background">>(ctx.req);
+        if (body.revision !== ctx.state.branding.revision) sendError(ctx.res, 409, "conflict", "branding changed; reload before saving");
+        else {
+          const settings = { name: body.name.trim(), notice: body.notice.trim(), show_powered_by: body.show_powered_by };
+          ctx.state.branding = { ...ctx.state.branding, ...settings, revision: createHash("sha256").update(JSON.stringify(settings)).digest("hex") };
+          sendJSON(ctx.res, 200, ctx.state.branding);
+        }
+      }
+      return true;
+    }
+    case "PUT settings/branding/logo":
+    case "DELETE settings/branding/logo":
+    case "PUT settings/branding/background":
+    case "DELETE settings/branding/background": {
+      const kind = ctx.parts[4] as BrandingImageKind;
+      if (!isOwner(ctx.account.role)) {
+        sendError(ctx.res, 403, "forbidden", "Owner account required");
+        return true;
+      }
+      if (is("PUT", ctx)) ctx.state.brandingImages[kind] = { type: String(ctx.req.headers["content-type"]), data: await readRawBody(ctx.req) };
+      else delete ctx.state.brandingImages[kind];
+      ctx.state.branding = { ...ctx.state.branding, has_logo: !!ctx.state.brandingImages.logo, has_background: !!ctx.state.brandingImages.background };
+      sendJSON(ctx.res, 200, ctx.state.branding);
       return true;
     }
     // A host starting with "smtp.fail" refuses the check; any other is accepted.

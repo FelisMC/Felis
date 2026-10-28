@@ -51,7 +51,7 @@ const t = (key: string, opts?: Record<string, unknown>) => i18next.t(key, opts);
 
 // renderLogin waits out the Owner probe, which holds the page on a spinner, and
 // returns once the heading is the one wanted: the doors by default.
-async function renderLogin(heading = t("auth:login_title")) {
+async function renderLogin(heading = t("common:brand_name")) {
   const view = render(
     <MemoryRouter initialEntries={["/login"]}>
       <Login />
@@ -256,7 +256,7 @@ describe("an install with no Owner", () => {
     expect(calls.authOwnerStatus).toHaveBeenCalledTimes(2);
 
     await userEvent.click(screen.getByRole("button", { name: t("auth:no_owner_recheck") }));
-    await screen.findByRole("heading", { name: t("auth:login_title") });
+    await screen.findByRole("heading", { name: t("common:brand_name") });
     expect(screen.getByLabelText(t("auth:email_address"))).toBeTruthy();
   });
 

@@ -132,6 +132,8 @@ type API struct {
 
 	failover failoverState
 
+	brandingCache brandingCache
+
 	ownerBound atomic.Bool
 
 	drainInit  sync.Once
@@ -282,6 +284,9 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "GET", Pattern: "/api/v1/auth/setup/status", SetupAllowed: true, h: a.handleSetupStatus},
 		{Method: "GET", Pattern: "/api/v1/auth/owner-status", Public: true, h: a.handleOwnerStatus},
 		{Method: "GET", Pattern: "/api/v1/panel/language", Public: true, h: a.handlePanelLanguage},
+		{Method: "GET", Pattern: "/api/v1/branding", Public: true, h: a.handlePublicBranding},
+		{Method: "GET", Pattern: "/api/v1/branding/logo", Public: true, h: a.handleBrandingImage(brandingLogo)},
+		{Method: "GET", Pattern: "/api/v1/branding/background", Public: true, h: a.handleBrandingImage(brandingBackground)},
 		{Method: "POST", Pattern: "/api/v1/auth/passkey/login/begin", Public: true, AuthDoor: true, h: a.handlePasskeyLoginBegin},
 		{Method: "POST", Pattern: "/api/v1/auth/passkey/login/finish", Public: true, AuthDoor: true, h: a.handlePasskeyLoginFinish},
 		{Method: "POST", Pattern: "/api/v1/auth/passkey/login/discoverable/begin", Public: true, AuthDoor: true, h: a.handlePasskeyLoginDiscoverableBegin},
@@ -382,6 +387,12 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "PUT", Pattern: "/api/v1/settings/wake-policy", Owner: true, Admin: true, h: a.handleSetWakePolicy},
 		{Method: "GET", Pattern: "/api/v1/settings/default-language", Owner: true, Admin: true, h: a.handleGetDefaultLanguage},
 		{Method: "PUT", Pattern: "/api/v1/settings/default-language", Owner: true, Admin: true, h: a.handleSetDefaultLanguage},
+		{Method: "GET", Pattern: "/api/v1/settings/branding", Owner: true, Admin: true, h: a.handleGetBranding},
+		{Method: "PUT", Pattern: "/api/v1/settings/branding", Owner: true, Admin: true, h: a.handleSetBranding},
+		{Method: "PUT", Pattern: "/api/v1/settings/branding/logo", Owner: true, Admin: true, h: a.handleSetBrandingImage(brandingLogo)},
+		{Method: "DELETE", Pattern: "/api/v1/settings/branding/logo", Owner: true, Admin: true, h: a.handleClearBrandingImage(brandingLogo)},
+		{Method: "PUT", Pattern: "/api/v1/settings/branding/background", Owner: true, Admin: true, h: a.handleSetBrandingImage(brandingBackground)},
+		{Method: "DELETE", Pattern: "/api/v1/settings/branding/background", Owner: true, Admin: true, h: a.handleClearBrandingImage(brandingBackground)},
 		{Method: "GET", Pattern: "/api/v1/settings/auth-sources", Owner: true, Admin: true, h: a.handleGetAuthSources},
 		{Method: "PUT", Pattern: "/api/v1/settings/auth-sources", Owner: true, Admin: true, h: a.handleSetAuthSources},
 		{Method: "POST", Pattern: "/api/v1/settings/auth-sources/test", Owner: true, Admin: true, h: a.handleTestAuthSource},

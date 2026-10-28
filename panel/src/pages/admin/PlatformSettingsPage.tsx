@@ -1,6 +1,6 @@
 import { Link, useSearchParams } from "react-router-dom";
 import { useEffect, useState } from "react";
-import { BellRing, Loader2, Network, RefreshCw, Route, Save, Settings, ShieldCheck } from "lucide-react";
+import { BellRing, Loader2, Network, Palette, RefreshCw, Route, Save, Settings, ShieldCheck } from "lucide-react";
 import { PageTabs } from "@/components/PageTabs";
 import { AccessCard, ConvergeCard, CredentialsCard, ProxyCard, StorageCard, useOverviewError } from "./platform/HostConfigCards";
 import { useTranslation } from "react-i18next";
@@ -12,6 +12,7 @@ import { RetentionCard } from "@/components/RetentionCard";
 import { HeartbeatCard } from "@/components/HeartbeatCard";
 import { FailoverPolicyCard } from "@/components/FailoverPolicyCard";
 import { DefaultLanguageCard } from "@/components/DefaultLanguageCard";
+import { BrandingCard } from "@/components/BrandingCard";
 import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/PageHeader";
 import { MessageLine } from "@/components/MessageLine";
@@ -29,6 +30,7 @@ const platformTabs = [
   { key: "notices", icon: BellRing },
   { key: "access", icon: ShieldCheck },
   { key: "nodes", icon: Network },
+  { key: "branding", icon: Palette },
 ] as const;
 type PlatformTab = (typeof platformTabs)[number]["key"];
 
@@ -128,6 +130,9 @@ export function PlatformSettingsPage() {
     <NodeControlPanel distributed={!config || config.fallback ? null : !!config.distributed} controllerHA={!!config?.controllerHA} />
     {config?.distributed && !config.fallback && <DistributedNodes />}
     {config?.distributed && !config.fallback && <FailoverPolicyCard />}
+    </div>
+    <div role="tabpanel" id="platform-panel-branding" aria-labelledby="platform-tab-branding" hidden={tab !== "branding"} className="space-y-6">
+    <BrandingCard />
     </div>
     {reauth.dialog}
   </div></RefreshContext.Provider>;

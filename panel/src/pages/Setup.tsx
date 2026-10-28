@@ -11,6 +11,7 @@ import { api, clientError, humanizeError, type SetupState } from "@/lib/api";
 import type { ApiError } from "@/lib/types";
 import { base64urlToBytes, bytesToBase64url } from "@/lib/utils";
 import { useTier } from "@/lib/tier";
+import { useBranding } from "@/lib/branding";
 import { InlineError } from "@/components/MessageLine";
 
 // Setup creates its own session, requires a passkey before SMTP exists, and retries only transient token failures.
@@ -24,6 +25,7 @@ export function Setup() {
   const navigate = useNavigate();
   const { refresh } = useTier();
   const { t } = useTranslation("auth");
+  const { name } = useBranding();
 
   const [state, setState] = useState<SetupState | null>(null);
   const [booting, setBooting] = useState(true);
@@ -93,7 +95,7 @@ export function Setup() {
 
   if (booting) {
     return (
-      <AuthLayout title="Felis">
+      <AuthLayout title={name}>
         <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" />
           {t("setup_preparing")}

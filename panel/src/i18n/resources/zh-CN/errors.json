@@ -162,6 +162,7 @@
   "node_control_unavailable": "主机节点执行服务不可用。请检查主控上的 felis-node-control.service。",
   "node_not_lost": "该节点仍然在线，或者它不是 Worker 节点。只有失联的 Worker 节点可以故障切换。",
   "bad_heartbeat_url": "心跳地址须为以 http:// 或 https:// 开头的完整网址。",
+  "bad_image": "文件不是有效的 PNG 或 WebP 图片，或 PNG 的宽度或高度超过 4096 像素。",
   "eula_required": "使用服务端软件的服务器须先同意 Minecraft 最终用户许可协议（EULA）。",
   "software_unavailable": "当前平台未启用服务端软件。",
   "software_not_found": "所选服务端软件不提供该版本或构建。请重新选择。",

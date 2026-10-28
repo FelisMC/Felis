@@ -34,6 +34,7 @@ for (const [account, path] of [
   ["owner", "/admin/updates"],
   ["owner", "/admin/users"],
   ["owner", "/admin/audit"],
+  ["owner", "/admin/platform?tab=branding"],
   ["owner", "/account"],
 ] as const) {
   test(`every control on ${path} has a name for ${account}`, async ({ page, signIn }) => {
