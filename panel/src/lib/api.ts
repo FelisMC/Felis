@@ -51,6 +51,9 @@ import type {
   BrandingImageKind,
   BrandingSettings,
   PublicBranding,
+  APITokenList,
+  APITokenSettings,
+  CreatedAPIToken,
   FailoverPolicySettings,
   ArchivePolicy,
   ArchivePolicySettings,
@@ -1004,6 +1007,8 @@ export const api = rejectingSync({
   // The image goes up as the request body; its own type is the Content-Type the server checks.
   uploadBrandingImage: (kind: BrandingImageKind, image: File) => send<BrandingSettings>(`/settings/branding/${kind}`, { method: "PUT", headers: { "Content-Type": image.type }, body: image }),
   removeBrandingImage: (kind: BrandingImageKind) => request<BrandingSettings>("DELETE", `/settings/branding/${kind}`),
+  getAPITokenSettings: () => request<APITokenSettings>("GET", "/settings/api-tokens"),
+  setAPITokenSettings: (settings: APITokenSettings) => request<APITokenSettings>("PUT", "/settings/api-tokens", settings),
   getHeartbeat: () => request<HeartbeatSettings>("GET", "/settings/heartbeat"),
   setHeartbeat: (url: string, revision: string) => request<HeartbeatSettings>("PUT", "/settings/heartbeat", { url, revision }),
   clearHeartbeat: () => request<HeartbeatSettings>("DELETE", "/settings/heartbeat"),
@@ -1060,6 +1065,13 @@ export const api = rejectingSync({
 
   revokeMyOtherSessions: () =>
     request<{ revoked: number }>("POST", "/account/sessions/revoke-others"),
+
+  listAPITokens: () => request<APITokenList>("GET", "/account/api-tokens"),
+
+  createAPIToken: (body: { name: string; expires_at?: string; admin?: boolean }) =>
+    request<CreatedAPIToken>("POST", "/account/api-tokens", body),
+
+  revokeAPIToken: (id: string) => request<void>("DELETE", urlPath`/account/api-tokens/${id}`),
 
   // Passkey and email changes require a recently verified factor; otherwise return reauth_required.
   // The passkey begin returns the raw {"publicKey": ...} document.
@@ -1367,6 +1379,9 @@ export function humanizeError(e: unknown): string {
     case "software_change_unconfirmed":
     case "self_service_disabled":
     case "no_node":
+    case "bad_api_token":
+    case "api_tokens_disabled":
+    case "api_token_limit":
       return t(err.code);
     case "subdomain_taken":
       return t("subdomain_taken");

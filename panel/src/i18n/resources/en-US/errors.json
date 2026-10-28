@@ -177,5 +177,8 @@
   "bad_url": "The URL must use HTTP or HTTPS and point to a public address. Private, loopback and link-local addresses are not allowed.",
   "download_failed": "The remote file download failed. Check the URL and remote service status.",
   "bad_extra_ports": "Additional port settings are invalid. Check protocols, port ranges, duplicate entries and managed port restrictions.",
-  "extra_ports_pending": "Additional ports are being removed. Wait for the configuration to finish before trying again."
+  "extra_ports_pending": "Additional ports are being removed. Wait for the configuration to finish before trying again.",
+  "bad_api_token": "The API key name or expiry is invalid. The name must be 1 to 64 characters on one line, and the expiry must be within the permitted range.",
+  "api_tokens_disabled": "API keys are not enabled on this platform. The platform owner can enable them in Platform settings.",
+  "api_token_limit": "The account has reached its API key limit. Revoke a key that is no longer needed, then create the new key."
 }

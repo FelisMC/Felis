@@ -22,6 +22,8 @@ type Principal struct {
 	ViaSession    bool
 	// ReauthAt is zero until the session proves an account factor.
 	ReauthAt time.Time
+	// APIKey is the displayed prefix of the API key that authenticated the request.
+	APIKey string
 }
 
 func staffRole(role string) bool {

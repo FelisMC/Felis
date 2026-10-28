@@ -73,6 +73,8 @@ func TestOpenAPISchemasMatchWireStructs(t *testing.T) {
 		"ServerQuota":              serverQuotaView{},
 		"SelfServiceQuotaSettings": selfServiceQuotaView{},
 		"DefaultLanguageSettings":  defaultLanguageView{},
+		"APIToken":                 APIToken{},
+		"APITokenSettings":         apiTokenSettingsView{},
 		"PanelLanguage":            panelLanguageView{},
 		"BrandingSettings":         brandingView{},
 		"PublicBranding":           publicBrandingView{},

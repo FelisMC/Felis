@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   passkeyDelete: vi.fn(),
   passkeyRegisterBegin: vi.fn(),
   listMySessions: vi.fn(),
+  listAPITokens: vi.fn(),
   emailStart: vi.fn(),
   emailVerify: vi.fn(),
   reauthStatus: vi.fn(),
@@ -38,6 +39,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
       passkeyDelete: mocks.passkeyDelete,
       passkeyRegisterBegin: mocks.passkeyRegisterBegin,
       listMySessions: mocks.listMySessions,
+      listAPITokens: mocks.listAPITokens,
       emailStart: mocks.emailStart,
       emailVerify: mocks.emailVerify,
       reauthStatus: mocks.reauthStatus,
@@ -96,6 +98,7 @@ beforeEach(() => {
   for (const fn of Object.values(mocks)) if (typeof fn === "function") fn.mockReset();
   mocks.identity = identity();
   mocks.listMySessions.mockResolvedValue([]);
+  mocks.listAPITokens.mockResolvedValue({ enabled: false, limit: 10, can_create_admin: false, tokens: [] });
   mocks.reauthEmailStart.mockResolvedValue({ sent: true, expires_at: "2026-09-25T10:10:00Z" });
   mocks.reauthEmailVerify.mockResolvedValue({ ok: true, until: "2026-09-25T10:05:00Z" });
   mocks.reauthPasskeyFinish.mockResolvedValue({ ok: true, until: "2026-09-25T10:05:00Z" });

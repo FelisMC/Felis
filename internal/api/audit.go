@@ -28,7 +28,7 @@ func auditActor(p *Principal) string {
 	switch {
 	case p == nil:
 		return anonymousActor
-	case p.Email != "" && (p.EmailVerified || !p.ViaSession):
+	case p.Email != "" && (p.EmailVerified || (!p.ViaSession && p.APIKey == "")):
 		return p.Email
 	case p.Username != "":
 		return p.Username
@@ -73,11 +73,15 @@ func (a *API) auditAccount(r *http.Request, u *StaffUser, action, target string)
 
 // auditEntry defaults Source to external; internal callers must set it and their component actor.
 func (a *API) auditEntry(r *http.Request, e AuditEntry) {
-	if e.Source == "" {
+	external := e.Source == ""
+	if external {
 		e.Source = "external"
+		if p := principalFromContext(r.Context()); p != nil && p.APIKey != "" {
+			e.Source = "api_key:" + p.APIKey
+		}
 	}
 	e.RequestID = requestIDFromContext(r.Context())
-	if e.Source == "external" {
+	if external {
 		if ip := a.clientIP(r); ip.IsValid() {
 			e.ClientIP = ip.String()
 		}

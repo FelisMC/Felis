@@ -68,6 +68,11 @@ func (a *API) reauthState(r *http.Request, p *Principal) (reauthState, error) {
 
 // requireReauth writes the refusal response when returning false.
 func (a *API) requireReauth(w http.ResponseWriter, r *http.Request, p *Principal) bool {
+	if p != nil && p.APIKey != "" {
+		writeError(w, r, newError(http.StatusForbidden, "session_required",
+			"this change needs a signed-in session; an API key cannot confirm it's you"))
+		return false
+	}
 	st, err := a.reauthState(r, p)
 	if err != nil {
 		writeError(w, r, err)

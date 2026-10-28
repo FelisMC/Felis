@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isIP } from "node:net";
 import { gzipSync } from "node:zlib";
@@ -15,6 +15,8 @@ import type {
   DefaultLanguageSettings,
   BrandingImageKind,
   BrandingSettings,
+  APIToken,
+  APITokenSettings,
   MailSettings,
   MailSettingsRequest,
   ArchivePolicySettings,
@@ -130,6 +132,8 @@ interface MockState {
   defaultLanguage: DefaultLanguageSettings;
   branding: BrandingSettings;
   brandingImages: Partial<Record<BrandingImageKind, { type: string; data: Buffer }>>;
+  apiTokenSettings: APITokenSettings;
+  apiTokens: Record<AccountID, APIToken[]>;
   mailSettings: MailSettings;
   mailPassword: string;
   archivePolicy: ArchivePolicySettings;
@@ -539,6 +543,8 @@ function initialState(): MockState {
     defaultLanguage: { language: "", revision: "initial" },
     branding: { name: "", notice: "", show_powered_by: true, has_logo: false, has_background: false, revision: "initial" },
     brandingImages: {},
+    apiTokenSettings: { enabled: false, revision: "initial" },
+    apiTokens: {},
     mailSettings: { source: "host", host: "smtp.mock.felis.local", port: 587, from: "noreply@mock.felis.local", username: "noreply@mock.felis.local", password_set: true, require_tls: true, max_per_hour: 0, revision: "" },
     mailPassword: "mock",
     archivePolicy: hostArchivePolicy(),
@@ -1930,6 +1936,15 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
       sendJSON(ctx.res, 200, ctx.state.branding);
       return true;
     }
+    case "GET settings/api-tokens":
+      sendJSON(ctx.res, 200, ctx.state.apiTokenSettings);
+      return true;
+    case "PUT settings/api-tokens": {
+      const { enabled } = await readJSON<APITokenSettings>(ctx.req);
+      ctx.state.apiTokenSettings = { enabled, revision: createHash("sha256").update(JSON.stringify({ enabled })).digest("hex") };
+      sendJSON(ctx.res, 200, ctx.state.apiTokenSettings);
+      return true;
+    }
     // A host starting with "smtp.fail" refuses the check; any other is accepted.
     case "GET settings/smtp":
     case "PUT settings/smtp":
@@ -2274,6 +2289,30 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
       sendJSON(ctx.res, 200, { credentials: list });
       return true;
     }
+    case "GET account/api-tokens":
+      sendJSON(ctx.res, 200, {
+        enabled: ctx.state.apiTokenSettings.enabled,
+        limit: 10,
+        can_create_admin: isAdmin(ctx.account.role),
+        tokens: ctx.state.apiTokens[ctx.account.id] ?? [],
+      });
+      return true;
+    case "POST account/api-tokens": {
+      const body = await readJSON<{ name: string; expires_at?: string; admin?: boolean }>(ctx.req);
+      const secret = `felis_pat_${randomBytes(32).toString("base64url")}`;
+      const token: APIToken = {
+        id: `tok-${Date.now()}`,
+        name: body.name.trim(),
+        prefix: secret.slice(0, 18),
+        admin: body.admin === true,
+        created_at: new Date().toISOString(),
+        expires_at: body.expires_at ?? null,
+        last_used_at: null,
+      };
+      ctx.state.apiTokens[ctx.account.id] = [token, ...(ctx.state.apiTokens[ctx.account.id] ?? [])];
+      sendJSON(ctx.res, 201, { ...token, token: secret });
+      return true;
+    }
     case "GET account/reauth": {
       const factors = reauthFactors(ctx.state, ctx.account);
       const until = ctx.account.reauthUntil ?? 0;
@@ -2378,6 +2417,12 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
         }
         b.status = "expired";
         sendJSON(ctx.res, 200, { id: b.id, status: "expired" });
+        return true;
+      }
+      if (ctx.method === "DELETE" && ctx.parts[2] === "account" && ctx.parts[3] === "api-tokens" && ctx.parts[4]) {
+        ctx.state.apiTokens[ctx.account.id] = (ctx.state.apiTokens[ctx.account.id] ?? []).filter((k) => k.id !== ctx.parts[4]);
+        ctx.res.statusCode = 204;
+        ctx.res.end();
         return true;
       }
       if (ctx.method === "DELETE" && ctx.parts[2] === "account" && ctx.parts[3] === "passkey" && ctx.parts[4] === "credentials" && ctx.parts[5]) {

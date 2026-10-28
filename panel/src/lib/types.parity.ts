@@ -95,6 +95,8 @@ export type WireParity = [
   Holds<Parity<T.SoftwareVersion, S["SoftwareVersion"]>>,
   Holds<Parity<T.SoftwareBuild, S["SoftwareBuild"]>>,
   Holds<Parity<T.SessionView, S["SessionView"]>>,
+  Holds<Parity<T.APIToken, S["APIToken"]>>,
+  Holds<Parity<T.APITokenSettings, S["APITokenSettings"]>>,
   Holds<Parity<T.PasskeyCredential, S["PasskeyCredential"]>>,
   Holds<Parity<T.UpdateWindow, S["UpdateWindow"]>>,
   Holds<Parity<T.DBBackupStatus, S["DBBackupStatus"]>>,

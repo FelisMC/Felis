@@ -87,7 +87,7 @@ func rejectCrossSiteWrites(next http.Handler) http.Handler {
 		switch r.Method {
 		case http.MethodGet, http.MethodHead, http.MethodOptions:
 		default:
-			if !sameOriginRequest(r) {
+			if !keyOnlyRequest(r) && !sameOriginRequest(r) {
 				writeError(w, r, newError(http.StatusForbidden, "cross_site",
 					"requests from another site may not change anything here"))
 				return

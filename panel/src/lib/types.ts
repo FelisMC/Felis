@@ -1018,6 +1018,34 @@ export interface SessionView {
   current?: boolean;
 }
 
+export interface APIToken {
+  id: string;
+  name: string;
+  /** The first 18 characters of the key, enough to recognise it in a list. */
+  prefix: string;
+  admin: boolean;
+  created_at: string;
+  expires_at: string | null;
+  last_used_at: string | null;
+}
+
+/** GET /account/api-tokens: the caller's live keys, newest first, with the rules that apply to them. */
+export interface APITokenList {
+  enabled: boolean;
+  limit: number;
+  can_create_admin: boolean;
+  tokens: APIToken[];
+}
+
+/** The create response carries the plaintext key, which no later call returns. */
+export type CreatedAPIToken = APIToken & { token: string };
+
+/** The platform switch for API keys (GET/PUT /settings/api-tokens). */
+export interface APITokenSettings {
+  enabled: boolean;
+  revision: string;
+}
+
 export interface ExecutionNode {
   name: string;
   role: string;

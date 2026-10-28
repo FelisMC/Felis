@@ -14,6 +14,7 @@ import { formatAbsolute } from "@/lib/format";
 import type { MinecraftProfile, PasskeyCredential } from "@/lib/types";
 import { useAsync, useConfig } from "@/lib/hooks";
 import { AccountSessionsCard } from "@/pages/AccountSessions";
+import { AccountAPITokensCard } from "@/pages/AccountAPITokens";
 import { isReauthCancelled, isReauthRequired, useReauth } from "@/components/ReauthDialog";
 import { useTier } from "@/lib/tier";
 import { base64urlToBytes, bytesToBase64url } from "@/lib/utils";
@@ -558,6 +559,8 @@ export function Account() {
         onSignOut={() => void signOut()}
         signingOut={signingOut}
       />
+
+      <AccountAPITokensCard />
 
       {reauth.dialog}
     </>

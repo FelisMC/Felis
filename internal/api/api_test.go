@@ -23,6 +23,7 @@ import (
 const testRoot = "mc.example.net" // neutral; never a deployment domain
 
 type fakeRepo struct {
+	apiTokens    []fakeAPIToken
 	bySub        map[string]*ServerRecord
 	byName       map[string]*ServerRecord
 	linked       map[string]bool
@@ -981,6 +982,76 @@ func (f *fakeRepo) MarkSessionReauth(_ context.Context, tokenHash string, at tim
 	}
 	if s, ok := f.sessions[tokenHash]; ok && !s.revoked {
 		s.reauthAt = at
+	}
+	return nil
+}
+
+type fakeAPIToken struct {
+	APIToken
+	hash    string
+	revoked bool
+}
+
+func (t *fakeAPIToken) live(now time.Time) bool {
+	return !t.revoked && (t.ExpiresAt == nil || t.ExpiresAt.After(now))
+}
+
+func (f *fakeRepo) CreateAPIToken(_ context.Context, t *APIToken, hash string, limit int, now time.Time) error {
+	n := 0
+	for i := range f.apiTokens {
+		if f.apiTokens[i].UserID == t.UserID && f.apiTokens[i].live(now) {
+			n++
+		}
+	}
+	if n >= limit {
+		return ErrAPITokenLimit
+	}
+	t.CreatedAt = now
+	f.apiTokens = append(f.apiTokens, fakeAPIToken{APIToken: *t, hash: hash})
+	return nil
+}
+
+func (f *fakeRepo) ListAPITokens(_ context.Context, userID string, now time.Time) ([]APIToken, error) {
+	var out []APIToken
+	for i := len(f.apiTokens) - 1; i >= 0; i-- {
+		if t := f.apiTokens[i]; t.UserID == userID && t.live(now) {
+			out = append(out, t.APIToken)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeRepo) RevokeAPIToken(_ context.Context, userID, id string, _ time.Time) error {
+	for i := range f.apiTokens {
+		if t := &f.apiTokens[i]; t.ID == id && t.UserID == userID && !t.revoked {
+			t.revoked = true
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+func (f *fakeRepo) APITokenUser(_ context.Context, hash string, now time.Time) (*StaffUser, *APIToken, error) {
+	for i := range f.apiTokens {
+		t := &f.apiTokens[i]
+		if t.hash != hash || !t.live(now) {
+			continue
+		}
+		for _, u := range f.staff {
+			if u.ID == t.UserID && !f.seededDead(u.ID) {
+				su, tok := *u, t.APIToken
+				return &su, &tok, nil
+			}
+		}
+	}
+	return nil, nil, ErrNotFound
+}
+
+func (f *fakeRepo) TouchAPIToken(_ context.Context, id string, now time.Time) error {
+	for i := range f.apiTokens {
+		if f.apiTokens[i].ID == id {
+			f.apiTokens[i].LastUsedAt = ptrTime(now)
+		}
 	}
 	return nil
 }

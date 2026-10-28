@@ -134,10 +134,21 @@ components:
         session doors — passkey login, email-OTP, bind code, and op-login
         finish — HttpOnly+Secure+SameSite=Lax and host-only, so an op.console
         session never reaches the player console. Only its sha-256 is
-        persisted. It is the external face's only credential: Cloudflare
-        Access, when the install sits behind it, is enforced at the edge and
-        felis-api does not read the Access JWT. Admin-tier operations
-        additionally require a staff session on the operator console host.
+        persisted. Cloudflare Access, when the install sits behind it, is
+        enforced at the edge and felis-api does not read the Access JWT.
+        Admin-tier operations additionally require a staff session on the
+        operator console host.
+    apiKey:
+      type: http
+      scheme: bearer
+      description: >-
+        Personal API key (external face), `Authorization: Bearer felis_pat_…`,
+        accepted wherever sessionCookie is, while the owner keeps API keys
+        turned on. It acts as its owner with three limits: it cannot manage API
+        keys, it cannot pass a confirmation of identity, and it carries staff
+        rights only when created as an admin key and used on the operator
+        console. A request carrying both a key and a session cookie is refused.
+        Only the key's sha-256 is persisted; audit records name it by prefix.
 
   responses:
     NoContent:
@@ -2226,6 +2237,42 @@ components:
           description: >-
             On the holder's own list only, true on the session the request came in
             on. Absent otherwise.
+
+    APIToken:
+      type: object
+      description: >-
+        One live personal API key as its owner sees it. The key itself is
+        returned only once, in the response that creates it.
+      required: [id, name, prefix, admin, created_at, expires_at, last_used_at]
+      properties:
+        id: { type: string }
+        name: { type: string, maxLength: 64 }
+        prefix:
+          type: string
+          description: The first characters of the key, shown to tell keys apart and recorded as the audit source.
+        admin:
+          type: boolean
+          description: Whether the key carries the owner's staff rights on the operator console.
+        created_at: { type: string, format: date-time }
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the key stops working, or null for a key without an expiry. An admin key always expires.
+        last_used_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the key last authenticated a request, recorded at most once a minute.
+
+    APITokenSettings:
+      type: object
+      required: [enabled, revision]
+      properties:
+        enabled:
+          type: boolean
+          description: Whether personal API keys can be created and used on this platform. Off by default.
+        revision: { type: string, description: Opaque revision; stale or concurrent writes return 409. }
 
 paths:
   /api/v1/nodes:
@@ -6620,6 +6667,54 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /api/v1/settings/api-tokens:
+    get:
+      tags: [account]
+      operationId: getAPITokenSettings
+      summary: Read whether personal API keys are turned on (Owner).
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: Current switch and revision.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APITokenSettings' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    put:
+      tags: [account]
+      operationId: setAPITokenSettings
+      summary: Turn personal API keys on or off (Owner).
+      description: >
+        Turning keys off stops every existing key from authenticating at once and
+        refuses new ones; turning them back on restores the keys that have not
+        expired or been revoked. Needs a confirmation of identity from the last
+        few minutes.
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/APITokenSettings' }
+      responses:
+        '200':
+          description: Saved switch and new revision.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APITokenSettings' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: The setting changed; reload before saving.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /api/v1/settings/archive-policy:
     get:
       tags: [account]
@@ -10694,6 +10789,107 @@ paths:
                     description: How many sessions were signed out.
         '401':
           $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/account/api-tokens:
+    get:
+      tags: [account]
+      operationId: listMyAPITokens
+      summary: List the caller's live personal API keys.
+      description: >
+        Managed from a signed-in session only; a request authenticated by an API
+        key is refused with 403 session_required.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: The platform switch, the per-account limit and the caller's live keys, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [enabled, limit, can_create_admin, tokens]
+                properties:
+                  enabled: { type: boolean, description: Whether API keys are turned on for the platform. }
+                  limit: { type: integer, description: The most live keys one account may hold. }
+                  can_create_admin:
+                    type: boolean
+                    description: True for staff signed in on the operator console, who may create admin keys.
+                  tokens:
+                    type: array
+                    items: { $ref: '#/components/schemas/APIToken' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [account]
+      operationId: createMyAPIToken
+      summary: Create a personal API key and return it once.
+      description: >
+        A key lasts at most 365 days, or without an expiry when expires_at is
+        omitted. An admin key needs staff on the operator console, a confirmation
+        of identity from the last few minutes and an expiry within 90 days.
+        Managed from a signed-in session only.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 64, description: A single-line label. }
+                expires_at: { type: string, format: date-time }
+                admin: { type: boolean, default: false }
+      responses:
+        '201':
+          description: The key; `token` is shown only in this response.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: '#/components/schemas/APIToken' }
+                  - type: object
+                    required: [token]
+                    properties:
+                      token: { type: string, description: "The key, starting with felis_pat_; send it as Authorization: Bearer." }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: >-
+            api_tokens_disabled — API keys are turned off; session_required — the
+            request used an API key; reauth_required — an admin key needs a recent
+            confirmation of identity; forbidden — only staff on the operator console
+            create admin keys.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: api_token_limit — the account already holds the most live keys allowed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/account/api-tokens/{id}:
+    delete:
+      tags: [account]
+      operationId: revokeMyAPIToken
+      summary: Revoke one of the caller's API keys.
+      description: >
+        Scoped to the caller: an id that is not one of the caller's live keys is a
+        404 whoever it belongs to. Managed from a signed-in session only.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { $ref: '#/components/responses/NoContent' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /api/v1/account/migrate:
     get:

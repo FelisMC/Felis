@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   linkVerify: vi.fn(),
   passkeyDelete: vi.fn(),
   listMySessions: vi.fn(),
+  listAPITokens: vi.fn(),
   migrateStatus: vi.fn(),
   migrateIssueCode: vi.fn(),
   identity: null as Identity | null,
@@ -37,6 +38,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
       passkeyList: mocks.passkeyList,
       passkeyDelete: mocks.passkeyDelete,
       listMySessions: mocks.listMySessions,
+      listAPITokens: mocks.listAPITokens,
     },
   };
 });
@@ -86,6 +88,7 @@ beforeEach(() => {
   mocks.passkeyDelete.mockReset();
   mocks.listMySessions.mockReset();
   mocks.listMySessions.mockResolvedValue([thisMac]);
+  mocks.listAPITokens.mockReset().mockResolvedValue({ enabled: false, limit: 10, can_create_admin: false, tokens: [] });
   mocks.migrateStatus.mockReset();
   mocks.migrateStatus.mockResolvedValue({ active: false });
   mocks.migrateIssueCode.mockReset();

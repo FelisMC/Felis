@@ -385,6 +385,8 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "PUT", Pattern: "/api/v1/settings/entry-policy", Owner: true, Admin: true, h: a.handleSetEntryPolicy},
 		{Method: "GET", Pattern: "/api/v1/settings/wake-policy", Owner: true, Admin: true, h: a.handleGetWakePolicy},
 		{Method: "PUT", Pattern: "/api/v1/settings/wake-policy", Owner: true, Admin: true, h: a.handleSetWakePolicy},
+		{Method: "GET", Pattern: "/api/v1/settings/api-tokens", Owner: true, Admin: true, h: a.handleGetAPITokenSettings},
+		{Method: "PUT", Pattern: "/api/v1/settings/api-tokens", Owner: true, Admin: true, h: a.handleSetAPITokenSettings},
 		{Method: "GET", Pattern: "/api/v1/settings/default-language", Owner: true, Admin: true, h: a.handleGetDefaultLanguage},
 		{Method: "PUT", Pattern: "/api/v1/settings/default-language", Owner: true, Admin: true, h: a.handleSetDefaultLanguage},
 		{Method: "GET", Pattern: "/api/v1/settings/branding", Owner: true, Admin: true, h: a.handleGetBranding},
@@ -423,6 +425,9 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "GET", Pattern: "/api/v1/account/sessions", h: a.handleListMySessions},
 		{Method: "DELETE", Pattern: "/api/v1/account/sessions/{hash}", h: a.handleRevokeMySession},
 		{Method: "POST", Pattern: "/api/v1/account/sessions/revoke-others", h: a.handleRevokeMyOtherSessions},
+		{Method: "GET", Pattern: "/api/v1/account/api-tokens", h: a.handleListAPITokens},
+		{Method: "POST", Pattern: "/api/v1/account/api-tokens", h: a.handleCreateAPIToken},
+		{Method: "DELETE", Pattern: "/api/v1/account/api-tokens/{id}", h: a.handleRevokeAPIToken},
 		{Method: "GET", Pattern: "/api/v1/account/migrate", h: a.handleMigrateStatus},
 		{Method: "POST", Pattern: "/api/v1/account/migrate/confirm/otp/start", h: a.handleMigrateConfirmOTPStart},
 		{Method: "POST", Pattern: "/api/v1/account/migrate/confirm/otp/verify", h: a.handleMigrateConfirmOTPVerify},
@@ -583,7 +588,7 @@ func writeNoRoute(w http.ResponseWriter, r *http.Request, muxes ...*http.ServeMu
 func (a *API) requireOnboarded(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p := principalFromContext(r.Context())
-		if p != nil && p.ViaSession && !p.EmailVerified {
+		if p != nil && (p.ViaSession || p.APIKey != "") && !p.EmailVerified {
 			creds, err := a.Repo.PasskeyCredentialsForUser(r.Context(), p.UserID)
 			if err != nil {
 				// Treat store outages as retryable instead of incorrectly requiring passkey enrollment.

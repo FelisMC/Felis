@@ -179,6 +179,9 @@ func (s SessionAuth) now() time.Time {
 }
 
 func (s SessionAuth) Authenticate(r *http.Request) (*Principal, error) {
+	if key, ok := bearerAPIToken(r); ok {
+		return s.authenticateAPIToken(r, key)
+	}
 	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil || cookie.Value == "" {
 		return nil, fmt.Errorf("no session")

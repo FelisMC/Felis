@@ -1921,6 +1921,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/settings/api-tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read whether personal API keys are turned on (Owner). */
+        get: operations["getAPITokenSettings"];
+        /**
+         * Turn personal API keys on or off (Owner).
+         * @description Turning keys off stops every existing key from authenticating at once and refuses new ones; turning them back on restores the keys that have not expired or been revoked. Needs a confirmation of identity from the last few minutes.
+         */
+        put: operations["setAPITokenSettings"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/settings/archive-policy": {
         parameters: {
             query?: never;
@@ -3334,6 +3355,50 @@ export interface paths {
         /** Sign out every session of the caller except the one making this request. */
         post: operations["revokeMyOtherSessions"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/account/api-tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the caller's live personal API keys.
+         * @description Managed from a signed-in session only; a request authenticated by an API key is refused with 403 session_required.
+         */
+        get: operations["listMyAPITokens"];
+        put?: never;
+        /**
+         * Create a personal API key and return it once.
+         * @description A key lasts at most 365 days, or without an expiry when expires_at is omitted. An admin key needs staff on the operator console, a confirmation of identity from the last few minutes and an expiry within 90 days. Managed from a signed-in session only.
+         */
+        post: operations["createMyAPIToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/account/api-tokens/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Revoke one of the caller's API keys.
+         * @description Scoped to the caller: an id that is not one of the caller's live keys is a 404 whoever it belongs to. Managed from a signed-in session only.
+         */
+        delete: operations["revokeMyAPIToken"];
         options?: never;
         head?: never;
         patch?: never;
@@ -5423,6 +5488,33 @@ export interface components {
             revoked_at?: string;
             /** @description On the holder's own list only, true on the session the request came in on. Absent otherwise. */
             current?: boolean;
+        };
+        /** @description One live personal API key as its owner sees it. The key itself is returned only once, in the response that creates it. */
+        APIToken: {
+            id: string;
+            name: string;
+            /** @description The first characters of the key, shown to tell keys apart and recorded as the audit source. */
+            prefix: string;
+            /** @description Whether the key carries the owner's staff rights on the operator console. */
+            admin: boolean;
+            /** Format: date-time */
+            created_at: string;
+            /**
+             * Format: date-time
+             * @description When the key stops working, or null for a key without an expiry. An admin key always expires.
+             */
+            expires_at: string | null;
+            /**
+             * Format: date-time
+             * @description When the key last authenticated a request, recorded at most once a minute.
+             */
+            last_used_at: string | null;
+        };
+        APITokenSettings: {
+            /** @description Whether personal API keys can be created and used on this platform. Off by default. */
+            enabled: boolean;
+            /** @description Opaque revision; stale or concurrent writes return 409. */
+            revision: string;
         };
     };
     responses: {
@@ -10097,6 +10189,64 @@ export interface operations {
             403: components["responses"]["Forbidden"];
         };
     };
+    getAPITokenSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current switch and revision. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APITokenSettings"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    setAPITokenSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["APITokenSettings"];
+            };
+        };
+        responses: {
+            /** @description Saved switch and new revision. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APITokenSettings"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description The setting changed; reload before saving. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     getArchivePolicy: {
         parameters: {
             query?: never;
@@ -14472,6 +14622,107 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+        };
+    };
+    listMyAPITokens: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The platform switch, the per-account limit and the caller's live keys, newest first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description Whether API keys are turned on for the platform. */
+                        enabled: boolean;
+                        /** @description The most live keys one account may hold. */
+                        limit: number;
+                        /** @description True for staff signed in on the operator console, who may create admin keys. */
+                        can_create_admin: boolean;
+                        tokens: components["schemas"]["APIToken"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    createMyAPIToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description A single-line label. */
+                    name: string;
+                    /** Format: date-time */
+                    expires_at?: string;
+                    /** @default false */
+                    admin?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description The key; `token` is shown only in this response. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIToken"] & {
+                        /** @description The key, starting with felis_pat_; send it as Authorization: Bearer. */
+                        token: string;
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            /** @description api_tokens_disabled — API keys are turned off; session_required — the request used an API key; reauth_required — an admin key needs a recent confirmation of identity; forbidden — only staff on the operator console create admin keys. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description api_token_limit — the account already holds the most live keys allowed. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    revokeMyAPIToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: components["responses"]["NoContent"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
         };
     };
     migrateStatus: {

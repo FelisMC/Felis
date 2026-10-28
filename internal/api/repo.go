@@ -332,6 +332,16 @@ type Repo interface {
 	// TouchSession records activity at now; it never moves last_seen_at backwards, and an absent session is not an error.
 	TouchSession(ctx context.Context, tokenHash string, now time.Time) error
 	MarkSessionReauth(ctx context.Context, tokenHash string, at time.Time) error
+
+	// CreateAPIToken fills CreatedAt, or returns ErrAPITokenLimit when the user already has limit live keys.
+	CreateAPIToken(ctx context.Context, t *APIToken, hash string, limit int, now time.Time) error
+	// ListAPITokens lists the user's live keys, newest first.
+	ListAPITokens(ctx context.Context, userID string, now time.Time) ([]APIToken, error)
+	// RevokeAPIToken returns ErrNotFound for another user's or an already revoked key.
+	RevokeAPIToken(ctx context.Context, userID, id string, now time.Time) error
+	// APITokenUser resolves a live key of an active account.
+	APITokenUser(ctx context.Context, hash string, now time.Time) (*StaffUser, *APIToken, error)
+	TouchAPIToken(ctx context.Context, id string, now time.Time) error
 	RevokeSession(ctx context.Context, tokenHash string) error
 	RevokeUserSession(ctx context.Context, userID, tokenHash string) error
 	// RevokeOtherUserSessions revokes every live session of userID except keepTokenHash (all when empty) and returns the count.

@@ -13,6 +13,7 @@ import { HeartbeatCard } from "@/components/HeartbeatCard";
 import { FailoverPolicyCard } from "@/components/FailoverPolicyCard";
 import { DefaultLanguageCard } from "@/components/DefaultLanguageCard";
 import { BrandingCard } from "@/components/BrandingCard";
+import { APITokenSettingsCard } from "@/components/APITokenSettingsCard";
 import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/PageHeader";
 import { MessageLine } from "@/components/MessageLine";
@@ -109,6 +110,7 @@ export function PlatformSettingsPage() {
     <AccessCard overview={overview} />
     <StorageCard overview={overview} />
     <CredentialsCard />
+    <APITokenSettingsCard />
     <ProxyCard overview={overview} />
     <ConvergeCard />
     </div>
