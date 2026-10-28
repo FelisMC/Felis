@@ -320,7 +320,6 @@ export function ServerConsole() {
           )}
           {!error && <RecoveryNotice data={data} />}
 
-          {owned && <ResourceUsage key={name} name={name} running={!error && data.phase === "Running" && data.desiredState === "Running"} cpu={data.cpu} memory={data.memory} disk={error && data.disk ? { ...data.disk, stale: true } : data.disk} diskFull={data.diskFull} />}
           {!error && startup && (
             <div role="status" className="shrink-0 space-y-2 rounded-xl border border-border bg-card p-4 text-sm">
               <p className="flex items-center gap-2 font-medium">{startupBlocked ? <ShieldAlert className="h-4 w-4 text-amber-500" /> : <Loader2 className="h-4 w-4 animate-spin text-primary" />}{t(`startup_${startup.stage}`)}</p>
@@ -329,7 +328,7 @@ export function ServerConsole() {
               <p className="text-xs text-muted-foreground">{t(startup.stage === "failed" ? "startup_failed_hint" : "startup_hint")}</p>
             </div>
           )}
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-4 lg:grid-rows-[minmax(0,1fr)] lg:flex-1 lg:min-h-0">
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-4 lg:grid-rows-[minmax(0,1fr)] lg:flex-1 lg:min-h-[32rem]">
             {/* Left/Main column: Console */}
             <div className="lg:col-span-3 flex flex-col lg:min-h-0 lg:h-full">
               <Card className="dark flex flex-col lg:flex-1 lg:min-h-0 overflow-hidden bg-black text-zinc-50 border-zinc-800">
@@ -489,6 +488,7 @@ export function ServerConsole() {
               )}
             </div>
           </div>
+          {owned && <ResourceUsage key={name} name={name} running={!error && data.phase === "Running" && data.desiredState === "Running"} cpu={data.cpu} memory={data.memory} disk={error && data.disk ? { ...data.disk, stale: true } : data.disk} diskFull={data.diskFull} />}
         </>
       ) : null}
     </div>

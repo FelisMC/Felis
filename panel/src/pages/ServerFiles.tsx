@@ -781,6 +781,13 @@ export function ServerFiles() {
   const dirtyBytes = open ? new TextEncoder().encode(open.text).length : 0;
   const tooLarge = dirtyBytes > MAX_WRITE_BYTES;
 
+  // A full disk is the thing to fix first, so only then does its card lead the page.
+  const diskCard = (
+    <Card><CardContent className="space-y-2 p-4">
+      <DiskUsage disk={statusQ.error && statusQ.data.disk ? { ...statusQ.data.disk, stale: true } : statusQ.data.disk} diskFull={statusQ.data.diskFull} />
+      {statusQ.data.diskFull && <p className="text-xs text-muted-foreground">{t("disk_cleanup_hint")}</p>}
+    </CardContent></Card>
+  );
   const header = (
     <PageHeader
       icon={FolderOpen}
@@ -803,10 +810,7 @@ export function ServerFiles() {
         <NotYours title={t("not_yours_title")} body={t("not_yours_body")} />
       ) : (
         <div className="space-y-4">
-          <Card><CardContent className="space-y-2 p-4">
-            <DiskUsage disk={statusQ.error && statusQ.data.disk ? { ...statusQ.data.disk, stale: true } : statusQ.data.disk} diskFull={statusQ.data.diskFull} />
-            {statusQ.data.diskFull && <p className="text-xs text-muted-foreground">{t("disk_cleanup_hint")}</p>}
-          </CardContent></Card>
+          {statusQ.data.diskFull && diskCard}
           {live && <div role="status" className="space-y-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm">
             <p>{t("live_warning")}</p>
             {worldConfirmation("files-world-confirm")}
@@ -1228,6 +1232,7 @@ export function ServerFiles() {
               </CardContent>
             </Card>
           )}
+          {!statusQ.data.diskFull && diskCard}
         </div>
       )}
 
