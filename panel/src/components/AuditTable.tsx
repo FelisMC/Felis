@@ -50,12 +50,12 @@ export function AuditTable({ entries, onOpen }: Props) {
                 )}
               </td>
               <td className={cn(cell, "break-all")}>
-                <span className="text-xs text-muted-foreground md:hidden">{t("audit_col_actor")}: </span>
+                <span className="text-xs text-muted-foreground md:hidden">{t("common:label_prefix", { label: t("audit_col_actor") })}</span>
                 {entry.actor}
               </td>
               <td className={cn(cell, "break-all font-mono text-xs font-medium")}>{entry.action}</td>
               <td className={cn(cell, "break-all text-muted-foreground")}>
-                <span className="text-xs md:hidden">{t("audit_col_server")}: </span>
+                <span className="text-xs md:hidden">{t("common:label_prefix", { label: t("audit_col_server") })}</span>
                 {entry.server_name ?? "—"}
               </td>
             </tr>

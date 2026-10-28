@@ -830,6 +830,16 @@ func (f *fakeRepo) ListAudit(_ context.Context, q AuditQuery) ([]AuditRecord, er
 	return out, nil
 }
 
+func (f *fakeRepo) CountAuthFailures(_ context.Context, _ time.Time) (int, error) {
+	n := 0
+	for _, e := range f.audits {
+		if strings.HasPrefix(e.Action, "auth.") && strings.HasSuffix(e.Action, ".failed") {
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (f *fakeRepo) LastBackupRequest(_ context.Context, serverName string, since time.Time) (time.Time, error) {
 	if at, ok := f.backupRequested[serverName]; ok && !at.Before(since) {
 		return at, nil

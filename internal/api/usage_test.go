@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -28,7 +29,7 @@ func TestUsageHistory(t *testing.T) {
 	servers := []ServerInfo{{Name: "survival", Phase: "Running", DesiredState: "Running"}}
 	for i := 0; i < 245; i++ {
 		point = UsagePoint{At: at.Add(time.Duration(i) * 15 * time.Second), CPUMilli: int64(i), MemoryBytes: 64 << 20}
-		if err := u.Collect(ctx, servers); err != nil {
+		if err := u.Collect(ctx, servers, point.At); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -37,7 +38,7 @@ func TestUsageHistory(t *testing.T) {
 		t.Fatalf("bounded chronological history: len=%d first=%v last=%v", len(view.History), view.History[0], view.Current)
 	}
 	view.History[0].CPUMilli = -1
-	if err := u.Collect(ctx, servers); err != nil {
+	if err := u.Collect(ctx, servers, point.At); err != nil {
 		t.Fatal(err)
 	}
 	if got := u.Snapshot("survival", point.At); len(got.History) != 240 || got.History[0].CPUMilli != 5 {
@@ -50,7 +51,7 @@ func TestUsageHistory(t *testing.T) {
 		t.Fatal("history outlived one hour")
 	}
 	failure = errors.New("metrics unavailable")
-	if err := u.Collect(ctx, servers); !errors.Is(err, failure) {
+	if err := u.Collect(ctx, servers, point.At); !errors.Is(err, failure) {
 		t.Fatal("metrics failure was hidden", err)
 	}
 	if got := u.Snapshot("survival", point.At); got.Current != nil || len(got.History) != 240 {
@@ -58,13 +59,13 @@ func TestUsageHistory(t *testing.T) {
 	}
 	failure = nil
 	servers[0].Phase = "Stopped"
-	if err := u.Collect(ctx, servers); err != nil {
+	if err := u.Collect(ctx, servers, point.At); err != nil {
 		t.Fatal(err)
 	}
 	if got := u.Snapshot("survival", point.At); got.Current != nil || len(got.History) != 240 {
 		t.Fatal("stopped server lost history or retained current")
 	}
-	if err := u.Collect(ctx, nil); err != nil {
+	if err := u.Collect(ctx, nil, point.At); err != nil {
 		t.Fatal(err)
 	}
 	if len(u.Snapshot("survival", point.At).History) != 0 {
@@ -81,7 +82,7 @@ func TestUsageSamplerConcurrentReaders(t *testing.T) {
 	for range 10 {
 		group.Go(func() {
 			for range 20 {
-				if err := u.Collect(context.Background(), []ServerInfo{{Name: "survival", Phase: "Running", DesiredState: "Running"}}); err != nil {
+				if err := u.Collect(context.Background(), []ServerInfo{{Name: "survival", Phase: "Running", DesiredState: "Running"}}, point.At); err != nil {
 					t.Error(err)
 				}
 				u.Snapshot("survival", point.At)
@@ -128,7 +129,7 @@ func TestUsagePermissionsAndStatusPrivacy(t *testing.T) {
 	a.Usage = NewUsageSampler(func(context.Context) (map[string]UsagePoint, error) {
 		return map[string]UsagePoint{"survival-0": {At: now, CPUMilli: 250, MemoryBytes: 1 << 30}}, nil
 	})
-	if err := a.Usage.Collect(context.Background(), []ServerInfo{*cl.byName["survival"]}); err != nil {
+	if err := a.Usage.Collect(context.Background(), []ServerInfo{*cl.byName["survival"]}, now); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
@@ -173,7 +174,7 @@ func TestUsagePermissionsAndStatusPrivacy(t *testing.T) {
 	a.Usage.read = func(context.Context) (map[string]UsagePoint, error) {
 		return map[string]UsagePoint{"survival-0": {At: now, CPUMilli: 250}, "public-0": {At: now, CPUMilli: 500}}, nil
 	}
-	if err := a.Usage.Collect(context.Background(), []ServerInfo{*cl.byName["survival"], *cl.byName["public"]}); err != nil {
+	if err := a.Usage.Collect(context.Background(), []ServerInfo{*cl.byName["survival"], *cl.byName["public"]}, now); err != nil {
 		t.Fatal(err)
 	}
 	listed := do(a.ExternalHandler(), "GET", "/api/v1/me/servers", "", nil)
@@ -194,5 +195,96 @@ func TestUsagePermissionsAndStatusPrivacy(t *testing.T) {
 	}
 	if stopped.Current != nil || len(stopped.History) != 1 {
 		t.Fatal("stopping server still reports current usage or lost history")
+	}
+}
+
+func TestPlatformUsageSumsRunningServersPerNode(t *testing.T) {
+	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	u := NewUsageSampler(func(context.Context) (map[string]UsagePoint, error) {
+		return map[string]UsagePoint{
+			"a-0":       {At: now, CPUMilli: 250, MemoryBytes: 1 << 30},
+			"b-0":       {At: now, CPUMilli: 500, MemoryBytes: 2 << 30},
+			"stopped-0": {At: now, CPUMilli: 9999, MemoryBytes: 1 << 40},
+		}, nil
+	})
+	servers := []ServerInfo{
+		{Name: "b", Phase: "Running", DesiredState: "Running", NodeName: "worker-b"},
+		{Name: "a", Phase: "Running", DesiredState: "Running", NodeName: "worker-b"},
+		{Name: "starting", Phase: "Running", DesiredState: "Running", NodeName: "worker-a"},
+		{Name: "stopped", Phase: "Stopped", DesiredState: "Stopped", NodeName: "worker-c"},
+	}
+	if err := u.Collect(context.Background(), servers, now); err != nil {
+		t.Fatal(err)
+	}
+	view := u.PlatformSnapshot(now)
+	if view.Current == nil || view.Current.Running != 3 || view.Current.CPUMilli != 750 || view.Current.MemoryBytes != 3<<30 || !view.Current.At.Equal(now) {
+		t.Fatalf("platform point = %+v, want 3 running servers with the two measured ones summed", view.Current)
+	}
+	want := []NodeUsage{
+		{Name: "worker-a", Running: 1},
+		{Name: "worker-b", CPUMilli: 750, MemoryBytes: 3 << 30, Running: 2},
+	}
+	if !slices.Equal(view.Nodes, want) {
+		t.Fatalf("nodes = %+v, want %+v", view.Nodes, want)
+	}
+}
+
+func TestPlatformUsageCountsServersWithoutANodeOnlyInTheTotal(t *testing.T) {
+	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	u := NewUsageSampler(func(context.Context) (map[string]UsagePoint, error) {
+		return map[string]UsagePoint{"loose-0": {At: now, CPUMilli: 100, MemoryBytes: 1 << 20}}, nil
+	})
+	if err := u.Collect(context.Background(), []ServerInfo{{Name: "loose", Phase: "Running", DesiredState: "Running"}}, now); err != nil {
+		t.Fatal(err)
+	}
+	view := u.PlatformSnapshot(now)
+	if view.Current == nil || view.Current.Running != 1 || view.Current.CPUMilli != 100 || len(view.Nodes) != 0 {
+		t.Fatalf("view = %+v current %+v", view, view.Current)
+	}
+}
+
+func TestPlatformUsageHistoryAndFreshness(t *testing.T) {
+	ctx := context.Background()
+	at := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	var failure error
+	u := NewUsageSampler(func(context.Context) (map[string]UsagePoint, error) {
+		return map[string]UsagePoint{"a-0": {CPUMilli: 100, MemoryBytes: 1 << 20}}, failure
+	})
+	servers := []ServerInfo{{Name: "a", Phase: "Running", DesiredState: "Running", NodeName: "worker-a"}}
+	for i := range 3 {
+		if err := u.Collect(ctx, servers, at.Add(time.Duration(i)*UsageInterval)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	failure = errors.New("metrics unavailable")
+	if err := u.Collect(ctx, servers, at.Add(3*UsageInterval)); !errors.Is(err, failure) {
+		t.Fatal("metrics failure was hidden", err)
+	}
+	if got := u.PlatformSnapshot(at.Add(3 * UsageInterval)); len(got.History) != 3 {
+		t.Fatalf("a failed read left %d points, want the 3 before it", len(got.History))
+	}
+
+	stale := u.PlatformSnapshot(at.Add(5*UsageInterval + time.Second))
+	if stale.Current != nil || stale.Nodes == nil || len(stale.Nodes) != 0 || len(stale.History) != 3 {
+		t.Fatalf("stale view = current %+v nodes %v history %d, want no current, empty nodes, 3 points", stale.Current, stale.Nodes, len(stale.History))
+	}
+
+	failure = nil
+	servers[0].Phase = "Stopped"
+	last := at.Add(6 * UsageInterval)
+	if err := u.Collect(ctx, servers, last); err != nil {
+		t.Fatal(err)
+	}
+	got := u.PlatformSnapshot(last)
+	if len(got.History) != 4 || got.Current == nil || got.Current.Running != 0 || len(got.Nodes) != 0 {
+		t.Fatalf("view with nothing running = current %+v nodes %v history %d, want a zero point and no nodes", got.Current, got.Nodes, len(got.History))
+	}
+	for i := 1; i < len(got.History); i++ {
+		if !got.History[i].At.After(got.History[i-1].At) {
+			t.Fatal("history is not in time order")
+		}
+	}
+	if later := u.PlatformSnapshot(last.Add(time.Hour)); len(later.History) != 1 {
+		t.Fatalf("history kept %d points beyond an hour, want only the newest", len(later.History))
 	}
 }

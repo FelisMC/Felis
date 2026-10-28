@@ -953,6 +953,13 @@ func (p *PGRepo) ListAudit(ctx context.Context, q AuditQuery) ([]AuditRecord, er
 	return out, rows.Err()
 }
 
+func (p *PGRepo) CountAuthFailures(ctx context.Context, since time.Time) (int, error) {
+	var n int
+	err := p.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM audit_logs WHERE action LIKE 'auth.%.failed' AND created_at >= $1`, since).Scan(&n)
+	return n, err
+}
+
 func (p *PGRepo) CreateEmailOTP(ctx context.Context, id, userID, email, codeHash, purpose string, expiresAt time.Time) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {

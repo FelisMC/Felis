@@ -453,6 +453,7 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "GET", Pattern: "/api/v1/settings/self-service", Owner: true, Admin: true, h: a.handleGetSelfServiceQuota},
 		{Method: "PUT", Pattern: "/api/v1/settings/self-service", Owner: true, Admin: true, h: a.handleSetSelfServiceQuota},
 		{Method: "GET", Pattern: "/api/v1/fleet", Admin: true, h: a.handleFleet},
+		{Method: "GET", Pattern: "/api/v1/fleet/usage", Admin: true, h: a.handleFleetUsage},
 		{Method: "POST", Pattern: "/api/v1/images/build", Admin: true, h: a.handleBuildImage},
 		{Method: "GET", Pattern: "/api/v1/images/build", Admin: true, h: a.handleListBuilds},
 		{Method: "GET", Pattern: "/api/v1/images/build/{id}", Admin: true, h: a.handleGetBuild},

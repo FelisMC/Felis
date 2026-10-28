@@ -45,5 +45,6 @@
   "address_copy_failed": "Selected — copy it from the menu",
   "refresh_failed": "Refresh failed. The last successfully retrieved status is displayed.",
   "notifications": "Notifications",
-  "dismiss_notification": "Dismiss notification"
+  "dismiss_notification": "Dismiss notification",
+  "label_prefix": "{{label}}: "
 }

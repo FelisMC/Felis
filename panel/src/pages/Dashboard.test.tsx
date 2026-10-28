@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import i18next from "i18next";
-import type { AuditEntry, MyServerView, WhitelistImage } from "@/lib/types";
+import type { AuditEntry, MyServerView, PlatformUsage, WhitelistImage } from "@/lib/types";
 import { Dashboard } from "./Dashboard";
 
 const tier = vi.hoisted(() => ({ isAdmin: false, isOwner: false }));
@@ -13,6 +13,7 @@ const calls = vi.hoisted(() => ({
   listImages: vi.fn(),
   listAudit: vi.fn(),
   hostOverview: vi.fn(),
+  fleetUsage: vi.fn(),
   me: vi.fn(),
 }));
 
@@ -26,7 +27,7 @@ vi.mock("@/lib/api", async (importActual) => {
   return { ...actual, api: { ...actual.api, ...calls } };
 });
 
-const t = (key: string) => i18next.t(key, { ns: "dashboard" });
+const t = (key: string, options?: Record<string, unknown>) => i18next.t(key, { ns: "dashboard", ...options });
 const failure = (message: string) => ({ status: 409, code: "test_failure", message });
 const never = () => new Promise<never>(() => {});
 
@@ -63,6 +64,7 @@ beforeEach(() => {
   calls.listImages.mockResolvedValue([]);
   calls.listAudit.mockResolvedValue({ entries: [], next_cursor: "" });
   calls.hostOverview.mockImplementation(never);
+  calls.fleetUsage.mockImplementation(never);
   calls.me.mockImplementation(never);
 });
 
@@ -199,6 +201,78 @@ describe("Dashboard recent actions", () => {
     await screen.findByText(t("stat_servers"));
     expect(screen.queryByText(t("audit_title"))).toBeNull();
     expect(calls.listAudit).not.toHaveBeenCalled();
+  });
+});
+
+describe("Dashboard platform data", () => {
+  const at = (secondsAgo: number) => new Date(Date.now() - secondsAgo * 1000).toISOString();
+  const usage: PlatformUsage = {
+    current: { at: at(5), cpuMilli: 1250, memoryBytes: 3 * 1024 ** 3, running: 7 },
+    history: [
+      { at: at(35), cpuMilli: 1000, memoryBytes: 2 * 1024 ** 3, running: 6 },
+      { at: at(20), cpuMilli: 1100, memoryBytes: 2 * 1024 ** 3, running: 7 },
+      { at: at(5), cpuMilli: 1250, memoryBytes: 3 * 1024 ** 3, running: 7 },
+    ],
+    nodes: [
+      { name: "worker-a", cpuMilli: 750, memoryBytes: 1024 ** 3, running: 3 },
+      { name: "worker-b", cpuMilli: 500, memoryBytes: 2 * 1024 ** 3, running: 4 },
+    ],
+    loginFailures24h: 6,
+  };
+
+  it("shows an admin the totals, the three curves and each node", async () => {
+    tier.isAdmin = true;
+    calls.fleetUsage.mockResolvedValue(usage);
+    renderDashboard();
+
+    expect(await screen.findByText(t("platform_title"))).toBeTruthy();
+    for (const curve of ["platform_cpu_curve", "platform_memory_curve", "platform_running_curve"]) {
+      expect(screen.getByRole("img", { name: t(curve) })).toBeTruthy();
+    }
+    expect(screen.getByText(t("platform_cpu_value", { cores: "1.25" }))).toBeTruthy();
+    expect(screen.getByText("3.0 GiB")).toBeTruthy();
+    expect(screen.getByText("7")).toBeTruthy();
+    const nodes = within(screen.getByRole("table"));
+    expect(nodes.getByText("worker-a")).toBeTruthy();
+    expect(nodes.getByText(t("platform_cpu_value", { cores: "0.75" }))).toBeTruthy();
+    expect(nodes.getByText("2.0 GiB")).toBeTruthy();
+    expect(nodes.getByText("4")).toBeTruthy();
+    expect(screen.getByText("6")).toBeTruthy();
+  });
+
+  it("says so when nothing is known yet or nothing runs, and still draws the curves", async () => {
+    tier.isAdmin = true;
+    calls.fleetUsage.mockResolvedValue({ ...usage, current: null, nodes: [] });
+    renderDashboard();
+
+    expect(await screen.findByText(t("platform_nodes_empty"))).toBeTruthy();
+    expect(screen.getAllByText(t("platform_no_data"))).toHaveLength(3);
+    expect(screen.getByRole("img", { name: t("platform_cpu_curve") })).toBeTruthy();
+    expect(screen.getByRole("img", { name: t("platform_running_curve") })).toBeTruthy();
+    expect(screen.queryByRole("table")).toBeNull();
+  });
+
+  it("neither shows nor asks for platform data on a user's dashboard", async () => {
+    renderDashboard();
+
+    await screen.findByText(t("welcome_title"));
+    expect(screen.queryByText(t("platform_title"))).toBeNull();
+    expect(calls.fleetUsage).not.toHaveBeenCalled();
+  });
+
+  it("links the Owner to the audit log and not an admin", async () => {
+    tier.isAdmin = true;
+    calls.fleetUsage.mockResolvedValue(usage);
+    const view = renderDashboard();
+    await screen.findByText(t("platform_title"));
+    await screen.findByText("worker-a");
+    expect(screen.queryByRole("link", { name: t("platform_view_audit") })).toBeNull();
+
+    view.unmount();
+    tier.isOwner = true;
+    renderDashboard();
+    const link = await screen.findByRole("link", { name: t("platform_view_audit") });
+    expect(link.getAttribute("href")).toBe("/admin/audit");
   });
 });
 

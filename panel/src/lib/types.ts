@@ -170,6 +170,29 @@ export interface ServerUsage {
   history: UsagePoint[];
 }
 
+/** The running servers added together at one sampling. */
+export interface PlatformUsagePoint {
+  at: string;
+  cpuMilli: number;
+  memoryBytes: number;
+  running: number;
+}
+
+export interface NodeUsage {
+  name: string;
+  cpuMilli: number;
+  memoryBytes: number;
+  running: number;
+}
+
+/** GET /fleet/usage. */
+export interface PlatformUsage {
+  current: PlatformUsagePoint | null;
+  history: PlatformUsagePoint[];
+  nodes: NodeUsage[];
+  loginFailures24h: number;
+}
+
 export interface ConsoleHistoryPage {
   content: string;
   content_sha256: string;

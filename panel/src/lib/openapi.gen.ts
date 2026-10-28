@@ -2171,6 +2171,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/fleet/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Platform resource usage over the last hour, per-node figures and recent sign-in failures (admin).
+         * @description The running servers' CPU and memory added together, sampled every 15 seconds from the API instance's own memory, so each replica answers from its own samples. nodes lists the current figures per node.
+         */
+        get: operations["fleetUsage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/backups": {
         parameters: {
             query?: never;
@@ -4633,6 +4653,42 @@ export interface components {
             current: components["schemas"]["UsagePoint"] | null;
             /** @description Oldest first, covering the last hour; held in memory and cleared when the API instance changes. */
             history: components["schemas"]["UsagePoint"][];
+        };
+        /** @description The running servers added together at one sampling. */
+        PlatformUsagePoint: {
+            /** Format: date-time */
+            at: string;
+            /**
+             * Format: int64
+             * @description Sum over the running servers that have metrics.
+             */
+            cpuMilli: number;
+            /**
+             * Format: int64
+             * @description Sum over the running servers that have metrics.
+             */
+            memoryBytes: number;
+            /** @description Servers that are running and meant to run; those without metrics are counted too. */
+            running: number;
+        };
+        /** @description The running servers of one node added together at the latest sampling. */
+        NodeUsage: {
+            name: string;
+            /** Format: int64 */
+            cpuMilli: number;
+            /** Format: int64 */
+            memoryBytes: number;
+            running: number;
+        };
+        PlatformUsage: {
+            /** @description Null before the first sample, or when the latest one is older than 45 seconds. */
+            current: components["schemas"]["PlatformUsagePoint"] | null;
+            /** @description Oldest first, covering the last hour; held in memory and cleared when the API instance changes. */
+            history: components["schemas"]["PlatformUsagePoint"][];
+            /** @description By node name; only nodes with a running server, and empty while current is null. */
+            nodes: components["schemas"]["NodeUsage"][];
+            /** @description Sign-in failures recorded in the last 24 hours. */
+            loginFailures24h: number;
         };
         /** @description One row of the caller's server list (internal/api/repo.go MyServerView). */
         MyServerView: {
@@ -10682,6 +10738,28 @@ export interface operations {
                     "application/json": {
                         servers: components["schemas"]["FleetServer"][];
                     };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    fleetUsage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The platform usage view. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformUsage"];
                 };
             };
             401: components["responses"]["Unauthorized"];

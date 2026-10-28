@@ -1286,6 +1286,46 @@ components:
           items: { $ref: '#/components/schemas/UsagePoint' }
           description: Oldest first, covering the last hour; held in memory and cleared when the API instance changes.
 
+    PlatformUsagePoint:
+      type: object
+      description: The running servers added together at one sampling.
+      required: [at, cpuMilli, memoryBytes, running]
+      properties:
+        at: { type: string, format: date-time }
+        cpuMilli: { type: integer, format: int64, minimum: 0, description: Sum over the running servers that have metrics. }
+        memoryBytes: { type: integer, format: int64, minimum: 0, description: Sum over the running servers that have metrics. }
+        running: { type: integer, minimum: 0, description: Servers that are running and meant to run; those without metrics are counted too. }
+
+    NodeUsage:
+      type: object
+      description: The running servers of one node added together at the latest sampling.
+      required: [name, cpuMilli, memoryBytes, running]
+      properties:
+        name: { type: string }
+        cpuMilli: { type: integer, format: int64, minimum: 0 }
+        memoryBytes: { type: integer, format: int64, minimum: 0 }
+        running: { type: integer, minimum: 1 }
+
+    PlatformUsage:
+      type: object
+      required: [current, history, nodes, loginFailures24h]
+      properties:
+        current:
+          anyOf:
+            - { $ref: '#/components/schemas/PlatformUsagePoint' }
+            - { type: 'null' }
+          description: Null before the first sample, or when the latest one is older than 45 seconds.
+        history:
+          type: array
+          maxItems: 240
+          items: { $ref: '#/components/schemas/PlatformUsagePoint' }
+          description: Oldest first, covering the last hour; held in memory and cleared when the API instance changes.
+        nodes:
+          type: array
+          items: { $ref: '#/components/schemas/NodeUsage' }
+          description: By node name; only nodes with a running server, and empty while current is null.
+        loginFailures24h: { type: integer, minimum: 0, description: Sign-in failures recorded in the last 24 hours. }
+
     MyServerView:
       type: object
       description: One row of the caller's server list (internal/api/repo.go MyServerView).
@@ -7170,6 +7210,29 @@ paths:
                   servers:
                     type: array
                     items: { $ref: '#/components/schemas/FleetServer' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/fleet/usage:
+    get:
+      tags: [admin-servers]
+      operationId: fleetUsage
+      summary: Platform resource usage over the last hour, per-node figures and recent sign-in failures (admin).
+      description: >-
+        The running servers' CPU and memory added together, sampled every 15
+        seconds from the API instance's own memory, so each replica answers from its
+        own samples. nodes lists the current figures per node.
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: The platform usage view.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlatformUsage' }
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':

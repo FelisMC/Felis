@@ -121,3 +121,35 @@ func TestListAuditFiltersAndPages(t *testing.T) {
 		t.Errorf("fully populated row = %+v", full)
 	}
 }
+
+func TestCountAuthFailuresCountsRecentFailedSignIns(t *testing.T) {
+	ctx := context.Background()
+	tag := suffix(t)
+	now := mustNow()
+	since := now.Add(-24 * time.Hour)
+	count := func(from time.Time) int {
+		t.Helper()
+		n, err := repo.CountAuthFailures(ctx, from)
+		if err != nil {
+			t.Fatalf("CountAuthFailures: %v", err)
+		}
+		return n
+	}
+	day, wide := count(since), count(since.Add(-2*time.Hour))
+
+	for action, at := range map[string]time.Time{
+		"auth." + tag + ".failed":       now.Add(-time.Hour),
+		"auth." + tag + ".failedish":    now.Add(-time.Hour),
+		"auth." + tag + ".otp.locked":   now.Add(-time.Hour),
+		"auth.other-" + tag + ".failed": now.Add(-25 * time.Hour),
+	} {
+		mustExec(t, `INSERT INTO audit_logs (actor, source, action, created_at) VALUES ('pgint', 'external', $1, $2)`, action, at)
+	}
+
+	if got := count(since) - day; got != 1 {
+		t.Errorf("failures in the last 24 hours rose by %d, want 1 (only the recent auth.*.failed row)", got)
+	}
+	if got := count(since.Add(-2*time.Hour)) - wide; got != 2 {
+		t.Errorf("failures since 26 hours ago rose by %d, want 2 (both auth.*.failed rows)", got)
+	}
+}

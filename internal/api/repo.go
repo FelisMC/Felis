@@ -275,6 +275,8 @@ type Repo interface {
 	Audit(ctx context.Context, e AuditEntry) error
 	// ListAudit returns rows matching q, newest id first.
 	ListAudit(ctx context.Context, q AuditQuery) ([]AuditRecord, error)
+	// CountAuthFailures counts the sign-in failures recorded at or after since.
+	CountAuthFailures(ctx context.Context, since time.Time) (int, error)
 
 	// CreateEmailOTP supersedes live codes for the same (user,purpose), storing only the hash.
 	CreateEmailOTP(ctx context.Context, id, userID, email, codeHash, purpose string, expiresAt time.Time) error

@@ -22,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import { Loading, ErrorState, RefreshError } from "@/components/States";
 import { AuditTable } from "@/components/AuditTable";
 import { shownPhase } from "@/components/PhaseBadge";
+import { PlatformUsageCard } from "@/components/PlatformUsageCard";
 import { StatCard } from "@/components/StatCard";
 import { PageHeader } from "@/components/PageHeader";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
@@ -314,6 +315,8 @@ function FleetView({
         <StatCard icon={Play} label={t("stat_running")} value={counts.running} accentClass="text-primary bg-primary/15" />
         <StatCard icon={Activity} label={t("stat_players_online")} value={counts.players} accentClass="text-primary bg-primary/15" />
       </div>
+
+      {isAdmin && <PlatformUsageCard />}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-12 items-stretch">
         {/* 左侧：账号状态、健康度及负载监控 (lg:col-span-8 h-full 捕获拉伸高度) */}

@@ -45,5 +45,6 @@
   "address_copy_failed": "已选中，请用系统菜单复制",
   "refresh_failed": "刷新失败，当前显示上次成功读取的状态。",
   "notifications": "通知",
-  "dismiss_notification": "关闭提示"
+  "dismiss_notification": "关闭提示",
+  "label_prefix": "{{label}}："
 }

@@ -16,7 +16,7 @@ func sampleUsage(ctx context.Context, a *api.API, stderr io.Writer) {
 		sample, cancel := context.WithTimeout(ctx, 10*time.Second)
 		servers, err := a.Cluster.ListServers(sample)
 		if err == nil {
-			err = a.Usage.Collect(sample, servers)
+			err = a.Usage.Collect(sample, servers, time.Now())
 		}
 		cancel()
 		if err != nil && ctx.Err() == nil {

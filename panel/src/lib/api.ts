@@ -1,5 +1,6 @@
 import type {
   HostOverview,
+  PlatformUsage,
   ServerUsage,
   ConsoleHistoryPage,
   ConsoleCommandResult,
@@ -441,6 +442,8 @@ export const api = rejectingSync({
 
   fleet: () =>
     request<{ servers: FleetServer[] }>("GET", "/fleet").then((r) => r.servers ?? []),
+
+  fleetUsage: () => request<PlatformUsage>("GET", "/fleet/usage"),
 
   emergencyStop: (name: string, confirm: string) => send<{ name: string; desiredState: string }>(urlPath`/servers/${name}/emergency-stop`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm }), signal: AbortSignal.timeout(20_000) }),
   status: (name: string) => send<ServerStatus>(urlPath`/servers/${name}/status`, { method: "GET", signal: AbortSignal.timeout(12_000) }),

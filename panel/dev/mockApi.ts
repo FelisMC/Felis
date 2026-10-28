@@ -2159,6 +2159,29 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
       }
       sendJSON(ctx.res, 200, { servers: fleetView(ctx.state, ctx.account) });
       return true;
+    case "GET fleet/usage": {
+      if (!isAdmin(ctx.account.role)) {
+        sendError(ctx.res, 403, "forbidden", "admin account required");
+        return true;
+      }
+      const now = Date.now();
+      const history = Array.from({ length: 240 }, (_, i) => ({
+        at: new Date(now - (239 - i) * 15_000).toISOString(),
+        cpuMilli: Math.round(1500 + 600 * Math.sin(i / 25) + 150 * Math.sin(i / 7)),
+        memoryBytes: Math.round((6 + 0.8 * Math.sin(i / 40)) * 1024 ** 3),
+        running: 3 + Math.round(Math.sin(i / 60) + 0.5),
+      }));
+      sendJSON(ctx.res, 200, {
+        current: history[history.length - 1],
+        history,
+        nodes: [
+          { name: "mock-node-a", cpuMilli: 900, memoryBytes: 3.5 * 1024 ** 3, running: 2 },
+          { name: "mock-node-b", cpuMilli: 650, memoryBytes: 2.5 * 1024 ** 3, running: 2 },
+        ],
+        loginFailures24h: 3,
+      });
+      return true;
+    }
     case "GET backups":
       {
         // Admins see every archive, users only the worlds they once owned; paged, newest first.
