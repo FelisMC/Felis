@@ -5,7 +5,7 @@ import { api } from "@/lib/api";
 import { useAsync, usePolling } from "@/lib/hooks";
 import { formatAbsolute, formatBytes } from "@/lib/format";
 import { cpuUsage, memoryLimit, memoryUsage } from "@/lib/resourceUsage";
-import type { ServerDiskUsage } from "@/lib/types";
+import type { ServerDiskUsage, UsagePoint } from "@/lib/types";
 
 export function DiskUsage({ disk, diskFull = false }: { disk?: ServerDiskUsage; diskFull?: boolean }) {
   const { t, i18n } = useTranslation("servers");
@@ -27,21 +27,17 @@ export function DiskUsage({ disk, diskFull = false }: { disk?: ServerDiskUsage; 
   </section>;
 }
 
-type ChartMetric = "cpuMilli" | "memoryBytes" | "running";
-type ChartPoint = { at: string } & Partial<Record<ChartMetric, number>>;
-
-/** UsageChart draws the last hour of one metric; the vertical scale reaches the larger of limit and the highest point. */
-export function UsageChart({ history, metric, label, limit }: { history: ChartPoint[]; metric: ChartMetric; label: string; limit: number }) {
+function UsageChart({ history, metric, label, limit }: { history: UsagePoint[]; metric: "cpuMilli" | "memoryBytes"; label: string; limit: number }) {
   const now = Date.now();
   const points = history.filter((point) => Date.parse(point.at) >= now - 3600_000);
-  const max = Math.max(limit, ...points.map((point) => point[metric] ?? 0), 1);
+  const max = Math.max(limit, ...points.map((point) => point[metric]), 1);
   const segments: string[][] = [];
   let previous = 0;
   for (const point of points) {
     const at = Date.parse(point.at);
     if (segments.length === 0 || at - previous > 45_000) segments.push([]);
     const x = Math.max(0, Math.min(300, (at - now + 3600_000) / 12_000));
-    segments.at(-1)!.push(`${x.toFixed(1)},${(56 - (point[metric] ?? 0) / max * 52).toFixed(1)}`);
+    segments.at(-1)!.push(`${x.toFixed(1)},${(56 - point[metric] / max * 52).toFixed(1)}`);
     previous = at;
   }
   const last = segments.at(-1)?.at(-1)?.split(",");

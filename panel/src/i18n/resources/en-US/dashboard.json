@@ -55,7 +55,7 @@
   "audit_view_all": "View all",
   "audit_empty": "No actions have been recorded.",
   "platform_title": "Platform resources",
-  "platform_window": "Last hour, refreshed every 15 seconds",
+  "platform_window": "Last hour · sampled every 15 seconds",
   "platform_cpu": "CPU",
   "platform_memory": "Memory",
   "platform_running": "Running servers",
@@ -71,5 +71,11 @@
   "platform_col_memory": "Memory",
   "platform_col_running": "Running servers",
   "platform_login_failures": "Failed sign-ins in the last 24 hours",
-  "platform_view_audit": "View audit log"
+  "platform_view_audit": "View audit log",
+  "platform_login_failures_hint": "Refused sign-ins",
+  "platform_collecting": "Collecting data",
+  "platform_since_minutes_one": "{{count}} minute ago",
+  "platform_since_minutes_other": "{{count}} minutes ago",
+  "platform_since_hour": "1 hour ago",
+  "platform_now": "Now"
 }

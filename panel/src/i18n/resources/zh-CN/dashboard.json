@@ -55,7 +55,7 @@
   "audit_view_all": "查看全部",
   "audit_empty": "暂无操作记录。",
   "platform_title": "平台资源",
-  "platform_window": "近 1 小时，每 15 秒刷新",
+  "platform_window": "最近 1 小时 · 每 15 秒采样",
   "platform_cpu": "CPU",
   "platform_memory": "内存",
   "platform_running": "运行中服务器",
@@ -71,5 +71,11 @@
   "platform_col_memory": "内存",
   "platform_col_running": "运行中服务器",
   "platform_login_failures": "近 24 小时登录失败",
-  "platform_view_audit": "查看审计日志"
+  "platform_view_audit": "查看审计日志",
+  "platform_login_failures_hint": "被拒绝的登录次数",
+  "platform_collecting": "正在采集数据",
+  "platform_since_minutes_one": "{{count}} 分钟前",
+  "platform_since_minutes_other": "{{count}} 分钟前",
+  "platform_since_hour": "1 小时前",
+  "platform_now": "现在"
 }

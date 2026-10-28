@@ -98,6 +98,7 @@ export function Dashboard() {
             link={link}
             images={images.error ? null : images.data}
             isAdmin={isAdmin}
+            distributed={cfg.distributed === true}
           />
         </>
       )}
@@ -218,6 +219,7 @@ function FleetView({
   link,
   images,
   isAdmin,
+  distributed,
 }: {
   servers: MyServerView[];
   counts: { total: number; running: number; players: number };
@@ -225,6 +227,7 @@ function FleetView({
   /** null while the whitelist loads or when it cannot be read: its counts show a dash. */
   images: WhitelistImage[] | null;
   isAdmin: boolean;
+  distributed: boolean;
 }) {
   const { t } = useTranslation("dashboard");
 
@@ -315,8 +318,6 @@ function FleetView({
         <StatCard icon={Play} label={t("stat_running")} value={counts.running} accentClass="text-primary bg-primary/15" />
         <StatCard icon={Activity} label={t("stat_players_online")} value={counts.players} accentClass="text-primary bg-primary/15" />
       </div>
-
-      {isAdmin && <PlatformUsageCard />}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-12 items-stretch">
         {/* 左侧：账号状态、健康度及负载监控 (lg:col-span-8 h-full 捕获拉伸高度) */}
@@ -585,6 +586,8 @@ function FleetView({
           </CardContent>
         </Card>
       </div>
+
+      {isAdmin && <PlatformUsageCard distributed={distributed} />}
     </div>
   );
 }

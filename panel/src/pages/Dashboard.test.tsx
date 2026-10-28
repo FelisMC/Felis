@@ -19,8 +19,9 @@ const calls = vi.hoisted(() => ({
 
 vi.mock("@/lib/tier", () => ({ useTier: () => tier }));
 vi.mock("@/lib/webgl", () => ({ webglAvailable: () => false }));
+const deployment = vi.hoisted(() => ({ distributed: false }));
 vi.mock("@/lib/config", () => ({
-  loadConfig: () => Promise.resolve({ apiBase: "/api/v1", rootDomain: "example.test" }),
+  loadConfig: () => Promise.resolve({ apiBase: "/api/v1", rootDomain: "example.test", distributed: deployment.distributed }),
 }));
 vi.mock("@/lib/api", async (importActual) => {
   const actual = await importActual<typeof import("@/lib/api")>();
@@ -205,6 +206,12 @@ describe("Dashboard recent actions", () => {
 });
 
 describe("Dashboard platform data", () => {
+  beforeEach(() => {
+    deployment.distributed = true;
+  });
+  afterEach(() => {
+    deployment.distributed = false;
+  });
   const at = (secondsAgo: number) => new Date(Date.now() - secondsAgo * 1000).toISOString();
   const usage: PlatformUsage = {
     current: { at: at(5), cpuMilli: 1250, memoryBytes: 3 * 1024 ** 3, running: 7 },
@@ -250,6 +257,17 @@ describe("Dashboard platform data", () => {
     expect(screen.getByRole("img", { name: t("platform_cpu_curve") })).toBeTruthy();
     expect(screen.getByRole("img", { name: t("platform_running_curve") })).toBeTruthy();
     expect(screen.queryByRole("table")).toBeNull();
+  });
+
+  it("leaves the node table out of a single-node install", async () => {
+    deployment.distributed = false;
+    tier.isAdmin = true;
+    calls.fleetUsage.mockResolvedValue(usage);
+    renderDashboard();
+
+    expect(await screen.findByText(t("platform_cpu_value", { cores: "1.25" }))).toBeTruthy();
+    expect(screen.queryByText(t("platform_nodes_title"))).toBeNull();
+    expect(screen.queryByText("worker-a")).toBeNull();
   });
 
   it("neither shows nor asks for platform data on a user's dashboard", async () => {
