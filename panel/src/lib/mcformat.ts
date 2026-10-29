@@ -182,3 +182,8 @@ export function parseFormatting(raw: string): Formatted {
 
   return segments.some(styled) ? { text, segments } : { text };
 }
+
+// Vanilla RCON joins a command's replies with no separator, so help-style output is split back at each command.
+export function rconLines(output: string): string {
+  return output.startsWith("/") && !output.includes("\n") ? output.replace(/(?<=\S)\/(?=[a-z])/g, "\n/") : output;
+}

@@ -15,7 +15,7 @@ import { formatDuration } from "@/lib/format";
 import { ResourceUsage } from "@/components/ResourceUsage";
 import { RetireNotice } from "@/components/Retirement";
 import { RecoveryNotice, ServerEventsCard } from "@/components/ServerEvents";
-import { parseFormatting, type Formatted } from "@/lib/mcformat";
+import { parseFormatting, rconLines, type Formatted } from "@/lib/mcformat";
 import { cn } from "@/lib/utils";
 import { InlineError } from "@/components/MessageLine";
 import { useServer } from "@/pages/ServerLayout";
@@ -160,7 +160,7 @@ function CommandInput({ name }: { name: string }) {
       const res = await api.sendCommand(name, text);
       if (ticket !== generation.current) return;
       setCommand("");
-      setLast({ cmd: text, state: res.transport, out: res.transport === "rcon" ? parseFormatting(res.output.trim()) : undefined });
+      setLast({ cmd: text, state: res.transport, out: res.transport === "rcon" ? parseFormatting(rconLines(res.output.trim())) : undefined });
     } catch (ex) {
       if (ticket !== generation.current) return;
       setLast({ cmd: text, state: "failed" });

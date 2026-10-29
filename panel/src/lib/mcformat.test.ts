@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseFormatting } from "./mcformat";
+import { parseFormatting, rconLines } from "./mcformat";
 
 describe("parseFormatting", () => {
   it("returns a plain line untouched, without segments", () => {
@@ -107,5 +107,22 @@ describe("parseFormatting", () => {
     const out = parseFormatting('§c<img src=x onerror="alert(1)">');
     expect(out.text).toBe('<img src=x onerror="alert(1)">');
     expect(out.segments).toEqual([{ text: '<img src=x onerror="alert(1)">', color: "#ff5555" }]);
+  });
+});
+
+describe("rconLines", () => {
+  it("splits the run-together vanilla help reply back into one command per line", () => {
+    const reply = "/advancement (grant|revoke)/attribute <target> <attribute> (get|base|modifier)/xp -> experience/fill <from> <to> <block>";
+    expect(rconLines(reply).split("\n")).toEqual([
+      "/advancement (grant|revoke)",
+      "/attribute <target> <attribute> (get|base|modifier)",
+      "/xp -> experience",
+      "/fill <from> <to> <block>",
+    ]);
+  });
+
+  it("leaves replies that are not command lists, or already have lines, as they came", () => {
+    expect(rconLines("There are 0 of a max of 20 players online: ")).toBe("There are 0 of a max of 20 players online: ");
+    expect(rconLines("/help line one\n/other")).toBe("/help line one\n/other");
   });
 });
