@@ -2,6 +2,7 @@
 package rcon
 
 import (
+	"bufio"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -40,9 +41,13 @@ const DefaultPort = 25575
 // Conn is an authenticated RCON connection. It is not safe for concurrent use.
 type Conn struct {
 	conn     net.Conn
+	r        *bufio.Reader
 	reqID    int32
 	deadline time.Time
 }
+
+// readyWait is how long Ready listens for the peer having closed the connection.
+const readyWait = 2 * time.Millisecond
 
 // Dial bounds TCP connect and authentication with timeout, then clears the handshake deadline.
 func Dial(addr, password string, timeout time.Duration) (*Conn, error) {
@@ -59,7 +64,7 @@ func Dial(addr, password string, timeout time.Duration) (*Conn, error) {
 		return nil, err
 	}
 
-	c := &Conn{conn: netConn}
+	c := &Conn{conn: netConn, r: bufio.NewReader(netConn)}
 	if timeout > 0 {
 		if err := netConn.SetDeadline(time.Now().Add(timeout)); err != nil {
 			netConn.Close()
@@ -88,7 +93,7 @@ func DialContext(ctx context.Context, addr, password string, timeout time.Durati
 	if err != nil {
 		return nil, err
 	}
-	c := &Conn{conn: netConn}
+	c := &Conn{conn: netConn, r: bufio.NewReader(netConn)}
 	stop := context.AfterFunc(ctx, func() { _ = netConn.Close() })
 	err = c.auth(password)
 	stopped := stop()
@@ -109,6 +114,18 @@ func (c *Conn) SetDeadline(t time.Time) error {
 }
 
 func (c *Conn) Close() error { return c.conn.Close() }
+
+// Ready reports whether a kept connection can take another command, and clears the deadline its last user set.
+func (c *Conn) Ready() bool {
+	if err := c.conn.SetReadDeadline(time.Now().Add(readyWait)); err != nil {
+		return false
+	}
+	_, err := c.r.Peek(1)
+	var netErr net.Error
+	alive := err == nil || errors.As(err, &netErr) && netErr.Timeout()
+	c.deadline = time.Time{}
+	return alive && c.conn.SetDeadline(time.Time{}) == nil
+}
 
 func (c *Conn) Execute(cmd string) (string, error) {
 	return c.ExecuteContext(context.Background(), cmd)
@@ -133,7 +150,7 @@ func (c *Conn) ExecuteContext(ctx context.Context, cmd string) (string, error) {
 	var reply []byte
 	sentEnd := false
 	for {
-		respID, _, body, err := readPacket(c.conn)
+		respID, _, body, err := readPacket(c.r)
 		if err != nil {
 			return "", c.ctxErr(ctx, err)
 		}
@@ -172,7 +189,7 @@ func (c *Conn) auth(password string) error {
 		return err
 	}
 	for {
-		respID, respType, _, err := readPacket(c.conn)
+		respID, respType, _, err := readPacket(c.r)
 		if err != nil {
 			return err
 		}

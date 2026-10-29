@@ -96,27 +96,41 @@ func (k *K8sConsole) SubmitCommand(ctx context.Context, name, command string, pr
 			return ConsoleCommandResult{}, err
 		}
 	}
-	conn, connectErr := k.connectRCON(ctx, ms)
-	if connectErr == nil {
-		defer conn.Close()
+	// The handshake can take seconds, so recheck the server before sending input.
+	recheck := func() error {
+		current, err := k.consoleServer(ctx, name)
+		if err != nil {
+			return err
+		}
+		if current.UID != ms.UID || !consoleAcceptsInput(current) {
+			return ErrConsoleNotRunning
+		}
+		return nil
 	}
-	if ctx.Err() != nil {
+	var output string
+	var checkErr error
+	sent := false
+	rconErr := k.withRCON(ctx, ms, func(conn consoleRCON) error {
+		if checkErr = recheck(); checkErr != nil {
+			return checkErr
+		}
+		sent = true
+		var err error
+		output, err = conn.ExecuteContext(ctx, command)
+		return err
+	})
+	switch {
+	case sent && rconErr != nil:
+		return ConsoleCommandResult{}, ErrConsoleOutcomeUnknown
+	case sent:
+		return ConsoleCommandResult{Name: name, Output: output, Transport: "rcon"}, nil
+	case checkErr != nil:
+		return ConsoleCommandResult{}, checkErr
+	case ctx.Err() != nil:
 		return ConsoleCommandResult{}, ErrConsoleUnavailable
 	}
-	// The handshake can take seconds, so recheck the server before sending input.
-	current, err := k.consoleServer(ctx, name)
-	if err != nil {
+	if err := recheck(); err != nil {
 		return ConsoleCommandResult{}, err
-	}
-	if current.UID != ms.UID || !consoleAcceptsInput(current) {
-		return ConsoleCommandResult{}, ErrConsoleNotRunning
-	}
-	if connectErr == nil {
-		output, err := conn.ExecuteContext(ctx, command)
-		if err != nil {
-			return ConsoleCommandResult{}, ErrConsoleOutcomeUnknown
-		}
-		return ConsoleCommandResult{Name: name, Output: output, Transport: "rcon"}, nil
 	}
 	if preferStdin {
 		return ConsoleCommandResult{}, ErrConsoleUnavailable

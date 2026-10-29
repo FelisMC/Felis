@@ -3,6 +3,7 @@ package operator
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -31,6 +32,15 @@ type Prober interface {
 type RconProber struct {
 	Timeout     time.Duration
 	SaveTimeout time.Duration
+	// Pool keeps a session per server between probes; nil opens one per call.
+	Pool *rcon.Pool[*rcon.Conn]
+}
+
+// keptSessionIdle outlasts the slowest probe interval, so a running server keeps one session.
+const keptSessionIdle = 3 * time.Minute
+
+func NewRconProber() RconProber {
+	return RconProber{Pool: rcon.NewPool(rcon.Dial, keptSessionIdle)}
 }
 
 // defaultSaveTimeout bounds the explicit flush; timeout still permits normal SIGTERM shutdown saving within pod grace.
@@ -50,38 +60,53 @@ func boundTimeout(ctx context.Context, d, def time.Duration) time.Duration {
 	return d
 }
 
+// session runs fn on the server's session; repeatable commands get a second try when a kept session failed.
+func (p RconProber) session(ctx context.Context, addr, password string, repeatable bool, fn func(*rcon.Conn) error) error {
+	timeout := boundTimeout(ctx, p.Timeout, 5*time.Second)
+	if p.Pool == nil {
+		conn, err := rcon.Dial(addr, password, timeout)
+		if err != nil {
+			return fmt.Errorf("%w: %w", rcon.ErrDial, err)
+		}
+		defer conn.Close()
+		return fn(conn)
+	}
+	if repeatable {
+		return p.Pool.DoAgain(ctx, addr, password, timeout, fn)
+	}
+	return p.Pool.Do(ctx, addr, password, timeout, fn)
+}
+
 // Probe returns success after authentication even when list fails or cannot be parsed, avoiding readiness flaps from count sampling.
 func (p RconProber) Probe(ctx context.Context, addr, password string) (PlayerCount, error) {
 	timeout := boundTimeout(ctx, p.Timeout, 5*time.Second)
-	conn, err := rcon.Dial(addr, password, timeout)
-	if err != nil {
+	var pc PlayerCount
+	err := p.session(ctx, addr, password, true, func(conn *rcon.Conn) error {
+		if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+			return err
+		}
+		reply, err := conn.Execute("list")
+		if err != nil {
+			return err
+		}
+		pc, _ = parseListReply(reply)
+		return nil
+	})
+	if errors.Is(err, rcon.ErrDial) {
 		return PlayerCount{}, err
 	}
-	defer conn.Close()
-
-	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
-		return PlayerCount{}, nil
-	}
-	reply, err := conn.Execute("list")
-	if err != nil {
-		return PlayerCount{}, nil
-	}
-	pc, _ := parseListReply(reply)
 	return pc, nil
 }
 
 // Save accepts any reply because loader-specific wording differs; a response marks completion on the server thread.
 func (p RconProber) Save(ctx context.Context, addr, password string) error {
-	conn, err := rcon.Dial(addr, password, boundTimeout(ctx, p.Timeout, 5*time.Second))
-	if err != nil {
+	return p.session(ctx, addr, password, true, func(conn *rcon.Conn) error {
+		if err := conn.SetDeadline(time.Now().Add(boundTimeout(ctx, p.SaveTimeout, defaultSaveTimeout))); err != nil {
+			return err
+		}
+		_, err := conn.Execute("save-all flush")
 		return err
-	}
-	defer conn.Close()
-	if err := conn.SetDeadline(time.Now().Add(boundTimeout(ctx, p.SaveTimeout, defaultSaveTimeout))); err != nil {
-		return err
-	}
-	_, err = conn.Execute("save-all flush")
-	return err
+	})
 }
 
 func (p RconProber) Commands(ctx context.Context, addr, password string, commands []string) error {
@@ -90,35 +115,29 @@ func (p RconProber) Commands(ctx context.Context, addr, password string, command
 	}
 	ctx, cancel := context.WithTimeout(ctx, stopCommandsTimeout)
 	defer cancel()
-	conn, err := rcon.DialContext(ctx, addr, password, boundTimeout(ctx, p.Timeout, 5*time.Second))
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	deadline, _ := ctx.Deadline()
-	if err := conn.SetDeadline(deadline); err != nil {
-		return err
-	}
-	for _, command := range commands {
-		if _, err := conn.ExecuteContext(ctx, command); err != nil {
+	return p.session(ctx, addr, password, false, func(conn *rcon.Conn) error {
+		deadline, _ := ctx.Deadline()
+		if err := conn.SetDeadline(deadline); err != nil {
 			return err
 		}
-	}
-	return nil
+		for _, command := range commands {
+			if _, err := conn.ExecuteContext(ctx, command); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (p RconProber) Broadcast(ctx context.Context, addr, password, text string) error {
 	timeout := boundTimeout(ctx, p.Timeout, 5*time.Second)
-	conn, err := rcon.Dial(addr, password, timeout)
-	if err != nil {
+	return p.session(ctx, addr, password, false, func(conn *rcon.Conn) error {
+		if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+			return err
+		}
+		_, err := conn.Execute(tellrawCommand(text))
 		return err
-	}
-	defer conn.Close()
-	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
-		return err
-	}
-	_, err = conn.Execute(tellrawCommand(text))
-	return err
+	})
 }
 
 // tellrawCommand escapes non-ASCII as JSON Unicode so RCON implementations without UTF-8 support preserve chat text.

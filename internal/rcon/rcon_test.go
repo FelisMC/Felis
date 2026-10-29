@@ -24,6 +24,26 @@ type fakeRCON struct {
 	// hang leaves every command unanswered; doubleEnd answers the end marker
 	// twice, as a Source-engine server does.
 	hang, doubleEnd bool
+	mu              sync.Mutex
+	open            []net.Conn
+	accepted        int
+}
+
+// sessions counts the connections accepted so far.
+func (f *fakeRCON) sessions() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.accepted
+}
+
+// dropAll closes every connection from the server side, as a restarting server does.
+func (f *fakeRCON) dropAll() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.open {
+		c.Close()
+	}
+	f.open = nil
 }
 
 func startFakeRCON(t *testing.T, password string, replies map[string]string) *fakeRCON {
@@ -52,6 +72,10 @@ func (f *fakeRCON) serve() {
 		if err != nil {
 			return
 		}
+		f.mu.Lock()
+		f.accepted++
+		f.open = append(f.open, conn)
+		f.mu.Unlock()
 		go f.handle(conn)
 	}
 }

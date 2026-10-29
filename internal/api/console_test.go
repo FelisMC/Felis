@@ -60,6 +60,7 @@ func (c *fakeConsoleRCON) ExecuteContext(context.Context, string) (string, error
 
 func (c *fakeConsoleRCON) SetDeadline(time.Time) error { return c.deadlineErr }
 func (c *fakeConsoleRCON) Close() error                { c.closed.Add(1); return nil }
+func (c *fakeConsoleRCON) Ready() bool                 { return c.closed.Load() == 0 }
 
 func consoleTestPod(name string) corev1.Pod {
 	return corev1.Pod{
@@ -147,7 +148,11 @@ func TestConsoleSubmitPrefersRCONAndNeverRepeatsExecution(t *testing.T) {
 				return nil, errors.New("must not attach")
 			}
 			got, err := k.SubmitCommand(context.Background(), "survival", "list", false)
-			if !errors.Is(err, tc.want) || conn.executed.Load() != 1 || attached.Load() != 0 || conn.closed.Load() != 1 {
+			// A session that answered is kept for the next command; one that failed is closed.
+			if want := map[bool]int32{false: 0, true: 1}[err != nil]; conn.closed.Load() != want {
+				t.Fatalf("session closed %d times, want %d", conn.closed.Load(), want)
+			}
+			if !errors.Is(err, tc.want) || conn.executed.Load() != 1 || attached.Load() != 0 {
 				t.Fatalf("command repeated or failure lost: result=%+v err=%v execute=%d attach=%d closed=%d", got, err, conn.executed.Load(), attached.Load(), conn.closed.Load())
 			}
 			if err == nil && (got.Name != "survival" || got.Transport != "rcon" || got.Output != "reply") {

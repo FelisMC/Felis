@@ -84,7 +84,7 @@ func cmdOperator(args []string, _, stderr io.Writer) int {
 	r := &operator.Reconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
-		Prober: operator.RconProber{},
+		Prober: operator.NewRconProber(),
 		// The operator's own image, for the forwarding-config initContainer it injects into user servers (passed as FELIS_IMAGE); absent, that injection is skipped.
 		FelisImage: os.Getenv("FELIS_IMAGE"),
 		// The server-software download cache runtime-image servers install

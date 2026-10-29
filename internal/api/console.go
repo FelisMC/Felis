@@ -33,8 +33,12 @@ type ConsoleCommandResult struct {
 type consoleRCON interface {
 	ExecuteContext(context.Context, string) (string, error)
 	SetDeadline(time.Time) error
+	Ready() bool
 	Close() error
 }
+
+// keptSessionIdle closes a server's RCON session after this long unused.
+const keptSessionIdle = 2 * time.Minute
 
 type K8sConsole struct {
 	c             client.Client
@@ -44,13 +48,14 @@ type K8sConsole struct {
 	timeout       time.Duration
 	submitTimeout time.Duration
 	dial          func(string, string, time.Duration) (consoleRCON, error)
+	sessions      *rcon.Pool[consoleRCON]
 	executor      func(*rest.Config, string, *url.URL) (remotecommand.Executor, error)
 	mu            sync.Mutex
 	slots         map[string]*consoleSlot
 }
 
 func NewK8sConsole(c client.Client, cs kubernetes.Interface, config *rest.Config, namespace string) *K8sConsole {
-	return &K8sConsole{
+	k := &K8sConsole{
 		c: c, clientset: cs, config: config, namespace: namespace,
 		timeout: 5 * time.Second, submitTimeout: 10 * time.Second,
 		dial: func(addr, password string, timeout time.Duration) (consoleRCON, error) {
@@ -58,6 +63,10 @@ func NewK8sConsole(c client.Client, cs kubernetes.Interface, config *rest.Config
 		},
 		executor: remotecommand.NewSPDYExecutor,
 	}
+	k.sessions = rcon.NewPool(func(addr, password string, timeout time.Duration) (consoleRCON, error) {
+		return k.dial(addr, password, timeout)
+	}, keptSessionIdle)
+	return k
 }
 
 // RunCommand hides dial, authentication and Secret errors behind ErrConsoleUnavailable.
@@ -66,12 +75,12 @@ func (k *K8sConsole) RunCommand(ctx context.Context, name, command string) (stri
 	if err != nil {
 		return "", err
 	}
-	conn, err := k.connectRCON(ctx, ms)
-	if err != nil {
-		return "", ErrConsoleUnavailable
-	}
-	defer conn.Close()
-	out, err := conn.ExecuteContext(ctx, command)
+	var out string
+	err = k.withRCON(ctx, ms, func(conn consoleRCON) error {
+		var err error
+		out, err = conn.ExecuteContext(ctx, command)
+		return err
+	})
 	if err != nil {
 		return "", ErrConsoleUnavailable
 	}
@@ -89,14 +98,15 @@ func (k *K8sConsole) consoleServer(ctx context.Context, name string) (*v1alpha1.
 	return &ms, nil
 }
 
-func (k *K8sConsole) connectRCON(ctx context.Context, ms *v1alpha1.MinecraftServer) (consoleRCON, error) {
+// withRCON runs fn on the server's kept session under the caller's deadline; an error wrapping rcon.ErrDial means nothing was sent.
+func (k *K8sConsole) withRCON(ctx context.Context, ms *v1alpha1.MinecraftServer, fn func(consoleRCON) error) error {
 	if ctx.Err() != nil || !ms.Spec.Rcon.Enabled {
-		return nil, ErrConsoleUnavailable
+		return fmt.Errorf("%w: %w", rcon.ErrDial, ErrConsoleUnavailable)
 	}
 
 	password, err := k.rconPassword(ctx, ms)
 	if err != nil {
-		return nil, ErrConsoleUnavailable
+		return fmt.Errorf("%w: %w", rcon.ErrDial, ErrConsoleUnavailable)
 	}
 
 	timeout := k.timeout
@@ -105,29 +115,24 @@ func (k *K8sConsole) connectRCON(ctx context.Context, ms *v1alpha1.MinecraftServ
 	}
 	if dl, ok := ctx.Deadline(); ok {
 		if remaining := time.Until(dl); remaining <= 0 {
-			return nil, ErrConsoleUnavailable
+			return fmt.Errorf("%w: %w", rcon.ErrDial, ErrConsoleUnavailable)
 		} else if remaining < timeout {
 			timeout = remaining
 		}
 	}
 
-	conn, err := k.dial(rconEndpoint(ms), password, timeout)
-	if err != nil {
-		return nil, ErrConsoleUnavailable
-	}
-	if ctx.Err() != nil {
-		conn.Close()
-		return nil, ErrConsoleUnavailable
-	}
-	// Honor longer caller timeouts so large-world save-all flushes can finish.
-	if dl, ok := ctx.Deadline(); ok {
-		if err := conn.SetDeadline(dl); err != nil {
-			conn.Close()
-			return nil, ErrConsoleUnavailable
+	return k.sessions.Do(ctx, rconEndpoint(ms), password, timeout, func(conn consoleRCON) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
-	}
-
-	return conn, nil
+		// Honor longer caller timeouts so large-world save-all flushes can finish.
+		if dl, ok := ctx.Deadline(); ok {
+			if err := conn.SetDeadline(dl); err != nil {
+				return err
+			}
+		}
+		return fn(conn)
+	})
 }
 
 // rconEndpoint must match the operator's rconAddress convention.
