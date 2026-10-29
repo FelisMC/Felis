@@ -1,4 +1,4 @@
-import { Outlet, useOutletContext, useParams } from "react-router-dom";
+import { Outlet, useMatch, useOutletContext, useParams } from "react-router-dom";
 import { Activity, Archive, CalendarClock, FolderOpen, Puzzle, Settings, Shield, Terminal, Users } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
@@ -17,6 +17,7 @@ import { STATUS_POLL_FAST_MS, STATUS_POLL_SLOW_MS, useAsync, useConfig, usePolli
 import { canManage } from "@/lib/ownership";
 import { useTier } from "@/lib/tier";
 import type { ServerStatus } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 /** ServerContext is what every tab of one server shares: its polled status and who may manage it. */
 export interface ServerContext {
@@ -46,6 +47,7 @@ export function ServerLayout() {
   usePolling(reload, moving ? STATUS_POLL_FAST_MS : STATUS_POLL_SLOW_MS);
   const { data: mine } = useAsync(() => (isAdmin ? Promise.resolve([]) : api.myServers()), [isAdmin, name]);
   const owned = canManage(isAdmin, mine, name);
+  const onConsole = useMatch({ path: "/servers/:name", end: true }) !== null;
 
   const backLink = <BackLink to="/servers" label={t("my_servers_breadcrumb")} />;
   const back = <div>{backLink}</div>;
@@ -82,9 +84,9 @@ export function ServerLayout() {
   ].filter(Boolean);
   const context: ServerContext = { name, data, error, reload, owned };
 
-  // The layout passes the page's height on, so the console can fill it.
+  // Only the console fills the window; the other tabs grow with their content so the page keeps its bottom spacing.
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4">
+    <div className={cn("flex flex-col gap-4", onConsole && "min-h-0 flex-1")}>
       {error != null && (
         <div className="space-y-2">
           <MessageLine kind="error" message={t("status_stale_detail", { time: updatedAt ? new Date(updatedAt).toLocaleTimeString() : "—", error: humanizeError(error) })} />
