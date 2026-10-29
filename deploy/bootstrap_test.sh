@@ -5676,6 +5676,28 @@ case "$(hafn push_images_to_registry)" in
 esac
 rm -rf "$pbdir"
 
+swfns="$(bsfn swap_file_mib; bsfn ensure_swap)"
+swdir="$(mktemp -d)"
+swap_run() { # memory KiB, swap KiB, why the preflight left swap out
+  MEM="$1" SWAPKB="$2" SKIP="$3" DIR="$swdir" bash -c '
+'"$swfns"'
+warn() { echo "WARN $*"; }; ok() { echo "OK $*"; }; log() { :; }
+mem_total_kb() { echo "$MEM"; }; swap_total_kb() { echo "$SWAPKB"; }
+make_swap_file() { echo "MADE $1"; }
+swapon() { return 1; }
+SWAP_FILE="$DIR/swapfile" SWAP_SKIP="$SKIP"
+ensure_swap' 2>&1
+}
+expect "a node without swap gets a swap file as large as its memory" "MADE 16384" "$(swap_run 16777216 0 "")"
+expect "a small node gets at least 2 GiB of swap" "MADE 2048" "$(swap_run 1048576 0 "")"
+expect "a host that refuses swap installs on without it" "WARN this host refused a swap file" "$(swap_run 16777216 0 "")"
+out="$(swap_run 16777216 4194304 "")"
+expect "existing swap smaller than memory is kept with a warning" "WARN swap is 4096 MiB, less than the 16384 MiB" "$out"
+case "$out" in *MADE*) echo "FAIL existing swap must not get a second swap file"; fails=$((fails + 1)) ;; *) echo "PASS existing swap gets no second swap file" ;; esac
+out="$(swap_run 16777216 0 "/ has 100 MiB free")"
+expect "a disk too small for swap beside the install skips the swap file" "WARN no swap file created: / has 100 MiB free" "$out"
+case "$out" in *MADE*) echo "FAIL a skipped swap file was made"; fails=$((fails + 1)) ;; *) echo "PASS a skipped swap file is not made" ;; esac
+rm -rf "$swdir"
 
 if [ "$fails" -eq 0 ]; then
   echo "ALL PASS"

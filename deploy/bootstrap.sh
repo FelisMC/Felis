@@ -938,6 +938,8 @@ warn_dynamic_node_ip() {
 # Collect all preflight failures before mutating the host.
 # Warnings print as they are found and never stop the run; FELIS_PREFLIGHT=warn turns problems into warnings too.
 PREFLIGHT_PROBLEMS=()
+SWAP_FILE=/swapfile
+SWAP_SKIP=""
 preflight_fail() { PREFLIGHT_PROBLEMS+=("$*"); }
 
 # Allow for kernel-reserved memory when evaluating the minimum full-stack host size.
@@ -1072,6 +1074,17 @@ preflight_disk() {
       warn "preflight: ${mount} will be over 85% full after the install; k3s starts deleting cached images there and evicts pods near 95%"
     fi
   done <<<"$rows"
+  # The swap file is optional: it is left out rather than squeezing what the install writes.
+  if [ "$(swap_total_kb)" = 0 ] && [ ! -e "$SWAP_FILE" ]; then
+    local swap_kb free_after
+    swap_kb=$(($(swap_file_mib) * 1024))
+    read -r mount size avail <<<"$(df -Pk / 2>/dev/null | awk 'NR == 2 { print $6, $2, $4 }')"
+    need="$(printf '%s\n' "$rows" | awk -v m="$mount" '$1 == m { print $5 }')"
+    free_after=$((${avail:-0} - ${need:-0} - swap_kb))
+    if [ "$free_after" -lt $((${size:-0} / 10)) ]; then
+      SWAP_SKIP="/ has $((${avail:-0} / 1024)) MiB free, too little for a $((swap_kb / 1024)) MiB swap file beside the install"
+    fi
+  fi
 }
 
 # pid_unit prints the systemd service a process runs in, or nothing.
@@ -1297,27 +1310,54 @@ pkg_refresh_once() {
   _PKG_REFRESHED=1
 }
 
+swap_total_kb() { awk '/^SwapTotal:/ { print $2 }' /proc/meminfo; }
+
+# swap_file_mib matches memory, with 2 GiB as the floor a small host needs to ride out memory pressure.
+swap_file_mib() {
+  local mib=$((($(mem_total_kb) + 1023) / 1024))
+  [ "$mib" -ge 2048 ] || mib=2048
+  echo "$mib"
+}
+
+# A hibernating server's memory moves to swap, so a node without swap gets a swap file as large as its memory.
 ensure_swap() {
-  local mem_kb swap_kb
-  mem_kb="$(awk '/^MemTotal:/{print $2}' /proc/meminfo)"
-  swap_kb="$(awk '/^SwapTotal:/{print $2}' /proc/meminfo)"
+  local mem_kb swap_kb mib
+  mem_kb="$(mem_total_kb)"
+  swap_kb="$(swap_total_kb)"
   if [ "${swap_kb:-0}" -gt 0 ]; then
-    ok "swap already present ($((swap_kb/1024)) MiB)"
+    if [ "$swap_kb" -lt "$mem_kb" ]; then
+      warn "swap is $((swap_kb / 1024)) MiB, less than the $((mem_kb / 1024)) MiB of memory; an idle server whose memory does not fit in it stops instead of hibernating"
+    else
+      ok "swap already present ($((swap_kb / 1024)) MiB)"
+    fi
     return 0
   fi
-  if [ "${mem_kb:-0}" -ge 2097152 ]; then
-    ok "RAM $((mem_kb/1024)) MiB is sufficient; skipping swap"
+  if [ -e "$SWAP_FILE" ]; then
+    warn "${SWAP_FILE} exists but is not in use; leaving it alone, so idle servers stop instead of hibernating"
     return 0
   fi
-  log "low RAM ($((mem_kb/1024)) MiB) and no swap — creating a 2 GiB swap file"
-  if ! fallocate -l 2G /swapfile 2>/dev/null; then
-    dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
+  if [ -n "$SWAP_SKIP" ]; then
+    warn "no swap file created: ${SWAP_SKIP}; idle servers stop instead of hibernating"
+    return 0
   fi
-  chmod 600 /swapfile
-  mkswap /swapfile >/dev/null
-  swapon /swapfile
-  grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
-  ok "2 GiB swap active"
+  mib="$(swap_file_mib)"
+  log "creating a ${mib} MiB swap file so idle servers can hibernate"
+  if ! make_swap_file "$mib" || ! swapon "$SWAP_FILE" 2>/dev/null; then
+    rm -f "$SWAP_FILE"
+    warn "this host refused a swap file; idle servers stop instead of hibernating"
+    return 0
+  fi
+  grep -q "^${SWAP_FILE} " /etc/fstab || echo "${SWAP_FILE} none swap sw 0 0" >> /etc/fstab
+  ok "${mib} MiB swap active"
+}
+
+make_swap_file() { # mib
+  if [ "$(stat -f -c %T / 2>/dev/null)" = btrfs ]; then
+    btrfs filesystem mkswapfile --size "${1}m" "$SWAP_FILE" >/dev/null 2>&1
+    return
+  fi
+  fallocate -l "${1}M" "$SWAP_FILE" 2>/dev/null || dd if=/dev/zero of="$SWAP_FILE" bs=1M count="$1" status=none || return
+  chmod 600 "$SWAP_FILE" && mkswap "$SWAP_FILE" >/dev/null 2>&1
 }
 
 # Enable NTP and allow initial synchronization; the watchdog reports clocks still unsynchronized after the wait.
@@ -5611,6 +5651,7 @@ main_controller_join() {
   PREFLIGHT_PROBLEMS=()
   preflight_platform; preflight_memory; preflight_disk; preflight_networks; preflight_outbound
   [ "${#PREFLIGHT_PROBLEMS[@]}" = 0 ] || die "controller preflight failed: ${PREFLIGHT_PROBLEMS[*]}"
+  ensure_swap
   install_base
   ensure_time_sync
   ensure_persistent_journal
@@ -5692,6 +5733,7 @@ main_worker() {
     if systemctl is-active --quiet "$unit.service"; then preflight_fail "conflicting Kubernetes service: $unit"; fi
   done
   [ "${#PREFLIGHT_PROBLEMS[@]}" = 0 ] || die "worker preflight failed: ${PREFLIGHT_PROBLEMS[*]}"
+  ensure_swap
   install_base
   ensure_time_sync
   ensure_persistent_journal
