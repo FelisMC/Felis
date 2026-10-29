@@ -333,6 +333,7 @@ type ownerPatchRequest struct {
 	DisplayName           *string               `json:"displayName,omitempty"`
 	AutostartPolicy       *string               `json:"autostartPolicy,omitempty"`
 	IdleStopSeconds       *int32                `json:"idleStopSeconds,omitempty"`
+	IdleAction            *string               `json:"idleAction,omitempty"`
 	Memory                *string               `json:"memory,omitempty"`
 	Storage               *string               `json:"storage,omitempty"`
 	CPU                   *string               `json:"cpu,omitempty"`
@@ -376,6 +377,7 @@ func (a *API) handleOwnerPatchServer(w http.ResponseWriter, r *http.Request) {
 		DisplayName:           body.DisplayName,
 		AutostartPolicy:       body.AutostartPolicy,
 		IdleStopSeconds:       body.IdleStopSeconds,
+		IdleAction:            body.IdleAction,
 		Memory:                body.Memory,
 		Storage:               body.Storage,
 		Software:              body.Software,

@@ -73,7 +73,7 @@ func TestSystemServerResourcesAndInvariants(t *testing.T) {
 	if _, exists := repo.byName["lobby"]; exists {
 		t.Fatal("system resources added an ownership row")
 	}
-	for _, body := range []string{`{"autostartPolicy":"ownerOnly"}`, `{"idleStopSeconds":600}`} {
+	for _, body := range []string{`{"autostartPolicy":"ownerOnly"}`, `{"idleStopSeconds":600}`, `{"idleAction":"stop"}`} {
 		result := do(api.ExternalHandler(), "PATCH", "/api/v1/servers/lobby", body, jsonHeader)
 		if result.Code != http.StatusBadRequest {
 			t.Fatalf("system invariant changed: %d %s", result.Code, result.Body.String())

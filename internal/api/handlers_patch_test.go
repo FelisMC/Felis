@@ -347,6 +347,22 @@ func TestPatchServerIdleStop(t *testing.T) {
 	}
 }
 
+func TestPatchServerIdleAction(t *testing.T) {
+	api, _, cl, _ := newPatchAPI()
+	if w := patchSurvival(api, `{"idleAction":"pause"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("unknown action: code = %d, want 400 (%s)", w.Code, w.Body.String())
+	}
+	if _, patched := cl.patched["survival"]; patched {
+		t.Fatal("an unknown idle action reached the cluster")
+	}
+	if w := patchSurvival(api, `{"idleAction":"stop"}`); w.Code != http.StatusOK {
+		t.Fatalf("stop: code = %d (%s)", w.Code, w.Body.String())
+	}
+	if got := cl.byName["survival"].IdleAction; got != "stop" {
+		t.Fatalf("view idleAction = %q, want stop", got)
+	}
+}
+
 // seedResources gives survival the pod block create would have written: a 4Gi
 // ceiling, a 1-core CPU limit and a 500m CPU request.
 func seedResources(cl *fakeCluster) {

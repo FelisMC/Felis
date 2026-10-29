@@ -178,7 +178,7 @@ func (a *API) beginStep(ctx context.Context, s *Schedule) error {
 		if !running && step.Type == StepRestart {
 			return a.alreadyThere(ctx, s, pos, "the server was not running")
 		}
-		if !running {
+		if !running && !info.hibernated() {
 			return a.alreadyThere(ctx, s, pos, "the server was already stopped")
 		}
 		if step.Type != StepRestart && a.lastStep(s) {

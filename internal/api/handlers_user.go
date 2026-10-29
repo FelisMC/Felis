@@ -735,6 +735,7 @@ type patchServerRequest struct {
 	Memory             *string               `json:"memory,omitempty"`
 	Resources          *patchResourceRequest `json:"resources,omitempty"`
 	IdleStopSeconds    *int32                `json:"idleStopSeconds,omitempty"`
+	IdleAction         *string               `json:"idleAction,omitempty"`
 	JavaFlags          *[]string             `json:"java_flags,omitempty"`
 	Args               *[]string             `json:"args,omitempty"`
 	Env                *[]v1alpha1.EnvVar    `json:"env,omitempty"`
@@ -786,7 +787,7 @@ func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
 func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, body patchServerRequest) {
 	if naming.IsSystemServer(name) &&
 		((body.AutostartPolicy != nil && *body.AutostartPolicy != string(v1alpha1.AutostartPublic)) ||
-			(body.IdleStopSeconds != nil && *body.IdleStopSeconds != 0)) {
+			(body.IdleStopSeconds != nil && *body.IdleStopSeconds != 0) || body.IdleAction != nil) {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "system services must remain public and exempt from idle stop"))
 		return
 	}
@@ -796,7 +797,7 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 	}
 
 	if body.DisplayName == nil && body.AutostartPolicy == nil && body.Image == nil &&
-		body.Memory == nil && body.Resources == nil && body.Storage == nil && body.IdleStopSeconds == nil &&
+		body.Memory == nil && body.Resources == nil && body.Storage == nil && body.IdleStopSeconds == nil && body.IdleAction == nil &&
 		body.Software == nil && !body.setsRecovery() &&
 		body.JavaFlags == nil && body.Args == nil && body.Env == nil && body.StopCommands == nil && body.ExtraPorts == nil {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
@@ -870,6 +871,15 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 		}
 		patch.IdleStopSeconds = body.IdleStopSeconds
 		changed = append(changed, "idleStopSeconds")
+	}
+	if body.IdleAction != nil {
+		action := v1alpha1.IdleAction(*body.IdleAction)
+		if action != v1alpha1.IdleHibernate && action != v1alpha1.IdleStop {
+			writeError(w, r, newError(http.StatusBadRequest, "bad_request", "idleAction must be hibernate or stop"))
+			return
+		}
+		patch.IdleAction = &action
+		changed = append(changed, "idleAction")
 	}
 
 	if body.ResumeAfterHostRestart != nil {

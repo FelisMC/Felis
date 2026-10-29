@@ -367,7 +367,8 @@ func (k *K8sCluster) AcquireMaintenance(ctx context.Context, name, kind string) 
 		if desired == "" {
 			desired = v1alpha1.DesiredStopped
 		}
-		if kind != maintenance.KindConfigWrite || !naming.IsSystemServer(name) {
+		frozenBackup := kind == maintenance.KindBackup && frozen(&ms)
+		if !frozenBackup && (kind != maintenance.KindConfigWrite || !naming.IsSystemServer(name)) {
 			if desired != v1alpha1.DesiredStopped || ms.Status.Ready || ms.Status.Phase != v1alpha1.PhaseStopped {
 				return ErrNotStopped
 			}
@@ -544,6 +545,9 @@ func (k *K8sCluster) PatchServerSpec(ctx context.Context, name string, p ServerS
 		if p.NotifyProblems != nil {
 			ms.Spec.Notify.Problems = p.NotifyProblems
 		}
+		if p.IdleAction != nil {
+			ms.Spec.Idle.Action = *p.IdleAction
+		}
 		if p.IdleStopSeconds != nil {
 			// Keep a duration when disabling so an explicit off differs from unset.
 			if *p.IdleStopSeconds == 0 {
@@ -552,7 +556,7 @@ func (k *K8sCluster) PatchServerSpec(ctx context.Context, name string, p ServerS
 					ms.Spec.Idle.EmptySecondsBeforeStop = v1alpha1.DefaultEmptySecondsBeforeStop
 				}
 			} else {
-				ms.Spec.Idle = v1alpha1.IdleSpec{AutoStopEnabled: true, EmptySecondsBeforeStop: *p.IdleStopSeconds}
+				ms.Spec.Idle.AutoStopEnabled, ms.Spec.Idle.EmptySecondsBeforeStop = true, *p.IdleStopSeconds
 			}
 		}
 		if p.ExtraPorts != nil {
@@ -612,6 +616,8 @@ func serverInfo(ms *v1alpha1.MinecraftServer, now time.Time) *ServerInfo {
 		ExtraPortsPending: extraPortsPending,
 		CPU:               cpuStr,
 		IdleStopSeconds:   idleStopSeconds(ms),
+		IdleAction:        string(idleAction(ms.Spec.Idle)),
+		Hibernation:       serverHibernation(ms.Status.Hibernation),
 		PlayerCountUnknown: ms.Status.Phase == v1alpha1.PhaseRunning &&
 			meta.IsStatusConditionFalse(ms.Status.Conditions, v1alpha1.ConditionPlayersCounted),
 		LegacyForwarding: ms.Labels[v1alpha1.LabelForwarding] == v1alpha1.ForwardingLegacy,
@@ -630,6 +636,26 @@ func serverInfo(ms *v1alpha1.MinecraftServer, now time.Time) *ServerInfo {
 		AutoStop:               autoStopInfo(ms.Status.AutoStop),
 		CrashStopped:           v1alpha1.CrashStopped(&ms.Status),
 	}
+}
+
+// frozen reports a hibernated server whose world was flushed before its process stopped, so the volume can be read.
+func frozen(ms *v1alpha1.MinecraftServer) bool {
+	return ms.Spec.DesiredState == v1alpha1.DesiredHibernated && ms.Status.Phase == v1alpha1.PhaseHibernated &&
+		ms.Status.Hibernation != nil && ms.Status.Hibernation.Stage == v1alpha1.HibernationFrozen
+}
+
+func idleAction(idle v1alpha1.IdleSpec) v1alpha1.IdleAction {
+	if idle.Hibernates() {
+		return v1alpha1.IdleHibernate
+	}
+	return v1alpha1.IdleStop
+}
+
+func serverHibernation(h *v1alpha1.HibernationStatus) *ServerHibernation {
+	if h == nil {
+		return nil
+	}
+	return &ServerHibernation{Stage: string(h.Stage), Since: h.Since.Time, SwappedBytes: h.SwappedBytes, Message: h.Message}
 }
 
 // maxCrashRestarts reports the limit even while restarts are off.

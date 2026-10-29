@@ -37,6 +37,10 @@ type ServerInfo struct {
 	ExtraPortsPending bool              `json:"extraPortsPending,omitempty"`
 	// IdleStopSeconds=0 disables idle shutdown.
 	IdleStopSeconds int32 `json:"idleStopSeconds"`
+	// IdleAction is hibernate or stop; the public projection leaves it out.
+	IdleAction string `json:"idleAction,omitempty"`
+	// Hibernation is set while the server's process is frozen, being frozen or waking.
+	Hibernation *ServerHibernation `json:"hibernation,omitempty"`
 	// PlayerCountUnknown suspends idle shutdown until RCON can read the count.
 	PlayerCountUnknown bool `json:"playerCountUnknown,omitempty"`
 	// LegacyForwarding enables player-identity forwarding in the handshake address.
@@ -151,6 +155,20 @@ type ServerSpecPatch struct {
 	NotifyStarted          *bool
 	NotifyStopped          *bool
 	NotifyProblems         *bool
+	IdleAction             *v1alpha1.IdleAction
+}
+
+func (s *ServerInfo) hibernated() bool {
+	return s.DesiredState == string(v1alpha1.DesiredHibernated)
+}
+
+// ServerHibernation describes a frozen server process.
+type ServerHibernation struct {
+	Stage        string    `json:"stage"`
+	Since        time.Time `json:"since"`
+	SwappedBytes int64     `json:"swappedBytes,omitempty"`
+	// Message explains why a wake is waiting.
+	Message string `json:"message,omitempty"`
 }
 
 type Cluster interface {

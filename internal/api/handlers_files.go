@@ -470,6 +470,11 @@ func (a *API) authorizeFileOp(w http.ResponseWriter, r *http.Request) (string, b
 		a.writeLookupError(w, r, err)
 		return "", false
 	}
+	if info.hibernated() {
+		writeError(w, r, newError(http.StatusConflict, "hibernated",
+			"wake or stop the server before working with its files"))
+		return "", false
+	}
 	running := info.Phase == string(v1alpha1.PhaseRunning) && info.DesiredState == string(v1alpha1.DesiredRunning)
 	if !running && !liveExperienceFile(r, name) && (info.Ready || info.DesiredState != string(v1alpha1.DesiredStopped) || info.Phase == string(v1alpha1.PhaseStarting) || info.Phase == string(v1alpha1.PhaseStopping)) {
 		writeError(w, r, newError(http.StatusConflict, "server_transitioning",

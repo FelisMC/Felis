@@ -147,6 +147,15 @@ func TestScheduleRunnerFiring(t *testing.T) {
 		if r2.cl.desired["survival"] != "" {
 			t.Fatal("stopped a stopped server again")
 		}
+		r3 := newSchedRig(t)
+		info := r3.cl.byName["survival"]
+		info.Phase, info.Ready, info.DesiredState = string(v1alpha1.PhaseHibernated), false, string(v1alpha1.DesiredHibernated)
+		id = r3.schedule([]string{StepStop}, schedT0)
+		r3.tick(t)
+		r3.outcome(t, id, ScheduleOK, "")
+		if r3.cl.desired["survival"] != v1alpha1.DesiredStopped {
+			t.Fatalf("a hibernated server was left frozen: desired %q", r3.cl.desired["survival"])
+		}
 	})
 
 	t.Run("a server gone since the schedule was saved", func(t *testing.T) {

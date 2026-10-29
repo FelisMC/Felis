@@ -341,7 +341,12 @@ func (a *API) enqueueBackup(w http.ResponseWriter, r *http.Request, name string,
 		a.writeLookupError(w, r, err)
 		return
 	}
-	if info.Ready || info.DesiredState != string(v1alpha1.DesiredStopped) {
+	if info.hibernated() && info.Phase != string(v1alpha1.PhaseHibernated) {
+		writeError(w, r, newError(http.StatusConflict, "not_stopped",
+			"the server is hibernating or waking; back it up once it is hibernated or running"))
+		return
+	}
+	if !info.hibernated() && (info.Ready || info.DesiredState != string(v1alpha1.DesiredStopped)) {
 		// Use live backup only for running servers; transitional states cannot provide a consistent world.
 		if !info.Ready || info.DesiredState != string(v1alpha1.DesiredRunning) || a.Backuper == nil {
 			writeError(w, r, newError(http.StatusConflict, "not_stopped",

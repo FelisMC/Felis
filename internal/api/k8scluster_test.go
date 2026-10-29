@@ -152,6 +152,41 @@ func TestPatchIdleStopKeepsTheChoiceVisible(t *testing.T) {
 	}
 }
 
+func TestIdleActionDefaultsToHibernate(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	ms := &v1alpha1.MinecraftServer{}
+	ms.Name, ms.Namespace = "survival", "minecraft"
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ms).Build()
+	k := NewK8sCluster(c, "minecraft")
+	action := func() string {
+		info, err := k.GetServer(context.Background(), "survival")
+		if err != nil {
+			t.Fatalf("GetServer: %v", err)
+		}
+		return info.IdleAction
+	}
+	if got := action(); got != "hibernate" {
+		t.Fatalf("unset idleAction = %q, want hibernate", got)
+	}
+	stop := v1alpha1.IdleStop
+	if err := k.PatchServerSpec(context.Background(), "survival", ServerSpecPatch{IdleAction: &stop}); err != nil {
+		t.Fatalf("patch: %v", err)
+	}
+	if got := action(); got != "stop" {
+		t.Fatalf("idleAction after patch = %q, want stop", got)
+	}
+	minutes := int32(900)
+	if err := k.PatchServerSpec(context.Background(), "survival", ServerSpecPatch{IdleStopSeconds: &minutes}); err != nil {
+		t.Fatalf("patch duration: %v", err)
+	}
+	if got := action(); got != "stop" {
+		t.Fatalf("a new idle duration reset the action to %q", got)
+	}
+}
+
 // spyReader records the options of every List it serves.
 type spyReader struct {
 	client.Reader

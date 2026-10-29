@@ -1990,6 +1990,9 @@ func (c *fakeCluster) PatchServerSpec(_ context.Context, n string, p ServerSpecP
 	if p.IdleStopSeconds != nil {
 		info.IdleStopSeconds = *p.IdleStopSeconds
 	}
+	if p.IdleAction != nil {
+		info.IdleAction = string(*p.IdleAction)
+	}
 	if p.ResumeAfterHostRestart != nil {
 		info.ResumeAfterHostRestart = *p.ResumeAfterHostRestart
 	}

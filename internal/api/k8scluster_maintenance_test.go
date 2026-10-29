@@ -240,6 +240,29 @@ func TestAcquireMaintenance(t *testing.T) {
 		}
 	})
 
+	t.Run("a frozen server admits a backup and nothing that writes", func(t *testing.T) {
+		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "survival-0", Namespace: "minecraft",
+			Labels: map[string]string{v1alpha1.LabelServer: "survival", v1alpha1.LabelComponent: gamePodComponent}}}
+		hibernated := func(stage v1alpha1.HibernationStage) *v1alpha1.MinecraftServer {
+			ms := stoppedServer()
+			ms.Spec.DesiredState = v1alpha1.DesiredHibernated
+			ms.Status.Phase = v1alpha1.PhaseHibernated
+			ms.Status.Hibernation = &v1alpha1.HibernationStatus{Stage: stage}
+			return ms
+		}
+		k, _ := lockCluster(t, hibernated(v1alpha1.HibernationFrozen), pod)
+		if err := k.AcquireMaintenance(ctx, "survival", maintenance.KindRestore); !errors.Is(err, ErrNotStopped) {
+			t.Fatalf("restore into a frozen server: %v, want ErrNotStopped", err)
+		}
+		if err := k.AcquireMaintenance(ctx, "survival", maintenance.KindBackup); err != nil {
+			t.Fatalf("backup of a frozen server: %v", err)
+		}
+		k, _ = lockCluster(t, hibernated(v1alpha1.HibernationThawing), pod)
+		if err := k.AcquireMaintenance(ctx, "survival", maintenance.KindBackup); !errors.Is(err, ErrNotStopped) {
+			t.Fatalf("backup while waking: %v, want ErrNotStopped", err)
+		}
+	})
+
 	t.Run("a Job's own pod is not the game pod", func(t *testing.T) {
 		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "files-x", Namespace: "minecraft",
 			Labels: map[string]string{v1alpha1.LabelServer: "survival"}}}
