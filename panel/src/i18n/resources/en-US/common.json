@@ -48,6 +48,7 @@
   "dismiss_notification": "Dismiss notification",
   "label_prefix": "{{label}}: ",
   "chart_collecting": "Collecting data",
+  "chart_no_data": "No data",
   "chart_since_minutes_one": "{{count}} minute ago",
   "chart_since_minutes_other": "{{count}} minutes ago",
   "chart_since_hour": "1 hour ago",

@@ -9,7 +9,8 @@ const GAP_MS = 45_000;
  * AreaChart draws the last hour of one series up to now. The time axis starts at the oldest sample
  * held, so a fresh start fills the width; max fixes the top of the scale, otherwise the peak sets it.
  */
-export function AreaChart({ points, label, max }: { points: { at: string; value: number }[]; label: string; max?: number }) {
+/** idle marks a source that is not being sampled, so too few points read as no data. */
+export function AreaChart({ points, label, max, idle = false }: { points: { at: string; value: number }[]; label: string; max?: number; idle?: boolean }) {
   const { t } = useTranslation("common");
   const gradient = useId();
   const now = Date.now();
@@ -54,7 +55,7 @@ export function AreaChart({ points, label, max }: { points: { at: string; value:
           })}
         </svg>
         {shown.length < 2 && (
-          <p className="absolute inset-0 flex items-center justify-center text-[11px] text-muted-foreground">{t("chart_collecting")}</p>
+          <p className="absolute inset-0 flex items-center justify-center text-[11px] text-muted-foreground">{t(idle ? "chart_no_data" : "chart_collecting")}</p>
         )}
       </div>
       <div className="mt-1 flex justify-between text-[10px] text-muted-foreground">

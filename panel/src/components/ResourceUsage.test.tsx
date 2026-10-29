@@ -52,6 +52,12 @@ describe("ResourceUsage", () => {
     expect(screen.getByText("9.0 GiB / 10 GiB")).toBeTruthy();
     expect(screen.getByRole("meter").getAttribute("aria-valuenow")).toBe(String(disk.usedBytes));
   });
+  it("says there is no data, rather than that it is collecting, for a stopped server without history", async () => {
+    mocks.serverUsage.mockResolvedValue({ current: null, history: [] });
+    render(<ResourceUsage name="survival" running={false} cpu="2" memory="2Gi" />);
+    expect(await screen.findAllByText(i18next.t("common:chart_no_data"))).toHaveLength(2);
+    expect(screen.queryByText(i18next.t("common:chart_collecting"))).toBeNull();
+  });
 });
 
 describe("DiskUsage", () => {

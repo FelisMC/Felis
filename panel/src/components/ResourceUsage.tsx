@@ -55,10 +55,10 @@ export function ResourceUsage({ name, running, cpu, memory, disk, diskFull }: { 
       <CardContent className="space-y-4">
         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
           <MetricTile icon={Cpu} label={t("usage_cpu")} value={cpuValue} muted={!current}>
-            <AreaChart points={history.map((p) => ({ at: p.at, value: p.cpuMilli }))} label={t("usage_cpu_curve")} max={cpuLimit || 1000} />
+            <AreaChart points={history.map((p) => ({ at: p.at, value: p.cpuMilli }))} label={t("usage_cpu_curve")} max={cpuLimit || 1000} idle={!running} />
           </MetricTile>
           <MetricTile icon={MemoryStick} label={t("usage_memory")} value={memoryValue} muted={!current}>
-            <AreaChart points={history.map((p) => ({ at: p.at, value: p.memoryBytes }))} label={t("usage_memory_curve")} max={memoryLimit(memory) ?? undefined} />
+            <AreaChart points={history.map((p) => ({ at: p.at, value: p.memoryBytes }))} label={t("usage_memory_curve")} max={memoryLimit(memory) ?? undefined} idle={!running} />
           </MetricTile>
           <DiskUsage disk={disk} diskFull={diskFull} />
         </div>

@@ -48,6 +48,7 @@
   "dismiss_notification": "关闭提示",
   "label_prefix": "{{label}}：",
   "chart_collecting": "正在采集数据",
+  "chart_no_data": "暂无数据",
   "chart_since_minutes_one": "{{count}} 分钟前",
   "chart_since_minutes_other": "{{count}} 分钟前",
   "chart_since_hour": "1 小时前",
