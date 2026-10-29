@@ -273,7 +273,8 @@ export function ServerConsole() {
         <RetireNotice name={name} retiring={data.retiring} isAdmin={isAdmin} onChanged={reload} />
       )}
       {!error && <RecoveryNotice data={data} />}
-      <Card className="dark flex h-[clamp(24rem,68dvh,52rem)] flex-col overflow-hidden border-zinc-800 bg-black text-zinc-50">
+      {/* The console fills the main area's visible height, less the bottom spacer. */}
+      <Card className="dark flex h-[clamp(24rem,calc(100cqh-1.5rem),72rem)] flex-col overflow-hidden border-zinc-800 bg-black text-zinc-50">
         <CardContent className="flex min-h-0 flex-1 flex-col bg-black p-0">
           {!error && startup && <StartupStrip startup={startup} blocked={startupBlocked} />}
           {savedLogs ? (

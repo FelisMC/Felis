@@ -19,6 +19,8 @@ export interface PageHeaderProps {
 
 export function PageHeader({ icon: Icon, title, subtitle, actions, tabs, back, className }: PageHeaderProps) {
   const host = React.useContext(PageHeaderHostContext);
+  // A header with tabs stays pinned over its sections, so it keeps to one line with the subtitle beside the title.
+  const compact = !!(tabs || back);
   const row = (
     <div className={cn("mx-auto flex w-full max-w-8xl flex-wrap items-center justify-between gap-3", className, host && "my-0")}>
       <div className="flex min-w-0 max-w-full items-center gap-3">
@@ -27,13 +29,13 @@ export function PageHeader({ icon: Icon, title, subtitle, actions, tabs, back, c
             {React.isValidElement(Icon)
               ? Icon
               : React.createElement(Icon as React.ComponentType<{ className?: string }>, {
-                  className: "h-6 w-6",
+                  className: compact ? "h-5 w-5" : "h-6 w-6",
                 })}
           </div>
         )}
-        <div className="min-w-0 text-left">
-          <h1 className="text-2xl font-semibold tracking-tight text-foreground">{title}</h1>
-          {subtitle && <div className="text-sm text-muted-foreground mt-0.5">{subtitle}</div>}
+        <div className={cn("min-w-0 text-left", compact && "flex flex-wrap items-baseline gap-x-4 gap-y-0.5")}>
+          <h1 className={cn("font-semibold tracking-tight text-foreground", compact ? "text-xl" : "text-2xl")}>{title}</h1>
+          {subtitle && <div className={cn("text-sm text-muted-foreground", !compact && "mt-0.5")}>{subtitle}</div>}
         </div>
       </div>
       {actions && <div className="flex min-w-0 max-w-full shrink-0 flex-wrap items-center gap-3">{actions}</div>}
@@ -43,9 +45,9 @@ export function PageHeader({ icon: Icon, title, subtitle, actions, tabs, back, c
   // strip's padding, so the chosen tab's underline lands on the line itself.
   const header = tabs || back ? (
     <div className="mx-auto w-full max-w-8xl">
-      {back && <div className="mb-3">{back}</div>}
+      {back && <div className="mb-1.5">{back}</div>}
       {row}
-      {tabs && <div className={cn("mt-4 md:mt-5", host ? "-mx-4 -mb-4 md:mx-0 md:-mb-6" : "border-b border-border")}>{tabs}</div>}
+      {tabs && <div className={cn("mt-3", host ? "-mx-4 -mb-4 md:mx-0" : "border-b border-border")}>{tabs}</div>}
     </div>
   ) : row;
   return host ? createPortal(header, host) : header;
