@@ -219,12 +219,19 @@ func (a *API) serverResources(ctx context.Context, name string) (ResourceSpec, e
 	if err != nil {
 		return ResourceSpec{}, err
 	}
-	storage, _ := resource.ParseQuantity(info.StorageSize)
 	return ResourceSpec{
 		CPUMilli:  quantityToMilli(info.Resources.Limits[corev1.ResourceCPU]),
 		MemoryMB:  quantityToMB(info.Resources.Limits[corev1.ResourceMemory]),
-		StorageMB: quantityToMB(storage),
+		StorageMB: worldStorageMB(info.StorageSize),
 	}, nil
+}
+
+func worldStorageMB(size string) int {
+	if size == "" {
+		size = defaultWorldSize
+	}
+	q, _ := resource.ParseQuantity(size)
+	return quantityToMB(q)
 }
 
 func (a *API) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -737,7 +744,7 @@ type patchServerRequest struct {
 	Software              *softwareRequest `json:"software,omitempty"`
 	ConfirmSoftwareChange bool             `json:"confirmSoftwareChange,omitempty"`
 	AcceptEULA            bool             `json:"acceptEula,omitempty"`
-	// Storage is recognized only to return storage_immutable; this build does not orchestrate PVC expansion.
+	// Storage sets the world quota the disk scans enforce; it cannot drop to or below the last measured use.
 	Storage *string `json:"storage,omitempty"`
 
 	ResumeAfterHostRestart *bool               `json:"resumeAfterHostRestart,omitempty"`
@@ -794,11 +801,6 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 		body.JavaFlags == nil && body.Args == nil && body.Env == nil && body.StopCommands == nil && body.ExtraPorts == nil {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
 			"patch must set at least one field"))
-		return
-	}
-	if body.Storage != nil {
-		writeError(w, r, newError(http.StatusBadRequest, "storage_immutable",
-			"storage size cannot be changed through this endpoint (PVC capacity is immutable)"))
 		return
 	}
 
@@ -972,6 +974,27 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 		changed = append(changed, "software")
 	}
 
+	if body.Storage != nil {
+		q, err := parsePositiveQuantity(*body.Storage, "storage")
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		info, err := current()
+		if err != nil {
+			a.writeLookupError(w, r, err)
+			return
+		}
+		if info.Disk != nil && info.Disk.UsedBytes >= q.Value() {
+			writeError(w, r, newError(http.StatusConflict, "storage_below_usage",
+				"the world already uses %d bytes, so its storage must stay above that", info.Disk.UsedBytes))
+			return
+		}
+		size := q.String()
+		patch.StorageSize = &size
+		changed = append(changed, "storage")
+	}
+
 	var (
 		newResources corev1.ResourceRequirements
 		resUpdated   bool
@@ -1013,11 +1036,24 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 	}
 
 	// Resize the quota cache under the owner's claim lock before cluster writes; shrink-only changes remain allowed above quota.
-	if resUpdated && !naming.IsSystemServer(name) {
-		newCPU := quantityToMilli(newResources.Limits[corev1.ResourceCPU])
-		newMemMB := quantityToMB(newResources.Limits[corev1.ResourceMemory])
-
-		prev, err := a.Repo.ResizeServer(r.Context(), name, newCPU, newMemMB)
+	if (resUpdated || patch.StorageSize != nil) && !naming.IsSystemServer(name) {
+		info, err := current()
+		if err != nil {
+			a.writeLookupError(w, r, err)
+			return
+		}
+		limits, storage := info.Resources.Limits, info.StorageSize
+		if resUpdated {
+			limits = newResources.Limits
+		}
+		if patch.StorageSize != nil {
+			storage = *patch.StorageSize
+		}
+		prev, err := a.Repo.ResizeServer(r.Context(), name, ResourceSpec{
+			CPUMilli:  quantityToMilli(limits[corev1.ResourceCPU]),
+			MemoryMB:  quantityToMB(limits[corev1.ResourceMemory]),
+			StorageMB: worldStorageMB(storage),
+		})
 		if errors.Is(err, ErrQuotaExceeded) {
 			writeError(w, r, newError(http.StatusForbidden, "quota_exceeded",
 				"this change would exceed the server owner's resource quota"))

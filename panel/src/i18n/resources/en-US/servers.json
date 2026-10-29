@@ -476,11 +476,10 @@
   "create_server_memory_hint": "The memory limit in GiB; decimals such as 1.5 are allowed. The JVM heap is sized from it.",
   "create_server_memory_hint_left": "In GiB; decimals are allowed. {{left}} GiB of the quota is left.",
   "create_server_memory_invalid": "Enter a number of at least 1, in GiB.",
-  "create_server_storage_hint": "The world volume size in whole GiB. It cannot be changed after creation.",
-  "create_server_storage_hint_left": "In whole GiB; it cannot be changed after creation. {{left}} GiB of the quota is left.",
+  "create_server_storage_hint": "Space the world files may use, in whole GiB. It can be changed later in settings.",
+  "create_server_storage_hint_left": "In whole GiB; it can be changed later in settings. {{left}} GiB of the quota is left.",
   "create_server_storage_invalid": "Enter a whole number of at least 1, in GiB.",
   "create_server_over_quota": "This exceeds the quota; {{left}} GiB of it is left.",
-  "edit_server_storage_fixed": "The world volume size is set at creation and cannot be changed.",
   "software_jar_source": "Jar source",
   "software_jar_mode_existing": "In the server",
   "software_jar_mode_upload": "Upload",
@@ -655,5 +654,6 @@
   "settings_change": "Change",
   "kill_desc": "Ends an unresponsive process at once without saving; players are disconnected and changes since the last save may be lost.",
   "emergency_stop_desc": "When a normal stop and a force stop both fail, scales the workload to zero, bypassing the game process and the operator.",
-  "retire_delete_desc": "Archives the world, then removes the server so its name and subdomain can be used again."
+  "retire_delete_desc": "Archives the world, then removes the server so its name and subdomain can be used again.",
+  "edit_server_storage_hint": "Space the world files may use, in whole GiB. It cannot go below what is already used."
 }

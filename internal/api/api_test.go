@@ -43,7 +43,7 @@ type fakeRepo struct {
 	// claimQuotaRefuse refuses a name whose advisory pre-check already passed.
 	claimQuotaRefuse       map[string]bool
 	migrateQuotaRefuse     map[string]bool
-	serverResources        map[string]ResourceSpec // cached resources; ResizeServer keeps the storage
+	serverResources        map[string]ResourceSpec // cached resources
 	resourceUpdates        map[string]ResourceSpec
 	resizeErr              error // ResizeServer fails with it (a store outage)
 	quotaChecked           []ResourceSpec
@@ -263,7 +263,7 @@ func (f *fakeRepo) UpdateServerResources(ctx context.Context, name string, cpu, 
 	return nil
 }
 
-func (f *fakeRepo) ResizeServer(_ context.Context, name string, cpu, mem int) (ResourceSpec, error) {
+func (f *fakeRepo) ResizeServer(_ context.Context, name string, next ResourceSpec) (ResourceSpec, error) {
 	if f.resizeErr != nil {
 		return ResourceSpec{}, f.resizeErr
 	}
@@ -272,8 +272,7 @@ func (f *fakeRepo) ResizeServer(_ context.Context, name string, cpu, mem int) (R
 		return ResourceSpec{}, nil
 	}
 	prev := f.serverResources[name]
-	next := ResourceSpec{CPUMilli: cpu, MemoryMB: mem, StorageMB: prev.StorageMB}
-	if rec.OwnerID != "" && (cpu > prev.CPUMilli || mem > prev.MemoryMB) {
+	if rec.OwnerID != "" && (next.CPUMilli > prev.CPUMilli || next.MemoryMB > prev.MemoryMB || next.StorageMB > prev.StorageMB) {
 		f.quotaChecked = append(f.quotaChecked, next)
 		if !f.quota[rec.OwnerID] {
 			return ResourceSpec{}, ErrQuotaExceeded
@@ -2022,6 +2021,9 @@ func (c *fakeCluster) PatchServerSpec(_ context.Context, n string, p ServerSpecP
 	}
 	if p.JavaMemory != nil {
 		info.JavaMemory = *p.JavaMemory
+	}
+	if p.StorageSize != nil {
+		info.StorageSize = *p.StorageSize
 	}
 	if p.Resources != nil {
 		info.Resources = *p.Resources.DeepCopy()

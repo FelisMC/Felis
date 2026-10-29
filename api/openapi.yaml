@@ -6079,6 +6079,12 @@ paths:
                 autostartPolicy: { type: string, enum: [ownerOnly, public, allowlist] }
                 idleStopSeconds: { type: integer, format: int32 }
                 memory: { type: string }
+                storage:
+                  type: string
+                  description: >-
+                    The world's storage quota. Growth counts against the caller's storage
+                    quota; a size at or below the last measured use is refused with 409
+                    storage_below_usage.
                 cpu: { type: string, description: The CPU limit; empty removes it. }
                 software: { $ref: '#/components/schemas/SoftwareRequest' }
                 confirmSoftwareChange: { type: boolean }
@@ -11775,7 +11781,12 @@ paths:
                     re-derives the JVM heap. The CPU limit and request are kept.
                 storage:
                   type: string
-                  description: Rejected with 400 storage_immutable — present for a clear error, not mutation.
+                  description: >-
+                    Sets the world's storage quota, which the disk scans enforce. Growth
+                    counts against the owner's storage quota (403 quota_exceeded); a size
+                    at or below the last measured use is refused with 409
+                    storage_below_usage. The world volume keeps the size it was created
+                    with.
                 resources:
                   type: object
                   description: >-

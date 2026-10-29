@@ -9376,6 +9376,8 @@ export interface operations {
                     /** Format: int32 */
                     idleStopSeconds?: number;
                     memory?: string;
+                    /** @description The world's storage quota. Growth counts against the caller's storage quota; a size at or below the last measured use is refused with 409 storage_below_usage. */
+                    storage?: string;
                     /** @description The CPU limit; empty removes it. */
                     cpu?: string;
                     software?: components["schemas"]["SoftwareRequest"];
@@ -15575,7 +15577,7 @@ export interface operations {
                     confirmImageChange?: boolean;
                     /** @description Sets the memory limit and request together, as create does, and re-derives the JVM heap. The CPU limit and request are kept. */
                     memory?: string;
-                    /** @description Rejected with 400 storage_immutable — present for a clear error, not mutation. */
+                    /** @description Sets the world's storage quota, which the disk scans enforce. Growth counts against the owner's storage quota (403 quota_exceeded); a size at or below the last measured use is refused with 409 storage_below_usage. The world volume keeps the size it was created with. */
                     storage?: string;
                     /** @description Single fields of the pod block, laid over what the server has: a field left out keeps its value, so each may be sent alone. An empty cpu or cpuRequest removes that limit or request; the memory ceiling cannot be emptied. A request above its limit is a 400. */
                     resources?: {

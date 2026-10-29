@@ -85,7 +85,7 @@ func TestSeedOwnedServerUnderTheDefaultQuota(t *testing.T) {
 	if _, err := repo.ClaimServer(ctx, ownerless, u.ID); !errors.Is(err, api.ErrQuotaExceeded) {
 		t.Fatalf("claim past the default quota = %v, want ErrQuotaExceeded", err)
 	}
-	if _, err := repo.ResizeServer(ctx, won, 0, 8192); !errors.Is(err, api.ErrQuotaExceeded) {
+	if _, err := repo.ResizeServer(ctx, won, api.ResourceSpec{MemoryMB: 8192, StorageMB: cachedSize(t, won).StorageMB}); !errors.Is(err, api.ErrQuotaExceeded) {
 		t.Fatalf("resize past the default memory cap = %v, want ErrQuotaExceeded", err)
 	}
 

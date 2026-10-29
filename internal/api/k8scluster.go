@@ -520,6 +520,9 @@ func (k *K8sCluster) PatchServerSpec(ctx context.Context, name string, p ServerS
 		if p.JavaMemory != nil {
 			ms.Spec.JavaMemory = *p.JavaMemory
 		}
+		if p.StorageSize != nil {
+			ms.Spec.Storage.Size = *p.StorageSize
+		}
 		if p.Resources != nil {
 			ms.Spec.Resources = *p.Resources
 		}

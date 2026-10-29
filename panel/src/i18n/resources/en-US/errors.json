@@ -64,7 +64,6 @@
   "bad_display_name": "Invalid display name. Use at most 64 visible characters or spaces, excluding line breaks, tabs, and control characters.",
   "bad_startup_settings": "Invalid startup settings. Check the entry counts, UTF-8 byte limits, environment variable names and reserved variables. JVM flags must contain one argument per entry and cannot override heap sizing or load argument files.",
   "at_capacity": "The cluster’s running-server limit has been reached. Retry after another server stops.",
-  "storage_immutable": "Storage capacity cannot be changed online.",
   "bad_idle_stop": "Idle stop must be between 1 minute and 24 hours, or Never.",
   "email_taken": "That email is already verified on another account — sign in with it or use another address.",
   "mail_undeliverable": "The verification email could not be delivered — try again later, or ask the operator to check the mail relay.",
@@ -182,5 +181,6 @@
   "extra_ports_pending": "Additional ports are being removed. Wait for the configuration to finish before trying again.",
   "bad_api_token": "The API key name or expiry is invalid. The name must be 1 to 64 characters on one line, and the expiry must be within the permitted range.",
   "api_tokens_disabled": "API keys are not enabled on this platform. The platform owner can enable them in Platform settings.",
-  "api_token_limit": "The account has reached its API key limit. Revoke a key that is no longer needed, then create the new key."
+  "api_token_limit": "The account has reached its API key limit. Revoke a key that is no longer needed, then create the new key.",
+  "storage_below_usage": "Storage must be larger than the space the world already uses."
 }

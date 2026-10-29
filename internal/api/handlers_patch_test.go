@@ -17,7 +17,7 @@ import (
 // existing "survival" server so a PATCH has a live target to mutate.
 func newPatchAPI() (*API, *fakeRepo, *fakeCluster, *fakeBuilder) {
 	api, repo, cl, fb := newCreateAPI()
-	cl.byName["survival"] = &ServerInfo{Name: "survival", Subdomain: "survival",
+	cl.byName["survival"] = &ServerInfo{Name: "survival", Subdomain: "survival", StorageSize: "10Gi",
 		AutostartPolicy: string(v1alpha1.AutostartOwnerOnly),
 		DesiredState:    string(v1alpha1.DesiredStopped), Phase: string(v1alpha1.PhaseStopped)}
 	repo.byName["survival"] = &ServerRecord{Name: "survival", Subdomain: "survival"}
@@ -135,6 +135,51 @@ func TestPatchServerPreservesStorageCache(t *testing.T) {
 	}
 }
 
+func TestPatchServerStorage(t *testing.T) {
+	mk := func(quota bool) (*API, *fakeRepo, *fakeCluster) {
+		api, repo, cl, _ := newPatchAPI()
+		seedResources(cl)
+		cl.byName["survival"].Disk = &ServerDiskUsage{UsedBytes: 3 << 30, LimitBytes: 10 << 30}
+		repo.byName["survival"].OwnerID = "u1"
+		repo.quota["u1"] = quota
+		repo.serverResources["survival"] = ResourceSpec{CPUMilli: 1000, MemoryMB: 4096, StorageMB: 10240}
+		return api, repo, cl
+	}
+
+	for _, size := range []string{"20Gi", "4Gi"} {
+		api, repo, cl := mk(true)
+		if w := patchSurvival(api, `{"storage":"`+size+`"}`); w.Code != http.StatusOK {
+			t.Fatalf("storage %s: code = %d, want 200 (%s)", size, w.Code, w.Body.String())
+		}
+		if p := cl.patched["survival"]; p.StorageSize == nil || *p.StorageSize != size {
+			t.Fatalf("storage %s: patched size = %v", size, p.StorageSize)
+		}
+		q := resource.MustParse(size)
+		want := ResourceSpec{CPUMilli: 1000, MemoryMB: 4096, StorageMB: int(q.Value() >> 20)}
+		if got := repo.resourceUpdates["survival"]; got != want {
+			t.Fatalf("storage %s: resource cache = %+v, want %+v", size, got, want)
+		}
+	}
+
+	api, _, cl := mk(true)
+	w := patchSurvival(api, `{"storage":"3Gi"}`)
+	if w.Code != http.StatusConflict || decodeErr(t, w) != "storage_below_usage" {
+		t.Fatalf("storage at the measured use: code = %d body %s, want 409 storage_below_usage", w.Code, w.Body.String())
+	}
+	if _, ok := cl.patched["survival"]; ok {
+		t.Fatal("storage below the measured use reached the cluster")
+	}
+
+	api, _, cl = mk(false)
+	w = patchSurvival(api, `{"storage":"20Gi"}`)
+	if w.Code != http.StatusForbidden || decodeErr(t, w) != "quota_exceeded" {
+		t.Fatalf("storage past the owner's quota: code = %d body %s, want 403 quota_exceeded", w.Code, w.Body.String())
+	}
+	if _, ok := cl.patched["survival"]; ok {
+		t.Fatal("storage past the owner's quota reached the cluster")
+	}
+}
+
 func TestPatchServerRejections(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -149,9 +194,14 @@ func TestPatchServerRejections(t *testing.T) {
 			wantCode: http.StatusBadRequest, wantErr: "bad_request",
 		},
 		{
-			name:     "storage is immutable",
-			body:     `{"storage":"20Gi"}`,
-			wantCode: http.StatusBadRequest, wantErr: "storage_immutable",
+			name:     "storage that is not a quantity",
+			body:     `{"storage":"lots"}`,
+			wantCode: http.StatusBadRequest, wantErr: "bad_request",
+		},
+		{
+			name:     "storage of zero",
+			body:     `{"storage":"0"}`,
+			wantCode: http.StatusBadRequest, wantErr: "bad_request",
 		},
 		{
 			name:     "bad name in path",
@@ -482,7 +532,7 @@ func TestPatchServerResizeCache(t *testing.T) {
 		if _, ok := cl.patched["survival"]; !ok {
 			t.Fatal("the patch did not reach the cluster")
 		}
-		if got, want := repo.resourceUpdates["survival"], (ResourceSpec{CPUMilli: 2000, MemoryMB: 4096, StorageMB: 5120}); got != want {
+		if got, want := repo.resourceUpdates["survival"], (ResourceSpec{CPUMilli: 2000, MemoryMB: 4096, StorageMB: 10240}); got != want {
 			t.Fatalf("resource cache = %+v, want %+v", got, want)
 		}
 	})

@@ -684,6 +684,7 @@ export const api = rejectingSync({
     autostartPolicy?: AutostartPolicy;
     idleStopSeconds?: number;
     memory?: string;
+    storage?: string;
     cpu?: string;
     software?: SoftwareRequest;
     confirmSoftwareChange?: boolean;
@@ -709,6 +710,8 @@ export const api = rejectingSync({
      *  opened by that build's Minecraft version, which cannot be undone. */
     confirmImageChange?: boolean;
     memory?: string;
+    /** The world's storage quota; it cannot drop to or below the space already used. */
+    storage?: string;
     /** Idle auto-stop: 0 turns it off, else seconds empty before the stop (60–86400). */
     idleStopSeconds?: number;
     /** Moves the server onto (other) server software; not together with image. */
@@ -1472,8 +1475,8 @@ export function humanizeError(e: unknown): string {
       return t("bad_startup_settings");
     case "at_capacity":
       return t("at_capacity");
-    case "storage_immutable":
-      return t("storage_immutable");
+    case "storage_below_usage":
+      return t("storage_below_usage");
     case "bad_idle_stop":
       return t("bad_idle_stop");
     // Email identity: the verified-email uniqueness index and VerifyEmailOTP's guard make a second verified holder impossible; the OTP relay can also refuse to deliver at all.

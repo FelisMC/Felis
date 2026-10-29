@@ -44,18 +44,20 @@ func TestResizeServerQuota(t *testing.T) {
 	}
 
 	for _, c := range []struct {
-		name     string
-		cpu, mem int
-		refused  bool
-		after    api.ResourceSpec
+		name          string
+		cpu, mem, sto int
+		refused       bool
+		after         api.ResourceSpec
 	}{
-		{"cpu grows to the cap", 2000, 2048, false, api.ResourceSpec{CPUMilli: 2000, MemoryMB: 2048, StorageMB: 400}},
-		{"cpu grows past the cap", 2001, 2048, true, api.ResourceSpec{CPUMilli: 2000, MemoryMB: 2048, StorageMB: 400}},
-		{"memory grows past the cap", 2000, 4097, true, api.ResourceSpec{CPUMilli: 2000, MemoryMB: 2048, StorageMB: 400}},
-		{"memory grows to the cap as cpu shrinks", 1500, 4096, false, api.ResourceSpec{CPUMilli: 1500, MemoryMB: 4096, StorageMB: 400}},
+		{"cpu grows to the cap", 2000, 2048, 400, false, api.ResourceSpec{CPUMilli: 2000, MemoryMB: 2048, StorageMB: 400}},
+		{"cpu grows past the cap", 2001, 2048, 400, true, api.ResourceSpec{CPUMilli: 2000, MemoryMB: 2048, StorageMB: 400}},
+		{"memory grows past the cap", 2000, 4097, 400, true, api.ResourceSpec{CPUMilli: 2000, MemoryMB: 2048, StorageMB: 400}},
+		{"memory grows to the cap as cpu shrinks", 1500, 4096, 400, false, api.ResourceSpec{CPUMilli: 1500, MemoryMB: 4096, StorageMB: 400}},
+		{"storage grows past the cap", 1500, 4096, 625, true, api.ResourceSpec{CPUMilli: 1500, MemoryMB: 4096, StorageMB: 400}},
+		{"storage grows to the cap", 1500, 4096, 624, false, api.ResourceSpec{CPUMilli: 1500, MemoryMB: 4096, StorageMB: 624}},
 	} {
 		prevWant := cachedSize(t, a)
-		prev, err := repo.ResizeServer(ctx, a, c.cpu, c.mem)
+		prev, err := repo.ResizeServer(ctx, a, api.ResourceSpec{CPUMilli: c.cpu, MemoryMB: c.mem, StorageMB: c.sto})
 		switch {
 		case c.refused && !errors.Is(err, api.ErrQuotaExceeded):
 			t.Fatalf("%s: err = %v, want ErrQuotaExceeded", c.name, err)
@@ -70,10 +72,10 @@ func TestResizeServerQuota(t *testing.T) {
 	// Storage over its cap (an admin lowered it, or the other server grew): growth
 	// is refused though it fits CPU and memory, and a shrink still goes through.
 	mustExec(t, `UPDATE servers SET cached_storage_mb = 700 WHERE name = $1`, b)
-	if _, err := repo.ResizeServer(ctx, a, 1600, 4096); !errors.Is(err, api.ErrQuotaExceeded) {
+	if _, err := repo.ResizeServer(ctx, a, api.ResourceSpec{CPUMilli: 1600, MemoryMB: 4096, StorageMB: 624}); !errors.Is(err, api.ErrQuotaExceeded) {
 		t.Fatalf("growth with storage over its cap: err = %v, want ErrQuotaExceeded", err)
 	}
-	if _, err := repo.ResizeServer(ctx, a, 1000, 2048); err != nil {
+	if _, err := repo.ResizeServer(ctx, a, api.ResourceSpec{CPUMilli: 1000, MemoryMB: 2048, StorageMB: 400}); err != nil {
 		t.Fatalf("shrink with storage over its cap: %v", err)
 	}
 	if got, want := cachedSize(t, a), (api.ResourceSpec{CPUMilli: 1000, MemoryMB: 2048, StorageMB: 400}); got != want {
@@ -82,14 +84,14 @@ func TestResizeServerQuota(t *testing.T) {
 
 	free := "rsf-" + sfx
 	seedSized(t, free, "", api.ResourceSpec{CPUMilli: 500, MemoryMB: 1024, StorageMB: 400})
-	if prev, err := repo.ResizeServer(ctx, free, 8000, 16384); err != nil || prev.CPUMilli != 500 {
+	if prev, err := repo.ResizeServer(ctx, free, api.ResourceSpec{CPUMilli: 8000, MemoryMB: 16384, StorageMB: 400}); err != nil || prev.CPUMilli != 500 {
 		t.Fatalf("resize of an unowned server = %+v, %v; want prev cpu 500, nil", prev, err)
 	}
 	if got, want := cachedSize(t, free), (api.ResourceSpec{CPUMilli: 8000, MemoryMB: 16384, StorageMB: 400}); got != want {
 		t.Fatalf("unowned cache = %+v, want %+v", got, want)
 	}
 
-	if prev, err := repo.ResizeServer(ctx, "rsnone-"+sfx, 1000, 1024); err != nil || prev != (api.ResourceSpec{}) {
+	if prev, err := repo.ResizeServer(ctx, "rsnone-"+sfx, api.ResourceSpec{CPUMilli: 1000, MemoryMB: 1024, StorageMB: 1}); err != nil || prev != (api.ResourceSpec{}) {
 		t.Fatalf("resize of no server = %+v, %v; want zeroes, nil", prev, err)
 	}
 	if rowExists(t, `SELECT 1 FROM servers WHERE name = $1`, "rsnone-"+sfx) {
@@ -113,7 +115,7 @@ func TestResizeServerWaitsForClaims(t *testing.T) {
 	defer hold.Rollback() //nolint:errcheck // no-op after commit
 	resized := make(chan error, 1)
 	go func() {
-		_, err := repo.ResizeServer(ctx, a, 1500, 1024)
+		_, err := repo.ResizeServer(ctx, a, api.ResourceSpec{CPUMilli: 1500, MemoryMB: 1024, StorageMB: 1})
 		resized <- err
 	}()
 	waitForLockWait(t, "SELECT pg_advisory_xact_lock")
@@ -146,7 +148,7 @@ func TestResizeServerFollowsNewOwner(t *testing.T) {
 	defer hold.Rollback() //nolint:errcheck // no-op after commit
 	resized := make(chan error, 1)
 	go func() {
-		_, err := repo.ResizeServer(ctx, a, 1500, 1024)
+		_, err := repo.ResizeServer(ctx, a, api.ResourceSpec{CPUMilli: 1500, MemoryMB: 1024, StorageMB: 1})
 		resized <- err
 	}()
 	waitForLockWait(t, "SELECT pg_advisory_xact_lock")
@@ -185,7 +187,7 @@ func TestResizeServerWaitsForAClaimOfAFreeServer(t *testing.T) {
 	}
 	resized := make(chan error, 1)
 	go func() {
-		_, err := repo.ResizeServer(ctx, free, 1500, 1024)
+		_, err := repo.ResizeServer(ctx, free, api.ResourceSpec{CPUMilli: 1500, MemoryMB: 1024, StorageMB: 1})
 		resized <- err
 	}()
 	waitForLockWait(t, "SELECT owner_id, cached_cpu_milli")

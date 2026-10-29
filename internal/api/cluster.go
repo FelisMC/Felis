@@ -125,7 +125,7 @@ type CreateServerInput struct {
 	Software *v1alpha1.SoftwareSpec
 }
 
-// ServerSpecPatch uses nil for unchanged fields and excludes routing identity and world-volume size to avoid cross-store drift.
+// ServerSpecPatch uses nil for unchanged fields and excludes routing identity to avoid cross-store drift.
 type ServerSpecPatch struct {
 	DisplayName     *string
 	AutostartPolicy *v1alpha1.AutostartPolicy
@@ -142,6 +142,8 @@ type ServerSpecPatch struct {
 	// ClearSoftware removes the runtime-software selection when moving to a server image.
 	Software      *v1alpha1.SoftwareSpec
 	ClearSoftware bool
+	// StorageSize moves only the world quota; the claim keeps the size it was created with.
+	StorageSize *string
 
 	ResumeAfterHostRestart *bool
 	RestartOnCrash         *bool

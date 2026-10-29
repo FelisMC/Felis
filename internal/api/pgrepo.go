@@ -305,9 +305,9 @@ func (p *PGRepo) UpdateServerResources(ctx context.Context, name string, cpuMill
 }
 
 // ResizeServer locks the owner's lane before the server row and retries if ownership changes.
-func (p *PGRepo) ResizeServer(ctx context.Context, name string, cpuMilli, memoryMB int) (ResourceSpec, error) {
+func (p *PGRepo) ResizeServer(ctx context.Context, name string, to ResourceSpec) (ResourceSpec, error) {
 	for attempt := 1; ; attempt++ {
-		prev, moved, err := p.resizeServer(ctx, name, cpuMilli, memoryMB)
+		prev, moved, err := p.resizeServer(ctx, name, to)
 		if !moved {
 			return prev, err
 		}
@@ -318,7 +318,7 @@ func (p *PGRepo) ResizeServer(ctx context.Context, name string, cpuMilli, memory
 }
 
 // resizeServer reports moved when ownership changed without writing anything.
-func (p *PGRepo) resizeServer(ctx context.Context, name string, cpuMilli, memoryMB int) (prev ResourceSpec, moved bool, err error) {
+func (p *PGRepo) resizeServer(ctx context.Context, name string, to ResourceSpec) (prev ResourceSpec, moved bool, err error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ResourceSpec{}, false, err
@@ -352,9 +352,8 @@ func (p *PGRepo) resizeServer(ctx context.Context, name string, cpuMilli, memory
 		return ResourceSpec{}, true, nil
 	}
 
-	if cpuMilli > prev.CPUMilli || memoryMB > prev.MemoryMB {
-		ok, err := quotaFits(ctx, tx, owner.String, name,
-			ResourceSpec{CPUMilli: cpuMilli, MemoryMB: memoryMB, StorageMB: prev.StorageMB})
+	if to.CPUMilli > prev.CPUMilli || to.MemoryMB > prev.MemoryMB || to.StorageMB > prev.StorageMB {
+		ok, err := quotaFits(ctx, tx, owner.String, name, to)
 		if err != nil {
 			return ResourceSpec{}, false, err
 		}
@@ -363,8 +362,8 @@ func (p *PGRepo) resizeServer(ctx context.Context, name string, cpuMilli, memory
 		}
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE servers SET cached_cpu_milli = $2, cached_memory_mb = $3 WHERE name = $1`,
-		name, cpuMilli, memoryMB); err != nil {
+		`UPDATE servers SET cached_cpu_milli = $2, cached_memory_mb = $3, cached_storage_mb = $4 WHERE name = $1`,
+		name, to.CPUMilli, to.MemoryMB, to.StorageMB); err != nil {
 		return ResourceSpec{}, false, err
 	}
 	return prev, false, tx.Commit()

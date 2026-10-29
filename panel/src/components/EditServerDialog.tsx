@@ -93,6 +93,7 @@ interface EditServerForm {
   autostartPolicy: AutostartPolicy;
   image: string;
   memory: string;
+  storage: string;
   cpu: string;
   /** Idle auto-stop seconds as a Select value; "0" is Never. */
   idleStop: string;
@@ -244,8 +245,9 @@ export function EditServerDialog({
   const [jarFile, setJarFile] = useState<File | null>(null);
   const [uploaded, setUploaded] = useState<number | null>(null);
 
-  // Memory is edited in GiB, as typed text.
+  // Memory and storage are edited in GiB, as typed text.
   const currentMemoryGiB = quantityGiB(currentMemory);
+  const currentStorageGiB = quantityGiB(currentStorage);
   // The status poll hands a new array each time, so the form follows the tags by value.
   const tagsKey = JSON.stringify(currentTags);
   const [tagDraft, setTagDraft] = useState("");
@@ -255,6 +257,7 @@ export function EditServerDialog({
     autostartPolicy: currentPolicy,
     image: currentImage,
     memory: currentMemoryGiB,
+    storage: currentStorageGiB,
     cpu: currentCpu,
     idleStop: currentIdleStop,
     resume: currentResume,
@@ -357,6 +360,7 @@ export function EditServerDialog({
         autostartPolicy: currentPolicy,
         image: currentImage,
         memory: currentMemoryGiB,
+        storage: currentStorageGiB,
         cpu: currentCpu,
         idleStop: currentIdleStop,
         resume: currentResume,
@@ -374,7 +378,7 @@ export function EditServerDialog({
       setEula(false);
       setJarFile(null);
     }
-  }, [open, currentDisplayName, tagsKey, currentPolicy, currentImage, currentMemoryGiB, currentCpu, currentIdleStop, softwareKey,
+  }, [open, currentDisplayName, tagsKey, currentPolicy, currentImage, currentMemoryGiB, currentStorageGiB, currentCpu, currentIdleStop, softwareKey,
     currentResume, currentCrashRestart, currentMaxCrash, notifyStarted, notifyStopped, notifyProblems]);
 
   function set<K extends keyof EditServerForm>(k: K, v: EditServerForm[K]) {
@@ -436,6 +440,9 @@ export function EditServerDialog({
   const memoryGiB = parseGiB(form.memory);
   const memoryOk = memoryGiB !== null && memoryGiB >= 1;
   const memoryChanged = memoryGiB === null ? form.memory.trim() !== currentMemoryGiB : memoryGiB !== parseGiB(currentMemoryGiB);
+  const storageGiB = parseGiB(form.storage);
+  const storageOk = storageGiB !== null && storageGiB >= 1 && Number.isInteger(storageGiB);
+  const storageChanged = storageGiB === null ? form.storage.trim() !== currentStorageGiB : storageGiB !== parseGiB(currentStorageGiB);
 
   const maxCrash = crashLimit(form.maxCrash);
   const maxCrashChanged = form.crashRestart && form.maxCrash.trim() !== currentMaxCrash;
@@ -455,6 +462,7 @@ export function EditServerDialog({
     softwareChanged ||
     !!jarUpload ||
     memoryChanged ||
+    storageChanged ||
     cpu !== currentCpu ||
     form.idleStop !== currentIdleStop;
 
@@ -464,6 +472,7 @@ export function EditServerDialog({
     cpuOk &&
     tagError === null &&
     (!memoryChanged || memoryOk) &&
+    (!storageChanged || storageOk) &&
     (!maxCrashChanged || maxCrash !== null) &&
     (!extraPortsChanged || extraPortsOk) &&
     !submitting &&
@@ -496,9 +505,12 @@ export function EditServerDialog({
         if (softwareMoves) payload.confirmSoftwareChange = true;
         if (!currentSoftware) payload.acceptEula = eula;
       }
-      // Memory and CPU each go alone; the API keeps whatever is not sent.
+      // Memory, storage and CPU each go alone; the API keeps whatever is not sent.
       if (memoryChanged && memoryGiB !== null) {
         payload.memory = gibQuantity(memoryGiB);
+      }
+      if (storageChanged && storageGiB !== null) {
+        payload.storage = gibQuantity(storageGiB);
       }
       if (cpu !== currentCpu) {
         payload.resources = { cpu };
@@ -795,10 +807,17 @@ export function EditServerDialog({
               </p>
             </div>
             <div className="grid content-start gap-2">
-              {/* A volume keeps the size it was created with. */}
               <Label htmlFor="edit-server-storage">{t("create_server_storage")}</Label>
-              <GiBInput id="edit-server-storage" value={quantityGiB(currentStorage) || currentStorage} onChange={() => {}} disabled describedBy="edit-server-storage-hint" />
-              <p id="edit-server-storage-hint" className="text-xs text-muted-foreground">{t("edit_server_storage_fixed")}</p>
+              <GiBInput
+                id="edit-server-storage"
+                value={form.storage}
+                onChange={(v) => set("storage", v)}
+                invalid={storageChanged && !storageOk}
+                describedBy="edit-server-storage-hint"
+              />
+              <p id="edit-server-storage-hint" className={storageChanged && !storageOk ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>
+                {storageChanged && !storageOk ? t("create_server_storage_invalid") : t("edit_server_storage_hint")}
+              </p>
             </div>
           </div>
 

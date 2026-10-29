@@ -273,7 +273,7 @@ type Repo interface {
 	SelfServiceState(ctx context.Context, userID string) (QuotaState, error)
 	UpdateServerResources(ctx context.Context, name string, cpuMilli, memoryMB, storageMB int) error
 	// ResizeServer serializes with claims, caps growth and returns previous values; absent live rows are unchanged.
-	ResizeServer(ctx context.Context, name string, cpuMilli, memoryMB int) (prev ResourceSpec, err error)
+	ResizeServer(ctx context.Context, name string, to ResourceSpec) (prev ResourceSpec, err error)
 	// PatchServerPorts locks the server row and checks a nonempty ownerID before apply.
 	PatchServerPorts(ctx context.Context, name, ownerID string, apply func() error) error
 	Audit(ctx context.Context, e AuditEntry) error
