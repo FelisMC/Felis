@@ -24,7 +24,7 @@ import { MAX_SERVER_TAGS, MAX_SERVER_TAG_LENGTH, mergeTags, tagIssue } from "@/l
 import { useAsync, useUnsavedGuard } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
 import { AssignServerDialog } from "@/components/AssignServerDialog";
-import type { AutostartPolicy, Phase, ServerExtraPort, ServerNotify, ServerSoftware, ServerStartupSettings } from "@/lib/types";
+import type { AutostartPolicy, IdleAction, Phase, ServerExtraPort, ServerNotify, ServerSoftware, ServerStartupSettings } from "@/lib/types";
 import { InlineError } from "@/components/MessageLine";
 import { cn } from "@/lib/utils";
 import { uploadFile } from "@/components/files/uploadFile";
@@ -93,6 +93,7 @@ interface EditServerForm {
   cpu: string;
   /** Idle auto-stop seconds as a Select value; "0" is Never. */
   idleStop: string;
+  idleAction: IdleAction;
   resume: boolean;
   crashRestart: boolean;
   maxCrash: string;
@@ -196,6 +197,7 @@ export interface ServerConfigProps {
   currentStorage?: string;
   currentCpu?: string;
   currentIdleStopSeconds?: number;
+  currentIdleAction?: IdleAction;
   /** The operator cannot read the player count, so idle stop is paused. */
   playerCountUnknown?: boolean;
   /** What the server runs from the runtime image; absent for a server image. */
@@ -238,6 +240,7 @@ export function ServerConfigForm({
   currentStorage = "",
   currentCpu = "",
   currentIdleStopSeconds = 0,
+  currentIdleAction = "hibernate",
   playerCountUnknown = false,
   currentSoftware,
   currentResume = true,
@@ -305,6 +308,7 @@ export function ServerConfigForm({
     storage: currentStorageGiB,
     cpu: currentCpu,
     idleStop: currentIdleStop,
+    idleAction: currentIdleAction,
     resume: currentResume,
     crashRestart: currentCrashRestart,
     maxCrash: currentMaxCrash,
@@ -401,6 +405,7 @@ export function ServerConfigForm({
       storage: currentStorageGiB,
       cpu: currentCpu,
       idleStop: currentIdleStop,
+      idleAction: currentIdleAction,
       resume: currentResume,
       crashRestart: currentCrashRestart,
       maxCrash: currentMaxCrash,
@@ -415,7 +420,7 @@ export function ServerConfigForm({
     setSoftwareConfirmed(false);
     setEula(false);
     setJarFile(null);
-  }, [currentDisplayName, tagsKey, currentPolicy, currentImage, currentMemoryGiB, currentStorageGiB, currentCpu, currentIdleStop, softwareKey,
+  }, [currentDisplayName, tagsKey, currentPolicy, currentImage, currentMemoryGiB, currentStorageGiB, currentCpu, currentIdleStop, currentIdleAction, softwareKey,
     currentResume, currentCrashRestart, currentMaxCrash, notifyStarted, notifyStopped, notifyProblems]);
   // The form follows the server whenever what it runs with changes, as after a save.
   useEffect(() => resetForm(), [resetForm]);
@@ -509,7 +514,8 @@ export function ServerConfigForm({
     memoryChanged ||
     storageChanged ||
     cpu !== currentCpu ||
-    form.idleStop !== currentIdleStop;
+    form.idleStop !== currentIdleStop ||
+    form.idleAction !== currentIdleAction;
   useUnsavedGuard(!inDialog && hasChanges);
 
   const pinnedBuild = splitImageRef(currentImage).short;
@@ -563,6 +569,9 @@ export function ServerConfigForm({
       }
       if (!systemService && form.idleStop !== currentIdleStop) {
         payload.idleStopSeconds = Number(form.idleStop);
+      }
+      if (!systemService && form.idleAction !== currentIdleAction) {
+        payload.idleAction = form.idleAction;
       }
       if (!systemService) {
         if (form.resume !== currentResume) payload.resumeAfterHostRestart = form.resume;
@@ -924,6 +933,21 @@ export function ServerConfigForm({
                 />
               </div>
             </SettingRow>
+            {idleOn && (
+              <SettingRow label={t("edit_server_idle_action")} htmlFor="es-idle-action" hint={t(`edit_server_idle_action_${form.idleAction}_hint`)}>
+                <div className="flex lg:justify-end">
+                  <Select value={form.idleAction} onValueChange={(v) => set("idleAction", v as IdleAction)}>
+                    <SelectTrigger id="es-idle-action" className="w-44">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="hibernate">{t("idle_action_hibernate")}</SelectItem>
+                      <SelectItem value="stop">{t("idle_action_stop")}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </SettingRow>
+            )}
             <SettingRow label={t("edit_server_resume")} hint={t("edit_server_resume_hint")} htmlFor="es-resume">
               <div className="flex lg:justify-end">
                 <Switch id="es-resume" checked={form.resume} onCheckedChange={(v) => set("resume", v)} />

@@ -562,6 +562,7 @@ export function ServerBackups() {
     !!statusQ.data &&
     (statusQ.data.phase === "Starting" ||
       statusQ.data.phase === "Stopping" ||
+      statusQ.data.phase === "Hibernating" ||
       pendingPower(statusQ.data) !== null ||
       startFailure(statusQ.data) === "retrying");
   usePolling(statusQ.reload, moving ? STATUS_POLL_FAST_MS : STATUS_POLL_SLOW_MS);
@@ -710,7 +711,7 @@ export function ServerBackups() {
   const latestID = page === 1 ? all.find((b) => !b.corrupt)?.id : undefined;
   // Gate by desired state as well as phase and world holders; backup downloads do not hold the world.
   const phase = shownPhase(statusQ.data);
-  const backupReady = phase === "Stopped" || (phase === "Running" && !!statusQ.data?.ready);
+  const backupReady = phase === "Stopped" || phase === "Hibernated" || (phase === "Running" && !!statusQ.data?.ready);
   const worldBusy = (jobsQ.data ?? []).some(
     (j) => (j.state === "running" && j.kind !== "export_backup") || j.then_restore === "pending",
   );
@@ -759,7 +760,9 @@ export function ServerBackups() {
                     ? t("backup_world_busy")
                     : phase === "Running"
                       ? t("backup_live_hint")
-                      : undefined
+                      : phase === "Hibernated"
+                        ? t("backup_hibernated_hint")
+                        : undefined
               }
             >
               {backingUp ? (

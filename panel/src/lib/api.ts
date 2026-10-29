@@ -12,6 +12,7 @@ import type {
   AllowlistEntry,
   ApiError,
   AutostartPolicy,
+  IdleAction,
   BackupView,
   BanlistResult,
   Build,
@@ -683,6 +684,7 @@ export const api = rejectingSync({
     displayName?: string;
     autostartPolicy?: AutostartPolicy;
     idleStopSeconds?: number;
+    idleAction?: IdleAction;
     memory?: string;
     storage?: string;
     cpu?: string;
@@ -714,6 +716,7 @@ export const api = rejectingSync({
     storage?: string;
     /** Idle auto-stop: 0 turns it off, else seconds empty before the stop (60–86400). */
     idleStopSeconds?: number;
+    idleAction?: IdleAction;
     /** Moves the server onto (other) server software; not together with image. */
     software?: SoftwareRequest;
     /** Required for another type or Minecraft version, or leaving a server image. */

@@ -15,6 +15,8 @@
   "list_truncated": "列表已按服务器安全上限截断。",
   "stopped_required_title": "服务器正在切换状态",
   "stopped_required_body": "服务器运行中或完全停止时可访问文件，请等待启动或停止完成。",
+  "hibernated_files_title": "服务器已休眠",
+  "hibernated_files_body": "休眠期间进程处于冻结状态，无法访问文件。唤醒或停止服务器后可管理文件。",
   "live_warning": "服务器运行期间，世界文件的改动可能被服务器覆盖；插件与配置的改动通常在重启后生效。",
   "live_world_confirm": "已了解在服务器运行期间修改世界目录的风险。",
   "live_world_confirm_required": "服务器正在运行，确认后才能改动世界目录。",

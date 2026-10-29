@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useId, useLayoutEffect, type KeyboardEvent } from "react";
-import { Moon, ShieldAlert, HelpCircle, Loader2, SendHorizontal, type LucideIcon } from "lucide-react";
+import { Moon, ShieldAlert, HelpCircle, Loader2, SendHorizontal, Snowflake, type LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -10,8 +10,8 @@ import { Loading } from "@/components/States";
 import { api, consoleStreamURL, humanizeError } from "@/lib/api";
 import { useConfig } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
-import type { Phase, ServerStatus } from "@/lib/types";
-import { formatDuration } from "@/lib/format";
+import type { Phase, ServerHibernation, ServerStatus } from "@/lib/types";
+import { formatBytes, formatDuration } from "@/lib/format";
 import { RetireNotice } from "@/components/Retirement";
 import { RecoveryNotice } from "@/components/ServerEvents";
 import { parseFormatting, rconLines, type Formatted } from "@/lib/mcformat";
@@ -77,6 +77,25 @@ function StartupStrip({ startup, blocked }: { startup: NonNullable<ServerStatus[
       </p>
       {startup.reason && <p className="break-words">{startup.reason === "Unschedulable" && startup.message?.includes("Insufficient memory") ? t("startup_memory") : [startup.reason, startup.message].filter(Boolean).join(": ")}</p>}
       <p className="text-xs text-zinc-500">{t(startup.stage === "failed" ? "startup_failed_hint" : "startup_hint")}</p>
+    </div>
+  );
+}
+
+// HibernationStrip heads the console of a server that is freezing, frozen or waking from a freeze.
+function HibernationStrip({ hibernation, waking }: { hibernation: ServerHibernation; waking: boolean }) {
+  const { t } = useTranslation("servers");
+  const blocked = !!hibernation.message;
+  const frozen = hibernation.stage === "Frozen" && !waking;
+  const kind = hibernation.stage === "Freezing" ? "freezing" : frozen ? "frozen" : blocked ? "wake_blocked" : "waking";
+  const Icon = blocked ? ShieldAlert : frozen ? Snowflake : Loader2;
+  return (
+    <div role="status" className={cn("shrink-0 space-y-1 border-b border-zinc-800 bg-zinc-900/70 px-4 py-3 text-sm text-zinc-300", blocked && "border-l-2 border-l-amber-500")}>
+      <p className="flex items-center gap-2 font-medium text-zinc-100">
+        <Icon className={cn("h-4 w-4", blocked ? "text-amber-400" : frozen ? "text-indigo-300" : "animate-spin text-primary")} />
+        {t(`hibernation_${kind}_title`)}
+      </p>
+      <p>{t(`hibernation_${kind}_body`, { size: formatBytes(hibernation.swappedBytes ?? 0) })}</p>
+      {blocked && <p className="break-words text-xs text-zinc-500">{hibernation.message}</p>}
     </div>
   );
 }
@@ -260,8 +279,9 @@ export function ServerConsole() {
   const { t } = useTranslation("servers");
   const savedLogs = owned && !error && data.desiredState === "Stopped" && !data.ready && !["Running", "Starting", "Stopping"].includes(data.phase);
   const commandable = owned && !error && data.desiredState === "Running" && ["Starting", "Running"].includes(data.phase);
-  // Stream Starting and Failed Pods as well as Running Pods so startup failures remain diagnosable.
-  const streamable = data.phase === "Running" || ((data.phase === "Starting" || data.phase === "Failed") && data.startup?.logsAvailable !== false);
+  // A frozen Pod keeps its log, and Starting or Failed Pods stream so startup failures remain diagnosable.
+  const streamable = data.phase === "Running" || data.phase === "Hibernating" || data.phase === "Hibernated" ||
+    ((data.phase === "Starting" || data.phase === "Failed") && data.startup?.logsAvailable !== false);
   const failure = startFailure(data);
   const startup = data.startup;
   const startupBlocked = startup?.stage === "failed" || startup?.reason === "Unschedulable";
@@ -274,7 +294,8 @@ export function ServerConsole() {
       {!error && <RecoveryNotice data={data} />}
       <Card className="dark flex min-h-96 flex-1 flex-col overflow-hidden border-zinc-800 bg-black text-zinc-50">
         <CardContent className="flex min-h-0 flex-1 flex-col bg-black p-0">
-          {!error && startup && <StartupStrip startup={startup} blocked={startupBlocked} />}
+          {!error && data.hibernation && data.hibernation.stage !== "Killing" && <HibernationStrip hibernation={data.hibernation} waking={data.desiredState === "Running"} />}
+          {!error && startup && !data.hibernation && <StartupStrip startup={startup} blocked={startupBlocked} />}
           {savedLogs ? (
             <div className="flex min-h-0 flex-1 flex-col"><ConsoleHistory key={name} name={name} /></div>
           ) : !streamable ? (

@@ -50,7 +50,7 @@ import { RefreshContext, useAsync, useConfig, usePageRefresh, usePolling } from 
 import { useTier } from "@/lib/tier";
 import { joinAddress, type RuntimeConfig } from "@/lib/config";
 import { matchScore } from "@/lib/fuzzy";
-import type { AutostartPolicy, FleetServer, Phase, MyServerView, RetireState } from "@/lib/types";
+import type { AutostartPolicy, DesiredState, FleetServer, Phase, MyServerView, RetireState } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { cpuUsage, memoryUsage } from "@/lib/resourceUsage";
 
@@ -61,6 +61,8 @@ const PHASES: Phase[] = [
   "Starting",
   "Stopping",
   "Failed",
+  "Hibernating",
+  "Hibernated",
   "Stopped",
   "Unknown",
 ];
@@ -133,7 +135,7 @@ interface UnifiedServer {
   displayName?: string;
   phase: Phase;
   ready: boolean;
-  desiredState?: "Running" | "Stopped";
+  desiredState?: DesiredState;
   autostartPolicy?: AutostartPolicy;
   playersOnline: number;
   playersMax: number;
@@ -321,6 +323,8 @@ export function ServersPage() {
       Stopped: 0,
       Failed: 0,
       Unknown: 0,
+      Hibernating: 0,
+      Hibernated: 0,
     };
     let playersOnline = 0;
     let playersMax = 0;

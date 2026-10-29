@@ -2466,7 +2466,7 @@ export interface paths {
         };
         /**
          * List a directory in a running or stopped server's world volume (owner-or-admin).
-         * @description Lists one directory inside the server's world volume — the repair lever for a server that will not boot because a config file is wrong. A server that has never started gets its world volume here, the one its first start then mounts, so files can be put in place before that start. Running servers share the RWO volume with file Jobs on the game pod's node, using uid/gid 1000. Starting or stopping returns 409 server_transitioning; backup, restore or migration returns 409 maintenance_in_progress. The listing runs as a Job whose output is read back through pods/log, so the call is synchronous but takes seconds rather than milliseconds. Paths are resolved inside the world root by os.Root, so "..", an absolute path, and a symlink leaving the root are all refused with 400 bad_path. Listings are capped; truncated reports that the cap was hit.
+         * @description Lists one directory inside the server's world volume — the repair lever for a server that will not boot because a config file is wrong. A server that has never started gets its world volume here, the one its first start then mounts, so files can be put in place before that start. Running servers share the RWO volume with file Jobs on the game pod's node, using uid/gid 1000. Starting or stopping returns 409 server_transitioning, a hibernated server returns 409 hibernated, and backup, restore or migration returns 409 maintenance_in_progress. The listing runs as a Job whose output is read back through pods/log, so the call is synchronous but takes seconds rather than milliseconds. Paths are resolved inside the world root by os.Root, so "..", an absolute path, and a symlink leaving the root are all refused with 400 bad_path. Listings are capped; truncated reports that the cap was hit.
          */
         get: operations["listServerFiles"];
         put?: never;
@@ -4245,7 +4245,7 @@ export interface components {
          * @description MinecraftServer lifecycle phase (internal/apis/felis/v1alpha1).
          * @enum {string}
          */
-        Phase: "Unknown" | "Stopped" | "Starting" | "Running" | "Stopping" | "Failed";
+        Phase: "Unknown" | "Stopped" | "Starting" | "Running" | "Stopping" | "Failed" | "Hibernating" | "Hibernated";
         ExecutionNode: {
             name: string;
             role: string;
@@ -4566,7 +4566,7 @@ export interface components {
              * @description Present only when set; the operator's target state.
              * @enum {string}
              */
-            desiredState?: "Running" | "Stopped";
+            desiredState?: "Running" | "Stopped" | "Hibernated";
             endpointMode?: string;
             endpointAddress?: string;
             /** Format: int32 */
@@ -4596,6 +4596,12 @@ export interface components {
              * @description Seconds the server may sit empty before idle auto-stop scales it down; 0 when it never idles out (off, RCON disabled, or a system server).
              */
             idleStopSeconds: number;
+            /**
+             * @description Owner and admin only; what an idle server does once idleStopSeconds pass. hibernate freezes the process and moves its memory to swap; a node without enough swap stops it instead.
+             * @enum {string}
+             */
+            idleAction?: "hibernate" | "stop";
+            hibernation?: components["schemas"]["ServerHibernation"];
             /** @description Present and true while the operator cannot read the player count over RCON; idle auto-stop waits until it can. */
             playerCountUnknown?: boolean;
             /** @description Present and true when the CR carries the label felis.lolicon.best/forwarding=legacy. The proxy then forwards this server's players BungeeCord-style in the handshake address instead of modern forwarding (Felis-Legacy Velocity fork only). */
@@ -4667,10 +4673,10 @@ export interface components {
             /** Format: int64 */
             seq: number;
             /** @enum {string} */
-            type: "Started" | "Stopped" | "Crashed" | "HostRestarted" | "StartFailed" | "DiskWarning" | "DiskFull";
+            type: "Started" | "Stopped" | "Crashed" | "HostRestarted" | "StartFailed" | "DiskWarning" | "DiskFull" | "Hibernated";
             /** Format: date-time */
             at: string;
-            /** @description The stop reason of Stopped, the termination reason of Crashed and the failure reason of StartFailed. */
+            /** @description The stop reason of Stopped (WakeFailed or HibernationLost after a hibernation that could not resume), the termination reason of Crashed, the failure reason of StartFailed, and Woke on a Started that resumed a hibernated process. */
             reason?: string;
             /** Format: int32 */
             exitCode?: number;
@@ -4692,6 +4698,23 @@ export interface components {
             started?: boolean;
             stopped?: boolean;
             problems?: boolean;
+        };
+        /** @description Present while the server's process is being frozen, is frozen, or is waking. */
+        ServerHibernation: {
+            /**
+             * @description Growing waits for the node to give the server its memory back; Thawing reads the memory back from swap.
+             * @enum {string}
+             */
+            stage: "Freezing" | "Frozen" | "Growing" | "Thawing" | "Killing";
+            /** Format: date-time */
+            since: string;
+            /**
+             * Format: int64
+             * @description Memory moved to swap by the freeze.
+             */
+            swappedBytes?: number;
+            /** @description Why a wake is waiting */
+            message?: string;
         };
         /** @description One row of the fleet-wide admin read (internal/api/handlers_user.go fleetServerView). */
         FleetServer: components["schemas"]["ServerInfo"] & {
@@ -4818,7 +4841,7 @@ export interface components {
              * @description Owned rows only, from live CRD status.
              * @enum {string}
              */
-            desiredState?: "Running" | "Stopped";
+            desiredState?: "Running" | "Stopped" | "Hibernated";
             /**
              * @description Owned rows only, from live CRD status.
              * @enum {string}
@@ -9377,6 +9400,8 @@ export interface operations {
                     autostartPolicy?: "ownerOnly" | "public" | "allowlist";
                     /** Format: int32 */
                     idleStopSeconds?: number;
+                    /** @enum {string} */
+                    idleAction?: "hibernate" | "stop";
                     memory?: string;
                     /** @description The world's storage quota. Growth counts against the caller's storage quota; a size at or below the last measured use is refused with 409 storage_below_usage. */
                     storage?: string;
@@ -11832,7 +11857,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Startup or shutdown is in progress (server_transitioning), or backup, restore or migration holds the world (maintenance_in_progress). */
+            /** @description Startup or shutdown is in progress (server_transitioning), or backup, restore or migration holds the world (maintenance_in_progress); a hibernated server returns hibernated until it is woken or stopped. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -12098,7 +12123,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Startup or shutdown is in progress (server_transitioning or not_stopped), or backup, restore, migration or a stopped-server file change holds the world (maintenance_in_progress). */
+            /** @description Startup or shutdown is in progress (server_transitioning or not_stopped), or backup, restore, migration or a stopped-server file change holds the world (maintenance_in_progress); a hibernated server returns hibernated until it is woken or stopped. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -12166,7 +12191,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Something is already at the path (file_exists), the server is changing state (server_transitioning or not_stopped), or backup, restore, migration or a stopped-server file change holds the world (maintenance_in_progress). */
+            /** @description Something is already at the path (file_exists), the server is changing state (server_transitioning or not_stopped), or backup, restore, migration or a stopped-server file change holds the world (maintenance_in_progress); a hibernated server returns hibernated until it is woken or stopped. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -12242,7 +12267,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Something is already at to (file_exists), the server is changing state (server_transitioning or not_stopped), or backup, restore, migration or a stopped-server file change holds the world (maintenance_in_progress). */
+            /** @description Something is already at to (file_exists), the server is changing state (server_transitioning or not_stopped), or backup, restore, migration or a stopped-server file change holds the world (maintenance_in_progress); a hibernated server returns hibernated until it is woken or stopped. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -12312,7 +12337,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Startup or shutdown is in progress (server_transitioning or not_stopped), or backup, restore, migration or another stopped-server operation holds the world (maintenance_in_progress). */
+            /** @description Startup or shutdown is in progress (server_transitioning or not_stopped), or backup, restore, migration or another stopped-server operation holds the world (maintenance_in_progress); a hibernated server returns hibernated until it is woken or stopped. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -12397,7 +12422,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description A file already exists without overwrite (file_exists), the server is changing state (server_transitioning or not_stopped), or backup, restore, migration or another stopped-server operation holds the world (maintenance_in_progress). */
+            /** @description A file already exists without overwrite (file_exists), the server is changing state (server_transitioning or not_stopped), or backup, restore, migration or another stopped-server operation holds the world (maintenance_in_progress); a hibernated server returns hibernated until it is woken or stopped. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -12498,7 +12523,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Startup, shutdown, backup, restore or migration is in progress (server_transitioning or maintenance_in_progress). */
+            /** @description Startup, shutdown, backup, restore or migration is in progress (server_transitioning or maintenance_in_progress); a hibernated server returns hibernated until it is woken or stopped. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -12821,7 +12846,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Startup or shutdown is in progress (server_transitioning or not_stopped), or backup, restore, migration or another stopped-server operation holds the world (maintenance_in_progress). */
+            /** @description Startup or shutdown is in progress (server_transitioning or not_stopped), or backup, restore, migration or another stopped-server operation holds the world (maintenance_in_progress); a hibernated server returns hibernated until it is woken or stopped. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -15593,6 +15618,11 @@ export interface operations {
                      * @description Idle auto-stop. 0 turns it off; otherwise the server stops after this many seconds with nobody online (60–86400, else 400 bad_idle_stop).
                      */
                     idleStopSeconds?: number;
+                    /**
+                     * @description Whether an idle server hibernates or stops; anything else is a 400 bad_request. System servers reject it.
+                     * @enum {string}
+                     */
+                    idleAction?: "hibernate" | "stop";
                     /** @description Moves the server onto server software, or to other server software, on the runtime image of its Java. Not together with image. Another type or Minecraft version, or leaving a server image, needs confirmSoftwareChange (409 software_change_unconfirmed otherwise); leaving a server image also needs acceptEula. */
                     software?: components["schemas"]["SoftwareRequest"];
                     confirmSoftwareChange?: boolean;

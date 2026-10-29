@@ -15,6 +15,8 @@
   "list_truncated": "The listing was truncated at the server's safety limit.",
   "stopped_required_title": "Server is changing state",
   "stopped_required_body": "File access is available while the server is running or fully stopped. Wait for startup or shutdown to finish.",
+  "hibernated_files_title": "Server is hibernated",
+  "hibernated_files_body": "Files are unavailable while the process is frozen. Resume or stop the server to manage its files.",
   "live_warning": "While the server is running, changes to world files may be overwritten by the server. Plugin and configuration changes usually take effect after a restart.",
   "live_world_confirm": "I acknowledge the risk of modifying world directories while the server is running.",
   "live_world_confirm_required": "The server is running; confirm before changing its world folders.",

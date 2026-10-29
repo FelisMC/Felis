@@ -7,7 +7,24 @@ export type Phase =
   | "Running"
   | "Stopping"
   | "Failed"
-  | "Unknown";
+  | "Unknown"
+  | "Hibernating"
+  | "Hibernated";
+
+export type DesiredState = "Running" | "Stopped" | "Hibernated";
+
+/** What an idle server does: freeze in place, or stop. */
+export type IdleAction = "hibernate" | "stop";
+
+/** A server whose process is being frozen, is frozen, or is waking. */
+export interface ServerHibernation {
+  /** Growing waits for the node to give the memory back; Thawing reads it back from swap. */
+  stage: "Freezing" | "Frozen" | "Growing" | "Thawing" | "Killing";
+  since: string;
+  swappedBytes?: number;
+  /** Why a wake is waiting. */
+  message?: string;
+}
 
 export type AutostartPolicy = "ownerOnly" | "public" | "allowlist";
 
@@ -78,7 +95,7 @@ export interface MyServerView {
   playersOnline: number;
   playersMax: number;
   displayName?: string;
-  desiredState?: "Running" | "Stopped";
+  desiredState?: DesiredState;
   autostartPolicy?: AutostartPolicy;
   /** True while the operator cannot read the player count; a stop may drop players. */
   playerCountUnknown?: boolean;
@@ -105,7 +122,7 @@ export interface ServerStatus {
   phase: Phase;
   ready: boolean;
   autostartPolicy?: AutostartPolicy;
-  desiredState?: "Running" | "Stopped";
+  desiredState?: DesiredState;
   endpointMode?: string;
   endpointAddress?: string;
   playersOnline: number;
@@ -122,6 +139,9 @@ export interface ServerStatus {
   memoryBytes?: number;
   /** Seconds empty before idle auto-stop; 0 when the server never idles out. */
   idleStopSeconds: number;
+  /** Owner and admin view only; absent means hibernate. */
+  idleAction?: IdleAction;
+  hibernation?: ServerHibernation;
   /** True while the operator cannot read the player count; idle stop waits. */
   playerCountUnknown?: boolean;
   /** True when the CR is labelled forwarding=legacy: the proxy forwards this
@@ -228,7 +248,7 @@ export interface AutoStopInfo {
   at: string;
 }
 
-export type ServerEventType = "Started" | "Stopped" | "Crashed" | "HostRestarted" | "StartFailed" | "DiskWarning" | "DiskFull";
+export type ServerEventType = "Started" | "Stopped" | "Crashed" | "HostRestarted" | "StartFailed" | "DiskWarning" | "DiskFull" | "Hibernated";
 
 export interface ServerEvent {
   seq: number;

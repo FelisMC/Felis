@@ -20,6 +20,7 @@
   "backup_requires_stopped": "Stop the server before backing it up.",
   "backup_requires_settled": "The server is starting or stopping. Back it up once it is running or fully stopped.",
   "backup_live_hint": "A running server can be backed up too: saving pauses for a few seconds while the world is copied, and players stay connected.",
+  "backup_hibernated_hint": "The backup reads the world saved before hibernation; the server stays hibernated.",
   "export_world": "Export world",
   "export_world_hint": "Package the current world as a .tar.gz file for download.",
   "export_preparing": "Preparing…",

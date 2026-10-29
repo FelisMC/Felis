@@ -13,6 +13,8 @@ export const PHASE_COLOR: Record<Phase, string> = {
   Stopped: "#64748b",
   Failed: "#ef4444",
   Unknown: "#94a3b8",
+  Hibernating: "#818cf8",
+  Hibernated: "#818cf8",
 };
 
 export const PHASE_KEY: Record<Phase, string> = {
@@ -22,6 +24,8 @@ export const PHASE_KEY: Record<Phase, string> = {
   Stopped: "servers:phase_stopped",
   Failed: "servers:phase_failed",
   Unknown: "servers:phase_unknown",
+  Hibernating: "servers:phase_hibernating",
+  Hibernated: "servers:phase_hibernated",
 };
 
 const VARIANT: Record<Phase, BadgeVariant> = {
@@ -31,10 +35,12 @@ const VARIANT: Record<Phase, BadgeVariant> = {
   Stopped: "muted",
   Failed: "destructive",
   Unknown: "muted",
+  Hibernating: "outline",
+  Hibernated: "muted",
 };
 
-// Phases that should pulse: the two in-flight transitions a pod is moving through.
-const TRANSIENT: ReadonlySet<Phase> = new Set<Phase>(["Starting", "Stopping"]);
+// Phases that should pulse: the in-flight transitions a pod is moving through.
+const TRANSIENT: ReadonlySet<Phase> = new Set<Phase>(["Starting", "Stopping", "Hibernating"]);
 
 // Unvalidated phases fall back to neutral Unknown styling.
 export function phaseColor(phase: Phase): string {
@@ -67,10 +73,12 @@ export type PendingPower = "start" | "stop";
 
 // Compare phase with desiredState; public views without desiredState show no pending transition.
 export function pendingPower(s: { phase: Phase; desiredState?: string }): PendingPower | null {
-  if (s.desiredState === "Running" && (s.phase === "Stopped" || s.phase === "Stopping" || s.phase === "Unknown")) {
+  if (s.desiredState === "Running" && (s.phase === "Stopped" || s.phase === "Stopping" || s.phase === "Unknown" || s.phase === "Hibernated")) {
     return "start";
   }
-  if (s.desiredState === "Stopped" && (s.phase === "Running" || s.phase === "Starting")) return "stop";
+  if (s.desiredState === "Stopped" && (s.phase === "Running" || s.phase === "Starting" || s.phase === "Hibernated" || s.phase === "Hibernating")) {
+    return "stop";
+  }
   return null;
 }
 

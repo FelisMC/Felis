@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { PHASE_COLOR, pendingPower, phaseColor, phaseVariant, shownPhase, startFailure } from "@/components/PhaseBadge";
-import type { Phase } from "@/lib/types";
+import type { DesiredState, Phase } from "@/lib/types";
 
 // Pin the frontend phase union against the backend's closed lifecycle set.
 const BACKEND_PHASES = [
@@ -27,7 +27,7 @@ describe("phase palette parity", () => {
 
 describe("unmodelled phase fallback", () => {
   // Simulate an unknown phase crossing the unvalidated JSON boundary.
-  const future = "Hibernating" as Phase;
+  const future = "Migrating" as Phase;
 
   it("degrades an out-of-union phase to the Unknown colour", () => {
     expect(phaseColor(future)).toBe(PHASE_COLOR.Unknown);
@@ -53,7 +53,7 @@ describe("start failure", () => {
 describe("a server asked to move", () => {
   // desiredState flips the moment a wake or stop is accepted; the phase follows
   // once the operator acts. Every pair the two can be in:
-  const cases: [Phase, "Running" | "Stopped" | undefined, "start" | "stop" | null, Phase][] = [
+  const cases: [Phase, DesiredState | undefined, "start" | "stop" | null, Phase][] = [
     ["Stopped", "Running", "start", "Starting"],
     ["Unknown", "Running", "start", "Starting"],
     // Woken while going down: it comes back up once it is down.
@@ -68,6 +68,11 @@ describe("a server asked to move", () => {
     ["Stopped", "Stopped", null, "Stopped"],
     ["Failed", "Stopped", null, "Failed"],
     ["Unknown", "Stopped", null, "Unknown"],
+    // A hibernated server asked to resume or stop shows where it is heading before the operator acts.
+    ["Hibernated", "Running", "start", "Starting"],
+    ["Hibernated", "Stopped", "stop", "Stopping"],
+    ["Hibernating", "Stopped", "stop", "Stopping"],
+    ["Hibernated", "Hibernated", null, "Hibernated"],
     // A view without desiredState shows the phase as it is.
     ["Stopped", undefined, null, "Stopped"],
     ["Running", undefined, null, "Running"],

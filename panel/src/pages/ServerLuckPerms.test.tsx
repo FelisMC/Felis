@@ -82,7 +82,7 @@ describe("ServerLuckPerms on a server that is down", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     calls.status.mockResolvedValue({ name: "lobby", displayName: "Lobby", phase: "Stopped", desiredState: "Stopped" });
     renderPage();
-    expect(await screen.findByText("Server is asleep")).toBeTruthy();
+    expect(await screen.findByText("Server is not running")).toBeTruthy();
     expect(calls.accessPlayers).not.toHaveBeenCalled();
 
     calls.status.mockResolvedValue({ name: "lobby", displayName: "Lobby", phase: "Running", desiredState: "Running" });
@@ -90,7 +90,7 @@ describe("ServerLuckPerms on a server that is down", () => {
     await act(() => vi.advanceTimersByTimeAsync(STATUS_POLL_FAST_MS));
     expect(await screen.findByRole("button", { name: /Alex/ })).toBeTruthy();
     expect(calls.accessPlayers).toHaveBeenCalledWith("lobby");
-    expect(screen.queryByText("Server is asleep")).toBeNull();
+    expect(screen.queryByText("Server is not running")).toBeNull();
   });
 
   it("shows a server woken elsewhere as starting", async () => {

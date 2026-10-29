@@ -43,7 +43,8 @@ export function ServerLayout() {
   const { t } = useTranslation("servers");
   const { data, error, loading, reload, updatedAt } = useAsync(() => api.status(name), [name], { coalesce: true });
   // Poll faster during power transitions and retry backoff.
-  const moving = !!data && (data.phase === "Starting" || data.phase === "Stopping" || pendingPower(data) !== null || startFailure(data) === "retrying");
+  const moving = !!data && (data.phase === "Starting" || data.phase === "Stopping" || data.phase === "Hibernating" ||
+    (!!data.hibernation && data.hibernation.stage !== "Frozen") || pendingPower(data) !== null || startFailure(data) === "retrying");
   usePolling(reload, moving ? STATUS_POLL_FAST_MS : STATUS_POLL_SLOW_MS);
   const { data: mine } = useAsync(() => (isAdmin ? Promise.resolve([]) : api.myServers()), [isAdmin, name]);
   const owned = canManage(isAdmin, mine, name);

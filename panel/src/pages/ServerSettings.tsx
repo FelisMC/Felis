@@ -47,6 +47,7 @@ export function ServerSettings() {
           currentStorage={data.storageSize}
           currentCpu={data.cpu}
           currentIdleStopSeconds={data.idleStopSeconds}
+          currentIdleAction={data.idleAction}
           playerCountUnknown={data.playerCountUnknown}
           currentSoftware={data.software}
           currentResume={data.resumeAfterHostRestart}

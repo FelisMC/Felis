@@ -55,7 +55,7 @@ describe("ServerPlayers following the server", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     calls.status.mockResolvedValue(status({ phase: "Stopped", desiredState: "Stopped", autostartPolicy: "allowlist" }));
     renderPage();
-    expect(await screen.findByText("Server is asleep")).toBeTruthy();
+    expect(await screen.findByText("Server is not running")).toBeTruthy();
     // Asleep, the wake list is the one block left, so it opens.
     expect(screen.getByTestId("wake-list").dataset).toMatchObject({ policy: "allowlist", open: "true" });
 
@@ -71,7 +71,7 @@ describe("ServerPlayers following the server", () => {
     await act(() => vi.advanceTimersByTimeAsync(STATUS_POLL_FAST_MS));
     expect(calls.status.mock.calls.length).toBe(reads);
     await act(() => vi.advanceTimersByTimeAsync(STATUS_POLL_SLOW_MS - STATUS_POLL_FAST_MS));
-    expect(await screen.findByText("Server is asleep")).toBeTruthy();
+    expect(await screen.findByText("Server is not running")).toBeTruthy();
     expect(screen.queryByTestId("online")).toBeNull();
   });
 

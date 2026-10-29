@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Loader2, AlertTriangle, Inbox, ShieldX, ShieldQuestion, Construction, Moon, SearchX, RefreshCw } from "lucide-react";
+import { Loader2, AlertTriangle, Inbox, ShieldX, ShieldQuestion, Construction, Moon, SearchX, RefreshCw, Snowflake } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { MAX_AUTO_RESTARTS, shownPhase, type StartFailure } from "@/components/PhaseBadge";
@@ -7,7 +7,7 @@ import { PowerButton } from "@/components/PowerButton";
 import { Button } from "@/components/ui/button";
 import { humanizeError } from "@/lib/api";
 import { useTier } from "@/lib/tier";
-import type { Phase, RetireState } from "@/lib/types";
+import type { DesiredState, Phase, RetireState } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 export function Loading({ label }: { label?: string }) {
@@ -200,7 +200,7 @@ export interface NotRunningProps {
   /** The server to wake from here. */
   serverName: string;
   phase: Phase;
-  desiredState?: "Running" | "Stopped";
+  desiredState?: DesiredState;
   /** From startFailure: a Failed start gets its own copy and a retry. */
   failure?: StartFailure | null;
   autoRestarts?: number;
@@ -225,7 +225,7 @@ export function NotRunning({
 }: NotRunningProps) {
   const { t } = useTranslation("servers");
   const shown = shownPhase({ phase, desiredState });
-  const transitional = failure === null && (shown === "Starting" || shown === "Stopping");
+  const transitional = failure === null && (shown === "Starting" || shown === "Stopping" || shown === "Hibernating");
 
   let icon = <Moon className="h-8 w-8 text-muted-foreground/70" />;
   let copy = { title, body };
@@ -243,7 +243,12 @@ export function NotRunning({
     copy =
       shown === "Starting"
         ? { title: t("server_waking_title"), body: t("server_waking_body") }
-        : { title: t("server_stopping_title"), body: t("server_stopping_body") };
+        : shown === "Hibernating"
+          ? { title: t("server_hibernating_title"), body: t("server_hibernating_body") }
+          : { title: t("server_stopping_title"), body: t("server_stopping_body") };
+  } else if (shown === "Hibernated") {
+    icon = <Snowflake className="h-8 w-8 text-muted-foreground/70" />;
+    copy = { title: t("server_hibernated_title"), body: t("server_hibernated_body") };
   }
 
   return (

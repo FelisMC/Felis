@@ -7,7 +7,7 @@ import type { Phase, MyServerView } from "@/lib/types";
 
 // Keep the flat fallback outside the three.js chunk so it survives WebGL or chunk-load failure.
 
-const TRANSIENT: ReadonlySet<Phase> = new Set<Phase>(["Starting", "Stopping"]);
+const TRANSIENT: ReadonlySet<Phase> = new Set<Phase>(["Starting", "Stopping", "Hibernating"]);
 
 export type FleetGridReason = "webgl" | "error";
 

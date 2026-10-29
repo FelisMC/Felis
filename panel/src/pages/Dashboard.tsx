@@ -237,6 +237,7 @@ function FleetView({
     let starting = 0;
     let stopping = 0;
     let stopped = 0;
+    let hibernated = 0;
     let failed = 0;
     let unknown = 0;
     let maxPlayers = 0;
@@ -246,6 +247,7 @@ function FleetView({
       else if (s.phase === "Starting") starting++;
       else if (s.phase === "Stopping") stopping++;
       else if (s.phase === "Stopped") stopped++;
+      else if (s.phase === "Hibernated" || s.phase === "Hibernating") hibernated++;
       else if (s.phase === "Failed") failed++;
       else unknown++;
 
@@ -257,6 +259,7 @@ function FleetView({
       starting,
       stopping,
       stopped,
+      hibernated,
       failed,
       unknown,
       maxPlayers,
@@ -368,6 +371,7 @@ function FleetView({
                         {renderBarSegment(statusStats.starting, "bg-[#eab308]")}
                         {renderBarSegment(statusStats.stopping, "bg-[#f97316]")}
                         {renderBarSegment(statusStats.failed, "bg-[#ef4444]")}
+                        {renderBarSegment(statusStats.hibernated, "bg-[#818cf8]")}
                         {renderBarSegment(statusStats.stopped, "bg-[#64748b]")}
                         {renderBarSegment(statusStats.unknown, "bg-[#94a3b8]")}
                       </div>
@@ -461,7 +465,7 @@ function FleetView({
                       <div className="text-xl font-bold font-mono text-[#22c55e] leading-none mt-1.5">{runningRatio}%</div>
                     </div>
 
-                    {/* 节点休眠率 */}
+                    {/* 节点停止率 */}
                     <div className="space-y-1">
                       <div className="flex items-center gap-1.5 text-muted-foreground">
                         <Activity className="h-3.5 w-3.5 text-primary" />
@@ -566,6 +570,13 @@ function FleetView({
                     <span className="text-muted-foreground text-[11px]">{t("legend_stopped")}</span>
                   </div>
                   <span className="font-mono text-[11px] text-foreground font-semibold">{statusStats.stopped}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="h-2 w-2 rounded-full bg-[#818cf8]" />
+                    <span className="text-muted-foreground text-[11px]">{t("legend_hibernated")}</span>
+                  </div>
+                  <span className="font-mono text-[11px] text-foreground font-semibold">{statusStats.hibernated}</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">

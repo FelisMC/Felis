@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { pendingPower } from "@/components/PhaseBadge";
 import { RetiringBadge } from "@/components/Retirement";
 import { api, humanizeError } from "@/lib/api";
-import type { Phase, RetireState } from "@/lib/types";
+import type { DesiredState, Phase, RetireState } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /** How long a sent wake or stop shows as in progress when the view never
@@ -20,7 +20,7 @@ interface Props {
   phase: Phase;
   /** What the server was last asked to be. Absent in a view without it; the
    *  phase alone then decides. */
-  desiredState?: "Running" | "Stopped";
+  desiredState?: DesiredState;
   /** Its start Failed while meant to run: offer a retry and a stop. */
   failed?: boolean;
   playersOnline?: number;
@@ -138,6 +138,25 @@ export function PowerButton({
           {busy === "wake" ? spinner : <RotateCcw />}
           {busy === "wake" ? t("retrying_start") : t("retry_start")}
         </Button>
+        {stopButton("outline", () => void run("stop"))}
+      </div>
+    );
+  } else if (desiredState === "Hibernated" && phase !== "Hibernated") {
+    control = (
+      <Button size={size} variant="outline" disabled>
+        {spinner}
+        {t("hibernating")}
+      </Button>
+    );
+  } else if (desiredState === "Hibernated") {
+    control = (
+      <div className="flex items-center justify-end gap-2">
+        {!stopOnly && (
+          <Button size={size} onClick={() => void run("wake")} disabled={busy !== null || diskFull}>
+            {busy === "wake" ? spinner : <Play />}
+            {busy === "wake" ? t("resuming") : t("resume")}
+          </Button>
+        )}
         {stopButton("outline", () => void run("stop"))}
       </div>
     );

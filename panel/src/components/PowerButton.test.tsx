@@ -37,6 +37,21 @@ describe("PowerButton", () => {
     expect(onChanged).toHaveBeenCalledOnce();
   });
 
+  it("offers a hibernated server a resume and a full stop, and nothing while it is still freezing", async () => {
+    wake.mockResolvedValue(undefined);
+    stop.mockResolvedValue(undefined);
+    const { rerender } = render(<PowerButton name="tech" phase="Hibernating" desiredState="Hibernated" onChanged={vi.fn()} />);
+    expect(screen.getByRole("button", { name: t("servers:hibernating") })).toHaveProperty("disabled", true);
+
+    rerender(<PowerButton name="tech" phase="Hibernated" desiredState="Hibernated" onChanged={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: t("servers:resume") }));
+    expect(wake).toHaveBeenCalledWith("tech");
+
+    rerender(<PowerButton key="again" name="tech" phase="Hibernated" desiredState="Hibernated" onChanged={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: t("servers:stop") }));
+    expect(stop).toHaveBeenCalledWith("tech");
+  });
+
   it("stays on the page with the reason when the wake is refused", async () => {
     wake.mockRejectedValue({ status: 429, code: "quota_exceeded", message: "raw" });
     const onChanged = vi.fn();

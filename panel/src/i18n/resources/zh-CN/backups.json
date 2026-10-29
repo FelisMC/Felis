@@ -20,6 +20,7 @@
   "backup_requires_stopped": "备份前需要先停止服务器。",
   "backup_requires_settled": "服务器正在启动或停止，请等它运行起来或完全停止后再备份。",
   "backup_live_hint": "服务器运行中也可以备份：复制世界期间存档会暂停几秒钟，玩家不受影响。",
+  "backup_hibernated_hint": "备份读取休眠前保存的世界，服务器保持休眠。",
   "export_world": "导出世界",
   "export_world_hint": "将当前世界打包为 .tar.gz 文件并下载。",
   "export_preparing": "准备中……",

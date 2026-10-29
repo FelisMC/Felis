@@ -16,9 +16,13 @@ export function crashCause(t: T, reason: string | undefined, exitCode: number): 
 export function eventText(t: T, ev: ServerEvent): string {
   switch (ev.type) {
     case "Started":
-      return t("event_started");
+      return t(ev.reason === "Woke" ? "event_woke" : "event_started");
+    case "Hibernated":
+      return t("event_hibernated");
     case "Stopped":
       if (ev.reason === "Idle") return t("event_stopped_idle");
+      if (ev.reason === "WakeFailed") return t("event_stopped_wake_failed");
+      if (ev.reason === "HibernationLost") return t("event_stopped_hibernation_lost");
       if (ev.reason === "Crashed" || ev.reason === "CrashLimit") return t("event_stopped_crash");
       if (ev.reason === "HostRestarted") return t("event_stopped_host");
       if (ev.reason === "DiskFull") return t("event_stopped_disk");

@@ -18,6 +18,7 @@ import {
   Pencil,
   RefreshCw,
   Save,
+  Snowflake,
   Square,
   Trash2,
   Upload,
@@ -148,6 +149,7 @@ export function ServerFiles() {
   const stopped = statusQ.data?.phase === "Stopped";
   const live = statusQ.data?.phase === "Running" && statusQ.data.desiredState === "Running";
   const accessible = stopped || live;
+  const hibernated = statusQ.data?.desiredState === "Hibernated";
   const world = useFileWorldConfirmation(name, owned, live);
   const { confirmed: worldConfirmed, setConfirmed: setWorldConfirmed, directories: worldDirs,
     needsConfirmation: needsWorldConfirmation, requireConfirmation: requireWorldConfirmation,
@@ -814,11 +816,11 @@ export function ServerFiles() {
           {!accessible ? (
             <Card>
               <CardContent className="flex flex-col items-center gap-3 py-14 text-center">
-                <Square className="h-7 w-7 text-muted-foreground/70" />
+                {hibernated ? <Snowflake className="h-7 w-7 text-muted-foreground/70" /> : <Square className="h-7 w-7 text-muted-foreground/70" />}
                 <div>
-                  <p className="font-medium">{t("stopped_required_title")}</p>
+                  <p className="font-medium">{t(hibernated ? "hibernated_files_title" : "stopped_required_title")}</p>
                   <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
-                    {t("stopped_required_body")}
+                    {t(hibernated ? "hibernated_files_body" : "stopped_required_body")}
                   </p>
                 </div>
                 <PowerButton
@@ -830,7 +832,7 @@ export function ServerFiles() {
                   playerCountUnknown={statusQ.data.playerCountUnknown}
                   retiring={statusQ.data.retiring}
                   diskFull={statusQ.data.diskFull}
-                  stopOnly
+                  stopOnly={!hibernated}
                   onChanged={statusQ.reload}
                   className="items-center"
                 />
