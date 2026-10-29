@@ -629,6 +629,7 @@ export const api = rejectingSync({
   nodeTaskArtifact: (id: string) => downloadBlob(urlPath`/settings/node-control/tasks/${id}/artifact`),
   hostOverview: () => request<HostOverview>("GET", "/platform/host"),
   holdAlerts: (until: string | null) => request<null>("POST", "/platform/host/quiet", { until }),
+  ignoreAlert: (key: string, ignored: boolean) => request<null>("POST", "/platform/host/ignore", { key, ignored }),
   revealOffsiteKey: () => request<{ key: string }>("POST", "/platform/offsite/key"),
   exportAudit: (since: string, until: string) => {
     const q = new URLSearchParams();

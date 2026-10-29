@@ -20,8 +20,9 @@ export function PlatformHealthBanner() {
   const diskFree = disk ? disk.available / disk.total : 1;
   const status = data.offsite.status as OffsiteStatus | undefined;
   const offsiteOk = data.offsite.configured && !!status?.last_success && !status.key_mismatch && !status.standby && !status.displaced;
+  const open = data.alerts.filter((a) => !a.ignored).length;
   const items = [
-    { key: "alerts", icon: data.alerts.length ? AlertTriangle : CheckCircle2, bad: data.alerts.length > 0, text: data.alerts.length ? t("host_alerts_open", { count: data.alerts.length }) : t("host_alerts_none"), tab: "status" },
+    { key: "alerts", icon: open ? AlertTriangle : CheckCircle2, bad: open > 0, text: open ? t("host_alerts_open", { count: open }) : t("host_alerts_none"), tab: "status" },
     { key: "db", icon: Database, bad: !newest, text: newest ? t("health_db_newest", { time: formatRelative(newest.created, now, i18n.language) }) : t("db_bundles_none"), tab: "backups" },
     { key: "offsite", icon: CloudUpload, bad: !offsiteOk, text: t("health_offsite", { state: t(!data.offsite.configured ? "offsite_state_off" : offsiteOk ? "offsite_state_ok" : "offsite_state_attention") }), tab: "offsite" },
     ...(disk ? [{ key: "disk", icon: HardDrive, bad: diskFree < 0.1, text: t("health_disk_free", { free: formatBytes(disk.available), path: disk.path }), tab: "status" }] : []),

@@ -1308,6 +1308,8 @@ export interface HostAlert {
   hint?: string;
   firstSeen: string;
   notified?: string;
+  /** The Owner ignores this check: it is not mailed or counted as open. */
+  ignored?: boolean;
 }
 export interface HostOverview {
   host: string;
@@ -1320,6 +1322,8 @@ export interface HostOverview {
   alerts: HostAlert[];
   alertsError?: string;
   quietUntil?: string;
+  /** Every ignored check key, firing or not; absent from hosts older than the ignore list. */
+  ignored?: string[];
   databaseBackups: { name: string; label: string; size: number; created: string }[];
   databaseBackupsError?: string;
   offsite: {

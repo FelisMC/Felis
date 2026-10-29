@@ -1748,6 +1748,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/platform/host/ignore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ignore one watchdog check, or restore its mail (Owner, fresh reauthentication).
+         * @description An ignored check keeps running and stays listed, but the watchdog mails nothing about it and does not count it as open. A restored check that still fires goes back to the usual mail and reminder schedule.
+         */
+        post: operations["ignoreAlert"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/platform/offsite/key": {
         parameters: {
             query?: never;
@@ -4392,6 +4412,8 @@ export interface components {
                 firstSeen: string;
                 /** Format: date-time */
                 notified?: string;
+                /** @description The Owner ignores this check; it is not mailed. */
+                ignored?: boolean;
             }[];
             alertsError?: string;
             /**
@@ -4399,6 +4421,8 @@ export interface components {
              * @description The watchdog mails nothing until then.
              */
             quietUntil?: string;
+            /** @description Every check key the Owner ignores, firing or not. Ignored checks still run but are never mailed, reminded or reported as resolved. */
+            ignored?: string[];
             databaseBackups: {
                 name: string;
                 label: string;
@@ -9799,6 +9823,42 @@ export interface operations {
         };
         responses: {
             /** @description The hold is in place or lifted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Host node execution service is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ignoreAlert: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description The alert key */
+                    key: string;
+                    ignored: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description The check is ignored or restored. */
             204: {
                 headers: {
                     [name: string]: unknown;

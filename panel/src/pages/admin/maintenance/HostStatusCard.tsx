@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { AlertTriangle, BellOff, CheckCircle2, HardDrive, Loader2, MemoryStick, Server } from "lucide-react";
+import { AlertTriangle, Bell, BellOff, CheckCircle2, EyeOff, HardDrive, Loader2, MemoryStick, Server } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,7 +10,7 @@ import { isReauthCancelled, useReauth } from "@/components/ReauthDialog";
 import { api, humanizeError } from "@/lib/api";
 import { formatAbsolute, formatBytes, formatRelative } from "@/lib/format";
 import type { AsyncState } from "@/lib/hooks";
-import type { HostOverview } from "@/lib/types";
+import type { HostAlert, HostOverview } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /** Usage bars turn amber at 80 % and red at 90 %, the watchdog's own disk thresholds. */
@@ -38,6 +38,7 @@ export function HostStatusCard({ overview }: { overview: AsyncState<HostOverview
   const reauth = useReauth();
   const [hold, setHold] = useState<string>("4");
   const [holding, setHolding] = useState(false);
+  const [ignoring, setIgnoring] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const data = overview.data;
   const now = Date.now();
@@ -54,6 +55,21 @@ export function HostStatusCard({ overview }: { overview: AsyncState<HostOverview
       setHolding(false);
     }
   }
+  async function setIgnored(key: string, ignored: boolean) {
+    setIgnoring(key);
+    setError(null);
+    try {
+      await reauth.guard(() => api.ignoreAlert(key, ignored));
+      overview.reload();
+    } catch (e) {
+      if (!isReauthCancelled(e)) setError(humanizeError(e));
+    } finally {
+      setIgnoring(null);
+    }
+  }
+  const summary = (a: HostAlert) => (locale.startsWith("zh") ? a.summary : a.summary_en) || a.summary_en || a.summary;
+  const open = data?.alerts.filter((a) => !a.ignored) ?? [];
+  const ignored = data?.ignored ?? [];
   const failedUnits = data?.units.filter((u) => u.active !== "active") ?? [];
   return (
     <Card>
@@ -73,8 +89,8 @@ export function HostStatusCard({ overview }: { overview: AsyncState<HostOverview
           <section aria-label={t("host_alerts_title")} className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h3 className="flex items-center gap-2 text-sm font-semibold">
-                {data.alerts.length ? <AlertTriangle className="h-4 w-4 text-destructive" aria-hidden="true" /> : <CheckCircle2 className="h-4 w-4 text-primary" aria-hidden="true" />}
-                {data.alerts.length ? t("host_alerts_open", { count: data.alerts.length }) : t("host_alerts_none")}
+                {open.length ? <AlertTriangle className="h-4 w-4 text-destructive" aria-hidden="true" /> : <CheckCircle2 className="h-4 w-4 text-primary" aria-hidden="true" />}
+                {open.length ? t("host_alerts_open", { count: open.length }) : t("host_alerts_none")}
               </h3>
               <div className="flex flex-wrap items-center gap-2">
                 {data.quietUntil ? <>
@@ -91,21 +107,54 @@ export function HostStatusCard({ overview }: { overview: AsyncState<HostOverview
             </div>
             <p className="text-xs leading-relaxed text-muted-foreground">{t("host_quiet_hint")}</p>
             {data.alertsError && <MessageLine kind="error" message={t("host_alerts_unreadable", { error: data.alertsError })} />}
-            {data.alerts.length > 0 && <ul className="divide-y divide-border rounded-lg border border-border">
-              {data.alerts.map((a) => (
-                <li key={a.key} className="space-y-1 p-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant={a.severity === "critical" ? "destructive" : "muted"}>{t(`host_severity_${a.severity}`)}</Badge>
-                    <span className="text-sm font-medium">{(locale.startsWith("zh") ? a.summary : a.summary_en) || a.summary_en || a.summary}</span>
+            {open.length > 0 && <ul className="divide-y divide-border rounded-lg border border-border">
+              {open.map((a) => (
+                <li key={a.key} className="flex items-start gap-3 p-3">
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant={a.severity === "critical" ? "destructive" : "muted"}>{t(`host_severity_${a.severity}`)}</Badge>
+                      <span className="text-sm font-medium">{summary(a)}</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      <code>{a.key}</code> · {t("host_alert_since", { time: formatRelative(a.firstSeen, now, locale) })}
+                      {a.notified ? ` · ${t("host_alert_mailed", { time: formatRelative(a.notified, now, locale) })}` : ` · ${t("host_alert_pending")}`}
+                    </p>
+                    {a.hint && <p className="text-xs leading-relaxed text-muted-foreground">{a.hint}</p>}
                   </div>
-                  <p className="text-xs text-muted-foreground">
-                    <code>{a.key}</code> · {t("host_alert_since", { time: formatRelative(a.firstSeen, now, locale) })}
-                    {a.notified ? ` · ${t("host_alert_mailed", { time: formatRelative(a.notified, now, locale) })}` : ` · ${t("host_alert_pending")}`}
-                  </p>
-                  {a.hint && <p className="text-xs leading-relaxed text-muted-foreground">{a.hint}</p>}
+                  {data.ignored && (
+                    <Button variant="ghost" size="sm" className="shrink-0" disabled={ignoring !== null} aria-label={t("host_alert_ignore_label", { key: a.key })} onClick={() => void setIgnored(a.key, true)}>
+                      {ignoring === a.key ? <Loader2 className="animate-spin" /> : <EyeOff />}{t("host_alert_ignore")}
+                    </Button>
+                  )}
                 </li>
               ))}
             </ul>}
+            {ignored.length > 0 && (
+              <details className="group rounded-lg border border-border">
+                <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm text-muted-foreground">
+                  <EyeOff className="h-4 w-4" aria-hidden="true" />{t("host_ignored_title", { count: ignored.length })}
+                </summary>
+                <div className="space-y-2 border-t border-border p-3">
+                  <p className="text-xs leading-relaxed text-muted-foreground">{t("host_ignored_hint")}</p>
+                  <ul className="divide-y divide-border">
+                    {ignored.map((key) => {
+                      const firing = data.alerts.find((a) => a.key === key);
+                      return (
+                        <li key={key} className="flex items-center gap-3 py-2">
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm">{firing ? summary(firing) : <code>{key}</code>}</p>
+                            <p className="text-xs text-muted-foreground">{firing ? <code>{key}</code> : t("host_ignored_idle")}</p>
+                          </div>
+                          <Button variant="outline" size="sm" className="shrink-0" disabled={ignoring !== null} aria-label={t("host_alert_restore_label", { key })} onClick={() => void setIgnored(key, false)}>
+                            {ignoring === key ? <Loader2 className="animate-spin" /> : <Bell />}{t("host_alert_restore")}
+                          </Button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              </details>
+            )}
           </section>
 
           <section aria-label={t("host_units_title")} className="space-y-3">

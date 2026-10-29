@@ -13,7 +13,7 @@ import type { AsyncState } from "@/lib/hooks";
 import type { HostOverview, NodeControlTask } from "@/lib/types";
 
 const calls = vi.hoisted(() => ({
-  nodeTasks: vi.fn(), nodeTask: vi.fn(), startNodeTask: vi.fn(), holdAlerts: vi.fn(), revealOffsiteKey: vi.fn(), exportAudit: vi.fn(), fleet: vi.fn(),
+  nodeTasks: vi.fn(), nodeTask: vi.fn(), startNodeTask: vi.fn(), holdAlerts: vi.fn(), ignoreAlert: vi.fn(), revealOffsiteKey: vi.fn(), exportAudit: vi.fn(), fleet: vi.fn(),
 }));
 vi.mock("@/lib/api", async (original) => ({ ...await original<typeof import("@/lib/api")>(), api: calls }));
 const saved = vi.hoisted(() => vi.fn());
@@ -75,6 +75,26 @@ describe("host status", () => {
     const until = new Date(calls.holdAlerts.mock.calls[0][0]).getTime();
     expect(Math.abs(until - (Date.now() + 4 * 3600_000))).toBeLessThan(60_000);
     expect(overview.reload).toHaveBeenCalled();
+  });
+
+  it("ignores one alert so it no longer counts as open, and restores it from the ignored list", async () => {
+    calls.ignoreAlert.mockResolvedValue(null);
+    const clock = { key: "clock", severity: "warning" as const, summary: "时钟未同步", summary_en: "The clock is not synchronized", firstSeen: "2026-10-11T00:00:00Z" };
+    const overview = state({ ...base, alerts: [...base.alerts, clock], ignored: [] });
+    const { unmount } = render(<HostStatusCard overview={overview} />);
+    expect(screen.getByText("2 open alerts")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "Ignore alert: clock" }));
+    await waitFor(() => expect(calls.ignoreAlert).toHaveBeenCalledWith("clock", true));
+    expect(overview.reload).toHaveBeenCalled();
+    unmount();
+
+    render(<HostStatusCard overview={state({ ...base, alerts: [...base.alerts, { ...clock, ignored: true }], ignored: ["clock", "disk/old"] })} />);
+    expect(screen.getByText("1 open alert")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Ignore alert: clock" })).toBeNull();
+    await userEvent.click(screen.getByText("2 ignored checks"));
+    expect(screen.getByText("Not firing")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "Restore alerts: clock" }));
+    await waitFor(() => expect(calls.ignoreAlert).toHaveBeenCalledWith("clock", false));
   });
 
   it("lifts a hold that is in place", async () => {
