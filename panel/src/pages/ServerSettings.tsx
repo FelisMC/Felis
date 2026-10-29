@@ -27,7 +27,7 @@ export function ServerSettings() {
     return <EmptyState title={t("settings_none_title")} hint={t("settings_none_hint")} />;
   }
 
-  const cores = data.cpu?.endsWith("m") ? Number(data.cpu.slice(0, -1)) / 1000 : Number(data.cpu);
+  const cores = data.cpu ? (data.cpu.endsWith("m") ? Number(data.cpu.slice(0, -1)) / 1000 : Number(data.cpu)) : null;
   const bytes = (value?: string) => {
     const n = memoryLimit(value);
     return n ? formatBytes(n) : "—";
@@ -67,37 +67,39 @@ export function ServerSettings() {
             />
           }
         >
-          <Row label={t("create_server_display_name")}>{data.displayName || data.name}</Row>
+          <Item label={t("settings_display_name")}>{data.displayName || data.name}</Item>
+          <Item label={t("create_server_policy")}>{policy}</Item>
+          <Item label={t("edit_server_idle")}>{idleLabel(t, data.idleStopSeconds ?? 0)}</Item>
+          <Item label={t("settings_crash_restart")}>
+            {data.restartOnCrash ? t("settings_crash_restart_on", { count: data.maxCrashRestarts ?? 0 }) : t("settings_off")}
+          </Item>
+          <Item label={t("settings_cpu")}>{cores === null || !Number.isFinite(cores) ? t("settings_unlimited") : t("settings_cpu_value", { cores })}</Item>
+          <Item label={t("settings_memory")}>{bytes(data.memory)}</Item>
+          <Item label={t("settings_storage")}>{bytes(data.storageSize)}</Item>
+          {data.software ? (
+            <Item label={t("edit_server_software")}>{softwareSummary(t, data.software)} · {t("software_java_option", { version: data.software.java })}</Item>
+          ) : data.image && (
+            <Item label={t("create_server_image")}><span className="break-all font-mono text-xs font-normal">{data.image}</span></Item>
+          )}
           {!system && (
-            <Row label={t("edit_server_tags")}>
+            <Item label={t("edit_server_tags")}>
               {data.tags && data.tags.length > 0 ? (
                 <span className="flex flex-wrap gap-1.5">
-                  {data.tags.map((tag) => <span key={tag} className="rounded-md bg-muted px-2 py-0.5 text-xs">{tag}</span>)}
+                  {data.tags.map((tag) => <span key={tag} className="rounded-md bg-muted px-2 py-0.5 text-xs font-normal">{tag}</span>)}
                 </span>
-              ) : <span className="text-muted-foreground">{t("settings_none")}</span>}
-            </Row>
+              ) : <span className="font-normal text-muted-foreground">{t("settings_none")}</span>}
+            </Item>
           )}
-          <Row label={t("create_server_policy")}>{policy}</Row>
-          <Row label={t("edit_server_idle")}>{idleLabel(t, data.idleStopSeconds ?? 0)}</Row>
-          <Row label={t("settings_resources")}>
-            {t("settings_resources_value", { cores: Number.isFinite(cores) ? cores : "—", memory: bytes(data.memory), storage: bytes(data.storageSize) })}
-          </Row>
-          {data.software ? (
-            <Row label={t("edit_server_software")}>
-              {softwareSummary(t, data.software)} · {t("software_java_option", { version: data.software.java })}
-            </Row>
-          ) : data.image && <Row label={t("create_server_image")}><span className="break-all font-mono text-xs">{data.image}</span></Row>}
-          <Row label={t("settings_crash_restart")}>
-            {data.restartOnCrash ? t("settings_crash_restart_on", { count: data.maxCrashRestarts ?? 0 }) : t("settings_off")}
-          </Row>
         </Section>
       )}
 
       {forwarding && (
-        <Section title={t("settings_network_title")} description={t("forwarding_description")}>
-          <Row label={t("forwarding_title")} action={<ForwardingDialog serverName={name} legacy={!!data.legacyForwarding} onUpdated={reload} trigger={<Button size="sm" variant="outline">{t("settings_change")}</Button>} />}>
-            {t(data.legacyForwarding ? "forwarding_legacy" : "forwarding_modern")}
-          </Row>
+        <Section
+          title={t("settings_network_title")}
+          description={t("settings_network_desc")}
+          action={<ForwardingDialog serverName={name} legacy={!!data.legacyForwarding} onUpdated={reload} trigger={<Button size="sm" variant="outline">{t("settings_change_forwarding")}</Button>} />}
+        >
+          <Item label={t("forwarding_title")}>{t(data.legacyForwarding ? "forwarding_legacy" : "forwarding_modern")}</Item>
         </Section>
       )}
 
@@ -128,19 +130,18 @@ function Section({ title, description, action, children }: { title: string; desc
         </div>
         {action}
       </CardHeader>
-      <CardContent className="p-0">
-        <dl className="divide-y divide-border">{children}</dl>
+      <CardContent>
+        <dl className="grid grid-cols-2 gap-x-6 gap-y-5 md:grid-cols-3 xl:grid-cols-4">{children}</dl>
       </CardContent>
     </Card>
   );
 }
 
-function Row({ label, action, children }: { label: string; action?: ReactNode; children: ReactNode }) {
+function Item({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="grid items-center gap-x-6 gap-y-1 px-5 py-3 sm:grid-cols-[11rem_minmax(0,1fr)_auto]">
-      <dt className="text-sm text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 text-sm">{children}</dd>
-      {action && <div className="sm:justify-self-end">{action}</div>}
+    <div className="min-w-0 space-y-1">
+      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dd className="break-words text-sm font-medium">{children}</dd>
     </div>
   );
 }
