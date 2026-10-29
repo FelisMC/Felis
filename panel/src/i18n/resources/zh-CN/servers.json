@@ -653,5 +653,6 @@
   "settings_unlimited": "不限",
   "settings_cpu_value": "{{cores}} 核",
   "settings_network_desc": "代理向此服务器传递玩家身份的方式。",
-  "settings_change_forwarding": "更改转发方式"
+  "settings_change_forwarding": "更改转发方式",
+  "log_history_rcon_only": "这段日志只有 RCON 连接记录，已隐藏。"
 }

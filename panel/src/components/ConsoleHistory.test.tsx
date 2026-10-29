@@ -42,6 +42,20 @@ describe("saved console history", () => {
     expect(screen.queryByRole("button", { name: t("log_history_more") })).toBeNull();
   });
 
+  it("hides RCON session lines from the saved log until asked, as the live log does", async () => {
+    calls.history.mockResolvedValueOnce(page([
+      "[03:09:39] [RCON Listener #1/INFO]: Thread RCON Client /10.42.0.62 started",
+      "[03:09:39] [RCON Client /10.42.0.62 #53/INFO]: Thread RCON Client /10.42.0.62 shutting down",
+      "[03:14:26] [Server thread/INFO]: Saving the game",
+      "",
+    ].join("\n")));
+    render(<ConsoleHistory name="lobby" />);
+    expect(await screen.findByText("[03:14:26] [Server thread/INFO]: Saving the game")).toBeTruthy();
+    expect(rows()).toHaveLength(1);
+    await userEvent.click(screen.getByRole("button", { name: /Show RCON/ }));
+    expect(rows()).toHaveLength(3);
+  });
+
   it("joins raw page bytes before decoding a UTF-8 character split across pages", async () => {
     const bytes = Buffer.from("世界\r\nmiddle\nlast\r");
     calls.history.mockResolvedValueOnce(page(bytes.subarray(1), "prefix", true)).mockResolvedValueOnce(page(bytes.subarray(0, 1)));

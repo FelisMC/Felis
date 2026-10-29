@@ -3,7 +3,7 @@ import { Loader2, RefreshCw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { MessageLine } from "@/components/MessageLine";
-import { LogRow } from "@/components/LogConsole";
+import { LogRow, RCON_LIFECYCLE, RconToggle } from "@/components/LogConsole";
 import { api, humanizeError } from "@/lib/api";
 import { classifyLogLine } from "@/lib/logstream";
 import { parseFormatting } from "@/lib/mcformat";
@@ -74,16 +74,23 @@ export function ConsoleHistory({ name }: { name: string }) {
       return { ...formatted, level: classifyLogLine(formatted.text) };
     });
   }, [data]);
+  const [showRcon, setShowRcon] = useState(false);
+  // Keys count back from the newest line, so loading older lines keeps them stable.
+  const rows = useMemo(() => lines.map((line, index) => ({ line, key: index - lines.length }))
+    .filter(({ line }) => showRcon || !RCON_LIFECYCLE.test(line.text)), [lines, showRcon]);
   const changed = (error as { code?: string } | null)?.code === "file_changed";
 
   return (
     <section aria-label={t("log_history_title")} className="flex flex-col bg-black text-zinc-200 lg:min-h-0 lg:flex-1">
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-zinc-800 bg-zinc-900/60 px-3 py-2">
         <div className="min-w-0 text-xs"><span className="font-medium">{t("log_history_title")}</span><code className="ml-2 text-zinc-400">logs/latest.log</code></div>
-        <Button size="sm" variant="ghost" onClick={() => void load()} disabled={loading}
-          className="text-zinc-300 hover:bg-zinc-800 hover:text-zinc-50">
-          <RefreshCw className="h-3.5 w-3.5" />{t("log_history_refresh")}
-        </Button>
+        <div className="flex items-center gap-1.5">
+          <RconToggle shown={showRcon} hidden={lines.length - rows.length} onToggle={() => setShowRcon((shown) => !shown)} />
+          <Button size="sm" variant="ghost" onClick={() => void load()} disabled={loading}
+            className="text-zinc-300 hover:bg-zinc-800 hover:text-zinc-50">
+            <RefreshCw className="h-3.5 w-3.5" />{t("log_history_refresh")}
+          </Button>
+        </div>
       </div>
       {error !== null && <div className="space-y-2 px-3 pt-3">
         <MessageLine kind="error" message={changed ? t("log_history_changed") : t("log_history_failed", { reason: humanizeError(error) })} />
@@ -99,8 +106,8 @@ export function ConsoleHistory({ name }: { name: string }) {
           </Button>
         </div>}
         {loading && !data && <p role="status" className="flex items-center justify-center gap-2 py-8 text-zinc-400"><Loader2 className="h-4 w-4 animate-spin" />{t("log_history_loading")}</p>}
-        {data && lines.length === 0 && <p className="py-8 text-center text-zinc-500">{t("log_history_empty")}</p>}
-        {lines.map((line, index) => <LogRow key={index - lines.length} line={line} />)}
+        {data && rows.length === 0 && <p className="py-8 text-center text-zinc-500">{t(lines.length > 0 ? "log_history_rcon_only" : "log_history_empty")}</p>}
+        {rows.map(({ line, key }) => <LogRow key={key} line={line} />)}
       </div>
     </section>
   );

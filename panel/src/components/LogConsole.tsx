@@ -42,7 +42,7 @@ export function LogRow({ line }: { line: Pick<LogLine, "text" | "segments" | "le
 }
 
 // Match only INFO lifecycle messages; RCON failures and command output remain visible.
-const RCON_LIFECYCLE = /^(?:\[\d{2}:\d{2}:\d{2} INFO\]|\[\d{2}:\d{2}:\d{2}(?:\.\d+)?\] \[[^\]]+\/INFO\]): Thread RCON Client \/\S+ (?:started|shutting down)$/;
+export const RCON_LIFECYCLE = /^(?:\[\d{2}:\d{2}:\d{2} INFO\]|\[\d{2}:\d{2}:\d{2}(?:\.\d+)?\] \[[^\]]+\/INFO\]): Thread RCON Client \/\S+ (?:started|shutting down)$/;
 
 // A chunk off screen is sized from its last layout, or before it has had one,
 // from 100 unwrapped lines of text-xs at leading-relaxed (19.5px each).
@@ -55,6 +55,23 @@ const LogChunk = memo(function LogChunk({ lines }: { lines: LogLine[] }) {
     </div>
   );
 }, sameChunk);
+
+export function RconToggle({ shown, hidden, onToggle }: { shown: boolean; hidden: number; onToggle: () => void }) {
+  const { t } = useTranslation("servers");
+  if (hidden === 0 && !shown) return null;
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      aria-pressed={shown}
+      onClick={onToggle}
+      className="text-zinc-300 hover:bg-zinc-800 hover:text-zinc-50"
+    >
+      {t(shown ? "log_hide_rcon" : "log_show_rcon")}
+      {hidden > 0 && <span className="tabular-nums">({hidden})</span>}
+    </Button>
+  );
+}
 
 function StatusIndicator({ status }: { status: StreamStatus }) {
   const { t } = useTranslation("servers");
@@ -117,18 +134,7 @@ export function LogConsole({ url, className, starting = false, onWriter }: { url
       <div className="flex items-center justify-between gap-2 border-b border-zinc-800 bg-zinc-900/60 px-3 py-2 shrink-0">
         <StatusIndicator status={starting && retryable && status === "ended" ? "reconnecting" : status} />
         <div className="flex items-center gap-1.5">
-          {(hiddenCount > 0 || showRcon) && (
-            <Button
-              variant="ghost"
-              size="sm"
-              aria-pressed={showRcon}
-              onClick={() => setShowRcon((shown) => !shown)}
-              className="text-zinc-300 hover:bg-zinc-800 hover:text-zinc-50"
-            >
-              {t(showRcon ? "log_hide_rcon" : "log_show_rcon")}
-              {hiddenCount > 0 && <span className="tabular-nums">({hiddenCount})</span>}
-            </Button>
-          )}
+          <RconToggle shown={showRcon} hidden={hiddenCount} onToggle={() => setShowRcon((shown) => !shown)} />
           {status === "ended" && (
             <Button
               variant="outline"

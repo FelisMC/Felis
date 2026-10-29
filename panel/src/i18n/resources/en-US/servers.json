@@ -659,5 +659,6 @@
   "settings_unlimited": "Unlimited",
   "settings_cpu_value": "{{cores}} cores",
   "settings_network_desc": "How the proxy passes player identities to this server.",
-  "settings_change_forwarding": "Change forwarding"
+  "settings_change_forwarding": "Change forwarding",
+  "log_history_rcon_only": "This part of the log holds only RCON session lines, which are hidden."
 }
