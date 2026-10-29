@@ -205,6 +205,8 @@ func writeServerSettings(dataDir, rconPort, rconPassword string) error {
 		content = upsertProperty(content, "enable-rcon", "true")
 		content = upsertProperty(content, "rcon.port", rconPort)
 		content = upsertProperty(content, "rcon.password", rconPassword)
+		// The platform's own RCON commands stay out of operators' chat and the log.
+		content = upsertProperty(content, "broadcast-rcon-to-ops", "false")
 	} else {
 		content = upsertProperty(content, "enable-rcon", "false")
 	}

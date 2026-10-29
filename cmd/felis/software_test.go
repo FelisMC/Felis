@@ -142,7 +142,7 @@ func TestWriteServerSettings(t *testing.T) {
 	}
 	got := readProps(t, dir)
 	for k, v := range map[string]string{"server-port": "25565", "online-mode": "false", "white-list": "false",
-		"enable-rcon": "true", "rcon.port": "25575", "rcon.password": "s3cret"} {
+		"enable-rcon": "true", "rcon.port": "25575", "rcon.password": "s3cret", "broadcast-rcon-to-ops": "false"} {
 		if got[k] != v {
 			t.Errorf("%s = %q, want %q", k, got[k], v)
 		}

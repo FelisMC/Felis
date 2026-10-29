@@ -53,6 +53,8 @@ if [ -n "${RCON_PASSWORD:-}" ]; then
   set_prop enable-rcon true
   set_prop rcon.port "${RCON_PORT:-25575}"
   set_prop rcon.password "$RCON_PASSWORD"
+  # The platform's own RCON commands stay out of operators' chat and the log.
+  set_prop broadcast-rcon-to-ops false
   echo "felis-lobby: rcon enabled on port ${RCON_PORT:-25575}"
 else
   set_prop enable-rcon false
