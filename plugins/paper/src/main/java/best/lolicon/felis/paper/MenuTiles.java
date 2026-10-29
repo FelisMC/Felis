@@ -22,6 +22,8 @@ final class MenuTiles {
     static final String OWNER_ONLY = "owner_only";
     static final String ALLOWLIST = "allowlist";
 
+    private static final String PHASE_HIBERNATED = "Hibernated";
+
     private MenuTiles() {
     }
 
@@ -36,6 +38,9 @@ final class MenuTiles {
         List<String> reason = lockReason(verdict, zh);
         if (!reason.isEmpty()) {
             return new Tile(Kind.LOCKED, zh ? "无法启动" : "Can't start", mine, reason);
+        }
+        if (PHASE_HIBERNATED.equals(status.phase())) {
+            return new Tile(Kind.WAKE, zh ? "唤醒" : "Resume", mine, List.of());
         }
         return new Tile(Kind.WAKE, zh ? "启动" : "Start", mine, List.of());
     }
@@ -97,6 +102,10 @@ final class MenuTiles {
                 return zh ? "已停止" : "Stopped";
             case "Failed":
                 return zh ? "启动失败" : "Failed to start";
+            case "Hibernating":
+                return zh ? "正在休眠" : "Hibernating";
+            case "Hibernated":
+                return zh ? "已休眠" : "Hibernated";
             default:
                 return zh ? "未知" : "Unknown";
         }

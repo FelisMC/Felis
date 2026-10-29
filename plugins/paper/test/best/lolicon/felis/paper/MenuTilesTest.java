@@ -72,6 +72,13 @@ public final class MenuTilesTest {
         en.put("start_failed", "LOCKED Can't start false [It failed to start several times, It needs a fix on the web console]");
         en.forEach((v, want) ->
                 assertEq("stopped, English, " + v, want, brief(MenuTiles.tile(status(false, false), v, false))));
+
+        // A hibernated server resumes where it froze, so its tile says so.
+        ControlFrame frozen = ControlFrame.statusUpdate("alpha", "Hibernated", false, 0, 20, false);
+        assertEq("hibernated, owner", "WAKE 唤醒 true []", brief(MenuTiles.tile(frozen, "owner", true)));
+        assertEq("hibernated, English", "WAKE Resume false []", brief(MenuTiles.tile(frozen, "wake", false)));
+        assertEq("hibernated, owner_only", "LOCKED 无法启动 false [只有主人能启动这台服务器, 它运行时任何人都能加入]",
+                brief(MenuTiles.tile(frozen, "owner_only", true)));
     }
 
     // Claim sends a ClaimRequest, Join and Start a WakeRequest, a grey tile nothing.
@@ -105,7 +112,9 @@ public final class MenuTilesTest {
                 {"Unknown", "未知", "Unknown"},
                 {null, "未知", "Unknown"},
                 {"", "未知", "Unknown"},
-                {"Hibernating", "未知", "Unknown"},
+                {"Hibernating", "正在休眠", "Hibernating"},
+                {"Hibernated", "已休眠", "Hibernated"},
+                {"Migrating", "未知", "Unknown"},
         };
         for (String[] row : table) {
             assertEq("phase " + row[0] + ", zh", row[1], MenuTiles.phase(row[0], true));

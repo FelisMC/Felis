@@ -14,6 +14,7 @@ import java.util.Optional;
 // Answer pings from cached lifecycle data without contacting or waking sleeping backends.
 public final class MotdResponder {
     private static final String PHASE_FAILED = "Failed";
+    private static final String DESIRED_HIBERNATED = "Hibernated";
 
     private final ServerRegistry registry;
 
@@ -57,16 +58,21 @@ public final class MotdResponder {
         if ("Running".equals(v.desiredState())) {
             return "启动中… / starting…";
         }
-        // The ping carries no identity either, so a sleeping server says who can wake
+        // The ping carries no identity either, so a server that is down says who can wake
         // it, by the same autostartPolicy gate the join runs into: ownerOnly or unset
         // admits the owner alone.
+        boolean frozen = DESIRED_HIBERNATED.equals(v.desiredState());
+        String zh = frozen ? "已休眠" : "已停止";
+        String en = frozen ? "hibernated" : "stopped";
+        String zhWake = frozen ? "唤醒" : "启动";
+        String enWake = frozen ? "resume" : "start";
         if ("public".equals(v.autostartPolicy())) {
-            return "休眠中，加入即唤醒 / sleeping — join to wake";
+            return zh + "，加入即" + zhWake + " / " + en + " — join to " + enWake;
         }
         if ("allowlist".equals(v.autostartPolicy())) {
-            return "休眠中，名单内玩家加入即唤醒 / sleeping — allowlisted players can wake it";
+            return zh + "，名单内玩家加入即" + zhWake + " / " + en + " — allowlisted players can " + enWake + " it";
         }
-        return "休眠中，仅服主可唤醒 / sleeping — only the owner can wake it";
+        return zh + "，仅服主可" + zhWake + " / " + en + " — only the owner can " + enWake + " it";
     }
 
     static NamedTextColor statusColor(ServerView v) {

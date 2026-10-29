@@ -142,16 +142,21 @@ public final class ServerRegistryTest {
         assertEq("motd: retries spent", "启动失败，等服主处理 / failed to start — the owner has to restart it",
                 MotdResponder.statusLine(gaveUp));
         assertEq("motd: retries spent is red", NamedTextColor.RED, MotdResponder.statusColor(gaveUp));
-        // A sleeping server says who can wake it: a stranger reading "join to wake" on
+        // A server that is down says who can wake it: a stranger reading "join to start" on
         // an ownerOnly server joined only to be refused.
-        assertEq("motd: sleeping, ownerOnly", "休眠中，仅服主可唤醒 / sleeping — only the owner can wake it",
+        assertEq("motd: stopped, ownerOnly", "已停止，仅服主可启动 / stopped — only the owner can start it",
                 MotdResponder.statusLine(down("a", "a")));
-        assertEq("motd: sleeping, public", "休眠中，加入即唤醒 / sleeping — join to wake",
+        assertEq("motd: stopped, public", "已停止，加入即启动 / stopped — join to start",
                 MotdResponder.statusLine(sleeping("public")));
-        assertEq("motd: sleeping, allowlist", "休眠中，名单内玩家加入即唤醒 / sleeping — allowlisted players can wake it",
+        assertEq("motd: stopped, allowlist", "已停止，名单内玩家加入即启动 / stopped — allowlisted players can start it",
                 MotdResponder.statusLine(sleeping("allowlist")));
-        assertEq("motd: sleeping, no policy", "休眠中，仅服主可唤醒 / sleeping — only the owner can wake it",
+        assertEq("motd: stopped, no policy", "已停止，仅服主可启动 / stopped — only the owner can start it",
                 MotdResponder.statusLine(sleeping(null)));
+        ServerView frozen = new ServerView("a", "a", "Hibernated", false, "public", "Hibernated",
+                "fallback", "login", 0, 20);
+        assertEq("motd: hibernated, public", "已休眠，加入即唤醒 / hibernated — join to resume",
+                MotdResponder.statusLine(frozen));
+        assertEq("motd: hibernated is grey", NamedTextColor.GRAY, MotdResponder.statusColor(frozen));
 
         System.out.println("ServerRegistryTest OK (" + checks + " checks)");
     }
