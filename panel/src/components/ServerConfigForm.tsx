@@ -704,15 +704,17 @@ export function ServerConfigForm({
         <SettingsSection title={t("settings_section_software")}>
           {admin && !systemService && (
             <SettingRow label={t("create_server_source")} hint={t("settings_source_hint")}>
-              <SegmentedControl
-                label={t("create_server_source")}
-                value={source}
-                onChange={(k) => { setSource(k); setChangingSoftware(false); setSoftware(choiceOf(currentSoftware)); }}
-                segments={[
-                  { key: "software", label: t("software_source_software") },
-                  { key: "image", label: t("software_source_image") },
-                ]}
-              />
+              <div className="flex lg:justify-end">
+                <SegmentedControl
+                  label={t("create_server_source")}
+                  value={source}
+                  onChange={(k) => { setSource(k); setChangingSoftware(false); setSoftware(choiceOf(currentSoftware)); }}
+                  segments={[
+                    { key: "software", label: t("software_source_software") },
+                    { key: "image", label: t("software_source_image") },
+                  ]}
+                />
+              </div>
             </SettingRow>
           )}
 
