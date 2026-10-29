@@ -818,8 +818,13 @@ components:
               hint: { type: string }
               firstSeen: { type: string, format: date-time }
               notified: { type: string, format: date-time }
+              ignored: { type: boolean, description: The Owner ignores this check; it is not mailed. }
         alertsError: { type: string }
         quietUntil: { type: string, format: date-time, description: The watchdog mails nothing until then. }
+        ignored:
+          type: array
+          description: Every check key the Owner ignores, firing or not. Ignored checks still run but are never mailed, reminded or reported as resolved.
+          items: { type: string }
         databaseBackups:
           type: array
           items:
@@ -6399,6 +6404,35 @@ paths:
                 until: { type: [string, 'null'], format: date-time, description: Null lifts the hold. }
       responses:
         '204': { description: The hold is in place or lifted. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { description: Host node execution service is unavailable. }
+  /api/v1/platform/host/ignore:
+    post:
+      operationId: ignoreAlert
+      summary: Ignore one watchdog check, or restore its mail (Owner, fresh reauthentication).
+      description: >-
+        An ignored check keeps running and stays listed, but the watchdog mails nothing
+        about it and does not count it as open. A restored check that still fires goes
+        back to the usual mail and reminder schedule.
+      tags: [account]
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [key, ignored]
+              properties:
+                key: { type: string, minLength: 1, maxLength: 200, description: The alert key, as listed in the host overview. }
+                ignored: { type: boolean }
+      responses:
+        '204': { description: The check is ignored or restored. }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }

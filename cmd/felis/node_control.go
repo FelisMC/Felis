@@ -127,11 +127,12 @@ func cmdNodeControl(args []string, stdout, stderr io.Writer) int {
 	manager.ArtifactDirs = []string{supportBundleDir}
 	manager.Host = execute.overview
 	manager.OffsiteKey = offsiteKey
-	quiet := "/run/felis/watchdog-quiet-until"
+	quiet, ignore := "/run/felis/watchdog-quiet-until", defaultIgnoreFile
 	if w, found, err := watchdogUnitFlags(filepath.Join(systemdUnitDir, "felis-watchdog.service")); err == nil && found {
-		quiet = w.quietPath
+		quiet, ignore = w.quietPath, w.ignorePath
 	}
 	manager.Quiet = hostQuiet(quiet)
+	manager.Ignore = hostIgnore(ignore)
 	server := &http.Server{Handler: manager.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second}
 	go func() { <-ctx.Done(); server.Close() }()
 	fmt.Fprintln(stdout, "node-control listening on", *socket)

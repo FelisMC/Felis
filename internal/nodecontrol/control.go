@@ -136,9 +136,10 @@ type Manager struct {
 	wg      sync.WaitGroup
 	// ArtifactDirs restricts which task outputs may be downloaded.
 	ArtifactDirs []string
-	// Nil Host or Quiet hooks answer 404; a zero quiet deadline lifts the notification hold.
+	// Nil Host, Quiet or Ignore hooks answer 404; a zero quiet deadline lifts the notification hold.
 	Host       func(context.Context) (any, error)
 	Quiet      func(time.Time) error
+	Ignore     func(key string, ignored bool) error
 	OffsiteKey func() (string, error)
 }
 
@@ -461,7 +462,41 @@ func (m *Manager) Handler() http.Handler {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
+	mux.HandleFunc("POST /host/ignore", func(w http.ResponseWriter, r *http.Request) {
+		if m.Ignore == nil {
+			http.Error(w, "no watchdog ignore list", 404)
+			return
+		}
+		var body struct {
+			Key     string `json:"key"`
+			Ignored bool   `json:"ignored"`
+		}
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil || !ValidAlertKey(body.Key) {
+			http.Error(w, "invalid ignore request", 400)
+			return
+		}
+		if err := m.Ignore(body.Key, body.Ignored); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 	return mux
+}
+
+// ValidAlertKey accepts the printable keys the watchdog gives its findings.
+func ValidAlertKey(key string) bool {
+	if key == "" || len(key) > 200 {
+		return false
+	}
+	for _, r := range key {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 // Serve only recorded artifacts that are regular files under an artifact directory.
@@ -569,11 +604,19 @@ func (c *Client) OffsiteKey(ctx context.Context) (string, error) {
 }
 
 func (c *Client) Quiet(ctx context.Context, until time.Time) error {
-	raw, err := json.Marshal(map[string]time.Time{"until": until})
+	return c.post(ctx, "/host/quiet", map[string]time.Time{"until": until})
+}
+
+func (c *Client) Ignore(ctx context.Context, key string, ignored bool) error {
+	return c.post(ctx, "/host/ignore", map[string]any{"key": key, "ignored": ignored})
+}
+
+func (c *Client) post(ctx context.Context, path string, body any) error {
+	raw, err := json.Marshal(body)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, "POST", "http://node-control/host/quiet", strings.NewReader(string(raw)))
+	req, err := http.NewRequestWithContext(ctx, "POST", "http://node-control"+path, strings.NewReader(string(raw)))
 	if err != nil {
 		return err
 	}

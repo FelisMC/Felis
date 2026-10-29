@@ -30,6 +30,7 @@ func TestHostRoutesAreOwnerOnly(t *testing.T) {
 		for _, tc := range []struct{ method, path, body string }{
 			{"GET", "/api/v1/platform/host", ""},
 			{"POST", "/api/v1/platform/host/quiet", `{"until":null}`},
+			{"POST", "/api/v1/platform/host/ignore", `{"key":"clock","ignored":true}`},
 			{"GET", "/api/v1/settings/node-control/tasks/task/artifact", ""},
 			{"POST", "/api/v1/platform/offsite/key", ""},
 			{"GET", "/api/v1/platform/audit", ""},
@@ -39,8 +40,8 @@ func TestHostRoutesAreOwnerOnly(t *testing.T) {
 				t.Fatalf("%s %s %s = %d", role, tc.method, tc.path, w.Code)
 			}
 		}
-		if len(control.quiet) != 0 {
-			t.Fatal("a non-Owner held the watchdog")
+		if len(control.quiet) != 0 || len(control.ignores) != 0 {
+			t.Fatal("a non-Owner held or silenced the watchdog")
 		}
 	}
 }
@@ -56,6 +57,7 @@ func TestHostRoutesAskForAFreshProof(t *testing.T) {
 	a.AuditExport = func(context.Context, time.Time, time.Time, io.Writer) (int, error) { return 0, nil }
 	for _, tc := range []struct{ method, path, body string }{
 		{"POST", "/api/v1/platform/host/quiet", `{"until":null}`},
+		{"POST", "/api/v1/platform/host/ignore", `{"key":"clock","ignored":true}`},
 		{"GET", "/api/v1/settings/node-control/tasks/task/artifact", ""},
 		{"POST", "/api/v1/platform/offsite/key", ""},
 		{"GET", "/api/v1/platform/audit-export", ""},
@@ -116,6 +118,34 @@ func TestHostQuietTakesAHoldWithinAWeek(t *testing.T) {
 	}
 	if !hasAudit(repo, "platform.host.quiet") {
 		t.Fatal("the hold was not audited")
+	}
+}
+
+func TestHostIgnoreSilencesOneCheckAndRestoresIt(t *testing.T) {
+	a, repo, control := ownerAPI()
+	post := func(body string) int {
+		return do(a.ExternalHandler(), "POST", "/api/v1/platform/host/ignore", body, jsonHeader).Code
+	}
+	if code := post(`{"key":"","ignored":true}`); code != http.StatusBadRequest {
+		t.Fatalf("an empty key = %d", code)
+	}
+	if code := post("{\"key\":\"clock\\n\",\"ignored\":true}"); code != http.StatusBadRequest {
+		t.Fatalf("a key with a newline = %d", code)
+	}
+	if len(control.ignores) != 0 {
+		t.Fatal("a refused key reached the host")
+	}
+	if code := post(`{"key":"clock","ignored":true}`); code != http.StatusNoContent {
+		t.Fatalf("ignoring = %d", code)
+	}
+	if code := post(`{"key":"clock","ignored":false}`); code != http.StatusNoContent {
+		t.Fatalf("restoring = %d", code)
+	}
+	if strings.Join(control.ignores, ",") != "clock=true,clock=false" {
+		t.Fatalf("host saw %v", control.ignores)
+	}
+	if !hasAudit(repo, "platform.host.alert-ignore") || !hasAudit(repo, "platform.host.alert-restore") {
+		t.Fatal("ignoring and restoring were not audited")
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -21,6 +22,7 @@ type fakeNodeControl struct {
 	host    json.RawMessage
 	key     string
 	quiet   []time.Time
+	ignores []string
 	file    string
 }
 
@@ -49,6 +51,10 @@ func (f *fakeNodeControl) OffsiteKey(context.Context) (string, error) {
 }
 func (f *fakeNodeControl) Quiet(_ context.Context, until time.Time) error {
 	f.quiet = append(f.quiet, until)
+	return f.err
+}
+func (f *fakeNodeControl) Ignore(_ context.Context, key string, ignored bool) error {
+	f.ignores = append(f.ignores, fmt.Sprintf("%s=%v", key, ignored))
 	return f.err
 }
 func (f *fakeNodeControl) Artifact(_ context.Context, id string) (io.ReadCloser, int64, string, error) {

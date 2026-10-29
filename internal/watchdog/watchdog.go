@@ -36,6 +36,8 @@ type Report struct {
 	Findings []Finding
 	// Unknown prefixes preserve alert state when their probes cannot run.
 	Unknown []string
+	// Ignored keys stay tracked but are never mailed, reminded or reported as resolved.
+	Ignored map[string]bool
 }
 
 type Alert struct {
@@ -46,6 +48,7 @@ type Alert struct {
 	NotifiedSeverity Severity  `json:"notified_severity,omitempty"`
 	// ClearedAt starts the resolveAfter delay before a recovery notice.
 	ClearedAt time.Time `json:"cleared_at,omitzero"`
+	Ignored   bool      `json:"ignored,omitempty"`
 }
 
 type State struct {
@@ -69,10 +72,10 @@ type Relay struct {
 	RequireTLS bool   `json:"require_tls"`
 }
 
-// Open excludes one-off events and includes notified alerts still firing.
+// Open excludes one-off events and ignored alerts and includes notified alerts still firing.
 func (s *State) Open() bool {
 	for _, a := range s.Alerts {
-		if !a.Notified.IsZero() && a.ClearedAt.IsZero() && !a.Event {
+		if !a.Notified.IsZero() && a.ClearedAt.IsZero() && !a.Event && !a.Ignored {
 			return true
 		}
 	}
@@ -111,8 +114,10 @@ func (s *State) Observe(r Report, now time.Time) Plan {
 		}
 		a.Finding = f
 		a.ClearedAt = time.Time{}
+		a.Ignored = r.Ignored[f.Key]
 		notified := !a.Notified.IsZero()
 		switch {
+		case a.Ignored:
 		case !notified && now.Sub(a.FirstSeen) >= f.For:
 			plan.Firing = append(plan.Firing, *a)
 		case notified && f.Severity == Critical && a.NotifiedSeverity != Critical:
@@ -126,7 +131,7 @@ func (s *State) Observe(r Report, now time.Time) Plan {
 			continue
 		}
 		switch {
-		case a.Notified.IsZero() || a.Event:
+		case a.Notified.IsZero() || a.Event || r.Ignored[key]:
 			delete(s.Alerts, key)
 		case a.ClearedAt.IsZero():
 			a.ClearedAt = now
@@ -135,7 +140,7 @@ func (s *State) Observe(r Report, now time.Time) Plan {
 		}
 	}
 	for _, a := range s.Alerts {
-		if !a.Notified.IsZero() && a.ClearedAt.IsZero() && !a.Event {
+		if !a.Notified.IsZero() && a.ClearedAt.IsZero() && !a.Event && !a.Ignored {
 			plan.Active = append(plan.Active, *a)
 		}
 	}
@@ -344,6 +349,64 @@ func SaveStateOr(path, fallback string, s *State) error {
 		return fmt.Errorf("%w; nor in %s: %v", err, fallback, ferr)
 	}
 	return fmt.Errorf("%w; kept in %s until the host restarts", err, fallback)
+}
+
+// LoadIgnored reads the alert keys an owner chose to ignore; a missing file ignores nothing.
+func LoadIgnored(path string) (map[string]bool, error) {
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return map[string]bool{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var keys []string
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		return nil, fmt.Errorf("%s: %v", path, err)
+	}
+	set := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		set[k] = true
+	}
+	return set, nil
+}
+
+// SetIgnored adds or removes one key in the ignore file, replacing it in one rename.
+func SetIgnored(path, key string, ignored bool) error {
+	set, err := LoadIgnored(path)
+	if err != nil {
+		return err
+	}
+	if ignored {
+		set[key] = true
+	} else {
+		delete(set, key)
+	}
+	keys := make([]string, 0, len(set))
+	for k := range set {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	raw, err := json.MarshalIndent(keys, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".ignored-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(append(raw, '\n')); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 // QuietUntil reads a Unix timestamp; missing or unreadable markers disable the quiet period.

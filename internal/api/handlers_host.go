@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"felis.lolicon.best/internal/nodecontrol"
 )
 
 func (a *API) handleHostOverview(w http.ResponseWriter, r *http.Request) {
@@ -56,6 +58,40 @@ func (a *API) handleHostQuiet(w http.ResponseWriter, r *http.Request) {
 		detail = until.Format(time.RFC3339)
 	}
 	a.audit(r, "platform.host.quiet", detail)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleHostIgnore stops or resumes mail for one watchdog check; the check keeps running.
+func (a *API) handleHostIgnore(w http.ResponseWriter, r *http.Request) {
+	p := principalFromContext(r.Context())
+	if !a.requireReauth(w, r, p) || !a.nodeControlReady(w, r) {
+		return
+	}
+	if err := requireJSONContentType(r); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	var body struct {
+		Key     string `json:"key"`
+		Ignored bool   `json:"ignored"`
+	}
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if !nodecontrol.ValidAlertKey(body.Key) {
+		writeError(w, r, newError(400, "bad_request", "key names one watchdog check"))
+		return
+	}
+	if err := a.NodeControl.Ignore(r.Context(), body.Key, body.Ignored); err != nil {
+		a.writeNodeControlError(w, r, err)
+		return
+	}
+	action := "platform.host.alert-restore"
+	if body.Ignored {
+		action = "platform.host.alert-ignore"
+	}
+	a.audit(r, action, body.Key)
 	w.WriteHeader(http.StatusNoContent)
 }
 

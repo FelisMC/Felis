@@ -68,6 +68,60 @@ func TestObserveLifecycle(t *testing.T) {
 	}
 }
 
+func TestIgnoredAlertIsTrackedButNeverMailed(t *testing.T) {
+	s := &State{}
+	clock := finding("clock", Warning, time.Hour)
+	ignore := map[string]bool{"clock": true}
+	run(s, Report{Findings: []Finding{clock}}, t0)
+	p := run(s, Report{Findings: []Finding{clock}}, t0.Add(2*time.Hour))
+	if len(p.Firing) != 1 {
+		t.Fatalf("before the ignore: firing %v, want clock", keys(p.Firing))
+	}
+
+	firing := Report{Findings: []Finding{clock}, Ignored: ignore}
+	if p := run(s, firing, t0.Add(2*time.Hour+remindEvery)); !p.Empty() || len(p.Active) != 0 {
+		t.Fatalf("ignored: plan %+v, want no reminder and nothing listed as still firing", p)
+	}
+	if s.Open() {
+		t.Fatal("an ignored alert keeps the state open")
+	}
+	cleared := Report{Ignored: ignore}
+	run(s, cleared, t0.Add(3*time.Hour+remindEvery))
+	if p := run(s, cleared, t0.Add(3*time.Hour+remindEvery+resolveAfter)); len(p.Resolved) != 0 || len(s.Alerts) != 0 {
+		t.Fatalf("an ignored alert that cleared: resolved %v, state %v; want it dropped without a recovery notice", keys(p.Resolved), s.Alerts)
+	}
+}
+
+func TestAlertIgnoredBeforeItFiredFiresOnceRestored(t *testing.T) {
+	s := &State{}
+	clock := finding("clock", Warning, time.Hour)
+	run(s, Report{Findings: []Finding{clock}, Ignored: map[string]bool{"clock": true}}, t0)
+	if p := run(s, Report{Findings: []Finding{clock}, Ignored: map[string]bool{"clock": true}}, t0.Add(2*time.Hour)); !p.Empty() {
+		t.Fatalf("ignored past its For: %+v", p)
+	}
+	if p := run(s, Report{Findings: []Finding{clock}}, t0.Add(3*time.Hour)); len(p.Firing) != 1 {
+		t.Fatalf("restored while still firing: firing %v, want clock", keys(p.Firing))
+	}
+}
+
+func TestSetIgnoredKeepsOtherKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "watchdog", "ignored.json")
+	if got, err := LoadIgnored(path); err != nil || len(got) != 0 {
+		t.Fatalf("missing file: %v, %v", got, err)
+	}
+	for _, step := range []struct {
+		key string
+		on  bool
+	}{{"clock", true}, {"disk:/", true}, {"clock", false}} {
+		if err := SetIgnored(path, step.key, step.on); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, err := LoadIgnored(path); err != nil || len(got) != 1 || !got["disk:/"] {
+		t.Fatalf("ignored = %v, %v; want only disk:/", got, err)
+	}
+}
+
 func TestObserveFlapWithinResolveWindow(t *testing.T) {
 	s := &State{}
 	f := finding("disk//", Warning, 0)

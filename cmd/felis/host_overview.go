@@ -31,6 +31,8 @@ type hostOverview struct {
 	Alerts      []hostAlert `json:"alerts"`
 	AlertsError string      `json:"alertsError,omitempty"`
 	QuietUntil  *time.Time  `json:"quietUntil,omitempty"`
+	// Ignored lists every key the owner ignores, firing or not, so each can be restored.
+	Ignored []string `json:"ignored"`
 
 	DatabaseBackups      []hostBundle `json:"databaseBackups"`
 	DatabaseBackupsError string       `json:"databaseBackupsError,omitempty"`
@@ -70,6 +72,7 @@ type hostAlert struct {
 	watchdog.Finding
 	FirstSeen time.Time  `json:"firstSeen"`
 	Notified  *time.Time `json:"notified,omitempty"`
+	Ignored   bool       `json:"ignored,omitempty"`
 }
 
 type hostBundle struct {
@@ -149,6 +152,15 @@ func (e nodeExecutor) overview(ctx context.Context) (any, error) {
 		v.Proxy = hostProxy{Address: env.w.proxyAddr, Reachable: &reachable}
 	}
 
+	ignored, err := watchdog.LoadIgnored(env.w.ignorePath)
+	if err != nil {
+		v.AlertsError = err.Error()
+	}
+	v.Ignored = []string{}
+	for key := range ignored {
+		v.Ignored = append(v.Ignored, key)
+	}
+	sort.Strings(v.Ignored)
 	if state, err := watchdog.LoadState(watchdog.NewestState(env.w.statePath, env.w.fallbackState)); err != nil {
 		v.AlertsError = err.Error()
 	} else {
@@ -156,7 +168,7 @@ func (e nodeExecutor) overview(ctx context.Context) (any, error) {
 			if !a.ClearedAt.IsZero() {
 				continue
 			}
-			alert := hostAlert{Finding: a.Finding, FirstSeen: a.FirstSeen}
+			alert := hostAlert{Finding: a.Finding, FirstSeen: a.FirstSeen, Ignored: ignored[a.Key]}
 			if !a.Notified.IsZero() {
 				n := a.Notified
 				alert.Notified = &n

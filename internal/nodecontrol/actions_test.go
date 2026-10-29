@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -243,6 +244,11 @@ func TestHostHooksOverTheSocket(t *testing.T) {
 	var holds []time.Time
 	manager.Host = func(context.Context) (any, error) { return map[string]string{"host": "ctl-a"}, nil }
 	manager.Quiet = func(until time.Time) error { holds = append(holds, until); return nil }
+	var ignores []string
+	manager.Ignore = func(key string, ignored bool) error {
+		ignores = append(ignores, fmt.Sprintf("%s=%v", key, ignored))
+		return nil
+	}
 	manager.OffsiteKey = func() (string, error) { return "sealing-key", nil }
 	raw, err := client.Host(context.Background())
 	if err != nil || string(raw) != `{"host":"ctl-a"}`+"\n" && string(raw) != `{"host":"ctl-a"}` {
@@ -262,6 +268,15 @@ func TestHostHooksOverTheSocket(t *testing.T) {
 	}
 	if len(holds) != 2 || holds[0].IsZero() || !holds[1].IsZero() {
 		t.Fatalf("holds %v", holds)
+	}
+	if err := client.Ignore(context.Background(), "clock\n", true); err == nil {
+		t.Fatal("a key with a newline was taken")
+	}
+	if err := client.Ignore(context.Background(), "clock", true); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(ignores, ",") != "clock=true" {
+		t.Fatalf("ignores %v", ignores)
 	}
 	if key, err := client.OffsiteKey(context.Background()); err != nil || key != "sealing-key" {
 		t.Fatalf("key %q %v", key, err)

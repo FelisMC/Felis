@@ -65,6 +65,9 @@ func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 
 	var report watchdog.Report
+	if report.Ignored, err = watchdog.LoadIgnored(w.ignorePath); err != nil {
+		fmt.Fprintf(stderr, "felis watchdog: %v; mailing every alert\n", err)
+	}
 	if aside != "" {
 		fmt.Fprintf(stderr, "felis watchdog: %s was unreadable; moved it to %s and started over\n", loadPath, aside)
 		report.Findings = append(report.Findings, watchdog.StateSetAside(aside))
@@ -126,8 +129,11 @@ func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 // watchdogFlags are felis watchdog's flags. felis doctor reads them back from
 // the ExecStart= line of felis-watchdog.service, so it checks what the timer's
 // runs check, with the same paths.
+const defaultIgnoreFile = "/var/lib/felis/watchdog/ignored.json"
+
 type watchdogFlags struct {
 	cfgPath, statePath, fallbackState, smtpPasswordFile, quietPath string
+	ignorePath                                                     string
 	backupDir, diskPaths, certDirs, proxyAddr, nodeIP, controlNS   string
 	offsiteStatus, toolsStatus, heartbeatFile                      string
 	dryRun, unitFailed                                             bool
@@ -139,6 +145,7 @@ func (w *watchdogFlags) register(fs *flag.FlagSet) {
 	fs.StringVar(&w.fallbackState, "fallback-state", watchdog.FallbackStatePath, "where a run keeps its state while -state cannot be written, so what it mailed is not mailed again (tmpfs: until the host restarts; \"\" keeps none)")
 	fs.StringVar(&w.smtpPasswordFile, "smtp-password-file", hostSMTPPasswordPath, "the relay password `felis setup` keeps on the host; the felis-smtp Secret stands in while it is missing")
 	fs.StringVar(&w.quietPath, "quiet-file", "/run/felis/watchdog-quiet-until", "Unix time before which nothing is mailed; the installer writes it while it restarts things on purpose")
+	fs.StringVar(&w.ignorePath, "ignore-file", defaultIgnoreFile, "JSON list of alert keys the owner ignores: still checked, never mailed")
 	fs.StringVar(&w.backupDir, "backup-dir", "/var/lib/felis/db-backups", `control-plane database backups to check for freshness ("" skips the check)`)
 	fs.StringVar(&w.diskPaths, "disk-paths", "/,/var/lib/rancher/k3s,/var/lib/felis", "comma-separated paths whose filesystems must keep free space")
 	fs.StringVar(&w.certDirs, "k3s-cert-dirs", strings.Join(watchdog.K3sCertDirs, ","), `k3s certificate directories whose *.crt files must not be near expiry ("" skips the check)`)

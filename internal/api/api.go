@@ -380,6 +380,7 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "GET", Pattern: "/api/v1/settings/node-control/tasks/{id}/artifact", Owner: true, Admin: true, h: a.handleNodeTaskArtifact},
 		{Method: "GET", Pattern: "/api/v1/platform/host", Owner: true, Admin: true, h: a.handleHostOverview},
 		{Method: "POST", Pattern: "/api/v1/platform/host/quiet", Owner: true, Admin: true, h: a.handleHostQuiet},
+		{Method: "POST", Pattern: "/api/v1/platform/host/ignore", Owner: true, Admin: true, h: a.handleHostIgnore},
 		{Method: "GET", Pattern: "/api/v1/platform/audit", Owner: true, Admin: true, h: a.handleListAudit},
 		{Method: "GET", Pattern: "/api/v1/platform/audit-export", Owner: true, Admin: true, h: a.handleAuditExport},
 		{Method: "POST", Pattern: "/api/v1/platform/offsite/key", Owner: true, Admin: true, h: a.handleOffsiteKey},

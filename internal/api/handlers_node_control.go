@@ -17,6 +17,7 @@ type NodeControl interface {
 	Start(context.Context, nodecontrol.Request, string) (nodecontrol.Task, error)
 	Host(context.Context) (json.RawMessage, error)
 	Quiet(context.Context, time.Time) error
+	Ignore(ctx context.Context, key string, ignored bool) error
 	Artifact(context.Context, string) (io.ReadCloser, int64, string, error)
 	OffsiteKey(context.Context) (string, error)
 }

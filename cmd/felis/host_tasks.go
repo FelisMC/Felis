@@ -23,6 +23,7 @@ import (
 	"felis.lolicon.best/internal/dbbackup"
 	"felis.lolicon.best/internal/nodecontrol"
 	"felis.lolicon.best/internal/platform"
+	"felis.lolicon.best/internal/watchdog"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -678,6 +679,11 @@ func hostQuiet(path string) func(time.Time) error {
 		}
 		return os.WriteFile(path, []byte(strconv.FormatInt(until.Unix(), 10)+"\n"), 0644)
 	}
+}
+
+// hostIgnore adds or removes one alert key in the watchdog's ignore file.
+func hostIgnore(path string) func(string, bool) error {
+	return func(key string, ignored bool) error { return watchdog.SetIgnored(path, key, ignored) }
 }
 
 var unitXmx = regexp.MustCompile(`-Xmx([0-9]+[MG])`)
