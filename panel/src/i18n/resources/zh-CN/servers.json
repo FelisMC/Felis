@@ -563,7 +563,7 @@
   "extensions_link_desc": "查看已安装的 JAR 文件，管理启用状态并打开配置目录。",
   "extensions_not_yours_title": "无权管理插件与模组",
   "extensions_not_yours_body": "只有服务器所有者或管理员可以管理其插件与模组。",
-  "extensions_restart_hint": "上传、启用、禁用与删除将在服务器重启后生效。",
+  "extensions_restart_hint": "服务器运行中，插件与模组的改动在下次重启后生效。",
   "extensions_wait": "请等待当前文件操作或服务器状态切换完成后，再修改插件与模组。",
   "extensions_upload_target": "上传目录",
   "extensions_plugins": "插件 · plugins/",

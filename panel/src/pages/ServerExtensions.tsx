@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { FolderOpen, Loader2, RefreshCw, Trash2, Upload } from "lucide-react";
+import { FolderOpen, Info, Loader2, RefreshCw, Trash2, Upload } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { MessageLine } from "@/components/MessageLine";
 import { TabHeader } from "@/components/TabHeader";
 import { EmptyState, ErrorState, Loading, NotYours, RefreshError } from "@/components/States";
+import { LiveWorldDialog } from "@/components/files/LiveWorldDialog";
 import { UploadQueue } from "@/components/files/UploadQueue";
 import { useFileOps } from "@/components/files/useFileOps";
 import { useFileWorldConfirmation } from "@/components/files/useFileWorldConfirmation";
@@ -14,7 +15,6 @@ import { holderText, useWorldJobs } from "@/components/files/useWorldJobs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { api, humanizeError } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
@@ -72,21 +72,17 @@ function InstalledExtensions({ name }: { name: string }) {
     reloadWorlds();
   }, [uploads.busy, reloadExtensions, reloadWorlds]);
 
-  function confirmation(id: string) {
-    return <label htmlFor={id} className="flex items-start gap-2 text-sm">
-      <Checkbox id={id} checked={world.confirmed} onChange={(event) => world.setConfirmed(event.target.checked)} />
-      <span>{t("files:live_world_confirm")}</span>
-    </label>;
-  }
-
   function requireWritable(paths: string[]) {
     if (busy) throw new Error(t("extensions_wait"));
     world.requireConfirmation(paths);
   }
 
+  const renamed = (entry: ServerExtension) => entry.enabled ? entry.path + ".disabled" : entry.path.slice(0, -".disabled".length);
+
   async function toggle(entry: ServerExtension) {
-    const to = entry.enabled ? entry.path + ".disabled" : entry.path.slice(0, -".disabled".length);
+    const to = renamed(entry);
     setMessage(null);
+    if (!world.guard([entry.path, to], () => void toggle(entry))) return;
     try {
       requireWritable([entry.path, to]);
       setChanging(entry.path);
@@ -103,6 +99,8 @@ function InstalledExtensions({ name }: { name: string }) {
 
   async function remove() {
     if (!deleting) return;
+    // The dialog carried the live-world warning when one was due.
+    if (world.needsConfirmation([deleting.path])) world.setConfirmed(true);
     requireWritable([deleting.path]);
     setChanging(deleting.path);
     try {
@@ -115,6 +113,10 @@ function InstalledExtensions({ name }: { name: string }) {
     } finally {
       setChanging(null);
     }
+  }
+
+  function pickFiles() {
+    if (world.guard([target], () => input.current?.click())) input.current?.click();
   }
 
   function add(files: File[]) {
@@ -139,10 +141,9 @@ function InstalledExtensions({ name }: { name: string }) {
       <NotYours title={t("extensions_not_yours_title")} body={t("extensions_not_yours_body")} /> :
       <div className="space-y-4">
         {status.error != null && <RefreshError error={status.error} />}
-        {live && <section role="status" className="space-y-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm">
-          <p>{t("extensions_restart_hint")}</p>
-          {confirmation("extensions-world-confirm")}
-        </section>}
+        {live && <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Info className="h-4 w-4 shrink-0" aria-hidden="true" />{t("extensions_restart_hint")}
+        </p>}
         {message && <MessageLine kind={message.kind} message={message.text} />}
         {!accessible ? <EmptyState title={t("files:stopped_required_title")} hint={t("files:stopped_required_body")} /> :
           <Card><CardContent className="p-0">
@@ -151,7 +152,7 @@ function InstalledExtensions({ name }: { name: string }) {
                 <SelectTrigger aria-label={t("extensions_upload_target")} className="w-40"><SelectValue /></SelectTrigger>
                 <SelectContent><SelectItem value="plugins">{t("extensions_plugins")}</SelectItem><SelectItem value="mods">{t("extensions_mods")}</SelectItem></SelectContent>
               </Select>
-              <Button variant="outline" disabled={busy || world.needsConfirmation([target])} onClick={() => input.current?.click()}>
+              <Button variant="outline" disabled={busy} onClick={pickFiles}>
                 <Upload className="h-4 w-4" />{t("extensions_upload")}
               </Button>
               <input ref={input} data-testid="extension-upload-input" type="file" accept=".jar" multiple hidden
@@ -192,7 +193,7 @@ function InstalledExtensions({ name }: { name: string }) {
                     <div className="flex flex-wrap items-start gap-2">
                       {entry.config_path && <Button asChild variant="outline" size="sm"><Link to={`/servers/${name}/files?path=${encodeURIComponent(entry.config_path)}`}>
                         <FolderOpen className="h-3.5 w-3.5" />{t("extensions_config")}</Link></Button>}
-                      <Button variant="outline" size="sm" disabled={busy || world.needsConfirmation([entry.path])} onClick={() => void toggle(entry)}>
+                      <Button variant="outline" size="sm" disabled={busy} onClick={() => void toggle(entry)}>
                         {changing === entry.path && <Loader2 className="h-3.5 w-3.5 animate-spin" />}{t(entry.enabled ? "extensions_disable" : "extensions_enable")}
                       </Button>
                       <Button variant="ghost" size="sm" disabled={busy} onClick={() => { setMessage(null); setDeleting(entry); }} aria-label={t("extensions_delete_item", { filename: entry.filename })}>
@@ -205,9 +206,9 @@ function InstalledExtensions({ name }: { name: string }) {
           </CardContent></Card>}
       </div>}
     <ConfirmDialog open={deleting !== null} onOpenChange={(open) => { if (!open) setDeleting(null); }}
-      title={t("extensions_delete_title", { filename: deleting?.filename ?? "" })} description={t("extensions_delete_body")}
-      confirmLabel={t("files:delete")} onConfirm={remove} confirmDisabled={busy || !!deleting && world.needsConfirmation([deleting.path])}>
-      {live && deleting && world.needsConfirmation([deleting.path]) && confirmation("extension-delete-world-confirm")}
-    </ConfirmDialog>
+      title={t("extensions_delete_title", { filename: deleting?.filename ?? "" })}
+      description={deleting && world.needsConfirmation([deleting.path]) ? `${t("extensions_delete_body")} ${t("files:live_world_ask_body")}` : t("extensions_delete_body")}
+      confirmLabel={t("files:delete")} onConfirm={remove} confirmDisabled={busy} />
+    <LiveWorldDialog world={world} />
   </>;
 }

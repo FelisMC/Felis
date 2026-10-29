@@ -4,12 +4,15 @@ import {
   AlertTriangle,
   ArrowUp,
   ChevronRight,
+  CloudDownload,
   Download,
   FileArchive,
   FilePlus,
   FileText,
   Folder,
   FolderPlus,
+  FolderUp,
+  Info,
   Loader2,
   Search,
   Pencil,
@@ -29,6 +32,7 @@ import { InlineConfirm } from "@/components/InlineConfirm";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { NameDialog } from "@/components/files/NameDialog";
 import { FileOps } from "@/components/files/FileOps";
+import { LiveWorldDialog } from "@/components/files/LiveWorldDialog";
 import { UploadQueue } from "@/components/files/UploadQueue";
 import { FileMenu } from "@/components/files/FileMenu";
 import { ServerPropertiesEditor } from "@/components/files/ServerPropertiesEditor";
@@ -144,9 +148,10 @@ export function ServerFiles() {
   const stopped = statusQ.data?.phase === "Stopped";
   const live = statusQ.data?.phase === "Running" && statusQ.data.desiredState === "Running";
   const accessible = stopped || live;
+  const world = useFileWorldConfirmation(name, owned, live);
   const { confirmed: worldConfirmed, setConfirmed: setWorldConfirmed, directories: worldDirs,
     needsConfirmation: needsWorldConfirmation, requireConfirmation: requireWorldConfirmation,
-    reload: reloadWorlds } = useFileWorldConfirmation(name, owned, live);
+    guard: guardWorld, reload: reloadWorlds } = world;
 
   function worldConfirmation(id: string) {
     return <label htmlFor={id} className="flex items-start gap-2 text-sm">
@@ -513,10 +518,7 @@ export function ServerFiles() {
 
   function addFiles(files: readonly File[], paths?: readonly string[]) {
     if (files.length === 0) return;
-    if (needsWorldConfirmation(files.map((file, index) => joinPath(dir, paths?.[index] || file.webkitRelativePath || file.name)))) {
-      setMsg({ kind: "error", text: t("live_world_confirm_required") });
-      return;
-    }
+    if (!guardWorld(files.map((file, index) => joinPath(dir, paths?.[index] || file.webkitRelativePath || file.name)), () => addFiles(files, paths))) return;
     setMsg(null);
     uploads.add(files, dir, entries, paths);
   }
@@ -589,6 +591,7 @@ export function ServerFiles() {
 
   async function startUnzip(entry: ServerFileEntry) {
     const p = joinPath(dir, entry.name);
+    if (!guardWorld([], () => void startUnzip(entry))) return;
     setMsg(null);
     setUnzipping(p);
     try {
@@ -636,6 +639,7 @@ export function ServerFiles() {
   }
 
   function beginTask(request: FileTask) {
+    if (!guardWorld(taskTargets(request), () => beginTask(request))) return;
     setMsg(null);
     void runTask(request).catch((e) => {
       heldElsewhere(e);
@@ -797,10 +801,9 @@ export function ServerFiles() {
       ) : (
         <div className="space-y-4">
           {statusQ.data.diskFull && diskCard}
-          {live && <div role="status" className="space-y-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm">
-            <p>{t("live_warning")}</p>
-            {worldConfirmation("files-world-confirm")}
-          </div>}
+          {live && <p role="status" className="flex items-start gap-2 text-sm text-muted-foreground">
+            <Info className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />{t("live_warning")}
+          </p>}
           {msg && <MessageLine kind={msg.kind} message={msg.text} />}
           {statusQ.error != null && (
             <MessageLine
@@ -915,6 +918,39 @@ export function ServerFiles() {
                   <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-1">
                     <Button
                       size="sm"
+                      variant="outline"
+                      onClick={() => fileInput.current?.click()}
+                      aria-label={t("upload")}
+                      title={t("upload_hint")}
+                    >
+                      <Upload className="h-4 w-4" />
+                      <span className="hidden sm:inline">{t("upload")}</span>
+                    </Button>
+                    <input
+                      ref={fileInput}
+                      type="file"
+                      multiple
+                      hidden
+                      data-testid="upload-input"
+                      onChange={(e) => {
+                        addFiles(Array.from(e.target.files ?? []));
+                        e.target.value = "";
+                      }}
+                    />
+                    <Button size="sm" variant="ghost" onClick={() => folderInput.current?.click()} aria-label={t("upload_folder")} title={t("upload_folder")}>
+                      <FolderUp className="h-4 w-4" /><span className="hidden md:inline">{t("upload_folder")}</span>
+                    </Button>
+                    <input ref={folderInput} type="file" multiple hidden data-testid="folder-upload-input"
+                      {...{ webkitdirectory: "", directory: "" }}
+                      onChange={(e) => { addFiles(Array.from(e.target.files ?? [])); e.target.value = ""; }} />
+                    <Button size="sm" variant="ghost" disabled={changing} aria-label={t("from_url")} title={changing ? waitTitle : t("from_url")} onClick={() => {
+                      setTaskPath(joinPath(dir, "")); setSourceURL(""); setTaskDialog("url");
+                    }}>
+                      <CloudDownload className="h-4 w-4" /><span className="hidden md:inline">{t("from_url")}</span>
+                    </Button>
+                    <span aria-hidden="true" className="mx-1 h-5 w-px bg-border" />
+                    <Button
+                      size="sm"
                       variant="ghost"
                       onClick={() => ask({ kind: "file", dir })}
                       disabled={changing}
@@ -935,36 +971,7 @@ export function ServerFiles() {
                       <FolderPlus className="h-4 w-4" />
                       <span className="hidden md:inline">{t("new_folder")}</span>
                     </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => fileInput.current?.click()}
-                      aria-label={t("upload")}
-                      title={t("upload_hint")}
-                    >
-                      <Upload className="h-4 w-4" />
-                      <span className="hidden sm:inline">{t("upload")}</span>
-                    </Button>
-                    <input
-                      ref={fileInput}
-                      type="file"
-                      multiple
-                      hidden
-                      data-testid="upload-input"
-                      onChange={(e) => {
-                        addFiles(Array.from(e.target.files ?? []));
-                        e.target.value = "";
-                      }}
-                    />
-                    <Button size="sm" variant="ghost" onClick={() => folderInput.current?.click()} aria-label={t("upload_folder")}>
-                      <FolderPlus className="h-4 w-4" /><span className="hidden md:inline">{t("upload_folder")}</span>
-                    </Button>
-                    <input ref={folderInput} type="file" multiple hidden data-testid="folder-upload-input"
-                      {...{ webkitdirectory: "", directory: "" }}
-                      onChange={(e) => { addFiles(Array.from(e.target.files ?? [])); e.target.value = ""; }} />
-                    <Button size="sm" variant="ghost" disabled={changing} onClick={() => {
-                      setTaskPath(joinPath(dir, "")); setSourceURL(""); setTaskDialog("url");
-                    }}>{t("from_url")}</Button>
+                    <span aria-hidden="true" className="mx-1 h-5 w-px bg-border" />
                     <Button
                       size="sm"
                       variant="ghost"
@@ -1447,6 +1454,7 @@ export function ServerFiles() {
         {conflicts && conflicts.op !== "unzip" && !taskRequests.current.has(conflicts.id) && <p className="text-sm text-muted-foreground">{t("task_retry_unavailable")}</p>}
         <ConflictList op={conflicts} />
       </ConfirmDialog>
+      <LiveWorldDialog world={world} />
     </>
   );
 }

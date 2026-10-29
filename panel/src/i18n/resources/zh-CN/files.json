@@ -17,7 +17,7 @@
   "stopped_required_body": "服务器运行中或完全停止时可访问文件，请等待启动或停止完成。",
   "live_warning": "服务器运行期间，世界文件的改动可能被服务器覆盖；插件与配置的改动通常在重启后生效。",
   "live_world_confirm": "已了解在服务器运行期间修改世界目录的风险。",
-  "live_world_confirm_required": "在服务器运行期间修改世界目录或解压归档前，须勾选确认项。",
+  "live_world_confirm_required": "服务器正在运行，确认后才能改动世界目录。",
   "not_yours_title": "无权访问服务器文件",
   "not_yours_body": "只有服务器所有者或管理员才能编辑其文件。",
   "binary_hint": "二进制文件不支持文本编辑。请下载后使用适配软件处理，再重新上传；文本编辑可能损坏文件。",
@@ -431,5 +431,8 @@
   "properties_field_spawn_animals": "动物生成（旧版）",
   "properties_hint_spawn_animals": "适用于 1.21.1 及更早版本，已在 1.21.2 移除，无直接对应的游戏规则。仅在文件已有此属性时显示。",
   "properties_field_spawn_npcs": "NPC 生成（旧版）",
-  "properties_hint_spawn_npcs": "适用于 1.21.1 及更早版本，已在 1.21.2 移除，无直接对应的游戏规则。仅在文件已有此属性时显示。"
+  "properties_hint_spawn_npcs": "适用于 1.21.1 及更早版本，已在 1.21.2 移除，无直接对应的游戏规则。仅在文件已有此属性时显示。",
+  "live_world_ask_title": "服务器正在运行，仍要改动世界文件？",
+  "live_world_ask_body": "运行中的服务器会持续写入世界目录，此时改动的文件可能被覆盖，也可能损坏存档。建议先停止服务器。继续后，本次运行期间不再询问。",
+  "live_world_ask_confirm": "仍然继续"
 }

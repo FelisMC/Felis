@@ -565,7 +565,7 @@
   "extensions_link_desc": "View installed JAR files, manage their enabled state and open their configuration directories.",
   "extensions_not_yours_title": "Plugin and mod access denied",
   "extensions_not_yours_body": "Only the server owner or an admin can manage its plugins and mods.",
-  "extensions_restart_hint": "Uploads, enabling, disabling and deletion take effect after the server restarts.",
+  "extensions_restart_hint": "The server is running; plugin and mod changes take effect at its next restart.",
   "extensions_wait": "Wait for the current file operation or server transition to finish before modifying plugins and mods.",
   "extensions_upload_target": "Upload directory",
   "extensions_plugins": "Plugins · plugins/",

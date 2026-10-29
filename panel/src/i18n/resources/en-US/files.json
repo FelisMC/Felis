@@ -17,7 +17,7 @@
   "stopped_required_body": "File access is available while the server is running or fully stopped. Wait for startup or shutdown to finish.",
   "live_warning": "While the server is running, changes to world files may be overwritten by the server. Plugin and configuration changes usually take effect after a restart.",
   "live_world_confirm": "I acknowledge the risk of modifying world directories while the server is running.",
-  "live_world_confirm_required": "Select the confirmation checkbox before modifying world directories or extracting an archive while the server is running.",
+  "live_world_confirm_required": "The server is running; confirm before changing its world folders.",
   "not_yours_title": "Server file access denied",
   "not_yours_body": "Only the owner or an admin can edit this server's files.",
   "binary_hint": "Binary files do not support text editing. Download the file, process it with compatible software, and upload it again. Text editing may corrupt the file.",
@@ -434,5 +434,8 @@
   "properties_field_spawn_animals": "Animal spawning (legacy)",
   "properties_hint_spawn_animals": "Applies through 1.21.1 and was removed in 1.21.2 without a direct equivalent game rule. Shown only when this property exists.",
   "properties_field_spawn_npcs": "NPC spawning (legacy)",
-  "properties_hint_spawn_npcs": "Applies through 1.21.1 and was removed in 1.21.2 without a direct equivalent game rule. Shown only when this property exists."
+  "properties_hint_spawn_npcs": "Applies through 1.21.1 and was removed in 1.21.2 without a direct equivalent game rule. Shown only when this property exists.",
+  "live_world_ask_title": "The server is running. Change world files anyway?",
+  "live_world_ask_body": "A running server keeps writing to its world folder, so files changed now may be overwritten or corrupt the save. Stopping the server first is safer. Once you continue, the panel will not ask again until the server restarts.",
+  "live_world_ask_confirm": "Continue anyway"
 }

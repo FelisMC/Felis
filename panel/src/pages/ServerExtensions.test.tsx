@@ -157,15 +157,15 @@ describe("installed extensions", () => {
     expect((screen.getByRole("button", { name: t("extensions_upload") }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("requires a live world acknowledgement when level-name uses the plugins directory", async () => {
+  it("asks before a change when level-name puts the world in the plugins directory", async () => {
     calls.status.mockResolvedValue({ ...stopped, phase: "Running", desiredState: "Running" });
     calls.readServerFile.mockResolvedValue({ content: btoa("level-name=plugins\n") });
     renderPage();
-    const toggle = within(await row()).getByRole("button", { name: t("extensions_disable") }) as HTMLButtonElement;
-    expect(toggle.disabled).toBe(true);
-    await userEvent.click(screen.getByRole("checkbox", { name: fileText("live_world_confirm") }));
-    await userEvent.click(toggle);
-    expect(calls.renameServerFile).toHaveBeenCalledWith("demo", "plugins/example.jar", "plugins/example.jar.disabled");
+    await userEvent.click(within(await row()).getByRole("button", { name: t("extensions_disable") }));
+    const ask = await screen.findByRole("dialog", { name: fileText("live_world_ask_title") });
+    expect(calls.renameServerFile).not.toHaveBeenCalled();
+    await userEvent.click(within(ask).getByRole("button", { name: fileText("live_world_ask_confirm") }));
+    await waitFor(() => expect(calls.renameServerFile).toHaveBeenCalledWith("demo", "plugins/example.jar", "plugins/example.jar.disabled"));
   });
 
   it("uploads a batch into its selected directory and scans once after the queue drains", async () => {

@@ -633,17 +633,16 @@ describe("ServerFiles on a running server", () => {
     expect(mocks.deleteServerFile).not.toHaveBeenCalled();
   });
 
-  it("refuses world uploads until the checkbox is selected", async () => {
+  it("asks before uploading into the running world and uploads once confirmed", async () => {
     mocks.status.mockResolvedValue({ ...stopped, phase: "Running", desiredState: "Running", ready: true });
     mocks.uploadServerFile.mockResolvedValue({ status: "uploaded", sha256: "new" });
     renderFiles();
     await userEvent.click(await screen.findByRole("button", { name: i18next.t("files:open_folder", { name: "world" }) }));
     const files = [new File(["notes"], "notes.txt")];
     fireEvent.change(screen.getByTestId("upload-input"), { target: { files } });
-    expect(await screen.findByText(t("files:live_world_confirm_required"))).toBeTruthy();
+    const ask = await screen.findByRole("dialog", { name: t("files:live_world_ask_title") });
     expect(mocks.uploadServerFile).not.toHaveBeenCalled();
-    await userEvent.click(screen.getByRole("checkbox", { name: t("files:live_world_confirm") }));
-    fireEvent.change(screen.getByTestId("upload-input"), { target: { files } });
+    await userEvent.click(within(ask).getByRole("button", { name: t("files:live_world_ask_confirm") }));
     await waitFor(() => expect(mocks.uploadServerFile).toHaveBeenCalledWith("lobby", "world/notes.txt", files[0], false, expect.any(Object)));
   });
 
@@ -652,13 +651,11 @@ describe("ServerFiles on a running server", () => {
     mocks.listServerFiles.mockResolvedValue({ path: "", entries: [{ name: "world.zip", size: 10, is_dir: false, mod_time: "" }] });
     mocks.unzipServerFile.mockResolvedValue({ op: fileOp({ state: "succeeded" }) });
     renderFiles();
-    const extract = await screen.findByRole("button", { name: i18next.t("files:unzip_item", { name: "world.zip" }) });
-    await userEvent.click(extract);
-    expect(await screen.findByText(t("files:live_world_confirm_required"))).toBeTruthy();
+    await userEvent.click(await screen.findByRole("button", { name: i18next.t("files:unzip_item", { name: "world.zip" }) }));
+    const ask = await screen.findByRole("dialog", { name: t("files:live_world_ask_title") });
     expect(mocks.unzipServerFile).not.toHaveBeenCalled();
-    await userEvent.click(screen.getByRole("checkbox", { name: t("files:live_world_confirm") }));
-    await userEvent.click(extract);
-    expect(mocks.unzipServerFile).toHaveBeenCalledExactlyOnceWith("lobby", "world.zip", false);
+    await userEvent.click(within(ask).getByRole("button", { name: t("files:live_world_ask_confirm") }));
+    await waitFor(() => expect(mocks.unzipServerFile).toHaveBeenCalledExactlyOnceWith("lobby", "world.zip", false));
   });
 
   it("offers a failed start a stop, sent without asking, and nothing that would start it", async () => {
@@ -1331,11 +1328,12 @@ describe("ServerFiles uploads", () => {
       await act(() => vi.advanceTimersByTimeAsync(STATUS_POLL_FAST_MS));
       await screen.findByText(t("files:live_warning"));
       await act(async () => release(at(PART)));
-      expect(await within(queue()).findByText(t("files:live_world_confirm_required"))).toBeTruthy();
+      const ask = await screen.findByRole("dialog", { name: t("files:live_world_ask_title") });
       expect(mocks.commitServerFileUpload).not.toHaveBeenCalled();
 
       mocks.getServerFileUpload.mockResolvedValue({ ...at(SIZE), path: "world/world.zip" });
-      await userEvent.click(screen.getByRole("checkbox", { name: t("files:live_world_confirm") }));
+      await userEvent.click(within(ask).getByRole("button", { name: t("files:live_world_ask_confirm") }));
+      expect(await within(queue()).findByText(t("files:live_world_confirm_required"))).toBeTruthy();
       await userEvent.click(within(queue()).getByRole("button", { name: t("files:upload_retry") }));
       expect(await within(queue()).findByText(t("files:upload_done"))).toBeTruthy();
       expect(mocks.commitServerFileUpload).toHaveBeenCalledExactlyOnceWith("lobby", "s1", false);
