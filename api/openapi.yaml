@@ -4086,6 +4086,12 @@ paths:
               required: [command]
               properties:
                 command: { type: string }
+                console:
+                  type: boolean
+                  description: >-
+                    Types the line into the game container's stdin first, as on the
+                    server's own terminal, so its output appears in the console log and
+                    no RCON session is logged. RCON is used only when stdin took nothing.
       responses:
         '200':
           description: RCON reply or acknowledgment that a line was submitted through stdin.

@@ -10,6 +10,8 @@ const maxConsoleCommandLen = 1024
 
 type commandRequest struct {
 	Command string `json:"command"`
+	// Console types the line into the server console so its output lands in the log; RCON is only the fallback.
+	Console bool `json:"console,omitempty"`
 }
 
 func (a *API) handleCommand(w http.ResponseWriter, r *http.Request) {
@@ -64,7 +66,7 @@ func (a *API) handleCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := a.Console.SubmitCommand(r.Context(), name, command)
+	result, err := a.Console.SubmitCommand(r.Context(), name, command, body.Console)
 	switch {
 	case errors.Is(err, ErrConsoleOutcomeUnknown):
 		a.audit(r, "console.command.uncertain", name)

@@ -118,6 +118,21 @@ describe("LogStreamController", () => {
     expect(lines[0].text).toContain("heads up");
   });
 
+  it("places a typed command between the lines before and after it, marked as input", () => {
+    const { factory, created, frames } = makeFactory();
+    const ctrl = new LogStreamController({ url: "/c", factory, frame: frames.schedule });
+    ctrl.open();
+    created[0].emitMessage("[12:00:00] [Server thread/INFO]: Done (3.2s)!");
+    ctrl.write("> help", true);
+    created[0].emitMessage("[12:00:01] [Server thread/ERROR]: Unknown command");
+    frames.run();
+    expect(ctrl.getSnapshot().lines.map(({ text, level, input }) => ({ text, level, input }))).toEqual([
+      { text: "[12:00:00] [Server thread/INFO]: Done (3.2s)!", level: "info", input: undefined },
+      { text: "> help", level: "plain", input: true },
+      { text: "[12:00:01] [Server thread/ERROR]: Unknown command", level: "error", input: undefined },
+    ]);
+  });
+
   it("bounds the ring buffer, dropping the oldest lines", () => {
     const { factory, created, frames } = makeFactory();
     const ctrl = new LogStreamController({ url: "/c", factory, maxLines: 2, frame: frames.schedule });

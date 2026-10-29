@@ -51,7 +51,6 @@
   "command_label": "服务器命令",
   "command_placeholder": "输入命令…如 list",
   "command_send": "发送命令",
-  "command_sending": "正在发送命令…",
   "command_sent_stdin": "命令已发送，请在控制台日志查看执行结果。",
   "command_not_running": "服务器当前不接受控制台输入。请启动服务器后再发送命令。",
   "log_connecting": "连接中…",

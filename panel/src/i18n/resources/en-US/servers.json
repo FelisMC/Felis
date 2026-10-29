@@ -52,7 +52,6 @@
   "command_label": "Server command",
   "command_placeholder": "Type a command… e.g. list",
   "command_send": "Send command",
-  "command_sending": "Sending command…",
   "command_sent_stdin": "Command sent. Check the console log for the result.",
   "command_not_running": "The server is not accepting console input. Start it before sending commands.",
   "log_connecting": "Connecting…",

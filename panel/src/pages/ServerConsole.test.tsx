@@ -31,10 +31,20 @@ vi.mock("@/lib/api", async (importActual) => {
   const actual = await importActual<typeof import("@/lib/api")>();
   return { ...actual, api: { ...actual.api, ...calls } };
 });
-vi.mock("@/components/LogConsole", async (importActual) => ({
-  ...await importActual<typeof import("@/components/LogConsole")>(),
-  LogConsole: () => <div data-testid="log-stream" />,
-}));
+vi.mock("@/components/LogConsole", async (importActual) => {
+  const { useEffect, useState } = await import("react");
+  type Writer = (raw: string, input?: boolean) => void;
+  // The log view keeps what the console echoes into it, the way the live stream does.
+  function FakeLog({ onWriter }: { onWriter?: (write: Writer | null) => void }) {
+    const [lines, setLines] = useState<string[]>([]);
+    useEffect(() => {
+      onWriter?.((raw) => setLines((shown) => [...shown, raw]));
+      return () => onWriter?.(null);
+    }, [onWriter]);
+    return <div data-testid="log-stream">{lines.map((line, i) => <div key={i}>{line}</div>)}</div>;
+  }
+  return { ...await importActual<typeof import("@/components/LogConsole")>(), LogConsole: FakeLog };
+});
 
 beforeEach(() => {
   tier.isAdmin = true;
@@ -387,7 +397,7 @@ describe("ServerConsole command line", () => {
 
   beforeEach(() => {
     calls.status.mockResolvedValue(status({ phase: "Running", desiredState: "Running", ready: true }));
-    calls.sendCommand.mockResolvedValue({ name: "survival", output: "There are 0 of a max of 20 players online.\n", transport: "rcon" });
+    calls.sendCommand.mockResolvedValue({ name: "survival", output: "", transport: "stdin" });
     localStorage.clear();
   });
   afterEach(() => vi.useRealTimers());
@@ -397,19 +407,30 @@ describe("ServerConsole command line", () => {
     return (await screen.findByRole("textbox", { name: "Server command" })) as HTMLInputElement;
   }
 
-  it("sends the typed command, trimmed, and shows the reply under it", async () => {
+  const log = () => screen.getByTestId("log-stream");
+
+  it("sends the typed command, trimmed, and echoes it into the log where the server's output follows", async () => {
     const user = userEvent.setup();
     const box = await commandLine();
 
     await user.type(box, "  list  {Enter}");
 
     expect(calls.sendCommand).toHaveBeenCalledExactlyOnceWith("survival", "list");
-    expect(await screen.findByText("There are 0 of a max of 20 players online.")).toBeTruthy();
-    expect(screen.getByText(/^> list/)).toBeTruthy();
-    expect(box.value).toBe("");
+    expect(within(log()).getByText("> list")).toBeTruthy();
+    await waitFor(() => expect(box.value).toBe(""));
+    expect(screen.queryByText(i18next.t("servers:command_sent_stdin"))).toBeNull();
   });
 
-  it("renders Minecraft and ANSI formatting in command replies without interpreting markup", async () => {
+  it("puts an RCON fallback reply into the log one line per command", async () => {
+    calls.sendCommand.mockResolvedValue({ name: "survival", transport: "rcon", output: "/advancement (grant|revoke)/attribute <target>" });
+    const box = await commandLine();
+    await userEvent.type(box, "help{Enter}");
+    expect(await within(log()).findByText("/attribute <target>")).toBeTruthy();
+    expect(within(log()).getAllByText(/./).map((line) => line.textContent)).toEqual(["> help", "/advancement (grant|revoke)", "/attribute <target>"]);
+  });
+
+  it("renders Minecraft and ANSI formatting in a reply shown without a log, without interpreting markup", async () => {
+    calls.status.mockResolvedValue(status({ phase: "Starting", desiredState: "Running", ready: false, startup: { stage: "booting", logsAvailable: false } }));
     calls.sendCommand.mockResolvedValue({ name: "survival", transport: "rcon", output: "§eHelp: §fIndex §lBold§r\n§x§1§2§3§4§5§6Hex\n\x1b[31m<b>unsafe</b>\x1b[0m" });
     const box = await commandLine();
     await userEvent.type(box, "help{Enter}");
@@ -483,19 +504,8 @@ describe("ServerConsole command line", () => {
     await userEvent.type(box, "say starting");
     await userEvent.click(screen.getByRole("button", { name: i18next.t("servers:command_send") }));
     expect(await screen.findByText(i18next.t("servers:command_sent_stdin"))).toBeTruthy();
-    expect(screen.getByText(/^> say starting/)).toBeTruthy();
     expect(box.value).toBe("");
     expect(calls.sendCommand).toHaveBeenCalledExactlyOnceWith("survival", "say starting");
-    expect(screen.queryByText("There are 0 of a max of 20 players online.")).toBeNull();
-  });
-
-  it("reports stdin submission while a running server has no RCON reply", async () => {
-    calls.sendCommand.mockResolvedValue({ name: "survival", output: "", transport: "stdin" });
-    const box = await commandLine();
-    await userEvent.type(box, "list{Enter}");
-    expect(await screen.findByText(i18next.t("servers:command_sent_stdin"))).toBeTruthy();
-    expect(box.value).toBe("");
-    expect(calls.sendCommand).toHaveBeenCalledTimes(1);
   });
 
   it("keeps an uncertain command visible and never resends it during status polling", async () => {
@@ -525,9 +535,9 @@ describe("ServerConsole command line", () => {
     expect(calls.sendCommand).toHaveBeenCalledTimes(1);
     expect(box.value).toBe("list");
     expect(box.disabled).toBe(true);
-    expect(screen.getByText(i18next.t("servers:command_sending"))).toBeTruthy();
+    expect(within(log()).getByText("> list")).toBeTruthy();
     await act(async () => { resolve({ name: "survival", output: "Reply", transport: "rcon" }); });
-    expect(await screen.findByText("Reply")).toBeTruthy();
+    expect(await within(log()).findByText("Reply")).toBeTruthy();
     expect(box.disabled).toBe(false);
     expect(box.value).toBe("");
   });

@@ -7437,6 +7437,8 @@ export interface operations {
             content: {
                 "application/json": {
                     command: string;
+                    /** @description Types the line into the game container's stdin first, as on the server's own terminal, so its output appears in the console log and no RCON session is logged. RCON is used only when stdin took nothing. */
+                    console?: boolean;
                 };
             };
         };

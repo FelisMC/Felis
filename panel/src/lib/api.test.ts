@@ -153,7 +153,7 @@ describe("console command wire shape", () => {
     const [url, options] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(url).toBe("/servers/survival/command");
     expect(options.method).toBe("POST");
-    expect(JSON.parse(options.body)).toEqual({ command: "list" });
+    expect(JSON.parse(options.body)).toEqual({ command: "list", console: true });
   });
 
   it("propagates uncertain outcomes without retrying the command", async () => {

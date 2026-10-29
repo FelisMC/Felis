@@ -16,7 +16,12 @@ export interface LogLine {
   level: LogLevel;
   /** Styled runs when the line carried colour codes (see mcformat.ts). */
   segments?: Segment[];
+  /** input marks a command typed in the panel and echoed into the log. */
+  input?: boolean;
 }
+
+/** LogWriter adds a line the panel produced itself after what has arrived so far. */
+export type LogWriter = (raw: string, input?: boolean) => void;
 
 /** Immutable snapshot consumed by useSyncExternalStore. */
 export interface LogStreamSnapshot {
@@ -140,6 +145,8 @@ export class LogStreamController {
     this.commit();
   }
 
+  readonly write: LogWriter = (raw, input = false) => this.pushLine(raw, input);
+
   /** close tears the stream down for good. Idempotent. */
   close(): void {
     this.dropPending();
@@ -181,10 +188,11 @@ export class LogStreamController {
     }
   }
 
-  private pushLine(raw: string): void {
+  private pushLine(raw: string, input = false): void {
     const { text, segments } = parseFormatting(raw);
-    const line: LogLine = { seq: this.seq++, text, level: classifyLogLine(text) };
+    const line: LogLine = { seq: this.seq++, text, level: input ? "plain" : classifyLogLine(text) };
     if (segments) line.segments = segments;
+    if (input) line.input = true;
     this.pending.push(line);
     // A background tab gets no frames, so the queue is bounded too. It trims
     // only once it holds twice the buffer, keeping each push O(1) on average.

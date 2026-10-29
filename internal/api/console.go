@@ -21,7 +21,7 @@ import (
 // Console separates reply-dependent RCON calls from interactive submissions.
 type Console interface {
 	RunCommand(ctx context.Context, name, command string) (string, error)
-	SubmitCommand(ctx context.Context, name, command string) (ConsoleCommandResult, error)
+	SubmitCommand(ctx context.Context, name, command string, preferStdin bool) (ConsoleCommandResult, error)
 }
 
 type ConsoleCommandResult struct {

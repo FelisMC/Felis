@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -59,8 +60,8 @@ func consoleAcceptsInput(ms *v1alpha1.MinecraftServer) bool {
 		(ms.Status.Phase == v1alpha1.PhaseStarting || ms.Status.Phase == v1alpha1.PhaseRunning)
 }
 
-// SubmitCommand uses stdin only when RCON cannot connect, so nothing runs twice.
-func (k *K8sConsole) SubmitCommand(ctx context.Context, name, command string) (ConsoleCommandResult, error) {
+// SubmitCommand switches transport only while the first one has delivered nothing, so nothing runs twice.
+func (k *K8sConsole) SubmitCommand(ctx context.Context, name, command string, preferStdin bool) (ConsoleCommandResult, error) {
 	command, err := normalizeConsoleCommand(command)
 	if err != nil {
 		return ConsoleCommandResult{}, err
@@ -86,6 +87,15 @@ func (k *K8sConsole) SubmitCommand(ctx context.Context, name, command string) (C
 	if !consoleAcceptsInput(ms) {
 		return ConsoleCommandResult{}, ErrConsoleNotRunning
 	}
+	if preferStdin {
+		err := k.submitStdin(ctx, name, command)
+		if err == nil {
+			return ConsoleCommandResult{Name: name, Output: "", Transport: "stdin"}, nil
+		}
+		if !errors.Is(err, ErrConsoleUnavailable) {
+			return ConsoleCommandResult{}, err
+		}
+	}
 	conn, connectErr := k.connectRCON(ctx, ms)
 	if connectErr == nil {
 		defer conn.Close()
@@ -107,6 +117,9 @@ func (k *K8sConsole) SubmitCommand(ctx context.Context, name, command string) (C
 			return ConsoleCommandResult{}, ErrConsoleOutcomeUnknown
 		}
 		return ConsoleCommandResult{Name: name, Output: output, Transport: "rcon"}, nil
+	}
+	if preferStdin {
+		return ConsoleCommandResult{}, ErrConsoleUnavailable
 	}
 	if err := k.submitStdin(ctx, name, command); err != nil {
 		return ConsoleCommandResult{}, err

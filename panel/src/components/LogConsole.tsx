@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useLogStream } from "@/lib/useLogStream";
 import { chunkLines, sameChunk } from "@/lib/logchunks";
-import type { LogLevel, LogLine, StreamStatus } from "@/lib/logstream";
+import type { LogLevel, LogLine, LogWriter, StreamStatus } from "@/lib/logstream";
 import type { Formatted, Segment } from "@/lib/mcformat";
 
 const LEVEL_CLASS: Record<LogLevel, string> = {
@@ -35,8 +35,8 @@ export function FormattedText({ formatted }: { formatted: Formatted }) {
     : formatted.text;
 }
 
-export function LogRow({ line }: { line: Pick<LogLine, "text" | "segments" | "level"> }) {
-  return <div className={cn("whitespace-pre-wrap break-all", LEVEL_CLASS[line.level])}>
+export function LogRow({ line }: { line: Pick<LogLine, "text" | "segments" | "level" | "input"> }) {
+  return <div className={cn("whitespace-pre-wrap break-all", line.input ? "text-sky-300" : LEVEL_CLASS[line.level])}>
     <FormattedText formatted={line.text ? line : { text: "\u00A0" }} />
   </div>;
 }
@@ -73,11 +73,16 @@ function StatusIndicator({ status }: { status: StreamStatus }) {
   );
 }
 
-// Logs are read-only SSE; commands use a separate RCON API without exposing its password.
+// Logs are read-only SSE; onWriter hands out a way to echo typed commands into it.
 // Pause tail following during history inspection and resume at the bottom.
-export function LogConsole({ url, className, starting = false }: { url: string; className?: string; starting?: boolean }) {
+export function LogConsole({ url, className, starting = false, onWriter }: { url: string; className?: string; starting?: boolean; onWriter?: (write: LogWriter | null) => void }) {
   const { t } = useTranslation("servers");
-  const { lines, status, retryable, clear, reconnect } = useLogStream(url);
+  const { lines, status, retryable, clear, reconnect, write } = useLogStream(url);
+  useEffect(() => {
+    if (!onWriter) return;
+    onWriter(write);
+    return () => onWriter(null);
+  }, [onWriter, write]);
   useEffect(() => {
     if (!starting || !retryable || status !== "ended") return;
     const timer = window.setTimeout(reconnect, 5000);

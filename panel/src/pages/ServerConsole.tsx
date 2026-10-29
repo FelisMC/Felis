@@ -16,6 +16,7 @@ import { ResourceUsage } from "@/components/ResourceUsage";
 import { RetireNotice } from "@/components/Retirement";
 import { RecoveryNotice, ServerEventsCard } from "@/components/ServerEvents";
 import { parseFormatting, rconLines, type Formatted } from "@/lib/mcformat";
+import type { LogWriter } from "@/lib/logstream";
 import { cn } from "@/lib/utils";
 import { InlineError } from "@/components/MessageLine";
 import { useServer } from "@/pages/ServerLayout";
@@ -126,12 +127,16 @@ function persistHistory(name: string, h: string[]): void {
 const MAX_HISTORY = 50;
 const HISTORY_KEY = (name: string) => `felis:cmd:history:${name}`;
 
-function CommandInput({ name }: { name: string }) {
+// echo writes into the log view and reports false when no log is on screen.
+type Echo = (raw: string, input?: boolean) => boolean;
+
+function CommandInput({ name, echo }: { name: string; echo: Echo }) {
   const { t } = useTranslation("servers");
   const [command, setCommand] = useState("");
   const [sending, setSending] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [last, setLast] = useState<{ cmd: string; state: "pending" | "rcon" | "stdin" | "failed"; out?: Formatted } | null>(null);
+  // note stands in for the log when none is on screen.
+  const [note, setNote] = useState<Formatted | null>(null);
   const inFlight = useRef(false);
   const generation = useRef(0);
   const historyRef = useRef<string[]>(loadHistory(name));
@@ -148,7 +153,8 @@ function CommandInput({ name }: { name: string }) {
     const ticket = ++generation.current;
     setSending(true);
     setErr(null);
-    setLast({ cmd: text, state: "pending" });
+    setNote(null);
+    const shown = echo("> " + text, true);
     const h = historyRef.current;
     if (h.length === 0 || h[h.length - 1] !== text) {
       if (h.length >= MAX_HISTORY) h.shift();
@@ -160,15 +166,16 @@ function CommandInput({ name }: { name: string }) {
       const res = await api.sendCommand(name, text);
       if (ticket !== generation.current) return;
       setCommand("");
-      setLast({ cmd: text, state: res.transport, out: res.transport === "rcon" ? parseFormatting(rconLines(res.output.trim())) : undefined });
+      const reply = res.transport === "rcon" ? rconLines(res.output.trim()) : "";
+      if (!shown) setNote(reply ? parseFormatting(reply) : { text: t("command_sent_stdin") });
+      else if (reply) for (const line of reply.split("\n")) echo(line);
     } catch (ex) {
       if (ticket !== generation.current) return;
-      setLast({ cmd: text, state: "failed" });
       setErr((ex as { code?: string }).code === "not_running" ? t("command_not_running") : humanizeError(ex));
     } finally {
       if (ticket === generation.current) { inFlight.current = false; setSending(false); }
     }
-  }, [name, t]);
+  }, [name, t, echo]);
 
   useLayoutEffect(() => {
     if (!sending) inputRef.current?.focus();
@@ -207,12 +214,9 @@ function CommandInput({ name }: { name: string }) {
 
   return (
     <div className="space-y-2">
-      {last && (
-        <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2 font-mono text-xs text-zinc-300">
-          <span className="text-zinc-500">{"> " + last.cmd + "\n"}</span>
-          {last.state === "pending" && <span role="status">{t("command_sending")}</span>}
-          {last.state === "stdin" && <span role="status">{t("command_sent_stdin")}</span>}
-          {last.out && <FormattedText formatted={last.out} />}
+      {note && (
+        <pre role="status" className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words font-mono text-xs text-zinc-400">
+          <FormattedText formatted={note} />
         </pre>
       )}
       <div className="flex items-center gap-2 rounded-md border border-zinc-700 bg-zinc-900 px-3 font-mono text-xs text-zinc-200">
@@ -245,6 +249,13 @@ function CommandInput({ name }: { name: string }) {
 
 export function ServerConsole() {
   const { name, data, error, owned, reload } = useServer();
+  const writer = useRef<LogWriter | null>(null);
+  const onWriter = useCallback((write: LogWriter | null) => { writer.current = write; }, []);
+  const echo = useCallback<Echo>((raw, input) => {
+    if (!writer.current) return false;
+    writer.current(raw, input);
+    return true;
+  }, []);
   const cfg = useConfig();
   const { isAdmin } = useTier();
   const { t } = useTranslation("servers");
@@ -283,6 +294,7 @@ export function ServerConsole() {
                 starting={!error && data.phase === "Starting"}
                 url={consoleStreamURL(cfg.apiBase, name)}
                 className="rounded-none border-0 bg-transparent"
+                onWriter={onWriter}
               />
             </div>
           ) : (
@@ -290,7 +302,7 @@ export function ServerConsole() {
           )}
           {commandable && (
             <div className="shrink-0 border-t border-zinc-800 bg-zinc-900/40 p-3">
-              <CommandInput key={name} name={name} />
+              <CommandInput key={name} name={name} echo={echo} />
             </div>
           )}
         </CardContent>

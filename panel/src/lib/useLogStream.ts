@@ -4,6 +4,7 @@ import {
   type EventSourceFactory,
   type StreamStatus,
   type LogLine,
+  type LogWriter,
 } from "./logstream";
 import { useTier } from "./tier";
 
@@ -17,6 +18,7 @@ export interface UseLogStream {
   retryable: boolean;
   clear: () => void;
   reconnect: () => void;
+  write: LogWriter;
 }
 
 // Keep one controller per URL and close it during effect cleanup, including StrictMode remounts.
@@ -43,5 +45,5 @@ export function useLogStream(url: string): UseLogStream {
   const clear = useCallback(() => controller.clear(), [controller]);
   const reconnect = useCallback(() => controller.reconnect(), [controller]);
 
-  return { lines: snapshot.lines, status: snapshot.status, retryable: snapshot.retryable, clear, reconnect };
+  return { lines: snapshot.lines, status: snapshot.status, retryable: snapshot.retryable, clear, reconnect, write: controller.write };
 }

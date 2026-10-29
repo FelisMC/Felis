@@ -26,12 +26,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-func (f *fakeConsole) SubmitCommand(ctx context.Context, name, command string) (ConsoleCommandResult, error) {
+func (f *fakeConsole) SubmitCommand(ctx context.Context, name, command string, _ bool) (ConsoleCommandResult, error) {
 	output, err := f.RunCommand(ctx, name, command)
 	return ConsoleCommandResult{Name: name, Output: output, Transport: "rcon"}, err
 }
 
-func (s *scriptedConsole) SubmitCommand(context.Context, string, string) (ConsoleCommandResult, error) {
+func (s *scriptedConsole) SubmitCommand(context.Context, string, string, bool) (ConsoleCommandResult, error) {
 	panic("reply-dependent operations must use RunCommand")
 }
 
@@ -146,7 +146,7 @@ func TestConsoleSubmitPrefersRCONAndNeverRepeatsExecution(t *testing.T) {
 				attached.Add(1)
 				return nil, errors.New("must not attach")
 			}
-			got, err := k.SubmitCommand(context.Background(), "survival", "list")
+			got, err := k.SubmitCommand(context.Background(), "survival", "list", false)
 			if !errors.Is(err, tc.want) || conn.executed.Load() != 1 || attached.Load() != 0 || conn.closed.Load() != 1 {
 				t.Fatalf("command repeated or failure lost: result=%+v err=%v execute=%d attach=%d closed=%d", got, err, conn.executed.Load(), attached.Load(), conn.closed.Load())
 			}
@@ -199,9 +199,59 @@ func TestConsoleSubmitFallsBackOnlyBeforeExecution(t *testing.T) {
 					return nil
 				}), nil
 			}
-			got, err := k.SubmitCommand(context.Background(), "survival", "/say 你好")
+			got, err := k.SubmitCommand(context.Background(), "survival", "/say 你好", false)
 			if err != nil || got.Name != "survival" || got.Output != "" || got.Transport != "stdin" || calls != 1 || conn.executed.Load() != 0 {
 				t.Fatalf("fallback: result=%+v err=%v attach=%d execute=%d", got, err, calls, conn.executed.Load())
+			}
+		})
+	}
+}
+
+func TestConsoleSubmitTypedIntoTheConsoleUsesRCONOnlyWhenStdinTookNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		pod       bool
+		streamErr error
+		dialErr   error
+		transport string
+		want      error
+		dialed    bool
+	}{
+		{"stdin delivers", true, nil, nil, "stdin", nil, false},
+		{"no writable pod falls back to RCON", false, nil, nil, "rcon", nil, true},
+		{"stdin broke after taking the line", true, io.ErrUnexpectedEOF, nil, "", ErrConsoleOutcomeUnknown, false},
+		{"neither transport", false, nil, errors.New("refused"), "", ErrConsoleUnavailable, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var pods []corev1.Pod
+			if tc.pod {
+				pods = []corev1.Pod{consoleTestPod("survival")}
+			}
+			k, ms := newConsoleTestBackend(t, pods)
+			enableConsoleTestRCON(t, k, ms)
+			conn := &fakeConsoleRCON{output: "reply"}
+			var dialed atomic.Int32
+			k.dial = func(string, string, time.Duration) (consoleRCON, error) {
+				dialed.Add(1)
+				if tc.dialErr != nil {
+					return nil, tc.dialErr
+				}
+				return conn, nil
+			}
+			k.executor = func(*rest.Config, string, *url.URL) (remotecommand.Executor, error) {
+				return consoleExecutorFunc(func(_ context.Context, o remotecommand.StreamOptions) error {
+					if _, err := io.ReadAll(o.Stdin); err != nil {
+						return err
+					}
+					return tc.streamErr
+				}), nil
+			}
+			got, err := k.SubmitCommand(context.Background(), "survival", "help", true)
+			if !errors.Is(err, tc.want) || got.Transport != tc.transport || (dialed.Load() > 0) != tc.dialed {
+				t.Fatalf("result=%+v err=%v dialed=%d; want transport %q err %v dialed %v", got, err, dialed.Load(), tc.transport, tc.want, tc.dialed)
+			}
+			if tc.transport == "stdin" && conn.executed.Load() != 0 {
+				t.Fatal("a line typed into the console also ran over RCON")
 			}
 		})
 	}
@@ -237,7 +287,7 @@ func TestConsoleSubmitRequiresWritableRunningContainer(t *testing.T) {
 			k, _ := newConsoleTestBackend(t, pods)
 			var calls atomic.Int32
 			k.executor = func(*rest.Config, string, *url.URL) (remotecommand.Executor, error) { calls.Add(1); return nil, nil }
-			_, err := k.SubmitCommand(context.Background(), "survival", "list")
+			_, err := k.SubmitCommand(context.Background(), "survival", "list", false)
 			if !errors.Is(err, ErrConsoleUnavailable) || calls.Load() != 0 {
 				t.Fatalf("invalid Pod accepted: err=%v calls=%d", err, calls.Load())
 			}
@@ -280,7 +330,7 @@ func TestConsoleSubmitRequiresRunningIntentAndActivePhase(t *testing.T) {
 					return err
 				}), nil
 			}
-			got, err := k.SubmitCommand(context.Background(), "survival", "list")
+			got, err := k.SubmitCommand(context.Background(), "survival", "list", false)
 			if tc.allowed {
 				if err != nil || got.Transport != "stdin" || calls != 1 {
 					t.Fatalf("active input: result=%+v err=%v calls=%d", got, err, calls)
@@ -324,7 +374,7 @@ func TestConsoleSubmitRechecksLifecycleAfterHandshake(t *testing.T) {
 				}
 				calls := 0
 				k.executor = func(*rest.Config, string, *url.URL) (remotecommand.Executor, error) { calls++; return nil, nil }
-				_, err := k.SubmitCommand(context.Background(), "survival", "list")
+				_, err := k.SubmitCommand(context.Background(), "survival", "list", false)
 				if !errors.Is(err, ErrConsoleNotRunning) || calls != 0 || conn.executed.Load() != 0 {
 					t.Fatalf("stale server received input: err=%v attaches=%d executions=%d", err, calls, conn.executed.Load())
 				}
@@ -345,7 +395,7 @@ func TestConsoleSubmitCancellationDuringHandshakeDoesNotAttach(t *testing.T) {
 	k.dial = func(string, string, time.Duration) (consoleRCON, error) { cancel(); return conn, nil }
 	attaches := 0
 	k.executor = func(*rest.Config, string, *url.URL) (remotecommand.Executor, error) { attaches++; return nil, nil }
-	_, err := k.SubmitCommand(ctx, "survival", "list")
+	_, err := k.SubmitCommand(ctx, "survival", "list", false)
 	if !errors.Is(err, ErrConsoleUnavailable) || attaches != 0 || conn.executed.Load() != 0 || conn.closed.Load() != 1 {
 		t.Fatalf("canceled handshake sent input: err=%v attaches=%d executions=%d closed=%d", err, attaches, conn.executed.Load(), conn.closed.Load())
 	}
@@ -382,7 +432,7 @@ func TestConsoleAttachFailureDoesNotRetry(t *testing.T) {
 					return errors.New("fake-private-password broken stream")
 				}), nil
 			}
-			_, err := k.SubmitCommand(context.Background(), "survival", "list")
+			_, err := k.SubmitCommand(context.Background(), "survival", "list", false)
 			want := ErrConsoleOutcomeUnknown
 			if mode == "setup" || mode == "before reading" || mode == "false success" {
 				want = ErrConsoleUnavailable
@@ -407,7 +457,7 @@ func TestConsoleSubmitCancellationAndLockCleanup(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	_, err = k.SubmitCommand(ctx, "survival", "list")
+	_, err = k.SubmitCommand(ctx, "survival", "list", false)
 	if !errors.Is(err, ErrConsoleUnavailable) || attaches.Load() != 0 {
 		t.Fatalf("waiting command escaped its lock: err=%v attaches=%d", err, attaches.Load())
 	}
@@ -425,7 +475,7 @@ func TestConsoleSubmitCancellationAndLockCleanup(t *testing.T) {
 	}
 	ctx, cancel = context.WithCancel(context.Background())
 	cancel()
-	_, err = k.SubmitCommand(ctx, "survival", "list")
+	_, err = k.SubmitCommand(ctx, "survival", "list", false)
 	if !errors.Is(err, ErrConsoleUnavailable) || attaches.Load() != 0 {
 		t.Fatalf("canceled request sent a command: err=%v attaches=%d", err, attaches.Load())
 	}
@@ -438,7 +488,7 @@ func TestConsoleSubmitReadsStateAfterLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	result := make(chan error, 1)
-	go func() { _, err := k.SubmitCommand(context.Background(), "survival", "list"); result <- err }()
+	go func() { _, err := k.SubmitCommand(context.Background(), "survival", "list", false); result <- err }()
 	if err := k.c.Get(context.Background(), client.ObjectKeyFromObject(ms), ms); err != nil {
 		t.Fatal(err)
 	}
@@ -493,7 +543,7 @@ func TestConsoleSubmitSerializesCompleteLines(t *testing.T) {
 		}), nil
 	}
 	first, second := make(chan error, 1), make(chan error, 1)
-	go func() { _, err := k.SubmitCommand(context.Background(), "survival", "say first"); first <- err }()
+	go func() { _, err := k.SubmitCommand(context.Background(), "survival", "say first", false); first <- err }()
 	select {
 	case line := <-entered:
 		if line != "say first\n" {
@@ -502,8 +552,11 @@ func TestConsoleSubmitSerializesCompleteLines(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("first command did not start")
 	}
-	go func() { _, err := k.SubmitCommand(context.Background(), "survival", "say second"); second <- err }()
-	if _, err := k.SubmitCommand(context.Background(), "creative", "say other"); err != nil {
+	go func() {
+		_, err := k.SubmitCommand(context.Background(), "survival", "say second", false)
+		second <- err
+	}()
+	if _, err := k.SubmitCommand(context.Background(), "creative", "say other", false); err != nil {
 		t.Fatal(err)
 	}
 	if line := <-entered; line != "say other\n" {
