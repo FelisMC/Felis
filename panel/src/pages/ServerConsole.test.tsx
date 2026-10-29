@@ -13,7 +13,7 @@ import { humanizeError } from "@/lib/api";
 import i18next from "i18next";
 import type { ConsoleCommandResult } from "@/lib/types";
 
-const calls = vi.hoisted(() => ({ status: vi.fn(), myServers: vi.fn(), listImages: vi.fn(), sendCommand: vi.fn(), serverUsage: vi.fn(), serverConsoleHistory: vi.fn() }));
+const calls = vi.hoisted(() => ({ status: vi.fn(), myServers: vi.fn(), listImages: vi.fn(), sendCommand: vi.fn(), serverUsage: vi.fn(), serverConsoleHistory: vi.fn(), patchServer: vi.fn() }));
 const tier = vi.hoisted(() => ({
   loading: false,
   identity: { user_id: "admin-1", email: "admin@example.test", role: "admin" },
@@ -56,6 +56,7 @@ beforeEach(() => {
   calls.listImages.mockReset();
   calls.listImages.mockResolvedValue([]);
   calls.sendCommand.mockReset();
+  calls.patchServer.mockReset();
   calls.serverUsage.mockReset();
   calls.serverUsage.mockResolvedValue({ current: null, history: [] });
   calls.serverConsoleHistory.mockReset();
@@ -160,24 +161,23 @@ describe("ServerConsole failed start", () => {
   });
 });
 
-describe("ServerConsole edit dialog", () => {
-  it.each(["admin", "owner", "viewer"])("shows extra ports and passes the current values only to a managing %s", async (role) => {
+describe("ServerConsole settings", () => {
+  it.each(["admin", "owner", "viewer"])("shows the extra ports with their addresses only to a managing %s", async (role) => {
     tier.isAdmin = role === "admin";
     calls.myServers.mockResolvedValue([{ name: "survival", owned: role === "owner" }]);
     calls.status.mockResolvedValue(status({ phase: "Running", desiredState: "Running", extraPorts: [{ protocol: "UDP", port: 24454, nodePort: 31001, address: "203.0.113.10:31001" }], extraPortsPending: true }));
     renderConsole("/servers/survival/settings");
     await screen.findByRole("navigation", { name: "Server sections" });
-    const region = { name: i18next.t("servers:extra_ports_title") };
+    const port = { name: i18next.t("servers:extra_ports_internal", { number: 1 }) };
     if (role === "viewer") {
       await waitFor(() => expect(calls.myServers).toHaveBeenCalled());
-      expect(screen.queryByRole("region", region)).toBeNull();
+      expect(screen.queryByRole("spinbutton", port)).toBeNull();
       return;
     }
-    const ports = await screen.findByRole("region", region);
-    expect(within(ports).getByText("203.0.113.10:31001")).toBeTruthy();
-    await userEvent.click(screen.getByRole("button", { name: /Edit Server Config/ }));
-    expect(screen.getByRole("spinbutton", { name: i18next.t("servers:extra_ports_internal", { number: 1 }) })).toHaveProperty("value", "24454");
-    expect(within(screen.getByRole("dialog")).getByText(i18next.t("servers:extra_ports_pending"))).toBeTruthy();
+    const network = await screen.findByRole("region", { name: i18next.t("servers:settings_network_title") });
+    expect(within(network).getByRole("spinbutton", port)).toHaveProperty("value", "24454");
+    expect(within(network).getByText("203.0.113.10:31001")).toBeTruthy();
+    expect(within(network).getByText(i18next.t("servers:extra_ports_pending"))).toBeTruthy();
   });
 
   it("offers the server's memory limit as the current memory, not the JVM heap", async () => {
@@ -186,11 +186,38 @@ describe("ServerConsole edit dialog", () => {
     );
     renderConsole("/servers/survival/settings");
 
-    await userEvent.setup().click(await screen.findByRole("button", { name: /Edit Server Config/ }));
     const memory = (await screen.findByLabelText("Memory")) as HTMLInputElement;
     expect(memory.value).toBe("4");
     expect(screen.queryByText("3072M")).toBeNull();
     expect((screen.getByLabelText("CPU Limit") as HTMLInputElement).value).toBe("2");
+  });
+
+  it("turns idle auto-stop off with its switch and saves only that from the bar", async () => {
+    calls.patchServer.mockResolvedValue({ name: "survival", patched: ["idleStopSeconds"] });
+    calls.status.mockResolvedValue(status({ phase: "Stopped", desiredState: "Stopped", idleStopSeconds: 600 }));
+    renderConsole("/servers/survival/settings");
+    const bar = { name: i18next.t("servers:settings_save_bar") };
+    const idle = await screen.findByRole("switch", { name: i18next.t("servers:edit_server_idle") });
+    expect(screen.getByRole("combobox", { name: i18next.t("servers:settings_idle_after") })).toBeTruthy();
+    expect(screen.queryByRole("region", bar)).toBeNull();
+
+    await userEvent.click(idle);
+    expect(screen.queryByRole("combobox", { name: i18next.t("servers:settings_idle_after") })).toBeNull();
+    await userEvent.click(within(screen.getByRole("region", bar)).getByRole("button", { name: i18next.t("servers:edit_server_submit") }));
+    expect(calls.patchServer).toHaveBeenCalledExactlyOnceWith("survival", { idleStopSeconds: 0 });
+  });
+
+  it("puts every field back and hides the bar when the changes are discarded", async () => {
+    calls.status.mockResolvedValue(status({ phase: "Stopped", desiredState: "Stopped", memory: "4Gi", cpu: "2" }));
+    renderConsole("/servers/survival/settings");
+    const cpu = (await screen.findByLabelText("CPU Limit")) as HTMLInputElement;
+    await userEvent.clear(cpu);
+    await userEvent.type(cpu, "500m");
+    const bar = screen.getByRole("region", { name: i18next.t("servers:settings_save_bar") });
+    await userEvent.click(within(bar).getByRole("button", { name: i18next.t("servers:settings_discard") }));
+    expect(cpu.value).toBe("2");
+    expect(screen.queryByRole("region", { name: i18next.t("servers:settings_save_bar") })).toBeNull();
+    expect(calls.patchServer).not.toHaveBeenCalled();
   });
 });
 
@@ -373,7 +400,7 @@ describe("ServerConsole retirement", () => {
     calls.status.mockResolvedValue(stopped({ reaperExempt: true }));
     renderConsole("/servers/survival/settings");
 
-    expect(await screen.findByRole("button", { name: /Edit Server Config/ })).toBeTruthy();
+    expect(await screen.findByRole("region", { name: i18next.t("servers:settings_section_general") })).toBeTruthy();
     expect(giveUp()).toBeNull();
     expect(del()).toBeNull();
   });
@@ -389,7 +416,7 @@ describe("ServerConsole retirement", () => {
     expect(screen.getByText("Given up")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Wake" })).toBeNull();
     await userEvent.click(screen.getByRole("link", { name: "Settings" }));
-    await screen.findByRole("button", { name: /Edit Server Config/ });
+    await screen.findByRole("region", { name: i18next.t("servers:settings_section_general") });
     expect(giveUp()).toBeNull();
   });
 });

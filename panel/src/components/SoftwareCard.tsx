@@ -1,6 +1,6 @@
 import { AlertTriangle, Package, ShieldCheck } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { softwareSummary } from "@/components/EditServerDialog";
+import { softwareSummary } from "@/components/ServerConfigForm";
 import type { ServerSoftware } from "@/lib/types";
 
 /** SoftwareCard names the server software a runtime-image server runs and

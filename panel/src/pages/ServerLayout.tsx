@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { BackLink } from "@/components/BackLink";
 import { CopyAddress } from "@/components/CopyAddress";
-import { softwareSummary } from "@/components/EditServerDialog";
+import { softwareSummary } from "@/components/ServerConfigForm";
 import { MessageLine } from "@/components/MessageLine";
 import { PageHeader } from "@/components/PageHeader";
 import { LinkTabs, type LinkTab } from "@/components/PageTabs";

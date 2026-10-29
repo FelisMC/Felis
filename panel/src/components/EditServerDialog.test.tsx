@@ -35,7 +35,7 @@ const startupValue = (): ServerStartupSettings => ({
 const itemName = (key: "java_flags" | "args" | "stop_commands", number: number) => t("edit_startup_item", { label: t(`edit_startup_${key}`), number });
 const removeItem = (key: "java_flags" | "args" | "stop_commands", number = 1) => screen.getByRole("button", { name: t("edit_startup_remove_item", { label: t(`edit_startup_${key}`), number }) });
 async function expandStartup(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(screen.getByRole("button", { name: t("edit_startup_title") }));
+  await user.click(screen.getByRole("button", { name: t("settings_startup_show") }));
   return await screen.findByLabelText(itemName("args", 1)) as HTMLTextAreaElement;
 }
 
@@ -116,7 +116,7 @@ describe("EditServerDialog request body", () => {
 
   it("clears the display name with an empty one", async () => {
     const user = await openDialog();
-    await user.clear(screen.getByLabelText("Display name (optional)"));
+    await user.clear(screen.getByLabelText("Display name"));
     await user.click(save());
 
     expect(calls.patchServer).toHaveBeenCalledWith("survival", { displayName: "" });
@@ -124,7 +124,7 @@ describe("EditServerDialog request body", () => {
 
   it("stops the display name at the length the API takes", async () => {
     const user = await openDialog();
-    await user.clear(screen.getByLabelText("Display name (optional)"));
+    await user.clear(screen.getByLabelText("Display name"));
     await user.paste("x".repeat(70));
     await user.click(save());
 
@@ -142,7 +142,7 @@ describe("EditServerDialog request body", () => {
   it("treats surrounding space as no change", async () => {
     const user = await openDialog();
     await user.type(cpuInput(), "  ");
-    await user.type(screen.getByLabelText("Display name (optional)"), " ");
+    await user.type(screen.getByLabelText("Display name"), " ");
 
     expect(save().disabled).toBe(true);
   });
@@ -159,7 +159,7 @@ describe("EditServerDialog request body", () => {
     for (const good of ["1.5", "500m", "4"]) {
       await user.clear(cpuInput());
       await user.type(cpuInput(), good);
-      expect(screen.queryByText(/millicores/), good).toBeNull();
+      expect(screen.queryByText(/must be greater than zero/), good).toBeNull();
       expect(save().disabled, good).toBe(false);
     }
     expect(calls.patchServer).not.toHaveBeenCalled();
@@ -290,7 +290,7 @@ describe("EditServerDialog private startup settings", () => {
     expect(screen.getByLabelText(itemName("args", 3))).toHaveProperty("value", "first\nsecond");
     expect(screen.getByLabelText(t("edit_startup_env_value", { number: 1 }))).toHaveProperty("value", startupValue().env[0].value);
     expect(save().disabled).toBe(true);
-    await user.click(screen.getByRole("button", { name: t("edit_startup_title") }));
+    await user.click(screen.getByRole("button", { name: t("settings_startup_hide") }));
     await expandStartup(user);
     expect(calls.getStartupSettings).toHaveBeenCalledTimes(1);
     expect(save().disabled).toBe(true);
@@ -359,7 +359,7 @@ describe("EditServerDialog private startup settings", () => {
     fireEvent.change(screen.getByLabelText(itemName("args", 1)), { target: { value: "retained draft" } });
     rendered.rerender(<EditServerDialog serverName="survival" currentCpu="2" currentPhase="Running" onUpdated={onUpdated} />);
     expect(screen.getByLabelText(itemName("args", 1))).toHaveProperty("value", "retained draft");
-    await user.click(screen.getByRole("button", { name: t("edit_startup_title") }));
+    await user.click(screen.getByRole("button", { name: t("settings_startup_hide") }));
     expect(screen.queryByLabelText(itemName("args", 1))).toBeNull();
     expect(screen.getByText(t("edit_startup_restart_hint"))).toBeTruthy();
     await user.click(save());
@@ -371,7 +371,7 @@ describe("EditServerDialog private startup settings", () => {
     const failure = { status: 503, code: "upstream_unavailable" };
     calls.getStartupSettings.mockRejectedValueOnce(failure);
     const user = await openDialog();
-    await user.click(screen.getByRole("button", { name: t("edit_startup_title") }));
+    await user.click(screen.getByRole("button", { name: t("settings_startup_show") }));
     expect((await screen.findByRole("alert")).textContent).toBe(humanizeError(failure));
     expect(screen.queryByLabelText(itemName("args", 1))).toBeNull();
     expect(save().disabled).toBe(true);
@@ -404,7 +404,7 @@ describe("EditServerDialog private startup settings", () => {
     const user = userEvent.setup();
     render(<StrictMode><EditServerDialog serverName="survival" onUpdated={onUpdated} /></StrictMode>);
     await user.click(screen.getByRole("button", { name: /Edit Server Config/ }));
-    await user.click(screen.getByRole("button", { name: t("edit_startup_title") }));
+    await user.click(screen.getByRole("button", { name: t("settings_startup_show") }));
     expect(screen.getByText(t("edit_startup_loading"))).toBeTruthy();
     expect(screen.queryByLabelText(itemName("args", 1))).toBeNull();
     await user.click(screen.getByRole("button", { name: "Cancel" }));
@@ -422,7 +422,7 @@ describe("EditServerDialog private startup settings", () => {
     const user = userEvent.setup();
     const rendered = render(<EditServerDialog serverName="survival" onUpdated={onUpdated} />);
     await user.click(screen.getByRole("button", { name: /Edit Server Config/ }));
-    await user.click(screen.getByRole("button", { name: t("edit_startup_title") }));
+    await user.click(screen.getByRole("button", { name: t("settings_startup_show") }));
     rendered.rerender(<EditServerDialog serverName="second" onUpdated={onUpdated} />);
     expect(screen.queryByRole("dialog")).toBeNull();
     await user.click(screen.getByRole("button", { name: /Edit Server Config/ }));
@@ -524,9 +524,9 @@ describe("EditServerDialog recovery and mail", () => {
 
   it("sends the mail switches that changed", async () => {
     const user = await openDialog();
-    const problems = screen.getByRole("checkbox", { name: /Problems/ }) as HTMLInputElement;
-    expect(problems.checked).toBe(true);
-    await user.click(screen.getByRole("checkbox", { name: "Server stopped" }));
+    const problems = screen.getByRole("switch", { name: /Problems/ });
+    expect(problems.getAttribute("aria-checked")).toBe("true");
+    await user.click(screen.getByRole("switch", { name: "Server stopped" }));
     await user.click(problems);
     await user.click(save());
 
