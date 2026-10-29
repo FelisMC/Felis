@@ -334,10 +334,7 @@ describe("ServerConsole retirement", () => {
     calls.status.mockResolvedValue(stopped());
     renderConsole("/servers/survival/settings");
 
-    const more = await screen.findByRole("button", { name: "More actions" });
-    expect(giveUp()).toBeNull();
-    await userEvent.click(more);
-    expect(screen.getByRole("button", { name: "Give up" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Give up" })).toBeTruthy();
     expect(del()).toBeNull();
   });
 
@@ -345,10 +342,7 @@ describe("ServerConsole retirement", () => {
     calls.status.mockResolvedValue(stopped());
     renderConsole("/servers/survival/settings");
 
-    const more = await screen.findByRole("button", { name: "More actions" });
-    expect(del()).toBeNull();
-    await userEvent.click(more);
-    expect(screen.getByRole("button", { name: "Delete" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Delete" })).toBeTruthy();
     expect(giveUp()).toBeTruthy();
   });
 
@@ -485,7 +479,7 @@ describe("ServerConsole command line", () => {
     calls.status.mockResolvedValue(status({ phase: "Starting", desiredState: "Running", ready: false, startup: { stage: "booting", logsAvailable: false } }));
     calls.sendCommand.mockResolvedValue({ name: "survival", output: "", transport: "stdin" });
     const box = await commandLine();
-    expect(screen.getByText("Logs unavailable")).toBeTruthy();
+    expect(screen.getByText(i18next.t("servers:console_waiting_logs"))).toBeTruthy();
     await userEvent.type(box, "say starting");
     await userEvent.click(screen.getByRole("button", { name: i18next.t("servers:command_send") }));
     expect(await screen.findByText(i18next.t("servers:command_sent_stdin"))).toBeTruthy();
@@ -651,7 +645,7 @@ describe("startup diagnostics and stale state", () => {
     expect(await screen.findByText("Startup issue")).toBeTruthy();
     expect(screen.getByText(/OOMKilled.*137/)).toBeTruthy();
     expect(screen.queryByText("Starting", { exact: true })).toBeNull();
-    expect(screen.getByText("Logs unavailable")).toBeTruthy();
+    expect(screen.getByText(i18next.t("servers:console_waiting_logs"))).toBeTruthy();
   });
   it("explains scheduling failure before logs exist", async () => {
     calls.status.mockResolvedValue(status({ phase: "Starting", desiredState: "Running", startup: { stage: "scheduling", reason: "Unschedulable", message: "0/1 nodes: Insufficient memory", startedAt: new Date().toISOString(), logsAvailable: false } }));

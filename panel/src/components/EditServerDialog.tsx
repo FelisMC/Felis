@@ -1,5 +1,5 @@
 import { Checkbox } from "@/components/ui/checkbox";
-import { useState, useEffect, useRef, useCallback, useId } from "react";
+import { useState, useEffect, useRef, useCallback, useId, type ReactNode } from "react";
 import { Settings, ChevronRight, AlertTriangle, Loader2, Plus, Trash2, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ConfirmFooter } from "@/components/ConfirmFooter";
@@ -56,7 +56,7 @@ function cpuValid(cpu: string): boolean {
 const IDLE_OPTIONS = ["0", "300", "600", "900", "1800", "3600", "7200"];
 
 /** idleLabel renders an idle-stop duration the way a person says it. */
-function idleLabel(t: (key: string, opts?: Record<string, unknown>) => string, seconds: number): string {
+export function idleLabel(t: (key: string, opts?: Record<string, unknown>) => string, seconds: number): string {
   if (seconds <= 0) return t("idle_stop_never");
   if (seconds % 3600 === 0) return t("idle_stop_hours", { count: seconds / 3600 });
   if (seconds % 60 === 0) return t("idle_stop_minutes", { count: seconds / 60 });
@@ -79,7 +79,7 @@ function ImageLabel({ imageRef, t }: { imageRef: string; t: (key: string, opts?:
   );
 }
 
-function policyOptions(t: (key: string) => string): { value: AutostartPolicy; label: string }[] {
+export function policyOptions(t: (key: string) => string): { value: AutostartPolicy; label: string }[] {
   return [
     { value: "ownerOnly", label: t("create_server_policy_owner") },
     { value: "public", label: t("create_server_policy_public") },
@@ -169,6 +169,8 @@ interface Props {
   /** owner edits a server the caller owns (PATCH /me/servers/{name}): no image,
    *  memory and CPU within their quota. admin is the staff patch. */
   mode?: "admin" | "owner";
+  /** trigger replaces the default card that opens the dialog. */
+  trigger?: ReactNode;
   onUpdated: () => void;
 }
 
@@ -206,6 +208,7 @@ export function EditServerDialog({
   currentExtraPorts,
   currentExtraPortsPending = false,
   mode = "admin",
+  trigger,
   onUpdated,
 }: Props) {
   const currentIdleStop = String(currentIdleStopSeconds);
@@ -549,8 +552,7 @@ export function EditServerDialog({
   return (
     <Dialog open={open} onOpenChange={changeOpen}>
       <DialogTrigger asChild>
-        {/* Unified Sidebar Link/Card style trigger */}
-        <button
+        {trigger ?? <button
           type="button"
           className="group flex w-full text-left items-center gap-3 rounded-xl border border-border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-accent focus:outline-none"
         >
@@ -562,7 +564,7 @@ export function EditServerDialog({
             </p>
           </div>
           <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
-        </button>
+        </button>}
       </DialogTrigger>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>

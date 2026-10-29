@@ -57,3 +57,15 @@ export function splitImageRef(ref: string): { tag: string; digest: string; short
   const digest = ref.slice(at + 1);
   return { tag: ref.slice(0, at), digest, short: digest.replace(/^sha256:/, "").slice(0, 12) };
 }
+
+type Translate = (key: string, options?: Record<string, unknown>) => string;
+
+/** formatDuration names a span of seconds in the two largest units, such as "9 h 14 min". */
+export function formatDuration(seconds: number, t: Translate): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  if (h > 0) return t("common:duration_hours", { h, m });
+  if (m > 0) return t("common:duration_minutes", { m, s });
+  return t("common:duration_seconds", { s });
+}

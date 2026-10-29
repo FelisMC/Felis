@@ -51,5 +51,8 @@
   "chart_since_minutes_one": "{{count}} 分钟前",
   "chart_since_minutes_other": "{{count}} 分钟前",
   "chart_since_hour": "1 小时前",
-  "chart_now": "现在"
+  "chart_now": "现在",
+  "duration_hours": "{{h}} 小时 {{m}} 分",
+  "duration_minutes": "{{m}} 分 {{s}} 秒",
+  "duration_seconds": "{{s}} 秒"
 }

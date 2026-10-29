@@ -12,10 +12,12 @@ export interface PageHeaderProps {
   actions?: React.ReactNode;
   /** tabs is a PageTabs row drawn along the header's bottom edge. */
   tabs?: React.ReactNode;
+  /** back is a link to the page one level up, set above the title. */
+  back?: React.ReactNode;
   className?: string;
 }
 
-export function PageHeader({ icon: Icon, title, subtitle, actions, tabs, className }: PageHeaderProps) {
+export function PageHeader({ icon: Icon, title, subtitle, actions, tabs, back, className }: PageHeaderProps) {
   const host = React.useContext(PageHeaderHostContext);
   const row = (
     <div className={cn("mx-auto flex w-full max-w-8xl flex-wrap items-center justify-between gap-3", className, host && "my-0")}>
@@ -39,10 +41,11 @@ export function PageHeader({ icon: Icon, title, subtitle, actions, tabs, classNa
   );
   // In the header strip the tabs sit on its bottom border: the negative margin takes back the
   // strip's padding, so the chosen tab's underline lands on the line itself.
-  const header = tabs ? (
+  const header = tabs || back ? (
     <div className="mx-auto w-full max-w-8xl">
+      {back && <div className="mb-3">{back}</div>}
       {row}
-      <div className={cn("mt-4 md:mt-5", host ? "-mx-4 -mb-4 md:mx-0 md:-mb-6" : "border-b border-border")}>{tabs}</div>
+      {tabs && <div className={cn("mt-4 md:mt-5", host ? "-mx-4 -mb-4 md:mx-0 md:-mb-6" : "border-b border-border")}>{tabs}</div>}
     </div>
   ) : row;
   return host ? createPortal(header, host) : header;

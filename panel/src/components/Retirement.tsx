@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronRight, Ellipsis, Hourglass, Loader2 } from "lucide-react";
+import { Hourglass, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -99,7 +99,8 @@ export function RetireNotice({
 type Mode = "release" | "delete" | "stop" | "kill";
 
 // Require the typed server name before submitting retirement.
-export function RetireCard({
+/** DangerZone lists the actions that stop or remove a server, each with what it costs and its own confirmation. */
+export function DangerZone({
   name,
   label,
   isAdmin,
@@ -119,40 +120,36 @@ export function RetireCard({
 }) {
   const { t } = useTranslation("servers");
   const [mode, setMode] = useState<Mode | null>(null);
-  const [open, setOpen] = useState(false);
+  const rows: { mode: Mode; title: string; body: string; destructive?: boolean }[] = [
+    ...(canKill ? [{ mode: "kill" as const, title: t("kill"), body: t("kill_desc"), destructive: true }] : []),
+    ...(isOwner ? [{ mode: "stop" as const, title: t("emergency_stop"), body: t("emergency_stop_desc") }] : []),
+    ...(canRetire ? [{ mode: "release" as const, title: t("retire_release"), body: t("retire_card_desc") }] : []),
+    ...(canRetire && isAdmin ? [{ mode: "delete" as const, title: t("retire_delete"), body: t("retire_delete_desc"), destructive: true }] : []),
+  ];
+  if (rows.length === 0) return null;
 
   return (
-    <div>
-      <Button variant="outline" className="h-auto w-full justify-start gap-3 border-border bg-card p-4 text-left active:scale-100" onClick={() => setOpen(true)}>
-        <Ellipsis className="text-muted-foreground" /><span className="flex-1">{t("more_actions")}</span><ChevronRight className="text-muted-foreground" />
-      </Button>
-      <Dialog open={open && mode === null} onOpenChange={setOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>{t("more_actions")}</DialogTitle>
-            <DialogDescription>{t("more_actions_desc")}</DialogDescription>
-          </DialogHeader>
-          <div className="flex flex-wrap gap-2">
-            {canKill && <Button variant="destructive" onClick={() => setMode("kill")}>{t("kill")}</Button>}
-            {isOwner && <Button variant="outline" onClick={() => setMode("stop")}>{t("emergency_stop")}</Button>}
-            {canRetire && <Button variant="outline" onClick={() => setMode("release")}>{t("retire_release")}</Button>}
-            {canRetire && isAdmin && <Button variant="destructive" onClick={() => setMode("delete")}>{t("retire_delete")}</Button>}
+    <section aria-labelledby="server-danger-zone" className="overflow-hidden rounded-xl border border-destructive/40 bg-card">
+      <h2 id="server-danger-zone" className="border-b border-destructive/20 px-5 py-3 text-sm font-semibold text-destructive">{t("settings_danger_zone")}</h2>
+      <div className="divide-y divide-border">
+        {rows.map((row) => (
+          <div key={row.mode} className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 px-5 py-4">
+            <div className="min-w-0 max-w-2xl space-y-1">
+              <p className="text-sm font-medium">{row.title}</p>
+              <p className="text-xs leading-relaxed text-muted-foreground">{row.body}</p>
+            </div>
+            <Button size="sm" variant={row.destructive ? "destructive" : "outline"} className={cn(!row.destructive && "border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive")} onClick={() => setMode(row.mode)}>
+              {row.title}
+            </Button>
           </div>
-        </DialogContent>
-      </Dialog>
+        ))}
+      </div>
       {mode === "kill" ? (
-        <KillDialog name={name} label={label} onClose={() => setMode(null)} onDone={() => { setMode(null); setOpen(false); onChanged(); }} />
+        <KillDialog name={name} label={label} onClose={() => setMode(null)} onDone={() => { setMode(null); onChanged(); }} />
       ) : mode && (
-        <RetireDialog
-          name={name}
-          label={label}
-          mode={mode}
-          isAdmin={isAdmin}
-          onClose={() => setMode(null)}
-          onDone={() => { setOpen(false); onChanged(); }}
-        />
+        <RetireDialog name={name} label={label} mode={mode} isAdmin={isAdmin} onClose={() => setMode(null)} onDone={onChanged} />
       )}
-    </div>
+    </section>
   );
 }
 

@@ -47,7 +47,8 @@ export function ServerLayout() {
   const { data: mine } = useAsync(() => (isAdmin ? Promise.resolve([]) : api.myServers()), [isAdmin, name]);
   const owned = canManage(isAdmin, mine, name);
 
-  const back = <div><BackLink to="/servers" label={t("my_servers_breadcrumb")} /></div>;
+  const backLink = <BackLink to="/servers" label={t("my_servers_breadcrumb")} />;
+  const back = <div>{backLink}</div>;
   if (loading && !data) return <div className="flex flex-col gap-4">{back}<Loading /></div>;
   if (!data) {
     return (
@@ -82,7 +83,6 @@ export function ServerLayout() {
 
   return (
     <div className="flex flex-col gap-4">
-      {back}
       {error != null && (
         <div className="space-y-2">
           <MessageLine kind="error" message={t("status_stale_detail", { time: updatedAt ? new Date(updatedAt).toLocaleTimeString() : "—", error: humanizeError(error) })} />
@@ -126,6 +126,7 @@ export function ServerLayout() {
           </div>
         }
         tabs={<LinkTabs tabs={tabs} label={t("server_tabs")} />}
+        back={backLink}
       />
       <Outlet context={context} />
     </div>

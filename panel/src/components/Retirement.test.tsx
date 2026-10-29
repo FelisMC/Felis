@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import i18next from "i18next";
-import { RetireCard, RetireNotice } from "./Retirement";
+import { DangerZone, RetireNotice } from "./Retirement";
 
 const calls = vi.hoisted(() => ({ retireServer: vi.fn(), cancelRetire: vi.fn(), emergencyStop: vi.fn(), kill: vi.fn() }));
 vi.mock("@/lib/api", async (importOriginal) => {
@@ -21,12 +21,11 @@ beforeEach(() => {
   calls.kill.mockReset();
 });
 
-describe("RetireCard", () => {
+describe("DangerZone", () => {
   it("requires confirmation before force stop and allows cancelling", async () => {
     calls.kill.mockResolvedValue({ desiredState: "Stopped" });
     const onChanged = vi.fn();
-    render(<RetireCard name="survival" label="World" isAdmin={false} canKill onChanged={onChanged} />);
-    await userEvent.click(screen.getByRole("button", { name: t("servers:more_actions") }));
+    render(<DangerZone name="survival" label="World" isAdmin={false} canKill onChanged={onChanged} />);
     expect(screen.queryByRole("button", { name: t("servers:emergency_stop") })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: t("servers:kill") }));
     expect(screen.getByText(t("servers:kill_warning"))).toBeTruthy();
@@ -44,8 +43,7 @@ describe("RetireCard", () => {
   it("keeps a refused force stop open with its reason", async () => {
     calls.kill.mockRejectedValue({ status: 403, code: "forbidden", message: "raw" });
     const onChanged = vi.fn();
-    render(<RetireCard name="survival" label="World" isAdmin canKill onChanged={onChanged} />);
-    await userEvent.click(screen.getByRole("button", { name: t("servers:more_actions") }));
+    render(<DangerZone name="survival" label="World" isAdmin canKill onChanged={onChanged} />);
     await userEvent.click(screen.getByRole("button", { name: t("servers:kill") }));
     await userEvent.click(screen.getByRole("button", { name: t("servers:kill") }));
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", t("errors:forbidden"));
@@ -56,9 +54,7 @@ describe("RetireCard", () => {
   it("requires exact confirmation and reports acceptance without claiming shutdown", async () => {
     calls.emergencyStop.mockResolvedValue({ desiredState: "Stopped" });
     const onChanged = vi.fn();
-    render(<RetireCard name="survival" label="World" isAdmin isOwner onChanged={onChanged} />);
-    expect(screen.queryByRole("button", { name: t("servers:emergency_stop") })).toBeNull();
-    await userEvent.click(screen.getByRole("button", { name: t("servers:more_actions") }));
+    render(<DangerZone name="survival" label="World" isAdmin isOwner onChanged={onChanged} />);
     await userEvent.click(screen.getByRole("button", { name: t("servers:emergency_stop") }));
     const confirm = screen.getByRole("button", { name: t("servers:emergency_stop") });
     expect(confirm).toHaveProperty("disabled", true);
@@ -71,8 +67,7 @@ describe("RetireCard", () => {
   });
 
   it("keeps system services behind emergency controls without offering retirement", async () => {
-    render(<RetireCard name="login" label="Login" isAdmin isOwner canRetire={false} onChanged={vi.fn()} />);
-    await userEvent.click(screen.getByRole("button", { name: t("servers:more_actions") }));
+    render(<DangerZone name="login" label="Login" isAdmin isOwner canRetire={false} onChanged={vi.fn()} />);
     expect(screen.getByRole("button", { name: t("servers:emergency_stop") })).toBeTruthy();
     expect(screen.queryByRole("button", { name: t("servers:retire_delete") })).toBeNull();
     expect(screen.queryByRole("button", { name: t("servers:retire_release") })).toBeNull();
@@ -81,10 +76,9 @@ describe("RetireCard", () => {
   it("lets an owner give the server up once its name is typed out, and never offers a deletion", async () => {
     calls.retireServer.mockResolvedValue({ name: "survival", retiring: { requested_at: hourAgo(), delete: false } });
     const onChanged = vi.fn();
-    render(<RetireCard name="survival" label="Survival World" isAdmin={false} onChanged={onChanged} />);
+    render(<DangerZone name="survival" label="Survival World" isAdmin={false} onChanged={onChanged} />);
 
     expect(screen.queryByRole("button", { name: t("servers:retire_delete") })).toBeNull();
-    await userEvent.click(screen.getByRole("button", { name: t("servers:more_actions") }));
     await userEvent.click(screen.getByRole("button", { name: t("servers:retire_release") }));
 
     const dialog = screen.getByRole("dialog");
@@ -114,9 +108,8 @@ describe("RetireCard", () => {
   it("lets an admin delete the server, and says only an admin can take that back", async () => {
     calls.retireServer.mockResolvedValue({ name: "survival", retiring: { requested_at: hourAgo(), delete: true } });
     const onChanged = vi.fn();
-    render(<RetireCard name="survival" label="survival" isAdmin onChanged={onChanged} />);
+    render(<DangerZone name="survival" label="survival" isAdmin onChanged={onChanged} />);
 
-    await userEvent.click(screen.getByRole("button", { name: t("servers:more_actions") }));
     await userEvent.click(screen.getByRole("button", { name: t("servers:retire_delete") }));
     const dialog = screen.getByRole("dialog");
     expect(dialog.textContent).toContain(t("servers:retire_step_delete"));
@@ -131,9 +124,8 @@ describe("RetireCard", () => {
   it("keeps the dialog open with the reason when the request is refused", async () => {
     calls.retireServer.mockRejectedValue({ status: 409, code: "world_volume_orphaned", message: "raw" });
     const onChanged = vi.fn();
-    render(<RetireCard name="survival" label="survival" isAdmin onChanged={onChanged} />);
+    render(<DangerZone name="survival" label="survival" isAdmin onChanged={onChanged} />);
 
-    await userEvent.click(screen.getByRole("button", { name: t("servers:more_actions") }));
     await userEvent.click(screen.getByRole("button", { name: t("servers:retire_delete") }));
     await userEvent.type(screen.getByLabelText(t("servers:retire_confirm_label"), { exact: false }), "survival");
     await userEvent.click(screen.getByRole("button", { name: t("servers:retire_confirm_delete") }));

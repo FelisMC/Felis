@@ -10,7 +10,8 @@ import { Loading } from "@/components/States";
 import { api, consoleStreamURL, humanizeError } from "@/lib/api";
 import { useConfig } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
-import type { Phase } from "@/lib/types";
+import type { Phase, ServerStatus } from "@/lib/types";
+import { formatDuration } from "@/lib/format";
 import { ResourceUsage } from "@/components/ResourceUsage";
 import { RetireNotice } from "@/components/Retirement";
 import { RecoveryNotice, ServerEventsCard } from "@/components/ServerEvents";
@@ -55,12 +56,27 @@ function useNotStreamingCopy(phase: Phase, waitingForContainer: boolean): { icon
 function NotStreaming({ phase, waitingForContainer = false }: { phase: Phase; waitingForContainer?: boolean }) {
   const { icon: Icon, title, body, spin } = useNotStreamingCopy(phase, waitingForContainer);
   return (
-    <div className="flex items-start gap-3 rounded-md border border-dashed border-border bg-muted/30 p-6 text-sm text-muted-foreground">
-      <Icon className={cn("mt-0.5 h-5 w-5 shrink-0 text-muted-foreground/70", spin && "animate-spin")} />
-      <div className="space-y-1">
-        <p className="font-medium text-foreground">{title}</p>
-        <p>{body}</p>
-      </div>
+    <div className="flex max-w-md flex-col items-center gap-2 text-sm text-zinc-500">
+      <Icon className={cn("h-5 w-5 text-zinc-600", spin && "animate-spin")} />
+      <p className="font-medium text-zinc-300">{title}</p>
+      <p>{body}</p>
+    </div>
+  );
+}
+
+// StartupStrip heads the console while a start is in progress, so the reason it waits sits next to where its logs will appear.
+function StartupStrip({ startup, blocked }: { startup: NonNullable<ServerStatus["startup"]>; blocked: boolean }) {
+  const { t } = useTranslation("servers");
+  const waited = startup.startedAt ? Math.max(0, Math.floor((Date.now() - new Date(startup.startedAt).getTime()) / 1000)) : null;
+  return (
+    <div role="status" className={cn("shrink-0 space-y-1 border-b border-zinc-800 bg-zinc-900/70 px-4 py-3 text-sm text-zinc-300", blocked && "border-l-2 border-l-amber-500")}>
+      <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 font-medium text-zinc-100">
+        {blocked ? <ShieldAlert className="h-4 w-4 text-amber-400" /> : <Loader2 className="h-4 w-4 animate-spin text-primary" />}
+        {t(`startup_${startup.stage}`)}
+        {waited !== null && <span className="text-xs font-normal text-zinc-500">{t("startup_elapsed", { duration: formatDuration(waited, t) })}</span>}
+      </p>
+      {startup.reason && <p className="break-words">{startup.reason === "Unschedulable" && startup.message?.includes("Insufficient memory") ? t("startup_memory") : [startup.reason, startup.message].filter(Boolean).join(": ")}</p>}
+      <p className="text-xs text-zinc-500">{t(startup.stage === "failed" ? "startup_failed_hint" : "startup_hint")}</p>
     </div>
   );
 }
@@ -246,22 +262,18 @@ export function ServerConsole() {
         <RetireNotice name={name} retiring={data.retiring} isAdmin={isAdmin} onChanged={reload} />
       )}
       {!error && <RecoveryNotice data={data} />}
-      {!error && startup && (
-        <div role="status" className="space-y-2 rounded-xl border border-border bg-card p-4 text-sm">
-          <p className="flex items-center gap-2 font-medium">{startupBlocked ? <ShieldAlert className="h-4 w-4 text-amber-500" /> : <Loader2 className="h-4 w-4 animate-spin text-primary" />}{t(`startup_${startup.stage}`)}</p>
-          {startup.startedAt && <p className="text-xs text-muted-foreground">{t("startup_elapsed", { seconds: Math.max(0, Math.floor((Date.now() - new Date(startup.startedAt).getTime()) / 1000)) })}</p>}
-          {startup.reason && <p className="break-words text-muted-foreground">{startup.reason === "Unschedulable" && startup.message?.includes("Insufficient memory") ? t("startup_memory") : [startup.reason, startup.message].filter(Boolean).join(": ")}</p>}
-          <p className="text-xs text-muted-foreground">{t(startup.stage === "failed" ? "startup_failed_hint" : "startup_hint")}</p>
-        </div>
-      )}
-
       <Card className="dark flex h-[clamp(24rem,68dvh,52rem)] flex-col overflow-hidden border-zinc-800 bg-black text-zinc-50">
         <CardContent className="flex min-h-0 flex-1 flex-col bg-black p-0">
+          {!error && startup && <StartupStrip startup={startup} blocked={startupBlocked} />}
           {savedLogs ? (
             <div className="flex min-h-0 flex-1 flex-col"><ConsoleHistory key={name} name={name} /></div>
           ) : !streamable ? (
-            <div className="flex flex-1 flex-col justify-center bg-black p-6">
-              <NotStreaming phase={error ? "Unknown" : shownPhase(data)} waitingForContainer={!error && data.startup?.logsAvailable === false} />
+            <div className="flex flex-1 items-center justify-center px-6 text-center">
+              {!error && startup ? (
+                <p className="text-sm text-zinc-500">{t("console_waiting_logs")}</p>
+              ) : (
+                <NotStreaming phase={error ? "Unknown" : shownPhase(data)} waitingForContainer={!error && data.startup?.logsAvailable === false} />
+              )}
             </div>
           ) : cfg ? (
             <div className="flex min-h-0 flex-1 flex-col bg-black">

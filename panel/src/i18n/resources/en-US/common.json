@@ -51,5 +51,8 @@
   "chart_since_minutes_one": "{{count}} minute ago",
   "chart_since_minutes_other": "{{count}} minutes ago",
   "chart_since_hour": "1 hour ago",
-  "chart_now": "Now"
+  "chart_now": "Now",
+  "duration_hours": "{{h}} h {{m}} min",
+  "duration_minutes": "{{m}} min {{s}} s",
+  "duration_seconds": "{{s}} s"
 }

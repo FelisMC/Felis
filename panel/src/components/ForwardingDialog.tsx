@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { ChevronRight, Loader2, Save, Shuffle } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
@@ -9,7 +9,7 @@ import { HostTaskStatus, useHostTask } from "@/components/HostTask";
 import { MessageLine } from "@/components/MessageLine";
 
 // Legacy forwarding cannot authenticate player identities reaching the backend port.
-export function ForwardingDialog({ serverName, legacy, onUpdated }: { serverName: string; legacy: boolean; onUpdated: () => void }) {
+export function ForwardingDialog({ serverName, legacy, onUpdated, trigger }: { serverName: string; legacy: boolean; onUpdated: () => void; trigger?: ReactNode }) {
   const { t } = useTranslation("servers");
   const host = useHostTask(["server-forwarding"]);
   const [open, setOpen] = useState(false);
@@ -20,14 +20,14 @@ export function ForwardingDialog({ serverName, legacy, onUpdated }: { serverName
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <button type="button" className="group flex w-full items-center gap-3 rounded-xl border border-border bg-card p-4 text-left transition-colors hover:border-primary/40 hover:bg-accent focus:outline-none">
+        {trigger ?? <button type="button" className="group flex w-full items-center gap-3 rounded-xl border border-border bg-card p-4 text-left transition-colors hover:border-primary/40 hover:bg-accent focus:outline-none">
           <Shuffle className="h-5 w-5 shrink-0 text-primary" />
           <div className="min-w-0 flex-1">
             <p className="text-sm font-medium">{t("forwarding_title")}</p>
             <p className="mt-0.5 text-xs text-muted-foreground">{t(legacy ? "forwarding_legacy" : "forwarding_modern")}</p>
           </div>
           <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
-        </button>
+        </button>}
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>
