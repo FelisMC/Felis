@@ -49,7 +49,7 @@ for (const [account, path] of [
 // Dialogs only exist once opened, so each is opened and swept on its own.
 for (const [account, path, opener] of [
   ["owner", "/servers", "servers:create_server_btn"],
-  ["owner", "/servers/lobby", "servers:edit_server_title"],
+  ["owner", "/servers/lobby/settings", "servers:edit_server_title"],
   ["owner", "/admin/users", "admin:users_create_btn"],
   ["owner", "/admin/images", "admin:add_image_btn"],
   ["owner", "/admin/builds", "admin:trigger_build_title"],

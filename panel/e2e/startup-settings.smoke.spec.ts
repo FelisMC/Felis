@@ -12,7 +12,7 @@ test("startup settings fit a narrow screen", async ({ page, signIn }) => {
   await signIn("user");
   expect((await page.request.patch("/api/v1/me/servers/creative", { data: initial })).ok()).toBe(true);
   await page.setViewportSize({ width: 375, height: 812 });
-  await page.goto("/servers/creative");
+  await page.goto("/servers/creative/settings");
   await page.getByRole("button", { name: new RegExp(`^${t("servers:edit_server_title")}`) }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("button", { name: t("servers:edit_startup_title"), exact: true }).click();

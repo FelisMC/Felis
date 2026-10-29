@@ -439,8 +439,8 @@ export function ServerLuckPerms() {
           {/* Right Main Panel */}
           <div className="lg:col-span-3 space-y-6">
             {!selectedPlayer ? (
-              <Card className="flex flex-col items-center justify-center py-8 lg:py-24 text-center border-dashed lg:min-h-[500px]">
-                <Shield className="h-14 w-14 text-muted-foreground/15 mb-4 animate-pulse" />
+              <Card className="flex flex-col items-center justify-center py-5 lg:py-24 text-center border-dashed lg:min-h-[500px]">
+                <Shield className="h-9 w-9 lg:h-14 lg:w-14 text-muted-foreground/15 mb-2 lg:mb-4 animate-pulse" />
                 <p className="text-sm text-muted-foreground font-medium max-w-xs leading-normal">
                   {t("luckperms_select_player_prompt")}
                 </p>

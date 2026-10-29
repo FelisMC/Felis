@@ -23,7 +23,7 @@ test("a server owner adds TCP and UDP ports and copies the direct address on a n
   expect((await page.request.patch("/api/v1/me/servers/creative", { data: { extraPorts: [] } })).ok()).toBe(true);
   await page.setViewportSize({ width: 375, height: 812 });
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
-  await page.goto("/servers/creative");
+  await page.goto("/servers/creative/settings");
   await page.getByRole("button", { name: new RegExp(`^${t("servers:edit_server_title")}`) }).click();
   const dialog = page.getByRole("dialog");
   const add = dialog.getByRole("button", { name: t("servers:extra_ports_add"), exact: true });
