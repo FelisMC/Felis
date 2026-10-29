@@ -425,7 +425,7 @@ func TestOperatorDeployment_Wiring(t *testing.T) {
 			t.Errorf("operator must mount NO Secret volume, found %q", v.Name)
 		}
 	}
-	// Only two plain envs: FELIS_IMAGE and FELIS_ARTIFACT_CACHE; no Secret-backed env, since it holds no DB URL or token.
+	// Only plain envs: the image, the artifact cache and the control namespace for hibernation Jobs; no Secret-backed env, since it holds no DB URL or token.
 	for _, e := range c.Env {
 		if e.ValueFrom != nil {
 			t.Errorf("operator must carry no credential env, found %q with valueFrom", e.Name)
@@ -434,6 +434,7 @@ func TestOperatorDeployment_Wiring(t *testing.T) {
 	want := []corev1.EnvVar{
 		{Name: "FELIS_IMAGE", Value: p.FelisImage},
 		{Name: "FELIS_ARTIFACT_CACHE", Value: "http://felis-artifacts." + p.ControlNamespace + ".svc:8090"},
+		{Name: "FELIS_CONTROL_NAMESPACE", Value: p.ControlNamespace},
 	}
 	if !reflect.DeepEqual(c.Env, want) {
 		t.Errorf("operator env = %v, want exactly %v", c.Env, want)

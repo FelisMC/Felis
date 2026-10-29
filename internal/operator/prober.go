@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"regexp"
 	"strconv"
 	"strings"
@@ -19,6 +20,8 @@ type PlayerCount struct {
 	Online int32
 	Max    int32
 	Known  bool
+	// Stalled means RCON took the command but the server never answered, as when its main thread hangs.
+	Stalled bool
 }
 
 // Prober readiness depends on RCON authentication; player counts are advisory, while Save waits for command completion.
@@ -87,6 +90,8 @@ func (p RconProber) Probe(ctx context.Context, addr, password string) (PlayerCou
 		}
 		reply, err := conn.Execute("list")
 		if err != nil {
+			var timeout net.Error
+			pc.Stalled = errors.As(err, &timeout) && timeout.Timeout()
 			return err
 		}
 		pc, _ = parseListReply(reply)
@@ -94,6 +99,9 @@ func (p RconProber) Probe(ctx context.Context, addr, password string) (PlayerCou
 	})
 	if errors.Is(err, rcon.ErrDial) {
 		return PlayerCount{}, err
+	}
+	if err != nil {
+		return PlayerCount{Stalled: pc.Stalled}, nil
 	}
 	return pc, nil
 }

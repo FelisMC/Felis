@@ -35,6 +35,7 @@ func ControlPlaneRBAC(p Params) RBAC {
 			OperatorRole(p),
 			LeaseRole(p, SAAPI, LeaseAPILoops),
 			LeaseRole(p, SAOperator, LeaseOperator),
+			OperatorHibernateRole(p),
 		},
 		// Bindings live with their Role, but may reference a ServiceAccount in another namespace.
 		RoleBindings: []*rbacv1.RoleBinding{
@@ -43,6 +44,7 @@ func ControlPlaneRBAC(p Params) RBAC {
 			bindRole(p.MinecraftNamespace, "felis-operator", p.ControlNamespace, SAOperator, ComponentOperator),
 			bindRole(p.ControlNamespace, SAAPI+"-leases", p.ControlNamespace, SAAPI, ComponentAPI),
 			bindRole(p.ControlNamespace, SAOperator+"-leases", p.ControlNamespace, SAOperator, ComponentOperator),
+			bindRole(p.ControlNamespace, SAOperator+"-hibernate", p.ControlNamespace, SAOperator, ComponentOperator),
 		},
 	}
 	if reaperEnabled(p) {
@@ -102,8 +104,19 @@ func OperatorRole(p Params) *rbacv1.Role {
 		rule([]string{groupBatch}, []string{"jobs"}, []string{"list"}),
 		// Pod get and delete use the uncached reader by name for bounded startup retries and stale-template replacement.
 		rule([]string{groupCore}, []string{"pods"}, []string{"get", "delete"}),
+		// Resizing in place gives a hibernated server's memory back to the node and asks for it again on wake.
+		rule([]string{groupCore}, []string{"pods/resize"}, []string{"patch"}),
 		rule([]string{groupCore}, []string{"persistentvolumeclaims"}, []string{"get"}),
 		rule([]string{groupCore}, []string{"events"}, []string{"create", "patch"}),
+	})
+}
+
+// OperatorHibernateRole runs the node Jobs that freeze and thaw servers, and reads their verdicts from the Jobs' pods.
+func OperatorHibernateRole(p Params) *rbacv1.Role {
+	p = p.withDefaults()
+	return role(p.ControlNamespace, SAOperator+"-hibernate", ComponentOperator, []rbacv1.PolicyRule{
+		rule([]string{groupBatch}, []string{"jobs"}, []string{"get", "create"}),
+		rule([]string{groupCore}, []string{"pods"}, []string{"list"}),
 	})
 }
 

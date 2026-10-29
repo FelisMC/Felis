@@ -165,6 +165,25 @@ func TestWriteServerSettings(t *testing.T) {
 	}
 }
 
+func TestWatchdogFollowsHibernation(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeServerSettings(dir, "25575", "s3cret"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeWatchdog(dir, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := readProps(t, dir)["max-tick-time"]; got != "-1" {
+		t.Fatalf("hibernating: max-tick-time = %q, want -1 so a long freeze is not taken for a hang", got)
+	}
+	if err := writeWatchdog(dir, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := readProps(t, dir)["max-tick-time"]; got != "60000" {
+		t.Fatalf("no longer hibernating: max-tick-time = %q, want the game's 60000 back", got)
+	}
+}
+
 func TestLaunchEnvHandsFabricProxyLiteTheSecret(t *testing.T) {
 	t.Setenv(forwardingSecretEnv, "fwd")
 	base := []string{"PATH=/usr/bin"}

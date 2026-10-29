@@ -391,6 +391,11 @@ func applySoftware(pod *corev1.PodSpec, server *v1alpha1.MinecraftServer, o podO
 	main.Command = []string{felisBinCopy, "launch", "--data", dataMountPath, "--"}
 	main.WorkingDir = dataMountPath
 	main.Env = append(main.Env, corev1.EnvVar{Name: envSoftware, Value: spec})
+	if hibernates(server) {
+		main.Env = append(main.Env, corev1.EnvVar{Name: envHibernate, Value: "1"})
+		// A frozen process cannot answer the kubelet, so the operator's RCON checks stand in for the liveness probe.
+		main.LivenessProbe = nil
+	}
 	main.VolumeMounts = append(main.VolumeMounts, binRO)
 	return nil
 }

@@ -180,8 +180,14 @@ func (r *Reconciler) noteLifecycle(server *v1alpha1.MinecraftServer, prevPhase v
 		last = server.Status.Events[n-1].Type
 	}
 	switch {
+	case phase == v1alpha1.PhaseHibernated && last != v1alpha1.EventHibernated:
+		r.addEvent(server, v1alpha1.ServerEvent{Type: v1alpha1.EventHibernated})
 	case phase == v1alpha1.PhaseRunning && last != v1alpha1.EventStarted:
-		r.addEvent(server, v1alpha1.ServerEvent{Type: v1alpha1.EventStarted})
+		ev := v1alpha1.ServerEvent{Type: v1alpha1.EventStarted}
+		if last == v1alpha1.EventHibernated {
+			ev.Reason = v1alpha1.ReasonWoke
+		}
+		r.addEvent(server, ev)
 	case phase == v1alpha1.PhaseStopped && prevPhase != "" && last != v1alpha1.EventStopped:
 		ev := v1alpha1.ServerEvent{Type: v1alpha1.EventStopped}
 		if a := server.Status.AutoStop; a != nil {

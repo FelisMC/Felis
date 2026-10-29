@@ -164,6 +164,11 @@ func (in *MinecraftServerStatus) DeepCopyInto(out *MinecraftServerStatus) {
 		a := *in.AutoStop
 		out.AutoStop = &a
 	}
+	if in.Hibernation != nil {
+		h := *in.Hibernation
+		in.Hibernation.Since.DeepCopyInto(&h.Since)
+		out.Hibernation = &h
+	}
 	if in.Events != nil {
 		l := make([]ServerEvent, len(in.Events))
 		copy(l, in.Events)

@@ -367,6 +367,7 @@ func OperatorDeployment(p Params) *appsv1.Deployment {
 		Env: []corev1.EnvVar{
 			{Name: "FELIS_IMAGE", Value: p.FelisImage},
 			{Name: "FELIS_ARTIFACT_CACHE", Value: ArtifactCacheURL(p.ControlNamespace)},
+			{Name: "FELIS_CONTROL_NAMESPACE", Value: p.ControlNamespace},
 		},
 		Ports: []corev1.ContainerPort{
 			{Name: "metrics", ContainerPort: operatorMetricsPort, Protocol: corev1.ProtocolTCP},

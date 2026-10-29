@@ -99,6 +99,7 @@ var commands = map[string]func(args []string, stdout, stderr io.Writer) int{
 	"install-server":     cmdInstallServer,
 	"install-self":       cmdInstallSelf,
 	"launch":             cmdLaunch,
+	"hibernate":          cmdHibernate,
 	"artifact-cache":     cmdArtifactCache,
 	"pin-images":         cmdPinImages,
 	"image-bundle":       cmdImageBundle,

@@ -106,6 +106,8 @@ func cmdOperator(args []string, _, stderr io.Writer) int {
 		Volumes:  mgr.GetAPIReader(),
 		Recorder: mgr.GetEventRecorderFor("felis-operator"),
 		Watch:    watch,
+		// Freeze and thaw Jobs run in the control namespace, whose admission allows the host access they need.
+		HibernateNamespace: os.Getenv("FELIS_CONTROL_NAMESPACE"),
 	}
 	if os.Getenv("FELIS_DISTRIBUTED") == "true" {
 		r.Nodes = mgr.GetAPIReader()

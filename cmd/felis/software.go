@@ -126,12 +126,22 @@ func cmdLaunch(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "felis launch: %v\n", err)
 		return 1
 	}
+	hibernates := os.Getenv("FELIS_HIBERNATE") == "1"
+	if err := writeWatchdog(*dataDir, hibernates); err != nil {
+		fmt.Fprintf(stderr, "felis launch: %v\n", err)
+		return 1
+	}
+	flags := os.Getenv("JAVA_FLAGS")
+	if hibernates {
+		// Paper's own watchdog has no server.properties switch, only this property.
+		flags = strings.TrimSpace(flags + " -Ddisable.watchdog=true")
+	}
 	java, err := javaBinary()
 	if err != nil {
 		fmt.Fprintf(stderr, "felis launch: no java in this image: %v\n", err)
 		return 1
 	}
-	argv := launchArgv(java, rec.Launch, os.Getenv("JAVA_MEMORY"), os.Getenv("JAVA_FLAGS"), fs.Args())
+	argv := launchArgv(java, rec.Launch, os.Getenv("JAVA_MEMORY"), flags, fs.Args())
 	env := launchEnv(os.Environ(), spec)
 	if err := os.Chdir(*dataDir); err != nil {
 		fmt.Fprintf(stderr, "felis launch: %v\n", err)
@@ -295,4 +305,25 @@ func cmdArtifactCache(args []string, _, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// vanillaMaxTickTime is the game's default watchdog limit in milliseconds.
+const vanillaMaxTickTime = "60000"
+
+// writeWatchdog turns the game's hang watchdog off for a server that hibernates, since a long freeze looks like a hang to it, and back on when it no longer does.
+func writeWatchdog(dataDir string, off bool) error {
+	path := filepath.Join(dataDir, "server.properties")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	switch {
+	case off:
+		content = upsertProperty(content, "max-tick-time", "-1")
+	case strings.Contains("\n"+string(content), "\nmax-tick-time=-1"):
+		content = upsertProperty(content, "max-tick-time", vanillaMaxTickTime)
+	default:
+		return nil
+	}
+	return writeFileMode(path, content)
 }

@@ -107,9 +107,15 @@ type Reconciler struct {
 	Recorder record.EventRecorder // nil disables Events
 	Watch    *ReconcileWatch      // nil disables liveness tracking
 
-	// probeFailures is process-local and resets on success, stop or deletion.
+	// HibernateNamespace hosts the node Jobs that freeze and thaw servers; empty turns hibernation off.
+	HibernateNamespace string
+	// Resize changes a pod's resources in place; nil patches the pod's resize subresource.
+	Resize func(ctx context.Context, pod *corev1.Pod, res corev1.ResourceRequirements) error
+
+	// probeFailures and stalls are process-local and reset on success, stop or deletion.
 	probeMu       sync.Mutex
 	probeFailures map[types.NamespacedName]int
+	stalls        map[types.NamespacedName]time.Time
 }
 
 func (r *Reconciler) now() metav1.Time {
@@ -169,7 +175,7 @@ func (r *Reconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{RequeueAfter: requeueStopping}, nil
 	}
 	for _, annotation := range []string{v1alpha1.AnnotationStartRetry, v1alpha1.AnnotationRestart} {
-		if _, ok := server.Annotations[annotation]; ok {
+		if _, ok := server.Annotations[annotation]; ok && server.Status.Hibernation == nil {
 			if wait, err := r.takeRestartRequest(ctx, &server, desired, annotation); err != nil || wait {
 				return ctrl.Result{RequeueAfter: requeueStarting}, err
 			}
@@ -177,10 +183,16 @@ func (r *Reconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	var res ctrl.Result
 	var err error
-	if desired == v1alpha1.DesiredStopped {
+	switch {
+	case desired == v1alpha1.DesiredStopped:
 		r.clearProbeFailures(req.NamespacedName)
 		res, err = r.reconcileStopped(ctx, &server)
-	} else {
+	case server.Status.Hibernation != nil:
+		res, err = r.reconcileHibernation(ctx, &server, desired)
+	case desired == v1alpha1.DesiredHibernated:
+		// Hibernated without a frozen process means the freeze record is gone; the saved world is what remains.
+		err = r.stopFor(ctx, &server, v1alpha1.StopIdle)
+	default:
 		res, err = r.reconcileRunning(ctx, &server)
 	}
 	if err == nil {
@@ -421,6 +433,10 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 			return ctrl.Result{RequeueAfter: r.startingRequeue(server, readinessTimeout(server))}, nil
 		}
 		r.clearProbeFailures(client.ObjectKeyFromObject(server))
+		// With the game's own watchdog off for hibernation, an unanswered list is how a hang shows.
+		if podHibernates(pod) && r.noteStall(client.ObjectKeyFromObject(server), pc.Stalled) >= stallLimit {
+			return ctrl.Result{}, r.restartHung(ctx, server, pod)
+		}
 		players = pc
 		if pc.Known {
 			r.setCondition(server, v1alpha1.ConditionPlayersCounted, metav1.ConditionTrue, "Counted", "RCON list reply read")
@@ -442,6 +458,9 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 				if liveBackupFreezing(server, r.now().Time) {
 					// Preserve EmptySince while live backup delays stopping so shutdown follows thaw.
 					return ctrl.Result{RequeueAfter: liveBackupPoll}, nil
+				}
+				if r.canHibernate(server, pod) {
+					return r.beginHibernate(ctx, server, pod)
 				}
 				if err := r.stopFor(ctx, server, v1alpha1.StopIdle); err != nil {
 					return ctrl.Result{}, err
@@ -488,11 +507,15 @@ func (r *Reconciler) reconcileStopped(ctx context.Context, server *v1alpha1.Mine
 	var sts appsv1.StatefulSet
 	err := r.Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: server.Name}, &sts)
 	if apierrors.IsNotFound(err) {
+		server.Status.Hibernation = nil
 		r.markStopped(server)
 		return ctrl.Result{}, r.patchStatus(ctx, server)
 	}
 	if err != nil {
 		return ctrl.Result{}, err
+	}
+	if server.Status.Hibernation != nil {
+		return r.stopFrozen(ctx, server, &sts)
 	}
 
 	if sts.Spec.Replicas == nil || *sts.Spec.Replicas != 0 {

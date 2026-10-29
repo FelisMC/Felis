@@ -35,7 +35,7 @@ const (
 
 const ForwardingLegacy = "legacy"
 
-// DesiredState is the operator-facing intent: Running or Stopped.
+// DesiredState is the operator-facing intent: Running, Stopped or Hibernated.
 type DesiredState string
 
 const (
@@ -43,6 +43,8 @@ const (
 	DesiredRunning DesiredState = "Running"
 	// DesiredStopped asks the operator to scale the server down to zero.
 	DesiredStopped DesiredState = "Stopped"
+	// DesiredHibernated keeps the process frozen with its memory in swap; only the operator sets it, when an idle server hibernates.
+	DesiredHibernated DesiredState = "Hibernated"
 )
 
 type Phase string
@@ -54,6 +56,10 @@ const (
 	PhaseRunning  Phase = "Running"
 	PhaseStopping Phase = "Stopping"
 	PhaseFailed   Phase = "Failed"
+	// PhaseHibernating covers saving, freezing and swapping out an idle server.
+	PhaseHibernating Phase = "Hibernating"
+	// PhaseHibernated is a frozen process whose memory sits in swap; waking resumes it at the same tick.
+	PhaseHibernated Phase = "Hibernated"
 )
 
 // AutostartPolicy controls who may wake a stopped server; it only applies when the proxy runs with online-mode=true.
@@ -141,7 +147,7 @@ type MinecraftServerSpec struct {
 	NodeName string `json:"nodeName,omitempty"`
 
 	// DesiredState toggles the server up or down (default Stopped).
-	// +kubebuilder:validation:Enum=Running;Stopped
+	// +kubebuilder:validation:Enum=Running;Stopped;Hibernated
 	DesiredState DesiredState `json:"desiredState,omitempty"`
 	// AutostartPolicy controls who may wake the server.
 	// +kubebuilder:validation:Enum=public;allowlist;ownerOnly
@@ -298,6 +304,16 @@ func DefaultIdle() IdleSpec {
 	return IdleSpec{AutoStopEnabled: true, EmptySecondsBeforeStop: DefaultEmptySecondsBeforeStop}
 }
 
+// IdleAction is what a server does once it has been empty for its idle time.
+type IdleAction string
+
+const (
+	// IdleHibernate freezes the process and swaps its memory to disk, so waking resumes the same tick.
+	IdleHibernate IdleAction = "hibernate"
+	// IdleStop shuts the server down.
+	IdleStop IdleAction = "stop"
+)
+
 // IdleSpec configures empty-server auto-stop. Both fields zero means unset: `felis converge` fills in only that case, so auto-stop off keeps EmptySecondsBeforeStop set.
 type IdleSpec struct {
 	// AutoStopEnabled turns on idle auto-stop.
@@ -306,6 +322,46 @@ type IdleSpec struct {
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=604800
 	EmptySecondsBeforeStop int32 `json:"emptySecondsBeforeStop,omitempty"`
+	// Action is what the idle server does; empty means hibernate.
+	// +kubebuilder:validation:Enum=hibernate;stop
+	Action IdleAction `json:"action,omitempty"`
+}
+
+// Hibernates reports whether an idle server freezes rather than stops.
+func (i IdleSpec) Hibernates() bool { return i.Action != IdleStop }
+
+// HibernationStage is where a freeze or a wake stands.
+type HibernationStage string
+
+const (
+	HibernationFreezing HibernationStage = "Freezing"
+	HibernationFrozen   HibernationStage = "Frozen"
+	// HibernationGrowing waits for the node to grant the pod its memory back before thawing.
+	HibernationGrowing HibernationStage = "Growing"
+	HibernationThawing HibernationStage = "Thawing"
+	// HibernationKilling ends the frozen process from its node before its pod goes, for a stop or a failed wake.
+	HibernationKilling HibernationStage = "Killing"
+)
+
+// HibernationStatus tracks a frozen server process.
+type HibernationStatus struct {
+	Stage HibernationStage `json:"stage"`
+	// Since is when the freeze began.
+	Since metav1.Time `json:"since"`
+	// Job names the node Job carrying out the current freeze or thaw.
+	Job string `json:"job,omitempty"`
+	// Node is where the frozen process lives.
+	Node string `json:"node,omitempty"`
+	// Container is the ID of the frozen container, so a replaced pod is noticed.
+	Container string `json:"container,omitempty"`
+	// MemoryRequest, MemoryLimit and CPURequest are what the pod ran with before the freeze shrank it; waking restores them.
+	MemoryRequest string `json:"memoryRequest,omitempty"`
+	MemoryLimit   string `json:"memoryLimit,omitempty"`
+	CPURequest    string `json:"cpuRequest,omitempty"`
+	// SwappedBytes is the memory moved to swap.
+	SwappedBytes int64 `json:"swappedBytes,omitempty"`
+	// Message explains why a wake is waiting.
+	Message string `json:"message,omitempty"`
 }
 
 const DefaultMaxCrashRestarts int32 = 3
@@ -396,6 +452,14 @@ const (
 	EventCrashed       = "Crashed"
 	EventHostRestarted = "HostRestarted"
 	EventStartFailed   = "StartFailed"
+	EventHibernated    = "Hibernated"
+)
+
+// Lifecycle event reasons of a hibernation that did not end in a resumed process.
+const (
+	ReasonWoke            = "Woke"
+	ReasonWakeFailed      = "WakeFailed"
+	ReasonHibernationLost = "HibernationLost"
 )
 
 const MaxServerEvents = 20
@@ -445,6 +509,8 @@ type MinecraftServerStatus struct {
 	Crashes   int32        `json:"crashes,omitempty"`
 	LastCrash *CrashRecord `json:"lastCrash,omitempty"`
 	AutoStop  *AutoStop    `json:"autoStop,omitempty"`
+	// Hibernation tracks a frozen process; nil when the server is not hibernating.
+	Hibernation *HibernationStatus `json:"hibernation,omitempty"`
 	// Events are oldest first, at most MaxServerEvents.
 	Events []ServerEvent `json:"events,omitempty"`
 	// +kubebuilder:validation:MaxItems=5

@@ -100,3 +100,23 @@ func TestSoftwareServerNeedsTheFelisImage(t *testing.T) {
 		t.Error("a runtime-image server was built with no image to run its install steps")
 	}
 }
+
+func TestOnlyAServerThatHibernatesDropsTheLivenessProbe(t *testing.T) {
+	for _, tc := range []struct {
+		action    v1alpha1.IdleAction
+		hibernate bool
+	}{{"", true}, {v1alpha1.IdleHibernate, true}, {v1alpha1.IdleStop, false}} {
+		server := softwareServer()
+		server.Spec.Idle = v1alpha1.IdleSpec{AutoStopEnabled: true, EmptySecondsBeforeStop: 600, Action: tc.action}
+		sts, err := buildStatefulSetWith(server, 1, podOptions{FelisImage: "felis:test"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		game := containerNamed(sts.Spec.Template.Spec.Containers, containerName)
+		flagged := slices.ContainsFunc(game.Env, func(e corev1.EnvVar) bool { return e.Name == envHibernate && e.Value == "1" })
+		if flagged != tc.hibernate || (game.LivenessProbe == nil) != tc.hibernate {
+			t.Errorf("idle action %q: watchdog switch %v, liveness probe %v; want switch %v and a probe only when the server stops instead",
+				tc.action, flagged, game.LivenessProbe != nil, tc.hibernate)
+		}
+	}
+}

@@ -60,7 +60,7 @@ func TestRunUnknownCommand(t *testing.T) {
 var undocumentedCommands = map[string]bool{
 	"bootstrap-assets": true, "init-forwarding": true, "init-volume": true,
 	"pin-images": true, "image-bundle": true,
-	"install-server": true, "install-self": true, "launch": true,
+	"install-server": true, "install-self": true, "launch": true, "hibernate": true,
 }
 
 func TestUsageAndDispatchTableAgree(t *testing.T) {
