@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
 import { ServerConsole } from "./ServerConsole";
 import { ServerLayout } from "./ServerLayout";
+import { ServerMonitor } from "./ServerMonitor";
 import { ServerSettings } from "./ServerSettings";
 import { ValidParam } from "@/components/ValidParam";
 import { STATUS_POLL_FAST_MS, STATUS_POLL_SLOW_MS } from "@/lib/hooks";
@@ -66,6 +67,7 @@ const serverRoutes = (
   <Route path="/servers/:name" element={<ValidParam param="name" pattern={/^[a-z0-9-]+$/} />}>
     <Route element={<ServerLayout />}>
       <Route index element={<ServerConsole />} />
+      <Route path="monitor" element={<ServerMonitor />} />
       <Route path="settings" element={<ServerSettings />} />
     </Route>
   </Route>
@@ -98,8 +100,8 @@ describe("ServerConsole host recovery", () => {
     tier.isAdmin = false;
     calls.myServers.mockResolvedValue([{ name: "survival", owned: false }]);
     calls.status.mockResolvedValue(status({ phase: "Running", desiredState: "Running", disk: { usedBytes: 100, limitBytes: 1000, sampledAt: "2026-10-24T00:00:00Z", stale: false } }));
-    renderConsole();
-    await screen.findByTestId("log-stream");
+    renderConsole("/servers/survival/monitor");
+    await screen.findByText(i18next.t("servers:events_empty_title"));
     expect(screen.queryByLabelText("Resource usage")).toBeNull();
     expect(screen.queryByRole("region", { name: i18next.t("servers:disk_title") })).toBeNull();
     expect(calls.serverUsage).not.toHaveBeenCalled();
@@ -108,7 +110,7 @@ describe("ServerConsole host recovery", () => {
   it("shows a stopped server's disk sample and refreshes its startup restriction", async () => {
     const disk = { usedBytes: 1200, limitBytes: 1000, sampledAt: "2026-10-24T00:00:00Z", stale: true };
     calls.status.mockResolvedValue(status({ phase: "Stopped", desiredState: "Stopped", disk, diskFull: true }));
-    renderConsole();
+    renderConsole("/servers/survival/monitor");
     const usage = await screen.findByRole("region", { name: i18next.t("servers:disk_title") });
     expect(within(usage).getByText("1.2 KiB / 1000 B")).toBeTruthy();
     expect(screen.getByRole("button", { name: i18next.t("servers:wake") })).toHaveProperty("disabled", true);
@@ -739,7 +741,7 @@ describe("ServerConsole crashes and host restarts", () => {
         { seq: 3, type: "Crashed", at: ago(10), reason: "Error", exitCode: 1, crashes: 1, limit: 3 },
       ],
     }));
-    renderConsole();
+    renderConsole("/servers/survival/monitor");
 
     const list = within(await screen.findByRole("region", { name: "Activity" })).getAllByRole("listitem");
     expect(list.map((li) => li.textContent)).toEqual([

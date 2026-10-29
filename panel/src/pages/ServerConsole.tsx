@@ -12,9 +12,8 @@ import { useConfig } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
 import type { Phase, ServerStatus } from "@/lib/types";
 import { formatDuration } from "@/lib/format";
-import { ResourceUsage } from "@/components/ResourceUsage";
 import { RetireNotice } from "@/components/Retirement";
-import { RecoveryNotice, ServerEventsCard } from "@/components/ServerEvents";
+import { RecoveryNotice } from "@/components/ServerEvents";
 import { parseFormatting, rconLines, type Formatted } from "@/lib/mcformat";
 import type { LogWriter } from "@/lib/logstream";
 import { cn } from "@/lib/utils";
@@ -268,13 +267,12 @@ export function ServerConsole() {
   const startupBlocked = startup?.stage === "failed" || startup?.reason === "Unschedulable";
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex min-h-0 flex-1 flex-col gap-4">
       {data.retiring && (
         <RetireNotice name={name} retiring={data.retiring} isAdmin={isAdmin} onChanged={reload} />
       )}
       {!error && <RecoveryNotice data={data} />}
-      {/* The console fills the main area's visible height, less the bottom spacer. */}
-      <Card className="dark flex h-[clamp(24rem,calc(100cqh-1.5rem),72rem)] flex-col overflow-hidden border-zinc-800 bg-black text-zinc-50">
+      <Card className="dark flex min-h-96 flex-1 flex-col overflow-hidden border-zinc-800 bg-black text-zinc-50">
         <CardContent className="flex min-h-0 flex-1 flex-col bg-black p-0">
           {!error && startup && <StartupStrip startup={startup} blocked={startupBlocked} />}
           {savedLogs ? (
@@ -309,8 +307,6 @@ export function ServerConsole() {
         </CardContent>
       </Card>
 
-      {owned && <ResourceUsage key={name} name={name} running={!error && data.phase === "Running" && data.desiredState === "Running"} cpu={data.cpu} memory={data.memory} disk={error && data.disk ? { ...data.disk, stale: true } : data.disk} diskFull={data.diskFull} />}
-      {data.events && data.events.length > 0 && <ServerEventsCard events={data.events} />}
     </div>
   );
 }

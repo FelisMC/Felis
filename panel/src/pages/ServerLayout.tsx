@@ -1,5 +1,5 @@
 import { Outlet, useOutletContext, useParams } from "react-router-dom";
-import { Archive, CalendarClock, FolderOpen, Puzzle, Settings, Shield, Terminal, Users } from "lucide-react";
+import { Activity, Archive, CalendarClock, FolderOpen, Puzzle, Settings, Shield, Terminal, Users } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { BackLink } from "@/components/BackLink";
@@ -65,6 +65,7 @@ export function ServerLayout() {
   const base = `/servers/${name}`;
   const tabs: LinkTab[] = [
     { to: base, end: true, label: t("tab_console"), icon: Terminal },
+    { to: `${base}/monitor`, label: t("tab_monitor"), icon: Activity },
     { to: `${base}/files`, label: t("tab_files"), icon: FolderOpen },
     { to: `${base}/players`, label: t("tab_players"), icon: Users },
     { to: `${base}/backups`, label: t("tab_backups"), icon: Archive },
@@ -81,8 +82,9 @@ export function ServerLayout() {
   ].filter(Boolean);
   const context: ServerContext = { name, data, error, reload, owned };
 
+  // The layout passes the page's height on, so the console can fill it.
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex min-h-0 flex-1 flex-col gap-4">
       {error != null && (
         <div className="space-y-2">
           <MessageLine kind="error" message={t("status_stale_detail", { time: updatedAt ? new Date(updatedAt).toLocaleTimeString() : "—", error: humanizeError(error) })} />

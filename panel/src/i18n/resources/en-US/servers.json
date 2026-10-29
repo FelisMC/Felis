@@ -660,5 +660,9 @@
   "settings_cpu_value": "{{cores}} cores",
   "settings_network_desc": "How the proxy passes player identities to this server.",
   "settings_change_forwarding": "Change forwarding",
-  "log_history_rcon_only": "This part of the log holds only RCON session lines, which are hidden."
+  "log_history_rcon_only": "This part of the log holds only RCON session lines, which are hidden.",
+  "tab_monitor": "Monitoring",
+  "monitor_link_desc": "Resource usage over time, and the server's starts, stops and failures.",
+  "events_empty_title": "No activity yet",
+  "events_empty_hint": "Starts, stops and failures of the server appear here."
 }

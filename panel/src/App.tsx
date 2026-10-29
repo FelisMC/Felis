@@ -45,6 +45,9 @@ const ServerLuckPerms = lazyWithReload(() =>
 const ServerLayout = lazyWithReload(() =>
   import("@/pages/ServerLayout").then((m) => ({ default: m.ServerLayout })),
 );
+const ServerMonitor = lazyWithReload(() =>
+  import("@/pages/ServerMonitor").then((m) => ({ default: m.ServerMonitor })),
+);
 const ServerSettings = lazyWithReload(() =>
   import("@/pages/ServerSettings").then((m) => ({ default: m.ServerSettings })),
 );
@@ -119,6 +122,7 @@ export default function App() {
               >
                 <Route element={<ServerLayout />}>
                   <Route index element={<ServerConsole />} />
+                  <Route path="monitor" element={<ServerMonitor />} />
                   <Route path="players" element={<ServerPlayers />} />
                   <Route path="backups" element={<ServerBackups />} />
                   <Route path="files" element={<ServerFiles />} />

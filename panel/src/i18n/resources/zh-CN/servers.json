@@ -654,5 +654,9 @@
   "settings_cpu_value": "{{cores}} 核",
   "settings_network_desc": "代理向此服务器传递玩家身份的方式。",
   "settings_change_forwarding": "更改转发方式",
-  "log_history_rcon_only": "这段日志只有 RCON 连接记录，已隐藏。"
+  "log_history_rcon_only": "这段日志只有 RCON 连接记录，已隐藏。",
+  "tab_monitor": "监控",
+  "monitor_link_desc": "资源占用曲线，以及服务器的启动、停止与故障记录。",
+  "events_empty_title": "暂无运行记录",
+  "events_empty_hint": "服务器启动、停止或出现故障后，记录会显示在这里。"
 }

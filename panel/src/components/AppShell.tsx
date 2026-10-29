@@ -308,8 +308,7 @@ export function AppShell() {
               </div>
             </header>
             <div ref={setHeaderHost} className="shrink-0 border-b border-border bg-background p-4 empty:hidden md:px-6" />
-            {/* A size container, so a page can fill the height left under the pinned header with cqh. */}
-            <main ref={setMain} className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pt-4 [container-type:size] md:px-6 md:pt-6">
+            <main ref={setMain} className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pt-4 md:px-6 md:pt-6">
               <div className="mx-auto flex min-h-0 w-full max-w-8xl flex-1 flex-col gap-6 after:h-6 after:shrink-0 after:content-['']">
                 {/* A crash on one page leaves the navigation usable; moving to
                     another route clears it. Pages load as their own chunks, so the
