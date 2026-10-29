@@ -43,6 +43,7 @@ func newCgroup(t *testing.T, anon int64) string {
 		"memory.swap.max":     "0",
 		"memory.reclaim":      "",
 		"cgroup.freeze":       "0",
+		"cgroup.kill":         "",
 		"cgroup.events":       "populated 1\nfrozen 0\n",
 		"cgroup.procs":        "4242\n",
 	}
@@ -52,6 +53,14 @@ func newCgroup(t *testing.T, anon int64) string {
 		}
 	}
 	return cg
+}
+
+// put replaces a file in one rename, as the kernel updates a cgroup file, so a reader never sees it half written.
+func put(cg, file, body string) {
+	tmp := filepath.Join(cg, "."+file)
+	if os.WriteFile(tmp, []byte(body), 0o644) == nil {
+		_ = os.Rename(tmp, filepath.Join(cg, file))
+	}
 }
 
 func runKernel(t *testing.T, cg string, keepBack int64) *fakeKernel {
@@ -66,9 +75,9 @@ func runKernel(t *testing.T, cg string, keepBack int64) *fakeKernel {
 			case <-time.After(2 * time.Millisecond):
 			}
 			freeze := strings.TrimSpace(read(t, cg, "cgroup.freeze"))
-			_ = os.WriteFile(filepath.Join(cg, "cgroup.events"), []byte("populated 1\nfrozen "+freeze+"\n"), 0o644)
+			put(cg, "cgroup.events", "populated 1\nfrozen "+freeze+"\n")
 			if ask := strings.Fields(read(t, cg, "memory.reclaim")); len(ask) > 0 {
-				_ = os.WriteFile(filepath.Join(cg, "memory.reclaim"), nil, 0o644)
+				put(cg, "memory.reclaim", "")
 				n, _ := strconv.ParseInt(ask[0], 10, 64)
 				k.mu.Lock()
 				k.maxAsk = max(k.maxAsk, n)
@@ -77,9 +86,9 @@ func runKernel(t *testing.T, cg string, keepBack int64) *fakeKernel {
 				moved := min(n, anon-k.keepBack)
 				if moved > 0 {
 					swapped := num(t, cg, "memory.swap.current", "") + moved
-					_ = os.WriteFile(filepath.Join(cg, "memory.stat"), []byte(fmt.Sprintf("anon %d\nfile 0\n", anon-moved)), 0o644)
-					_ = os.WriteFile(filepath.Join(cg, "memory.swap.current"), []byte(strconv.FormatInt(swapped, 10)), 0o644)
-					_ = os.WriteFile(filepath.Join(cg, "memory.current"), []byte(strconv.FormatInt(anon-moved, 10)), 0o644)
+					put(cg, "memory.swap.current", strconv.FormatInt(swapped, 10))
+					put(cg, "memory.current", strconv.FormatInt(anon-moved, 10))
+					put(cg, "memory.stat", fmt.Sprintf("anon %d\nfile 0\n", anon-moved))
 				}
 			}
 		}
@@ -197,7 +206,7 @@ func TestKillWaitsUntilTheContainerHasNoProcessLeft(t *testing.T) {
 			time.Sleep(time.Millisecond)
 		}
 		time.Sleep(20 * time.Millisecond)
-		_ = os.WriteFile(filepath.Join(cg, "cgroup.events"), []byte("populated 0\nfrozen 1\n"), 0o644)
+		put(cg, "cgroup.events", "populated 0\nfrozen 1\n")
 	}()
 	start := time.Now()
 	got, err := host(t, cg, 0, 0, nil).Kill(cg)
