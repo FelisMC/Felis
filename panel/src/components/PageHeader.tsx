@@ -19,8 +19,8 @@ export interface PageHeaderProps {
 
 export function PageHeader({ icon: Icon, title, subtitle, actions, tabs, back, className }: PageHeaderProps) {
   const host = React.useContext(PageHeaderHostContext);
-  // A header with tabs stays pinned over its sections, so it keeps to one line with the subtitle beside the title.
-  const compact = !!(tabs || back);
+  // A page one level down keeps its pinned header to one line, with the subtitle beside the title.
+  const compact = !!back;
   const row = (
     <div className={cn("mx-auto flex w-full max-w-8xl flex-wrap items-center justify-between gap-3", className, host && "my-0")}>
       <div className="flex min-w-0 max-w-full items-center gap-3">
