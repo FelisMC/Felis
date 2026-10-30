@@ -875,12 +875,13 @@ public final class WaitingRouterTest {
             Fakes.FakePlayer sleeper = player("kappa.mc.test", true);
             choose(sleeper);
             gated(sleeper);
+            int wakes = api.count("POST " + SERVERS + "kappa/wake");
             router.releaseFromLogin(sleeper.player);
             Fakes.await("no lobby: queued", () -> router.waitingCount() == 1);
-            assertEq("no lobby: the target is woken", 1, api.count("POST " + SERVERS + "kappa/wake"));
+            assertEq("no lobby: the target is woken", wakes + 1, api.count("POST " + SERVERS + "kappa/wake"));
             assertEq("no lobby: the player waits in login", 0, sleeper.connects.size());
             router.releaseFromLogin(sleeper.player);
-            assertEq("no lobby: the gate's repeats wake nothing more", 1, api.count("POST " + SERVERS + "kappa/wake"));
+            assertEq("no lobby: the gate's repeats wake nothing more", wakes + 1, api.count("POST " + SERVERS + "kappa/wake"));
             api.ready.put("kappa", true);
             router.tick();
             assertEq("no lobby: moved in once it is up", List.of("kappa"), List.copyOf(sleeper.connects));
