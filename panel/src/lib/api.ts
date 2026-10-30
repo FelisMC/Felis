@@ -96,6 +96,7 @@ import type {
   UpdateReport,
 } from "./types";
 import { loadConfig } from "./config";
+import { noteServerDate } from "./clock";
 import { base64Sha256, sha256Of } from "./digest";
 import i18next from "i18next";
 
@@ -199,6 +200,7 @@ async function fetchOK(path: string, init: RequestInit): Promise<Response> {
     throw networkError(e);
   }
   reportConnection(true);
+  noteServerDate(res.headers?.get("Date") ?? null);
   if (res.ok) return res;
 
   let text = "";

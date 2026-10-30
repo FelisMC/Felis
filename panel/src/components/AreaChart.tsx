@@ -1,5 +1,6 @@
 import { useId } from "react";
 import { useTranslation } from "react-i18next";
+import { serverNow } from "@/lib/clock";
 
 const HOUR_MS = 3600_000;
 // Samples further apart than this belong to separate runs and are not joined.
@@ -13,7 +14,7 @@ const GAP_MS = 45_000;
 export function AreaChart({ points, label, max, idle = false }: { points: { at: string; value: number }[]; label: string; max?: number; idle?: boolean }) {
   const { t } = useTranslation("common");
   const gradient = useId();
-  const now = Date.now();
+  const now = serverNow();
   const shown = points
     .map((p) => ({ at: Date.parse(p.at), value: p.value }))
     .filter((p) => p.at >= now - HOUR_MS);
