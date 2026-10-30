@@ -175,6 +175,9 @@ func TestAPIRole_MinecraftPowersExact(t *testing.T) {
 	if !hasRule(mc, groupCore, "persistentvolumeclaims", "list") {
 		t.Error("felis-api must list retained PVCs before creating a server")
 	}
+	if !hasRule(mc, groupCore, "persistentvolumeclaims", "create") {
+		t.Error("felis-api must create a stopped server's missing world PVC on a single node, or restoring it fails as forbidden")
+	}
 	if hasRule(mc, groupCore, "persistentvolumeclaims", "watch") || hasRule(mc, groupCore, "persistentvolumeclaims", "delete") {
 		t.Error("felis-api must NOT watch or delete PVCs")
 	}

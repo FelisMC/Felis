@@ -64,7 +64,8 @@ func APIMinecraftRole(p Params) *rbacv1.Role {
 	rules := []rbacv1.PolicyRule{
 		rule([]string{groupFelis}, []string{"minecraftservers"}, []string{"get", "list", "watch", "create", "patch"}),
 		rule([]string{groupCore}, []string{"secrets"}, []string{"get"}),
-		rule([]string{groupCore}, []string{"persistentvolumeclaims"}, []string{"get", "list"}),
+		// create: a restore or file edit on a server that has never started, or whose world was archived, makes its claim.
+		rule([]string{groupCore}, []string{"persistentvolumeclaims"}, []string{"get", "list", "create"}),
 		// Job list exposes async status and pending restore chains; patch records chain settlement on the snapshot Job.
 		rule([]string{groupBatch}, []string{"jobs"}, []string{"create", "get", "delete", "list", "patch"}),
 		rule([]string{groupApps}, []string{"statefulsets"}, []string{"get"}),
@@ -75,7 +76,7 @@ func APIMinecraftRole(p Params) *rbacv1.Role {
 		rule([]string{"metrics.k8s.io"}, []string{"pods"}, []string{"list"}),
 	}
 	if p.Distributed {
-		rules = append(rules, rule([]string{groupCore}, []string{"persistentvolumeclaims"}, []string{"create", "list"}), rule([]string{groupApps}, []string{"statefulsets"}, []string{"get", "delete"}))
+		rules = append(rules, rule([]string{groupApps}, []string{"statefulsets"}, []string{"get", "delete"}))
 	}
 	return role(p.MinecraftNamespace, "felis-api", ComponentAPI, rules)
 }
