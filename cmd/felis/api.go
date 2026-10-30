@@ -337,6 +337,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	}
 	jobStatus := api.NewK8sJobStatus(cl, cfg.K8s.Namespace)
 	a := &api.API{
+		NoLobby:         cfg.Velocity.LobbyImage == "",
 		Repo:            repo,
 		Cluster:         cluster,
 		Console:         api.NewK8sConsole(cl, clientset, restCfg, cfg.K8s.Namespace),
@@ -406,7 +407,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	externalHandler := panel.Handler(a.ExternalHandler(), cfg.Server.RootDomain,
 		defaultPanelHostname(cfg.Server.RootDomain, cfg.Auth.PanelHostname),
 		defaultAdminHostname(cfg.Server.RootDomain, cfg.Auth.AdminHostname),
-		cfg.Velocity.GamePort, cfg.Velocity.GameVersion, resolvedVersion(), panel.Topology{Distributed: distribution != nil, ControllerHA: distribution != nil && os.Getenv("FELIS_CONTROLLER_HA") == "true"})
+		cfg.Velocity.GamePort, cfg.Velocity.GameVersion, resolvedVersion(), panel.Topology{Distributed: distribution != nil, ControllerHA: distribution != nil && os.Getenv("FELIS_CONTROLLER_HA") == "true", NoLobby: cfg.Velocity.LobbyImage == ""})
 	internalSrv := newAPIServer(*internalAddr, a.InternalHandler())
 	externalSrv := newAPIServer(cfg.Server.Listen, externalHandler)
 

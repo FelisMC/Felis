@@ -21,11 +21,13 @@ import (
 type API struct {
 	Distribution Distribution
 	NodeControl  NodeControl
-	Repo         Repo
-	Cluster      Cluster
-	Usage        *UsageSampler
-	Internal     InternalAuth
-	External     ExternalAuth
+	// NoLobby marks an install without the formal lobby, so players wait in and leave from the login space.
+	NoLobby  bool
+	Repo     Repo
+	Cluster  Cluster
+	Usage    *UsageSampler
+	Internal InternalAuth
+	External ExternalAuth
 
 	Builder ImageBuilder // nil: /images routes answer 503
 

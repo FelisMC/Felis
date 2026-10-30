@@ -22,6 +22,7 @@ var static embed.FS
 type runtimeConfig struct {
 	Distributed   bool   `json:"distributed,omitempty"`
 	ControllerHA  bool   `json:"controllerHA,omitempty"`
+	NoLobby       bool   `json:"noLobby,omitempty"`
 	APIBase       string `json:"apiBase"`
 	RootDomain    string `json:"rootDomain"`
 	PanelHostname string `json:"panelHostname,omitempty"`
@@ -115,6 +116,8 @@ func publicGamePort(p int) int {
 type Topology struct {
 	Distributed  bool
 	ControllerHA bool
+	// NoLobby tells the panel the install has only the login space.
+	NoLobby bool
 }
 
 type handler struct {
@@ -187,6 +190,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			APIBase:       "/api/v1",
 			Distributed:   h.topology.Distributed,
 			ControllerHA:  h.topology.ControllerHA,
+			NoLobby:       h.topology.NoLobby,
 			RootDomain:    h.rootDomain,
 			PanelHostname: h.panelHostname,
 			AdminHostname: h.adminHostname,

@@ -63,7 +63,7 @@ func TestEntryPolicyPersistenceAndAuthorization(t *testing.T) {
 
 func TestEntryPolicyValidation(t *testing.T) {
 	good := entryPolicy{Mode: "direct", DefaultServer: "main", OfflineAction: "wake", WaitingSpace: "login"}
-	if !good.valid() {
+	if !good.valid(false) {
 		t.Fatal("valid policy rejected")
 	}
 	for _, mutate := range []func(*entryPolicy){
@@ -71,9 +71,30 @@ func TestEntryPolicyValidation(t *testing.T) {
 	} {
 		p := good
 		mutate(&p)
-		if p.valid() {
+		if p.valid(false) {
 			t.Fatal("invalid policy accepted", p)
 		}
+	}
+}
+
+func TestEntryPolicyWithoutALobbyKeepsLinkedPlayersInTheLoginSpace(t *testing.T) {
+	repo := newFakeRepo()
+	a := newTestAPI(repo, newFakeCluster())
+	a.NoLobby = true
+	view, _, err := a.readEntryPolicy(context.Background())
+	if err != nil || !view.RequireAccountLink || view.WaitingSpace != "login" {
+		t.Fatalf("default without a lobby = %+v, %v; want linking kept with login waiting", view, err)
+	}
+	repo.settings[entryPolicyKey] = []byte(`{"mode":"lobby","requireAccountLink":true,"offlineAction":"wake","waitingSpace":"lobby"}`)
+	view, _, err = a.readEntryPolicy(context.Background())
+	if err != nil || view.Mode != "domain" || view.WaitingSpace != "login" {
+		t.Fatalf("a policy saved with a lobby = %+v, %v; want it moved off the lobby", view, err)
+	}
+	if (entryPolicy{Mode: "lobby", OfflineAction: "wake", WaitingSpace: "login"}).valid(true) {
+		t.Fatal("lobby entry accepted without a lobby")
+	}
+	if !(entryPolicy{Mode: "domain", RequireAccountLink: true, OfflineAction: "wake", WaitingSpace: "login"}).valid(true) {
+		t.Fatal("linked login-space waiting refused without a lobby")
 	}
 }
 

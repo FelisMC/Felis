@@ -27,12 +27,26 @@ type entryPolicyView struct {
 	Revision string `json:"revision"`
 }
 
-func defaultEntryPolicy() entryPolicy {
+func defaultEntryPolicy(noLobby bool) entryPolicy {
 	// Preserve routing and web association until the owner saves an explicit policy.
-	return entryPolicy{Mode: "domain", RequireAccountLink: true, OfflineAction: "wake", WaitingSpace: "lobby"}
+	p := entryPolicy{Mode: "domain", RequireAccountLink: true, OfflineAction: "wake", WaitingSpace: "lobby"}
+	if noLobby {
+		p.WaitingSpace = "login"
+	}
+	return p
 }
 
-func (p entryPolicy) valid() bool {
+// withoutLobby moves a policy saved while the lobby existed onto the login space.
+func (p entryPolicy) withoutLobby() entryPolicy {
+	if p.Mode == "lobby" {
+		p.Mode = "domain"
+	}
+	p.WaitingSpace = "login"
+	return p
+}
+
+// valid checks a policy; without a lobby, linked players wait in the login space instead.
+func (p entryPolicy) valid(noLobby bool) bool {
 	if p.Mode != "lobby" && p.Mode != "direct" && p.Mode != "domain" {
 		return false
 	}
@@ -42,7 +56,10 @@ func (p entryPolicy) valid() bool {
 	if p.WaitingSpace != "login" && p.WaitingSpace != "lobby" {
 		return false
 	}
-	if p.RequireAccountLink && p.WaitingSpace != "lobby" {
+	if noLobby && (p.Mode == "lobby" || p.WaitingSpace == "lobby") {
+		return false
+	}
+	if !noLobby && p.RequireAccountLink && p.WaitingSpace != "lobby" {
 		return false
 	}
 	if p.Mode == "direct" && p.DefaultServer == "" {
@@ -60,7 +77,7 @@ func (p entryPolicy) valid() bool {
 }
 
 func (a *API) readEntryPolicy(ctx context.Context) (entryPolicyView, []byte, error) {
-	view := entryPolicyView{entryPolicy: defaultEntryPolicy()}
+	view := entryPolicyView{entryPolicy: defaultEntryPolicy(a.NoLobby)}
 	raw, err := a.Repo.GetSetting(ctx, entryPolicyKey)
 	if errors.Is(err, ErrNotFound) {
 		raw = nil
@@ -69,7 +86,10 @@ func (a *API) readEntryPolicy(ctx context.Context) (entryPolicyView, []byte, err
 	} else if err = json.Unmarshal(raw, &view.entryPolicy); err != nil {
 		return view, nil, err
 	}
-	if !view.entryPolicy.valid() {
+	if a.NoLobby {
+		view.entryPolicy = view.entryPolicy.withoutLobby()
+	}
+	if !view.entryPolicy.valid(a.NoLobby) {
 		return view, nil, errors.New("invalid player entry policy")
 	}
 	canonical, _ := json.Marshal(view.entryPolicy)
@@ -100,7 +120,7 @@ func (a *API) handleSetEntryPolicy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	if !body.entryPolicy.valid() {
+	if !body.entryPolicy.valid(a.NoLobby) {
 		writeError(w, r, newError(400, "bad_request", "invalid entry mode, target or offline policy"))
 		return
 	}
