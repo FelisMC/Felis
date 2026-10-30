@@ -51,10 +51,9 @@ final class GateConfig {
         return root != null ? "console." + root : null;
     }
 
-    /** Returns FELIS_LOBBY_SERVER, else "lobby". */
+    /** Returns FELIS_LOBBY_SERVER, else "lobby"; set but blank means the install has no lobby. */
     static String lobby(String raw) {
-        String t = trimmed(raw);
-        return t != null ? t : DEFAULT_LOBBY;
+        return raw == null ? DEFAULT_LOBBY : raw.trim();
     }
 
     static String trimmed(String raw) {

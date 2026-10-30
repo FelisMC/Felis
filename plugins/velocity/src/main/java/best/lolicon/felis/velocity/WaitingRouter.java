@@ -59,6 +59,7 @@ public final class WaitingRouter {
     private final Map<UUID, String> pendingTargets = new ConcurrentHashMap<>();
     private final Map<UUID, Long> lastGateNotice = new ConcurrentHashMap<>();
     private final Set<UUID> authorizing = ConcurrentHashMap.newKeySet(); // login releases and queue entries mid-authorization; drops the gate's repeated sends
+    private final Map<UUID, String> exits = new ConcurrentHashMap<>(); // without a lobby: the one server a released player may leave the login space for
     private final AtomicBoolean ticking = new AtomicBoolean(false); // overlapping ticks would add load while felis-api is slow
 
     private volatile MenuTransferListener menuListener; // null until ControlChannel is wired in at init; read on the tick pool
@@ -86,6 +87,22 @@ public final class WaitingRouter {
 
     /** Moves the player to the lobby; {@link #onServerPreConnect} authorizes it, so an early release is only denied. */
     void releaseFromLogin(Player player) {
+        if (lobbyServer.isEmpty()) {
+            UUID id = player.getUniqueId();
+            if (waiting.containsKey(id) || exits.containsKey(id) || !authorizing.add(id)) {
+                return; // already leaving, waiting, or being decided: the gate's repeats are dropped
+            }
+            if (!plugin.async(() -> {
+                try {
+                    releaseWithoutLobby(player);
+                } finally {
+                    authorizing.remove(id);
+                }
+            })) {
+                authorizing.remove(id);
+            }
+            return;
+        }
         Optional<RegisteredServer> lobby = proxy.getServer(lobbyServer);
         if (lobby.isEmpty()) {
             log.warn("Felis: login release for {} but the lobby '{}' is not registered yet",
@@ -128,6 +145,79 @@ public final class WaitingRouter {
         releaseFromLogin(player);
     }
 
+    // Without a lobby the router picks the exit itself: the ready target, the fallback, or a wait in the login space.
+    private void releaseWithoutLobby(Player player) {
+        UUID id = player.getUniqueId();
+        boolean zh = FelisVelocityPlugin.zh(player);
+        try {
+            if (!linked(id)) {
+                gateNotice(player, Component.text(
+                        zh ? "请先完成登录，再离开登录区。"
+                           : "Finish signing in before leaving the login area.", NamedTextColor.YELLOW));
+                return;
+            }
+        } catch (LinkException e) {
+            log.warn("Felis: could not verify login release for {} (status={}): {}",
+                    id, e.statusCode(), e.getMessage());
+            gateNotice(player, Component.text(
+                    zh ? "登录验证暂时不可用，请稍候重试。"
+                       : "Login verification is temporarily unavailable. Please wait and try again.",
+                    NamedTextColor.RED));
+            return;
+        }
+        String targetName = pendingTargets.get(id);
+        if (targetName == null) {
+            entryDisconnect(player, "登录已完成。此地址没有对应的服务器，请使用服务器的连接地址重新连接。",
+                    "Signed in. This address leads to no server; reconnect using the server's own address.");
+            return;
+        }
+        ServerView target;
+        try {
+            target = api.serverStatus(targetName);
+        } catch (LinkException e) {
+            if (e.statusCode() == 404) {
+                pendingTargets.remove(id, targetName);
+                entryDisconnect(player, "「" + targetName + "」已不可用。", "« " + targetName + " » is no longer available.");
+            } else {
+                log.warn("Felis: login release for {} could not read {}: {}", id, targetName, e.getMessage());
+            }
+            return; // an outage leaves the gate asking again
+        }
+        registry.observe(target);
+        Optional<RegisteredServer> backend = registry.registered(targetName);
+        if (target.ready() && backend.isPresent()) {
+            transfer(player, targetName, backend.get(), false, 1);
+            return;
+        }
+        EntryPolicy policy = entrySessions.getOrDefault(id, entryPolicy);
+        if (policy.offlineAction().equals("disconnect")) {
+            entryDisconnect(player, "目标服务器当前未运行，请稍后重连。", "The destination is offline. Reconnect later.");
+            return;
+        }
+        if (policy.offlineAction().equals("fallback")) {
+            try {
+                ServerView fallback = api.serverStatus(policy.fallbackServer());
+                registry.observe(fallback);
+                Optional<RegisteredServer> destination = registry.registered(fallback.name());
+                if (fallback.ready() && destination.isPresent()) {
+                    pendingTargets.remove(id);
+                    transfer(player, fallback.name(), destination.get(), false, 1);
+                    return;
+                }
+            } catch (LinkException error) {
+                log.warn("Felis: fallback lookup failed: {}", error.getMessage());
+            }
+            entryDisconnect(player, "备用服务器不可用，请稍后重连。", "The fallback server is unavailable. Reconnect later.");
+            return;
+        }
+        pendingTargets.remove(id, targetName);
+        wakeAndWaitLinked(player, targetName, false);
+        if (!waiting.containsKey(id)) {
+            entryDisconnect(player, "服务器无法自动启动，请联系管理员检查启动权限、维护状态及资源。",
+                    "Automatic startup was refused. Contact the administrator to check permissions, maintenance and capacity.");
+        }
+    }
+
     private boolean linked(UUID id) throws LinkException {
         EntryPolicy policy = entrySessions.get(id);
         if (policy != null && !policy.requireAccountLink()) {
@@ -158,6 +248,11 @@ public final class WaitingRouter {
     /** Moves a player past the login gate back to the lobby; nothing to wake, and a wait already joined stays. */
     void toLobby(Player player) {
         boolean zh = FelisVelocityPlugin.zh(player);
+        if (lobbyServer.isEmpty()) {
+            player.sendMessage(Component.text(
+                    zh ? "此平台没有大厅。" : "This platform has no lobby.", NamedTextColor.YELLOW));
+            return;
+        }
         if (player.getCurrentServer()
                 .map(sc -> serverNamed(sc.getServer(), lobbyServer))
                 .orElse(false)) {
@@ -263,7 +358,7 @@ public final class WaitingRouter {
                 entryDisconnect(player, "目标服务器当前未运行，请稍后重连。", "The destination is offline. Reconnect later.");
                 return;
             }
-            String space = policy.waitingSpace().equals("login") ? loginServer : lobbyServer;
+            String space = policy.waitingSpace().equals("login") || lobbyServer.isEmpty() ? loginServer : lobbyServer;
             ServerView spaceStatus = api.serverStatus(space);
             registry.observe(spaceStatus);
             Optional<RegisteredServer> waitingSpace = proxy.getServer(space);
@@ -299,6 +394,21 @@ public final class WaitingRouter {
 
         Player player = event.getPlayer();
         event.setResult(ServerPreConnectEvent.ServerResult.denied());
+        if (lobbyServer.isEmpty()) {
+            String exit = exits.get(player.getUniqueId());
+            if (exit != null && serverNamed(event.getOriginalServer(), exit)) {
+                event.setResult(ServerPreConnectEvent.ServerResult.allowed(event.getOriginalServer()));
+                return null;
+            }
+            player.sendMessage(Component.text(
+                    FelisVelocityPlugin.zh(player)
+                            ? "登录网关只能把玩家放行到其目标服务器。"
+                            : "The login gate may only release players to their own server.",
+                    NamedTextColor.RED));
+            log.warn("Felis: denied login-gate transfer for {} to {}",
+                    player.getUniqueId(), event.getOriginalServer().getServerInfo().getName());
+            return null;
+        }
         if (!serverNamed(event.getOriginalServer(), lobbyServer)) {
             player.sendMessage(Component.text(
                     FelisVelocityPlugin.zh(player)
@@ -398,6 +508,7 @@ public final class WaitingRouter {
     @Subscribe
     public void onDisconnect(DisconnectEvent event) {
         UUID id = event.getPlayer().getUniqueId();
+        exits.remove(id);
         pendingTargets.remove(id);
         entrySessions.remove(id);
         waiting.remove(id);
@@ -421,6 +532,7 @@ public final class WaitingRouter {
         String name = event.getServer().getServerInfo().getName();
         UUID id = event.getPlayer().getUniqueId();
         pendingTargets.remove(id, name);
+        exits.remove(id, name);
         EntryPolicy session = entrySessions.get(id);
         Waiter waiter = waiting.get(id);
         if (session != null && !session.requireAccountLink() && waiter != null) {
@@ -504,9 +616,13 @@ public final class WaitingRouter {
                     waiting.remove(id);
                     disconnectAutomaticWait(player);
                     player.sendMessage(Component.text(
-                            zh ? "「" + w.serverName + "」启动耗时超出预期。你可以稍后在大厅重试。"
-                               : "« " + w.serverName + " » is taking longer than expected to start. "
-                                 + "You can try again from the lobby later.", NamedTextColor.YELLOW));
+                            lobbyServer.isEmpty()
+                                    ? (zh ? "「" + w.serverName + "」启动耗时超出预期，请稍后重新连接。"
+                                          : "« " + w.serverName + " » is taking longer than expected to start. "
+                                            + "Reconnect later.")
+                                    : (zh ? "「" + w.serverName + "」启动耗时超出预期。你可以稍后在大厅重试。"
+                                          : "« " + w.serverName + " » is taking longer than expected to start. "
+                                            + "You can try again from the lobby later."), NamedTextColor.YELLOW));
                 }
                 continue;
             }
@@ -552,9 +668,11 @@ public final class WaitingRouter {
                 NamedTextColor.RED));
     }
 
+    // A failed wait ends the connection of a player parked in the login space, which is no place to stay.
     private void disconnectAutomaticWait(Player player, Component reason) {
         EntryPolicy policy = entrySessions.get(player.getUniqueId());
-        if (policy != null && !policy.requireAccountLink() && player.getCurrentServer()
+        boolean parked = lobbyServer.isEmpty() || (policy != null && !policy.requireAccountLink());
+        if (parked && player.getCurrentServer()
                 .map(server -> serverNamed(server.getServer(), loginServer)).orElse(false)) {
             player.disconnect(reason);
         }
@@ -815,6 +933,9 @@ public final class WaitingRouter {
     // Retry unexplained connection failures only; explicit refusal or preemption terminates transfer immediately.
     private void transfer(Player player, String serverName, RegisteredServer backend,
                           boolean fromMenu, int attempt) {
+        if (lobbyServer.isEmpty()) {
+            exits.put(player.getUniqueId(), serverName);
+        }
         player.createConnectionRequest(backend).connect().whenComplete((result, err) -> {
             if (err == null && (result == null || result.isSuccessful())) {
                 return;

@@ -69,6 +69,7 @@ public final class WaitingRouterTest {
             joins();
             slowApi();
             backToLobby();
+            noLobby(client);
             disconnectAndRelease();
             automaticEntry();
         } finally {
@@ -854,6 +855,58 @@ public final class WaitingRouterTest {
         router.toLobby(cut.player);
         assertEq("lobby unreachable: told", true, cut.said("Couldn't connect you to « lobby ». Please try again."));
         assertEq("lobby unreachable: not queued", queued, router.waitingCount());
+    }
+
+    // Without a lobby the release itself picks the exit, and the login space leads nowhere else.
+    private static void noLobby(FelisApiClient client) {
+        WaitingRouter withLobby = router;
+        router = new WaitingRouter(net.proxy, log.logger, client, reg, plugin, "login", "");
+        try {
+            reg.refresh(servers(true));
+
+            Fakes.FakePlayer ready = player("beta.mc.test", true);
+            assertEq("no lobby: a fresh connection lands on login", "login", choose(ready));
+            gated(ready);
+            router.releaseFromLogin(ready.player);
+            Fakes.await("no lobby: released", () -> !ready.connects.isEmpty());
+            assertEq("no lobby: a ready target is reached straight from login", List.of("beta"),
+                    List.copyOf(ready.connects));
+
+            Fakes.FakePlayer sleeper = player("kappa.mc.test", true);
+            choose(sleeper);
+            gated(sleeper);
+            router.releaseFromLogin(sleeper.player);
+            Fakes.await("no lobby: queued", () -> router.waitingCount() == 1);
+            assertEq("no lobby: the target is woken", 1, api.count("POST " + SERVERS + "kappa/wake"));
+            assertEq("no lobby: the player waits in login", 0, sleeper.connects.size());
+            router.releaseFromLogin(sleeper.player);
+            assertEq("no lobby: the gate's repeats wake nothing more", 1, api.count("POST " + SERVERS + "kappa/wake"));
+            api.ready.put("kappa", true);
+            router.tick();
+            assertEq("no lobby: moved in once it is up", List.of("kappa"), List.copyOf(sleeper.connects));
+
+            Fakes.FakePlayer stray = player(null, true);
+            stray.current = login;
+            assertEq("no lobby: login leads nowhere the router did not pick", "denied", allowedTo(preConnect(stray, beta)));
+            assertEq("no lobby: told", true, stray.said("may only release players to their own server"));
+
+            Fakes.FakePlayer nowhere = player(null, true);
+            choose(nowhere);
+            gated(nowhere);
+            router.releaseFromLogin(nowhere.player);
+            Fakes.await("no lobby: an address without a server ends the connection", () -> nowhere.disconnectedWith != null);
+            assertEq("no lobby: told to use the server's address", true,
+                    nowhere.disconnectedWith.contains("reconnect using the server's own address"));
+
+            Fakes.FakePlayer asker = player(null, true);
+            asker.current = beta;
+            router.toLobby(asker.player);
+            assertEq("no lobby: /lobby explains", true, asker.said("This platform has no lobby."));
+            assertEq("no lobby: /lobby moves nobody", 0, asker.connects.size());
+        } finally {
+            router = withLobby;
+            reg.refresh(servers(true));
+        }
     }
 
     private static void disconnectAndRelease() {

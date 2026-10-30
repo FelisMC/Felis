@@ -55,11 +55,10 @@ final class FelisVelocityConfig {
         }
         String root = trimToNull(firstNonBlank(System.getenv(ENV_ROOT_DOMAIN), props.getProperty(KEY_ROOT_DOMAIN)));
         String login = trimToNull(firstNonBlank(System.getenv(ENV_LOGIN), props.getProperty(KEY_LOGIN)));
-        String lobby = trimToNull(firstNonBlank(System.getenv(ENV_LOBBY), props.getProperty(KEY_LOBBY)));
+        String lobby = lobbyName(System.getenv(ENV_LOBBY), props.getProperty(KEY_LOBBY));
         String panel = trimToNull(firstNonBlank(System.getenv(ENV_PANEL_HOSTNAME), props.getProperty(KEY_PANEL_HOSTNAME)));
         String admin = trimToNull(firstNonBlank(System.getenv(ENV_ADMIN_HOSTNAME), props.getProperty(KEY_ADMIN_HOSTNAME)));
         login = login == null ? DEFAULT_LOGIN : login;
-        lobby = lobby == null ? DEFAULT_LOBBY : lobby;
         if (login.equalsIgnoreCase(lobby)) {
             throw new IOException("login-server and lobby-server must be different");
         }
@@ -87,7 +86,7 @@ final class FelisVelocityConfig {
         return loginServer;
     }
 
-    /** lobbyServer is the post-auth server name waiters are parked in. */
+    /** lobbyServer is the post-auth server name waiters are parked in; empty on an install without a lobby. */
     String lobbyServer() {
         return lobbyServer;
     }
@@ -108,6 +107,15 @@ final class FelisVelocityConfig {
             return adminHostname;
         }
         return rootDomain == null ? null : "op.console." + rootDomain;
+    }
+
+    // lobbyName prefers the environment; a name set but left blank means the install has no lobby, an unset one the default.
+    static String lobbyName(String env, String property) {
+        String raw = env != null ? env : property;
+        if (raw == null) {
+            return DEFAULT_LOBBY;
+        }
+        return raw.trim();
     }
 
     private static String firstNonBlank(String a, String b) {

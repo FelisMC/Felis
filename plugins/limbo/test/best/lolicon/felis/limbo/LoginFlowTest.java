@@ -65,6 +65,7 @@ public final class LoginFlowTest {
             pollFailuresAreNotFatal(stub);
             leavingStopsEveryTimer(stub);
             releaseWindowEndsInADisconnect(stub);
+            withoutALobbyTheReleaseLastsUntilThePlayerLeaves(stub);
             reconnectStartsAFreshRelease(stub);
             laggingMainThreadReleasesOnce(stub);
             reconnectDuringAnOutageRunsOneRetryLoop(stub);
@@ -268,6 +269,21 @@ public final class LoginFlowTest {
         assertEq("no timer left", 0, rig.gate.pending());
     }
 
+    private static void withoutALobbyTheReleaseLastsUntilThePlayerLeaves(Stub stub) {
+        Rig rig = new Rig(stub, 600_000L, false);
+        UUID id = stub.player(false, true);
+        Seat seat = rig.join(id, "Waiting");
+        assertEq("no lobby: told they are going to their server", List.of(LoginFlow.SIGNED_IN_NO_LOBBY), seat.chat);
+        rig.gate.advance(2400 * 3); // three times the lobby release window
+        assertEq("no lobby: still here while the server starts", null, seat.disconnected);
+        int sent = seat.releases.size();
+        rig.gate.advance(160);
+        assertEq("no lobby: the release is still re-sent", sent + 1, seat.releases.size());
+        rig.gate.leave(id);
+        rig.gate.advance(400);
+        assertEq("no lobby: no timer once the player has gone", 0, rig.gate.pending());
+    }
+
     private static void reconnectStartsAFreshRelease(Stub stub) {
         Rig rig = new Rig(stub);
         UUID id = stub.player(false, true);
@@ -355,6 +371,7 @@ public final class LoginFlowTest {
         assertEq("neither: login stays off", null, GateConfig.panelHost(null, ""));
         assertEq("lobby default", "lobby", GateConfig.lobby(null));
         assertEq("lobby set", "hub", GateConfig.lobby(" hub "));
+        assertEq("lobby set to nothing: none", "", GateConfig.lobby(" "));
     }
 
     private static void loginBook() throws IOException {
@@ -408,10 +425,14 @@ public final class LoginFlowTest {
         }
 
         Rig(Stub stub, long timeoutMillis) {
+            this(stub, timeoutMillis, true);
+        }
+
+        Rig(Stub stub, long timeoutMillis, boolean hasLobby) {
             this.stub = stub;
             LinkConfig cfg = new LinkConfig(stub.base(), "gate-token");
             flow = new LoginFlow(gate, new FelisApiClient(cfg), new LinkClient(cfg), CONSOLE, timeoutMillis,
-                    gate::now, QUIET);
+                    hasLobby, gate::now, QUIET);
         }
 
         /** join seats a player, fires the join and runs what is due right away. */

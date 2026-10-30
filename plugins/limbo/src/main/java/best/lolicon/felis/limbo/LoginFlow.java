@@ -64,12 +64,14 @@ final class LoginFlow {
     static final String NO_LOBBY = "进入大厅失败，请重连 / Could not reach the lobby. Please reconnect.";
     static final String BUSY = "§e[Felis] 登录服务繁忙，正在重试… / The login service is busy — retrying…";
     static final String SIGNED_IN = "§a[Felis] 登录成功，正在进入大厅… / Signed in — sending you to the lobby…";
+    static final String SIGNED_IN_NO_LOBBY = "§a[Felis] 登录成功，正在进入服务器… / Signed in — sending you to your server…";
 
     private final Gate gate;
     private final FelisApiClient api;
     private final LinkClient link;
     private final String consoleUrl;
     private final long timeoutMillis;
+    private final boolean hasLobby;
     private final LongSupplier clock;
     private final Logger log;
 
@@ -79,12 +81,13 @@ final class LoginFlow {
     private final OutageTracker pollOutage; // shared by all polls: one felis-api outage is one event
 
     LoginFlow(Gate gate, FelisApiClient api, LinkClient link, String consoleUrl, long timeoutMillis,
-              LongSupplier clock, Logger log) {
+              boolean hasLobby, LongSupplier clock, Logger log) {
         this.gate = gate;
         this.api = api;
         this.link = link;
         this.consoleUrl = consoleUrl;
         this.timeoutMillis = timeoutMillis;
+        this.hasLobby = hasLobby;
         this.clock = clock;
         this.log = log;
         this.pollOutage = new OutageTracker(POLL_OUTAGE_REPEAT_MILLIS, clock);
@@ -210,8 +213,9 @@ final class LoginFlow {
             return;
         }
         cancel(id);
-        seat.chat(SIGNED_IN);
-        releaseAttempt(id, 0, clock.getAsLong() + RELEASE_WINDOW_MILLIS);
+        seat.chat(hasLobby ? SIGNED_IN : SIGNED_IN_NO_LOBBY);
+        // Without a lobby the proxy holds the player through the server's start and owns that timeout.
+        releaseAttempt(id, 0, hasLobby ? clock.getAsLong() + RELEASE_WINDOW_MILLIS : Long.MAX_VALUE);
     }
 
     // The proxy re-checks the link on each LoginRelease, so a denied attempt is retried until the window closes.
@@ -237,7 +241,7 @@ final class LoginFlow {
         try {
             seat.sendControl(Control.encode(ControlFrame.loginRelease(seat.name())));
         } catch (IOException | RuntimeException e) {
-            log.warning("FelisLimbo: could not send the lobby release for " + id + " — " + e.getMessage());
+            log.warning("FelisLimbo: could not send the release for " + id + " — " + e.getMessage());
         }
     }
 

@@ -100,9 +100,9 @@ public final class FelisLimboPlugin extends LimboPlugin implements Listener {
                 ? System.getenv("FELIS_LOGIN_TIMEOUT_SECONDS")
                 : Long.toString(experience.number("loginTimeoutSeconds", GateConfig.DEFAULT_TIMEOUT_SECONDS))) * 1000L;
         this.flow = new LoginFlow(new LimboGate(), new FelisApiClient(cfg), new LinkClient(cfg),
-                consoleUrl, timeoutMillis, System::currentTimeMillis, LOG);
+                consoleUrl, timeoutMillis, !lobby.isEmpty(), System::currentTimeMillis, LOG);
         LOG.info("FelisLimbo: login flow ON — console=" + consoleUrl
-                + ", lobby=" + lobby + ", window=" + (timeoutMillis / 1000) + "s");
+                + ", lobby=" + (lobby.isEmpty() ? "none" : lobby) + ", window=" + (timeoutMillis / 1000) + "s");
     }
 
     private static void logLoginOff() {
