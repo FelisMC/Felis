@@ -327,7 +327,7 @@ func TestEnsureSystemServersIdempotent(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
 	ctx := context.Background()
 
-	first := ensureSystemServers(ctx, cl, "minecraft", "reg/limbo:1", "reg/lobby:1", "http://felis-api.felis.svc.cluster.local:8081", "mc.example.net", "console.mc.example.net")
+	first := ensureSystemServers(ctx, cl, "minecraft", systemImages{login: "reg/limbo:1", lobby: "reg/lobby:1"}, "http://felis-api.felis.svc.cluster.local:8081", "mc.example.net", "console.mc.example.net")
 	if len(first) != 2 {
 		t.Fatalf("first run outcomes = %d, want 2", len(first))
 	}
@@ -353,7 +353,7 @@ func TestEnsureSystemServersIdempotent(t *testing.T) {
 	}
 
 	// Re-run: both already exist → skipped, nothing created, no error.
-	second := ensureSystemServers(ctx, cl, "minecraft", "reg/limbo:1", "reg/lobby:1", "http://felis-api.felis.svc.cluster.local:8081", "mc.example.net", "console.mc.example.net")
+	second := ensureSystemServers(ctx, cl, "minecraft", systemImages{login: "reg/limbo:1", lobby: "reg/lobby:1"}, "http://felis-api.felis.svc.cluster.local:8081", "mc.example.net", "console.mc.example.net")
 	for _, o := range second {
 		if o.err != nil {
 			t.Fatalf("%s: unexpected error on re-run: %v", o.name, o.err)
@@ -379,7 +379,7 @@ func TestEnsureSystemServersRejectsLegacyLoginNameCollision(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(legacy).Build()
 
 	out := ensureSystemServers(
-		context.Background(), cl, "minecraft", "reg/limbo:1", "",
+		context.Background(), cl, "minecraft", systemImages{login: "reg/limbo:1"},
 		"http://felis-api.felis.svc.cluster.local:8081", "mc.example.net", "console.mc.example.net",
 	)
 	if len(out) != 2 {
@@ -400,7 +400,7 @@ func TestEnsureSystemServersSkipsUnsetImage(t *testing.T) {
 	ctx := context.Background()
 
 	// login image set, lobby image empty → login created, lobby skipped.
-	out := ensureSystemServers(ctx, cl, "minecraft", "reg/limbo:1", "", "http://felis-api.felis.svc.cluster.local:8081", "mc.example.net", "console.mc.example.net")
+	out := ensureSystemServers(ctx, cl, "minecraft", systemImages{login: "reg/limbo:1", loginMemory: "320Mi"}, "http://felis-api.felis.svc.cluster.local:8081", "mc.example.net", "console.mc.example.net")
 	byName := map[string]systemServerOutcome{}
 	for _, o := range out {
 		byName[o.name] = o
@@ -410,6 +410,18 @@ func TestEnsureSystemServersSkipsUnsetImage(t *testing.T) {
 	}
 	if byName[naming.SystemLobbyServer].skipped != "image not configured" {
 		t.Errorf("lobby: skipped = %q, want %q", byName[naming.SystemLobbyServer].skipped, "image not configured")
+	}
+	var login v1alpha1.MinecraftServer
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: "minecraft", Name: naming.SystemLoginServer}, &login); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range login.Spec.Env {
+		if e.Name == envLobbyServer && e.Value != "" {
+			t.Errorf("login space told of lobby %q on an install without one", e.Value)
+		}
+	}
+	if got := login.Spec.Resources.Limits.Memory().String(); got != "320Mi" || login.Spec.JavaMemory != "160M" {
+		t.Errorf("login memory %s heap %s, want the configured 320Mi with a 160M heap", got, login.Spec.JavaMemory)
 	}
 }
 
@@ -468,7 +480,7 @@ func TestEnsureSystemServersRefreshesDerivedEnv(t *testing.T) {
 	}
 
 	run := func(cl client.Client) []systemServerOutcome {
-		return ensureSystemServers(ctx, cl, "minecraft", "felis-limbo:demo", "felis-lobby:demo",
+		return ensureSystemServers(ctx, cl, "minecraft", systemImages{login: "felis-limbo:demo", lobby: "felis-lobby:demo"},
 			"http://felis-api-internal.felis.svc.cluster.local:8081",
 			"mc.example.net", "console.mc.example.net")
 	}

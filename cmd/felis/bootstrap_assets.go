@@ -15,7 +15,7 @@ func cmdBootstrapAssets(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "config-keys":
 		// Optional keys the installer may emit; older binaries reject this verb.
-		_, err := fmt.Fprintln(stdout, "velocity.game_version")
+		_, err := fmt.Fprintln(stdout, "velocity.game_version\nvelocity.login_memory")
 		if err != nil {
 			fmt.Fprintf(stderr, "felis bootstrap-assets: write: %v\n", err)
 			return 1

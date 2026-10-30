@@ -199,7 +199,7 @@ func provisionSystemServers(ctx context.Context, cfg *config.Config, out io.Writ
 		buildNS = platform.DefaultBuildNamespace
 	}
 	secretOutcomes := provisionSecretReplicas(ctx, cl, controlNS, cfg.K8s.Namespace, buildNS)
-	outcomes := ensureSystemServers(ctx, cl, cfg.K8s.Namespace, cfg.Velocity.LoginImage, cfg.Velocity.LobbyImage, apiBaseURL, cfg.Server.RootDomain, defaultPanelHostname(cfg.Server.RootDomain, cfg.Auth.PanelHostname))
+	outcomes := ensureSystemServers(ctx, cl, cfg.K8s.Namespace, systemImagesFrom(cfg.Velocity), apiBaseURL, cfg.Server.RootDomain, defaultPanelHostname(cfg.Server.RootDomain, cfg.Auth.PanelHostname))
 	outcomes = append(secretOutcomes, outcomes...)
 	fmt.Fprintln(out, "\nfelis setup: login/lobby system servers (always-on, reaper-exempt):")
 	for _, o := range outcomes {
@@ -214,13 +214,13 @@ func provisionSystemServers(ctx context.Context, cfg *config.Config, out io.Writ
 			fmt.Fprintf(out, "  - %s: skipped (%s)\n", o.name, o.skipped)
 		}
 	}
-	printVelocityWiringGuidance(out, cfg.Server.RootDomain)
+	printVelocityWiringGuidance(out, cfg.Server.RootDomain, cfg.Velocity.LobbyImage == "")
 	return nil
 }
 
 // The static proxy fallback names only login; login and lobby register dynamically.
 // Every fresh connection authenticates at login before lobby or backend routing.
-func printVelocityWiringGuidance(out io.Writer, rootDomain string) {
+func printVelocityWiringGuidance(out io.Writer, rootDomain string, noLobby bool) {
 	fmt.Fprintln(out, "\nfelis setup: Velocity login topology (bootstrap configured the host proxy automatically):")
 	fmt.Fprintln(out, "  If Velocity runs on another host, mirror these settings there:")
 	fmt.Fprintln(out, "  1. Set the DEFAULT landing server to \"login\" so every fresh connection hits the")
@@ -232,8 +232,16 @@ func printVelocityWiringGuidance(out io.Writer, rootDomain string) {
 	fmt.Fprintln(out, "     it only as login's authenticated release target, then restores the requested route.")
 	fmt.Fprintln(out, "  Rationale: rather refuse a connection when login is down than route a player past")
 	fmt.Fprintln(out, "  the gate. Felis already refuses to give any server a fallback of \"lobby\".")
+	if noLobby {
+		fmt.Fprintln(out, "  This install has no lobby: set FELIS_LOBBY_SERVER= (empty) or lobby-server= so the proxy")
+		fmt.Fprintln(out, "  sends linked players from login straight to their server and keeps them in login while it wakes.")
+	}
+	waits := "lobby"
+	if noLobby {
+		waits = "login"
+	}
 	if rootDomain != "" {
-		fmt.Fprintf(out, "  (login is the front door for %s; linked players wait in lobby while a target wakes.)\n", rootDomain)
+		fmt.Fprintf(out, "  (login is the front door for %s; linked players wait in %s while a target wakes.)\n", rootDomain, waits)
 	}
 }
 

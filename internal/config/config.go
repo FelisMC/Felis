@@ -86,8 +86,10 @@ type VelocityConfig struct {
 	ServiceTokenRef string `toml:"service_token_ref"`
 	// LoginImage is the login limbo image; setup skips the login server when empty.
 	LoginImage string `toml:"login_image"`
-	// LobbyImage is the lobby hub image; skipped when empty.
+	// LobbyImage is the lobby hub image; empty means no lobby, and players leave the login space for their server directly.
 	LobbyImage string `toml:"lobby_image"`
+	// LoginMemory is the login space's memory as a Kubernetes quantity; empty means 512Mi.
+	LoginMemory string `toml:"login_memory"`
 	// GamePort is the public proxy port; 0 means Minecraft's default, 25565.
 	GamePort int `toml:"game_port"`
 	// GameVersion is the login/lobby protocol version; empty means unknown (custom images).

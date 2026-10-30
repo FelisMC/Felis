@@ -17,12 +17,16 @@ func TestBootstrapConfigKeys(t *testing.T) {
 		t.Fatalf("exit code = %d: %s", code, errBuf.String())
 	}
 	var cfg config.Config
-	meta, err := toml.Decode(strings.TrimSpace(out.String())+` = "26.3"`, &cfg)
+	var doc strings.Builder
+	for _, key := range strings.Fields(out.String()) {
+		doc.WriteString(key + " = \"26.3\"\n")
+	}
+	meta, err := toml.Decode(doc.String(), &cfg)
 	if err != nil || len(meta.Undecoded()) != 0 {
 		t.Fatalf("advertised config key is unsupported: %v, undecoded: %v", err, meta.Undecoded())
 	}
-	if cfg.Velocity.GameVersion != "26.3" {
-		t.Fatalf("advertised key did not set the game version: %q", cfg.Velocity.GameVersion)
+	if cfg.Velocity.GameVersion != "26.3" || cfg.Velocity.LoginMemory != "26.3" {
+		t.Fatalf("advertised keys did not set the game version and login memory: %+v", cfg.Velocity)
 	}
 }
 

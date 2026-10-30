@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
+	"felis.lolicon.best/internal/config"
 	"felis.lolicon.best/internal/naming"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -122,14 +123,32 @@ func buildSystemServer(in systemServerSpec, namespace string) (*v1alpha1.Minecra
 	}, nil
 }
 
+// systemImages names the system servers' images, an empty one skipping its server; without a lobby the login space is the only exit.
+type systemImages struct {
+	login, lobby string
+	// loginMemory sizes the login space; empty keeps defaultLoginMemory.
+	loginMemory string
+}
+
+func systemImagesFrom(v config.VelocityConfig) systemImages {
+	return systemImages{login: v.LoginImage, lobby: v.LobbyImage, loginMemory: v.LoginMemory}
+}
+
+const defaultLoginMemory = "512Mi"
+
 // The login gate has no fallback, so its failure cannot bypass authentication.
 func loginSystemServer(image, namespace, apiBaseURL, rootDomain, panelHostname string) (*v1alpha1.MinecraftServer, error) {
+	return loginSpace(image, namespace, apiBaseURL, rootDomain, panelHostname, defaultLoginMemory, naming.SystemLobbyServer)
+}
+
+// loginSpace builds the login gate; an empty lobby tells it the install has none.
+func loginSpace(image, namespace, apiBaseURL, rootDomain, panelHostname, memory, lobby string) (*v1alpha1.MinecraftServer, error) {
 	return buildSystemServer(systemServerSpec{
 		name:           naming.SystemLoginServer,
 		subdomain:      naming.SystemLoginServer,
 		displayName:    "Login",
 		image:          image,
-		memory:         "512Mi",
+		memory:         memory,
 		storage:        "1Gi",
 		fallbackServer: "",
 		healthHTTPPort: felisLimboHealthPort,
@@ -137,7 +156,7 @@ func loginSystemServer(image, namespace, apiBaseURL, rootDomain, panelHostname s
 			{Name: envAPIBaseURL, Value: apiBaseURL},
 			{Name: envRootDomain, Value: rootDomain},
 			{Name: envPanelHostname, Value: panelHostname},
-			{Name: envLobbyServer, Value: naming.SystemLobbyServer},
+			{Name: envLobbyServer, Value: lobby},
 		},
 	}, namespace)
 }
@@ -200,18 +219,25 @@ type systemServerPlan struct {
 	build func(image, namespace string) (*v1alpha1.MinecraftServer, error)
 }
 
-func systemServerPlans(loginImage, lobbyImage, apiBaseURL, rootDomain, panelHostname string) []systemServerPlan {
+func systemServerPlans(images systemImages, apiBaseURL, rootDomain, panelHostname string) []systemServerPlan {
+	memory, lobby := images.loginMemory, naming.SystemLobbyServer
+	if memory == "" {
+		memory = defaultLoginMemory
+	}
+	if images.lobby == "" {
+		lobby = ""
+	}
 	return []systemServerPlan{
-		{name: naming.SystemLoginServer, image: loginImage, build: func(image, ns string) (*v1alpha1.MinecraftServer, error) {
-			return loginSystemServer(image, ns, apiBaseURL, rootDomain, panelHostname)
+		{name: naming.SystemLoginServer, image: images.login, build: func(image, ns string) (*v1alpha1.MinecraftServer, error) {
+			return loginSpace(image, ns, apiBaseURL, rootDomain, panelHostname, memory, lobby)
 		}},
-		{name: naming.SystemLobbyServer, image: lobbyImage, build: lobbySystemServer},
+		{name: naming.SystemLobbyServer, image: images.lobby, build: lobbySystemServer},
 	}
 }
 
 // ensureSystemServers creates missing login and lobby servers; existing ones are never overwritten and a service with no image is skipped.
-func ensureSystemServers(ctx context.Context, cl client.Client, namespace, loginImage, lobbyImage, apiBaseURL, rootDomain, panelHostname string) []systemServerOutcome {
-	plans := systemServerPlans(loginImage, lobbyImage, apiBaseURL, rootDomain, panelHostname)
+func ensureSystemServers(ctx context.Context, cl client.Client, namespace string, images systemImages, apiBaseURL, rootDomain, panelHostname string) []systemServerOutcome {
+	plans := systemServerPlans(images, apiBaseURL, rootDomain, panelHostname)
 
 	outcomes := make([]systemServerOutcome, 0, len(plans))
 	for _, p := range plans {
@@ -341,9 +367,9 @@ func derivedEnvWanted(desired *v1alpha1.MinecraftServer) map[string]string {
 }
 
 // Convergence fills unset fields only; update images before enabling their new readiness requirements.
-func convergeSystemServers(ctx context.Context, cl client.Client, namespace, loginImage, lobbyImage, apiBaseURL, rootDomain, panelHostname string) []systemServerOutcome {
+func convergeSystemServers(ctx context.Context, cl client.Client, namespace string, images systemImages, apiBaseURL, rootDomain, panelHostname string) []systemServerOutcome {
 	outcomes := make([]systemServerOutcome, 0, 2)
-	for _, p := range systemServerPlans(loginImage, lobbyImage, apiBaseURL, rootDomain, panelHostname) {
+	for _, p := range systemServerPlans(images, apiBaseURL, rootDomain, panelHostname) {
 		if p.image == "" {
 			outcomes = append(outcomes, systemServerOutcome{name: p.name, skipped: "image not configured"})
 			continue

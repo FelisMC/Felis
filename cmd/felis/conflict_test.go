@@ -120,7 +120,7 @@ func TestConvergeRetriesAConcurrentStatusWrite(t *testing.T) {
 	}, lobby)
 
 	var got systemServerOutcome
-	for _, o := range convergeSystemServers(ctx, cl, "minecraft", "", "reg/lobby:1",
+	for _, o := range convergeSystemServers(ctx, cl, "minecraft", systemImages{login: "", lobby: "reg/lobby:1"},
 		"http://felis-api-internal.felis.svc.cluster.local:8081", "mc.example.net", "console.mc.example.net") {
 		if o.name == naming.SystemLobbyServer {
 			got = o

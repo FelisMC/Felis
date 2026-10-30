@@ -59,7 +59,7 @@ func cmdConverge(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	outcomes = append(outcomes, convergeSystemServers(context.Background(), cl, cfg.K8s.Namespace,
-		cfg.Velocity.LoginImage, cfg.Velocity.LobbyImage,
+		systemImagesFrom(cfg.Velocity),
 		platform.InternalAPIBaseURL(controlNS), cfg.Server.RootDomain,
 		defaultPanelHostname(cfg.Server.RootDomain, cfg.Auth.PanelHostname))...)
 

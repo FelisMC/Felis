@@ -40,7 +40,7 @@ func TestConvergeSystemServersFillsPredatedFields(t *testing.T) {
 	login.Spec.Env = append(login.Spec.Env, v1alpha1.EnvVar{Name: "OPERATOR_TUNING", Value: "keep-me"})
 
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lobby, login).Build()
-	outcomes := convergeSystemServers(ctx, cl, "minecraft", "reg/limbo:1", "reg/lobby:1",
+	outcomes := convergeSystemServers(ctx, cl, "minecraft", systemImages{login: "reg/limbo:1", lobby: "reg/lobby:1"},
 		"http://felis-api.felis.svc.cluster.local:8081", "mc.example.net", "console.mc.example.net")
 
 	byName := map[string]systemServerOutcome{}
@@ -111,7 +111,7 @@ func TestConvergeSystemServersLeavesNonZeroFieldsAlone(t *testing.T) {
 	}
 
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lobby, login).Build()
-	for _, o := range convergeSystemServers(ctx, cl, "minecraft", "reg/limbo:1", "reg/lobby:1",
+	for _, o := range convergeSystemServers(ctx, cl, "minecraft", systemImages{login: "reg/limbo:1", lobby: "reg/lobby:1"},
 		"http://felis-api.felis.svc.cluster.local:8081", "mc.example.net", "console.mc.example.net") {
 		if o.err != nil {
 			t.Fatalf("%s: unexpected error: %v", o.name, o.err)
@@ -134,7 +134,7 @@ func TestConvergeSystemServersGuards(t *testing.T) {
 	scheme := newSystemServerScheme(t)
 	ctx := context.Background()
 	run := func(cl client.Client, loginImage, lobbyImage string) []systemServerOutcome {
-		return convergeSystemServers(ctx, cl, "minecraft", loginImage, lobbyImage,
+		return convergeSystemServers(ctx, cl, "minecraft", systemImages{login: loginImage, lobby: lobbyImage},
 			"http://felis-api.felis.svc.cluster.local:8081", "mc.example.net", "console.mc.example.net")
 	}
 

@@ -904,7 +904,7 @@ func (h domainHost) configNamespaces(minecraftNS string) []string {
 func (h domainHost) convergeLogin(ctx context.Context, cfg *config.Config, n domainNames) (bool, error) {
 	ns := cfg.K8s.Namespace
 	login := false
-	for _, p := range systemServerPlans(cfg.Velocity.LoginImage, cfg.Velocity.LobbyImage, platform.InternalAPIBaseURL(h.controlNS), n.root, n.panel) {
+	for _, p := range systemServerPlans(systemImagesFrom(cfg.Velocity), platform.InternalAPIBaseURL(h.controlNS), n.root, n.panel) {
 		if p.image == "" {
 			continue
 		}
