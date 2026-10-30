@@ -955,7 +955,8 @@ SWAPPINESS_FILE=/etc/sysctl.d/99-zz-felis-swappiness.conf
 preflight_fail() { PREFLIGHT_PROBLEMS+=("$*"); }
 
 # Allow for kernel-reserved memory when evaluating the minimum full-stack host size.
-PREFLIGHT_MIN_RAM_KB=1835008      # 1.75 GiB
+# A "2 GB" cloud host reports 1.6-1.9 GiB once the kernel has taken its share.
+PREFLIGHT_MIN_RAM_KB=1572864      # 1.5 GiB
 PREFLIGHT_RECOMMENDED_RAM_KB=3670016  # 3.5 GiB
 
 # ipv4_to_int prints a dotted quad as a 32-bit integer; anything else fails.
