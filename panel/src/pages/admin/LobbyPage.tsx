@@ -235,10 +235,11 @@ function CreateSystemServers({ onCreated }: { onCreated: () => void }) {
 export function LobbyPage() {
   const { t } = useTranslation("lobby");
   const [params, setParams] = useSearchParams();
-  const name = params.get("space") === "lobby" ? "lobby" : "login";
+  const cfg = useConfig();
+  const noLobby = cfg?.noLobby === true;
+  const name = params.get("space") === "lobby" && !noLobby ? "lobby" : "login";
   const [dirty, setDirty] = useState(false);
   const [nextSpace, setNextSpace] = useState<string | null>(null);
-  const cfg = useConfig();
   const status = useAsync(() => api.status(name), [name]);
   usePolling(status.reload, STATUS_POLL_FAST_MS);
   const data = status.data;
@@ -256,8 +257,8 @@ export function LobbyPage() {
     { icon: Shield, title: "backups_title", hint: "backups_hint", to: `/servers/${name}/backups` },
   ];
   return <div className="space-y-6">
-    <PageHeader icon={DoorOpen} title={t("title")} subtitle={t("subtitle")}
-      tabs={<PageTabs label={t("space_label")} idPrefix="lobby-space" value={name} onChange={selectSpace}
+    <PageHeader icon={DoorOpen} title={t(noLobby ? "title_no_lobby" : "title")} subtitle={t(noLobby ? "subtitle_no_lobby" : "subtitle")}
+      tabs={noLobby ? undefined : <PageTabs label={t("space_label")} idPrefix="lobby-space" value={name} onChange={selectSpace}
         tabs={[{ key: "login", icon: BookOpen, label: t("login") }, { key: "lobby", icon: DoorOpen, label: t("lobby") }]} />} />
     <Card><CardContent className="flex flex-wrap items-start justify-between gap-4">
       <div className="flex min-w-0 gap-3">
@@ -270,8 +271,8 @@ export function LobbyPage() {
       </div>
       <Link to="/admin/images" className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline">{t("images_link")}<ChevronRight className="h-3.5 w-3.5" /></Link>
     </CardContent></Card>
-    <div role="tabpanel" id={`lobby-space-panel-${name}`} aria-labelledby={`lobby-space-tab-${name}`} className="space-y-6">
-      <p className="text-sm text-muted-foreground">{t(`${name}_description`)}</p>
+    <div role={noLobby ? undefined : "tabpanel"} id={`lobby-space-panel-${name}`} aria-labelledby={noLobby ? undefined : `lobby-space-tab-${name}`} className="space-y-6">
+      <p className="text-sm text-muted-foreground">{t(noLobby ? "login_description_no_lobby" : `${name}_description`)}</p>
       {missing ? <MissingSpace name={name} onCreated={status.reload} /> : <>
       {status.error != null && <ErrorState error={status.error} onRetry={status.reload} />}
       <Card className="flex flex-wrap items-center justify-between gap-3 p-5">

@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { MessageLine } from "@/components/MessageLine";
 import { isReauthCancelled, useReauth } from "@/components/ReauthDialog";
 import { api, humanizeError } from "@/lib/api";
-import { useAsync, useRefreshSignal, useUnsavedGuard } from "@/lib/hooks";
+import { useAsync, useConfig, useRefreshSignal, useUnsavedGuard } from "@/lib/hooks";
 import type { EntryPolicySettings } from "@/lib/types";
 
 const modes = [{ value: "lobby", icon: DoorOpen }, { value: "direct", icon: Server }, { value: "domain", icon: Globe }] as const;
@@ -27,6 +27,8 @@ export function PlayerEntrySettings() {
   const query = useAsync(api.getEntryPolicy, []);
   const fleet = useAsync(api.fleet, []);
   const reauth = useReauth();
+  const noLobby = useConfig()?.noLobby === true;
+  const choices = noLobby ? modes.filter(({ value }) => value !== "lobby") : modes;
   const [draft, setDraft] = useState(initial);
   const [saved, setSaved] = useState<EntryPolicySettings | null>(null);
   const [saving, setSaving] = useState(false);
@@ -40,7 +42,7 @@ export function PlayerEntrySettings() {
   }, [query.data]);
   const busy = query.loading || saving || !saved;
   const servers = (fleet.data ?? []).filter((server) => !server.system && server.name !== "login" && server.name !== "lobby");
-  const modeIndex = modes.findIndex(({ value }) => value === draft.mode);
+  const modeIndex = choices.findIndex(({ value }) => value === draft.mode);
   const valid = (draft.mode !== "direct" || !!draft.defaultServer)
     && (draft.offlineAction !== "fallback" || (!!draft.fallbackServer && draft.fallbackServer !== draft.defaultServer));
   function change(update: Partial<EntryPolicySettings>) { setDraft((value) => ({ ...value, ...update })); setMessage(null); }
@@ -73,7 +75,7 @@ export function PlayerEntrySettings() {
       <p className="text-sm text-muted-foreground">{t("entry_description")}</p>
       {query.loading && <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />{t("platform_loading")}</p>}
       <div className="space-y-3">
-        <div role="radiogroup" aria-label={t("entry_mode")} className="grid gap-3 sm:grid-cols-3" onKeyDown={(event) => {
+        <div role="radiogroup" aria-label={t("entry_mode")} className={`grid gap-3 ${noLobby ? "sm:grid-cols-2" : "sm:grid-cols-3"}`} onKeyDown={(event) => {
           if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key) || busy) return;
           event.preventDefault();
           const choices = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"]'));
@@ -81,23 +83,23 @@ export function PlayerEntrySettings() {
           const index = event.key === "Home" ? 0 : event.key === "End" ? choices.length - 1 : (current + (event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1) + choices.length) % choices.length;
           choices[index].focus(); choices[index].click();
         }}>
-          {modes.map(({ value: mode, icon: Icon }) => <Button key={mode} type="button" role="radio" tabIndex={draft.mode === mode ? 0 : -1} aria-checked={draft.mode === mode} variant="outline" disabled={busy} className={`h-auto justify-start whitespace-normal px-4 py-3 text-left active:scale-100 ${draft.mode === mode ? "border-primary/40 bg-primary/5 ring-1 ring-primary/20" : ""}`} onClick={() => { if (draft.mode === mode) return; change({ mode, ...(mode === "lobby" ? { defaultServer: "" } : {}), ...(mode === "direct" ? { requireAccountLink: false, offlineAction: "disconnect", waitingSpace: "login", fallbackServer: "" } : {}) }); }}>
+          {choices.map(({ value: mode, icon: Icon }) => <Button key={mode} type="button" role="radio" tabIndex={draft.mode === mode ? 0 : -1} aria-checked={draft.mode === mode} variant="outline" disabled={busy} className={`h-auto justify-start whitespace-normal px-4 py-3 text-left active:scale-100 ${draft.mode === mode ? "border-primary/40 bg-primary/5 ring-1 ring-primary/20" : ""}`} onClick={() => { if (draft.mode === mode) return; change({ mode, ...(mode === "lobby" ? { defaultServer: "" } : {}), ...(mode === "direct" ? { requireAccountLink: false, offlineAction: "disconnect", waitingSpace: "login", fallbackServer: "" } : {}) }); }}>
             <span className="space-y-1"><span className="flex items-center gap-2"><Icon className={draft.mode === mode ? "text-primary" : "text-muted-foreground"} aria-hidden="true" />{t(`entry_${mode}`)}</span><span className="block text-xs font-normal leading-relaxed text-muted-foreground">{t(`entry_${mode}_hint`)}</span></span>
           </Button>)}
         </div>
         <div className={`relative flex flex-wrap items-center gap-2 rounded-lg border px-4 py-3 text-sm ${calloutFill} ${calloutEdge}`} aria-label={t("entry_preview")}>
-          {modeIndex >= 0 && <span data-testid="entry-preview-tail" aria-hidden="true" className={`absolute -top-[7px] hidden h-3.5 w-3.5 -translate-x-1/2 rotate-45 border-l border-t transition-[left] duration-200 ease-out motion-reduce:transition-none sm:block ${calloutFill} ${calloutEdge}`} style={{ left: `calc((100% + 0.75rem) * ${modeIndex} / 3 + (100% - 1.5rem) / 6)` }} />}
+          {modeIndex >= 0 && <span data-testid="entry-preview-tail" aria-hidden="true" className={`absolute -top-[7px] hidden h-3.5 w-3.5 -translate-x-1/2 rotate-45 border-l border-t transition-[left] duration-200 ease-out motion-reduce:transition-none sm:block ${calloutFill} ${calloutEdge}`} style={{ left: `calc((100% + 0.75rem) * ${modeIndex} / ${choices.length} + (100% - ${(choices.length - 1) * 0.75}rem) / ${choices.length * 2})` }} />}
           <span className="flex items-center gap-2"><ShieldCheck className="h-4 w-4 text-primary" aria-hidden="true" />{t("entry_identity")}</span>{draft.requireAccountLink && <><ArrowRight className="h-4 w-4 text-muted-foreground" /><span className="flex items-center gap-2"><LogIn className="h-4 w-4 text-muted-foreground" aria-hidden="true" />{t("entry_web")}</span></>}<ArrowRight className="h-4 w-4 text-muted-foreground" /><span className="font-medium">{draft.mode === "lobby" ? t("entry_lobby") : draft.mode === "domain" ? t("entry_domain_target") : draft.defaultServer || t("entry_select_server")}</span>
         </div>
       </div>
       <div className="grid gap-6 md:grid-cols-2">
-        {draft.mode !== "lobby" && <div className="space-y-2"><Label htmlFor="entry-defaultServer">{t(draft.mode === "direct" ? "entry_main" : "entry_default")}</Label>{serverSelect("defaultServer", draft.mode === "domain")}<p className="text-xs leading-relaxed text-muted-foreground">{t(draft.mode === "direct" ? "entry_main_hint" : "entry_default_hint")}</p></div>}
+        {draft.mode !== "lobby" && <div className="space-y-2"><Label htmlFor="entry-defaultServer">{t(draft.mode === "direct" ? "entry_main" : "entry_default")}</Label>{serverSelect("defaultServer", draft.mode === "domain")}<p className="text-xs leading-relaxed text-muted-foreground">{t(draft.mode === "direct" ? "entry_main_hint" : noLobby ? "entry_default_hint_no_lobby" : "entry_default_hint")}</p></div>}
         <div className="space-y-2"><Label htmlFor="entry-offline">{t("entry_offline")}</Label><Select value={draft.offlineAction} disabled={busy} onValueChange={(value) => change({ offlineAction: value as EntryPolicySettings["offlineAction"], ...(value !== "fallback" ? { fallbackServer: "" } : {}) })}><SelectTrigger id="entry-offline"><SelectValue /></SelectTrigger><SelectContent>{(["wake", "fallback", "disconnect"] as const).map((action) => <SelectItem key={action} value={action}>{t(`entry_${action}`)}</SelectItem>)}</SelectContent></Select></div>
         {draft.offlineAction === "fallback" && <div className="space-y-2"><Label htmlFor="entry-fallbackServer">{t("entry_fallback_server")}</Label>{serverSelect("fallbackServer")}</div>}
-        {draft.offlineAction === "wake" && <div className="space-y-2"><Label htmlFor="entry-waiting">{t("entry_waiting")}</Label><Select value={draft.waitingSpace} disabled={busy || draft.requireAccountLink} onValueChange={(value) => change({ waitingSpace: value as EntryPolicySettings["waitingSpace"] })}><SelectTrigger id="entry-waiting"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="login">{t("entry_wait_login")}</SelectItem><SelectItem value="lobby">{t("entry_lobby")}</SelectItem></SelectContent></Select><p className="text-xs leading-relaxed text-muted-foreground">{t(draft.requireAccountLink ? "entry_web_wait" : "entry_wake_hint")}</p></div>}
+        {draft.offlineAction === "wake" && <div className="space-y-2"><Label htmlFor="entry-waiting">{t("entry_waiting")}</Label><Select value={draft.waitingSpace} disabled={busy || draft.requireAccountLink || noLobby} onValueChange={(value) => change({ waitingSpace: value as EntryPolicySettings["waitingSpace"] })}><SelectTrigger id="entry-waiting"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="login">{t("entry_wait_login")}</SelectItem>{!noLobby && <SelectItem value="lobby">{t("entry_lobby")}</SelectItem>}</SelectContent></Select><p className="text-xs leading-relaxed text-muted-foreground">{t(!draft.requireAccountLink ? "entry_wake_hint" : noLobby ? "entry_web_wait_no_lobby" : "entry_web_wait")}</p></div>}
       </div>
-      <div className="flex items-start justify-between gap-4 border-t border-border pt-5"><div className="space-y-1"><Label htmlFor="entry-link">{t("entry_link")}</Label><p className="text-xs leading-relaxed text-muted-foreground">{t("entry_link_hint")}</p></div><Switch id="entry-link" checked={draft.requireAccountLink} disabled={busy} onCheckedChange={(checked) => change({ requireAccountLink: checked, ...(checked ? { waitingSpace: "lobby" } : {}) })} /></div>
-      <p className="text-xs leading-relaxed text-muted-foreground">{t("entry_components")} <Link className="font-medium text-primary hover:underline" to="/admin/lobby">{t("entry_manage_spaces")}</Link></p>
+      <div className="flex items-start justify-between gap-4 border-t border-border pt-5"><div className="space-y-1"><Label htmlFor="entry-link">{t("entry_link")}</Label><p className="text-xs leading-relaxed text-muted-foreground">{t("entry_link_hint")}</p></div><Switch id="entry-link" checked={draft.requireAccountLink} disabled={busy} onCheckedChange={(checked) => change({ requireAccountLink: checked, ...(checked ? { waitingSpace: noLobby ? "login" : "lobby" } : {}) })} /></div>
+      <p className="text-xs leading-relaxed text-muted-foreground">{t(noLobby ? "entry_components_no_lobby" : "entry_components")} <Link className="font-medium text-primary hover:underline" to="/admin/lobby">{t(noLobby ? "entry_manage_login_space" : "entry_manage_spaces")}</Link></p>
       {query.error != null && <MessageLine kind="error" message={humanizeError(query.error)} />}
       {fleet.error != null && <MessageLine kind="error" message={humanizeError(fleet.error)} />}
       {message && <MessageLine kind={message.kind} message={message.text} />}

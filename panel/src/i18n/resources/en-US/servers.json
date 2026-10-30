@@ -103,6 +103,7 @@
   "schedules_link_desc": "Restart, back up or run commands at set times.",
   "system_service": "System service",
   "system_service_hint": "Staff manage system services in Login & lobby.",
+  "system_service_hint_no_lobby": "Staff manage system services in Login space.",
   "players_back_to_console": "Back to console",
   "players_not_yours_title": "Server management access denied",
   "players_not_yours_body": "Only the owner or an admin can manage this server's players.",

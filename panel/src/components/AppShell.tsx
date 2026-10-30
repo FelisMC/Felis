@@ -6,6 +6,7 @@ import * as SelectPrimitive from "@radix-ui/react-select";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { cn } from "@/lib/utils";
 import { useTier } from "@/lib/tier";
+import { useConfig } from "@/lib/hooks";
 import { visibleSections, type NavSection } from "@/lib/nav";
 import { Select, SelectContent, SelectItem } from "@/components/ui/select";
 import { useTheme, type ThemePreference } from "@/lib/theme";
@@ -251,7 +252,8 @@ export function AppShell() {
     if (main) main.scrollTop = 0;
   }, [main, pathname]);
   // Missing identity flags grant neither admin nor owner sections.
-  const sections = visibleSections(isAdmin, isOwner);
+  const noLobby = useConfig()?.noLobby === true;
+  const sections = visibleSections(isAdmin, isOwner, noLobby);
 
   // Sync document metadata with the active language.
   useEffect(() => {

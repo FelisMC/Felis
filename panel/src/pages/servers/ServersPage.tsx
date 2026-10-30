@@ -767,7 +767,7 @@ function ServerActions({
             <Link to={`/admin/lobby?space=${server.name}`}>{server.name === "login" ? <BookOpen /> : <DoorOpen />}{ts(server.name === "login" ? "system_customize_login" : "system_customize")}</Link>
           </Button>
         ) : (
-          <span className="text-sm text-muted-foreground" title={ts("system_service_hint")}>{ts("system_service")}</span>
+          <span className="text-sm text-muted-foreground" title={ts(cfg?.noLobby ? "system_service_hint_no_lobby" : "system_service_hint")}>{ts("system_service")}</span>
         )}
       </div>
     );
@@ -849,9 +849,10 @@ function ServerActions({
 function OwnerLabel({ server }: { server: UnifiedServer }) {
   const { t } = useTranslation("ops");
   const { t: ts } = useTranslation("servers");
+  const noLobby = useConfig()?.noLobby === true;
   if (server.system) {
     return (
-      <span className="text-muted-foreground" title={ts("system_service_hint")}>
+      <span className="text-muted-foreground" title={ts(noLobby ? "system_service_hint_no_lobby" : "system_service_hint")}>
         {ts("system_service")}
       </span>
     );

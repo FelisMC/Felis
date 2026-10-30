@@ -12,6 +12,7 @@
   "admin_updates": "Maintenance & Backups",
   "admin_audit": "Audit log",
   "admin_lobby": "Login & lobby",
+  "admin_login_space": "Login space",
   "auth_sources": "Authentication sources",
   "platform_settings": "Platform settings"
 }

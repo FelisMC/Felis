@@ -23,6 +23,8 @@ export interface NavItem {
   icon: LucideIcon;
   /** react-router NavLink `end` — exact-match active styling for index routes. */
   end?: boolean;
+  /** The label key on an install without a lobby. */
+  noLobbyKey?: string;
 }
 
 export interface NavSection {
@@ -56,7 +58,7 @@ export const NAV_SECTIONS: NavSection[] = [
     adminOnly: true,
     ownerOnly: false,
     items: [
-      { to: "/admin/lobby", key: "admin_lobby", icon: DoorOpen },
+      { to: "/admin/lobby", key: "admin_lobby", noLobbyKey: "admin_login_space", icon: DoorOpen },
       { to: "/admin/images", key: "admin_images", icon: Boxes },
       { to: "/admin/builds", key: "admin_builds", icon: Cpu },
       { to: "/admin/submissions", key: "admin_submissions", icon: ClipboardCheck },
@@ -78,10 +80,12 @@ export const NAV_SECTIONS: NavSection[] = [
 ];
 
 // Unknown or loading identity gets user sections only.
-export function visibleSections(isAdmin: boolean, isOwner: boolean): NavSection[] {
-  return NAV_SECTIONS.filter((s) => {
+export function visibleSections(isAdmin: boolean, isOwner: boolean, noLobby = false): NavSection[] {
+  const sections = NAV_SECTIONS.filter((s) => {
     if (s.ownerOnly) return isOwner;
     if (s.adminOnly) return isAdmin;
     return true;
   });
+  if (!noLobby) return sections;
+  return sections.map((s) => ({ ...s, items: s.items.map((item) => (item.noLobbyKey ? { ...item, key: item.noLobbyKey } : item)) }));
 }

@@ -40,16 +40,18 @@ describe("loadConfig", () => {
       adminHostname: "op.console.mc.example",
       gameVersion: "26.3",
       build,
+      noLobby: false,
     });
     expect(cfg.fallback).toBeUndefined();
   });
 
   it("reads the deployment shape", async () => {
-    serve({ rootDomain: "mc.example", distributed: true, controllerHA: true });
+    serve({ rootDomain: "mc.example", distributed: true, controllerHA: true, noLobby: true });
     const { loadConfig } = await freshConfig();
     const cfg = await loadConfig();
     expect(cfg.distributed).toBe(true);
     expect(cfg.controllerHA).toBe(true);
+    expect(cfg.noLobby).toBe(true);
   });
 
   it("fetches once and keeps the result", async () => {

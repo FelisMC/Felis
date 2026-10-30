@@ -28,6 +28,8 @@ export interface RuntimeConfig {
   gameVersion?: string;
   /** What the server runs, for the version badge. */
   build?: BuildInfo;
+  /** The install has no formal lobby; players sign in, wait and leave from the login space. */
+  noLobby?: boolean;
   /** /config.json could not be read, so these are build-time defaults and
    *  addresses built from them may be wrong. The shell says so. */
   fallback?: boolean;
@@ -89,6 +91,7 @@ export async function loadConfig(): Promise<RuntimeConfig> {
       gamePort: parsePort(raw.gamePort),
       gameVersion: typeof raw.gameVersion === "string" && raw.gameVersion ? raw.gameVersion : undefined,
       build: parseBuild(raw.build),
+      noLobby: raw.noLobby === true,
     };
   } catch (err) {
     console.warn("felis panel: /config.json unavailable, using build-time defaults", err);

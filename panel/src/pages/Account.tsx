@@ -680,9 +680,9 @@ function MinecraftGuide() {
   return (
     <details className="group mt-4 border-t border-border pt-4 space-y-3">
       <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden"><ChevronRight className="h-4 w-4 shrink-0 transition-transform group-open:rotate-90" />{t("game_guide")}</summary>
-      <p className="text-muted-foreground">{cfg.gameVersion ? t("game_version", { version: cfg.gameVersion }) : t("game_version_unknown")}</p>
+      <p className="text-muted-foreground">{cfg.gameVersion ? t(cfg.noLobby ? "game_version_no_lobby" : "game_version", { version: cfg.gameVersion }) : t("game_version_unknown")}</p>
       {!cfg.fallback && <CopyAddress address={entryAddress(cfg)} />}
-      <p className="text-muted-foreground">{t("game_lobby")}</p>
+      <p className="text-muted-foreground">{t(cfg.noLobby ? "game_lobby_no_lobby" : "game_lobby")}</p>
       <p className="text-muted-foreground">{t("game_thirdparty")}</p>
     </details>
   );

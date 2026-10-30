@@ -33,6 +33,13 @@ describe("visibleSections", () => {
     expect(links(true, true)).toContain("/admin/audit");
   });
 
+  it("names the space page after the login space on an install without a lobby", () => {
+    const label = (noLobby: boolean) =>
+      visibleSections(true, false, noLobby).flatMap((section) => section.items).find((item) => item.to === "/admin/lobby")?.key;
+    expect(label(false)).toBe("admin_lobby");
+    expect(label(true)).toBe("admin_login_space");
+  });
+
   it("keeps the User-Side section ungated so it survives both branches", () => {
     const user = NAV_SECTIONS.find((s) => s.id === "user");
     expect(user?.adminOnly).toBe(false);

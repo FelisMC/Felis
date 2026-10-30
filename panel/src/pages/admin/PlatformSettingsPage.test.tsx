@@ -8,7 +8,7 @@ import { PlatformSettingsPage } from "./PlatformSettingsPage";
 import type { WakePolicySettings } from "@/lib/types";
 const calls = vi.hoisted(() => ({ getEntryPolicy: vi.fn(), setEntryPolicy: vi.fn(), fleet: vi.fn(), getWakePolicy: vi.fn(), setWakePolicy: vi.fn(), getDefaultLanguage: vi.fn(), setDefaultLanguage: vi.fn(), getBrandingSettings: vi.fn(), getAPITokenSettings: vi.fn(), nodes: vi.fn(), nodeTasks: vi.fn(), nodeTask: vi.fn(), startNodeTask: vi.fn(), retryNodeTask: vi.fn(), getMailSettings: vi.fn(), getArchivePolicy: vi.fn(), getFailoverPolicy: vi.fn(), getHeartbeat: vi.fn(), hostOverview: vi.fn(), getSelfServiceQuota: vi.fn(), setSelfServiceQuota: vi.fn() }));
 vi.mock("@/lib/api", async (original) => ({ ...await original<typeof import("@/lib/api")>(), api: calls }));
-const runtime = vi.hoisted(() => ({ distributed: false, fallback: false, apiBase: "/api/v1", rootDomain: "example.test" }));
+const runtime = vi.hoisted(() => ({ distributed: false, fallback: false, noLobby: false, apiBase: "/api/v1", rootDomain: "example.test" }));
 vi.mock("@/lib/hooks", async (original) => ({ ...await original<typeof import("@/lib/hooks")>(), useConfig: () => runtime }));
 const policy: WakePolicySettings = { maxRunningServers: 0, wakeCooldownSeconds: 0, revision: "initial", managed: false };
 const limit = () => screen.getByRole("spinbutton", { name: "Running server limit (0–10000)" }) as HTMLInputElement;
@@ -25,6 +25,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   runtime.distributed = false;
   runtime.fallback = false;
+  runtime.noLobby = false;
   calls.getEntryPolicy.mockResolvedValue({ mode: "domain", defaultServer: "", requireAccountLink: true, offlineAction: "wake", waitingSpace: "lobby", fallbackServer: "", revision: "initial" });
   calls.fleet.mockResolvedValue([]);
   calls.nodes.mockResolvedValue([]);
@@ -110,6 +111,24 @@ describe("page reload", () => {
     expect(reload).toHaveProperty("disabled", true);
     await userEvent.click(screen.getByRole("button", { name: "Discard changes" }));
     expect(reload).toHaveProperty("disabled", false);
+  });
+});
+
+describe("player entry without a lobby", () => {
+  it("offers no lobby and keeps linked players waiting in the login space", async () => {
+    runtime.noLobby = true;
+    calls.getEntryPolicy.mockResolvedValue({ mode: "domain", defaultServer: "", requireAccountLink: false, offlineAction: "wake", waitingSpace: "login", fallbackServer: "", revision: "initial" });
+    calls.setEntryPolicy.mockImplementation(async (body) => ({ ...body, revision: "saved" }));
+    page("entry");
+    const link = await screen.findByRole("switch", { name: "Require panel account linking" });
+    await waitFor(() => expect((link as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.getAllByRole("radio").map((radio) => radio.textContent)).toEqual([
+      expect.stringContaining("Direct to main server"), expect.stringContaining("Route by hostname"),
+    ]);
+    await userEvent.click(link);
+    expect(screen.getByText("This platform has no lobby, so players wait for startup in the login space.")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "Save entry policy" }));
+    await waitFor(() => expect(calls.setEntryPolicy).toHaveBeenCalledWith(expect.objectContaining({ requireAccountLink: true, waitingSpace: "login" })));
   });
 });
 

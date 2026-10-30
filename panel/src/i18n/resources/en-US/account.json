@@ -161,6 +161,8 @@
   "game_version": "Use Minecraft Java Edition {{version}} for the login server and lobby. Target servers may require another version or mods; check their instructions.",
   "game_version_unknown": "The login service client version is not configured. An operator must verify and set game_version. The panel version does not indicate the game version.",
   "game_lobby": "Players enter the lobby after authentication through the login service. The lobby provides server selection. Run /menu to open the server menu and wait for startup. Check the service list if the login service or lobby is not ready.",
+  "game_version_no_lobby": "Use Minecraft Java Edition {{version}} for the login server. Target servers may require another version or mods; check their instructions.",
+  "game_lobby_no_lobby": "Players enter the server matching their connection address after authentication through the login service. When that server is offline, the entry policy set by the administrator starts it and waits, uses a fallback server, or rejects the connection.",
   "game_thirdparty": "For a third-party source, configure the same provider in your launcher. Profile lookup reads an identity; joining still requires authentication with that provider.",
   "staff_code_alternative": "Use an in-game binding code when profile lookup is unavailable"
 }

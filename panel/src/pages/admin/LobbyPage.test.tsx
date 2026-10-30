@@ -15,7 +15,8 @@ vi.mock("@/lib/tier", async (original) => ({
   useTier: () => ({ loading: false, identity: { user_id: "staff-1", role: tier.isOwner ? "owner" : "admin" }, isAdmin: true, isOwner: tier.isOwner }),
 }));
 vi.mock("@/lib/api", async (original) => ({ ...await original<typeof import("@/lib/api")>(), api: calls }));
-vi.mock("@/lib/config", async (original) => ({ ...await original<typeof import("@/lib/config")>(), loadConfig: () => Promise.resolve({ apiBase: "/api/v1", rootDomain: "example.test", gameVersion: "26.3" }) }));
+const runtime = vi.hoisted(() => ({ noLobby: false }));
+vi.mock("@/lib/config", async (original) => ({ ...await original<typeof import("@/lib/config")>(), loadConfig: () => Promise.resolve({ apiBase: "/api/v1", rootDomain: "example.test", gameVersion: "26.3", noLobby: runtime.noLobby }) }));
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -27,6 +28,7 @@ beforeEach(() => {
   calls.restart.mockResolvedValue({ name: "lobby", desiredState: "Running" });
   calls.nodeTasks.mockResolvedValue({ available: true, tasks: [] });
   tier.isOwner = true;
+  runtime.noLobby = false;
 });
 
 function page(space = "lobby") {
@@ -88,6 +90,16 @@ describe("LobbyPage", () => {
     await screen.findByLabelText("Login book title");
     expect(calls.status).toHaveBeenCalledWith("login");
     expect(screen.getByRole("tab", { name: "Login space" }).getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("shows only the login space on an install without a lobby", async () => {
+    runtime.noLobby = true;
+    page("lobby");
+    expect(await screen.findByRole("heading", { level: 1, name: "Login space" })).toBeTruthy();
+    await screen.findByLabelText("Login book title");
+    expect(screen.queryByRole("tab")).toBeNull();
+    expect(screen.queryByLabelText("English menu title")).toBeNull();
+    expect(calls.status).toHaveBeenLastCalledWith("login");
   });
 
   it("saves while running and restarts only when requested", async () => {

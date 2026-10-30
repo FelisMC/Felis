@@ -12,6 +12,7 @@
   "admin_updates": "维护与备份",
   "admin_audit": "审计日志",
   "admin_lobby": "登录与大厅",
+  "admin_login_space": "登录空间",
   "auth_sources": "认证源",
   "platform_settings": "平台设置"
 }

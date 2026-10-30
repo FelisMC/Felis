@@ -102,6 +102,7 @@
   "schedules_link_desc": "定时重启、备份或执行命令。",
   "system_service": "系统服务",
   "system_service_hint": "系统服务由管理员在“登录与大厅”中管理。",
+  "system_service_hint_no_lobby": "系统服务由管理员在“登录空间”中管理。",
   "players_back_to_console": "返回控制台",
   "players_not_yours_title": "无权管理此服务器",
   "players_not_yours_body": "只有所有者或管理员才能管理此服务器的玩家。",
