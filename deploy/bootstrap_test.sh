@@ -1578,7 +1578,7 @@ expect "a GC window that never ends still fails the install" "DIE: could not mir
 rm -rf "$pushdir"
 
 # Start Docker once per local-image batch; release bundle uploads need no Docker.
-wiblock="$(for f in push_images_to_registry role_prebuilt role_image stop_docker; do awk '/^'"$f"'\(\) \{/,/^}/' "$BS"; done)"
+wiblock="$(for f in push_images_to_registry role_prebuilt role_image stop_docker game_roles; do awk '/^'"$f"'\(\) \{/,/^}/' "$BS"; done)"
 case "$wiblock" in *"push_images_to_registry() {"*"role_prebuilt() {"*"role_image() {"*"stop_docker() {"*) ;; *) echo "FAIL: push_images_to_registry or its helpers are missing from $BS"; exit 1 ;; esac
 run_batch() { # PREBUILT_ROLES [ARTIFACT_MODE [ARTIFACT_CACHE]]
   FELIS_IMAGE=a FELIS_LIMBO_IMAGE=b FELIS_LOBBY_IMAGE=c FELIS_PAPER_IMAGE=d PREBUILT_ROLES="$1" \
@@ -1941,11 +1941,11 @@ run_write() { # out-file [state-dir] [database-deployment]; under the installer'
     felis() {
       [ "$*" = "bootstrap-assets config-keys" ] || return 2
       [ "${OLD_CONFIG:-0}" != 1 ] || return 2
-      printf "%s\n" velocity.game_version
+      printf "%s\n" velocity.game_version velocity.login_memory
     }
     . "$FNFILE"
     FELIS_ROOT_DOMAIN=r.example.com DB_USER=u DB_PASSWORD=p DB_NAME=d MINECRAFT_NS=minecraft \
-    FELIS_EGRESS_MODE=nodeport FELIS_LIMBO_IMAGE=li FELIS_LOBBY_IMAGE=lo FELIS_GAME_PORT=25570 MC_VERSION=26.3 \
+    FELIS_EGRESS_MODE=nodeport FELIS_LIMBO_IMAGE=li FELIS_LOBBY_IMAGE="${LOBBY_IMG-lo}" FELIS_GAME_PORT=25570 MC_VERSION=26.3 \
     REGISTRY_URL=registry.felis.svc:5000 BUILD_NS=felis-build FELIS_ARCHIVE_LOCAL_PATH=/a \
     HOST_BIN=felis FELIS_OFFSITE_BUCKET= write_felis_toml "$OUT_TOML" 127.0.0.1:15432 "$DEPLOY"'
 }
@@ -2003,6 +2003,13 @@ case "$out" in
   *stale.invalid* | *stale-ns* | *stale/path*)
     echo "FAIL: stale installer-owned values survived the re-run"; fails=$((fails + 1)) ;;
 esac
+
+case "$out" in *login_memory*) echo "FAIL a standard host sized its login space"; fails=$((fails + 1)) ;; *) echo "PASS a standard host keeps the login space's default memory" ;; esac
+(HOST_PROFILE=small LOBBY_IMG="" run_write "$rdir/small.toml")
+expect "a small host has no lobby and a smaller login space" 'lobby_image = ""
+login_memory = "320Mi"' "$(cat "$rdir/small.toml")"
+(HOST_PROFILE=small LOBBY_IMG="" OLD_CONFIG=1 run_write "$rdir/small-old.toml")
+case "$(cat "$rdir/small-old.toml")" in *login_memory*) echo "FAIL an older binary must not receive velocity.login_memory"; fails=$((fails + 1)) ;; *) echo "PASS an older binary receives no login memory key" ;; esac
 
 cp "$rdir/out.toml" "$rdir/felis.host.toml"
 run_write "$rdir/out2.toml"
@@ -2107,7 +2114,7 @@ run_surfaces() { # state-dir out-dir; under the installer's shell options and ER
     openssl() { for a in "$@"; do :; done; cp "$a" "$VOUT/openssl.cnf"; touch "$VOUT/k" "$VOUT/c"; }
     . "$FNFILE"
     FELIS_ROOT_DOMAIN=r.example.com FORWARDING_SECRET=f SERVICE_TOKEN=t LOGIN_SERVER=login \
-    LOBBY_SERVER=lobby FELIS_GAME_PORT=25565 VELOCITY_DIR=/v VELOCITY_USER=v NODE_IP=10.0.0.5 \
+    LOBBY_SERVER=lobby FELIS_LOBBY_IMAGE="${LOBBY_IMG-lo}" FELIS_GAME_PORT=25565 VELOCITY_DIR=/v VELOCITY_USER=v NODE_IP=10.0.0.5 \
     PANEL_TLS_CERT="$VOUT/c" PANEL_TLS_KEY="$VOUT/k"
     write_velocity_config
     ensure_panel_tls_cert'
@@ -2118,6 +2125,10 @@ out="$(cat "$adir/v/felis-link.properties" 2>&1)"
 expect "the proxy routes the carried panel hostname" "panel-hostname=play.example.org" "$out"
 expect "the proxy routes the carried admin hostname" "admin-hostname=ops.example.org" "$out"
 expect "the proxy keeps the root domain" "root-domain=r.example.com" "$out"
+expect "the proxy names the lobby" "lobby-server=lobby" "$out"
+rm -rf "$adir/v"; mkdir "$adir/v"
+(LOBBY_IMG="" run_surfaces "$adir" "$adir/v")
+expect "without a lobby the proxy is told there is none" "lobby-server=" "$(tail -n 1 "$adir/v/felis-link.properties")"
 out="$(cat "$adir/v/openssl.cnf" 2>&1)"
 expect "a regenerated panel certificate names the carried hostnames" 'DNS.1 = ops.example.org
 DNS.2 = play.example.org' "$out"
@@ -3059,7 +3070,7 @@ ssblock="$(awk '/^restart_existing_system_servers\(\) \{/,/^}/' "$BS")"
 [ -n "$ssblock" ] || { echo "FAIL: no restart_existing_system_servers found in $BS"; exit 1; }
 sdir2="$(mktemp -d)"
 run_system_restart() { # limbo-id lobby-id pods(0|1) pin-exit
-  LIMBO_IMAGE_ID="$1" LOBBY_IMAGE_ID="$2" PODS="$3" PIN_EXIT="${4:-0}" SYSTEM_SERVER_IMAGES="$sdir2/state" \
+  LIMBO_IMAGE_ID="$1" LOBBY_IMAGE_ID="$2" PODS="$3" PIN_EXIT="${4:-0}" SYSTEM_SERVER_IMAGES="$sdir2/state" FELIS_LOBBY_IMAGE="${LOBBY_IMG-lo}" \
   LOGIN_SERVER=login LOBBY_SERVER=lobby MINECRAFT_NS=minecraft HOST_BIN=felis \
   REGISTRY_URL=registry.felis.svc:5000 REGISTRY_PUSH_HOST=127.0.0.1:5000 bash -c '
     set -Eeuo pipefail
@@ -3103,6 +3114,13 @@ case "$out" in
   *) echo "PASS no pod, nothing to restart" ;;
 esac
 expect "the builds are recorded even before the pods exist" "lobby sha256:ddd" "$(cat "$sdir2/state")"
+rm -f "$sdir2/state"
+out="$(LOBBY_IMG="" run_system_restart sha256:aaa "" 1)"
+case "$out" in
+  *"system lobby"*|*"server=lobby"*) echo "FAIL a host without a lobby touched one: $out"; fails=$((fails + 1)) ;;
+  *"system login"*) echo "PASS a host without a lobby pins only the login gate" ;;
+  *) echo "FAIL a host without a lobby did not pin its login gate: $out"; fails=$((fails + 1)) ;;
+esac
 rm -rf "$sdir2"
 
 rfblock="$(awk '/^pkg_refresh_once\(\) \{/,/^}/' "$BS")"
@@ -3355,7 +3373,7 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 
 printf '#!/bin/sh\n' > "$kdir/k3s"; chmod +x "$kdir/k3s"
 
 run_k3s_config() { # $1: kubelet cert path, $2: k3s binary path, $3: hostname, $4: openssl subject stub ("" = real openssl)
-  CERT="$1" BIN="$2" HOSTNAME_STUB="$3" SUBJECT="${4:-}" DROPIN="$kdir/config.yaml.d/50-felis.yaml" bash -c '
+  CERT="$1" BIN="$2" HOSTNAME_STUB="$3" SUBJECT="${4:-}" DROPIN="$kdir/config.yaml.d/50-felis.yaml" HOST_PROFILE="${PROFILE:-}" bash -c '
     set -Eeuo pipefail
     ok() { echo "OK: $*"; }; log() { echo "LOG: $*"; }; warn() { echo "WARN: $*"; }
     remember_temp() { :; }
@@ -3428,13 +3446,16 @@ printf 'half-written\n' > "$kdir/broken.crt"
 out="$(run_k3s_config "$kdir/broken.crt" "$kdir/k3s" renamed-host)"
 expect "a certificate openssl cannot parse is a warning, not a failed install" "WARN: could not read this node's k3s name" "$out"
 expect "and the drop-in is still written" 'write-kubeconfig-mode: "0600"' "$(cat "$dropin")"
+case "$(cat "$dropin")" in *helm-controller*) echo "FAIL a standard host lost k3s's Helm controller"; fails=$((fails + 1)) ;; *) echo "PASS a standard host keeps k3s's Helm controller" ;; esac
+(PROFILE=small run_k3s_config "$kdir/broken.crt" "$kdir/k3s" renamed-host >/dev/null)
+expect "a small host runs k3s without the Helm controller it has no use for" "disable-helm-controller: true" "$(cat "$dropin")"
 
 # k3s's Go collector runs at GOGC=50 via a systemd drop-in; k3s restarts only when it changed.
 svblock="$(awk '/^write_k3s_service_dropin\(\) \{/,/^}/' "$BS")"
 [ -n "$svblock" ] || { echo "FAIL: no write_k3s_service_dropin found in $BS"; exit 1; }
 svdropin="$kdir/k3s.service.d/50-felis.conf"
 run_k3s_service_dropin() {
-  DROPIN="$svdropin" bash -c '
+  DROPIN="$svdropin" HOST_PROFILE="${PROFILE:-}" bash -c '
     set -Eeuo pipefail
     ok() { echo "OK: $*"; }; log() { echo "LOG: $*"; }
     remember_temp() { :; }
@@ -3484,6 +3505,8 @@ printf '[Service]\nEnvironment=GOGC=100\n' > "$svdropin"
 out="$(run_k3s_service_dropin)"
 expect "an edited service drop-in is put back" "Environment=GOGC=50" "$(cat "$svdropin")"
 expect "and k3s is restarted onto it" "RESTART=1" "$out"
+(PROFILE=small run_k3s_service_dropin >/dev/null)
+expect "a small host caps k3s's Go heap" "Environment=GOMEMLIMIT=400MiB" "$(cat "$svdropin")"
 
 sblock="$(awk '/^strip_k3s_kubeconfig_mode_flag\(\) \{/,/^}/' "$BS")"
 [ -n "$sblock" ] || { echo "FAIL: no strip_k3s_kubeconfig_mode_flag found in $BS"; exit 1; }
@@ -4805,9 +4828,9 @@ case "$(run_select dev 1)" in *SUMS*) echo "FAIL: an unstamped build looked up a
 expect "a source build takes nothing from a release" "MODE[] TAG[]" "$(run_select v9.9.9 1 "" "")"
 expect "FELIS_ARTIFACT_DIR stays the source" "MODE[dir] TAG[]" "$(run_select v9.9.9 1 dir)"
 
-gsblock="$(bsfn build_game_stack; bsfn role_prebuilt; bsfn stop_docker)"
+gsblock="$(bsfn build_game_stack; bsfn role_prebuilt; bsfn stop_docker; bsfn game_roles)"
 run_game_stack() { # PREBUILT_ROLES-after-import FELIS_GAME_STACK [ARTIFACT_MODE]
-  AFTER="$1" STACK="$2" MODE="${3-release}" bash -c '
+  AFTER="$1" STACK="$2" MODE="${3-release}" FELIS_LOBBY_IMAGE="${LOBBY_IMG-lo}" bash -c '
     ok() { :; }
     game_stack_source() { :; }
     resolve_game_jars() { :; }
@@ -4834,6 +4857,11 @@ out="$(run_game_stack " limbo lobby paper " latest)"
 case "$out" in *IMPORT*) echo "FAIL: FELIS_GAME_STACK=latest took the release's pinned images"; fails=$((fails + 1)) ;; *) echo "PASS FELIS_GAME_STACK=latest takes nothing from the release" ;; esac
 expect "and builds all three" "BUILD limbo
 BUILD lobby
+BUILD paper" "$out"
+out="$(LOBBY_IMG="" run_game_stack " " pinned)"
+expect "a host without a lobby neither imports nor builds one" "IMPORT limbo paper
+ENSURE
+BUILD limbo
 BUILD paper" "$out"
 
 vpblock="$(bsfn install_velocity_plugin; bsfn artifact_unusable)"
@@ -5132,6 +5160,7 @@ run_compatibility_guard() {
     validate_settings() { :; }
     detect_os() { :; }
     prompt_install_mode() { INSTALL_MODE=full; }
+    resolve_host_profile() { :; }
     detect_node_ip() { :; }
     preflight() { :; }
     quiet_watchdog() { echo HOST_CHANGE; exit 0; }
@@ -5589,6 +5618,7 @@ die() { printf 'DIE: %s\n' \"\$*\"; exit 1; }
 ok() { printf 'OK: %s\n' \"\$*\"; }
 recall_distributed_settings() { :; }
 recall_ha_settings() { :; }
+resolve_host_profile() { :; }
 install_db_backup_timer() { printf 'CALL db-backup %s %s\n' \"\$FELIS_DB_BACKUP_TIME\" \"\$FELIS_DB_BACKUP_KEEP\"; }
 install_velocity_service() { printf 'CALL velocity %s\n' \"\$FELIS_VELOCITY_XMX\"; }
 configure_offsite() { echo 'CALL configure_offsite'; }
@@ -5655,6 +5685,7 @@ out="$(env IMAGES="$pbdir/images" CALLS="$pbdir/calls" REGISTRY_URL=registry.fel
   bash -c 'set -Eeuo pipefail
 docker() { if [ "$1" = images ]; then cat "$IMAGES"; else echo "CALL docker $*" >> "$CALLS"; fi; }
 '"$(hafn role_image)"'
+'"$(hafn game_roles)"'
 '"$pbfn"'
 prune_build_images; cat "$CALLS"' 2>&1)"
 expect "an earlier control-plane image leaves Docker" "CALL docker rmi registry.felis.svc:5000/felis/felis:v1.1.0" "$out"
@@ -5676,7 +5707,7 @@ case "$(hafn push_images_to_registry)" in
 esac
 rm -rf "$pbdir"
 
-swfns="$(bsfn swap_file_mib; bsfn ensure_swap)"
+swfns="$(bsfn swap_file_mib; bsfn ensure_swap; bsfn ensure_swap_space; bsfn ensure_swappiness)"
 swdir="$(mktemp -d)"
 swap_run() { # memory KiB, swap KiB, why the preflight left swap out
   MEM="$1" SWAPKB="$2" SKIP="$3" DIR="$swdir" bash -c '
@@ -5685,7 +5716,7 @@ warn() { echo "WARN $*"; }; ok() { echo "OK $*"; }; log() { :; }
 mem_total_kb() { echo "$MEM"; }; swap_total_kb() { echo "$SWAPKB"; }
 make_swap_file() { echo "MADE $1"; }
 swapon() { return 1; }
-SWAP_FILE="$DIR/swapfile" SWAP_SKIP="$SKIP"
+SWAP_FILE="$DIR/swapfile" SWAP_SKIP="$SKIP" SWAPPINESS_PROC="$DIR/swappiness" SWAPPINESS_FILE="$DIR/sysctl.d/99-zz-felis-swappiness.conf"
 ensure_swap' 2>&1
 }
 expect "a node without swap gets a swap file as large as its memory" "MADE 16384" "$(swap_run 16777216 0 "")"
@@ -5697,7 +5728,41 @@ case "$out" in *MADE*) echo "FAIL existing swap must not get a second swap file"
 out="$(swap_run 16777216 0 "/ has 100 MiB free")"
 expect "a disk too small for swap beside the install skips the swap file" "WARN no swap file created: / has 100 MiB free" "$out"
 case "$out" in *MADE*) echo "FAIL a skipped swap file was made"; fails=$((fails + 1)) ;; *) echo "PASS a skipped swap file is not made" ;; esac
+echo 0 > "$swdir/swappiness"
+out="$(swap_run 2097152 2097152 "")"
+expect "swap a cloud image switched off with swappiness 0 is put back to use" "vm.swappiness = 60" "$(cat "$swdir/sysctl.d/99-zz-felis-swappiness.conf" 2>&1)"
+expect "at once, not only after a reboot" "60" "$(cat "$swdir/swappiness")"
+expect "and the change is announced" "WARN vm.swappiness was 0" "$out"
+rm -rf "$swdir/sysctl.d"; echo 10 > "$swdir/swappiness"
+swap_run 2097152 2097152 "" >/dev/null
+if [ -e "$swdir/sysctl.d" ] || [ "$(cat "$swdir/swappiness")" != 10 ]; then echo "FAIL an operator's own swappiness was changed"; fails=$((fails + 1)); else echo "PASS an operator's own swappiness is left alone"; fi
 rm -rf "$swdir"
+
+hpfns="$(bsfn resolve_host_profile)"
+hpdir="$(mktemp -d)"
+profile_run() { # FELIS_HOST_PROFILE, memory KiB, recorded profile ("" = none), installed (0|1)
+  HP="$1" MEM="$2" REC="$3" DONE="$4" DIR="$hpdir" bash -c '
+set -Eeuo pipefail
+'"$hpfns"'
+die() { echo "DIE $*"; exit 1; }
+log() { :; }
+mem_total_kb() { echo "$MEM"; }
+rm -f "$DIR/profile" "$DIR/done"
+[ -z "$REC" ] || echo "$REC" > "$DIR/profile"
+[ "$DONE" = 0 ] || : > "$DIR/done"
+FELIS_HOST_PROFILE="$HP" HOST_PROFILE_FILE="$DIR/profile" BOOTSTRAP_DONE="$DIR/done" PREFLIGHT_RECOMMENDED_RAM_KB=3670016
+FELIS_LOBBY_IMAGE=lobby-image FELIS_VELOCITY_XMX="${XMX:-}"
+resolve_host_profile
+echo "$HOST_PROFILE lobby[$FELIS_LOBBY_IMAGE] xmx[$FELIS_VELOCITY_XMX]"' 2>&1
+}
+expect "a fresh 2 GB host runs the small profile without a lobby" "small lobby[] xmx[256M]" "$(profile_run auto 1900000 "" 0)"
+expect "a fresh 8 GB host runs the standard profile" "standard lobby[lobby-image] xmx[]" "$(profile_run auto 8000000 "" 0)"
+expect "an install from before profiles keeps its lobby" "standard lobby[lobby-image]" "$(profile_run auto 1900000 "" 1)"
+expect "a small install stays small after more memory is added" "small lobby[]" "$(profile_run auto 8000000 small 1)"
+expect "an explicit proxy heap wins on a small host" "xmx[512M]" "$(XMX=512M profile_run small 1900000 "" 0)"
+expect "an install with a lobby is not switched to small" "DIE this install runs the lobby" "$(profile_run small 1900000 standard 1)"
+expect "a small install can grow into the standard profile" "standard lobby[lobby-image]" "$(profile_run standard 8000000 small 1)"
+rm -rf "$hpdir"
 
 if [ "$fails" -eq 0 ]; then
   echo "ALL PASS"

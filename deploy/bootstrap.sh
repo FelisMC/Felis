@@ -136,7 +136,11 @@ FELIS_NANO_PROXY_CIDR="${FELIS_NANO_PROXY_CIDR:-}"
 # Backends that get their identity through the handshake address (see write_velocity_service);
 # read at proxy restart, not live from the CRs.
 FELIS_LEGACY_FORWARDING_SERVERS="${FELIS_LEGACY_FORWARDING_SERVERS:-legacy18}"
-FELIS_VELOCITY_XMX="${FELIS_VELOCITY_XMX:-1G}"
+# Empty takes the host profile's heap: 256M on a small host, else 1G.
+FELIS_VELOCITY_XMX="${FELIS_VELOCITY_XMX:-}"
+# auto: a fresh host below 3.5 GiB runs the small profile (no lobby, smaller heaps); later runs keep the recorded profile.
+FELIS_HOST_PROFILE="${FELIS_HOST_PROFILE:-auto}"
+HOST_PROFILE=""
 # Pinned go.dev sha256 per architecture; move the version and both digests together.
 GO_PINNED_VERSION="1.27.3"
 GO_PINNED_SHA256_AMD64="65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40"
@@ -244,6 +248,7 @@ VELOCITY_SERVICE="/etc/systemd/system/felis-velocity.service"
 # Last-started proxy fingerprint and login/lobby images; a rerun restarts only what changed, as each restart disconnects players.
 VELOCITY_FINGERPRINT="${STATE_DIR}/velocity.fingerprint"
 SYSTEM_SERVER_IMAGES="${STATE_DIR}/system-server-images"
+HOST_PROFILE_FILE="${STATE_DIR}/host-profile"
 # felis-postgres constants; must equal internal/platform's (TestBootstrapAgreesWithThePostgresConstants).
 PG_DEPLOYMENT="felis-postgres"
 PG_CONTAINER="postgres"
@@ -748,8 +753,12 @@ validate_settings() {
       || die "FELIS_RELEASE names a published release, which the ${FELIS_VERSION_BOOTSTRAP} channel does not install; drop FELIS_VERSION_BOOTSTRAP"
     ! bootstrap_from_tui || die "FELIS_RELEASE does not reach felis setup's install, which installs the binary it runs as; run the installer one-liner with FELIS_RELEASE instead"
   fi
-  [ "$(heap_megabytes "$FELIS_VELOCITY_XMX")" -ge 256 ] \
+  [ -z "$FELIS_VELOCITY_XMX" ] || [ "$(heap_megabytes "$FELIS_VELOCITY_XMX")" -ge 256 ] \
     || die "FELIS_VELOCITY_XMX must be a heap size of at least 256M, written <n>M or <n>G (got '${FELIS_VELOCITY_XMX}')"
+  case "$FELIS_HOST_PROFILE" in
+    auto|small|standard) ;;
+    *) die "FELIS_HOST_PROFILE must be auto, small or standard (got '${FELIS_HOST_PROFILE}')" ;;
+  esac
   case "$FELIS_UPGRADE_DEPS" in
     0|1) ;;
     *) die "FELIS_UPGRADE_DEPS must be 0 or 1 (got '${FELIS_UPGRADE_DEPS}')" ;;
@@ -940,6 +949,9 @@ warn_dynamic_node_ip() {
 PREFLIGHT_PROBLEMS=()
 SWAP_FILE=/swapfile
 SWAP_SKIP=""
+SWAPPINESS_PROC=/proc/sys/vm/swappiness
+# Sorts after 99-sysctl.conf, the link to /etc/sysctl.conf where cloud images set it.
+SWAPPINESS_FILE=/etc/sysctl.d/99-zz-felis-swappiness.conf
 preflight_fail() { PREFLIGHT_PROBLEMS+=("$*"); }
 
 # Allow for kernel-reserved memory when evaluating the minimum full-stack host size.
@@ -1016,9 +1028,41 @@ preflight_memory() {
   [ -n "$mem_kb" ] || return 0
   if [ "$mem_kb" -lt "$PREFLIGHT_MIN_RAM_KB" ]; then
     preflight_fail "this host has $((mem_kb / 1024)) MiB of RAM; the full stack needs at least $((PREFLIGHT_MIN_RAM_KB / 1024)) MiB (a 2 GB host), 4 GB to run players' servers beside it. Felis-nano (FELIS_INSTALL_MODE=nano) fits in far less"
+  elif [ "$mem_kb" -lt "$PREFLIGHT_RECOMMENDED_RAM_KB" ] && [ "${HOST_PROFILE:-}" = small ]; then
+    log "preflight: $((mem_kb / 1024)) MiB of RAM: the small profile runs without the lobby, leaving room for one small server; 4 GB is the comfortable size"
   elif [ "$mem_kb" -lt "$PREFLIGHT_RECOMMENDED_RAM_KB" ]; then
     warn "preflight: $((mem_kb / 1024)) MiB of RAM runs the platform with little room for players' servers; 4 GB is the comfortable size"
   fi
+}
+
+# resolve_host_profile settles the profile: the one an earlier run recorded, else small for a fresh host below 3.5 GiB.
+resolve_host_profile() {
+  local recorded=""
+  [ -r "$HOST_PROFILE_FILE" ] && recorded="$(cat "$HOST_PROFILE_FILE")"
+  case "$recorded" in small|standard) ;; *) recorded="" ;; esac
+  HOST_PROFILE="$FELIS_HOST_PROFILE"
+  if [ "$HOST_PROFILE" = auto ]; then
+    if [ -n "$recorded" ]; then
+      HOST_PROFILE="$recorded"
+    elif [ -e "$BOOTSTRAP_DONE" ] || [ "$(mem_total_kb)" -ge "$PREFLIGHT_RECOMMENDED_RAM_KB" ]; then
+      HOST_PROFILE=standard
+    else
+      HOST_PROFILE=small
+    fi
+  fi
+  if [ "$HOST_PROFILE" = small ] && [ "$recorded" != small ] && [ -e "$BOOTSTRAP_DONE" ]; then
+    die "this install runs the lobby, and the small profile applies only to new installs; rerun without FELIS_HOST_PROFILE=small"
+  fi
+  if [ "$HOST_PROFILE" = small ]; then
+    FELIS_LOBBY_IMAGE=""
+    FELIS_VELOCITY_XMX="${FELIS_VELOCITY_XMX:-256M}"
+  fi
+  log "host profile: ${HOST_PROFILE}"
+}
+
+# game_roles lists the game images this install runs; the small profile has no lobby.
+game_roles() {
+  if [ -n "${FELIS_LOBBY_IMAGE:-}" ]; then echo limbo lobby paper; else echo limbo paper; fi
 }
 
 # existing_ancestor prints the nearest directory of $1 that exists, for df.
@@ -1319,8 +1363,13 @@ swap_file_mib() {
   echo "$mib"
 }
 
-# A hibernating server's memory moves to swap, so a node without swap gets a swap file as large as its memory.
 ensure_swap() {
+  ensure_swap_space
+  ensure_swappiness
+}
+
+# A hibernating server's memory moves to swap, so a node without swap gets a swap file as large as its memory.
+ensure_swap_space() {
   local mem_kb swap_kb mib
   mem_kb="$(mem_total_kb)"
   swap_kb="$(swap_total_kb)"
@@ -1349,6 +1398,18 @@ ensure_swap() {
   fi
   grep -q "^${SWAP_FILE} " /etc/fstab || echo "${SWAP_FILE} none swap sw 0 0" >> /etc/fstab
   ok "${mib} MiB swap active"
+}
+
+# Some cloud images set vm.swappiness=0, which leaves swap unused until the host thrashes.
+ensure_swappiness() {
+  local swap_kb
+  swap_kb="$(swap_total_kb)"
+  [ "${swap_kb:-0}" -gt 0 ] || return 0
+  [ "$(cat "$SWAPPINESS_PROC" 2>/dev/null)" = 0 ] || return 0
+  mkdir -p "$(dirname "$SWAPPINESS_FILE")"
+  printf '%s\n' "# Written by the Felis installer: at 0 the host thrashes before it swaps." "vm.swappiness = 60" > "$SWAPPINESS_FILE"
+  echo 60 2>/dev/null > "$SWAPPINESS_PROC" || true
+  warn "vm.swappiness was 0, which leaves swap unused until the host thrashes; set to the kernel default 60 in ${SWAPPINESS_FILE}"
 }
 
 make_swap_file() { # mib
@@ -1830,6 +1891,9 @@ write_k3s_config() {
     if [ -n "$name" ]; then
       printf 'node-name: "%s"\n' "$name"
     fi
+    if [ "${HOST_PROFILE:-}" = small ] && [ "${DISTRIBUTED:-0}" != 1 ]; then
+      echo 'disable-helm-controller: true'
+    fi
   } > "$tmp"
   if [ -z "$name" ]; then
     warn "could not read this node's k3s name, so it is not pinned; a hostname change would orphan every volume"
@@ -1858,6 +1922,7 @@ write_k3s_service_dropin() {
     echo "# Written by the Felis installer (deploy/bootstrap.sh); a rerun rewrites it."
     echo "[Service]"
     echo "Environment=GOGC=50"
+    [ "${HOST_PROFILE:-}" != small ] || echo "Environment=GOMEMLIMIT=400MiB"
   } > "$tmp"
   if [ -f "$file" ] && cmp -s "$tmp" "$file"; then
     rm -f "$tmp"
@@ -1869,7 +1934,7 @@ write_k3s_service_dropin() {
   mv "$tmp" "$file"
   systemctl daemon-reload
   K3S_RESTART_NEEDED=1
-  log "wrote ${file} (GOGC=50)"
+  log "wrote ${file} (GOGC=50$([ "${HOST_PROFILE:-}" != small ] || echo ", GOMEMLIMIT=400MiB"))"
 }
 
 # Remove legacy command-line kubeconfig permissions because flags override config files.
@@ -2955,9 +3020,10 @@ build_game_stack() {
   # A release's game images are built from its game-stack.lock, the pinned stack. The latest
   # The stack is resolved on this host at install time, so it is built here.
   if [ "$FELIS_GAME_STACK" = pinned ]; then
-    import_release_images limbo lobby paper
+    # shellcheck disable=SC2046
+    import_release_images $(game_roles)
   fi
-  for role in limbo lobby paper; do
+  for role in $(game_roles); do
     role_prebuilt "$role" && continue
     [ -n "$docker_used" ] || ensure_docker
     docker_used=1
@@ -2965,7 +3031,7 @@ build_game_stack() {
   done
   install_velocity_plugin
   stop_docker
-  ok "login + lobby images imported; felis-velocity.jar staged"
+  ok "game images imported ($(game_roles)); felis-velocity.jar staged"
 }
 
 # build_game_image <role> builds one game image on this host and imports it into k3s containerd.
@@ -3376,7 +3442,7 @@ root-domain=${FELIS_ROOT_DOMAIN}
 panel-hostname=${panel_host}
 admin-hostname=${admin_host}
 login-server=${LOGIN_SERVER}
-lobby-server=${LOBBY_SERVER}
+lobby-server=${FELIS_LOBBY_IMAGE:+${LOBBY_SERVER}}
 EOF
   )
 
@@ -3394,7 +3460,7 @@ install_velocity_service() {
   # Protocol-47 backends need quoted legacy-server properties; keep other backends on signed modern forwarding.
   local legacy_forwarding_servers="${FELIS_LEGACY_FORWARDING_SERVERS}"
   # Start with a small heap and no pre-touch; use G1 for larger ceilings and require at least 256M.
-  local xmx="$FELIS_VELOCITY_XMX" jvm
+  local xmx="${FELIS_VELOCITY_XMX:-1G}" jvm
   if [ "$(heap_megabytes "$xmx")" -le 1024 ]; then
     jvm="-Xms16M -Xmx${xmx} -XX:+UseSerialGC -XX:TieredStopAtLevel=1"
   else
@@ -3956,12 +4022,15 @@ offsite_enabled() {
 # Only host config names the database Deployment; mode 0600 protects the URL password.
 write_felis_toml() {
   local target="$1" db_addr="$2" deployment="${3:-}" deployment_line="" smtp_block auth_body auth_source_blocks registry_block archive_block offsite_section
-  local config_keys game_version_line=""
+  local config_keys game_version_line="" login_memory_line=""
   # main's installer also installs older releases, whose strict TOML parser rejects
   # newer optional keys. Ask the installed binary rather than guessing from its stamp.
   config_keys="$("$HOST_BIN" bootstrap-assets config-keys 2>/dev/null || true)"
   if grep -Fxq 'velocity.game_version' <<<"$config_keys"; then
     game_version_line="game_version = \"${MC_VERSION:-}\""
+  fi
+  if [ "${HOST_PROFILE:-}" = small ] && grep -Fxq 'velocity.login_memory' <<<"$config_keys"; then
+    login_memory_line="login_memory = \"320Mi\""
   fi
   if [ -n "$deployment" ]; then
     # Starts with the newline that ends the url line, so the pod copy has no blank line there.
@@ -4012,10 +4081,11 @@ namespace = "${MINECRAFT_NS}"
 egress_mode = "${FELIS_EGRESS_MODE}"
 
 [velocity]
-# The two always-on system servers that felis setup provisions. They are built and imported
-# into k3s by build_game_stack below, so setup never has to be told "build these first".
+# The always-on system servers that felis setup provisions, built and imported into k3s by
+# build_game_stack below. An empty lobby_image means this install has no lobby.
 login_image = "${FELIS_LIMBO_IMAGE}"
 lobby_image = "${FELIS_LOBBY_IMAGE}"
+${login_memory_line}
 # The public port players connect on; the panel shows it in server addresses.
 game_port = ${FELIS_GAME_PORT}
 ${game_version_line}
@@ -4836,11 +4906,11 @@ registry_docker_login() {
 # Deploy the registry before publishing; push release bundles directly and start Docker once for locally built images.
 push_images_to_registry() {
   local role img docker_used=""
-  for role in felis limbo lobby paper; do
+  for role in felis $(game_roles); do
     role_prebuilt "$role" || continue
     push_release_image "$role"
   done
-  for role in felis limbo lobby paper; do
+  for role in felis $(game_roles); do
     role_prebuilt "$role" && continue
     img="$(role_image "$role")"
     [ -n "$img" ] || continue
@@ -4865,7 +4935,7 @@ push_images_to_registry() {
 prune_build_images() {
   local keep=" " role repo tag digest id ref
   local gradle="${PLUGIN_BUILD_IMAGE%%[:@]*}" pinned="${PLUGIN_BUILD_IMAGE##*@}"
-  for role in felis limbo lobby paper; do keep+="$(role_image "$role") "; done
+  for role in felis $(game_roles); do keep+="$(role_image "$role") "; done
   while IFS=$'\t' read -r repo tag digest id; do
     ref=""
     case "$repo" in
@@ -4961,7 +5031,7 @@ restart_existing_system_servers() {
       -l "felis.lolicon.best/server=${name}" --wait=false
   done <<EOF
 ${LOGIN_SERVER} ${LIMBO_IMAGE_ID:-}
-${LOBBY_SERVER} ${LOBBY_IMAGE_ID:-}
+${FELIS_LOBBY_IMAGE:+${LOBBY_SERVER} ${LOBBY_IMAGE_ID:-}}
 EOF
   printf '%s' "$next" > "$SYSTEM_SERVER_IMAGES"
 }
@@ -4994,6 +5064,8 @@ diagnose_rollout() {
 mark_bootstrap_done() {
   date -u +%Y-%m-%dT%H:%M:%SZ > "$BOOTSTRAP_DONE"
   chmod 0644 "$BOOTSTRAP_DONE"
+  printf '%s\n' "${HOST_PROFILE:-standard}" > "$HOST_PROFILE_FILE"
+  chmod 0644 "$HOST_PROFILE_FILE"
 }
 
 # 9. Summary
@@ -5068,7 +5140,7 @@ summary_next() {
     log "Next: create the Owner account. Run on this host:"
     log "    sudo felis setup"
   fi
-  log "It starts the login and lobby servers, has you join ${NODE_IP}:${FELIS_GAME_PORT} in Minecraft to"
+  log "It starts the $([ -n "${FELIS_LOBBY_IMAGE:-}" ] && echo "login and lobby servers" || echo "login server"), has you join ${NODE_IP}:${FELIS_GAME_PORT} in Minecraft to"
   log "bind your Mojang account as the Owner, then sets up how the panel is reached."
   log "$rule"
 }
@@ -5661,6 +5733,7 @@ main_controller_join() {
   mkdir -p /etc/rancher/k3s/config.yaml.d
   tar -xf "$ETC_BUNDLE" -C /etc --no-same-owner
   chmod 0700 /etc/felis
+  resolve_host_profile
   install -m 0600 "$SERVER_TOKEN_FILE" /etc/rancher/k3s/felis-server-token
   install -m 0600 "$AGENT_TOKEN_FILE" /etc/rancher/k3s/felis-agent-token
   DISTRIBUTED=1
@@ -5809,6 +5882,7 @@ main_worker_upgrade() {
 # The settings the panel saved come in through recall_host_settings.
 main_reconfigure() {
   [ -e "$BOOTSTRAP_DONE" ] || die "reconfigure changes an installed host, and this one has no full install"
+  resolve_host_profile
   export KUBECONFIG="$K3S_KUBECONFIG"
   if [ -z "${FELIS_DISTRIBUTED+x}" ] && [ -f "$K3S_CONFIG_DROPIN" ] && grep -q 'flannel-backend: "wireguard-native"' "$K3S_CONFIG_DROPIN"; then DISTRIBUTED=1; fi
   recall_distributed_settings
@@ -5843,6 +5917,7 @@ main() {
   if [ "$INSTALL_MODE" = worker ]; then main_worker; return; fi
   if [ "$INSTALL_MODE" = worker-upgrade ]; then main_worker_upgrade; return; fi
   if [ "$INSTALL_MODE" = controller-join ]; then main_controller_join; return; fi
+  resolve_host_profile
   detect_node_ip
   # Before the first change to the host: a problem found here costs a rerun, one found
   # halfway through costs an install to unwind.
