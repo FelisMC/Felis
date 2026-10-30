@@ -1539,7 +1539,7 @@ install_cloudflared() {
   tmp="$(mktemp)"
   remember_temp "$tmp"
   log "installing cloudflared ${FELIS_CLOUDFLARED_VERSION} (${arch})"
-  curl -fsSL --retry 5 --retry-delay 2 "$url" -o "$tmp"
+  curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors "$url" -o "$tmp"
   have="$(sha256sum <"$tmp" | cut -d' ' -f1)"
   if [ "$have" != "$(printf '%s' "$want" | tr 'A-Z' 'a-z')" ]; then
     rm -f "$tmp"
@@ -2018,7 +2018,7 @@ stage_k3s_airgap_images() {
   tmp="$(mktemp "${K3S_IMAGES_DIR}/.${file}.XXXXXX")"
   remember_temp "$tmp"
   log "downloading k3s ${FELIS_K3S_VERSION}'s own images (${file})"
-  if ! curl -fsSL --retry 5 --retry-delay 2 -o "$tmp" "${base}/${file}"; then
+  if ! curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors -o "$tmp" "${base}/${file}"; then
     rm -f "$tmp"
     warn "could not download ${file}; k3s pulls its own images from Docker Hub instead"
     return 0
@@ -3184,7 +3184,7 @@ install_via_plugins() {
     log "downloading ${name} ${version}"
     tmp="$(mktemp "${VELOCITY_DIR}/.${name}.jar.XXXXXX")"
     remember_temp "$tmp"
-    curl -fsSL --retry 5 --retry-delay 2 "$url" -o "$tmp" || die "failed to download ${name} ${version}: ${url}"
+    curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors "$url" -o "$tmp" || die "failed to download ${name} ${version}: ${url}"
     have="$(sha256sum <"$tmp" | cut -d' ' -f1)"
     [ "$have" = "$want" ] \
       || die "${name} ${version} checksum mismatch: got ${have}, expected ${want}"
@@ -3276,7 +3276,7 @@ install_jre() {
   local tmp have
   tmp="$(mktemp -d)"
   remember_temp "$tmp"
-  curl -fsSL --retry 5 --retry-delay 2 "$url" -o "${tmp}/jre.tar.gz" \
+  curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors "$url" -o "${tmp}/jre.tar.gz" \
     || die "failed to download the Temurin JRE: ${url}"
   have="$(sha256sum <"${tmp}/jre.tar.gz" | cut -d' ' -f1)"
   [ "$have" = "$want" ] \
@@ -3350,7 +3350,7 @@ stage_velocity_jar() {
   log "downloading Velocity ${version}"
   tmp="$(mktemp "${VELOCITY_DIR}/.velocity.jar.XXXXXX")"
   remember_temp "$tmp"
-  curl -fsSL --retry 5 --retry-delay 2 "$url" -o "$tmp" || die "failed to download Velocity: ${url}"
+  curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors "$url" -o "$tmp" || die "failed to download Velocity: ${url}"
   # Verify proxy downloads against the lock or content-addressed digest before installation.
   have="$(sha256sum <"$tmp" | cut -d' ' -f1)"
   [ "$have" = "$want" ] \
@@ -5226,7 +5226,7 @@ install_go_toolchain() {
   # A private directory, not a fixed /tmp name another local user could have planted first.
   tmp="$(mktemp -d)"
   remember_temp "$tmp"
-  curl -fsSL --retry 5 --retry-delay 2 "$url" -o "${tmp}/${tarball}" || die "failed to download the Go toolchain: ${url}"
+  curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors "$url" -o "${tmp}/${tarball}" || die "failed to download the Go toolchain: ${url}"
   # Checked before the old toolchain is removed, so a refusal leaves the host as it was.
   # Hash stdin, never the path — same reason as install_via_plugins.
   have="$(sha256sum <"${tmp}/${tarball}" | cut -d' ' -f1)"
