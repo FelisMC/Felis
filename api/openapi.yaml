@@ -337,7 +337,7 @@ components:
         defaultServer: { type: string, description: Required for direct mode; optional fallback destination for unmatched hostnames. }
         requireAccountLink: { type: boolean, description: Require Limbo web sign-in and panel association in addition to proxy game identity authentication. }
         offlineAction: { type: string, enum: [wake, fallback, disconnect] }
-        waitingSpace: { type: string, enum: [login, lobby], description: With web sign-in required, players wait in the lobby, or in the login space on an install without a lobby. }
+        waitingSpace: { type: string, enum: [login, lobby], description: "With web sign-in required, players wait in the lobby, or in the login space on an install without a lobby." }
         fallbackServer: { type: string, description: Required for fallback action and distinct from the default server. }
         revision: { type: string, description: Opaque revision; stale or concurrent writes return 409. }
 

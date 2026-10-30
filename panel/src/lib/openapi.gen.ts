@@ -3982,7 +3982,10 @@ export interface components {
             logsAvailable: boolean;
         };
         EntryPolicySettings: {
-            /** @enum {string} */
+            /**
+             * @description An install without the formal lobby refuses lobby and reads a stored lobby policy as domain.
+             * @enum {string}
+             */
             mode: "lobby" | "direct" | "domain";
             /** @description Required for direct mode; optional fallback destination for unmatched hostnames. */
             defaultServer: string;
@@ -3991,7 +3994,7 @@ export interface components {
             /** @enum {string} */
             offlineAction: "wake" | "fallback" | "disconnect";
             /**
-             * @description Web sign-in currently requires lobby waiting.
+             * @description With web sign-in required, players wait in the lobby, or in the login space on an install without a lobby.
              * @enum {string}
              */
             waitingSpace: "login" | "lobby";
