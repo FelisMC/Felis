@@ -265,6 +265,9 @@ func LoadUploadIndex(ctx context.Context, b Bucket, key []byte, stamp string) (*
 	return x, nil
 }
 
+// ErrNoUploadIndex means no sync has copied an uploads volume, as on a platform where nothing was ever uploaded.
+var ErrNoUploadIndex = errors.New("the bucket holds no uploads index: no sync has copied the uploads volume yet")
+
 // ChooseUploadIndex refuses an empty newest version when older versions retain data, protecting pre-restore rebuilt hosts.
 func ChooseUploadIndex(ctx context.Context, b Bucket, key []byte, at string) (string, *UploadIndex, error) {
 	versions, err := UploadIndexes(ctx, b)
@@ -272,7 +275,7 @@ func ChooseUploadIndex(ctx context.Context, b Bucket, key []byte, at string) (st
 		return "", nil, err
 	}
 	if len(versions) == 0 {
-		return "", nil, errors.New("the bucket holds no uploads index: no sync has copied the uploads volume yet")
+		return "", nil, ErrNoUploadIndex
 	}
 	if at != "" {
 		if !slices.Contains(versions, at) {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -28,6 +29,10 @@ func offsiteFetchUploads(fs *flag.FlagSet, args []string, stdout, stderr io.Writ
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Hour)
 	defer cancel()
 	stamp, idx, err := offsite.ChooseUploadIndex(ctx, env.bucket, env.key, *at)
+	if errors.Is(err, offsite.ErrNoUploadIndex) && *at == "" {
+		fmt.Fprintln(stdout, "felis offsite fetch-uploads: the bucket holds no uploads, so there is nothing to put back")
+		return 0
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "felis offsite fetch-uploads: %v\n", err)
 		return 1

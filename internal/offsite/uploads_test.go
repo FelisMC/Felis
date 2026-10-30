@@ -3,6 +3,7 @@ package offsite
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -121,6 +122,13 @@ func TestSyncUploadsEmptyVolumeKeepsCopies(t *testing.T) {
 	}
 	if res.UploadObjectsPruned != 3 {
 		t.Fatalf("pruned %d, want the old version and its 2 contexts", res.UploadObjectsPruned)
+	}
+}
+
+func TestChooseUploadIndexTellsANeverCopiedVolumeApart(t *testing.T) {
+	s, b, _, _ := newUploadsSyncer(t)
+	if _, _, err := ChooseUploadIndex(context.Background(), b, s.Key, ""); !errors.Is(err, ErrNoUploadIndex) {
+		t.Fatalf("a bucket no upload reached: %v, want ErrNoUploadIndex so a rebuild goes on without uploads", err)
 	}
 }
 
