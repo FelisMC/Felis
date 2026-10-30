@@ -203,11 +203,29 @@ describe("world backups", () => {
     expect(screen.getByRole("button", { name: "Start backup" })).toHaveProperty("disabled", true);
     fireEvent.click(screen.getByRole("checkbox", { name: /Survival/ }));
     await userEvent.click(screen.getByRole("switch", { name: "Stop running servers first" }));
-    await userEvent.click(await ready("Start backup"));
+    await userEvent.click(await ready("Back up 1 server"));
     const dialog = await screen.findByRole("dialog");
     expect(calls.startNodeTask).not.toHaveBeenCalled();
     await userEvent.click(within(dialog).getByRole("button", { name: "Start backup" }));
     await waitFor(() => expect(calls.startNodeTask).toHaveBeenCalledWith({ action: "backup-now", params: { stop: "true", servers: "survival" }, confirmMaintenance: true }));
+  });
+
+  it("narrows a long list by search and tag, and selects everything shown at once", async () => {
+    calls.fleet.mockResolvedValue([
+      ...Array.from({ length: 30 }, (_, i) => ({ name: `smp-${i + 1}`, tags: i < 3 ? ["survival"] : [] })),
+      { name: "creative", owner: "alice@example.com" },
+    ]);
+    render(<WorldBackupCard />);
+    await userEvent.click(screen.getByRole("radio", { name: "Selected servers" }));
+    expect(await screen.findByText("0 of 31 selected")).toBeTruthy();
+    await userEvent.type(screen.getByPlaceholderText("Search by name, owner or tag"), "alice");
+    expect(screen.getAllByRole("checkbox")).toHaveLength(1);
+    await userEvent.clear(screen.getByPlaceholderText("Search by name, owner or tag"));
+    await userEvent.click(screen.getByRole("button", { name: "survival", pressed: false }));
+    await userEvent.click(screen.getByRole("button", { name: "Select all shown" }));
+    expect(screen.getByText("3 of 31 selected")).toBeTruthy();
+    await userEvent.click(await ready("Back up 3 servers"));
+    await waitFor(() => expect(calls.startNodeTask).toHaveBeenCalledWith({ action: "backup-now", params: { servers: "smp-1,smp-2,smp-3" }, confirmMaintenance: false }));
   });
 });
 

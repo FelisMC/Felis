@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Loader2, Play, Save } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
@@ -9,8 +9,21 @@ import { Switch } from "@/components/ui/switch";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { HostTaskNotice, HostTaskStatus, useHostTask } from "@/components/HostTask";
 import { MessageLine } from "@/components/MessageLine";
+import { PhaseBadge, shownPhase } from "@/components/PhaseBadge";
+import { SearchInput } from "@/components/SearchInput";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync, useRefreshSignal } from "@/lib/hooks";
+import type { FleetServer } from "@/lib/types";
+import { cn } from "@/lib/utils";
+
+const byLabel = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+const label = (s: FleetServer) => s.displayName || s.name;
+
+// matches looks for every word of the search in the server's names, owner and tags.
+function matches(s: FleetServer, query: string): boolean {
+  const haystack = [s.name, s.displayName, s.owner, ...(s.tags ?? [])].filter(Boolean).join(" ").toLowerCase();
+  return query.toLowerCase().split(/\s+/).every((word) => haystack.includes(word));
+}
 
 // Live backup disables saving only during world copying.
 export function WorldBackupCard() {
@@ -18,9 +31,16 @@ export function WorldBackupCard() {
   const host = useHostTask(["backup-now"]);
   const fleet = useAsync(api.fleet, []);
   useRefreshSignal(fleet.reload);
-  const servers = (fleet.data ?? []).filter((s) => !s.system);
+  const servers = useMemo(
+    () => (fleet.data ?? []).filter((s) => !s.system).sort((a, b) => byLabel.compare(label(a), label(b))),
+    [fleet.data],
+  );
+  const tags = useMemo(() => [...new Set(servers.flatMap((s) => s.tags ?? []))].sort(byLabel.compare), [servers]);
   const [all, setAll] = useState(true);
   const [chosen, setChosen] = useState<string[]>([]);
+  const [query, setQuery] = useState("");
+  const [tag, setTag] = useState<string | null>(null);
+  const shown = servers.filter((s) => (!tag || (s.tags ?? []).includes(tag)) && (!query.trim() || matches(s, query.trim())));
   const [stop, setStop] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const ready = all || chosen.length > 0;
@@ -51,16 +71,47 @@ export function WorldBackupCard() {
             <legend className="sr-only">{t("world_backup_some")}</legend>
             {fleet.error != null && <MessageLine kind="error" message={humanizeError(fleet.error)} />}
             {servers.length === 0 && !fleet.loading && <p className="text-sm text-muted-foreground">{t("world_backup_no_servers")}</p>}
-            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-              {servers.map((s) => (
-                <label key={s.name} className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm">
-                  <Checkbox checked={chosen.includes(s.name)} disabled={host.busy}
-                    onChange={(e) => { const on = e.target.checked; setChosen((list) => on ? [...list, s.name] : list.filter((n) => n !== s.name)); }} />
-                  <span className="truncate">{s.displayName || s.name}</span>
-                  <span className="ml-auto truncate font-mono text-[11px] text-muted-foreground">{s.name}</span>
-                </label>
-              ))}
-            </div>
+            {servers.length > 0 && <>
+              <div className="flex flex-wrap items-center gap-2">
+                <SearchInput value={query} onChange={setQuery} placeholder={t("world_backup_search")} className="max-w-sm" />
+                <Button type="button" variant="outline" size="sm" disabled={host.busy || shown.length === 0}
+                  onClick={() => setChosen((list) => [...new Set([...list, ...shown.map((s) => s.name)])])}>
+                  {t("world_backup_select_shown")}
+                </Button>
+                <Button type="button" variant="ghost" size="sm" disabled={host.busy || chosen.length === 0} onClick={() => setChosen([])}>
+                  {t("world_backup_clear")}
+                </Button>
+                <span role="status" className="ml-auto text-xs text-muted-foreground">{t("world_backup_selected", { count: chosen.length, total: servers.length })}</span>
+              </div>
+              {tags.length > 0 && (
+                <div role="group" aria-label={t("world_backup_tags")} className="flex flex-wrap items-center gap-1.5">
+                  <span className="mr-1 text-xs text-muted-foreground">{t("world_backup_tags")}</span>
+                  {tags.map((name) => (
+                    <button key={name} type="button" aria-pressed={tag === name} onClick={() => setTag(tag === name ? null : name)}
+                      className={cn("rounded-full border px-2.5 py-0.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                        tag === name ? "border-primary bg-primary text-primary-foreground" : "border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground")}>
+                      {name}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <ul className="max-h-72 divide-y divide-border overflow-y-auto rounded-lg border border-border">
+                {shown.map((s) => (
+                  <li key={s.name}>
+                    <label className="flex cursor-pointer items-center gap-3 px-3 py-2 text-sm hover:bg-accent/40">
+                      <Checkbox checked={chosen.includes(s.name)} disabled={host.busy}
+                        onChange={(e) => { const on = e.target.checked; setChosen((list) => on ? [...list, s.name] : list.filter((n) => n !== s.name)); }} />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate">{label(s)}</span>
+                        <span className="block truncate text-xs text-muted-foreground"><span className="font-mono">{s.name}</span>{s.owner && ` · ${s.owner}`}</span>
+                      </span>
+                      <PhaseBadge phase={shownPhase(s)} />
+                    </label>
+                  </li>
+                ))}
+                {shown.length === 0 && <li className="px-3 py-6 text-center text-sm text-muted-foreground">{t("world_backup_no_match")}</li>}
+              </ul>
+            </>}
           </fieldset>
         )}
         <div className="flex items-start justify-between gap-4 rounded-lg border border-border p-4">
@@ -71,7 +122,7 @@ export function WorldBackupCard() {
           <Switch id="world-backup-stop" checked={stop} disabled={host.busy} onCheckedChange={setStop} />
         </div>
         <Button disabled={!host.available || host.busy || !ready} onClick={() => (stop ? setConfirming(true) : void request())}>
-          {host.starting ? <Loader2 className="animate-spin" /> : <Play />}{t("world_backup_start")}
+          {host.starting ? <Loader2 className="animate-spin" /> : <Play />}{all || chosen.length === 0 ? t("world_backup_start") : t("world_backup_start_some", { count: chosen.length })}
         </Button>
         {host.error && <MessageLine kind="error" message={host.error} />}
         {host.task && <HostTaskStatus task={host.task} />}
