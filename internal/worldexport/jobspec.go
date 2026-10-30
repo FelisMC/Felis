@@ -154,7 +154,7 @@ func ExportJob(p JobParams) (*batchv1.Job, error) {
 		Args:         args,
 		Env:          []corev1.EnvVar{{Name: TokenEnv, Value: p.Token}},
 		VolumeMounts: []corev1.VolumeMount{mount},
-		Resources:    corev1.ResourceRequirements{Limits: limits, Requests: limits},
+		Resources:    corev1.ResourceRequirements{Limits: limits, Requests: jobRequests(limits)},
 		SecurityContext: &corev1.SecurityContext{
 			Privileged:               boolPtr(false),
 			AllowPrivilegeEscalation: boolPtr(false),
@@ -210,6 +210,17 @@ func readOnlyClaim(name, claim string) corev1.Volume {
 			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: claim, ReadOnly: true},
 		},
 	}
+}
+
+// jobRequests reserves what a world copy needs, so the job schedules beside a server on a small host; the limits still bound it.
+func jobRequests(limits corev1.ResourceList) corev1.ResourceList {
+	requests := corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("128Mi")}
+	for name, limit := range limits {
+		if limit.Cmp(requests[name]) < 0 {
+			requests[name] = limit
+		}
+	}
+	return requests
 }
 
 func resourceLimits(cpu, mem string) (corev1.ResourceList, error) {

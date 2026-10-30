@@ -5,6 +5,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 func sampleJobParams() JobParams {
@@ -44,6 +45,22 @@ func TestBackupJobRunsUnderWeakSAWithNoAPIToken(t *testing.T) {
 	}
 	if amt := job.Spec.Template.Spec.AutomountServiceAccountToken; amt == nil || *amt {
 		t.Error("AutomountServiceAccountToken must be explicitly false")
+	}
+}
+
+func TestBackupJobSchedulesBesideASmallServerOnA2GBHost(t *testing.T) {
+	// Measured on a 2 GB cloud host: 1672Mi allocatable, 668Mi requested by the platform, plus one 768Mi server.
+	free := resource.MustParse("236Mi")
+	job, err := BackupJob(sampleJobParams())
+	if err != nil {
+		t.Fatalf("BackupJob: %v", err)
+	}
+	res := job.Spec.Template.Spec.Containers[0].Resources
+	if res.Requests.Memory().Cmp(free) > 0 {
+		t.Errorf("memory request %s does not fit in the %s left on a 2 GB host", res.Requests.Memory(), &free)
+	}
+	if res.Limits.Memory().String() != "1Gi" || res.Limits.Cpu().String() != "1" {
+		t.Errorf("limits = %s / %s, want the configured 1 / 1Gi", res.Limits.Cpu(), res.Limits.Memory())
 	}
 }
 
