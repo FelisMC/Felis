@@ -132,7 +132,7 @@ func TestRestoreHostRunsTheRunbookOnce(t *testing.T) {
 	want := []string{
 		"felis offsite fetch-db -dir " + dir + " latest",
 		"felis offsite fetch-images",
-		"felis offsite fetch-uploads",
+		"felis offsite fetch-uploads -adopt-volume",
 		"kubectl -n felis scale deployment felis-api --replicas=0",
 		"kubectl -n felis scale deployment felis-operator --replicas=0",
 		"felis db restore -yes -no-safety-backup " + bundle,
@@ -169,7 +169,7 @@ func TestRestoreHostRunsTheRunbookOnce(t *testing.T) {
 
 func TestRestoreHostResumesAfterAFailure(t *testing.T) {
 	dir := t.TempDir()
-	r := &fakeRestoreRunner{t: t, dir: dir, servers: rebuildServers, fail: map[string]error{"felis offsite fetch-uploads": errors.New("bucket timeout")}}
+	r := &fakeRestoreRunner{t: t, dir: dir, servers: rebuildServers, fail: map[string]error{"felis offsite fetch-uploads -adopt-volume": errors.New("bucket timeout")}}
 	st, _ := loadRestoreState(dir)
 	if err := runRestoreHost(context.Background(), r, restoreOptions{dir: dir}, st, io.Discard); err == nil || !strings.Contains(err.Error(), "bucket timeout") {
 		t.Fatalf("a failed step = %v", err)
@@ -182,7 +182,7 @@ func TestRestoreHostResumesAfterAFailure(t *testing.T) {
 	if err := runRestoreHost(context.Background(), r, restoreOptions{dir: dir}, saved, io.Discard); err == nil {
 		t.Fatal("a server that could not be restored passed silently")
 	}
-	if r.calls[0] != "felis offsite fetch-uploads" {
+	if r.calls[0] != "felis offsite fetch-uploads -adopt-volume" {
 		t.Errorf("the rerun started at %q", r.calls[0])
 	}
 	saved, _ = loadRestoreState(dir)

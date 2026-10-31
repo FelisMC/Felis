@@ -8,6 +8,7 @@ import (
 	"io"
 	"time"
 
+	"felis.lolicon.best/internal/config"
 	"felis.lolicon.best/internal/offsite"
 	"felis.lolicon.best/internal/platform"
 )
@@ -18,6 +19,7 @@ func offsiteFetchUploads(fs *flag.FlagSet, args []string, stdout, stderr io.Writ
 	uploadsDir := fs.String("uploads-dir", "", "host directory of the submission uploads volume (default: resolved from the uploads PVC, binding it if needed)")
 	uploadsPVC := fs.String("uploads-pvc", platform.UploadsPVCName, "the submission uploads PVC, in the control-plane namespace")
 	at := fs.String("at", "", "uploads index version to restore (default: the newest; `felis offsite list` shows them)")
+	adopt := fs.Bool("adopt-volume", false, "on a host with no S3 uploads store set up, keep uploads on the uploads volume, as the host that wrote the copies did (felis restore-host passes it)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -38,6 +40,14 @@ func offsiteFetchUploads(fs *flag.FlagSet, args []string, stdout, stderr io.Writ
 		return 1
 	}
 	dir := *uploadsDir
+	if dir == "" && *adopt && adoptsUploadsVolume(cfg.Registry) {
+		fmt.Fprintln(stdout, "felis offsite fetch-uploads: this host has no uploads store set up, so it now keeps uploads on its uploads volume, as the host that wrote the copies did")
+		if err := applyStorageConfig(ctx, storageLocal, s3Inputs{}); err != nil {
+			fmt.Fprintf(stderr, "felis offsite fetch-uploads: switch uploads to the volume: %v\n", err)
+			return 1
+		}
+		cfg.Registry.UserUploadsContext = platform.UploadsLocalPath
+	}
 	if dir == "" {
 		if !isLocalUploadsPath(cfg.Registry.UserUploadsContext) {
 			fmt.Fprintf(stderr, "felis offsite fetch-uploads: [registry] user_uploads_context %q is not the uploads volume; pass -uploads-dir to restore into a directory anyway\n", cfg.Registry.UserUploadsContext)
@@ -61,4 +71,9 @@ func offsiteFetchUploads(fs *flag.FlagSet, args []string, stdout, stderr io.Writ
 		return 1
 	}
 	return 0
+}
+
+// adoptsUploadsVolume reports whether uploads have nowhere to go but the volume: no S3 store is set up, only the placeholder.
+func adoptsUploadsVolume(reg config.RegistryConfig) bool {
+	return !isLocalUploadsPath(reg.UserUploadsContext) && reg.S3 == (config.RegistryS3Config{})
 }

@@ -181,7 +181,7 @@ func runRestoreHost(ctx context.Context, r restoreRunner, o restoreOptions, st *
 		return err
 	}
 	if err := step(stepUploads, "putting the submission uploads back", func() error {
-		return r.felis(ctx, "offsite", "fetch-uploads")
+		return r.felis(ctx, "offsite", "fetch-uploads", "-adopt-volume")
 	}); err != nil {
 		return err
 	}
