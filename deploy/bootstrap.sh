@@ -4219,7 +4219,7 @@ EOF
       case "$wrc" in
         0) ok "off-site copy: hourly to the [offsite] bucket, first copy started (sudo felis offsite status; journalctl -u felis-offsite)" ;;
         4)
-          if [ "$RESTORE_FROM_OFFSITE" = 1 ] && [ "$RESTORE_TAKE_OVER" = 1 ]; then
+          if [ "${RESTORE_FROM_OFFSITE:-0}" = 1 ] && [ "${RESTORE_TAKE_OVER:-0}" = 1 ]; then
             log "another host writes the [offsite] bucket; this host takes it over once the rebuild from it finishes"
             return 0
           fi

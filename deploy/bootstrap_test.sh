@@ -2874,6 +2874,9 @@ case "$out" in
   *"take-over -yes"* | *"-config $odir/felis.host.toml -env-file $odir/offsite.env -yes"*) echo "FAIL the install took the bucket over: $out"; fails=$((fails + 1)) ;;
   *) echo "PASS the install only asks, never takes the bucket over" ;;
 esac
+out="$(OFFSITE_ENABLED=1 STANDBY=1 RESTORE_FROM_OFFSITE=1 RESTORE_TAKE_OVER=1 run_offsite 'install_offsite_timer; summary_offsite')"
+expect "a rebuild that takes the bucket over says so instead of standing by" "LOG: another host writes the [offsite] bucket; this host takes it over once the rebuild from it finishes" "$out"
+case "$out" in *"OFF-SITE COPY ON STANDBY"*|*"run sudo felis offsite take-over"*) echo "FAIL a take-over rebuild was told to take the bucket over by hand"; fails=$((fails + 1)) ;; *) echo "PASS a take-over rebuild is not told to take the bucket over by hand" ;; esac
 out="$(OFFSITE_ENABLED=1 STANDBY=1 run_offsite 'install_offsite_timer; summary_offsite')"
 expect "a standby host names the writer" "WARN:   host prod-1 (id 3333333333333333) writes the bucket, last at 2026-09-27 07:00:00 (20m ago)" "$out"
 expect "a standby host is a loud warning" "WARN: Another host writes the [offsite] bucket, and this host was built from its backup:" "$out"
