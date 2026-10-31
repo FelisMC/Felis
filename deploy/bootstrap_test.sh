@@ -5399,6 +5399,7 @@ run_restore() { # $1 mode, $2 bundle, $3 take over, $4 exit status of felis
     die() { printf "DIE: %s\n" "$*"; exit 1; }
     log() { :; }; ok() { printf "OK: %s\n" "$*"; }
     felis_stub() { echo "FELIS $*"; return "$RC"; }
+    systemctl() { echo "SYSTEMCTL $*"; }
     HOST_BIN=felis_stub
     '"$rfblock"'
     restore_from_offsite
@@ -5408,6 +5409,8 @@ case "$(run_restore 0 "" 0)" in *FELIS*) echo "FAIL a plain install must not run
 expect "a rebuild runs felis restore-host" "FELIS restore-host -yes
 OK: rebuilt from the off-site copy" "$(run_restore 1 "" 0)"
 expect "a rebuild passes the named bundle and the take-over" "FELIS restore-host -yes -bundle felis-db-x.tar -take-over" "$(run_restore 1 felis-db-x.tar 1)"
+expect "a rebuild that took the bucket over copies to it at once" "SYSTEMCTL start --no-block felis-offsite.service" "$(run_restore 1 "" 1)"
+case "$(run_restore 1 "" 0)" in *SYSTEMCTL*) echo "FAIL a rebuild that left the bucket to its writer started a copy"; fails=$((fails + 1)) ;; *) echo "PASS a rebuild without the take-over copies nothing" ;; esac
 out="$(run_restore 1 "" 0 1)"
 expect "a rebuild that stops says how to carry on" "DIE: the rebuild stopped before it finished; fix the cause above and run: sudo felis restore-host -yes" "$out"
 case "$out" in *DONE*) echo "FAIL a failed rebuild must stop the install"; fails=$((fails + 1)) ;; esac

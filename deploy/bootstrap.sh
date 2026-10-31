@@ -856,6 +856,10 @@ restore_from_offsite() {
   "$HOST_BIN" "${args[@]}" \
     || die "the rebuild stopped before it finished; fix the cause above and run: sudo felis restore-host -yes (it carries on where it stopped)"
   ok "rebuilt from the off-site copy"
+  if [ "$RESTORE_TAKE_OVER" = 1 ]; then
+    systemctl start --no-block felis-offsite.service
+    ok "this host writes the [offsite] bucket now; its first copy has started"
+  fi
 }
 
 # Exclude heartbeat URLs from errors because the path contains the monitoring secret.
@@ -4215,6 +4219,10 @@ EOF
       case "$wrc" in
         0) ok "off-site copy: hourly to the [offsite] bucket, first copy started (sudo felis offsite status; journalctl -u felis-offsite)" ;;
         4)
+          if [ "$RESTORE_FROM_OFFSITE" = 1 ] && [ "$RESTORE_TAKE_OVER" = 1 ]; then
+            log "another host writes the [offsite] bucket; this host takes it over once the rebuild from it finishes"
+            return 0
+          fi
           OFFSITE_STANDBY=1
           warn "================================================================================"
           warn "Another host writes the [offsite] bucket, and this host was built from its backup:"
