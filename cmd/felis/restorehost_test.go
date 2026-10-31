@@ -141,6 +141,7 @@ func TestRestoreHostRunsTheRunbookOnce(t *testing.T) {
 		"kubectl -n felis scale deployment felis-operator --replicas=1",
 		"kubectl -n felis rollout status deployment/felis-api --timeout=300s",
 		"kubectl apply -f -",
+		"felis converge",
 		"felis offsite fetch-worlds",
 		"restore survival",
 		"restore creative",

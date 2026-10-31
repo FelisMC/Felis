@@ -41,6 +41,7 @@ const (
 	stepUploads       = "uploads"
 	stepDatabase      = "database"
 	stepServers       = "servers"
+	stepSystemServers = "system_servers"
 	stepWorlds        = "worlds"
 	stepRestoreWorlds = "restore_worlds"
 	stepTakeOver      = "take_over"
@@ -220,6 +221,12 @@ func runRestoreHost(ctx context.Context, r restoreRunner, o restoreOptions, st *
 			return nil
 		}
 		return r.kubectl(ctx, list, "apply", "-f", "-")
+	}); err != nil {
+		return err
+	}
+	// The bundle leaves the system servers out, so nothing would let players in until the converge pass creates them.
+	if err := step(stepSystemServers, "creating this install's login space and lobby", func() error {
+		return r.felis(ctx, "converge")
 	}); err != nil {
 		return err
 	}
