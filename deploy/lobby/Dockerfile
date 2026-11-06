@@ -1,7 +1,7 @@
 # Post-auth lobby requires signed forwarding and the same protocol as the login gate.
 
 # Use pinned Gradle/JDK 25 and dependency verification; build architecture-independent JARs without target emulation.
-FROM --platform=$BUILDPLATFORM gradle:9.8.1-jdk25@sha256:e4f9e3d037cc0c7d8fc42cd97edb976dfd19a5b7314212b88b6de3807d13cd47 AS plugin
+FROM --platform=$BUILDPLATFORM gradle:9.8.2-jdk25@sha256:e46e15353757ef9c9be0197a243653e88d25ebcd4c3c841057cf839c11fcf898 AS plugin
 WORKDIR /src
 COPY plugins/paper/ ./plugins/paper/
 COPY plugins/shared/ ./plugins/shared/
