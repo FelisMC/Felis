@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -43,7 +44,11 @@ func TestNanoRoutesNeedNoServerSubsystem(t *testing.T) {
 	path := strings.NewReplacer("{mc_uuid}", "069a79f4-44e9-4726-a5be-fca90e38aaf5", "{id}", "x", "{hash}", "h", "{name}", "survival")
 	for route := range nanoRoutes {
 		method, pattern, _ := strings.Cut(route, " ")
-		w := do(faces[internal[route]], method, path.Replace(pattern), "{}", jsonHeader)
+		// Served directly, outside the OpenAPI recorder: these probes look for panics, not for the wire contract.
+		r := httptest.NewRequest(method, path.Replace(pattern), strings.NewReader("{}"))
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		faces[internal[route]].ServeHTTP(w, r)
 		var body struct {
 			Error struct{ Code string } `json:"error"`
 		}
