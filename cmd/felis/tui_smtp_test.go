@@ -7,6 +7,7 @@ import (
 
 	"felis.lolicon.best/internal/config"
 	"felis.lolicon.best/internal/mail"
+	tea "github.com/charmbracelet/bubbletea"
 	"sigs.k8s.io/yaml"
 )
 
@@ -45,18 +46,20 @@ func TestSMTPRelayCarriesTLSPosture(t *testing.T) {
 }
 
 func TestMailStepSaysWhatSkippingLeavesOut(t *testing.T) {
-	fresh := newMailStepModel(smtpInputs{})
-	fresh.setSize(400, 60)
-	v := fresh.View()
+	m := newTestRoot(false, consoleModeSetup, "")
+	m = drive(t, m, preflightDoneMsg{})
+	m = drive(t, m, connectResultMsg{method: connectLocal, panelHostname: "panel.felis.example.com"})
+	m = drive(t, m, tea.WindowSizeMsg{Width: 400, Height: 80})
+	m.screen.Init() // the form lays its fields out on Init, as the program does on adopting a screen
+	v := m.View()
 	for _, want := range []string{"Esc skips this step", "no email codes and no alerts", "passkey, which needs a trusted certificate"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("the Mail step lacks %q:\n%s", want, v)
 		}
 	}
 	configured := newMailStepModel(smtpInputs{host: "smtp.example.net", port: "587", from: "felis@example.net"})
-	configured.setSize(400, 60)
-	if v := configured.View(); !strings.Contains(v, "keeps the relay already configured") || strings.Contains(v, "no email codes") {
-		t.Errorf("with a relay already set, skipping keeps it:\n%s", v)
+	if !strings.Contains(configured.skipNote, "keeps the relay already configured") || strings.Contains(configured.skipNote, "no email codes") {
+		t.Errorf("with a relay already set, skipping keeps it: %q", configured.skipNote)
 	}
 	if v := newSMTPModel(smtpInputs{}).View(); strings.Contains(v, "Esc skips") {
 		t.Errorf("the summary's email form offers to skip a step:\n%s", v)
