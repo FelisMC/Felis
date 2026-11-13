@@ -1,9 +1,9 @@
 #!/bin/bash
-# Checks a Felis-nano install on a CI runner: usage: e2e_nano_check.sh <installer-log> <release-assets-dir>
+# Checks a Felis-nano install on a CI runner: usage: e2e_nano_check.sh <installer-log> [release-assets-dir]
 set -euo pipefail
 
 log="$1"
-dist="$2"
+dist="${2:-}"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "PASS: $*"; }
 
@@ -74,8 +74,13 @@ props=/etc/felis/nano-proxy/felis-link.properties
 grep -qx 'mode=nano' "$props" || fail "${props} has no mode=nano"
 grep -qx 'api-base-url=http://127.0.0.1:8081' "$props" || fail "${props} names another api-base-url"
 grep -qx "service-token=${token}" "$props" || fail "${props} carries another token than nano.env"
-cmp -s /etc/felis/nano-proxy/felis-velocity.jar "${dist}/felis-velocity.jar" || fail "the staged plugin is not the release's"
-pass "the proxy bundle carries nano mode, the token and the release's plugin"
+jar=/etc/felis/nano-proxy/felis-velocity.jar
+if [ -n "$dist" ]; then
+  cmp -s "$jar" "${dist}/felis-velocity.jar" || fail "the staged plugin is not the release's"
+else
+  python3 -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).getinfo("velocity-plugin.json")' "$jar" || fail "the staged plugin is no Velocity plugin"
+fi
+pass "the proxy bundle carries nano mode, the token and the plugin"
 
 grep -q '/setup?token=' "$log" || fail "the installer printed no setup link"
 out="$(ufw status)"

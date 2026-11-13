@@ -317,6 +317,65 @@ jobs:
           path: '*.log'
           if-no-files-found: ignore
 
+  # The documented development-channel nano install: the binary and the proxy plugin built from this commit.
+  nano-source:
+    if: github.event_name != 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Stage this commit as the installer's source
+        run: |
+          sudo mkdir -p /opt/felis
+          sudo cp -a "$GITHUB_WORKSPACE" /opt/felis/src
+          sudo chown -R root:root /opt/felis/src
+
+      - name: Enable ufw
+        run: sudo ufw --force enable
+
+      - name: Leave an earlier Felis-nano behind
+        run: |
+          sudo install -d -m 0755 /etc/felis
+          printf '[[auth_source]]\ntag = "e2e"\nprefix = "E2E"\nurl = "http://127.0.0.1:9999/session/minecraft/hasJoined"\n' | sudo tee /etc/felis/felis.toml >/dev/null
+
+      # Samples used memory so the Docker and Gradle build of the plugin can be sized against small hosts.
+      - name: Install
+        run: |
+          ( while sleep 2; do free -m | awk '/^Mem:/ { print $3 }'; done ) > mem.log &
+          sampler=$!
+          sudo FELIS_SKIP_FETCH=1 FELIS_INSTALL_MODE=nano bash /opt/felis/src/deploy/bootstrap.sh 2>&1 | tee nano-source.log || bash deploy/e2e_upstream.sh nano-source.log $?
+          kill "$sampler" || true
+          echo "used memory during the install: peak $(sort -n mem.log | tail -n 1) MiB, lowest $(sort -n mem.log | sed -n 1p) MiB"
+
+      - name: Check the install
+        if: env.E2E_UPSTREAM_SKIP != '1'
+        run: |
+          sudo bash deploy/e2e_nano_check.sh nano-source.log
+          bash deploy/e2e_nano_velocity.sh
+          free -m
+
+      - name: Rerun the same source
+        if: env.E2E_UPSTREAM_SKIP != '1'
+        run: sudo FELIS_SKIP_FETCH=1 FELIS_INSTALL_MODE=nano bash /opt/felis/src/deploy/bootstrap.sh 2>&1 | tee nano-source-rerun.log || bash deploy/e2e_upstream.sh nano-source-rerun.log $?
+
+      - name: Check the rerun
+        if: env.E2E_UPSTREAM_SKIP != '1'
+        run: |
+          sudo bash deploy/e2e_nano_check.sh nano-source-rerun.log
+          grep -q 'felis-velocity.jar already built from' nano-source-rerun.log
+
+      - name: Diagnostics
+        if: failure()
+        run: sudo journalctl -u felis-nano -u postgresql -u docker --no-pager -n 120 || true
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: e2e-nano-source-logs
+          path: '*.log'
+          if-no-files-found: ignore
+
   source:
     if: github.event_name != 'push'
     runs-on: ubuntu-24.04
