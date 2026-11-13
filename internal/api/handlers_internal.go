@@ -16,9 +16,9 @@ func (a *API) handleHealthz(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleReadyz(w http.ResponseWriter, r *http.Request) {
-	checks := map[string]func(context.Context) error{
-		"db":      a.Repo.Ping,
-		"k8s_api": a.Cluster.Ping,
+	checks := map[string]func(context.Context) error{"db": a.Repo.Ping}
+	if a.Cluster != nil {
+		checks["k8s_api"] = a.Cluster.Ping
 	}
 	for name, check := range checks {
 		if err := check(r.Context()); err != nil {
