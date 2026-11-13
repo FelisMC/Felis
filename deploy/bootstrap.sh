@@ -1211,7 +1211,7 @@ preflight_memory() {
   [ -n "$mem_kb" ] || return 0
   if [ "$mem_kb" -lt "$PREFLIGHT_MIN_RAM_KB" ]; then
     preflight_fail "this host has $((mem_kb / 1024)) MiB of RAM; the full stack needs at least $((PREFLIGHT_MIN_RAM_KB / 1024)) MiB (a 2 GB host), 4 GB to run players' servers beside it. Felis-nano (FELIS_INSTALL_MODE=nano) has no memory minimum"
-  elif [ "$mem_kb" -lt "$PREFLIGHT_RECOMMENDED_RAM_KB" ] && [ "$INSTALL_MODE" != worker ]; then
+  elif [ "$mem_kb" -lt "$PREFLIGHT_RECOMMENDED_RAM_KB" ] && [ "${INSTALL_MODE:-}" != worker ]; then
     warn "preflight: $((mem_kb / 1024)) MiB of RAM: on a single node this host runs only the platform, and the panel refuses new game servers; they need a host with at least $((PREFLIGHT_RECOMMENDED_RAM_KB / 1024)) MiB (a 4 GB host) or a worker node"
   fi
 }

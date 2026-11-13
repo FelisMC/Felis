@@ -4091,9 +4091,15 @@ expect "a 1 GB host is refused" "976 MiB of RAM; the full stack needs at least 1
 expect "and nano is named as what fits it" "FELIS_INSTALL_MODE=nano" "$out"
 out="$(PF_MEM_KB=1950000 run_pf)"
 expect "a 2 GB host installs" "WENT ON" "$out"
-expect "with a warning about room for servers" "WARN: preflight: 1904 MiB of RAM runs the platform" "$out"
+expect "with a warning that it runs only the platform" "WARN: preflight: 1904 MiB of RAM: on a single node this host runs only the platform" "$out"
 out="$(PF_MEM_KB=1712128 run_pf)"
 expect "a 2 GB cloud host that reports 1672 MiB installs" "WENT ON" "$out"
+out="$(PF_MEM_KB=1712128 INSTALL_MODE=worker run_pf)"
+expect "a 2 GB worker installs" "WENT ON" "$out"
+case "$out" in
+  *"runs only the platform"*) echo "FAIL a 2 GB worker must not be told it runs only the platform"; fails=$((fails + 1)) ;;
+  *) echo "PASS a 2 GB worker is not told it runs only the platform" ;;
+esac
 
 # 20 GiB free: a first install writes 10 + 2 + 3 + 8 GiB to the root filesystem, so only the sum refuses it.
 out="$(PF_DF="/ 104857600 83886080 20971520" run_pf)"
