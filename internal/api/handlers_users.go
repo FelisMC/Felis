@@ -202,6 +202,9 @@ func (a *API) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clearPorts := func(ctx context.Context, name string) error {
+		if a.Cluster == nil {
+			return nil
+		}
 		info, err := a.Cluster.GetServer(ctx, name)
 		if errors.Is(err, ErrNotFound) {
 			return nil
