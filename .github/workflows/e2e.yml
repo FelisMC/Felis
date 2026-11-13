@@ -164,6 +164,10 @@ jobs:
           sudo bash deploy/e2e_nano_check.sh nano.log "$GITHUB_WORKSPACE/dist"
           if grep -E 'docker already installed|installing docker|docker running' nano.log; then exit 1; fi
 
+      - name: Run the plugin in the locked Velocity
+        if: env.E2E_UPSTREAM_SKIP != '1'
+        run: bash deploy/e2e_nano_velocity.sh
+
       - name: Rerun the same assets
         if: env.E2E_UPSTREAM_SKIP != '1'
         run: sudo FELIS_ARTIFACT_DIR="$GITHUB_WORKSPACE/dist" FELIS_INSTALL_MODE=nano bash deploy/bootstrap.sh 2>&1 | tee nano-rerun.log || bash deploy/e2e_upstream.sh nano-rerun.log $?
