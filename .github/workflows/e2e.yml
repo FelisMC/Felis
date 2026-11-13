@@ -133,6 +133,58 @@ jobs:
           path: '*.log'
           if-no-files-found: ignore
 
+  # Upgrade a database-free Felis-nano to login control with PostgreSQL, the panel and the proxy bundle.
+  nano:
+    needs: artifacts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: e2e-assets
+          path: dist
+
+      - name: Enable ufw
+        run: sudo ufw --force enable
+
+      - name: Leave an earlier Felis-nano behind
+        run: |
+          sudo install -d -m 0755 /etc/felis
+          printf '[[auth_source]]\ntag = "e2e"\nprefix = "E2E"\nurl = "http://127.0.0.1:9999/session/minecraft/hasJoined"\n' | sudo tee /etc/felis/felis.toml >/dev/null
+          printf '[Service]\nExecStart=/usr/local/bin/felis nano -config /etc/felis/felis.toml -listen 127.0.0.1:8081\nDynamicUser=yes\n' | sudo tee /etc/systemd/system/felis-nano.service >/dev/null
+
+      - name: Install
+        run: sudo FELIS_ARTIFACT_DIR="$GITHUB_WORKSPACE/dist" FELIS_INSTALL_MODE=nano bash deploy/bootstrap.sh 2>&1 | tee nano.log || bash deploy/e2e_upstream.sh nano.log $?
+
+      - name: Check the install
+        if: env.E2E_UPSTREAM_SKIP != '1'
+        run: |
+          sudo bash deploy/e2e_nano_check.sh nano.log "$GITHUB_WORKSPACE/dist"
+          if grep -E 'docker already installed|installing docker|docker running' nano.log; then exit 1; fi
+
+      - name: Rerun the same assets
+        if: env.E2E_UPSTREAM_SKIP != '1'
+        run: sudo FELIS_ARTIFACT_DIR="$GITHUB_WORKSPACE/dist" FELIS_INSTALL_MODE=nano bash deploy/bootstrap.sh 2>&1 | tee nano-rerun.log || bash deploy/e2e_upstream.sh nano-rerun.log $?
+
+      - name: Check the rerun
+        if: env.E2E_UPSTREAM_SKIP != '1'
+        run: |
+          sudo bash deploy/e2e_nano_check.sh nano-rerun.log "$GITHUB_WORKSPACE/dist"
+          grep -q 'postgresql already installed' nano-rerun.log
+
+      - name: Diagnostics
+        if: failure()
+        run: sudo journalctl -u felis-nano -u postgresql --no-pager -n 120 || true
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: e2e-nano-logs
+          path: '*.log'
+          if-no-files-found: ignore
+
   # Exercise the unpinned documented installer against checksum-verified latest release assets.
   readme:
     runs-on: ubuntu-24.04
