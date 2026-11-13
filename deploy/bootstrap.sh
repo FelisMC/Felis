@@ -133,6 +133,9 @@ FELIS_PREFLIGHT="${FELIS_PREFLIGHT:-strict}"
 # Left empty here; resolve_nano_listen applies the default after an installed unit's address.
 FELIS_NANO_LISTEN="${FELIS_NANO_LISTEN:-}"
 FELIS_NANO_PROXY_CIDR="${FELIS_NANO_PROXY_CIDR:-}"
+# The panel's HTTPS port, and the port in its public address (443 behind a reverse proxy); resolve_nano_listen fills both.
+FELIS_NANO_PANEL_PORT="${FELIS_NANO_PANEL_PORT:-}"
+FELIS_NANO_PUBLIC_PORT="${FELIS_NANO_PUBLIC_PORT:-}"
 # Backends that get their identity through the handshake address (see write_velocity_service);
 # read at proxy restart, not live from the CRs.
 FELIS_LEGACY_FORWARDING_SERVERS="${FELIS_LEGACY_FORWARDING_SERVERS:-legacy18}"
@@ -216,6 +219,16 @@ HOST_BIN_IN_USE=0
 # Felis's own toolchain, not /usr/local/go: install_go_toolchain replaces whatever is here.
 GOROOT_DIR="/opt/felis/go"
 NANO_SERVICE="/etc/systemd/system/felis-nano.service"
+NANO_USER="felis-nano"
+NANO_ENV="${STATE_DIR}/nano.env"
+NANO_PROXY_DIR="${STATE_DIR}/nano-proxy"
+# The oldest PostgreSQL major CI runs the migrations against.
+NANO_PG_MIN_MAJOR=13
+NANO_PG_PORT=5432
+NANO_DB_PASSWORD=""
+NANO_SERVICE_TOKEN=""
+NANO_PLUGIN_JAR=""
+NANO_SETUP_OUT=""
 DB_BACKUP_SERVICE="/etc/systemd/system/felis-db-backup.service"
 DB_BACKUP_TIMER="/etc/systemd/system/felis-db-backup.timer"
 WATCHDOG_SERVICE="/etc/systemd/system/felis-watchdog.service"
@@ -526,11 +539,12 @@ node_global_cidrs() {
   ' | sort -u
 }
 
+# Run from / so psql does not warn that it cannot enter the caller's directory.
 as_postgres() {
   if command -v runuser >/dev/null 2>&1; then
-    runuser -u postgres -- "$@"
+    (cd / && runuser -u postgres -- "$@")
   else
-    sudo -u postgres "$@"
+    (cd / && sudo -u postgres "$@")
   fi
 }
 
@@ -712,12 +726,24 @@ validate_cidr() {
   die "$1 must be an address with a prefix length (for example 10.0.0.7/32 or fd00::7/128), got: $2"
 }
 
+validate_port() {
+  local name="$1" value="$2"
+  case "$value" in
+    ''|*[!0-9]*) die "${name} must be a port number, got: ${value}" ;;
+  esac
+  [ "$value" -ge 1 ] && [ "$value" -le 65535 ] || die "${name} must be 1-65535, got: ${value}"
+}
+
 validate_settings() {
   validate_timeout PKG_LOCK_TIMEOUT "$PKG_LOCK_TIMEOUT"
   validate_timeout APT_LOCK_TIMEOUT "$APT_LOCK_TIMEOUT"
   validate_nodeport FELIS_PANEL_NODEPORT "$FELIS_PANEL_NODEPORT"
   validate_listen FELIS_NANO_LISTEN "$FELIS_NANO_LISTEN"
   validate_cidr FELIS_NANO_PROXY_CIDR "$FELIS_NANO_PROXY_CIDR"
+  validate_port FELIS_NANO_PANEL_PORT "$FELIS_NANO_PANEL_PORT"
+  validate_port FELIS_NANO_PUBLIC_PORT "$FELIS_NANO_PUBLIC_PORT"
+  [ "$FELIS_NANO_PANEL_PORT" != "${FELIS_NANO_LISTEN##*:}" ] \
+    || die "FELIS_NANO_PANEL_PORT (${FELIS_NANO_PANEL_PORT}) and the port of FELIS_NANO_LISTEN must differ"
   validate_offsite_settings
   validate_heartbeat_url
   validate_restore_settings
@@ -908,6 +934,7 @@ detect_os() {
 # Read the persisted root domain from generated TOML before choosing defaults.
 persisted_root_domain() {
   local f="${STATE_DIR}/felis.host.toml"
+  [ "$INSTALL_MODE" != nano ] || f="${STATE_DIR}/felis.toml"
   [ -r "$f" ] || return 0
   awk -F'"' '/^[[:space:]]*root_domain[[:space:]]*=/ { print $2; exit }' "$f"
 }
@@ -927,6 +954,7 @@ detect_node_ip() {
   local persisted
   persisted="$(persisted_root_domain)"
   if [ -n "${FELIS_ROOT_DOMAIN:-}" ] && [ -n "$persisted" ] && [ "$FELIS_ROOT_DOMAIN" != "$persisted" ]; then
+    [ "$INSTALL_MODE" != nano ] || die "FELIS_ROOT_DOMAIN (${FELIS_ROOT_DOMAIN}) differs from the installed ${persisted}. To move Felis-nano, set root_domain under [server] in ${STATE_DIR}/felis.toml, delete ${PANEL_TLS_CERT} and ${PANEL_TLS_KEY}, then rerun the installer without FELIS_ROOT_DOMAIN"
     die "FELIS_ROOT_DOMAIN (${FELIS_ROOT_DOMAIN}) differs from the installed ${persisted}. The installer keeps the installed domain; to move the install, rerun it without FELIS_ROOT_DOMAIN, then run: sudo felis domain set ${FELIS_ROOT_DOMAIN} (https://docs.felismc.com/en/operations/access#change-domain)"
   fi
   FELIS_ROOT_DOMAIN="${FELIS_ROOT_DOMAIN:-${persisted:-${NODE_IP}.nip.io}}"
@@ -5199,7 +5227,7 @@ prompt_install_mode() {
   printf '\n'
   printf 'What do you want to install on this host?\n'
   printf '  [1] Felis       — full control plane (k3s + Postgres + panel; orchestrates Minecraft servers)\n'
-  printf '  [2] Felis-nano  — auth multiplexer only (federates Mojang + third-party Yggdrasil; no k3s/DB)\n'
+  printf '  [2] Felis-nano  — login control for your own Velocity network (accounts, Yggdrasil sources, panel; no k3s)\n'
   while :; do
     printf 'Choose [1/2] (default %s): ' "$n"
     IFS= read -r reply </dev/tty || reply=""
@@ -5285,6 +5313,10 @@ acquire_felis_binary() {
 }
 
 acquire_nano_binary() {
+  if [ -n "$FELIS_ARTIFACT_DIR" ]; then
+    install_artifact_binary
+    return 0
+  fi
   # Reuse release binaries for nano to avoid requiring a local Go toolchain or checkout.
   if use_release_binary; then
     resolve_install_ref
@@ -5297,51 +5329,350 @@ acquire_nano_binary() {
   build_nano_binary
 }
 
-write_nano_config() {
-  local target="${STATE_DIR}/felis.toml"
-  # Nano's DynamicUser needs directory traversal; do not widen full-install directories containing secrets.
+refuse_nano_beside_full() {
+  [ ! -e "$BOOTSTRAP_DONE" ] || die "this host runs the full Felis platform, whose login control already covers what Felis-nano does; Felis-nano is for a network Felis does not run"
+}
+
+ensure_nano_user() {
+  id -u "$NANO_USER" >/dev/null 2>&1 && return 0
+  useradd --system --no-create-home --home-dir / --shell /usr/sbin/nologin "$NANO_USER" \
+    || die "could not create the ${NANO_USER} system user"
+  ok "system user ${NANO_USER} created"
+}
+
+# postgres_installed reads the unit list whole: grep -q on a pipe dies of SIGPIPE under pipefail.
+postgres_installed() {
+  local units
+  command -v psql >/dev/null 2>&1 || return 1
+  units="$(systemctl list-unit-files 2>/dev/null)" || return 1
+  grep -q '^postgresql' <<<"$units"
+}
+
+# EL8 defaults to PostgreSQL 10 and EL9 to 13; a first install takes the newest module stream.
+enable_newest_postgres_stream() {
+  local best
+  [ "$PKG" = dnf ] || return 0
+  best="$(dnf -q module list postgresql 2>/dev/null | awk '$1 == "postgresql" && $2 ~ /^[0-9]+$/ { print $2 }' | sort -n | tail -n 1)" || true
+  [ -n "$best" ] || return 0
+  log "enabling the postgresql:${best} module stream"
+  dnf -y -q module reset postgresql >/dev/null 2>&1 || true
+  dnf -y -q module enable "postgresql:${best}" >/dev/null || die "could not enable the postgresql:${best} module stream"
+}
+
+# Debian, Ubuntu and openSUSE create the cluster themselves; EL and Arch need it made here.
+init_host_postgres_cluster() {
+  local data_dir
+  case "$PKG" in apt|zypper) return 0 ;; esac
+  data_dir="$(postgres_data_dir)"
+  [ -f "${data_dir}/PG_VERSION" ] && return 0
+  log "initialising the PostgreSQL cluster at ${data_dir}"
+  if command -v postgresql-setup >/dev/null 2>&1; then
+    postgresql-setup --initdb >/dev/null || die "postgresql-setup --initdb failed"
+  elif command -v initdb >/dev/null 2>&1; then
+    install -d -o postgres -g postgres -m 0700 "$data_dir"
+    as_postgres initdb -D "$data_dir" --auth-local=peer --auth-host=scram-sha-256 >/dev/null || die "initdb failed"
+  else
+    die "cannot initialise ${data_dir}: neither postgresql-setup nor initdb is installed"
+  fi
+}
+
+# A server newer than the cluster it finds refuses to start; say why before the unit fails.
+check_host_postgres_major() {
+  local data_dir have want
+  [ "$PKG" = apt ] && return 0
+  data_dir="$(postgres_data_dir)"
+  [ -f "${data_dir}/PG_VERSION" ] || return 0
+  have="$(tr -d '[:space:]' < "${data_dir}/PG_VERSION")"
+  want="$( (postgres --version 2>/dev/null || psql --version 2>/dev/null) | head -n 1 | sed -nE 's/^[^0-9]*([0-9]+)\..*/\1/p')"
+  [ -n "$want" ] && [ "$have" != "$want" ] || return 0
+  die "PostgreSQL ${want} is installed, but ${data_dir} holds a PostgreSQL ${have} cluster, which it cannot open. Upgrade the cluster (pg_upgrade, with the ${have} binaries still installed) or reinstall PostgreSQL ${have}, then rerun the installer"
+}
+
+host_postgres_major() {
+  as_postgres psql -XtAc 'SHOW server_version_num' 2>/dev/null | sed -nE 's/^([0-9]+)[0-9]{4}$/\1/p'
+}
+
+install_nano_postgres() {
+  local major=""
+  if postgres_installed; then
+    ok "postgresql already installed"
+  else
+    log "installing postgresql"
+    enable_newest_postgres_stream
+    case "$PKG" in
+      apt|pacman) pkg_install postgresql ;;
+      *) pkg_install postgresql-server postgresql ;;
+    esac
+  fi
+  init_host_postgres_cluster
+  check_host_postgres_major
+  systemctl enable --now postgresql >/dev/null 2>&1 || die "postgresql did not start; see: journalctl -u postgresql"
+  for _ in $(seq 1 30); do
+    major="$(host_postgres_major)" || true
+    [ -z "$major" ] || break
+    sleep 1
+  done
+  [ -n "$major" ] || die "postgresql started but does not answer; see: journalctl -u postgresql"
+  [ "$major" -ge "$NANO_PG_MIN_MAJOR" ] \
+    || die "this host runs PostgreSQL ${major}; Felis needs ${NANO_PG_MIN_MAJOR} or newer. Install a newer PostgreSQL (for example from apt.postgresql.org or download.postgresql.org), then rerun the installer"
+  ok "postgresql ${major} running"
+}
+
+# nano.env keeps the generated secrets across reruns; the unit reads FELIS_SERVICE_TOKEN from it.
+load_nano_secrets() {
+  local pw="" tok=""
+  if [ -r "$NANO_ENV" ]; then
+    pw="$(sed -n 's/^FELIS_NANO_DB_PASSWORD=//p' "$NANO_ENV")"
+    tok="$(sed -n 's/^FELIS_SERVICE_TOKEN=//p' "$NANO_ENV")"
+  fi
+  NANO_DB_PASSWORD="${pw:-$(openssl rand -hex 24)}"
+  NANO_SERVICE_TOKEN="${tok:-$(openssl rand -hex 32)}"
+  write_file_atomic "$NANO_ENV" 0600 <<EOF
+FELIS_SERVICE_TOKEN=${NANO_SERVICE_TOKEN}
+FELIS_NANO_DB_PASSWORD=${NANO_DB_PASSWORD}
+EOF
+}
+
+# The Felis rules go first so a distribution default such as "host all all 127.0.0.1/32 ident" never sees the role.
+write_nano_pg_hba() { # hba-file
+  local hba="$1" tmp
+  tmp="$(mktemp)"
+  remember_temp "$tmp"
+  {
+    printf '# BEGIN FELIS MANAGED HBA\n'
+    printf 'host %s %s 127.0.0.1/32 scram-sha-256\n' "$DB_NAME" "$DB_USER"
+    printf 'host %s %s ::1/128 scram-sha-256\n' "$DB_NAME" "$DB_USER"
+    printf '# END FELIS MANAGED HBA\n\n'
+    awk '
+      $0 == "# BEGIN FELIS MANAGED HBA" { skip = 1; next }
+      $0 == "# END FELIS MANAGED HBA" { skip = 0; blank = 1; next }
+      blank && $0 == "" { blank = 0; next }
+      { blank = 0 }
+      !skip { print }
+    ' "$hba"
+  } > "$tmp"
+  cmp -s "$tmp" "$hba" || cat "$tmp" > "$hba"
+  rm -f "$tmp"
+}
+
+configure_nano_database() {
+  local hba
+  hba="$(as_postgres psql -XtAc 'SHOW hba_file' 2>/dev/null)" || true
+  [ -n "$hba" ] && [ -f "$hba" ] || die "could not find PostgreSQL's pg_hba.conf"
+  write_nano_pg_hba "$hba"
+  as_postgres psql -X -q -v ON_ERROR_STOP=1 >/dev/null <<SQL || die "could not create the ${DB_USER} role"
+SET password_encryption = 'scram-sha-256';
+DO \$\$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${DB_USER}') THEN
+    CREATE ROLE ${DB_USER} LOGIN;
+  END IF;
+END
+\$\$;
+ALTER ROLE ${DB_USER} WITH LOGIN PASSWORD '${NANO_DB_PASSWORD}';
+SQL
+  if [ "$(as_postgres psql -XtAc "SELECT 1 FROM pg_database WHERE datname = '${DB_NAME}'")" != 1 ]; then
+    as_postgres createdb -O "$DB_USER" "$DB_NAME" || die "could not create the ${DB_NAME} database"
+  fi
+  as_postgres psql -XtAc 'SELECT pg_reload_conf()' >/dev/null
+  NANO_PG_PORT="$(as_postgres psql -XtAc 'SHOW port')"
+  ok "database ${DB_NAME} ready for role ${DB_USER} (loopback, scram-sha-256)"
+}
+
+# The service user must reach felis.toml and the TLS key; the full install's 0700 directory is never widened.
+prepare_nano_state_dir() {
   if [ ! -d "$STATE_DIR" ]; then
     mkdir -p "$STATE_DIR"
     chmod 0755 "$STATE_DIR"
   elif [ ! -e "$SECRETS_ENV" ] && [ ! -e "$BOOTSTRAP_DONE" ]; then
     chmod 0755 "$STATE_DIR"
   fi
+}
+
+# set_toml_key prints file with key = value under [section], adding the table when it is missing.
+set_toml_key() { # file section key value
+  awk -v sec="[$2]" -v key="$3" -v val="$4" '
+    function emit() { print key " = " val; done = 1 }
+    {
+      line = $0
+      sub(/^[ \t]+/, "", line)
+      sub(/[ \t]+$/, "", line)
+      if (line ~ /^\[/) {
+        if (in_sec && !done) emit()
+        in_sec = (line == sec)
+        print
+        next
+      }
+      if (in_sec && line ~ ("^" key "[ \t]*=")) {
+        if (!done) emit()
+        next
+      }
+      print
+    }
+    END {
+      if (in_sec && !done) emit()
+      if (!done) { print ""; print sec; emit() }
+    }
+  ' "$1"
+}
+
+write_nano_config() {
+  local target="${STATE_DIR}/felis.toml" url tmp
+  url="postgres://${DB_USER}:${NANO_DB_PASSWORD}@127.0.0.1:${NANO_PG_PORT}/${DB_NAME}?sslmode=disable"
   if [ -e "$target" ]; then
-    ok "config already present at ${target}; leaving it (edit it to add [[auth_source]] roots)"
-    return 0
-  fi
-  cat > "$target" <<'EOF'
-# Felis-nano — Yggdrasil hasJoined multiplexer.
-# Mojang is always the first (identity) source, added in code — do NOT list it here.
-# Add each third-party Yggdrasil root below (priority = order). url is the FULL
-# hasJoined endpoint. After editing:  sudo systemctl restart felis-nano
-#
-# Order is trust: the first source that answers 200 wins, so list the most trusted roots
-# first, and remove a compromised root rather than just moving it down.
-# tag is permanent: it is hashed into every player UUID of its source, so changing it
-# (even its case) gives all of them new UUIDs and orphans their data, links and bans.
-#
-# prefix is required, 1-4 letters/digits, unique per source. A player of this source
-# whose name belongs to a Mojang account joins as PREFIX_name (LS_steve) instead —
-# otherwise the proxy, which keys its player list on the NAME, refuses to have both
-# online at once ("You are already connected to this proxy!"). Everyone else keeps
-# their own name.
+    # An earlier nano left it world-readable; tighten it before the password goes in.
+    chmod 0640 "$target"
+    tmp="$(mktemp "${target}.XXXXXX")"
+    remember_temp "$tmp"
+    set_toml_key "$target" server root_domain "\"${FELIS_ROOT_DOMAIN}\"" > "$tmp"
+    set_toml_key "$tmp" database url "\"${url}\"" | write_file_atomic "$target" 0640
+    rm -f "$tmp"
+  else
+    write_file_atomic "$target" 0640 <<EOF
+# Felis-nano: login control for a Velocity network Felis does not run.
+# After editing: sudo systemctl restart felis-nano
+
+[server]
+root_domain = "${FELIS_ROOT_DOMAIN}"
+
+[database]
+url = "${url}"
+
+# Third-party Yggdrasil sources are managed in the panel (Auth sources); entries
+# here are the defaults it starts from. Mojang is always the first source.
+# tag is permanent: it is hashed into every player UUID of its source.
 #
 # [[auth_source]]
 # tag = "littleskin"
 # prefix = "LS"
 # url = "https://littleskin.cn/api/yggdrasil/sessionserver/session/minecraft/hasJoined"
 EOF
-  chmod 0644 "$target"
-  ok "wrote nano config template ${target} (edit it to add your Yggdrasil sources)"
+  fi
+  chgrp "$NANO_USER" "$target"
+  ok "wrote ${target}"
 }
 
-# Preserve the installed nano listen address unless an explicit override is supplied.
+ensure_nano_tls_cert() {
+  local mode
+  mode="$(stat -c '%a' "$STATE_DIR")"
+  ensure_panel_tls_cert
+  chmod "$mode" "$STATE_DIR"
+  chgrp "$NANO_USER" "$PANEL_TLS_KEY"
+  chmod 0640 "$PANEL_TLS_KEY"
+}
+
+migrate_nano_database() {
+  HOST_BIN_IN_USE=1
+  "$HOST_BIN" migrate up -config "${STATE_DIR}/felis.toml" || die "felis migrate up failed; the service keeps its previous binary until this succeeds"
+}
+
+# nano_public_host is a console host as the proxy plugin prints it, port included unless 443.
+nano_public_host() {
+  if [ "$FELIS_NANO_PUBLIC_PORT" = 443 ]; then printf '%s\n' "$1"; else printf '%s:%s\n' "$1" "$FELIS_NANO_PUBLIC_PORT"; fi
+}
+
+nano_api_host() {
+  local host="${FELIS_NANO_LISTEN%:*}"
+  case "$host" in ""|0.0.0.0|"[::]") host="${NODE_IP}" ;; esac
+  printf '%s\n' "$host"
+}
+
+# A published release ships felis-velocity.jar under the same SHA256SUMS as the binary.
+nano_release_artifacts() {
+  local v
+  [ "$ARTIFACT_MODE" = dir ] && return 0
+  v="$("$HOST_BIN" version 2>/dev/null | sed -n 1p || true)"
+  v="${v#felis }"
+  [[ "$v" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || return 1
+  ARTIFACT_MODE=release
+  ARTIFACT_TAG="$v"
+  load_artifact_sums && return 0
+  ARTIFACT_MODE=""
+  ARTIFACT_TAG=""
+  return 1
+}
+
+# stage_nano_proxy_bundle leaves what the operator's Velocity needs in NANO_PROXY_DIR.
+stage_nano_proxy_bundle() {
+  local tmp
+  install -d -m 0700 "$NANO_PROXY_DIR"
+  tmp="$(mktemp)"
+  remember_temp "$tmp"
+  cat > "$tmp" <<EOF
+# Felis-nano: goes to <velocity>/plugins/felis-link/felis-link.properties. Keep it private: it holds the service token.
+mode=nano
+api-base-url=http://$(nano_api_host):${FELIS_NANO_LISTEN##*:}
+service-token=${NANO_SERVICE_TOKEN}
+panel-hostname=$(nano_public_host "console.${FELIS_ROOT_DOMAIN}")
+admin-hostname=$(nano_public_host "op.console.${FELIS_ROOT_DOMAIN}")
+EOF
+  install_if_changed "$tmp" "${NANO_PROXY_DIR}/felis-link.properties" 0600 root root
+  rm -f "$tmp"
+  NANO_PLUGIN_JAR=""
+  if nano_release_artifacts && artifact_fetch felis-velocity.jar; then
+    install_if_changed "$ARTIFACT_FILE" "${NANO_PROXY_DIR}/felis-velocity.jar" 0644 root root
+    NANO_PLUGIN_JAR="${NANO_PROXY_DIR}/felis-velocity.jar"
+  else
+    rm -f "${NANO_PROXY_DIR}/felis-velocity.jar"
+  fi
+  ok "proxy plugin settings staged in ${NANO_PROXY_DIR}"
+}
+
+install_nano_service() {
+  local caps=""
+  if [ "${FELIS_NANO_PANEL_PORT:-8443}" -lt 1024 ] || [ "${FELIS_NANO_LISTEN##*:}" -lt 1024 ]; then
+    caps="AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE"
+  fi
+  cat > "$NANO_SERVICE" <<EOF
+[Unit]
+Description=Felis-nano login control
+After=network-online.target postgresql.service
+Wants=network-online.target postgresql.service
+
+[Service]
+Type=simple
+User=${NANO_USER}
+Group=${NANO_USER}
+EnvironmentFile=${NANO_ENV}
+ExecStart=${HOST_BIN} nano -config ${STATE_DIR}/felis.toml -listen ${FELIS_NANO_LISTEN} -panel-port ${FELIS_NANO_PANEL_PORT} -public-port ${FELIS_NANO_PUBLIC_PORT} -tls-cert ${PANEL_TLS_CERT} -tls-key ${PANEL_TLS_KEY}
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+${caps}
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable felis-nano
+  # restart, not `enable --now`: on a re-run the service is already active and --now would
+  # leave the OLD binary running against the NEW unit. Converge means converge.
+  HOST_BIN_IN_USE=1
+  systemctl restart felis-nano
+  # restart returns as soon as the process is forked. A config the new binary rejects, or a
+  # file it cannot open, only shows once it has exited and the unit sits in auto-restart.
+  sleep 2
+  if ! systemctl is-active --quiet felis-nano; then
+    journalctl -u felis-nano -n 20 --no-pager || true
+    die "felis-nano did not stay up; its last log lines are above"
+  fi
+  ok "felis-nano.service enabled and started (listen ${FELIS_NANO_LISTEN}, panel ${FELIS_NANO_PANEL_PORT})"
+}
+
+# Preserve the installed nano addresses unless an explicit override is supplied.
 resolve_nano_listen() {
-  if [ -z "$FELIS_NANO_LISTEN" ] && [ -r "$NANO_SERVICE" ]; then
-    FELIS_NANO_LISTEN="$(sed -n 's/^ExecStart=.* -listen \([^ ]*\).*$/\1/p' "$NANO_SERVICE")"
+  if [ -r "$NANO_SERVICE" ]; then
+    [ -n "$FELIS_NANO_LISTEN" ] || FELIS_NANO_LISTEN="$(sed -n 's/^ExecStart=.* -listen \([^ ]*\).*$/\1/p' "$NANO_SERVICE")"
+    [ -n "$FELIS_NANO_PANEL_PORT" ] || FELIS_NANO_PANEL_PORT="$(sed -n 's/^ExecStart=.* -panel-port \([0-9]*\).*$/\1/p' "$NANO_SERVICE")"
+    [ -n "$FELIS_NANO_PUBLIC_PORT" ] || FELIS_NANO_PUBLIC_PORT="$(sed -n 's/^ExecStart=.* -public-port \([0-9]*\).*$/\1/p' "$NANO_SERVICE")"
   fi
   FELIS_NANO_LISTEN="${FELIS_NANO_LISTEN:-127.0.0.1:8081}"
+  FELIS_NANO_PANEL_PORT="${FELIS_NANO_PANEL_PORT:-8443}"
+  FELIS_NANO_PUBLIC_PORT="${FELIS_NANO_PUBLIC_PORT:-$FELIS_NANO_PANEL_PORT}"
 }
 
 nano_listen_is_loopback() {
@@ -5384,63 +5715,40 @@ configure_nano_firewall() {
   firewall-cmd --reload
 }
 
-install_nano_service() {
-  # DynamicUser: no static account, ephemeral UID. nano writes nothing (logs go to
-  # journald) and only reads the world-readable felis.toml, so strict sandboxing fits.
-  cat > "$NANO_SERVICE" <<EOF
-[Unit]
-Description=Felis-nano Yggdrasil hasJoined multiplexer
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=${HOST_BIN} nano -config ${STATE_DIR}/felis.toml -listen ${FELIS_NANO_LISTEN}
-Restart=on-failure
-RestartSec=5
-DynamicUser=yes
-NoNewPrivileges=yes
-ProtectSystem=strict
-ProtectHome=yes
-
-[Install]
-WantedBy=multi-user.target
-EOF
-  systemctl daemon-reload
-  systemctl enable felis-nano
-  # restart, not `enable --now`: on a re-run the service is already active and --now would
-  # leave the OLD binary running against the NEW unit. Converge means converge.
-  HOST_BIN_IN_USE=1
-  systemctl restart felis-nano
-  # restart returns as soon as the process is forked. A config the new binary rejects, or a
-  # file it cannot open, only shows once it has exited and the unit sits in auto-restart.
-  sleep 2
-  if ! systemctl is-active --quiet felis-nano; then
-    journalctl -u felis-nano -n 20 --no-pager || true
-    die "felis-nano did not stay up; its last log lines are above"
+# The panel is the public face: its port opens to every source.
+open_nano_panel_port() {
+  local port="$FELIS_NANO_PANEL_PORT"
+  if ufw_active; then
+    ufw allow proto tcp to any port "$port" comment felis-nano-panel >/dev/null
   fi
-  ok "felis-nano.service enabled and started (listen ${FELIS_NANO_LISTEN})"
+  command -v firewall-cmd >/dev/null 2>&1 || return 0
+  systemctl is-active --quiet firewalld || return 0
+  firewall-cmd --permanent --query-port="${port}/tcp" >/dev/null 2>&1 && return 0
+  log "opening firewalld port ${port}/tcp for the panel"
+  firewall-cmd --permanent --add-port="${port}/tcp" >/dev/null
+  firewall-cmd --reload >/dev/null
+}
+
+# nano_setup_link creates the Owner on a first run and keeps the one-time link for the summary.
+nano_setup_link() {
+  NANO_SETUP_OUT="$("$HOST_BIN" nano setup -config "${STATE_DIR}/felis.toml" -public-port "$FELIS_NANO_PUBLIC_PORT" 2>&1)" \
+    || warn "felis nano setup failed: ${NANO_SETUP_OUT}"
 }
 
 summary_nano() {
-  local port="${FELIS_NANO_LISTEN##*:}" host="${FELIS_NANO_LISTEN%:*}"
-  # A wildcard bind names no address a proxy could dial; the node's own is the useful one.
-  case "$host" in ""|0.0.0.0|"[::]") host="${NODE_IP}" ;; esac
+  local port="${FELIS_NANO_LISTEN##*:}" host
+  host="$(nano_api_host)"
   echo
   ok "Felis-nano deployed."
   echo
   systemctl --no-pager --full status felis-nano 2>/dev/null | sed -n 1,6p || true
   echo
   log "hasJoined endpoint: http://${host}:${port}/session/minecraft/hasJoined"
-  log "Point Velocity at it — add to the proxy JVM startup flags (between java and -jar):"
-  log "    -Dmojang.sessionserver=http://${host}:${port}/session/minecraft/hasJoined"
-  log "    (the FULL endpoint URL, path included — Velocity's default for this property is"
-  log "     the full https://sessionserver.mojang.com/session/minecraft/hasJoined)"
   if nano_listen_is_loopback; then
     log "Bound to loopback: reachable from Velocity on THIS host, and from nowhere else."
     log "Proxy on another machine? Re-run with the address on the sudo line (sudo drops"
     log "exported variables):"
-    log "    curl -fsSL <raw-url>/deploy/bootstrap.sh | sudo FELIS_NANO_LISTEN=<private-ip>:${port} FELIS_NANO_PROXY_CIDR=<proxy-ip>/32 bash"
+    log "    curl -fsSL <raw-url>/deploy/bootstrap.sh | sudo FELIS_INSTALL_MODE=nano FELIS_NANO_LISTEN=<private-ip>:${port} FELIS_NANO_PROXY_CIDR=<proxy-ip>/32 bash"
     log "firewalld or ufw then admits ${port}/tcp ONLY from that proxy — hasJoined takes no auth token,"
     log "so an internet-facing one is a free auth relay burning your Mojang egress IP."
   elif [ -n "$FELIS_NANO_PROXY_CIDR" ]; then
@@ -5453,19 +5761,69 @@ summary_nano() {
     log "    firewall-cmd --permanent --add-rich-rule='rule family=\"ipv4\" source address=\"<proxy-ip>/32\" port port=\"${port}\" protocol=\"tcp\" accept' && firewall-cmd --reload"
     log "    ufw allow proto tcp from <proxy-ip>/32 to any port ${port} comment felis-nano"
   fi
-  log "Then edit ${STATE_DIR}/felis.toml to add your [[auth_source]] roots and run:"
-  log "    sudo systemctl restart felis-nano"
+  summary_nano_proxy
+  summary_nano_panel
   log "Follow live login traffic with:  sudo journalctl -u felis-nano -f"
   echo
 }
 
+summary_nano_proxy() {
+  local host
+  host="$(nano_api_host)"
+  echo
+  log "Your Velocity proxy (online-mode = true in velocity.toml):"
+  if [ -n "$NANO_PLUGIN_JAR" ]; then
+    log "  1. Copy ${NANO_PLUGIN_JAR} into <velocity>/plugins/."
+  else
+    log "  1. Put felis-velocity.jar into <velocity>/plugins/. This build has no published one: take it"
+    log "     from the release matching 'felis version', or build plugins/velocity with Gradle."
+  fi
+  log "  2. Copy ${NANO_PROXY_DIR}/felis-link.properties to <velocity>/plugins/felis-link/felis-link.properties"
+  log "     (it holds the service token: keep it readable by the proxy's user alone)."
+  log "  3. Add to the proxy's JVM flags, between java and -jar:"
+  log "       -Dmojang.sessionserver=http://${host}:${FELIS_NANO_LISTEN##*:}/session/minecraft/hasJoined"
+  log "  4. Restart the proxy. Players of a third-party skin site start their client through"
+  log "     authlib-injector pointed at that site; add the site under Auth sources in the panel."
+}
+
+summary_nano_panel() {
+  local admin
+  admin="$(nano_public_host "op.console.${FELIS_ROOT_DOMAIN}")"
+  echo
+  log "Panel: https://$(nano_public_host "console.${FELIS_ROOT_DOMAIN}") for players, https://${admin} for operators"
+  log "  (port ${FELIS_NANO_PANEL_PORT}/tcp; a cloud firewall in front of this host must admit it too)."
+  log "  The certificate is self-signed. Browsers create passkeys only on a trusted certificate: replace"
+  log "  ${PANEL_TLS_CERT} and ${PANEL_TLS_KEY} and restart felis-nano, or serve the panel through a"
+  log "  reverse proxy on 443 and rerun the installer with FELIS_NANO_PUBLIC_PORT=443."
+  [ -n "${NANO_SETUP_OUT:-}" ] || return 0
+  echo
+  log "Owner sign-in:"
+  printf '%s\n' "$NANO_SETUP_OUT" | sed 's/^/    /'
+  case "$NANO_SETUP_OUT" in
+    *"/setup?token="*)
+      log "  The setup page records an email, then asks for a passkey. For a new link:"
+      log "    sudo felis nano setup$([ "$FELIS_NANO_PUBLIC_PORT" = 8443 ] || printf ' -public-port %s' "$FELIS_NANO_PUBLIC_PORT")" ;;
+  esac
+}
+
 main_nano() {
+  refuse_nano_beside_full
   detect_node_ip
   install_base
   acquire_nano_binary
+  ensure_nano_user
+  install_nano_postgres
+  load_nano_secrets
+  configure_nano_database
+  prepare_nano_state_dir
   write_nano_config
+  ensure_nano_tls_cert
+  migrate_nano_database
+  stage_nano_proxy_bundle
   install_nano_service
   configure_nano_firewall
+  open_nano_panel_port
+  nano_setup_link
   summary_nano
 }
 

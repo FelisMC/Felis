@@ -370,18 +370,17 @@ else
   fails=$((fails + 1))
 fi
 
-# felis-nano runs as a DynamicUser: its directory must stay searchable by others, the full install's 0700 must not widen.
+# The felis-nano user must reach /etc/felis; the full install's 0700 must not widen.
 
-wblock="$(awk '/^write_nano_config\(\) \{/,/^}/' "$BS")"
-[ -n "$wblock" ] || { echo "FAIL: no write_nano_config found in $BS"; exit 1; }
-[ "$(printf '%s\n' "$wblock" | wc -l)" -lt 50 ] \
+wblock="$(awk '/^prepare_nano_state_dir\(\) \{/,/^}/' "$BS")"
+[ -n "$wblock" ] || { echo "FAIL: no prepare_nano_state_dir found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$wblock" | wc -l)" -lt 20 ] \
   || { echo "FAIL: the extracted block is not the function -- did its closing brace move?"; exit 1; }
 
 run_nano_config() { # state-dir
   STATE_DIR="$1" SECRETS_ENV="$1/secrets.env" BOOTSTRAP_DONE="$1/bootstrap.done" bash -c 'umask 027
-    ok() { printf "OK: %s\n" "$*"; }
     '"$wblock"'
-    write_nano_config'
+    prepare_nano_state_dir'
 }
 
 mkdir "$sdir/probe" && chmod 0700 "$sdir/probe"
@@ -402,6 +401,51 @@ else
 fi
 
 
+# A legacy nano felis.toml holds only [[auth_source]]: the upgrade adds [server] and [database] and keeps the sources.
+tblock="$(awk '/^set_toml_key\(\) \{/,/^}/' "$BS")"
+[ -n "$tblock" ] || { echo "FAIL: no set_toml_key found in $BS"; exit 1; }
+set_key() { bash -c "$tblock"'
+  set_toml_key "$@"' _ "$@"; }
+printf '%s\n' '# Felis-nano' '[[auth_source]]' 'tag = "littleskin"' 'prefix = "LS"' 'url = "https://littleskin.cn/x"' > "$sdir/legacy.toml"
+set_key "$sdir/legacy.toml" server root_domain '"mc.example.com"' > "$sdir/step1.toml"
+set_key "$sdir/step1.toml" database url '"postgres://felis:pw@127.0.0.1:5432/felis"' > "$sdir/step2.toml"
+out="$(cat "$sdir/step2.toml")"
+expect "a legacy file keeps its auth source" "$(printf '[[auth_source]]\ntag = "littleskin"\nprefix = "LS"\nurl = "https://littleskin.cn/x"')" "$out"
+expect "a legacy file gains [server] root_domain" "$(printf '[server]\nroot_domain = "mc.example.com"')" "$out"
+expect "a legacy file gains [database] url" "$(printf '[database]\nurl = "postgres://felis:pw@127.0.0.1:5432/felis"')" "$out"
+set_key "$sdir/step2.toml" server root_domain '"mc.example.com"' > "$sdir/step3.toml"
+set_key "$sdir/step3.toml" database url '"postgres://felis:pw@127.0.0.1:5432/felis"' > "$sdir/step4.toml"
+if cmp -s "$sdir/step2.toml" "$sdir/step4.toml"; then echo "PASS a re-run leaves felis.toml as it was"; else
+  echo "FAIL a re-run changed felis.toml:"; diff "$sdir/step2.toml" "$sdir/step4.toml"; fails=$((fails + 1)); fi
+out="$(set_key "$sdir/step2.toml" database url '"postgres://felis:new@127.0.0.1:5433/felis"')"
+expect "a new database url replaces the old" "$(printf '[database]\nurl = "postgres://felis:new@127.0.0.1:5433/felis"')" "$out"
+expect "an auth source's url stays" 'url = "https://littleskin.cn/x"' "$out"
+case "$out" in
+  *'felis:pw@'*) echo "FAIL the old database url survived:"; echo "$out"; fails=$((fails + 1)) ;;
+  *) echo "PASS the old database url is gone" ;;
+esac
+
+# The role's scram rule must precede distribution defaults such as "host all all 127.0.0.1/32 ident".
+hblock="$(awk '/^write_nano_pg_hba\(\) \{/,/^}/' "$BS")"
+[ -n "$hblock" ] || { echo "FAIL: no write_nano_pg_hba found in $BS"; exit 1; }
+run_hba() { DB_NAME=felis DB_USER=felis bash -c 'remember_temp() { :; }
+  '"$hblock"'
+  write_nano_pg_hba "$1"' _ "$1"; }
+printf '%s\n' 'local all postgres peer' 'host all all 127.0.0.1/32 ident' > "$sdir/pg_hba.conf"
+run_hba "$sdir/pg_hba.conf"
+first_felis="$(grep -n '^host felis felis 127.0.0.1/32 scram-sha-256$' "$sdir/pg_hba.conf" | cut -d: -f1)"
+first_ident="$(grep -n 'ident$' "$sdir/pg_hba.conf" | cut -d: -f1)"
+if [ -n "$first_felis" ] && [ -n "$first_ident" ] && [ "$first_felis" -lt "$first_ident" ]; then
+  echo "PASS the felis rule precedes the ident default"
+else
+  echo "FAIL the felis rule does not precede the ident default:"; cat "$sdir/pg_hba.conf"; fails=$((fails + 1))
+fi
+expect "the distribution's rules stay" "local all postgres peer" "$(cat "$sdir/pg_hba.conf")"
+cp "$sdir/pg_hba.conf" "$sdir/pg_hba.first"
+run_hba "$sdir/pg_hba.conf"
+if cmp -s "$sdir/pg_hba.first" "$sdir/pg_hba.conf"; then echo "PASS a re-run leaves pg_hba.conf as it was"; else
+  echo "FAIL a re-run changed pg_hba.conf:"; diff "$sdir/pg_hba.first" "$sdir/pg_hba.conf"; fails=$((fails + 1)); fi
+
 iblock="$(awk '/^install_nano_service\(\) \{/,/^}/' "$BS")"
 [ -n "$iblock" ] || { echo "FAIL: no install_nano_service found in $BS"; exit 1; }
 [ "$(printf '%s\n' "$iblock" | wc -l)" -lt 50 ] \
@@ -409,7 +453,7 @@ iblock="$(awk '/^install_nano_service\(\) \{/,/^}/' "$BS")"
 
 run_nano_service() { # exit status systemctl is-active reports
   ACTIVE="$1" NANO_SERVICE="$sdir/felis-nano.service" HOST_BIN=/usr/local/bin/felis \
-    STATE_DIR=/etc/felis FELIS_NANO_LISTEN=127.0.0.1:25580 bash -c '
+    STATE_DIR=/etc/felis FELIS_NANO_LISTEN=127.0.0.1:25580 FELIS_NANO_PANEL_PORT=8443 FELIS_NANO_PUBLIC_PORT=8443 bash -c '
     die() { printf "DIE: %s\n" "$*"; exit 1; }
     ok() { printf "OK: %s\n" "$*"; }
     sleep() { :; }
@@ -437,9 +481,9 @@ rblock="$(awk '/^resolve_nano_listen\(\) \{/,/^}/' "$BS")"
   || { echo "FAIL: the extracted block is not the function -- did its closing brace move?"; exit 1; }
 
 run_listen() { # env-value unit-path
-  FELIS_NANO_LISTEN="$1" NANO_SERVICE="$2" bash -c "$rblock"'
+  FELIS_NANO_LISTEN="$1" FELIS_NANO_PANEL_PORT="${3:-}" FELIS_NANO_PUBLIC_PORT="${4:-}" NANO_SERVICE="$2" bash -c "$rblock"'
     resolve_nano_listen
-    printf "LISTEN: %s\n" "$FELIS_NANO_LISTEN"'
+    printf "LISTEN: %s PANEL: %s PUBLIC: %s\n" "$FELIS_NANO_LISTEN" "$FELIS_NANO_PANEL_PORT" "$FELIS_NANO_PUBLIC_PORT"'
 }
 
 expect "a re-run keeps the unit's listen address" "LISTEN: 127.0.0.1:25580" \
@@ -450,6 +494,14 @@ expect "a first install listens on loopback" "LISTEN: 127.0.0.1:8081" \
   "$(run_listen '' "$sdir/absent.service")"
 expect "a first install takes the operator's address" "LISTEN: 10.0.0.5:8081" \
   "$(run_listen 10.0.0.5:8081 "$sdir/absent.service")"
+expect "a first install serves the panel on 8443 under its own port" "PANEL: 8443 PUBLIC: 8443" \
+  "$(run_listen '' "$sdir/absent.service")"
+expect "the public port follows an operator's panel port" "PANEL: 9443 PUBLIC: 9443" \
+  "$(run_listen '' "$sdir/absent.service" 9443)"
+printf 'ExecStart=/usr/local/bin/felis nano -config /etc/felis/felis.toml -listen 127.0.0.1:8081 -panel-port 9443 -public-port 443 -tls-cert c -tls-key k\n' \
+  > "$sdir/nano-ports.service"
+expect "a re-run keeps the unit's panel and public ports" "LISTEN: 127.0.0.1:8081 PANEL: 9443 PUBLIC: 443" \
+  "$(run_listen '' "$sdir/nano-ports.service")"
 
 lblock="$(awk '/^validate_listen\(\) \{/,/^}/' "$BS")"
 [ -n "$lblock" ] || { echo "FAIL: no validate_listen found in $BS"; exit 1; }
@@ -479,12 +531,21 @@ kblock="$(awk '/^nano_listen_is_loopback\(\) \{/,/^}/' "$BS")"
 [ "$(printf '%s\n' "$kblock" | wc -l)" -lt 10 ] \
   || { echo "FAIL: the extracted block is not the function -- did its closing brace move?"; exit 1; }
 
-run_summary() { # listen [proxy-cidr]
-  FELIS_NANO_LISTEN="$1" FELIS_NANO_PROXY_CIDR="${2:-}" NODE_IP=203.0.113.9 STATE_DIR=/etc/felis bash -c '
+nano_summary_blocks=""
+for fn in nano_api_host nano_public_host summary_nano_proxy summary_nano_panel; do
+  b="$(awk "/^${fn}\\(\\) \\{/,/^}/" "$BS")"
+  [ -n "$b" ] || { echo "FAIL: no ${fn} found in $BS"; exit 1; }
+  nano_summary_blocks="${nano_summary_blocks}${b}"$'\n'
+done
+
+run_summary() { # listen [proxy-cidr] [public-port] [setup-output]
+  FELIS_NANO_LISTEN="$1" FELIS_NANO_PROXY_CIDR="${2:-}" FELIS_NANO_PANEL_PORT=8443 FELIS_NANO_PUBLIC_PORT="${3:-8443}" \
+    NANO_SETUP_OUT="${4:-}" NODE_IP=203.0.113.9 STATE_DIR=/etc/felis FELIS_ROOT_DOMAIN=mc.example.com bash -c '
     ok() { printf "OK: %s\n" "$*"; }
     log() { printf "LOG: %s\n" "$*"; }
     systemctl() { :; }
     '"$kblock"'
+    '"$nano_summary_blocks"'
     '"$sblock"'
     summary_nano'
 }
@@ -500,6 +561,18 @@ for v in 0.0.0.0:8081 '[::]:8081' :8081; do
   expect "a wildcard $v bind prints the node's address" "http://203.0.113.9:8081/session/minecraft/hasJoined" \
     "$(run_summary "$v")"
 done
+out="$(run_summary 127.0.0.1:8081)"
+expect "the proxy is told the JVM flag" "-Dmojang.sessionserver=http://127.0.0.1:8081/session/minecraft/hasJoined" "$out"
+expect "the panel address carries its port" "https://op.console.mc.example.com:8443 for operators" "$out"
+expect "a panel behind a reverse proxy on 443 has no port" "https://op.console.mc.example.com for operators" \
+  "$(run_summary 127.0.0.1:8081 '' 443)"
+out="$(run_summary 127.0.0.1:8081 '' 9443 'Open this link: https://op.console.mc.example.com:9443/setup?token=x')"
+expect "the setup link is shown" "/setup?token=x" "$out"
+expect "a new link names the public port" "sudo felis nano setup -public-port 9443" "$out"
+case "$(run_summary 127.0.0.1:8081 '' 8443 'The Owner owner has already signed in')" in
+  *"For a new link"*) echo "FAIL an Owner who signed in is offered a new setup link"; fails=$((fails + 1)) ;;
+  *) echo "PASS an Owner who signed in is offered no setup link" ;;
+esac
 
 # hasJoined takes no token: a non-loopback default would make every fresh nano host a public auth relay.
 run_loopback() { # listen
@@ -515,6 +588,7 @@ for v in 0.0.0.0:8081 10.0.0.5:8081 '[::]:8081'; do
 done
 ndefault="$(run_listen '' "$sdir/absent.service")"
 ndefault="${ndefault#LISTEN: }"
+ndefault="${ndefault%% PANEL:*}"
 expect "the default listen address (${ndefault:-empty}) is loopback" LOOPBACK "$(run_loopback "$ndefault")"
 
 

@@ -14,6 +14,7 @@ K3S_REGISTRIES="${K3S_REGISTRIES:-/etc/rancher/k3s/registries.yaml}"
 export KUBECONFIG="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
 CLOUDFLARED_BIN="${CLOUDFLARED_BIN:-/usr/local/bin/cloudflared}"
 VELOCITY_USER="felis-velocity"
+NANO_USER="felis-nano"
 DB_NAME="felis"
 DB_USER="felis"
 CONTROL_NS="felis"
@@ -162,11 +163,17 @@ tunnel_config() {
   printf '%s\n' "${path:-${STATE_DIR}/cloudflared.yml}"
 }
 
-# nano_port reads felis-nano's port from its unit before the unit goes.
+# nano_port and nano_panel_port read felis-nano's ports from its unit before the unit goes.
 nano_port() {
   local unit="${UNIT_DIR}/felis-nano.service"
   [ -r "$unit" ] || return 0
   sed -n 's/^ExecStart=.* -listen [^ ]*:\([0-9][0-9]*\).*$/\1/p' "$unit" | sed -n 1p
+}
+
+nano_panel_port() {
+  local unit="${UNIT_DIR}/felis-nano.service"
+  [ -r "$unit" ] || return 0
+  sed -n 's/^ExecStart=.* -panel-port \([0-9][0-9]*\).*$/\1/p' "$unit" | sed -n 1p
 }
 
 remove_units() {
@@ -253,12 +260,13 @@ remove_keepalived_config() {
 
 # remove_firewalld_rules takes back what configure_k3s_firewall, configure_velocity_firewall
 # and the nano setup opened. The k3s ones stay when k3s does.
-remove_firewalld_rules() { # game-port nano-port
+remove_firewalld_rules() { # game-port nano-port nano-panel-port
   command -v firewall-cmd >/dev/null 2>&1 || return 0
   systemctl is-active --quiet firewalld || return 0
-  local game="$1" nano="$2" port rule changed=0
+  local game="$1" nano="$2" nano_panel="${3:-}" port rule changed=0
   local ports=("${game}/tcp" "${FELIS_PANEL_NODEPORT}/tcp")
   [ -n "$nano" ] && ports+=("${nano}/tcp")
+  [ -n "$nano_panel" ] && ports+=("${nano_panel}/tcp")
   [ "$K3S_MODE" = remove ] && ports+=("6443/tcp" "30000-32767/tcp" "30000-32767/udp")
   for port in "${ports[@]}"; do
     if firewall-cmd --permanent --query-port="$port" >/dev/null 2>&1; then
@@ -406,9 +414,12 @@ remove_cloudflared_binary() {
 }
 
 remove_host_files() {
-  if id "$VELOCITY_USER" >/dev/null 2>&1; then
-    userdel "$VELOCITY_USER" >/dev/null 2>&1 || warn "could not remove the ${VELOCITY_USER} user"
-  fi
+  local user
+  for user in "$VELOCITY_USER" "$NANO_USER"; do
+    if id "$user" >/dev/null 2>&1; then
+      userdel "$user" >/dev/null 2>&1 || warn "could not remove the ${user} user"
+    fi
+  done
   rm -rf "$OPT_DIR"
   rm -f "$HOST_BIN" "${HOST_BIN}.new" "${HOST_BIN}.prev"
   # The release assets an install that stopped part way left for its rerun: downloads, not
@@ -552,9 +563,10 @@ main() {
   confirm
   final_backup
 
-  local game nano
+  local game nano nano_panel
   game="$(game_port)"
   nano="$(nano_port)"
+  nano_panel="$(nano_panel_port)"
   TUNNEL_CONFIG="$(tunnel_config)"
   remove_units
   case "$K3S_MODE" in
@@ -567,7 +579,7 @@ main() {
   remove_node_firewall
   remove_node_control_leftovers
   remove_keepalived_config
-  remove_firewalld_rules "$game" "$nano"
+  remove_firewalld_rules "$game" "$nano" "$nano_panel"
   remove_ufw_rules
   remove_host_files
   purge_database
