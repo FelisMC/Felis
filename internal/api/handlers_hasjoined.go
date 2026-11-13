@@ -57,14 +57,6 @@ type sessionProfile struct {
 	Properties []json.RawMessage `json:"properties"`
 }
 
-// HasJoinedHandler expects priority-ordered sources with Mojang first; repo enforces the reclaim blacklist.
-func HasJoinedHandler(sources []AuthSource, repo Repo) http.Handler {
-	a := &API{AuthSources: sources, Repo: repo}
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /session/minecraft/hasJoined", a.handleHasJoined)
-	return mux
-}
-
 // handleHasJoined accepts the tokenless sessionserver protocol; rejected sessions return 204.
 func (a *API) handleHasJoined(w http.ResponseWriter, r *http.Request) {
 	// Close requests with unexpected bodies so net/http cannot block draining a body that never arrives.

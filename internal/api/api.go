@@ -22,7 +22,9 @@ type API struct {
 	Distribution Distribution
 	NodeControl  NodeControl
 	// NoLobby marks an install without the formal lobby, so players wait in and leave from the login space.
-	NoLobby  bool
+	NoLobby bool
+	// Nano mounts only login control (nanoRoutes): sign-in, accounts, auth sources and the proxy plugin's calls.
+	Nano     bool
 	Repo     Repo
 	Cluster  Cluster
 	Usage    *UsageSampler
@@ -504,11 +506,69 @@ func (a *API) externalAPIRoutes() []apiRoute {
 }
 
 func (a *API) InternalHandler() http.Handler {
-	return a.buildFace("internal", a.internalAPIRoutes(), a.requireInternal)
+	return a.buildFace("internal", a.mounted(a.internalAPIRoutes()), a.requireInternal)
 }
 
 func (a *API) ExternalHandler() http.Handler {
-	return a.buildFace("external", a.externalAPIRoutes(), a.requireExternal)
+	return a.buildFace("external", a.mounted(a.externalAPIRoutes()), a.requireExternal)
+}
+
+// nanoRoutes is everything a Felis-nano install serves, keyed "METHOD pattern"; nothing in it reaches servers or the cluster.
+var nanoRoutes = map[string]bool{
+	"GET /healthz": true, "GET /readyz": true, "GET /metrics": true,
+	"GET /session/minecraft/hasJoined":                   true,
+	"POST /api/v1/internal/account/link/code":            true,
+	"GET /api/v1/internal/account/link/status/{mc_uuid}": true,
+	"GET /api/v1/internal/player/blacklist/{mc_uuid}":    true,
+	"POST /api/v1/internal/account/migrate/start":        true,
+	"GET /api/v1/internal/op-login/pending":              true,
+	"GET /api/v1/internal/op-login/{id}":                 true,
+	"POST /api/v1/internal/op-login/{id}/approve":        true,
+
+	"POST /api/v1/auth/logout": true, "POST /api/v1/auth/options": true,
+	"POST /api/v1/auth/setup/redeem": true, "GET /api/v1/auth/setup/status": true, "GET /api/v1/auth/owner-status": true,
+	"POST /api/v1/auth/passkey/login/begin": true, "POST /api/v1/auth/passkey/login/finish": true,
+	"POST /api/v1/auth/passkey/login/discoverable/begin": true, "POST /api/v1/auth/passkey/login/discoverable/finish": true,
+	"POST /api/v1/auth/email/start": true, "POST /api/v1/auth/email/verify": true,
+	"POST /api/v1/auth/op-login/start": true, "GET /api/v1/auth/op-login/status/{id}": true, "POST /api/v1/auth/op-login/finish": true,
+	"POST /api/v1/auth/bind": true,
+	"GET /api/v1/panel/language": true, "GET /api/v1/branding": true, "GET /api/v1/branding/logo": true, "GET /api/v1/branding/background": true,
+	"GET /api/v1/me": true,
+	"POST /api/v1/account/link/start": true, "POST /api/v1/account/link/verify": true, "GET /api/v1/account/link/sources": true,
+	"GET /api/v1/account/link/profile": true, "POST /api/v1/account/link/profile": true,
+	"POST /api/v1/account/email/start": true, "POST /api/v1/account/email/verify": true, "POST /api/v1/account/email": true,
+	"POST /api/v1/account/passkey/register/begin": true, "POST /api/v1/account/passkey/register/finish": true,
+	"GET /api/v1/account/passkey/credentials": true, "DELETE /api/v1/account/passkey/credentials/{id}": true,
+	"GET /api/v1/account/reauth": true, "POST /api/v1/account/reauth/passkey/begin": true, "POST /api/v1/account/reauth/passkey/finish": true,
+	"POST /api/v1/account/reauth/email/start": true, "POST /api/v1/account/reauth/email/verify": true,
+	"GET /api/v1/account/sessions": true, "DELETE /api/v1/account/sessions/{hash}": true, "POST /api/v1/account/sessions/revoke-others": true,
+	"GET /api/v1/account/migrate": true, "POST /api/v1/account/migrate/confirm/otp/start": true, "POST /api/v1/account/migrate/confirm/otp/verify": true,
+	"POST /api/v1/account/migrate/confirm/passkey/begin": true, "POST /api/v1/account/migrate/confirm/passkey/finish": true,
+	"POST /api/v1/account/migrate/issue-code": true, "POST /api/v1/account/migrate/redeem": true,
+	"GET /api/v1/settings/auth-sources": true, "PUT /api/v1/settings/auth-sources": true, "POST /api/v1/settings/auth-sources/test": true,
+	"GET /api/v1/settings/smtp": true, "PUT /api/v1/settings/smtp": true, "DELETE /api/v1/settings/smtp": true, "POST /api/v1/settings/smtp/test": true,
+	"GET /api/v1/settings/default-language": true, "PUT /api/v1/settings/default-language": true,
+	"GET /api/v1/settings/branding": true, "PUT /api/v1/settings/branding": true,
+	"PUT /api/v1/settings/branding/logo": true, "DELETE /api/v1/settings/branding/logo": true,
+	"PUT /api/v1/settings/branding/background": true, "DELETE /api/v1/settings/branding/background": true,
+	"GET /api/v1/platform/audit": true, "GET /api/v1/platform/audit-export": true,
+	"GET /api/v1/users": true, "POST /api/v1/users": true, "GET /api/v1/users/{id}": true, "PATCH /api/v1/users/{id}": true,
+	"DELETE /api/v1/users/{id}": true, "POST /api/v1/users/{id}/disable": true,
+	"GET /api/v1/users/{id}/sessions": true, "DELETE /api/v1/users/{id}/sessions": true, "DELETE /api/v1/users/{id}/sessions/{hash}": true,
+	"DELETE /api/v1/users/{id}/passkeys": true, "DELETE /api/v1/users/{id}/links/{mc_uuid}": true, "POST /api/v1/users/{id}/links": true,
+}
+
+func (a *API) mounted(routes []apiRoute) []apiRoute {
+	if !a.Nano {
+		return routes
+	}
+	var kept []apiRoute
+	for _, rt := range routes {
+		if nanoRoutes[rt.Method+" "+rt.Pattern] {
+			kept = append(kept, rt)
+		}
+	}
+	return kept
 }
 
 func (a *API) buildFace(face string, routes []apiRoute, guard func(http.Handler) http.Handler) http.Handler {
