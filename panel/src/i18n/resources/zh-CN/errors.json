@@ -45,7 +45,7 @@
   "session_expired": "会话已过期——请重新登录。",
   "forbidden": "当前账户无权执行此操作。",
   "self_protected": "不能对当前登录的账号执行此操作。",
-  "owner_protected": "面板不允许降级、禁用或删除 Owner 账户。请使用主机应急控制台（sudo felis breakGlass）管理。",
+  "owner_protected": "面板不允许降级、禁用或删除 Owner 账户。请使用主机应急控制台（sudo felis break-glass）管理。",
   "session_not_found": "会话已结束或不存在。",
   "generic": "操作失败，请稍后重试。",
   "otp_resend_cooldown": "验证码发送频繁，请稍后再试。",

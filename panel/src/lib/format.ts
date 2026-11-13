@@ -58,6 +58,11 @@ export function splitImageRef(ref: string): { tag: string; digest: string; short
   return { tag: ref.slice(0, at), digest, short: digest.replace(/^sha256:/, "").slice(0, 12) };
 }
 
+/** shortCommit returns the 7-character form of a full commit SHA, or null for anything else such as a release tag. */
+export function shortCommit(v: string): string | null {
+  return /^[0-9a-f]{40}$/.test(v) ? v.slice(0, 7) : null;
+}
+
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 
 /** formatDuration names a span of seconds in the two largest units, such as "9 h 14 min". */

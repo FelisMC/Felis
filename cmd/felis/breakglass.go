@@ -25,7 +25,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// felis breakGlass: root-only local recovery console that talks directly to Postgres.
+// felis break-glass: root-only local recovery console that talks directly to Postgres.
 
 // breakGlassOverrideToken is typed to proceed when no admin was verified by a mailed code.
 const breakGlassOverrideToken = "OVERRIDE"
@@ -48,7 +48,7 @@ type ownerStore interface {
 }
 
 func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("breakGlass", flag.ContinueOnError)
+	fs := flag.NewFlagSet("break-glass", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", "/etc/felis/felis.toml", "path to felis.toml")
 	if err := fs.Parse(args); err != nil {
@@ -60,20 +60,20 @@ func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 
 	// Local root is the only authority; os.Geteuid() is -1 on non-Unix, which also refuses.
 	if os.Geteuid() != 0 {
-		fmt.Fprintln(stderr, "felis breakGlass: refused — the break-glass emergency console must run as root (try: sudo felis breakGlass)")
+		fmt.Fprintln(stderr, "felis break-glass: refused — the break-glass emergency console must run as root (try: sudo felis break-glass)")
 		return 1
 	}
 
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "felis breakGlass: %v\n", err)
+		fmt.Fprintf(stderr, "felis break-glass: %v\n", err)
 		return 1
 	}
 
 	ctx := context.Background()
 	drv, err := store.Open(ctx, cfg.Database.URL)
 	if err != nil {
-		fmt.Fprintf(stderr, "felis breakGlass: open database: %v\n", err)
+		fmt.Fprintf(stderr, "felis break-glass: open database: %v\n", err)
 		return 1
 	}
 	defer drv.Close()
@@ -83,7 +83,7 @@ func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 	// Checked before the alt-screen TUI starts so a database fault prints as a plain error.
 	adminExists, err := repo.AdminExists(ctx)
 	if err != nil {
-		fmt.Fprintf(stderr, "felis breakGlass: detect existing admin: %v\n", err)
+		fmt.Fprintf(stderr, "felis break-glass: detect existing admin: %v\n", err)
 		return 1
 	}
 
@@ -101,12 +101,12 @@ func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 
 	res, err := runBreakGlassTUI(ctx, repo, cfg.Database, cfg.Server.RootDomain, cfg.Auth.AdminHostname, cfg.Auth.PanelHostname, cfg.Auth.AccessJWTAud, cfg.K8s.Namespace, accountableOSUser(), adminExists, recovery)
 	if err != nil {
-		fmt.Fprintf(stderr, "felis breakGlass: %v\n", err)
+		fmt.Fprintf(stderr, "felis break-glass: %v\n", err)
 		return 1
 	}
 
 	if !res.provisioned && !res.edgeConfigured && !res.halted && !res.backedUp {
-		fmt.Fprintln(stdout, "felis breakGlass: cancelled — no changes made.")
+		fmt.Fprintln(stdout, "felis break-glass: cancelled — no changes made.")
 		return 0
 	}
 
@@ -114,9 +114,9 @@ func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 	if res.provisioned {
 		if res.isOperator {
 			// Adding an Operator does not enable local auth.
-			fmt.Fprintf(stdout, "\nfelis breakGlass: Operator account %q provisioned.\n", res.username)
+			fmt.Fprintf(stdout, "\nfelis break-glass: Operator account %q provisioned.\n", res.username)
 		} else {
-			fmt.Fprintf(stdout, "\nfelis breakGlass: Owner account %q provisioned; local session sign-in is ENABLED.\n", res.username)
+			fmt.Fprintf(stdout, "\nfelis break-glass: Owner account %q provisioned; local session sign-in is ENABLED.\n", res.username)
 		}
 		fmt.Fprintf(stdout, "Recorded as %q (mode: %s, os user: %s).\n", res.accountable, res.mode, res.osUser)
 		if res.mode == "root_override" {
@@ -135,7 +135,7 @@ func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 
 	if res.edgeConfigured {
 		// felis.toml is left alone; the operator sets the Access audience and runs the tunnel.
-		fmt.Fprintf(stdout, "\nfelis breakGlass: Cloudflare Tunnel + Access edge configured.\n")
+		fmt.Fprintf(stdout, "\nfelis break-glass: Cloudflare Tunnel + Access edge configured.\n")
 		if len(res.edgeRoutedHosts) > 0 {
 			fmt.Fprintf(stdout, "Routed web hostnames: %s\n", strings.Join(res.edgeRoutedHosts, ", "))
 		}
@@ -153,7 +153,7 @@ func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 		if res.haltAlreadyStopped {
 			verb = "was already stopped"
 		}
-		fmt.Fprintf(stdout, "\nfelis breakGlass: server %q %s (namespace %s).\n", res.haltServer, verb, res.haltNamespace)
+		fmt.Fprintf(stdout, "\nfelis break-glass: server %q %s (namespace %s).\n", res.haltServer, verb, res.haltNamespace)
 		if res.haltSystemServer {
 			// A system server has no fallback: stopping it takes the proxy front door down.
 			fmt.Fprintf(stdout, "WARNING: %q is a system server — the shared front door is down until it is running again.\n", res.haltServer)
@@ -165,7 +165,7 @@ func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if res.backedUp {
-		fmt.Fprintf(stdout, "\nfelis breakGlass: backup of %q started (status: %s).\n", res.backupServer, res.backupStatus)
+		fmt.Fprintf(stdout, "\nfelis break-glass: backup of %q started (status: %s).\n", res.backupServer, res.backupStatus)
 		fmt.Fprintln(stdout, "A one-shot Job writes the archive asynchronously; it appears in the panel's backups list when finished.")
 	}
 	return 0

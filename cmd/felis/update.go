@@ -107,22 +107,32 @@ func cmdUpdate(args []string, stdout, stderr io.Writer) int {
 	var opts updateOptions
 	fs.BoolVar(&opts.all, "all", false, "include the release-pinned k3s and cloudflared updates")
 	fs.BoolVar(&opts.force, "force", false, "reinstall even at the same version; allow an explicitly requested Felis downgrade (does not bypass maintenance or dependency guards)")
-	fs.BoolVar(&opts.apply, "apply", false, "apply the inspected target after checking maintenance and taking a database/state backup")
-	fs.BoolVar(&opts.now, "now", false, "explicitly start manual maintenance now instead of using the configured window (requires --apply)")
+	fs.BoolVar(&opts.apply, "apply", false, "apply the inspected target after checking the maintenance window (when one is set) and taking a database/state backup")
+	fs.BoolVar(&opts.now, "now", false, "start maintenance now even when the configured maintenance window is not open (requires --apply)")
 	fs.StringVar(&opts.release, "version", "", "install a published Felis release, e.g. v0.2.0")
 	fs.StringVar(&opts.expectedCommit, "expect-commit", "", "refuse application if the target differs from the full SHA printed by the check")
 	fs.StringVar(&opts.ref, "ref", "", "build an exact commit, tag or branch from source")
-	dev := fs.Bool("dev", false, "build the newest main commit (the check prints its full SHA)")
+	dev := fs.Bool("dev", false, "build the newest main commit (the check prints its full SHA); the default target of a development build")
 	check := fs.Bool("check", false, "check and print the apply command without changing the host (default)")
 	velocityJar := fs.String("velocity-jar", updater.DefaultVelocityJarPath, "path to the installed Velocity jar")
 	fs.StringVar(&opts.cfgPath, "config", "/etc/felis/felis.toml", "host config for the maintenance window and pre-update backup")
 	record := fs.Bool("record", false, "store this read-only check for the panel (used by the daily timer)")
+	windowCheck := fs.Bool("window-check", false, "only check the maintenance window: exit 1 when one is set and not open now (the installer runs this before changing an installed host)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if fs.NArg() > 0 {
 		fmt.Fprintf(stderr, "felis update: unexpected argument %q (this command takes flags only)\n", fs.Arg(0))
 		return 2
+	}
+	if *windowCheck {
+		other := false
+		fs.Visit(func(f *flag.Flag) { other = other || (f.Name != "window-check" && f.Name != "config") })
+		if other {
+			fmt.Fprintln(stderr, "felis update: --window-check takes only --config")
+			return 2
+		}
+		return checkWindowNow(context.Background(), opts.cfgPath, time.Now(), stderr)
 	}
 	if nanoHost(nanoUnitPath, hostBootstrapDonePath) {
 		fmt.Fprintln(stderr, "felis update: this host runs Felis-nano, which the installer updates; rerun it in nano mode:")
@@ -133,9 +143,7 @@ func cmdUpdate(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "felis update: %v\n", err)
 		return 2
 	}
-	if *dev {
-		opts.ref = "main"
-	}
+	opts.followMain(*dev, resolvedVersion())
 	opts.selected = map[string]bool{}
 	for sel, on := range flags {
 		if *on || opts.all {
@@ -210,23 +218,37 @@ func cmdUpdate(args []string, stdout, stderr io.Writer) int {
 func checkUpdates(ctx context.Context, opts updateOptions, velocityJar string, record bool, stdout, stderr io.Writer) int {
 	lookup, cancel := context.WithTimeout(ctx, updateTimeout)
 	defer cancel()
-	src := updater.NewRoutingSource(updater.Topology())
-	rn := &updater.Runner{Gatherer: updater.NewHostGatherer(resolvedVersion(), velocityJar), Source: src}
+	stamp := resolvedVersion()
+	commit, dev := devBuildCommit(stamp)
+	topo := channelTopology(dev)
+	src := updater.NewRoutingSource(topo)
+	rn := &updater.Runner{Gatherer: updater.NewHostGatherer(stamp, velocityJar), Source: src, Topology: func() []updater.Spec { return topo }}
 	fmt.Fprintln(stdout, "Checking installed components and upstream versions (read-only)...")
 	res, err := rn.Run(lookup, time.Now(), updates.Window{})
 	if err != nil {
 		fmt.Fprintf(stderr, "felis update: %v\n", err)
 		return 1
 	}
+	var head mainCheck
+	if dev {
+		head = checkMain(lookup, commit)
+	}
 	now := time.Now()
 	win, winErr := readUpdateWindow(ctx, opts.cfgPath)
 	fmt.Fprint(stdout, renderWindowLine(win, winErr, now))
+	if dev && (len(opts.selected) == 0 || selectedCovers(opts.selected, "felis-api")) {
+		fmt.Fprint(stdout, head.render(stamp))
+	}
 	fmt.Fprint(stdout, renderUpdateReport(res, opts.selected))
 	fmt.Fprint(stdout, renderNotes(src.Notes(), opts.selected))
 	if record {
+		rep := buildStatusReport(res, src.Notes(), stamp, now)
+		if dev {
+			rep.Components = append([]updates.ComponentStatus{head.status(stamp)}, rep.Components...)
+		}
 		rctx, rcancel := context.WithTimeout(ctx, updateWindowTimeout)
 		defer rcancel()
-		if err := recordUpdateStatus(rctx, opts.cfgPath, buildStatusReport(res, src.Notes(), resolvedVersion(), now)); err != nil {
+		if err := recordUpdateStatus(rctx, opts.cfgPath, rep); err != nil {
 			fmt.Fprintf(stderr, "felis update: record the check for the panel: %v\n", err)
 			return 1
 		}
@@ -414,20 +436,44 @@ func readUpdateWindow(ctx context.Context, cfgPath string) (updates.Window, erro
 	return w, nil
 }
 
+const windowLayout = "2006-01-02 15:04 MST"
+
 // renderWindowLine is the report's first line: where now sits against the
 // maintenance window.
 func renderWindowLine(w updates.Window, err error, now time.Time) string {
-	const layout = "2006-01-02 15:04 MST"
 	switch {
 	case err != nil:
 		return fmt.Sprintf("Maintenance window: unknown (%v).\n", err)
-	case w.Start.IsZero() || w.End.IsZero():
-		return "Maintenance window: not set; configure it in the panel, or explicitly use --apply --now for manual maintenance.\n"
+	case !w.IsSet():
+		return "Maintenance window: not set; --apply runs as soon as it is started.\n"
 	case w.Contains(now):
-		return fmt.Sprintf("Maintenance window: open now, until %s.\n", w.End.Local().Format(layout))
+		return fmt.Sprintf("Maintenance window: open now, until %s.\n", w.End.Local().Format(windowLayout))
 	case now.Before(w.Start):
-		return fmt.Sprintf("Maintenance window: opens %s, until %s. Apply is blocked until this window opens (unless --now explicitly starts manual maintenance).\n", w.Start.Local().Format(layout), w.End.Local().Format(layout))
+		return fmt.Sprintf("Maintenance window: opens %s, until %s. Apply is refused until it opens, unless --now starts maintenance now.\n", w.Start.Local().Format(windowLayout), w.End.Local().Format(windowLayout))
 	default:
-		return fmt.Sprintf("Maintenance window: ended %s; apply is blocked; set a new window in the panel or explicitly use --now.\n", w.End.Local().Format(layout))
+		return fmt.Sprintf("Maintenance window: ended %s and no longer applies; --apply runs as soon as it is started.\n", w.End.Local().Format(windowLayout))
 	}
+}
+
+// closedWindow refuses only before a set window opens; without a window, or once it has ended, any time is allowed.
+func closedWindow(w updates.Window, now time.Time) error {
+	if !w.IsSet() || !now.Before(w.Start) {
+		return nil
+	}
+	span := w.Start.Local().Format(windowLayout) + " to " + w.End.Local().Format(windowLayout)
+	return fmt.Errorf("the maintenance window %s has not opened yet; wait for it", span)
+}
+
+// checkWindowNow exits 1 only for a set window that is closed; an unreadable window is reported and allowed so a repair rerun still proceeds.
+func checkWindowNow(ctx context.Context, cfgPath string, now time.Time, stderr io.Writer) int {
+	win, err := readUpdateWindow(ctx, cfgPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "felis update: cannot read the maintenance window, so it is not enforced: %v\n", err)
+		return 0
+	}
+	if err := closedWindow(win, now); err != nil {
+		fmt.Fprintf(stderr, "felis update: %v\n", err)
+		return 1
+	}
+	return 0
 }

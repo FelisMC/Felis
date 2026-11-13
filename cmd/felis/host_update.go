@@ -48,7 +48,7 @@ func (e nodeExecutor) updateUnitState(ctx context.Context, unit string) (unitSta
 	return st, scan.Err()
 }
 
-// update applies a release in a transient unit and waits for it, also after node-control restarts mid-update.
+// update applies a release or a main commit in a transient unit and waits for it, also after node-control restarts mid-update.
 func (e nodeExecutor) update(ctx context.Context, r nodecontrol.Request, stage func(string) error, out io.Writer) error {
 	task, ok := nodecontrol.CurrentTask(ctx)
 	if !ok {
@@ -66,10 +66,14 @@ func (e nodeExecutor) update(ctx context.Context, r nodecontrol.Request, stage f
 		if err := stage("update"); err != nil {
 			return err
 		}
-		args := []string{"--unit", unit, "--description", "Felis update to " + r.Params["version"] + " started from the panel",
+		targetFlag, target := "--version", r.Params["version"]
+		if commit := r.Params["commit"]; commit != "" {
+			targetFlag, target = "--ref", commit
+		}
+		args := []string{"--unit", unit, "--description", "Felis update to " + target + " started from the panel",
 			"--property", "RemainAfterExit=yes",
 			"--property", "StandardOutput=append:" + task.Log, "--property", "StandardError=append:" + task.Log,
-			"--", e.binary, "update", "--apply", "--version", r.Params["version"]}
+			"--", e.binary, "update", "--apply", targetFlag, target}
 		if r.Params["now"] == "true" {
 			args = append(args, "--now")
 		}

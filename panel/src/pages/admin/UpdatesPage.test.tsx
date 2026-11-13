@@ -41,14 +41,14 @@ function page(path = "/admin/updates") {
 }
 
 describe("UpdatesPage", () => {
-  it("explains the maintenance guard and explicit apply flow on the update tab", async () => {
+  it("explains that the maintenance window is optional and what it holds back", async () => {
     page("/admin/updates?tab=updates");
     expect(
       await screen.findByText(
-        "Apply is allowed inside this window. The host checks it before taking a backup and again before installation. Outside the window, apply is refused unless `--now` explicitly starts manual maintenance; `--force` does not bypass the checks.",
+        "The maintenance window is optional. Without one, an update starts as soon as it is requested. With one, `felis update --apply`, an update started on this page and a rerun of the installer start only inside it; the host checks the window before the backup and again before installation. Outside the window, `--apply --now` or the extra confirmation on this page starts maintenance at once. `--force` does not bypass the check.",
       ),
     ).toBeTruthy();
-    expect(screen.getByText("No maintenance window set. Configure one before applying, or explicitly use `--apply --now` for manual maintenance.")).toBeTruthy();
+    expect(screen.getByText("No maintenance window is set. Updates start as soon as they are requested.")).toBeTruthy();
     expect(screen.queryByText(/applied automatically|may apply a Scheduled update/)).toBeNull();
     expect(screen.getByRole("tab", { name: "Updates" }).getAttribute("aria-selected")).toBe("true");
   });
@@ -106,7 +106,8 @@ describe("UpdatesPage update now", () => {
     expect(screen.queryByRole("button", { name: t("admin:update_now_button") })).toBeNull();
   });
 
-  it("holds an update outside the maintenance window until that is confirmed too", async () => {
+  it("holds an update before a set maintenance window opens until that is confirmed too", async () => {
+    calls.getUpdateWindow.mockResolvedValue({ start: hours(1), end: hours(2) });
     calls.startNodeTask.mockResolvedValue(updateTask({ stage: "preflight" }));
     calls.nodeTask.mockResolvedValue(updateTask({ stage: "preflight" }));
     page("/admin/updates?tab=updates");
@@ -131,8 +132,12 @@ describe("UpdatesPage update now", () => {
     });
   });
 
-  it("updates inside the maintenance window on a plain confirmation", async () => {
-    calls.getUpdateWindow.mockResolvedValue({ start: hours(-1), end: hours(1) });
+  it.each([
+    ["no maintenance window is set", { start: null, end: null }],
+    ["inside the maintenance window", { start: hours(-1), end: hours(1) }],
+    ["the maintenance window has ended", { start: hours(-2), end: hours(-1) }],
+  ])("updates on a plain confirmation when %s", async (_, maintenanceWindow) => {
+    calls.getUpdateWindow.mockResolvedValue(maintenanceWindow);
     calls.startNodeTask.mockResolvedValue(updateTask({ stage: "preflight" }));
     calls.nodeTask.mockResolvedValue(updateTask({ stage: "preflight" }));
     page("/admin/updates?tab=updates");
@@ -148,6 +153,26 @@ describe("UpdatesPage update now", () => {
     expect(calls.startNodeTask).toHaveBeenCalledExactlyOnceWith({
       action: "update",
       params: { version: "v0.3.0", now: "false" },
+      confirmMaintenance: true,
+    });
+  });
+
+  it("offers a development build the newest main commit and updates to exactly that commit", async () => {
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    calls.getUpdateReport.mockResolvedValue(reportOf(component({ current: "v0.0.0+g1a2b3c4", latest: sha })));
+    calls.startNodeTask.mockResolvedValue(updateTask({ request: { action: "update", params: { commit: sha, now: "false" }, confirmMaintenance: true } }));
+    calls.nodeTask.mockResolvedValue(updateTask({ request: { action: "update", params: { commit: sha, now: "false" }, confirmMaintenance: true } }));
+    page("/admin/updates?tab=updates");
+    const user = userEvent.setup();
+    const section = await screen.findByRole("region", { name: t("admin:update_now_title_commit", { commit: "0123456" }) });
+    expect(within(section).getByText(sha)).toBeTruthy();
+    await waitFor(() => expect(updateButton(section).disabled).toBe(false));
+    await user.click(updateButton(section));
+    await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: t("admin:update_now_confirm_btn") }));
+
+    expect(calls.startNodeTask).toHaveBeenCalledExactlyOnceWith({
+      action: "update",
+      params: { commit: sha, now: "false" },
       confirmMaintenance: true,
     });
   });

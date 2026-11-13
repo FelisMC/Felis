@@ -947,7 +947,7 @@ export interface UpdateComponent {
   name: string;
   /** Installed version; absent when unreadable. */
   current?: string;
-  /** The newer stable release; present only when state is available. */
+  /** The newer stable release, or the newest main commit's full SHA for felis-api on a development build; present only when state is available. */
   latest?: string;
   state: UpdateComponentState;
   /** The `felis update --<selector>` flag that prints how to apply it. */

@@ -535,10 +535,10 @@ components:
     UpdateWindow:
       type: object
       description: >
-        The SysAdmin-set auto-update maintenance window (internal/api/handlers_updates.go
-        updateWindow). An absolute [start,end) interval during which Felis may apply a
-        Scheduled component's update to itself; both ends null means unset (no apply is
-        ever opened). Keys are always present; their values are null when unset.
+        The optional Owner-set maintenance window (internal/api/handlers_updates.go
+        updateWindow). An absolute [start,end) interval; while it is set, an update starts
+        only inside it. Both ends null means unset, and an update then starts as soon as
+        it is requested. Keys are always present; their values are null when unset.
       required: [start, end]
       properties:
         start:
@@ -647,11 +647,13 @@ components:
         One component's line. available has a newer stable release (latest);
         unknown means the release feed could not be read and unreadable that the
         installed version could not, both with error; pinned never changes by policy.
+        On a development build felis-api follows main instead: available means main
+        has newer commits, and latest is the newest main commit's full SHA.
       required: [name, state]
       properties:
         name: { type: string }
         current: { type: string, description: Installed version; omitted when unreadable. }
-        latest: { type: string, description: The newer stable release; present only when state is available. }
+        latest: { type: string, description: 'The newer stable release, or the full SHA of the newest main commit for felis-api on a development build; present only when state is available.' }
         state: { type: string, enum: [current, available, unknown, unreadable, pinned] }
         selector: { type: string, description: 'The `felis update --<selector>` flag that prints how to apply it; omitted when none.' }
         note: { type: string, description: What the release lookup learned beyond the version; omitted when none. }
@@ -729,8 +731,9 @@ components:
           enum: [enable, join, approve, upgrade, fence, unfence, enable-ha, join-controller, db-backup, db-verify, db-delete, db-restore, offsite-sync, offsite-list, offsite-check-key, offsite-take-over, offsite-configure, offsite-disable, restore-host, backup-now, rotate-token, domain-check, domain-set, storage-configure, connection-configure, converge, doctor, support-bundle, host-settings, server-forwarding, update]
           description: >-
             The node lifecycle actions (enable to join-controller) and the platform host tasks the panel runs on the controller host.
-            update applies the published release in params.version with `felis update --apply` in its own systemd unit;
-            params.now "true" applies it outside the maintenance window. felis-api restarts during an update, and the task
+            update applies the published release in params.version, or on a development build the main commit whose full SHA
+            is params.commit, with `felis update --apply` in its own systemd unit; params.now "true" applies it outside a set
+            maintenance window. felis-api restarts during an update, and the task
             keeps running and reports its result once the panel reconnects.
         name: { type: string, description: Stable node name; required for every action except enable and enable-ha. }
         sshTarget: { type: string, description: Verified root SSH alias or user@host; required for join, approve, upgrade and join-controller. }
@@ -7335,11 +7338,13 @@ paths:
       summary: Read the Owner-set auto-update maintenance window (Owner).
       description: >-
         Felis applies no update on its own. `felis update` checks versions and
-        prints an explicit apply command. `felis update --apply` reads this
-        platform-wide [start,end) window before backup and before installation,
-        refusing outside it unless `--now` explicitly starts manual maintenance.
-        An unreadable window is always a refusal, including with `--now` or
-        `--force`. An unset window reads back as {start:null,end:null}.
+        prints an explicit apply command. The window is optional. When it is set,
+        `felis update --apply` reads this platform-wide [start,end) window before
+        backup and before installation and refuses outside it unless `--now` starts
+        maintenance at once; an installer rerun on an installed host waits for it
+        too. When it is unset, an update starts as soon as it is requested. For
+        `--apply`, an unreadable window is always a refusal, including with `--now`
+        or `--force`. An unset window reads back as {start:null,end:null}.
       x-felis-face: [external]
       x-felis-tier: owner
       security: [{ sessionCookie: [] }]
@@ -9782,7 +9787,7 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           description: >-
-            Not an owner (forbidden); a change to the caller's own role (self_protected); a role change on the owner account (owner_protected), which only the host's break-glass console (sudo felis breakGlass) may make; or a change to the caller's own email without a reauth in the last 5 minutes (reauth_required).
+            Not an owner (forbidden); a change to the caller's own role (self_protected); a role change on the owner account (owner_protected), which only the host's break-glass console (sudo felis break-glass) may make; or a change to the caller's own email without a reauth in the last 5 minutes (reauth_required).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -9816,7 +9821,7 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           description: >-
-            Not an owner (forbidden); the caller's own account (self_protected); or the owner account (owner_protected), which only the host's break-glass console (sudo felis breakGlass) may remove.
+            Not an owner (forbidden); the caller's own account (self_protected); or the owner account (owner_protected), which only the host's break-glass console (sudo felis break-glass) may remove.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

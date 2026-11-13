@@ -86,9 +86,9 @@ func TestUpdateApplySafetyAndOrdering(t *testing.T) {
 		wantErr                                     bool
 	}{
 		{name: "active", windows: []updates.Window{open, open}, want: []string{"window", "backup", "window", "install", "verify"}},
-		{name: "unset", windows: []updates.Window{{}}, want: []string{"window"}, wantErr: true},
+		{name: "unset", windows: []updates.Window{{}, {}}, want: []string{"window", "backup", "window", "install", "verify"}},
 		{name: "future", windows: []updates.Window{future}, want: []string{"window"}, wantErr: true},
-		{name: "ended", windows: []updates.Window{ended}, want: []string{"window"}, wantErr: true},
+		{name: "ended no longer applies", windows: []updates.Window{ended, ended}, want: []string{"window", "backup", "window", "install", "verify"}},
 		{name: "force cannot bypass", opts: updateOptions{force: true}, windows: []updates.Window{future}, want: []string{"window"}, wantErr: true},
 		{name: "manual maintenance", opts: updateOptions{now: true}, windows: []updates.Window{{}, {}}, want: []string{"window", "backup", "window", "install", "verify"}},
 		{name: "manual cannot bypass unreadable window", opts: updateOptions{now: true}, windowErr: failed, want: []string{"window"}, wantErr: true},
@@ -122,6 +122,21 @@ func TestUpdateApplySafetyAndOrdering(t *testing.T) {
 	}
 }
 
+func TestUpdateApplyRefusalNamesTheWindowAndTheOverride(t *testing.T) {
+	prev := time.Local
+	time.Local = time.FixedZone("CST", 8*3600)
+	t.Cleanup(func() { time.Local = prev })
+	start := time.Now().Add(24 * time.Hour).Truncate(time.Hour)
+	upcoming := updates.Window{Start: start, End: start.Add(2 * time.Hour)}
+	err := runUpdateApply(context.Background(), updateOptions{}, updateApplySteps{
+		window: func(context.Context) (updates.Window, error) { return upcoming, nil },
+	})
+	span := start.In(time.Local).Format(windowLayout) + " to " + start.Add(2*time.Hour).In(time.Local).Format(windowLayout)
+	if err == nil || !strings.Contains(err.Error(), span+" has not opened yet") || !strings.Contains(err.Error(), "--now") {
+		t.Fatalf("refusal = %v, want it to name %s and --now", err, span)
+	}
+}
+
 func TestUpdateInstallerCannotUseStaleSourceOrBypassGuards(t *testing.T) {
 	env := []string{"FELIS_REF=stale", "FELIS_REF=duplicate", "FELIS_BOOTSTRAP_BINARY=/old", "FELIS_BOOTSTRAP_FROM_TUI=1", "FELIS_SKIP_FETCH=1", "FELIS_RELEASE=v0.1.0", "FELIS_GAME_STACK=latest", "FELIS_PREFLIGHT=warn", "FELIS_PRE_MIGRATE_BACKUP=0", "FELIS_GITHUB_TOKEN=private-token", "PATH=/usr/bin"}
 	for _, release := range []string{"", "v0.2.0"} {
@@ -134,7 +149,7 @@ func TestUpdateInstallerCannotUseStaleSourceOrBypassGuards(t *testing.T) {
 			}
 			got[key] = value
 		}
-		for key, want := range map[string]string{"FELIS_BOOTSTRAP_BINARY": "", "FELIS_BOOTSTRAP_FROM_TUI": "", "FELIS_SKIP_FETCH": "", "FELIS_RELEASE": release, "FELIS_GAME_STACK": "pinned", "FELIS_PREFLIGHT": "strict", "FELIS_PRE_MIGRATE_BACKUP": "1", "FELIS_FORCE_UPDATE": "1", "FELIS_UPGRADE_DEPS": "1", "FELIS_GITHUB_TOKEN": "private-token"} {
+		for key, want := range map[string]string{"FELIS_BOOTSTRAP_BINARY": "", "FELIS_BOOTSTRAP_FROM_TUI": "", "FELIS_SKIP_FETCH": "", "FELIS_RELEASE": release, "FELIS_GAME_STACK": "pinned", "FELIS_PREFLIGHT": "strict", "FELIS_PRE_MIGRATE_BACKUP": "1", "FELIS_FORCE_UPDATE": "1", "FELIS_UPGRADE_DEPS": "1", "FELIS_GITHUB_TOKEN": "private-token", "FELIS_IGNORE_MAINTENANCE_WINDOW": "1"} {
 			if got[key] != want {
 				t.Errorf("%s = %q; want %q", key, got[key], want)
 			}

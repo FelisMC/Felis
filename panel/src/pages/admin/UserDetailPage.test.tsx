@@ -226,7 +226,7 @@ describe("UserDetailPage", () => {
   describe("danger zone for accounts the server protects", () => {
     const SELF_REASON = "The signed-in account cannot be disabled or deleted.";
     const OWNER_REASON =
-      "The Owner account cannot be disabled or deleted from the panel. Manage it through the host recovery console (sudo felis breakGlass).";
+      "The Owner account cannot be disabled or deleted from the panel. Manage it through the host recovery console (sudo felis break-glass).";
 
     const button = (name: string) => screen.getByRole("button", { name }) as HTMLButtonElement;
     const describedBy = (b: HTMLElement) =>
@@ -258,7 +258,7 @@ describe("UserDetailPage", () => {
       expect(describedBy(button("Delete User"))).toBe(OWNER_REASON);
       expect(
         screen.getByText(
-          "The Owner role cannot be changed. Manage it through the host recovery console (sudo felis breakGlass).",
+          "The Owner role cannot be changed. Manage it through the host recovery console (sudo felis break-glass).",
         ),
       ).toBeTruthy();
       expect(screen.queryByRole("combobox")).toBeNull();

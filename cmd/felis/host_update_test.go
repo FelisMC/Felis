@@ -68,6 +68,18 @@ func TestUpdateRunsTheInstallerOutsideNodeControl(t *testing.T) {
 	}
 }
 
+func TestUpdateToAMainCommitBuildsThatExactCommit(t *testing.T) {
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	sd := &fakeSystemd{states: []string{unitMissing, unitDone}}
+	if _, err := runUpdate(t, sd, false, map[string]string{"commit": sha, "now": "false"}); err != nil {
+		t.Fatal(err)
+	}
+	start := sd.calls[0]
+	if got := strings.Join(start[slices.Index(start, "--")+1:], " "); got != "/usr/local/bin/felis update --apply --ref "+sha {
+		t.Fatalf("command = %q", got)
+	}
+}
+
 func TestUpdateInsideTheWindowOmitsNow(t *testing.T) {
 	sd := &fakeSystemd{states: []string{unitMissing, unitDone}}
 	if _, err := runUpdate(t, sd, false, map[string]string{"version": "v0.3.0", "now": "false"}); err != nil {

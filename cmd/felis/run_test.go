@@ -139,18 +139,26 @@ func TestRunSetupAndBreakGlassCommands(t *testing.T) {
 		if !strings.Contains(errBuf.String(), "Usage of setup") {
 			t.Errorf("expected setup help, got stderr=%q stdout=%q", errBuf.String(), out.String())
 		}
-		if strings.Contains(errBuf.String(), "Usage of breakGlass") {
-			t.Errorf("setup must not route to breakGlass help, got %q", errBuf.String())
+		if strings.Contains(errBuf.String(), "Usage of break-glass") {
+			t.Errorf("setup must not route to break-glass help, got %q", errBuf.String())
 		}
 	})
 
-	t.Run("breakGlass help", func(t *testing.T) {
-		var out, errBuf bytes.Buffer
-		if code := run([]string{"breakGlass", "-h"}, &out, &errBuf); code != 0 {
-			t.Errorf("exit code = %d, want 0", code)
-		}
-		if !strings.Contains(errBuf.String(), "Usage of breakGlass") {
-			t.Errorf("expected breakGlass help, got stderr=%q stdout=%q", errBuf.String(), out.String())
+	for _, name := range []string{"break-glass", "breakGlass"} {
+		t.Run(name+" help", func(t *testing.T) {
+			var out, errBuf bytes.Buffer
+			if code := run([]string{name, "-h"}, &out, &errBuf); code != 0 {
+				t.Errorf("exit code = %d, want 0", code)
+			}
+			if !strings.Contains(errBuf.String(), "Usage of break-glass") {
+				t.Errorf("expected break-glass help, got stderr=%q stdout=%q", errBuf.String(), out.String())
+			}
+		})
+	}
+
+	t.Run("the old spelling stays out of the usage", func(t *testing.T) {
+		if strings.Contains(usage, "breakGlass") {
+			t.Error("usage lists breakGlass; only break-glass is advertised")
 		}
 	})
 

@@ -37,6 +37,7 @@ var (
 	identityPattern = regexp.MustCompile(`^([A-Za-z0-9._%+-]+)?@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}$`)
 	printable       = regexp.MustCompile(`^[\x21\x23-\x26\x28-\x5b\x5d-\x7e]+$`)
 	releasePattern  = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]{1,40})?$`)
+	commitPattern   = regexp.MustCompile(`^[0-9a-f]{40}$`)
 	rotatableKinds  = []string{"velocity", "limbo", "build", "ops", "registry", "forwarding", "db"}
 )
 
@@ -104,13 +105,8 @@ var actions = map[string]action{
 	"converge": {timeout: 10 * time.Minute, params: []string{"userRcon"},
 		confirmIf: func(r Request) bool { return r.Params["userRcon"] == "true" },
 		check:     func(r Request) error { return boolParam(r, "userRcon") }},
-	"update": {blocking: true, confirm: true, detached: true, timeout: 90 * time.Minute, params: []string{"version", "now"},
-		check: func(r Request) error {
-			if !releasePattern.MatchString(r.Params["version"]) {
-				return errors.New("the version must be a published Felis release such as v0.3.0")
-			}
-			return boolParam(r, "now")
-		}},
+	"update": {blocking: true, confirm: true, detached: true, timeout: 90 * time.Minute, params: []string{"version", "commit", "now"},
+		check: checkUpdate},
 	"doctor":         {timeout: 3 * time.Minute},
 	"support-bundle": {timeout: 10 * time.Minute, params: []string{"serverLogs"}, check: func(r Request) error { return boolParam(r, "serverLogs") }},
 	"host-settings": {timeout: 30 * time.Minute, params: []string{"dbBackupTime", "dbBackupKeep", "velocityXmx"},
@@ -253,6 +249,20 @@ func boolParam(r Request, keys ...string) error {
 		}
 	}
 	return nil
+}
+
+// checkUpdate takes a published release, or on a development build the full SHA of a main commit.
+func checkUpdate(r Request) error {
+	version, commit := r.Params["version"], r.Params["commit"]
+	switch {
+	case version != "" && commit != "":
+		return errors.New("name a release version or a commit, not both")
+	case commit != "" && !commitPattern.MatchString(commit):
+		return errors.New("the commit must be a full 40-character commit SHA")
+	case commit == "" && !releasePattern.MatchString(version):
+		return errors.New("the version must be a published Felis release such as v0.3.0")
+	}
+	return boolParam(r, "now")
 }
 
 func oneOf(v string, allowed []string, what string) error {

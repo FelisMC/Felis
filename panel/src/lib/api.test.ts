@@ -557,7 +557,7 @@ describe("api access-control wire shapes", () => {
       "This operation is not permitted on the signed-in account.",
     );
     expect(humanizeError({ status: 403, code: "owner_protected" })).toBe(
-      "The Owner account cannot be demoted, disabled, or deleted from the panel. Manage it through the host recovery console (sudo felis breakGlass).",
+      "The Owner account cannot be demoted, disabled, or deleted from the panel. Manage it through the host recovery console (sudo felis break-glass).",
     );
   });
 

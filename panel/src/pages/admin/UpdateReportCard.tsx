@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { MessageLine } from "@/components/MessageLine";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync, useRefreshSignal } from "@/lib/hooks";
-import { formatAbsolute, formatRelative } from "@/lib/format";
+import { formatAbsolute, formatRelative, shortCommit } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { UpdateComponent, UpdateComponentState } from "@/lib/types";
 import { CopyCommand } from "./DBBackupCard";
@@ -180,7 +180,7 @@ function ComponentRow({ c }: { c: UpdateComponent }) {
         </div>
         <div className="min-w-0 truncate font-mono" title={c.latest}>
           <span className="text-muted-foreground sm:hidden">{t("versions_col_latest")}: </span>
-          {c.latest ? <span className="text-amber-600 dark:text-amber-400">{c.latest}</span> : <span className="text-muted-foreground">—</span>}
+          {c.latest ? <span className="text-amber-600 dark:text-amber-400">{shortCommit(c.latest) ?? c.latest}</span> : <span className="text-muted-foreground">—</span>}
         </div>
         <div>
           <span className={cn("inline-block rounded border px-1.5 py-px text-[10px] font-semibold", STATE_STYLE[c.state])}>

@@ -159,7 +159,7 @@ function UpdatesSection() {
       case "expired":
         return "text-zinc-500";
       default:
-        return "text-amber-500";
+        return "text-zinc-500";
     }
   })();
 
@@ -172,7 +172,7 @@ function UpdatesSection() {
       case "expired":
         return "text-zinc-500 bg-zinc-500/10";
       default:
-        return "text-amber-500 bg-amber-500/10";
+        return "text-zinc-500 bg-zinc-500/10";
     }
   })();
 
@@ -181,7 +181,7 @@ function UpdatesSection() {
       {/* Installed vs newest upstream versions (read-only, host timer) */}
       <UpdateReportCard />
 
-      <PanelUpdateCard inWindow={windowStatus === "active"} />
+      <PanelUpdateCard windowClosed={windowStatus === "pending"} />
 
       {/* Stats Cards Row */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
@@ -222,10 +222,14 @@ function UpdatesSection() {
         </CardHeader>
         <CardContent className="space-y-6 text-sm">
           <p className="text-muted-foreground leading-relaxed">{t("updates_window_advisory")}</p>
-          {/* Unset hint warning */}
           {windowStatus === "unset" && (
             <p className="text-muted-foreground bg-muted/15 border border-dashed border-border rounded-lg p-4 leading-relaxed">
               {t("updates_current_unset")}
+            </p>
+          )}
+          {windowStatus === "expired" && (
+            <p className="text-muted-foreground bg-muted/15 border border-dashed border-border rounded-lg p-4 leading-relaxed">
+              {t("updates_current_expired")}
             </p>
           )}
 

@@ -5256,7 +5256,7 @@ summary() {
   log "The proxy authenticates against Mojang and forwards the verified profile to the"
   log "login gate; the backends are reachable in-cluster only. Follow it with:"
   log "    sudo journalctl -u felis-velocity -f"
-  log "Use 'sudo felis breakGlass' only for emergency local Owner recovery/reset."
+  log "Use 'sudo felis break-glass' only for emergency local Owner recovery/reset."
   if [ -n "${PREVIOUS_FELIS_IMAGE:-}" ]; then
     echo
     log "The control plane moved from ${PREVIOUS_FELIS_IMAGE} to ${FELIS_IMAGE}"
@@ -5466,6 +5466,20 @@ acquire_nano_binary() {
 # Felis-nano keeps its accounts in the host PostgreSQL, which a full install would move into k3s and stop under felis-nano.
 refuse_full_beside_nano() {
   [ ! -e "$NANO_ENV" ] || die "this host runs Felis-nano; remove it before installing the full platform here: sudo bash deploy/uninstall.sh (it keeps the database unless you pass --purge)"
+}
+
+# A rerun on an installed host waits for a set maintenance window; a felis too old for the check exits 2 and is let through.
+check_maintenance_window() {
+  [ "${FELIS_IGNORE_MAINTENANCE_WINDOW:-0}" != 1 ] && [ "${FELIS_NODE_CONTROL_TASK:-0}" != 1 ] || return 0
+  [ -e "$BOOTSTRAP_DONE" ] && [ -x "$HOST_BIN" ] || return 0
+  local out rc=0
+  # The inner `|| exit` keeps the inherited ERR trap from reporting an expected status as a failed install.
+  out="$("$HOST_BIN" update --window-check 2>&1 || exit "$?")" || rc=$?
+  case "$rc" in
+    0) [ -z "$out" ] || warn "$out" ;;
+    1) die "${out}
+  To change this host now instead, set FELIS_IGNORE_MAINTENANCE_WINDOW=1." ;;
+  esac
 }
 
 refuse_nano_beside_full() {
@@ -6467,6 +6481,7 @@ main() {
   if [ "$INSTALL_MODE" = worker-upgrade ]; then main_worker_upgrade; return; fi
   if [ "$INSTALL_MODE" = controller-join ]; then main_controller_join; return; fi
   refuse_full_beside_nano
+  check_maintenance_window
   resolve_host_profile
   detect_node_ip
   # Before the first change to the host: a problem found here costs a rerun, one found

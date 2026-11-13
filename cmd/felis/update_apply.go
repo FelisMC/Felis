@@ -68,7 +68,7 @@ func renderInstallPlan(target updater.InstallTarget, o updateOptions) string {
 		b.WriteString("Host dependencies: also reconcile k3s and cloudflared to this target's pins.\n")
 	}
 	b.WriteString("Upstream availability above is advisory; application uses this target's compatible pins, not each upstream's newest release. User server images remain pinned.\n")
-	b.WriteString("Before applying: check maintenance, back up the database and host/server configuration, then check maintenance again.\n")
+	b.WriteString("Before applying: check the maintenance window when one is set, back up the database and host/server configuration, then check the window again.\n")
 	b.WriteString("API, proxy and system spaces may restart.\n")
 	if o.apply {
 		return b.String()
@@ -100,8 +100,8 @@ func renderInstallPlan(target updater.InstallTarget, o updateOptions) string {
 	if o.cfgPath != "/etc/felis/felis.toml" {
 		cmd += " --config " + shellQuote(o.cfgPath)
 	}
-	fmt.Fprintf(&b, "\nAfter reviewing, run inside the maintenance window:\n  %s\n", cmd)
-	b.WriteString("Without an active window, apply is refused. For an explicit manual maintenance run, add --now. --force never bypasses these checks.\n")
+	fmt.Fprintf(&b, "\nAfter reviewing, run:\n  %s\n", cmd)
+	b.WriteString("When a maintenance window is set, apply waits for it to open and ignores it once it has ended; add --now to start maintenance before it opens. --force never bypasses this check.\n")
 	return b.String()
 }
 
@@ -113,14 +113,23 @@ type updateApplySteps struct {
 }
 
 func runUpdateApply(ctx context.Context, o updateOptions, steps updateApplySteps) error {
+	opened := false
 	check := func() error {
 		win, err := steps.window(ctx)
 		if err != nil {
 			return fmt.Errorf("cannot verify maintenance window: %w", err)
 		}
-		if !o.now && (win.Start.IsZero() || win.End.IsZero() || !win.Contains(time.Now())) {
-			return fmt.Errorf("no active maintenance window; set one in the panel or explicitly use --apply --now for manual maintenance")
+		if o.now {
+			return ctx.Err()
 		}
+		now := time.Now()
+		if opened && !win.Contains(now) {
+			return errors.New("the maintenance window closed during the pre-update backup; nothing applied, so update in the next window or add --now to start maintenance now")
+		}
+		if err := closedWindow(win, now); err != nil {
+			return fmt.Errorf("%w, or add --now to start maintenance now", err)
+		}
+		opened = win.Contains(now)
 		return ctx.Err()
 	}
 	if err := check(); err != nil {
@@ -206,6 +215,7 @@ func updateInstallerEnv(env []string, target updater.InstallTarget, o updateOpti
 		"FELIS_UPGRADE_DEPS": "0", "FELIS_FORCE_UPDATE": "0", "FELIS_IMAGE": "",
 		"FELIS_GAME_STACK": "pinned", "FELIS_VELOCITY_VERSION": "", "FELIS_JRE_VERSION": "",
 		"FELIS_K3S_VERSION": "", "FELIS_CLOUDFLARED_VERSION": "", "FELIS_PREFLIGHT": "strict", "FELIS_PRE_MIGRATE_BACKUP": "1",
+		"FELIS_IGNORE_MAINTENANCE_WINDOW": "1",
 	}
 	if target.Release != "" {
 		replace["FELIS_REF"], replace["FELIS_RELEASE"], replace["FELIS_VERSION_BOOTSTRAP"] = "", target.Release, "release"

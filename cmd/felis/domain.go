@@ -763,7 +763,7 @@ func (h domainHost) printPlan(ctx context.Context, p domainPlan, action certActi
 				creds, users, p.from.panel, p.to.panel)
 		}
 		if !smtp {
-			fmt.Fprintln(h.out, "    No [smtp] relay is configured, so email codes are not delivered: an Owner locked out this way recovers with sudo felis breakGlass.")
+			fmt.Fprintln(h.out, "    No [smtp] relay is configured, so email codes are not delivered: an Owner locked out this way recovers with sudo felis break-glass.")
 		}
 	}
 	if _, err := os.Stat(h.paths.tunnelConfig); err == nil {

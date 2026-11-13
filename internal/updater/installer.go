@@ -64,32 +64,41 @@ func (s InstallerSource) Prepare(ctx context.Context, release, ref string) (Inst
 		}
 		release, ref = tag, tag
 	}
-	resp, err := s.github.get(ctx, "/repos/"+s.repo+"/commits/"+url.PathEscape(ref), "application/vnd.github+json")
+	sha, err := s.Resolve(ctx, ref)
 	if err != nil {
 		return InstallTarget{}, err
 	}
+	script, err := s.script(ctx, sha)
+	if err != nil {
+		return InstallTarget{}, err
+	}
+	return InstallTarget{Release: release, Revision: sha, Script: script}, nil
+}
+
+// Resolve returns the full lowercase commit SHA a ref names now, refusing a full SHA that resolves elsewhere.
+func (s InstallerSource) Resolve(ctx context.Context, ref string) (string, error) {
+	resp, err := s.github.get(ctx, "/repos/"+s.repo+"/commits/"+url.PathEscape(ref), "application/vnd.github+json")
+	if err != nil {
+		return "", err
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return InstallTarget{}, fmt.Errorf("github: resolve ref %q: HTTP %d", ref, resp.StatusCode)
+		return "", fmt.Errorf("github: resolve ref %q: HTTP %d", ref, resp.StatusCode)
 	}
 	var commit struct {
 		SHA string `json:"sha"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&commit); err != nil {
-		return InstallTarget{}, fmt.Errorf("github: decode commit: %w", err)
+		return "", fmt.Errorf("github: decode commit: %w", err)
 	}
 	if _, err := hex.DecodeString(commit.SHA); err != nil || len(commit.SHA) != 40 {
-		return InstallTarget{}, fmt.Errorf("github: ref %q did not resolve to a full commit SHA", ref)
+		return "", fmt.Errorf("github: ref %q did not resolve to a full commit SHA", ref)
 	}
 	commit.SHA = strings.ToLower(commit.SHA)
 	if _, err := hex.DecodeString(ref); err == nil && len(ref) == 40 && !strings.EqualFold(ref, commit.SHA) {
-		return InstallTarget{}, fmt.Errorf("github: resolved commit %s differs from requested %s", commit.SHA, ref)
+		return "", fmt.Errorf("github: resolved commit %s differs from requested %s", commit.SHA, ref)
 	}
-	script, err := s.script(ctx, commit.SHA)
-	if err != nil {
-		return InstallTarget{}, err
-	}
-	return InstallTarget{Release: release, Revision: commit.SHA, Script: script}, nil
+	return commit.SHA, nil
 }
 
 func (s InstallerSource) script(ctx context.Context, revision string) (string, error) {

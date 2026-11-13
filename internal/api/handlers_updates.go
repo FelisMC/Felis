@@ -9,7 +9,7 @@ import (
 	"felis.lolicon.best/internal/updates"
 )
 
-// Updates require explicit application within the global maintenance window; unreadable windows refuse even manual overrides.
+// Updates are applied explicitly, inside the global maintenance window when one is set; unreadable windows refuse even manual overrides.
 
 const updateWindowKey = "update_window"
 

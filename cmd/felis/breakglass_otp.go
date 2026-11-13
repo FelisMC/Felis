@@ -189,14 +189,14 @@ func recoveryMail(code, host, osUser, admin string, op bgOperation) (subject, bo
 	}
 	minutes := int(recoveryCodeTTL / time.Minute)
 	subject = "Felis break-glass recovery code / 紧急恢复验证码"
-	body = fmt.Sprintf(`Someone with root on %[1]s (OS user %[2]s) opened felis breakGlass and named your staff account %[3]q to %[4]s.
+	body = fmt.Sprintf(`Someone with root on %[1]s (OS user %[2]s) opened felis break-glass and named your staff account %[3]q to %[4]s.
 
 Recovery code: %[6]s
 It works for %[7]d minutes.
 
 If this was not you, root on that machine is in someone else's hands: change its credentials and read the audit log for break_glass entries.
 
-有人在 %[1]s 上以 root 身份（系统用户 %[2]s）打开了 felis breakGlass，指名你的管理员账号 %[3]q 来%[5]s。
+有人在 %[1]s 上以 root 身份（系统用户 %[2]s）打开了 felis break-glass，指名你的管理员账号 %[3]q 来%[5]s。
 
 恢复验证码：%[6]s
 %[7]d 分钟内有效。

@@ -52,7 +52,7 @@ Commands:
   watchdog          Check the platform once and mail the owners what has gone wrong (run by felis-watchdog.timer)
   version           Print the build stamp of this binary
   update            Check platform versions; --apply installs a reviewed target
-  breakGlass        Open the local break-glass emergency console (TUI; requires root/sudo)
+  break-glass       Open the local break-glass emergency console (TUI; requires root/sudo)
 
 Run "felis <command> -h" for command-specific flags.
 `
@@ -92,7 +92,7 @@ var commands = map[string]func(args []string, stdout, stderr io.Writer) int{
 	"converge":           cmdConverge,
 	"rotate-token":       cmdRotateToken,
 	"domain":             cmdDomain,
-	"breakGlass":         cmdBreakGlass,
+	"break-glass":        cmdBreakGlass,
 	"bootstrap-assets":   cmdBootstrapAssets,
 	"init-forwarding":    cmdInitForwarding,
 	"init-volume":        cmdInitVolume,
@@ -112,6 +112,9 @@ var commands = map[string]func(args []string, stdout, stderr io.Writer) int{
 	"support-bundle":     cmdSupportBundle,
 }
 
+// commandAliases keep earlier spellings working without listing them in usage.
+var commandAliases = map[string]string{"breakGlass": "break-glass"}
+
 // run dispatches a subcommand. It is separate from main so the router is
 // testable without spawning a process.
 func run(args []string, stdout, stderr io.Writer) int {
@@ -124,6 +127,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, usage)
 		return 0
+	}
+	if name, ok := commandAliases[cmd]; ok {
+		cmd = name
 	}
 	if fn, ok := commands[cmd]; ok {
 		return fn(rest, stdout, stderr)

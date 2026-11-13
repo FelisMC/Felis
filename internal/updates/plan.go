@@ -19,6 +19,11 @@ type Window struct {
 	End   time.Time `json:"end"`
 }
 
+// IsSet reports whether both ends are present; a half-set window counts as unset.
+func (w Window) IsSet() bool {
+	return !w.Start.IsZero() && !w.End.IsZero()
+}
+
 // Contains rejects unset, empty or inverted windows.
 func (w Window) Contains(now time.Time) bool {
 	if w.Start.IsZero() || w.End.IsZero() || !w.End.After(w.Start) {

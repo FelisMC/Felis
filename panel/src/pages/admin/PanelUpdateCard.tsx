@@ -8,10 +8,13 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { HostTaskNotice, HostTaskStatus, useHostTask } from "@/components/HostTask";
 import { MessageLine } from "@/components/MessageLine";
 import { api } from "@/lib/api";
+import { shortCommit } from "@/lib/format";
 import { useAsync, useRefreshSignal } from "@/lib/hooks";
 
+const requestedTarget = (params?: Record<string, string>) => params?.version ?? params?.commit;
+
 /** PanelUpdateCard offers the host's pending Felis update and follows it to the end. */
-export function PanelUpdateCard({ inWindow }: { inWindow: boolean }) {
+export function PanelUpdateCard({ windowClosed }: { windowClosed: boolean }) {
   const { t, i18n } = useTranslation("admin");
   const titleId = useId();
   const report = useAsync(() => api.getUpdateReport(), []);
@@ -24,12 +27,16 @@ export function PanelUpdateCard({ inWindow }: { inWindow: boolean }) {
   const felis = report.data?.report?.components.find((c) => c.name === "felis-api" && c.state === "available" && c.latest);
   const task = host.task;
   const shown =
-    task && (task.state === "running" || task.id === startedId || (felis && task.request.params?.version === felis.latest))
+    task && (task.state === "running" || task.id === startedId || (felis && requestedTarget(task.request.params) === felis.latest))
       ? task
       : null;
   if (!felis && !shown) return null;
 
-  const target = felis?.latest ?? shown?.request.params?.version ?? "";
+  const target = felis?.latest ?? requestedTarget(shown?.request.params) ?? "";
+  // A development build's report names the newest main commit by its full SHA instead of a release.
+  const short = shortCommit(target);
+  const commit = short !== null;
+  const named = { version: target, commit: short };
   const updated = shown?.state === "succeeded";
   const reconnecting = host.running && (!!host.listError || !!host.detailError);
   const rollback = `https://docs.felismc.com${i18n.language.startsWith("zh") ? "" : "/en"}/operations/upgrade#rollback`;
@@ -39,18 +46,19 @@ export function PanelUpdateCard({ inWindow }: { inWindow: boolean }) {
       <CardHeader>
         <CardTitle id={titleId} className="flex items-center gap-2">
           <ArrowUpCircle className="h-4 w-4 text-primary" aria-hidden="true" />
-          {t("update_now_title", { version: target })}
+          {t(commit ? "update_now_title_commit" : "update_now_title", named)}
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4 text-sm">
         {felis && (
-          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
+          <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1">
             <dt className="text-muted-foreground">{t("update_now_current")}</dt>
-            <dd className="font-mono">{felis.current ?? "—"}</dd>
-            <dt className="text-muted-foreground">{t("update_now_target")}</dt>
-            <dd className="font-mono">{felis.latest}</dd>
+            <dd className="font-mono break-all">{felis.current ?? "—"}</dd>
+            <dt className="text-muted-foreground">{t(commit ? "update_now_target_commit" : "update_now_target")}</dt>
+            <dd className="font-mono break-all">{felis.latest}</dd>
           </dl>
         )}
+        {commit && <p className="text-xs leading-relaxed text-muted-foreground">{t("update_now_dev_note")}</p>}
         {felis?.note && <p className="text-xs leading-relaxed text-muted-foreground">{felis.note}</p>}
         <p className="leading-relaxed text-muted-foreground">{t("update_now_description")}</p>
         <HostTaskNotice otherRunning={host.otherRunning} available={host.available} loading={host.loading} />
@@ -76,7 +84,7 @@ export function PanelUpdateCard({ inWindow }: { inWindow: boolean }) {
         {shown && <HostTaskStatus task={shown} />}
         {updated && (
           <div className="space-y-3">
-            <MessageLine kind="success" message={t("update_now_done", { version: target })} />
+            <MessageLine kind="success" message={t(commit ? "update_now_done_commit" : "update_now_done", named)} />
             <p className="text-xs text-muted-foreground">{t("update_now_reload_hint")}</p>
             <Button onClick={() => window.location.reload()}>
               <RefreshCw />
@@ -97,21 +105,21 @@ export function PanelUpdateCard({ inWindow }: { inWindow: boolean }) {
       <ConfirmDialog
         open={confirming}
         onOpenChange={setConfirming}
-        title={t("update_now_confirm_title", { version: target })}
+        title={t(commit ? "update_now_confirm_title_commit" : "update_now_confirm_title", named)}
         description={t("update_now_description")}
         confirmLabel={t("update_now_confirm_btn")}
         confirmVariant="default"
-        confirmDisabled={!inWindow && !acknowledged}
+        confirmDisabled={windowClosed && !acknowledged}
         onConfirm={async () => {
           const created = await host.start({
             action: "update",
-            params: { version: target, now: inWindow ? "false" : "true" },
+            params: { [commit ? "commit" : "version"]: target, now: windowClosed ? "true" : "false" },
             confirmMaintenance: true,
           });
           if (created) setStartedId(created.id);
         }}
       >
-        {!inWindow && (
+        {windowClosed && (
           <div className="grid gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs">
             <p className="flex items-start gap-1.5 text-amber-700 dark:text-amber-300">
               <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" />

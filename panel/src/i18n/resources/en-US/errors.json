@@ -45,7 +45,7 @@
   "session_expired": "The session has expired. Sign in again.",
   "forbidden": "The current account is not authorized to perform this operation.",
   "self_protected": "This operation is not permitted on the signed-in account.",
-  "owner_protected": "The Owner account cannot be demoted, disabled, or deleted from the panel. Manage it through the host recovery console (sudo felis breakGlass).",
+  "owner_protected": "The Owner account cannot be demoted, disabled, or deleted from the panel. Manage it through the host recovery console (sudo felis break-glass).",
   "session_not_found": "The session has ended or does not exist.",
   "generic": "The operation failed. Retry later.",
   "otp_resend_cooldown": "Verification code requested too frequently, please try again later.",

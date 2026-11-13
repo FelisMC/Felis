@@ -232,14 +232,21 @@ func updateRequest() Request {
 }
 
 func TestUpdateRequest(t *testing.T) {
+	const sha = "0123456789abcdef0123456789abcdef01234567"
 	if err := updateRequest().Validate(); err != nil {
 		t.Fatalf("a release update was refused: %v", err)
+	}
+	if err := (Request{Action: "update", ConfirmMaintenance: true, Params: map[string]string{"commit": sha, "now": "false"}}).Validate(); err != nil {
+		t.Fatalf("an update to a main commit was refused: %v", err)
 	}
 	for _, change := range []func(*Request){
 		func(r *Request) { r.ConfirmMaintenance = false },
 		func(r *Request) { r.Params["version"] = "main" },
 		func(r *Request) { r.Params["version"] = "v0.3.0; reboot" },
 		func(r *Request) { r.Params["now"] = "yes" },
+		func(r *Request) { r.Params["commit"] = sha },
+		func(r *Request) { delete(r.Params, "version"); r.Params["commit"] = "main" },
+		func(r *Request) { delete(r.Params, "version"); r.Params["commit"] = sha[:7] },
 	} {
 		bad := updateRequest()
 		change(&bad)

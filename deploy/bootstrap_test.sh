@@ -5337,6 +5337,7 @@ run_compatibility_guard() {
     detect_os() { :; }
     prompt_install_mode() { INSTALL_MODE=full; }
     refuse_full_beside_nano() { :; }
+    check_maintenance_window() { :; }
     resolve_host_profile() { :; }
     detect_node_ip() { :; }
     preflight() { :; }
@@ -5363,6 +5364,35 @@ refuse_full_beside_nano && echo GO'; }
 : > "$sdir/nano.env"
 expect "a full install stops on a Felis-nano host" "DIE: this host runs Felis-nano" "$(run_beside_nano "$sdir/nano.env")"
 expect "a host without Felis-nano goes on" "GO" "$(run_beside_nano "$sdir/absent.env")"
+
+# A rerun on an installed host waits for a set maintenance window before it changes anything.
+before "a rerun checks the maintenance window before changing the host" '  check_maintenance_window' '  quiet_watchdog' "$(bsfn main)"
+mwdir="$(mktemp -d)"
+: > "$mwdir/bootstrap.done"
+run_window() { # felis-exit-status [FELIS_IGNORE_MAINTENANCE_WINDOW [bootstrap.done]]
+  printf '#!/bin/sh\necho "felis update: window message" >&2\nexit %s\n' "$1" > "$mwdir/felis"
+  chmod +x "$mwdir/felis"
+  BOOTSTRAP_DONE="${3:-$mwdir/bootstrap.done}" HOST_BIN="$mwdir/felis" FELIS_IGNORE_MAINTENANCE_WINDOW="${2:-}" bash -c '
+    set -Eeuo pipefail
+    trap "echo ERR TRAP >&2" ERR
+    die() { echo "DIE: $*"; exit 1; }
+    warn() { echo "WARN: $*"; }
+    '"$(bsfn check_maintenance_window)"'
+    check_maintenance_window && echo WENT ON' 2>&1
+}
+out="$(run_window 1)"
+expect "a closed window stops the rerun with felis's reason" "DIE: felis update: window message" "$out"
+expect "and names the override" "FELIS_IGNORE_MAINTENANCE_WINDOW=1" "$out"
+expect "the override goes on" "WENT ON" "$(run_window 1 1)"
+expect "a fresh install is not checked" "WENT ON" "$(run_window 1 "" "$mwdir/absent")"
+expect "an unreadable window warns and goes on" "WARN: felis update: window message
+WENT ON" "$(run_window 0)"
+out="$(run_window 2)"
+case "$out" in
+  "WENT ON") echo "PASS a felis without the check goes on quietly" ;;
+  *) echo "FAIL a felis without the check must go on quietly: $out"; fails=$((fails + 1)) ;;
+esac
+rm -rf "$mwdir"
 
 before "distributed host firewall runs the newly built binary" \
   '  build_image' '"$HOST_BIN" node firewall --controller' "$(bsfn main)"

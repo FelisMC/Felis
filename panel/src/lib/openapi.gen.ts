@@ -2158,7 +2158,7 @@ export interface paths {
         };
         /**
          * Read the Owner-set auto-update maintenance window (Owner).
-         * @description Felis applies no update on its own. `felis update` checks versions and prints an explicit apply command. `felis update --apply` reads this platform-wide [start,end) window before backup and before installation, refusing outside it unless `--now` explicitly starts manual maintenance. An unreadable window is always a refusal, including with `--now` or `--force`. An unset window reads back as {start:null,end:null}.
+         * @description Felis applies no update on its own. `felis update` checks versions and prints an explicit apply command. The window is optional. When it is set, `felis update --apply` reads this platform-wide [start,end) window before backup and before installation and refuses outside it unless `--now` starts maintenance at once; an installer rerun on an installed host waits for it too. When it is unset, an update starts as soon as it is requested. For `--apply`, an unreadable window is always a refusal, including with `--now` or `--force`. An unset window reads back as {start:null,end:null}.
          */
         get: operations["getUpdateWindow"];
         /**
@@ -4162,7 +4162,7 @@ export interface components {
                 request_id?: string;
             };
         };
-        /** @description The SysAdmin-set auto-update maintenance window (internal/api/handlers_updates.go updateWindow). An absolute [start,end) interval during which Felis may apply a Scheduled component's update to itself; both ends null means unset (no apply is ever opened). Keys are always present; their values are null when unset. */
+        /** @description The optional Owner-set maintenance window (internal/api/handlers_updates.go updateWindow). An absolute [start,end) interval; while it is set, an update starts only inside it. Both ends null means unset, and an update then starts as soon as it is requested. Keys are always present; their values are null when unset. */
         UpdateWindow: {
             /**
              * Format: date-time
@@ -4232,12 +4232,12 @@ export interface components {
              */
             max_age_seconds: number;
         };
-        /** @description One component's line. available has a newer stable release (latest); unknown means the release feed could not be read and unreadable that the installed version could not, both with error; pinned never changes by policy. */
+        /** @description One component's line. available has a newer stable release (latest); unknown means the release feed could not be read and unreadable that the installed version could not, both with error; pinned never changes by policy. On a development build felis-api follows main instead: available means main has newer commits, and latest is the newest main commit's full SHA. */
         UpdateComponent: {
             name: string;
             /** @description Installed version; omitted when unreadable. */
             current?: string;
-            /** @description The newer stable release; present only when state is available. */
+            /** @description The newer stable release, or the full SHA of the newest main commit for felis-api on a development build; present only when state is available. */
             latest?: string;
             /** @enum {string} */
             state: "current" | "available" | "unknown" | "unreadable" | "pinned";
@@ -4321,7 +4321,7 @@ export interface components {
         };
         NodeControlRequest: {
             /**
-             * @description The node lifecycle actions (enable to join-controller) and the platform host tasks the panel runs on the controller host. update applies the published release in params.version with `felis update --apply` in its own systemd unit; params.now "true" applies it outside the maintenance window. felis-api restarts during an update, and the task keeps running and reports its result once the panel reconnects.
+             * @description The node lifecycle actions (enable to join-controller) and the platform host tasks the panel runs on the controller host. update applies the published release in params.version, or on a development build the main commit whose full SHA is params.commit, with `felis update --apply` in its own systemd unit; params.now "true" applies it outside a set maintenance window. felis-api restarts during an update, and the task keeps running and reports its result once the panel reconnects.
              * @enum {string}
              */
             action: "enable" | "join" | "approve" | "upgrade" | "fence" | "unfence" | "enable-ha" | "join-controller" | "db-backup" | "db-verify" | "db-delete" | "db-restore" | "offsite-sync" | "offsite-list" | "offsite-check-key" | "offsite-take-over" | "offsite-configure" | "offsite-disable" | "restore-host" | "backup-now" | "rotate-token" | "domain-check" | "domain-set" | "storage-configure" | "connection-configure" | "converge" | "doctor" | "support-bundle" | "host-settings" | "server-forwarding" | "update";
@@ -13563,7 +13563,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
-            /** @description Not an owner (forbidden); the caller's own account (self_protected); or the owner account (owner_protected), which only the host's break-glass console (sudo felis breakGlass) may remove. */
+            /** @description Not an owner (forbidden); the caller's own account (self_protected); or the owner account (owner_protected), which only the host's break-glass console (sudo felis break-glass) may remove. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -13616,7 +13616,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
-            /** @description Not an owner (forbidden); a change to the caller's own role (self_protected); a role change on the owner account (owner_protected), which only the host's break-glass console (sudo felis breakGlass) may make; or a change to the caller's own email without a reauth in the last 5 minutes (reauth_required). */
+            /** @description Not an owner (forbidden); a change to the caller's own role (self_protected); a role change on the owner account (owner_protected), which only the host's break-glass console (sudo felis break-glass) may make; or a change to the caller's own email without a reauth in the last 5 minutes (reauth_required). */
             403: {
                 headers: {
                     [name: string]: unknown;
