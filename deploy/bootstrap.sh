@@ -6495,10 +6495,10 @@ main() {
   # halfway through costs an install to unwind.
   preflight
   check_postgres_major
-  remember_install_settings
   if [ "$FELIS_UPGRADE_DEPS" = 1 ] && [ -x "$K3S_BIN" ]; then
     k3s_upgrade_allowed "$("$K3S_BIN" --version 2>/dev/null | awk 'NR == 1 { print $3 }')" "$FELIS_K3S_VERSION" || true
   fi
+  remember_install_settings
   quiet_watchdog
   pause_package_background_timers
   ensure_swap

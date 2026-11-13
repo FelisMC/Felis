@@ -5345,6 +5345,7 @@ run_compatibility_guard() {
     prompt_install_mode() { INSTALL_MODE=full; }
     refuse_full_beside_nano() { :; }
     check_maintenance_window() { :; }
+    remember_install_settings() { :; }
     resolve_host_profile() { :; }
     detect_node_ip() { :; }
     preflight() { :; }
