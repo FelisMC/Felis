@@ -19,6 +19,7 @@ import (
 	"felis.lolicon.best/internal/api"
 	"felis.lolicon.best/internal/config"
 	"felis.lolicon.best/internal/mailsettings"
+	"felis.lolicon.best/internal/naming"
 	"felis.lolicon.best/internal/platform"
 	"felis.lolicon.best/internal/store"
 
@@ -516,6 +517,19 @@ func validateEdgeHostname(label, host string, required bool) error {
 		return fmt.Errorf("%s must not start with a dot", label)
 	}
 	return nil
+}
+
+// validateAdminConsoleHostname checks the admin console host and how it pairs with the player console host, defaulted from the root domain when blank.
+func validateAdminConsoleHostname(rootDomain, panelInput, adminInput string) error {
+	admin := normalizeEdgeHostname(adminInput)
+	if err := validateEdgeHostname("admin console", admin, true); err != nil {
+		return err
+	}
+	panel := defaultPanelHostname(rootDomain, normalizeEdgeHostname(panelInput))
+	if strings.EqualFold(panel, admin) {
+		return errors.New("player and admin console hostnames must be different")
+	}
+	return naming.ValidateConsoleHosts(panel, admin)
 }
 
 func isHex32(s string) bool {

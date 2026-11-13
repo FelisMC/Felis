@@ -162,6 +162,16 @@ func ValidateHostname(host, rootDomain string) error {
 	return nil
 }
 
+// ValidateConsoleHosts requires the admin console host to be the player console host or a name under it, because passkeys are bound to the player console host.
+func ValidateConsoleHosts(panel, admin string) error {
+	p := strings.ToLower(strings.TrimSuffix(panel, "."))
+	a := strings.ToLower(strings.TrimSuffix(admin, "."))
+	if a == p || strings.HasSuffix(a, "."+p) {
+		return nil
+	}
+	return fmt.Errorf("the admin console hostname %s must be the player console hostname %s or a name under it, such as op.%s: passkeys belong to the player console hostname and cannot be registered or used on any other name", admin, panel, p)
+}
+
 // CallerToken ties an internal caller to its token Secret, the env var that holds the token, and the namespace the Secret must be replicated into.
 type CallerToken struct {
 	Caller string

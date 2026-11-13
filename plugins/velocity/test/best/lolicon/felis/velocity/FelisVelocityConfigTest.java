@@ -22,6 +22,13 @@ public final class FelisVelocityConfigTest {
         } catch (IOException e) {
             assertEq("an unknown mode names the key", true, e.getMessage().contains("mode must be \"nano\""));
         }
+
+        String named = base + "root-domain=example.org\n";
+        FelisVelocityConfig direct = load(dir, named + "panel-port=30443\n");
+        assertEq("direct access: the panel link carries the NodePort", "https://console.example.org:30443", direct.panelUrl());
+        assertEq("direct access: the operator link carries it too", "https://op.console.example.org:30443", direct.adminUrl());
+        Files.writeString(dir.resolve("felis-link.properties"), named + "panel-port=\n");
+        assertEq("a proxied panel drops the port without a restart", "https://console.example.org", direct.panelUrl());
         System.out.println("FelisVelocityConfigTest OK (" + checks + " checks)");
     }
 

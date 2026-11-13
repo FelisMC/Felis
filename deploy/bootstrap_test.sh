@@ -2206,11 +2206,12 @@ panel_hostname = "console.r.example.com"
 
 # The proxy's link properties and the panel certificate take the carried names.
 wvblock="$(awk '/^write_velocity_config\(\) \{/,/^}/' "$BS")"
+vpblock="$(awk '/^velocity_panel_port\(\) \{/,/^}/' "$BS")"
 ptblock="$(awk '/^ensure_panel_tls_cert\(\) \{/,/^}/' "$BS")"
 iicblock="$(awk '/^install_if_changed\(\) \{/,/^}/' "$BS")"
-{ [ -n "$wvblock" ] && [ -n "$ptblock" ] && [ -n "$iicblock" ]; } \
-  || { echo "FAIL: write_velocity_config / ensure_panel_tls_cert / install_if_changed not found in $BS"; exit 1; }
-printf '%s\n' "$iicblock" "$wvblock" "$ptblock" >> "$fnfile"
+{ [ -n "$wvblock" ] && [ -n "$vpblock" ] && [ -n "$ptblock" ] && [ -n "$iicblock" ]; } \
+  || { echo "FAIL: write_velocity_config / velocity_panel_port / ensure_panel_tls_cert / install_if_changed not found in $BS"; exit 1; }
+printf '%s\n' "$iicblock" "$vpblock" "$wvblock" "$ptblock" >> "$fnfile"
 cat > "$adir/felis.host.toml" <<'TOML'
 [auth]
 admin_hostname = "ops.example.org"
@@ -2228,7 +2229,7 @@ run_surfaces() { # state-dir out-dir; under the installer's shell options and ER
     . "$FNFILE"
     FELIS_ROOT_DOMAIN=r.example.com FORWARDING_SECRET=f SERVICE_TOKEN=t LOGIN_SERVER=login \
     LOBBY_SERVER=lobby FELIS_LOBBY_IMAGE="${LOBBY_IMG-lo}" FELIS_GAME_PORT=25565 VELOCITY_DIR=/v VELOCITY_USER=v NODE_IP=10.0.0.5 \
-    PANEL_TLS_CERT="$VOUT/c" PANEL_TLS_KEY="$VOUT/k"
+    PANEL_TLS_CERT="$VOUT/c" PANEL_TLS_KEY="$VOUT/k" FELIS_PANEL_NODEPORT=30443
     write_velocity_config
     ensure_panel_tls_cert'
 }
@@ -2239,6 +2240,7 @@ expect "the proxy routes the carried panel hostname" "panel-hostname=play.exampl
 expect "the proxy routes the carried admin hostname" "admin-hostname=ops.example.org" "$out"
 expect "the proxy keeps the root domain" "root-domain=r.example.com" "$out"
 expect "the proxy names the lobby" "lobby-server=lobby" "$out"
+expect "direct access gives the proxy the panel port for its links" "panel-port=30443" "$out"
 rm -rf "$adir/v"; mkdir "$adir/v"
 (LOBBY_IMG="" run_surfaces "$adir" "$adir/v")
 expect "without a lobby the proxy is told there is none" "lobby-server=" "$(tail -n 1 "$adir/v/felis-link.properties")"
@@ -2249,6 +2251,11 @@ rm -rf "$adir/v"; mkdir "$adir/v"
 (PUBLIC_IP=203.0.113.9 run_surfaces "$adir" "$adir/v")
 expect "a certificate made on a cloud host names its public address as well" 'IP.2 = 10.0.0.5
 IP.3 = 203.0.113.9' "$(cat "$adir/v/openssl.cnf" 2>&1)"
+printf '[auth]\nadmin_hostname = "ops.example.org"\npanel_hostname = "play.example.org"\nclient_ip_header = "X-Forwarded-For"\n' > "$adir/felis.host.toml"
+rm -rf "$adir/v"; mkdir "$adir/v"
+run_surfaces "$adir" "$adir/v"
+expect "behind a reverse proxy the proxy's links carry no port" 'panel-port=
+login-server=login' "$(cat "$adir/v/felis-link.properties" 2>&1)"
 
 # Use oversized sections to expose early-reader-exit SIGPIPE races under pipefail.
 { printf '[auth]\nadmin_hostname = "ops.example.org"\npanel_hostname = "play.example.org"\n'
@@ -2284,7 +2291,7 @@ run_link() { # velocity-dir [root-domain]
     stat() { echo "root:v 640"; }
     . "$FNFILE"
     STATE_DIR="$VD" FELIS_ROOT_DOMAIN="$RD" FORWARDING_SECRET=f SERVICE_TOKEN=t LOGIN_SERVER=login \
-    LOBBY_SERVER=lobby FELIS_GAME_PORT=25565 VELOCITY_DIR="$VD" VELOCITY_USER=v NODE_IP=10.0.0.5
+    LOBBY_SERVER=lobby FELIS_GAME_PORT=25565 VELOCITY_DIR="$VD" VELOCITY_USER=v NODE_IP=10.0.0.5 FELIS_PANEL_NODEPORT=30443
     write_velocity_config' 2>&1
 }
 ldir2="$(mktemp -d)"

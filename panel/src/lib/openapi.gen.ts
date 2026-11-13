@@ -4825,6 +4825,12 @@ export interface components {
             nodes: components["schemas"]["NodeUsage"][];
             /** @description Sign-in failures recorded in the last 24 hours. */
             loginFailures24h: number;
+            /** @description Per online, schedulable node, the memory it can still promise a new server: its allocatable memory less what the pods placed on it request. Present only with include=free_memory, and omitted when the host service is absent or does not answer. */
+            freeMemory?: {
+                node: string;
+                /** Format: int64 */
+                bytes: number;
+            }[];
         };
         /** @description One row of the caller's server list (internal/api/repo.go MyServerView). */
         MyServerView: {
@@ -6177,6 +6183,8 @@ export interface operations {
                         memory?: string;
                         memoryRequest?: string;
                     };
+                    /** @description The account that owns the new server; omitted, the server starts unclaimed. An administrator may name only themselves (403 forbidden otherwise); the Owner may name any active account (400 unknown_user otherwise). The owner's quota does not refuse it. */
+                    ownerId?: string;
                 };
             };
         };
@@ -11115,7 +11123,10 @@ export interface operations {
     };
     fleetUsage: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description free_memory adds freeMemory, worked out from the cluster on each request, so only a caller about to place a server asks for it. */
+                include?: "free_memory";
+            };
             header?: never;
             path?: never;
             cookie?: never;

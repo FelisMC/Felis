@@ -1365,6 +1365,18 @@ components:
           items: { $ref: '#/components/schemas/NodeUsage' }
           description: By node name; only nodes with a running server, and empty while current is null.
         loginFailures24h: { type: integer, minimum: 0, description: Sign-in failures recorded in the last 24 hours. }
+        freeMemory:
+          type: array
+          description: >-
+            Per online, schedulable node, the memory it can still promise a new server: its allocatable
+            memory less what the pods placed on it request. Present only with include=free_memory,
+            and omitted when the host service is absent or does not answer.
+          items:
+            type: object
+            required: [node, bytes]
+            properties:
+              node: { type: string }
+              bytes: { type: integer, format: int64, minimum: 0 }
 
     MyServerView:
       type: object
@@ -2714,6 +2726,12 @@ paths:
                     cpuRequest: { type: string }
                     memory: { type: string }
                     memoryRequest: { type: string }
+                ownerId:
+                  type: string
+                  description: >-
+                    The account that owns the new server; omitted, the server starts unclaimed. An
+                    administrator may name only themselves (403 forbidden otherwise); the Owner may name
+                    any active account (400 unknown_user otherwise). The owner's quota does not refuse it.
       responses:
         '201':
           description: Created; starts Stopped.
@@ -7489,6 +7507,12 @@ paths:
       x-felis-face: [external]
       x-felis-tier: admin
       security: [{ sessionCookie: [] }]
+      parameters:
+        - name: include
+          in: query
+          required: false
+          description: free_memory adds freeMemory, worked out from the cluster on each request, so only a caller about to place a server asks for it.
+          schema: { type: string, enum: [free_memory] }
       responses:
         '200':
           description: The platform usage view.

@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"felis.lolicon.best/internal/naming"
 )
 
 type action struct {
@@ -357,6 +359,11 @@ func checkConnection(r Request) error {
 	}
 	if err := host("adminHost"); err != nil {
 		return err
+	}
+	if panel, admin := r.Params["panelHost"], r.Params["adminHost"]; panel != "" && admin != "" {
+		if err := naming.ValidateConsoleHosts(panel, admin); err != nil {
+			return err
+		}
 	}
 	switch r.Params["mode"] {
 	case "local", "reverse-proxy":

@@ -146,14 +146,7 @@ func (m *edgeModel) build() *huh.Form {
 				CharLimit(253).
 				Value(&m.adminHost).
 				Validate(func(s string) error {
-					admin := normalizeEdgeHostname(s)
-					if err := validateEdgeHostname("admin console", admin, true); err != nil {
-						return err
-					}
-					if panel := normalizeEdgeHostname(m.panelHost); panel != "" && strings.EqualFold(panel, admin) {
-						return errors.New("player and admin console hostnames must be different")
-					}
-					return nil
+					return validateAdminConsoleHostname(m.rootDomain, m.panelHost, s)
 				}),
 			huh.NewInput().
 				Title("Tunnel name").

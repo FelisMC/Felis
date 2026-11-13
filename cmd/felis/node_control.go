@@ -126,6 +126,7 @@ func cmdNodeControl(args []string, stdout, stderr io.Writer) int {
 	}
 	manager.ArtifactDirs = []string{supportBundleDir}
 	manager.Host = execute.overview
+	manager.FreeMemory = execute.freeMemory
 	manager.OffsiteKey = offsiteKey
 	quiet, ignore := "/run/felis/watchdog-quiet-until", defaultIgnoreFile
 	if w, found, err := watchdogUnitFlags(filepath.Join(systemdUnitDir, "felis-watchdog.service")); err == nil && found {

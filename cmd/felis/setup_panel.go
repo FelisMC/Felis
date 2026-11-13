@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"felis.lolicon.best/internal/config"
 )
 
 const defaultPanelNodePort = 30443
@@ -30,6 +32,14 @@ func setupPanelNodePort() int {
 		return defaultPanelNodePort
 	}
 	return port
+}
+
+// panelLinkPort is the port panel links carry: the NodePort under direct access, none behind a reverse proxy or tunnel.
+func panelLinkPort(auth config.AuthConfig, nodePort func() int) int {
+	if auth.DirectAccess() {
+		return nodePort()
+	}
+	return 0
 }
 
 func localPanelURL(rootDomain, adminHostname string) string {

@@ -36,11 +36,18 @@ import { formatBytes } from "@/lib/format";
 import { useAsync } from "@/lib/hooks";
 import { hostFor, type RuntimeConfig } from "@/lib/config";
 import { DISPLAY_NAME_MAX, serverNameIssue, type ServerNameIssue } from "@/lib/naming";
+import { useTier } from "@/lib/tier";
 import type { AutostartPolicy, ServerQuota } from "@/lib/types";
+import { cn } from "@/lib/utils";
 import { InlineError } from "@/components/MessageLine";
+import { UserPicker, type AssignUser } from "@/components/AssignServerDialog";
 
 // Expose structured fields only; the backend validates resource limits and image eligibility.
 
+const MEMORY_DEFAULT_GIB = 4;
+const MEMORY_STEP_GIB = 0.5;
+
+type OwnerChoice = "me" | "other" | "none";
 
 function policyOptions(t: (key: string) => string): { value: AutostartPolicy; label: string }[] {
   return [
@@ -80,6 +87,8 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
 
   const nodes = useAsync(() => (open && staff && cfg.distributed ? api.nodes() : Promise.resolve(null)), [open, staff, cfg.distributed]);
   const workers = (nodes.data ?? []).filter((n) => n.role === "worker" && n.ready && n.approved);
+  const fleetUsage = useAsync(() => (open && staff ? api.fleetUsage({ freeMemory: true }) : Promise.resolve(null)), [open, staff]);
+  const { identity, isOwner } = useTier();
 
   const [form, setForm] = useState<Form>({
     name: "",
@@ -87,10 +96,14 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
     displayName: "",
     nodeName: "",
     image: "",
-    memory: "4",
+    memory: String(MEMORY_DEFAULT_GIB),
     storage: "10",
-    autostartPolicy: "ownerOnly",
+    autostartPolicy: self ? "ownerOnly" : "allowlist",
   });
+  // Memory follows the derived default until the user types one.
+  const [memoryTouched, setMemoryTouched] = useState(false);
+  const [owner, setOwner] = useState<OwnerChoice>("me");
+  const [ownerUser, setOwnerUser] = useState<AssignUser | null>(null);
   const [software, setSoftware] = useState<SoftwareChoice>(EMPTY_SOFTWARE);
   const [eula, setEula] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -139,24 +152,35 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
   // What the caller's quota leaves for memory and storage; an option past it is
   // offered disabled, with the reason beside it.
   const limits = self?.quota.limits ?? null;
-  const usage = self?.quota.usage;
-  const memoryLeft = limits?.max_memory_mb != null && usage ? limits.max_memory_mb - usage.memory_mb : Infinity;
-  const storageLeft = limits?.max_storage_gb != null && usage ? limits.max_storage_gb * 1024 - usage.storage_mb : Infinity;
+  const quotaUsage = self?.quota.usage;
+  const memoryLeft = limits?.max_memory_mb != null && quotaUsage ? limits.max_memory_mb - quotaUsage.memory_mb : Infinity;
+  const storageLeft = limits?.max_storage_gb != null && quotaUsage ? limits.max_storage_gb * 1024 - quotaUsage.storage_mb : Infinity;
+  // What the chosen node, or the roomiest one the server could go to, can still promise a new server.
+  const free = (fleetUsage.data?.freeMemory ?? []).filter((n) =>
+    !cfg.distributed || (form.nodeName ? n.node === form.nodeName : workers.some((w) => w.name === n.node)));
+  const freeBytes = free.length === 0 ? null : Math.max(...free.map((n) => n.bytes));
+  const freeMB = freeBytes === null ? Infinity : freeBytes / 2 ** 20;
+  const roomGiB = Math.min(freeMB, memoryLeft) / 1024;
+  const defaultMemory = Math.max(1, Math.min(MEMORY_DEFAULT_GIB, Math.floor(roomGiB / MEMORY_STEP_GIB) * MEMORY_STEP_GIB));
+  const memory = memoryTouched ? form.memory : String(defaultMemory);
   // Memory and storage are typed in GiB: memory from 1, in steps as fine as the
   // user likes; storage in whole GiB, as a volume is sized.
-  const memoryGiB = parseGiB(form.memory);
+  const memoryGiB = parseGiB(memory);
   const storageGiB = parseGiB(form.storage);
   const memoryIssue =
     memoryGiB === null || memoryGiB < 1 ? "invalid" : memoryGiB * 1024 > memoryLeft ? "quota" : null;
   const storageIssue =
     storageGiB === null || storageGiB < 1 || !Number.isInteger(storageGiB) ? "invalid" : storageGiB * 1024 > storageLeft ? "quota" : null;
   const left = (mb: number) => String(Math.max(0, Math.floor((mb / 1024) * 10) / 10));
+  const overFree = memoryIssue === null && memoryGiB !== null && memoryGiB * 1024 > freeMB;
+  const ownerId = !staff || owner === "none" ? undefined : owner === "me" ? identity?.user_id : ownerUser?.id;
 
   const uploadJar = useSoftware && software.type === "custom" && !!jarFile;
   const canSubmit = created ? !submitting : nameIssue === null &&
     subdomainIssue === null &&
     (useSoftware ? softwareReady(software) && eula : !!image) &&
     (!staff || !cfg.distributed || workers.some((n) => n.name === form.nodeName)) &&
+    (!staff || owner !== "other" || !!ownerUser) &&
     memoryIssue === null &&
     storageIssue === null &&
     !submitting;
@@ -210,6 +234,7 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
         storage: gibQuantity(storageGiB!),
         autostartPolicy: form.autostartPolicy,
         ...(useSoftware ? { software: softwareRequest(software), acceptEula: eula } : { image }),
+        ...(ownerId ? { ownerId } : {}),
       });
     }
   }
@@ -239,11 +264,11 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
 
         {/* Once the server exists only its jar upload is left, so the form is held. */}
         <fieldset disabled={!!created} className="grid min-w-0 gap-4">
-          {self && limits && usage && (
+          {self && limits && quotaUsage && (
             <p className="rounded-md border border-border bg-muted/40 p-2.5 text-xs text-muted-foreground">
               {t("self_create_quota", {
-                servers: limits.max_servers != null ? `${usage.servers} / ${limits.max_servers}` : usage.servers,
-                memory: limits.max_memory_mb != null ? `${usage.memory_mb} / ${limits.max_memory_mb} MB` : `${usage.memory_mb} MB`,
+                servers: limits.max_servers != null ? `${quotaUsage.servers} / ${limits.max_servers}` : quotaUsage.servers,
+                memory: limits.max_memory_mb != null ? `${quotaUsage.memory_mb} / ${limits.max_memory_mb} MB` : `${quotaUsage.memory_mb} MB`,
               })}
             </p>
           )}
@@ -350,6 +375,24 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
             />
           </div>
 
+          {staff && (
+            <div className="grid gap-2">
+              <Label htmlFor="cs-owner">{t("create_server_owner")}</Label>
+              <Select value={owner} onValueChange={(v) => { setOwner(v as OwnerChoice); setError(null); }}>
+                <SelectTrigger id="cs-owner" aria-describedby="cs-owner-hint"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="me">{identity?.email ? t("create_server_owner_me_named", { account: identity.email }) : t("create_server_owner_me")}</SelectItem>
+                  {isOwner && <SelectItem value="other">{t("create_server_owner_other")}</SelectItem>}
+                  <SelectItem value="none">{t("create_server_owner_none")}</SelectItem>
+                </SelectContent>
+              </Select>
+              {owner === "other" && <UserPicker exclude={identity?.email} picked={ownerUser} onPick={(u) => { setOwnerUser(u); setError(null); }} />}
+              <p id="cs-owner-hint" className="text-xs text-muted-foreground">
+                {t(owner === "none" ? "create_server_owner_none_hint" : "create_server_owner_hint")}
+              </p>
+            </div>
+          )}
+
           {staff && cfg.distributed && (
             <div className="grid gap-2">
               <Label htmlFor="cs-node">{t("node")}</Label>
@@ -367,19 +410,26 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
               <Label htmlFor="create-server-memory">{t("create_server_memory")}</Label>
               <GiBInput
                 id="create-server-memory"
-                value={form.memory}
-                onChange={(v) => set("memory", v)}
-                invalid={!!form.memory && memoryIssue !== null}
+                value={memory}
+                onChange={(v) => { setMemoryTouched(true); set("memory", v); }}
+                invalid={!!memory && memoryIssue !== null}
                 describedBy="create-server-memory-hint"
               />
-              <p id="create-server-memory-hint" className={memoryIssue ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>
+              <p
+                id="create-server-memory-hint"
+                className={cn("text-xs", memoryIssue ? "text-destructive" : overFree ? "text-amber-700 dark:text-amber-300" : "text-muted-foreground")}
+              >
                 {memoryIssue === "invalid"
                   ? t("create_server_memory_invalid")
                   : memoryIssue === "quota"
                     ? t("create_server_over_quota", { left: left(memoryLeft) })
-                    : memoryLeft !== Infinity
-                      ? t("create_server_memory_hint_left", { left: left(memoryLeft) })
-                      : t("create_server_memory_hint")}
+                    : overFree
+                      ? t("create_server_memory_over_free", { free: left(freeMB) })
+                      : freeBytes !== null
+                        ? t("create_server_memory_hint_free", { free: left(freeMB) })
+                        : memoryLeft !== Infinity
+                          ? t("create_server_memory_hint_left", { left: left(memoryLeft) })
+                          : t("create_server_memory_hint")}
               </p>
             </div>
             <div className="grid content-start gap-2">

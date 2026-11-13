@@ -73,6 +73,7 @@ func TestHostTaskRequests(t *testing.T) {
 		{Action: "connection-configure", Params: map[string]string{"mode": "cloudflare", "adminHost": "op.example.com", "identity": "owner@example.com", "accountID": strings.Repeat("a", 32)}, ConfirmMaintenance: true},
 		{Action: "connection-configure", Params: map[string]string{"mode": "local", "identity": "@example.com"}, ConfirmMaintenance: true},
 		{Action: "connection-configure", Params: map[string]string{"mode": "reverse-proxy"}, ConfirmMaintenance: true},
+		{Action: "connection-configure", Params: map[string]string{"mode": "reverse-proxy", "panelHost": "play.example.com", "adminHost": "admin.example.com"}, ConfirmMaintenance: true},
 		{Action: "converge", Params: map[string]string{"userRcon": "true"}},
 		{Action: "host-settings"},
 		{Action: "host-settings", Params: map[string]string{"dbBackupTime": "25:00"}},

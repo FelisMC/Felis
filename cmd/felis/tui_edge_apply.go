@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,7 +35,7 @@ func applyCloudflareEdge(ctx context.Context, result *cfsetup.Result, panelHost,
 	}
 	// cloudflared is the only way in once the NodePort is fenced, so the
 	// visitor address it writes can key the sign-in rate limit.
-	if err := writeConnectionConfig(panelHost, adminHost, result.AccessAud, "CF-Connecting-IP"); err != nil {
+	if err := writeConnectionConfig(ctx, panelHost, adminHost, result.AccessAud, "CF-Connecting-IP"); err != nil {
 		return err
 	}
 	if err := applyFelisConfigSecret(ctx); err != nil {
@@ -65,7 +68,7 @@ func applyReverseProxy(ctx context.Context, panelHost, adminHost string) error {
 		return fmt.Errorf("admin hostname is required")
 	}
 	// Caddy, nginx and Traefik all append the peer they saw to X-Forwarded-For.
-	if err := writeConnectionConfig(panelHost, adminHost, "", "X-Forwarded-For"); err != nil {
+	if err := writeConnectionConfig(ctx, panelHost, adminHost, "", "X-Forwarded-For"); err != nil {
 		return err
 	}
 	if err := applyFelisConfigSecret(ctx); err != nil {
@@ -77,14 +80,42 @@ func applyReverseProxy(ctx context.Context, panelHost, adminHost string) error {
 	return kubectl(ctx, "-n", "felis", "rollout", "status", "deployment/felis-api", "--timeout=180s")
 }
 
-// An empty audience clears the old Cloudflare configuration in both host and Pod files.
-func writeConnectionConfig(panelHost, adminHost, aud, clientIPHeader string) error {
+// An empty audience clears the old Cloudflare configuration in both host and Pod files; the host proxy's panel links follow the new access method.
+func writeConnectionConfig(ctx context.Context, panelHost, adminHost, aud, clientIPHeader string) error {
 	for _, path := range []string{hostSetupConfigPath, podSetupConfigPath} {
 		if err := updateAuthConfig(path, panelHost, adminHost, aud, clientIPHeader); err != nil {
 			return err
 		}
 	}
-	return nil
+	auth := config.AuthConfig{AccessJWTAud: aud, ClientIPHeader: clientIPHeader}
+	return syncProxyPanelPort(defaultLinkPropsPath, panelLinkPort(auth, func() int { return livePanelNodePort(ctx) }))
+}
+
+// livePanelNodePort reads the NodePort from the felis-api Service, because node-control does not inherit the installer's setting.
+func livePanelNodePort(ctx context.Context) int {
+	out, err := kubectlOutput(ctx, "-n", "felis", "get", "service", "felis-api", "-o", "jsonpath={.spec.ports[0].nodePort}")
+	if port, convErr := strconv.Atoi(strings.TrimSpace(string(out))); err == nil && convErr == nil && port > 0 {
+		return port
+	}
+	return setupPanelNodePort()
+}
+
+const linkPropsPanelPort = "panel-port"
+
+// syncProxyPanelPort records the port in the host proxy's felis-link.properties, which the proxy rereads per command; a proxy elsewhere is skipped.
+func syncProxyPanelPort(path string, port int) error {
+	want := ""
+	if port != 0 {
+		want = strconv.Itoa(port)
+	}
+	have, err := readKeyValues(path, linkPropsPanelPort)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil || have[linkPropsPanelPort] == want {
+		return err
+	}
+	return setKeyValueLines(path, "=", [][2]string{{linkPropsPanelPort, want}})
 }
 
 func updateAuthConfig(path, panelHost, adminHost, aud, clientIPHeader string) error {

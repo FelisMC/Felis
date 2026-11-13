@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -166,14 +165,7 @@ func (m *reverseProxyModel) build() *huh.Form {
 			Title("Admin console hostname").
 			Value(&m.adminHost).
 			Validate(func(s string) error {
-				admin := normalizeEdgeHostname(s)
-				if err := validateEdgeHostname("admin console", admin, true); err != nil {
-					return err
-				}
-				if panel := normalizeEdgeHostname(m.panelHost); panel != "" && strings.EqualFold(panel, admin) {
-					return errors.New("player and admin console hostnames must be different")
-				}
-				return nil
+				return validateAdminConsoleHostname(m.rootDomain, m.panelHost, s)
 			}),
 	)))
 }

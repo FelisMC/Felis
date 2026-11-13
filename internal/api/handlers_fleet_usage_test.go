@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"felis.lolicon.best/internal/nodecontrol"
 )
 
 func TestFleetUsageIsForStaffAndCountsLoginFailures(t *testing.T) {
@@ -45,5 +47,24 @@ func TestFleetUsageIsForStaffAndCountsLoginFailures(t *testing.T) {
 	if view.Current == nil || view.Current.Running != 1 || view.Current.CPUMilli != 250 || len(view.History) != 1 ||
 		len(view.Nodes) != 1 || view.Nodes[0].Name != "worker-a" || view.LoginFailures24h != 2 {
 		t.Fatalf("with a sampler: %s", w.Body.String())
+	}
+}
+
+func TestFleetUsageAsksForFreeMemoryOnlyWhenIncluded(t *testing.T) {
+	a := newTestAPI(newFakeRepo(), newFakeCluster())
+	a.External = staticExternal{p: fileAdmin}
+	asked := 0
+	a.FreeMemory = func(context.Context) ([]nodecontrol.NodeMemory, error) {
+		asked++
+		return []nodecontrol.NodeMemory{{Node: "host", Bytes: 2 << 30}}, nil
+	}
+	var plain, with map[string]json.RawMessage
+	_ = json.Unmarshal(do(a.ExternalHandler(), "GET", "/api/v1/fleet/usage", "", nil).Body.Bytes(), &plain)
+	if _, ok := plain["freeMemory"]; ok || asked != 0 {
+		t.Fatalf("a plain poll asked the host (%d calls) or carried freeMemory: %v", asked, plain)
+	}
+	_ = json.Unmarshal(do(a.ExternalHandler(), "GET", "/api/v1/fleet/usage?include=free_memory", "", nil).Body.Bytes(), &with)
+	if asked != 1 || string(with["freeMemory"]) != `[{"node":"host","bytes":2147483648}]` {
+		t.Fatalf("include=free_memory: %d calls, freeMemory %s", asked, with["freeMemory"])
 	}
 }

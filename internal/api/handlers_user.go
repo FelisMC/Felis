@@ -394,6 +394,8 @@ type createServerRequest struct {
 	Software        *softwareRequest `json:"software,omitempty"`
 	// AcceptEULA authorizes writing eula=true on every start of runtime server software.
 	AcceptEULA bool `json:"acceptEula,omitempty"`
+	// OwnerID gives the new server to an account; empty leaves it unclaimed.
+	OwnerID string `json:"ownerId,omitempty"`
 }
 
 type resourceRequest struct {
@@ -407,6 +409,11 @@ func (a *API) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 	var body createServerRequest
 	if err := decodeJSON(w, r, &body); err != nil {
 		writeError(w, r, err)
+		return
+	}
+	// Giving a server to someone else is an assignment, which only the Owner may make.
+	if p := principalFromContext(r.Context()); body.OwnerID != "" && body.OwnerID != p.UserID && !p.IsOwner() {
+		writeError(w, r, newError(http.StatusForbidden, "forbidden", "only the platform owner can create a server for another account"))
 		return
 	}
 
@@ -473,8 +480,6 @@ func (a *API) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Staff-created servers start unowned; user quota is charged when claiming, not at creation.
-
 	if err := a.checkNewServerName(r.Context(), body.Name, body.Subdomain); err != nil {
 		writeError(w, r, err)
 		return
@@ -493,6 +498,19 @@ func (a *API) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	// Staff choose the owner deliberately, so the owner's self-service quota does not refuse it.
+	var over []QuotaExcess
+	if body.OwnerID != "" {
+		res := ResourceSpec{CPUMilli: cpuMilli, MemoryMB: memMB, StorageMB: storMB}
+		if _, over, err = a.Repo.AssignServer(r.Context(), body.Name, body.OwnerID, res, true); err != nil {
+			if derr := a.Repo.DiscardSeededServer(context.WithoutCancel(r.Context()), body.Name); derr != nil {
+				log.Printf("api: server %s could not be given to its owner and its row could not be discarded (request_id=%s): %v",
+					body.Name, requestIDFromContext(r.Context()), derr)
+			}
+			a.writeAssignError(w, r, err, over)
+			return
+		}
+	}
 
 	in := CreateServerInput{
 		NodeName:        body.NodeName,
@@ -507,6 +525,13 @@ func (a *API) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 		Software:        sw,
 	}
 	if err := a.Cluster.CreateServer(r.Context(), in); err != nil {
+		// An owned row with no server behind it would count against the owner's quota.
+		if body.OwnerID != "" {
+			if derr := a.Repo.DiscardSeededServer(context.WithoutCancel(r.Context()), body.Name); derr != nil {
+				log.Printf("api: server %s refused by the cluster and its owned row could not be discarded (request_id=%s): %v",
+					body.Name, requestIDFromContext(r.Context()), derr)
+			}
+		}
 		if errors.Is(err, ErrConflict) {
 			writeError(w, r, newError(http.StatusConflict, "already_exists",
 				"a server named %q already exists", body.Name))
@@ -516,7 +541,11 @@ func (a *API) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.audit(r, "server.create", body.Name)
+	if body.OwnerID != "" {
+		a.auditDetail(r, "server.create", body.Name, map[string]any{"owner_from": nil, "owner_to": body.OwnerID, "over_quota": nonNilExcess(over)})
+	} else {
+		a.audit(r, "server.create", body.Name)
+	}
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"name":         body.Name,
 		"subdomain":    body.Subdomain,

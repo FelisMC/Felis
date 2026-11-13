@@ -3527,6 +3527,12 @@ felis_internal_ip() {
   printf '%s' "$ip"
 }
 
+# Direct access serves the panel only on its NodePort, so the proxy's web links carry it; behind a proxy or tunnel they carry none.
+velocity_panel_port() {
+  [ -z "$(auth_hostname client_ip_header "")" ] && [ -z "$(auth_hostname access_jwt_aud "")" ] || return 0
+  printf '%s' "$FELIS_PANEL_NODEPORT"
+}
+
 write_velocity_config() {
   local api_ip tmp panel_host admin_host
   api_ip="$(felis_internal_ip)"
@@ -3601,6 +3607,7 @@ service-token=${SERVICE_TOKEN}
 root-domain=${FELIS_ROOT_DOMAIN}
 panel-hostname=${panel_host}
 admin-hostname=${admin_host}
+panel-port=$(velocity_panel_port)
 login-server=${LOGIN_SERVER}
 lobby-server=${FELIS_LOBBY_IMAGE:+${LOBBY_SERVER}}
 EOF
@@ -3665,7 +3672,7 @@ EOF
 }
 
 # Fingerprint the unit, JRE, JARs, and installer-owned files; exclude plugin-generated runtime configuration.
-# Exclude the hot-reloaded service token from restart fingerprints.
+# Exclude the hot-reloaded service token and panel port from restart fingerprints.
 velocity_fingerprint() {
   local f sum
   for f in "$VELOCITY_SERVICE" "${JRE_DIR}/release" "${VELOCITY_DIR}/velocity.jar" \
@@ -3673,7 +3680,7 @@ velocity_fingerprint() {
       "${VELOCITY_DIR}/plugins/felis-link/felis-link.properties" "${VELOCITY_DIR}"/plugins/*.jar; do
     [ -f "$f" ] || continue
     case "$f" in
-      */felis-link.properties) sum="$({ grep -v '^service-token=' "$f" || true; } | sha256sum | cut -d' ' -f1)" ;;
+      */felis-link.properties) sum="$({ grep -v -e '^service-token=' -e '^panel-port=' "$f" || true; } | sha256sum | cut -d' ' -f1)" ;;
       *) sum="$(sha256sum <"$f" | cut -d' ' -f1)" ;;
     esac
     printf '%s %s\n' "$sum" "$f"

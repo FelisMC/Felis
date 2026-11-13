@@ -18,6 +18,7 @@ import (
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/fileedit"
 	"felis.lolicon.best/internal/naming"
+	"felis.lolicon.best/internal/nodecontrol"
 )
 
 type API struct {
@@ -84,6 +85,9 @@ type API struct {
 
 	// PanelPort goes into panel URLs when the console is not served on 443; zero leaves it out.
 	PanelPort int
+
+	// FreeMemory reports each schedulable node's unrequested memory for fleet usage; nil or a failure leaves it out.
+	FreeMemory func(context.Context) ([]nodecontrol.NodeMemory, error)
 
 	WakeCooldown time.Duration
 

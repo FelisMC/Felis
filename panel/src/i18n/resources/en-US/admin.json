@@ -875,6 +875,7 @@
   "access_mode_cloudflare_hint": "The host creates a tunnel, routes the hostnames, and puts Cloudflare Access in front of the admin console. The panel port is then closed to the public.",
   "access_panel_host": "Panel hostname",
   "access_admin_host": "Admin console hostname",
+  "access_admin_host_passkeys": "Use the panel hostname or a name under it, such as op.{{panel}}. Passkeys are bound to the panel hostname and cannot be registered or used on another name.",
   "access_identity": "Who may sign in",
   "access_identity_hint": "An email address, or @ followed by an email domain.",
   "access_account": "Cloudflare account ID",

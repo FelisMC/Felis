@@ -146,6 +146,28 @@ func TestValidateHostname(t *testing.T) {
 	}
 }
 
+// A passkey's relying party is the player console host; WebAuthn admits it only on that host and names under it.
+func TestValidateConsoleHosts(t *testing.T) {
+	cases := []struct {
+		panel, admin string
+		ok           bool
+	}{
+		{"console.example.com", "op.console.example.com", true},
+		{"example.com", "admin.example.com", true},
+		{"console.example.com", "console.example.com", true},
+		{"Console.Example.com", "op.console.example.com.", true},
+		{"play.example.com", "admin.example.com", false},
+		{"console.example.com", "opconsole.example.com", false},
+		{"op.console.example.com", "console.example.com", false},
+	}
+	for _, c := range cases {
+		err := naming.ValidateConsoleHosts(c.panel, c.admin)
+		if (err == nil) != c.ok {
+			t.Errorf("ValidateConsoleHosts(%q, %q) = %v, want ok=%v", c.panel, c.admin, err, c.ok)
+		}
+	}
+}
+
 func TestCleanDisplayName(t *testing.T) {
 	str := func(rs ...rune) string { return string(rs) }
 	rainbow := str(0x1F3F3, 0xFE0F, 0x200D, 0x1F308)

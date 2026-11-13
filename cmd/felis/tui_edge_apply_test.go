@@ -1,8 +1,12 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"felis.lolicon.best/internal/config"
 )
 
 func TestOriginFenceRuleset(t *testing.T) {
@@ -45,6 +49,38 @@ func TestOriginFenceRulesetHonorsPort(t *testing.T) {
 	}
 	if strings.Contains(rs, "30443") {
 		t.Errorf("ruleset must not carry the default 30443 when a different port is configured:\n%s", rs)
+	}
+}
+
+func TestProxyPanelPortFollowsAccessMethod(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "felis-link.properties")
+	if err := os.WriteFile(path, []byte("service-token=secret\npanel-hostname=console.example.org\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	nodePort := func() int { return 30443 }
+	apply := func(auth config.AuthConfig) string {
+		t.Helper()
+		if err := syncProxyPanelPort(path, panelLinkPort(auth, nodePort)); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(raw)
+	}
+
+	if got := apply(config.AuthConfig{}); !strings.Contains(got, "\npanel-port=30443\n") || !strings.HasPrefix(got, "service-token=secret\n") {
+		t.Fatalf("direct access must give the proxy the NodePort and keep its token:\n%s", got)
+	}
+	if got := apply(config.AuthConfig{ClientIPHeader: "X-Forwarded-For"}); !strings.Contains(got, "\npanel-port=\n") {
+		t.Fatalf("a reverse proxy serves the panel on 443, so links carry no port:\n%s", got)
+	}
+	if got := apply(config.AuthConfig{AccessJWTAud: "aud"}); !strings.Contains(got, "\npanel-port=\n") {
+		t.Fatalf("a Cloudflare Tunnel serves the panel on 443, so links carry no port:\n%s", got)
+	}
+	if err := syncProxyPanelPort(filepath.Join(t.TempDir(), "absent.properties"), 30443); err != nil {
+		t.Fatalf("a proxy on another host must be skipped: %v", err)
 	}
 }
 

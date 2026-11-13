@@ -115,6 +115,11 @@ func (a AuthConfig) EffectiveClientIPHeader() string {
 	return ""
 }
 
+// DirectAccess reports that no reverse proxy or Cloudflare Tunnel fronts the panel, so it is reached on its NodePort.
+func (a AuthConfig) DirectAccess() bool {
+	return a.ClientIPHeader == "" && a.AccessJWTAud == ""
+}
+
 type K8sConfig struct {
 	Namespace   string `toml:"namespace"`
 	EgressMode  string `toml:"egress_mode"`

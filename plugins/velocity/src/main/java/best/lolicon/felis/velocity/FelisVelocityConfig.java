@@ -18,17 +18,20 @@ final class FelisVelocityConfig {
     static final String ENV_LOBBY = "FELIS_LOBBY_SERVER";
     static final String ENV_PANEL_HOSTNAME = "FELIS_PANEL_HOSTNAME";
     static final String ENV_ADMIN_HOSTNAME = "FELIS_ADMIN_HOSTNAME";
+    static final String ENV_PANEL_PORT = "FELIS_PANEL_PORT";
     static final String ENV_MODE = "FELIS_PROXY_MODE";
     private static final String KEY_ROOT_DOMAIN = "root-domain";
     private static final String KEY_LOGIN = "login-server";
     private static final String KEY_LOBBY = "lobby-server";
     private static final String KEY_PANEL_HOSTNAME = "panel-hostname";
     private static final String KEY_ADMIN_HOSTNAME = "admin-hostname";
+    private static final String KEY_PANEL_PORT = "panel-port";
     private static final String KEY_MODE = "mode";
     static final String MODE_NANO = "nano";
     private static final String DEFAULT_LOGIN = "login";
     private static final String DEFAULT_LOBBY = "lobby";
 
+    private final Path file;
     private final LinkConfig linkConfig;
     private final String rootDomain;  // null → routing disabled
     private final String loginServer;
@@ -37,9 +40,10 @@ final class FelisVelocityConfig {
     private final String adminHostname;  // null → fall back to op.console.<root>
     private final boolean nano;
 
-    private FelisVelocityConfig(LinkConfig linkConfig, String rootDomain,
+    private FelisVelocityConfig(Path file, LinkConfig linkConfig, String rootDomain,
                                 String loginServer, String lobbyServer,
                                 String panelHostname, String adminHostname, boolean nano) {
+        this.file = file;
         this.linkConfig = linkConfig;
         this.rootDomain = rootDomain;
         this.loginServer = loginServer;
@@ -69,7 +73,7 @@ final class FelisVelocityConfig {
             throw new IOException("login-server and lobby-server must be different");
         }
         return new FelisVelocityConfig(
-                link, root == null ? null : root.toLowerCase(Locale.ROOT), login, lobby,
+                file, link, root == null ? null : root.toLowerCase(Locale.ROOT), login, lobby,
                 panel == null ? null : panel.toLowerCase(Locale.ROOT),
                 admin == null ? null : admin.toLowerCase(Locale.ROOT), nano);
     }
@@ -113,6 +117,50 @@ final class FelisVelocityConfig {
             return adminHostname;
         }
         return rootDomain == null ? null : "op.console." + rootDomain;
+    }
+
+    /** panelUrl is the player web panel's address with the panel port, or null when no host is configured. */
+    String panelUrl() {
+        return webUrl(panelHostname(), panelPort());
+    }
+
+    /** adminUrl is the operator console's address with the panel port, or null when no host is configured. */
+    String adminUrl() {
+        return webUrl(adminHostname(), panelPort());
+    }
+
+    // panelPort is read on every call, so a changed access method reaches the proxy without a restart.
+    private String panelPort() {
+        String env = System.getenv(ENV_PANEL_PORT);
+        if (env != null && !env.trim().isEmpty()) {
+            return env;
+        }
+        Properties props = new Properties();
+        try (InputStream in = Files.newInputStream(file)) {
+            props.load(in);
+        } catch (IOException | IllegalArgumentException e) {
+            return null;
+        }
+        return props.getProperty(KEY_PANEL_PORT);
+    }
+
+    // webUrl leaves out a port that is missing, invalid or 443.
+    static String webUrl(String host, String rawPort) {
+        if (host == null) {
+            return null;
+        }
+        String port = trimToNull(rawPort);
+        if (port != null) {
+            try {
+                int p = Integer.parseInt(port);
+                if (p > 0 && p < 65536 && p != 443) {
+                    return "https://" + host + ":" + p;
+                }
+            } catch (NumberFormatException ignored) {
+                // no port
+            }
+        }
+        return "https://" + host;
     }
 
     /** nano is true on a Felis-nano network: the proxy keeps its own routing and Felis handles only sign-in. */

@@ -136,7 +136,7 @@ function AssignForm({
         <ServerPicker user={user} picked={pickedServer} onPick={(s) => pick(setPickedServer, s)} />
       )}
       {server && !user && (
-        <UserPicker server={server} picked={pickedUser} onPick={(u) => pick(setPickedUser, u)} />
+        <UserPicker exclude={server.owner} picked={pickedUser} onPick={(u) => pick(setPickedUser, u)} />
       )}
 
       {target && assignee && preview.loading && (
@@ -229,7 +229,8 @@ function ServerPicker({ user, picked, onPick }: { user: AssignUser; picked: Assi
   );
 }
 
-function UserPicker({ server, picked, onPick }: { server: AssignServer; picked: AssignUser | null; onPick: (u: AssignUser) => void }) {
+/** UserPicker searches the active accounts; exclude leaves out one account named as the fleet names an owner. */
+export function UserPicker({ exclude, picked, onPick }: { exclude?: string; picked: AssignUser | null; onPick: (u: AssignUser) => void }) {
   const { t } = useTranslation("admin");
   const [filter, setFilter] = useState("");
   const [search, setSearch] = useState("");
@@ -244,7 +245,7 @@ function UserPicker({ server, picked, onPick }: { server: AssignServer; picked: 
     [search],
     { keepPrevious: true },
   );
-  const rows = (users.data?.users ?? []).filter((u) => !u.disabled && userIdentity(u) !== server.owner);
+  const rows = (users.data?.users ?? []).filter((u) => !u.disabled && userIdentity(u) !== exclude);
 
   return (
     <Picker

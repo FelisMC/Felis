@@ -679,14 +679,14 @@ public final class FelisVelocityPlugin {
         async(player, () -> {
             try {
                 apiClient.migrateStart(uuid);
-                String panelHost = config.panelHostname();
+                String panelUrl = config.panelUrl();
                 player.sendMessage(Component.text(
                         zh ? "迁移已发起——请在网页控制台完成："
                            : "Migration started — finish it on the web console:", NamedTextColor.GREEN));
                 player.sendMessage(Component.text(
-                        "  " + (panelHost == null
+                        "  " + (panelUrl == null
                                 ? (zh ? "玩家网页控制台" : "the players' web console")
-                                : "https://" + panelHost + "/account"),
+                                : panelUrl + "/account"),
                         NamedTextColor.WHITE));
                 player.sendMessage(Component.text(
                         zh ? "你需要确认身份、指定接收服务器的账户，然后获得一个迁移码。"
@@ -704,9 +704,9 @@ public final class FelisVelocityPlugin {
             return;
         }
         boolean zh = zh(source);
-        String panelHost = config.panelHostname();
-        String adminHost = config.adminHostname();
-        if (panelHost == null && adminHost == null) {
+        String panelUrl = config.panelUrl();
+        String adminUrl = config.adminUrl();
+        if (panelUrl == null && adminUrl == null) {
             source.sendMessage(Component.text(
                     zh ? "此代理未配置网页控制台。"
                        : "The web console isn't configured on this proxy.", NamedTextColor.YELLOW));
@@ -714,11 +714,11 @@ public final class FelisVelocityPlugin {
         }
         source.sendMessage(Component.text(
                 zh ? "Felis 网页控制台" : "Felis web consoles", NamedTextColor.AQUA));
-        if (panelHost != null) {
-            source.sendMessage(field(zh ? "玩家" : "players", "https://" + panelHost));
+        if (panelUrl != null) {
+            source.sendMessage(field(zh ? "玩家" : "players", panelUrl));
         }
-        if (adminHost != null) {
-            source.sendMessage(field(zh ? "管理员" : "operators", "https://" + adminHost));
+        if (adminUrl != null) {
+            source.sendMessage(field(zh ? "管理员" : "operators", adminUrl));
         }
         source.sendMessage(Component.text(
                 zh ? "  管理员：/felis web op approve <code> 查看并批准待处理的登录"
@@ -731,8 +731,8 @@ public final class FelisVelocityPlugin {
             return;
         }
         boolean zh = zh(source);
-        String adminHost = config.adminHostname();
-        String site = adminHost != null ? adminHost : (zh ? "管理员控制台" : "the operator console");
+        String adminUrl = config.adminUrl();
+        String site = adminUrl != null ? adminUrl : (zh ? "管理员控制台" : "the operator console");
         source.sendMessage(Component.text(
                 zh ? "管理员登录" : "Operator sign-in", NamedTextColor.AQUA));
         source.sendMessage(Component.text(

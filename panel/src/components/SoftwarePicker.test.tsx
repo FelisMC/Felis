@@ -82,6 +82,7 @@ const backend = vi.hoisted(() => {
       }),
       listImages: vi.fn(async () => []),
       nodes: vi.fn(async () => []),
+      fleetUsage: vi.fn(async () => ({ current: null, history: [], nodes: [], loginFailures24h: 0 })),
       createServer: vi.fn(async (req: CreateServerRequest) => {
         if (req.software && !req.acceptEula) return err("eula_required");
         const sw = req.software ? resolve(req.software) : undefined;

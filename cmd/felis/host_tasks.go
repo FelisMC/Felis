@@ -21,6 +21,7 @@ import (
 	"felis.lolicon.best/internal/cfsetup"
 	"felis.lolicon.best/internal/config"
 	"felis.lolicon.best/internal/dbbackup"
+	"felis.lolicon.best/internal/naming"
 	"felis.lolicon.best/internal/nodecontrol"
 	"felis.lolicon.best/internal/platform"
 	"felis.lolicon.best/internal/watchdog"
@@ -466,6 +467,10 @@ func (e nodeExecutor) configureConnection(ctx context.Context, r nodecontrol.Req
 	if adminHost == "" {
 		adminHost = cfg.Auth.AdminHostname
 	}
+	root := cfg.Server.RootDomain
+	if err := naming.ValidateConsoleHosts(defaultPanelHostname(root, panelHost), defaultAdminHostname(root, adminHost)); err != nil {
+		return err
+	}
 	if p["mode"] != "cloudflare" {
 		if err := stage("configure"); err != nil {
 			return err
@@ -476,7 +481,7 @@ func (e nodeExecutor) configureConnection(ctx context.Context, r nodecontrol.Req
 		if p["mode"] == "reverse-proxy" {
 			return applyReverseProxy(ctx, panelHost, adminHost)
 		}
-		if err := writeConnectionConfig(panelHost, adminHost, "", ""); err != nil {
+		if err := writeConnectionConfig(ctx, panelHost, adminHost, "", ""); err != nil {
 			return err
 		}
 		if err := applyFelisConfigSecret(ctx); err != nil {

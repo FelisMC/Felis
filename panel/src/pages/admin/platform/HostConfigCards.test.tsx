@@ -59,6 +59,18 @@ describe("access and domain", () => {
     }));
   });
 
+  it("refuses an admin console hostname outside the panel hostname and says passkeys need it", async () => {
+    render(<AccessCard overview={state(overview)} />);
+    await userEvent.click(screen.getByRole("radio", { name: "Own reverse proxy" }));
+    fireEvent.change(screen.getByLabelText("Panel hostname"), { target: { value: "play.example.com" } });
+    fireEvent.change(screen.getByLabelText("Admin console hostname"), { target: { value: "admin.example.com" } });
+    expect(screen.getByText(/Passkeys are bound to the panel hostname/).textContent).toContain("op.play.example.com");
+    expect(screen.getByRole("button", { name: "Apply access method" })).toHaveProperty("disabled", true);
+    fireEvent.change(screen.getByLabelText("Admin console hostname"), { target: { value: "admin.play.example.com" } });
+    expect(screen.queryByText(/Passkeys are bound to the panel hostname/)).toBeNull();
+    await enabled("Apply access method");
+  });
+
   it("moves to a reverse proxy and changes the domain after confirmation", async () => {
     finishInstantly();
     render(<AccessCard overview={state(overview)} />);

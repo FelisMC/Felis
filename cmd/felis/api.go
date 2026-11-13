@@ -350,6 +350,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		RootDomain:     cfg.Server.RootDomain,
 		AdminHostname:  cfg.Auth.AdminHostname,
 		PanelHostname:  cfg.Auth.PanelHostname,
+		PanelPort:      panelLinkPort(cfg.Auth, setupPanelNodePort),
 		WakeCooldown:   30 * time.Second,
 		BackupCooldown: rcfg.ManualCooldown,
 		BackupStoreCap: rcfg.MaxLocalBytes,
@@ -410,7 +411,9 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		a.Distribution = distribution
 	}
 	if socket := os.Getenv("FELIS_NODE_CONTROL_SOCKET"); socket != "" {
-		a.NodeControl = nodecontrol.NewClient(socket)
+		hostOps := nodecontrol.NewClient(socket)
+		a.NodeControl = hostOps
+		a.FreeMemory = hostOps.FreeMemory
 		cluster.NodeMaintenanceGuard = api.NodeMaintenanceGuard(a.NodeControl)
 	}
 	if fileStage != nil {

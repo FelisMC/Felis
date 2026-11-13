@@ -201,6 +201,22 @@ func TestCreateServerRejections(t *testing.T) {
 			wantCode: http.StatusBadRequest, wantErr: "bad_request",
 		},
 		{
+			name:     "another account's server without the Owner role",
+			body:     strings.TrimSuffix(validCreateBody, "}") + `,"ownerId":"b"}`,
+			wantCode: http.StatusForbidden, wantErr: "forbidden",
+		},
+		{
+			name:     "an owner that is not a live account",
+			body:     strings.TrimSuffix(validCreateBody, "}") + `,"ownerId":"a"}`,
+			setup:    func(r *fakeRepo, _ *fakeCluster) { r.assignErr = ErrUnknownAssignee },
+			wantCode: http.StatusBadRequest, wantErr: "unknown_user",
+			check: func(t *testing.T, repo *fakeRepo, _ *fakeCluster) {
+				if repo.aliases["survival"] != "" {
+					t.Error("a create refused over its owner must release the subdomain")
+				}
+			},
+		},
+		{
 			name:     "missing memory",
 			body:     `{"name":"survival","subdomain":"survival","image":"registry.felis.svc:5000/mc:1","storage":"10Gi"}`,
 			wantCode: http.StatusBadRequest, wantErr: "bad_request",
@@ -307,6 +323,23 @@ func TestCreateServerRejections(t *testing.T) {
 				c.check(t, repo, cl)
 			}
 		})
+	}
+}
+
+func TestCreateServerGivesItToTheChosenOwner(t *testing.T) {
+	api, repo, cl, _ := newCreateAPI()
+	w := do(api.ExternalHandler(), "POST", "/api/v1/servers", strings.TrimSuffix(validCreateBody, "}")+`,"ownerId":"a"}`, nil)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("code = %d, want 201 (%s)", w.Code, w.Body.String())
+	}
+	if _, ok := cl.created["survival"]; !ok || repo.owners["survival"].OwnerID != "a" {
+		t.Fatalf("the creating admin must own the new server, got %+v", repo.owners["survival"])
+	}
+
+	api.External = staticExternal{p: &Principal{UserID: "o", Role: "owner", ViaAdminAccess: true}}
+	body := `{"name":"creative","subdomain":"creative","image":"registry.felis.svc:5000/mc:1","memory":"2Gi","storage":"10Gi","ownerId":"b"}`
+	if w := do(api.ExternalHandler(), "POST", "/api/v1/servers", body, nil); w.Code != http.StatusCreated || repo.owners["creative"].OwnerID != "b" {
+		t.Fatalf("the Owner must be able to create a server for another account: %d %s, owner %+v", w.Code, w.Body.String(), repo.owners["creative"])
 	}
 }
 

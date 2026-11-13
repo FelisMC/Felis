@@ -53,7 +53,12 @@ export function AccessCard({ overview }: { overview: Overview }) {
   }, [current]);
   const changed = !!current && (mode !== current.mode || panelHost !== current.panelHost || adminHost !== current.adminHost || mode === "cloudflare");
   useUnsavedGuard(apiToken !== "");
-  const hostsValid = (!panelHost || dnsName.test(panelHost)) && (mode === "local" || dnsName.test(adminHost));
+  const rootDomain = overview.data?.rootDomain ?? "";
+  const effectivePanel = panelHost || (rootDomain && `console.${rootDomain}`);
+  const effectiveAdmin = adminHost || (rootDomain && `op.console.${rootDomain}`);
+  // Passkeys are bound to the panel hostname, so the admin console must be that name or one under it.
+  const adminSharesPasskeys = !effectivePanel || !effectiveAdmin || effectiveAdmin === effectivePanel || effectiveAdmin.endsWith(`.${effectivePanel}`);
+  const hostsValid = (!panelHost || dnsName.test(panelHost)) && (mode === "local" || dnsName.test(adminHost)) && adminSharesPasskeys;
   const cloudflareValid = mode !== "cloudflare" || (/^[a-f0-9]{32}$/.test(accountID) && /^([A-Za-z0-9._%+-]+)?@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}$/.test(identity) && apiToken !== "");
   const domainValid = dnsName.test(domain) && domain !== overview.data?.rootDomain;
   async function apply() {
@@ -81,7 +86,12 @@ export function AccessCard({ overview }: { overview: Overview }) {
         <p className="text-xs leading-relaxed text-muted-foreground">{t(`access_mode_${mode}_hint`)}</p>
         <div className="grid gap-4 md:grid-cols-2">
           <div className="space-y-2"><Label htmlFor="access-panel-host">{t("access_panel_host")}</Label><Input id="access-panel-host" value={panelHost} disabled={host.busy} onChange={(e) => setPanelHost(e.target.value.trim().toLowerCase())} placeholder="console.example.com" /></div>
-          <div className="space-y-2"><Label htmlFor="access-admin-host">{t("access_admin_host")}</Label><Input id="access-admin-host" value={adminHost} disabled={host.busy} onChange={(e) => setAdminHost(e.target.value.trim().toLowerCase())} placeholder="op.console.example.com" /></div>
+          <div className="space-y-2">
+            <Label htmlFor="access-admin-host">{t("access_admin_host")}</Label>
+            <Input id="access-admin-host" value={adminHost} disabled={host.busy} onChange={(e) => setAdminHost(e.target.value.trim().toLowerCase())} placeholder="op.console.example.com"
+              aria-invalid={!adminSharesPasskeys || undefined} aria-describedby={adminSharesPasskeys ? undefined : "access-admin-host-issue"} />
+            {!adminSharesPasskeys && <p id="access-admin-host-issue" className="text-xs leading-relaxed text-destructive">{t("access_admin_host_passkeys", { panel: effectivePanel })}</p>}
+          </div>
           {mode === "cloudflare" && <>
             <div className="space-y-2"><Label htmlFor="access-identity">{t("access_identity")}</Label><Input id="access-identity" value={identity} disabled={host.busy} onChange={(e) => setIdentity(e.target.value.trim())} placeholder="owner@example.com · @example.com" /><p className="text-xs text-muted-foreground">{t("access_identity_hint")}</p></div>
             <div className="space-y-2"><Label htmlFor="access-account">{t("access_account")}</Label><Input id="access-account" value={accountID} disabled={host.busy} onChange={(e) => setAccountID(e.target.value.trim().toLowerCase())} className="font-mono text-xs" /></div>

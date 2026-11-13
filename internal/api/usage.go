@@ -8,6 +8,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"felis.lolicon.best/internal/nodecontrol"
 )
 
 const UsageInterval = 15 * time.Second
@@ -39,12 +41,13 @@ type NodeUsage struct {
 	Running     int    `json:"running"`
 }
 
-// PlatformUsage is GET /api/v1/fleet/usage; the handler fills LoginFailures24h.
+// PlatformUsage is GET /api/v1/fleet/usage; the handler fills LoginFailures24h and FreeMemory.
 type PlatformUsage struct {
-	Current          *PlatformUsagePoint  `json:"current"`
-	History          []PlatformUsagePoint `json:"history"`
-	Nodes            []NodeUsage          `json:"nodes"`
-	LoginFailures24h int                  `json:"loginFailures24h"`
+	Current          *PlatformUsagePoint      `json:"current"`
+	History          []PlatformUsagePoint     `json:"history"`
+	Nodes            []NodeUsage              `json:"nodes"`
+	LoginFailures24h int                      `json:"loginFailures24h"`
+	FreeMemory       []nodecontrol.NodeMemory `json:"freeMemory,omitempty"`
 }
 
 type ring[T any] struct {

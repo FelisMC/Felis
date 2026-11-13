@@ -141,6 +141,14 @@ type Manager struct {
 	Quiet      func(time.Time) error
 	Ignore     func(key string, ignored bool) error
 	OffsiteKey func() (string, error)
+	// FreeMemory answers 404 when nil.
+	FreeMemory func(context.Context) ([]NodeMemory, error)
+}
+
+// NodeMemory is the memory a schedulable node can still promise a new pod: its allocatable memory less what the pods on it request.
+type NodeMemory struct {
+	Node  string `json:"node"`
+	Bytes int64  `json:"bytes"`
 }
 
 func Open(ctx context.Context, dir string, execute Executor) (*Manager, error) {
@@ -425,6 +433,20 @@ func (m *Manager) Handler() http.Handler {
 		}
 		json.NewEncoder(w).Encode(v)
 	})
+	mux.HandleFunc("GET /host/free-memory", func(w http.ResponseWriter, r *http.Request) {
+		if m.FreeMemory == nil {
+			http.Error(w, "no memory figures", 404)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		v, err := m.FreeMemory(ctx)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		json.NewEncoder(w).Encode(v)
+	})
 	mux.HandleFunc("GET /host/offsite-key", func(w http.ResponseWriter, r *http.Request) {
 		if m.OffsiteKey == nil {
 			http.Error(w, "no off-site key", 404)
@@ -592,6 +614,12 @@ func (c *Client) Start(ctx context.Context, r Request, actor string) (Task, erro
 func (c *Client) Host(ctx context.Context) (json.RawMessage, error) {
 	var out json.RawMessage
 	err := c.call(ctx, "GET", "/host", nil, &out)
+	return out, err
+}
+
+func (c *Client) FreeMemory(ctx context.Context) ([]NodeMemory, error) {
+	var out []NodeMemory
+	err := c.call(ctx, "GET", "/host/free-memory", nil, &out)
 	return out, err
 }
 

@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { CreateServerDialog } from "./CreateServerDialog";
 import { humanizeError } from "@/lib/api";
-import type { CreateServerRequest, WhitelistImage } from "@/lib/types";
+import type { CreateServerRequest, PlatformUsage, WhitelistImage } from "@/lib/types";
 
-const calls = vi.hoisted(() => ({ listImages: vi.fn(), createServer: vi.fn(), nodes: vi.fn() }));
+const tier = vi.hoisted(() => ({ identity: { user_id: "u-admin", email: "admin@example.test", role: "admin", is_admin: true, is_owner: false }, isOwner: false }));
+const calls = vi.hoisted(() => ({ listImages: vi.fn(), createServer: vi.fn(), nodes: vi.fn(), fleetUsage: vi.fn() }));
+vi.mock("@/lib/tier", () => ({ useTier: () => tier }));
 vi.mock("@/lib/api", async (importActual) => {
   const actual = await importActual<typeof import("@/lib/api")>();
   return { ...actual, api: { ...actual.api, ...calls } };
@@ -29,12 +31,16 @@ function image(image_ref: string, enabled: boolean): WhitelistImage {
   return { image_ref, enabled } as WhitelistImage;
 }
 
+const usageWithout: PlatformUsage = { current: null, history: [], nodes: [], loginFailures24h: 0 };
+
 beforeEach(() => {
   calls.listImages.mockReset();
   calls.createServer.mockReset();
+  calls.fleetUsage.mockReset();
   onCreated.mockReset();
   calls.listImages.mockResolvedValue([image(PAPER, true), image(RETIRED, false)]);
   calls.createServer.mockResolvedValue({});
+  calls.fleetUsage.mockResolvedValue(usageWithout);
 });
 
 async function openDialog() {
@@ -92,6 +98,7 @@ describe("CreateServerDialog request body", () => {
       memory: "8Gi",
       storage: "120Gi",
       autostartPolicy: "public",
+      ownerId: "u-admin",
     });
     expect(onCreated).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -127,7 +134,7 @@ describe("CreateServerDialog request body", () => {
     expect(sent().displayName).toBe("x".repeat(64));
   });
 
-  it("leaves a blank display name out, and sends the default sizes and policy", async () => {
+  it("leaves a blank display name out, and gives the server to its creator on the wake-list policy", async () => {
     const user = await openDialog();
 
     await fillValid(user);
@@ -141,8 +148,37 @@ describe("CreateServerDialog request body", () => {
       image: PAPER,
       memory: "4Gi",
       storage: "10Gi",
-      autostartPolicy: "ownerOnly",
+      autostartPolicy: "allowlist",
+      ownerId: "u-admin",
     });
+  });
+
+  it("creates an unclaimed server when nobody is chosen as its owner", async () => {
+    const user = await openDialog();
+    await fillValid(user);
+
+    await pick(user, "Server owner", "Nobody — a player can claim it");
+    expect(screen.getByText("Until a player claims the server, it gets no scheduled restore points.")).toBeTruthy();
+    await user.click(create());
+
+    expect(sent()).not.toHaveProperty("ownerId");
+  });
+
+  // A 4 GiB server on a host with less room left would never be scheduled.
+  it("starts the memory at what the host can still allocate, and warns past it without refusing", async () => {
+    calls.fleetUsage.mockResolvedValue({ ...usageWithout, freeMemory: [{ node: "host", bytes: 1920 * 2 ** 20 }] });
+    const user = await openDialog();
+    const memory = screen.getByLabelText("Memory") as HTMLInputElement;
+
+    await waitFor(() => expect(memory.value).toBe("1.5"));
+    expect(screen.getByText("In GiB; decimals are allowed. 1.8 GiB can still be allocated.")).toBeTruthy();
+    await user.clear(memory);
+    await user.type(memory, "4");
+    expect(screen.getByText("Only 1.8 GiB can still be allocated, so the server cannot start until memory is freed.")).toBeTruthy();
+    await fillValid(user);
+    await user.click(create());
+
+    expect(sent().memory).toBe("4Gi");
   });
 
   it("offers only the enabled images", async () => {

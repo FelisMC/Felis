@@ -205,12 +205,20 @@ export interface NodeUsage {
   running: number;
 }
 
+/** NodeFreeMemory is what one schedulable node can still promise a new server. */
+export interface NodeFreeMemory {
+  node: string;
+  bytes: number;
+}
+
 /** GET /fleet/usage. */
 export interface PlatformUsage {
   current: PlatformUsagePoint | null;
   history: PlatformUsagePoint[];
   nodes: NodeUsage[];
   loginFailures24h: number;
+  /** Absent when the host service does not report it. */
+  freeMemory?: NodeFreeMemory[];
 }
 
 export interface ConsoleHistoryPage {
@@ -579,6 +587,8 @@ export interface CreateServerRequest {
     memory?: string;
     memoryRequest?: string;
   };
+  /** The account that owns the new server; omitted, it starts unclaimed. */
+  ownerId?: string;
 }
 
 /** SelfCreateRequest is POST /me/servers: a server of the caller's own, always

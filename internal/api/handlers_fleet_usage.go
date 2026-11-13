@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"time"
 )
@@ -17,5 +18,12 @@ func (a *API) handleFleetUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	view.LoginFailures24h = failures
+	if a.FreeMemory != nil && r.URL.Query().Get("include") == "free_memory" {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		if free, err := a.FreeMemory(ctx); err == nil {
+			view.FreeMemory = free
+		}
+		cancel()
+	}
 	writeJSON(w, http.StatusOK, view)
 }

@@ -865,6 +865,7 @@
   "access_mode_cloudflare_hint": "主机创建隧道、配置域名路由，并为管理控制台启用 Cloudflare Access，随后对公网关闭面板端口。",
   "access_panel_host": "面板域名",
   "access_admin_host": "管理控制台域名",
+  "access_admin_host_passkeys": "请使用面板域名或其下级域名，例如 op.{{panel}}。Passkey 与面板域名绑定，无法在其他域名上注册或使用。",
   "access_identity": "允许登录的身份",
   "access_identity_hint": "填写邮箱地址，或以 @ 开头的邮箱域名。",
   "access_account": "Cloudflare 账户 ID",
