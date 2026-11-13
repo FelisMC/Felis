@@ -18,11 +18,29 @@ recall_install_settings() {
     export "${key?}"
   done < "$INSTALL_ENV"
 }
+# A host installed before install.env existed reads back what its running install uses, so a first rerun does not reset it.
+infer_install_settings() {
+  [ ! -e "$INSTALL_ENV" ] && [ -e /etc/felis/bootstrap.done ] || return 0
+  local v k3s=/usr/local/bin/k3s
+  if [ -z "${FELIS_VERSION_BOOTSTRAP+x}" ]; then
+    case "$(/usr/local/bin/felis version 2>/dev/null | sed -n 1p)" in *+g*) export FELIS_VERSION_BOOTSTRAP=dev ;; esac
+  fi
+  if [ -z "${FELIS_GAME_PORT+x}" ]; then
+    v="$(awk '/^\[/ { s = ($0 == "[velocity]") } s && $1 == "game_port" { print $3; exit }' /etc/felis/felis.host.toml 2>/dev/null)" || v=""
+    [ -z "$v" ] || export FELIS_GAME_PORT="$v"
+  fi
+  [ -x "$k3s" ] || return 0
+  if [ -z "${FELIS_PANEL_NODEPORT+x}" ]; then
+    v="$(timeout 20 "$k3s" kubectl -n felis get svc felis-api -o 'jsonpath={.spec.ports[0].nodePort}' 2>/dev/null)" || v=""
+    [ -z "$v" ] || export FELIS_PANEL_NODEPORT="$v"
+  fi
+  if [ -z "${FELIS_WORLDS_HOST_PATH+x}" ]; then
+    v="$(timeout 20 "$k3s" kubectl get pv -l app.kubernetes.io/component=reaper -o 'jsonpath={.items[*].spec.hostPath.path}' 2>/dev/null)" || v=""
+    [ -z "$v" ] || export FELIS_WORLDS_HOST_PATH="${v%% *}"
+  fi
+}
 recall_install_settings
-# A host installed before install.env existed keeps the channel its binary was built from.
-if [ -z "${FELIS_VERSION_BOOTSTRAP:-}" ] && [ ! -e "$INSTALL_ENV" ] && [ -x /usr/local/bin/felis ]; then
-  case "$(/usr/local/bin/felis version 2>/dev/null | sed -n 1p)" in *+g*) FELIS_VERSION_BOOTSTRAP=dev ;; esac
-fi
+infer_install_settings
 
 FELIS_REPO_URL="${FELIS_REPO_URL:-https://github.com/FelisMC/Felis.git}"
 FELIS_VERSION_BOOTSTRAP="${FELIS_VERSION_BOOTSTRAP:-release}"
