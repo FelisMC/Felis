@@ -19,6 +19,7 @@ func TestUnrequestedMemoryOnASmallHost(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{Name: name},
 			Spec:       corev1.NodeSpec{Unschedulable: cordoned},
 			Status: corev1.NodeStatus{
+				Capacity:    corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("4Gi")},
 				Allocatable: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("4Gi")},
 				Conditions:  []corev1.NodeCondition{{Type: corev1.NodeReady, Status: status}},
 			},
@@ -45,7 +46,7 @@ func TestUnrequestedMemoryOnASmallHost(t *testing.T) {
 		},
 	)
 	// The scheduler counts the larger of a pod's containers and its biggest init container: 4096 - 512 - 1024 - 384 - 256 MiB.
-	want := []nodecontrol.NodeMemory{{Node: "host", Bytes: 1920 << 20}}
+	want := []nodecontrol.NodeMemory{{Node: "host", Bytes: 1920 << 20, Capacity: 4 << 30}}
 	if len(got) != 1 || got[0] != want[0] {
 		t.Fatalf("unrequestedMemory = %+v, want %+v (only the online, schedulable node)", got, want)
 	}

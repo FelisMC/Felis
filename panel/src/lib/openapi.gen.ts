@@ -182,7 +182,7 @@ export interface paths {
         put?: never;
         /**
          * Create a server (admin).
-         * @description Requires a staff session on the operator console host. The server runs either a whitelisted server image or server software on the runtime image, never both. An image in the platform registry is stored pinned to the digest its tag names at creation (name:tag@sha256:…), so a later push over the tag never moves the server; 400 image_not_in_registry when the registry lacks the tag, 503 registry_unavailable when it cannot be asked. Server software needs acceptEula (400 eula_required); 502 software_metadata_unavailable when its download site cannot be reached, 503 runtime_unavailable while its Java runtime is not yet in the platform registry.
+         * @description Requires a staff session on the operator console host. The server runs either a whitelisted server image or server software on the runtime image, never both. An image in the platform registry is stored pinned to the digest its tag names at creation (name:tag@sha256:…), so a later push over the tag never moves the server; 400 image_not_in_registry when the registry lacks the tag, 503 registry_unavailable when it cannot be asked. Server software needs acceptEula (400 eula_required); 502 software_metadata_unavailable when its download site cannot be reached, 503 runtime_unavailable while its Java runtime is not yet in the platform registry. On a single-node install whose host has under 3.5 GiB of memory, 409 host_too_small: such a host runs only the platform.
          */
         post: operations["createServer"];
         delete?: never;
@@ -1523,7 +1523,7 @@ export interface paths {
         put?: never;
         /**
          * Create a server of your own, within your quota.
-         * @description Creates a server owned by the caller, running server software on the runtime image, within the quota in force for them: their own, else the Owner's default quota (403 self_service_disabled when neither applies, 403 quota_exceeded when the server does not fit). Needs a linked Minecraft account (412 not_linked) and acceptEula (400 eula_required). In distributed mode the server goes to the admitted node with the fewest user servers.
+         * @description Creates a server owned by the caller, running server software on the runtime image, within the quota in force for them: their own, else the Owner's default quota (403 self_service_disabled when neither applies, 403 quota_exceeded when the server does not fit). Needs a linked Minecraft account (412 not_linked) and acceptEula (400 eula_required). In distributed mode the server goes to the admitted node with the fewest user servers. On a single-node install whose host has under 3.5 GiB of memory, 409 host_too_small: such a host runs only the platform.
          */
         post: operations["createMyServer"];
         delete?: never;
@@ -4847,6 +4847,11 @@ export interface components {
                 node: string;
                 /** Format: int64 */
                 bytes: number;
+                /**
+                 * Format: int64
+                 * @description The node's total memory; absent from an older host service.
+                 */
+                capacity?: number;
             }[];
         };
         /** @description One row of the caller's server list (internal/api/repo.go MyServerView). */
@@ -6191,6 +6196,7 @@ export interface operations {
                     software?: components["schemas"]["SoftwareRequest"];
                     /** @description Accepts the Minecraft EULA, which server software runs under; required with software. */
                     acceptEula?: boolean;
+                    /** @description The memory limit, a Kubernetes quantity of at least 768Mi (400 bad_request otherwise). */
                     memory?: string;
                     storage?: string;
                     autostartPolicy?: string;
@@ -9388,9 +9394,9 @@ export interface operations {
                     subdomain: string;
                     displayName?: string;
                     software: components["schemas"]["SoftwareRequest"];
-                    /** @description The memory limit */
+                    /** @description The memory limit, a Kubernetes quantity of at least 768Mi such as 4Gi (400 bad_request otherwise). */
                     memory: string;
-                    /** @description Optional CPU limit */
+                    /** @description Optional CPU limit, a Kubernetes quantity such as 2. */
                     cpu?: string;
                     storage: string;
                     /** @enum {string} */
@@ -15720,7 +15726,7 @@ export interface operations {
                     image?: string;
                     /** @description Acknowledges that the new image opens the world with its Minecraft version, whose chunk upgrades the old one cannot read. Without it an image that would move the server is refused with 409 image_change_unconfirmed. The audit row records image_from/image_to. */
                     confirmImageChange?: boolean;
-                    /** @description Sets the memory limit and request together, as create does, and re-derives the JVM heap. The CPU limit and request are kept. */
+                    /** @description Sets the memory limit and request together, as create does, and re-derives the JVM heap. The CPU limit and request are kept. A changed memory limit must be at least 768Mi (400 bad_request otherwise). */
                     memory?: string;
                     /** @description Sets the world's storage quota, which the disk scans enforce. Growth counts against the owner's storage quota (403 quota_exceeded); a size at or below the last measured use is refused with 409 storage_below_usage. The world volume keeps the size it was created with. */
                     storage?: string;

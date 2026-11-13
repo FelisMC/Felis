@@ -46,6 +46,8 @@ import { UserPicker, type AssignUser } from "@/components/AssignServerDialog";
 
 const MEMORY_DEFAULT_GIB = 4;
 const MEMORY_STEP_GIB = 0.5;
+// A single host below this, a "2 GB" one, runs only the platform and the API refuses new servers on it.
+const MIN_GAME_HOST_BYTES = 3584 * 2 ** 20;
 
 type OwnerChoice = "me" | "other" | "none";
 
@@ -173,6 +175,8 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
     storageGiB === null || storageGiB < 1 || !Number.isInteger(storageGiB) ? "invalid" : storageGiB * 1024 > storageLeft ? "quota" : null;
   const left = (mb: number) => String(Math.max(0, Math.floor((mb / 1024) * 10) / 10));
   const overFree = memoryIssue === null && memoryGiB !== null && memoryGiB * 1024 > freeMB;
+  const hosts = fleetUsage.data?.freeMemory ?? [];
+  const hostTooSmall = !cfg.distributed && hosts.length > 0 && hosts.every((n) => !!n.capacity && n.capacity < MIN_GAME_HOST_BYTES);
   const ownerId = !staff || owner === "none" ? undefined : owner === "me" ? identity?.user_id : ownerUser?.id;
 
   const uploadJar = useSoftware && software.type === "custom" && !!jarFile;
@@ -183,6 +187,7 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
     (!staff || owner !== "other" || !!ownerUser) &&
     memoryIssue === null &&
     storageIssue === null &&
+    !hostTooSmall &&
     !submitting;
 
   async function submit() {
@@ -264,6 +269,11 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
 
         {/* Once the server exists only its jar upload is left, so the form is held. */}
         <fieldset disabled={!!created} className="grid min-w-0 gap-4">
+          {hostTooSmall && (
+            <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-2.5 text-xs text-destructive">
+              {t("errors:host_too_small")}
+            </p>
+          )}
           {self && limits && quotaUsage && (
             <p className="rounded-md border border-border bg-muted/40 p-2.5 text-xs text-muted-foreground">
               {t("self_create_quota", {

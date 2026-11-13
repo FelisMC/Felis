@@ -176,6 +176,7 @@
   "software_change_unconfirmed": "After a software or game version change, the next startup opens the world with the new version. Upgraded chunks are not compatible with older versions. Back up the world and select the confirmation before saving.",
   "self_service_disabled": "This account has no server quota. Ask the platform owner to assign one.",
   "no_node": "No node can take a new server at the moment. Contact an administrator.",
+  "host_too_small": "This host has under 4 GB of memory and runs only the platform. Game servers need a host with at least 4 GB of memory, or a worker node.",
   "bad_url": "The URL must use HTTP or HTTPS and point to a public address. Private, loopback and link-local addresses are not allowed.",
   "download_failed": "The remote file download failed. Check the URL and remote service status.",
   "bad_extra_ports": "Additional port settings are invalid. Check protocols, port ranges, duplicate entries and managed port restrictions.",

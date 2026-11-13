@@ -209,6 +209,8 @@ export interface NodeUsage {
 export interface NodeFreeMemory {
   node: string;
   bytes: number;
+  /** The node's total memory; absent from an older host service. */
+  capacity?: number;
 }
 
 /** GET /fleet/usage. */

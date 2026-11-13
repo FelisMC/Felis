@@ -181,6 +181,15 @@ describe("CreateServerDialog request body", () => {
     expect(sent().memory).toBe("4Gi");
   });
 
+  it("says a host under 4 GB runs only the platform and offers no create", async () => {
+    calls.fleetUsage.mockResolvedValue({ ...usageWithout, freeMemory: [{ node: "host", bytes: 2 ** 30, capacity: 1700 * 2 ** 20 }] });
+    const user = await openDialog();
+
+    expect(await screen.findByText("This host has under 4 GB of memory and runs only the platform. Game servers need a host with at least 4 GB of memory, or a worker node.")).toBeTruthy();
+    await fillValid(user);
+    expect(create().disabled).toBe(true);
+  });
+
   it("offers only the enabled images", async () => {
     const user = await openDialog();
 

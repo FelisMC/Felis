@@ -1377,6 +1377,7 @@ components:
             properties:
               node: { type: string }
               bytes: { type: integer, format: int64, minimum: 0 }
+              capacity: { type: integer, format: int64, minimum: 0, description: "The node's total memory; absent from an older host service." }
 
     MyServerView:
       type: object
@@ -2692,7 +2693,9 @@ paths:
         503 registry_unavailable when it cannot be asked. Server software needs
         acceptEula (400 eula_required); 502 software_metadata_unavailable when its
         download site cannot be reached, 503 runtime_unavailable while its Java
-        runtime is not yet in the platform registry.
+        runtime is not yet in the platform registry. On a single-node install whose
+        host has under 3.5 GiB of memory, 409 host_too_small: such a host runs only
+        the platform.
       x-felis-face: [external]
       x-felis-tier: admin
       security: [{ sessionCookie: [] }]
@@ -2716,7 +2719,7 @@ paths:
                 acceptEula:
                   type: boolean
                   description: Accepts the Minecraft EULA, which server software runs under; required with software.
-                memory: { type: string }
+                memory: { type: string, description: "The memory limit, a Kubernetes quantity of at least 768Mi (400 bad_request otherwise)." }
                 storage: { type: string }
                 autostartPolicy: { type: string }
                 resources:
@@ -6051,7 +6054,8 @@ paths:
         quota (403 self_service_disabled when neither applies, 403 quota_exceeded when
         the server does not fit). Needs a linked Minecraft account (412 not_linked)
         and acceptEula (400 eula_required). In distributed mode the server goes to the
-        admitted node with the fewest user servers.
+        admitted node with the fewest user servers. On a single-node install whose host
+        has under 3.5 GiB of memory, 409 host_too_small: such a host runs only the platform.
       x-felis-face: [external]
       x-felis-tier: app
       security: [{ sessionCookie: [] }]
@@ -6067,8 +6071,8 @@ paths:
                 subdomain: { type: string }
                 displayName: { type: string, maxLength: 64 }
                 software: { $ref: '#/components/schemas/SoftwareRequest' }
-                memory: { type: string, description: The memory limit, a Kubernetes quantity such as 4Gi. }
-                cpu: { type: string, description: Optional CPU limit, a Kubernetes quantity such as 2. }
+                memory: { type: string, description: "The memory limit, a Kubernetes quantity of at least 768Mi such as 4Gi (400 bad_request otherwise)." }
+                cpu: { type: string, description: "Optional CPU limit, a Kubernetes quantity such as 2." }
                 storage: { type: string }
                 autostartPolicy: { type: string, enum: [ownerOnly, public, allowlist] }
                 acceptEula: { type: boolean }
@@ -11890,7 +11894,8 @@ paths:
                   type: string
                   description: >-
                     Sets the memory limit and request together, as create does, and
-                    re-derives the JVM heap. The CPU limit and request are kept.
+                    re-derives the JVM heap. The CPU limit and request are kept. A changed
+                    memory limit must be at least 768Mi (400 bad_request otherwise).
                 storage:
                   type: string
                   description: >-

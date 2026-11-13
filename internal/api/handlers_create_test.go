@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/naming"
+	"felis.lolicon.best/internal/nodecontrol"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
@@ -171,6 +173,11 @@ func TestCreateServerRejections(t *testing.T) {
 			wantCode: http.StatusBadRequest, wantErr: "bad_name",
 		},
 		{
+			name:     "memory below 768Mi",
+			body:     `{"name":"survival","subdomain":"survival","image":"registry.felis.svc:5000/mc:1","memory":"512Mi","storage":"10Gi"}`,
+			wantCode: http.StatusBadRequest, wantErr: "bad_request",
+		},
+		{
 			name:     "reserved name",
 			body:     `{"name":"admin","subdomain":"survival","image":"registry.felis.svc:5000/mc:1","memory":"2Gi","storage":"10Gi"}`,
 			wantCode: http.StatusBadRequest, wantErr: "bad_name",
@@ -323,6 +330,46 @@ func TestCreateServerRejections(t *testing.T) {
 				c.check(t, repo, cl)
 			}
 		})
+	}
+}
+
+func TestCreateServerNeedsAFourGigabyteHost(t *testing.T) {
+	for _, tc := range []struct {
+		capacity int64
+		want     int
+	}{
+		{1700 << 20, http.StatusConflict},
+		{3800 << 20, http.StatusCreated},
+		{0, http.StatusCreated},
+	} {
+		api, _, cl, _ := newCreateAPI()
+		api.FreeMemory = func(context.Context) ([]nodecontrol.NodeMemory, error) {
+			return []nodecontrol.NodeMemory{{Node: "host", Bytes: 1 << 30, Capacity: tc.capacity}}, nil
+		}
+		w := do(api.ExternalHandler(), "POST", "/api/v1/servers", validCreateBody, nil)
+		if w.Code != tc.want {
+			t.Fatalf("capacity %d MiB: code = %d, want %d (%s)", tc.capacity>>20, w.Code, tc.want, w.Body.String())
+		}
+		if tc.want == http.StatusConflict && (decodeErr(t, w) != "host_too_small" || len(cl.created) != 0) {
+			t.Errorf("a refused create answered %s and created %v", w.Body.String(), cl.created)
+		}
+	}
+}
+
+func TestResizeBelowTheMemoryFloorIsRefused(t *testing.T) {
+	str := func(s string) *string { return &s }
+	old := corev1.ResourceRequirements{
+		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")},
+		Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")},
+	}
+	if _, _, _, err := mergeResources(old, str("640Mi"), nil); err == nil {
+		t.Error("resizing to 640Mi was accepted")
+	}
+	if _, _, _, err := mergeResources(old, nil, &patchResourceRequest{CPU: str("1")}); err != nil {
+		t.Errorf("a CPU change on a server created before the floor: %v", err)
+	}
+	if _, _, _, err := mergeResources(old, str("768Mi"), nil); err != nil {
+		t.Errorf("resizing to 768Mi: %v", err)
 	}
 }
 

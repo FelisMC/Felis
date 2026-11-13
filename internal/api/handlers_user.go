@@ -457,6 +457,10 @@ func (a *API) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	if err := a.checkGameHost(r.Context()); err != nil {
+		writeError(w, r, err)
+		return
+	}
 
 	var (
 		image string
@@ -618,6 +622,9 @@ func resolveResources(memory string, rr *resourceRequest) (string, corev1.Resour
 		return "", corev1.ResourceRequirements{}, newError(http.StatusInternalServerError, "internal",
 			"refusing to create a server without a memory ceiling")
 	}
+	if err := checkMemoryFloor(memLim); err != nil {
+		return "", corev1.ResourceRequirements{}, err
+	}
 
 	return deriveJavaHeap(memLim), corev1.ResourceRequirements{Limits: limits, Requests: requests}, nil
 }
@@ -711,7 +718,23 @@ func mergeResources(cur corev1.ResourceRequirements, memory *string, rr *patchRe
 			"this server has no memory ceiling; set memory in the same patch"))
 	}
 	curLim := cur.Limits[corev1.ResourceMemory]
-	return deriveJavaHeap(memLim), memLim.Cmp(curLim) != 0, out, nil
+	moved := memLim.Cmp(curLim) != 0
+	if moved {
+		if err := checkMemoryFloor(memLim); err != nil {
+			return fail(err)
+		}
+	}
+	return deriveJavaHeap(memLim), moved, out, nil
+}
+
+// minServerMemory is the smallest memory ceiling a player server is created or resized to; below it Paper fills its container and pages the whole host.
+var minServerMemory = resource.MustParse("768Mi")
+
+func checkMemoryFloor(limit resource.Quantity) error {
+	if limit.Cmp(minServerMemory) < 0 {
+		return newError(http.StatusBadRequest, "bad_request", "memory must be at least %s", minServerMemory.String())
+	}
+	return nil
 }
 
 // deriveJavaHeap emits JVM-compatible MiB and reserves the larger of 512 MiB or 25% for off-heap use, capped at half the pod limit.

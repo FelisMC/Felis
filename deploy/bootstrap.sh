@@ -1210,11 +1210,9 @@ preflight_memory() {
   mem_kb="$(mem_total_kb)"
   [ -n "$mem_kb" ] || return 0
   if [ "$mem_kb" -lt "$PREFLIGHT_MIN_RAM_KB" ]; then
-    preflight_fail "this host has $((mem_kb / 1024)) MiB of RAM; the full stack needs at least $((PREFLIGHT_MIN_RAM_KB / 1024)) MiB (a 2 GB host), 4 GB to run players' servers beside it. Felis-nano (FELIS_INSTALL_MODE=nano) fits in far less"
-  elif [ "$mem_kb" -lt "$PREFLIGHT_RECOMMENDED_RAM_KB" ] && [ "${HOST_PROFILE:-}" = small ]; then
-    warn "preflight: $((mem_kb / 1024)) MiB of RAM: the small profile runs the platform without the lobby, but a game server beside it needs a 4 GB host"
-  elif [ "$mem_kb" -lt "$PREFLIGHT_RECOMMENDED_RAM_KB" ]; then
-    warn "preflight: $((mem_kb / 1024)) MiB of RAM runs the platform with little room for players' servers; 4 GB is the comfortable size"
+    preflight_fail "this host has $((mem_kb / 1024)) MiB of RAM; the full stack needs at least $((PREFLIGHT_MIN_RAM_KB / 1024)) MiB (a 2 GB host), 4 GB to run players' servers beside it. Felis-nano (FELIS_INSTALL_MODE=nano) has no memory minimum"
+  elif [ "$mem_kb" -lt "$PREFLIGHT_RECOMMENDED_RAM_KB" ] && [ "$INSTALL_MODE" != worker ]; then
+    warn "preflight: $((mem_kb / 1024)) MiB of RAM: on a single node this host runs only the platform, and the panel refuses new game servers; they need a host with at least $((PREFLIGHT_RECOMMENDED_RAM_KB / 1024)) MiB (a 4 GB host) or a worker node"
   fi
 }
 

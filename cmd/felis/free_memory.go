@@ -38,7 +38,11 @@ func unrequestedMemory(nodes []corev1.Node, pods []corev1.Pod) []nodecontrol.Nod
 		if n.Spec.Unschedulable || !placement.Online(n) {
 			continue
 		}
-		out = append(out, nodecontrol.NodeMemory{Node: n.Name, Bytes: max(n.Status.Allocatable.Memory().Value()-requested[n.Name], 0)})
+		out = append(out, nodecontrol.NodeMemory{
+			Node:     n.Name,
+			Bytes:    max(n.Status.Allocatable.Memory().Value()-requested[n.Name], 0),
+			Capacity: n.Status.Capacity.Memory().Value(),
+		})
 	}
 	return out
 }

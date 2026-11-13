@@ -255,6 +255,10 @@ func (a *API) handleSelfCreateServer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	if err := a.checkGameHost(ctx); err != nil {
+		writeError(w, r, err)
+		return
+	}
 	if !body.AcceptEULA {
 		writeError(w, r, errEULARequired)
 		return

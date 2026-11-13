@@ -149,6 +149,8 @@ type Manager struct {
 type NodeMemory struct {
 	Node  string `json:"node"`
 	Bytes int64  `json:"bytes"`
+	// Capacity is the node's total memory; zero when a host service too old to report it answered.
+	Capacity int64 `json:"capacity,omitempty"`
 }
 
 func Open(ctx context.Context, dir string, execute Executor) (*Manager, error) {
