@@ -1,4 +1,5 @@
 {
+  "passkey_refused": "The browser did not create a passkey. If you did not cancel it, the usual cause is an untrusted certificate: browsers do not allow passkeys on a page with a self-signed certificate, so open the panel at an address with a trusted certificate (a reverse proxy or Cloudflare Tunnel) and try again.",
   "title": "Account",
   "subtitle": "Identity and Minecraft linking.",
   "sessions_title": "Signed-in devices",

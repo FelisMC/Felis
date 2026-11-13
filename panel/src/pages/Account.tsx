@@ -209,7 +209,8 @@ export function Account() {
       setRegisterDialogOpen(false);
       setPasskeyNickname("");
     } catch (err: any) {
-      setPasskeyError(humanizeError(err));
+      const refused = err?.name === "NotAllowedError" || err?.name === "SecurityError";
+      setPasskeyError(refused ? t("passkey_refused") : humanizeError(err));
     } finally {
       setRegisteringPasskey(false);
       abortControllerRef.current = null;

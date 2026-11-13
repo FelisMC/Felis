@@ -1,4 +1,5 @@
 {
+  "passkey_refused": "浏览器没有创建通行密钥。如果不是你取消了操作，常见原因是证书不受信任：浏览器不允许在使用自签名证书的页面上创建通行密钥，请通过使用受信任证书的地址（反向代理或 Cloudflare Tunnel）访问面板后再试。",
   "title": "账户",
   "subtitle": "身份验证与 Minecraft 关联。",
   "sessions_title": "已登录的设备",
