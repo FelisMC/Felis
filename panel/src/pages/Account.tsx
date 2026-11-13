@@ -38,6 +38,7 @@ import {
 export function Account() {
   const status = useAsync(() => api.linkStatus(), []);
   const { identity, refresh } = useTier();
+  const cfg = useConfig();
   const { t, i18n } = useTranslation("account");
   // Adding or removing a passkey and changing the email ask for a fresh proof
   // of a factor first (ReauthDialog).
@@ -548,10 +549,12 @@ export function Account() {
         </CardContent>
       </Card>
 
-      <MigrationCard
-        userId={identity?.user_id}
-        hasPasskey={credentials.length > 0}
-      />
+      {cfg && !cfg.nano && (
+        <MigrationCard
+          userId={identity?.user_id}
+          hasPasskey={credentials.length > 0}
+        />
+      )}
 
       <AccountSessionsCard
         version={sessionsVersion}
