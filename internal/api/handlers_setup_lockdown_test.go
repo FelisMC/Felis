@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestAdvClaim403MechanismIsRequireOnboarded(t *testing.T) {
+func TestBindCodePlayerUsesThePanelWithoutAPasskey(t *testing.T) {
 	api, repo := seedBindAPI(t)
 	mintBindCode(t, api, repo, "DEMO2345", bindTestUUID, authSourceMojang)
 
@@ -18,12 +18,8 @@ func TestAdvClaim403MechanismIsRequireOnboarded(t *testing.T) {
 	}
 	cookie := map[string]string{"Cookie": sessionCookieName + "=" + sessionCookieValue(t, w)}
 	userID := repo.staff[bindTestUUID].ID
-
 	if u := repo.staff[bindTestUUID]; u.EmailVerified {
-		t.Fatalf("bind-created player has EmailVerified=true; lockdown premise is wrong")
-	}
-	if creds, _ := repo.PasskeyCredentialsForUser(t.Context(), userID); len(creds) != 0 {
-		t.Fatalf("bind-created player already has %d passkeys; lockdown premise is wrong", len(creds))
+		t.Fatalf("bind-created player has EmailVerified=true; the premise is wrong")
 	}
 
 	cl := api.Cluster.(*fakeCluster)
@@ -31,46 +27,9 @@ func TestAdvClaim403MechanismIsRequireOnboarded(t *testing.T) {
 	repo.claimOK["demo2"] = true
 	repo.quota[userID] = true
 
-	if got := do(api.ExternalHandler(), "GET", "/api/v1/me/servers", "", cookie); got.Code != http.StatusOK {
-		t.Fatalf("/me/servers = %d, want 200 (%s)", got.Code, got.Body.String())
-	}
-
-	routes := []struct{ method, path string }{
-		{"POST", "/api/v1/servers/demo2/claim"},
-		{"POST", "/api/v1/servers/demo2/wake"},
-		{"GET", "/api/v1/servers/demo2/status"},
-	}
-	for _, tc := range routes {
-		got := do(api.ExternalHandler(), tc.method, tc.path, "", cookie)
-		if got.Code != http.StatusForbidden {
-			t.Fatalf("%s %s = %d, want 403 (%s)", tc.method, tc.path, got.Code, got.Body.String())
-		}
-		// The DISCRIMINATOR: setup_required proves requireOnboarded fired. If the
-		// 403 came from isOwnerOrAdmin the code would be "forbidden".
-		if c := errCode(got.Body.Bytes()); c != "setup_required" {
-			t.Fatalf("%s %s 403 code = %q, want setup_required (%s)",
-				tc.method, tc.path, c, got.Body.String())
-		}
-	}
-
-	// One bit: enroll a passkey. Nothing else about the request changes.
-	repo.passkeyCreds["pk1"] = PasskeyCredential{ID: "pk1", UserID: userID, CredentialID: "c1"}
-
-	// Claim now reaches its handler and succeeds.
 	if got := do(api.ExternalHandler(), "POST", "/api/v1/servers/demo2/claim", "", cookie); got.Code != http.StatusOK {
-		t.Fatalf("post-passkey claim = %d %q, want 200 (%s)", got.Code, errCode(got.Body.Bytes()), got.Body.String())
-	}
-	// The fake claim records only the row count; mirror the ownership write before testing setup behavior.
-	repo.byName["demo2"] = &ServerRecord{Name: "demo2", Subdomain: "demo2", OwnerID: userID}
-
-	// With ownership recorded, wake and status pass authorizeWake/isOwnerOrAdmin —
-	// proving the earlier 403s were the lockdown, not the ownership check.
-	for _, tc := range routes[1:] {
-		got := do(api.ExternalHandler(), tc.method, tc.path, "", cookie)
-		if got.Code == http.StatusForbidden {
-			t.Fatalf("%s %s still 403 for the owner after passkey enrollment (%s)",
-				tc.method, tc.path, got.Body.String())
-		}
+		t.Fatalf("claim by a player who signed in from the game = %d %q, want 200 (%s)",
+			got.Code, errCode(got.Body.Bytes()), got.Body.String())
 	}
 }
 
@@ -87,12 +46,13 @@ func TestAdvRequireOnboardedPredicate(t *testing.T) {
 		p    *Principal
 		want int
 	}{
-		// The live demo2 player: bind-onboarded, no email, no passkey.
-		{"session player, unverified, no passkey", &Principal{UserID: "u1", ViaSession: true, EmailVerified: false}, http.StatusForbidden},
-		{"session player, email verified", &Principal{UserID: "u1", ViaSession: true, EmailVerified: true}, passed},
-		{"session player, unverified but passkey enrolled", &Principal{UserID: "has-pk", ViaSession: true, EmailVerified: false}, passed},
+		{"session player, unverified, no passkey", &Principal{UserID: "u1", Role: "user", ViaSession: true}, passed},
+		{"session owner, unverified, no passkey", &Principal{UserID: "u1", Role: "owner", ViaSession: true}, http.StatusForbidden},
+		{"api key of an admin, unverified, no passkey", &Principal{UserID: "u1", Role: "admin", APIKey: "k1"}, http.StatusForbidden},
+		{"session owner, email verified", &Principal{UserID: "u1", Role: "owner", ViaSession: true, EmailVerified: true}, passed},
+		{"session admin, unverified but passkey enrolled", &Principal{UserID: "has-pk", Role: "admin", ViaSession: true}, passed},
 		// Admin Zero-Trust path carries no session flag; internal face carries no principal.
-		{"non-session principal", &Principal{UserID: "a1", ViaSession: false, EmailVerified: false}, passed},
+		{"non-session principal", &Principal{UserID: "a1", Role: "admin"}, passed},
 		{"nil principal (internal face)", nil, passed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -128,7 +88,7 @@ func TestRequireOnboardedReportsAStoreOutage(t *testing.T) {
 
 	r := httptest.NewRequest("POST", "/api/v1/servers/demo2/wake", nil)
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyPrincipal,
-		&Principal{UserID: "has-pk", ViaSession: true, EmailVerified: false}))
+		&Principal{UserID: "has-pk", Role: "owner", ViaSession: true}))
 	w := httptest.NewRecorder()
 	h(w, r)
 	if ran {

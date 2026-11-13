@@ -667,7 +667,7 @@ func writeNoRoute(w http.ResponseWriter, r *http.Request, muxes ...*http.ServeMu
 func (a *API) requireOnboarded(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p := principalFromContext(r.Context())
-		if p != nil && (p.ViaSession || p.APIKey != "") && !p.EmailVerified {
+		if p != nil && staffRole(p.Role) && (p.ViaSession || p.APIKey != "") && !p.EmailVerified {
 			creds, err := a.Repo.PasskeyCredentialsForUser(r.Context(), p.UserID)
 			if err != nil {
 				// Treat store outages as retryable instead of incorrectly requiring passkey enrollment.
@@ -686,9 +686,9 @@ func (a *API) requireOnboarded(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// setupRequired must match requireOnboarded; email presence cannot identify bind-code players needing setup.
-func setupRequired(emailVerified, hasPasskey bool) bool {
-	return !emailVerified && !hasPasskey
+// setupRequired must match requireOnboarded: staff need a verified email or a passkey, players can always sign in again from the game.
+func setupRequired(role string, emailVerified, hasPasskey bool) bool {
+	return staffRole(role) && !emailVerified && !hasPasskey
 }
 
 type ctxKey int
