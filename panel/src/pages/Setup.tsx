@@ -12,6 +12,7 @@ import type { ApiError } from "@/lib/types";
 import { base64urlToBytes, bytesToBase64url } from "@/lib/utils";
 import { useTier } from "@/lib/tier";
 import { useBranding } from "@/lib/branding";
+import { useConfig } from "@/lib/hooks";
 import { InlineError } from "@/components/MessageLine";
 
 // Setup creates its own session, requires a passkey before SMTP exists, and retries only transient token failures.
@@ -26,6 +27,7 @@ export function Setup() {
   const { refresh } = useTier();
   const { t } = useTranslation("auth");
   const { name } = useBranding();
+  const setupCommand = useConfig()?.nano ? "felis nano setup" : "felis setup";
 
   const [state, setState] = useState<SetupState | null>(null);
   const [booting, setBooting] = useState(true);
@@ -128,7 +130,7 @@ export function Setup() {
             <p className="text-muted-foreground">
               {t("setup_invalid_hint_prefix")}
               <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">
-                felis setup
+                {setupCommand}
               </code>
               {t("setup_invalid_hint_suffix")}
             </p>
