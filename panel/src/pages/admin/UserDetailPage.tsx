@@ -68,7 +68,8 @@ export function UserDetailPage() {
     [id],
   );
   const [assigning, setAssigning] = useState(false);
-  const nano = useConfig()?.nano === true;
+  const config = useConfig();
+  const hasServers = config !== null && !config.nano;
 
   if (loading && !user) return <Loading />;
   if (error && (error as Partial<ApiError>).status === 404) {
@@ -123,7 +124,7 @@ export function UserDetailPage() {
         actions={(
           <div className="flex flex-wrap items-center gap-2">
             {/* A disabled button gets no hover events, so the tooltip sits on a wrapper. */}
-            {!nano && (
+            {hasServers && (
               <span title={user.disabled ? t("assign_disabled_user") : undefined}>
                 <Button variant="outline" size="sm" className="gap-1.5" disabled={user.disabled} onClick={() => setAssigning(true)}>
                   <Server className="h-4 w-4" />
@@ -143,7 +144,7 @@ export function UserDetailPage() {
         <EditProfileCard user={user} onSaved={reload} isSelf={identity?.user_id === id} />
         {/* Linked accounts */}
         <LinkedAccountsCard user={user} onChanged={reload} />
-        {!nano && <UserQuotaCard userId={user.id} />}
+        {hasServers && <UserQuotaCard userId={user.id} />}
         {/* Sessions */}
         <SessionsCard userId={user.id} onChanged={reload} />
       </div>
@@ -151,7 +152,7 @@ export function UserDetailPage() {
       {/* Danger zone */}
       <DangerZone user={user} isSelf={identity?.user_id === id} onChanged={reload} navigate={navigate} />
 
-      {!nano && (
+      {hasServers && (
         <AssignServerDialog
           open={assigning}
           onOpenChange={setAssigning}

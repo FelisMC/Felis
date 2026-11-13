@@ -37,7 +37,8 @@ export function UsersPage() {
   const { t, i18n } = useTranslation("admin");
   const locale = i18n.language;
   const navigate = useNavigate();
-  const nano = useConfig()?.nano === true;
+  const config = useConfig();
+  const hasServers = config !== null && !config.nano;
 
   // Debounce server-side search and reset pagination; Enter applies immediately.
   const [query, setQuery] = useState("");
@@ -89,7 +90,7 @@ export function UsersPage() {
     <div className="space-y-6">
       <PageHeader icon={Users} title={t("users_title")} subtitle={t("users_subtitle")} actions={<CreateUserDialog onCreated={(id) => { reload(); navigate(`/admin/users/${id}`); }} />} />
 
-      {!nano && <SelfServiceQuotaCard />}
+      {hasServers && <SelfServiceQuotaCard />}
 
       {/* Filters */}
       <Card>
@@ -159,7 +160,7 @@ export function UsersPage() {
                     <tr className="border-b border-border bg-muted/30 text-left">
                       <th className="px-4 py-3 font-medium text-muted-foreground">{t("users_col_user")}</th>
                       <th className="px-4 py-3 font-medium text-muted-foreground hidden sm:table-cell">{t("users_col_role")}</th>
-                      {!nano && <th className="px-4 py-3 font-medium text-muted-foreground hidden md:table-cell">{t("users_col_servers")}</th>}
+                      {hasServers && <th className="px-4 py-3 font-medium text-muted-foreground hidden md:table-cell">{t("users_col_servers")}</th>}
                       <th className="px-4 py-3 font-medium text-muted-foreground hidden lg:table-cell">{t("users_col_status")}</th>
                       <th className="px-4 py-3 font-medium text-muted-foreground hidden lg:table-cell">{t("users_col_created")}</th>
                       <th className="px-4 py-3 font-medium text-muted-foreground w-0" />
@@ -167,7 +168,7 @@ export function UsersPage() {
                   </thead>
                   <tbody>
                     {data.users.map((u: UserView) => (
-                      <UserRow key={u.id} user={u} locale={locale} showServers={!nano} />
+                      <UserRow key={u.id} user={u} locale={locale} showServers={hasServers} />
                     ))}
                   </tbody>
                 </table>
