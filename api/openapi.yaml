@@ -6324,7 +6324,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
-        '409': { description: Another node task is running or this task cannot be retried. }
+        '409': { description: Another node task is running, this task cannot be retried, or the update commit is not the one the last update check found (update_target_unchecked). }
         '503': { description: Host node execution service is unavailable. }
   /api/v1/settings/node-control/tasks/{id}:
     get:

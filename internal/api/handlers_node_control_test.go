@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"felis.lolicon.best/internal/nodecontrol"
+	"felis.lolicon.best/internal/updates"
 )
 
 type fakeNodeControl struct {
@@ -152,5 +153,30 @@ func TestNodeControlRequiresFreshOwnerProof(t *testing.T) {
 	w = do(a.ExternalHandler(), "POST", nodeTaskPath, nodeTaskBody, jsonHeader)
 	if w.Code != 202 || control.calls != 1 {
 		t.Fatal(w.Code, w.Body.String())
+	}
+}
+
+func TestPanelUpdateInstallsOnlyTheCheckedMainCommit(t *testing.T) {
+	checked := strings.Repeat("a", 40)
+	repo := newFakeRepo()
+	a := newTestAPI(repo, newFakeCluster())
+	a.External = staticExternal{p: &Principal{UserID: "actor", Role: "owner", ViaAdminAccess: true}}
+	control := &fakeNodeControl{}
+	a.NodeControl = control
+	start := func(commit string) int {
+		body := `{"action":"update","params":{"commit":"` + commit + `"},"confirmMaintenance":true}`
+		return do(a.ExternalHandler(), "POST", nodeTaskPath, body, jsonHeader).Code
+	}
+
+	if code := start(checked); code != 409 || control.calls != 0 {
+		t.Fatalf("with no recorded check: %d, %d starts; want 409 and none", code, control.calls)
+	}
+	report, _ := json.Marshal(updates.StatusReport{CheckedAt: time.Now(), Components: []updates.ComponentStatus{{Name: "felis-api", Latest: checked, State: "update"}}})
+	repo.settings[updates.StatusKey] = report
+	if code := start(strings.Repeat("b", 40)); code != 409 || control.calls != 0 {
+		t.Fatalf("another commit: %d, %d starts; want 409 and none", code, control.calls)
+	}
+	if code := start(checked); code != 202 || control.calls != 1 {
+		t.Fatalf("the checked commit: %d, %d starts; want 202 and one", code, control.calls)
 	}
 }

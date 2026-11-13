@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"felis.lolicon.best/internal/nodecontrol"
+	"felis.lolicon.best/internal/updates"
 )
 
 type NodeControl interface {
@@ -80,6 +81,12 @@ func (a *API) startNodeTask(w http.ResponseWriter, r *http.Request, req nodecont
 		writeError(w, r, newError(400, "bad_request", "%v", err))
 		return
 	}
+	if commit := req.Params["commit"]; req.Action == "update" && commit != "" {
+		if err := a.checkedMainCommit(r.Context(), commit); err != nil {
+			writeError(w, r, err)
+			return
+		}
+	}
 	task, err := a.NodeControl.Start(r.Context(), req, principalFromContext(r.Context()).UserID)
 	if err != nil {
 		a.writeNodeControlError(w, r, err)
@@ -124,4 +131,27 @@ func NodeMaintenanceGuard(control NodeControl) func(context.Context) error {
 		}
 		return nil
 	}
+}
+
+// checkedMainCommit admits only the main commit the last recorded update check found, so the panel cannot install arbitrary code.
+func (a *API) checkedMainCommit(ctx context.Context, commit string) error {
+	refused := newError(409, "update_target_unchecked",
+		"that commit is not the one the last update check found on main; run the check again")
+	raw, err := a.Repo.GetSetting(ctx, updates.StatusKey)
+	if errors.Is(err, ErrNotFound) {
+		return refused
+	}
+	if err != nil {
+		return err
+	}
+	var rep updates.StatusReport
+	if err := json.Unmarshal(raw, &rep); err != nil {
+		return err
+	}
+	for _, c := range rep.Components {
+		if c.Name == "felis-api" && c.Latest == commit {
+			return nil
+		}
+	}
+	return refused
 }

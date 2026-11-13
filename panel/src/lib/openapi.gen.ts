@@ -9659,7 +9659,7 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
-            /** @description Another node task is running or this task cannot be retried. */
+            /** @description Another node task is running, this task cannot be retried, or the update commit is not the one the last update check found (update_target_unchecked). */
             409: {
                 headers: {
                     [name: string]: unknown;
