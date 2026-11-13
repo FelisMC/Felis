@@ -4588,11 +4588,11 @@ expect "k3s joins a PATH sudo stripped of it" "/usr/local/bin:/usr/sbin:/usr/bin
 [ "$(kp /usr/bin:/usr/local/bin)" = "/usr/bin:/usr/local/bin" ] && echo "PASS a PATH that has k3s is left alone" \
   || { echo "FAIL: ensure_k3s_on_path changed a PATH that had k3s: $(kp /usr/bin:/usr/local/bin)"; fails=$((fails + 1)); }
 
-# The host server is gone once the database moved: no unit may still wait for it.
-if grep -n 'postgresql\.service' "$BS"; then
+# The full install's host server is gone once the database moved: only Felis-nano's unit, which keeps its accounts there, waits for it.
+if awk '/^install_nano_service\(\) \{/,/^}/ { next } /postgresql\.service/ { print NR ": " $0; found = 1 } END { exit !found }' "$BS"; then
   echo "FAIL: a unit bootstrap writes still orders itself after postgresql.service"; fails=$((fails + 1))
 else
-  echo "PASS no unit waits for the host PostgreSQL"
+  echo "PASS no unit but felis-nano's waits for the host PostgreSQL"
 fi
 pgorder="$(awk '/^main\(\) \{/,/^}/' "$BS" | grep -nE '^[[:space:]]*(ensure_k3s_on_path|install_k3s|deploy_postgres|migrate_host_postgres|run_migrations|deploy_bundle)$' | sed 's/^[0-9]*:[[:space:]]*//' | tr '\n' ' ')"
 expect "the database runs in k3s, takes the host's data, then is migrated and joined by the bundle" \
