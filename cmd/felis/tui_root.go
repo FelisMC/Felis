@@ -121,6 +121,8 @@ type rootModel struct {
 	// alertRoute reads where the watchdog's alerts go for the summary; nil
 	// leaves those rows out.
 	alertRoute func(context.Context) alertRoute
+	// localAccess returns the switch back to direct access, or nil when none is needed; nil leaves Local only a no-op.
+	localAccess func(context.Context) func(panelHost, adminHost string) error
 }
 
 func newRootModel(ctx context.Context, store ownerStore, db config.DatabaseConfig, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser string, adminExists bool, mode consoleMode) *rootModel {
@@ -183,8 +185,7 @@ func (m *rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.adminExists {
 			return m.startOwnerSetup()
 		}
-		m.stage = stageConnect
-		return m.adopt(newConnectChooserModel(m.rootDomain, m.adminHost, m.panelHost))
+		return m.openConnectChooser()
 
 	case setupReadyMsg:
 		m.result.username = msg.username
@@ -299,13 +300,15 @@ func (m *rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.backFromDetour()
 
 	case goBackMsg:
-		m.stage = stageConnect
-		return m.adopt(newConnectChooserModel(m.rootDomain, m.adminHost, m.panelHost))
+		return m.openConnectChooser()
 
 	case reconfigureConnectMsg:
 		m.reconfiguringConnect = true
-		m.stage = stageConnect
-		return m.adopt(newConnectChooserModel(m.rootDomain, m.adminHost, m.panelHost))
+		return m.openConnectChooser()
+
+	case connectCancelMsg:
+		m.reconfiguringConnect = false
+		return m.backFromDetour()
 	}
 
 	if m.screen != nil {
@@ -473,6 +476,16 @@ func (m *rootModel) railWithHint() string {
 	return r
 }
 
+func (m *rootModel) openConnectChooser() (tea.Model, tea.Cmd) {
+	c := newConnectChooserModel(m.rootDomain, m.adminHost, m.panelHost)
+	c.detour = m.reconfiguringConnect
+	if m.localAccess != nil {
+		c.applyLocal = m.localAccess(m.ctx)
+	}
+	m.stage = stageConnect
+	return m.adopt(c)
+}
+
 // applyConnectResult records the chosen connection outcome onto the result.
 func (m *rootModel) applyConnectResult(msg connectResultMsg) {
 	m.result.connectMethod = msg.method
@@ -487,13 +500,17 @@ func (m *rootModel) applyConnectResult(msg connectResultMsg) {
 		m.result.connectConfigured = true
 		m.result.edgeConfigured = true
 		if msg.edge != nil {
+			m.accessAud = msg.edge.AccessAud
 			m.result.edgeAud = msg.edge.AccessAud
 			m.result.edgeRoutedHosts = msg.edge.RoutedHostnames
 			m.result.edgeConfigPath = msg.edge.ConfigPath
 		}
 	case connectReverseProxy:
+		m.accessAud = ""
 		m.result.connectConfigured = true
 		m.result.reverseProxyGuide = msg.guide
+	default:
+		m.accessAud = ""
 	}
 	m.result.panelURL = panelURLFor(msg.method, m.rootDomain, m.result.adminHostname)
 }

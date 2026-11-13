@@ -475,22 +475,10 @@ func (e nodeExecutor) configureConnection(ctx context.Context, r nodecontrol.Req
 		if err := stage("configure"); err != nil {
 			return err
 		}
-		if err := takeDownCloudflareEdge(ctx, out); err != nil {
-			return err
-		}
 		if p["mode"] == "reverse-proxy" {
-			return applyReverseProxy(ctx, panelHost, adminHost)
+			return applyReverseProxy(ctx, panelHost, adminHost, out)
 		}
-		if err := writeConnectionConfig(ctx, panelHost, adminHost, "", ""); err != nil {
-			return err
-		}
-		if err := applyFelisConfigSecret(ctx); err != nil {
-			return err
-		}
-		if err := kubectl(ctx, "-n", "felis", "rollout", "restart", "deployment/felis-api"); err != nil {
-			return err
-		}
-		return kubectl(ctx, "-n", "felis", "rollout", "status", "deployment/felis-api", "--timeout=180s")
+		return applyLocalAccess(ctx, panelHost, adminHost, out)
 	}
 	// cloudflared and cfsetup keep the login certificate under $HOME/.cloudflared; a root
 	// service has no HOME of its own.

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -62,15 +63,48 @@ func applyCloudflareEdge(ctx context.Context, result *cfsetup.Result, panelHost,
 	return nil
 }
 
-// Reverse-proxy mode clears the Access audience and uses the owner's local session.
-func applyReverseProxy(ctx context.Context, panelHost, adminHost string) error {
+// Reverse-proxy mode takes down any Cloudflare edge, clears the Access audience and uses the owner's local session.
+func applyReverseProxy(ctx context.Context, panelHost, adminHost string, out io.Writer) error {
 	if adminHost == "" {
 		return fmt.Errorf("admin hostname is required")
 	}
-	// Caddy, nginx and Traefik all append the peer they saw to X-Forwarded-For.
-	if err := writeConnectionConfig(ctx, panelHost, adminHost, "", "X-Forwarded-For"); err != nil {
+	if err := takeDownCloudflareEdge(ctx, out); err != nil {
 		return err
 	}
+	var current config.AuthConfig
+	if cfg, err := config.Load(hostSetupConfigPath); err == nil {
+		current = cfg.Auth
+	}
+	if err := writeConnectionConfig(ctx, panelHost, adminHost, "", reverseProxyHeader(current)); err != nil {
+		return err
+	}
+	return restartAPIWithConfig(ctx)
+}
+
+// applyLocalAccess takes down any Cloudflare edge and serves the panel directly on its NodePort again.
+func applyLocalAccess(ctx context.Context, panelHost, adminHost string, out io.Writer) error {
+	if err := takeDownCloudflareEdge(ctx, out); err != nil {
+		return err
+	}
+	if err := writeConnectionConfig(ctx, panelHost, adminHost, "", ""); err != nil {
+		return err
+	}
+	return restartAPIWithConfig(ctx)
+}
+
+// localAccessSwitch returns the switch back to direct access, or nil when the host already serves the panel directly.
+func localAccessSwitch(ctx context.Context) func(panelHost, adminHost string) error {
+	cfg, err := config.Load(hostSetupConfigPath)
+	_, unitErr := os.Stat(cloudflaredFelisUnit)
+	if err == nil && cfg.Auth.DirectAccess() && errors.Is(unitErr, fs.ErrNotExist) {
+		return nil
+	}
+	return func(panelHost, adminHost string) error {
+		return applyLocalAccess(ctx, panelHost, adminHost, io.Discard)
+	}
+}
+
+func restartAPIWithConfig(ctx context.Context) error {
 	if err := applyFelisConfigSecret(ctx); err != nil {
 		return err
 	}
@@ -78,6 +112,14 @@ func applyReverseProxy(ctx context.Context, panelHost, adminHost string) error {
 		return err
 	}
 	return kubectl(ctx, "-n", "felis", "rollout", "status", "deployment/felis-api", "--timeout=180s")
+}
+
+// reverseProxyHeader keeps a client address header set by hand, else X-Forwarded-For, which Caddy, nginx and Traefik all append to.
+func reverseProxyHeader(current config.AuthConfig) string {
+	if current.AccessJWTAud == "" && current.ClientIPHeader != "" {
+		return current.ClientIPHeader
+	}
+	return "X-Forwarded-For"
 }
 
 // An empty audience clears the old Cloudflare configuration in both host and Pod files; the host proxy's panel links follow the new access method.

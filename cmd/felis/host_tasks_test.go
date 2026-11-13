@@ -263,15 +263,33 @@ func TestCurrentHostSettingsReadTheUnits(t *testing.T) {
 	}
 }
 
+func TestReverseProxyKeepsHandSetHeader(t *testing.T) {
+	cases := []struct {
+		current config.AuthConfig
+		want    string
+	}{
+		{config.AuthConfig{}, "X-Forwarded-For"},
+		{config.AuthConfig{ClientIPHeader: "X-Real-IP"}, "X-Real-IP"},
+		{config.AuthConfig{AccessJWTAud: "aud", ClientIPHeader: "CF-Connecting-IP"}, "X-Forwarded-For"},
+	}
+	for _, c := range cases {
+		if got := reverseProxyHeader(c.current); got != c.want {
+			t.Errorf("%+v: got %q, want %q", c.current, got, c.want)
+		}
+	}
+}
+
 func TestConnectionAndStorageOf(t *testing.T) {
 	var cfg config.Config
 	cfg.Auth.PanelHostname, cfg.Auth.AdminHostname = "console.example.com", "op.console.example.com"
 	if c := connectionOf(&cfg); c.Mode != "local" || c.PanelHost != "console.example.com" {
 		t.Fatalf("%+v", c)
 	}
-	cfg.Auth.ClientIPHeader = "X-Forwarded-For"
-	if c := connectionOf(&cfg); c.Mode != "reverse-proxy" {
-		t.Fatalf("%+v", c)
+	for _, header := range []string{"X-Forwarded-For", "X-Real-IP"} {
+		cfg.Auth.ClientIPHeader = header
+		if c := connectionOf(&cfg); c.Mode != "reverse-proxy" {
+			t.Fatalf("%s: %+v", header, c)
+		}
 	}
 	cfg.Auth.AccessJWTAud = "aud"
 	if c := connectionOf(&cfg); c.Mode != "cloudflare" {

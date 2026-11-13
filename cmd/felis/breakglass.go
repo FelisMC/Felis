@@ -454,6 +454,7 @@ func newConsoleRoot(ctx context.Context, s ownerStore, db config.DatabaseConfig,
 	rm.alertRoute = func(ctx context.Context) alertRoute {
 		return hostAlertRoute(ctx, hostSetupConfigPath, db.URL, defaultHeartbeatFile)
 	}
+	rm.localAccess = localAccessSwitch
 	return rm
 }
 

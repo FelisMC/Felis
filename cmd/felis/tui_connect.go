@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -19,7 +20,15 @@ type connectChooserModel struct {
 	form          *huh.Form
 	choice        connectMethod
 	width, height int
+
+	// detour marks a change to an existing connection, so Esc returns without changing it.
+	detour bool
+	// applyLocal switches the host back to direct access; nil when it already serves the panel directly.
+	applyLocal func(panelHost, adminHost string) error
 }
+
+// connectCancelMsg leaves the connection unchanged.
+type connectCancelMsg struct{}
 
 func newConnectChooserModel(rootDomain, adminHost, panelHost string) *connectChooserModel {
 	m := &connectChooserModel{rootDomain: rootDomain, adminHost: adminHost, panelHost: panelHost}
@@ -68,8 +77,13 @@ func (m *connectChooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c":
 			return m, tea.Quit
 		case "esc":
-			// Skipping is choosing local — the operator can change this later.
-			return m, m.chooseLocal()
+			switch {
+			case m.detour:
+				return m, func() tea.Msg { return connectCancelMsg{} }
+			case m.applyLocal == nil:
+				return m, m.chooseLocal()
+			}
+			return m, nil
 		}
 	}
 
@@ -93,6 +107,9 @@ func (m *connectChooserModel) onComplete() (tea.Model, tea.Cmd) {
 	case connectReverseProxy:
 		return newReverseProxyModel(m.rootDomain, m.adminHost, m.panelHost), nil
 	default:
+		if m.applyLocal != nil {
+			return newLocalAccessModel(defaultPanelHostname(m.rootDomain, m.panelHost), defaultAdminHostname(m.rootDomain, m.adminHost), m.applyLocal), nil
+		}
 		return m, m.chooseLocal()
 	}
 }
@@ -110,6 +127,76 @@ func (m *connectChooserModel) View() string { return m.form.View() }
 // arrowNavOK lets the root repurpose ←/→ to walk the step rail: this screen
 // navigates its options with ↑/↓, so the horizontal arrows are free.
 func (m *connectChooserModel) arrowNavOK() bool { return true }
+
+type localApplyMsg struct{ err error }
+
+// localAccessModel moves a host off Cloudflare or a reverse proxy back to direct access.
+type localAccessModel struct {
+	panelHost, adminHost string
+	apply                func(panelHost, adminHost string) error
+	sp                   spinner.Model
+	working              bool
+	err                  error
+}
+
+func newLocalAccessModel(panelHost, adminHost string, apply func(panelHost, adminHost string) error) *localAccessModel {
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = tuiLabel
+	return &localAccessModel{panelHost: panelHost, adminHost: adminHost, apply: apply, sp: sp}
+}
+
+func (m *localAccessModel) Init() tea.Cmd { return m.run() }
+
+func (m *localAccessModel) run() tea.Cmd {
+	m.working, m.err = true, nil
+	panel, admin, apply := m.panelHost, m.adminHost, m.apply
+	return tea.Batch(m.sp.Tick, func() tea.Msg { return localApplyMsg{err: apply(panel, admin)} })
+}
+
+func (m *localAccessModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case localApplyMsg:
+		m.working, m.err = false, msg.err
+		if msg.err != nil {
+			return m, nil
+		}
+		panel, admin := m.panelHost, m.adminHost
+		return m, func() tea.Msg {
+			return connectResultMsg{method: connectLocal, panelHostname: panel, adminHostname: admin}
+		}
+	case spinner.TickMsg:
+		if m.working {
+			var cmd tea.Cmd
+			m.sp, cmd = m.sp.Update(msg)
+			return m, cmd
+		}
+	case tea.KeyMsg:
+		switch {
+		case msg.String() == "ctrl+c":
+			return m, tea.Quit
+		case m.working:
+		case msg.String() == "enter":
+			return m, m.run()
+		case msg.String() == "esc":
+			return m, goBack()
+		}
+	}
+	return m, nil
+}
+
+func (m *localAccessModel) View() string {
+	if m.working {
+		return "  " + m.sp.View() + " " + tuiHint.Render("Removing the previous access method and rolling the API…") + "\n"
+	}
+	var b strings.Builder
+	b.WriteString(tuiErrorBanner("Could not switch to local access.") + "\n\n")
+	if m.err != nil {
+		b.WriteString(tuiHint.Render(m.err.Error()) + "\n")
+	}
+	b.WriteString("\n" + tuiAction("enter", "retry", "esc", "back"))
+	return b.String()
+}
 
 type rpStep int
 
@@ -268,7 +355,7 @@ func (m *reverseProxyModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *reverseProxyModel) apply() tea.Cmd {
 	panel, admin := m.panelHost, m.adminHost
 	return func() tea.Msg {
-		return rpApplyMsg{err: applyReverseProxy(context.Background(), panel, admin)}
+		return rpApplyMsg{err: applyReverseProxy(context.Background(), panel, admin, io.Discard)}
 	}
 }
 

@@ -281,7 +281,7 @@ func connectionOf(cfg *config.Config) hostConnection {
 	switch {
 	case cfg.Auth.AccessJWTAud != "":
 		c.Mode = "cloudflare"
-	case strings.EqualFold(cfg.Auth.ClientIPHeader, "X-Forwarded-For"):
+	case !cfg.Auth.DirectAccess():
 		c.Mode = "reverse-proxy"
 	}
 	return c

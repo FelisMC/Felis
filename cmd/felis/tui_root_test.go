@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"felis.lolicon.best/internal/cfsetup"
 	"felis.lolicon.best/internal/config"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -121,6 +122,61 @@ func TestRootReconfigureConnectSkipsMail(t *testing.T) {
 	if m.result.connectMethod != connectReverseProxy {
 		t.Fatalf("reconfigure did not update connectMethod: %v", m.result.connectMethod)
 	}
+}
+
+func TestRootLocalOnlySwitchesAHostOffItsOldAccess(t *testing.T) {
+	m := newTestRoot(false, consoleModeSetup, "")
+	m = drive(t, m, preflightDoneMsg{})
+	m = drive(t, m, connectResultMsg{method: connectCloudflare, edge: &cfsetup.Result{AccessAud: "aud"}})
+	m = drive(t, m, smtpResultMsg{})
+	m = drive(t, m, ownerResultMsg{username: "owner"})
+	var applied []string
+	m.localAccess = func(context.Context) func(string, string) error {
+		return func(panel, admin string) error {
+			applied = append(applied, panel+" "+admin)
+			return nil
+		}
+	}
+
+	m = drive(t, m, reconfigureConnectMsg{})
+	_, cmd := m.screen.Update(key(tea.KeyEsc))
+	m = drive(t, m, cmd())
+	if _, ok := m.screen.(*summaryModel); !ok || len(applied) != 0 || m.result.connectMethod != connectCloudflare {
+		t.Fatalf("esc on the chooser: screen %T, applied %v, method %v", m.screen, applied, m.result.connectMethod)
+	}
+
+	m = drive(t, m, reconfigureConnectMsg{})
+	next, _ := m.screen.(*connectChooserModel).onComplete()
+	_, initCmd := m.adopt(next)
+	for _, msg := range msgsOf(initCmd) {
+		if done, ok := msg.(localApplyMsg); ok {
+			_, cmd := m.Update(done)
+			m = drive(t, m, cmd())
+		}
+	}
+	if len(applied) != 1 || applied[0] != "panel.felis.example.com admin.felis.example.com" {
+		t.Fatalf("applied %v", applied)
+	}
+	if _, ok := m.screen.(*summaryModel); !ok || m.result.connectMethod != connectLocal || m.accessAud != "" {
+		t.Fatalf("after Local only: screen %T, method %v, aud %q", m.screen, m.result.connectMethod, m.accessAud)
+	}
+}
+
+// msgsOf runs a command and every command it batches.
+func msgsOf(cmd tea.Cmd) []tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+	msg := cmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		return []tea.Msg{msg}
+	}
+	var out []tea.Msg
+	for _, c := range batch {
+		out = append(out, msgsOf(c)...)
+	}
+	return out
 }
 
 func TestRootReconfigureStorageReEntersChooser(t *testing.T) {
