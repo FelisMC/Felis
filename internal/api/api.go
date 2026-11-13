@@ -7,7 +7,9 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -79,6 +81,9 @@ type API struct {
 
 	// PanelHostname is the player console host used for panel URLs; empty falls back to console.<RootDomain>.
 	PanelHostname string
+
+	// PanelPort goes into panel URLs when the console is not served on 443; zero leaves it out.
+	PanelPort int
 
 	WakeCooldown time.Duration
 
@@ -163,6 +168,9 @@ func (a *API) panelURL() string {
 	}
 	if host == "" {
 		return ""
+	}
+	if a.PanelPort != 0 && a.PanelPort != 443 {
+		host = net.JoinHostPort(host, strconv.Itoa(a.PanelPort))
 	}
 	return "https://" + host
 }

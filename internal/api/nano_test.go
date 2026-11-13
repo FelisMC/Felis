@@ -70,3 +70,19 @@ func TestNanoServesNothingThatTouchesServers(t *testing.T) {
 		}
 	}
 }
+
+func TestPanelURLCarriesANonStandardPort(t *testing.T) {
+	for _, tc := range []struct {
+		port int
+		want string
+	}{
+		{0, "https://console.example.com"},
+		{443, "https://console.example.com"},
+		{8443, "https://console.example.com:8443"},
+	} {
+		a := &API{RootDomain: "example.com", PanelPort: tc.port}
+		if got := a.panelURL(); got != tc.want {
+			t.Errorf("PanelPort %d: panelURL() = %q, want %q", tc.port, got, tc.want)
+		}
+	}
+}

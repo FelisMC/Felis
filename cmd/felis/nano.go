@@ -39,11 +39,15 @@ func cmdNano(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", "/etc/felis/felis.toml", "path to felis.toml")
 	listen := fs.String("listen", nanoDefaultListen, "address for hasJoined and the proxy plugin; plain HTTP, so keep it on the proxy's network")
-	panelPort := fs.Int("panel-port", nanoDefaultPanelPort, "HTTPS port of the panel")
+	panelPort := fs.Int("panel-port", nanoDefaultPanelPort, "HTTPS port the panel listens on")
+	publicPort := fs.Int("public-port", 0, "port in the panel's public address, e.g. 443 behind a reverse proxy (default: -panel-port)")
 	tlsCert := fs.String("tls-cert", "/etc/felis/panel-tls.crt", "panel TLS certificate")
 	tlsKey := fs.String("tls-key", "/etc/felis/panel-tls.key", "panel TLS private key")
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+	if *publicPort == 0 {
+		*publicPort = *panelPort
 	}
 	cfg, err := loadNanoConfig(*cfgPath)
 	if err != nil {
@@ -58,7 +62,7 @@ func cmdNano(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer drv.Close()
-	a, err := nanoAPI(cfg, api.NewPGRepo(drv.DB()), *panelPort, func(ctx context.Context, since, until time.Time, w io.Writer) (int, error) {
+	a, err := nanoAPI(cfg, api.NewPGRepo(drv.DB()), *publicPort, func(ctx context.Context, since, until time.Time, w io.Writer) (int, error) {
 		return retention.ExportAudit(ctx, drv.DB(), since, until, w)
 	}, stderr)
 	if err != nil {
@@ -81,8 +85,8 @@ func cmdNano(args []string, stdout, stderr io.Writer) int {
 		defaultPanelHostname(cfg.Server.RootDomain, cfg.Auth.PanelHostname),
 		defaultAdminHostname(cfg.Server.RootDomain, cfg.Auth.AdminHostname),
 		cfg.Velocity.GamePort, cfg.Velocity.GameVersion, resolvedVersion(), panel.Topology{Nano: true}))
-	fmt.Fprintf(stderr, "felis nano: hasJoined and the proxy plugin on %s; panel on https://%s:%d\n",
-		*listen, defaultAdminHostname(cfg.Server.RootDomain, cfg.Auth.AdminHostname), *panelPort)
+	fmt.Fprintf(stderr, "felis nano: hasJoined and the proxy plugin on %s; panel on port %d, operators sign in at %s\n",
+		*listen, *panelPort, httpsOrigin(defaultAdminHostname(cfg.Server.RootDomain, cfg.Auth.AdminHostname), *publicPort))
 	return serveNano(ctx, stderr,
 		nanoListener{newAPIServer("", a.InternalHandler()), ln, nil},
 		nanoListener{panelSrv, panelLn, &tlsFiles{*tlsCert, *tlsKey}})
@@ -101,10 +105,13 @@ func loadNanoConfig(path string) (*config.Config, error) {
 }
 
 // nanoAPI is the login-control API: no cluster, console, builds or backups, so it mounts only api.nanoRoutes.
-func nanoAPI(cfg *config.Config, repo api.Repo, panelPort int, auditExport func(context.Context, time.Time, time.Time, io.Writer) (int, error), stderr io.Writer) (*api.API, error) {
+func nanoAPI(cfg *config.Config, repo api.Repo, publicPort int, auditExport func(context.Context, time.Time, time.Time, io.Writer) (int, error), stderr io.Writer) (*api.API, error) {
 	internal, err := internalCallerTokens(os.Getenv)
 	if err != nil {
 		return nil, fmt.Errorf("proxy plugin token: %w", err)
+	}
+	if internal["velocity"] == "" {
+		fmt.Fprintln(stderr, "felis nano: FELIS_SERVICE_TOKEN is not set, so the proxy plugin's /link, /felis approve and /felis migrate calls are refused")
 	}
 	mailer, smtpPassword := hostMailer(cfg.SMTP, "felis nano", stderr)
 	a := &api.API{
@@ -120,6 +127,7 @@ func nanoAPI(cfg *config.Config, repo api.Repo, panelPort int, auditExport func(
 		RootDomain:     cfg.Server.RootDomain,
 		AdminHostname:  cfg.Auth.AdminHostname,
 		PanelHostname:  cfg.Auth.PanelHostname,
+		PanelPort:      publicPort,
 		AuditExport:    auditExport,
 		AuthDoorLimit:  api.RateLimit{Burst: 20, PerMinute: 20},
 		ClientIPHeader: cfg.Auth.EffectiveClientIPHeader(),
@@ -128,7 +136,7 @@ func nanoAPI(cfg *config.Config, repo api.Repo, panelPort int, auditExport func(
 	a.AuthSources = authSourcesFromConfig(cfg.AuthSources)
 	a.AuthSourceSettings = &api.AuthSourceSettings{Repo: repo, Defaults: a.AuthSources}
 	a.MailSettings = &api.MailSettings{Repo: repo, Host: hostMailSettings(cfg.SMTP, smtpPassword), NewMailer: func(s mailsettings.Settings) api.OTPMailer { return s.SMTP() }}
-	if rpID, origins := passkeyRelyingParty(cfg, panelPort); rpID == "" {
+	if rpID, origins := passkeyRelyingParty(cfg, publicPort); rpID == "" {
 		fmt.Fprintln(stderr, "felis nano: passkey verifier disabled (no panel host: set server.root_domain or auth.panel_hostname) — passkey endpoints return 503")
 	} else if pv, err := passkey.New(rpID, "Felis", origins); err != nil {
 		fmt.Fprintf(stderr, "felis nano: passkey verifier disabled: %v — passkey endpoints return 503\n", err)
@@ -136,6 +144,13 @@ func nanoAPI(cfg *config.Config, repo api.Repo, panelPort int, auditExport func(
 		a.Passkey = pv
 	}
 	return a, nil
+}
+
+func httpsOrigin(host string, port int) string {
+	if port == 443 {
+		return "https://" + host
+	}
+	return "https://" + net.JoinHostPort(host, strconv.Itoa(port))
 }
 
 type tlsFiles struct{ cert, key string }
@@ -185,7 +200,7 @@ func cmdNanoSetup(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("nano setup", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", "/etc/felis/felis.toml", "path to felis.toml")
-	panelPort := fs.Int("panel-port", nanoDefaultPanelPort, "HTTPS port of the panel")
+	publicPort := fs.Int("public-port", nanoDefaultPanelPort, "port in the panel's public address (443 behind a reverse proxy)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -210,9 +225,9 @@ func cmdNanoSetup(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer drv.Close()
-	out, err := performSetupOwner(ctx, api.NewPGRepo(drv.DB()), fmt.Sprintf("https://%s:%d", admin, *panelPort), accountableOSUser())
+	out, err := performSetupOwner(ctx, api.NewPGRepo(drv.DB()), httpsOrigin(admin, *publicPort), accountableOSUser())
 	if errors.Is(err, api.ErrConflict) {
-		fmt.Fprintf(stdout, "The Owner %s has already signed in; sign in at https://%s:%d\n", out.ownerUsername, admin, *panelPort)
+		fmt.Fprintf(stdout, "The Owner %s has already signed in; sign in at %s\n", out.ownerUsername, httpsOrigin(admin, *publicPort))
 		return 0
 	}
 	if err != nil {
