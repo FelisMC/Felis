@@ -46,6 +46,7 @@ test("folder selection uploads every file under its relative path", async ({ pag
   writeFileSync(join(directory, "settings", "config.yml"), "enabled: true\n");
   try {
     await page.goto("/servers/lobby/files");
+    await expect(page.getByRole("button", { name: t("files:open_folder", { name: "config" }), exact: true })).toBeVisible();
     await page.getByTestId("folder-upload-input").setInputFiles(directory);
     await expect(page.getByRole("region", { name: t("files:uploads_label") }).getByText(t("files:upload_done"), { exact: true })).toBeVisible();
     await page.getByRole("button", { name: t("files:open_folder", { name: "example-plugin" }), exact: true }).click();
