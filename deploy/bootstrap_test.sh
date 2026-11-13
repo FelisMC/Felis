@@ -2328,7 +2328,7 @@ curls="$(mktemp)"
 run_detect() { # state-dir [FELIS_ROOT_DOMAIN]; IPOUT and HOSTOUT stand in for ip route get and hostname -I, TRACE and IPIFY for the lookups
   : > "$curls"
   STATE_DIR="$1" RD="${2:-}" FNFILE="$fnfile" IPOUT="${IPOUT-1.1.1.1 via 10.0.0.1 dev eth0 src 10.0.0.5 uid 0}" HOSTOUT="${HOSTOUT:-}" \
-    INSTALL_MODE="${MODE:-}" FELIS_PUBLIC_IP="${PUBIP:-}" TRACE="${TRACE:-}" IPIFY="${IPIFY:-}" CLOUD="${CLOUD:-}" CURLS="$curls" bash -c '
+    INSTALL_MODE="${MODE:-}" FELIS_PUBLIC_IP="${PUBIP:-}" TRACE="${TRACE:-}" IPIFY="${IPIFY:-}" CLOUD="${CLOUD:-}" META="${META:-}" CURLS="$curls" bash -c '
     die() { printf "DIE: %s\n" "$*"; exit 1; }
     log() { printf "LOG: %s\n" "$*"; }
     warn() { printf "WARN: %s\n" "$*"; }
@@ -2337,6 +2337,7 @@ run_detect() { # state-dir [FELIS_ROOT_DOMAIN]; IPOUT and HOSTOUT stand in for i
     curl() {
       echo "curl $*" >> "$CURLS"
       case "$*" in
+        *100.100.100.200/latest/meta-data/eipv4*) [ -n "$META" ] && printf "%s" "$META" ;;
         *169.254.169.254*) [ -n "$CLOUD" ] ;;
         *1.1.1.1/cdn-cgi/trace*) [ -n "$TRACE" ] && printf "fl=1\nip=%s\nts=1\n" "$TRACE" ;;
         *api.ipify.org*) [ -n "$IPIFY" ] && printf "%s" "$IPIFY" ;;
@@ -2381,6 +2382,9 @@ no_lookup() { # label
 # A home network's host is private too, but the router's public address is not where its LAN players reach it.
 expect "a private address off the cloud is kept" "ROOT=10.0.0.5.nip.io PUBLIC=10.0.0.5" "$(MODE=full TRACE=203.0.113.9 run_detect "$adir")"
 no_lookup "  without a lookup"
+out="$(CLOUD=1 META=203.0.113.44 TRACE=203.0.113.9 MODE=full run_detect "$adir")"
+expect "the provider's metadata names the public address first" "PUBLIC=203.0.113.44 NODE=10.0.0.5" "$out"
+no_lookup "  without asking an outside service"
 expect "FELIS_PUBLIC_IP names the address" "ROOT=198.51.100.7.nip.io PUBLIC=198.51.100.7 NODE=10.0.0.5" \
   "$(MODE=full PUBIP=198.51.100.7 TRACE=203.0.113.9 run_detect "$adir")"
 no_lookup "  without a lookup"

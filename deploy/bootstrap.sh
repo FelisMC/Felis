@@ -1077,10 +1077,15 @@ cloud_host() {
   return 1
 }
 
-# lookup_public_ipv4 prints this host's public IPv4 address as an outside service sees it.
+# lookup_public_ipv4 prints this host's public IPv4 address: from the provider's metadata service, else as an outside service sees it.
 lookup_public_ipv4() {
-  local ip
+  local ip url
   command -v curl >/dev/null 2>&1 || return 1
+  for url in http://100.100.100.200/latest/meta-data/eipv4 http://100.100.100.200/latest/meta-data/public-ipv4 \
+    http://169.254.0.23/latest/meta-data/public-ipv4 http://169.254.169.254/latest/meta-data/public-ipv4; do
+    ip="$(curl -fsS --max-time 2 "$url" 2>/dev/null)" || ip=""
+    if ipv4_to_int "$ip" >/dev/null; then printf '%s\n' "$ip"; return 0; fi
+  done
   ip="$(curl -4fsS --max-time 4 https://1.1.1.1/cdn-cgi/trace 2>/dev/null | sed -n 's/^ip=//p')" || ip=""
   ipv4_to_int "$ip" >/dev/null || ip="$(curl -4fsS --max-time 4 https://api.ipify.org 2>/dev/null)" || ip=""
   ipv4_to_int "$ip" >/dev/null || return 1
