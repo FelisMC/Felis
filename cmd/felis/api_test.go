@@ -45,7 +45,7 @@ func TestPasskeyRelyingParty(t *testing.T) {
 			for _, origin := range tc.wantOrigins {
 				wantOrigins = append(wantOrigins, origin, fmt.Sprintf("%s:%d", origin, defaultPanelNodePort))
 			}
-			rp, origins := passkeyRelyingParty(cfg)
+			rp, origins := passkeyRelyingParty(cfg, setupPanelNodePort())
 			if rp != tc.wantRP || !slices.Equal(origins, wantOrigins) {
 				t.Fatalf("relying party = %q %q, want %q %q", rp, origins, tc.wantRP, wantOrigins)
 			}
@@ -57,7 +57,7 @@ func TestPasskeyRelyingPartyIncludesConfiguredNodePort(t *testing.T) {
 	t.Setenv("FELIS_PANEL_NODEPORT", "30445")
 	cfg := &config.Config{}
 	cfg.Server.RootDomain = "example.com"
-	_, origins := passkeyRelyingParty(cfg)
+	_, origins := passkeyRelyingParty(cfg, setupPanelNodePort())
 	if !slices.Contains(origins, "https://op.console.example.com:30445") {
 		t.Fatalf("configured NodePort origin missing: %v", origins)
 	}

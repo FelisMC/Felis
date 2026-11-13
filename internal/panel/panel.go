@@ -23,6 +23,7 @@ type runtimeConfig struct {
 	Distributed   bool   `json:"distributed,omitempty"`
 	ControllerHA  bool   `json:"controllerHA,omitempty"`
 	NoLobby       bool   `json:"noLobby,omitempty"`
+	Nano          bool   `json:"nano,omitempty"`
 	APIBase       string `json:"apiBase"`
 	RootDomain    string `json:"rootDomain"`
 	PanelHostname string `json:"panelHostname,omitempty"`
@@ -118,6 +119,8 @@ type Topology struct {
 	ControllerHA bool
 	// NoLobby tells the panel the install has only the login space.
 	NoLobby bool
+	// Nano tells the panel it fronts Felis-nano: sign-in, accounts and auth sources, no servers.
+	Nano bool
 }
 
 type handler struct {
@@ -191,6 +194,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Distributed:   h.topology.Distributed,
 			ControllerHA:  h.topology.ControllerHA,
 			NoLobby:       h.topology.NoLobby,
+			Nano:          h.topology.Nano,
 			RootDomain:    h.rootDomain,
 			PanelHostname: h.panelHostname,
 			AdminHostname: h.adminHostname,

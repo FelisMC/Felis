@@ -6,37 +6,25 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 )
 
-func TestNanoWarnsThatServerListenIsIgnored(t *testing.T) {
+func TestNanoTellsADatabaseFreeInstallHowToMoveOn(t *testing.T) {
 	cfg := filepath.Join(t.TempDir(), "felis.toml")
-	if err := os.WriteFile(cfg, []byte("[server]\nlisten = \"0.0.0.0:9999\"\n"), 0o600); err != nil {
+	old := "[[auth_source]]\ntag = \"littleskin\"\nprefix = \"ls\"\nurl = \"https://littleskin.cn/api/yggdrasil/sessionserver/session/minecraft/hasJoined\"\n"
+	if err := os.WriteFile(cfg, []byte(old), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var stderr bytes.Buffer
-	if rc := cmdNano([]string{"-config", cfg, "-listen", "127.0.0.1:-1"}, io.Discard, &stderr); rc != 1 {
-		t.Fatalf("cmdNano = %d, want 1 from the unbindable -listen", rc)
+	if rc := cmdNano([]string{"-config", cfg}, io.Discard, &stderr); rc != 1 {
+		t.Fatalf("cmdNano = %d on a config without [database], want 1", rc)
 	}
-	if !strings.Contains(stderr.String(), `listen = "0.0.0.0:9999" is ignored`) {
-		t.Fatalf("stderr %q should say the configured listen is ignored", stderr.String())
-	}
-
-	// With no [server] table at all there is nothing to warn about.
-	if err := os.WriteFile(cfg, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	stderr.Reset()
-	_ = cmdNano([]string{"-config", cfg, "-listen", "127.0.0.1:-1"}, io.Discard, &stderr)
-	if strings.Contains(stderr.String(), "is ignored") {
-		t.Fatalf("stderr %q warns about a listen the operator never set", stderr.String())
+	if !strings.Contains(stderr.String(), "FELIS_INSTALL_MODE=nano") || !strings.Contains(stderr.String(), "[[auth_source]] entries carry over") {
+		t.Fatalf("stderr %q should say how to move a database-free install on", stderr.String())
 	}
 }
 
@@ -53,7 +41,7 @@ func TestNanoDrainsInFlightLoginOnShutdown(t *testing.T) {
 	}
 	ctx, stop := context.WithCancel(context.Background())
 	done := make(chan int, 1)
-	go func() { done <- serveNano(ctx, srv, ln, io.Discard) }()
+	go func() { done <- serveNano(ctx, io.Discard, nanoListener{srv, ln, nil}) }()
 
 	got := make(chan int, 1)
 	go func() {
@@ -85,25 +73,5 @@ func TestNanoListensOnLoopbackByDefault(t *testing.T) {
 	host, _, err := net.SplitHostPort(nanoDefaultListen)
 	if ip := net.ParseIP(host); err != nil || ip == nil || !ip.IsLoopback() {
 		t.Fatalf("default -listen %q is not a loopback address", nanoDefaultListen)
-	}
-}
-
-func TestNanoRequestLogIsQuotedAndCapped(t *testing.T) {
-	const rlo = rune(0x202e) // RIGHT-TO-LEFT OVERRIDE
-	var log bytes.Buffer
-	h := nanoHandler(nil, &log)
-	target := "/session/minecraft/hasJoined?username=" + string(rlo) + "evil" + string([]byte{0x9b}) + "31m" + strings.Repeat("a", 4096)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, target, nil))
-
-	line := log.String()
-	if strings.ContainsRune(line, rlo) || !utf8.ValidString(line) {
-		t.Fatalf("raw caller bytes reached the log: %q", line)
-	}
-	if escaped := strings.Trim(strconv.QuoteRune(rlo), "'"); !strings.Contains(line, escaped) {
-		t.Fatalf("log line %q should show the override escaped as %s", line, escaped)
-	}
-	if len(line) > 2*nanoLogURIMax {
-		t.Fatalf("log line is %d bytes for a %d-byte URI; want it capped", len(line), len(target))
 	}
 }

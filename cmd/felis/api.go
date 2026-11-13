@@ -55,14 +55,14 @@ import (
 const mojangSessionServer = "https://sessionserver.mojang.com/session/minecraft/hasJoined"
 
 // passkeyRelyingParty returns the WebAuthn rp id (the player console host) and its allowed origins; empty id means no panel host.
-func passkeyRelyingParty(cfg *config.Config) (string, []string) {
+func passkeyRelyingParty(cfg *config.Config, port int) (string, []string) {
 	rpID := defaultPanelHostname(cfg.Server.RootDomain, cfg.Auth.PanelHostname)
 	if rpID == "" {
 		return "", nil
 	}
-	origins := []string{"https://" + rpID, fmt.Sprintf("https://%s:%d", rpID, setupPanelNodePort())}
+	origins := []string{"https://" + rpID, fmt.Sprintf("https://%s:%d", rpID, port)}
 	if admin := defaultAdminHostname(cfg.Server.RootDomain, cfg.Auth.AdminHostname); admin != "" && admin != rpID {
-		origins = append(origins, "https://"+admin, fmt.Sprintf("https://%s:%d", admin, setupPanelNodePort()))
+		origins = append(origins, "https://"+admin, fmt.Sprintf("https://%s:%d", admin, port))
 	}
 	return rpID, origins
 }
@@ -145,26 +145,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	// With no [smtp] host the mailer stays nil and code-mailing endpoints answer 503 mail_unavailable.
-	var mailer api.OTPMailer
-	var smtpPassword string
-	if cfg.SMTP.Host != "" {
-		passRef := cfg.SMTP.PasswordRef
-		if passRef == "" {
-			passRef = platform.SMTPPasswordEnv
-		}
-		password := os.Getenv(passRef)
-		smtpPassword = password
-		if cfg.SMTP.Username != "" && password == "" {
-			fmt.Fprintf(stderr, "felis api: warning: [smtp] username is set but credentials env %s is empty — OTP sends will fail AUTH\n", passRef)
-		}
-		mailer = smtpRelay(cfg.SMTP, password)
-		if !cfg.SMTP.TLSRequired() {
-			fmt.Fprintf(stderr, "felis api: warning: [smtp] %s may be sent codes without TLS (require_tls off or a relay on this host)\n", cfg.SMTP.Host)
-		}
-	} else {
-		fmt.Fprintln(stderr, "felis api: no [smtp] in felis.toml — email codes go through the relay saved in the panel (Platform settings → Mail delivery); while there is none, email sign-in and verification answer 503 mail_unavailable")
-	}
+	mailer, smtpPassword := hostMailer(cfg.SMTP, "felis api", stderr)
 
 	buildCfg := buildConfig(cfg)
 	buildCfg.FelisImage = os.Getenv("FELIS_IMAGE")
@@ -396,7 +377,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stderr, "felis api: hasJoined multiplexer active — Mojang + %d default third-party source(s); panel settings take precedence\n", len(cfg.AuthSources))
 
 	// One relying party spans both web faces: the panel host is a domain suffix of the operator host.
-	if rpID, origins := passkeyRelyingParty(cfg); rpID == "" {
+	if rpID, origins := passkeyRelyingParty(cfg, setupPanelNodePort()); rpID == "" {
 		fmt.Fprintln(stderr, "felis api: passkey verifier disabled (no panel host: set server.root_domain or auth.panel_hostname) — passkey endpoints return 503")
 	} else if pv, err := passkey.New(rpID, "Felis", origins); err != nil {
 		fmt.Fprintf(stderr, "felis api: passkey verifier disabled: %v — passkey endpoints return 503\n", err)
@@ -864,6 +845,26 @@ func internalCallerTokens(getenv func(string) string) (api.CallerTokens, error) 
 		tokens[api.Caller(ct.Caller)] = strings.TrimSpace(getenv(ct.APIEnv))
 	}
 	return api.NewCallerTokens(tokens)
+}
+
+// hostMailer is the relay [smtp] names, or nil when there is none, so code-mailing endpoints answer 503 mail_unavailable until one is saved in the panel.
+func hostMailer(c config.SMTPConfig, prog string, stderr io.Writer) (api.OTPMailer, string) {
+	if c.Host == "" {
+		fmt.Fprintf(stderr, "%s: no [smtp] in felis.toml — email codes go through the relay saved in the panel (Platform settings → Mail delivery); while there is none, email sign-in and verification answer 503 mail_unavailable\n", prog)
+		return nil, ""
+	}
+	passRef := c.PasswordRef
+	if passRef == "" {
+		passRef = platform.SMTPPasswordEnv
+	}
+	password := os.Getenv(passRef)
+	if c.Username != "" && password == "" {
+		fmt.Fprintf(stderr, "%s: warning: [smtp] username is set but credentials env %s is empty — OTP sends will fail AUTH\n", prog, passRef)
+	}
+	if !c.TLSRequired() {
+		fmt.Fprintf(stderr, "%s: warning: [smtp] %s may be sent codes without TLS (require_tls off or a relay on this host)\n", prog, c.Host)
+	}
+	return smtpRelay(c, password), password
 }
 
 // smtpRelay builds the [smtp] relay with the TLS posture from config.SMTPConfig.TLSRequired; shared by api, reaper and watchdog.
