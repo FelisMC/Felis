@@ -5278,6 +5278,15 @@ expect "k3s minor skip is refused before host changes" 'skips a minor version' "
 case "$out" in *HOST_CHANGE*) echo "FAIL k3s refusal came after a host change"; fails=$((fails + 1));; esac
 rm -rf "$compatdir"
 
+# A full install would move Felis-nano's database into k3s and stop the host PostgreSQL under felis-nano.
+before "a full install refuses a Felis-nano host before changing it" '  refuse_full_beside_nano' '  quiet_watchdog' "$(bsfn main)"
+run_beside_nano() { NANO_ENV="$1" bash -c 'die() { echo "DIE: $*"; exit 1; }
+'"$(bsfn refuse_full_beside_nano)"'
+refuse_full_beside_nano && echo GO'; }
+: > "$sdir/nano.env"
+expect "a full install stops on a Felis-nano host" "DIE: this host runs Felis-nano" "$(run_beside_nano "$sdir/nano.env")"
+expect "a host without Felis-nano goes on" "GO" "$(run_beside_nano "$sdir/absent.env")"
+
 before "distributed host firewall runs the newly built binary" \
   '  build_image' '"$HOST_BIN" node firewall --controller' "$(bsfn main)"
 before "distributed host firewall is installed before platform deployment" \

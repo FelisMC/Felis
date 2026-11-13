@@ -5329,6 +5329,11 @@ acquire_nano_binary() {
   build_nano_binary
 }
 
+# Felis-nano keeps its accounts in the host PostgreSQL, which a full install would move into k3s and stop under felis-nano.
+refuse_full_beside_nano() {
+  [ ! -e "$NANO_ENV" ] || die "this host runs Felis-nano; remove it before installing the full platform here: sudo bash deploy/uninstall.sh (it keeps the database unless you pass --purge)"
+}
+
 refuse_nano_beside_full() {
   [ ! -e "$BOOTSTRAP_DONE" ] || die "this host runs the full Felis platform, whose login control already covers what Felis-nano does; Felis-nano is for a network Felis does not run"
 }
@@ -6325,6 +6330,7 @@ main() {
   if [ "$INSTALL_MODE" = worker ]; then main_worker; return; fi
   if [ "$INSTALL_MODE" = worker-upgrade ]; then main_worker_upgrade; return; fi
   if [ "$INSTALL_MODE" = controller-join ]; then main_controller_join; return; fi
+  refuse_full_beside_nano
   resolve_host_profile
   detect_node_ip
   # Before the first change to the host: a problem found here costs a rerun, one found
