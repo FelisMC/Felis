@@ -527,13 +527,14 @@ purge_images() {
   local was_active=1 refs
   systemctl is-active --quiet docker || { was_active=0; systemctl start docker >/dev/null 2>&1 || return 0; }
   refs="$(docker image ls --format '{{.Repository}}:{{.Tag}}' | grep -E '^(registry\.felis\.svc:5000/felis/|felis/)' || true)"
+  # Build cache is pruned only where Felis built images; a host whose Docker serves others keeps theirs.
   if [ -n "$refs" ]; then
     # shellcheck disable=SC2086 # one ref per word
     docker image rm -f $refs >/dev/null 2>&1 || true
+    docker builder prune -af >/dev/null 2>&1 || true
+    ok "Felis images and Docker's build cache removed"
   fi
-  docker builder prune -af >/dev/null 2>&1 || true
   [ "$was_active" = 1 ] || systemctl stop docker docker.socket >/dev/null 2>&1 || true
-  ok "Felis images and Docker's build cache removed"
 }
 
 purge_state() {

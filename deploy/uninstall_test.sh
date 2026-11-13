@@ -141,7 +141,7 @@ run_uninstall() {
         *) echo "UFW $*" >> "$calls" ;;
       esac
     }
-    docker() { echo "DOCKER $*" >> "$calls"; }
+    docker() { echo "DOCKER $*" >> "$calls"; [ "$1 $2" != "image ls" ] || printf "%s\n" ${DOCKER_IMAGES:-}; }
     userdel() { echo "USERDEL $*" >> "$calls"; }
     uname() { echo testhost; }
     main "$@"' "$US" "$@" 2>&1
@@ -307,7 +307,9 @@ calls="$(cat "$root/calls")"
 refute "a single-node host has no node firewall chains to remove" "-X FELIS" "$calls"
 
 fresh_host
+export DOCKER_IMAGES=felis/api:dev
 out="$(run_uninstall "default felis minecraft" --purge --yes)"
+unset DOCKER_IMAGES
 calls="$(cat "$root/calls")"
 refute "purge takes no bundle" "db backup" "$calls"
 expect "purge asks what the role holds first" "PSQL-CHECK" "$calls"
@@ -328,8 +330,13 @@ case "$hba" in
   *) echo "FAIL pg_hba.conf starts with: $(printf '%s' "$hba" | head -n 1)"; fails=$((fails + 1)) ;;
 esac
 expect "purge cleans Docker's build cache" "DOCKER builder prune -af" "$calls"
+expect "purge removes the Felis images" "DOCKER image rm -f felis/api:dev" "$calls"
 expect "purge drops the cluster directory's SELinux rule" "SEMANAGE fcontext -d $root/h/data/postgres(/.*)?" "$calls"
 refute "purge leaves k3s's pods to k3s-uninstall.sh" "scale deployment felis-postgres" "$calls"
+
+fresh_host
+run_uninstall "default felis minecraft" --purge --yes >/dev/null
+refute "a host with no Felis images keeps Docker's build cache" "DOCKER builder prune" "$(cat "$root/calls")"
 
 moved_host() { fresh_host; printf 'moved\n' > "$root/h/data/postgres-moved"; printf 'saved\n' > "$root/h/hba.conf.pre-pg-move"; }
 moved_host
