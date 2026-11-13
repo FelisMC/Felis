@@ -113,7 +113,7 @@ type loginEmailVerifyRequest struct {
 	Code  string `json:"code"`
 }
 
-// handleLoginEmailVerify returns a uniform invalid_code response and refuses staff only after consuming valid proof.
+// handleLoginEmailVerify returns a uniform invalid_code response and refuses staff with a passkey only after consuming valid proof.
 func (a *API) handleLoginEmailVerify(w http.ResponseWriter, r *http.Request) {
 	if !localAuthEnabled(r.Context(), a.Repo) {
 		writeError(w, r, newError(http.StatusForbidden, "local_auth_disabled",
@@ -165,12 +165,20 @@ func (a *API) handleLoginEmailVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Refuse staff after consuming proof so player login cannot bypass staff authentication.
-	if u.Role != "user" {
-		a.authFailure(r, "login_email", "staff_account", u)
-		writeError(w, r, newError(http.StatusForbidden, "staff_account",
-			"that account is staff; sign in at the operator console"))
-		return
+	// Staff with a passkey must use it; the check follows consumption so the response cannot reveal staff accounts.
+	staff := staffRole(u.Role)
+	if staff {
+		creds, err := a.Repo.PasskeyCredentialsForUser(r.Context(), u.ID)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		if len(creds) > 0 {
+			a.authFailure(r, "login_email", "staff_passkey", u)
+			writeError(w, r, newError(http.StatusForbidden, "staff_passkey",
+				"this staff account has a passkey; sign in with it"))
+			return
+		}
 	}
 
 	if err := a.startSession(w, r, u.ID, provenSignIn); err != nil {
@@ -178,6 +186,9 @@ func (a *API) handleLoginEmailVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.auditAccount(r, u, "auth.login_email", "")
+	if staff {
+		a.notifyStaffEmailSignIn(r, u.Email)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user_id": u.ID,
 		"role":    u.Role,

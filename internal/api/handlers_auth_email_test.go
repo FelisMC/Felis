@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -519,61 +520,49 @@ func TestLoginEmailPurposeSeparation(t *testing.T) {
 	}
 }
 
-func TestLoginEmailVerifyRefusesStaff(t *testing.T) {
+func TestStaffSignInWithEmailCode(t *testing.T) {
 	for _, role := range []string{"admin", "owner"} {
-		t.Run(role, func(t *testing.T) { verifyStaffRefusedAtPlayerDoor(t, role) })
+		t.Run(role+" with a passkey is refused", func(t *testing.T) { staffEmailSignIn(t, role, true) })
+		t.Run(role+" without a passkey signs in and is told", func(t *testing.T) { staffEmailSignIn(t, role, false) })
 	}
 }
 
-func verifyStaffRefusedAtPlayerDoor(t *testing.T, role string) {
+func staffEmailSignIn(t *testing.T, role string, hasPasskey bool) {
 	repo := newFakeRepo()
 	repo.settings[LocalAuthEnabledKey] = []byte("true")
-	repo.staff["owner"] = &StaffUser{
-		ID: "a1", Username: "owner", Email: "boss@example.net",
-		Role: role, EmailVerified: true,
+	repo.staff["owner"] = &StaffUser{ID: "a1", Username: "owner", Email: "boss@example.net", Role: role, EmailVerified: true}
+	if hasPasskey {
+		repo.passkeyCreds["pk"] = PasskeyCredential{ID: "pk", UserID: "a1", CredentialID: "c1"}
 	}
-	mailer := &captureMailer{}
+	mailer := &noticeMailer{}
 	api := newTestAPI(repo, newFakeCluster())
 	api.Mailer = mailer
 	eh := api.ExternalHandler()
 
-	// Start happily mails a staff address — the refusal lives at verify, after the
-	// code proves mailbox control, so start stays neutral.
 	if w := do(eh, "POST", "/api/v1/auth/email/start", `{"email":"boss@example.net"}`, jsonHeader); w.Code != http.StatusAccepted {
-		t.Fatalf("start for staff address: code = %d, want 202 (%s)", w.Code, w.Body.String())
+		t.Fatalf("start = %d, want 202 (%s)", w.Code, w.Body.String())
 	}
 	good := mailer.code
-	if good == "000000" {
-		t.Skip("astronomically unlucky code collision; rerun")
-	}
+	w := do(eh, "POST", "/api/v1/auth/email/verify", `{"email":"boss@example.net","code":"`+good+`"}`, jsonHeader)
 
-	if w := do(eh, "POST", "/api/v1/auth/email/verify",
-		`{"email":"boss@example.net","code":"000000"}`, jsonHeader); w.Code != http.StatusBadRequest || decodeErr(t, w) != "invalid_code" {
-		t.Fatalf("wrong code for staff: code = %d body %s, want 400 invalid_code", w.Code, w.Body.String())
-	}
-
-	w := do(eh, "POST", "/api/v1/auth/email/verify",
-		`{"email":"boss@example.net","code":"`+good+`"}`, jsonHeader)
-	if w.Code != http.StatusForbidden || decodeErr(t, w) != "staff_account" {
-		t.Fatalf("valid code for staff: code = %d body %s, want 403 staff_account", w.Code, w.Body.String())
-	}
-	if len(w.Result().Cookies()) != 0 {
-		t.Error("no session cookie may be set for a refused staff login")
-	}
-	if len(repo.sessions) != 0 {
-		t.Error("no session row may be minted for a refused staff login")
-	}
-	for _, a := range repo.audits {
-		if a.Action == "auth.login_email" {
-			t.Error("a refused staff login must not be audited as a successful login")
+	if hasPasskey {
+		if w.Code != http.StatusForbidden || decodeErr(t, w) != "staff_passkey" {
+			t.Fatalf("staff with a passkey: code = %d body %s, want 403 staff_passkey", w.Code, w.Body.String())
 		}
+		if len(w.Result().Cookies()) != 0 || len(repo.sessions) != 0 {
+			t.Error("a refused staff login must not open a session")
+		}
+		// The refusal comes after the code is spent, so the reply cannot be used to find staff accounts.
+		if w := do(eh, "POST", "/api/v1/auth/email/verify", `{"email":"boss@example.net","code":"`+good+`"}`, jsonHeader); decodeErr(t, w) != "invalid_code" {
+			t.Fatalf("replay after the refusal = %s, want invalid_code", w.Body.String())
+		}
+		return
 	}
-	// Ordering pin: the refusal consumed the code (verify ran before the staff
-	// check), so replaying it now collapses to invalid_code.
-	if w := do(eh, "POST", "/api/v1/auth/email/verify",
-		`{"email":"boss@example.net","code":"`+good+`"}`, jsonHeader); w.Code != http.StatusBadRequest || decodeErr(t, w) != "invalid_code" {
-		t.Fatalf("replay after staff refusal: code = %d body %s, want 400 invalid_code (code must be spent)",
-			w.Code, w.Body.String())
+	if w.Code != http.StatusOK || len(repo.sessions) != 1 {
+		t.Fatalf("staff without a passkey: code = %d body %s sessions %d, want 200 and one session", w.Code, w.Body.String(), len(repo.sessions))
+	}
+	if len(mailer.notices) != 1 || !strings.HasPrefix(mailer.notices[0], "boss@example.net|") {
+		t.Fatalf("notices = %q, want one security notice to boss@example.net", mailer.notices)
 	}
 }
 

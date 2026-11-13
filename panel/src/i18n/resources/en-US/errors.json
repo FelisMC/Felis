@@ -1,6 +1,7 @@
 {
   "local_auth_disabled": "Local sign-in is disabled in this deployment. Access the console through the organization’s secure entry point.",
   "staff_account": "This is a staff account — use Operator sign-in instead.",
+  "staff_passkey": "This staff account has a passkey — sign in with it.",
   "not_linked": "Link your Minecraft account before claiming (Account → Link).",
   "invalid_code": "The binding code is invalid or expired. Obtain a new code.",
   "already_linked": "That Minecraft account is already linked to another user.",

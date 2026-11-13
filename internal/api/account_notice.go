@@ -52,6 +52,15 @@ func (a *API) notifyPasskeyAdded(r *http.Request, p *Principal) {
 	a.notifyAccountChange(r, verifiedEmail(p), subject, body)
 }
 
+func (a *API) notifyStaffEmailSignIn(r *http.Request, to string) {
+	subject, body := accountChangeNotice(
+		"管理员账户通过邮件验证码登录", "staff sign-in with an email code",
+		"你的 Felis 管理员账户刚刚通过邮件验证码登录。", "Your Felis staff account just signed in with an email code.",
+		"添加 Passkey", "add a passkey",
+		a.now(), a.noticeIP(r))
+	a.notifyAccountChange(r, to, subject, body)
+}
+
 func (a *API) notifyPasskeyRemoved(r *http.Request, p *Principal) {
 	subject, body := accountChangeNotice(
 		"已删除 Passkey", "passkey removed",

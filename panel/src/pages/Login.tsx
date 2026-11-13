@@ -229,6 +229,30 @@ export function Login() {
         <CardContent className="p-6 sm:p-7">
           {activeTab === "main" && (
             <div className="space-y-4">
+              {isOpHost && (
+                <div className="space-y-3">
+                  <Button
+                    type="button"
+                    className="w-full justify-center gap-2 font-medium"
+                    onClick={handlePasskeyLoginClick}
+                    disabled={submitting}
+                  >
+                    <Fingerprint className="h-4 w-4" />
+                    {t("passkey_btn")}
+                  </Button>
+                  <p className="text-xs leading-relaxed text-muted-foreground">{t("op_methods_hint")}</p>
+                  <div className="relative my-2">
+                    <div className="absolute inset-0 flex items-center">
+                      <div className="w-full border-t border-muted" />
+                    </div>
+                    <div className="relative flex justify-center text-[10px] uppercase">
+                      <span className="bg-card px-2 text-muted-foreground font-semibold tracking-wider">
+                        {t("or_divider")}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
               <form onSubmit={handleEmailSubmit} className="space-y-4">
                 <div className="space-y-2">
                   <Label htmlFor="email">{t("email_address")}</Label>
@@ -328,26 +352,30 @@ export function Login() {
               </div>
 
               <div className="space-y-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="w-full justify-center gap-2 font-medium"
-                  onClick={handlePasskeyLoginClick}
-                  disabled={submitting}
-                >
-                  <Fingerprint className="h-4 w-4 text-primary" />
-                  {t("passkey_btn")}
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="w-full justify-center gap-2 font-medium"
-                  onClick={() => switchTab("bind")}
-                  disabled={submitting}
-                >
-                  <KeyRound className="h-4 w-4 text-muted-foreground" />
-                  {t("tab_bind_btn")}
-                </Button>
+                {!isOpHost && (
+                  <>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="w-full justify-center gap-2 font-medium"
+                      onClick={handlePasskeyLoginClick}
+                      disabled={submitting}
+                    >
+                      <Fingerprint className="h-4 w-4 text-primary" />
+                      {t("passkey_btn")}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="w-full justify-center gap-2 font-medium"
+                      onClick={() => switchTab("bind")}
+                      disabled={submitting}
+                    >
+                      <KeyRound className="h-4 w-4 text-muted-foreground" />
+                      {t("tab_bind_btn")}
+                    </Button>
+                  </>
+                )}
                 <Button
                   type="button"
                   variant="outline"

@@ -1,6 +1,7 @@
 {
   "local_auth_disabled": "当前部署已禁用本地登录，请通过组织的安全入口访问控制台。",
   "staff_account": "该账户为管理员账户——请使用管理员登录。",
+  "staff_passkey": "该管理员账户已设置 Passkey，请使用 Passkey 登录。",
   "not_linked": "请先关联 Minecraft 账户（账户页 → 关联）。",
   "invalid_code": "绑定码无效或已过期，请重新获取。",
   "already_linked": "该 Minecraft 账户已关联至其他用户。",
