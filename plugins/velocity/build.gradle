@@ -31,6 +31,15 @@ dependencies {
     annotationProcessor "com.velocitypowered:velocity-api:${velocityApi}"
 }
 
+// velocity-api requires the velocity-brigadier SNAPSHOT; pin one build so its checksum can be verified.
+configurations.configureEach {
+    resolutionStrategy.eachDependency { d ->
+        if (d.requested.group == 'com.velocitypowered' && d.requested.name == 'velocity-brigadier') {
+            d.useVersion '1.0.0-20261110.144108-12'
+        }
+    }
+}
+
 // Compile the dependency-free shared core into each loader JAR without shading.
 sourceSets {
     main {
