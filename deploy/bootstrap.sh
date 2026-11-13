@@ -5383,7 +5383,7 @@ check_host_postgres_major() {
   data_dir="$(postgres_data_dir)"
   [ -f "${data_dir}/PG_VERSION" ] || return 0
   have="$(tr -d '[:space:]' < "${data_dir}/PG_VERSION")"
-  want="$( (postgres --version 2>/dev/null || psql --version 2>/dev/null) | head -n 1 | sed -nE 's/^[^0-9]*([0-9]+)\..*/\1/p')"
+  want="$( (postgres --version 2>/dev/null || psql --version 2>/dev/null) | sed -nE '1s/^[^0-9]*([0-9]+)\..*/\1/p')"
   [ -n "$want" ] && [ "$have" != "$want" ] || return 0
   die "PostgreSQL ${want} is installed, but ${data_dir} holds a PostgreSQL ${have} cluster, which it cannot open. Upgrade the cluster (pg_upgrade, with the ${have} binaries still installed) or reinstall PostgreSQL ${have}, then rerun the installer"
 }
