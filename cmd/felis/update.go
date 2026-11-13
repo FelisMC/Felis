@@ -84,6 +84,17 @@ var updateTargets = []updateTarget{
 	},
 }
 
+const nanoUnitPath = "/etc/systemd/system/felis-nano.service"
+
+// nanoHost reports a Felis-nano install: the nano unit without the full install's marker.
+func nanoHost(unit, bootstrapDone string) bool {
+	if _, err := os.Stat(unit); err != nil {
+		return false
+	}
+	_, err := os.Stat(bootstrapDone)
+	return errors.Is(err, os.ErrNotExist)
+}
+
 // cmdUpdate checks by default; only --apply changes the host. --record remains
 // read-only so the daily timer cannot start an unattended upgrade.
 func cmdUpdate(args []string, stdout, stderr io.Writer) int {
@@ -112,6 +123,11 @@ func cmdUpdate(args []string, stdout, stderr io.Writer) int {
 	if fs.NArg() > 0 {
 		fmt.Fprintf(stderr, "felis update: unexpected argument %q (this command takes flags only)\n", fs.Arg(0))
 		return 2
+	}
+	if nanoHost(nanoUnitPath, hostBootstrapDonePath) {
+		fmt.Fprintln(stderr, "felis update: this host runs Felis-nano, which the installer updates; rerun it in nano mode:")
+		fmt.Fprintln(stderr, "  curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/main/deploy/bootstrap.sh | sudo FELIS_INSTALL_MODE=nano bash")
+		return 1
 	}
 	if err := opts.validate(*dev, *check, *record); err != nil {
 		fmt.Fprintf(stderr, "felis update: %v\n", err)

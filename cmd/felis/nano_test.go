@@ -75,3 +75,23 @@ func TestNanoListensOnLoopbackByDefault(t *testing.T) {
 		t.Fatalf("default -listen %q is not a loopback address", nanoDefaultListen)
 	}
 }
+
+func TestNanoHostIsTheNanoUnitWithoutAFullInstall(t *testing.T) {
+	dir := t.TempDir()
+	unit, done := filepath.Join(dir, "felis-nano.service"), filepath.Join(dir, "bootstrap.done")
+	if nanoHost(unit, done) {
+		t.Error("a host with neither file is a nano host")
+	}
+	if err := os.WriteFile(unit, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !nanoHost(unit, done) {
+		t.Error("the nano unit alone is not a nano host")
+	}
+	if err := os.WriteFile(done, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if nanoHost(unit, done) {
+		t.Error("a full install with a stray nano unit is a nano host")
+	}
+}

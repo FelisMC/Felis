@@ -94,10 +94,14 @@ func preMigrateBackup(ctx context.Context, drv store.Driver, migrations []store.
 	if err != nil {
 		return "", err
 	}
+	export := exportMinecraftServers
+	if nanoHost(nanoUnitPath, hostBootstrapDonePath) {
+		export = nil
+	}
 	path, err := dbbackup.Backup(ctx, dbbackup.BackupOptions{
 		DatabaseURL: db.URL, Tools: tools, Dir: dir, Label: dbbackup.LabelPreMigrate,
 		Keep: defaultKeep[dbbackup.LabelPreMigrate], StateDir: preMigrateStateDir,
-		Version: resolvedVersion(), ExportServers: exportMinecraftServers, Log: log, Record: true,
+		Version: resolvedVersion(), ExportServers: export, Log: log, Record: true,
 	})
 	if errors.Is(err, dbbackup.ErrServersMissing) {
 		// Rolling the migration back needs the database alone. Backup logged
