@@ -109,6 +109,22 @@ describe("Setup", () => {
     expect(await screen.findByText(t("auth:setup_passkey_refused"))).toBeTruthy();
   });
 
+  it("leads a refused passkey back to the email code when mail works", async () => {
+    calls.setupRedeem.mockResolvedValue({ ...fresh, mail_available: true, email: "owner@example.net" });
+    calls.passkeyRegisterBegin.mockResolvedValue({ challenge: "AAAA", user: { id: "AAAA", name: "owner", displayName: "owner" } });
+    Object.defineProperty(navigator, "credentials", {
+      configurable: true,
+      value: { create: vi.fn().mockRejectedValue(new DOMException("WebAuthn is not supported on sites with TLS certificate errors.", "NotAllowedError")) },
+    });
+    renderSetup();
+
+    await userEvent.click(await screen.findByRole("button", { name: t("auth:setup_use_passkey") }));
+    await userEvent.click(await screen.findByRole("button", { name: t("auth:setup_create_passkey") }));
+    expect(await screen.findByText(t("auth:setup_passkey_refused_mail"))).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: t("auth:setup_use_email") }));
+    expect(await screen.findByRole("button", { name: t("auth:setup_send_code") })).toBeTruthy();
+  });
+
   it("sends a spent link back to felis setup, with nothing to retry", async () => {
     calls.setupRedeem.mockRejectedValue({ status: 400, code: "setup_token_invalid", message: "" });
     renderSetup();

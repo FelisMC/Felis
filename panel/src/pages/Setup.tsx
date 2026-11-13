@@ -161,7 +161,7 @@ export function Setup() {
           ) : !state.email ? (
             <EmailStep initialEmail={state.email} onRecorded={reload} />
           ) : !state.has_passkey ? (
-            <PasskeyStep onEnrolled={reload} />
+            <PasskeyStep onEnrolled={reload} onUseEmail={state.mail_available ? () => setPreferPasskey(false) : undefined} />
           ) : (
             <div className="flex items-center justify-center gap-2 py-6 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -354,13 +354,17 @@ function EmailVerifyStep({
   );
 }
 
-// The setup lock lifts after passkey enrollment when no mail relay can verify an email.
+// The setup lock lifts after passkey enrollment; onUseEmail offers the email code instead when mail works.
 function PasskeyStep({
   onEnrolled,
+  onUseEmail,
 }: {
   onEnrolled: () => Promise<void>;
+  onUseEmail?: () => void;
 }) {
   const { t } = useTranslation("auth");
+  const nano = useConfig()?.nano;
+  const refusal = onUseEmail ? "setup_passkey_refused_mail" : nano ? "setup_passkey_refused_nano" : "setup_passkey_refused";
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -409,7 +413,7 @@ function PasskeyStep({
     } catch (err: any) {
       // Chromium refuses passkeys on pages whose certificate it does not trust and reports it like a cancel.
       const refused = err?.name === "NotAllowedError" || err?.name === "SecurityError";
-      setError(refused ? t("setup_passkey_refused") : humanizeError(err));
+      setError(refused ? t(refusal) : humanizeError(err));
       setBusy(false);
     }
   }
@@ -419,7 +423,7 @@ function PasskeyStep({
       <div className="flex items-center gap-2 text-sm font-medium text-foreground">
         <Fingerprint className="h-4 w-4 text-primary" /> {t("setup_passkey_step")}
       </div>
-      <p className="text-sm text-muted-foreground">{t("setup_passkey_desc")}</p>
+      <p className="text-sm text-muted-foreground">{t(onUseEmail ? "setup_passkey_desc_optional" : "setup_passkey_desc")}</p>
       <InlineError message={error} />
       <Button className="w-full gap-2" onClick={enroll} disabled={busy}>
         {busy ? (
@@ -434,6 +438,11 @@ function PasskeyStep({
           </>
         )}
       </Button>
+      {onUseEmail ? (
+        <Button type="button" variant="link" className="w-full" disabled={busy} onClick={onUseEmail}>
+          {t("setup_use_email")}
+        </Button>
+      ) : null}
     </div>
   );
 }
