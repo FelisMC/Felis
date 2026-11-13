@@ -134,7 +134,8 @@ func host(t *testing.T, cg string, swapFree, available int64, prefetched *[]int)
 			}
 			return nil
 		},
-		Poll:    time.Millisecond,
+		// The stall window is 50 polls; 5ms keeps it well above the fake kernel's 2ms tick on a busy runner.
+		Poll:    5 * time.Millisecond,
 		Timeout: 2 * time.Second,
 	}
 }
