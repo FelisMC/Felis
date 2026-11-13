@@ -8,7 +8,7 @@ RUN npm ci
 COPY panel/ ./
 RUN npm run build
 
-FROM --platform=$BUILDPLATFORM golang:1.27.3@sha256:6928d94d1142af58816fed5a62338d605a266ccd53a0deaab6b1096f19059261 AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.4@sha256:5e8afd493a7124a8586e134d9b532731161d4b9becf9dee5a5956b107426f93d AS build
 WORKDIR /src
 ARG TARGETOS=linux
 ARG TARGETARCH
