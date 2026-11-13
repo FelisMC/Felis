@@ -18,11 +18,14 @@ final class FelisVelocityConfig {
     static final String ENV_LOBBY = "FELIS_LOBBY_SERVER";
     static final String ENV_PANEL_HOSTNAME = "FELIS_PANEL_HOSTNAME";
     static final String ENV_ADMIN_HOSTNAME = "FELIS_ADMIN_HOSTNAME";
+    static final String ENV_MODE = "FELIS_PROXY_MODE";
     private static final String KEY_ROOT_DOMAIN = "root-domain";
     private static final String KEY_LOGIN = "login-server";
     private static final String KEY_LOBBY = "lobby-server";
     private static final String KEY_PANEL_HOSTNAME = "panel-hostname";
     private static final String KEY_ADMIN_HOSTNAME = "admin-hostname";
+    private static final String KEY_MODE = "mode";
+    static final String MODE_NANO = "nano";
     private static final String DEFAULT_LOGIN = "login";
     private static final String DEFAULT_LOBBY = "lobby";
 
@@ -32,16 +35,18 @@ final class FelisVelocityConfig {
     private final String lobbyServer;
     private final String panelHostname;  // null → fall back to console.<root>
     private final String adminHostname;  // null → fall back to op.console.<root>
+    private final boolean nano;
 
     private FelisVelocityConfig(LinkConfig linkConfig, String rootDomain,
                                 String loginServer, String lobbyServer,
-                                String panelHostname, String adminHostname) {
+                                String panelHostname, String adminHostname, boolean nano) {
         this.linkConfig = linkConfig;
         this.rootDomain = rootDomain;
         this.loginServer = loginServer;
         this.lobbyServer = lobbyServer;
         this.panelHostname = panelHostname;
         this.adminHostname = adminHostname;
+        this.nano = nano;
     }
 
     // load reads the file; notice hears of a service token replaced in it later.
@@ -58,6 +63,7 @@ final class FelisVelocityConfig {
         String lobby = lobbyName(System.getenv(ENV_LOBBY), props.getProperty(KEY_LOBBY));
         String panel = trimToNull(firstNonBlank(System.getenv(ENV_PANEL_HOSTNAME), props.getProperty(KEY_PANEL_HOSTNAME)));
         String admin = trimToNull(firstNonBlank(System.getenv(ENV_ADMIN_HOSTNAME), props.getProperty(KEY_ADMIN_HOSTNAME)));
+        boolean nano = nanoMode(firstNonBlank(System.getenv(ENV_MODE), props.getProperty(KEY_MODE)));
         login = login == null ? DEFAULT_LOGIN : login;
         if (login.equalsIgnoreCase(lobby)) {
             throw new IOException("login-server and lobby-server must be different");
@@ -65,7 +71,7 @@ final class FelisVelocityConfig {
         return new FelisVelocityConfig(
                 link, root == null ? null : root.toLowerCase(Locale.ROOT), login, lobby,
                 panel == null ? null : panel.toLowerCase(Locale.ROOT),
-                admin == null ? null : admin.toLowerCase(Locale.ROOT));
+                admin == null ? null : admin.toLowerCase(Locale.ROOT), nano);
     }
 
     LinkConfig linkConfig() {
@@ -107,6 +113,22 @@ final class FelisVelocityConfig {
             return adminHostname;
         }
         return rootDomain == null ? null : "op.console." + rootDomain;
+    }
+
+    /** nano is true on a Felis-nano network: the proxy keeps its own routing and Felis handles only sign-in. */
+    boolean nano() {
+        return nano;
+    }
+
+    static boolean nanoMode(String raw) throws IOException {
+        String mode = trimToNull(raw);
+        if (mode == null) {
+            return false;
+        }
+        if (MODE_NANO.equalsIgnoreCase(mode)) {
+            return true;
+        }
+        throw new IOException("mode must be \"" + MODE_NANO + "\" or left out (got \"" + mode + "\")");
     }
 
     // lobbyName prefers the environment; a name set but left blank means the install has no lobby, an unset one the default.

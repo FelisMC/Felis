@@ -115,6 +115,12 @@ public final class FelisVelocityPlugin {
                     + "spoofable identities. /link remains available. Set online-mode=true to enable routing.");
             return;
         }
+        if (config.nano()) {
+            this.apiClient = new FelisApiClient(config.linkConfig());
+            logger.info("Felis-nano: sign-in only — /link, /felis approve and /felis migrate are registered; "
+                    + "this proxy keeps its own servers and routing.");
+            return;
+        }
         if (!config.routingEnabled()) {
             logger.warn("Felis routing DISABLED: no root-domain configured. Add 'root-domain=' to "
                     + "felis-link.properties (or set " + FelisVelocityConfig.ENV_ROOT_DOMAIN + ") to enable "
@@ -432,7 +438,7 @@ public final class FelisVelocityPlugin {
                        : "Hold on — finish connecting before using /felis.", NamedTextColor.YELLOW));
             return false;
         }
-        if (config.loginServer().equalsIgnoreCase(current.get().getServerInfo().getName())) {
+        if (!config.nano() && config.loginServer().equalsIgnoreCase(current.get().getServerInfo().getName())) {
             player.sendMessage(Component.text(
                     zh ? "请先完成登录——登录区内无法使用 /felis。"
                        : "Finish signing in first — /felis isn't available from the login area.",
@@ -453,6 +459,15 @@ public final class FelisVelocityPlugin {
         boolean zh = zh(source);
         source.sendMessage(Component.text("Felis proxy", NamedTextColor.AQUA));
         source.sendMessage(field("online-mode", String.valueOf(onlineMode)));
+        if (config.nano() && onlineMode) {
+            source.sendMessage(Component.text(
+                    zh ? "  Felis-nano：只管登录，服务器与路由由本代理自行管理"
+                       : "  Felis-nano: sign-in only; this proxy keeps its own servers and routing",
+                    NamedTextColor.GRAY));
+            source.sendMessage(Component.text(
+                    zh ? "  /felis help 查看命令" : "  /felis help for commands", NamedTextColor.GRAY));
+            return;
+        }
         if (!routingActive) {
             source.sendMessage(Component.text(
                     zh ? "  routing: 已禁用" + (onlineMode ? "（未设置 root-domain）" : "（离线模式）")
@@ -637,7 +652,7 @@ public final class FelisVelocityPlugin {
             return;
         }
         boolean zh = zh(player);
-        if (!routingActive) {
+        if (apiClient == null) {
             player.sendMessage(routingDisabled(zh));
             return;
         }
@@ -727,7 +742,7 @@ public final class FelisVelocityPlugin {
             return;
         }
         boolean zh = zh(player);
-        if (!routingActive) {
+        if (apiClient == null) {
             player.sendMessage(routingDisabled(zh));
             return;
         }
