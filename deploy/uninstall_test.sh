@@ -51,6 +51,8 @@ fresh_host() {
     printf '#!/bin/sh\necho "RUN %s $*" >> "%s"\n' "$b" "$root/calls" > "$root/h/bin/$b"
     chmod +x "$root/h/bin/$b"
   done
+  mkdir -p "$root/h/usrbin"
+  ln -s "$root/h/bin/felis" "$root/h/usrbin/felis"
   cat > "$root/h/hba.conf" <<'EOF'
 # BEGIN FELIS MANAGED HBA
 # Felis rules must precede distro defaults such as 127.0.0.1 ident.
@@ -67,7 +69,7 @@ EOF
 # `kubectl get namespaces` answers, or "down" for a k3s that does not answer.
 run_uninstall() {
   ns="$1"; shift
-  NS="$ns" ROOT="$root" STATE_DIR="$root/h/etc" DATA_DIR="$root/h/data" HOST_BIN="$root/h/bin/felis" \
+  NS="$ns" ROOT="$root" STATE_DIR="$root/h/etc" DATA_DIR="$root/h/data" HOST_BIN="$root/h/bin/felis" HOST_BIN_LINK="$root/h/usrbin/felis" \
   OPT_DIR="$root/h/opt" UNIT_DIR="$root/h/units" K3S_BIN_DIR="$root/h/bin" \
   K3S_STORAGE="$root/h/storage" K3S_REGISTRIES="$root/h/registries.yaml" \
   TMPFILES_DIR="$root/h/tmpfiles.d" NODE_CONTROL_RUN_DIR="$root/h/run/felis-node-control" \
@@ -171,6 +173,9 @@ refute "keep-data leaves the database alone" "DROP DATABASE" "$calls"
 [ ! -e "$root/h/opt" ] && [ ! -e "$root/h/bin/felis" ] \
   && echo "PASS /opt/felis and the host binary are removed" \
   || { echo "FAIL /opt/felis or the host binary is still there"; fails=$((fails + 1)); }
+[ ! -L "$root/h/usrbin/felis" ] && echo "PASS the /usr/bin/felis link to the binary is removed" \
+  || { echo "FAIL the /usr/bin/felis link is still there"; fails=$((fails + 1)); }
+expect "the plan names the link" "the $root/h/usrbin/felis link to $root/h/bin/felis" "$out"
 [ -z "$(ls "$root/h/units")" ] && echo "PASS every Felis unit file is removed" \
   || { echo "FAIL units left: $(ls "$root/h/units")"; fails=$((fails + 1)); }
 [ ! -e "$root/h/units/k3s.service.d" ] \
@@ -188,6 +193,12 @@ kill_at="$(grep -n 'RUN k3s-killall.sh' "$root/calls" | head -n 1 | cut -d: -f1)
   || { echo "FAIL felis-postgres was not stopped before k3s-killall.sh: $calls"; fails=$((fails + 1)); }
 expect "and the uninstall waits for it to stop" "KUBE -n felis wait --for=delete pod -l app.kubernetes.io/name=felis,app.kubernetes.io/component=postgres" "$calls"
 refute "keep-data keeps the cluster directory's SELinux rule" "SEMANAGE" "$calls"
+
+fresh_host
+rm -f "$root/h/usrbin/felis"
+printf 'not Felis\n' > "$root/h/usrbin/felis"
+run_uninstall "default felis minecraft" --yes >/dev/null
+expect "a /usr/bin/felis that is not Felis's link stays" "not Felis" "$(cat "$root/h/usrbin/felis" 2>&1)"
 
 fresh_host
 printf '#!/bin/sh\necho "RUN felis $*" >> "%s"\nexit 1\n' "$root/calls" > "$root/h/bin/felis"

@@ -145,7 +145,7 @@ func reportSetupResult(stdout io.Writer, res breakGlassResult, bootstrapped, adm
 		fmt.Fprintf(stdout, "\nfelis setup: Owner account %q provisioned (passwordless).\n", res.username)
 		fmt.Fprintf(stdout, "Recorded as %q (mode: %s, os user: %s).\n", res.accountable, res.mode, res.osUser)
 		if res.setupTokenURL != "" {
-			fmt.Fprintf(stdout, "Open this URL to record your email and create a passkey (Minecraft is optional):\n\n    %s\n\n", res.setupTokenURL)
+			fmt.Fprintf(stdout, "Open this URL to finish the Owner sign-in: verify your email with a code, or create a passkey (Minecraft is optional):\n\n    %s\n\n", res.setupTokenURL)
 		}
 		if res.auditWarning != "" {
 			fmt.Fprintf(stdout, "WARNING: the accountability audit row was NOT written: %s\n", res.auditWarning)

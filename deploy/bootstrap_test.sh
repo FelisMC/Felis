@@ -2041,7 +2041,7 @@ run_write() { # out-file [state-dir] [database-deployment]; under the installer'
     . "$FNFILE"
     FELIS_ROOT_DOMAIN=r.example.com DB_USER=u DB_PASSWORD=p DB_NAME=d MINECRAFT_NS=minecraft \
     FELIS_EGRESS_MODE=nodeport FELIS_LIMBO_IMAGE=li FELIS_LOBBY_IMAGE="${LOBBY_IMG-lo}" FELIS_GAME_PORT=25570 MC_VERSION=26.3 \
-    REGISTRY_URL=registry.felis.svc:5000 BUILD_NS=felis-build FELIS_ARCHIVE_LOCAL_PATH=/a \
+    REGISTRY_URL=registry.felis.svc:5000 BUILD_NS=felis-build FELIS_ARCHIVE_LOCAL_PATH=/a UPLOADS_LOCAL_PATH=/var/lib/felis/uploads \
     HOST_BIN=felis FELIS_OFFSITE_BUCKET= write_felis_toml "$OUT_TOML" 127.0.0.1:15432 "$DEPLOY"'
 }
 
@@ -2072,6 +2072,24 @@ expect "a re-run carries the scan gate's unfixed-vulnerability rule" 'scan_fail_
 expect "a re-run carries the scan gate's accepted finding ids" 'scan_accept = ["CVE-2021-35515", "CVE-2025-67030"]' "$out"
 expect "a re-run carries the [registry.s3] uploads subtable" "[registry.s3]" "$out"
 expect "the carried subtable keeps its keys" 'endpoint = "https://s3.example"' "$out"
+case "$out" in
+  *user_uploads_context*) echo "FAIL an install with an S3 uploads store was moved to the uploads volume"; fails=$((fails + 1)) ;;
+  *) echo "PASS an install with an S3 uploads store keeps it" ;;
+esac
+fresh_dir="$(mktemp -d)"
+run_write "$fresh_dir/out.toml" "$fresh_dir"
+expect "a first install keeps submission uploads on the uploads volume" 'build_namespace = "felis-build"
+user_uploads_context = "/var/lib/felis/uploads"
+
+[archive]' "$(cat "$fresh_dir/out.toml")"
+rm -rf "$fresh_dir"
+gouploads="$(sed -n 's/^[[:space:]]*UploadsLocalPath[[:space:]]*= "\(.*\)"$/\1/p' "$(dirname "$BS")/../internal/platform/workloads.go")"
+shuploads="$(sed -n 's/^UPLOADS_LOCAL_PATH="\(.*\)"$/\1/p' "$BS")"
+if [ -n "$gouploads" ] && [ "$gouploads" = "$shuploads" ]; then
+  echo "PASS the installer's uploads path is where felis-api mounts the uploads volume"
+else
+  echo "FAIL uploads path: felis-api mounts <$gouploads>, the installer writes <$shuploads>"; fails=$((fails + 1))
+fi
 expect "url stays installer-owned" 'url = "registry.felis.svc:5000"' "$out"
 expect "a re-run carries the archive retention window" 'retention = "30d"' "$out"
 expect "a re-run carries the on-demand backup count" 'manual_keep = 3' "$out"
@@ -2227,6 +2245,10 @@ expect "without a lobby the proxy is told there is none" "lobby-server=" "$(tail
 out="$(cat "$adir/v/openssl.cnf" 2>&1)"
 expect "a regenerated panel certificate names the carried hostnames" 'DNS.1 = ops.example.org
 DNS.2 = play.example.org' "$out"
+rm -rf "$adir/v"; mkdir "$adir/v"
+(PUBLIC_IP=203.0.113.9 run_surfaces "$adir" "$adir/v")
+expect "a certificate made on a cloud host names its public address as well" 'IP.2 = 10.0.0.5
+IP.3 = 203.0.113.9' "$(cat "$adir/v/openssl.cnf" 2>&1)"
 
 # Use oversized sections to expose early-reader-exit SIGPIPE races under pipefail.
 { printf '[auth]\nadmin_hostname = "ops.example.org"\npanel_hostname = "play.example.org"\n'
@@ -2290,17 +2312,34 @@ dnblock="$(awk '/^detect_node_ip\(\) \{/,/^}/' "$BS")"
 prdblock="$(awk '/^persisted_root_domain\(\) \{/,/^}/' "$BS")"
 { [ -n "$dnblock" ] && [ -n "$prdblock" ]; } || { echo "FAIL: detect_node_ip / persisted_root_domain not found in $BS"; exit 1; }
 printf '%s\n' "$prdblock" "$dnblock" "$(awk '/^ipv4_to_int\(\) \{/,/^}/' "$BS")" > "$fnfile"
-run_detect() { # state-dir [FELIS_ROOT_DOMAIN]; IPOUT and HOSTOUT stand in for ip route get and hostname -I
-  STATE_DIR="$1" RD="${2:-}" FNFILE="$fnfile" IPOUT="${IPOUT-1.1.1.1 via 10.0.0.1 dev eth0 src 10.0.0.5 uid 0}" HOSTOUT="${HOSTOUT:-}" bash -c '
+for f in cidr_overlap private_ipv4 cloud_host lookup_public_ipv4 detect_public_ip; do
+  b="$(awk '/^'"$f"'\(\) \{/,/^}/' "$BS")"
+  [ -n "$b" ] && [ "$(printf '%s\n' "$b" | wc -l)" -lt 30 ] || { echo "FAIL: ${f} not found in $BS, or not just the function"; exit 1; }
+  printf '%s\n' "$b" >> "$fnfile"
+done
+curls="$(mktemp)"
+run_detect() { # state-dir [FELIS_ROOT_DOMAIN]; IPOUT and HOSTOUT stand in for ip route get and hostname -I, TRACE and IPIFY for the lookups
+  : > "$curls"
+  STATE_DIR="$1" RD="${2:-}" FNFILE="$fnfile" IPOUT="${IPOUT-1.1.1.1 via 10.0.0.1 dev eth0 src 10.0.0.5 uid 0}" HOSTOUT="${HOSTOUT:-}" \
+    INSTALL_MODE="${MODE:-}" FELIS_PUBLIC_IP="${PUBIP:-}" TRACE="${TRACE:-}" IPIFY="${IPIFY:-}" CLOUD="${CLOUD:-}" CURLS="$curls" bash -c '
     die() { printf "DIE: %s\n" "$*"; exit 1; }
     log() { printf "LOG: %s\n" "$*"; }
     warn() { printf "WARN: %s\n" "$*"; }
     ip() { [ -z "$IPOUT" ] || printf "%s\n" "$IPOUT"; }
     hostname() { [ "$1" = -I ] && printf "%s \n" "$HOSTOUT"; }
+    curl() {
+      echo "curl $*" >> "$CURLS"
+      case "$*" in
+        *169.254.169.254*) [ -n "$CLOUD" ] ;;
+        *1.1.1.1/cdn-cgi/trace*) [ -n "$TRACE" ] && printf "fl=1\nip=%s\nts=1\n" "$TRACE" ;;
+        *api.ipify.org*) [ -n "$IPIFY" ] && printf "%s" "$IPIFY" ;;
+        *) return 22 ;;
+      esac
+    }
     . "$FNFILE"
     if [ -n "$RD" ]; then FELIS_ROOT_DOMAIN="$RD"; fi
     detect_node_ip
-    echo "ROOT=$FELIS_ROOT_DOMAIN"'
+    echo "ROOT=$FELIS_ROOT_DOMAIN PUBLIC=$PUBLIC_IP NODE=$NODE_IP"'
 }
 printf '[server]\nroot_domain = "r.example.com"\n' > "$adir/felis.host.toml"
 out="$(run_detect "$adir" new.example.net)"
@@ -2320,6 +2359,42 @@ expect "the fallback skips IPv6 addresses" "ROOT=192.168.1.20.nip.io" \
   "$(IPOUT='' HOSTOUT='fd00::5 2001:db8::20 192.168.1.20 10.42.0.1' run_detect "$adir")"
 expect "a host with IPv6 addresses alone is refused" "DIE: could not determine this host's primary IPv4 address" \
   "$(IPOUT='' HOSTOUT='fd00::5 2001:db8::20' run_detect "$adir")"
+
+# A cloud host's own address is private; players and browsers are given its public one.
+out="$(CLOUD=1 MODE=full TRACE=203.0.113.9 run_detect "$adir")"
+expect "a private node address takes the public one for the default domain" "ROOT=203.0.113.9.nip.io PUBLIC=203.0.113.9 NODE=10.0.0.5" "$out"
+expect "  and the log says which address and why" "LOG: players and browsers are given the public address 203.0.113.9: 10.0.0.5 is private" "$out"
+expect "the lookup falls back to a second service" "PUBLIC=198.51.100.4 NODE=10.0.0.5" "$(CLOUD=1 MODE=nano IPIFY=198.51.100.4 run_detect "$adir")"
+out="$(CLOUD=1 MODE=full run_detect "$adir")"
+expect "a failed lookup keeps the node address" "ROOT=10.0.0.5.nip.io PUBLIC=10.0.0.5" "$out"
+expect "  and says how to name the public one" "set FELIS_PUBLIC_IP=<address>" "$out"
+no_lookup() { # label
+  if grep -E 'cdn-cgi/trace|ipify' "$curls" >/dev/null; then echo "FAIL $1: $(cat "$curls")"; fails=$((fails + 1)); else echo "PASS $1"; fi
+}
+# A home network's host is private too, but the router's public address is not where its LAN players reach it.
+expect "a private address off the cloud is kept" "ROOT=10.0.0.5.nip.io PUBLIC=10.0.0.5" "$(MODE=full TRACE=203.0.113.9 run_detect "$adir")"
+no_lookup "  without a lookup"
+expect "FELIS_PUBLIC_IP names the address" "ROOT=198.51.100.7.nip.io PUBLIC=198.51.100.7 NODE=10.0.0.5" \
+  "$(MODE=full PUBIP=198.51.100.7 TRACE=203.0.113.9 run_detect "$adir")"
+no_lookup "  without a lookup"
+expect "FELIS_PUBLIC_IP=none keeps the node address" "ROOT=10.0.0.5.nip.io PUBLIC=10.0.0.5" \
+  "$(MODE=full PUBIP=none TRACE=203.0.113.9 run_detect "$adir")"
+no_lookup "  without a lookup"
+expect "a public node address is used as it is" "ROOT=203.0.113.20.nip.io PUBLIC=203.0.113.20" \
+  "$(MODE=full TRACE=198.51.100.1 IPOUT='1.1.1.1 via 203.0.113.1 dev eth0 src 203.0.113.20 uid 0' run_detect "$adir")"
+no_lookup "  without a lookup"
+expect "a worker keeps its node address" "PUBLIC=10.0.0.5" "$(MODE=worker TRACE=203.0.113.9 run_detect "$adir")"
+no_lookup "  without a lookup"
+printf '[server]\nroot_domain = "r.example.com"\n' > "$adir/felis.host.toml"
+expect "an installed domain wins over the public address" "ROOT=r.example.com PUBLIC=203.0.113.9" "$(CLOUD=1 MODE=full TRACE=203.0.113.9 run_detect "$adir")"
+rm -f "$adir/felis.host.toml"
+for pair in 10.255.0.1:private 172.16.0.1:private 172.31.255.255:private 172.32.0.1:public 192.168.4.2:private \
+  100.64.0.1:private 100.127.255.255:private 100.128.0.1:public 203.0.113.9:public; do
+  got="$(FNFILE="$fnfile" A="${pair%%:*}" bash -c '. "$FNFILE"; if private_ipv4 "$A"; then echo private; else echo public; fi')"
+  [ "$got" = "${pair#*:}" ] && echo "PASS ${pair%%:*} is ${got}" \
+    || { echo "FAIL ${pair%%:*} reads as ${got}, want ${pair#*:}"; fails=$((fails + 1)); }
+done
+rm -f "$curls"
 
 rm -rf "$adir"
 rm -f "$fnfile"
@@ -2610,7 +2685,8 @@ expect "the Owner test is felis setup's own (AdminExists)" "${admin_roles:-Admin
 
 out="$(TERMINAL=1 run_next f)"
 expect "with no Owner on a terminal the summary says the setup console starts" "LOG: Next: create the Owner account. The setup console starts now" "$out"
-expect "  and how it binds the Owner" "has you join 10.0.0.5:25565 in Minecraft" "$out"
+expect "  and that it ends on a one-time setup link for the Owner" "prints a one-time setup link" "$out"
+expect "  with Minecraft left optional" "Minecraft is not needed" "$out"
 if started; then echo "PASS   and starts it"; else echo "FAIL the setup console did not start: $out"; fails=$((fails + 1)); fi
 expect "  on the terminal's keys" "keys from the terminal" "$(cat "$next_dir/stdin")"
 # felis setup can run the installer itself (its host bootstrap step), which would take an
@@ -5773,6 +5849,114 @@ else
   echo "FAIL recall_host_settings must run before the FELIS_DB_BACKUP_TIME and FELIS_VELOCITY_XMX defaults (lines <$recall_at> <$default_at> <$xmx_at>)"; fails=$((fails + 1))
 fi
 rm -rf "$rcdir"
+
+# Reruns and panel-started updates keep the game port, the panel port, world cleanup and the
+# release channel from install.env; a variable set for the run wins, and the file is never run.
+for f in recall_install_settings remember_install_settings validate_install_settings validate_port write_file_atomic ipv4_to_int; do
+  body="$(hafn "$f")"
+  [ -n "$body" ] && [ "$(printf '%s\n' "$body" | wc -l)" -lt 30 ] || { echo "FAIL: no $f found in $BS, or not just the function"; exit 1; }
+done
+isdir="$(mktemp -d)"
+run_is() { # script
+  env -u FELIS_VERSION_BOOTSTRAP -u FELIS_GAME_PORT -u FELIS_PANEL_NODEPORT -u FELIS_WORLDS_HOST_PATH -u FELIS_K3S_VERSION \
+    INSTALL_ENV="$isdir/etc/install.env" ISDIR="$isdir" FELIS_PUBLIC_IP= bash -c "set -Eeuo pipefail
+die() { printf 'DIE: %s\n' \"\$*\"; exit 1; }
+remember_temp() { :; }
+$(hafn write_file_atomic)
+$(hafn ipv4_to_int)
+$(hafn validate_port)
+$(hafn recall_install_settings)
+$(hafn remember_install_settings)
+$(hafn validate_install_settings)
+$1" 2>&1
+}
+mkdir -p "$isdir/etc"
+cat > "$isdir/etc/install.env" <<'EOF'
+# Written by the Felis installer
+FELIS_VERSION_BOOTSTRAP=dev
+FELIS_GAME_PORT=25570
+FELIS_PANEL_NODEPORT=30500
+FELIS_WORLDS_HOST_PATH=/var/lib/rancher/k3s/storage
+EOF
+out="$(run_is 'recall_install_settings; printf "[%s][%s][%s][%s]\n" "$FELIS_VERSION_BOOTSTRAP" "$FELIS_GAME_PORT" "$FELIS_PANEL_NODEPORT" "$FELIS_WORLDS_HOST_PATH"; bash -c "echo child sees \$FELIS_PANEL_NODEPORT"')"
+expect "a rerun without the variables takes the recorded ones" "[dev][25570][30500][/var/lib/rancher/k3s/storage]" "$out"
+expect "  and passes them on, so felis setup shows the recorded panel port" "child sees 30500" "$out"
+out="$(run_is 'FELIS_GAME_PORT=25599; FELIS_VERSION_BOOTSTRAP=release; FELIS_WORLDS_HOST_PATH=; recall_install_settings; remember_install_settings; cat "$INSTALL_ENV"; ls -l "$INSTALL_ENV"')"
+expect "a variable set for the run wins and is recorded" 'FELIS_VERSION_BOOTSTRAP=release
+FELIS_GAME_PORT=25599
+FELIS_PANEL_NODEPORT=30500
+FELIS_WORLDS_HOST_PATH=
+' "$out"
+expect "  in a file only root reads" "-rw-------" "$out"
+expect "the recorded empty worlds path keeps world cleanup off" "[]" "$(run_is 'recall_install_settings; printf "[%s]\n" "$FELIS_WORLDS_HOST_PATH"')"
+cat > "$isdir/etc/install.env" <<'EOF'
+$(touch "$ISDIR/pwned-1")
+FELIS_GAME_PORT=$(touch "$ISDIR/pwned-2")
+FELIS_WORLDS_HOST_PATH=`touch $ISDIR/pwned-3`
+PATH=/nonexistent
+FELIS_K3S_VERSION=v0.0.0
+EOF
+out="$(run_is 'recall_install_settings; printf "[%s][%s]\n" "${FELIS_K3S_VERSION-unset}" "$PATH"; FELIS_VERSION_BOOTSTRAP=release; validate_install_settings')"
+if [ -e "$isdir/pwned-1" ] || [ -e "$isdir/pwned-2" ] || [ -e "$isdir/pwned-3" ]; then
+  echo "FAIL a line of install.env was run: $(ls "$isdir")"; fails=$((fails + 1))
+else
+  echo "PASS install.env is read, never run"
+fi
+case "$out" in
+  "[unset][/nonexistent]"*) echo "FAIL install.env set a variable outside its four"; fails=$((fails + 1)) ;;
+  "[unset]["*) echo "PASS install.env sets only its own four variables" ;;
+  *) echo "FAIL unexpected recall output: $out"; fails=$((fails + 1)) ;;
+esac
+expect "a recorded value goes through the variable's own check" "DIE: FELIS_WORLDS_HOST_PATH must not contain spaces" "$out"
+expect "a recorded port that is not a number is refused" "DIE: FELIS_GAME_PORT must be a port number" \
+  "$(run_is 'recall_install_settings; validate_port FELIS_GAME_PORT "$FELIS_GAME_PORT"')"
+for bad in 'FELIS_WORLDS_HOST_PATH="$(printf "/x\nFELIS_GAME_PORT=1")"' 'FELIS_WORLDS_HOST_PATH=worlds' \
+  'FELIS_VERSION_BOOTSTRAP=nightly' 'FELIS_PUBLIC_IP=203.0.113'; do
+  case "$(run_is "FELIS_VERSION_BOOTSTRAP=release; FELIS_WORLDS_HOST_PATH=; $bad; validate_install_settings")" in
+    *DIE:*) echo "PASS <$bad> is refused" ;;
+    *) echo "FAIL <$bad> was accepted"; fails=$((fails + 1)) ;;
+  esac
+done
+rm -rf "$isdir"
+recall_at="$(grep -n '^recall_install_settings$' "$BS" | cut -d: -f1)"
+late=""
+for v in FELIS_VERSION_BOOTSTRAP FELIS_GAME_PORT FELIS_PANEL_NODEPORT FELIS_WORLDS_HOST_PATH; do
+  at="$(grep -n "^${v}=\"\\\${${v}:-" "$BS" | cut -d: -f1)"
+  if [ -z "$recall_at" ] || [ -z "$at" ] || [ "$at" -lt "$recall_at" ]; then late="$late $v"; fi
+done
+if [ -z "$late" ]; then echo "PASS install.env is recalled before the defaults fill in"; else echo "FAIL recall_install_settings must run before the defaults of:$late"; fails=$((fails + 1)); fi
+for m in main main_nano; do
+  case "$(hafn "$m")" in
+    *remember_install_settings*link_host_bin*) echo "PASS ${m} records the install parameters and links the binary" ;;
+    *) echo "FAIL ${m} must call remember_install_settings, then link_host_bin"; fails=$((fails + 1)) ;;
+  esac
+done
+
+# sudo on EL hosts leaves /usr/local/bin out of PATH; /usr/bin/felis links to the binary, and nothing else there is replaced.
+lkdir="$(mktemp -d)"
+run_binlink() {
+  HOST_BIN="$lkdir/local/felis" HOST_BIN_LINK="$lkdir/usr/felis" bash -c "
+warn() { printf 'WARN: %s\n' \"\$*\"; }
+ok() { printf 'OK: %s\n' \"\$*\"; }
+$(hafn link_host_bin)
+link_host_bin" 2>&1
+}
+mkdir -p "$lkdir/local" "$lkdir/usr"
+: > "$lkdir/local/felis"
+run_binlink >/dev/null
+expect "an absent /usr/bin/felis becomes a link to the binary" "$lkdir/local/felis" "$(readlink "$lkdir/usr/felis")"
+out="$(run_binlink)"
+case "$out" in *WARN*) echo "FAIL a rerun warned about its own link: $out"; fails=$((fails + 1)) ;; *) echo "PASS a rerun keeps its own link quietly" ;; esac
+rm -f "$lkdir/usr/felis"
+printf 'another felis\n' > "$lkdir/usr/felis"
+out="$(run_binlink)"
+expect "another /usr/bin/felis is reported" "WARN: $lkdir/usr/felis is not Felis's" "$out"
+expect "  and left as it is" "another felis" "$(cat "$lkdir/usr/felis")"
+rm -f "$lkdir/usr/felis"
+ln -s /opt/other/felis "$lkdir/usr/felis"
+run_binlink >/dev/null
+expect "a link to something else is left as it is" "/opt/other/felis" "$(readlink "$lkdir/usr/felis")"
+rm -rf "$lkdir"
 
 # Each update builds the control-plane image under a new tag. The push step removes what
 # earlier runs left in Docker and keeps this run's images and anything that is not Felis's.

@@ -43,10 +43,10 @@ func TestRootSetupHappyPath(t *testing.T) {
 		t.Fatalf("stage = %v, want Connection", m.stage)
 	}
 	m = drive(t, m, connectResultMsg{method: connectReverseProxy, panelHostname: "panel.felis.example.com", adminHostname: "new-admin.felis.example.com", guide: "caddy…"})
-	if m.stage != stageStorage {
-		t.Fatalf("stage = %v, want Storage", m.stage)
+	if _, ok := m.screen.(*smtpModel); !ok || !strings.Contains(m.View(), "4. Mail") {
+		t.Fatalf("after the connection, screen = %T, want the Mail step:\n%s", m.screen, m.View())
 	}
-	m = drive(t, m, storageResultMsg{method: storageS3, detail: "s3://bucket"})
+	m = drive(t, m, smtpResultMsg{configured: true, detail: "smtp.example.net:587  ·  from felis@example.net"})
 	owner, ok := m.screen.(*setupOwnerModel)
 	if !ok || owner.panelURL != "https://new-admin.felis.example.com" {
 		t.Fatalf("owner setup = %#v", m.screen)
@@ -54,9 +54,12 @@ func TestRootSetupHappyPath(t *testing.T) {
 	if m.result.provisioned {
 		t.Fatal("Owner must not be minted before configuration")
 	}
+	if review := m.reviewBody(int(stageMail)); !strings.Contains(review, "smtp.example.net:587") {
+		t.Fatalf("the Mail step's review lacks the relay:\n%s", review)
+	}
 	m = drive(t, m, ownerResultMsg{username: "owner", setupTokenURL: "https://new-admin.felis.example.com/setup?token=t0ken"})
 	sum, ok := m.screen.(*summaryModel)
-	if !ok || sum.setupTokenURL != m.result.setupTokenURL || sum.panelURL != "https://new-admin.felis.example.com" || sum.storageLabel != "s3://bucket" {
+	if !ok || sum.setupTokenURL != m.result.setupTokenURL || sum.panelURL != "https://new-admin.felis.example.com" {
 		t.Fatalf("summary = %#v", m.screen)
 	}
 	if !strings.Contains(sum.View(), "Finish Owner login") || !strings.Contains(sum.View(), "Minecraft can be linked later") {
@@ -68,7 +71,7 @@ func TestRootSetupLocalSummary(t *testing.T) {
 	m := newTestRoot(false, consoleModeSetup, "")
 	m = drive(t, m, preflightDoneMsg{})
 	m = drive(t, m, connectResultMsg{method: connectLocal, panelHostname: "panel.felis.example.com"})
-	m = drive(t, m, storageResultMsg{method: storageLocal, detail: "local disk · /var/lib/felis/uploads"})
+	m = drive(t, m, smtpResultMsg{})
 	m = drive(t, m, ownerResultMsg{username: "owner"})
 
 	sum, ok := m.screen.(*summaryModel)
@@ -84,11 +87,11 @@ func TestRootSetupLocalSummary(t *testing.T) {
 	}
 }
 
-func TestRootReconfigureConnectSkipsStorage(t *testing.T) {
+func TestRootReconfigureConnectSkipsMail(t *testing.T) {
 	m := newTestRoot(false, consoleModeSetup, "")
 	m = drive(t, m, preflightDoneMsg{})
 	m = drive(t, m, connectResultMsg{method: connectLocal, panelHostname: "panel.felis.example.com"})
-	m = drive(t, m, storageResultMsg{method: storageS3, detail: "s3://bucket"})
+	m = drive(t, m, smtpResultMsg{})
 	m = drive(t, m, ownerResultMsg{username: "owner", setupTokenURL: "https://op.console.example.com/setup?token=t0ken"})
 	if _, ok := m.screen.(*summaryModel); !ok {
 		t.Fatalf("after first run, screen = %T, want *summaryModel", m.screen)
@@ -103,7 +106,7 @@ func TestRootReconfigureConnectSkipsStorage(t *testing.T) {
 		t.Fatalf("reconfigure screen = %T, want *connectChooserModel", m.screen)
 	}
 
-	// Completing it returns straight to the summary, not the storage chooser, with the original storage recap intact.
+	// Completing it skips the Mail step: the pending login link is renewed, then the summary returns.
 	m = drive(t, m, connectResultMsg{method: connectReverseProxy, panelHostname: "panel.felis.example.com", guide: "caddy…"})
 	if _, ok := m.screen.(*setupOwnerModel); !ok {
 		t.Fatalf("pending link should refresh, screen = %T", m.screen)
@@ -112,12 +115,8 @@ func TestRootReconfigureConnectSkipsStorage(t *testing.T) {
 	if m.stage != stageSummary {
 		t.Fatalf("after reconfigure connect, stage = %v, want stageSummary", m.stage)
 	}
-	sum, ok := m.screen.(*summaryModel)
-	if !ok {
+	if _, ok := m.screen.(*summaryModel); !ok {
 		t.Fatalf("after reconfigure connect, screen = %T, want *summaryModel", m.screen)
-	}
-	if sum.storageLabel != "s3://bucket" {
-		t.Fatalf("reconfigure summary storageLabel = %q, want preserved %q", sum.storageLabel, "s3://bucket")
 	}
 	if m.result.connectMethod != connectReverseProxy {
 		t.Fatalf("reconfigure did not update connectMethod: %v", m.result.connectMethod)
@@ -128,17 +127,25 @@ func TestRootReconfigureStorageReEntersChooser(t *testing.T) {
 	m := newTestRoot(false, consoleModeSetup, "")
 	m = drive(t, m, preflightDoneMsg{})
 	m = drive(t, m, connectResultMsg{method: connectLocal, panelHostname: "panel.felis.example.com"})
-	m = drive(t, m, storageResultMsg{method: storageLocal, detail: "local disk · /var/lib/felis/uploads"})
+	m = drive(t, m, smtpResultMsg{})
 	m = drive(t, m, ownerResultMsg{username: "owner"})
 	if _, ok := m.screen.(*summaryModel); !ok {
 		t.Fatalf("after first run, screen = %T, want *summaryModel", m.screen)
 	}
 
-	// "change storage" re-enters the storage chooser.
+	// Esc on the chooser goes back to the summary and applies nothing.
 	m = drive(t, m, reconfigureStorageMsg{})
-	if m.stage != stageStorage {
-		t.Fatalf("reconfigure-storage stage = %v, want stageStorage", m.stage)
+	next, cmd := m.screen.Update(key(tea.KeyEsc))
+	if _, applying := next.(*storageModel); applying || cmd == nil {
+		t.Fatalf("esc on the storage chooser = %T, want it to leave storage unchanged", next)
 	}
+	m = drive(t, m, cmd())
+	if _, ok := m.screen.(*summaryModel); !ok {
+		t.Fatalf("after esc on the chooser, screen = %T, want *summaryModel", m.screen)
+	}
+
+	// "change storage" opens the storage chooser from the summary.
+	m = drive(t, m, reconfigureStorageMsg{})
 	if _, ok := m.screen.(*storageChooserModel); !ok {
 		t.Fatalf("reconfigure-storage screen = %T, want *storageChooserModel", m.screen)
 	}
@@ -154,6 +161,26 @@ func TestRootReconfigureStorageReEntersChooser(t *testing.T) {
 	}
 	if sum.storageLabel != "s3://newbucket" {
 		t.Fatalf("summary storageLabel = %q, want updated %q", sum.storageLabel, "s3://newbucket")
+	}
+}
+
+func TestRootMailStepCanBeSkipped(t *testing.T) {
+	m := newTestRoot(false, consoleModeSetup, "")
+	m = drive(t, m, preflightDoneMsg{})
+	m = drive(t, m, connectResultMsg{method: connectLocal, panelHostname: "panel.felis.example.com"})
+	if _, ok := m.screen.(*smtpModel); !ok || m.stage != stageMail {
+		t.Fatalf("after the connection, screen = %T, want the Mail step", m.screen)
+	}
+	_, cmd := m.Update(key(tea.KeyEsc))
+	if cmd == nil {
+		t.Fatal("esc on the Mail step did nothing")
+	}
+	m = drive(t, m, cmd())
+	if _, ok := m.screen.(*setupOwnerModel); !ok || m.stage != stageOwner {
+		t.Fatalf("after skipping mail, screen = %T, want the Panel login step", m.screen)
+	}
+	if review := m.reviewBody(int(stageMail)); !strings.Contains(review, "Skipped") {
+		t.Fatalf("review of a skipped Mail step:\n%s", review)
 	}
 }
 

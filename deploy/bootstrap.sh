@@ -3,6 +3,27 @@
 
 set -Eeuo pipefail
 
+# Recorded install parameters act as if set for this run, so felis setup sees the panel port; a variable set for the run wins.
+INSTALL_ENV="/etc/felis/install.env"
+recall_install_settings() {
+  [ -r "$INSTALL_ENV" ] || return 0
+  local key value
+  while IFS="=" read -r key value; do
+    case "$key" in
+      FELIS_VERSION_BOOTSTRAP|FELIS_GAME_PORT|FELIS_PANEL_NODEPORT|FELIS_WORLDS_HOST_PATH) ;;
+      *) continue ;;
+    esac
+    [ -z "${!key+x}" ] || continue
+    printf -v "$key" "%s" "$value"
+    export "${key?}"
+  done < "$INSTALL_ENV"
+}
+recall_install_settings
+# A host installed before install.env existed keeps the channel its binary was built from.
+if [ -z "${FELIS_VERSION_BOOTSTRAP:-}" ] && [ ! -e "$INSTALL_ENV" ] && [ -x /usr/local/bin/felis ]; then
+  case "$(/usr/local/bin/felis version 2>/dev/null | sed -n 1p)" in *+g*) FELIS_VERSION_BOOTSTRAP=dev ;; esac
+fi
+
 FELIS_REPO_URL="${FELIS_REPO_URL:-https://github.com/FelisMC/Felis.git}"
 FELIS_VERSION_BOOTSTRAP="${FELIS_VERSION_BOOTSTRAP:-release}"
 # A set ref skips channel resolution and the tag lookup, so the stamp is v0.0.0+g<sha>.
@@ -128,6 +149,9 @@ SERVER_TOKEN_FILE="${FELIS_SERVER_TOKEN_FILE:-}"
 AGENT_TOKEN_FILE="${FELIS_AGENT_TOKEN_FILE:-}"
 ETC_BUNDLE="${FELIS_ETC_BUNDLE:-}"
 CONTROLLER_PEERS="${FELIS_CONTROLLER_PEERS:-}"
+# The address players and browsers are given; empty looks it up when NODE_IP is private, "none" keeps NODE_IP.
+FELIS_PUBLIC_IP="${FELIS_PUBLIC_IP:-}"
+PUBLIC_IP=""
 FELIS_PREFLIGHT="${FELIS_PREFLIGHT:-strict}"
 # hasJoined is unauthenticated, so a public bind is a free auth relay: loopback is the default.
 # Left empty here; resolve_nano_listen applies the default after an installed unit's address.
@@ -211,6 +235,8 @@ PANEL_TLS_CERT="${STATE_DIR}/panel-tls.crt"
 PANEL_TLS_KEY="${STATE_DIR}/panel-tls.key"
 SRC_DIR="/opt/felis/src"
 HOST_BIN="/usr/local/bin/felis"
+# sudo's secure_path on EL leaves out /usr/local/bin.
+HOST_BIN_LINK="/usr/bin/felis"
 # Binary this run replaced (keep_previous_host_binary); once migrations start or nano restarts
 # onto the new one, a failed run keeps the new binary.
 HOST_BIN_PREV=""
@@ -247,6 +273,8 @@ SETUP_CONSOLE=0
 SMTP_PASSWORD_FILE="${STATE_DIR}/smtp-password"
 UPLOADS_S3_ACCESS_KEY_FILE="${STATE_DIR}/uploads-s3-access-key"
 UPLOADS_S3_SECRET_KEY_FILE="${STATE_DIR}/uploads-s3-secret-key"
+# Must equal platform.UploadsLocalPath, where felis-api mounts the uploads volume.
+UPLOADS_LOCAL_PATH="/var/lib/felis/uploads"
 OFFSITE_SERVICE="/etc/systemd/system/felis-offsite.service"
 OFFSITE_TIMER="/etc/systemd/system/felis-offsite.timer"
 BUILD_TOOLS_SERVICE="/etc/systemd/system/felis-build-tools.service"
@@ -412,6 +440,20 @@ restore_previous_host_binary() { # exit-status
     fi
   fi
   rm -f -- "$HOST_BIN_PREV"
+}
+
+# link_host_bin points HOST_BIN_LINK at HOST_BIN so `sudo felis` works where sudo's PATH lacks /usr/local/bin.
+link_host_bin() {
+  if [ -L "$HOST_BIN_LINK" ] && [ "$(readlink "$HOST_BIN_LINK")" = "$HOST_BIN" ]; then return 0; fi
+  if [ -e "$HOST_BIN_LINK" ] || [ -L "$HOST_BIN_LINK" ]; then
+    warn "${HOST_BIN_LINK} is not Felis's and is left as it is; where sudo cannot find felis, run sudo ${HOST_BIN}"
+    return 0
+  fi
+  if ! ln -s "$HOST_BIN" "$HOST_BIN_LINK"; then
+    warn "could not link ${HOST_BIN_LINK} to ${HOST_BIN}; where sudo cannot find felis, run sudo ${HOST_BIN}"
+    return 0
+  fi
+  ok "${HOST_BIN_LINK} links to ${HOST_BIN}"
 }
 
 remember_temp() { TEMP_PATHS+=("$1"); }
@@ -734,10 +776,42 @@ validate_port() {
   [ "$value" -ge 1 ] && [ "$value" -le 65535 ] || die "${name} must be 1-65535, got: ${value}"
 }
 
+# Each value also goes into install.env as one KEY=value line, so line breaks are refused.
+validate_install_settings() {
+  case "$FELIS_VERSION_BOOTSTRAP" in
+    release|dev) ;;
+    *) die "FELIS_VERSION_BOOTSTRAP must be 'release' or 'dev', got '${FELIS_VERSION_BOOTSTRAP}'" ;;
+  esac
+  case "$FELIS_WORLDS_HOST_PATH" in
+    "") ;;
+    *[[:space:]]* | *\"* | *\'* | *\\*) die "FELIS_WORLDS_HOST_PATH must not contain spaces, quotes or backslashes" ;;
+    /*) ;;
+    *) die "FELIS_WORLDS_HOST_PATH must be an absolute path, got: ${FELIS_WORLDS_HOST_PATH}" ;;
+  esac
+  case "$FELIS_PUBLIC_IP" in
+    "" | none) ;;
+    *) ipv4_to_int "$FELIS_PUBLIC_IP" >/dev/null || die "FELIS_PUBLIC_IP must be an IPv4 address or none, got: ${FELIS_PUBLIC_IP}" ;;
+  esac
+}
+
+# remember_install_settings records the install parameters for later runs and panel-started updates.
+remember_install_settings() {
+  (umask 077; mkdir -p "$(dirname "$INSTALL_ENV")")
+  write_file_atomic "$INSTALL_ENV" 0600 <<EOF
+# Written by the Felis installer; later runs use these unless a variable is set for the run.
+FELIS_VERSION_BOOTSTRAP=${FELIS_VERSION_BOOTSTRAP}
+FELIS_GAME_PORT=${FELIS_GAME_PORT}
+FELIS_PANEL_NODEPORT=${FELIS_PANEL_NODEPORT}
+FELIS_WORLDS_HOST_PATH=${FELIS_WORLDS_HOST_PATH}
+EOF
+}
+
 validate_settings() {
   validate_timeout PKG_LOCK_TIMEOUT "$PKG_LOCK_TIMEOUT"
   validate_timeout APT_LOCK_TIMEOUT "$APT_LOCK_TIMEOUT"
   validate_nodeport FELIS_PANEL_NODEPORT "$FELIS_PANEL_NODEPORT"
+  validate_port FELIS_GAME_PORT "$FELIS_GAME_PORT"
+  validate_install_settings
   validate_listen FELIS_NANO_LISTEN "$FELIS_NANO_LISTEN"
   validate_cidr FELIS_NANO_PROXY_CIDR "$FELIS_NANO_PROXY_CIDR"
   validate_port FELIS_NANO_PANEL_PORT "$FELIS_NANO_PANEL_PORT"
@@ -776,7 +850,7 @@ validate_settings() {
     [ -z "$FELIS_ARTIFACT_DIR" ] || die "FELIS_RELEASE and FELIS_ARTIFACT_DIR both name what to install; set one"
     [ -z "${FELIS_SKIP_FETCH:-}" ] || die "FELIS_RELEASE and FELIS_SKIP_FETCH both name what to install; set one"
     [ "$FELIS_VERSION_BOOTSTRAP" = release ] \
-      || die "FELIS_RELEASE names a published release, which the ${FELIS_VERSION_BOOTSTRAP} channel does not install; drop FELIS_VERSION_BOOTSTRAP"
+      || die "FELIS_RELEASE names a published release, which the ${FELIS_VERSION_BOOTSTRAP} channel does not install; set FELIS_VERSION_BOOTSTRAP=release"
     ! bootstrap_from_tui || die "FELIS_RELEASE does not reach felis setup's install, which installs the binary it runs as; run the installer one-liner with FELIS_RELEASE instead"
   fi
   [ -z "$FELIS_VELOCITY_XMX" ] || [ "$(heap_megabytes "$FELIS_VELOCITY_XMX")" -ge 256 ] \
@@ -949,6 +1023,7 @@ detect_node_ip() {
     done
   fi
   [ -n "${NODE_IP:-}" ] || die "could not determine this host's primary IPv4 address"
+  detect_public_ip
 
   # Preserve installed domains on reruns; use felis domain set to update all dependent surfaces.
   local persisted
@@ -957,11 +1032,63 @@ detect_node_ip() {
     [ "$INSTALL_MODE" != nano ] || die "FELIS_ROOT_DOMAIN (${FELIS_ROOT_DOMAIN}) differs from the installed ${persisted}. To move Felis-nano, set root_domain under [server] in ${STATE_DIR}/felis.toml, delete ${PANEL_TLS_CERT} and ${PANEL_TLS_KEY}, then rerun the installer without FELIS_ROOT_DOMAIN"
     die "FELIS_ROOT_DOMAIN (${FELIS_ROOT_DOMAIN}) differs from the installed ${persisted}. The installer keeps the installed domain; to move the install, rerun it without FELIS_ROOT_DOMAIN, then run: sudo felis domain set ${FELIS_ROOT_DOMAIN} (https://docs.felismc.com/en/operations/access#change-domain)"
   fi
-  FELIS_ROOT_DOMAIN="${FELIS_ROOT_DOMAIN:-${persisted:-${NODE_IP}.nip.io}}"
+  FELIS_ROOT_DOMAIN="${FELIS_ROOT_DOMAIN:-${persisted:-${PUBLIC_IP}.nip.io}}"
   if [ -n "$persisted" ] && [ "$FELIS_ROOT_DOMAIN" = "$persisted" ]; then
     log "node IP: ${NODE_IP}   root domain: ${FELIS_ROOT_DOMAIN} (reusing the installed domain)"
   else
     log "node IP: ${NODE_IP}   root domain: ${FELIS_ROOT_DOMAIN}"
+  fi
+}
+
+# private_ipv4 reports whether an address is in a private or shared (carrier-grade NAT) range.
+private_ipv4() {
+  local cidr
+  for cidr in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10; do
+    cidr_overlap "$1" "$cidr" && return 0
+  done
+  return 1
+}
+
+# cloud_host reports a cloud VM: a provider metadata service answers on its well-known address.
+cloud_host() {
+  local url
+  command -v curl >/dev/null 2>&1 || return 1
+  for url in http://169.254.169.254/ http://100.100.100.200/ http://169.254.0.23/; do
+    curl -s -o /dev/null --max-time 1 "$url" && return 0
+  done
+  return 1
+}
+
+# lookup_public_ipv4 prints this host's public IPv4 address as an outside service sees it.
+lookup_public_ipv4() {
+  local ip
+  command -v curl >/dev/null 2>&1 || return 1
+  ip="$(curl -4fsS --max-time 4 https://1.1.1.1/cdn-cgi/trace 2>/dev/null | sed -n 's/^ip=//p')" || ip=""
+  ipv4_to_int "$ip" >/dev/null || ip="$(curl -4fsS --max-time 4 https://api.ipify.org 2>/dev/null)" || ip=""
+  ipv4_to_int "$ip" >/dev/null || return 1
+  printf '%s\n' "$ip"
+}
+
+# PUBLIC_IP is what players and browsers are given (default domain, certificate, printed
+# addresses); on a cloud VM with a private NIC it is the looked-up public address, and the
+# cluster, firewall and network policy keep NODE_IP.
+detect_public_ip() {
+  PUBLIC_IP="$NODE_IP"
+  case "$INSTALL_MODE" in full | nano) ;; *) return 0 ;; esac
+  case "$FELIS_PUBLIC_IP" in
+    none) log "players and browsers are given ${NODE_IP}, this host's own address (FELIS_PUBLIC_IP=none)"; return 0 ;;
+    ?*) PUBLIC_IP="$FELIS_PUBLIC_IP"; log "players and browsers are given ${PUBLIC_IP} (FELIS_PUBLIC_IP)"; return 0 ;;
+  esac
+  private_ipv4 "$NODE_IP" || return 0
+  if ! cloud_host; then
+    log "players and browsers are given ${NODE_IP}, this host's private address (set FELIS_PUBLIC_IP=<address> if they reach it at a forwarded public one)"
+    return 0
+  fi
+  if PUBLIC_IP="$(lookup_public_ipv4)"; then
+    log "players and browsers are given the public address ${PUBLIC_IP}: ${NODE_IP} is private (set FELIS_PUBLIC_IP to choose another)"
+  else
+    PUBLIC_IP="$NODE_IP"
+    warn "${NODE_IP} is a private address and the public one could not be looked up; players and browsers are given ${NODE_IP} (set FELIS_PUBLIC_IP=<address> if they reach this host at another)"
   fi
 }
 
@@ -3864,9 +3991,10 @@ ensure_panel_tls_cert() {
     return 0
   fi
 
-  local cn panel_host conf
+  local cn panel_host conf public_san=""
   cn="$(auth_hostname admin_hostname "op.console.${FELIS_ROOT_DOMAIN}")"
   panel_host="$(auth_hostname panel_hostname "console.${FELIS_ROOT_DOMAIN}")"
+  [ -z "${PUBLIC_IP:-}" ] || [ "$PUBLIC_IP" = "$NODE_IP" ] || public_san="IP.3 = ${PUBLIC_IP}"
   conf="$(mktemp)"
   remember_temp "$conf"
   cat > "$conf" <<EOF
@@ -3888,6 +4016,7 @@ DNS.2 = ${panel_host}
 DNS.3 = localhost
 IP.1 = 127.0.0.1
 IP.2 = ${NODE_IP}
+${public_san}
 EOF
 
   log "generating self-signed panel TLS certificate"
@@ -4086,6 +4215,11 @@ deployment = \"${deployment}\""
     log "carrying forward the configured [registry] overrides"
     registry_block="${registry_block}"$'\n' # keep a blank line before the next section
   fi
+  # Submission uploads stay on the uploads volume until a bucket is set (felis setup, s).
+  case "$registry_block" in
+    *user_uploads_context* | *"[registry.s3]"*) ;;
+    *) registry_block="user_uploads_context = \"${UPLOADS_LOCAL_PATH}\""$'\n'"${registry_block}" ;;
+  esac
   archive_block="$(persisted_archive_block)"
   if [ -n "$archive_block" ]; then
     log "carrying forward the configured [archive] overrides"
@@ -5117,8 +5251,8 @@ summary() {
   echo
   log "Player panel: https://$(auth_hostname panel_hostname "console.${FELIS_ROOT_DOMAIN}") — served on 443 once your edge/Cloudflare Tunnel routes it here."
   log "Operator console (Op/Admin/Owner): https://$(auth_hostname admin_hostname "op.console.${FELIS_ROOT_DOMAIN}") — the Owner runs 'felis setup' and onboards here."
-  log "Before the edge is ready: direct + self-signed at https://${NODE_IP}:${FELIS_PANEL_NODEPORT} (browser will warn on first visit)."
-  log "Minecraft address: ${NODE_IP}:${FELIS_GAME_PORT} (point mc.${FELIS_ROOT_DOMAIN} here)"
+  log "Before the edge is ready: direct + self-signed at https://${PUBLIC_IP}:${FELIS_PANEL_NODEPORT} (browser will warn on first visit)."
+  log "Minecraft address: ${PUBLIC_IP}:${FELIS_GAME_PORT} (point mc.${FELIS_ROOT_DOMAIN} here)"
   log "The proxy authenticates against Mojang and forwards the verified profile to the"
   log "login gate; the backends are reachable in-cluster only. Follow it with:"
   log "    sudo journalctl -u felis-velocity -f"
@@ -5177,8 +5311,8 @@ summary_next() {
     log "Next: create the Owner account. Run on this host:"
     log "    sudo felis setup"
   fi
-  log "It starts the $([ -n "${FELIS_LOBBY_IMAGE:-}" ] && echo "login and lobby servers" || echo "login server"), has you join ${NODE_IP}:${FELIS_GAME_PORT} in Minecraft to"
-  log "bind your Mojang account as the Owner, then sets up how the panel is reached."
+  log "It sets up how the panel is reached and outgoing mail, then prints a one-time setup link:"
+  log "open it in a browser to finish the Owner account. Minecraft is not needed; link it later in the panel."
   log "$rule"
 }
 
@@ -5847,7 +5981,7 @@ summary_nano_panel() {
   printf '%s\n' "$NANO_SETUP_OUT" | sed 's/^/    /'
   case "$NANO_SETUP_OUT" in
     *"/setup?token="*)
-      log "  The setup page records an email, then asks for a passkey. For a new link:"
+      log "  The setup page verifies an email with a code once mail is set up, otherwise it asks for a passkey. For a new link:"
       log "    sudo felis nano setup$([ "$FELIS_NANO_PUBLIC_PORT" = 8443 ] || printf ' -public-port %s' "$FELIS_NANO_PUBLIC_PORT")" ;;
   esac
 }
@@ -5855,8 +5989,10 @@ summary_nano_panel() {
 main_nano() {
   refuse_nano_beside_full
   detect_node_ip
+  remember_install_settings
   install_base
   acquire_nano_binary
+  link_host_bin
   ensure_nano_user
   install_nano_postgres
   load_nano_secrets
@@ -6337,6 +6473,7 @@ main() {
   # halfway through costs an install to unwind.
   preflight
   check_postgres_major
+  remember_install_settings
   if [ "$FELIS_UPGRADE_DEPS" = 1 ] && [ -x "$K3S_BIN" ]; then
     k3s_upgrade_allowed "$("$K3S_BIN" --version 2>/dev/null | awk 'NR == 1 { print $3 }')" "$FELIS_K3S_VERSION" || true
   fi
@@ -6370,6 +6507,7 @@ main() {
   import_release_images felis registry postgres
   import_platform_images
   build_image
+  link_host_bin
   # Source builds install the new HOST_BIN here; an earlier call may execute the
   # old release's binary, which has no distributed node commands.
   if [ "${DISTRIBUTED:-0}" = 1 ]; then

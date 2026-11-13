@@ -21,13 +21,6 @@ const (
 	storageS3
 )
 
-func storageMethodLabel(m storageMethod) string {
-	if m == storageS3 {
-		return "Object storage (S3-compatible)"
-	}
-	return "Local disk (on this node)"
-}
-
 // s3Inputs is the operator-entered coordinates for the S3 backend. Only endpoint,
 // bucket and region reach felis.toml; the two keys go into a Kubernetes Secret.
 type s3Inputs struct {
@@ -58,7 +51,7 @@ func (m *storageChooserModel) build() *huh.Form {
 	return m.sized(newFelisForm(huh.NewGroup(
 		huh.NewSelect[storageMethod]().
 			Title("Where should uploaded modpacks be stored?").
-			Description("Players submit modpacks for review; approved ones are built from here. You can change this later.").
+			Description("Players submit modpacks for review; approved ones are built from here. Esc leaves the current setting unchanged.").
 			Value(&m.choice).
 			Options(
 				huh.NewOption("Local disk · nothing else to set up", storageLocal),
@@ -93,8 +86,7 @@ func (m *storageChooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c":
 			return m, tea.Quit
 		case "esc":
-			// Skipping is choosing local — the simplest backend, changeable later.
-			return newStorageModel(storageLocal, s3Inputs{}), nil
+			return m, func() tea.Msg { return storageCancelMsg{} }
 		}
 	}
 
@@ -137,6 +129,9 @@ type storageResultMsg struct {
 
 // storageBackMsg returns from the storage sub-screen to the chooser.
 type storageBackMsg struct{}
+
+// storageCancelMsg leaves the chooser with storage unchanged.
+type storageCancelMsg struct{}
 
 func goBackStorage() tea.Cmd { return func() tea.Msg { return storageBackMsg{} } }
 

@@ -77,14 +77,14 @@ type wizardStage int
 const (
 	stagePreflight wizardStage = iota
 	stageConnect
-	stageStorage
+	stageMail
 	stageOwner
 	stageSummary
 	// Append recovery stages without changing setup rail indices; hide the rail during recovery.
 	stageMenu
 )
 
-var setupRailSteps = []string{"Bootstrap", "Preflight", "Connection", "Storage", "Panel login", "Done"}
+var setupRailSteps = []string{"Bootstrap", "Preflight", "Connection", "Mail", "Panel login", "Done"}
 
 type rootModel struct {
 	ctx context.Context
@@ -96,8 +96,10 @@ type rootModel struct {
 	// (read-only), or -1 when the live screen is in front. Driven by ←/→.
 	reviewing int
 
-	// Connection reconfiguration skips storage and returns to the summary.
+	// Connection reconfiguration skips the Mail step and returns to the summary.
 	reconfiguringConnect bool
+	// mailDetail recaps the relay the Mail step configured; empty when it was skipped.
+	mailDetail string
 
 	width  int
 	height int
@@ -260,46 +262,41 @@ func (m *rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case connectResultMsg:
 		m.applyConnectResult(msg)
 		if m.reconfiguringConnect {
-			// Changing only the connection — storage is already set, so skip it.
+			// Changing only the connection — mail was already handled, so skip it.
 			m.reconfiguringConnect = false
 			if m.result.setupTokenURL != "" {
 				return m.startOwnerSetup()
 			}
 			return m.showSummary()
 		}
-		m.stage = stageStorage
-		return m.adopt(newStorageChooserModel(m.rootDomain, storageLocal, s3Inputs{}))
+		m.stage = stageMail
+		return m.adopt(newMailStepModel(currentSMTPInputs()))
 
-	case storageResultMsg:
-		m.result.storageMethod = msg.method
-		m.result.storageDetail = msg.detail
+	case smtpResultMsg:
+		if m.stage != stageMail {
+			return m.backFromDetour()
+		}
+		m.mailDetail = msg.detail
 		if !m.adminExists {
 			return m.startOwnerSetup()
 		}
 		return m.showSummary()
 
-	case storageBackMsg:
-		m.stage = stageStorage
-		return m.adopt(newStorageChooserModel(m.rootDomain, storageLocal, s3Inputs{}))
-
-	case reconfigureStorageMsg:
-		// Fixing/switching storage after install: re-enter the chooser pre-selected on
-		// the current backend, with the non-secret S3 fields pre-filled.
-		method, prefill := currentStorageInputs()
-		m.stage = stageStorage
-		return m.adopt(newStorageChooserModel(m.rootDomain, method, prefill))
-
 	case reconfigureSMTPMsg:
-		// Configuring email after install: the wizard rail deliberately has no SMTP
-		// step (first-run is mail-less by design), so this is always a summary/status
-		// detour and returns there when done.
 		return m.adopt(newSMTPModel(currentSMTPInputs()))
 
-	case smtpResultMsg:
-		if m.result.alreadySetUp {
-			return m.showStatus()
-		}
-		return m.showSummary()
+	case reconfigureStorageMsg, storageBackMsg:
+		// Upload storage is a summary detour: the chooser opens on the current backend with the non-secret S3 fields filled in.
+		method, prefill := currentStorageInputs()
+		return m.adopt(newStorageChooserModel(m.rootDomain, method, prefill))
+
+	case storageResultMsg:
+		m.result.storageMethod = msg.method
+		m.result.storageDetail = msg.detail
+		return m.backFromDetour()
+
+	case storageCancelMsg:
+		return m.backFromDetour()
 
 	case goBackMsg:
 		m.stage = stageConnect
@@ -388,18 +385,19 @@ func (m *rootModel) reviewBody(stage int) string {
 		b.WriteString(tuiHint.Render("Control plane verified before configuration."))
 	case stageOwner:
 		b.WriteString(tuiOK.Render("✓ Panel login") + "\n")
-		b.WriteString(tuiHint.Render("Open the one-time setup link in the summary to create your passkey."))
+		b.WriteString(tuiHint.Render("Open the one-time setup link in the summary to verify your email or create your passkey."))
 	case stageConnect:
 		b.WriteString(tuiOK.Render("✓ Connection") + "\n")
 		b.WriteString(tuiLabel.Render("method    ") + connectMethodLabel(m.result.connectMethod) + "\n")
 		if m.result.panelURL != "" {
 			b.WriteString(tuiLabel.Render("panel     ") + m.result.panelURL)
 		}
-	case stageStorage:
-		b.WriteString(tuiOK.Render("✓ Storage") + "\n")
-		b.WriteString(tuiLabel.Render("backend   ") + storageMethodLabel(m.result.storageMethod) + "\n")
-		if m.result.storageDetail != "" {
-			b.WriteString(tuiHint.Render(m.result.storageDetail))
+	case stageMail:
+		b.WriteString(tuiOK.Render("✓ Mail") + "\n")
+		if m.mailDetail != "" {
+			b.WriteString(tuiLabel.Render("relay     ") + m.mailDetail)
+		} else {
+			b.WriteString(tuiHint.Render("Skipped. Press e on the summary, or use the panel, to set up mail later."))
 		}
 	}
 	b.WriteString("\n\n" + tuiHint.Render("read-only · ") + tuiLabel.Render("←/→") +
@@ -560,10 +558,19 @@ func (m *rootModel) showStatus() (tea.Model, tea.Cmd) {
 		setupTokenURL: m.result.setupTokenURL,
 		auditWarning:  m.result.auditWarning,
 		accessLabel:   accessLabel,
+		storageLabel:  m.result.storageDetail,
 		alreadySetUp:  true,
 		localHint:     m.accessAud == "" && rootDomainEmbeddedIP(m.rootDomain) != "",
 		alerts:        m.readAlertRoute(),
 	})
+}
+
+// backFromDetour returns from a screen the summary opened to the summary it came from.
+func (m *rootModel) backFromDetour() (tea.Model, tea.Cmd) {
+	if m.result.alreadySetUp {
+		return m.showStatus()
+	}
+	return m.showSummary()
 }
 
 // readAlertRoute reads the alert route afresh, so the summary shows a relay the

@@ -98,13 +98,16 @@ func TestRootSummaryReadsAlertRoute(t *testing.T) {
 		reads++
 		return route
 	}
-	m = drive(t, m, storageResultMsg{method: storageLocal, detail: "local disk"})
+	m = drive(t, m, preflightDoneMsg{})
+	m = drive(t, m, connectResultMsg{method: connectLocal, panelHostname: "panel.example.com"})
+	m = drive(t, m, smtpResultMsg{})
 	m = drive(t, m, ownerResultMsg{username: "owner", setupTokenURL: "https://op.console.example.com/setup?token=t0ken"})
 	sum, ok := m.screen.(*summaryModel)
 	if !ok || sum.alerts == nil || sum.alerts.relay != "" {
-		t.Fatalf("summary after storage: %T %+v", m.screen, sum)
+		t.Fatalf("summary after skipping mail: %T %+v", m.screen, sum)
 	}
 	route = alertRoute{relay: "smtp.example.com:587", recipients: []string{"owner@example.com"}}
+	m = drive(t, m, reconfigureSMTPMsg{})
 	m = drive(t, m, smtpResultMsg{configured: true})
 	sum, ok = m.screen.(*summaryModel)
 	if !ok || sum.alerts == nil || sum.alerts.relay != "smtp.example.com:587" {
@@ -182,7 +185,7 @@ func TestSummaryWithAlertsFitsTerminal(t *testing.T) {
 			m = drive(t, m, preflightDoneMsg{})
 			m = drive(t, m, ownerResultMsg{username: "owner", setupTokenURL: "https://op.console.example.com/setup?token=t0ken"})
 			m = drive(t, m, connectResultMsg{method: connectLocal, panelHostname: "panel.example.com"})
-			m = drive(t, m, storageResultMsg{method: storageLocal, detail: "local disk · /var/lib/felis/uploads"})
+			m = drive(t, m, smtpResultMsg{})
 			if _, ok := m.screen.(*summaryModel); !ok {
 				t.Fatalf("screen = %T, want the summary", m.screen)
 			}

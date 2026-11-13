@@ -6,6 +6,7 @@ STATE_DIR="${STATE_DIR:-/etc/felis}"
 DATA_DIR="${DATA_DIR:-/var/lib/felis}"
 RETAIN_DIR="${DATA_DIR}/retained"
 HOST_BIN="${HOST_BIN:-/usr/local/bin/felis}"
+HOST_BIN_LINK="${HOST_BIN_LINK:-/usr/bin/felis}"
 OPT_DIR="${OPT_DIR:-/opt/felis}"
 UNIT_DIR="${UNIT_DIR:-/etc/systemd/system}"
 K3S_BIN_DIR="${K3S_BIN_DIR:-/usr/local/bin}"
@@ -111,10 +112,16 @@ confirm() {
   [ "$answer" = "$want" ] || die "not confirmed; nothing was changed"
 }
 
+# felis_bin_link reports whether HOST_BIN_LINK is the installer's link to HOST_BIN; anything else there stays.
+felis_bin_link() { [ -L "$HOST_BIN_LINK" ] && [ "$(readlink "$HOST_BIN_LINK")" = "$HOST_BIN" ]; }
+
 print_plan() {
   log "this will remove from $(uname -n):"
   log "  the felis-* systemd units, cloudflared-felis.service, the ${VELOCITY_USER} and ${NANO_USER} users,"
   log "  ${OPT_DIR}, ${HOST_BIN}, the felis_postgres and felis_edge nftables tables and the firewalld and ufw openings"
+  if felis_bin_link; then
+    log "  the ${HOST_BIN_LINK} link to ${HOST_BIN}"
+  fi
   if [ -f "${UNIT_DIR}/felis-node-firewall.service" ]; then
     log "  the FELIS-* iptables chains of the multi-node host firewall"
   fi
@@ -422,6 +429,7 @@ remove_host_files() {
   done
   rm -rf "$OPT_DIR"
   rm -f "$HOST_BIN" "${HOST_BIN}.new" "${HOST_BIN}.prev"
+  if felis_bin_link; then rm -f "$HOST_BIN_LINK"; fi
   # The release assets an install that stopped part way left for its rerun: downloads, not
   # data, so keep-data mode drops them too.
   rm -rf "${DATA_DIR}/artifacts"

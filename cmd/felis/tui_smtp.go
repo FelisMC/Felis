@@ -22,7 +22,7 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// It is reached from the summary ("e"), mirroring "change storage".
+// It is the wizard's Mail step and the summary's "e".
 
 // smtpInputs is the operator-entered relay coordinates. Only host/port/from/
 // username reach felis.toml; the password goes into the felis-smtp Secret.
@@ -62,6 +62,8 @@ type smtpModel struct {
 	sp   spinner.Model
 	err  error
 	in   smtpInputs
+	// skipNote tells the wizard's Mail step what esc leaves out; empty on the summary's form.
+	skipNote string
 
 	width, height int
 }
@@ -79,11 +81,26 @@ func newSMTPModel(in smtpInputs) *smtpModel {
 	return m
 }
 
+// newMailStepModel is the wizard's Mail step: the summary's form, which esc skips.
+func newMailStepModel(in smtpInputs) *smtpModel {
+	m := newSMTPModel(in)
+	m.skipNote = "Esc skips this step. Without mail there are no email codes and no alerts, and the Owner must create a passkey, which needs a trusted certificate."
+	if in.host != "" {
+		m.skipNote = "Esc skips this step and keeps the relay already configured."
+	}
+	m.form = m.build()
+	return m
+}
+
 func (m *smtpModel) build() *huh.Form {
+	intro := "The relay Felis mails one-time codes through — email verification, email login, account recovery and alerts all need it. The password goes into a Kubernetes Secret; only the other fields are written to felis.toml. Saving sends one self-test message to the From address: nothing is written unless it is delivered."
+	if m.skipNote != "" {
+		intro += "\n\n" + m.skipNote
+	}
 	return m.sized(newFelisForm(huh.NewGroup(
 		huh.NewNote().
 			Title("Email (SMTP)").
-			Description("The relay Felis mails one-time codes through — email verification, email login and operator sign-in all need it. The password goes into a Kubernetes Secret; only the other fields are written to felis.toml. Saving sends one self-test message to the From address: nothing is written unless it is delivered."),
+			Description(intro),
 		huh.NewInput().
 			Title("SMTP host").
 			Description("Your provider's relay, e.g. smtp.gmail.com or smtp.mailgun.org.").

@@ -13,9 +13,10 @@ func TestWizardViewsFitTerminal(t *testing.T) {
 		name string
 		msg  tea.Msg
 	}{
-		{"owner", preflightDoneMsg{}},
-		{"connect", ownerResultMsg{username: "owner", setupTokenURL: "https://op.console.example.com/setup?token=t0ken"}},
-		{"summary", connectResultMsg{method: connectLocal, panelHostname: "panel.example.com"}},
+		{"connect", preflightDoneMsg{}},
+		{"mail", connectResultMsg{method: connectLocal, panelHostname: "panel.example.com"}},
+		{"owner", smtpResultMsg{}},
+		{"summary", ownerResultMsg{username: "owner", setupTokenURL: "https://op.console.example.com/setup?token=t0ken"}},
 	}
 
 	// Include narrow widths because wrapped notes can exceed the terminal height budget.

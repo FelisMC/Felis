@@ -101,7 +101,7 @@ func (m *hostBootstrapModel) View() string {
 		b.WriteString(tuiInfo("The terminal is handed to the installer until it finishes.") + "\n")
 	case hostBootstrapDone:
 		b.WriteString(tuiSuccessBanner("Host bootstrap completed.") + "\n\n")
-		b.WriteString(tuiInfo("Continue to create the Owner account and choose how the panel is reached.") + "\n")
+		b.WriteString(tuiInfo("Continue to choose how the panel is reached, set up mail and create the Owner account.") + "\n")
 		b.WriteString("\n" + tuiSeparator() + "\n")
 		b.WriteString(tuiAction("enter", "continue", "esc", "continue"))
 	case hostBootstrapError:

@@ -44,6 +44,25 @@ func TestSMTPRelayCarriesTLSPosture(t *testing.T) {
 	}
 }
 
+func TestMailStepSaysWhatSkippingLeavesOut(t *testing.T) {
+	fresh := newMailStepModel(smtpInputs{})
+	fresh.setSize(400, 60)
+	v := fresh.View()
+	for _, want := range []string{"Esc skips this step", "no email codes and no alerts", "passkey, which needs a trusted certificate"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("the Mail step lacks %q:\n%s", want, v)
+		}
+	}
+	configured := newMailStepModel(smtpInputs{host: "smtp.example.net", port: "587", from: "felis@example.net"})
+	configured.setSize(400, 60)
+	if v := configured.View(); !strings.Contains(v, "keeps the relay already configured") || strings.Contains(v, "no email codes") {
+		t.Errorf("with a relay already set, skipping keeps it:\n%s", v)
+	}
+	if v := newSMTPModel(smtpInputs{}).View(); strings.Contains(v, "Esc skips") {
+		t.Errorf("the summary's email form offers to skip a step:\n%s", v)
+	}
+}
+
 func TestSetupSMTPConfigKeepsHandSetKeys(t *testing.T) {
 	off := false
 	prev := config.SMTPConfig{Host: "old.example.net", Port: 25, From: "old@example.net", MaxPerHour: 500, RequireTLS: &off}

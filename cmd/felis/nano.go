@@ -237,6 +237,6 @@ func cmdNanoSetup(args []string, stdout, stderr io.Writer) int {
 	if out.auditErr != nil {
 		fmt.Fprintf(stderr, "felis nano setup: warning: the audit row was not written: %v\n", out.auditErr)
 	}
-	fmt.Fprintf(stdout, "Open this link within %s to finish the Owner's sign-in (record an email or create a passkey):\n  %s\n", setupTokenTTL, out.setupTokenURL)
+	fmt.Fprintf(stdout, "Open this link within %s to finish the Owner's sign-in (verify an email with a code, or create a passkey):\n  %s\n", setupTokenTTL, out.setupTokenURL)
 	return 0
 }

@@ -130,7 +130,7 @@ func (m *summaryModel) View() string {
 	b.WriteString(tuiCardStyle.Render(strings.TrimRight(card.String(), "\n")) + "\n\n")
 
 	if m.setupTokenURL != "" {
-		b.WriteString(tuiHint.Render("Open the setup link, record your email, and create a passkey.\nMinecraft can be linked later from Account; it is not required for panel access.") + "\n")
+		b.WriteString(tuiHint.Render("Open the setup link and verify your email with a code (mail must be set up), or create a passkey.\nMinecraft can be linked later from Account; it is not required for panel access.") + "\n")
 	} else {
 		b.WriteString(tuiHint.Render("Manage servers, users, and Minecraft identities in the panel.") + "\n")
 	}
