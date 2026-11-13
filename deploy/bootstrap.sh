@@ -5612,10 +5612,36 @@ EOF
   if nano_release_artifacts && artifact_fetch felis-velocity.jar; then
     install_if_changed "$ARTIFACT_FILE" "${NANO_PROXY_DIR}/felis-velocity.jar" 0644 root root
     NANO_PLUGIN_JAR="${NANO_PROXY_DIR}/felis-velocity.jar"
+  elif [ -z "$HAVE_PREBUILT_BINARY" ] && [ -d "${SRC_DIR}/plugins/velocity" ]; then
+    build_nano_plugin
   else
-    rm -f "${NANO_PROXY_DIR}/felis-velocity.jar"
+    rm -f "${NANO_PROXY_DIR}/felis-velocity.jar" "${NANO_PROXY_DIR}/felis-velocity.rev"
   fi
   ok "proxy plugin settings staged in ${NANO_PROXY_DIR}"
+}
+
+# A source install builds the plugin from the same checkout as the binary, in the pinned Gradle image.
+build_nano_plugin() {
+  local rev jar="${NANO_PROXY_DIR}/felis-velocity.jar" stamp="${NANO_PROXY_DIR}/felis-velocity.rev"
+  rev="$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null || true)"
+  if [ -n "$rev" ] && [ -f "$jar" ] && [ "$(cat "$stamp" 2>/dev/null)" = "$rev" ]; then
+    NANO_PLUGIN_JAR="$jar"
+    ok "felis-velocity.jar already built from ${rev:0:12}"
+    return 0
+  fi
+  log "building felis-velocity.jar (gradle in a container; Docker stops again afterwards)"
+  ensure_docker
+  if ! docker run --rm -v "${SRC_DIR}:/src:z" -w /src/plugins/velocity \
+      "$PLUGIN_BUILD_IMAGE" gradle --no-daemon clean build --console=plain --init-script ../shared/build-progress.gradle; then
+    stop_docker
+    die "felis-velocity plugin build failed"
+  fi
+  stop_docker
+  local -a jars=( "${SRC_DIR}"/plugins/velocity/build/libs/felis-velocity-*.jar )
+  [ "${#jars[@]}" -eq 1 ] && [ -f "${jars[0]}" ] || die "felis-velocity build must produce exactly one plugin jar"
+  install_if_changed "${jars[0]}" "$jar" 0644 root root
+  printf '%s\n' "$rev" > "$stamp"
+  NANO_PLUGIN_JAR="$jar"
 }
 
 install_nano_service() {
@@ -5715,17 +5741,28 @@ configure_nano_firewall() {
   firewall-cmd --reload
 }
 
-# The panel is the public face: its port opens to every source.
+# A public port other than the panel's means a reverse proxy on this host; the panel port then stays closed, or clients could forge X-Forwarded-For.
 open_nano_panel_port() {
-  local port="$FELIS_NANO_PANEL_PORT"
+  local port="$FELIS_NANO_PANEL_PORT" proxied=""
+  [ "$FELIS_NANO_PUBLIC_PORT" = "$port" ] || proxied=1
   if ufw_active; then
-    ufw allow proto tcp to any port "$port" comment felis-nano-panel >/dev/null
+    if [ -n "$proxied" ]; then
+      ufw delete allow proto tcp to any port "$port" >/dev/null || true
+    else
+      ufw allow proto tcp to any port "$port" comment felis-nano-panel >/dev/null
+    fi
   fi
   command -v firewall-cmd >/dev/null 2>&1 || return 0
   systemctl is-active --quiet firewalld || return 0
-  firewall-cmd --permanent --query-port="${port}/tcp" >/dev/null 2>&1 && return 0
-  log "opening firewalld port ${port}/tcp for the panel"
-  firewall-cmd --permanent --add-port="${port}/tcp" >/dev/null
+  if [ -n "$proxied" ]; then
+    firewall-cmd --permanent --query-port="${port}/tcp" >/dev/null 2>&1 || return 0
+    log "closing firewalld port ${port}/tcp: the reverse proxy reaches the panel on this host"
+    firewall-cmd --permanent --remove-port="${port}/tcp" >/dev/null
+  else
+    firewall-cmd --permanent --query-port="${port}/tcp" >/dev/null 2>&1 && return 0
+    log "opening firewalld port ${port}/tcp for the panel"
+    firewall-cmd --permanent --add-port="${port}/tcp" >/dev/null
+  fi
   firewall-cmd --reload >/dev/null
 }
 
@@ -5791,10 +5828,14 @@ summary_nano_panel() {
   admin="$(nano_public_host "op.console.${FELIS_ROOT_DOMAIN}")"
   echo
   log "Panel: https://$(nano_public_host "console.${FELIS_ROOT_DOMAIN}") for players, https://${admin} for operators"
-  log "  (port ${FELIS_NANO_PANEL_PORT}/tcp; a cloud firewall in front of this host must admit it too)."
-  log "  The certificate is self-signed. Browsers create passkeys only on a trusted certificate: replace"
-  log "  ${PANEL_TLS_CERT} and ${PANEL_TLS_KEY} and restart felis-nano, or serve the panel through a"
-  log "  reverse proxy on 443 and rerun the installer with FELIS_NANO_PUBLIC_PORT=443."
+  if [ "$FELIS_NANO_PUBLIC_PORT" != "$FELIS_NANO_PANEL_PORT" ]; then
+    log "  Your reverse proxy forwards to https://127.0.0.1:${FELIS_NANO_PANEL_PORT}; the host firewall keeps that port from other hosts."
+  else
+    log "  (port ${FELIS_NANO_PANEL_PORT}/tcp; a cloud firewall in front of this host must admit it too)."
+    log "  The certificate is self-signed. Browsers create passkeys only on a trusted certificate: replace"
+    log "  ${PANEL_TLS_CERT} and ${PANEL_TLS_KEY} and restart felis-nano, or serve the panel through a"
+    log "  reverse proxy on 443 and rerun the installer with FELIS_NANO_PUBLIC_PORT=443."
+  fi
   [ -n "${NANO_SETUP_OUT:-}" ] || return 0
   echo
   log "Owner sign-in:"

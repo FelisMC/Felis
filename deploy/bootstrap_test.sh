@@ -535,7 +535,8 @@ nano_summary_blocks=""
 for fn in nano_api_host nano_public_host summary_nano_proxy summary_nano_panel; do
   b="$(awk "/^${fn}\\(\\) \\{/,/^}/" "$BS")"
   [ -n "$b" ] || { echo "FAIL: no ${fn} found in $BS"; exit 1; }
-  nano_summary_blocks="${nano_summary_blocks}${b}"$'\n'
+  nano_summary_blocks="${nano_summary_blocks}${b}
+"
 done
 
 run_summary() { # listen [proxy-cidr] [public-port] [setup-output]
@@ -690,6 +691,26 @@ for args in "127.0.0.1:8081 10.0.0.7/32 0 active" "0.0.0.0:8081 10.0.0.7/32 0 in
     *) echo "PASS run_fw $args leaves ufw alone" ;;
   esac
 done
+
+# Behind a reverse proxy the panel port must not stay public, or clients could forge X-Forwarded-For.
+pblock="$(awk '/^open_nano_panel_port\(\) \{/,/^}/' "$BS")"
+[ -n "$pblock" ] || { echo "FAIL: no open_nano_panel_port found in $BS"; exit 1; }
+run_panel_fw() { # public-port
+  FELIS_NANO_PANEL_PORT=8443 FELIS_NANO_PUBLIC_PORT="$1" UFW=active bash -c '
+    log() { :; }
+    systemctl() { return 1; }
+    '"$ufw_stub"'
+    '"$ublock"'
+    '"$pblock"'
+    open_nano_panel_port' 2>&1
+}
+expect "a directly served panel opens its port" "UFW: allow proto tcp to any port 8443 comment felis-nano-panel" "$(run_panel_fw 8443)"
+out="$(run_panel_fw 443)"
+expect "a panel behind a reverse proxy closes its port" "UFW: delete allow proto tcp to any port 8443" "$out"
+case "$out" in
+  *"UFW: allow"*) echo "FAIL a panel behind a reverse proxy opened its port:"; echo "$out"; fails=$((fails + 1)) ;;
+  *) echo "PASS a panel behind a reverse proxy opens nothing" ;;
+esac
 
 k3fblock="$(awk '/^configure_k3s_firewall\(\) \{/,/^}/' "$BS")"
 [ -n "$k3fblock" ] || { echo "FAIL: no configure_k3s_firewall found in $BS"; exit 1; }
