@@ -298,6 +298,7 @@
   "scan_not_kept": "构建未留存此文件，可能由于文件过大或生成步骤失败。",
   "scan_download_failed": "下载失败：{{reason}}",
   "platform_title": "平台设置",
+  "nano_settings_subtitle": "设置登录验证码的邮件发送、默认界面语言、个人 API 令牌与面板外观。",
   "mail_title": "邮件服务",
   "mail_source_panel": "面板设置",
   "mail_source_host": "安装时的设置",

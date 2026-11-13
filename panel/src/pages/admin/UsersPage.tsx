@@ -26,7 +26,7 @@ import { Pagination } from "@/components/Pagination";
 import { CreateUserDialog } from "@/components/CreateUserDialog";
 import { SelfServiceQuotaCard } from "@/components/SelfServiceQuotaCard";
 import { api } from "@/lib/api";
-import { useAsync } from "@/lib/hooks";
+import { useAsync, useConfig } from "@/lib/hooks";
 import { formatAbsolute } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { UserView } from "@/lib/types";
@@ -37,6 +37,7 @@ export function UsersPage() {
   const { t, i18n } = useTranslation("admin");
   const locale = i18n.language;
   const navigate = useNavigate();
+  const nano = useConfig()?.nano === true;
 
   // Debounce server-side search and reset pagination; Enter applies immediately.
   const [query, setQuery] = useState("");
@@ -88,7 +89,7 @@ export function UsersPage() {
     <div className="space-y-6">
       <PageHeader icon={Users} title={t("users_title")} subtitle={t("users_subtitle")} actions={<CreateUserDialog onCreated={(id) => { reload(); navigate(`/admin/users/${id}`); }} />} />
 
-      <SelfServiceQuotaCard />
+      {!nano && <SelfServiceQuotaCard />}
 
       {/* Filters */}
       <Card>
@@ -158,7 +159,7 @@ export function UsersPage() {
                     <tr className="border-b border-border bg-muted/30 text-left">
                       <th className="px-4 py-3 font-medium text-muted-foreground">{t("users_col_user")}</th>
                       <th className="px-4 py-3 font-medium text-muted-foreground hidden sm:table-cell">{t("users_col_role")}</th>
-                      <th className="px-4 py-3 font-medium text-muted-foreground hidden md:table-cell">{t("users_col_servers")}</th>
+                      {!nano && <th className="px-4 py-3 font-medium text-muted-foreground hidden md:table-cell">{t("users_col_servers")}</th>}
                       <th className="px-4 py-3 font-medium text-muted-foreground hidden lg:table-cell">{t("users_col_status")}</th>
                       <th className="px-4 py-3 font-medium text-muted-foreground hidden lg:table-cell">{t("users_col_created")}</th>
                       <th className="px-4 py-3 font-medium text-muted-foreground w-0" />
@@ -166,7 +167,7 @@ export function UsersPage() {
                   </thead>
                   <tbody>
                     {data.users.map((u: UserView) => (
-                      <UserRow key={u.id} user={u} locale={locale} />
+                      <UserRow key={u.id} user={u} locale={locale} showServers={!nano} />
                     ))}
                   </tbody>
                 </table>
@@ -183,7 +184,7 @@ export function UsersPage() {
   );
 }
 
-function UserRow({ user, locale }: { user: UserView; locale: string }) {
+function UserRow({ user, locale, showServers }: { user: UserView; locale: string; showServers: boolean }) {
   const { t } = useTranslation("admin");
 
   return (
@@ -210,12 +211,14 @@ function UserRow({ user, locale }: { user: UserView; locale: string }) {
       <td className="px-4 py-3 hidden sm:table-cell">
         <RoleBadge role={user.role} />
       </td>
-      <td className="px-4 py-3 hidden md:table-cell">
-        <span className="inline-flex items-center gap-1 text-muted-foreground">
-          <Server className="h-3.5 w-3.5" />
-          {user.server_count}
-        </span>
-      </td>
+      {showServers && (
+        <td className="px-4 py-3 hidden md:table-cell">
+          <span className="inline-flex items-center gap-1 text-muted-foreground">
+            <Server className="h-3.5 w-3.5" />
+            {user.server_count}
+          </span>
+        </td>
+      )}
       <td className="px-4 py-3 hidden lg:table-cell">
         <UserStatusBadge disabled={user.disabled} />
       </td>

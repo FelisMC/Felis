@@ -252,8 +252,8 @@ export function AppShell() {
     if (main) main.scrollTop = 0;
   }, [main, pathname]);
   // Missing identity flags grant neither admin nor owner sections.
-  const noLobby = useConfig()?.noLobby === true;
-  const sections = visibleSections(isAdmin, isOwner, noLobby);
+  const config = useConfig();
+  const sections = visibleSections(isAdmin, isOwner, { noLobby: config?.noLobby, nano: config?.nano });
 
   // Sync document metadata with the active language.
   useEffect(() => {

@@ -49,7 +49,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { UserQuotaCard } from "@/components/UserQuotaCard";
 import { AssignServerDialog, userIdentity } from "@/components/AssignServerDialog";
 import { api, humanizeError } from "@/lib/api";
-import { useAsync } from "@/lib/hooks";
+import { useAsync, useConfig } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
 import { deviceLabel } from "@/lib/device";
 import { formatAbsolute, formatRelative } from "@/lib/format";
@@ -68,6 +68,7 @@ export function UserDetailPage() {
     [id],
   );
   const [assigning, setAssigning] = useState(false);
+  const nano = useConfig()?.nano === true;
 
   if (loading && !user) return <Loading />;
   if (error && (error as Partial<ApiError>).status === 404) {
@@ -122,12 +123,14 @@ export function UserDetailPage() {
         actions={(
           <div className="flex flex-wrap items-center gap-2">
             {/* A disabled button gets no hover events, so the tooltip sits on a wrapper. */}
-            <span title={user.disabled ? t("assign_disabled_user") : undefined}>
-              <Button variant="outline" size="sm" className="gap-1.5" disabled={user.disabled} onClick={() => setAssigning(true)}>
-                <Server className="h-4 w-4" />
-                {t("assign_title")}
-              </Button>
-            </span>
+            {!nano && (
+              <span title={user.disabled ? t("assign_disabled_user") : undefined}>
+                <Button variant="outline" size="sm" className="gap-1.5" disabled={user.disabled} onClick={() => setAssigning(true)}>
+                  <Server className="h-4 w-4" />
+                  {t("assign_title")}
+                </Button>
+              </span>
+            )}
             <UserStatusBadge disabled={user.disabled} />
             <RoleBadge role={user.role} />
           </div>
@@ -140,8 +143,7 @@ export function UserDetailPage() {
         <EditProfileCard user={user} onSaved={reload} isSelf={identity?.user_id === id} />
         {/* Linked accounts */}
         <LinkedAccountsCard user={user} onChanged={reload} />
-        {/* Quotas */}
-        <UserQuotaCard userId={user.id} />
+        {!nano && <UserQuotaCard userId={user.id} />}
         {/* Sessions */}
         <SessionsCard userId={user.id} onChanged={reload} />
       </div>
@@ -149,12 +151,14 @@ export function UserDetailPage() {
       {/* Danger zone */}
       <DangerZone user={user} isSelf={identity?.user_id === id} onChanged={reload} navigate={navigate} />
 
-      <AssignServerDialog
-        open={assigning}
-        onOpenChange={setAssigning}
-        user={{ id: user.id, label: user.username, identity: userIdentity(user) }}
-        onAssigned={reload}
-      />
+      {!nano && (
+        <AssignServerDialog
+          open={assigning}
+          onOpenChange={setAssigning}
+          user={{ id: user.id, label: user.username, identity: userIdentity(user) }}
+          onAssigned={reload}
+        />
+      )}
     </div>
   );
 }

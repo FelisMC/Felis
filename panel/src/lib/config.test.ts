@@ -41,6 +41,7 @@ describe("loadConfig", () => {
       gameVersion: "26.3",
       build,
       noLobby: false,
+      nano: false,
     });
     expect(cfg.fallback).toBeUndefined();
   });

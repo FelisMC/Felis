@@ -25,6 +25,14 @@ export interface NavItem {
   end?: boolean;
   /** The label key on an install without a lobby. */
   noLobbyKey?: string;
+  /** Shown on Felis-nano, which has sign-in, accounts and auth sources only. */
+  nano?: boolean;
+}
+
+/** What kind of install the panel fronts, from /config.json. */
+export interface InstallKind {
+  noLobby?: boolean;
+  nano?: boolean;
 }
 
 export interface NavSection {
@@ -49,7 +57,7 @@ export const NAV_SECTIONS: NavSection[] = [
       { to: "/", key: "dashboard", icon: LayoutDashboard, end: true },
       { to: "/servers", key: "my_servers", icon: Server },
       { to: "/submissions", key: "my_submissions", icon: Upload },
-      { to: "/account", key: "account", icon: UserRound },
+      { to: "/account", key: "account", icon: UserRound, nano: true },
     ],
   },
   {
@@ -70,22 +78,27 @@ export const NAV_SECTIONS: NavSection[] = [
     adminOnly: false,
     ownerOnly: true,
     items: [
-      { to: "/admin/users", key: "admin_users", icon: Users },
-      { to: "/admin/auth-sources", key: "auth_sources", icon: ShieldCheck },
+      { to: "/admin/users", key: "admin_users", icon: Users, nano: true },
+      { to: "/admin/auth-sources", key: "auth_sources", icon: ShieldCheck, nano: true },
       { to: "/admin/updates", key: "admin_updates", icon: Clock },
-      { to: "/admin/audit", key: "admin_audit", icon: ScrollText },
-      { to: "/admin/platform", key: "platform_settings", icon: Settings },
+      { to: "/admin/audit", key: "admin_audit", icon: ScrollText, nano: true },
+      { to: "/admin/platform", key: "platform_settings", icon: Settings, nano: true },
     ],
   },
 ];
 
 // Unknown or loading identity gets user sections only.
-export function visibleSections(isAdmin: boolean, isOwner: boolean, noLobby = false): NavSection[] {
-  const sections = NAV_SECTIONS.filter((s) => {
+export function visibleSections(isAdmin: boolean, isOwner: boolean, install: InstallKind = {}): NavSection[] {
+  return NAV_SECTIONS.filter((s) => {
     if (s.ownerOnly) return isOwner;
     if (s.adminOnly) return isAdmin;
     return true;
-  });
-  if (!noLobby) return sections;
-  return sections.map((s) => ({ ...s, items: s.items.map((item) => (item.noLobbyKey ? { ...item, key: item.noLobbyKey } : item)) }));
+  })
+    .map((s) => ({
+      ...s,
+      items: s.items
+        .filter((item) => !install.nano || item.nano)
+        .map((item) => (install.noLobby && item.noLobbyKey ? { ...item, key: item.noLobbyKey } : item)),
+    }))
+    .filter((s) => s.items.length > 0);
 }

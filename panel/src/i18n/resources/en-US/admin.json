@@ -302,6 +302,7 @@
   "scan_not_kept": "The file was not retained for this build. It may have exceeded the size limit or its generation step may have failed.",
   "scan_download_failed": "Unable to download: {{reason}}",
   "platform_title": "Platform settings",
+  "nano_settings_subtitle": "Mail delivery for sign-in codes, the default interface language, personal API tokens and the panel’s look.",
   "mail_title": "Mail delivery",
   "mail_source_panel": "Panel settings",
   "mail_source_host": "Install-time settings",

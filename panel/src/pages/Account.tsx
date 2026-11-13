@@ -676,7 +676,7 @@ function StaffLinkForm({ onLinked }: { onLinked: (uuid: string) => void }) {
 function MinecraftGuide() {
   const { t } = useTranslation("account");
   const cfg = useConfig();
-  if (!cfg) return null;
+  if (!cfg || cfg.nano) return null;
   return (
     <details className="group mt-4 border-t border-border pt-4 space-y-3">
       <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden"><ChevronRight className="h-4 w-4 shrink-0 transition-transform group-open:rotate-90" />{t("game_guide")}</summary>

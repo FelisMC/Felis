@@ -35,9 +35,15 @@ describe("visibleSections", () => {
 
   it("names the space page after the login space on an install without a lobby", () => {
     const label = (noLobby: boolean) =>
-      visibleSections(true, false, noLobby).flatMap((section) => section.items).find((item) => item.to === "/admin/lobby")?.key;
+      visibleSections(true, false, { noLobby }).flatMap((section) => section.items).find((item) => item.to === "/admin/lobby")?.key;
     expect(label(false)).toBe("admin_lobby");
     expect(label(true)).toBe("admin_login_space");
+  });
+
+  it("shows a Felis-nano Owner only accounts, auth sources, users, audit and settings", () => {
+    const links = visibleSections(true, true, { nano: true }).flatMap((section) => section.items.map((item) => item.to));
+    expect(links).toEqual(["/account", "/admin/users", "/admin/auth-sources", "/admin/audit", "/admin/platform"]);
+    expect(visibleSections(false, false, { nano: true }).flatMap((section) => section.items.map((item) => item.to))).toEqual(["/account"]);
   });
 
   it("keeps the User-Side section ungated so it survives both branches", () => {

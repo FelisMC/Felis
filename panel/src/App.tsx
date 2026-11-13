@@ -7,6 +7,7 @@ import { AppShell } from "@/components/AppShell";
 import { RequireAdmin } from "@/components/RequireAdmin";
 import { RequireAuth } from "@/components/RequireAuth";
 import { RequireOwner } from "@/components/RequireOwner";
+import { FullFelisOnly, NanoSwitch } from "@/components/InstallGate";
 import { SetupRequiredRedirect } from "@/components/SetupRequiredRedirect";
 import { Loading } from "@/components/States";
 import { ToastProvider } from "@/components/Toaster";
@@ -77,6 +78,7 @@ const UpdatesPage = lazyWithReload(() =>
   import("@/pages/admin/UpdatesPage").then((m) => ({ default: m.UpdatesPage })),
 );
 const PlatformSettingsPage = lazyWithReload(() => import("@/pages/admin/PlatformSettingsPage").then((m) => ({ default: m.PlatformSettingsPage })));
+const NanoSettingsPage = lazyWithReload(() => import("@/pages/admin/NanoSettingsPage").then((m) => ({ default: m.NanoSettingsPage })));
 const AuthSourcesPage = lazyWithReload(() => import("@/pages/admin/AuthSourcesPage").then((m) => ({ default: m.AuthSourcesPage })));
 const AuditPage = lazyWithReload(() => import("@/pages/admin/AuditPage").then((m) => ({ default: m.AuditPage })));
 
@@ -111,7 +113,8 @@ export default function App() {
               (graded ZT). */}
           <Route element={<RequireAuth />}>
             <Route element={<AppShell />}>
-              {/* User-Side — app-tier */}
+              {/* User-Side — app-tier; a Felis-nano panel runs no servers, so FullFelisOnly sends these to /account. */}
+              <Route element={<FullFelisOnly />}>
               <Route index element={<Dashboard />} />
               <Route path="servers" element={<ServersPage />} />
               {/* A :name that is not a server name (a crafted link carrying
@@ -133,21 +136,26 @@ export default function App() {
                 </Route>
               </Route>
               <Route path="submissions" element={<MySubmissionsPage />} />
+              </Route>
               <Route path="account" element={<Account />} />
 
               {/* Admin-Side — admin-tier (server & content ops).
                   /admin has no landing page; redirect to the first concrete view
                   so the section root and any stale bookmarks land somewhere useful. */}
               <Route path="admin" element={<RequireAdmin />}>
-                <Route index element={<Navigate to="/admin/images" replace />} />
-                <Route path="lobby" element={<LobbyPage />} />
-                <Route path="images" element={<ImageAdmin />} />
-                <Route path="builds" element={<ImageBuildPage />} />
-                <Route path="submissions" element={<SubmissionsPage />} />
+                <Route index element={<NanoSwitch nano={<Navigate to="/admin/auth-sources" replace />} full={<Navigate to="/admin/images" replace />} />} />
+                <Route element={<FullFelisOnly />}>
+                  <Route path="lobby" element={<LobbyPage />} />
+                  <Route path="images" element={<ImageAdmin />} />
+                  <Route path="builds" element={<ImageBuildPage />} />
+                  <Route path="submissions" element={<SubmissionsPage />} />
+                </Route>
                 {/* Owner-gated platform settings and user management. */}
                 <Route element={<RequireOwner />}>
-                  <Route path="updates" element={<UpdatesPage />} />
-                  <Route path="platform" element={<PlatformSettingsPage />} />
+                  <Route element={<FullFelisOnly />}>
+                    <Route path="updates" element={<UpdatesPage />} />
+                  </Route>
+                  <Route path="platform" element={<NanoSwitch nano={<NanoSettingsPage />} full={<PlatformSettingsPage />} />} />
                   <Route path="auth-sources" element={<AuthSourcesPage />} />
                   <Route path="audit" element={<AuditPage />} />
                   <Route path="users" element={<UsersPage />} />
