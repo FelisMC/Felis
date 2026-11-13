@@ -5639,7 +5639,7 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
-        /** @description The session belongs to an account still in first-run setup, which may use only the x-felis-setup-allowed operations until it has a durable sign-in (setup_required). */
+        /** @description The session belongs to a staff account still in first-run setup, which may use only the x-felis-setup-allowed operations until it has a durable sign-in (setup_required). */
         SetupRequired: {
             headers: {
                 [name: string]: unknown;
@@ -8775,7 +8775,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Local session login is disabled (local_auth_disabled), or the account is staff and must sign in at the operator console (staff_account). */
+            /** @description Local session login is disabled (local_auth_disabled), or the account is staff with a passkey and must sign in with it (staff_passkey). */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8987,6 +8987,7 @@ export interface operations {
                         email_verified: boolean;
                         has_passkey: boolean;
                         setup_required: boolean;
+                        mail_available: boolean;
                     };
                 };
             };
@@ -9045,6 +9046,7 @@ export interface operations {
                         email_verified: boolean;
                         has_passkey: boolean;
                         setup_required: boolean;
+                        mail_available: boolean;
                     };
                 };
             };

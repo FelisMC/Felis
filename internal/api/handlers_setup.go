@@ -76,7 +76,8 @@ func (a *API) handleSetupRedeem(w http.ResponseWriter, r *http.Request) {
 		"email_verified": u.EmailVerified,
 		"has_passkey":    hasPasskey,
 		// Keep setup_required consistent with requireOnboarded via setupRequired.
-		"setup_required": setupRequired(u.EmailVerified, hasPasskey),
+		"setup_required": setupRequired(u.Role, u.EmailVerified, hasPasskey),
+		"mail_available": a.mailer(r.Context()) != nil,
 	})
 }
 
@@ -101,6 +102,7 @@ func (a *API) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
 		"email_verified": u.EmailVerified,
 		"has_passkey":    hasPasskey,
 		// Keep setup_required consistent with requireOnboarded via setupRequired.
-		"setup_required": setupRequired(u.EmailVerified, hasPasskey),
+		"setup_required": setupRequired(u.Role, u.EmailVerified, hasPasskey),
+		"mail_available": a.mailer(r.Context()) != nil,
 	})
 }

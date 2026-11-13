@@ -34,8 +34,8 @@ func TestSetupNoSMTPFlow(t *testing.T) {
 	}
 
 	// 1. Nothing done → setup required, no email, no passkey.
-	if s := status(t); s["setup_required"] != true || s["email"] != "" || s["has_passkey"] != false {
-		t.Fatalf("fresh owner status = %v, want setup_required=true email=\"\" has_passkey=false", s)
+	if s := status(t); s["setup_required"] != true || s["email"] != "" || s["has_passkey"] != false || s["mail_available"] != false {
+		t.Fatalf("fresh owner status = %v, want setup_required=true email=\"\" has_passkey=false mail_available=false", s)
 	}
 
 	w := do(h, "POST", "/api/v1/account/email", `{"email":"owner@example.net"}`, jsonHeader)
@@ -69,39 +69,52 @@ func TestSetupNoSMTPFlow(t *testing.T) {
 	}
 }
 
-func TestSetupCompletesForNoEmailPlayer(t *testing.T) {
+func TestSetupIsNeverRequiredOfAPlayer(t *testing.T) {
 	repo := newFakeRepo()
-	// A console-tier player: role=user, no email ever, no passkey.
+	// A player who signed in from the game: no email, no passkey.
 	repo.staff["p"] = &StaffUser{ID: "p1", Username: "player", Role: "user"}
-
 	api := newTestAPI(repo, newFakeCluster())
 	api.External = staticExternal{p: &Principal{UserID: "p1", Role: "user", ViaSession: true}}
+
+	w := do(api.ExternalHandler(), "GET", "/api/v1/auth/setup/status", "", nil)
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil || w.Code != http.StatusOK {
+		t.Fatalf("status = %d %s", w.Code, w.Body.String())
+	}
+	if got["setup_required"] != false {
+		t.Fatalf("player status = %v, want setup_required=false: a player can always sign in again from the game", got)
+	}
+}
+
+func TestOwnerFinishesSetupWithAnEmailCode(t *testing.T) {
+	repo := newFakeRepo()
+	repo.staff["owner"] = &StaffUser{ID: "o1", Username: "owner", Role: "owner"}
+	api := newTestAPI(repo, newFakeCluster())
+	mailer := &captureMailer{}
+	api.Mailer = mailer
+	api.External = staticExternal{p: &Principal{UserID: "o1", Role: "owner", ViaSession: true}}
 	h := api.ExternalHandler()
 
-	status := func(t *testing.T) map[string]any {
+	status := func() map[string]any {
 		t.Helper()
-		w := do(h, "GET", "/api/v1/auth/setup/status", "", nil)
-		if w.Code != http.StatusOK {
-			t.Fatalf("status code = %d, want 200 (%s)", w.Code, w.Body.String())
-		}
 		var got map[string]any
-		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-			t.Fatalf("status body not JSON: %v", err)
+		w := do(h, "GET", "/api/v1/auth/setup/status", "", nil)
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil || w.Code != http.StatusOK {
+			t.Fatalf("status = %d %s", w.Code, w.Body.String())
 		}
 		return got
 	}
-
-	// No email, no passkey → forced onboarding still owed.
-	if s := status(t); s["setup_required"] != true || s["email"] != "" {
-		t.Fatalf("fresh player status = %v, want setup_required=true email=\"\"", s)
+	if s := status(); s["setup_required"] != true || s["mail_available"] != true {
+		t.Fatalf("fresh owner with a mail relay = %v, want setup_required=true mail_available=true", s)
 	}
-
-	repo.passkeyCreds["pk1"] = PasskeyCredential{ID: "pk1", UserID: "p1", CredentialID: "cred1"}
-
-	// Setup is now COMPLETE even though email stays empty. The OLD predicate returned
-	// true here (email == "") and looped the player forever.
-	if s := status(t); s["setup_required"] != false || s["has_passkey"] != true || s["email"] != "" {
-		t.Fatalf("post-passkey player status = %v, want setup_required=false has_passkey=true email=\"\"", s)
+	if w := do(h, "POST", "/api/v1/account/email/start", `{"email":"owner@example.net"}`, jsonHeader); w.Code != http.StatusAccepted {
+		t.Fatalf("email start during setup = %d %s, want 202", w.Code, w.Body.String())
+	}
+	if w := do(h, "POST", "/api/v1/account/email/verify", `{"code":"`+mailer.code+`"}`, jsonHeader); w.Code != http.StatusOK {
+		t.Fatalf("email verify during setup = %d %s, want 200", w.Code, w.Body.String())
+	}
+	if s := status(); s["setup_required"] != false {
+		t.Fatalf("owner with a verified email = %v, want setup_required=false", s)
 	}
 }
 

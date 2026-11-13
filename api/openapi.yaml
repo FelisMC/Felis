@@ -169,7 +169,7 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
     SetupRequired:
-      description: The session belongs to an account still in first-run setup, which may use only the x-felis-setup-allowed operations until it has a durable sign-in (setup_required).
+      description: The session belongs to a staff account still in first-run setup, which may use only the x-felis-setup-allowed operations until it has a durable sign-in (setup_required).
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
@@ -5455,7 +5455,7 @@ paths:
         '403':
           description: >-
             Local session login is disabled (local_auth_disabled), or the account is
-            staff and must sign in at the operator console (staff_account).
+            staff with a passkey and must sign in with it (staff_passkey).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -5659,7 +5659,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [user_id, username, role, email, email_verified, has_passkey, setup_required]
+                required: [user_id, username, role, email, email_verified, has_passkey, setup_required, mail_available]
                 properties:
                   user_id: { type: string }
                   username: { type: string }
@@ -5668,6 +5668,7 @@ paths:
                   email_verified: { type: boolean }
                   has_passkey: { type: boolean }
                   setup_required: { type: boolean }
+                  mail_available: { type: boolean }
         '400':
           description: >-
             A token is required (bad_request), or it is unknown, already used, or
@@ -5711,7 +5712,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [user_id, username, role, email, email_verified, has_passkey, setup_required]
+                required: [user_id, username, role, email, email_verified, has_passkey, setup_required, mail_available]
                 properties:
                   user_id: { type: string }
                   username: { type: string }
@@ -5720,6 +5721,7 @@ paths:
                   email_verified: { type: boolean }
                   has_passkey: { type: boolean }
                   setup_required: { type: boolean }
+                  mail_available: { type: boolean }
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':

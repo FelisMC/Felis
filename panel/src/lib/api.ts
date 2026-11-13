@@ -387,6 +387,7 @@ export interface SetupState {
   email_verified: boolean;
   has_passkey: boolean;
   setup_required: boolean;
+  mail_available: boolean;
 }
 
 export const api = rejectingSync({
@@ -1334,6 +1335,8 @@ export function humanizeError(e: unknown): string {
       return t("local_auth_disabled");
     case "staff_account":
       return t("staff_account");
+    case "staff_passkey":
+      return t("staff_passkey");
     case "not_linked":
       return t("not_linked");
     case "invalid_code":

@@ -30,6 +30,7 @@ export function Setup() {
   const setupCommand = useConfig()?.nano ? "felis nano setup" : "felis setup";
 
   const [state, setState] = useState<SetupState | null>(null);
+  const [preferPasskey, setPreferPasskey] = useState(false);
   const [booting, setBooting] = useState(true);
   const [fatal, setFatal] = useState<{ message: string; retryable: boolean } | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -155,7 +156,9 @@ export function Setup() {
       <Card>
         <CardContent className="space-y-4 pt-6">
           <p className="text-sm text-muted-foreground">{t("setup_game_optional")}</p>
-          {!state.email ? (
+          {state.mail_available && !state.email_verified && !preferPasskey ? (
+            <EmailVerifyStep initialEmail={state.email} onVerified={reload} onUsePasskey={() => setPreferPasskey(true)} />
+          ) : !state.email ? (
             <EmailStep initialEmail={state.email} onRecorded={reload} />
           ) : !state.has_passkey ? (
             <PasskeyStep onEnrolled={reload} />
@@ -238,7 +241,120 @@ function EmailStep({
   );
 }
 
-// The setup lock lifts only after passkey enrollment.
+// With a mail relay, a verified email completes setup on its own, so a self-signed certificate cannot block it.
+function EmailVerifyStep({
+  initialEmail,
+  onVerified,
+  onUsePasskey,
+}: {
+  initialEmail: string | null;
+  onVerified: () => Promise<void>;
+  onUsePasskey: () => void;
+}) {
+  const { t } = useTranslation("auth");
+  const [email, setEmail] = useState(initialEmail ?? "");
+  const [sentTo, setSentTo] = useState<string | null>(null);
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function send(e: FormEvent) {
+    e.preventDefault();
+    const addr = email.trim();
+    if (!addr || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.emailStart(addr);
+      setSentTo(addr);
+      setCode("");
+    } catch (err) {
+      setError(humanizeError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function verify(e: FormEvent) {
+    e.preventDefault();
+    const value = code.trim();
+    if (!value || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.emailVerify(value);
+      await onVerified(); // setup completes and the page moves on
+    } catch (err) {
+      setError(humanizeError(err));
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+        <Mail className="h-4 w-4 text-primary" /> {t("setup_verify_step")}
+      </div>
+      <p className="text-sm text-muted-foreground">{t("setup_verify_desc")}</p>
+      {sentTo === null ? (
+        <form onSubmit={send} className="space-y-3">
+          <div className="space-y-2">
+            <Label htmlFor="setup-verify-email">{t("email_address")}</Label>
+            <Input
+              id="setup-verify-email"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              autoComplete="email"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              placeholder="you@example.com"
+              disabled={busy}
+              autoFocus
+              aria-invalid={error ? true : undefined}
+            />
+          </div>
+          <InlineError message={error} />
+          <Button type="submit" className="w-full" disabled={busy || !email.trim()}>
+            {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            {t("setup_send_code")}
+          </Button>
+        </form>
+      ) : (
+        <form onSubmit={verify} className="space-y-3">
+          <p className="text-sm text-muted-foreground">{t("setup_code_sent", { email: sentTo })}</p>
+          <div className="space-y-2">
+            <Label htmlFor="setup-verify-code">{t("setup_code_label")}</Label>
+            <Input
+              id="setup-verify-code"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              disabled={busy}
+              autoFocus
+              aria-invalid={error ? true : undefined}
+            />
+          </div>
+          <InlineError message={error} />
+          <Button type="submit" className="w-full" disabled={busy || !code.trim()}>
+            {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            {t("setup_verify_submit")}
+          </Button>
+          <Button type="button" variant="ghost" className="w-full" disabled={busy} onClick={() => setSentTo(null)}>
+            {t("setup_change_email")}
+          </Button>
+        </form>
+      )}
+      <Button type="button" variant="link" className="w-full" disabled={busy} onClick={onUsePasskey}>
+        {t("setup_use_passkey")}
+      </Button>
+    </div>
+  );
+}
+
+// The setup lock lifts after passkey enrollment when no mail relay can verify an email.
 function PasskeyStep({
   onEnrolled,
 }: {
@@ -291,7 +407,9 @@ function PasskeyStep({
       await api.passkeyRegisterFinish(t("setup_default_passkey_name"), attestation);
       await onEnrolled();
     } catch (err: any) {
-      setError(humanizeError(err));
+      // Chromium refuses passkeys on pages whose certificate it does not trust and reports it like a cancel.
+      const refused = err?.name === "NotAllowedError" || err?.name === "SecurityError";
+      setError(refused ? t("setup_passkey_refused") : humanizeError(err));
       setBusy(false);
     }
   }

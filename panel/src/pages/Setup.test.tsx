@@ -9,6 +9,9 @@ import { Setup } from "./Setup";
 const calls = vi.hoisted(() => ({
   setupRedeem: vi.fn(),
   setupStatus: vi.fn(),
+  emailStart: vi.fn(),
+  emailVerify: vi.fn(),
+  passkeyRegisterBegin: vi.fn(),
   refresh: vi.fn(),
 }));
 vi.mock("@/lib/tier", () => ({
@@ -18,7 +21,14 @@ vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
   return {
     ...actual,
-    api: { ...actual.api, setupRedeem: calls.setupRedeem, setupStatus: calls.setupStatus },
+    api: {
+      ...actual.api,
+      setupRedeem: calls.setupRedeem,
+      setupStatus: calls.setupStatus,
+      emailStart: calls.emailStart,
+      emailVerify: calls.emailVerify,
+      passkeyRegisterBegin: calls.passkeyRegisterBegin,
+    },
   };
 });
 
@@ -32,6 +42,7 @@ const fresh = {
   email_verified: false,
   has_passkey: false,
   setup_required: true,
+  mail_available: false,
 };
 
 function renderSetup() {
@@ -66,6 +77,36 @@ describe("Setup", () => {
     expect(await screen.findByText(t("auth:setup_welcome", { name: "owner" }))).toBeTruthy();
     expect(screen.getByText(t("auth:setup_game_optional"))).toBeTruthy();
     expect(calls.setupRedeem.mock.calls).toEqual([["raw-token"], ["raw-token"]]);
+  });
+
+  it("finishes with an email code when mail delivery works", async () => {
+    calls.setupRedeem.mockResolvedValue({ ...fresh, mail_available: true });
+    calls.emailStart.mockResolvedValue({ sent: true, expires_at: "" });
+    calls.emailVerify.mockResolvedValue({ verified: true, email: "owner@example.net" });
+    calls.setupStatus.mockResolvedValue({ ...fresh, mail_available: true, email: "owner@example.net", email_verified: true, setup_required: false });
+    renderSetup();
+
+    await userEvent.type(await screen.findByLabelText(t("auth:email_address")), "owner@example.net");
+    await userEvent.click(screen.getByRole("button", { name: t("auth:setup_send_code") }));
+    await userEvent.type(await screen.findByLabelText(t("auth:setup_code_label")), "123456");
+    await userEvent.click(screen.getByRole("button", { name: t("auth:setup_verify_submit") }));
+
+    await vi.waitFor(() => expect(calls.refresh).toHaveBeenCalled());
+    expect(calls.emailStart).toHaveBeenCalledWith("owner@example.net");
+    expect(calls.emailVerify).toHaveBeenCalledWith("123456");
+  });
+
+  it("explains the certificate when the browser refuses a passkey", async () => {
+    calls.setupRedeem.mockResolvedValue({ ...fresh, email: "owner@example.net" });
+    calls.passkeyRegisterBegin.mockResolvedValue({ challenge: "AAAA", user: { id: "AAAA", name: "owner", displayName: "owner" } });
+    Object.defineProperty(navigator, "credentials", {
+      configurable: true,
+      value: { create: vi.fn().mockRejectedValue(new DOMException("blocked", "NotAllowedError")) },
+    });
+    renderSetup();
+
+    await userEvent.click(await screen.findByRole("button", { name: t("auth:setup_create_passkey") }));
+    expect(await screen.findByText(t("auth:setup_passkey_refused"))).toBeTruthy();
   });
 
   it("sends a spent link back to felis setup, with nothing to retry", async () => {
