@@ -5260,6 +5260,7 @@ run_compatibility_guard() {
     validate_settings() { :; }
     detect_os() { :; }
     prompt_install_mode() { INSTALL_MODE=full; }
+    refuse_full_beside_nano() { :; }
     resolve_host_profile() { :; }
     detect_node_ip() { :; }
     preflight() { :; }
