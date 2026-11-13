@@ -113,7 +113,7 @@ confirm() {
 
 print_plan() {
   log "this will remove from $(uname -n):"
-  log "  the felis-* systemd units, cloudflared-felis.service, the ${VELOCITY_USER} user,"
+  log "  the felis-* systemd units, cloudflared-felis.service, the ${VELOCITY_USER} and ${NANO_USER} users,"
   log "  ${OPT_DIR}, ${HOST_BIN}, the felis_postgres and felis_edge nftables tables and the firewalld and ufw openings"
   if [ -f "${UNIT_DIR}/felis-node-firewall.service" ]; then
     log "  the FELIS-* iptables chains of the multi-node host firewall"
