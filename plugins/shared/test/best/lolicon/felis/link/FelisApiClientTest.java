@@ -30,6 +30,9 @@ public final class FelisApiClientTest {
             if (path.endsWith("/wake")) {
                 status = 202;
                 body = "{\"name\":\"alpha\",\"phase\":\"Starting\",\"ready\":false}";
+            } else if (path.equals("/api/v1/internal/console-urls")) {
+                status = 200;
+                body = "{\"panel_url\":\"https://console.example.net:30443\",\"admin_url\":\"\"}";
             } else if (path.startsWith("/api/v1/internal/player/menu-access/")) {
                 status = 200;
                 body = "{\"servers\":{\"mine\":\"owner\",\"odd\":7,\"pub\":\"wake\"}}";
@@ -68,6 +71,7 @@ public final class FelisApiClientTest {
             opLoginShowNamesTheAccount(api);
             opLoginApproveSendsTheTypedName(api);
             menuAccessReadsVerdictsByName(api);
+            consoleUrlsFillGapsFromTheProxyFile(api);
         } finally {
             stub.stop(0);
         }
@@ -93,6 +97,12 @@ public final class FelisApiClientTest {
         UUID id = UUID.fromString("00000000-0000-0000-0000-00000000000a");
         assertEq("verdicts", java.util.Map.of("mine", "owner", "pub", "wake"), api.menuAccess(id));
         assertEq("route", List.of("GET /api/v1/internal/player/menu-access/" + id), seen);
+    }
+
+    private static void consoleUrlsFillGapsFromTheProxyFile(FelisApiClient api) throws LinkException {
+        ConsoleUrls file = new ConsoleUrls("https://console.example.net", "https://op.console.example.net");
+        assertEq("console urls", new ConsoleUrls("https://console.example.net:30443", "https://op.console.example.net"),
+                api.consoleUrls().orElse(file));
     }
 
     private static void pathBendingNamesNeverLeaveTheClient(FelisApiClient api) {

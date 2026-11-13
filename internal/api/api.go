@@ -166,9 +166,17 @@ func (a *API) CloseStreams() {
 }
 
 func (a *API) panelURL() string {
-	host := a.PanelHostname
+	return a.consoleURL(a.PanelHostname, "console.")
+}
+
+func (a *API) adminURL() string {
+	return a.consoleURL(a.AdminHostname, "op.console.")
+}
+
+// consoleURL falls back to prefix+RootDomain for an unset host and adds PanelPort unless it is 0 or 443.
+func (a *API) consoleURL(host, prefix string) string {
 	if host == "" && a.RootDomain != "" {
-		host = "console." + a.RootDomain
+		host = prefix + a.RootDomain
 	}
 	if host == "" {
 		return ""
@@ -269,6 +277,7 @@ func (a *API) internalAPIRoutes() []apiRoute {
 		{Method: "POST", Pattern: "/api/v1/internal/account/link/code", Callers: gate, h: a.handleCreateLinkCode},
 		{Method: "GET", Pattern: "/api/v1/internal/account/link/status/{mc_uuid}", Callers: gate, h: a.handleLinkStatus},
 		{Method: "GET", Pattern: "/api/v1/internal/settings/entry-policy", Callers: gate, h: a.handleGetEntryPolicy},
+		{Method: "GET", Pattern: "/api/v1/internal/console-urls", Callers: proxy, h: a.handleConsoleURLs},
 		{Method: "POST", Pattern: "/api/v1/internal/account/migrate/start", Callers: proxy, h: a.handleMigrateStart},
 		{Method: "POST", Pattern: "/api/v1/internal/player/reclaim", Callers: proxy, h: a.handleReclaimUsername},
 		{Method: "GET", Pattern: "/api/v1/internal/player/blacklist/{mc_uuid}", Callers: gate, h: a.handleCheckBlacklist},
@@ -532,6 +541,7 @@ var nanoRoutes = routeSet(
 	"POST /api/v1/internal/account/link/code",
 	"GET /api/v1/internal/account/link/status/{mc_uuid}",
 	"GET /api/v1/internal/player/blacklist/{mc_uuid}",
+	"GET /api/v1/internal/console-urls",
 	"GET /api/v1/internal/op-login/pending",
 	"GET /api/v1/internal/op-login/{id}",
 	"POST /api/v1/internal/op-login/{id}/approve",

@@ -112,6 +112,16 @@ public final class FelisApiClient {
         return out;
     }
 
+    /** consoleUrls reads the console addresses, with the panel port the current access method needs. */
+    public ConsoleUrls consoleUrls() throws LinkException {
+        Map<?, ?> obj = getObject("/api/v1/internal/console-urls", 200);
+        return new ConsoleUrls(nonEmpty(obj.get("panel_url")), nonEmpty(obj.get("admin_url")));
+    }
+
+    private static String nonEmpty(Object value) {
+        return value instanceof String s && !s.isEmpty() ? s : null;
+    }
+
     // Anything but linked:true, including a missing field, reads as not yet linked: the caller keeps waiting rather than admitting on an ambiguous body.
     public boolean linkStatus(UUID mcUuid) throws LinkException {
         Objects.requireNonNull(mcUuid, "mcUuid");

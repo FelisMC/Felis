@@ -1,5 +1,6 @@
 package best.lolicon.felis.velocity;
 
+import best.lolicon.felis.link.ConsoleUrls;
 import best.lolicon.felis.link.FelisApiClient;
 import best.lolicon.felis.link.LinkClient;
 import best.lolicon.felis.link.LinkCode;
@@ -39,6 +40,7 @@ import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
 /** Velocity side of Felis: /link, /felis, /invite and subdomain routing; routing needs online mode and a root-domain. */
@@ -679,7 +681,7 @@ public final class FelisVelocityPlugin {
         async(player, () -> {
             try {
                 apiClient.migrateStart(uuid);
-                String panelUrl = config.panelUrl();
+                String panelUrl = consoleUrls().panel();
                 player.sendMessage(Component.text(
                         zh ? "迁移已发起——请在网页控制台完成："
                            : "Migration started — finish it on the web console:", NamedTextColor.GREEN));
@@ -699,13 +701,36 @@ public final class FelisVelocityPlugin {
         });
     }
 
-    private void sendWebInfo(CommandSource source) {
-        if (!gateInfo(source)) {
-            return;
+    // consoleUrls prefers felis-api's addresses, which follow the access method, and fills gaps from this proxy's file.
+    private ConsoleUrls consoleUrls() {
+        ConsoleUrls file = new ConsoleUrls(config.panelUrl(), config.adminUrl());
+        if (apiClient == null) {
+            return file;
         }
+        try {
+            return apiClient.consoleUrls().orElse(file);
+        } catch (LinkException e) {
+            return file;
+        }
+    }
+
+    /** withConsoleUrls asks felis-api off the proxy thread, or uses this proxy's file when the pool is full. */
+    private void withConsoleUrls(Consumer<ConsoleUrls> show) {
+        if (!async(() -> show.accept(consoleUrls()))) {
+            show.accept(new ConsoleUrls(config.panelUrl(), config.adminUrl()));
+        }
+    }
+
+    private void sendWebInfo(CommandSource source) {
+        if (gateInfo(source)) {
+            withConsoleUrls(urls -> showWebInfo(source, urls));
+        }
+    }
+
+    private void showWebInfo(CommandSource source, ConsoleUrls urls) {
         boolean zh = zh(source);
-        String panelUrl = config.panelUrl();
-        String adminUrl = config.adminUrl();
+        String panelUrl = urls.panel();
+        String adminUrl = urls.admin();
         if (panelUrl == null && adminUrl == null) {
             source.sendMessage(Component.text(
                     zh ? "此代理未配置网页控制台。"
@@ -727,11 +752,13 @@ public final class FelisVelocityPlugin {
     }
 
     private void sendWebOpInfo(CommandSource source) {
-        if (!gateInfo(source)) {
-            return;
+        if (gateInfo(source)) {
+            withConsoleUrls(urls -> showWebOpInfo(source, urls.admin()));
         }
+    }
+
+    private void showWebOpInfo(CommandSource source, String adminUrl) {
         boolean zh = zh(source);
-        String adminUrl = config.adminUrl();
         String site = adminUrl != null ? adminUrl : (zh ? "管理员控制台" : "the operator console");
         source.sendMessage(Component.text(
                 zh ? "管理员登录" : "Operator sign-in", NamedTextColor.AQUA));

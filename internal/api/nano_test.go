@@ -76,18 +76,21 @@ func TestNanoServesNothingThatTouchesServers(t *testing.T) {
 	}
 }
 
-func TestPanelURLCarriesANonStandardPort(t *testing.T) {
+func TestConsoleURLsCarryANonStandardPort(t *testing.T) {
 	for _, tc := range []struct {
-		port int
-		want string
+		port         int
+		panel, admin string
 	}{
-		{0, "https://console.example.com"},
-		{443, "https://console.example.com"},
-		{8443, "https://console.example.com:8443"},
+		{0, "https://console.example.com", "https://op.console.example.com"},
+		{443, "https://console.example.com", "https://op.console.example.com"},
+		{30443, "https://console.example.com:30443", "https://op.console.example.com:30443"},
 	} {
 		a := &API{RootDomain: "example.com", PanelPort: tc.port}
-		if got := a.panelURL(); got != tc.want {
-			t.Errorf("PanelPort %d: panelURL() = %q, want %q", tc.port, got, tc.want)
+		w := httptest.NewRecorder()
+		a.handleConsoleURLs(w, httptest.NewRequest("GET", "/api/v1/internal/console-urls", nil))
+		var got map[string]string
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil || got["panel_url"] != tc.panel || got["admin_url"] != tc.admin {
+			t.Errorf("PanelPort %d: %s, want panel %q admin %q", tc.port, w.Body, tc.panel, tc.admin)
 		}
 	}
 }

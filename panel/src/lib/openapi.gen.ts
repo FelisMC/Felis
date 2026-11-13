@@ -1836,6 +1836,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/internal/console-urls": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the console addresses, with the panel port, that the proxy shows players. */
+        get: operations["internalConsoleUrls"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/settings/entry-policy": {
         parameters: {
             query?: never;
@@ -10012,6 +10029,31 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EntryPolicySettings"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    internalConsoleUrls: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Console addresses; an empty string means no host is configured. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        panel_url: string;
+                        admin_url: string;
+                    };
                 };
             };
             401: components["responses"]["Unauthorized"];

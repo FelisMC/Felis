@@ -6548,6 +6548,29 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /api/v1/internal/console-urls:
+    get:
+      tags: [internal]
+      operationId: internalConsoleUrls
+      summary: Read the console addresses, with the panel port, that the proxy shows players.
+      x-felis-face: [internal]
+      x-felis-tier: service
+      x-felis-callers: [velocity]
+      security: [{ serviceToken: [] }]
+      responses:
+        '200':
+          description: Console addresses; an empty string means no host is configured.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [panel_url, admin_url]
+                properties:
+                  panel_url: { type: string }
+                  admin_url: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /api/v1/settings/entry-policy:
     get:
       tags: [account]

@@ -15,6 +15,11 @@ func (a *API) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// handleConsoleURLs gives a proxy the console addresses with the port players must use; an empty value means no host is known.
+func (a *API) handleConsoleURLs(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"panel_url": a.panelURL(), "admin_url": a.adminURL()})
+}
+
 func (a *API) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	checks := map[string]func(context.Context) error{"db": a.Repo.Ping}
 	if a.Cluster != nil {
