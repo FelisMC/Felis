@@ -11,6 +11,7 @@ import best.lolicon.felis.link.ServerView;
 import com.google.inject.Inject;
 import com.mojang.brigadier.Command;
 import com.mojang.brigadier.arguments.StringArgumentType;
+import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.tree.LiteralCommandNode;
 import com.velocitypowered.api.command.BrigadierCommand;
 import com.velocitypowered.api.command.CommandManager;
@@ -104,7 +105,9 @@ public final class FelisVelocityPlugin {
         this.linkClient = new LinkClient(config.linkConfig());
         registerLinkCommand();
         registerFelisCommand();
-        registerInviteCommand();
+        if (!config.nano()) {
+            registerInviteCommand();
+        }
 
         warnIfBungeeChannelOpen();
 
@@ -117,7 +120,7 @@ public final class FelisVelocityPlugin {
         }
         if (config.nano()) {
             this.apiClient = new FelisApiClient(config.linkConfig());
-            logger.info("Felis-nano: sign-in only — /link, /felis approve and /felis migrate are registered; "
+            logger.info("Felis-nano: sign-in only — /link and /felis web op approve are registered; "
                     + "this proxy keeps its own servers and routing.");
             return;
         }
@@ -356,7 +359,7 @@ public final class FelisVelocityPlugin {
 
     private void registerFelisCommand() {
         CommandManager commands = proxy.getCommandManager();
-        LiteralCommandNode<CommandSource> node = BrigadierCommand.literalArgumentBuilder("felis")
+        LiteralArgumentBuilder<CommandSource> root = BrigadierCommand.literalArgumentBuilder("felis")
                 .executes(ctx -> {
                     sendSummary(ctx.getSource());
                     return Command.SINGLE_SUCCESS;
@@ -364,32 +367,6 @@ public final class FelisVelocityPlugin {
                 .then(BrigadierCommand.literalArgumentBuilder("help")
                         .executes(ctx -> {
                             sendHelp(ctx.getSource());
-                            return Command.SINGLE_SUCCESS;
-                        }))
-                .then(BrigadierCommand.literalArgumentBuilder("server")
-                        .executes(ctx -> {
-                            sendServerList(ctx.getSource());
-                            return Command.SINGLE_SUCCESS;
-                        }))
-                .then(BrigadierCommand.literalArgumentBuilder("lobby")
-                        .executes(ctx -> {
-                            doLobby(ctx.getSource());
-                            return Command.SINGLE_SUCCESS;
-                        }))
-                .then(BrigadierCommand.literalArgumentBuilder("go")
-                        .then(BrigadierCommand.requiredArgumentBuilder("server", StringArgumentType.word())
-                                .executes(ctx -> {
-                                    doGo(ctx.getSource(), StringArgumentType.getString(ctx, "server"), false);
-                                    return Command.SINGLE_SUCCESS;
-                                })))
-                .then(BrigadierCommand.literalArgumentBuilder("claim")
-                        .executes(ctx -> {
-                            doClaim(ctx.getSource());
-                            return Command.SINGLE_SUCCESS;
-                        }))
-                .then(BrigadierCommand.literalArgumentBuilder("migrate")
-                        .executes(ctx -> {
-                            doMigrate(ctx.getSource());
                             return Command.SINGLE_SUCCESS;
                         }))
                 .then(BrigadierCommand.literalArgumentBuilder("web")
@@ -414,8 +391,36 @@ public final class FelisVelocityPlugin {
                                                                     StringArgumentType.getString(ctx, "code"),
                                                                     StringArgumentType.getString(ctx, "account"));
                                                             return Command.SINGLE_SUCCESS;
-                                                        }))))))
-                .build();
+                                                        }))))));
+        if (!config.nano()) {
+            root.then(BrigadierCommand.literalArgumentBuilder("server")
+                            .executes(ctx -> {
+                                sendServerList(ctx.getSource());
+                                return Command.SINGLE_SUCCESS;
+                            }))
+                    .then(BrigadierCommand.literalArgumentBuilder("lobby")
+                            .executes(ctx -> {
+                                doLobby(ctx.getSource());
+                                return Command.SINGLE_SUCCESS;
+                            }))
+                    .then(BrigadierCommand.literalArgumentBuilder("go")
+                            .then(BrigadierCommand.requiredArgumentBuilder("server", StringArgumentType.word())
+                                    .executes(ctx -> {
+                                        doGo(ctx.getSource(), StringArgumentType.getString(ctx, "server"), false);
+                                        return Command.SINGLE_SUCCESS;
+                                    })))
+                    .then(BrigadierCommand.literalArgumentBuilder("claim")
+                            .executes(ctx -> {
+                                doClaim(ctx.getSource());
+                                return Command.SINGLE_SUCCESS;
+                            }))
+                    .then(BrigadierCommand.literalArgumentBuilder("migrate")
+                            .executes(ctx -> {
+                                doMigrate(ctx.getSource());
+                                return Command.SINGLE_SUCCESS;
+                            }));
+        }
+        LiteralCommandNode<CommandSource> node = root.build();
         CommandMeta meta = commands.metaBuilder("felis").plugin(this).build();
         commands.register(meta, new BrigadierCommand(node));
     }
@@ -497,6 +502,14 @@ public final class FelisVelocityPlugin {
     private void sendHelp(CommandSource source) {
         boolean zh = zh(source);
         source.sendMessage(Component.text(zh ? "Felis 命令" : "Felis commands", NamedTextColor.AQUA));
+        if (config.nano()) {
+            helpLine(source, "/felis", zh ? "代理状态" : "proxy status");
+            helpLine(source, "/link", zh ? "把游戏账号绑定到网页控制台账户" : "link your game account to a web console account");
+            helpLine(source, "/felis web", zh ? "网页控制台地址" : "where the web consoles live");
+            helpLine(source, "/felis web op approve <code>",
+                    zh ? "查看并批准待处理的管理员登录" : "review and approve a pending operator sign-in");
+            return;
+        }
         helpLine(source, "/felis",
                 zh ? "代理与路由状态" : "proxy and routing status");
         helpLine(source, "/felis server",
@@ -652,7 +665,7 @@ public final class FelisVelocityPlugin {
             return;
         }
         boolean zh = zh(player);
-        if (apiClient == null) {
+        if (!routingActive) {
             player.sendMessage(routingDisabled(zh));
             return;
         }
