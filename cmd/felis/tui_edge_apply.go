@@ -95,13 +95,18 @@ func applyLocalAccess(ctx context.Context, panelHost, adminHost string, out io.W
 // localAccessSwitch returns the switch back to direct access, or nil when the host already serves the panel directly.
 func localAccessSwitch(ctx context.Context) func(panelHost, adminHost string) error {
 	cfg, err := config.Load(hostSetupConfigPath)
-	_, unitErr := os.Stat(cloudflaredFelisUnit)
-	if err == nil && cfg.Auth.DirectAccess() && errors.Is(unitErr, fs.ErrNotExist) {
+	if err == nil && cfg.Auth.DirectAccess() && !edgeRunning(ctx) {
 		return nil
 	}
 	return func(panelHost, adminHost string) error {
 		return applyLocalAccess(ctx, panelHost, adminHost, io.Discard)
 	}
+}
+
+// edgeRunning reports a Cloudflare connector that is enabled or running; the unit file a takedown leaves behind does not count.
+func edgeRunning(ctx context.Context) bool {
+	const unit = "cloudflared-felis.service"
+	return systemctl(ctx, "is-enabled", "--quiet", unit) == nil || systemctl(ctx, "is-active", "--quiet", unit) == nil
 }
 
 func restartAPIWithConfig(ctx context.Context) error {
