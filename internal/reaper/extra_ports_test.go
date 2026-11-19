@@ -74,7 +74,7 @@ func TestReaperPortCleanupRequiresFreshConfirmationAndMatchingUID(t *testing.T) 
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 			defer cancel()
-			err := k.ClearExtraPorts(ctx, server.Name, uid)
+			err := k.ClearOwnerSettings(ctx, server.Name, uid)
 			switch mode {
 			case "ready", "missing":
 				if err != nil {
@@ -97,5 +97,42 @@ func TestReaperPortCleanupRequiresFreshConfirmationAndMatchingUID(t *testing.T) 
 				}
 			}
 		})
+	}
+}
+
+func TestReaperOwnerSettingsCleanupClearsStartupAndPolicy(t *testing.T) {
+	server := holdServer(v1alpha1.DesiredStopped, v1alpha1.PhaseStopped)
+	server.UID, server.Generation = "current-cr", 3
+	server.Spec.AutostartPolicy = v1alpha1.AutostartPublic
+	server.Spec.JavaFlags = []string{"-Dcustom=old"}
+	server.Spec.Args = []string{"--nogui"}
+	server.Spec.Env = []v1alpha1.EnvVar{
+		{Name: "FELIS_SERVICE_TOKEN", Value: "managed"},
+		{Name: "RCON_PASSWORD", Value: "rcon"},
+		{Name: "USER_FLAG", Value: "old"},
+	}
+	server.Spec.Lifecycle.StopCommands = []string{"say old-stop"}
+	server.Spec.ExtraPorts = []v1alpha1.ExtraPort{{Protocol: corev1.ProtocolUDP, Port: 24454}}
+	server.Status.Conditions = []metav1.Condition{{
+		Type: v1alpha1.ConditionExtraPortsReady, Status: metav1.ConditionTrue, Reason: "Ready", ObservedGeneration: 3,
+	}}
+	k, c, _ := holdCluster(t, server)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := k.ClearOwnerSettings(ctx, server.Name, "current-cr"); err != nil {
+		t.Fatal(err)
+	}
+	var current v1alpha1.MinecraftServer
+	if err := c.Get(ctx, client.ObjectKeyFromObject(server), &current); err != nil {
+		t.Fatal(err)
+	}
+	wantEnv := []v1alpha1.EnvVar{
+		{Name: "FELIS_SERVICE_TOKEN", Value: "managed"},
+		{Name: "RCON_PASSWORD", Value: "rcon"},
+	}
+	if len(current.Spec.JavaFlags) != 0 || len(current.Spec.Args) != 0 || len(current.Spec.Lifecycle.StopCommands) != 0 ||
+		len(current.Spec.ExtraPorts) != 0 || !reflect.DeepEqual(current.Spec.Env, wantEnv) ||
+		current.Spec.AutostartPolicy != v1alpha1.AutostartOwnerOnly {
+		t.Fatalf("owner settings were not cleared: %+v", current.Spec)
 	}
 }

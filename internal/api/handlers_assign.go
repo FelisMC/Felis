@@ -106,7 +106,7 @@ func (a *API) handleAssignServer(w http.ResponseWriter, r *http.Request) {
 		a.writeLookupError(w, r, err)
 		return
 	}
-	previous, over, err := a.Repo.AssignServer(r.Context(), name, body.UserID, res, body.AllowOverQuota)
+	previous, over, err := a.Repo.AssignServer(r.Context(), name, body.UserID, res, body.AllowOverQuota, a.clearOwnerSettings)
 	if err != nil {
 		a.writeAssignError(w, r, err, over)
 		return

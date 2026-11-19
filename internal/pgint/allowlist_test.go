@@ -129,13 +129,13 @@ func TestWakeAllowlistLifecycle(t *testing.T) {
 	// Each change of owner empties the list of the server that changed hands and
 	// no other: the bystander, owned by someone else, keeps its entry throughout.
 	owner, keeper := newUser(t, "user", "alowner"), newUser(t, "user", "alkeeper")
-	if ok, err := repo.ClaimServer(ctx, bystander, keeper.ID); err != nil || !ok {
+	if ok, err := repo.ClaimServer(ctx, bystander, keeper.ID, nil); err != nil || !ok {
 		t.Fatalf("claim the bystander = %v, %v", ok, err)
 	}
 	join(bystander, linked)
 	claim := func() {
 		t.Helper()
-		if ok, err := repo.ClaimServer(ctx, name, owner.ID); err != nil || !ok {
+		if ok, err := repo.ClaimServer(ctx, name, owner.ID, nil); err != nil || !ok {
 			t.Fatalf("claim = %v, %v", ok, err)
 		}
 	}

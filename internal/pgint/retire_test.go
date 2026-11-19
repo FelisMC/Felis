@@ -127,7 +127,7 @@ func TestRetiringServerIsNotClaimable(t *testing.T) {
 		t.Fatalf("RequestRetire(%s): %v", theirs, err)
 	}
 
-	if ok, err := repo.ClaimServer(ctx, freeRetiring, u.ID); err != nil || ok {
+	if ok, err := repo.ClaimServer(ctx, freeRetiring, u.ID, nil); err != nil || ok {
 		t.Fatalf("claiming a server being released = (%v, %v), want (false, nil)", ok, err)
 	}
 	if o := serverOwner(t, freeRetiring); o != "" {
@@ -179,7 +179,7 @@ func TestRetiringServerIsNotClaimable(t *testing.T) {
 	if err := repo.CancelRetire(ctx, freeRetiring, true); err != nil {
 		t.Fatalf("CancelRetire: %v", err)
 	}
-	if ok, err := repo.ClaimServer(ctx, freeRetiring, u.ID); err != nil || !ok {
+	if ok, err := repo.ClaimServer(ctx, freeRetiring, u.ID, nil); err != nil || !ok {
 		t.Fatalf("claim after the cancel = (%v, %v)", ok, err)
 	}
 	for _, n := range []string{mineRetiring, theirs} {
@@ -357,7 +357,7 @@ func (c *fleetCluster) DeletePVC(_ context.Context, pvc string) error {
 	return nil
 }
 
-func (c *fleetCluster) ClearExtraPorts(context.Context, string, string) error { return nil }
+func (c *fleetCluster) ClearOwnerSettings(context.Context, string, string) error { return nil }
 
 func (c *fleetCluster) DeleteServer(_ context.Context, name, uid string) error {
 	if c.uids[name] != uid {

@@ -108,7 +108,7 @@ func TestServerTagsResetWhenAServerChangesHands(t *testing.T) {
 	}
 
 	mustExec(t, `UPDATE servers SET owner_id = NULL WHERE name = $1`, released)
-	if ok, err := repo.ClaimServer(ctx, released, next.ID); err != nil || !ok {
+	if ok, err := repo.ClaimServer(ctx, released, next.ID, nil); err != nil || !ok {
 		t.Fatalf("ClaimServer = (%v, %v)", ok, err)
 	}
 	if err := repo.SeedServer(ctx, recreated, "tgrs-"+sfx, 100, 128, 1); err != nil {

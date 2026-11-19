@@ -245,7 +245,7 @@ func (a *API) handleInternalClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claimed, err := a.Repo.ClaimServer(r.Context(), name, userID)
+	claimed, err := a.Repo.ClaimServer(r.Context(), name, userID, a.clearOwnerSettings)
 	if err != nil {
 		// The atomic claim repeats the quota gate so concurrent requests cannot exceed the tenant's allowance.
 		if errors.Is(err, ErrQuotaExceeded) {

@@ -67,7 +67,7 @@ func (p *PGRepo) AssignPreview(ctx context.Context, name, userID string, res Res
 	return assignState(ctx, p.db, name, userID, res, false)
 }
 
-func (p *PGRepo) AssignServer(ctx context.Context, name, userID string, res ResourceSpec, allowOver bool) (string, []QuotaExcess, error) {
+func (p *PGRepo) AssignServer(ctx context.Context, name, userID string, res ResourceSpec, allowOver bool, clearOwner func(context.Context, string) error) (string, []QuotaExcess, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", nil, err
@@ -84,6 +84,11 @@ func (p *PGRepo) AssignServer(ctx context.Context, name, userID string, res Reso
 	}
 	if len(over) > 0 && !allowOver {
 		return previous, over, ErrQuotaExceeded
+	}
+	if clearOwner != nil {
+		if err := clearOwner(ctx, name); err != nil {
+			return previous, nil, err
+		}
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE servers SET owner_id = $2, claimed_at = now(), last_active_at = now(), warned_3d_at = NULL, warned_1d_at = NULL, tags = '{}'

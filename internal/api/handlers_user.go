@@ -183,7 +183,7 @@ func (a *API) handleClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claimed, err := a.Repo.ClaimServer(r.Context(), name, p.UserID)
+	claimed, err := a.Repo.ClaimServer(r.Context(), name, p.UserID, a.clearOwnerSettings)
 	if err != nil {
 		// A concurrent claim that spent the last slot surfaces here: ClaimServer re-checks quota under the per-user lock.
 		if errors.Is(err, ErrQuotaExceeded) {
@@ -506,7 +506,7 @@ func (a *API) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 	var over []QuotaExcess
 	if body.OwnerID != "" {
 		res := ResourceSpec{CPUMilli: cpuMilli, MemoryMB: memMB, StorageMB: storMB}
-		if _, over, err = a.Repo.AssignServer(r.Context(), body.Name, body.OwnerID, res, true); err != nil {
+		if _, over, err = a.Repo.AssignServer(r.Context(), body.Name, body.OwnerID, res, true, nil); err != nil {
 			if derr := a.Repo.DiscardSeededServer(context.WithoutCancel(r.Context()), body.Name); derr != nil {
 				log.Printf("api: server %s could not be given to its owner and its row could not be discarded (request_id=%s): %v",
 					body.Name, requestIDFromContext(r.Context()), derr)
@@ -1087,12 +1087,15 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 	}
 	applyPatch := func() error {
 		apply := func() error { return a.Cluster.PatchServerSpec(r.Context(), name, patch) }
-		if patch.ExtraPorts == nil || naming.IsSystemServer(name) {
+		if naming.IsSystemServer(name) {
 			return apply()
 		}
 		ownerID := ""
 		if p := principalFromContext(r.Context()); p != nil && !p.IsAdmin() {
 			ownerID = p.UserID
+		}
+		if ownerID == "" && patch.ExtraPorts == nil {
+			return apply()
 		}
 		return a.Repo.PatchServerPorts(r.Context(), name, ownerID, apply)
 	}

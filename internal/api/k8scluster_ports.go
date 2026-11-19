@@ -87,7 +87,7 @@ func (k *K8sCluster) extraPortAddresses(ctx context.Context, server *v1alpha1.Mi
 	}
 }
 
-func (k *K8sCluster) ClearExtraPorts(ctx context.Context, name, uid string) error {
+func (k *K8sCluster) ClearOwnerSettings(ctx context.Context, name, uid string) error {
 	err := wait.PollUntilContextTimeout(ctx, 250*time.Millisecond, 15*time.Second, true, func(ctx context.Context) (bool, error) {
 		var server v1alpha1.MinecraftServer
 		if err := k.getServer(ctx, name, &server); err != nil {
@@ -99,9 +99,9 @@ func (k *K8sCluster) ClearExtraPorts(ctx context.Context, name, uid string) erro
 		if uid == "" || string(server.UID) != uid {
 			return false, ErrConflict
 		}
-		if len(server.Spec.ExtraPorts) > 0 {
-			patch := client.MergeFromWithOptions(server.DeepCopy(), client.MergeFromWithOptimisticLock{})
-			server.Spec.ExtraPorts = nil
+		base := server.DeepCopy()
+		if v1alpha1.ClearOwnerSettings(&server.Spec) {
+			patch := client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})
 			err := k.c.Patch(ctx, &server, patch)
 			if apierrors.IsConflict(err) {
 				return false, nil

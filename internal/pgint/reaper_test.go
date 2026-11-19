@@ -40,7 +40,7 @@ func (c *reclaimCluster) HoldWorld(ctx context.Context, _ string) (context.Conte
 
 func (c *reclaimCluster) WorldExists(context.Context, string) (bool, error) { return true, nil }
 
-func (c *reclaimCluster) ClearExtraPorts(context.Context, string, string) error { return nil }
+func (c *reclaimCluster) ClearOwnerSettings(context.Context, string, string) error { return nil }
 
 // DeleteServer is only reached by a retirement, which these tests do not ask for.
 func (c *reclaimCluster) DeleteServer(_ context.Context, name, _ string) error {
@@ -68,7 +68,7 @@ func TestReclaimRestartsReaperClock(t *testing.T) {
 		t.Fatalf("seed server: %v", err)
 	}
 	first := newUser(t, "user", "reclaim-a")
-	if ok, err := repo.ClaimServer(ctx, name, first.ID); err != nil || !ok {
+	if ok, err := repo.ClaimServer(ctx, name, first.ID, nil); err != nil || !ok {
 		t.Fatalf("first claim = (%v, %v)", ok, err)
 	}
 
@@ -96,7 +96,7 @@ func TestReclaimRestartsReaperClock(t *testing.T) {
 
 	second := newUser(t, "user", "reclaim-b")
 	before := time.Now()
-	if ok, err := repo.ClaimServer(ctx, name, second.ID); err != nil || !ok {
+	if ok, err := repo.ClaimServer(ctx, name, second.ID, nil); err != nil || !ok {
 		t.Fatalf("second claim = (%v, %v)", ok, err)
 	}
 	var lastActive time.Time
@@ -397,7 +397,7 @@ func TestReleasedWorldKeepsItsSize(t *testing.T) {
 		t.Fatalf("seed server: %v", err)
 	}
 	first := newUser(t, "user", "released-a")
-	if ok, err := repo.ClaimServer(ctx, name, first.ID); err != nil || !ok {
+	if ok, err := repo.ClaimServer(ctx, name, first.ID, nil); err != nil || !ok {
 		t.Fatalf("first claim = (%v, %v)", ok, err)
 	}
 	if err := st.ReleaseWorld(ctx, name, time.Now(), func(string) error { return nil }); err != nil {
@@ -420,13 +420,13 @@ func TestReleasedWorldKeepsItsSize(t *testing.T) {
 	if _, err := repo.SetQuotas(ctx, small.ID, api.QuotaInput{MaxCPUMilli: &oneCPU}, "pgint"); err != nil {
 		t.Fatalf("SetQuotas: %v", err)
 	}
-	if ok, err := repo.ClaimServer(ctx, name, small.ID); !errors.Is(err, api.ErrQuotaExceeded) {
+	if ok, err := repo.ClaimServer(ctx, name, small.ID, nil); !errors.Is(err, api.ErrQuotaExceeded) {
 		t.Fatalf("claim over the CPU quota = (%v, %v), want ErrQuotaExceeded", ok, err)
 	}
 
 	// A claim that fits counts the server at its size.
 	fits := newUser(t, "user", "released-c")
-	if ok, err := repo.ClaimServer(ctx, name, fits.ID); err != nil || !ok {
+	if ok, err := repo.ClaimServer(ctx, name, fits.ID, nil); err != nil || !ok {
 		t.Fatalf("claim within quota = (%v, %v)", ok, err)
 	}
 	var used int

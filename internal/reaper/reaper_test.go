@@ -181,7 +181,7 @@ func (c *fakeCluster) DeleteServer(ctx context.Context, name, uid string) error 
 	return nil
 }
 
-func (c *fakeCluster) ClearExtraPorts(ctx context.Context, name, uid string) error {
+func (c *fakeCluster) ClearOwnerSettings(ctx context.Context, name, uid string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -189,7 +189,7 @@ func (c *fakeCluster) ClearExtraPorts(ctx context.Context, name, uid string) err
 		return c.clearPortsErr
 	}
 	if current, ok := c.crds[name]; ok && current.UID != uid {
-		return errors.New("server identity changed before extra port cleanup")
+		return errors.New("server identity changed before owner setting cleanup")
 	}
 	c.clearedPorts = append(c.clearedPorts, name+"/"+uid)
 	return nil

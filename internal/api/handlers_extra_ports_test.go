@@ -209,3 +209,72 @@ func TestDeleteUserWaitsForPortCleanupBeforeReleasingOwnership(t *testing.T) {
 		})
 	}
 }
+
+func TestStaleOwnerStartupPatchRejectedAfterReassignment(t *testing.T) {
+	a, repo, cl := newStartupSettingsAPI()
+	a.Repo = portsReassignedRepo{repo}
+	a.External = staticExternal{p: &Principal{UserID: "owner1", Role: "user"}}
+	w := do(a.ExternalHandler(), "PATCH", "/api/v1/me/servers/survival", `{"java_flags":["-Dlate=1"],"stop_commands":["say late"],"autostartPolicy":"public"}`, jsonHeader)
+	if w.Code != http.StatusForbidden || len(cl.patched) != 0 || len(repo.audits) != 0 {
+		t.Fatalf("stale owner wrote startup settings after reassignment: status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestOwnershipTransitionsClearStartupSettingsAndPolicy(t *testing.T) {
+	for _, mode := range []string{"claim", "internal claim", "assign"} {
+		t.Run(mode, func(t *testing.T) {
+			a, repo, cl := newStartupSettingsAPI()
+			cl.byName["survival"].UID = "survival-cr"
+			cl.byName["survival"].AutostartPolicy = string(v1alpha1.AutostartPublic)
+			cl.byName["survival"].Resources = corev1.ResourceRequirements{
+				Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("2Gi")},
+			}
+			switch mode {
+			case "claim":
+				repo.byName["survival"].OwnerID = ""
+				repo.linked["bob"], repo.quota["bob"], repo.claimOK["survival"] = true, true, true
+				a.External = staticExternal{p: &Principal{UserID: "bob", Email: "bob@example.net", Role: "user"}}
+				w := do(a.ExternalHandler(), "POST", "/api/v1/servers/survival/claim", "", nil)
+				if w.Code != http.StatusOK {
+					t.Fatalf("claim = %d %s", w.Code, w.Body.String())
+				}
+				repo.byName["survival"].OwnerID = "bob"
+			case "internal claim":
+				repo.byName["survival"].OwnerID = ""
+				repo.links[menuUUID], repo.quota["bob"], repo.claimOK["survival"] = "bob", true, true
+				w := internalClaim(a, `{"mc_uuid":"`+menuUUID+`"}`)
+				if w.Code != http.StatusOK {
+					t.Fatalf("internal claim = %d %s", w.Code, w.Body.String())
+				}
+				repo.byName["survival"].OwnerID = "bob"
+			case "assign":
+				repo.owners["survival"] = ServerOwnership{OwnerID: "owner1"}
+				a.External = staticExternal{p: &Principal{UserID: "platform-owner", Role: "owner", ViaAdminAccess: true}}
+				w := do(a.ExternalHandler(), "POST", assignPath, `{"user_id":"bob"}`, jsonHeader)
+				if w.Code != http.StatusOK {
+					t.Fatalf("assign = %d %s", w.Code, w.Body.String())
+				}
+				repo.byName["survival"].OwnerID = "bob"
+			}
+			if cl.byName["survival"].AutostartPolicy != string(v1alpha1.AutostartOwnerOnly) {
+				t.Fatalf("autostartPolicy = %q, want ownerOnly", cl.byName["survival"].AutostartPolicy)
+			}
+			a.External = staticExternal{p: &Principal{UserID: "bob", Role: "user"}}
+			w := do(a.ExternalHandler(), "GET", "/api/v1/servers/survival/startup-settings", "", nil)
+			if w.Code != http.StatusOK {
+				t.Fatalf("GET startup-settings = %d %s", w.Code, w.Body.String())
+			}
+			var got ServerStartupSettings
+			if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			if len(got.JavaFlags) != 0 || len(got.Args) != 0 || len(got.Env) != 0 || len(got.StopCommands) != 0 {
+				t.Fatalf("startup settings after %s = %+v, want empty", mode, got)
+			}
+			spec := cl.startupSpecs["survival"]
+			if len(spec.Env) != 2 {
+				t.Fatalf("reserved env vars lost after %s: %+v", mode, spec.Env)
+			}
+		})
+	}
+}

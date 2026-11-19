@@ -206,7 +206,7 @@ type Cluster interface {
 	DeletePVC(ctx context.Context, pvc string) error
 	// DeleteServer requires the inspected UID and treats absence as success, leaving a same-name replacement untouched.
 	DeleteServer(ctx context.Context, name, uid string) error
-	ClearExtraPorts(ctx context.Context, name, uid string) error
+	ClearOwnerSettings(ctx context.Context, name, uid string) error
 }
 
 // Warner failures never block reaping; stamp warning delivery only after a successful send so later runs can retry.
@@ -516,9 +516,9 @@ func (r *Reaper) retire(ctx context.Context, now time.Time, c Candidate, crd Ser
 func (r *Reaper) releaseWorld(ctx context.Context, now time.Time, c Candidate, crd ServerCRD) error {
 	if err := r.Store.ReleaseWorld(ctx, c.Name, now, func(owner string) error {
 		if owner != c.OwnerID {
-			return fmt.Errorf("%w: server ownership changed before extra port cleanup", ErrNotQuiet)
+			return fmt.Errorf("%w: server ownership changed before owner setting cleanup", ErrNotQuiet)
 		}
-		return r.Cluster.ClearExtraPorts(ctx, c.Name, crd.UID)
+		return r.Cluster.ClearOwnerSettings(ctx, c.Name, crd.UID)
 	}); err != nil {
 		return fmt.Errorf("release world: %w", err)
 	}

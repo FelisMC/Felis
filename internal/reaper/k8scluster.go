@@ -243,7 +243,7 @@ func (k *K8sCluster) DeleteServer(ctx context.Context, name, uid string) error {
 	})
 }
 
-func (k *K8sCluster) ClearExtraPorts(ctx context.Context, name, uid string) error {
+func (k *K8sCluster) ClearOwnerSettings(ctx context.Context, name, uid string) error {
 	err := wait.PollUntilContextTimeout(ctx, 250*time.Millisecond, 15*time.Second, true, func(ctx context.Context) (bool, error) {
 		var ms v1alpha1.MinecraftServer
 		if err := k.get(ctx, name, &ms); err != nil {
@@ -253,11 +253,11 @@ func (k *K8sCluster) ClearExtraPorts(ctx context.Context, name, uid string) erro
 			return false, err
 		}
 		if uid == "" || string(ms.UID) != uid {
-			return false, fmt.Errorf("%w: server identity changed before extra port cleanup", ErrNotQuiet)
+			return false, fmt.Errorf("%w: server identity changed before owner setting cleanup", ErrNotQuiet)
 		}
-		if len(ms.Spec.ExtraPorts) > 0 {
-			patch := client.MergeFromWithOptions(ms.DeepCopy(), client.MergeFromWithOptimisticLock{})
-			ms.Spec.ExtraPorts = nil
+		base := ms.DeepCopy()
+		if v1alpha1.ClearOwnerSettings(&ms.Spec) {
+			patch := client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})
 			err := k.c.Patch(ctx, &ms, patch)
 			if apierrors.IsConflict(err) {
 				return false, nil
@@ -268,7 +268,7 @@ func (k *K8sCluster) ClearExtraPorts(ctx context.Context, name, uid string) erro
 		return condition != nil && condition.Status == metav1.ConditionTrue && condition.ObservedGeneration >= ms.Generation && len(ms.Status.ExtraPorts) == 0, nil
 	})
 	if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
-		return fmt.Errorf("%w: extra port cleanup is pending", ErrNotQuiet)
+		return fmt.Errorf("%w: owner setting cleanup is pending", ErrNotQuiet)
 	}
 	return err
 }

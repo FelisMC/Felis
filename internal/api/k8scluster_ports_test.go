@@ -215,7 +215,7 @@ func TestClearExtraPortsWaitsForCurrentEmptyConfirmation(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 			defer cancel()
-			err := k.ClearExtraPorts(ctx, server.Name, uid)
+			err := k.ClearOwnerSettings(ctx, server.Name, uid)
 			if mode == "ready" || mode == "missing CR" {
 				if err != nil {
 					t.Fatal(err)
@@ -249,7 +249,7 @@ func TestClearExtraPortsCASDoesNotFinishBeforeOperatorCleanup(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- k.ClearExtraPorts(ctx, server.Name, string(server.UID)) }()
+	go func() { done <- k.ClearOwnerSettings(ctx, server.Name, string(server.UID)) }()
 	select {
 	case <-patched:
 	case <-ctx.Done():
@@ -273,5 +273,36 @@ func TestClearExtraPortsCASDoesNotFinishBeforeOperatorCleanup(t *testing.T) {
 	}
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestClearOwnerSettingsClearsStartupAndPolicy(t *testing.T) {
+	server := stoppedServer()
+	server.UID, server.Generation = "ports-server", 4
+	server.Spec.AutostartPolicy = v1alpha1.AutostartPublic
+	server.Spec.JavaFlags = []string{"-Dcustom=old"}
+	server.Spec.Args = []string{"--nogui"}
+	server.Spec.Env = []v1alpha1.EnvVar{
+		{Name: "FELIS_SERVICE_TOKEN", Value: "managed"},
+		{Name: "USER_ENV", Value: "old"},
+	}
+	server.Spec.Lifecycle.StopCommands = []string{"say old"}
+	server.Status.Conditions = []metav1.Condition{{
+		Type: v1alpha1.ConditionExtraPortsReady, Status: metav1.ConditionTrue, Reason: "Ready", ObservedGeneration: 4,
+	}}
+	k, c := lockCluster(t, server)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := k.ClearOwnerSettings(ctx, server.Name, "ports-server"); err != nil {
+		t.Fatal(err)
+	}
+	var current v1alpha1.MinecraftServer
+	if err := c.Get(ctx, client.ObjectKeyFromObject(server), &current); err != nil {
+		t.Fatal(err)
+	}
+	wantEnv := []v1alpha1.EnvVar{{Name: "FELIS_SERVICE_TOKEN", Value: "managed"}}
+	if len(current.Spec.JavaFlags) != 0 || len(current.Spec.Args) != 0 || len(current.Spec.Lifecycle.StopCommands) != 0 ||
+		!reflect.DeepEqual(current.Spec.Env, wantEnv) || current.Spec.AutostartPolicy != v1alpha1.AutostartOwnerOnly {
+		t.Fatalf("owner settings were not cleared: %+v", current.Spec)
 	}
 }

@@ -369,7 +369,7 @@ func (p *PGRepo) resizeServer(ctx context.Context, name string, to ResourceSpec)
 	return prev, false, tx.Commit()
 }
 
-func (p *PGRepo) ClaimServer(ctx context.Context, name, userID string) (bool, error) {
+func (p *PGRepo) ClaimServer(ctx context.Context, name, userID string, clearOwner func(context.Context, string) error) (bool, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
@@ -415,6 +415,11 @@ func (p *PGRepo) ClaimServer(ctx context.Context, name, userID string) (bool, er
 	if !quotaAllows(maxServers, maxCPU, maxMem, maxStor, count, cpuSum, memSum, storSum,
 		1, ResourceSpec{CPUMilli: cpu, MemoryMB: mem, StorageMB: stor}) {
 		return false, ErrQuotaExceeded
+	}
+	if clearOwner != nil {
+		if err := clearOwner(ctx, name); err != nil {
+			return false, err
+		}
 	}
 
 	res, err := tx.ExecContext(ctx,

@@ -227,7 +227,7 @@ type Repo interface {
 	// QuotaCheck is advisory, excludes excludeName from existing usage and treats unset caps as unlimited.
 	QuotaCheck(ctx context.Context, userID string, excludeName string, incoming ResourceSpec) (bool, error)
 	// ClaimServer atomically checks owner and quota, resetting activity and wake state; false means already claimed or retiring.
-	ClaimServer(ctx context.Context, name, userID string) (bool, error)
+	ClaimServer(ctx context.Context, name, userID string, clearOwner func(context.Context, string) error) (bool, error)
 	UserInAllowlist(ctx context.Context, name, userID string) (bool, error)
 	UUIDInAllowlist(ctx context.Context, name, mcUUID string) (bool, error)
 	// ServerAllowlist lists the wake allowlist, newest first, including revoked entries.
@@ -248,7 +248,7 @@ type Repo interface {
 	// AssignPreview reports the current owner and the caps userID would pass with one more server of size res.
 	AssignPreview(ctx context.Context, name, userID string, res ResourceSpec) (owner string, over []QuotaExcess, err error)
 	// AssignServer gives name to userID as a claim would, refusing ErrQuotaExceeded unless allowOver; it returns the previous owner.
-	AssignServer(ctx context.Context, name, userID string, res ResourceSpec, allowOver bool) (previous string, over []QuotaExcess, err error)
+	AssignServer(ctx context.Context, name, userID string, res ResourceSpec, allowOver bool, clearOwner func(context.Context, string) error) (previous string, over []QuotaExcess, err error)
 	// ServerTags lists the tags of live servers that have any.
 	ServerTags(ctx context.Context) (map[string][]string, error)
 	// SetServerTags replaces the whole tag set; the caller has validated it, and ErrNotFound means no live server.

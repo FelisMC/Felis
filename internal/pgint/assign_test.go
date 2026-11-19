@@ -30,11 +30,11 @@ func TestAssignServerCountsTheNewOwnersQuota(t *testing.T) {
 	if err != nil || owner != alice.ID || len(over) != 2 || over[0] != want[0] || over[1] != want[1] {
 		t.Fatalf("preview = %q %+v %v", owner, over, err)
 	}
-	if _, _, err := repo.AssignServer(ctx, moved, bob.ID, res, false); !errors.Is(err, api.ErrQuotaExceeded) || serverOwner(t, moved) != alice.ID {
+	if _, _, err := repo.AssignServer(ctx, moved, bob.ID, res, false, nil); !errors.Is(err, api.ErrQuotaExceeded) || serverOwner(t, moved) != alice.ID {
 		t.Fatalf("unconfirmed assign = %v, owner %s", err, serverOwner(t, moved))
 	}
 
-	previous, _, err := repo.AssignServer(ctx, moved, bob.ID, res, true)
+	previous, _, err := repo.AssignServer(ctx, moved, bob.ID, res, true, nil)
 	if err != nil || previous != alice.ID || serverOwner(t, moved) != bob.ID {
 		t.Fatalf("confirmed assign = %q %v, owner %s", previous, err, serverOwner(t, moved))
 	}
@@ -47,20 +47,20 @@ func TestAssignServerCountsTheNewOwnersQuota(t *testing.T) {
 		t.Fatalf("after assign: %d allowlist rows, %d tags, want none", allowlisted, tags)
 	}
 
-	if _, _, err := repo.AssignServer(ctx, moved, bob.ID, res, true); !errors.Is(err, api.ErrAlreadyOwner) {
+	if _, _, err := repo.AssignServer(ctx, moved, bob.ID, res, true, nil); !errors.Is(err, api.ErrAlreadyOwner) {
 		t.Fatalf("assign to the current owner = %v", err)
 	}
 	if err := repo.SetUserDisabled(ctx, alice.ID, true); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := repo.AssignServer(ctx, moved, alice.ID, res, true); !errors.Is(err, api.ErrUnknownAssignee) {
+	if _, _, err := repo.AssignServer(ctx, moved, alice.ID, res, true, nil); !errors.Is(err, api.ErrUnknownAssignee) {
 		t.Fatalf("assign to a disabled account = %v", err)
 	}
 	if _, err := repo.RequestRetire(ctx, kept, false); err != nil {
 		t.Fatal(err)
 	}
 	carol := newUser(t, "user", "assign-third")
-	if _, _, err := repo.AssignServer(ctx, kept, carol.ID, res, true); !errors.Is(err, api.ErrAssignRetiring) {
+	if _, _, err := repo.AssignServer(ctx, kept, carol.ID, res, true, nil); !errors.Is(err, api.ErrAssignRetiring) {
 		t.Fatalf("assign a retiring server = %v", err)
 	}
 }

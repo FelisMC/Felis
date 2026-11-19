@@ -196,7 +196,7 @@ type Cluster interface {
 	CreateServer(ctx context.Context, in CreateServerInput) error
 	// PatchServerSpec merge-patches non-nil fields so concurrent operator status updates survive.
 	PatchServerSpec(ctx context.Context, name string, patch ServerSpecPatch) error
-	ClearExtraPorts(ctx context.Context, name, uid string) error
+	ClearOwnerSettings(ctx context.Context, name, uid string) error
 	ServerEventFeeds(ctx context.Context) ([]ServerEventFeed, error)
 	MarkEventsMailed(ctx context.Context, name string, seq int64) error
 }

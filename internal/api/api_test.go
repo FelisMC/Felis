@@ -740,7 +740,7 @@ func (f *fakeRepo) IsProtectedAdminLink(_ context.Context, mcUUID string) (bool,
 	}
 	return false, nil
 }
-func (f *fakeRepo) ClaimServer(_ context.Context, n, u string) (bool, error) {
+func (f *fakeRepo) ClaimServer(ctx context.Context, n, u string, clearOwner func(context.Context, string) error) (bool, error) {
 	ok, present := f.claimOK[n]
 	if !present {
 		return false, ErrNotFound
@@ -748,18 +748,28 @@ func (f *fakeRepo) ClaimServer(_ context.Context, n, u string) (bool, error) {
 	if ok && f.claimQuotaRefuse[n] {
 		return false, ErrQuotaExceeded // mirrors the atomic gate losing the race
 	}
+	if ok && clearOwner != nil {
+		if err := clearOwner(ctx, n); err != nil {
+			return false, err
+		}
+	}
 	return ok, nil
 }
 func (f *fakeRepo) AssignPreview(_ context.Context, name, _ string, _ ResourceSpec) (string, []QuotaExcess, error) {
 	return f.owners[name].OwnerID, f.assignOver, f.assignErr
 }
-func (f *fakeRepo) AssignServer(ctx context.Context, name, userID string, res ResourceSpec, allowOver bool) (string, []QuotaExcess, error) {
+func (f *fakeRepo) AssignServer(ctx context.Context, name, userID string, res ResourceSpec, allowOver bool, clearOwner func(context.Context, string) error) (string, []QuotaExcess, error) {
 	previous, over, err := f.AssignPreview(ctx, name, userID, res)
 	switch {
 	case err != nil:
 		return previous, nil, err
 	case len(over) > 0 && !allowOver:
 		return previous, over, ErrQuotaExceeded
+	}
+	if clearOwner != nil {
+		if err := clearOwner(ctx, name); err != nil {
+			return previous, nil, err
+		}
 	}
 	o := f.owners[name]
 	o.OwnerID = userID
@@ -1806,6 +1816,11 @@ func newFakeCluster() *fakeCluster {
 }
 func (c *fakeCluster) GetServer(_ context.Context, n string) (*ServerInfo, error) {
 	if s, ok := c.byName[n]; ok {
+		if s.UID == "" {
+			cp := *s
+			cp.UID = "uid-" + n
+			return &cp, nil
+		}
 		return s, nil
 	}
 	return nil, ErrNotFound
@@ -2041,7 +2056,7 @@ func (c *fakeCluster) PatchServerSpec(_ context.Context, n string, p ServerSpecP
 	return nil
 }
 
-func (c *fakeCluster) ClearExtraPorts(_ context.Context, name, uid string) error {
+func (c *fakeCluster) ClearOwnerSettings(_ context.Context, name, uid string) error {
 	c.clearedPorts = append(c.clearedPorts, name+"/"+uid)
 	if c.clearPortsErr != nil {
 		return c.clearPortsErr
@@ -2050,11 +2065,20 @@ func (c *fakeCluster) ClearExtraPorts(_ context.Context, name, uid string) error
 	if !ok {
 		return nil
 	}
-	if uid == "" || info.UID != uid {
+	wantUID := info.UID
+	if wantUID == "" {
+		wantUID = "uid-" + name
+	}
+	if uid == "" || wantUID != uid {
 		return ErrConflict
 	}
 	spec := c.startupSpecs[name]
-	spec.ExtraPorts = nil
+	if info.AutostartPolicy != "" {
+		spec.AutostartPolicy = v1alpha1.AutostartPolicy(info.AutostartPolicy)
+	}
+	if v1alpha1.ClearOwnerSettings(&spec) {
+		info.AutostartPolicy = string(spec.AutostartPolicy)
+	}
 	c.startupSpecs[name] = spec
 	info.ExtraPorts, info.ExtraPortsPending = nil, false
 	return nil

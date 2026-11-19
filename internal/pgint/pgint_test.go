@@ -434,7 +434,7 @@ func TestClaimServerQuotaAtomicGate(t *testing.T) {
 		wg.Add(1)
 		go func(i int, name string) {
 			defer wg.Done()
-			claimed[i], results[i] = repo.ClaimServer(ctx, name, u.ID)
+			claimed[i], results[i] = repo.ClaimServer(ctx, name, u.ID, nil)
 		}(i, name)
 	}
 	wg.Wait()
@@ -464,7 +464,7 @@ func TestClaimServerQuotaAtomicGate(t *testing.T) {
 
 	s3 := "qc-" + suffix(t)
 	seed(s3)
-	if _, err := repo.ClaimServer(ctx, s3, u.ID); !errors.Is(err, api.ErrQuotaExceeded) {
+	if _, err := repo.ClaimServer(ctx, s3, u.ID, nil); !errors.Is(err, api.ErrQuotaExceeded) {
 		t.Fatalf("third claim = %v, want ErrQuotaExceeded", err)
 	}
 
@@ -476,7 +476,7 @@ func TestClaimServerQuotaAtomicGate(t *testing.T) {
 		t.Fatalf("find the race's unclaimed row: %v", err)
 	}
 	for _, name := range []string{free1, s3} {
-		if ok, err := repo.ClaimServer(ctx, name, otherUser.ID); err != nil || !ok {
+		if ok, err := repo.ClaimServer(ctx, name, otherUser.ID, nil); err != nil || !ok {
 			t.Fatalf("quota-free claim %s = (%v, %v), want (true, nil)", name, ok, err)
 		}
 	}
@@ -531,7 +531,7 @@ func TestSetQuotasReplacesEveryCap(t *testing.T) {
 
 	set(api.QuotaInput{MaxServers: n(0), MaxCPUMilli: n(2000), MaxMemoryMB: n(4096), MaxStorageGB: n(20)}, "0/2000/4096/20")
 	gate(false)
-	if _, err := repo.ClaimServer(ctx, name, u.ID); !errors.Is(err, api.ErrQuotaExceeded) {
+	if _, err := repo.ClaimServer(ctx, name, u.ID, nil); !errors.Is(err, api.ErrQuotaExceeded) {
 		t.Fatalf("claim at max_servers 0 = %v, want ErrQuotaExceeded", err)
 	}
 
@@ -541,7 +541,7 @@ func TestSetQuotasReplacesEveryCap(t *testing.T) {
 	gate(false)
 	set(api.QuotaInput{}, "-/-/-/-")
 	gate(true)
-	if claimed, err := repo.ClaimServer(ctx, name, u.ID); err != nil || !claimed {
+	if claimed, err := repo.ClaimServer(ctx, name, u.ID, nil); err != nil || !claimed {
 		t.Fatalf("claim with every cap lifted = %v, %v; want claimed", claimed, err)
 	}
 }
