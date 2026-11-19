@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/metrics"
 )
 
@@ -201,7 +202,7 @@ func (a *API) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 			"the owner account cannot be deleted from the panel"))
 		return
 	}
-	if err := a.Repo.DeleteUser(r.Context(), id, p.Email, a.clearOwnerSettings); err != nil {
+	if err := a.Repo.DeleteUser(r.Context(), id, p.Email, a.retireDeletedUserServer); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			writeError(w, r, newError(http.StatusNotFound, "not_found", "user not found"))
 			return
@@ -226,6 +227,26 @@ func (a *API) clearOwnerSettings(ctx context.Context, name string) error {
 		return err
 	}
 	return a.Cluster.ClearOwnerSettings(ctx, name, info.UID)
+}
+
+func (a *API) retireDeletedUserServer(ctx context.Context, name string) error {
+	if a.Cluster == nil {
+		return nil
+	}
+	info, err := a.Cluster.GetServer(ctx, name)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := a.Cluster.ClearOwnerSettings(ctx, name, info.UID); err != nil {
+		return err
+	}
+	if !info.ReaperExempt && info.DesiredState != string(v1alpha1.DesiredStopped) {
+		return a.Cluster.SetDesiredState(ctx, name, v1alpha1.DesiredStopped)
+	}
+	return nil
 }
 
 func (a *API) handleDisableUser(w http.ResponseWriter, r *http.Request) {

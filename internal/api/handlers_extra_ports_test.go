@@ -189,7 +189,7 @@ func TestDeleteUserWaitsForPortCleanupBeforeReleasingOwnership(t *testing.T) {
 			repo.seedUser(UserView{ID: "owner1", Username: "old-owner", Role: "user"})
 			repo.byName["survival"] = &ServerRecord{Name: "survival", OwnerID: "owner1"}
 			repo.byName["other"] = &ServerRecord{Name: "other", OwnerID: "new-owner"}
-			cl.byName["survival"] = &ServerInfo{Name: "survival", UID: "ports-cr"}
+			cl.byName["survival"] = &ServerInfo{Name: "survival", UID: "ports-cr", DesiredState: string(v1alpha1.DesiredRunning)}
 			if fail {
 				cl.clearPortsErr = newError(http.StatusConflict, "extra_ports_pending", "cleanup pending")
 			}
@@ -203,8 +203,18 @@ func TestDeleteUserWaitsForPortCleanupBeforeReleasingOwnership(t *testing.T) {
 			if w.Code != want || !reflect.DeepEqual(cl.clearedPorts, []string{"survival/ports-cr"}) || repo.deletedIDs["owner1"] == fail {
 				t.Fatalf("cleanup/deletion status=%d calls=%v body=%s", w.Code, cl.clearedPorts, w.Body.String())
 			}
-			if (repo.byName["survival"].OwnerID == "") == fail || repo.byName["other"].OwnerID != "new-owner" {
-				t.Fatal("cleanup failure released ownership or touched another user's server")
+			if repo.byName["survival"].OwnerID != "owner1" || (repo.byName["survival"].Retire != nil) == fail || repo.byName["other"].OwnerID != "new-owner" {
+				t.Fatal("user deletion released ownership before archival or touched another user's server")
+			}
+			if !fail {
+				if cl.desired["survival"] != v1alpha1.DesiredStopped {
+					t.Fatalf("desiredState = %q, want Stopped", cl.desired["survival"])
+				}
+				repo.linked["bob"], repo.quota["bob"], repo.claimOK["survival"] = true, true, false
+				a.External = staticExternal{p: &Principal{UserID: "bob", Email: "bob@example.net", Role: "user"}}
+				if cw := do(a.ExternalHandler(), "POST", "/api/v1/servers/survival/claim", "", nil); cw.Code != http.StatusConflict {
+					t.Fatalf("claim retiring server after user delete = %d %s, want 409", cw.Code, cw.Body.String())
+				}
 			}
 		})
 	}

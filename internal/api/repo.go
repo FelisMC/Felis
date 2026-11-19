@@ -365,7 +365,7 @@ type Repo interface {
 	UserDetail(ctx context.Context, userID string) (*UserDetail, error)
 	CreateUser(ctx context.Context, input CreateUserInput, createdBy string) (*UserView, error)
 	UpdateUser(ctx context.Context, userID string, patch UpdateUserInput, updatedBy string) (*UserView, error)
-	// DeleteUser soft-deletes and revokes sessions, releases servers and removes credentials while retaining the audit identity.
+	// DeleteUser soft-deletes and revokes sessions, retires servers and removes credentials while retaining the audit identity.
 	DeleteUser(ctx context.Context, userID, deletedBy string, clearPorts func(context.Context, string) error) error
 	// SetUserDisabled flips the disabled flag of a live user, revoking every session when disabling; ErrNotFound if unknown or deleted.
 	SetUserDisabled(ctx context.Context, userID string, disabled bool) error

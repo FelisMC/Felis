@@ -1874,11 +1874,19 @@ func (p *PGRepo) DeleteUser(ctx context.Context, userID, _ string, clearPorts fu
 	}
 
 	if _, err := tx.ExecContext(ctx,
-		`WITH released AS (
-		   UPDATE servers SET owner_id = NULL WHERE owner_id = $1 AND deleted_at IS NULL RETURNING name)
-		 DELETE FROM server_allowlist WHERE server_name IN (SELECT name FROM released)`,
+		`WITH retiring AS (
+		   UPDATE servers
+		   SET retire_requested_at = COALESCE(retire_requested_at, now())
+		   WHERE owner_id = $1 AND deleted_at IS NULL
+		   RETURNING name)
+		 DELETE FROM server_allowlist WHERE server_name IN (SELECT name FROM retiring)`,
 		userID); err != nil {
 		return err
+	}
+	for _, name := range servers {
+		if err := disableServerSchedulesTx(ctx, tx, name); err != nil {
+			return err
+		}
 	}
 
 	if _, err := tx.ExecContext(ctx,
@@ -1918,8 +1926,23 @@ func (p *PGRepo) PatchServerPorts(ctx context.Context, name, ownerID string, app
 		}
 		return err
 	}
-	if ownerID != "" && owner != ownerID {
-		return errForbidden
+	if ownerID != "" {
+		if owner != ownerID {
+			return errForbidden
+		}
+		var live, retiring bool
+		if err := tx.QueryRowContext(ctx,
+			`SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND NOT disabled AND deleted_at IS NULL),
+			        (SELECT retire_requested_at IS NOT NULL FROM servers WHERE name = $2)`,
+			ownerID, name).Scan(&live, &retiring); err != nil {
+			return err
+		}
+		if !live {
+			return errForbidden
+		}
+		if retiring {
+			return errServerRetiring
+		}
 	}
 	if err := apply(); err != nil {
 		return err

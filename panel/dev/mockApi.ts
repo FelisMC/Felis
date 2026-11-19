@@ -912,7 +912,7 @@ function fleetView(state: MockState, accountInfo: MockAccount): FleetServer[] {
       endpointMode: "domain",
       endpointAddress: s.ready ? `10.43.0.${10 + i}:25565` : undefined,
       playersOnline: s.ready ? s.playersOnline : 0,
-      owner: owner ? state.accounts[owner].email : "",
+      owner: owner ? (state.accounts[owner]?.email ?? owner) : "",
       owned: owner === accountInfo.id,
       claimable: owner === null && !s.retiring && !s.reaperExempt,
       system: s.reaperExempt,
@@ -2651,22 +2651,15 @@ async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
         sendError(ctx.res, 403, "owner_protected", "the owner account cannot be deleted from the panel");
         return true;
       }
-      const activeServers = ctx.state.servers.filter(
-        (s) => s.owner === acc.id && s.phase !== "Stopped" && s.phase !== "Failed"
-      );
-      if (activeServers.length > 0) {
-        sendError(
-          ctx.res,
-          409,
-          "active_servers",
-          "cannot delete user with active servers"
-        );
-        return true;
-      }
-
       ctx.state.servers.forEach((s) => {
         if (s.owner === acc.id) {
-          s.owner = null;
+          s.desiredState = "Stopped";
+          s.phase = "Stopped";
+          s.ready = false;
+          s.retiring = {
+            requested_at: s.retiring?.requested_at ?? new Date().toISOString(),
+            delete: s.retiring?.delete ?? false,
+          };
         }
       });
 

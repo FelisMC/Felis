@@ -9852,7 +9852,7 @@ paths:
     delete:
       tags: [users]
       operationId: deleteUser
-      summary: Soft-delete a user — releases servers, revokes sessions (admin only, cannot delete self).
+      summary: Soft-delete a user — archives and releases servers, revokes sessions (admin only, cannot delete self).
       x-felis-face: [external]
       x-felis-tier: owner
       security: [{ sessionCookie: [] }]

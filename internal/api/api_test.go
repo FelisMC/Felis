@@ -1332,9 +1332,10 @@ func (f *fakeRepo) DeleteUser(ctx context.Context, userID, _ string, clearPorts 
 					}
 				}
 			}
+			now := time.Now()
 			for _, record := range f.byName {
-				if record.OwnerID == userID {
-					record.OwnerID = ""
+				if record.OwnerID == userID && record.Retire == nil {
+					record.Retire = &RetireState{RequestedAt: now}
 				}
 			}
 			f.seededUsers = append(f.seededUsers[:i], f.seededUsers[i+1:]...)
@@ -1362,8 +1363,13 @@ func (f *fakeRepo) PatchServerPorts(_ context.Context, name, ownerID string, app
 	if !ok {
 		return ErrNotFound
 	}
-	if ownerID != "" && record.OwnerID != ownerID {
-		return errForbidden
+	if ownerID != "" {
+		if record.OwnerID != ownerID || f.deletedIDs[ownerID] {
+			return errForbidden
+		}
+		if record.Retire != nil {
+			return errServerRetiring
+		}
 	}
 	return apply()
 }

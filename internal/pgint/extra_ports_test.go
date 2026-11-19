@@ -140,13 +140,12 @@ func TestDeleteUserPortCleanupBlocksClaimAndStaleOwnerPatch(t *testing.T) {
 		patched <- repo.PatchServerPorts(ctx, name, oldOwner.ID, func() error { applied.Add(1); return nil })
 	}()
 	waitForLockWait(t, "SELECT COALESCE(owner_id, '') FROM servers")
-	claimed := make(chan error, 1)
+	claimed := make(chan bool, 1)
+	claimErr := make(chan error, 1)
 	go func() {
 		ok, err := repo.ClaimServer(ctx, name, newOwner.ID, nil)
-		if err == nil && !ok {
-			err = errors.New("claim failed after confirmed release")
-		}
-		claimed <- err
+		claimed <- ok
+		claimErr <- err
 	}()
 	waitForLockWait(t, "SELECT owner_id, retire_requested_at")
 	if applied.Load() != 0 || serverOwner(t, name) != oldOwner.ID {
@@ -159,11 +158,30 @@ func TestDeleteUserPortCleanupBlocksClaimAndStaleOwnerPatch(t *testing.T) {
 	if err := <-patched; err == nil || applied.Load() != 0 {
 		t.Fatal("stale owner wrote ports after account deletion")
 	}
-	if err := <-claimed; err != nil {
+	if err := <-claimErr; err != nil {
 		t.Fatal(err)
 	}
-	if serverOwner(t, name) != newOwner.ID {
-		t.Fatal("new owner did not receive the cleared server")
+	if <-claimed || serverOwner(t, name) != oldOwner.ID {
+		t.Fatal("claim succeeded before reaper archived and released the deleted user's server")
+	}
+	rec, err := repo.ServerByName(ctx, name)
+	if err != nil || rec.Retire == nil || rec.Retire.Delete {
+		t.Fatalf("server after user deletion = %+v, %v; want pending release retirement", rec, err)
+	}
+	mine, err := repo.MyServers(ctx, newOwner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range mine {
+		if s.Name == name {
+			t.Fatalf("deleted user's unarchived server surfaced in MyServers: %+v", s)
+		}
+	}
+	if err := reaper.NewPGStore(db).ReleaseWorld(ctx, name, time.Now(), func(string) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := repo.ClaimServer(ctx, name, newOwner.ID, nil); err != nil || !ok || serverOwner(t, name) != newOwner.ID {
+		t.Fatalf("claim after reaper release = (%v, %v), owner=%q", ok, err, serverOwner(t, name))
 	}
 }
 

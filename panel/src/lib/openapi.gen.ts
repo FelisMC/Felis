@@ -2904,7 +2904,7 @@ export interface paths {
         get: operations["getUser"];
         put?: never;
         post?: never;
-        /** Soft-delete a user — releases servers, revokes sessions (admin only, cannot delete self). */
+        /** Soft-delete a user — archives and releases servers, revokes sessions (admin only, cannot delete self). */
         delete: operations["deleteUser"];
         options?: never;
         head?: never;
