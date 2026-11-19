@@ -2303,11 +2303,10 @@ func (p *PGRepo) RedeemMigration(ctx context.Context, targetUserID, codeHash str
 	}
 	rows.Close()
 
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE server_schedules s SET owner_id = $2 FROM servers v
-		 WHERE v.name = s.server_name AND v.owner_id = $2 AND s.owner_id = $1`,
-		sourceUserID, targetUserID); err != nil {
-		return "", nil, err
+	for _, name := range moved {
+		if err := disableServerSchedulesTx(ctx, tx, name); err != nil {
+			return "", nil, err
+		}
 	}
 
 	if _, err := tx.ExecContext(ctx,

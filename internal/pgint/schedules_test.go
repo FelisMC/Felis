@@ -358,13 +358,16 @@ func TestSchedulesFollowTheServer(t *testing.T) {
 	dst := newUser(t, "user", "sch-dst")
 	other := newUser(t, "user", "sch-other")
 	sfx := suffix(t)
-	mine, theirs := "sm-"+sfx, "st-"+sfx
-	seedOwnedServer(t, mine, src.ID, false)
-	seedOwnedServer(t, theirs, other.ID, false)
-	moved := mustCreateSchedule(t, newSchedule(mine, src.ID, api.StepStop, nil))
-	stale := mustCreateSchedule(t, newSchedule(mine, other.ID, api.StepStop, nil)) // saved by a previous owner
-	kept := mustCreateSchedule(t, newSchedule(theirs, src.ID, api.StepStop, nil))  // src's, on a server src lost
+	mine, dstSrv, theirs := "sm-"+sfx, "sd-"+sfx, "st-"+sfx
 	t0 := mustNow().Truncate(time.Second)
+	next := t0.Add(time.Hour)
+	seedOwnedServer(t, mine, src.ID, false)
+	seedOwnedServer(t, dstSrv, dst.ID, false)
+	seedOwnedServer(t, theirs, other.ID, false)
+	moved := mustCreateSchedule(t, newSchedule(mine, src.ID, api.StepStop, &next))
+	stale := mustCreateSchedule(t, newSchedule(mine, other.ID, api.StepStop, &next))
+	onDst := mustCreateSchedule(t, newSchedule(dstSrv, src.ID, api.StepStop, &next))
+	kept := mustCreateSchedule(t, newSchedule(theirs, src.ID, api.StepStop, &next))
 	if err := repo.StartMigration(ctx, "schmig-"+sfx, src.ID, t0); err != nil {
 		t.Fatal(err)
 	}
@@ -378,13 +381,38 @@ func TestSchedulesFollowTheServer(t *testing.T) {
 		t.Fatalf("RedeemMigration: %v", err)
 	}
 	for _, c := range []struct {
-		server string
-		id     int64
-		owner  string
-	}{{mine, moved.ID, dst.ID}, {mine, stale.ID, other.ID}, {theirs, kept.ID, src.ID}} {
-		if g := mustGetSchedule(t, c.server, c.id); g.OwnerID != c.owner {
-			t.Fatalf("schedule %d owner %q, want %q", c.id, g.OwnerID, c.owner)
+		server  string
+		id      int64
+		owner   string
+		enabled bool
+	}{
+		{mine, moved.ID, src.ID, false},
+		{mine, stale.ID, other.ID, false},
+		{dstSrv, onDst.ID, src.ID, true},
+		{theirs, kept.ID, src.ID, true},
+	} {
+		g := mustGetSchedule(t, c.server, c.id)
+		if g.OwnerID != c.owner || g.Enabled != c.enabled {
+			t.Fatalf("schedule %d = (owner=%q, enabled=%v), want (%q, %v)", c.id, g.OwnerID, g.Enabled, c.owner, c.enabled)
 		}
+	}
+
+	emptySrc := newUser(t, "user", "sch-esrc")
+	leftover := mustCreateSchedule(t, newSchedule(dstSrv, emptySrc.ID, api.StepStop, &next))
+	if err := repo.StartMigration(ctx, "schmig2-"+sfx, emptySrc.ID, t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.ConfirmMigration(ctx, emptySrc.ID, "passkey", "sess", t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.IssueMigrationCode(ctx, emptySrc.ID, dst.ID, "sess", "h-sch2-"+sfx, t0, t0.Add(10*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, moved2, err := repo.RedeemMigration(ctx, dst.ID, "h-sch2-"+sfx, t0); err != nil || len(moved2) != 0 {
+		t.Fatalf("RedeemMigration(empty) = (%v, %v)", moved2, err)
+	}
+	if g := mustGetSchedule(t, dstSrv, leftover.ID); g.OwnerID != emptySrc.ID {
+		t.Fatalf("leftover schedule owner = %q, want %q", g.OwnerID, emptySrc.ID)
 	}
 }
 
