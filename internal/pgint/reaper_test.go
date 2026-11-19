@@ -6,11 +6,14 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"felis.lolicon.best/internal/api"
+	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/backup"
 	"felis.lolicon.best/internal/reaper"
 )
@@ -468,5 +471,87 @@ func TestRestartClock(t *testing.T) {
 	}
 	if !last.Equal(at) || w3.Valid || w1.Valid || cpu != 100 {
 		t.Fatalf("after RestartClock: last_active_at=%v warned=%v/%v cpu=%d; want %v, cleared, cache kept", last, w3, w1, cpu, at)
+	}
+}
+
+type stubOpsAuth struct{}
+
+func (stubOpsAuth) Authenticate(*http.Request) (api.Caller, error) { return api.CallerOps, nil }
+
+type stubRestoreCluster struct {
+	api.Cluster
+	ensured []string
+}
+
+func (c *stubRestoreCluster) GetServer(_ context.Context, name string) (*api.ServerInfo, error) {
+	return &api.ServerInfo{Name: name, Phase: "Stopped", DesiredState: string(v1alpha1.DesiredStopped)}, nil
+}
+
+func (c *stubRestoreCluster) EnsureWorldVolume(_ context.Context, name string) error {
+	c.ensured = append(c.ensured, name)
+	return nil
+}
+
+func (c *stubRestoreCluster) AcquireMaintenance(context.Context, string, string) error { return nil }
+func (c *stubRestoreCluster) ReleaseMaintenance(context.Context, string) error         { return nil }
+
+type stubRestorer struct{ refs []string }
+
+func (r *stubRestorer) Restore(_ context.Context, _, ref string) error {
+	r.refs = append(r.refs, ref)
+	return nil
+}
+
+func TestInternalRestoreScopesBackupsToCurrentOwner(t *testing.T) {
+	ctx := context.Background()
+	name := "rebuild-" + suffix(t)
+	userA := newUser(t, "user", "rebuild-a")
+	userB := newUser(t, "user", "rebuild-b")
+	seedOwnedServer(t, name, userB.ID, false)
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	seedBackup := func(id string, owner any, ref string, created time.Time) {
+		t.Helper()
+		if _, err := db.ExecContext(ctx,
+			`INSERT INTO world_backups (id, server_name, former_owner, backup_ref, size_bytes, reason, status, created_at, expires_at)
+			 VALUES ($1, $2, $3, $4, 64, 'inactive_15d', 'present', $5, $6)`,
+			id, name, owner, ref, created, created.Add(90*reaper.Day)); err != nil {
+			t.Fatalf("seed backup %s: %v", id, err)
+		}
+	}
+	seedBackup("bk-a-"+suffix(t), userA.ID, "/archives/"+name+"-a.tar.gz", now)
+
+	cl := &stubRestoreCluster{}
+	restorer := &stubRestorer{}
+	h := (&api.API{Repo: repo, Cluster: cl, Internal: stubOpsAuth{}, Restorer: restorer}).InternalHandler()
+	call := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/internal/servers/"+name+"/restore", nil)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		return w
+	}
+
+	if w := call(); w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), `"no_backup"`) || len(restorer.refs) != 0 || len(cl.ensured) != 0 {
+		t.Fatalf("with only former owner's backup = %d %s, refs=%v, ensured=%v; want 404 no_backup", w.Code, w.Body.String(), restorer.refs, cl.ensured)
+	}
+
+	refB := "/archives/" + name + "-b.tar.gz"
+	seedBackup("bk-b-"+suffix(t), userB.ID, refB, now.Add(-time.Hour))
+	if w := call(); w.Code != http.StatusAccepted || len(restorer.refs) != 1 || restorer.refs[0] != refB {
+		t.Fatalf("with current owner's older backup = %d %s, refs=%v; want 202 and %s", w.Code, w.Body.String(), restorer.refs, refB)
+	}
+
+	restorer.refs, cl.ensured = nil, nil
+	if _, err := db.ExecContext(ctx, `UPDATE servers SET owner_id = NULL WHERE name = $1`, name); err != nil {
+		t.Fatal(err)
+	}
+	if w := call(); w.Code != http.StatusNotFound || len(restorer.refs) != 0 {
+		t.Fatalf("unclaimed server with tenant backups = %d %s, refs=%v; want 404 no_backup", w.Code, w.Body.String(), restorer.refs)
+	}
+
+	refUnclaimed := "/archives/" + name + "-unclaimed.tar.gz"
+	seedBackup("bk-u-"+suffix(t), nil, refUnclaimed, now.Add(-2*time.Hour))
+	if w := call(); w.Code != http.StatusAccepted || len(restorer.refs) != 1 || restorer.refs[0] != refUnclaimed {
+		t.Fatalf("unclaimed server with unclaimed backup = %d %s, refs=%v; want 202 and %s", w.Code, w.Body.String(), restorer.refs, refUnclaimed)
 	}
 }

@@ -259,6 +259,7 @@ type Repo interface {
 	// BackupsForUser scopes to former ownership recorded at archive time.
 	BackupsForUser(ctx context.Context, userID string, opts BackupListOpts) ([]BackupView, int, error)
 	LatestBackup(ctx context.Context, serverName string) (*BackupRecord, error)
+	LatestBackupForOwner(ctx context.Context, serverName, ownerID string) (*BackupRecord, error)
 	BackupByID(ctx context.Context, id string) (*BackupRecord, error)
 	// ExpireBackup removes restore and budget eligibility immediately; retention and offsite sync clean up archive bytes later.
 	ExpireBackup(ctx context.Context, id string, at time.Time) error

@@ -422,11 +422,12 @@ func (a *API) handleInternalRestore(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
 		return
 	}
-	if _, err := a.Repo.ServerByName(r.Context(), name); err != nil {
+	rec, err := a.Repo.ServerByName(r.Context(), name)
+	if err != nil {
 		a.writeLookupError(w, r, err)
 		return
 	}
-	backup, err := a.Repo.LatestBackup(r.Context(), name)
+	backup, err := a.Repo.LatestBackupForOwner(r.Context(), name, rec.OwnerID)
 	if errors.Is(err, ErrNotFound) {
 		writeError(w, r, newError(http.StatusNotFound, "no_backup", "no restorable backup exists for this server"))
 		return

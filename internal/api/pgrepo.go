@@ -802,6 +802,23 @@ func (p *PGRepo) LatestBackup(ctx context.Context, serverName string) (*BackupRe
 	return &b, nil
 }
 
+func (p *PGRepo) LatestBackupForOwner(ctx context.Context, serverName, ownerID string) (*BackupRecord, error) {
+	const q = `SELECT id, server_name, COALESCE(former_owner, ''), backup_ref, COALESCE(size_bytes, 0),
+		COALESCE(sha256, ''), created_at
+		FROM world_backups
+		WHERE server_name = $1 AND COALESCE(former_owner, '') = $2 AND status = 'present' AND corrupt_at IS NULL
+		ORDER BY created_at DESC LIMIT 1`
+	var b BackupRecord
+	switch err := p.db.QueryRowContext(ctx, q, serverName, ownerID).Scan(
+		&b.ID, &b.ServerName, &b.FormerOwner, &b.BackupRef, &b.SizeBytes, &b.SHA256, &b.CreatedAt); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, ErrNotFound
+	case err != nil:
+		return nil, err
+	}
+	return &b, nil
+}
+
 func (p *PGRepo) BackupByID(ctx context.Context, id string) (*BackupRecord, error) {
 	const q = `SELECT id, server_name, COALESCE(former_owner, ''), backup_ref, COALESCE(size_bytes, 0),
 		corrupt_at IS NOT NULL, COALESCE(sha256, '')

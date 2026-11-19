@@ -32,10 +32,15 @@ func newFailoverRig() *failoverRig {
 		g.repo.byName[name] = &ServerRecord{Name: name, OwnerID: "u-" + name}
 	}
 	backup := func(id string, age time.Duration, corrupt bool) fakeBackup {
-		return fakeBackup{view: BackupView{ID: id, ServerName: "alice", Status: "present", CreatedAt: failoverT0.Add(-age), SizeBytes: int64(age / time.Minute), Corrupt: corrupt},
+		return fakeBackup{view: BackupView{ID: id, ServerName: "alice", FormerOwner: "u-alice", Status: "present", CreatedAt: failoverT0.Add(-age), SizeBytes: int64(age / time.Minute), Corrupt: corrupt},
 			ref: "/backups/" + id + ".tar.gz", sha256: strings.Repeat(id[len(id)-1:], 64)}
 	}
-	g.repo.backups = append(g.repo.backups, backup("bk-1", 3*time.Hour, false), backup("bk-2", 40*time.Minute, false), backup("bk-3", 5*time.Minute, true))
+	g.repo.backups = append(g.repo.backups,
+		backup("bk-1", 3*time.Hour, false),
+		backup("bk-2", 40*time.Minute, false),
+		backup("bk-3", 5*time.Minute, true),
+		fakeBackup{view: BackupView{ID: "bk-bob-prev", ServerName: "bob", FormerOwner: "u-prev", Status: "present", CreatedAt: failoverT0.Add(-10 * time.Minute), SizeBytes: 10}, ref: "/backups/bk-bob-prev.tar.gz"},
+	)
 	lostSince := failoverT0.Add(-20 * time.Minute)
 	g.d = &fakeDistribution{
 		targets: map[string]bool{"a": true, "c": true},
@@ -140,7 +145,7 @@ func TestFailoverStartsEachServerAndFencesTheNode(t *testing.T) {
 
 	g.d.lostErr = nil
 	g.repo.byName["dave"] = &ServerRecord{Name: "dave", OwnerID: "u-dave"}
-	g.repo.backups = append(g.repo.backups, fakeBackup{view: BackupView{ID: "bk-d", ServerName: "dave", Status: "present", CreatedAt: failoverT0}, ref: "/backups/bk-d.tar.gz"})
+	g.repo.backups = append(g.repo.backups, fakeBackup{view: BackupView{ID: "bk-d", ServerName: "dave", FormerOwner: "u-dave", Status: "present", CreatedAt: failoverT0}, ref: "/backups/bk-d.tar.gz"})
 	g.d.placed["b"] = append(g.d.placed["b"], distributed.PlacedServer{Name: "dave"})
 	g.d.beginErr = map[string]error{"dave": errors.New("target claim refused")}
 	w := g.failOver(`{"targetNode":"c","confirm":"b"}`)
@@ -175,7 +180,7 @@ func TestFailoverStartsEachServerAndFencesTheNode(t *testing.T) {
 	}
 
 	g.d.placed["b"][2].Operation.State = "failed"
-	g.repo.backups = append(g.repo.backups, fakeBackup{view: BackupView{ID: "bk-c", ServerName: "carol", Status: "present", CreatedAt: failoverT0}, ref: "/backups/bk-c.tar.gz"})
+	g.repo.backups = append(g.repo.backups, fakeBackup{view: BackupView{ID: "bk-c", ServerName: "carol", FormerOwner: "u-carol", Status: "present", CreatedAt: failoverT0}, ref: "/backups/bk-c.tar.gz"})
 	g.d.begun = nil
 	if w := g.failOver(`{"targetNode":"a","confirm":"b"}`); w.Code != http.StatusAccepted {
 		t.Fatalf("second failover = %d %s", w.Code, w.Body.String())
@@ -321,20 +326,22 @@ func TestAutomaticFailover(t *testing.T) {
 func TestReplicasKeepWorkerWorldsRecent(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
+		owner   string
 		age     time.Duration
 		minutes int
 		want    bool
 	}{
-		{"stale", 2 * time.Hour, 60, true},
-		{"recent", 30 * time.Minute, 60, false},
-		{"switched off", 2 * time.Hour, 0, false},
+		{"stale", "owner1", 2 * time.Hour, 60, true},
+		{"recent", "owner1", 30 * time.Minute, 60, false},
+		{"previous owner recent", "previous-owner", 30 * time.Minute, 60, true},
+		{"switched off", "owner1", 2 * time.Hour, 0, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newLiveFixture()
 			f.a.Now = func() time.Time { return failoverT0 }
 			f.a.Distribution = &fakeDistribution{replicas: []string{"survival"}}
 			repo := f.a.Repo.(*fakeRepo)
-			repo.backups = append(repo.backups, fakeBackup{view: BackupView{ID: "bk-s", ServerName: "survival", Status: "present", CreatedAt: failoverT0.Add(-tc.age)}, ref: "/backups/bk-s.tar.gz"})
+			repo.backups = append(repo.backups, fakeBackup{view: BackupView{ID: "bk-s", ServerName: "survival", FormerOwner: tc.owner, Status: "present", CreatedAt: failoverT0.Add(-tc.age)}, ref: "/backups/bk-s.tar.gz"})
 			raw, _ := json.Marshal(FailoverPolicy{AfterMinutes: 15, ReplicaMinutes: tc.minutes})
 			repo.settings[failoverPolicyKey] = raw
 			if err := f.a.FailoverTick(context.Background()); err != nil {

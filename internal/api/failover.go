@@ -180,12 +180,19 @@ func (a *API) handleFailoverPlan(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, p := range placed {
 		s := FailoverServer{Name: p.Name, DesiredState: p.DesiredState, Operation: p.Operation}
-		switch b, err := a.Repo.LatestBackup(r.Context(), p.Name); {
-		case err == nil:
-			s.Backup = &FailoverBackup{ID: b.ID, CreatedAt: b.CreatedAt, SizeBytes: b.SizeBytes}
-		case !errors.Is(err, ErrNotFound):
+		rec, err := a.Repo.ServerByName(r.Context(), p.Name)
+		if err != nil && !errors.Is(err, ErrNotFound) {
 			writeError(w, r, err)
 			return
+		}
+		if err == nil {
+			switch b, err := a.Repo.LatestBackupForOwner(r.Context(), p.Name, rec.OwnerID); {
+			case err == nil:
+				s.Backup = &FailoverBackup{ID: b.ID, CreatedAt: b.CreatedAt, SizeBytes: b.SizeBytes}
+			case !errors.Is(err, ErrNotFound):
+				writeError(w, r, err)
+				return
+			}
 		}
 		plan.Servers = append(plan.Servers, s)
 	}
@@ -281,7 +288,7 @@ func (a *API) failOver(ctx context.Context, node, target, actor string) (Failove
 		} else if err != nil {
 			return res, err
 		}
-		b, err := a.Repo.LatestBackup(ctx, p.Name)
+		b, err := a.Repo.LatestBackupForOwner(ctx, p.Name, rec.OwnerID)
 		if errors.Is(err, ErrNotFound) {
 			res.Skipped = append(res.Skipped, FailoverSkip{Name: p.Name, Reason: "no_backup"})
 			continue
@@ -451,7 +458,7 @@ func (a *API) startReplica(ctx context.Context, every time.Duration) error {
 		} else if err != nil {
 			return err
 		}
-		if b, err := a.Repo.LatestBackup(ctx, name); err == nil && a.now().Sub(b.CreatedAt) < every {
+		if b, err := a.Repo.LatestBackupForOwner(ctx, name, rec.OwnerID); err == nil && a.now().Sub(b.CreatedAt) < every {
 			continue
 		} else if err != nil && !errors.Is(err, ErrNotFound) {
 			return err

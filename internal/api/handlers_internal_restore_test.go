@@ -14,7 +14,7 @@ func TestInternalRestoreRebuildsAWorld(t *testing.T) {
 		repo := newFakeRepo()
 		repo.byName["survival"] = &ServerRecord{Name: "survival", OwnerID: "owner1"}
 		repo.backups = []fakeBackup{
-			{view: BackupView{ID: "bk-1", ServerName: "survival", Status: "present", CreatedAt: time.Unix(1_700_000_000, 0)}, ref: "/backups/1.tar.gz"},
+			{view: BackupView{ID: "bk-1", ServerName: "survival", FormerOwner: "owner1", Status: "present", CreatedAt: time.Unix(1_700_000_000, 0)}, ref: "/backups/1.tar.gz"},
 		}
 		cl := newFakeCluster()
 		cl.byName["survival"] = &ServerInfo{Name: "survival", Phase: "Stopped", DesiredState: string(v1alpha1.DesiredStopped)}
@@ -48,6 +48,12 @@ func TestInternalRestoreRebuildsAWorld(t *testing.T) {
 	cl.byName["survival"].Ready, cl.byName["survival"].DesiredState = true, string(v1alpha1.DesiredRunning)
 	if w = do(a.InternalHandler(), "POST", path, "", nil); w.Code != http.StatusConflict || restorer.calls != 0 || len(cl.ensured) != 0 {
 		t.Errorf("a running server = %d %s (restores %d, ensured %v)", w.Code, w.Body.String(), restorer.calls, cl.ensured)
+	}
+
+	a, repo, cl, restorer = mk()
+	repo.backups[0].view.FormerOwner = "previous-owner"
+	if w = do(a.InternalHandler(), "POST", path, "", nil); w.Code != http.StatusNotFound || decodeErr(t, w) != "no_backup" || restorer.calls != 0 || len(cl.ensured) != 0 {
+		t.Errorf("previous owner's backup = %d %s (restores %d, ensured %v)", w.Code, w.Body.String(), restorer.calls, cl.ensured)
 	}
 
 	a, repo, _, restorer = mk()

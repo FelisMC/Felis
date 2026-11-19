@@ -911,10 +911,21 @@ func (f *fakeRepo) pageBackups(owner string, opts BackupListOpts) ([]BackupView,
 	return match[lo:hi], len(match), nil
 }
 func (f *fakeRepo) LatestBackup(_ context.Context, serverName string) (*BackupRecord, error) {
+	return f.latestBackup(serverName, nil)
+}
+
+func (f *fakeRepo) LatestBackupForOwner(_ context.Context, serverName, ownerID string) (*BackupRecord, error) {
+	return f.latestBackup(serverName, &ownerID)
+}
+
+func (f *fakeRepo) latestBackup(serverName string, ownerID *string) (*BackupRecord, error) {
 	var latest *fakeBackup
 	for i := range f.backups {
 		b := &f.backups[i]
 		if b.view.Status != "present" || b.view.ServerName != serverName || b.view.Corrupt {
+			continue
+		}
+		if ownerID != nil && b.view.FormerOwner != *ownerID {
 			continue
 		}
 		if latest == nil || b.view.CreatedAt.After(latest.view.CreatedAt) {
