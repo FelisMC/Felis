@@ -11,6 +11,7 @@ import (
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/maintenance"
+	"felis.lolicon.best/internal/naming"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -472,4 +473,70 @@ func TestHostNodeMaintenanceBlocksStartsAndWorldJobs(t *testing.T) {
 	if err := c.Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: server.Name}, &got); err != nil || got.Spec.DesiredState != v1alpha1.DesiredStopped || len(got.Annotations) != 0 {
 		t.Fatal("state changed during host maintenance", got, err)
 	}
+}
+
+func TestEnsureSystemLobby(t *testing.T) {
+	scheme := runtime.NewScheme()
+	v1alpha1.AddToScheme(scheme)
+	corev1.AddToScheme(scheme)
+	batchv1.AddToScheme(scheme)
+	ctx := context.Background()
+
+	t.Run("creates missing system lobby running", func(t *testing.T) {
+		c := fake.NewClientBuilder().WithScheme(scheme).Build()
+		k := NewK8sCluster(c, "minecraft")
+		if err := k.EnsureSystemLobby(ctx, "reg/lobby:1"); err != nil {
+			t.Fatalf("EnsureSystemLobby: %v", err)
+		}
+		var lobby v1alpha1.MinecraftServer
+		if err := c.Get(ctx, types.NamespacedName{Namespace: "minecraft", Name: naming.SystemLobbyServer}, &lobby); err != nil {
+			t.Fatalf("get lobby: %v", err)
+		}
+		if lobby.Spec.DesiredState != v1alpha1.DesiredRunning || !lobby.Spec.ReaperExempt || !lobby.Spec.Rcon.Enabled || lobby.Labels[v1alpha1.LabelSystemRole] != naming.SystemLobbyServer {
+			t.Fatalf("unexpected lobby spec/labels: %+v %+v", lobby.Labels, lobby.Spec)
+		}
+	})
+
+	t.Run("starts stopped lobby and retries failed lobby", func(t *testing.T) {
+		lobby := &v1alpha1.MinecraftServer{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      naming.SystemLobbyServer,
+				Namespace: "minecraft",
+				Labels:    map[string]string{v1alpha1.LabelSystemRole: naming.SystemLobbyServer},
+			},
+			Spec:   v1alpha1.MinecraftServerSpec{DesiredState: v1alpha1.DesiredStopped},
+			Status: v1alpha1.MinecraftServerStatus{Phase: v1alpha1.PhaseStopped},
+		}
+		c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&v1alpha1.MinecraftServer{}).WithObjects(lobby).Build()
+		k := NewK8sCluster(c, "minecraft")
+		if err := k.EnsureSystemLobby(ctx, "reg/lobby:1"); err != nil {
+			t.Fatalf("start stopped lobby: %v", err)
+		}
+		var got v1alpha1.MinecraftServer
+		if err := c.Get(ctx, types.NamespacedName{Namespace: "minecraft", Name: naming.SystemLobbyServer}, &got); err != nil || got.Spec.DesiredState != v1alpha1.DesiredRunning {
+			t.Fatalf("got = %+v, err = %v", got.Spec, err)
+		}
+
+		got.Status.Phase = v1alpha1.PhaseFailed
+		if err := c.Status().Update(ctx, &got); err != nil {
+			t.Fatalf("mark failed: %v", err)
+		}
+		if err := k.EnsureSystemLobby(ctx, "reg/lobby:1"); err != nil {
+			t.Fatalf("retry failed lobby: %v", err)
+		}
+		if err := c.Get(ctx, types.NamespacedName{Namespace: "minecraft", Name: naming.SystemLobbyServer}, &got); err != nil || got.Annotations[v1alpha1.AnnotationStartRetry] == "" {
+			t.Fatalf("missing start-retry annotation: %+v, err = %v", got.Annotations, err)
+		}
+	})
+
+	t.Run("refuses unmarked lobby collision", func(t *testing.T) {
+		collision := &v1alpha1.MinecraftServer{
+			ObjectMeta: metav1.ObjectMeta{Name: naming.SystemLobbyServer, Namespace: "minecraft"},
+		}
+		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(collision).Build()
+		k := NewK8sCluster(c, "minecraft")
+		if err := k.EnsureSystemLobby(ctx, "reg/lobby:1"); err == nil {
+			t.Fatal("expected conflict on unmarked lobby")
+		}
+	})
 }

@@ -908,6 +908,24 @@ public final class WaitingRouterTest {
             router = withLobby;
             reg.refresh(servers(true));
         }
+
+        try {
+            router.setEntryPolicy(new EntryPolicy(false, "domain", "", true, "wake", "login", ""));
+            Fakes.FakePlayer ready = player("beta.mc.test", true);
+            assertEq("disabled lobby: fresh connection lands on login", "login", choose(ready));
+            gated(ready);
+            router.releaseFromLogin(ready.player);
+            Fakes.await("disabled lobby: released straight to server", () -> !ready.connects.isEmpty());
+            assertEq("disabled lobby: skips lobby and connects to beta", List.of("beta"), List.copyOf(ready.connects));
+
+            Fakes.FakePlayer asker = player(null, true);
+            asker.current = beta;
+            router.toLobby(asker.player);
+            assertEq("disabled lobby: /lobby explains", true, asker.said("This platform has no lobby."));
+            assertEq("disabled lobby: /lobby moves nobody", 0, asker.connects.size());
+        } finally {
+            router.setEntryPolicy(EntryPolicy.legacy());
+        }
     }
 
     private static void disconnectAndRelease() {

@@ -625,6 +625,7 @@ func configSummary(c *config.Config, path string) []byte {
 	line("velocity.game_port", c.Velocity.GamePort)
 	line("velocity.login_image", c.Velocity.LoginImage)
 	line("velocity.lobby_image", c.Velocity.LobbyImage)
+	line("velocity.lobby_enabled", c.Velocity.DefaultUseLobby())
 	line("auth.panel_hostname", c.Auth.PanelHostname)
 	line("auth.admin_hostname", c.Auth.AdminHostname)
 	line("auth.client_ip_header", c.Auth.ClientIPHeader)

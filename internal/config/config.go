@@ -88,12 +88,24 @@ type VelocityConfig struct {
 	LoginImage string `toml:"login_image"`
 	// LobbyImage is the lobby hub image; empty means no lobby, and players leave the login space for their server directly.
 	LobbyImage string `toml:"lobby_image"`
+	// LobbyEnabled sets the initial lobby state before any panel entry policy is saved; nil enables it when LobbyImage is set.
+	LobbyEnabled *bool `toml:"lobby_enabled"`
 	// LoginMemory is the login space's memory as a Kubernetes quantity; empty means 512Mi.
 	LoginMemory string `toml:"login_memory"`
 	// GamePort is the public proxy port; 0 means Minecraft's default, 25565.
 	GamePort int `toml:"game_port"`
 	// GameVersion is the login/lobby protocol version; empty means unknown (custom images).
 	GameVersion string `toml:"game_version"`
+}
+
+func (v VelocityConfig) DefaultUseLobby() bool {
+	if v.LobbyImage == "" {
+		return false
+	}
+	if v.LobbyEnabled != nil {
+		return *v.LobbyEnabled
+	}
+	return true
 }
 
 // AuthConfig is the [auth] table; the API does not verify Access JWTs, a set audience only marks an install behind Cloudflare.

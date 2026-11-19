@@ -206,21 +206,23 @@ func provisionSystemServers(ctx context.Context, cfg *config.Config, out io.Writ
 		switch {
 		case o.err != nil:
 			fmt.Fprintf(out, "  - %s: ERROR %v\n", o.name, o.err)
+		case o.created && o.desiredState != "":
+			fmt.Fprintf(out, "  - %s: created (DesiredState=%s)\n", o.name, o.desiredState)
 		case o.created:
-			fmt.Fprintf(out, "  - %s: created (DesiredState=Running)\n", o.name)
+			fmt.Fprintf(out, "  - %s: created\n", o.name)
 		case o.updated:
 			fmt.Fprintf(out, "  - %s: refreshed from the control namespace\n", o.name)
 		default:
 			fmt.Fprintf(out, "  - %s: skipped (%s)\n", o.name, o.skipped)
 		}
 	}
-	printVelocityWiringGuidance(out, cfg.Server.RootDomain, cfg.Velocity.LobbyImage == "")
+	printVelocityWiringGuidance(out, cfg.Server.RootDomain, cfg.Velocity.LobbyImage == "", !cfg.Velocity.DefaultUseLobby())
 	return nil
 }
 
 // The static proxy fallback names only login; login and lobby register dynamically.
 // Every fresh connection authenticates at login before lobby or backend routing.
-func printVelocityWiringGuidance(out io.Writer, rootDomain string, noLobby bool) {
+func printVelocityWiringGuidance(out io.Writer, rootDomain string, noLobby, lobbyDisabled bool) {
 	fmt.Fprintln(out, "\nfelis setup: Velocity login topology (bootstrap configured the host proxy automatically):")
 	fmt.Fprintln(out, "  If Velocity runs on another host, mirror these settings there:")
 	fmt.Fprintln(out, "  1. Set the DEFAULT landing server to \"login\" so every fresh connection hits the")
@@ -237,7 +239,7 @@ func printVelocityWiringGuidance(out io.Writer, rootDomain string, noLobby bool)
 		fmt.Fprintln(out, "  sends linked players from login straight to their server and keeps them in login while it wakes.")
 	}
 	waits := "lobby"
-	if noLobby {
+	if noLobby || lobbyDisabled {
 		waits = "login"
 	}
 	if rootDomain != "" {

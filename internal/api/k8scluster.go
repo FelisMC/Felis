@@ -239,6 +239,70 @@ func (k *K8sCluster) CreateServer(ctx context.Context, in CreateServerInput) err
 	return nil
 }
 
+func (k *K8sCluster) EnsureSystemLobby(ctx context.Context, image string) error {
+	var ms v1alpha1.MinecraftServer
+	err := k.getServer(ctx, naming.SystemLobbyServer, &ms)
+	if errors.Is(err, ErrNotFound) {
+		if image == "" {
+			return ErrNotFound
+		}
+		if k.NodeMaintenanceGuard != nil {
+			if err := k.NodeMaintenanceGuard(ctx); err != nil {
+				return err
+			}
+		}
+		memQ := resource.MustParse("1Gi")
+		lobby := &v1alpha1.MinecraftServer{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      naming.SystemLobbyServer,
+				Namespace: k.namespace,
+				Labels:    map[string]string{v1alpha1.LabelSystemRole: naming.SystemLobbyServer},
+			},
+			Spec: v1alpha1.MinecraftServerSpec{
+				Subdomain:       naming.SystemLobbyServer,
+				DisplayName:     "Lobby",
+				Image:           image,
+				JavaMemory:      "512M",
+				DesiredState:    v1alpha1.DesiredRunning,
+				AutostartPolicy: v1alpha1.AutostartPublic,
+				ReaperExempt:    true,
+				FallbackServer:  naming.SystemLoginServer,
+				OnlineMode:      false,
+				Rcon: v1alpha1.RconSpec{
+					Enabled: true,
+					SecretRef: v1alpha1.SecretKeyRef{
+						Name: naming.RconSecretName(naming.SystemLobbyServer),
+						Key:  naming.RconSecretKey,
+					},
+				},
+				Storage: v1alpha1.StorageSpec{Size: "2Gi"},
+				Resources: corev1.ResourceRequirements{
+					Limits:   corev1.ResourceList{corev1.ResourceMemory: memQ},
+					Requests: corev1.ResourceList{corev1.ResourceMemory: memQ},
+				},
+			},
+		}
+		createErr := k.c.Create(ctx, lobby)
+		if createErr == nil {
+			return nil
+		}
+		if !apierrors.IsAlreadyExists(createErr) {
+			return createErr
+		}
+		err = k.getServer(ctx, naming.SystemLobbyServer, &ms)
+	}
+	if err != nil {
+		return err
+	}
+	if ms.Labels[v1alpha1.LabelSystemRole] != naming.SystemLobbyServer {
+		return newError(http.StatusConflict, "conflict", "existing lobby server is not marked as the system lobby")
+	}
+	if ms.Status.Phase == v1alpha1.PhaseFailed && ms.Spec.DesiredState == v1alpha1.DesiredRunning {
+		return k.RetryStart(ctx, naming.SystemLobbyServer)
+	}
+	return k.SetDesiredState(ctx, naming.SystemLobbyServer, v1alpha1.DesiredRunning)
+}
+
 func (k *K8sCluster) SetDesiredState(ctx context.Context, name string, state v1alpha1.DesiredState) error {
 	if state == v1alpha1.DesiredRunning {
 		return k.start(ctx, name)

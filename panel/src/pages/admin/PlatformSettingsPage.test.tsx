@@ -26,7 +26,7 @@ beforeEach(() => {
   runtime.distributed = false;
   runtime.fallback = false;
   runtime.noLobby = false;
-  calls.getEntryPolicy.mockResolvedValue({ mode: "domain", defaultServer: "", requireAccountLink: true, offlineAction: "wake", waitingSpace: "lobby", fallbackServer: "", revision: "initial" });
+  calls.getEntryPolicy.mockResolvedValue({ useLobby: true, mode: "domain", defaultServer: "", requireAccountLink: true, offlineAction: "wake", waitingSpace: "lobby", fallbackServer: "", revision: "initial" });
   calls.fleet.mockResolvedValue([]);
   calls.nodes.mockResolvedValue([]);
   calls.nodeTasks.mockResolvedValue({ available: false, tasks: [] });
@@ -117,18 +117,52 @@ describe("page reload", () => {
 describe("player entry without a lobby", () => {
   it("offers no lobby and keeps linked players waiting in the login space", async () => {
     runtime.noLobby = true;
-    calls.getEntryPolicy.mockResolvedValue({ mode: "domain", defaultServer: "", requireAccountLink: false, offlineAction: "wake", waitingSpace: "login", fallbackServer: "", revision: "initial" });
+    calls.getEntryPolicy.mockResolvedValue({ useLobby: false, mode: "domain", defaultServer: "", requireAccountLink: false, offlineAction: "wake", waitingSpace: "login", fallbackServer: "", revision: "initial" });
     calls.setEntryPolicy.mockImplementation(async (body) => ({ ...body, revision: "saved" }));
     page("entry");
     const link = await screen.findByRole("switch", { name: "Require panel account linking" });
     await waitFor(() => expect((link as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.queryByRole("switch", { name: "Use lobby server" })).toBeNull();
     expect(screen.getAllByRole("radio").map((radio) => radio.textContent)).toEqual([
       expect.stringContaining("Direct to main server"), expect.stringContaining("Route by hostname"),
     ]);
     await userEvent.click(link);
     expect(screen.getByText("This platform has no lobby, so players wait for startup in the login space.")).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "Save entry policy" }));
-    await waitFor(() => expect(calls.setEntryPolicy).toHaveBeenCalledWith(expect.objectContaining({ requireAccountLink: true, waitingSpace: "login" })));
+    await waitFor(() => expect(calls.setEntryPolicy).toHaveBeenCalledWith(expect.objectContaining({ useLobby: false, requireAccountLink: true, waitingSpace: "login" })));
+  });
+});
+
+describe("player entry lobby toggle", () => {
+  it("switches routing and startup waiting between the login space and lobby after installation", async () => {
+    calls.getEntryPolicy.mockResolvedValue({ useLobby: true, mode: "lobby", defaultServer: "", requireAccountLink: true, offlineAction: "wake", waitingSpace: "lobby", fallbackServer: "", revision: "initial" });
+    calls.setEntryPolicy
+      .mockImplementationOnce(async (body) => ({ ...body, revision: "saved-off" }))
+      .mockImplementationOnce(async (body) => ({ ...body, revision: "saved-on" }));
+    page("entry");
+    const toggle = await screen.findByRole("switch", { name: "Use lobby server" });
+    await waitFor(() => expect((toggle as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.getAllByRole("radio")).toHaveLength(3);
+
+    await userEvent.click(toggle);
+    expect(screen.getAllByRole("radio").map((radio) => radio.textContent)).toEqual([
+      expect.stringContaining("Direct to main server"), expect.stringContaining("Route by hostname"),
+    ]);
+    expect(screen.getByRole("radio", { name: /^Route by hostname/ }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByText("With the lobby disabled, players wait for startup in the login space.")).toBeTruthy();
+    expect(screen.getByText("The lobby is disabled; web sign-in and startup waits both take place in the login space, and the lobby server stays stopped.")).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: "Save entry policy" }));
+    await waitFor(() => expect(calls.setEntryPolicy).toHaveBeenCalledWith({
+      useLobby: false, mode: "domain", defaultServer: "", requireAccountLink: true, offlineAction: "wake", waitingSpace: "login", fallbackServer: "", revision: "initial",
+    }));
+
+    await userEvent.click(toggle);
+    expect(screen.getAllByRole("radio")).toHaveLength(3);
+    await userEvent.click(screen.getByRole("button", { name: "Save entry policy" }));
+    await waitFor(() => expect(calls.setEntryPolicy).toHaveBeenLastCalledWith({
+      useLobby: true, mode: "domain", defaultServer: "", requireAccountLink: true, offlineAction: "wake", waitingSpace: "lobby", fallbackServer: "", revision: "saved-off",
+    }));
   });
 });
 

@@ -282,6 +282,22 @@ public final class LoginFlowTest {
         rig.gate.leave(id);
         rig.gate.advance(400);
         assertEq("no lobby: no timer once the player has gone", 0, rig.gate.pending());
+
+        stub.useLobby = false;
+        try {
+            Rig policyDisabled = new Rig(stub, 600_000L, true);
+            UUID disabledId = stub.player(false, true);
+            Seat disabledSeat = policyDisabled.join(disabledId, "NoLobbyPolicy");
+            assertEq("disabled lobby policy: told they are going to their server",
+                    List.of(LoginFlow.SIGNED_IN_NO_LOBBY), disabledSeat.chat);
+            policyDisabled.gate.advance(2400 * 2);
+            assertEq("disabled lobby policy: keeps waiting beyond lobby release window",
+                    null, disabledSeat.disconnected);
+            policyDisabled.gate.leave(disabledId);
+            policyDisabled.gate.advance(400);
+        } finally {
+            stub.useLobby = true;
+        }
     }
 
     private static void reconnectStartsAFreshRelease(Stub stub) {
@@ -607,6 +623,7 @@ public final class LoginFlowTest {
         final Map<String, AtomicInteger> hits = new ConcurrentHashMap<>();
         final AtomicInteger mints = new AtomicInteger();
         volatile int failWith;
+        volatile boolean useLobby = true;
         volatile boolean requireAccountLink = true;
         volatile int mintStatus = 201;
         volatile String panelUrl;
@@ -646,7 +663,7 @@ public final class LoginFlowTest {
                 return;
             }
             if (path.endsWith("/settings/entry-policy")) {
-                reply(ex, 200, "{\"mode\":\"domain\",\"requireAccountLink\":" + requireAccountLink + ",\"offlineAction\":\"wake\",\"waitingSpace\":\"lobby\"}");
+                reply(ex, 200, "{\"useLobby\":" + useLobby + ",\"mode\":\"domain\",\"requireAccountLink\":" + requireAccountLink + ",\"offlineAction\":\"wake\",\"waitingSpace\":\"lobby\"}");
                 return;
             }
             String kind = path.contains("/link/status/") ? "/link/status/"

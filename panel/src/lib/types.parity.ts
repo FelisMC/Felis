@@ -104,4 +104,5 @@ export type WireParity = [
   Holds<Parity<T.DBBackupStatus, S["DBBackupStatus"]>>,
   Holds<Parity<T.UpdateReport, S["UpdateReport"]>>,
   Holds<Parity<T.UpdateComponent, S["UpdateComponent"]>>,
+  Holds<Parity<T.EntryPolicySettings, S["EntryPolicySettings"]>>,
 ];

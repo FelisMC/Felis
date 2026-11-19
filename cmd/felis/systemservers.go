@@ -28,6 +28,7 @@ type systemServerSpec struct {
 	subdomain      string
 	displayName    string
 	image          string
+	desiredState   v1alpha1.DesiredState
 	memory         string            // container memory limit and request
 	storage        string            // world PVC size
 	fallbackServer string            // "" = none (refuse when down); never the lobby
@@ -60,7 +61,7 @@ const (
 	envLobbyServer   = "FELIS_LOBBY_SERVER"
 )
 
-// buildSystemServer builds a Running, reaper-exempt, public-autostart server; RCON is enabled only when in.rcon.
+// buildSystemServer builds a reaper-exempt, public-autostart server; RCON is enabled only when in.rcon.
 func buildSystemServer(in systemServerSpec, namespace string) (*v1alpha1.MinecraftServer, error) {
 	if err := naming.ValidateSystemServerName(in.name); err != nil {
 		return nil, fmt.Errorf("invalid name: %w", err)
@@ -92,6 +93,11 @@ func buildSystemServer(in systemServerSpec, namespace string) (*v1alpha1.Minecra
 		return nil, fmt.Errorf("storage must be positive for %q", in.name)
 	}
 
+	desiredState := in.desiredState
+	if desiredState == "" {
+		desiredState = v1alpha1.DesiredRunning
+	}
+
 	limits := corev1.ResourceList{corev1.ResourceMemory: memQ}
 	requests := corev1.ResourceList{corev1.ResourceMemory: memQ}
 
@@ -108,7 +114,7 @@ func buildSystemServer(in systemServerSpec, namespace string) (*v1alpha1.Minecra
 			DisplayName:     in.displayName,
 			Image:           in.image,
 			JavaMemory:      deriveApplyJavaHeap(memQ),
-			DesiredState:    v1alpha1.DesiredRunning,
+			DesiredState:    desiredState,
 			AutostartPolicy: v1alpha1.AutostartPublic,
 			ReaperExempt:    true,
 			FallbackServer:  in.fallbackServer,
@@ -125,13 +131,19 @@ func buildSystemServer(in systemServerSpec, namespace string) (*v1alpha1.Minecra
 
 // systemImages names the system servers' images, an empty one skipping its server; without a lobby the login space is the only exit.
 type systemImages struct {
-	login, lobby string
+	login, lobby  string
+	lobbyDisabled bool
 	// loginMemory sizes the login space; empty keeps defaultLoginMemory.
 	loginMemory string
 }
 
 func systemImagesFrom(v config.VelocityConfig) systemImages {
-	return systemImages{login: v.LoginImage, lobby: v.LobbyImage, loginMemory: v.LoginMemory}
+	return systemImages{
+		login:         v.LoginImage,
+		lobby:         v.LobbyImage,
+		lobbyDisabled: !v.DefaultUseLobby(),
+		loginMemory:   v.LoginMemory,
+	}
 }
 
 const defaultLoginMemory = "512Mi"
@@ -163,11 +175,16 @@ func loginSpace(image, namespace, apiBaseURL, rootDomain, panelHostname, memory,
 
 // lobbySystemServer is the post-auth /menu hub; it falls back to the login gate.
 func lobbySystemServer(image, namespace string) (*v1alpha1.MinecraftServer, error) {
+	return lobbySystemServerWithState(image, namespace, v1alpha1.DesiredRunning)
+}
+
+func lobbySystemServerWithState(image, namespace string, state v1alpha1.DesiredState) (*v1alpha1.MinecraftServer, error) {
 	return buildSystemServer(systemServerSpec{
 		name:           naming.SystemLobbyServer,
 		subdomain:      naming.SystemLobbyServer,
 		displayName:    "Lobby",
 		image:          image,
+		desiredState:   state,
 		memory:         "1Gi",
 		storage:        "2Gi",
 		fallbackServer: naming.SystemLoginServer,
@@ -204,13 +221,14 @@ func hostRESTConfig() (*rest.Config, error) {
 }
 
 type systemServerOutcome struct {
-	name      string
-	created   bool
-	updated   bool
-	available bool
-	skipped   string // why the service was skipped (image unset / already exists)
-	err       error
-	changes   []string // converge only: the fields this pass filled
+	name         string
+	created      bool
+	updated      bool
+	available    bool
+	desiredState v1alpha1.DesiredState
+	skipped      string // why the service was skipped (image unset / already exists)
+	err          error
+	changes      []string // converge only: the fields this pass filled
 }
 
 type systemServerPlan struct {
@@ -227,11 +245,17 @@ func systemServerPlans(images systemImages, apiBaseURL, rootDomain, panelHostnam
 	if images.lobby == "" {
 		lobby = ""
 	}
+	lobbyState := v1alpha1.DesiredRunning
+	if images.lobbyDisabled {
+		lobbyState = v1alpha1.DesiredStopped
+	}
 	return []systemServerPlan{
 		{name: naming.SystemLoginServer, image: images.login, build: func(image, ns string) (*v1alpha1.MinecraftServer, error) {
 			return loginSpace(image, ns, apiBaseURL, rootDomain, panelHostname, memory, lobby)
 		}},
-		{name: naming.SystemLobbyServer, image: images.lobby, build: lobbySystemServer},
+		{name: naming.SystemLobbyServer, image: images.lobby, build: func(image, ns string) (*v1alpha1.MinecraftServer, error) {
+			return lobbySystemServerWithState(image, ns, lobbyState)
+		}},
 	}
 }
 
@@ -304,7 +328,7 @@ func ensureSystemServers(ctx context.Context, cl client.Client, namespace string
 			outcomes = append(outcomes, systemServerOutcome{name: p.name, err: err})
 			continue
 		}
-		outcomes = append(outcomes, systemServerOutcome{name: p.name, created: true, available: true})
+		outcomes = append(outcomes, systemServerOutcome{name: p.name, created: true, available: true, desiredState: ms.Spec.DesiredState})
 	}
 	return outcomes
 }
@@ -388,7 +412,7 @@ func convergeSystemServers(ctx context.Context, cl client.Client, namespace stri
 				outcomes = append(outcomes, systemServerOutcome{name: p.name, err: err})
 				continue
 			}
-			outcomes = append(outcomes, systemServerOutcome{name: p.name, created: true, available: true})
+			outcomes = append(outcomes, systemServerOutcome{name: p.name, created: true, available: true, desiredState: desired.Spec.DesiredState})
 			continue
 		case err != nil:
 			outcomes = append(outcomes, systemServerOutcome{name: p.name, err: err})

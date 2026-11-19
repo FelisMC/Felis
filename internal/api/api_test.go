@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
+	"felis.lolicon.best/internal/naming"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
@@ -1898,6 +1899,30 @@ func (c *fakeCluster) EnsureWorldVolume(_ context.Context, n string) error {
 	return nil
 }
 
+func (c *fakeCluster) EnsureSystemLobby(ctx context.Context, image string) error {
+	if s, ok := c.byName[naming.SystemLobbyServer]; ok {
+		if s.Phase == string(v1alpha1.PhaseFailed) && s.DesiredState == string(v1alpha1.DesiredRunning) {
+			return c.RetryStart(ctx, naming.SystemLobbyServer)
+		}
+		return c.SetDesiredState(ctx, naming.SystemLobbyServer, v1alpha1.DesiredRunning)
+	}
+	if image == "" {
+		return ErrNotFound
+	}
+	if err := c.wakeErr[naming.SystemLobbyServer]; err != nil {
+		return err
+	}
+	c.byName[naming.SystemLobbyServer] = &ServerInfo{
+		Name:         naming.SystemLobbyServer,
+		Subdomain:    naming.SystemLobbyServer,
+		Image:        image,
+		DesiredState: string(v1alpha1.DesiredRunning),
+		ReaperExempt: true,
+	}
+	c.desired[naming.SystemLobbyServer] = v1alpha1.DesiredRunning
+	return nil
+}
+
 func (c *fakeCluster) SetDesiredState(_ context.Context, n string, s v1alpha1.DesiredState) error {
 	if _, ok := c.byName[n]; !ok {
 		return ErrNotFound
@@ -2137,8 +2162,9 @@ func (o okInternal) Authenticate(*http.Request) (Caller, error) {
 
 func newTestAPI(repo Repo, cl Cluster) *API {
 	return &API{Repo: repo, Cluster: cl, Internal: okInternal{}, RootDomain: testRoot,
-		Now:       func() time.Time { return time.Unix(1_700_000_000, 0) },
-		AccessLog: discardLog}
+		LobbyImage: "felis/lobby:demo",
+		Now:        func() time.Time { return time.Unix(1_700_000_000, 0) },
+		AccessLog:  discardLog}
 }
 
 var discardLog = slog.New(slog.NewTextHandler(io.Discard, nil))

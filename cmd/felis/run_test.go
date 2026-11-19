@@ -19,14 +19,18 @@ func TestBootstrapConfigKeys(t *testing.T) {
 	var cfg config.Config
 	var doc strings.Builder
 	for _, key := range strings.Fields(out.String()) {
+		if key == "velocity.lobby_enabled" {
+			doc.WriteString(key + " = false\n")
+			continue
+		}
 		doc.WriteString(key + " = \"26.3\"\n")
 	}
 	meta, err := toml.Decode(doc.String(), &cfg)
 	if err != nil || len(meta.Undecoded()) != 0 {
 		t.Fatalf("advertised config key is unsupported: %v, undecoded: %v", err, meta.Undecoded())
 	}
-	if cfg.Velocity.GameVersion != "26.3" || cfg.Velocity.LoginMemory != "26.3" {
-		t.Fatalf("advertised keys did not set the game version and login memory: %+v", cfg.Velocity)
+	if cfg.Velocity.GameVersion != "26.3" || cfg.Velocity.LoginMemory != "26.3" || cfg.Velocity.LobbyEnabled == nil || *cfg.Velocity.LobbyEnabled {
+		t.Fatalf("advertised keys did not populate VelocityConfig: %+v", cfg.Velocity)
 	}
 }
 

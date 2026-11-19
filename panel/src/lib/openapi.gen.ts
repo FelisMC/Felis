@@ -1864,7 +1864,7 @@ export interface paths {
         get: operations["getEntryPolicy"];
         /**
          * Save player entry policy (Owner, fresh reauthentication).
-         * @description Applies to new connections within the proxy's 15-second refresh interval. Does not change online-mode, autostart authorization or existing players, and does not stop system spaces automatically.
+         * @description Applies to new connections within the proxy's 15-second refresh interval and starts or stops the formal lobby server to match useLobby. Does not change online-mode, autostart authorization or existing players.
          */
         put: operations["setEntryPolicy"];
         post?: never;
@@ -3999,6 +3999,8 @@ export interface components {
             logsAvailable: boolean;
         };
         EntryPolicySettings: {
+            /** @description Enable the formal lobby server for post-login navigation and waiting; disabled without a lobby image. */
+            useLobby: boolean;
             /**
              * @description An install without the formal lobby refuses lobby and reads a stored lobby policy as domain.
              * @enum {string}
@@ -4011,7 +4013,7 @@ export interface components {
             /** @enum {string} */
             offlineAction: "wake" | "fallback" | "disconnect";
             /**
-             * @description With web sign-in required, players wait in the lobby, or in the login space on an install without a lobby.
+             * @description With web sign-in required, players wait in the lobby when useLobby is enabled, or in the login space otherwise.
              * @enum {string}
              */
             waitingSpace: "login" | "lobby";
@@ -10120,13 +10122,14 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Policy changed; reload before saving. */
+            /** @description Policy changed or host cannot start the lobby server. */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     getWakePolicy: {

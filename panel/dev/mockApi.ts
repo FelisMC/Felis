@@ -541,7 +541,7 @@ function initialState(): MockState {
       },
     ],
     updateWindow: { start: null, end: null },
-    entryPolicy: { mode: "domain", defaultServer: "", requireAccountLink: true, offlineAction: "wake", waitingSpace: "lobby", fallbackServer: "", revision: "initial" },
+    entryPolicy: { useLobby: true, mode: "domain", defaultServer: "", requireAccountLink: true, offlineAction: "wake", waitingSpace: "lobby", fallbackServer: "", revision: "initial" },
     wakePolicy: { maxRunningServers: 0, wakeCooldownSeconds: 30, revision: "initial", managed: false },
     defaultLanguage: { language: "", revision: "initial" },
     branding: { name: "", notice: "", show_powered_by: true, has_logo: false, has_background: false, revision: "initial" },
@@ -1885,7 +1885,16 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
       else {
         const body = await readJSON<EntryPolicySettings>(ctx.req);
         if (body.revision !== ctx.state.entryPolicy.revision) sendError(ctx.res, 409, "conflict", "Entry policy changed");
+        else if (!body.useLobby && (body.mode === "lobby" || body.waitingSpace === "lobby")) sendError(ctx.res, 400, "bad_request", "invalid entry mode, target or offline policy");
+        else if (body.useLobby && body.requireAccountLink && body.waitingSpace !== "lobby") sendError(ctx.res, 400, "bad_request", "invalid entry mode, target or offline policy");
         else {
+          const lobby = ctx.state.servers.find((item) => item.name === "lobby");
+          if (lobby) {
+            lobby.desiredState = body.useLobby ? "Running" : "Stopped";
+            lobby.phase = body.useLobby ? "Running" : "Stopped";
+            lobby.ready = body.useLobby;
+            if (!body.useLobby) lobby.playersOnline = 0;
+          }
           ctx.state.entryPolicy = { ...body, revision: createHash("sha256").update(JSON.stringify(body)).digest("hex") };
           sendJSON(ctx.res, 200, ctx.state.entryPolicy);
         }

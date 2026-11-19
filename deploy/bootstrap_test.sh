@@ -2036,7 +2036,7 @@ run_write() { # out-file [state-dir] [database-deployment]; under the installer'
     felis() {
       [ "$*" = "bootstrap-assets config-keys" ] || return 2
       [ "${OLD_CONFIG:-0}" != 1 ] || return 2
-      printf "%s\n" velocity.game_version velocity.login_memory
+      printf "%s\n" velocity.game_version velocity.login_memory velocity.lobby_enabled
     }
     . "$FNFILE"
     FELIS_ROOT_DOMAIN=r.example.com DB_USER=u DB_PASSWORD=p DB_NAME=d MINECRAFT_NS=minecraft \
@@ -2118,9 +2118,16 @@ case "$out" in
 esac
 
 case "$out" in *login_memory*) echo "FAIL a standard host sized its login space"; fails=$((fails + 1)) ;; *) echo "PASS a standard host keeps the login space's default memory" ;; esac
-(HOST_PROFILE=small LOBBY_IMG="" run_write "$rdir/small.toml")
+case "$out" in *lobby_enabled*) echo "FAIL an enabled lobby must omit velocity.lobby_enabled"; fails=$((fails + 1)) ;; *) echo "PASS an enabled lobby omits velocity.lobby_enabled" ;; esac
+(WITH_LOBBY=0 run_write "$rdir/nolobby-std.toml")
+expect "a standard host with the lobby off keeps lobby_image and sets lobby_enabled = false" 'lobby_image = "lo"
+lobby_enabled = false' "$(cat "$rdir/nolobby-std.toml")"
+(WITH_LOBBY=0 OLD_CONFIG=1 run_write "$rdir/nolobby-old.toml")
+case "$(cat "$rdir/nolobby-old.toml")" in *lobby_enabled*) echo "FAIL an older binary must not receive velocity.lobby_enabled"; fails=$((fails + 1)) ;; *) echo "PASS an older binary receives no lobby_enabled key" ;; esac
+(HOST_PROFILE=small WITH_LOBBY=0 LOBBY_IMG="" run_write "$rdir/small.toml")
 expect "a small host has no lobby and a smaller login space" 'lobby_image = ""
 login_memory = "320Mi"' "$(cat "$rdir/small.toml")"
+case "$(cat "$rdir/small.toml")" in *lobby_enabled*) echo "FAIL a small host has no lobby image and needs no lobby_enabled"; fails=$((fails + 1)) ;; *) echo "PASS a small host omits lobby_enabled" ;; esac
 (HOST_PROFILE=small LOBBY_IMG="" OLD_CONFIG=1 run_write "$rdir/small-old.toml")
 case "$(cat "$rdir/small-old.toml")" in *login_memory*) echo "FAIL an older binary must not receive velocity.login_memory"; fails=$((fails + 1)) ;; *) echo "PASS an older binary receives no login memory key" ;; esac
 
@@ -5357,6 +5364,7 @@ run_compatibility_guard() {
     check_maintenance_window() { :; }
     remember_install_settings() { :; }
     resolve_host_profile() { :; }
+    resolve_with_lobby() { :; }
     detect_node_ip() { :; }
     preflight() { :; }
     quiet_watchdog() { echo HOST_CHANGE; exit 0; }
@@ -6108,6 +6116,39 @@ expect "an explicit proxy heap wins on a small host" "xmx[512M]" "$(XMX=512M pro
 expect "an install with a lobby is not switched to small" "DIE this install runs the lobby" "$(profile_run small 1900000 standard 1)"
 expect "a small install can grow into the standard profile" "standard lobby[lobby-image]" "$(profile_run standard 8000000 small 1)"
 rm -rf "$hpdir"
+
+wlfns="$(bsfn resolve_with_lobby; bsfn bootstrap_from_tui; bsfn mark_bootstrap_done)"
+wldir="$(mktemp -d)"
+with_lobby_run() { # HOST_PROFILE, FELIS_WITH_LOBBY, recorded ("" = none), installed (0|1), tty_reply ("none" = no tty)
+  HP="$1" WL="$2" REC="$3" DONE="$4" REPLY="$5" DIR="$wldir" bash -c '
+set -Eeuo pipefail
+'"$wlfns"'
+die() { echo "DIE $*" >&2; exit 1; }
+log() { :; }
+rm -f "$DIR/with-lobby" "$DIR/done" "$DIR/tty" "$DIR/profile"
+[ -z "$REC" ] || echo "$REC" > "$DIR/with-lobby"
+[ "$DONE" = 0 ] || : > "$DIR/done"
+if [ "$REPLY" = none ]; then
+  LOBBY_PROMPT_TTY="$DIR/missing-tty"
+else
+  printf "%s\n" "$REPLY" > "$DIR/tty"
+  LOBBY_PROMPT_TTY="$DIR/tty"
+fi
+HOST_PROFILE="$HP" FELIS_WITH_LOBBY="$WL" WITH_LOBBY_FILE="$DIR/with-lobby" HOST_PROFILE_FILE="$DIR/profile" BOOTSTRAP_DONE="$DIR/done"
+resolve_with_lobby >/dev/null
+mark_bootstrap_done
+echo "wl[$WITH_LOBBY] saved[$(cat "$DIR/with-lobby")]"' 2>&1
+}
+expect "a fresh non-interactive standard install leaves the lobby off" "wl[0] saved[0]" "$(with_lobby_run standard auto "" 0 none)"
+expect "pressing Enter at the lobby prompt leaves the lobby off" "wl[0] saved[0]" "$(with_lobby_run standard auto "" 0 "")"
+expect "answering y at the lobby prompt starts the lobby" "wl[1] saved[1]" "$(with_lobby_run standard auto "" 0 y)"
+expect "a TUI hand-off leaves the lobby off without prompting" "wl[0] saved[0]" "$(FELIS_BOOTSTRAP_FROM_TUI=1 with_lobby_run standard auto "" 0 y)"
+expect "an existing install predating with-lobby keeps its lobby" "wl[1] saved[1]" "$(with_lobby_run standard auto "" 1 none)"
+expect "a rerun keeps the recorded lobby-off choice" "wl[0] saved[0]" "$(with_lobby_run standard auto 0 1 none)"
+expect "explicit FELIS_WITH_LOBBY=1 overrides a recorded off choice" "wl[1] saved[1]" "$(with_lobby_run standard 1 0 1 none)"
+expect "the small profile refuses FELIS_WITH_LOBBY=1" "DIE the small profile has no lobby" "$(with_lobby_run small 1 "" 0 none)"
+expect "the small profile records 0 under auto" "wl[0] saved[0]" "$(with_lobby_run small auto "" 0 none)"
+rm -rf "$wldir"
 
 if [ "$fails" -eq 0 ]; then
   echo "ALL PASS"

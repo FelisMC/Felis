@@ -1385,6 +1385,7 @@ export interface DoctorView {
 }
 
 export interface EntryPolicySettings {
+  useLobby: boolean;
   mode: "lobby" | "direct" | "domain";
   defaultServer: string;
   requireAccountLink: boolean;

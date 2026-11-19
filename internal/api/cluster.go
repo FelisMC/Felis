@@ -194,6 +194,7 @@ type Cluster interface {
 	// ReleaseMaintenance is idempotent and runs after Job creation succeeds or fails.
 	ReleaseMaintenance(ctx context.Context, name string) error
 	CreateServer(ctx context.Context, in CreateServerInput) error
+	EnsureSystemLobby(ctx context.Context, image string) error
 	// PatchServerSpec merge-patches non-nil fields so concurrent operator status updates survive.
 	PatchServerSpec(ctx context.Context, name string, patch ServerSpecPatch) error
 	ClearOwnerSettings(ctx context.Context, name, uid string) error

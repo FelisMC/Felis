@@ -186,6 +186,9 @@ FELIS_VELOCITY_XMX="${FELIS_VELOCITY_XMX:-}"
 # auto: a fresh host below 3.5 GiB runs the small profile (no lobby, smaller heaps); later runs keep the recorded profile.
 FELIS_HOST_PROFILE="${FELIS_HOST_PROFILE:-auto}"
 HOST_PROFILE=""
+# auto: fresh standard installs leave the lobby stopped unless enabled interactively; reruns keep the recorded choice.
+FELIS_WITH_LOBBY="${FELIS_WITH_LOBBY:-auto}"
+WITH_LOBBY=""
 # Pinned go.dev sha256 per architecture; move the version and both digests together.
 GO_PINNED_VERSION="1.27.4"
 GO_PINNED_SHA256_AMD64="7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840"
@@ -308,6 +311,8 @@ VELOCITY_SERVICE="/etc/systemd/system/felis-velocity.service"
 VELOCITY_FINGERPRINT="${STATE_DIR}/velocity.fingerprint"
 SYSTEM_SERVER_IMAGES="${STATE_DIR}/system-server-images"
 HOST_PROFILE_FILE="${STATE_DIR}/host-profile"
+WITH_LOBBY_FILE="${STATE_DIR}/with-lobby"
+LOBBY_PROMPT_TTY="${LOBBY_PROMPT_TTY:-/dev/tty}"
 # felis-postgres constants; must equal internal/platform's (TestBootstrapAgreesWithThePostgresConstants).
 PG_DEPLOYMENT="felis-postgres"
 PG_CONTAINER="postgres"
@@ -877,6 +882,10 @@ validate_settings() {
     auto|small|standard) ;;
     *) die "FELIS_HOST_PROFILE must be auto, small or standard (got '${FELIS_HOST_PROFILE}')" ;;
   esac
+  case "$FELIS_WITH_LOBBY" in
+    auto|0|1) ;;
+    *) die "FELIS_WITH_LOBBY must be auto, 0 or 1 (got '${FELIS_WITH_LOBBY}')" ;;
+  esac
   case "$FELIS_UPGRADE_DEPS" in
     0|1) ;;
     *) die "FELIS_UPGRADE_DEPS must be 0 or 1 (got '${FELIS_UPGRADE_DEPS}')" ;;
@@ -1239,6 +1248,45 @@ resolve_host_profile() {
     FELIS_VELOCITY_XMX="${FELIS_VELOCITY_XMX:-256M}"
   fi
   log "host profile: ${HOST_PROFILE}"
+}
+
+# resolve_with_lobby settles whether a new install starts the lobby or leaves it stopped (~1 GB baseline).
+resolve_with_lobby() {
+  if [ "$HOST_PROFILE" = small ]; then
+    [ "$FELIS_WITH_LOBBY" != 1 ] || die "the small profile has no lobby; rerun without FELIS_WITH_LOBBY=1 or on a host with at least 4 GB of RAM"
+    WITH_LOBBY=0
+    return 0
+  fi
+  local recorded="" reply
+  [ -r "$WITH_LOBBY_FILE" ] && recorded="$(cat "$WITH_LOBBY_FILE")"
+  case "$recorded" in 0|1) ;; *) recorded="" ;; esac
+  WITH_LOBBY="$FELIS_WITH_LOBBY"
+  if [ "$WITH_LOBBY" = auto ]; then
+    if [ -n "$recorded" ]; then
+      WITH_LOBBY="$recorded"
+    elif [ -e "$BOOTSTRAP_DONE" ]; then
+      WITH_LOBBY=1
+    elif bootstrap_from_tui || ! (: <"$LOBBY_PROMPT_TTY") 2>/dev/null; then
+      WITH_LOBBY=0
+    else
+      printf '\n'
+      printf 'Start the lobby server now? It adds about 800 MB of idle RAM; you can change this later in Platform settings -> Player entry.\n'
+      while :; do
+        printf 'Enable lobby [y/N] (default N): '
+        IFS= read -r reply <"$LOBBY_PROMPT_TTY" || reply=""
+        case "$reply" in
+          ""|n|N|no|No|NO|0) WITH_LOBBY=0; break ;;
+          y|Y|yes|Yes|YES|1) WITH_LOBBY=1; break ;;
+          *) printf 'Please enter y or n.\n' ;;
+        esac
+      done
+    fi
+  fi
+  if [ "$WITH_LOBBY" = 1 ]; then
+    log "lobby: enabled"
+  else
+    log "lobby: off (enable any time in Platform settings -> Player entry)"
+  fi
 }
 
 # game_roles lists the game images this install runs; the small profile has no lobby.
@@ -4212,7 +4260,7 @@ offsite_enabled() {
 # Only host config names the database Deployment; mode 0600 protects the URL password.
 write_felis_toml() {
   local target="$1" db_addr="$2" deployment="${3:-}" deployment_line="" smtp_block auth_body auth_source_blocks registry_block archive_block offsite_section
-  local config_keys game_version_line="" login_memory_line=""
+  local config_keys game_version_line="" login_memory_line="" lobby_enabled_line=""
   # main's installer also installs older releases, whose strict TOML parser rejects
   # newer optional keys. Ask the installed binary rather than guessing from its stamp.
   config_keys="$("$HOST_BIN" bootstrap-assets config-keys 2>/dev/null || true)"
@@ -4221,6 +4269,9 @@ write_felis_toml() {
   fi
   if [ "${HOST_PROFILE:-}" = small ] && grep -Fxq 'velocity.login_memory' <<<"$config_keys"; then
     login_memory_line="login_memory = \"320Mi\""
+  fi
+  if [ "${WITH_LOBBY:-1}" = 0 ] && [ -n "${FELIS_LOBBY_IMAGE:-}" ] && grep -Fxq 'velocity.lobby_enabled' <<<"$config_keys"; then
+    lobby_enabled_line=$'\nlobby_enabled = false'
   fi
   if [ -n "$deployment" ]; then
     # Starts with the newline that ends the url line, so the pod copy has no blank line there.
@@ -4279,7 +4330,7 @@ egress_mode = "${FELIS_EGRESS_MODE}"
 # The always-on system servers that felis setup provisions, built and imported into k3s by
 # build_game_stack below. An empty lobby_image means this install has no lobby.
 login_image = "${FELIS_LIMBO_IMAGE}"
-lobby_image = "${FELIS_LOBBY_IMAGE}"
+lobby_image = "${FELIS_LOBBY_IMAGE}"${lobby_enabled_line}
 ${login_memory_line}
 # The public port players connect on; the panel shows it in server addresses.
 game_port = ${FELIS_GAME_PORT}
@@ -5265,6 +5316,8 @@ mark_bootstrap_done() {
   chmod 0644 "$BOOTSTRAP_DONE"
   printf '%s\n' "${HOST_PROFILE:-standard}" > "$HOST_PROFILE_FILE"
   chmod 0644 "$HOST_PROFILE_FILE"
+  printf '%s\n' "${WITH_LOBBY:-1}" > "$WITH_LOBBY_FILE"
+  chmod 0644 "$WITH_LOBBY_FILE"
 }
 
 # 9. Summary
@@ -6511,6 +6564,7 @@ main() {
   refuse_full_beside_nano
   check_maintenance_window
   resolve_host_profile
+  resolve_with_lobby
   detect_node_ip
   # Before the first change to the host: a problem found here costs a rerun, one found
   # halfway through costs an install to unwind.

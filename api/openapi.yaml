@@ -331,13 +331,14 @@ components:
 
     EntryPolicySettings:
       type: object
-      required: [mode, defaultServer, requireAccountLink, offlineAction, waitingSpace, fallbackServer, revision]
+      required: [useLobby, mode, defaultServer, requireAccountLink, offlineAction, waitingSpace, fallbackServer, revision]
       properties:
+        useLobby: { type: boolean, description: Enable the formal lobby server for post-login navigation and waiting; disabled without a lobby image. }
         mode: { type: string, enum: [lobby, direct, domain], description: An install without the formal lobby refuses lobby and reads a stored lobby policy as domain. }
         defaultServer: { type: string, description: Required for direct mode; optional fallback destination for unmatched hostnames. }
         requireAccountLink: { type: boolean, description: Require Limbo web sign-in and panel association in addition to proxy game identity authentication. }
         offlineAction: { type: string, enum: [wake, fallback, disconnect] }
-        waitingSpace: { type: string, enum: [login, lobby], description: "With web sign-in required, players wait in the lobby, or in the login space on an install without a lobby." }
+        waitingSpace: { type: string, enum: [login, lobby], description: "With web sign-in required, players wait in the lobby when useLobby is enabled, or in the login space otherwise." }
         fallbackServer: { type: string, description: Required for fallback action and distinct from the default server. }
         revision: { type: string, description: Opaque revision; stale or concurrent writes return 409. }
 
@@ -6595,7 +6596,7 @@ paths:
       tags: [account]
       operationId: setEntryPolicy
       summary: Save player entry policy (Owner, fresh reauthentication).
-      description: Applies to new connections within the proxy's 15-second refresh interval. Does not change online-mode, autostart authorization or existing players, and does not stop system spaces automatically.
+      description: Applies to new connections within the proxy's 15-second refresh interval and starts or stops the formal lobby server to match useLobby. Does not change online-mode, autostart authorization or existing players.
       x-felis-face: [external]
       x-felis-tier: owner
       security: [{ sessionCookie: [] }]
@@ -6614,7 +6615,8 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { description: Selected server does not exist. }
-        '409': { description: Policy changed; reload before saving. }
+        '409': { description: Policy changed or host cannot start the lobby server. }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
   /api/v1/settings/wake-policy:
     get:

@@ -25,7 +25,9 @@ type API struct {
 	Distribution Distribution
 	NodeControl  NodeControl
 	// NoLobby marks an install without the formal lobby, so players wait in and leave from the login space.
-	NoLobby bool
+	NoLobby                bool
+	LobbyImage             string
+	LobbyDisabledByDefault bool
 	// Nano mounts only login control (nanoRoutes): sign-in, accounts, auth sources and the proxy plugin's calls.
 	Nano     bool
 	Repo     Repo

@@ -609,3 +609,53 @@ func TestProvisionSecretReplicasCarryCallerTokens(t *testing.T) {
 		t.Error("the limbo token was copied into the build namespace")
 	}
 }
+
+func TestEnsureSystemServersCreatesLobbyStoppedWhenDisabled(t *testing.T) {
+	scheme := newSystemServerScheme(t)
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	ctx := context.Background()
+	imgs := systemImages{login: "reg/limbo:1", lobby: "reg/lobby:1", lobbyDisabled: true}
+
+	out := ensureSystemServers(ctx, cl, "minecraft", imgs,
+		"http://felis-api-internal.felis.svc.cluster.local:8081", "mc.example.net", "console.mc.example.net")
+	for _, o := range out {
+		if o.err != nil {
+			t.Fatalf("%s: %v", o.name, o.err)
+		}
+	}
+
+	var lobby, login v1alpha1.MinecraftServer
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: "minecraft", Name: naming.SystemLobbyServer}, &lobby); err != nil {
+		t.Fatalf("get lobby: %v", err)
+	}
+	if lobby.Spec.DesiredState != v1alpha1.DesiredStopped {
+		t.Fatalf("lobby DesiredState = %q, want Stopped", lobby.Spec.DesiredState)
+	}
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: "minecraft", Name: naming.SystemLoginServer}, &login); err != nil {
+		t.Fatalf("get login: %v", err)
+	}
+	foundLobbyEnv := false
+	for _, e := range login.Spec.Env {
+		if e.Name == envLobbyServer && e.Value == naming.SystemLobbyServer {
+			foundLobbyEnv = true
+		}
+	}
+	if !foundLobbyEnv {
+		t.Fatalf("login env = %+v, want FELIS_LOBBY_SERVER=lobby preserved for later panel enablement", login.Spec.Env)
+	}
+
+	lobby.Spec.DesiredState = v1alpha1.DesiredRunning
+	if err := cl.Update(ctx, &lobby); err != nil {
+		t.Fatalf("start lobby: %v", err)
+	}
+	ensureSystemServers(ctx, cl, "minecraft", imgs,
+		"http://felis-api-internal.felis.svc.cluster.local:8081", "mc.example.net", "console.mc.example.net")
+	convergeSystemServers(ctx, cl, "minecraft", imgs,
+		"http://felis-api-internal.felis.svc.cluster.local:8081", "mc.example.net", "console.mc.example.net")
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: "minecraft", Name: naming.SystemLobbyServer}, &lobby); err != nil {
+		t.Fatalf("get lobby after rerun: %v", err)
+	}
+	if lobby.Spec.DesiredState != v1alpha1.DesiredRunning {
+		t.Fatalf("lobby DesiredState = %q after rerun, want Running preserved", lobby.Spec.DesiredState)
+	}
+}

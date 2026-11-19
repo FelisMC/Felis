@@ -2,6 +2,7 @@ package best.lolicon.felis.limbo;
 
 import best.lolicon.felis.link.Control;
 import best.lolicon.felis.link.ControlFrame;
+import best.lolicon.felis.link.EntryPolicy;
 import best.lolicon.felis.link.FelisApiClient;
 import best.lolicon.felis.link.LinkClient;
 import best.lolicon.felis.link.LinkCode;
@@ -78,6 +79,7 @@ final class LoginFlow {
     private final ConcurrentHashMap<UUID, Integer> tasks = new ConcurrentHashMap<>(); // current timer task per player
     // The async link poll can see "linked" twice before cancellation lands; the release must start once.
     private final Set<UUID> releasing = ConcurrentHashMap.newKeySet();
+    private final ConcurrentHashMap<UUID, Boolean> lobbyReleases = new ConcurrentHashMap<>();
     private final OutageTracker pollOutage; // shared by all polls: one felis-api outage is one event
 
     LoginFlow(Gate gate, FelisApiClient api, LinkClient link, String consoleUrl, long timeoutMillis,
@@ -95,6 +97,7 @@ final class LoginFlow {
 
     void join(UUID id) {
         releasing.remove(id); // a reconnect starts a fresh login
+        lobbyReleases.remove(id);
         long startedAt = clock.getAsLong();
         gate.runAsync(() -> begin(id, 0, startedAt));
     }
@@ -103,6 +106,7 @@ final class LoginFlow {
     void clear() {
         tasks.clear();
         releasing.clear();
+        lobbyReleases.clear();
     }
 
     private void begin(UUID id, int attempt, long startedAt) {
@@ -114,10 +118,12 @@ final class LoginFlow {
                 disconnect(id, BLACKLISTED);
                 return;
             }
-            if (!api.entryPolicy().requireAccountLink()) {
+            EntryPolicy policy = api.entryPolicy();
+            if (!policy.requireAccountLink()) {
                 // The proxy owns routing and startup progress; this space is only a waiting room.
                 return;
             }
+            lobbyReleases.put(id, hasLobby && policy.useLobby());
             // An already-linked player needs no bind code.
             if (api.linkStatus(id)) {
                 gate.runSync(() -> startRelease(id));
@@ -213,9 +219,10 @@ final class LoginFlow {
             return;
         }
         cancel(id);
-        seat.chat(hasLobby ? SIGNED_IN : SIGNED_IN_NO_LOBBY);
+        boolean useLobby = lobbyReleases.getOrDefault(id, hasLobby);
+        seat.chat(useLobby ? SIGNED_IN : SIGNED_IN_NO_LOBBY);
         // Without a lobby the proxy holds the player through the server's start and owns that timeout.
-        releaseAttempt(id, 0, hasLobby ? clock.getAsLong() + RELEASE_WINDOW_MILLIS : Long.MAX_VALUE);
+        releaseAttempt(id, 0, useLobby ? clock.getAsLong() + RELEASE_WINDOW_MILLIS : Long.MAX_VALUE);
     }
 
     // The proxy re-checks the link on each LoginRelease, so a denied attempt is retried until the window closes.
@@ -223,11 +230,13 @@ final class LoginFlow {
         Seat seat = gate.player(id);
         if (seat == null) {
             releasing.remove(id);
+            lobbyReleases.remove(id);
             cancel(id);
             return;
         }
         if (clock.getAsLong() > deadline) {
             releasing.remove(id);
+            lobbyReleases.remove(id);
             log.warning("FelisLimbo: " + id + " was not released to the lobby within "
                     + (RELEASE_WINDOW_MILLIS / 1000) + "s");
             disconnect(id, NO_LOBBY);
@@ -266,6 +275,7 @@ final class LoginFlow {
     private void disconnect(UUID id, String reason) {
         gate.runSync(() -> {
             cancel(id);
+            lobbyReleases.remove(id);
             Seat seat = gate.player(id);
             if (seat != null) {
                 seat.disconnect(reason);

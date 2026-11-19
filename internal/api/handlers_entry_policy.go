@@ -8,12 +8,14 @@ import (
 	"errors"
 	"net/http"
 
+	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/naming"
 )
 
 const entryPolicyKey = "player_entry_policy"
 
 type entryPolicy struct {
+	UseLobby           bool   `json:"useLobby"`
 	Mode               string `json:"mode"`
 	DefaultServer      string `json:"defaultServer"`
 	RequireAccountLink bool   `json:"requireAccountLink"`
@@ -27,10 +29,11 @@ type entryPolicyView struct {
 	Revision string `json:"revision"`
 }
 
-func defaultEntryPolicy(noLobby bool) entryPolicy {
+func defaultEntryPolicy(noLobby, lobbyDisabled bool) entryPolicy {
 	// Preserve routing and web association until the owner saves an explicit policy.
-	p := entryPolicy{Mode: "domain", RequireAccountLink: true, OfflineAction: "wake", WaitingSpace: "lobby"}
-	if noLobby {
+	p := entryPolicy{UseLobby: true, Mode: "domain", RequireAccountLink: true, OfflineAction: "wake", WaitingSpace: "lobby"}
+	if noLobby || lobbyDisabled {
+		p.UseLobby = false
 		p.WaitingSpace = "login"
 	}
 	return p
@@ -38,6 +41,7 @@ func defaultEntryPolicy(noLobby bool) entryPolicy {
 
 // withoutLobby moves a policy saved while the lobby existed onto the login space.
 func (p entryPolicy) withoutLobby() entryPolicy {
+	p.UseLobby = false
 	if p.Mode == "lobby" {
 		p.Mode = "domain"
 	}
@@ -45,7 +49,7 @@ func (p entryPolicy) withoutLobby() entryPolicy {
 	return p
 }
 
-// valid checks a policy; without a lobby, linked players wait in the login space instead.
+// valid checks a policy; without an enabled lobby, linked players wait in the login space instead.
 func (p entryPolicy) valid(noLobby bool) bool {
 	if p.Mode != "lobby" && p.Mode != "direct" && p.Mode != "domain" {
 		return false
@@ -56,10 +60,13 @@ func (p entryPolicy) valid(noLobby bool) bool {
 	if p.WaitingSpace != "login" && p.WaitingSpace != "lobby" {
 		return false
 	}
-	if noLobby && (p.Mode == "lobby" || p.WaitingSpace == "lobby") {
+	if noLobby && p.UseLobby {
 		return false
 	}
-	if !noLobby && p.RequireAccountLink && p.WaitingSpace != "lobby" {
+	if !p.UseLobby && (p.Mode == "lobby" || p.WaitingSpace == "lobby") {
+		return false
+	}
+	if p.UseLobby && p.RequireAccountLink && p.WaitingSpace != "lobby" {
 		return false
 	}
 	if p.Mode == "direct" && p.DefaultServer == "" {
@@ -77,14 +84,17 @@ func (p entryPolicy) valid(noLobby bool) bool {
 }
 
 func (a *API) readEntryPolicy(ctx context.Context) (entryPolicyView, []byte, error) {
-	view := entryPolicyView{entryPolicy: defaultEntryPolicy(a.NoLobby)}
+	view := entryPolicyView{entryPolicy: defaultEntryPolicy(a.NoLobby, a.LobbyDisabledByDefault)}
 	raw, err := a.Repo.GetSetting(ctx, entryPolicyKey)
 	if errors.Is(err, ErrNotFound) {
 		raw = nil
 	} else if err != nil {
 		return view, nil, err
-	} else if err = json.Unmarshal(raw, &view.entryPolicy); err != nil {
-		return view, nil, err
+	} else {
+		view.entryPolicy = entryPolicy{UseLobby: !a.NoLobby}
+		if err = json.Unmarshal(raw, &view.entryPolicy); err != nil {
+			return view, nil, err
+		}
 	}
 	if a.NoLobby {
 		view.entryPolicy = view.entryPolicy.withoutLobby()
@@ -105,6 +115,25 @@ func (a *API) handleGetEntryPolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, view)
+}
+
+func (a *API) syncLobbyServer(ctx context.Context, useLobby bool) error {
+	if useLobby {
+		if err := a.checkGameHost(ctx); err != nil {
+			return err
+		}
+		if err := a.Cluster.EnsureSystemLobby(ctx, a.LobbyImage); err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return newError(http.StatusServiceUnavailable, "service_unavailable", "lobby server is not provisioned")
+			}
+			return err
+		}
+		return nil
+	}
+	if err := a.Cluster.SetDesiredState(ctx, naming.SystemLobbyServer, v1alpha1.DesiredStopped); err != nil && !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	return nil
 }
 
 func (a *API) handleSetEntryPolicy(w http.ResponseWriter, r *http.Request) {
@@ -141,6 +170,12 @@ func (a *API) handleSetEntryPolicy(w http.ResponseWriter, r *http.Request) {
 	if body.Revision != current.Revision {
 		writeError(w, r, newError(409, "conflict", "player entry policy changed; reload before saving"))
 		return
+	}
+	if !a.NoLobby {
+		if err := a.syncLobbyServer(r.Context(), body.UseLobby); err != nil {
+			writeError(w, r, err)
+			return
+		}
 	}
 	raw, _ := json.Marshal(body.entryPolicy)
 	if err = a.Repo.CompareAndSetSetting(r.Context(), entryPolicyKey, expected, raw); err != nil {

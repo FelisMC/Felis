@@ -85,9 +85,17 @@ public final class WaitingRouter {
         links.prune();
     }
 
+    private boolean usesLobby(EntryPolicy policy) {
+        return !lobbyServer.isEmpty() && (policy == null || policy.useLobby());
+    }
+
+    private boolean usesLobby(UUID id) {
+        return usesLobby(entrySessions.getOrDefault(id, entryPolicy));
+    }
+
     /** Moves the player to the lobby; {@link #onServerPreConnect} authorizes it, so an early release is only denied. */
     void releaseFromLogin(Player player) {
-        if (lobbyServer.isEmpty()) {
+        if (!usesLobby(player.getUniqueId())) {
             UUID id = player.getUniqueId();
             if (waiting.containsKey(id) || exits.containsKey(id) || !authorizing.add(id)) {
                 return; // already leaving, waiting, or being decided: the gate's repeats are dropped
@@ -248,7 +256,7 @@ public final class WaitingRouter {
     /** Moves a player past the login gate back to the lobby; nothing to wake, and a wait already joined stays. */
     void toLobby(Player player) {
         boolean zh = FelisVelocityPlugin.zh(player);
-        if (lobbyServer.isEmpty()) {
+        if (!usesLobby(entryPolicy)) {
             player.sendMessage(Component.text(
                     zh ? "此平台没有大厅。" : "This platform has no lobby.", NamedTextColor.YELLOW));
             return;
@@ -313,7 +321,7 @@ public final class WaitingRouter {
     }
 
     private Optional<ServerView> policyTarget(Player player, EntryPolicy policy) {
-        if (policy.mode().equals("lobby")) return Optional.ofNullable(registry.view(lobbyServer));
+        if (usesLobby(policy) && policy.mode().equals("lobby")) return Optional.ofNullable(registry.view(lobbyServer));
         if (policy.mode().equals("domain")) {
             Optional<ServerView> host = virtualHost(player).flatMap(registry::resolveByHost)
                     .filter(server -> !server.name().equalsIgnoreCase(loginServer));
@@ -358,7 +366,7 @@ public final class WaitingRouter {
                 entryDisconnect(player, "目标服务器当前未运行，请稍后重连。", "The destination is offline. Reconnect later.");
                 return;
             }
-            String space = policy.waitingSpace().equals("login") || lobbyServer.isEmpty() ? loginServer : lobbyServer;
+            String space = policy.waitingSpace().equals("login") || !usesLobby(policy) ? loginServer : lobbyServer;
             ServerView spaceStatus = api.serverStatus(space);
             registry.observe(spaceStatus);
             Optional<RegisteredServer> waitingSpace = proxy.getServer(space);
@@ -394,7 +402,7 @@ public final class WaitingRouter {
 
         Player player = event.getPlayer();
         event.setResult(ServerPreConnectEvent.ServerResult.denied());
-        if (lobbyServer.isEmpty()) {
+        if (!usesLobby(player.getUniqueId())) {
             String exit = exits.get(player.getUniqueId());
             if (exit != null && serverNamed(event.getOriginalServer(), exit)) {
                 event.setResult(ServerPreConnectEvent.ServerResult.allowed(event.getOriginalServer()));
@@ -616,7 +624,7 @@ public final class WaitingRouter {
                     waiting.remove(id);
                     disconnectAutomaticWait(player);
                     player.sendMessage(Component.text(
-                            lobbyServer.isEmpty()
+                            !usesLobby(id)
                                     ? (zh ? "「" + w.serverName + "」启动耗时超出预期，请稍后重新连接。"
                                           : "« " + w.serverName + " » is taking longer than expected to start. "
                                             + "Reconnect later.")
@@ -670,8 +678,8 @@ public final class WaitingRouter {
 
     // A failed wait ends the connection of a player parked in the login space, which is no place to stay.
     private void disconnectAutomaticWait(Player player, Component reason) {
-        EntryPolicy policy = entrySessions.get(player.getUniqueId());
-        boolean parked = lobbyServer.isEmpty() || (policy != null && !policy.requireAccountLink());
+        EntryPolicy policy = entrySessions.getOrDefault(player.getUniqueId(), entryPolicy);
+        boolean parked = !usesLobby(policy) || !policy.requireAccountLink();
         if (parked && player.getCurrentServer()
                 .map(server -> serverNamed(server.getServer(), loginServer)).orElse(false)) {
             player.disconnect(reason);
@@ -933,7 +941,7 @@ public final class WaitingRouter {
     // Retry unexplained connection failures only; explicit refusal or preemption terminates transfer immediately.
     private void transfer(Player player, String serverName, RegisteredServer backend,
                           boolean fromMenu, int attempt) {
-        if (lobbyServer.isEmpty()) {
+        if (!usesLobby(player.getUniqueId())) {
             exits.put(player.getUniqueId(), serverName);
         }
         player.createConnectionRequest(backend).connect().whenComplete((result, err) -> {
