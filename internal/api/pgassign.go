@@ -98,6 +98,9 @@ func (p *PGRepo) AssignServer(ctx context.Context, name, userID string, res Reso
 	if _, err := tx.ExecContext(ctx, `DELETE FROM server_allowlist WHERE server_name = $1`, name); err != nil {
 		return "", nil, err
 	}
+	if err := disableServerSchedulesTx(ctx, tx, name); err != nil {
+		return "", nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return "", nil, err
 	}

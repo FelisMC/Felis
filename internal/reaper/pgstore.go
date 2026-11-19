@@ -102,6 +102,16 @@ func (s *PGStore) ReleaseWorld(ctx context.Context, name string, at time.Time, c
 	if _, err := tx.ExecContext(ctx, q, name, at); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE server_schedules
+		 SET enabled = false, next_run_at = NULL, warned_for = NULL,
+		     run_state = '', run_step = 0, run_resume = false, run_step_at = NULL,
+		     last_result = 'skipped',
+		     last_detail = 'the server has a new owner since this schedule was saved; save it again to use it',
+		     updated_at = $2
+		 WHERE server_name = $1 AND (enabled OR run_state <> '')`, name, at); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 

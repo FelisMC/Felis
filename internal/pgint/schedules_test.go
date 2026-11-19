@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"felis.lolicon.best/internal/api"
+	"felis.lolicon.best/internal/reaper"
 )
 
 func newSchedule(server, owner, step string, next *time.Time) *api.Schedule {
@@ -510,3 +511,46 @@ func TestScheduleRunBudget(t *testing.T) {
 }
 
 func ptrTo(t time.Time) *time.Time { return &t }
+
+func TestOwnershipChangeStopsRunningSchedules(t *testing.T) {
+	ctx := context.Background()
+	t0 := mustNow().Truncate(time.Second)
+	next := t0.Add(time.Hour)
+	res := api.ResourceSpec{CPUMilli: 100, MemoryMB: 128, StorageMB: 1}
+	for _, op := range []string{"release", "claim", "assign"} {
+		t.Run(op, func(t *testing.T) {
+			oldOwner, newOwner := newUser(t, "user", "sch-own-a"), newUser(t, "user", "sch-own-b")
+			name := "sch-own-" + suffix(t)
+			if op == "claim" {
+				seedOwnerless(t, name, 128)
+			} else {
+				seedOwnedServer(t, name, oldOwner.ID, false)
+			}
+			running := mustCreateSchedule(t, newSchedule(name, oldOwner.ID, api.StepDelay, nil))
+			ok, err := mustClaim(t, running.ID, nil, nil, t0)
+			applied(t, "claim manual run", ok, err, true)
+			enabled := mustCreateSchedule(t, newSchedule(name, oldOwner.ID, api.StepStop, &next))
+
+			switch op {
+			case "release":
+				if err := reaper.NewPGStore(db).ReleaseWorld(ctx, name, t0, func(string) error { return nil }); err != nil {
+					t.Fatal(err)
+				}
+			case "claim":
+				if claimed, err := repo.ClaimServer(ctx, name, newOwner.ID, nil); err != nil || !claimed {
+					t.Fatalf("ClaimServer = (%v, %v)", claimed, err)
+				}
+			case "assign":
+				if _, _, err := repo.AssignServer(ctx, name, newOwner.ID, res, true, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, id := range []int64{running.ID, enabled.ID} {
+				g := mustGetSchedule(t, name, id)
+				if g.Enabled || g.RunState != "" || g.NextRunAt != nil || g.LastResult != api.ScheduleSkipped {
+					t.Fatalf("schedule %d after %s: %+v", id, op, g)
+				}
+			}
+		})
+	}
+}

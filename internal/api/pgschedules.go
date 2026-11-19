@@ -254,3 +254,13 @@ func (p *PGRepo) DisableSchedule(ctx context.Context, id int64, detail string) (
 		   last_result = 'skipped', last_detail = $2, updated_at = now()
 		 WHERE id = $1 AND run_state = '' AND enabled`, id, detail)
 }
+
+func disableServerSchedulesTx(ctx context.Context, tx *sql.Tx, server string) error {
+	_, err := tx.ExecContext(ctx,
+		`UPDATE server_schedules
+		 SET enabled = false, next_run_at = NULL, warned_for = NULL,
+		     run_state = '', run_step = 0, run_resume = false, run_step_at = NULL,
+		     last_result = 'skipped', last_detail = $2, updated_at = now()
+		 WHERE server_name = $1 AND (enabled OR run_state <> '')`, server, staleScheduleDetail)
+	return err
+}

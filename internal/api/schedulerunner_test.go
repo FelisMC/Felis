@@ -131,6 +131,37 @@ func TestScheduleRunnerFiring(t *testing.T) {
 		}
 	})
 
+	t.Run("an in-progress run ends as skipped when ownership changes", func(t *testing.T) {
+		r := newSchedRig(t)
+		r.stopped()
+		id := r.schedule([]string{StepDelay, StepStart, StepCommand}, schedT0)
+		r.tick(t)
+		r.step(t, id, phaseDelaying)
+		r.st.owners["survival"] = "newowner"
+		r.repo.byName["survival"].OwnerID = "newowner"
+		r.clock = schedT0.Add(2 * time.Minute)
+		r.tick(t)
+		s := r.outcome(t, id, ScheduleSkipped, staleScheduleDetail)
+		if s.Enabled || s.NextRunAt != nil || r.cl.desired["survival"] != "" || r.con.calls != 0 {
+			t.Fatalf("continued after ownership change: %+v desired=%q calls=%d", s, r.cl.desired["survival"], r.con.calls)
+		}
+	})
+
+	t.Run("ownership changing before the backup step aborts without backing up", func(t *testing.T) {
+		r := newSchedRig(t)
+		id := r.schedule([]string{StepBackup}, schedT0)
+		r.tick(t)
+		r.step(t, id, phaseBackupStopping)
+		r.stopped()
+		r.repo.byName["survival"].OwnerID = "newowner"
+		r.clock = schedT0.Add(time.Minute)
+		r.tick(t)
+		s := r.outcome(t, id, ScheduleSkipped, staleScheduleDetail)
+		if s.Enabled || len(r.b.scheduled) != 0 || strings.Join(r.cl.released, ",") != "survival" {
+			t.Fatalf("backup=%v released=%v row=%+v", r.b.scheduled, r.cl.released, s)
+		}
+	})
+
 	t.Run("stop", func(t *testing.T) {
 		r := newSchedRig(t)
 		id := r.schedule([]string{StepStop}, schedT0)

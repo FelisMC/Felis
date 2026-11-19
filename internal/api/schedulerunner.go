@@ -64,16 +64,15 @@ func (a *API) RunSchedules(ctx context.Context) error {
 	return nil
 }
 
+const staleScheduleDetail = "the server has a new owner since this schedule was saved; save it again to use it"
+
 func (a *API) tickSchedule(ctx context.Context, d *DueSchedule, now time.Time) error {
 	s := &d.Schedule
+	if d.ServerOwner != s.OwnerID {
+		return a.stopStaleSchedule(ctx, s)
+	}
 	if s.RunState != "" {
 		return a.advanceRun(ctx, s, now)
-	}
-	// Ownership changed; disable old commands until the new owner saves the schedule.
-	if d.ServerOwner != s.OwnerID {
-		_, err := a.Schedules.DisableSchedule(ctx, s.ID,
-			"the server has a new owner since this schedule was saved; save it again to use it")
-		return err
 	}
 	due := *s.NextRunAt
 	if now.Before(due) {
@@ -369,11 +368,19 @@ func (a *API) startBackupJob(ctx context.Context, s *Schedule, pos RunPos, then 
 	case err != nil:
 		return err
 	}
-	err := b.BackupScheduled(ctx, s.Server, s.OwnerID)
-	// The Job holds the world volume after creation; the lock protects only the handoff gap.
-	if rerr := a.Cluster.ReleaseMaintenance(context.WithoutCancel(ctx), s.Server); rerr != nil {
-		log.Printf("api: release the maintenance lock on %s: %v (it lapses after %s)", s.Server, rerr, maintenance.Grace)
+	releaseMaint := func() {
+		if rerr := a.Cluster.ReleaseMaintenance(context.WithoutCancel(ctx), s.Server); rerr != nil {
+			log.Printf("api: release the maintenance lock on %s: %v (it lapses after %s)", s.Server, rerr, maintenance.Grace)
+		}
 	}
+	owner, done, oerr := a.currentScheduleOwner(ctx, s, pos)
+	if done {
+		releaseMaint()
+		return oerr
+	}
+	err := b.BackupScheduled(ctx, s.Server, owner)
+	// The Job holds the world volume after creation; the lock protects only the handoff gap.
+	releaseMaint()
 	if err != nil {
 		return a.failRun(ctx, s, pos, "could not start the backup: "+err.Error())
 	}
@@ -564,13 +571,42 @@ func ptrTime(t time.Time) *time.Time { return &t }
 
 // backUpRunning falls back to stop-backup-start when live backup support, console access or volume access is unavailable.
 func (a *API) backUpRunning(ctx context.Context, s *Schedule, pos RunPos) error {
+	owner, done, err := a.currentScheduleOwner(ctx, s, pos)
+	if done {
+		return err
+	}
 	if _, _, ok := a.liveBackupParts(); !ok {
 		return a.downThen(ctx, s, pos, phaseBackupStopping, StepStop)
 	}
-	if err := a.startLiveBackup(ctx, s.Server, s.OwnerID, backupjob.ReasonScheduled); err != nil {
+	if err := a.startLiveBackup(ctx, s.Server, owner, backupjob.ReasonScheduled); err != nil {
 		log.Printf("api: schedule %d could not back %s up while it runs (%v); stopping it for the backup", s.ID, s.Server, err)
 		return a.downThen(ctx, s, pos, phaseBackupStopping, StepStop)
 	}
 	log.Printf("api: schedule %d started a backup of %s while it runs", s.ID, s.Server)
 	return a.moveRun(ctx, s, pos, RunPos{s.RunStep, phaseBackingUp}, "", "")
+}
+
+func (a *API) stopStaleSchedule(ctx context.Context, s *Schedule) error {
+	if s.RunState != "" {
+		s.Enabled = false
+		if err := a.endRun(ctx, s, RunPos{s.RunStep, s.RunState}, ScheduleSkipped, staleScheduleDetail); err != nil {
+			return err
+		}
+	}
+	_, err := a.Schedules.DisableSchedule(ctx, s.ID, staleScheduleDetail)
+	return err
+}
+
+func (a *API) currentScheduleOwner(ctx context.Context, s *Schedule, pos RunPos) (string, bool, error) {
+	rec, err := a.Repo.ServerByName(ctx, s.Server)
+	if errors.Is(err, ErrNotFound) {
+		return "", true, a.endRun(ctx, s, pos, ScheduleSkipped, "the server no longer exists")
+	}
+	if err != nil {
+		return "", true, err
+	}
+	if rec.OwnerID != s.OwnerID {
+		return "", true, a.stopStaleSchedule(ctx, s)
+	}
+	return rec.OwnerID, false, nil
 }
