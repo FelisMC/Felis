@@ -132,6 +132,7 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, errForbidden)
 		return
 	}
+	*r = *r.WithContext(withAuthorizedServer(r.Context(), rec))
 
 	var body struct {
 		BackupID       string `json:"backup_id"`
@@ -184,6 +185,9 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, errForbidden)
 		return
 	}
+	if _, ok := a.recheckAuthorizedServer(w, r, name); !ok {
+		return
+	}
 
 	// The Job can mount beside a live server on the same node; acquireWorld makes the stopped check atomic.
 	info, err := a.Cluster.GetServer(r.Context(), name)
@@ -216,6 +220,11 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	cur, ok := a.recheckAuthorizedServer(w, r, name)
+	if !ok {
+		release()
+		return
+	}
 	defer release()
 
 	snapshotter, snapshot := a.snapshotFirst()
@@ -223,7 +232,7 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 		snapshot = false
 	}
 	if snapshot {
-		err = snapshotter.BackupThenRestore(r.Context(), name, rec.OwnerID, backup.ID, backup.BackupRef)
+		err = snapshotter.BackupThenRestore(r.Context(), name, cur.OwnerID, backup.ID, backup.BackupRef)
 	} else {
 		err = a.Restorer.Restore(r.Context(), name, backup.BackupRef)
 	}

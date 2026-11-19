@@ -382,6 +382,7 @@ func (a *API) authorizeServerFiles(w http.ResponseWriter, r *http.Request) (stri
 		writeError(w, r, errForbidden)
 		return "", false
 	}
+	*r = *r.WithContext(withAuthorizedServer(r.Context(), rec))
 	return name, true
 }
 

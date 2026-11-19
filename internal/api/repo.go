@@ -7,11 +7,11 @@ import (
 )
 
 type ServerRecord struct {
-	Name      string
-	Subdomain string
-	OwnerID   string // "" when unclaimed
-	// CachedPhase is non-authoritative.
-	CachedPhase string
+	Name        string
+	Subdomain   string
+	OwnerID     string // "" when unclaimed
+	ClaimedAt   *time.Time
+	CachedPhase string       // non-authoritative
 	Retire      *RetireState // nil when no retirement is pending
 	Tags        []string     // set by ServerByName only
 }

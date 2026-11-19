@@ -39,15 +39,15 @@ func (p *PGRepo) ServerBySubdomain(ctx context.Context, subdomain string) (*Serv
 }
 
 func (p *PGRepo) ServerByName(ctx context.Context, name string) (*ServerRecord, error) {
-	const q = `SELECT s.name, COALESCE(sa.subdomain, ''), COALESCE(s.owner_id, ''), COALESCE(s.cached_phase, ''),
+	const q = `SELECT s.name, COALESCE(sa.subdomain, ''), COALESCE(s.owner_id, ''), s.claimed_at, COALESCE(s.cached_phase, ''),
 		s.retire_requested_at, s.retire_delete, to_jsonb(s.tags)
 		FROM servers s LEFT JOIN server_aliases sa ON sa.server_name = s.name
 		WHERE s.name = $1 AND s.deleted_at IS NULL`
 	var r ServerRecord
-	var retireAt sql.NullTime
+	var claimedAt, retireAt sql.NullTime
 	var retireDelete bool
 	var rawTags []byte
-	switch err := p.db.QueryRowContext(ctx, q, name).Scan(&r.Name, &r.Subdomain, &r.OwnerID, &r.CachedPhase, &retireAt, &retireDelete, &rawTags); {
+	switch err := p.db.QueryRowContext(ctx, q, name).Scan(&r.Name, &r.Subdomain, &r.OwnerID, &claimedAt, &r.CachedPhase, &retireAt, &retireDelete, &rawTags); {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil, ErrNotFound
 	case err != nil:
@@ -56,6 +56,10 @@ func (p *PGRepo) ServerByName(ctx context.Context, name string) (*ServerRecord, 
 	tags, err := decodeServerTags(rawTags)
 	if err != nil {
 		return nil, err
+	}
+	if claimedAt.Valid {
+		t := claimedAt.Time
+		r.ClaimedAt = &t
 	}
 	r.Retire = retireState(retireAt, retireDelete)
 	r.Tags = tags

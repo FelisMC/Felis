@@ -58,17 +58,74 @@ func (a *API) acquireWorld(w http.ResponseWriter, r *http.Request, name, kind, n
 	}, true
 }
 
+type authServerKey struct{}
+
+type authServerSnapshot struct {
+	ownerID   string
+	claimedAt *time.Time
+}
+
+func withAuthorizedServer(ctx context.Context, rec *ServerRecord) context.Context {
+	var claimedAt *time.Time
+	if rec.ClaimedAt != nil {
+		t := *rec.ClaimedAt
+		claimedAt = &t
+	}
+	return context.WithValue(ctx, authServerKey{}, authServerSnapshot{ownerID: rec.OwnerID, claimedAt: claimedAt})
+}
+
+func sameClaimedAt(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.Equal(*b)
+}
+
+func (a *API) recheckAuthorizedServer(w http.ResponseWriter, r *http.Request, name string) (*ServerRecord, bool) {
+	p := principalFromContext(r.Context())
+	cur, err := a.managedServerRecord(r.Context(), name)
+	if err != nil {
+		a.writeLookupError(w, r, err)
+		return nil, false
+	}
+	if !a.isOwnerOrAdmin(p, cur) {
+		writeError(w, r, errForbidden)
+		return nil, false
+	}
+	if snap, ok := r.Context().Value(authServerKey{}).(authServerSnapshot); ok && (p == nil || !p.IsAdmin()) {
+		if cur.OwnerID != snap.ownerID || !sameClaimedAt(cur.ClaimedAt, snap.claimedAt) {
+			writeError(w, r, errForbidden)
+			return nil, false
+		}
+	}
+	return cur, true
+}
+
 func (a *API) acquireFileWorld(w http.ResponseWriter, r *http.Request, name, kind, notStopped string) (func(), bool) {
+	if _, ok := a.recheckAuthorizedServer(w, r, name); !ok {
+		return nil, false
+	}
 	info, err := a.Cluster.GetServer(r.Context(), name)
 	if err != nil {
 		a.writeLookupError(w, r, err)
 		return nil, false
 	}
 	if info.Phase != "Running" || info.DesiredState != "Running" {
-		return a.acquireWorld(w, r, name, kind, notStopped)
+		release, ok := a.acquireWorld(w, r, name, kind, notStopped)
+		if !ok {
+			return nil, false
+		}
+		if _, ok := a.recheckAuthorizedServer(w, r, name); !ok {
+			release()
+			return nil, false
+		}
+		return release, true
 	}
 	if err := a.Cluster.CheckFileAccess(r.Context(), name); err != nil {
 		a.writeLookupError(w, r, maintenanceError(err, notStopped))
+		return nil, false
+	}
+	if _, ok := a.recheckAuthorizedServer(w, r, name); !ok {
 		return nil, false
 	}
 	return func() {}, true

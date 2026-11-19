@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1260,3 +1261,109 @@ func TestFileEditorErrorMapping(t *testing.T) {
 // bytesPtr builds the *[]byte writeFileRequest.Content wants. The pointer is what
 // lets an omitted field be distinguished from an empty one; see the type's comment.
 func bytesPtr(b []byte) *[]byte { return &b }
+
+type hookReader struct {
+	r    io.Reader
+	once func()
+}
+
+func (h *hookReader) Read(p []byte) (int, error) {
+	if h.once != nil {
+		fn := h.once
+		h.once = nil
+		fn()
+	}
+	return h.r.Read(p)
+}
+
+func TestSlowFileWriteAndRestoreRejectMidflightOwnershipChange(t *testing.T) {
+	owner := &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
+	t1, t2 := time.Unix(1_700_000_000, 0), time.Unix(1_700_003_600, 0)
+
+	send := func(t *testing.T, h http.Handler, method, path, body string, hdr map[string]string, onBodyRead func()) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(method, path, &hookReader{r: strings.NewReader(body), once: onBodyRead})
+		req.ContentLength = int64(len(body))
+		for k, v := range hdr {
+			req.Header.Set(k, v)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		return w
+	}
+
+	t.Run("upload body finishes after new owner claims and starts server", func(t *testing.T) {
+		a, repo, cl, files := mkFiles(t)
+		repo.byName["survival"].ClaimedAt = &t1
+		a.External = staticExternal{p: owner}
+		body := "PK-jar-bytes"
+		w := send(t, a.ExternalHandler(), "PUT", "/api/v1/servers/survival/files/upload?path=plugins/helper.jar&overwrite=true",
+			body, fileRouteHeader("upload", body), func() {
+				repo.byName["survival"].OwnerID = "bob"
+				repo.byName["survival"].ClaimedAt = &t2
+				cl.byName["survival"].Phase = string(v1alpha1.PhaseRunning)
+				cl.byName["survival"].Ready = true
+				cl.byName["survival"].DesiredState = string(v1alpha1.DesiredRunning)
+			})
+		if w.Code != http.StatusForbidden || files.calls != 0 || len(cl.acquired) != 0 {
+			t.Fatalf("status=%d calls=%d locks=%v body=%s", w.Code, files.calls, cl.acquired, w.Body.String())
+		}
+		stageEmpty(t, a)
+	})
+
+	t.Run("from-url download finishes after release and re-claim with new claimed_at", func(t *testing.T) {
+		a, repo, _, files := mkFiles(t)
+		repo.byName["survival"].ClaimedAt = &t1
+		a.External = staticExternal{p: owner}
+		a.FileDownloadClient = &http.Client{Transport: fileDownloadRoundTrip(func(*http.Request) (*http.Response, error) {
+			repo.byName["survival"].ClaimedAt = &t2
+			return fileDownloadResponse(http.StatusOK, "remote-bytes"), nil
+		})}
+		w := do(a.ExternalHandler(), "POST", "/api/v1/servers/survival/files/from-url",
+			`{"url":"https://example.net/plugin.jar","path":"plugins/plugin.jar","overwrite":true}`, jsonHeader)
+		if w.Code != http.StatusForbidden || files.calls != 0 {
+			t.Fatalf("status=%d calls=%d body=%s", w.Code, files.calls, w.Body.String())
+		}
+		stageEmpty(t, a)
+	})
+
+	for _, tc := range []struct {
+		name, method, path, body string
+	}{
+		{"write file", "PUT", "/api/v1/servers/survival/file?path=ops.json", `{"content":"aGk=","content_sha256":"` + hiSum + `"}`},
+		{"paper-global patch", "PATCH", paperGlobalPath, paperGlobalPatchBody},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, repo, cl, files := mkFiles(t)
+			repo.byName["survival"].ClaimedAt = &t1
+			a.External = staticExternal{p: owner}
+			w := send(t, a.ExternalHandler(), tc.method, tc.path, tc.body, jsonHeader, func() {
+				repo.byName["survival"].OwnerID = "bob"
+				repo.byName["survival"].ClaimedAt = &t2
+			})
+			if w.Code != http.StatusForbidden || files.calls != 0 || len(cl.acquired) != 0 {
+				t.Fatalf("status=%d calls=%d locks=%v body=%s", w.Code, files.calls, cl.acquired, w.Body.String())
+			}
+		})
+	}
+
+	t.Run("restore backup body finishes after reassignment", func(t *testing.T) {
+		a, repo, cl, _ := mkFiles(t)
+		repo.byName["survival"].ClaimedAt = &t1
+		repo.backups = []fakeBackup{{
+			view: BackupView{ID: "bk1", ServerName: "survival", FormerOwner: "owner1", Status: "present", CreatedAt: t1},
+			ref:  "ref-bk1",
+		}}
+		restorer := &fakeRestorer{}
+		a.Restorer = restorer
+		a.External = staticExternal{p: owner}
+		w := send(t, a.ExternalHandler(), "POST", "/api/v1/servers/survival/restore-backup",
+			`{"backup_id":"bk1","safety_snapshot":false}`, jsonHeader, func() {
+				repo.byName["survival"].OwnerID = "bob"
+				repo.byName["survival"].ClaimedAt = &t2
+			})
+		if w.Code != http.StatusForbidden || restorer.calls != 0 || len(cl.acquired) != 0 {
+			t.Fatalf("status=%d restores=%d locks=%v body=%s", w.Code, restorer.calls, cl.acquired, w.Body.String())
+		}
+	})
+}
