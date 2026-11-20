@@ -1,7 +1,7 @@
 # Lock Limbo artifacts; use game port 25565 and health port 8080, ready only after the first tick.
 
 # Build platform-independent plugin bytecode on the build architecture, with JDK 21+ for dependencies.
-FROM --platform=$BUILDPLATFORM gradle:9.8.1-jdk25@sha256:e4f9e3d037cc0c7d8fc42cd97edb976dfd19a5b7314212b88b6de3807d13cd47 AS plugin
+FROM --platform=$BUILDPLATFORM gradle:9.9.1-jdk25@sha256:39d599d8df1777d73b00b5bf928254ecd121802d518577fe08d41a3cf86aa45f AS plugin
 WORKDIR /src
 # Include the shared link sources alongside the Limbo module so they compile into its JAR.
 COPY plugins/limbo/ ./plugins/limbo/
