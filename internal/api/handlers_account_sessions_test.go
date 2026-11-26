@@ -341,3 +341,35 @@ func TestAPIKeyCannotRevokeSessions(t *testing.T) {
 		t.Fatalf("laptop session after rejected API key revoke = %d, want 200", w.Code)
 	}
 }
+
+func TestSessionCookieHostPrefixAndDuplicateRejection(t *testing.T) {
+	rec := httptest.NewRecorder()
+	setSessionCookie(rec, "tok-abc", frozenNow.Add(time.Hour))
+	cookies := rec.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("setSessionCookie emitted %d cookies, want 1", len(cookies))
+	}
+	c := cookies[0]
+	if !strings.HasPrefix(c.Name, "__Host-") || c.Domain != "" || c.Path != "/" || !c.Secure || !c.HttpOnly {
+		t.Fatalf("cookie attributes violate __Host- contract: %+v", c)
+	}
+
+	clearRec := httptest.NewRecorder()
+	clearSessionCookie(clearRec)
+	cleared := clearRec.Result().Cookies()
+	if len(cleared) != 1 || cleared[0].Name != c.Name || cleared[0].Domain != "" || cleared[0].Path != "/" || !cleared[0].Secure {
+		t.Fatalf("clearSessionCookie attributes mismatch: %+v", cleared)
+	}
+
+	f := newSessionsFixture(t)
+	for _, hdr := range []string{
+		sessionCookieName + "=bogus; " + sessionCookieName + "=" + laptopTok,
+		sessionCookieName + "=" + laptopTok + "; " + sessionCookieName + "=bogus",
+		sessionCookieName + "=" + laptopTok + "; " + sessionCookieName + "=" + phoneTok,
+	} {
+		w := do(f.eh, "GET", "/api/v1/me", "", map[string]string{"Cookie": hdr})
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("duplicate session cookies %q = %d (%s), want 401", hdr, w.Code, w.Body.String())
+		}
+	}
+}

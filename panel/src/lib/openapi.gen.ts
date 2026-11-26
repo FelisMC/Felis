@@ -1162,7 +1162,7 @@ export interface paths {
         put?: never;
         /**
          * Complete a passkey (WebAuthn) login and mint a session (spec §14, §B).
-         * @description Second leg of the public passkey door: the caller returns the email (to re-select the account) and the raw navigator.credentials.get() assertion. The live login challenge whose value the assertion signed (response.clientDataJSON) is consumed atomically and the assertion is verified against it; on success a host-only felis_session cookie is minted. Both players and staff may log in this way — a passkey is a two-factor authenticator (possession + user verification), strong enough to stand alone without the in-game approval op-login requires. User verification is checked per credential: the passkey must have verified the user when it was bound, and this assertion must verify the user now. Every failure mode (unknown address, no live challenge for the signed value, expired challenge, bad assertion, a credential or assertion without user verification, a cloned authenticator) collapses into one uniform passkey_login_invalid, so the door reveals nothing.
+         * @description Second leg of the public passkey door: the caller returns the email (to re-select the account) and the raw navigator.credentials.get() assertion. The live login challenge whose value the assertion signed (response.clientDataJSON) is consumed atomically and the assertion is verified against it; on success a host-only __Host-felis_session cookie is minted. Both players and staff may log in this way — a passkey is a two-factor authenticator (possession + user verification), strong enough to stand alone without the in-game approval op-login requires. User verification is checked per credential: the passkey must have verified the user when it was bound, and this assertion must verify the user now. Every failure mode (unknown address, no live challenge for the signed value, expired challenge, bad assertion, a credential or assertion without user verification, a cloned authenticator) collapses into one uniform passkey_login_invalid, so the door reveals nothing.
          */
         post: operations["passkeyLoginFinish"];
         delete?: never;
@@ -1242,7 +1242,7 @@ export interface paths {
         put?: never;
         /**
          * Redeem an email-OTP login code into a session (spec §B).
-         * @description Public, pre-session: resolves the address to an account, verifies the code under the login purpose, and on success mints a host-only felis_session. An unknown address, a wrong or expired code, and an attempt-exhausted code all return the IDENTICAL 400 invalid_code, so the door is not an existence or lockout oracle. The 10th wrong code in 24h locks the door for that account until the window ends (the right code then also reads as invalid_code); the owner is told by mail once, and the lock is audited as auth.otp.locked. Staff are refused (403) — but only AFTER a valid code is redeemed, so only the account owner can ever reach that refusal.
+         * @description Public, pre-session: resolves the address to an account, verifies the code under the login purpose, and on success mints a host-only __Host-felis_session. An unknown address, a wrong or expired code, and an attempt-exhausted code all return the IDENTICAL 400 invalid_code, so the door is not an existence or lockout oracle. The 10th wrong code in 24h locks the door for that account until the window ends (the right code then also reads as invalid_code); the owner is told by mail once, and the lock is audited as auth.otp.locked. Staff are refused (403) — but only AFTER a valid code is redeemed, so only the account owner can ever reach that refusal.
          */
         post: operations["loginEmailVerify"];
         delete?: never;
@@ -1322,7 +1322,7 @@ export interface paths {
         put?: never;
         /**
          * Redeem a one-time setup token into a lockdown session (spec §B).
-         * @description Public, pre-session first-run door: consumes the one-time setup token minted by the felis TUI (stored and looked up by SHA-256 hash, like session cookies), mints a host-only felis_session, and returns the remaining setup steps so the SPA can drive the wizard. An unknown, consumed, or expired token returns a uniform 400 setup_token_invalid. Gated on local_auth_enabled. The token is spent in the same transaction that stores the session, so a redemption that fails with 500 leaves the link working for another try.
+         * @description Public, pre-session first-run door: consumes the one-time setup token minted by the felis TUI (stored and looked up by SHA-256 hash, like session cookies), mints a host-only __Host-felis_session, and returns the remaining setup steps so the SPA can drive the wizard. An unknown, consumed, or expired token returns a uniform 400 setup_token_invalid. Gated on local_auth_enabled. The token is spent in the same transaction that stores the session, so a redemption that fails with 500 leaves the link working for another try.
          */
         post: operations["setupRedeem"];
         delete?: never;

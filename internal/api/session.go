@@ -19,7 +19,7 @@ import (
 
 const (
 	// sessionCookieName is host-only to isolate operator and player sessions.
-	sessionCookieName = "felis_session"
+	sessionCookieName = "__Host-felis_session"
 	sessionTTL        = 12 * time.Hour
 	// staffSessionIdle counts all authenticated requests, including background refreshes.
 	staffSessionIdle = 30 * time.Minute
@@ -93,12 +93,28 @@ func (a *API) mintSession(r *http.Request, userID string, proof signInProof) (st
 	}, nil
 }
 
+func singleSessionCookie(r *http.Request) (string, bool) {
+	var val string
+	count := 0
+	for _, c := range r.Cookies() {
+		if c.Name != sessionCookieName {
+			continue
+		}
+		count++
+		val = c.Value
+	}
+	if count != 1 || val == "" {
+		return "", false
+	}
+	return val, true
+}
+
 func currentSessionHash(r *http.Request) string {
-	c, err := r.Cookie(sessionCookieName)
-	if err != nil || c.Value == "" {
+	val, ok := singleSessionCookie(r)
+	if !ok {
 		return ""
 	}
-	return hashCookie(c.Value)
+	return hashCookie(val)
 }
 
 func setSessionCookie(w http.ResponseWriter, value string, expires time.Time) {
@@ -182,8 +198,8 @@ func (s SessionAuth) Authenticate(r *http.Request) (*Principal, error) {
 	if key, ok := bearerAPIToken(r); ok {
 		return s.authenticateAPIToken(r, key)
 	}
-	cookie, err := r.Cookie(sessionCookieName)
-	if err != nil || cookie.Value == "" {
+	val, ok := singleSessionCookie(r)
+	if !ok {
 		return nil, fmt.Errorf("no session")
 	}
 
@@ -197,7 +213,7 @@ func (s SessionAuth) Authenticate(r *http.Request) (*Principal, error) {
 		return nil, fmt.Errorf("local auth disabled")
 	}
 
-	hash, now := hashCookie(cookie.Value), s.now()
+	hash, now := hashCookie(val), s.now()
 	u, err := s.Repo.SessionUser(ctx, hash, now)
 	switch {
 	case errors.Is(err, ErrNotFound):

@@ -42,7 +42,7 @@ info:
 
     Control plane for the Felis Minecraft orchestration platform. The same binary
     exposes an internal face (per-caller service tokens, for velocity / backend
-    callbacks, never Zero Trust) and an external face (the felis_session cookie, for
+    callbacks, never Zero Trust) and an external face (the __Host-felis_session cookie, for
     people and the panel; Cloudflare Access, when present, is enforced at the edge).
     Admin-tier external operations additionally require a staff session on the
     operator console host. See `x-felis-face` / `x-felis-tier` on each operation.
@@ -128,7 +128,7 @@ components:
     sessionCookie:
       type: apiKey
       in: cookie
-      name: felis_session
+      name: __Host-felis_session
       description: >-
         Opaque session cookie (external face). Minted by the passwordless
         session doors — passkey login, email-OTP, bind code, and op-login
@@ -5148,7 +5148,7 @@ paths:
         Second leg of the public passkey door: the caller returns the email (to
         re-select the account) and the raw navigator.credentials.get() assertion. The
         live login challenge whose value the assertion signed (response.clientDataJSON)
-        is consumed atomically and the assertion is verified against it; on success a host-only felis_session cookie is minted. Both players
+        is consumed atomically and the assertion is verified against it; on success a host-only __Host-felis_session cookie is minted. Both players
         and staff may log in this way — a passkey is a two-factor authenticator
         (possession + user verification), strong enough to stand alone without the
         in-game approval op-login requires. User verification is checked per
@@ -5443,7 +5443,7 @@ paths:
       summary: Redeem an email-OTP login code into a session (spec §B).
       description: >-
         Public, pre-session: resolves the address to an account, verifies the code
-        under the login purpose, and on success mints a host-only felis_session. An
+        under the login purpose, and on success mints a host-only __Host-felis_session. An
         unknown address, a wrong or expired code, and an attempt-exhausted code all
         return the IDENTICAL 400 invalid_code, so the door is not an existence or
         lockout oracle. The 10th wrong code in 24h locks the door for that account
@@ -5665,7 +5665,7 @@ paths:
       description: >-
         Public, pre-session first-run door: consumes the one-time setup token minted by
         the felis TUI (stored and looked up by SHA-256 hash, like session cookies),
-        mints a host-only felis_session, and returns the remaining setup steps so the
+        mints a host-only __Host-felis_session, and returns the remaining setup steps so the
         SPA can drive the wizard. An unknown, consumed, or expired token returns a
         uniform 400 setup_token_invalid. Gated on local_auth_enabled. The token is
         spent in the same transaction that stores the session, so a redemption that
