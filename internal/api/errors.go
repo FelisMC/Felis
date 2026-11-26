@@ -26,6 +26,7 @@ var (
 	ErrPasskeyChallengeInvalid = errors.New("passkey challenge invalid or expired")
 	// ErrLastPasskey protects an unverified account's last durable login factor.
 	ErrLastPasskey         = errors.New("cannot remove the only passkey of an account without a verified email")
+	ErrLastLoginMethod     = errors.New("cannot unlink the only Minecraft account without a passkey or verified email")
 	ErrPlayerBindForbidden = errors.New("bind code belongs to a staff account")
 	// ErrPlayerAccountRetired means the account is soft-deleted or disabled; the code is not consumed.
 	ErrPlayerAccountRetired = errors.New("player account is retired or disabled")

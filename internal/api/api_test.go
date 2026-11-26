@@ -1631,6 +1631,59 @@ func (f *fakeRepo) RevokeAllUserSessions(_ context.Context, userID string) error
 	return nil
 }
 
+func (f *fakeRepo) ListUserLinks(_ context.Context, userID string) ([]LinkedAccount, error) {
+	out := []LinkedAccount{}
+	for mcUUID, uid := range f.links {
+		if uid != userID {
+			continue
+		}
+		src := f.linkAuthSource[mcUUID]
+		if src == "" {
+			src = authSourceMojang
+		}
+		out = append(out, LinkedAccount{MCUUID: mcUUID, AuthSource: src, VerifiedAt: time.Now().UTC()})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].MCUUID < out[j].MCUUID })
+	return out, nil
+}
+
+func (f *fakeRepo) UnlinkOwnAccount(_ context.Context, userID, mcUUID string) error {
+	if f.links[mcUUID] != userID {
+		return ErrNotFound
+	}
+	totalLinks := 0
+	for _, uid := range f.links {
+		if uid == userID {
+			totalLinks++
+		}
+	}
+	role := "user"
+	emailVerified := false
+	for _, u := range f.staff {
+		if u.ID == userID {
+			role = u.Role
+			emailVerified = u.EmailVerified
+		}
+	}
+	if role == "user" && totalLinks == 1 && !emailVerified {
+		passkeys := 0
+		for _, c := range f.passkeyCreds {
+			if c.UserID == userID {
+				passkeys++
+			}
+		}
+		if passkeys == 0 {
+			return ErrLastLoginMethod
+		}
+	}
+	delete(f.links, mcUUID)
+	delete(f.linkAuthSource, mcUUID)
+	if totalLinks == 1 {
+		delete(f.linked, userID)
+	}
+	return nil
+}
+
 func (f *fakeRepo) UnlinkAccount(_ context.Context, userID, mcUUID string) error {
 	if f.links[mcUUID] != userID {
 		return ErrNotFound

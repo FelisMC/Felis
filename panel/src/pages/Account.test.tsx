@@ -10,6 +10,8 @@ import { Account } from "./Account";
 const mocks = vi.hoisted(() => ({
   passkeyList: vi.fn(),
   linkStatus: vi.fn(),
+  listMyLinks: vi.fn(),
+  unlinkMyAccount: vi.fn(),
   linkSources: vi.fn(),
   lookupProfile: vi.fn(),
   linkProfile: vi.fn(),
@@ -29,6 +31,8 @@ vi.mock("@/lib/api", async (importOriginal) => {
     api: {
       ...actual.api,
       linkStatus: mocks.linkStatus,
+      listMyLinks: mocks.listMyLinks,
+      unlinkMyAccount: mocks.unlinkMyAccount,
       linkSources: mocks.linkSources,
       lookupProfile: mocks.lookupProfile,
       linkProfile: mocks.linkProfile,
@@ -80,6 +84,8 @@ function renderAccount() {
 
 beforeEach(() => {
   mocks.linkStatus.mockReset().mockResolvedValue({ linked: true });
+  mocks.listMyLinks.mockReset().mockResolvedValue({ links: [] });
+  mocks.unlinkMyAccount.mockReset().mockResolvedValue({ ok: true, mc_uuid: "" });
   mocks.linkSources.mockReset().mockResolvedValue({ sources: [{ tag: "littleskin", lookup_available: true }] });
   mocks.lookupProfile.mockReset();
   mocks.linkProfile.mockReset();
@@ -279,5 +285,40 @@ describe("staff Minecraft role designation", () => {
     expect(mocks.linkVerify).toHaveBeenCalledWith("ABCD1234");
     expect(mocks.linkSources).not.toHaveBeenCalled();
     expect(mocks.linkProfile).not.toHaveBeenCalled();
+  });
+});
+
+describe("self-service linked Minecraft accounts", () => {
+  const linkA = {
+    mc_uuid: "11111111-1111-1111-1111-111111111111",
+    auth_source: "mojang",
+    verified_at: "2026-03-01T10:00:00Z",
+  };
+
+  it("lists linked accounts and unlinks after confirmation when another login factor exists", async () => {
+    mocks.identity = identity(true);
+    mocks.passkeyList.mockResolvedValue({ credentials: [] });
+    mocks.listMyLinks.mockResolvedValueOnce({ links: [linkA] }).mockResolvedValue({ links: [] });
+    mocks.unlinkMyAccount.mockResolvedValue({ ok: true, mc_uuid: linkA.mc_uuid });
+
+    renderAccount();
+    expect(await screen.findByText(linkA.mc_uuid)).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: t("account:unlink_aria", { uuid: linkA.mc_uuid }) }));
+    const dialog = screen.getByRole("dialog");
+    expect(mocks.unlinkMyAccount).not.toHaveBeenCalled();
+    await userEvent.click(within(dialog).getByRole("button", { name: t("account:unlink_confirm") }));
+    await waitFor(() => expect(mocks.unlinkMyAccount).toHaveBeenCalledWith(linkA.mc_uuid));
+  });
+
+  it("disables unlinking the only Minecraft account when no passkey or verified email exists", async () => {
+    mocks.identity = identity(false);
+    mocks.passkeyList.mockResolvedValue({ credentials: [] });
+    mocks.listMyLinks.mockResolvedValue({ links: [linkA] });
+
+    renderAccount();
+    const btn = await screen.findByRole("button", { name: t("account:unlink_aria", { uuid: linkA.mc_uuid }) });
+    expect((btn as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(t("account:unlink_last_hint"))).toBeTruthy();
   });
 });

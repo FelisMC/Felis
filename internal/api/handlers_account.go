@@ -141,6 +141,9 @@ type linkVerifyRequest struct {
 
 func (a *API) handleLinkVerify(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
+	if !a.requireReauth(w, r, p) {
+		return
+	}
 	var req linkVerifyRequest
 	if err := decodeJSON(w, r, &req); err != nil {
 		writeError(w, r, err)
@@ -168,6 +171,48 @@ func (a *API) handleLinkVerify(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"linked": true, "mc_uuid": mcUUID, "auth_source": authSource,
 	})
+}
+
+func (a *API) handleListMyLinks(w http.ResponseWriter, r *http.Request) {
+	p := principalFromContext(r.Context())
+	links, err := a.Repo.ListUserLinks(r.Context(), p.UserID)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if links == nil {
+		links = []LinkedAccount{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"links": links})
+}
+
+func (a *API) handleUnlinkMyAccount(w http.ResponseWriter, r *http.Request) {
+	p := principalFromContext(r.Context())
+	if !a.requireReauth(w, r, p) {
+		return
+	}
+	mcUUID, err := parseMCUUID(r.PathValue("mc_uuid"))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if err := a.Repo.UnlinkOwnAccount(r.Context(), p.UserID, mcUUID); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, r, newError(http.StatusNotFound, "not_found",
+				"no linked account for this UUID"))
+			return
+		}
+		if errors.Is(err, ErrLastLoginMethod) {
+			writeError(w, r, newError(http.StatusConflict, "last_login_method",
+				"this is your only linked Minecraft account and you have no passkey or verified email; add another sign-in method first"))
+			return
+		}
+		writeError(w, r, err)
+		return
+	}
+	a.audit(r, "account.unlink", mcUUID)
+	a.revokeOtherSessionsAfter(r, "game account unlink")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "mc_uuid": mcUUID})
 }
 
 // handleLinkStart reports status only; the web cannot mint codes for an unverified game UUID.

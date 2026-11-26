@@ -10400,8 +10400,85 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Reauth or browser session required (session_required or reauth_required).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '409':
           description: Account already linked.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/account/links:
+    get:
+      tags: [account]
+      operationId: listMyLinks
+      summary: List Minecraft accounts linked to the caller's account.
+      x-felis-face: [external]
+      x-felis-tier: app
+      x-felis-setup-allowed: true
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: Linked Minecraft accounts.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [links]
+                properties:
+                  links:
+                    type: array
+                    items:
+                      type: object
+                      required: [mc_uuid, auth_source, verified_at]
+                      properties:
+                        mc_uuid: { type: string, format: uuid }
+                        auth_source: { type: string }
+                        verified_at: { type: string, format: date-time }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/account/links/{mc_uuid}:
+    delete:
+      tags: [account]
+      operationId: unlinkMyAccount
+      summary: Unlink a Minecraft account from the caller's own account.
+      x-felis-face: [external]
+      x-felis-tier: app
+      x-felis-setup-allowed: true
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - name: mc_uuid
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Unlinked.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, mc_uuid]
+                properties:
+                  ok: { type: boolean, const: true }
+                  mc_uuid: { type: string, format: uuid }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Reauth or browser session required (session_required or reauth_required).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Cannot unlink the only Minecraft account without another sign-in method (last_login_method).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

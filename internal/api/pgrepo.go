@@ -2118,6 +2118,70 @@ func (p *PGRepo) RevokeOtherUserSessions(ctx context.Context, userID, keepTokenH
 	return int(n), err
 }
 
+func (p *PGRepo) ListUserLinks(ctx context.Context, userID string) ([]LinkedAccount, error) {
+	rows, err := p.db.QueryContext(ctx,
+		`SELECT mc_uuid::text, COALESCE(auth_source, 'mojang'), verified_at
+		 FROM account_links WHERE user_id = $1 ORDER BY verified_at`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []LinkedAccount{}
+	for rows.Next() {
+		var a LinkedAccount
+		if err := rows.Scan(&a.MCUUID, &a.AuthSource, &a.VerifiedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (p *PGRepo) UnlinkOwnAccount(ctx context.Context, userID, mcUUID string) error {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var role string
+	var emailVerified bool
+	switch err := tx.QueryRowContext(ctx,
+		`SELECT role::text, email_verified FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
+		userID).Scan(&role, &emailVerified); {
+	case errors.Is(err, sql.ErrNoRows):
+		return ErrNotFound
+	case err != nil:
+		return err
+	}
+
+	var mine, totalLinks, passkeys int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT count(*) FILTER (WHERE mc_uuid = $2), count(*) FROM account_links WHERE user_id = $1`,
+		userID, mcUUID).Scan(&mine, &totalLinks); err != nil {
+		return err
+	}
+	if mine == 0 {
+		return ErrNotFound
+	}
+	if role == "user" && totalLinks == 1 && !emailVerified {
+		if err := tx.QueryRowContext(ctx,
+			`SELECT count(*) FROM webauthn_credentials WHERE user_id = $1`, userID).Scan(&passkeys); err != nil {
+			return err
+		}
+		if passkeys == 0 {
+			return ErrLastLoginMethod
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM account_links WHERE user_id = $1 AND mc_uuid = $2`,
+		userID, mcUUID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (p *PGRepo) UnlinkAccount(ctx context.Context, userID, mcUUID string) error {
 	res, err := p.db.ExecContext(ctx,
 		`DELETE FROM account_links WHERE user_id = $1 AND mc_uuid = $2`,

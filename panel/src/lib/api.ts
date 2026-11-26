@@ -41,6 +41,7 @@ import type {
   FleetServer,
   Identity,
   KickResult,
+  LinkedAccount,
   LinkResult,
   MinecraftAuthSource,
   AuthSourceConfig,
@@ -1009,6 +1010,11 @@ export const api = rejectingSync({
 
   linkVerify: (code: string) =>
     request<LinkResult>("POST", "/account/link/verify", { code }),
+
+  listMyLinks: () => request<{ links: LinkedAccount[] }>("GET", "/account/links"),
+
+  unlinkMyAccount: (mcUUID: string) =>
+    request<{ ok: true; mc_uuid: string }>("DELETE", `/account/links/${encodeURIComponent(mcUUID)}`),
 
   linkSources: () => request<{ sources: MinecraftAuthSource[] }>("GET", "/account/link/sources"),
 

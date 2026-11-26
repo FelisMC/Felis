@@ -381,6 +381,8 @@ type Repo interface {
 	// RevokeAllUserSessions revokes every live session of userID; zero sessions is not an error.
 	RevokeAllUserSessions(ctx context.Context, userID string) error
 
+	ListUserLinks(ctx context.Context, userID string) ([]LinkedAccount, error)
+	UnlinkOwnAccount(ctx context.Context, userID, mcUUID string) error
 	UnlinkAccount(ctx context.Context, userID, mcUUID string) error
 	LinkAccount(ctx context.Context, userID, mcUUID, authSource string) error
 

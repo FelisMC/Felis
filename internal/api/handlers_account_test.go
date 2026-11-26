@@ -289,6 +289,141 @@ func TestLinkStart(t *testing.T) {
 	})
 }
 
+func TestLinkVerifyRequiresReauthAndRejectsAPIKey(t *testing.T) {
+	const mcUUID = "66666666-6666-6666-6666-666666666666"
+	now := time.Unix(1_700_000_000, 0)
+
+	newSetup := func(p *Principal, withPasskey bool) (*fakeRepo, http.Handler) {
+		repo := newFakeRepo()
+		repo.staff["u1"] = &StaffUser{ID: "u1", Username: "u1", Email: "u1@example.net", Role: "user", EmailVerified: p.EmailVerified}
+		if withPasskey {
+			repo.passkeyCreds["pk-1"] = PasskeyCredential{ID: "pk-1", UserID: "u1", Name: "Key"}
+		}
+		repo.linkCodes["CODE1234"] = fakeLinkCode{mcUUID: mcUUID, authSource: authSourceMojang, expiresAt: now.Add(LinkCodeTTL)}
+		api := newTestAPI(repo, newFakeCluster())
+		api.External = staticExternal{p: p}
+		return repo, api.ExternalHandler()
+	}
+
+	t.Run("API key caller refused with 403 session_required", func(t *testing.T) {
+		repo, eh := newSetup(&Principal{UserID: "u1", Email: "u1@example.net", Role: "user", APIKey: "tok-1"}, false)
+		w := do(eh, "POST", "/api/v1/account/link/verify", `{"code":"CODE1234"}`, nil)
+		if w.Code != http.StatusForbidden || decodeErr(t, w) != "session_required" {
+			t.Fatalf("code = %d body %s, want 403 session_required", w.Code, w.Body.String())
+		}
+		if _, ok := repo.links[mcUUID]; ok {
+			t.Fatal("API key caller must not link a Minecraft account")
+		}
+		if _, ok := repo.linkCodes["CODE1234"]; !ok {
+			t.Fatal("refused call must not consume the link code")
+		}
+	})
+
+	t.Run("stale session with passkey refused with 403 reauth_required", func(t *testing.T) {
+		repo, eh := newSetup(&Principal{
+			UserID: "u1", Email: "u1@example.net", Role: "user", ViaSession: true,
+			ReauthAt: now.Add(-reauthWindow - time.Second),
+		}, true)
+		w := do(eh, "POST", "/api/v1/account/link/verify", `{"code":"CODE1234"}`, nil)
+		if w.Code != http.StatusForbidden || decodeErr(t, w) != "reauth_required" {
+			t.Fatalf("code = %d body %s, want 403 reauth_required", w.Code, w.Body.String())
+		}
+		if _, ok := repo.links[mcUUID]; ok {
+			t.Fatal("stale session must not link a Minecraft account")
+		}
+	})
+
+	t.Run("fresh reauth session succeeds", func(t *testing.T) {
+		repo, eh := newSetup(&Principal{
+			UserID: "u1", Email: "u1@example.net", Role: "user", ViaSession: true,
+			ReauthAt: now.Add(-time.Minute),
+		}, true)
+		w := do(eh, "POST", "/api/v1/account/link/verify", `{"code":"CODE1234"}`, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("code = %d body %s, want 200", w.Code, w.Body.String())
+		}
+		if repo.links[mcUUID] != "u1" {
+			t.Fatalf("links[%s] = %q, want u1", mcUUID, repo.links[mcUUID])
+		}
+	})
+
+	t.Run("first-time session without email or passkey succeeds", func(t *testing.T) {
+		repo, eh := newSetup(&Principal{UserID: "u1", Role: "user", ViaSession: true}, false)
+		w := do(eh, "POST", "/api/v1/account/link/verify", `{"code":"CODE1234"}`, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("code = %d body %s, want 200", w.Code, w.Body.String())
+		}
+		if repo.links[mcUUID] != "u1" {
+			t.Fatalf("links[%s] = %q, want u1", mcUUID, repo.links[mcUUID])
+		}
+	})
+}
+
+func TestSelfServiceAccountLinks(t *testing.T) {
+	const uuidA = "77777777-7777-7777-7777-777777777771"
+	const uuidB = "77777777-7777-7777-7777-777777777772"
+	now := time.Unix(1_700_000_000, 0)
+
+	repo := newFakeRepo()
+	repo.staff["u1"] = &StaffUser{ID: "u1", Username: "u1", Role: "user", EmailVerified: false}
+	repo.links[uuidA] = "u1"
+	repo.linkAuthSource[uuidA] = authSourceMojang
+	repo.linked["u1"] = true
+
+	api := newTestAPI(repo, newFakeCluster())
+	sessionP := &Principal{UserID: "u1", Role: "user", ViaSession: true, ReauthAt: now.Add(-time.Minute)}
+	api.External = staticExternal{p: sessionP}
+	eh := api.ExternalHandler()
+
+	w := do(eh, "GET", "/api/v1/account/links", "", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /account/links: code = %d (%s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), uuidA) {
+		t.Fatalf("GET /account/links body lacks %s: %s", uuidA, w.Body.String())
+	}
+
+	api.External = staticExternal{p: &Principal{UserID: "u1", Role: "user", APIKey: "tok-1"}}
+	w = do(eh, "DELETE", "/api/v1/account/links/"+uuidA, "", nil)
+	if w.Code != http.StatusForbidden || decodeErr(t, w) != "session_required" {
+		t.Fatalf("API key unlink: code = %d body %s, want 403 session_required", w.Code, w.Body.String())
+	}
+
+	api.External = staticExternal{p: sessionP}
+	w = do(eh, "DELETE", "/api/v1/account/links/"+uuidA, "", nil)
+	if w.Code != http.StatusConflict || decodeErr(t, w) != "last_login_method" {
+		t.Fatalf("last link unlink: code = %d body %s, want 409 last_login_method", w.Code, w.Body.String())
+	}
+
+	repo.links[uuidB] = "u1"
+	repo.linkAuthSource[uuidB] = authSourceThirdParty
+	w = do(eh, "DELETE", "/api/v1/account/links/"+uuidB, "", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("unlink extra identity: code = %d body %s, want 200", w.Code, w.Body.String())
+	}
+	if _, ok := repo.links[uuidB]; ok {
+		t.Fatal("unlinked uuidB still present in repo")
+	}
+	if repo.links[uuidA] != "u1" {
+		t.Fatal("remaining uuidA must stay linked")
+	}
+
+	repo.passkeyCreds["pk-1"] = PasskeyCredential{ID: "pk-1", UserID: "u1", Name: "Key"}
+	api.External = staticExternal{p: &Principal{UserID: "u1", Role: "user", ViaSession: true, ReauthAt: now.Add(-reauthWindow - time.Second)}}
+	w = do(eh, "DELETE", "/api/v1/account/links/"+uuidA, "", nil)
+	if w.Code != http.StatusForbidden || decodeErr(t, w) != "reauth_required" {
+		t.Fatalf("stale reauth unlink: code = %d body %s, want 403 reauth_required", w.Code, w.Body.String())
+	}
+	api.External = staticExternal{p: sessionP}
+	w = do(eh, "DELETE", "/api/v1/account/links/"+uuidA, "", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("fresh reauth unlink with passkey: code = %d body %s, want 200", w.Code, w.Body.String())
+	}
+	if _, ok := repo.links[uuidA]; ok {
+		t.Fatal("unlinked uuidA still present in repo")
+	}
+}
+
 func TestAccountLinkFaceSeparation(t *testing.T) {
 	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
 	api := newTestAPI(newFakeRepo(), newFakeCluster())

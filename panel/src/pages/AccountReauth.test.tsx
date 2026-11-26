@@ -34,6 +34,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
     api: {
       ...actual.api,
       linkStatus: () => Promise.resolve({ linked: true }),
+      listMyLinks: () => Promise.resolve({ links: [] }),
       migrateStatus: () => Promise.resolve({ active: false }),
       passkeyList: mocks.passkeyList,
       passkeyDelete: mocks.passkeyDelete,

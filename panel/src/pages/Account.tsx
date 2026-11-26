@@ -11,7 +11,7 @@ import { MessageLine, InlineError } from "@/components/MessageLine";
 import { PageHeader } from "@/components/PageHeader";
 import { api, clientError, humanizeError } from "@/lib/api";
 import { formatAbsolute } from "@/lib/format";
-import type { MinecraftProfile, PasskeyCredential } from "@/lib/types";
+import type { LinkedAccount, MinecraftProfile, PasskeyCredential } from "@/lib/types";
 import { useAsync, useConfig } from "@/lib/hooks";
 import { AccountSessionsCard } from "@/pages/AccountSessions";
 import { AccountAPITokensCard } from "@/pages/AccountAPITokens";
@@ -37,6 +37,7 @@ import {
 
 export function Account() {
   const status = useAsync(() => api.linkStatus(), []);
+  const myLinks = useAsync(() => api.listMyLinks(), []);
   const { identity, refresh } = useTier();
   const cfg = useConfig();
   const { t, i18n } = useTranslation("account");
@@ -264,8 +265,17 @@ export function Account() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [verifiedUUID, setVerifiedUUID] = useState<string | null>(null);
+  const [pendingUnlink, setPendingUnlink] = useState<string | null>(null);
+  const [unlinking, setUnlinking] = useState(false);
+  const [unlinkError, setUnlinkError] = useState<string | null>(null);
 
-  const linked = verifiedUUID !== null || status.data?.linked === true;
+  const links = myLinks.data?.links ?? [];
+  const linked = verifiedUUID !== null || links.length > 0 || status.data?.linked === true;
+  const keepLastLink =
+    identity?.is_admin !== true &&
+    links.length <= 1 &&
+    !identity?.email_verified &&
+    credentials.length === 0;
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -274,13 +284,33 @@ export function Account() {
     setSubmitting(true);
     setError(null);
     try {
-      const res = await api.linkVerify(trimmed);
+      const res = await reauth.guard(() => api.linkVerify(trimmed));
       setVerifiedUUID(res.mc_uuid);
       setCode("");
+      myLinks.reload();
+      status.reload();
     } catch (err) {
-      setError(humanizeError(err));
+      if (!isReauthCancelled(err)) setError(humanizeError(err));
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function confirmUnlink() {
+    if (!pendingUnlink || unlinking) return;
+    setUnlinking(true);
+    setUnlinkError(null);
+    try {
+      await reauth.guard(() => api.unlinkMyAccount(pendingUnlink));
+      if (verifiedUUID === pendingUnlink) setVerifiedUUID(null);
+      setPendingUnlink(null);
+      setSessionsVersion((v) => v + 1);
+      myLinks.reload();
+      status.reload();
+    } catch (err) {
+      if (!isReauthCancelled(err)) setUnlinkError(humanizeError(err));
+    } finally {
+      setUnlinking(false);
     }
   }
 
@@ -297,13 +327,29 @@ export function Account() {
         </CardHeader>
         <CardContent className="text-sm">
           {linked ? (
-            <LinkedState uuid={verifiedUUID} staff={identity?.is_admin === true} />
+            <LinkedState
+              uuid={verifiedUUID}
+              links={links}
+              staff={identity?.is_admin === true}
+              keepLastLink={keepLastLink}
+              onRequestUnlink={(mcUUID) => {
+                setUnlinkError(null);
+                setPendingUnlink(mcUUID);
+              }}
+            />
           ) : status.loading && !status.data ? (
             <Loading label={t("checking_link")} />
           ) : status.error ? (
             <ErrorState error={status.error} onRetry={status.reload} />
           ) : identity?.is_admin ? (
-            <StaffLinkForm onLinked={(uuid) => { setVerifiedUUID(uuid); void refresh(); }} />
+            <StaffLinkForm
+              onLinked={(uuid) => {
+                setVerifiedUUID(uuid);
+                myLinks.reload();
+                status.reload();
+                void refresh();
+              }}
+            />
           ) : (
             codeForm
           )}
@@ -313,6 +359,30 @@ export function Account() {
               {codeForm}
             </details>
           )}
+          <Dialog
+            open={pendingUnlink !== null}
+            onOpenChange={(open) => {
+              if (!open && !unlinking) setPendingUnlink(null);
+            }}
+          >
+            <DialogContent hideClose={unlinking}>
+              <DialogHeader>
+                <DialogTitle>{t("unlink_title")}</DialogTitle>
+                <DialogDescription>
+                  {pendingUnlink && t("unlink_desc", { uuid: pendingUnlink })}
+                </DialogDescription>
+              </DialogHeader>
+              {unlinkError && <MessageLine kind="error" message={unlinkError} />}
+              <ConfirmFooter
+                onCancel={() => setPendingUnlink(null)}
+                onConfirm={() => void confirmUnlink()}
+                loading={unlinking}
+                disabled={unlinking || keepLastLink}
+                cancelLabel={t("common:cancel")}
+                confirmLabel={t("unlink_confirm")}
+              />
+            </DialogContent>
+          </Dialog>
           <MinecraftGuide />
         </CardContent>
       </Card>
@@ -571,9 +641,20 @@ export function Account() {
   );
 }
 
-// Show a UUID only when returned by verification, never infer one for an existing link.
-function LinkedState({ uuid, staff }: { uuid: string | null; staff: boolean }) {
-  const { t } = useTranslation("account");
+function LinkedState({
+  uuid,
+  links,
+  staff,
+  keepLastLink,
+  onRequestUnlink,
+}: {
+  uuid: string | null;
+  links: LinkedAccount[];
+  staff: boolean;
+  keepLastLink: boolean;
+  onRequestUnlink: (mcUUID: string) => void;
+}) {
+  const { t, i18n } = useTranslation("account");
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2 font-medium text-foreground">
@@ -581,13 +662,54 @@ function LinkedState({ uuid, staff }: { uuid: string | null; staff: boolean }) {
         {t("linked_title")}
       </div>
       <p className="text-muted-foreground">{t(staff ? "staff_linked_desc" : "linked_desc")}</p>
-      {uuid && (
-        <div className="flex items-center gap-2 text-muted-foreground">
-          <span className="text-xs uppercase tracking-wide">{t("uuid_label")}</span>
-          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">
-            {uuid}
-          </code>
-        </div>
+      {links.length > 0 ? (
+        <>
+          <ul className="space-y-2">
+            {links.map((link) => (
+              <li
+                key={link.mc_uuid}
+                className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border/70 px-3 py-2"
+              >
+                <div className="min-w-0 space-y-0.5">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">
+                      {link.mc_uuid}
+                    </code>
+                    <span className="rounded bg-secondary px-1.5 py-0.5 text-xs text-secondary-foreground">
+                      {link.auth_source}
+                    </span>
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {formatAbsolute(link.verified_at, i18n.language)}
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={keepLastLink}
+                  aria-label={t("unlink_aria", { uuid: link.mc_uuid })}
+                  onClick={() => onRequestUnlink(link.mc_uuid)}
+                >
+                  <Trash2 className="mr-1.5 h-3.5 w-3.5" />
+                  {t("unlink_button")}
+                </Button>
+              </li>
+            ))}
+          </ul>
+          {keepLastLink && (
+            <p className="text-xs text-muted-foreground">{t("unlink_last_hint")}</p>
+          )}
+        </>
+      ) : (
+        uuid && (
+          <div className="flex items-center gap-2 text-muted-foreground">
+            <span className="text-xs uppercase tracking-wide">{t("uuid_label")}</span>
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">
+              {uuid}
+            </code>
+          </div>
+        )
       )}
     </div>
   );
