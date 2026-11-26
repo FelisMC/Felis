@@ -304,10 +304,18 @@ func (a *API) startStepUpOTP(w http.ResponseWriter, r *http.Request, p *Principa
 		writeOTPAccountLocked(w, r, until, a.now())
 		return
 	}
+	userKey := keyPrefix + "user:" + p.UserID
 	emailKey := keyPrefix + strings.ToLower(p.Email)
 	lim := a.otpLimiter()
+	userAt, ok := lim.reserve(userKey, otpResendCooldown)
+	if !ok {
+		writeError(w, r, newError(http.StatusTooManyRequests, "otp_resend_cooldown",
+			"a code was sent recently; wait a moment before requesting another"))
+		return
+	}
 	emailAt, ok := lim.reserve(emailKey, otpResendCooldown)
 	if !ok {
+		lim.release(userKey, userAt)
 		writeError(w, r, newError(http.StatusTooManyRequests, "otp_resend_cooldown",
 			"a code was sent recently; wait a moment before requesting another"))
 		return
@@ -316,6 +324,7 @@ func (a *API) startStepUpOTP(w http.ResponseWriter, r *http.Request, p *Principa
 	defer func() {
 		if !committed {
 			lim.release(emailKey, emailAt)
+			lim.release(userKey, userAt)
 		}
 	}()
 	code, err := newEmailOTP()

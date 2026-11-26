@@ -161,7 +161,7 @@ func (a *API) handleMigrateConfirmOTPStart(w http.ResponseWriter, r *http.Reques
 			"this account has a passkey; confirm the migration with your passkey"))
 		return
 	}
-	if p.Email == "" {
+	if p.Email == "" || !p.EmailVerified {
 		writeError(w, r, newError(http.StatusConflict, "no_step_up_factor",
 			"no verified email or passkey on this account to confirm the migration"))
 		return

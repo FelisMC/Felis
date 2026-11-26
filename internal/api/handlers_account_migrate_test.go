@@ -36,11 +36,11 @@ func startMigrate(t *testing.T, ih http.Handler, mcUUID string) *httptest.Respon
 
 func TestMigrateVertical(t *testing.T) {
 	const uuid = "11111111-1111-1111-1111-111111111111"
-	src := &Principal{UserID: "u1", Email: "old@example.net", Role: "user"}
+	src := &Principal{UserID: "u1", Email: "old@example.net", EmailVerified: true, Role: "user"}
 	tgt := &Principal{UserID: "u2", Email: "new@example.net", Role: "user"}
 
 	repo := newFakeRepo()
-	repo.seedUser(UserView{ID: "u1", Username: "old", Email: "old@example.net", Role: "user"})
+	repo.seedUser(UserView{ID: "u1", Username: "old", Email: "old@example.net", EmailVerified: true, Role: "user"})
 	repo.seedUser(UserView{ID: "u2", Username: "new", Email: "new@example.net", Role: "user"})
 	repo.links[uuid] = "u1"
 	repo.byName["alpha"] = &ServerRecord{Name: "alpha", OwnerID: "u1"}
@@ -107,8 +107,8 @@ func TestMigrateVertical(t *testing.T) {
 		t.Fatalf("source account not retired: %+v", d)
 	}
 
-	if len(mailer.notices) != 0 {
-		t.Fatalf("notices to an unverified address = %q, want none", mailer.notices)
+	if len(mailer.notices) != 2 {
+		t.Fatalf("notices to verified source = %q, want 2", mailer.notices)
 	}
 }
 
@@ -213,11 +213,11 @@ func TestMigratePasskeyCloneRejected(t *testing.T) {
 
 func TestMigrateRedeemOverQuota(t *testing.T) {
 	const uuid = "88888888-8888-8888-8888-888888888888"
-	src := &Principal{UserID: "u1", Email: "old@example.net", Role: "user"}
+	src := &Principal{UserID: "u1", Email: "old@example.net", EmailVerified: true, Role: "user"}
 	tgt := &Principal{UserID: "u2", Email: "new@example.net", Role: "user"}
 
 	repo := newFakeRepo()
-	repo.seedUser(UserView{ID: "u1", Username: "old", Email: "old@example.net", Role: "user"})
+	repo.seedUser(UserView{ID: "u1", Username: "old", Email: "old@example.net", EmailVerified: true, Role: "user"})
 	repo.seedUser(UserView{ID: "u2", Username: "new", Email: "new@example.net", Role: "user"})
 	repo.links[uuid] = "u1"
 	repo.byName["alpha"] = &ServerRecord{Name: "alpha", OwnerID: "u1"}
@@ -270,10 +270,10 @@ func TestMigrateRedeemOverQuota(t *testing.T) {
 
 func TestMigrateGuards(t *testing.T) {
 	const uuid = "66666666-6666-6666-6666-666666666666"
-	src := &Principal{UserID: "u1", Email: "old@example.net", Role: "user"}
+	src := &Principal{UserID: "u1", Email: "old@example.net", EmailVerified: true, Role: "user"}
 
 	repo := newFakeRepo()
-	repo.seedUser(UserView{ID: "u1", Username: "old", Email: "old@example.net", Role: "user"})
+	repo.seedUser(UserView{ID: "u1", Username: "old", Email: "old@example.net", EmailVerified: true, Role: "user"})
 	repo.links[uuid] = "u1"
 
 	mk, mailer, _ := migrateEnv(repo)
@@ -409,5 +409,46 @@ func TestMigrateConfirmHoldsForOneSessionBriefly(t *testing.T) {
 	if n := len(mail.notices); n != 3 || !strings.HasPrefix(mail.notices[2], "old@example.net|") ||
 		!strings.Contains(mail.notices[2], "「new」") || !strings.Contains(mail.notices[2], "alpha") {
 		t.Fatalf("notices after the redeem = %q, want a third to old@example.net naming new and alpha", mail.notices)
+	}
+}
+
+func TestMigrateConfirmOTPRequiresVerifiedEmailAndUserCooldown(t *testing.T) {
+	const uuid = "99999999-9999-9999-9999-999999999999"
+	src := &Principal{UserID: "u1", Email: "unverified@example.net", EmailVerified: false, Role: "user"}
+
+	repo := newFakeRepo()
+	repo.seedUser(UserView{ID: "u1", Username: "old", Email: "unverified@example.net", EmailVerified: false, Role: "user"})
+	repo.links[uuid] = "u1"
+
+	mk, mailer, _ := migrateEnv(repo)
+	a := mk(src)
+	if w := startMigrate(t, a.InternalHandler(), uuid); w.Code != http.StatusCreated {
+		t.Fatalf("start: %d (%s)", w.Code, w.Body.String())
+	}
+	ehSrc := a.ExternalHandler()
+
+	w := do(ehSrc, "POST", "/api/v1/account/migrate/confirm/otp/start", "", jsonHeader)
+	if w.Code != http.StatusConflict || decodeErr(t, w) != "no_step_up_factor" {
+		t.Fatalf("unverified email otp start: code = %d body %s, want 409 no_step_up_factor", w.Code, w.Body.String())
+	}
+	if mailer.calls != 0 {
+		t.Fatalf("mailer calls for unverified email = %d, want 0", mailer.calls)
+	}
+
+	src.EmailVerified = true
+	if w := do(ehSrc, "POST", "/api/v1/account/migrate/confirm/otp/start", "", jsonHeader); w.Code != http.StatusAccepted {
+		t.Fatalf("verified email otp start: code = %d body %s, want 202", w.Code, w.Body.String())
+	}
+	if mailer.calls != 1 {
+		t.Fatalf("mailer calls after first send = %d, want 1", mailer.calls)
+	}
+
+	src.Email = "other@example.net"
+	w = do(ehSrc, "POST", "/api/v1/account/migrate/confirm/otp/start", "", jsonHeader)
+	if w.Code != http.StatusTooManyRequests || decodeErr(t, w) != "otp_resend_cooldown" {
+		t.Fatalf("second otp start after email change: code = %d body %s, want 429 otp_resend_cooldown", w.Code, w.Body.String())
+	}
+	if mailer.calls != 1 {
+		t.Fatalf("mailer calls after cooldown hit = %d, want 1", mailer.calls)
 	}
 }
