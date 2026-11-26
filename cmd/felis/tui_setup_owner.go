@@ -84,6 +84,8 @@ func (m *setupOwnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *setupOwnerModel) arrowNavOK() bool { return true }
+
 func (m *setupOwnerModel) View() string {
 	if m.err != nil {
 		return tuiWarn.Render("Panel login setup could not finish: "+m.err.Error()) + "\n\n" +

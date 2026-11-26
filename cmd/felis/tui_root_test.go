@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -146,7 +147,12 @@ func TestRootLocalOnlySwitchesAHostOffItsOldAccess(t *testing.T) {
 	}
 
 	m = drive(t, m, reconfigureConnectMsg{})
-	next, _ := m.screen.(*connectChooserModel).onComplete()
+	chooser := m.screen.(*connectChooserModel)
+	if chooser.choice != connectCloudflare {
+		t.Fatalf("reconfigure chooser preselected %v, want connectCloudflare", chooser.choice)
+	}
+	chooser.choice = connectLocal
+	next, _ := chooser.onComplete()
 	_, initCmd := m.adopt(next)
 	for _, msg := range msgsOf(initCmd) {
 		if done, ok := msg.(localApplyMsg); ok {
@@ -380,9 +386,166 @@ func TestSetupRailSpansBootstrap(t *testing.T) {
 	}
 }
 
-// isQuit reports whether a command's message is tea.Quit's sentinel. tea.Quit
-// returns an unexported tea.quitMsg, so compare against the documented value
-// produced by calling tea.Quit itself.
+func runeKey(r rune) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}} }
+
+func TestRootReviewHintsAndReadOnlySteps(t *testing.T) {
+	m := newTestRoot(false, consoleModeSetup, "")
+	m = drive(t, m, preflightDoneMsg{})
+	m = drive(t, m, connectResultMsg{method: connectReverseProxy, panelHostname: "panel.felis.example.com", adminHostname: "admin.felis.example.com"})
+	m = drive(t, m, smtpResultMsg{})
+	m = drive(t, m, ownerResultMsg{username: "owner"})
+
+	for _, stage := range []wizardStage{stageConnect, stageMail} {
+		body := m.reviewBody(int(stage))
+		if !strings.Contains(body, "change") || strings.Contains(body, "read-only") {
+			t.Fatalf("stage %v review hint = %q, want editable change hint", stage, body)
+		}
+	}
+	for _, stage := range []wizardStage{stagePreflight, stageOwner} {
+		body := m.reviewBody(int(stage))
+		if !strings.Contains(body, "read-only") || strings.Contains(body, "change") {
+			t.Fatalf("stage %v review hint = %q, want read-only hint", stage, body)
+		}
+	}
+
+	m = drive(t, m, key(tea.KeyLeft))
+	if m.reviewing != int(stageOwner) {
+		t.Fatalf("reviewing = %d, want stageOwner", m.reviewing)
+	}
+	m = drive(t, m, runeKey('c'))
+	if m.reviewing != int(stageOwner) || m.stage != stageSummary {
+		t.Fatalf("c on read-only stageOwner changed state: reviewing=%d stage=%v", m.reviewing, m.stage)
+	}
+
+	m = drive(t, m, key(tea.KeyLeft))
+	m = drive(t, m, key(tea.KeyLeft))
+	m = drive(t, m, key(tea.KeyLeft))
+	if m.reviewing != int(stagePreflight) {
+		t.Fatalf("reviewing = %d, want stagePreflight", m.reviewing)
+	}
+	m = drive(t, m, runeKey('c'))
+	if m.reviewing != int(stagePreflight) || m.stage != stageSummary {
+		t.Fatalf("c on read-only stagePreflight changed state: reviewing=%d stage=%v", m.reviewing, m.stage)
+	}
+}
+
+func TestRootReviewEditConnectionFromMailReturnsToMail(t *testing.T) {
+	m := newTestRoot(false, consoleModeSetup, "")
+	m = drive(t, m, preflightDoneMsg{})
+	m = drive(t, m, connectResultMsg{method: connectReverseProxy, panelHostname: "panel.felis.example.com", adminHostname: "admin.felis.example.com"})
+	mailScreen, ok := m.screen.(*smtpModel)
+	if !ok || m.stage != stageMail {
+		t.Fatalf("screen = %T stage = %v, want *smtpModel at stageMail", m.screen, m.stage)
+	}
+	mailScreen.step = esError
+
+	m = drive(t, m, key(tea.KeyLeft))
+	if m.reviewing != int(stageConnect) {
+		t.Fatalf("reviewing = %d, want stageConnect", m.reviewing)
+	}
+	m = drive(t, m, runeKey('c'))
+	chooser, ok := m.screen.(*connectChooserModel)
+	if !ok || m.stage != stageConnect {
+		t.Fatalf("after c, screen = %T stage = %v, want *connectChooserModel", m.screen, m.stage)
+	}
+	if chooser.choice != connectReverseProxy || !chooser.detour {
+		t.Fatalf("chooser choice=%v detour=%v, want connectReverseProxy and detour=true", chooser.choice, chooser.detour)
+	}
+
+	_, cmd := m.screen.Update(key(tea.KeyEsc))
+	m = drive(t, m, cmd())
+	if m.stage != stageMail || m.screen != mailScreen || m.result.connectMethod != connectReverseProxy {
+		t.Fatalf("after esc cancel: stage=%v sameScreen=%v method=%v", m.stage, m.screen == mailScreen, m.result.connectMethod)
+	}
+
+	m = drive(t, m, key(tea.KeyLeft))
+	m = drive(t, m, runeKey('c'))
+	m = drive(t, m, connectResultMsg{method: connectCloudflare, panelHostname: "panel.felis.example.com", adminHostname: "edge.felis.example.com", edge: &cfsetup.Result{AccessAud: "aud"}})
+	if m.stage != stageMail || m.screen != mailScreen {
+		t.Fatalf("after applying connection edit from mail: stage=%v screen=%T, want stageMail and original mail screen", m.stage, m.screen)
+	}
+	if m.result.connectMethod != connectCloudflare || m.result.panelURL != "https://edge.felis.example.com" {
+		t.Fatalf("connection result not updated: method=%v panelURL=%q", m.result.connectMethod, m.result.panelURL)
+	}
+}
+
+func TestRootReviewEditConnectionFromOwnerRefreshesOwner(t *testing.T) {
+	m := newTestRoot(false, consoleModeSetup, "")
+	m = drive(t, m, preflightDoneMsg{})
+	m = drive(t, m, connectResultMsg{method: connectCloudflare, panelHostname: "panel.felis.example.com", adminHostname: "old.felis.example.com", edge: &cfsetup.Result{AccessAud: "aud"}})
+	m = drive(t, m, smtpResultMsg{})
+	ownerScreen, ok := m.screen.(*setupOwnerModel)
+	if !ok || m.stage != stageOwner {
+		t.Fatalf("screen = %T stage = %v, want *setupOwnerModel at stageOwner", m.screen, m.stage)
+	}
+	ownerScreen.err = errors.New("probe failed")
+
+	m = drive(t, m, key(tea.KeyLeft))
+	m = drive(t, m, key(tea.KeyLeft))
+	if m.reviewing != int(stageConnect) {
+		t.Fatalf("reviewing = %d, want stageConnect", m.reviewing)
+	}
+	m = drive(t, m, runeKey('c'))
+	chooser, ok := m.screen.(*connectChooserModel)
+	if !ok || chooser.choice != connectCloudflare {
+		t.Fatalf("chooser = %#v, want connectCloudflare preselected", m.screen)
+	}
+
+	_, cmd := m.screen.Update(key(tea.KeyEsc))
+	m = drive(t, m, cmd())
+	if m.stage != stageOwner || m.screen != ownerScreen || ownerScreen.err == nil {
+		t.Fatalf("after esc cancel from owner: stage=%v sameScreen=%v err=%v", m.stage, m.screen == ownerScreen, ownerScreen.err)
+	}
+
+	m = drive(t, m, key(tea.KeyLeft))
+	m = drive(t, m, key(tea.KeyLeft))
+	m = drive(t, m, runeKey('c'))
+	m = drive(t, m, connectResultMsg{method: connectReverseProxy, panelHostname: "panel.felis.example.com", adminHostname: "new.felis.example.com"})
+	refreshed, ok := m.screen.(*setupOwnerModel)
+	if !ok || m.stage != stageOwner {
+		t.Fatalf("after connection edit from owner: stage=%v screen=%T, want refreshed *setupOwnerModel", m.stage, m.screen)
+	}
+	if refreshed == ownerScreen || refreshed.panelURL != "https://new.felis.example.com" {
+		t.Fatalf("owner setup not refreshed: same=%v panelURL=%q", refreshed == ownerScreen, refreshed.panelURL)
+	}
+}
+
+func TestRootReviewEditMailFromOwnerReturnsToOwner(t *testing.T) {
+	m := newTestRoot(false, consoleModeSetup, "")
+	m = drive(t, m, preflightDoneMsg{})
+	m = drive(t, m, connectResultMsg{method: connectLocal, panelHostname: "panel.felis.example.com"})
+	m = drive(t, m, smtpResultMsg{})
+	ownerScreen, ok := m.screen.(*setupOwnerModel)
+	if !ok || m.stage != stageOwner {
+		t.Fatalf("screen = %T stage = %v, want *setupOwnerModel at stageOwner", m.screen, m.stage)
+	}
+	ownerScreen.err = errors.New("probe failed")
+
+	m = drive(t, m, key(tea.KeyLeft))
+	if m.reviewing != int(stageMail) {
+		t.Fatalf("reviewing = %d, want stageMail", m.reviewing)
+	}
+	m = drive(t, m, runeKey('c'))
+	if _, ok := m.screen.(*smtpModel); !ok || m.stage != stageMail {
+		t.Fatalf("after c on mail review: stage=%v screen=%T, want *smtpModel", m.stage, m.screen)
+	}
+
+	m = drive(t, m, smtpResultMsg{configured: false})
+	if m.stage != stageOwner || m.screen != ownerScreen || m.mailDetail != "" {
+		t.Fatalf("after mail edit cancel: stage=%v sameScreen=%v mailDetail=%q", m.stage, m.screen == ownerScreen, m.mailDetail)
+	}
+
+	m = drive(t, m, key(tea.KeyLeft))
+	m = drive(t, m, runeKey('c'))
+	m = drive(t, m, smtpResultMsg{configured: true, detail: "smtp.example.net:587  ·  from felis@example.net"})
+	if m.stage != stageOwner || m.screen != ownerScreen {
+		t.Fatalf("after mail edit save: stage=%v screen=%T, want original *setupOwnerModel", m.stage, m.screen)
+	}
+	if m.mailDetail != "smtp.example.net:587  ·  from felis@example.net" {
+		t.Fatalf("mailDetail = %q, want updated relay", m.mailDetail)
+	}
+}
+
 func isQuit(msg tea.Msg) bool {
 	_, ok := msg.(tea.QuitMsg)
 	return ok

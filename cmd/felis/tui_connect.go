@@ -30,8 +30,13 @@ type connectChooserModel struct {
 // connectCancelMsg leaves the connection unchanged.
 type connectCancelMsg struct{}
 
-func newConnectChooserModel(rootDomain, adminHost, panelHost string) *connectChooserModel {
-	m := &connectChooserModel{rootDomain: rootDomain, adminHost: adminHost, panelHost: panelHost}
+func newConnectChooserModel(rootDomain, adminHost, panelHost string, initial connectMethod) *connectChooserModel {
+	m := &connectChooserModel{
+		rootDomain: rootDomain,
+		adminHost:  adminHost,
+		panelHost:  panelHost,
+		choice:     initial,
+	}
 	m.form = m.build()
 	return m
 }

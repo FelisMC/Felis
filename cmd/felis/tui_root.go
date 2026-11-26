@@ -92,14 +92,13 @@ type rootModel struct {
 	screen tea.Model
 	stage  wizardStage
 
-	// reviewing is the index of a completed step the operator is looking back at
-	// (read-only), or -1 when the live screen is in front. Driven by ←/→.
 	reviewing int
 
-	// Connection reconfiguration skips the Mail step and returns to the summary.
 	reconfiguringConnect bool
-	// mailDetail recaps the relay the Mail step configured; empty when it was skipped.
-	mailDetail string
+	reconfiguringMail    bool
+	returnStage          wizardStage
+	returnScreen         tea.Model
+	mailDetail           string
 
 	width  int
 	height int
@@ -263,8 +262,24 @@ func (m *rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case connectResultMsg:
 		m.applyConnectResult(msg)
 		if m.reconfiguringConnect {
-			// Changing only the connection — mail was already handled, so skip it.
 			m.reconfiguringConnect = false
+			if stage, screen, ok := m.takeReturn(); ok {
+				switch stage {
+				case stageOwner:
+					return m.startOwnerSetup()
+				case stageSummary:
+					if m.result.setupTokenURL != "" {
+						return m.startOwnerSetup()
+					}
+					return m.showSummary()
+				default:
+					m.stage = stage
+					m.screen = screen
+					m.reviewing = -1
+					m.pushSize()
+					return m, nil
+				}
+			}
 			if m.result.setupTokenURL != "" {
 				return m.startOwnerSetup()
 			}
@@ -274,6 +289,13 @@ func (m *rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.adopt(newMailStepModel(currentSMTPInputs()))
 
 	case smtpResultMsg:
+		if msg.configured {
+			m.mailDetail = msg.detail
+		}
+		if m.reconfiguringMail {
+			m.reconfiguringMail = false
+			return m.backFromDetour()
+		}
 		if m.stage != stageMail {
 			return m.backFromDetour()
 		}
@@ -284,6 +306,7 @@ func (m *rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.showSummary()
 
 	case reconfigureSMTPMsg:
+		m.returnStage, m.returnScreen = 0, nil
 		return m.adopt(newSMTPModel(currentSMTPInputs()))
 
 	case reconfigureStorageMsg, storageBackMsg:
@@ -303,6 +326,7 @@ func (m *rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.openConnectChooser()
 
 	case reconfigureConnectMsg:
+		m.returnStage, m.returnScreen = 0, nil
 		m.reconfiguringConnect = true
 		return m.openConnectChooser()
 
@@ -330,7 +354,6 @@ func (m *rootModel) adopt(s tea.Model) (tea.Model, tea.Cmd) {
 	return m, s.Init()
 }
 
-// Claim horizontal arrows only during review or when the active screen has no text input.
 func (m *rootModel) handleRailKey(k tea.KeyMsg) (bool, tea.Model, tea.Cmd) {
 	if m.reviewing >= 0 {
 		switch k.String() {
@@ -344,14 +367,31 @@ func (m *rootModel) handleRailKey(k tea.KeyMsg) (bool, tea.Model, tea.Cmd) {
 		case "right":
 			m.reviewing++
 			if m.reviewing >= int(m.stage) {
-				m.reviewing = -1 // caught up to the live step
+				m.reviewing = -1
+			}
+			return true, m, nil
+		case "c", "C":
+			switch wizardStage(m.reviewing) {
+			case stageConnect:
+				m.returnStage = m.stage
+				m.returnScreen = m.screen
+				m.reconfiguringConnect = true
+				model, cmd := m.openConnectChooser()
+				return true, model, cmd
+			case stageMail:
+				m.returnStage = m.stage
+				m.returnScreen = m.screen
+				m.reconfiguringMail = true
+				m.stage = stageMail
+				model, cmd := m.adopt(newSMTPModel(currentSMTPInputs()))
+				return true, model, cmd
 			}
 			return true, m, nil
 		case "esc", "enter":
 			m.reviewing = -1
 			return true, m, nil
 		default:
-			return true, m, nil // swallow everything else while reviewing
+			return true, m, nil
 		}
 	}
 	if k.String() == "left" && m.canEnterReview() {
@@ -361,17 +401,14 @@ func (m *rootModel) handleRailKey(k tea.KeyMsg) (bool, tea.Model, tea.Cmd) {
 	return false, m, nil
 }
 
-// canEnterReview reports whether the live screen will yield ←/→ to the rail.
 func (m *rootModel) canEnterReview() bool {
-	if m.mode != consoleModeSetup || m.adminExistsAtStart() || m.stage == 0 {
+	if m.mode != consoleModeSetup || m.adminExistsAtStart() || m.stage == 0 || m.reconfiguringConnect || m.reconfiguringMail {
 		return false
 	}
 	n, ok := m.screen.(arrowNavigable)
 	return ok && n.arrowNavOK()
 }
 
-// displayStage is the rail position currently shown — the reviewed step when
-// looking back, otherwise the live stage.
 func (m *rootModel) displayStage() int {
 	if m.reviewing >= 0 {
 		return m.reviewing
@@ -379,7 +416,10 @@ func (m *rootModel) displayStage() int {
 	return int(m.stage)
 }
 
-// Review is read-only because completed steps have already committed changes.
+func reviewStageEditable(stage wizardStage) bool {
+	return stage == stageConnect || stage == stageMail
+}
+
 func (m *rootModel) reviewBody(stage int) string {
 	var b strings.Builder
 	switch wizardStage(stage) {
@@ -400,11 +440,17 @@ func (m *rootModel) reviewBody(stage int) string {
 		if m.mailDetail != "" {
 			b.WriteString(tuiLabel.Render("relay     ") + m.mailDetail)
 		} else {
-			b.WriteString(tuiHint.Render("Skipped. Press e on the summary, or use the panel, to set up mail later."))
+			b.WriteString(tuiHint.Render("Skipped. Press c to configure now, or set up mail later in the panel."))
 		}
 	}
-	b.WriteString("\n\n" + tuiHint.Render("read-only · ") + tuiLabel.Render("←/→") +
-		tuiHint.Render(" walk steps · ") + tuiLabel.Render("esc") + tuiHint.Render(" back"))
+	if reviewStageEditable(wizardStage(stage)) {
+		b.WriteString("\n\n" + tuiLabel.Render("c") + tuiHint.Render(" change · ") +
+			tuiLabel.Render("←/→") + tuiHint.Render(" walk steps · ") +
+			tuiLabel.Render("esc") + tuiHint.Render(" back"))
+	} else {
+		b.WriteString("\n\n" + tuiHint.Render("read-only · ") + tuiLabel.Render("←/→") +
+			tuiHint.Render(" walk steps · ") + tuiLabel.Render("esc") + tuiHint.Render(" back"))
+	}
 	return b.String()
 }
 
@@ -477,7 +523,14 @@ func (m *rootModel) railWithHint() string {
 }
 
 func (m *rootModel) openConnectChooser() (tea.Model, tea.Cmd) {
-	c := newConnectChooserModel(m.rootDomain, m.adminHost, m.panelHost)
+	initial := connectLocal
+	if m.reconfiguringConnect {
+		initial = m.result.connectMethod
+		if initial == connectLocal && m.accessAud != "" {
+			initial = connectCloudflare
+		}
+	}
+	c := newConnectChooserModel(m.rootDomain, m.adminHost, m.panelHost, initial)
 	c.detour = m.reconfiguringConnect
 	if m.localAccess != nil {
 		c.applyLocal = m.localAccess(m.ctx)
@@ -582,8 +635,34 @@ func (m *rootModel) showStatus() (tea.Model, tea.Cmd) {
 	})
 }
 
-// backFromDetour returns from a screen the summary opened to the summary it came from.
+func (m *rootModel) takeReturn() (wizardStage, tea.Model, bool) {
+	if m.returnScreen == nil {
+		return 0, nil, false
+	}
+	stage, screen := m.returnStage, m.returnScreen
+	m.returnStage, m.returnScreen = 0, nil
+	return stage, screen, true
+}
+
 func (m *rootModel) backFromDetour() (tea.Model, tea.Cmd) {
+	if stage, screen, ok := m.takeReturn(); ok {
+		if stage == stageSummary {
+			if m.result.alreadySetUp {
+				return m.showStatus()
+			}
+			return m.showSummary()
+		}
+		if stage == stageOwner {
+			if owner, ok := screen.(*setupOwnerModel); ok && owner.err == nil {
+				return m.startOwnerSetup()
+			}
+		}
+		m.stage = stage
+		m.screen = screen
+		m.reviewing = -1
+		m.pushSize()
+		return m, nil
+	}
 	if m.result.alreadySetUp {
 		return m.showStatus()
 	}
