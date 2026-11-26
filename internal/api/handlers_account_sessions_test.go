@@ -307,3 +307,36 @@ func TestSignInRecordsTheDevice(t *testing.T) {
 		}
 	}
 }
+
+func TestAPIKeyCannotRevokeSessions(t *testing.T) {
+	f := newSessionsFixture(t)
+	f.repo.settings[APITokensEnabledKey] = []byte("true")
+	rawKey := "felis_pat_testkey0123456789abcdef"
+	if err := f.repo.CreateAPIToken(t.Context(), &APIToken{
+		ID:        "tok-id-1",
+		UserID:    "u1",
+		Name:      "ci",
+		Prefix:    rawKey[:18],
+		CreatedAt: f.api.now(),
+	}, hashCookie(rawKey), 10, f.api.now()); err != nil {
+		t.Fatalf("CreateAPIToken: %v", err)
+	}
+	authHdr := map[string]string{"Authorization": "Bearer " + rawKey}
+
+	w := do(f.eh, "POST", "/api/v1/account/sessions/revoke-others", "", authHdr)
+	if w.Code != http.StatusForbidden || decodeErr(t, w) != "session_required" {
+		t.Fatalf("API key revoke-others = %d (%s), want 403 session_required", w.Code, w.Body.String())
+	}
+
+	w = do(f.eh, "DELETE", "/api/v1/account/sessions/"+hashCookie(laptopTok), "", authHdr)
+	if w.Code != http.StatusForbidden || decodeErr(t, w) != "session_required" {
+		t.Fatalf("API key revoke single = %d (%s), want 403 session_required", w.Code, w.Body.String())
+	}
+
+	if f.revoked(laptopTok) || f.revoked(phoneTok) {
+		t.Fatalf("API key revoked browser sessions: laptop=%v phone=%v", f.revoked(laptopTok), f.revoked(phoneTok))
+	}
+	if w := do(f.eh, "GET", "/api/v1/me", "", asCookie(laptopTok)); w.Code != http.StatusOK {
+		t.Fatalf("laptop session after rejected API key revoke = %d, want 200", w.Code)
+	}
+}

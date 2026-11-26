@@ -29,6 +29,9 @@ func (a *API) handleListMySessions(w http.ResponseWriter, r *http.Request) {
 // handleRevokeMySession returns 404 for all non-owned sessions and clears the cookie when revoking the current one.
 func (a *API) handleRevokeMySession(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
+	if !requireSessionForSessionControl(w, r, p) {
+		return
+	}
 	hash := r.PathValue("hash")
 	if err := a.Repo.RevokeUserSession(r.Context(), p.UserID, hash); err != nil {
 		if errors.Is(err, ErrNotFound) {
@@ -50,7 +53,16 @@ func (a *API) handleRevokeMySession(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) handleRevokeMyOtherSessions(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
-	n, err := a.Repo.RevokeOtherUserSessions(r.Context(), p.UserID, callerSessionHash(r, p))
+	if !requireSessionForSessionControl(w, r, p) {
+		return
+	}
+	keep := callerSessionHash(r, p)
+	if p.ViaSession && keep == "" {
+		writeError(w, r, newError(http.StatusForbidden, "session_required",
+			"sessions are managed from a signed-in browser session"))
+		return
+	}
+	n, err := a.Repo.RevokeOtherUserSessions(r.Context(), p.UserID, keep)
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -58,6 +70,15 @@ func (a *API) handleRevokeMyOtherSessions(w http.ResponseWriter, r *http.Request
 	metrics.SessionsRevokedTotal.WithLabelValues("self").Add(float64(n))
 	a.audit(r, "account.session.revoked_others", "")
 	writeJSON(w, http.StatusOK, map[string]any{"revoked": n})
+}
+
+func requireSessionForSessionControl(w http.ResponseWriter, r *http.Request, p *Principal) bool {
+	if p == nil || p.APIKey != "" {
+		writeError(w, r, newError(http.StatusForbidden, "session_required",
+			"sessions are managed from a signed-in browser session"))
+		return false
+	}
+	return true
 }
 
 // revokeOtherSessionsAfter runs after a committed factor change; failure is logged without making the completed change appear retryable.

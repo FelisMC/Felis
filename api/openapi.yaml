@@ -11058,6 +11058,11 @@ paths:
                     description: True when the revoked session was the caller's own, which is now signed out.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: session_required — API keys cannot revoke browser sessions.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '404':
           description: session_not_found — not a live session of the caller.
           content:
@@ -11086,6 +11091,11 @@ paths:
                     description: How many sessions were signed out.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: session_required — API keys cannot revoke browser sessions.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /api/v1/account/api-tokens:
     get:
