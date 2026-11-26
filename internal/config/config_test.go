@@ -675,6 +675,16 @@ url = "postgres://felis@db/felis"
 	if _, err := config.Load(writeTOML(t, base+"[auth]\nclient_ip_header = \"CF-Connecting-IP: 1.2.3.4\"\n")); err == nil {
 		t.Fatal("a header line with a value was accepted as a header name")
 	}
+	cfg, err := config.Load(writeTOML(t, base+"[auth]\ntrusted_proxies = [\"127.0.0.1\", \"10.42.0.0/16\"]\n"))
+	if err != nil {
+		t.Fatalf("Load valid trusted_proxies: %v", err)
+	}
+	if pfxs := cfg.Auth.MustTrustedProxies(); len(pfxs) != 2 || pfxs[0].String() != "127.0.0.1/32" || pfxs[1].String() != "10.42.0.0/16" {
+		t.Fatalf("MustTrustedProxies = %v", pfxs)
+	}
+	if _, err := config.Load(writeTOML(t, base+"[auth]\ntrusted_proxies = [\"not-a-cidr\"]\n")); err == nil {
+		t.Fatal("invalid trusted_proxies entry was accepted")
+	}
 	if _, err := config.Load(writeTOML(t, base+"[smtp]\nhost = \"smtp.example.net\"\nfrom = \"f@example.net\"\nmax_per_hour = -1\n")); err == nil {
 		t.Fatal("negative max_per_hour accepted")
 	}

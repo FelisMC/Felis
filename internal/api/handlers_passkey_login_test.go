@@ -353,6 +353,7 @@ func TestPasskeyLoginCeremoniesCoexist(t *testing.T) {
 func TestPasskeyLoginBeginPerSourceCap(t *testing.T) {
 	api, repo, _ := seedLoginPasskeyAPI(t)
 	api.ClientIPHeader = "CF-Connecting-IP"
+	api.TrustedProxies = testTrustedProxies
 	eh := api.ExternalHandler()
 	from := func(ip string) *httptest.ResponseRecorder {
 		return do(eh, "POST", "/api/v1/auth/passkey/login/begin", `{"email":"player@example.net"}`,

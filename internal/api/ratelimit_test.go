@@ -78,6 +78,8 @@ func TestDisabledLimitAdmitsEverything(t *testing.T) {
 	}
 }
 
+var testTrustedProxies = []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}
+
 func TestClientIPTrustsOnlyTheNamedHeader(t *testing.T) {
 	req := func(remote string, h map[string]string) *http.Request {
 		r := httptest.NewRequest("POST", "/", nil)
@@ -87,25 +89,58 @@ func TestClientIPTrustsOnlyTheNamedHeader(t *testing.T) {
 		}
 		return r
 	}
+	multiXFF := func(remote string, lines ...string) *http.Request {
+		r := httptest.NewRequest("POST", "/", nil)
+		r.RemoteAddr = remote
+		for _, line := range lines {
+			r.Header.Add("X-Forwarded-For", line)
+		}
+		return r
+	}
 	for _, tc := range []struct {
-		name   string
-		header string
-		r      *http.Request
-		want   string
+		name    string
+		header  string
+		trusted []netip.Prefix
+		r       *http.Request
+		want    string
 	}{
-		{"no header configured ignores CF-Connecting-IP", "", req("10.42.0.1:5000", map[string]string{"CF-Connecting-IP": "203.0.113.9"}), "10.42.0.1"},
-		{"cloudflare header", "CF-Connecting-IP", req("10.42.0.1:5000", map[string]string{"CF-Connecting-IP": "203.0.113.9"}), "203.0.113.9"},
-		{"cloudflare header absent falls back to peer", "CF-Connecting-IP", req("10.42.0.1:5000", nil), "10.42.0.1"},
-		{"garbage header falls back to peer", "CF-Connecting-IP", req("10.42.0.1:5000", map[string]string{"CF-Connecting-IP": "not-an-ip"}), "10.42.0.1"},
-		{"X-Forwarded-For takes the proxy-appended rightmost hop", "X-Forwarded-For", req("10.42.0.1:5000", map[string]string{"X-Forwarded-For": "1.1.1.1, 198.51.100.7"}), "198.51.100.7"},
-		{"v4-mapped v6 is unmapped", "CF-Connecting-IP", req("10.42.0.1:5000", map[string]string{"CF-Connecting-IP": "::ffff:203.0.113.9"}), "203.0.113.9"},
+		{"no header configured ignores CF-Connecting-IP", "", nil, req("10.42.0.1:5000", map[string]string{"CF-Connecting-IP": "203.0.113.9"}), "10.42.0.1"},
+		{"cloudflare header", "CF-Connecting-IP", nil, req("10.42.0.1:5000", map[string]string{"CF-Connecting-IP": "203.0.113.9"}), "203.0.113.9"},
+		{"cloudflare header absent falls back to peer", "CF-Connecting-IP", nil, req("10.42.0.1:5000", nil), "10.42.0.1"},
+		{"garbage header falls back to peer", "CF-Connecting-IP", nil, req("10.42.0.1:5000", map[string]string{"CF-Connecting-IP": "not-an-ip"}), "10.42.0.1"},
+		{"X-Forwarded-For takes the proxy-appended rightmost hop", "X-Forwarded-For", nil, req("10.42.0.1:5000", map[string]string{"X-Forwarded-For": "1.1.1.1, 198.51.100.7"}), "198.51.100.7"},
+		{"multiple X-Forwarded-For header lines take the last line", "X-Forwarded-For", nil, multiXFF("10.42.0.1:5000", "1.1.1.1", "198.51.100.7, 203.0.113.44"), "203.0.113.44"},
+		{"untrusted public peer cannot spoof X-Forwarded-For", "X-Forwarded-For", nil, req("198.51.100.10:5000", map[string]string{"X-Forwarded-For": "203.0.113.9"}), "198.51.100.10"},
+		{"explicit trusted proxy list rejects unlisted private peer", "X-Forwarded-For", []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}, req("10.42.0.1:5000", map[string]string{"X-Forwarded-For": "203.0.113.9"}), "10.42.0.1"},
+		{"explicit trusted proxy list admits listed peer", "X-Forwarded-For", []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}, req("127.0.0.1:5000", map[string]string{"X-Forwarded-For": "203.0.113.9"}), "203.0.113.9"},
+		{"v4-mapped v6 is unmapped", "CF-Connecting-IP", nil, req("10.42.0.1:5000", map[string]string{"CF-Connecting-IP": "::ffff:203.0.113.9"}), "203.0.113.9"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			a := &API{ClientIPHeader: tc.header}
+			a := &API{ClientIPHeader: tc.header, TrustedProxies: tc.trusted}
 			if got := a.clientIP(tc.r).String(); got != tc.want {
 				t.Fatalf("clientIP = %s, want %s", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestUntrustedPeerCannotBypassAuthRateLimitWithXFF(t *testing.T) {
+	api, _, _ := seedLoginEmailAPI(t)
+	api.AuthDoorLimit = RateLimit{Burst: 2, PerMinute: 2}
+	api.ClientIPHeader = "X-Forwarded-For"
+	eh := api.ExternalHandler()
+
+	for i, spoof := range []string{"203.0.113.1", "203.0.113.2"} {
+		w := do(eh, "POST", "/api/v1/auth/options", `{"email":"x@example.net"}`,
+			map[string]string{"Content-Type": "application/json", "X-Forwarded-For": spoof})
+		if w.Code != http.StatusOK {
+			t.Fatalf("call %d = %d (%s), want 200", i+1, w.Code, w.Body.String())
+		}
+	}
+	w := do(eh, "POST", "/api/v1/auth/options", `{"email":"x@example.net"}`,
+		map[string]string{"Content-Type": "application/json", "X-Forwarded-For": "203.0.113.3"})
+	if c, _ := errEnvelope(t, w); w.Code != http.StatusTooManyRequests || c != "rate_limited" {
+		t.Fatalf("3rd call with rotated XFF from untrusted peer = %d %s, want 429 rate_limited", w.Code, c)
 	}
 }
 
@@ -142,6 +177,7 @@ func TestAuthDoorsThrottlePerClientAddress(t *testing.T) {
 	api, _, _ := seedLoginEmailAPI(t)
 	api.AuthDoorLimit = RateLimit{Burst: 3, PerMinute: 3}
 	api.ClientIPHeader = "CF-Connecting-IP"
+	api.TrustedProxies = testTrustedProxies
 	eh := api.ExternalHandler()
 	from := func(ip string) map[string]string {
 		return map[string]string{"Content-Type": "application/json", "CF-Connecting-IP": ip}

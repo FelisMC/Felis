@@ -282,6 +282,7 @@ func TestSessionActivityIsRecordedAtMostOnceAMinute(t *testing.T) {
 func TestSignInRecordsTheDevice(t *testing.T) {
 	api, repo, mailer := seedLoginEmailAPI(t)
 	api.ClientIPHeader = "CF-Connecting-IP"
+	api.TrustedProxies = testTrustedProxies
 	eh := api.ExternalHandler()
 	if w := do(eh, "POST", "/api/v1/auth/email/start", `{"email":"player@example.net"}`, jsonHeader); w.Code != http.StatusAccepted {
 		t.Fatalf("start = %d", w.Code)

@@ -80,6 +80,11 @@ func applyReverseProxy(ctx context.Context, panelHost, adminHost string, out io.
 	if cfg, err := config.Load(hostSetupConfigPath); err == nil {
 		current = cfg.Auth
 	}
+	if len(current.TrustedProxies) == 0 {
+		if err := fenceOriginNodePort(ctx, int32(livePanelNodePort(ctx))); err != nil {
+			return err
+		}
+	}
 	if err := writeConnectionConfig(ctx, panelHost, adminHost, "", reverseProxyHeader(current)); err != nil {
 		return err
 	}

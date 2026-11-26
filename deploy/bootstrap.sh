@@ -1952,10 +1952,10 @@ ufw_active() {
 }
 
 cloudflare_edge_configured() {
-  local cfg="${HOST_CONFIG:-/etc/felis/felis.host.toml}" aud=""
+  local cfg="${HOST_CONFIG:-/etc/felis/felis.host.toml}" val=""
   [ -r "$cfg" ] || return 1
-  aud="$(awk '/^\[/ { s = ($0 == "[auth]") } s && $1 == "access_jwt_aud" { sub(/^[^=]*=[[:space:]]*/, ""); gsub(/^"|"[[:space:]]*$/, ""); print; exit }' "$cfg" 2>/dev/null)" || aud=""
-  [ -n "$aud" ]
+  val="$(awk '/^\[/ { s = ($0 == "[auth]") } s && ($1 == "access_jwt_aud" || $1 == "client_ip_header") { sub(/^[^=]*=[[:space:]]*/, ""); gsub(/^"|"[[:space:]]*$/, ""); if (length($0) > 0) { print; exit } }' "$cfg" 2>/dev/null)" || val=""
+  [ -n "$val" ]
 }
 
 reload_firewalld() {

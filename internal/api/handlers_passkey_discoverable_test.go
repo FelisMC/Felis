@@ -118,6 +118,7 @@ func TestPasskeyDiscoverableLoginBeginCapped(t *testing.T) {
 func TestPasskeyDiscoverableLoginBeginPerSourceCap(t *testing.T) {
 	api, repo, _ := seedDiscoverableLoginAPI(t)
 	api.ClientIPHeader = "CF-Connecting-IP"
+	api.TrustedProxies = testTrustedProxies
 	eh := api.ExternalHandler()
 	from := func(ip string) *httptest.ResponseRecorder {
 		return do(eh, "POST", "/api/v1/auth/passkey/login/discoverable/begin", `{}`,

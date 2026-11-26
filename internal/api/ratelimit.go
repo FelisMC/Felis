@@ -202,26 +202,48 @@ func (a *API) checkMailBudget(ctx context.Context) error {
 	return nil
 }
 
-// clientIP trusts the configured edge header; X-Forwarded-For uses the rightmost entry appended by that proxy.
-func (a *API) clientIP(r *http.Request) netip.Addr {
-	if name := a.ClientIPHeader; name != "" {
-		if v := r.Header.Get(name); v != "" {
-			if strings.EqualFold(name, "X-Forwarded-For") {
-				if i := strings.LastIndexByte(v, ','); i >= 0 {
-					v = v[i+1:]
-				}
-			}
-			if ip, err := netip.ParseAddr(strings.TrimSpace(v)); err == nil {
-				return ip.Unmap()
+func (a *API) isTrustedProxy(peer netip.Addr) bool {
+	if !peer.IsValid() {
+		return false
+	}
+	if len(a.TrustedProxies) > 0 {
+		for _, pfx := range a.TrustedProxies {
+			if pfx.Contains(peer) {
+				return true
 			}
 		}
+		return false
 	}
+	return peer.IsLoopback() || peer.IsPrivate() || peer.IsLinkLocalUnicast()
+}
+
+func (a *API) clientIP(r *http.Request) netip.Addr {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
-	ip, _ := netip.ParseAddr(host)
-	return ip.Unmap()
+	peer, _ := netip.ParseAddr(host)
+	peer = peer.Unmap()
+
+	if name := a.ClientIPHeader; name != "" && a.isTrustedProxy(peer) {
+		vals := r.Header.Values(name)
+		for i := len(vals) - 1; i >= 0; i-- {
+			v := strings.TrimSpace(vals[i])
+			if v == "" {
+				continue
+			}
+			if strings.EqualFold(name, "X-Forwarded-For") {
+				if comma := strings.LastIndexByte(v, ','); comma >= 0 {
+					v = strings.TrimSpace(v[comma+1:])
+				}
+			}
+			if ip, err := netip.ParseAddr(v); err == nil {
+				return ip.Unmap()
+			}
+			break
+		}
+	}
+	return peer
 }
 
 // sourceKey groups IPv4 by host and IPv6 by /64; malformed addresses share a key.

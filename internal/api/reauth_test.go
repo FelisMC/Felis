@@ -417,6 +417,7 @@ func noticeFixture(t *testing.T) (*sessionsFixture, *noticeMailer) {
 	mailer := &noticeMailer{}
 	f.api.Mailer = mailer
 	f.api.ClientIPHeader = "CF-Connecting-IP"
+	f.api.TrustedProxies = testTrustedProxies
 	f.setReauth(laptopTok, f.api.now())
 	return f, mailer
 }

@@ -365,6 +365,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		MaxStreamsPerPrincipal: 16,
 		AuthDoorLimit:          api.RateLimit{Burst: 20, PerMinute: 20},
 		ClientIPHeader:         cfg.Auth.EffectiveClientIPHeader(),
+		TrustedProxies:         cfg.Auth.MustTrustedProxies(),
 		MailLimit:              api.MailRateLimit(cfg.SMTP.MaxPerHour),
 	}
 	if a.ClientIPHeader != "" {

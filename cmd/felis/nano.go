@@ -131,6 +131,7 @@ func nanoAPI(cfg *config.Config, repo api.Repo, publicPort int, auditExport func
 		AuditExport:    auditExport,
 		AuthDoorLimit:  api.RateLimit{Burst: 20, PerMinute: 20},
 		ClientIPHeader: cfg.Auth.EffectiveClientIPHeader(),
+		TrustedProxies: cfg.Auth.MustTrustedProxies(),
 		MailLimit:      api.MailRateLimit(cfg.SMTP.MaxPerHour),
 	}
 	a.AuthSources = authSourcesFromConfig(cfg.AuthSources)

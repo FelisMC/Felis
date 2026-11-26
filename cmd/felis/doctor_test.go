@@ -457,7 +457,7 @@ func TestDoctorReportsEdgeFence(t *testing.T) {
 	env, _ := doctorHost(t, testWatchdogConfig, "")
 	var out bytes.Buffer
 	runDoctor(context.Background(), env, &out)
-	if !strings.Contains(out.String(), "-  edge origin fence: not checked, Cloudflare Tunnel is not configured\n") {
+	if !strings.Contains(out.String(), "-  edge origin fence: not checked, panel is not fronted by a local tunnel or reverse proxy\n") {
 		t.Fatalf("expected skipped edge origin fence:\n%s", out.String())
 	}
 

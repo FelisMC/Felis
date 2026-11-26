@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -114,7 +115,34 @@ type AuthConfig struct {
 	PanelHostname string `toml:"panel_hostname"`
 	AccessJWTAud  string `toml:"access_jwt_aud"`
 	// ClientIPHeader defaults to the TCP peer, or CF-Connecting-IP when AccessJWTAud is set.
-	ClientIPHeader string `toml:"client_ip_header"`
+	ClientIPHeader string   `toml:"client_ip_header"`
+	TrustedProxies []string `toml:"trusted_proxies"`
+}
+
+func (a AuthConfig) ParsedTrustedProxies() ([]netip.Prefix, error) {
+	if len(a.TrustedProxies) == 0 {
+		return nil, nil
+	}
+	out := make([]netip.Prefix, 0, len(a.TrustedProxies))
+	for _, raw := range a.TrustedProxies {
+		s := strings.TrimSpace(raw)
+		if pfx, err := netip.ParsePrefix(s); err == nil {
+			out = append(out, pfx.Masked())
+			continue
+		}
+		if addr, err := netip.ParseAddr(s); err == nil {
+			u := addr.Unmap()
+			out = append(out, netip.PrefixFrom(u, u.BitLen()))
+			continue
+		}
+		return nil, fmt.Errorf("config: [auth] trusted_proxies entry %q must be an IP or CIDR", raw)
+	}
+	return out, nil
+}
+
+func (a AuthConfig) MustTrustedProxies() []netip.Prefix {
+	out, _ := a.ParsedTrustedProxies()
+	return out
 }
 
 func (a AuthConfig) EffectiveClientIPHeader() string {
@@ -454,6 +482,9 @@ func (c *Config) Validate() error {
 	}
 	if h := c.Auth.ClientIPHeader; strings.ContainsAny(h, " :\t\r\n") {
 		return fmt.Errorf("config: [auth] client_ip_header %q must be a bare header name such as CF-Connecting-IP or X-Forwarded-For", h)
+	}
+	if _, err := c.Auth.ParsedTrustedProxies(); err != nil {
+		return err
 	}
 	return c.validateAuthSources()
 }

@@ -41,6 +41,7 @@ func TestAuditCannotBeSignedWithAnotherPersonsEmail(t *testing.T) {
 	api := newTestAPI(repo, newFakeCluster())
 	api.External = SessionAuth{Repo: repo, RootDomain: testRoot, Now: api.now}
 	api.ClientIPHeader = "CF-Connecting-IP"
+	api.TrustedProxies = testTrustedProxies
 	eh := api.ExternalHandler()
 	hdr := map[string]string{
 		"Content-Type": "application/json", "Cookie": sessionCookieName + "=tok",

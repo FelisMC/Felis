@@ -212,7 +212,7 @@ func watchdogProbes(ctx context.Context, w watchdogFlags, cfg *config.Config, no
 			add(watchdog.AddressFinding(w.nodeIP, held))
 		}
 	}
-	if strings.TrimSpace(cfg.Auth.AccessJWTAud) != "" {
+	if !cfg.Auth.DirectAccess() && len(cfg.Auth.TrustedProxies) == 0 {
 		present, detail := edgeFenceCheck(ctx)
 		add(watchdog.EdgeFenceFinding(true, present, detail))
 	}

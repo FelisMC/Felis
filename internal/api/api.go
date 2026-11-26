@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -118,6 +119,7 @@ type API struct {
 	MailLimit     RateLimit
 	// ClientIPHeader names the edge header carrying the client address; empty means the TCP peer.
 	ClientIPHeader string
+	TrustedProxies []netip.Prefix
 
 	AccessLog *slog.Logger
 

@@ -220,8 +220,8 @@ func collectDoctor(ctx context.Context, env doctorEnv) doctorReport {
 		if w.nodeIP == "" {
 			skip["host-address"] = "no -node-ip"
 		}
-		if strings.TrimSpace(cfg.Auth.AccessJWTAud) == "" {
-			skip["edge-fence"] = "Cloudflare Tunnel is not configured"
+		if cfg.Auth.DirectAccess() || len(cfg.Auth.TrustedProxies) > 0 {
+			skip["edge-fence"] = "panel is not fronted by a local tunnel or reverse proxy"
 		}
 	}
 	report.Findings = append(report.Findings, unitFindings(ctx, env)...)
