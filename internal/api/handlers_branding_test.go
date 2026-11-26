@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -9,6 +10,7 @@ import (
 	"errors"
 	"image"
 	"image/png"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -279,5 +281,64 @@ func TestPublicBrandingDefaultsAndRevalidation(t *testing.T) {
 	repo.failGetSetting = errors.New("database down")
 	if outage, _ := readPublicBranding(t, visitor); outage.Name != "Felis" || outage.Notice != "" || !outage.ShowPoweredBy || outage.Logo != nil {
 		t.Fatalf("store outage = %+v", outage)
+	}
+}
+
+type countingSettingRepo struct {
+	*fakeRepo
+	getSettingCalls int
+}
+
+func (c *countingSettingRepo) GetSetting(ctx context.Context, key string) ([]byte, error) {
+	c.getSettingCalls++
+	return c.fakeRepo.GetSetting(ctx, key)
+}
+
+func TestBrandingImageMemoryCacheAndRateLimit(t *testing.T) {
+	owner, base := brandingOwner()
+	bg := webpOf()
+	if w := putBrandingImage(owner, "background", "image/webp", bg); w.Code != http.StatusOK {
+		t.Fatalf("upload background = %d %s", w.Code, w.Body.String())
+	}
+
+	counting := &countingSettingRepo{fakeRepo: base}
+	a := newTestAPI(counting, newFakeCluster())
+	a.External = staticExternal{}
+	a.BrandingImageLimit = RateLimit{Burst: 3, PerMinute: 1}
+	now := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
+	a.Now = func() time.Time { return now }
+
+	if _, w := readPublicBranding(t, a); w.Code != http.StatusOK {
+		t.Fatalf("public branding = %d", w.Code)
+	}
+	counting.getSettingCalls = 0
+
+	w := do(a.ExternalHandler(), "GET", "/api/v1/branding/background", "", map[string]string{"If-None-Match": "*"})
+	if w.Code != http.StatusNotModified {
+		t.Fatalf("If-None-Match * = %d, want 304", w.Code)
+	}
+	if counting.getSettingCalls != 0 {
+		t.Fatalf("If-None-Match read DB %d times, want 0", counting.getSettingCalls)
+	}
+
+	w = do(a.ExternalHandler(), "GET", "/api/v1/branding/background", "", nil)
+	if w.Code != http.StatusOK || !bytes.Equal(w.Body.Bytes(), bg) {
+		t.Fatalf("cached background = %d len=%d", w.Code, w.Body.Len())
+	}
+	if counting.getSettingCalls != 0 {
+		t.Fatalf("cached background read DB %d times, want 0", counting.getSettingCalls)
+	}
+
+	w = do(a.ExternalHandler(), "GET", "/api/v1/branding/background", "", map[string]string{"If-None-Match": `"` + versionOf(bg) + `"`})
+	if w.Code != http.StatusNotModified {
+		t.Fatalf("3rd request = %d, want 304", w.Code)
+	}
+	if counting.getSettingCalls != 0 {
+		t.Fatalf("3rd request read DB %d times, want 0", counting.getSettingCalls)
+	}
+
+	w = do(a.ExternalHandler(), "GET", "/api/v1/branding/background", "", map[string]string{"If-None-Match": "*"})
+	if w.Code != http.StatusTooManyRequests || decodeErr(t, w) != "rate_limited" {
+		t.Fatalf("4th request = %d %s, want 429 rate_limited", w.Code, w.Body.String())
 	}
 }

@@ -142,10 +142,13 @@ type API struct {
 	exportsOnce sync.Once
 	exports     *exportRegistry
 
-	authDoorOnce    sync.Once
-	authDoorBuckets *bucketSet
-	mailOnce        sync.Once
-	mailBuckets     *bucketSet
+	authDoorOnce         sync.Once
+	authDoorBuckets      *bucketSet
+	mailOnce             sync.Once
+	mailBuckets          *bucketSet
+	BrandingImageLimit   RateLimit
+	brandingImageOnce    sync.Once
+	brandingImageBuckets *bucketSet
 
 	failover failoverState
 

@@ -36,16 +36,28 @@ const (
 	brandingCacheTTL = 30 * time.Second
 )
 
+var defaultBrandingImageLimit = RateLimit{Burst: 60, PerMinute: 120}
+
+type cachedBrandingImage struct {
+	contentType string
+	etag        string
+	data        []byte
+}
+
 // brandingCache spares the public read from loading both images on every page load.
 type brandingCache struct {
-	mu   sync.Mutex
-	view publicBrandingView
-	at   time.Time
+	mu         sync.Mutex
+	view       publicBrandingView
+	logo       *cachedBrandingImage
+	background *cachedBrandingImage
+	at         time.Time
 }
 
 func (c *brandingCache) forget() {
 	c.mu.Lock()
 	c.at = time.Time{}
+	c.logo = nil
+	c.background = nil
 	c.mu.Unlock()
 }
 
@@ -305,42 +317,81 @@ func defaultPublicBranding() publicBrandingView {
 	return publicBrandingView{Name: defaultBrandName, ShowPoweredBy: true}
 }
 
-func (a *API) cachedPublicBranding(ctx context.Context) (publicBrandingView, error) {
+func (a *API) brandingImageGate() *bucketSet {
+	a.brandingImageOnce.Do(func() {
+		limit := a.BrandingImageLimit
+		if !limit.enabled() {
+			limit = defaultBrandingImageLimit
+		}
+		a.brandingImageBuckets = newBucketSet(limit, a.now)
+	})
+	return a.brandingImageBuckets
+}
+
+func decodeBrandingImage(img *brandingImage) (*cachedBrandingImage, error) {
+	if img == nil {
+		return nil, nil
+	}
+	data, err := base64.StdEncoding.DecodeString(img.Data)
+	if err != nil {
+		return nil, err
+	}
+	return &cachedBrandingImage{
+		contentType: img.Type,
+		etag:        `"` + img.SHA256 + `"`,
+		data:        data,
+	}, nil
+}
+
+func (a *API) cachedBrandingSnapshot(ctx context.Context) (publicBrandingView, *cachedBrandingImage, *cachedBrandingImage, error) {
 	c := &a.brandingCache
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := a.now()
 	if !c.at.IsZero() && now.Sub(c.at) < brandingCacheTTL {
-		return c.view, nil
+		return c.view, c.logo, c.background, nil
 	}
-	view, err := a.readPublicBranding(ctx)
+	view, logo, background, err := a.readPublicBranding(ctx)
 	if err != nil {
-		return view, err
+		return view, nil, nil, err
 	}
-	c.view, c.at = view, now
-	return view, nil
+	c.view, c.logo, c.background, c.at = view, logo, background, now
+	return view, logo, background, nil
 }
 
-func (a *API) readPublicBranding(ctx context.Context) (publicBrandingView, error) {
+func (a *API) cachedPublicBranding(ctx context.Context) (publicBrandingView, error) {
+	view, _, _, err := a.cachedBrandingSnapshot(ctx)
+	return view, err
+}
+
+func (a *API) readPublicBranding(ctx context.Context) (publicBrandingView, *cachedBrandingImage, *cachedBrandingImage, error) {
 	settings, _, err := a.readBranding(ctx)
 	if err != nil {
-		return publicBrandingView{}, err
+		return publicBrandingView{}, nil, nil, err
 	}
-	logo, err := a.readBrandingImage(ctx, brandingLogo)
+	logoRaw, err := a.readBrandingImage(ctx, brandingLogo)
 	if err != nil {
-		return publicBrandingView{}, err
+		return publicBrandingView{}, nil, nil, err
 	}
-	background, err := a.readBrandingImage(ctx, brandingBackground)
+	logo, err := decodeBrandingImage(logoRaw)
 	if err != nil {
-		return publicBrandingView{}, err
+		return publicBrandingView{}, nil, nil, err
+	}
+	bgRaw, err := a.readBrandingImage(ctx, brandingBackground)
+	if err != nil {
+		return publicBrandingView{}, nil, nil, err
+	}
+	background, err := decodeBrandingImage(bgRaw)
+	if err != nil {
+		return publicBrandingView{}, nil, nil, err
 	}
 	return publicBrandingView{
 		Name:          cmp.Or(settings.Name, defaultBrandName),
 		Notice:        settings.Notice,
 		ShowPoweredBy: settings.ShowPoweredBy,
-		Logo:          logo.url(brandingLogo),
-		Background:    background.url(brandingBackground),
-	}, nil
+		Logo:          logoRaw.url(brandingLogo),
+		Background:    bgRaw.url(brandingBackground),
+	}, logo, background, nil
 }
 
 // handlePublicBranding answers 200 with the defaults on store failure so the panel still renders.
@@ -366,32 +417,36 @@ func (a *API) handlePublicBranding(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) handleBrandingImage(kind brandingImageKind) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		img, err := a.readBrandingImage(r.Context(), kind)
+		key := sourceKey(a.clientIP(r))
+		if ok, wait := a.brandingImageGate().take(key); !ok {
+			writeError(w, r, newError(http.StatusTooManyRequests, "rate_limited",
+				"too many requests from this network; try again shortly").retryAfter(wait))
+			return
+		}
+		_, logo, background, err := a.cachedBrandingSnapshot(r.Context())
 		if err != nil {
 			writeError(w, r, err)
 			return
+		}
+		img := logo
+		if kind.key == brandingBackgroundKey {
+			img = background
 		}
 		if img == nil {
 			writeError(w, r, newError(http.StatusNotFound, "not_found", "no %s is set", kind.name))
 			return
 		}
-		data, err := base64.StdEncoding.DecodeString(img.Data)
-		if err != nil {
-			writeError(w, r, err)
-			return
-		}
-		etag := `"` + img.SHA256 + `"`
 		h := w.Header()
-		h.Set("Content-Type", img.Type)
+		h.Set("Content-Type", img.contentType)
 		h.Set("X-Content-Type-Options", "nosniff")
-		h.Set("ETag", etag)
+		h.Set("ETag", img.etag)
 		h.Set("Cache-Control", "public, max-age=86400")
-		if etagMatches(r.Header.Get("If-None-Match"), etag) {
+		if etagMatches(r.Header.Get("If-None-Match"), img.etag) {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
-		h.Set("Content-Length", strconv.Itoa(len(data)))
-		_, _ = w.Write(data)
+		h.Set("Content-Length", strconv.Itoa(len(img.data)))
+		_, _ = w.Write(img.data)
 	}
 }
 

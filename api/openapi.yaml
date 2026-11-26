@@ -5865,6 +5865,11 @@ paths:
               schema: { type: string, format: binary }
         '304': { description: The logo is unchanged since the ETag in If-None-Match. }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429':
+          description: Too many branding image requests from this network (rate_limited).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /api/v1/branding/background:
     get:
@@ -5892,6 +5897,11 @@ paths:
               schema: { type: string, format: binary }
         '304': { description: The image is unchanged since the ETag in If-None-Match. }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429':
+          description: Too many branding image requests from this network (rate_limited).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /api/v1/auth/logout:
     post:
