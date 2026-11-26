@@ -306,3 +306,65 @@ func TestMailLimitCountsNotices(t *testing.T) {
 		t.Fatalf("notice sent past a spent budget: %q", mailer.notices)
 	}
 }
+
+func TestPasskeyNoticesThrottledPerAccountAndIsolatedFromOTPBucket(t *testing.T) {
+	f, mailer := noticeFixture(t)
+	clock := f.api.now()
+	f.api.Now = func() time.Time { return clock }
+	f.api.MailLimit = RateLimit{Burst: 2, PerMinute: 1}
+	f.repo.staff["other"] = &StaffUser{ID: "u9", Username: "other", Email: "other@example.net", Role: "user", EmailVerified: true}
+	f.repo.staff["third"] = &StaffUser{ID: "u10", Username: "third", Email: "third@example.net", Role: "user", EmailVerified: true}
+
+	v := f.api.Passkey.(*fakePasskeyVerifier)
+	v.credential = VerifiedCredential{CredentialID: "c-1", PublicKey: "pk-1"}
+	if w := do(f.eh, "POST", "/api/v1/account/passkey/register/begin", "", asCookie(laptopTok)); w.Code != http.StatusOK {
+		t.Fatalf("begin 1 = %d (%s)", w.Code, w.Body.String())
+	}
+	w := do(f.eh, "POST", "/api/v1/account/passkey/register/finish", `{"attestation":{"id":"1"}}`, fromIP(jsonCookie(laptopTok)))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("finish 1 = %d (%s)", w.Code, w.Body.String())
+	}
+	id, _ := acctBody(t, w)["id"].(string)
+	if id == "" {
+		t.Fatalf("missing credential id: %s", w.Body.String())
+	}
+	if len(mailer.notices) != 1 {
+		t.Fatalf("notices after register = %d, want 1", len(mailer.notices))
+	}
+
+	if w := do(f.eh, "DELETE", "/api/v1/account/passkey/credentials/"+id, "", fromIP(asCookie(laptopTok))); w.Code != http.StatusNoContent {
+		t.Fatalf("delete = %d (%s)", w.Code, w.Body.String())
+	}
+	if len(mailer.notices) != 1 {
+		t.Fatalf("notices after immediate delete = %d, want 1", len(mailer.notices))
+	}
+
+	req := httptest.NewRequest("POST", "/", nil)
+	f.api.notifyStaffEmailSignIn(req, "other@example.net")
+	f.api.notifyStaffEmailSignIn(req, "third@example.net")
+	if len(mailer.notices) != 2 {
+		t.Fatalf("notices after notice bucket drained = %d, want 2", len(mailer.notices))
+	}
+
+	for _, email := range []string{"other@example.net", "third@example.net"} {
+		if w := do(f.eh, "POST", "/api/v1/auth/email/start", `{"email":"`+email+`"}`, jsonHeader); w.Code != http.StatusAccepted {
+			t.Fatalf("otp start for %s after notice bucket drained = %d (%s), want 202", email, w.Code, w.Body.String())
+		}
+	}
+	if mailer.calls != 2 {
+		t.Fatalf("otp mailer calls = %d, want 2", mailer.calls)
+	}
+
+	clock = clock.Add(passkeyNoticeCooldown)
+	f.setReauth(laptopTok, clock)
+	v.credential = VerifiedCredential{CredentialID: "c-2", PublicKey: "pk-2"}
+	if w := do(f.eh, "POST", "/api/v1/account/passkey/register/begin", "", asCookie(laptopTok)); w.Code != http.StatusOK {
+		t.Fatalf("begin 2 = %d (%s)", w.Code, w.Body.String())
+	}
+	if w := do(f.eh, "POST", "/api/v1/account/passkey/register/finish", `{"attestation":{"id":"2"}}`, fromIP(jsonCookie(laptopTok))); w.Code != http.StatusCreated {
+		t.Fatalf("finish 2 = %d (%s)", w.Code, w.Body.String())
+	}
+	if len(mailer.notices) != 3 {
+		t.Fatalf("notices after cooldown elapsed = %d, want 3", len(mailer.notices))
+	}
+}

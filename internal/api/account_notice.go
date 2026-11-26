@@ -12,6 +12,8 @@ import (
 
 // Account-change notices are best effort after the change; email-change notices go to the previous verified address.
 
+const passkeyNoticeCooldown = 5 * time.Minute
+
 func (a *API) notifyAccountChange(r *http.Request, to, subject, body string) {
 	if to == "" {
 		return
@@ -22,7 +24,7 @@ func (a *API) notifyAccountChange(r *http.Request, to, subject, body string) {
 			subject, requestIDFromContext(r.Context()))
 		return
 	}
-	if ok, _ := a.mailGate().take(mailGateKey); !ok {
+	if ok, _ := a.mailGate().take(accountNoticeGateKey); !ok {
 		metrics.MailTotal.WithLabelValues("notice", "throttled").Inc()
 		log.Printf("auth: mail budget spent; account change notice %q was not sent (request_id=%s)",
 			subject, requestIDFromContext(r.Context()))
@@ -36,6 +38,18 @@ func (a *API) notifyAccountChange(r *http.Request, to, subject, body string) {
 	metrics.MailTotal.WithLabelValues("notice", "sent").Inc()
 }
 
+func (a *API) allowPasskeyNotice(r *http.Request, p *Principal) bool {
+	if verifiedEmail(p) == "" {
+		return false
+	}
+	if _, ok := a.otpLimiter().reserve("notice:passkey:"+p.UserID, passkeyNoticeCooldown); !ok {
+		metrics.MailTotal.WithLabelValues("notice", "throttled").Inc()
+		log.Printf("auth: passkey notice throttled for user %s (request_id=%s)", p.UserID, requestIDFromContext(r.Context()))
+		return false
+	}
+	return true
+}
+
 func verifiedEmail(p *Principal) string {
 	if !p.EmailVerified {
 		return ""
@@ -44,6 +58,9 @@ func verifiedEmail(p *Principal) string {
 }
 
 func (a *API) notifyPasskeyAdded(r *http.Request, p *Principal) {
+	if !a.allowPasskeyNotice(r, p) {
+		return
+	}
 	subject, body := accountChangeNotice(
 		"已添加 Passkey", "passkey added",
 		"你的 Felis 账户刚刚添加了一个 Passkey。", "A passkey was just added to your Felis account.",
@@ -62,6 +79,9 @@ func (a *API) notifyStaffEmailSignIn(r *http.Request, to string) {
 }
 
 func (a *API) notifyPasskeyRemoved(r *http.Request, p *Principal) {
+	if !a.allowPasskeyNotice(r, p) {
+		return
+	}
 	subject, body := accountChangeNotice(
 		"已删除 Passkey", "passkey removed",
 		"你的 Felis 账户刚刚删除了一个 Passkey，其它设备上的登录已全部退出。",

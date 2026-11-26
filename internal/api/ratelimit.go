@@ -160,7 +160,10 @@ func (a *API) mailGate() *bucketSet {
 	return a.mailBuckets
 }
 
-const mailGateKey = "mail"
+const (
+	mailGateKey          = "mail"
+	accountNoticeGateKey = "notice:account"
+)
 
 func (a *API) throttleAuthDoor(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
