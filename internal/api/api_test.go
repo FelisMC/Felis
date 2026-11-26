@@ -324,6 +324,12 @@ func (f *fakeRepo) RedeemPlayerBindCode(_ context.Context, newUserID, code strin
 		delete(f.linkCodes, code)
 		return existing, rec.mcUUID, rec.authSource, nil
 	}
+	if u, exists := f.staff[rec.mcUUID]; exists {
+		if u.Role != "user" {
+			return "", "", "", ErrPlayerBindForbidden
+		}
+		return "", "", "", ErrPlayerAccountRetired
+	}
 	f.staff[rec.mcUUID] = &StaffUser{ID: newUserID, Username: rec.mcUUID, Role: "user"}
 	f.links[rec.mcUUID] = newUserID
 	f.linkAuthSource[rec.mcUUID] = rec.authSource
@@ -1681,6 +1687,11 @@ func (f *fakeRepo) UnlinkOwnAccount(_ context.Context, userID, mcUUID string) er
 	if totalLinks == 1 {
 		delete(f.linked, userID)
 	}
+	if u, ok := f.staff[mcUUID]; ok && u.ID == userID {
+		delete(f.staff, mcUUID)
+		u.Username = "unlinked-" + u.ID
+		f.staff[u.Username] = u
+	}
 	return nil
 }
 
@@ -1690,6 +1701,11 @@ func (f *fakeRepo) UnlinkAccount(_ context.Context, userID, mcUUID string) error
 	}
 	delete(f.links, mcUUID)
 	delete(f.linkAuthSource, mcUUID)
+	if u, ok := f.staff[mcUUID]; ok && u.ID == userID {
+		delete(f.staff, mcUUID)
+		u.Username = "unlinked-" + u.ID
+		f.staff[u.Username] = u
+	}
 	return nil
 }
 

@@ -782,3 +782,53 @@ func TestReclaimUsernameContract(t *testing.T) {
 		t.Fatalf("UUID barred by a reclaim whose stash failed: %v, %v; want false", barred, err)
 	}
 }
+
+func TestUnlinkedPlayerCannotReenterViaBindCode(t *testing.T) {
+	ctx := context.Background()
+	t0 := mustNow().Truncate(time.Second)
+	mcUUID := testUUID(t)
+	code1 := "U1" + strings.ToUpper(suffix(t)[:6])
+	code2 := "U2" + strings.ToUpper(suffix(t)[:6])
+
+	if err := repo.CreateLinkCode(ctx, code1, mcUUID, "mojang", t0.Add(10*time.Minute)); err != nil {
+		t.Fatalf("CreateLinkCode 1: %v", err)
+	}
+	origID, _, _, err := repo.RedeemPlayerBindCode(ctx, "pgint-orig-"+suffix(t), code1, t0)
+	if err != nil {
+		t.Fatalf("RedeemPlayerBindCode 1: %v", err)
+	}
+
+	if err := repo.UnlinkAccount(ctx, origID, mcUUID); err != nil {
+		t.Fatalf("UnlinkAccount: %v", err)
+	}
+
+	if err := repo.CreateLinkCode(ctx, code2, mcUUID, "mojang", t0.Add(10*time.Minute)); err != nil {
+		t.Fatalf("CreateLinkCode 2: %v", err)
+	}
+	nextID, _, _, err := repo.RedeemPlayerBindCode(ctx, "pgint-next-"+suffix(t), code2, t0)
+	if err != nil {
+		t.Fatalf("RedeemPlayerBindCode 2: %v", err)
+	}
+	if nextID == origID {
+		t.Fatalf("unlinked UUID re-entered original user %q", origID)
+	}
+
+	legacyUUID := testUUID(t)
+	legacyID := "pgint-legacy-" + suffix(t)
+	mustExec(t, `INSERT INTO users (id, username, role, created_at) VALUES ($1, $2, 'user', $3)`, legacyID, legacyUUID, t0)
+	code3 := "U3" + strings.ToUpper(suffix(t)[:6])
+	if err := repo.CreateLinkCode(ctx, code3, legacyUUID, "mojang", t0.Add(10*time.Minute)); err != nil {
+		t.Fatalf("CreateLinkCode 3: %v", err)
+	}
+	gotID, _, _, err := repo.RedeemPlayerBindCode(ctx, "pgint-fresh-"+suffix(t), code3, t0)
+	if !errors.Is(err, api.ErrPlayerAccountRetired) {
+		t.Fatalf("legacy unlinked username redeem = (%q, %v), want ErrPlayerAccountRetired", gotID, err)
+	}
+	var linkedCount int
+	if err := db.QueryRow(`SELECT count(*) FROM account_links WHERE mc_uuid = $1`, legacyUUID).Scan(&linkedCount); err != nil {
+		t.Fatalf("count legacy links: %v", err)
+	}
+	if linkedCount != 0 {
+		t.Fatalf("legacy unlinked UUID gained %d account_links rows, want 0", linkedCount)
+	}
+}

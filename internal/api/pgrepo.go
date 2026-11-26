@@ -181,18 +181,20 @@ func (p *PGRepo) RedeemPlayerBindCode(ctx context.Context, newUserID, code strin
 			newUserID, mcUUID, now); err != nil {
 			return "", "", "", fmt.Errorf("create player: %w", err)
 		}
-		// Re-read by username so a concurrent winner's row is used and a deleted row squatting it is refused.
+		// Reject unlinked rows that still hold mcUUID as username.
 		var role string
-		var dis, del bool
+		var dis, del, hasLink bool
 		if err := tx.QueryRowContext(ctx,
-			`SELECT id, role::text, disabled, deleted_at IS NOT NULL FROM users WHERE username = $1`,
-			mcUUID).Scan(&userID, &role, &dis, &del); err != nil {
+			`SELECT u.id, u.role::text, u.disabled, u.deleted_at IS NOT NULL,
+			        EXISTS(SELECT 1 FROM account_links al WHERE al.user_id = u.id AND al.mc_uuid = $2)
+			   FROM users u WHERE u.username = $1`,
+			mcUUID, mcUUID).Scan(&userID, &role, &dis, &del, &hasLink); err != nil {
 			return "", "", "", fmt.Errorf("create player: %w", err)
 		}
 		if role != "user" {
 			return "", "", "", ErrPlayerBindForbidden
 		}
-		if dis || del {
+		if dis || del || (userID != newUserID && !hasLink) {
 			return "", "", "", ErrPlayerAccountRetired
 		}
 		if _, err := tx.ExecContext(ctx,
@@ -2179,11 +2181,23 @@ func (p *PGRepo) UnlinkOwnAccount(ctx context.Context, userID, mcUUID string) er
 		userID, mcUUID); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE users SET username = 'unlinked-' || id, updated_at = now()
+		  WHERE id = $1 AND username = $2`,
+		userID, mcUUID); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
 func (p *PGRepo) UnlinkAccount(ctx context.Context, userID, mcUUID string) error {
-	res, err := p.db.ExecContext(ctx,
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx,
 		`DELETE FROM account_links WHERE user_id = $1 AND mc_uuid = $2`,
 		userID, mcUUID)
 	if err != nil {
@@ -2196,7 +2210,13 @@ func (p *PGRepo) UnlinkAccount(ctx context.Context, userID, mcUUID string) error
 	if n == 0 {
 		return ErrNotFound
 	}
-	return nil
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE users SET username = 'unlinked-' || id, updated_at = now()
+		  WHERE id = $1 AND username = $2`,
+		userID, mcUUID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (p *PGRepo) LinkAccount(ctx context.Context, userID, mcUUID, authSource string) error {

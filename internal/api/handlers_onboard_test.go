@@ -197,3 +197,41 @@ func TestBindRedeemContentTypeGuard(t *testing.T) {
 		t.Fatal("a content-type-rejected redeem must not consume the code")
 	}
 }
+
+func TestBindRedeemAfterUnlinkDoesNotReenterOriginalAccount(t *testing.T) {
+	api, repo := seedBindAPI(t)
+
+	mintBindCode(t, api, repo, "FIRST123", bindTestUUID, authSourceMojang)
+	w := do(api.ExternalHandler(), "POST", "/api/v1/auth/bind", `{"code":"FIRST123"}`, jsonHeader)
+	if w.Code != http.StatusOK {
+		t.Fatalf("first bind: code = %d (%s)", w.Code, w.Body.String())
+	}
+	firstUserID, _ := acctBody(t, w)["user_id"].(string)
+	if firstUserID == "" {
+		t.Fatalf("first bind returned empty user_id: %s", w.Body.String())
+	}
+
+	if err := repo.UnlinkAccount(t.Context(), firstUserID, bindTestUUID); err != nil {
+		t.Fatalf("UnlinkAccount: %v", err)
+	}
+
+	mintBindCode(t, api, repo, "RETRY123", bindTestUUID, authSourceMojang)
+	w = do(api.ExternalHandler(), "POST", "/api/v1/auth/bind", `{"code":"RETRY123"}`, jsonHeader)
+	if w.Code == http.StatusOK {
+		secondUserID, _ := acctBody(t, w)["user_id"].(string)
+		if secondUserID == firstUserID {
+			t.Fatalf("unlinked UUID re-entered original user %q", firstUserID)
+		}
+	}
+
+	const legacyUUID = "99999999-9999-9999-9999-999999999999"
+	repo.staff[legacyUUID] = &StaffUser{ID: "legacy-victim", Username: legacyUUID, Role: "user"}
+	mintBindCode(t, api, repo, "LEG12345", legacyUUID, authSourceMojang)
+	w = do(api.ExternalHandler(), "POST", "/api/v1/auth/bind", `{"code":"LEG12345"}`, jsonHeader)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("legacy unlinked username collision: code = %d (%s), want 403", w.Code, w.Body.String())
+	}
+	if repo.links[legacyUUID] != "" {
+		t.Fatalf("legacy unlinked row was re-linked to %q", repo.links[legacyUUID])
+	}
+}
