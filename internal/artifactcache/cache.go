@@ -15,6 +15,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -58,6 +59,8 @@ func HostAllowed(host string) bool {
 const (
 	DefaultMaxFileBytes = 1 << 30
 	DefaultParallel     = 4
+	DefaultPerSource    = 2
+	DefaultSlotWait     = 10 * time.Second
 	DefaultTimeout      = 15 * time.Minute
 )
 
@@ -70,23 +73,28 @@ type Cache struct {
 	Upstream  *http.Client
 	UserAgent string
 	// IdleTimeout defaults to DefaultIdleTimeout.
-	IdleTimeout time.Duration
-	Log         *slog.Logger
+	IdleTimeout  time.Duration
+	SlotWait     time.Duration
+	MaxPerSource int
+	Log          *slog.Logger
 	// Allow overrides host validation and receives the host including any port.
 	Allow func(host string) bool
 
-	initOnce sync.Once
-	initErr  error
-	mu       sync.Mutex
-	total    int64
-	calls    map[string]*call
-	slots    chan struct{}
+	initOnce    sync.Once
+	initErr     error
+	mu          sync.Mutex
+	total       int64
+	calls       map[string]*call
+	sourceSlots map[string]int
+	slots       chan struct{}
 }
 
 type call struct {
-	done chan struct{}
-	sum  string
-	err  error
+	done    chan struct{}
+	sum     string
+	err     error
+	waiters int
+	cancel  context.CancelFunc
 }
 
 func (c *Cache) Init() error {
@@ -116,6 +124,7 @@ func (c *Cache) Init() error {
 		n := DefaultParallel
 		c.slots = make(chan struct{}, n)
 		c.calls = map[string]*call{}
+		c.sourceSlots = map[string]int{}
 	})
 	return c.initErr
 }
@@ -200,10 +209,12 @@ func (c *Cache) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	sum := c.lookup(d)
 	hit := sum != ""
 	if !hit {
-		sum, err = c.download(r.Context(), src.String(), d)
+		sum, err = c.download(r.Context(), requestSource(r), src.String(), d)
 		if err != nil {
 			status, code := http.StatusBadGateway, "upstream_failed"
-			if errors.Is(err, software.ErrDigestMismatch) {
+			if errors.Is(err, errBusy) {
+				status, code = http.StatusServiceUnavailable, "busy"
+			} else if errors.Is(err, software.ErrDigestMismatch) {
 				code = "digest_mismatch"
 			} else if errors.Is(err, errTooLarge) {
 				code = "too_large"
@@ -240,35 +251,112 @@ func (c *Cache) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, f)
 }
 
-var errTooLarge = errors.New("the file is larger than the cache accepts")
+var (
+	errTooLarge = errors.New("the file is larger than the cache accepts")
+	errBusy     = errors.New("artifact download slots are busy; retry or fetch directly")
+)
+
+func requestSource(r *http.Request) string {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+	if err == nil {
+		return host
+	}
+	return strings.TrimSpace(r.RemoteAddr)
+}
+
+func (c *Cache) releaseSourceLocked(source string) {
+	if source == "" {
+		return
+	}
+	if n := c.sourceSlots[source]; n <= 1 {
+		delete(c.sourceSlots, source)
+	} else {
+		c.sourceSlots[source] = n - 1
+	}
+}
+
+func (c *Cache) waitCall(ctx context.Context, cl *call) (string, error) {
+	select {
+	case <-cl.done:
+		return cl.sum, cl.err
+	case <-ctx.Done():
+		c.mu.Lock()
+		cl.waiters--
+		if cl.waiters == 0 {
+			cl.cancel()
+		}
+		c.mu.Unlock()
+		return "", ctx.Err()
+	}
+}
 
 // Deduplicate concurrent downloads for the same digest.
-func (c *Cache) download(ctx context.Context, src string, d software.Digest) (string, error) {
+func (c *Cache) download(ctx context.Context, source, src string, d software.Digest) (string, error) {
 	key := d.String()
+	maxPer := c.MaxPerSource
+	if maxPer <= 0 {
+		maxPer = DefaultPerSource
+	}
+
 	c.mu.Lock()
 	if cl, ok := c.calls[key]; ok {
+		cl.waiters++
 		c.mu.Unlock()
-		select {
-		case <-cl.done:
-			return cl.sum, cl.err
-		case <-ctx.Done():
+		return c.waitCall(ctx, cl)
+	}
+	if source != "" && c.sourceSlots[source] >= maxPer {
+		c.mu.Unlock()
+		return "", errBusy
+	}
+	if source != "" {
+		c.sourceSlots[source]++
+	}
+	c.mu.Unlock()
+
+	wait := c.SlotWait
+	if wait <= 0 {
+		wait = DefaultSlotWait
+	}
+	waitCtx, waitCancel := context.WithTimeout(ctx, wait)
+	select {
+	case c.slots <- struct{}{}:
+		waitCancel()
+	case <-waitCtx.Done():
+		waitCancel()
+		c.mu.Lock()
+		c.releaseSourceLocked(source)
+		c.mu.Unlock()
+		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
+		return "", errBusy
 	}
-	cl := &call{done: make(chan struct{})}
+
+	c.mu.Lock()
+	if cl, ok := c.calls[key]; ok {
+		cl.waiters++
+		c.releaseSourceLocked(source)
+		c.mu.Unlock()
+		<-c.slots
+		return c.waitCall(ctx, cl)
+	}
+	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), DefaultTimeout)
+	cl := &call{done: make(chan struct{}), waiters: 1, cancel: cancel}
 	c.calls[key] = cl
 	c.mu.Unlock()
 
-	// Finish downloads independently of the initiating request because other callers may be waiting.
-	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), DefaultTimeout)
-	cl.sum, cl.err = c.fetch(dctx, src, d)
-	cancel()
-
-	c.mu.Lock()
-	delete(c.calls, key)
-	c.mu.Unlock()
-	close(cl.done)
-	return cl.sum, cl.err
+	go func() {
+		sum, err := c.fetch(dctx, src, d)
+		cancel()
+		<-c.slots
+		c.mu.Lock()
+		c.releaseSourceLocked(source)
+		cl.sum, cl.err = sum, err
+		delete(c.calls, key)
+		close(cl.done)
+		c.mu.Unlock()
+	}()
+	return c.waitCall(ctx, cl)
 }
 
 func (c *Cache) client() *http.Client {
@@ -290,13 +378,6 @@ func (c *Cache) client() *http.Client {
 }
 
 func (c *Cache) fetch(ctx context.Context, src string, d software.Digest) (string, error) {
-	select {
-	case c.slots <- struct{}{}:
-	case <-ctx.Done():
-		return "", ctx.Err()
-	}
-	defer func() { <-c.slots }()
-
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	idle := newIdleWatch(c.IdleTimeout, cancel)

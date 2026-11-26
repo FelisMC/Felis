@@ -320,3 +320,136 @@ func TestClientKeepsASlowButSteadyDownload(t *testing.T) {
 		t.Fatalf("a download delivering a byte every 100ms, with a 300ms idle timeout: %v", err)
 	}
 }
+
+func fetchWithCtxAndAddr(ctx context.Context, h http.Handler, addr, src, algo, digest string) *httptest.ResponseRecorder {
+	q := url.Values{"url": {src}, "algo": {algo}, "digest": {digest}}
+	req := httptest.NewRequest(http.MethodGet, "/v1/fetch?"+q.Encode(), nil).WithContext(ctx)
+	req.RemoteAddr = addr
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	return w
+}
+
+func TestCacheBusySlotsAndPerSourceLimit(t *testing.T) {
+	t.Run("full global slots -> 503 busy and canceled waiter leaves no queued fetch", func(t *testing.T) {
+		o := newOrigin(t)
+		c, h := newCache(t, o)
+		c.SlotWait = 120 * time.Millisecond
+
+		gate := make(chan struct{})
+		o.mu.Lock()
+		o.gate = gate
+		o.mu.Unlock()
+
+		var wg sync.WaitGroup
+		for i := 0; i < DefaultParallel; i++ {
+			body := []byte("slot-" + string(rune('a'+i)))
+			path := "/slot-" + string(rune('a'+i))
+			src := o.put(path, body)
+			addr := "10.0.0." + string(rune('1'+i)) + ":1234"
+			wg.Add(1)
+			go func(addr, src string, body []byte) {
+				defer wg.Done()
+				w := fetchWithCtxAndAddr(context.Background(), h, addr, src, software.SHA256, sha256Of(body))
+				if w.Code != http.StatusOK {
+					t.Errorf("slot holder %s = %d %s", addr, w.Code, w.Body.String())
+				}
+			}(addr, src, body)
+		}
+
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if o.count("/slot-a") == 1 && o.count("/slot-b") == 1 && o.count("/slot-c") == 1 && o.count("/slot-d") == 1 {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+
+		busyBody := []byte("busy-file")
+		busySrc := o.put("/busy", busyBody)
+		start := time.Now()
+		w := fetchWithCtxAndAddr(context.Background(), h, "10.0.0.5:1234", busySrc, software.SHA256, sha256Of(busyBody))
+		elapsed := time.Since(start)
+		if w.Code != http.StatusServiceUnavailable || errCode(t, w) != "busy" {
+			t.Fatalf("over-capacity request = %d %s, want 503 busy", w.Code, w.Body.String())
+		}
+		if elapsed > 2*time.Second {
+			t.Fatalf("busy request waited %s, want near SlotWait", elapsed)
+		}
+
+		cancelBody := []byte("cancel-file")
+		cancelSrc := o.put("/cancel", cancelBody)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			done <- fetchWithCtxAndAddr(ctx, h, "10.0.0.6:1234", cancelSrc, software.SHA256, sha256Of(cancelBody))
+		}()
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+		<-done
+
+		close(gate)
+		wg.Wait()
+		if n := o.count("/busy"); n != 0 {
+			t.Fatalf("timed-out request reached upstream %d times, want 0", n)
+		}
+		if n := o.count("/cancel"); n != 0 {
+			t.Fatalf("canceled waiter reached upstream %d times, want 0", n)
+		}
+	})
+
+	t.Run("per-source limit leaves slots for other clients", func(t *testing.T) {
+		o := newOrigin(t)
+		c, h := newCache(t, o)
+		c.SlotWait = 120 * time.Millisecond
+		c.MaxPerSource = 2
+
+		gate := make(chan struct{})
+		o.mu.Lock()
+		o.gate = gate
+		o.mu.Unlock()
+
+		var wg sync.WaitGroup
+		for i := 0; i < 2; i++ {
+			body := []byte("same-" + string(rune('a'+i)))
+			src := o.put("/same-"+string(rune('a'+i)), body)
+			wg.Add(1)
+			go func(src string, body []byte) {
+				defer wg.Done()
+				w := fetchWithCtxAndAddr(context.Background(), h, "10.0.0.9:1111", src, software.SHA256, sha256Of(body))
+				if w.Code != http.StatusOK {
+					t.Errorf("same-source holder = %d %s", w.Code, w.Body.String())
+				}
+			}(src, body)
+		}
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if o.count("/same-a") == 1 && o.count("/same-b") == 1 {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+
+		extraBody := []byte("same-c")
+		extraSrc := o.put("/same-c", extraBody)
+		extraCtx, extraCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer extraCancel()
+		w := fetchWithCtxAndAddr(extraCtx, h, "10.0.0.9:2222", extraSrc, software.SHA256, sha256Of(extraBody))
+		if w.Code != http.StatusServiceUnavailable || errCode(t, w) != "busy" {
+			t.Fatalf("3rd concurrent download from same source = %d %s, want 503 busy", w.Code, w.Body.String())
+		}
+
+		o.mu.Lock()
+		o.gate = nil
+		o.mu.Unlock()
+		otherBody := []byte("other-client")
+		otherSrc := o.put("/other", otherBody)
+		w = fetchWithCtxAndAddr(context.Background(), h, "10.0.0.10:3333", otherSrc, software.SHA256, sha256Of(otherBody))
+		if w.Code != http.StatusOK || w.Body.String() != string(otherBody) {
+			t.Fatalf("other source = %d %s, want 200", w.Code, w.Body.String())
+		}
+
+		close(gate)
+		wg.Wait()
+	})
+}
