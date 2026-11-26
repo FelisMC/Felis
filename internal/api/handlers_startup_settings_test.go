@@ -141,7 +141,7 @@ func TestStartupSettingsPatchRoundTrip(t *testing.T) {
 				path = "/api/v1/me/servers/survival"
 			}
 			if mode == "system administrator" {
-				name, path = "login", "/api/v1/servers/login"
+				name, path = "lobby", "/api/v1/servers/lobby"
 				cl.byName[name] = &ServerInfo{Name: name}
 				cl.startupSpecs[name] = cl.startupSpecs["survival"]
 			}
