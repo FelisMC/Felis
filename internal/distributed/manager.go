@@ -20,6 +20,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -55,7 +56,7 @@ func (m *Manager) CreateBackupJob(ctx context.Context, p backupjob.JobParams) er
 	if err != nil {
 		return err
 	}
-	job, t, err := m.uploadJob(p.Server, world.Claim, world.Node, p.JobName)
+	job, t, secretName, token, err := m.uploadJob(p.Server, world.Claim, world.Node, p.JobName)
 	if err != nil {
 		return err
 	}
@@ -86,28 +87,73 @@ func (m *Manager) CreateBackupJob(ctx context.Context, p backupjob.JobParams) er
 		job.Annotations[maintenance.AnnotationRestoreBackupID] = p.RestoreBackupID
 	}
 	job.Spec.TTLSecondsAfterFinished = nil
-	err = m.Client.Create(ctx, job)
+	err = m.createJobWithSecret(ctx, job, secretName, worldexport.TokenSecretKey, token)
 	if apierrors.IsAlreadyExists(err) {
 		return backupjob.ErrAlreadyExists
 	}
 	return err
 }
 
-func (m *Manager) uploadJob(server, claim, node, name string) (*batchv1.Job, archivetransfer.Ticket, error) {
+func transferTokenSecretName(ticketID string) string {
+	if len(ticketID) > 16 {
+		ticketID = ticketID[:16]
+	}
+	return "transfer-tok-" + ticketID
+}
+
+func (m *Manager) createJobWithSecret(ctx context.Context, job *batchv1.Job, secretName, key, token string) error {
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secretName,
+			Namespace: m.Namespace,
+			Labels:    job.Labels,
+		},
+		Data: map[string][]byte{key: []byte(token)},
+	}
+	if err := m.Client.Create(ctx, secret); err != nil {
+		return err
+	}
+	if err := m.Client.Create(ctx, job); err != nil {
+		_ = m.Client.Delete(ctx, secret)
+		return err
+	}
+	if job.UID != "" {
+		ctrl := true
+		block := true
+		patch := client.MergeFrom(secret.DeepCopy())
+		secret.OwnerReferences = []metav1.OwnerReference{{
+			APIVersion:         "batch/v1",
+			Kind:               "Job",
+			Name:               job.Name,
+			UID:                job.UID,
+			Controller:         &ctrl,
+			BlockOwnerDeletion: &block,
+		}}
+		if err := m.Client.Patch(ctx, secret, patch); err != nil {
+			_ = m.Client.Delete(ctx, job, client.PropagationPolicy(metav1.DeletePropagationBackground))
+			_ = m.Client.Delete(ctx, secret)
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *Manager) uploadJob(server, claim, node, name string) (*batchv1.Job, archivetransfer.Ticket, string, string, error) {
 	t, url, token, err := m.Archive.Issue(server, http.MethodPut, "", "", 2*time.Hour)
 	if err != nil {
-		return nil, t, err
+		return nil, t, "", "", err
 	}
-	job, err := worldexport.ExportJob(worldexport.JobParams{Server: server, ID: t.ID[:16], Mode: worldexport.ModeWorld, WorldPVC: claim, TargetURL: url, Token: token, Namespace: m.Namespace, ServiceAccount: "felis-restore", Image: m.Image, WorldsRoot: "/world", Deadline: 2 * time.Hour})
+	secretName := transferTokenSecretName(t.ID)
+	job, err := worldexport.ExportJob(worldexport.JobParams{Server: server, ID: t.ID[:16], Mode: worldexport.ModeWorld, WorldPVC: claim, TargetURL: url, TokenSecretName: secretName, Namespace: m.Namespace, ServiceAccount: "felis-restore", Image: m.Image, WorldsRoot: "/world", Deadline: 2 * time.Hour})
 	if err != nil {
-		return nil, t, err
+		return nil, t, "", "", err
 	}
 	job.Name = name
 	job.Labels[LabelTransfer] = "true"
 	job.Spec.Template.Labels[LabelTransfer] = "true"
 	job.Spec.Template.Spec.Containers[0].Args = append(job.Spec.Template.Spec.Containers[0].Args, "--archive-raw")
 	m.pin(&job.Spec.Template.Spec, node)
-	return job, t, nil
+	return job, t, secretName, token, nil
 }
 
 func (m *Manager) pin(p *corev1.PodSpec, node string) {
@@ -122,11 +168,11 @@ func (m *Manager) restoreParams(ctx context.Context, p restore.JobParams) (resto
 	if err != nil {
 		return p, err
 	}
-	_, url, token, err := m.Archive.Issue(p.Server, http.MethodGet, p.BackupRef, rec.SHA256, 2*time.Hour)
+	t, url, token, err := m.Archive.Issue(p.Server, http.MethodGet, p.BackupRef, rec.SHA256, 2*time.Hour)
 	if err != nil {
 		return p, err
 	}
-	p.SourceURL, p.Token, p.SHA256, p.MaxBytes = url, token, rec.SHA256, m.Archive.Limit
+	p.SourceURL, p.Token, p.TokenSecretName, p.SHA256, p.MaxBytes = url, token, transferTokenSecretName(t.ID), rec.SHA256, m.Archive.Limit
 	if p.MaxBytes <= 0 {
 		p.MaxBytes = archivetransfer.DefaultLimit
 	}
@@ -176,17 +222,15 @@ func (m *Manager) SettleBackups(ctx context.Context) error {
 			errs = append(errs, err)
 			continue
 		}
-		rec, err := m.Archive.Receipt(ctx, p.Ticket.ID)
-		if err != nil {
-			if !maintenance.JobFinished(j) {
-				continue
-			}
-			// A terminal upload failure holds nothing, but must never start its restore chain.
-			if jobSucceeded(j) {
+		if !maintenance.JobFinished(j) {
+			continue
+		}
+		if jobSucceeded(j) {
+			rec, err := m.Archive.Receipt(ctx, p.Ticket.ID)
+			if err != nil {
 				errs = append(errs, fmt.Errorf("backup %s awaits durable receipt: %w", j.Name, err))
 				continue
 			}
-		} else {
 			if rec.Ref != p.Ticket.Ref || rec.SHA256 == "" || rec.Size <= 0 || rec.Size > p.Ticket.Limit {
 				errs = append(errs, fmt.Errorf("invalid receipt for %s", j.Name))
 				continue
@@ -255,26 +299,29 @@ func (a *RemoteArchiver) Archive(ctx context.Context, server, pvc string) (backu
 	}
 	id := archivetransfer.ID()
 	name := "reap-" + id[:16]
-	j, t, err := m.uploadJob(server, pvc, world.Node, name)
+	j, t, secretName, token, err := m.uploadJob(server, pvc, world.Node, name)
 	if err != nil {
 		return backup.Archived{}, err
 	}
-	if err = m.Client.Create(ctx, j); err != nil {
+	if err = m.createJobWithSecret(ctx, j, secretName, worldexport.TokenSecretKey, token); err != nil {
 		return backup.Archived{}, err
 	}
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for {
-		rec, err := m.Archive.Receipt(ctx, t.ID)
-		if err == nil {
-			return backup.Archived{Ref: backup.ArchiveRef(rec.Ref), Size: rec.Size, SHA256: rec.SHA256}, nil
-		}
 		var job batchv1.Job
 		if err = m.Client.Get(ctx, types.NamespacedName{Namespace: m.Namespace, Name: name}, &job); err != nil {
 			return backup.Archived{}, err
 		}
-		if maintenance.JobFinished(&job) && !jobSucceeded(&job) {
-			return backup.Archived{}, errors.New("remote archive Job failed")
+		if maintenance.JobFinished(&job) {
+			if !jobSucceeded(&job) {
+				return backup.Archived{}, errors.New("remote archive Job failed")
+			}
+			rec, err := m.Archive.Receipt(ctx, t.ID)
+			if err != nil {
+				return backup.Archived{}, err
+			}
+			return backup.Archived{Ref: backup.ArchiveRef(rec.Ref), Size: rec.Size, SHA256: rec.SHA256}, nil
 		}
 		select {
 		case <-ctx.Done():

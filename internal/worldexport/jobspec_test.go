@@ -15,7 +15,10 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 )
 
-const secretToken = "5ecret5ecret5ecret5ecret5ecret5ecret5ecret5ecret5ecret5ecret5ecr"
+const (
+	secretToken     = "5ecret5ecret5ecret5ecret5ecret5ecret5ecret5ecret5ecret5ecret5ecr"
+	tokenSecretName = "export-tok-0011223344556677"
+)
 
 func params(mode string) JobParams {
 	return JobParams{
@@ -23,9 +26,9 @@ func params(mode string) JobParams {
 		WorldPVC: "world-survival-0", BackupPVC: "felis-backups",
 		BackupRef: "/backups/survival-1.tar.gz", BackupSHA256: strings.Repeat("ab", 32),
 		Path: "plugins/Essentials", Dir: true,
-		TargetURL: "http://felis-api-internal.felis.svc.cluster.local:8081/api/v1/internal/exports/0011223344556677",
-		Token:     secretToken,
-		Namespace: "minecraft", ServiceAccount: "felis-restore", Image: "felis:1",
+		TargetURL:       "http://felis-api-internal.felis.svc.cluster.local:8081/api/v1/internal/exports/0011223344556677",
+		TokenSecretName: tokenSecretName,
+		Namespace:       "minecraft", ServiceAccount: "felis-restore", Image: "felis:1",
 		BackupRoot: "/backups", WorldsRoot: "/world", Deadline: time.Hour,
 		CPULimit: "1", MemLimit: "256Mi", TTLAfterFinished: 5 * time.Minute,
 	}
@@ -76,8 +79,10 @@ func TestExportJobIsolation(t *testing.T) {
 		if len(c.VolumeMounts) != 1 || c.VolumeMounts[0] != (corev1.VolumeMount{Name: tc.volume, MountPath: tc.mountPath, ReadOnly: true}) {
 			t.Errorf("%s: mounts = %+v", tc.mode, c.VolumeMounts)
 		}
-		if len(c.EnvFrom) != 0 || len(c.Env) != 1 || c.Env[0] != (corev1.EnvVar{Name: TokenEnv, Value: secretToken}) {
-			t.Errorf("%s: env = %+v, envFrom = %+v; want only the token", tc.mode, c.Env, c.EnvFrom)
+		if len(c.EnvFrom) != 0 || len(c.Env) != 1 || c.Env[0].Name != TokenEnv || c.Env[0].Value != "" ||
+			c.Env[0].ValueFrom == nil || c.Env[0].ValueFrom.SecretKeyRef == nil ||
+			c.Env[0].ValueFrom.SecretKeyRef.Name != tokenSecretName || c.Env[0].ValueFrom.SecretKeyRef.Key != TokenSecretKey {
+			t.Errorf("%s: env = %+v, envFrom = %+v; want SecretKeyRef %s/%s", tc.mode, c.Env, c.EnvFrom, tokenSecretName, TokenSecretKey)
 		}
 		if strings.Contains(strings.Join(c.Args, " "), secretToken) {
 			t.Errorf("%s: the token rides argv: %v", tc.mode, c.Args)
@@ -116,7 +121,7 @@ func TestExportJobIsolation(t *testing.T) {
 func TestExportJobRefusesIncompleteParams(t *testing.T) {
 	for name, edit := range map[string]func(*JobParams){
 		"no image":            func(p *JobParams) { p.Image = "" },
-		"no token":            func(p *JobParams) { p.Token = "" },
+		"no token secret":     func(p *JobParams) { p.TokenSecretName = "" },
 		"no target":           func(p *JobParams) { p.TargetURL = "" },
 		"no id":               func(p *JobParams) { p.ID = "" },
 		"unknown mode":        func(p *JobParams) { p.Mode = "both" },
@@ -202,6 +207,13 @@ func TestStartCreatesTheJob(t *testing.T) {
 	if d := *job.Spec.ActiveDeadlineSeconds; d != int64(defaultDeadline/time.Second) {
 		t.Errorf("deadline = %d, want the %s default", d, defaultDeadline)
 	}
+	sec, err := cs.CoreV1().Secrets("minecraft").Get(context.Background(), TokenSecretName("0011223344556677"), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("token secret missing: %v", err)
+	}
+	if string(sec.Data[TokenSecretKey]) != secretToken {
+		t.Errorf("secret token = %q, want %q", string(sec.Data[TokenSecretKey]), secretToken)
+	}
 	if _, err := e.Start(context.Background(), Request{Server: "survival", Mode: ModeWorld, ID: "0011223344556677",
 		TargetURL: "http://api:8081/x", Token: secretToken}); err == nil {
 		t.Error("a second Job of the same name was reported as created")
@@ -260,6 +272,9 @@ func TestStopDeletesTheJobAndItsPods(t *testing.T) {
 	}
 	if _, err := cs.BatchV1().Jobs("minecraft").Get(context.Background(), name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("the Job is still there: %v", err)
+	}
+	if _, err := cs.CoreV1().Secrets("minecraft").Get(context.Background(), TokenSecretName("0011223344556677"), metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("token secret still present after Stop: %v", err)
 	}
 	if policy != metav1.DeletePropagationBackground {
 		t.Errorf("propagation = %q, want Background so its Pods go too", policy)

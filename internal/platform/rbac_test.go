@@ -162,8 +162,10 @@ func TestAPIRole_MinecraftPowersExact(t *testing.T) {
 	if grantsResource(mc, groupFelis, "minecraftservers/status") {
 		t.Error("felis-api must NOT touch minecraftservers/status (status is the operator's alone)")
 	}
-	if !hasRule(mc, groupCore, "secrets", "get") {
-		t.Error("felis-api must read RCON secrets (secrets:get) for console writes")
+	for _, v := range []string{"get", "create", "patch", "delete"} {
+		if !hasRule(mc, groupCore, "secrets", v) {
+			t.Errorf("felis-api must have secrets:%s", v)
+		}
 	}
 	// The informer cache covers minecraftservers only; RCON secrets stay a direct
 	// Get by name, so no watch or list ever mirrors every secret into felis-api.
@@ -338,6 +340,20 @@ func TestReaperRole_ScopeExact(t *testing.T) {
 			if hasRule(rp, res.group, res.name, v) {
 				t.Errorf("reaper must NOT %s %s (list-only)", v, res.name)
 			}
+		}
+	}
+
+	dist := reaperParams()
+	dist.Distributed = true
+	drp := roleByName(t, ControlPlaneRBAC(dist).Roles, "felis-reaper")
+	for _, v := range []string{"create", "patch", "delete"} {
+		if !hasRule(drp, groupCore, "secrets", v) {
+			t.Errorf("distributed reaper must have secrets:%s", v)
+		}
+	}
+	for _, v := range []string{"get", "list", "watch"} {
+		if hasRule(drp, groupCore, "secrets", v) {
+			t.Errorf("distributed reaper must NOT have secrets:%s", v)
 		}
 	}
 }

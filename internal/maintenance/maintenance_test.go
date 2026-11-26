@@ -73,7 +73,7 @@ func exportJob(t *testing.T, server, mode string) batchv1.Job {
 	t.Helper()
 	j, err := worldexport.ExportJob(worldexport.JobParams{
 		Server: server, ID: "0011223344556677", Mode: mode, WorldPVC: "world-" + server + "-0",
-		BackupPVC: "felis-backups", BackupRef: "/backups/a.tar.gz", TargetURL: "http://api/x", Token: "t",
+		BackupPVC: "felis-backups", BackupRef: "/backups/a.tar.gz", TargetURL: "http://api/x", TokenSecretName: "export-tok-0011223344556677",
 		Namespace: "minecraft", ServiceAccount: "felis-restore", Image: "felis:1",
 		BackupRoot: "/backups", WorldsRoot: "/world", Path: "plugins",
 	})

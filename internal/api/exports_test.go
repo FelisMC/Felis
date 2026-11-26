@@ -1186,7 +1186,7 @@ func TestK8sExportJobs(t *testing.T) {
 		j, err := worldexport.ExportJob(worldexport.JobParams{
 			Server: "survival", ID: id, Mode: mode,
 			WorldPVC: "world-survival-0", BackupPVC: "felis-backups", BackupRef: "/backups/a.tar.gz", Path: "plugins",
-			TargetURL: exportBase + "/x", Token: "t", Namespace: "minecraft", Image: "felis:1",
+			TargetURL: exportBase + "/x", TokenSecretName: "export-tok-" + id, Namespace: "minecraft", Image: "felis:1",
 		})
 		if err != nil {
 			t.Fatal(err)

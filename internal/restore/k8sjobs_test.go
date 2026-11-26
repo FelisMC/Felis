@@ -3,19 +3,27 @@ package restore
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	"felis.lolicon.best/internal/archivetransfer"
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 func testScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
 	if err := batchv1.AddToScheme(scheme); err != nil {
 		t.Fatalf("scheme: %v", err)
 	}
@@ -131,5 +139,55 @@ func TestCreateRestoreJobRefusesAnotherArchiveInFlight(t *testing.T) {
 	p.BackupRef = "/backups/other.tar.gz"
 	if err := NewK8sJobs(c).CreateRestoreJob(context.Background(), p); !errors.Is(err, ErrAlreadyExists) {
 		t.Fatalf("same archive: CreateRestoreJob = %v, want ErrAlreadyExists", err)
+	}
+}
+
+func TestCreateRestoreJobUsesSecretKeyRefForRemoteToken(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithInterceptorFuncs(interceptor.Funcs{
+		Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			if j, ok := obj.(*batchv1.Job); ok && j.UID == "" {
+				j.UID = types.UID("uid-" + j.Name)
+			}
+			return cl.Create(ctx, obj, opts...)
+		},
+	}).Build()
+	p := testParams()
+	p.BackupPVC = ""
+	p.SourceURL = "http://archive.felis.svc:8081/t"
+	p.Token = "secret-transfer-token"
+	p.SHA256 = strings.Repeat("a", 64)
+	p.MaxBytes = 1024
+
+	if err := NewK8sJobs(c).CreateRestoreJob(context.Background(), p); err != nil {
+		t.Fatalf("CreateRestoreJob: %v", err)
+	}
+	var got batchv1.Job
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "minecraft", Name: "restore-survival"}, &got); err != nil {
+		t.Fatalf("job missing: %v", err)
+	}
+	var secretName string
+	for _, e := range got.Spec.Template.Spec.Containers[0].Env {
+		if e.Name == archivetransfer.TokenEnv {
+			if e.Value != "" {
+				t.Fatalf("token leaked in plaintext env: %q", e.Value)
+			}
+			if e.ValueFrom == nil || e.ValueFrom.SecretKeyRef == nil {
+				t.Fatalf("token env missing SecretKeyRef: %+v", e)
+			}
+			secretName = e.ValueFrom.SecretKeyRef.Name
+		}
+	}
+	if secretName == "" {
+		t.Fatal("missing FELIS_ARCHIVE_TOKEN env")
+	}
+	var sec corev1.Secret
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "minecraft", Name: secretName}, &sec); err != nil {
+		t.Fatalf("token secret %s missing: %v", secretName, err)
+	}
+	if string(sec.Data[TokenSecretKey]) != p.Token {
+		t.Fatalf("secret token = %q, want %q", string(sec.Data[TokenSecretKey]), p.Token)
+	}
+	if len(sec.OwnerReferences) != 1 || sec.OwnerReferences[0].Name != got.Name {
+		t.Fatalf("secret owners = %+v, want %s", sec.OwnerReferences, got.Name)
 	}
 }

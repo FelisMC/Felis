@@ -63,7 +63,7 @@ func APIMinecraftRole(p Params) *rbacv1.Role {
 	p = p.withDefaults()
 	rules := []rbacv1.PolicyRule{
 		rule([]string{groupFelis}, []string{"minecraftservers"}, []string{"get", "list", "watch", "create", "patch"}),
-		rule([]string{groupCore}, []string{"secrets"}, []string{"get"}),
+		rule([]string{groupCore}, []string{"secrets"}, []string{"get", "create", "patch", "delete"}),
 		// create: a restore or file edit on a server that has never started, or whose world was archived, makes its claim.
 		rule([]string{groupCore}, []string{"persistentvolumeclaims"}, []string{"get", "list", "create"}),
 		// Job list exposes async status and pending restore chains; patch records chain settlement on the snapshot Job.
@@ -132,7 +132,11 @@ func ReaperRole(p Params) *rbacv1.Role {
 		rule([]string{groupBatch}, []string{"jobs"}, []string{"list"}),
 	}
 	if p.Distributed {
-		rules = append(rules, rule([]string{groupBatch}, []string{"jobs"}, []string{"create", "get"}), rule([]string{groupCore}, []string{"persistentvolumeclaims"}, []string{"list"}))
+		rules = append(rules,
+			rule([]string{groupBatch}, []string{"jobs"}, []string{"create", "get"}),
+			rule([]string{groupCore}, []string{"secrets"}, []string{"create", "patch", "delete"}),
+			rule([]string{groupCore}, []string{"persistentvolumeclaims"}, []string{"list"}),
+		)
 	}
 	return role(p.MinecraftNamespace, "felis-reaper", ComponentReaper, rules)
 }

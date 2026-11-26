@@ -13,6 +13,7 @@ import (
 	"felis.lolicon.best/internal/maintenance"
 	"felis.lolicon.best/internal/placement"
 	"felis.lolicon.best/internal/restore"
+	"felis.lolicon.best/internal/worldexport"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -435,7 +436,7 @@ func (m *Manager) advance(ctx context.Context, s *v1alpha1.MinecraftServer, op *
 		var j batchv1.Job
 		err := m.Client.Get(ctx, types.NamespacedName{Namespace: m.Namespace, Name: name + "-backup"}, &j)
 		if apierrors.IsNotFound(err) {
-			job, t, err := m.uploadJob(op.Server, op.SourcePVC, op.SourceNode, name+"-backup")
+			job, t, secretName, token, err := m.uploadJob(op.Server, op.SourcePVC, op.SourceNode, name+"-backup")
 			if err != nil {
 				return err
 			}
@@ -444,10 +445,16 @@ func (m *Manager) advance(ctx context.Context, s *v1alpha1.MinecraftServer, op *
 			job.Labels[MigrationAnnotation] = op.ID
 			job.Spec.Template.Labels[MigrationAnnotation] = op.ID
 			job.Spec.TTLSecondsAfterFinished = nil
-			return m.Client.Create(ctx, job)
+			return m.createJobWithSecret(ctx, job, secretName, worldexport.TokenSecretKey, token)
 		}
 		if err != nil {
 			return err
+		}
+		if !maintenance.JobFinished(&j) {
+			return nil
+		}
+		if !jobSucceeded(&j) {
+			return errors.New("migration backup job failed")
 		}
 		var t archivetransfer.Ticket
 		if err = json.Unmarshal([]byte(j.Annotations[archivetransfer.Annotation]), &t); err != nil {
@@ -455,10 +462,7 @@ func (m *Manager) advance(ctx context.Context, s *v1alpha1.MinecraftServer, op *
 		}
 		rec, err := m.Archive.Receipt(ctx, t.ID)
 		if err != nil {
-			if maintenance.JobFinished(&j) {
-				return fmt.Errorf("migration backup has no durable receipt: %w", err)
-			}
-			return nil
+			return fmt.Errorf("migration backup has no durable receipt: %w", err)
 		}
 		if rec.Ref != t.Ref || rec.SHA256 == "" {
 			return errors.New("migration backup receipt mismatch")
@@ -504,7 +508,7 @@ func (m *Manager) advance(ctx context.Context, s *v1alpha1.MinecraftServer, op *
 			job.Labels[MigrationAnnotation] = op.ID
 			job.Spec.Template.Labels[MigrationAnnotation] = op.ID
 			job.Spec.TTLSecondsAfterFinished = nil
-			return m.Client.Create(ctx, job)
+			return m.createJobWithSecret(ctx, job, p.TokenSecretName, restore.TokenSecretKey, p.Token)
 		}
 		if err != nil {
 			return err

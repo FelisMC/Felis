@@ -16,6 +16,7 @@ import (
 	"felis.lolicon.best/internal/backupjob"
 	"felis.lolicon.best/internal/maintenance"
 	"felis.lolicon.best/internal/placement"
+	"felis.lolicon.best/internal/worldexport"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -44,17 +45,41 @@ func fixture(t *testing.T) (*Manager, context.Context) {
 	s.Spec.Storage.Size = "1Gi"
 	pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: s.WorldPVC(), Namespace: "minecraft"}, Spec: corev1.PersistentVolumeClaimSpec{VolumeName: "source", Resources: corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")}}}}
 	zero := int32(0)
-	cl := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(s, &batchv1.Job{}).WithObjects(node("b"), node("c"), s, pvc, localPV("source", "b"), &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "alice", Namespace: "minecraft"}, Spec: appsv1.StatefulSetSpec{Replicas: &zero}}, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "alice", Namespace: "minecraft"}, Spec: corev1.ServiceSpec{ClusterIP: "10.43.0.80"}}).Build()
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(s, &batchv1.Job{}).WithObjects(node("b"), node("c"), s, pvc, localPV("source", "b"), &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "alice", Namespace: "minecraft"}, Spec: appsv1.StatefulSetSpec{Replicas: &zero}}, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "alice", Namespace: "minecraft"}, Spec: corev1.ServiceSpec{ClusterIP: "10.43.0.80"}}).WithInterceptorFuncs(interceptor.Funcs{
+		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			if j, ok := obj.(*batchv1.Job); ok && j.UID == "" {
+				j.UID = types.UID("uid-" + j.Name)
+			}
+			return c.Create(ctx, obj, opts...)
+		},
+	}).Build()
 	var receipt archivetransfer.Receipt
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/inspect" && r.Method == "POST" || strings.HasPrefix(r.URL.Path, "/receipts/") {
+			wantID := strings.TrimPrefix(r.URL.Path, "/receipts/")
 			var jobs batchv1.JobList
 			cl.List(r.Context(), &jobs)
+			var matched archivetransfer.Receipt
 			for _, j := range jobs.Items {
+				raw := []byte(j.Annotations[archivetransfer.Annotation])
 				var ticket archivetransfer.Ticket
-				if json.Unmarshal([]byte(j.Annotations[archivetransfer.Annotation]), &ticket) == nil && ticket.Ref != "" {
-					receipt = archivetransfer.Receipt{Ref: ticket.Ref, SHA256: strings.Repeat("a", 64), Size: 50}
+				if json.Unmarshal(raw, &ticket) == nil && ticket.Ref != "" {
+					if !strings.HasPrefix(r.URL.Path, "/receipts/") || ticket.ID == wantID {
+						matched = archivetransfer.Receipt{Ref: ticket.Ref, SHA256: strings.Repeat("a", 64), Size: 50}
+					}
 				}
+				var pending pendingBackup
+				if json.Unmarshal(raw, &pending) == nil && pending.Ticket.Ref != "" {
+					if !strings.HasPrefix(r.URL.Path, "/receipts/") || pending.Ticket.ID == wantID {
+						matched = archivetransfer.Receipt{Ref: pending.Ticket.Ref, SHA256: strings.Repeat("a", 64), Size: 50}
+					}
+				}
+			}
+			if matched.Ref != "" {
+				receipt = matched
+			} else if strings.HasPrefix(r.URL.Path, "/receipts/") {
+				http.NotFound(w, r)
+				return
 			}
 			if receipt.Ref == "" {
 				http.NotFound(w, r)
@@ -103,7 +128,14 @@ func TestMigrationSurvivesRestartAndKeepsIdentity(t *testing.T) {
 	// A restart reconstructs the coordinator solely from persisted CR and Job state.
 	restarted := *m
 	m = &restarted
-	for i := 0; i < 3; i++ {
+	if err := m.ReconcileMigrations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if cur, err := m.Migration(ctx, "alice", op.ID); err != nil || cur.State != "backing_up" {
+		t.Fatalf("before backup completion %+v: %v", cur, err)
+	}
+	completeJobs(t, m, ctx, "-backup")
+	for i := 0; i < 2; i++ {
 		if err := m.ReconcileMigrations(ctx); err != nil {
 			t.Fatal(err)
 		}
@@ -123,18 +155,7 @@ func TestMigrationSurvivesRestartAndKeepsIdentity(t *testing.T) {
 	if err := m.Client.Create(ctx, localPV("target", "c")); err != nil {
 		t.Fatal(err)
 	}
-	var jobs batchv1.JobList
-	if err := m.Client.List(ctx, &jobs); err != nil {
-		t.Fatal(err)
-	}
-	for i := range jobs.Items {
-		j := &jobs.Items[i]
-		assertJobIsolation(t, j)
-		j.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
-		if err := m.Client.Status().Update(ctx, j); err != nil {
-			t.Fatal(err)
-		}
-	}
+	completeJobs(t, m, ctx, "-restore")
 	for i := 0; i < 3; i++ {
 		if err := m.ReconcileMigrations(ctx); err != nil {
 			t.Fatal(err)
@@ -157,6 +178,25 @@ func TestMigrationSurvivesRestartAndKeepsIdentity(t *testing.T) {
 	var sts appsv1.StatefulSet
 	if err := m.Client.Get(ctx, types.NamespacedName{Namespace: m.Namespace, Name: "alice"}, &sts); !apierrors.IsNotFound(err) {
 		t.Fatal("stopped immutable StatefulSet not removed", err)
+	}
+}
+
+func completeJobs(t *testing.T, m *Manager, ctx context.Context, suffix string) {
+	t.Helper()
+	var jobs batchv1.JobList
+	if err := m.Client.List(ctx, &jobs); err != nil {
+		t.Fatal(err)
+	}
+	for i := range jobs.Items {
+		j := &jobs.Items[i]
+		if suffix != "" && !strings.HasSuffix(j.Name, suffix) {
+			continue
+		}
+		assertJobIsolation(t, j)
+		j.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+		if err := m.Client.Status().Update(ctx, j); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -185,6 +225,11 @@ func assertJobIsolation(t *testing.T, j *batchv1.Job) {
 		for _, e := range c.Env {
 			if strings.Contains(e.Name, "DATABASE") || e.Name == archivetransfer.KeyEnv {
 				t.Fatal("full credentials leaked")
+			}
+			if e.Name == worldexport.TokenEnv || e.Name == archivetransfer.TokenEnv {
+				if e.Value != "" || e.ValueFrom == nil || e.ValueFrom.SecretKeyRef == nil || e.ValueFrom.SecretKeyRef.Name == "" {
+					t.Fatalf("token env %s must use SecretKeyRef: %+v", e.Name, e)
+				}
 			}
 		}
 	}
@@ -252,7 +297,11 @@ func TestMigrationFailureRetainsSourceAndCanRetry(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for i := 0; i < 3; i++ {
+			if err := m.ReconcileMigrations(ctx); err != nil {
+				t.Fatal(err)
+			}
+			completeJobs(t, m, ctx, "-backup")
+			for i := 0; i < 2; i++ {
 				if err := m.ReconcileMigrations(ctx); err != nil {
 					t.Fatal(err)
 				}
@@ -341,6 +390,25 @@ func TestBackupResolvesActiveClaimAndPreservesConflictContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertJobIsolation(t, &j)
+	var secretName string
+	for _, e := range j.Spec.Template.Spec.Containers[0].Env {
+		if e.Name == worldexport.TokenEnv && e.ValueFrom != nil && e.ValueFrom.SecretKeyRef != nil {
+			secretName = e.ValueFrom.SecretKeyRef.Name
+		}
+	}
+	if secretName == "" {
+		t.Fatal("backup job missing token SecretKeyRef")
+	}
+	var sec corev1.Secret
+	if err := m.Client.Get(ctx, types.NamespacedName{Namespace: m.Namespace, Name: secretName}, &sec); err != nil {
+		t.Fatalf("token secret %s missing: %v", secretName, err)
+	}
+	if len(sec.Data[worldexport.TokenSecretKey]) == 0 {
+		t.Fatal("token secret has empty token")
+	}
+	if len(sec.OwnerReferences) != 1 || sec.OwnerReferences[0].Name != j.Name {
+		t.Fatalf("token secret owners = %+v, want %s", sec.OwnerReferences, j.Name)
+	}
 	for _, v := range j.Spec.Template.Spec.Volumes {
 		if v.PersistentVolumeClaim != nil && v.PersistentVolumeClaim.ClaimName != getServer(t, m, ctx).WorldPVC() {
 			t.Fatal("backup used a stale world claim")
@@ -360,7 +428,11 @@ func TestAbortReleasesAFailedMigrationWhoseTargetIsGone(t *testing.T) {
 	if _, err := m.AbortMigration(ctx, "alice", op.ID); !errors.Is(err, ErrBusy) {
 		t.Fatalf("abort of a running migration: %v, want ErrBusy", err)
 	}
-	for i := 0; i < 3; i++ {
+	if err := m.ReconcileMigrations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	completeJobs(t, m, ctx, "-backup")
+	for i := 0; i < 2; i++ {
 		if err := m.ReconcileMigrations(ctx); err != nil {
 			t.Fatal(err)
 		}
@@ -470,5 +542,108 @@ func TestBackupReasonTravelsWithTheUpload(t *testing.T) {
 		if err := json.Unmarshal([]byte(j.Annotations[archivetransfer.Annotation]), &pending); err != nil || pending.Reason != tc.want {
 			t.Errorf("%s: reason %q (%v), want %q", name, pending.Reason, err, tc.want)
 		}
+	}
+}
+
+func TestSettleBackupsRequiresJobSucceeded(t *testing.T) {
+	m, ctx := fixture(t)
+	var recorded []Backup
+	m.Record = func(_ context.Context, b Backup) error {
+		recorded = append(recorded, b)
+		return nil
+	}
+
+	if err := m.CreateBackupJob(ctx, backupjob.JobParams{Server: "alice", JobName: "b-run"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SettleBackups(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorded) != 0 {
+		t.Fatalf("running job recorded backup: %+v", recorded)
+	}
+	var j batchv1.Job
+	if err := m.Client.Get(ctx, types.NamespacedName{Namespace: m.Namespace, Name: "b-run"}, &j); err != nil {
+		t.Fatal(err)
+	}
+	if j.Labels[archivetransfer.LabelPending] != "true" {
+		t.Fatalf("running job cleared pending label: %v", j.Labels)
+	}
+
+	j.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobFailed, Status: corev1.ConditionTrue}}
+	if err := m.Client.Status().Update(ctx, &j); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SettleBackups(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorded) != 0 {
+		t.Fatalf("failed job recorded backup: %+v", recorded)
+	}
+	if err := m.Client.Get(ctx, types.NamespacedName{Namespace: m.Namespace, Name: "b-run"}, &j); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := j.Labels[archivetransfer.LabelPending]; ok {
+		t.Fatalf("failed job kept pending label: %v", j.Labels)
+	}
+
+	if err := m.CreateBackupJob(ctx, backupjob.JobParams{Server: "alice", JobName: "b-ok"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Client.Get(ctx, types.NamespacedName{Namespace: m.Namespace, Name: "b-ok"}, &j); err != nil {
+		t.Fatal(err)
+	}
+	j.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+	if err := m.Client.Status().Update(ctx, &j); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SettleBackups(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorded) != 1 {
+		t.Fatalf("succeeded job recorded %d backups, want 1", len(recorded))
+	}
+	if err := m.Client.Get(ctx, types.NamespacedName{Namespace: m.Namespace, Name: "b-ok"}, &j); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := j.Labels[archivetransfer.LabelPending]; ok {
+		t.Fatalf("succeeded job kept pending label: %v", j.Labels)
+	}
+}
+
+func TestMigrationBackupFailedJobDoesNotRecordReceipt(t *testing.T) {
+	m, ctx := fixture(t)
+	recorded := 0
+	m.Record = func(context.Context, Backup) error {
+		recorded++
+		return nil
+	}
+	op, err := m.BeginMigration(ctx, "alice", "c", "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ReconcileMigrations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var jobs batchv1.JobList
+	if err := m.Client.List(ctx, &jobs); err != nil {
+		t.Fatal(err)
+	}
+	for i := range jobs.Items {
+		j := &jobs.Items[i]
+		j.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobFailed, Status: corev1.ConditionTrue}}
+		if err := m.Client.Status().Update(ctx, j); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := m.ReconcileMigrations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if recorded != 0 {
+		t.Fatalf("failed migration backup recorded %d receipts, want 0", recorded)
+	}
+	cur, err := m.Migration(ctx, "alice", op.ID)
+	if err != nil || cur.State != "failed" || cur.Stage != "backing_up" {
+		t.Fatalf("migration state = %+v (%v), want failed at backing_up", cur, err)
 	}
 }

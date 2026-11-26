@@ -26,27 +26,32 @@ const (
 	worldVolume     = "world"
 	backupVolume    = "backup"
 	felisBinaryPath = "/usr/local/bin/felis"
+
+	TokenSecretKey = "token"
 )
 
 type JobParams struct {
-	SourceURL, Token, SHA256 string
-	MaxBytes                 int64
-	Server                   string
-	WorldPVC                 string
-	BackupPVC                string
-	BackupRef                string
-	ArchiveStore             string
-	Namespace                string
-	ServiceAccount           string
-	Image                    string
-	BackupRoot               string
-	WorldsRoot               string
-	Deadline                 time.Duration
-	CPULimit                 string
-	MemLimit                 string
-	RunAsUser                int64
-	RunAsGroup               int64
-	FSGroup                  int64
+	SourceURL       string
+	Token           string
+	TokenSecretName string
+	SHA256          string
+	MaxBytes        int64
+	Server          string
+	WorldPVC        string
+	BackupPVC       string
+	BackupRef       string
+	ArchiveStore    string
+	Namespace       string
+	ServiceAccount  string
+	Image           string
+	BackupRoot      string
+	WorldsRoot      string
+	Deadline        time.Duration
+	CPULimit        string
+	MemLimit        string
+	RunAsUser       int64
+	RunAsGroup      int64
+	FSGroup         int64
 
 	TTLAfterFinished time.Duration
 }
@@ -155,12 +160,18 @@ func RestoreJob(p JobParams) (*batchv1.Job, error) {
 		},
 	}
 	if p.SourceURL != "" {
-		if p.Token == "" || p.SHA256 == "" || p.MaxBytes <= 0 {
+		if p.TokenSecretName == "" || p.SHA256 == "" || p.MaxBytes <= 0 {
 			return nil, fmt.Errorf("restore: remote archive credentials and bounds required")
 		}
 		c := &job.Spec.Template.Spec.Containers[0]
 		c.Args = append(c.Args, "--source-url", p.SourceURL, "--sha256", p.SHA256, "--max-bytes", strconv.FormatInt(p.MaxBytes, 10))
-		c.Env = []corev1.EnvVar{{Name: archivetransfer.TokenEnv, Value: p.Token}}
+		c.Env = []corev1.EnvVar{{
+			Name: archivetransfer.TokenEnv,
+			ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: p.TokenSecretName},
+				Key:                  TokenSecretKey,
+			}},
+		}}
 		c.VolumeMounts[1] = corev1.VolumeMount{Name: "tmp", MountPath: "/tmp"}
 		job.Spec.Template.Spec.Volumes[1] = corev1.Volume{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}
 	}

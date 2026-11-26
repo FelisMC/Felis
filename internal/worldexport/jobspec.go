@@ -34,7 +34,12 @@ const (
 )
 
 // TokenEnv keeps the one-time upload token out of argv.
-const TokenEnv = "FELIS_EXPORT_TOKEN"
+const (
+	TokenEnv       = "FELIS_EXPORT_TOKEN"
+	TokenSecretKey = "token"
+)
+
+func TokenSecretName(id string) string { return "export-tok-" + id }
 
 // DigestTrailer carries the streamed SHA-256 (RFC 9530); LengthHeader supplies a known content length.
 const (
@@ -52,12 +57,12 @@ type JobParams struct {
 	BackupPVC string
 	BackupRef string
 	// BackupSHA256 validates the source archive before secrets are removed for export.
-	BackupSHA256 string
-	Path         string
-	Paths        []string
-	Dir          bool
-	TargetURL    string
-	Token        string
+	BackupSHA256    string
+	Path            string
+	Paths           []string
+	Dir             bool
+	TargetURL       string
+	TokenSecretName string
 
 	Namespace      string
 	ServiceAccount string
@@ -90,8 +95,8 @@ func ExportJob(p JobParams) (*batchv1.Job, error) {
 	if p.Image == "" {
 		return nil, fmt.Errorf("worldexport: image is empty")
 	}
-	if p.ID == "" || p.TargetURL == "" || p.Token == "" {
-		return nil, fmt.Errorf("worldexport: an export needs an id, a target URL and a token")
+	if p.ID == "" || p.TargetURL == "" || p.TokenSecretName == "" {
+		return nil, fmt.Errorf("worldexport: an export needs an id, a target URL and a token secret")
 	}
 	var (
 		args   = []string{"--mode", p.Mode, "--server", p.Server, "--target-url", p.TargetURL}
@@ -148,11 +153,17 @@ func ExportJob(p JobParams) (*batchv1.Job, error) {
 	}
 
 	container := corev1.Container{
-		Name:         containerName,
-		Image:        p.Image,
-		Command:      []string{felisBinaryPath, "export"},
-		Args:         args,
-		Env:          []corev1.EnvVar{{Name: TokenEnv, Value: p.Token}},
+		Name:    containerName,
+		Image:   p.Image,
+		Command: []string{felisBinaryPath, "export"},
+		Args:    args,
+		Env: []corev1.EnvVar{{
+			Name: TokenEnv,
+			ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: p.TokenSecretName},
+				Key:                  TokenSecretKey,
+			}},
+		}},
 		VolumeMounts: []corev1.VolumeMount{mount},
 		Resources:    corev1.ResourceRequirements{Limits: limits, Requests: jobRequests(limits)},
 		SecurityContext: &corev1.SecurityContext{
