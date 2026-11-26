@@ -99,9 +99,13 @@ type JobParams struct {
 	DiskLimit       string // kaniko ephemeral storage and the pod cap; empty applies defaultDiskLimit
 	UserNamespaces  bool   // hostUsers: false; needs idmapped mounts
 	RuntimeClass    string
+	NodeSelector    map[string]string
+	Tolerations     []corev1.Toleration
+	PushSecretName  string
 }
 
-func BuildJobName(buildID string) string { return "build-" + buildID }
+func BuildJobName(buildID string) string        { return "build-" + buildID }
+func BuildPushSecretName(buildID string) string { return "build-push-" + buildID }
 
 func buildLabels(p JobParams) map[string]string {
 	return map[string]string{
@@ -307,11 +311,15 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 		}},
 	})
 
+	pushSecret := p.PushSecretName
+	if pushSecret == "" {
+		pushSecret = naming.RegistryPushSecretName
+	}
 	pushSec := sec.DeepCopy()
 	pushSec.ReadOnlyRootFilesystem = boolPtr(true)
 	secretEnv := func(name, key string) corev1.EnvVar {
 		return corev1.EnvVar{Name: name, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{Name: naming.RegistryPushSecretName},
+			LocalObjectReference: corev1.LocalObjectReference{Name: pushSecret},
 			Key:                  key,
 		}}}
 	}
@@ -360,6 +368,16 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 				},
 			},
 		},
+	}
+	if len(p.NodeSelector) > 0 {
+		sel := make(map[string]string, len(p.NodeSelector))
+		for k, v := range p.NodeSelector {
+			sel[k] = v
+		}
+		job.Spec.Template.Spec.NodeSelector = sel
+	}
+	if len(p.Tolerations) > 0 {
+		job.Spec.Template.Spec.Tolerations = append([]corev1.Toleration(nil), p.Tolerations...)
 	}
 	if p.UserNamespaces {
 		job.Spec.Template.Spec.HostUsers = boolPtr(false)

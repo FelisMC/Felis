@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"felis.lolicon.best/internal/metrics"
+	corev1 "k8s.io/api/core/v1"
 )
 
 type Status string
@@ -191,7 +192,10 @@ type Config struct {
 	MaxConcurrent int
 
 	// Send context tokens only to ContextOrigin; an empty origin rejects all HTTP contexts.
-	ContextOrigin string
+	ContextOrigin      string
+	NodeSelector       map[string]string
+	Tolerations        []corev1.Toleration
+	RegistryBuildToken string
 }
 
 const (
@@ -390,6 +394,8 @@ func (b *Builder) jobParams(bld *Build, cfg Config) JobParams {
 		DiskLimit:             cfg.DiskLimit,
 		UserNamespaces:        cfg.userNamespaces(),
 		RuntimeClass:          cfg.RuntimeClass,
+		NodeSelector:          cfg.NodeSelector,
+		Tolerations:           cfg.Tolerations,
 	}
 }
 

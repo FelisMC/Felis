@@ -2,13 +2,19 @@ package build
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"felis.lolicon.best/internal/naming"
+	"felis.lolicon.best/internal/registrygate"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -137,4 +143,69 @@ func finishProbe(t *testing.T, cl client.Client, cond batchv1.JobConditionType) 
 		time.Sleep(2 * time.Millisecond)
 	}
 	t.Fatal("the probe job never appeared")
+}
+
+func TestK8sJobsScopedPushSecretAndCancel(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	jobs := NewK8sJobs(cl, Config{
+		Namespace:          defaultNamespace,
+		RegistryBuildToken: "build-secret",
+	})
+	p := sampleJobParams()
+	p.BuildID = "bld-scoped-1"
+	p.Namespace = defaultNamespace
+	p.ImageRef = "registry.felis.svc:5000/user-uploads/sub-1:latest"
+
+	jobName, err := jobs.CreateBuildJob(context.Background(), p)
+	if err != nil {
+		t.Fatalf("CreateBuildJob: %v", err)
+	}
+	var job batchv1.Job
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: defaultNamespace, Name: jobName}, &job); err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	wantSecret := BuildPushSecretName(p.BuildID)
+	for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+		if e.ValueFrom == nil || e.ValueFrom.SecretKeyRef == nil || e.ValueFrom.SecretKeyRef.Name != wantSecret {
+			t.Fatalf("push env %s = %+v, want secret %q", e.Name, e, wantSecret)
+		}
+	}
+	var sec corev1.Secret
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: defaultNamespace, Name: wantSecret}, &sec); err != nil {
+		t.Fatalf("get push secret: %v", err)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer upstream.Close()
+	u, _ := url.Parse(upstream.URL)
+	gate := httptest.NewServer(registrygate.New(u, map[string]string{registrygate.PrincipalBuild: "build-secret"}, nil))
+	defer gate.Close()
+
+	put := func(path string) int {
+		req, _ := http.NewRequest(http.MethodPut, gate.URL+path, nil)
+		req.SetBasicAuth(string(sec.Data[naming.RegistryPushUsernameKey]), string(sec.Data[naming.RegistryPushPasswordKey]))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if code := put("/v2/user-uploads/sub-1/manifests/latest"); code != http.StatusCreated {
+		t.Fatalf("PUT own submission = %d, want 201", code)
+	}
+	if code := put("/v2/user-uploads/sub-2/manifests/latest"); code != http.StatusForbidden {
+		t.Fatalf("PUT other submission = %d, want 403", code)
+	}
+
+	if err := jobs.CancelBuildJob(context.Background(), jobName); err != nil {
+		t.Fatalf("CancelBuildJob: %v", err)
+	}
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: defaultNamespace, Name: wantSecret}, &sec); err == nil {
+		t.Fatal("scoped push secret still exists after CancelBuildJob")
+	}
 }

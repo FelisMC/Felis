@@ -775,6 +775,35 @@ func TestBuildJobRejectsBadResourceLimit(t *testing.T) {
 	}
 }
 
+func TestBuildJobPinsControllerPlacementAndPushSecret(t *testing.T) {
+	p := sampleJobParams()
+	sec := int64(30)
+	p.NodeSelector = map[string]string{"felis.node-restriction.kubernetes.io/role": "controller"}
+	p.Tolerations = []corev1.Toleration{{
+		Key:               corev1.TaintNodeNotReady,
+		Operator:          corev1.TolerationOpExists,
+		Effect:            corev1.TaintEffectNoExecute,
+		TolerationSeconds: &sec,
+	}}
+	p.PushSecretName = BuildPushSecretName(p.BuildID)
+	job, err := BuildJob(p)
+	if err != nil {
+		t.Fatalf("BuildJob: %v", err)
+	}
+	spec := job.Spec.Template.Spec
+	if spec.NodeSelector["felis.node-restriction.kubernetes.io/role"] != "controller" {
+		t.Errorf("NodeSelector = %v, want controller role", spec.NodeSelector)
+	}
+	if len(spec.Tolerations) != 1 || spec.Tolerations[0].Key != corev1.TaintNodeNotReady {
+		t.Errorf("Tolerations = %+v, want not-ready toleration", spec.Tolerations)
+	}
+	for _, e := range spec.Containers[0].Env {
+		if e.ValueFrom == nil || e.ValueFrom.SecretKeyRef == nil || e.ValueFrom.SecretKeyRef.Name != p.PushSecretName {
+			t.Errorf("push env %s = %+v, want secret %q", e.Name, e, p.PushSecretName)
+		}
+	}
+}
+
 func hasArg(args []string, want string) bool {
 	for _, a := range args {
 		if a == want {

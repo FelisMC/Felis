@@ -86,6 +86,7 @@ func APIBuildRole(p Params) *rbacv1.Role {
 	p = p.withDefaults()
 	return role(p.BuildNamespace, "felis-api-builds", ComponentAPI, []rbacv1.PolicyRule{
 		rule([]string{groupBatch}, []string{"jobs"}, []string{"create", "get", "delete"}),
+		rule([]string{groupCore}, []string{"secrets"}, []string{"create", "patch", "delete"}),
 		rule([]string{groupCore}, []string{"pods"}, []string{"list"}),
 		rule([]string{groupCore}, []string{"pods/log"}, []string{"get"}),
 	})

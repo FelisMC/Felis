@@ -506,6 +506,11 @@ func newAPIServer(addr string, handler http.Handler) *http.Server {
 }
 
 func buildConfig(cfg *config.Config) build.Config {
+	nodeSelector, tolerations := platform.ControllerPlacement(
+		os.Getenv("FELIS_CONTROLLER_NODE"),
+		os.Getenv("FELIS_DISTRIBUTED") == "true",
+		os.Getenv("FELIS_CONTROLLER_HA") == "true",
+	)
 	return build.Config{
 		Namespace:             cfg.Registry.BuildNamespace,
 		RegistryURL:           cfg.Registry.URL,
@@ -524,6 +529,9 @@ func buildConfig(cfg *config.Config) build.Config {
 		ScanFailUnfixed:       cfg.Registry.ScanFailUnfixed,
 		ScanAccept:            cfg.Registry.ScanAccept,
 		ContextOrigin:         internalAPIBaseURL(),
+		NodeSelector:          nodeSelector,
+		Tolerations:           tolerations,
+		RegistryBuildToken:    os.Getenv(platform.RegistryBuildTokenEnv),
 	}
 }
 

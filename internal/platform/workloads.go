@@ -75,6 +75,8 @@ const (
 	// The prune token comes from naming.RegistryAuthSecretName's optional prune key.
 	RegistryPruneTokenEnv = "FELIS_REGISTRY_PRUNE_TOKEN"
 	registryPruneTokenKey = "prune"
+	RegistryBuildTokenEnv = "FELIS_REGISTRY_BUILD_TOKEN"
+	registryBuildTokenKey = "build"
 
 	worldsMountPath = "/worlds"
 
@@ -203,6 +205,9 @@ func APIDeployment(p Params) *appsv1.Deployment {
 		}}},
 		corev1.EnvVar{Name: RegistryPruneTokenEnv, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
 			LocalObjectReference: corev1.LocalObjectReference{Name: naming.RegistryAuthSecretName}, Key: registryPruneTokenKey, Optional: optional,
+		}}},
+		corev1.EnvVar{Name: RegistryBuildTokenEnv, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: naming.RegistryAuthSecretName}, Key: registryBuildTokenKey, Optional: optional,
 		}}},
 	)
 

@@ -117,6 +117,36 @@ func TestBuildConfig_ProjectsOverrides(t *testing.T) {
 	}
 }
 
+func TestBuildConfig_ControllerPlacementAndPushToken(t *testing.T) {
+	t.Setenv("FELIS_DISTRIBUTED", "")
+	t.Setenv("FELIS_CONTROLLER_NODE", "")
+	t.Setenv("FELIS_CONTROLLER_HA", "")
+	t.Setenv("FELIS_REGISTRY_BUILD_TOKEN", "")
+	single := buildConfig(&config.Config{})
+	if len(single.NodeSelector) != 0 || len(single.Tolerations) != 0 || single.RegistryBuildToken != "" {
+		t.Errorf("single-node buildConfig = selector:%v tol:%v tok:%q", single.NodeSelector, single.Tolerations, single.RegistryBuildToken)
+	}
+
+	t.Setenv("FELIS_DISTRIBUTED", "true")
+	t.Setenv("FELIS_CONTROLLER_NODE", "ctl-1")
+	t.Setenv("FELIS_REGISTRY_BUILD_TOKEN", "build-secret")
+	dist := buildConfig(&config.Config{})
+	if dist.NodeSelector["felis.node-restriction.kubernetes.io/role"] != "controller" ||
+		dist.NodeSelector["felis.node-restriction.kubernetes.io/identity"] != "ctl-1" ||
+		len(dist.Tolerations) != 0 || dist.RegistryBuildToken != "build-secret" {
+		t.Errorf("distributed buildConfig = selector:%v tol:%v tok:%q", dist.NodeSelector, dist.Tolerations, dist.RegistryBuildToken)
+	}
+
+	t.Setenv("FELIS_CONTROLLER_HA", "true")
+	ha := buildConfig(&config.Config{})
+	if len(ha.NodeSelector) != 1 || ha.NodeSelector["felis.node-restriction.kubernetes.io/role"] != "controller" {
+		t.Errorf("HA NodeSelector = %v, want role=controller only", ha.NodeSelector)
+	}
+	if len(ha.Tolerations) != 2 {
+		t.Errorf("HA Tolerations = %+v, want 2 eviction tolerations", ha.Tolerations)
+	}
+}
+
 func TestNewAPIServerSetsHardenedTimeouts(t *testing.T) {
 	srv := newAPIServer(":0", http.NewServeMux())
 

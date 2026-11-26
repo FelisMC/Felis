@@ -3,7 +3,10 @@ package registrygate
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -11,6 +14,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -21,6 +25,9 @@ const (
 	PrincipalPlatform = "platform"
 	PrincipalBuild    = "build"
 	PrincipalPrune    = "prune"
+
+	UserUploadsRepoRoot    = "user-uploads"
+	scopedBuildTokenPrefix = "scoped:v1:"
 )
 
 var Principals = []string{PrincipalPlatform, PrincipalBuild, PrincipalPrune}
@@ -87,7 +94,7 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	principal, authErr := g.authenticate(r)
+	principal, allowedRepo, authErr := g.authenticate(r)
 	if authErr != nil {
 		challenge(w, "invalid credentials")
 		return
@@ -112,7 +119,7 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		challenge(w, "authentication required")
 		return
 	}
-	if reason := Authorize(principal, r.Method, r.URL.Path); reason != "" {
+	if reason := AuthorizeScope(principal, allowedRepo, r.Method, r.URL.Path); reason != "" {
 		if g.Log != nil {
 			g.Log.Warn("registry write refused", "principal", principal, "method", r.Method, "path", r.URL.Path, "reason", reason)
 		}
@@ -129,28 +136,109 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	g.proxy.ServeHTTP(w, r)
 }
 
-func (g *Gate) authenticate(r *http.Request) (string, error) {
+func (g *Gate) authenticate(r *http.Request) (string, string, error) {
 	if r.Header.Get("Authorization") == "" {
-		return "", nil
+		return "", "", nil
 	}
 	user, pass, ok := r.BasicAuth()
 	if !ok {
-		return "", fmt.Errorf("malformed authorization")
+		return "", "", fmt.Errorf("malformed authorization")
 	}
 	want, known := g.Tokens[user]
 	if !known || want == "" {
 		// Perform a comparison even for unknown users to reduce timing differences.
 		subtle.ConstantTimeCompare([]byte(pass), []byte("x"))
-		return "", fmt.Errorf("unknown principal")
+		return "", "", fmt.Errorf("unknown principal")
+	}
+	if user == PrincipalBuild && strings.HasPrefix(pass, scopedBuildTokenPrefix) {
+		now := time.Now
+		if g.maint.now != nil {
+			now = g.maint.now
+		}
+		repo, err := verifyScopedBuildToken(want, pass, now())
+		if err != nil {
+			return "", "", err
+		}
+		return user, repo, nil
 	}
 	if subtle.ConstantTimeCompare([]byte(pass), []byte(want)) != 1 {
-		return "", fmt.Errorf("bad secret")
+		return "", "", fmt.Errorf("bad secret")
 	}
-	return user, nil
+	return user, "", nil
+}
+
+func BuildPushToken(secret, repo string, expires time.Time) (string, error) {
+	if secret == "" {
+		return "", fmt.Errorf("build push secret is required")
+	}
+	if err := validateScopedRepo(repo); err != nil {
+		return "", err
+	}
+	exp := expires.Unix()
+	if exp <= 0 {
+		return "", fmt.Errorf("expiry must be positive")
+	}
+	sig := scopedBuildMAC(secret, exp, repo)
+	return fmt.Sprintf("%s%d:%s:%s", scopedBuildTokenPrefix, exp, repo, sig), nil
+}
+
+func verifyScopedBuildToken(secret, token string, now time.Time) (string, error) {
+	rest, ok := strings.CutPrefix(token, scopedBuildTokenPrefix)
+	if !ok {
+		return "", fmt.Errorf("bad scoped token")
+	}
+	parts := strings.Split(rest, ":")
+	if len(parts) != 3 {
+		return "", fmt.Errorf("malformed scoped token")
+	}
+	exp, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || exp <= now.Unix() {
+		return "", fmt.Errorf("expired scoped token")
+	}
+	repo := parts[1]
+	if err := validateScopedRepo(repo); err != nil {
+		return "", err
+	}
+	want := scopedBuildMAC(secret, exp, repo)
+	if subtle.ConstantTimeCompare([]byte(parts[2]), []byte(want)) != 1 {
+		return "", fmt.Errorf("bad scoped signature")
+	}
+	return repo, nil
+}
+
+func scopedBuildMAC(secret string, exp int64, repo string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte("felis-registry-build-push:v1\n"))
+	mac.Write([]byte(strconv.FormatInt(exp, 10)))
+	mac.Write([]byte("\n"))
+	mac.Write([]byte(repo))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func validateScopedRepo(repo string) error {
+	if repo == "" || strings.ContainsAny(repo, ":%\\ \t\r\n") || strings.HasPrefix(repo, "/") || strings.HasSuffix(repo, "/") {
+		return fmt.Errorf("invalid repository %q", repo)
+	}
+	for _, seg := range strings.Split(repo, "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return fmt.Errorf("invalid repository %q", repo)
+		}
+	}
+	root, _, _ := strings.Cut(repo, "/")
+	for _, reserved := range ReservedRepoRoots {
+		if root == reserved {
+			return fmt.Errorf("repository %s/ is reserved for the platform", reserved)
+		}
+	}
+	return nil
 }
 
 // Authorize returns an empty string to allow a write, otherwise a refusal reason.
 func Authorize(principal, method, path string) string {
+	return AuthorizeScope(principal, "", method, path)
+}
+
+func AuthorizeScope(principal, allowedRepo, method, path string) string {
 	switch principal {
 	case PrincipalPlatform:
 		return ""
@@ -167,6 +255,15 @@ func Authorize(principal, method, path string) string {
 			if root == reserved {
 				return fmt.Sprintf("repository %s/ is reserved for the platform", reserved)
 			}
+		}
+		if allowedRepo != "" {
+			if repo != allowedRepo {
+				return fmt.Sprintf("build token is scoped to repository %s", allowedRepo)
+			}
+			return ""
+		}
+		if root != UserUploadsRepoRoot {
+			return fmt.Sprintf("unscoped build principal may only write under %s/", UserUploadsRepoRoot)
 		}
 		return ""
 	case PrincipalPrune:

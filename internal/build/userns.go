@@ -83,6 +83,16 @@ func UsernsProbeJob(namespace, serviceAccount, image, name string) *batchv1.Job 
 func (k *K8sJobs) ProbeUserNamespaces(ctx context.Context, image string) (bool, error) {
 	name := "userns-probe-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	job := UsernsProbeJob(k.cfg.Namespace, k.cfg.ServiceAccount, image, name)
+	if len(k.cfg.NodeSelector) > 0 {
+		sel := make(map[string]string, len(k.cfg.NodeSelector))
+		for key, val := range k.cfg.NodeSelector {
+			sel[key] = val
+		}
+		job.Spec.Template.Spec.NodeSelector = sel
+	}
+	if len(k.cfg.Tolerations) > 0 {
+		job.Spec.Template.Spec.Tolerations = append([]corev1.Toleration(nil), k.cfg.Tolerations...)
+	}
 	if err := k.c.Create(ctx, job); err != nil {
 		return false, fmt.Errorf("create the probe job: %w", err)
 	}

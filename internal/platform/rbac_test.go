@@ -136,6 +136,16 @@ func TestAPIRole_CreatesJobsInBothNamespaces(t *testing.T) {
 	if hasRule(build, groupCore, "pods", "get") {
 		t.Error("felis-api-builds must NOT have pods:get (the build-log streamer lists then reads pods/log, never Gets a pod)")
 	}
+	for _, v := range []string{"create", "patch", "delete"} {
+		if !hasRule(build, groupCore, "secrets", v) {
+			t.Errorf("felis-api-builds must have secrets:%s", v)
+		}
+	}
+	for _, v := range []string{"get", "list", "watch"} {
+		if hasRule(build, groupCore, "secrets", v) {
+			t.Errorf("felis-api-builds must NOT have secrets:%s", v)
+		}
+	}
 }
 
 func TestAPIRole_MinecraftPowersExact(t *testing.T) {

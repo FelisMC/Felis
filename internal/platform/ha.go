@@ -107,3 +107,16 @@ func ReplicatedStorageClass(p Params) *storagev1.StorageClass {
 func controllerRoleSelector() map[string]string {
 	return map[string]string{placement.LabelRole: placement.RoleController}
 }
+
+func ControllerPlacement(controllerNode string, distributed, ha bool) (map[string]string, []corev1.Toleration) {
+	if ha {
+		return controllerRoleSelector(), haTolerations(Params{ControllerHA: true})
+	}
+	if controllerNode != "" {
+		return map[string]string{placement.LabelIdentity: controllerNode, placement.LabelRole: placement.RoleController}, nil
+	}
+	if distributed {
+		return controllerRoleSelector(), nil
+	}
+	return nil, nil
+}

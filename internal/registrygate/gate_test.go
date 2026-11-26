@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 type upstreamLog struct {
@@ -130,6 +131,8 @@ func TestBuildPrincipalIsFencedOffPlatformRepos(t *testing.T) {
 		"/v2/felis/manifests/latest",
 		"/v2/mirror/trivy-db/manifests/2",
 		"/v2/mirror/trivy-java-db/blobs/uploads/abc",
+		"/v2/modpacks/pack/manifests/1.0",
+		"/v2/builds/felis/manifests/1",
 	} {
 		for _, m := range []string{http.MethodPost, http.MethodPut, http.MethodPatch} {
 			if resp := do(t, gs, m, p, PrincipalBuild, "build-secret"); resp.StatusCode != http.StatusForbidden {
@@ -152,9 +155,6 @@ func TestBuildPrincipalIsFencedOffPlatformRepos(t *testing.T) {
 		{http.MethodPatch, "/v2/user-uploads/s1/blobs/uploads/abc", http.StatusOK},
 		{http.MethodPut, "/v2/user-uploads/s1/blobs/uploads/abc?digest=sha256:0", http.StatusCreated},
 		{http.MethodPut, "/v2/user-uploads/s1/manifests/latest", http.StatusCreated},
-		{http.MethodPut, "/v2/modpacks/pack/manifests/1.0", http.StatusCreated},
-		// A repository merely containing "felis" deeper down is not reserved.
-		{http.MethodPut, "/v2/builds/felis/manifests/1", http.StatusCreated},
 	} {
 		if resp := do(t, gs, c.method, c.path, PrincipalBuild, "build-secret"); resp.StatusCode != c.want {
 			t.Errorf("build %s %s = %d, want %d", c.method, c.path, resp.StatusCode, c.want)
@@ -164,6 +164,57 @@ func TestBuildPrincipalIsFencedOffPlatformRepos(t *testing.T) {
 		if a != "" {
 			t.Errorf("request %d (%s) reached the registry with an Authorization header", i, up.seen[i])
 		}
+	}
+}
+
+func TestBuildPrincipalScopedToken(t *testing.T) {
+	gs, up := newGate(t)
+	exp := time.Now().Add(time.Hour)
+
+	subTok, err := BuildPushToken("build-secret", "user-uploads/sub-1", exp)
+	if err != nil {
+		t.Fatalf("BuildPushToken: %v", err)
+	}
+	if resp := do(t, gs, http.MethodPut, "/v2/user-uploads/sub-1/manifests/latest", PrincipalBuild, subTok); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("scoped PUT own repo = %d, want 201", resp.StatusCode)
+	}
+	for _, p := range []string{
+		"/v2/user-uploads/sub-2/manifests/latest",
+		"/v2/user-uploads/sub-2/blobs/uploads/",
+		"/v2/modpacks/pack/manifests/1.0",
+		"/v2/felis/felis/manifests/v1",
+	} {
+		if resp := do(t, gs, http.MethodPut, p, PrincipalBuild, subTok); resp.StatusCode != http.StatusForbidden {
+			t.Errorf("scoped PUT %s = %d, want 403", p, resp.StatusCode)
+		}
+	}
+
+	adminTok, err := BuildPushToken("build-secret", "modpacks/pack", exp)
+	if err != nil {
+		t.Fatalf("BuildPushToken(admin): %v", err)
+	}
+	if resp := do(t, gs, http.MethodPut, "/v2/modpacks/pack/manifests/1.0", PrincipalBuild, adminTok); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("scoped admin PUT own repo = %d, want 201", resp.StatusCode)
+	}
+	if resp := do(t, gs, http.MethodPut, "/v2/modpacks/other/manifests/1.0", PrincipalBuild, adminTok); resp.StatusCode != http.StatusForbidden {
+		t.Errorf("scoped admin PUT other repo = %d, want 403", resp.StatusCode)
+	}
+
+	expiredTok, err := BuildPushToken("build-secret", "user-uploads/sub-1", time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("BuildPushToken(expired): %v", err)
+	}
+	if resp := do(t, gs, http.MethodPut, "/v2/user-uploads/sub-1/manifests/latest", PrincipalBuild, expiredTok); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expired scoped PUT = %d, want 401", resp.StatusCode)
+	}
+	if resp := do(t, gs, http.MethodPut, "/v2/user-uploads/sub-1/manifests/latest", PrincipalBuild, subTok+"x"); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("tampered scoped PUT = %d, want 401", resp.StatusCode)
+	}
+	if _, err := BuildPushToken("build-secret", "felis/felis", exp); err == nil {
+		t.Error("BuildPushToken accepted reserved repo")
+	}
+	if n := up.count(); n != 2 {
+		t.Fatalf("upstream saw %d requests, want 2: %v", n, up.seen)
 	}
 }
 
