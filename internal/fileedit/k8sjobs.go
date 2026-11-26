@@ -9,6 +9,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -22,10 +23,18 @@ const pollInterval = 150 * time.Millisecond
 
 const maxLogBytes = 12 << 20
 
+const (
+	defaultMaxAsyncPerServer = 1
+	defaultMaxAsyncGlobal    = 4
+)
+
 // K8sRunner gives file Jobs no Kubernetes credentials.
 type K8sRunner struct {
-	cs      kubernetes.Interface
-	Browser *Browser
+	cs                kubernetes.Interface
+	Browser           *Browser
+	MaxAsyncPerServer int
+	MaxAsyncGlobal    int
+	asyncMu           sync.Mutex
 }
 
 func NewK8sRunner(cs kubernetes.Interface) *K8sRunner {
@@ -151,10 +160,65 @@ func (k *K8sRunner) createJob(ctx context.Context, p JobParams) (*batchv1.Job, e
 			return nil, err
 		}
 	}
+	if p.Async {
+		k.asyncMu.Lock()
+		defer k.asyncMu.Unlock()
+		if err := k.checkAsyncJobs(ctx, p.Namespace, p.Server); err != nil {
+			return nil, err
+		}
+	}
 	if _, err := k.cs.BatchV1().Jobs(p.Namespace).Create(ctx, job, metav1.CreateOptions{}); err != nil {
 		return nil, fmt.Errorf("fileedit: create file job: %w", err)
 	}
 	return job, nil
+}
+
+func jobUnfinished(job batchv1.Job) bool {
+	terminal := false
+	for _, condition := range job.Status.Conditions {
+		if condition.Status == corev1.ConditionTrue && (condition.Type == batchv1.JobComplete || condition.Type == batchv1.JobFailed) {
+			terminal = true
+		}
+	}
+	return !terminal || job.Status.Active > 0 || job.Status.Terminating != nil && *job.Status.Terminating > 0
+}
+
+func (k *K8sRunner) checkAsyncJobs(ctx context.Context, namespace, server string) error {
+	maxPerServer := k.MaxAsyncPerServer
+	if maxPerServer <= 0 {
+		maxPerServer = defaultMaxAsyncPerServer
+	}
+	maxGlobal := k.MaxAsyncGlobal
+	if maxGlobal <= 0 {
+		maxGlobal = defaultMaxAsyncGlobal
+	}
+	options := metav1.ListOptions{
+		LabelSelector: LabelManagedBy + "=" + managedByValue + "," + LabelAsync + "=true",
+		Limit:         100,
+	}
+	var serverCount, globalCount int
+	for {
+		jobs, err := k.cs.BatchV1().Jobs(namespace).List(ctx, options)
+		if err != nil {
+			return fmt.Errorf("fileedit: check unfinished async Jobs: %w", err)
+		}
+		for _, job := range jobs.Items {
+			if !jobUnfinished(job) {
+				continue
+			}
+			globalCount++
+			if job.Labels[LabelServer] == server {
+				serverCount++
+			}
+			if serverCount >= maxPerServer || globalCount >= maxGlobal {
+				return ErrTooManyJobs
+			}
+		}
+		if jobs.Continue == "" {
+			return nil
+		}
+		options.Continue = jobs.Continue
+	}
 }
 
 func (k *K8sRunner) checkDiskUsageJobs(ctx context.Context, namespace string) error {
@@ -168,14 +232,7 @@ func (k *K8sRunner) checkDiskUsageJobs(ctx context.Context, namespace string) er
 		}
 		unfinished := false
 		for _, job := range jobs.Items {
-			terminal := false
-			for _, condition := range job.Status.Conditions {
-				if condition.Status == corev1.ConditionTrue && (condition.Type == batchv1.JobComplete || condition.Type == batchv1.JobFailed) {
-					terminal = true
-				}
-			}
-			// SuccessCriteriaMet and FailureTarget can precede the last Pod's termination.
-			if !terminal || job.Status.Active > 0 || job.Status.Terminating != nil && *job.Status.Terminating > 0 {
+			if jobUnfinished(job) {
 				unfinished = true
 				break
 			}

@@ -563,3 +563,23 @@ func TestUnzip(t *testing.T) {
 		}
 	})
 }
+
+func TestUnzipRejectsFIFOWithoutBlocking(t *testing.T) {
+	root, _ := worldRoot(t)
+	fifo := filepath.Join(root, "hold.zip")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+	done := make(chan Result, 1)
+	go func() {
+		done <- unzipAt(t, root, "hold.zip", false)
+	}()
+	select {
+	case res := <-done:
+		if res.Code != CodeBadPath {
+			t.Fatalf("unzip fifo result = %+v, want code %q", res, CodeBadPath)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("unzip blocked opening FIFO")
+	}
+}

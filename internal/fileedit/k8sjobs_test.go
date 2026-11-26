@@ -605,8 +605,8 @@ func TestK8sRunnerStart(t *testing.T) {
 	if got.Labels[LabelAsync] != "true" || got.Annotations[AnnotationPath] != "maps/world.zip" {
 		t.Fatalf("created %+v", got.ObjectMeta)
 	}
-	if n := len(cs.Actions()); n != 2 { // the create, and this test's get
-		t.Fatalf("%d calls to the cluster, want the one create", n-1)
+	if n := len(cs.Actions()); n != 3 {
+		t.Fatalf("%d calls to the cluster, want list + create + get", n)
 	}
 
 	cs = fake.NewSimpleClientset()
@@ -622,5 +622,43 @@ func TestK8sRunnerStart(t *testing.T) {
 	p.Op = OpUnzip
 	if err := NewK8sRunner(cs).Start(context.Background(), p); err == nil {
 		t.Fatal("a refused create must be an error")
+	}
+}
+
+func TestStartRejectsExcessAsyncJobsPerServerAndGlobal(t *testing.T) {
+	cs := fake.NewSimpleClientset()
+	runner := NewK8sRunner(cs)
+	runner.MaxAsyncPerServer = 1
+	runner.MaxAsyncGlobal = 2
+
+	makeAsync := func(server, opID string) JobParams {
+		p := testParams(OpUnzip)
+		p.Server, p.OpID, p.Path, p.Async = server, opID, "maps/world.zip", true
+		return p
+	}
+
+	if err := runner.Start(context.Background(), makeAsync("srv-a", "op1")); err != nil {
+		t.Fatalf("first async start on srv-a: %v", err)
+	}
+	if err := runner.Start(context.Background(), makeAsync("srv-a", "op2")); !errors.Is(err, ErrTooManyJobs) {
+		t.Fatalf("second async start on srv-a = %v, want ErrTooManyJobs", err)
+	}
+	if err := runner.Start(context.Background(), makeAsync("srv-b", "op3")); err != nil {
+		t.Fatalf("first async start on srv-b: %v", err)
+	}
+	if err := runner.Start(context.Background(), makeAsync("srv-c", "op4")); !errors.Is(err, ErrTooManyJobs) {
+		t.Fatalf("third global async start on srv-c = %v, want ErrTooManyJobs", err)
+	}
+
+	j, err := cs.BatchV1().Jobs("minecraft").Get(context.Background(), FilesJobName("srv-a", "op1"), metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.Status.Conditions = []batchv1.JobCondition{cond(batchv1.JobComplete, corev1.ConditionTrue, "")}
+	if _, err := cs.BatchV1().Jobs("minecraft").UpdateStatus(context.Background(), j, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.Start(context.Background(), makeAsync("srv-a", "op5")); err != nil {
+		t.Fatalf("async start after completion on srv-a: %v", err)
 	}
 }

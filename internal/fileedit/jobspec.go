@@ -244,6 +244,7 @@ func FilesJob(p JobParams) (*batchv1.Job, error) {
 				ObjectMeta: metav1.ObjectMeta{Labels: filesLabels(p)},
 				Spec: corev1.PodSpec{
 					RestartPolicy:                corev1.RestartPolicyNever,
+					ActiveDeadlineSeconds:        int64Ptr(deadline),
 					NodeSelector:                 jobNodeSelector(p.NodeName),
 					ServiceAccountName:           p.ServiceAccount,
 					AutomountServiceAccountToken: boolPtr(false),
@@ -263,6 +264,26 @@ func FilesJob(p JobParams) (*batchv1.Job, error) {
 		},
 	}
 	return job, nil
+}
+
+func FilesResourceQuota(namespace string) *corev1.ResourceQuota {
+	return &corev1.ResourceQuota{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "felis-files-quota",
+			Namespace: namespace,
+			Labels: map[string]string{
+				LabelManagedBy: managedByValue,
+			},
+		},
+		Spec: corev1.ResourceQuotaSpec{
+			Scopes: []corev1.ResourceQuotaScope{corev1.ResourceQuotaScopeTerminating},
+			Hard: corev1.ResourceList{
+				corev1.ResourcePods:           resource.MustParse("16"),
+				corev1.ResourceRequestsCPU:    resource.MustParse("8"),
+				corev1.ResourceRequestsMemory: resource.MustParse("4Gi"),
+			},
+		},
+	}
 }
 
 func resourceLimits(cpu, mem string) (corev1.ResourceList, error) {

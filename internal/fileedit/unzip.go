@@ -13,6 +13,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -43,7 +44,7 @@ const unzipTempPrefix = ".felis-unzip-"
 // unzip stages and verifies before journaled renames; failures roll back, but termination during placement may leave a partial application.
 func unzip(r *os.Root, rootPath, name string, overwrite bool, progress func(done, total int64)) Result {
 	name = path.Clean(name)
-	f, err := r.Open(name)
+	f, err := r.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return failure(err, name)
 	}

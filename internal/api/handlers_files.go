@@ -534,6 +534,9 @@ func writeFileEditError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, fileedit.ErrReadDamaged):
 		writeError(w, r, newError(http.StatusBadGateway, "read_damaged",
 			"the file's bytes changed on their way from the file Job; read it again"))
+	case errors.Is(err, fileedit.ErrTooManyJobs):
+		writeError(w, r, newError(http.StatusTooManyRequests, "too_many_file_ops",
+			"too many file operations are running; wait for an existing operation to finish"))
 	case errors.Is(err, context.DeadlineExceeded):
 		writeError(w, r, newError(http.StatusGatewayTimeout, "files_timeout",
 			"the file operation did not finish in time; retry shortly"))

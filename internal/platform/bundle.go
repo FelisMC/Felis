@@ -6,6 +6,7 @@ import (
 	"maps"
 
 	"felis.lolicon.best/internal/build"
+	"felis.lolicon.best/internal/fileedit"
 	"felis.lolicon.best/internal/restore"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -68,6 +69,9 @@ func Objects(p Params) []Object {
 	buildRQ := build.BuildResourceQuota(p.BuildNamespace)
 	buildRQ.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "ResourceQuota"}
 	objs = append(objs, buildRQ)
+	filesRQ := fileedit.FilesResourceQuota(p.MinecraftNamespace)
+	filesRQ.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "ResourceQuota"}
+	objs = append(objs, filesRQ)
 
 	for _, np := range MinecraftNetworkPolicies(p) {
 		objs = append(objs, np)

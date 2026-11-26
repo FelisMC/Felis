@@ -25,6 +25,7 @@ var (
 	ErrNoSpace     = errors.New("fileedit: the world volume is full")
 	ErrExists      = errors.New("fileedit: the target already exists")
 	ErrReadDamaged = errors.New("fileedit: the file's bytes changed on their way from the file Job")
+	ErrTooManyJobs = errors.New("fileedit: too many file operations in progress")
 )
 
 // Runner returns synchronous Job results and exposes long uploads or unzips through Start and Ops.
