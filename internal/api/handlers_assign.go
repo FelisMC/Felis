@@ -101,7 +101,7 @@ func (a *API) handleAssignServer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "user_id is required"))
 		return
 	}
-	res, err := a.claimResources(r.Context(), name)
+	res, err := a.serverResources(r.Context(), name)
 	if err != nil {
 		a.writeLookupError(w, r, err)
 		return

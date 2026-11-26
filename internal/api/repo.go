@@ -273,6 +273,7 @@ type Repo interface {
 	DiscardSeededServer(ctx context.Context, name string) error
 	SelfServiceState(ctx context.Context, userID string) (QuotaState, error)
 	UpdateServerResources(ctx context.Context, name string, cpuMilli, memoryMB, storageMB int) error
+	UpdateUnownedServerResources(ctx context.Context, name string, cpuMilli, memoryMB, storageMB int) error
 	// ResizeServer serializes with claims, caps growth and returns previous values; absent live rows are unchanged.
 	ResizeServer(ctx context.Context, name string, to ResourceSpec) (prev ResourceSpec, err error)
 	// PatchServerPorts locks the server row and checks a nonempty ownerID before apply.

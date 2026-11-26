@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -548,7 +549,13 @@ func (k *K8sCluster) clock() time.Time {
 
 func (k *K8sCluster) PatchServerSpec(ctx context.Context, name string, p ServerSpecPatch) error {
 	startup := p.setsStartupSettings()
-	checked := startup || p.ExtraPorts != nil
+	sized := p.Resources != nil || p.StorageSize != nil
+	checked := startup || p.ExtraPorts != nil || sized
+	var (
+		baseCaptured  bool
+		baseResources corev1.ResourceRequirements
+		baseStorage   string
+	)
 	apply := func() error {
 		var ms v1alpha1.MinecraftServer
 		if err := k.c.Get(ctx, types.NamespacedName{Namespace: k.namespace, Name: name}, &ms); err != nil {
@@ -556,6 +563,15 @@ func (k *K8sCluster) PatchServerSpec(ctx context.Context, name string, p ServerS
 				return ErrNotFound
 			}
 			return err
+		}
+		if sized {
+			if !baseCaptured {
+				baseResources = *ms.Spec.Resources.DeepCopy()
+				baseStorage = ms.Spec.Storage.Size
+				baseCaptured = true
+			} else if !reflect.DeepEqual(ms.Spec.Resources, baseResources) || ms.Spec.Storage.Size != baseStorage {
+				return ErrConflict
+			}
 		}
 		original := ms.DeepCopy()
 		patch := client.MergeFrom(original)

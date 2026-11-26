@@ -202,16 +202,23 @@ func (a *API) handleClaim(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"name": name, "claimed": true})
 }
 
-// claimResources refreshes sizes from the cluster because release clears the resource cache.
 func (a *API) claimResources(ctx context.Context, name string) (ResourceSpec, error) {
 	res, err := a.serverResources(ctx, name)
 	if err != nil {
 		return ResourceSpec{}, err
 	}
-	if err := a.Repo.UpdateServerResources(ctx, name, res.CPUMilli, res.MemoryMB, res.StorageMB); err != nil {
+	if err := a.Repo.UpdateUnownedServerResources(ctx, name, res.CPUMilli, res.MemoryMB, res.StorageMB); err != nil {
 		return ResourceSpec{}, err
 	}
 	return res, nil
+}
+
+func (a *API) refreshServerResources(ctx context.Context, name string) error {
+	res, err := a.serverResources(ctx, name)
+	if err != nil {
+		return err
+	}
+	return a.Repo.UpdateServerResources(ctx, name, res.CPUMilli, res.MemoryMB, res.StorageMB)
 }
 
 func (a *API) serverResources(ctx context.Context, name string) (ResourceSpec, error) {
@@ -1139,7 +1146,7 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 		if err := applyPatch(); err != nil {
 			// On cluster-write failure restore the cache from the cluster or, if unreadable, its previous values.
 			ctx := context.WithoutCancel(r.Context())
-			if _, rerr := a.claimResources(ctx, name); rerr != nil {
+			if rerr := a.refreshServerResources(ctx, name); rerr != nil {
 				if rerr := a.Repo.UpdateServerResources(ctx, name, prev.CPUMilli, prev.MemoryMB, prev.StorageMB); rerr != nil {
 					log.Printf("api: resize of %s refused by the cluster, resource cache left at the new size (request_id=%s): %v",
 						name, requestIDFromContext(ctx), rerr)

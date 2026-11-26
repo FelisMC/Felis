@@ -310,6 +310,13 @@ func (p *PGRepo) UpdateServerResources(ctx context.Context, name string, cpuMill
 	return err
 }
 
+func (p *PGRepo) UpdateUnownedServerResources(ctx context.Context, name string, cpuMilli, memoryMB, storageMB int) error {
+	_, err := p.db.ExecContext(ctx,
+		`UPDATE servers SET cached_cpu_milli = $2, cached_memory_mb = $3, cached_storage_mb = $4 WHERE name = $1 AND owner_id IS NULL AND deleted_at IS NULL`,
+		name, cpuMilli, memoryMB, storageMB)
+	return err
+}
+
 // ResizeServer locks the owner's lane before the server row and retries if ownership changes.
 func (p *PGRepo) ResizeServer(ctx context.Context, name string, to ResourceSpec) (ResourceSpec, error) {
 	for attempt := 1; ; attempt++ {

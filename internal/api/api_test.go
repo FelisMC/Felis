@@ -264,6 +264,17 @@ func (f *fakeRepo) UpdateServerResources(ctx context.Context, name string, cpu, 
 	return nil
 }
 
+func (f *fakeRepo) UpdateUnownedServerResources(ctx context.Context, name string, cpu, mem, stor int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if rec, ok := f.byName[name]; ok && rec.OwnerID != "" {
+		return nil
+	}
+	f.resourceUpdates[name] = ResourceSpec{CPUMilli: cpu, MemoryMB: mem, StorageMB: stor}
+	return nil
+}
+
 func (f *fakeRepo) ResizeServer(_ context.Context, name string, next ResourceSpec) (ResourceSpec, error) {
 	if f.resizeErr != nil {
 		return ResourceSpec{}, f.resizeErr
@@ -2695,12 +2706,16 @@ func TestClaimStateMachine(t *testing.T) {
 		repo := newFakeRepo()
 		repo.linked["u1"] = true
 		repo.quota["u1"] = true
+		repo.byName["survival"] = &ServerRecord{Name: "survival", OwnerID: "u2"}
 		repo.claimOK["survival"] = false // row exists but owner already set
 		api := newTestAPI(repo, claimCluster())
 		api.External = staticExternal{p: user}
 		w := do(api.ExternalHandler(), "POST", "/api/v1/servers/survival/claim", "", nil)
 		if w.Code != http.StatusConflict || decodeErr(t, w) != "already_claimed" {
 			t.Fatalf("code = %d body %s", w.Code, w.Body.String())
+		}
+		if _, updated := repo.resourceUpdates["survival"]; updated {
+			t.Fatalf("claim overwrote cached resources of an owned server: %+v", repo.resourceUpdates["survival"])
 		}
 	})
 	t.Run("success -> 200 + audit", func(t *testing.T) {

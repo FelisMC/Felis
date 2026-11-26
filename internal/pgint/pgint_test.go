@@ -546,6 +546,30 @@ func TestSetQuotasReplacesEveryCap(t *testing.T) {
 	}
 }
 
+func TestUpdateUnownedServerResourcesIgnoresOwned(t *testing.T) {
+	ctx := context.Background()
+	u := newUser(t, "user", "unownedres")
+	name := "unres-" + suffix(t)
+	if err := repo.SeedServer(ctx, name, name, 1000, 2048, 10240); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpdateUnownedServerResources(ctx, name, 2000, 4096, 20480); err != nil {
+		t.Fatal(err)
+	}
+	if got := cachedSize(t, name); got.CPUMilli != 2000 || got.MemoryMB != 4096 || got.StorageMB != 20480 {
+		t.Fatalf("unowned update = %+v, want 2000/4096/20480", got)
+	}
+	if claimed, err := repo.ClaimServer(ctx, name, u.ID, nil); err != nil || !claimed {
+		t.Fatalf("ClaimServer = (%v, %v)", claimed, err)
+	}
+	if err := repo.UpdateUnownedServerResources(ctx, name, 500, 1024, 5120); err != nil {
+		t.Fatal(err)
+	}
+	if got := cachedSize(t, name); got.CPUMilli != 2000 || got.MemoryMB != 4096 || got.StorageMB != 20480 {
+		t.Fatalf("owned row overwritten by UpdateUnownedServerResources: %+v", got)
+	}
+}
+
 func TestSeedServerReusedNameStartsClean(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "seedold")

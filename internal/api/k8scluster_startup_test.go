@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -304,5 +306,69 @@ func TestPatchStartupSettingsConflictsDoNotOverwriteConcurrentChanges(t *testing
 	}
 	if !reflect.DeepEqual(got.Spec.Args, before.Spec.Args) || got.Spec.DisplayName == "" {
 		t.Fatal("an exhausted retry overwrote the concurrent server state")
+	}
+}
+
+func TestPatchServerResourcesRejectsConcurrentResizeConflict(t *testing.T) {
+	spec := startupTestSpec()
+	spec.Resources = corev1.ResourceRequirements{
+		Limits: corev1.ResourceList{
+			corev1.ResourceMemory: resource.MustParse("2Gi"),
+			corev1.ResourceCPU:    resource.MustParse("1"),
+		},
+	}
+	spec.Storage.Size = "10Gi"
+	k, c, before := newStartupSettingsCluster(t, spec)
+	c.beforePatch = func(ctx context.Context) error {
+		if c.patches != 1 {
+			return nil
+		}
+		var current v1alpha1.MinecraftServer
+		if err := c.Client.Get(ctx, client.ObjectKeyFromObject(before), &current); err != nil {
+			return err
+		}
+		current.Spec.Resources.Limits[corev1.ResourceMemory] = resource.MustParse("4Gi")
+		return c.Client.Update(ctx, &current)
+	}
+	nextRes := corev1.ResourceRequirements{
+		Limits: corev1.ResourceList{
+			corev1.ResourceMemory: resource.MustParse("6Gi"),
+			corev1.ResourceCPU:    resource.MustParse("1"),
+		},
+	}
+	err := k.PatchServerSpec(context.Background(), "login", ServerSpecPatch{Resources: &nextRes})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("concurrent resource resize = %v, want ErrConflict", err)
+	}
+	var got v1alpha1.MinecraftServer
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(before), &got); err != nil {
+		t.Fatal(err)
+	}
+	if mem := got.Spec.Resources.Limits[corev1.ResourceMemory]; mem.Cmp(resource.MustParse("4Gi")) != 0 {
+		t.Fatalf("concurrent resource update overwritten: got %s, want 4Gi", mem.String())
+	}
+
+	c.patches = 0
+	c.beforePatch = func(ctx context.Context) error {
+		if c.patches != 1 {
+			return nil
+		}
+		var current v1alpha1.MinecraftServer
+		if err := c.Client.Get(ctx, client.ObjectKeyFromObject(before), &current); err != nil {
+			return err
+		}
+		current.Spec.Storage.Size = "15Gi"
+		return c.Client.Update(ctx, &current)
+	}
+	nextStor := "20Gi"
+	err = k.PatchServerSpec(context.Background(), "login", ServerSpecPatch{StorageSize: &nextStor})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("concurrent storage resize = %v, want ErrConflict", err)
+	}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(before), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Spec.Storage.Size != "15Gi" {
+		t.Fatalf("concurrent storage update overwritten: got %s, want 15Gi", got.Spec.Storage.Size)
 	}
 }
