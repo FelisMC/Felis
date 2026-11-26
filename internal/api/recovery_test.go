@@ -273,3 +273,55 @@ func TestEventsOfAServerWithNoReachableOwnerAreHandled(t *testing.T) {
 		t.Fatalf("mailed %d, marked %d", len(mailer.notices), cl.mailed["survival"])
 	}
 }
+
+func TestServerNoticesThrottledPerServerAndIsolatedFromOTPBucket(t *testing.T) {
+	api, cl, mailer, clock := noticeAPI(t, ServerNotify{Started: true, Stopped: true})
+	api.ServerNoticeLimit = RateLimit{Burst: 2, PerMinute: 0.1}
+	api.MailLimit = RateLimit{Burst: 3, PerMinute: 0.001}
+	repo := api.Repo.(*fakeRepo)
+	repo.settings[LocalAuthEnabledKey] = []byte("true")
+	repo.noticeTo["creative"] = []string{"owner@example.net"}
+	repo.staff["player"] = &StaffUser{ID: "u1", Username: "player", Email: "player@example.net", Role: "user", EmailVerified: true}
+	cl.feeds = append(cl.feeds, ServerEventFeed{Name: "creative", Notify: ServerNotify{Started: true, Stopped: true}})
+
+	for seq := int64(1); seq <= 3; seq++ {
+		evType := v1alpha1.EventStarted
+		if seq%2 == 0 {
+			evType = v1alpha1.EventStopped
+		}
+		cl.feeds[0].Events = append(cl.feeds[0].Events, ServerEvent{Seq: seq, Type: evType, At: *clock})
+		tick(t, api)
+		*clock = clock.Add(15 * time.Second)
+	}
+	if len(mailer.notices) != 2 {
+		t.Fatalf("survival notices = %d, want 2", len(mailer.notices))
+	}
+	if cl.mailed["survival"] != 3 {
+		t.Fatalf("survival mailed seq = %d, want 3", cl.mailed["survival"])
+	}
+
+	*clock = clock.Add(20 * time.Minute)
+	tick(t, api)
+	if len(mailer.notices) != 2 {
+		t.Fatalf("throttled survival notice was retried later: %d", len(mailer.notices))
+	}
+
+	cl.feeds[1].Events = []ServerEvent{{Seq: 1, Type: v1alpha1.EventStarted, At: *clock}}
+	tick(t, api)
+	cl.feeds[1].Events = append(cl.feeds[1].Events, ServerEvent{Seq: 2, Type: v1alpha1.EventStopped, At: *clock})
+	tick(t, api)
+	if len(mailer.notices) != 3 {
+		t.Fatalf("notices after creative drained notice bucket = %d, want 3", len(mailer.notices))
+	}
+	if cl.mailed["creative"] != 2 {
+		t.Fatalf("creative mailed seq = %d, want 2", cl.mailed["creative"])
+	}
+
+	eh := api.ExternalHandler()
+	if w := do(eh, "POST", "/api/v1/auth/email/start", `{"email":"player@example.net"}`, jsonHeader); w.Code != http.StatusAccepted {
+		t.Fatalf("otp start after server notices drained notice bucket = %d (%s), want 202", w.Code, w.Body.String())
+	}
+	if mailer.calls != 1 {
+		t.Fatalf("otp mailer calls = %d, want 1", mailer.calls)
+	}
+}

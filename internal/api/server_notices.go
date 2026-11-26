@@ -57,7 +57,9 @@ func (a *API) mailServerEvents(ctx context.Context, f *ServerEventFeed, now time
 	}
 	if len(mail) > 0 && !f.System {
 		if err := a.sendServerNotice(ctx, f, mail); err != nil {
-			return err
+			if !errors.Is(err, errMailBudget) {
+				return err
+			}
 		}
 	}
 	return a.Cluster.MarkEventsMailed(ctx, f.Name, last.Seq)
@@ -95,9 +97,13 @@ func (a *API) sendServerNotice(ctx context.Context, f *ServerEventFeed, events [
 	if !ok {
 		return nil
 	}
+	if ok, _ := a.serverNoticeGate().take(f.Name); !ok {
+		metrics.MailTotal.WithLabelValues("notice", "throttled").Inc()
+		return errMailBudget
+	}
 	subject, body := renderServerNotice(f, events, a.panelURL())
 	for _, addr := range to {
-		if ok, _ := a.mailGate().take(mailGateKey); !ok {
+		if ok, _ := a.mailGate().take(serverNoticeGateKey); !ok {
 			metrics.MailTotal.WithLabelValues("notice", "throttled").Inc()
 			return errMailBudget
 		}

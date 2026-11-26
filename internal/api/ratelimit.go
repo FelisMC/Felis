@@ -163,7 +163,21 @@ func (a *API) mailGate() *bucketSet {
 const (
 	mailGateKey          = "mail"
 	accountNoticeGateKey = "notice:account"
+	serverNoticeGateKey  = "notice:server"
 )
+
+var defaultServerNoticeLimit = RateLimit{Burst: 4, PerMinute: 0.1}
+
+func (a *API) serverNoticeGate() *bucketSet {
+	a.serverNoticeOnce.Do(func() {
+		lim := a.ServerNoticeLimit
+		if !lim.enabled() {
+			lim = defaultServerNoticeLimit
+		}
+		a.serverNoticeBuckets = newBucketSet(lim, a.now)
+	})
+	return a.serverNoticeBuckets
+}
 
 func (a *API) throttleAuthDoor(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

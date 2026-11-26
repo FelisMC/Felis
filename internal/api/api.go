@@ -146,6 +146,9 @@ type API struct {
 	authDoorBuckets      *bucketSet
 	mailOnce             sync.Once
 	mailBuckets          *bucketSet
+	ServerNoticeLimit    RateLimit
+	serverNoticeOnce     sync.Once
+	serverNoticeBuckets  *bucketSet
 	BrandingImageLimit   RateLimit
 	brandingImageOnce    sync.Once
 	brandingImageBuckets *bucketSet
