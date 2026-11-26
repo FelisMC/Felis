@@ -104,9 +104,9 @@ export function ServerEventsCard({ events }: { events: ServerEvent[] }) {
   const titleId = useId();
   const latest = events.slice(-SHOWN_EVENTS).reverse();
   return (
-    <section aria-labelledby={titleId} className="rounded-xl border border-border bg-card p-4">
-      <h2 id={titleId} className="mb-3 flex items-center gap-2 text-sm font-medium">
-        <History className="h-4 w-4 text-primary" />
+    <section aria-labelledby={titleId} className="rounded-lg border border-border bg-card p-3.5">
+      <h2 id={titleId} className="mb-3 flex items-center gap-2 text-xs font-medium">
+        <History className="h-3.5 w-3.5 text-primary" />
         {t("events_title")}
       </h2>
       <ol className="space-y-2.5">

@@ -75,7 +75,6 @@ export function UsersPage() {
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
     const next = query.trim();
-    // Unchanged and on page one: the press is a refresh.
     if (next === search && page === 0) {
       reload();
       return;
@@ -87,53 +86,52 @@ export function UsersPage() {
   const totalPages = data ? Math.max(1, Math.ceil(data.total / pageSize)) : 1;
 
   return (
-    <div className="space-y-6">
-      <PageHeader icon={Users} title={t("users_title")} subtitle={t("users_subtitle")} actions={<CreateUserDialog onCreated={(id) => { reload(); navigate(`/admin/users/${id}`); }} />} />
+    <div className="space-y-4">
+      <PageHeader
+        icon={Users}
+        title={t("users_title")}
+        subtitle={t("users_subtitle")}
+        actions={<CreateUserDialog onCreated={(id) => { reload(); navigate(`/admin/users/${id}`); }} />}
+      />
 
-      {hasServers && <SelfServiceQuotaCard />}
+      {hasServers && <SelfServiceQuotaCard collapsible />}
 
-      {/* Filters */}
-      <Card>
-        <CardContent className="p-3">
-          <form onSubmit={handleSearch} className="flex flex-wrap items-center gap-2">
-            <div className="relative min-w-[200px] flex-1">
-              <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                placeholder={t("users_search_placeholder")}
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                className="pl-8 text-sm"
-              />
-            </div>
-            <Select value={roleFilter} onValueChange={(v) => { setRoleFilter(v); setPage(0); }}>
-              <SelectTrigger className="w-[120px] text-sm" aria-label={t("users_filter_role")}>
-                <SelectValue placeholder={t("users_filter_role_all")} />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="">{t("users_filter_role_all")}</SelectItem>
-                <SelectItem value="owner">{t("users_role_owner")}</SelectItem>
-                <SelectItem value="admin">{t("users_role_admin")}</SelectItem>
-                <SelectItem value="user">{t("users_role_user")}</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select value={disabledFilter} onValueChange={(v) => { setDisabledFilter(v); setPage(0); }}>
-              <SelectTrigger className="w-[130px] text-sm" aria-label={t("users_filter_status")}>
-                <SelectValue placeholder={t("users_filter_status_all")} />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="">{t("users_filter_status_all")}</SelectItem>
-                <SelectItem value="false">{t("users_status_active")}</SelectItem>
-                <SelectItem value="true">{t("users_status_disabled")}</SelectItem>
-              </SelectContent>
-            </Select>
-            <Button type="submit" variant="outline" className="h-9 text-sm">
-              {t("users_search_btn")}
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
+      <form onSubmit={handleSearch} className="flex flex-wrap items-center gap-2">
+        <div className="relative min-w-[200px] flex-1">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            placeholder={t("users_search_placeholder")}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            className="pl-8"
+          />
+        </div>
+        <Select value={roleFilter} onValueChange={(v) => { setRoleFilter(v); setPage(0); }}>
+          <SelectTrigger className="w-[124px]" aria-label={t("users_filter_role")}>
+            <SelectValue placeholder={t("users_filter_role_all")} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="">{t("users_filter_role_all")}</SelectItem>
+            <SelectItem value="owner">{t("users_role_owner")}</SelectItem>
+            <SelectItem value="admin">{t("users_role_admin")}</SelectItem>
+            <SelectItem value="user">{t("users_role_user")}</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select value={disabledFilter} onValueChange={(v) => { setDisabledFilter(v); setPage(0); }}>
+          <SelectTrigger className="w-[132px]" aria-label={t("users_filter_status")}>
+            <SelectValue placeholder={t("users_filter_status_all")} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="">{t("users_filter_status_all")}</SelectItem>
+            <SelectItem value="false">{t("users_status_active")}</SelectItem>
+            <SelectItem value="true">{t("users_status_disabled")}</SelectItem>
+          </SelectContent>
+        </Select>
+        <Button type="submit" variant="outline">
+          {t("users_search_btn")}
+        </Button>
+      </form>
 
-      {/* Table */}
       {loading && !data ? (
         <Loading />
       ) : error ? (
@@ -152,18 +150,18 @@ export function UsersPage() {
         </EmptyState>
       ) : (
         <>
-          <Card>
+          <Card className="overflow-hidden">
             <CardContent className="p-0">
               <div className="overflow-x-auto">
-                <table className="w-full text-sm">
+                <table className="w-full text-xs">
                   <thead>
-                    <tr className="border-b border-border bg-muted/30 text-left">
-                      <th className="px-4 py-3 font-medium text-muted-foreground">{t("users_col_user")}</th>
-                      <th className="px-4 py-3 font-medium text-muted-foreground hidden sm:table-cell">{t("users_col_role")}</th>
-                      {hasServers && <th className="px-4 py-3 font-medium text-muted-foreground hidden md:table-cell">{t("users_col_servers")}</th>}
-                      <th className="px-4 py-3 font-medium text-muted-foreground hidden lg:table-cell">{t("users_col_status")}</th>
-                      <th className="px-4 py-3 font-medium text-muted-foreground hidden lg:table-cell">{t("users_col_created")}</th>
-                      <th className="px-4 py-3 font-medium text-muted-foreground w-0" />
+                    <tr className="border-b border-border/60 bg-muted text-left text-[11px] text-muted-foreground">
+                      <th className="px-3.5 py-2 font-normal">{t("users_col_user")}</th>
+                      <th className="hidden px-3.5 py-2 font-normal sm:table-cell">{t("users_col_role")}</th>
+                      {hasServers && <th className="hidden px-3.5 py-2 font-normal md:table-cell">{t("users_col_servers")}</th>}
+                      <th className="hidden px-3.5 py-2 font-normal lg:table-cell">{t("users_col_status")}</th>
+                      <th className="hidden px-3.5 py-2 font-normal lg:table-cell">{t("users_col_created")}</th>
+                      <th className="w-0 px-3.5 py-2 font-normal" />
                     </tr>
                   </thead>
                   <tbody>
@@ -191,11 +189,11 @@ function UserRow({ user, locale, showServers }: { user: UserView; locale: string
   return (
     <tr
       className={cn(
-        "border-b border-border/50 hover:bg-muted/20 transition-colors",
+        "border-b border-border/50 transition-colors last:border-0 hover:bg-accent/40",
         user.disabled && "opacity-60",
       )}
     >
-      <td className="px-4 py-3">
+      <td className="px-3.5 py-2.5">
         <Link
           to={`/admin/users/${user.id}`}
           className="font-medium text-foreground hover:text-primary hover:underline"
@@ -203,39 +201,34 @@ function UserRow({ user, locale, showServers }: { user: UserView; locale: string
           {user.username}
         </Link>
         {user.email && (
-          <div className="flex items-center gap-1 mt-0.5 text-xs text-muted-foreground">
-            <Mail className="h-3 w-3" />
+          <div className="mt-0.5 flex items-center gap-1 text-[11px] text-muted-foreground">
+            <Mail className="h-3 w-3 shrink-0 opacity-75" />
             {user.email}
           </div>
         )}
       </td>
-      <td className="px-4 py-3 hidden sm:table-cell">
+      <td className="hidden px-3.5 py-2.5 sm:table-cell">
         <RoleBadge role={user.role} />
       </td>
       {showServers && (
-        <td className="px-4 py-3 hidden md:table-cell">
-          <span className="inline-flex items-center gap-1 text-muted-foreground">
-            <Server className="h-3.5 w-3.5" />
+        <td className="hidden px-3.5 py-2.5 md:table-cell">
+          <span className="inline-flex items-center gap-1 font-mono text-muted-foreground tabular-nums">
+            <Server className="h-3 w-3 opacity-75" />
             {user.server_count}
           </span>
         </td>
       )}
-      <td className="px-4 py-3 hidden lg:table-cell">
+      <td className="hidden px-3.5 py-2.5 lg:table-cell">
         <UserStatusBadge disabled={user.disabled} />
       </td>
-      <td className="px-4 py-3 text-muted-foreground hidden lg:table-cell text-xs">
+      <td className="hidden px-3.5 py-2.5 font-mono text-[11px] text-muted-foreground tabular-nums lg:table-cell">
         {formatAbsolute(user.created_at, locale)}
       </td>
-      <td className="px-4 py-3 text-right">
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-8 gap-1 text-xs"
-          asChild
-        >
+      <td className="px-3.5 py-2.5 text-right">
+        <Button variant="outline" size="sm" asChild>
           <Link to={`/admin/users/${user.id}`}>
             {t("users_view_detail")}
-            <ChevronRight className="h-3.5 w-3.5 opacity-60" />
+            <ChevronRight className="h-3.5 w-3.5 opacity-65" />
           </Link>
         </Button>
       </td>

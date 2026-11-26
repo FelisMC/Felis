@@ -19,36 +19,33 @@ export interface PageHeaderProps {
 
 export function PageHeader({ icon: Icon, title, subtitle, actions, tabs, back, className }: PageHeaderProps) {
   const host = React.useContext(PageHeaderHostContext);
-  // A page one level down keeps its pinned header to one line, with the subtitle beside the title.
   const compact = !!back;
   const row = (
-    <div className={cn("mx-auto flex w-full max-w-8xl flex-wrap items-center justify-between gap-3", className, host && "my-0")}>
-      <div className="flex min-w-0 max-w-full items-center gap-3">
+    <div className={cn("flex w-full flex-wrap items-end justify-between gap-3", className, host && "my-0")}>
+      <div className="flex min-w-0 max-w-full items-center gap-2.5">
         {Icon && (
-          <div className="shrink-0 text-primary">
+          <div className="shrink-0 text-muted-foreground">
             {React.isValidElement(Icon)
               ? Icon
               : React.createElement(Icon as React.ComponentType<{ className?: string }>, {
-                  className: compact ? "h-5 w-5" : "h-6 w-6",
+                  className: compact ? "h-4 w-4" : "h-[17px] w-[17px]",
                 })}
           </div>
         )}
-        <div className={cn("min-w-0 text-left", compact && "flex flex-wrap items-baseline gap-x-4 gap-y-0.5")}>
-          <h1 className={cn("font-semibold tracking-tight text-foreground", compact ? "text-xl" : "text-2xl")}>{title}</h1>
-          {subtitle && <div className={cn("text-sm text-muted-foreground", !compact && "mt-0.5")}>{subtitle}</div>}
+        <div className={cn("min-w-0 text-left", compact && "flex flex-wrap items-baseline gap-x-3 gap-y-0.5")}>
+          <h1 className="text-[17px] font-semibold tracking-tight text-foreground">{title}</h1>
+          {subtitle && <div className={cn("text-xs text-muted-foreground", !compact && "mt-0.5")}>{subtitle}</div>}
         </div>
       </div>
-      {actions && <div className="flex min-w-0 max-w-full shrink-0 flex-wrap items-center gap-3">{actions}</div>}
+      {actions && <div className="flex min-w-0 max-w-full shrink-0 flex-wrap items-center gap-2">{actions}</div>}
     </div>
   );
-  // In the header strip the tabs sit on its bottom border: the negative margin takes back the
-  // strip's padding, so the chosen tab's underline lands on the line itself.
-  const header = tabs || back ? (
-    <div className="mx-auto w-full max-w-8xl">
-      {back && <div className="mb-1.5">{back}</div>}
+  const header = (
+    <div className={cn("mx-auto w-full max-w-[1220px]", tabs ? "pb-0" : "border-b border-border/60 pb-3.5")}>
+      {back && <div className="mb-2">{back}</div>}
       {row}
-      {tabs && <div className={cn("mt-3", host ? "-mx-4 -mb-4 md:mx-0" : "border-b border-border")}>{tabs}</div>}
+      {tabs && <div className="mt-3 border-b border-border/70">{tabs}</div>}
     </div>
-  ) : row;
+  );
   return host ? createPortal(header, host) : header;
 }

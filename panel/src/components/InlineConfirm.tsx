@@ -28,7 +28,7 @@ export function InlineConfirm({
   return (
     <div className={className}>
       <Button
-        variant="ghost"
+        variant="outline"
         size={size}
         onClick={onCancel}
         disabled={confirming}

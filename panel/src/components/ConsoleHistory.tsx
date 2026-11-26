@@ -81,14 +81,14 @@ export function ConsoleHistory({ name }: { name: string }) {
   const changed = (error as { code?: string } | null)?.code === "file_changed";
 
   return (
-    <section aria-label={t("log_history_title")} className="flex flex-col bg-black text-zinc-200 lg:min-h-0 lg:flex-1">
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-zinc-800 bg-zinc-900/60 px-3 py-2">
+    <section aria-label={t("log_history_title")} className="flex flex-col bg-[#09090b] text-zinc-200 lg:min-h-0 lg:flex-1">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-zinc-800/90 bg-[#121215] px-3 py-1.5">
         <div className="min-w-0 text-xs"><span className="font-medium">{t("log_history_title")}</span><code className="ml-2 text-zinc-400">logs/latest.log</code></div>
         <div className="flex items-center gap-1.5">
           <RconToggle shown={showRcon} hidden={lines.length - rows.length} onToggle={() => setShowRcon((shown) => !shown)} />
-          <Button size="sm" variant="ghost" onClick={() => void load()} disabled={loading}
-            className="text-zinc-300 hover:bg-zinc-800 hover:text-zinc-50">
-            <RefreshCw className="h-3.5 w-3.5" />{t("log_history_refresh")}
+          <Button size="sm" variant="outline" onClick={() => void load()} disabled={loading}
+            className="h-6 border-zinc-700/80 bg-zinc-900 px-2 text-[11px] text-zinc-200 hover:bg-zinc-800 hover:text-zinc-50">
+            <RefreshCw className="h-3 w-3" />{t("log_history_refresh")}
           </Button>
         </div>
       </div>

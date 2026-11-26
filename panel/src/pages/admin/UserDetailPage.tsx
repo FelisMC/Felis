@@ -86,37 +86,24 @@ export function UserDetailPage() {
   if (!user) return <Loading />;
 
   return (
-    <div className="space-y-6">
-      {/* Back link */}
-      <BackLink to="/admin/users" label={t("users_back_to_list")} />
-
+    <div className="space-y-4">
       <PageHeader
-        icon={(
-          <div className={cn(
-            "rounded-full p-2",
-            user.role === "owner"
-              ? "bg-yellow-500/10 text-yellow-600"
-              : user.role === "admin"
-                ? "bg-primary/10 text-primary"
-                : "bg-muted text-muted-foreground",
-          )}>
-            <UserRound className="h-6 w-6" />
-          </div>
-        )}
+        back={<BackLink to="/admin/users" label={t("users_back_to_list")} />}
+        icon={UserRound}
         title={user.username}
         subtitle={(
-          <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+          <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
             {user.email && (
               <span className="inline-flex items-center gap-1">
-                <Mail className="h-3.5 w-3.5" />
+                <Mail className="h-3 w-3" />
                 {user.email}
                 {user.email_verified && (
-                  <CheckCircle2 className="h-3 w-3 text-emerald-500" />
+                  <CheckCircle2 className="h-3 w-3 text-primary" />
                 )}
               </span>
             )}
-            <span className="inline-flex items-center gap-1">
-              <Calendar className="h-3.5 w-3.5" />
+            <span className="inline-flex items-center gap-1 font-mono">
+              <Calendar className="h-3 w-3" />
               {formatAbsolute(user.created_at, locale)}
             </span>
           </div>
@@ -127,7 +114,7 @@ export function UserDetailPage() {
             {hasServers && (
               <span title={user.disabled ? t("assign_disabled_user") : undefined}>
                 <Button variant="outline" size="sm" className="gap-1.5" disabled={user.disabled} onClick={() => setAssigning(true)}>
-                  <Server className="h-4 w-4" />
+                  <Server className="h-3.5 w-3.5" />
                   {t("assign_title")}
                 </Button>
               </span>
@@ -136,7 +123,6 @@ export function UserDetailPage() {
             <RoleBadge role={user.role} />
           </div>
         )}
-        className="mb-6"
       />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">

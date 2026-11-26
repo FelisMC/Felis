@@ -13,8 +13,8 @@ import { cn } from "@/lib/utils";
 export function Loading({ label }: { label?: string }) {
   const { t } = useTranslation("common");
   return (
-    <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
-      <Loader2 className="h-4 w-4 animate-spin" />
+    <div className="flex items-center justify-center gap-2 py-12 text-xs text-muted-foreground">
+      <Loader2 className="h-3.5 w-3.5 animate-spin" />
       {label ?? t("loading")}
     </div>
   );
@@ -23,30 +23,27 @@ export function Loading({ label }: { label?: string }) {
 export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () => void }) {
   const { t } = useTranslation("common");
   return (
-    <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
-      <AlertTriangle className="h-6 w-6 text-destructive" />
-      <p role="alert" className="text-sm text-muted-foreground">{humanizeError(error)}</p>
+    <div className="flex flex-col items-center justify-center gap-2.5 py-12 text-center">
+      <span className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-destructive/25 bg-destructive/10 text-destructive">
+        <AlertTriangle className="h-4 w-4" />
+      </span>
+      <p role="alert" className="max-w-sm text-xs text-muted-foreground">{humanizeError(error)}</p>
       {onRetry && (
-        <button
-          onClick={onRetry}
-          className="text-sm font-medium text-primary hover:underline"
-        >
+        <Button size="sm" variant="outline" onClick={onRetry}>
           {t("try_again")}
-        </button>
+        </Button>
       )}
     </div>
   );
 }
 
-// RefreshError sits above a page whose last read still shows while a later one
-// failed: the page stays usable, and says the status may be out of date.
 export function RefreshError({ error, className }: { error: unknown; className?: string }) {
   const { t } = useTranslation("common");
   return (
     <div
       role="alert"
       className={cn(
-        "flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive",
+        "flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive",
         className,
       )}
     >
@@ -68,11 +65,11 @@ export function EmptyState({
   children?: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border py-16 text-center">
-      <Inbox className="h-7 w-7 text-muted-foreground" />
+    <div className="flex flex-col items-center justify-center gap-2.5 rounded-xl border border-dashed border-border/80 bg-card/40 px-4 py-12 text-center">
+      <Inbox className="h-5 w-5 text-muted-foreground/75" />
       <div>
-        <p className="font-medium">{title}</p>
-        {hint && <p className="mt-1 text-sm text-muted-foreground">{hint}</p>}
+        <p className="text-[13px] font-medium text-foreground">{title}</p>
+        {hint && <p className="mt-1 max-w-sm text-xs text-muted-foreground">{hint}</p>}
       </div>
       {children}
     </div>
@@ -82,22 +79,21 @@ export function EmptyState({
 export function NotAuthorized() {
   const { t } = useTranslation("common");
   return (
-    <div className="mx-auto flex max-w-md flex-col items-center justify-center gap-3 py-24 text-center">
-      <ShieldX className="h-8 w-8 text-destructive" />
+    <div className="mx-auto flex max-w-md flex-col items-center justify-center gap-3 py-20 text-center">
+      <span className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-destructive/25 bg-destructive/10 text-destructive">
+        <ShieldX className="h-5 w-5" />
+      </span>
       <div>
-        <p className="font-medium">{t("not_authorized_title")}</p>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {t("not_authorized_body")}
-        </p>
+        <p className="text-sm font-medium">{t("not_authorized_title")}</p>
+        <p className="mt-1 text-xs text-muted-foreground">{t("not_authorized_body")}</p>
       </div>
-      <Link to="/" className="text-sm font-medium text-primary hover:underline">
+      <Link to="/" className="text-xs font-medium text-primary hover:underline">
         {t("back_to_dashboard")}
       </Link>
     </div>
   );
 }
 
-// Keep the app mounted and offer retry when a non-401 identity failure leaves access unknown.
 export function AccessUnknown({ error }: { error: unknown }) {
   const { t } = useTranslation("common");
   const { revalidate } = useTier();
@@ -113,11 +109,13 @@ export function AccessUnknown({ error }: { error: unknown }) {
   }
 
   return (
-    <div className="mx-auto flex max-w-md flex-col items-center justify-center gap-3 py-24 text-center">
-      <ShieldQuestion className="h-8 w-8 text-amber-500" />
+    <div className="mx-auto flex max-w-md flex-col items-center justify-center gap-3 py-20 text-center">
+      <span className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-amber-500/25 bg-amber-500/10 text-amber-500">
+        <ShieldQuestion className="h-5 w-5" />
+      </span>
       <div>
-        <p className="font-medium">{t("access_unknown_title")}</p>
-        <p className="mt-1 text-sm text-muted-foreground">{t("access_unknown_body")}</p>
+        <p className="text-sm font-medium">{t("access_unknown_title")}</p>
+        <p className="mt-1 text-xs text-muted-foreground">{t("access_unknown_body")}</p>
         <p role="alert" className="mt-2 text-xs text-muted-foreground/80">
           {humanizeError(error)}
         </p>
@@ -140,29 +138,28 @@ export interface NotFoundProps {
 export function NotFound({ title, body, linkTo = "/", linkLabel }: NotFoundProps) {
   const { t } = useTranslation("common");
   return (
-    <div className="mx-auto flex max-w-md flex-col items-center justify-center gap-3 py-24 text-center">
-      <SearchX className="h-8 w-8 text-muted-foreground" />
+    <div className="mx-auto flex max-w-md flex-col items-center justify-center gap-3 py-20 text-center">
+      <SearchX className="h-6 w-6 text-muted-foreground" />
       <div>
-        <p className="font-medium">{title ?? t("not_found_title")}</p>
-        <p className="mt-1 text-sm text-muted-foreground">{body ?? t("not_found_body")}</p>
+        <p className="text-sm font-medium">{title ?? t("not_found_title")}</p>
+        <p className="mt-1 text-xs text-muted-foreground">{body ?? t("not_found_body")}</p>
       </div>
-      <Link to={linkTo} className="text-sm font-medium text-primary hover:underline">
+      <Link to={linkTo} className="text-xs font-medium text-primary hover:underline">
         {linkLabel ?? t("back_to_dashboard")}
       </Link>
     </div>
   );
 }
 
-/** PendingBackend is a placeholder for a surface whose backend read does not exist yet. It names the missing endpoint so the gap is visible, not papered over with fake data. */
 export function PendingBackend({ endpoint, note }: { endpoint: string; note: string }) {
   const { t } = useTranslation("common");
   return (
-    <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border py-16 text-center">
-      <Construction className="h-7 w-7 text-muted-foreground" />
+    <div className="flex flex-col items-center justify-center gap-2.5 rounded-xl border border-dashed border-border/80 bg-card/40 px-4 py-12 text-center">
+      <Construction className="h-5 w-5 text-muted-foreground" />
       <div>
-        <p className="font-medium">{t("not_wired_yet")}</p>
-        <p className="mt-1 max-w-md text-sm text-muted-foreground">{note}</p>
-        <p className="mt-2 font-mono text-xs text-muted-foreground/80">
+        <p className="text-[13px] font-medium">{t("not_wired_yet")}</p>
+        <p className="mt-1 max-w-md text-xs text-muted-foreground">{note}</p>
+        <p className="mt-2 font-mono text-[11px] text-muted-foreground/80">
           {t("pending_backend_prefix")}{endpoint}
         </p>
       </div>
@@ -180,13 +177,15 @@ export interface NotYoursProps {
 export function NotYours({ title, body, linkTo = "/servers", linkLabel }: NotYoursProps) {
   const { t } = useTranslation("servers");
   return (
-    <div className="mx-auto flex max-w-md flex-col items-center justify-center gap-3 py-24 text-center">
-      <ShieldX className="h-8 w-8 text-destructive" />
+    <div className="mx-auto flex max-w-md flex-col items-center justify-center gap-3 py-20 text-center">
+      <span className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-destructive/25 bg-destructive/10 text-destructive">
+        <ShieldX className="h-5 w-5" />
+      </span>
       <div>
-        <p className="font-medium">{title}</p>
-        <p className="mt-1 text-sm text-muted-foreground">{body}</p>
+        <p className="text-sm font-medium">{title}</p>
+        <p className="mt-1 text-xs text-muted-foreground">{body}</p>
       </div>
-      <Link to={linkTo} className="text-sm font-medium text-primary hover:underline">
+      <Link to={linkTo} className="text-xs font-medium text-primary hover:underline">
         {linkLabel ?? t("my_servers_breadcrumb")}
       </Link>
     </div>
@@ -194,20 +193,15 @@ export function NotYours({ title, body, linkTo = "/servers", linkLabel }: NotYou
 }
 
 export interface NotRunningProps {
-  /** What the page says about a server that is down, and why it needs it up. */
   title: string;
   body: string;
-  /** The server to wake from here. */
   serverName: string;
   phase: Phase;
   desiredState?: DesiredState;
-  /** From startFailure: a Failed start gets its own copy and a retry. */
   failure?: StartFailure | null;
   autoRestarts?: number;
-  /** A pending retirement: the page offers no wake, only why. */
   retiring?: RetireState;
   diskFull?: boolean;
-  /** Called once the wake was accepted, so the page refetches its status. */
   onWoken: () => void;
 }
 
@@ -227,10 +221,10 @@ export function NotRunning({
   const shown = shownPhase({ phase, desiredState });
   const transitional = failure === null && (shown === "Starting" || shown === "Stopping" || shown === "Hibernating");
 
-  let icon = <Moon className="h-8 w-8 text-muted-foreground/70" />;
+  let icon = <Moon className="h-6 w-6 text-muted-foreground/70" />;
   let copy = { title, body };
   if (failure !== null) {
-    icon = <AlertTriangle className="h-8 w-8 text-destructive" />;
+    icon = <AlertTriangle className="h-6 w-6 text-destructive" />;
     copy =
       failure === "retrying"
         ? {
@@ -239,7 +233,7 @@ export function NotRunning({
           }
         : { title: t("server_failed_title"), body: t("server_failed_body") };
   } else if (transitional) {
-    icon = <Loader2 className="h-8 w-8 animate-spin text-muted-foreground/70" />;
+    icon = <Loader2 className="h-6 w-6 animate-spin text-muted-foreground/70" />;
     copy =
       shown === "Starting"
         ? { title: t("server_waking_title"), body: t("server_waking_body") }
@@ -247,7 +241,7 @@ export function NotRunning({
           ? { title: t("server_hibernating_title"), body: t("server_hibernating_body") }
           : { title: t("server_stopping_title"), body: t("server_stopping_body") };
   } else if (shown === "Hibernated") {
-    icon = <Snowflake className="h-8 w-8 text-muted-foreground/70" />;
+    icon = <Snowflake className="h-6 w-6 text-muted-foreground/70" />;
     copy = { title: t("server_hibernated_title"), body: t("server_hibernated_body") };
   }
 
@@ -255,12 +249,12 @@ export function NotRunning({
     <div
       role="status"
       aria-live="polite"
-      className="flex flex-col items-center justify-center gap-4 rounded-lg border border-dashed border-border bg-muted/20 py-16 text-center"
+      className="flex flex-col items-center justify-center gap-3.5 rounded-xl border border-dashed border-border/80 bg-card/50 px-4 py-14 text-center"
     >
       {icon}
       <div>
-        <p className="font-medium">{copy.title}</p>
-        <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">{copy.body}</p>
+        <p className="text-[13px] font-medium">{copy.title}</p>
+        <p className="mx-auto mt-1 max-w-sm text-xs text-muted-foreground">{copy.body}</p>
       </div>
       {!transitional && (
         <PowerButton

@@ -28,13 +28,30 @@ export function PlatformHealthBanner() {
     ...(disk ? [{ key: "disk", icon: HardDrive, bad: diskFree < 0.1, text: t("health_disk_free", { free: formatBytes(disk.available), path: disk.path }), tab: "status" }] : []),
   ];
   return (
-    <section aria-label={t("health_title")} className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border border-border bg-card px-4 py-3">
+    <section
+      aria-label={t("health_title")}
+      className="flex flex-wrap items-center gap-x-2 gap-y-1.5 rounded-lg border border-border bg-card px-3 py-2 text-xs shadow-[0_1px_2px_rgba(0,0,0,0.03)] dark:shadow-none"
+    >
       {items.map(({ key, icon: Icon, bad, text, tab }) => (
-        <Link key={key} to={`/admin/updates?tab=${tab}`} className={cn("flex items-center gap-2 text-sm hover:underline", bad ? "text-destructive" : "text-foreground")}>
-          <Icon className={cn("h-4 w-4", bad ? "text-destructive" : "text-primary")} aria-hidden="true" />{text}
+        <Link
+          key={key}
+          to={`/admin/updates?tab=${tab}`}
+          className={cn(
+            "inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 transition-colors hover:bg-accent/70",
+            bad ? "font-medium text-destructive" : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          <Icon className={cn("h-3.5 w-3.5 shrink-0", bad ? "text-destructive" : key === "alerts" ? "text-primary" : "text-muted-foreground/75")} aria-hidden="true" />
+          <span>{text}</span>
         </Link>
       ))}
-      <Link to="/admin/updates" className="ml-auto inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline">{t("health_open")}<ArrowRight className="h-3.5 w-3.5" /></Link>
+      <Link
+        to="/admin/updates"
+        className="ml-auto inline-flex h-6 items-center gap-1 rounded-md border border-border bg-background px-2 text-[11px] font-medium text-foreground transition-colors hover:border-muted-foreground/30 hover:bg-accent/70"
+      >
+        {t("health_open")}
+        <ArrowRight className="h-3 w-3" />
+      </Link>
     </section>
   );
 }

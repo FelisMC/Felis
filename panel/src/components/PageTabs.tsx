@@ -10,7 +10,6 @@ export interface PageTab<K extends string> {
   icon?: LucideIcon;
 }
 
-// On a narrow screen the row scrolls sideways and keeps the chosen tab in view.
 export function PageTabs<K extends string>({ tabs, value, onChange, label, idPrefix }: {
   tabs: readonly PageTab<K>[];
   value: K;
@@ -23,8 +22,6 @@ export function PageTabs<K extends string>({ tabs, value, onChange, label, idPre
   const shown = useRef(value);
   useEffect(() => {
     list.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
-    // Another section starts at its top, once it is the one shown: a switch the page holds back
-    // (unsaved changes to confirm first) leaves the scroll position alone.
     if (shown.current === value) return;
     shown.current = value;
     toTop();
@@ -48,9 +45,17 @@ export function PageTabs<K extends string>({ tabs, value, onChange, label, idPre
       {tabs.map(({ key, label: text, icon }) => {
         const selected = key === value;
         return (
-          <button key={key} type="button" role="tab" id={`${idPrefix}-tab-${key}`} aria-controls={selected ? `${idPrefix}-panel-${key}` : undefined}
-            aria-selected={selected} tabIndex={selected ? 0 : -1} onClick={() => { if (!selected) onChange(key); }}
-            className={tabClass(selected)}>
+          <button
+            key={key}
+            type="button"
+            role="tab"
+            id={`${idPrefix}-tab-${key}`}
+            aria-controls={selected ? `${idPrefix}-panel-${key}` : undefined}
+            aria-selected={selected}
+            tabIndex={selected ? 0 : -1}
+            onClick={() => { if (!selected) onChange(key); }}
+            className={tabClass(selected)}
+          >
             <TabFace icon={icon} text={text} selected={selected} />
           </button>
         );
@@ -63,11 +68,9 @@ export interface LinkTab {
   to: string;
   label: string;
   icon?: LucideIcon;
-  /** end matches the path exactly, so an index tab is not chosen on its child pages. */
   end?: boolean;
 }
 
-/** LinkTabs is the same row for sections that are routes of their own. */
 export function LinkTabs({ tabs, label }: { tabs: readonly LinkTab[]; label: string }) {
   return (
     <nav aria-label={label} className={ROW}>
@@ -82,27 +85,24 @@ export function LinkTabs({ tabs, label }: { tabs: readonly LinkTab[]; label: str
 
 const ROW = cn(
   "flex min-w-0 max-w-full gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
-  // Below md the row runs to the screen edges and fades there, so a tab cut off reads as more to scroll to.
-  "scroll-px-4 px-4 [-webkit-mask-image:linear-gradient(to_right,transparent,black_1rem,black_calc(100%-1rem),transparent)] [mask-image:linear-gradient(to_right,transparent,black_1rem,black_calc(100%-1rem),transparent)]",
-  "md:scroll-px-0 md:px-0 md:[-webkit-mask-image:none] md:[mask-image:none]",
+  "scroll-px-4 px-1 md:scroll-px-0 md:px-0",
 );
 
 function tabClass(selected: boolean) {
   return cn(
-    "group relative inline-flex shrink-0 whitespace-nowrap px-1.5 pb-2 pt-1 text-sm font-medium transition-colors duration-150 focus-visible:outline-none",
-    selected ? "text-foreground" : "text-muted-foreground hover:text-foreground",
+    "group relative inline-flex shrink-0 whitespace-nowrap pb-2 pt-0.5 text-[13px] transition-colors duration-150 focus-visible:outline-none",
+    selected ? "font-medium text-foreground" : "text-muted-foreground hover:text-foreground",
   );
 }
 
 function TabFace({ icon: Icon, text, selected }: { icon?: LucideIcon; text: string; selected: boolean }) {
   return (
     <>
-      {/* The hover tint and the focus ring go round the label, clear of the underline. */}
-      <span className="inline-flex items-center gap-2 rounded-md px-1.5 py-1 transition-colors duration-150 group-hover:bg-muted/70 group-focus-visible:ring-2 group-focus-visible:ring-ring">
-        {Icon && <Icon className={cn("h-4 w-4 shrink-0 transition-colors", selected ? "text-primary" : "text-muted-foreground group-hover:text-foreground")} aria-hidden="true" />}
+      <span className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 transition-colors duration-150 group-hover:bg-accent/60 group-focus-visible:ring-2 group-focus-visible:ring-ring/40">
+        {Icon && <Icon className={cn("h-3.5 w-3.5 shrink-0 transition-colors", selected ? "text-foreground" : "text-muted-foreground group-hover:text-foreground")} aria-hidden="true" />}
         {text}
       </span>
-      <span aria-hidden="true" className={cn("absolute inset-x-1.5 bottom-0 h-0.5 rounded-full transition-colors duration-150", selected ? "bg-primary" : "bg-transparent")} />
+      <span aria-hidden="true" className={cn("absolute inset-x-1.5 -bottom-px h-[1.5px] rounded-full transition-colors duration-150", selected ? "bg-primary" : "bg-transparent")} />
     </>
   );
 }

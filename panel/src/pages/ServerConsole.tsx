@@ -12,6 +12,7 @@ import { useConfig } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
 import type { Phase, ServerHibernation, ServerStatus } from "@/lib/types";
 import { formatBytes, formatDuration } from "@/lib/format";
+import { cpuUsage, memoryUsage } from "@/lib/resourceUsage";
 import { RetireNotice } from "@/components/Retirement";
 import { RecoveryNotice } from "@/components/ServerEvents";
 import { parseFormatting, rconLines, type Formatted } from "@/lib/mcformat";
@@ -20,12 +21,74 @@ import { cn } from "@/lib/utils";
 import { InlineError } from "@/components/MessageLine";
 import { useServer } from "@/pages/ServerLayout";
 
+function parseCpuMilli(limit?: string): number | null {
+  if (!limit) return null;
+  const s = limit.trim();
+  if (s.endsWith("m")) {
+    const n = Number(s.slice(0, -1));
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+  const n = Number(s);
+  return Number.isFinite(n) && n > 0 ? n * 1000 : null;
+}
+
+function parseMemBytes(limit?: string): number | null {
+  if (!limit) return null;
+  const m = /^(\d+(?:\.\d+)?)\s*(Gi|Mi|Ki|G|M|K)?i?B?$/i.exec(limit.trim());
+  if (!m) return null;
+  const val = Number(m[1]);
+  const unit = (m[2] ?? "").toLowerCase();
+  const mult = unit === "gi" || unit === "g" ? 1024 ** 3 : unit === "mi" || unit === "m" ? 1024 ** 2 : unit === "ki" || unit === "k" ? 1024 : 1;
+  return Number.isFinite(val) && val > 0 ? val * mult : null;
+}
+
+function LiveTelemetryStrip({ data }: { data: ServerStatus }) {
+  const { t } = useTranslation("servers");
+  const cpuText = cpuUsage(data.cpuMilli, data.cpu);
+  const memText = memoryUsage(data.memoryBytes, data.memory);
+  const diskText = data.disk ? `${formatBytes(data.disk.usedBytes)} / ${formatBytes(data.disk.limitBytes)}` : "—";
+  const playersText =
+    data.phase === "Running" && !data.playerCountUnknown ? `${data.playersOnline} / ${data.playersMax}` : "—";
+
+  const cpuLimit = parseCpuMilli(data.cpu);
+  const cpuPct = data.cpuMilli != null && cpuLimit ? Math.min(100, Math.round((data.cpuMilli / cpuLimit) * 100)) : 0;
+  const memLimit = parseMemBytes(data.memory);
+  const memPct = data.memoryBytes != null && memLimit ? Math.min(100, Math.round((data.memoryBytes / memLimit) * 100)) : 0;
+  const diskPct = data.disk && data.disk.limitBytes > 0 ? Math.min(100, Math.round((data.disk.usedBytes / data.disk.limitBytes) * 100)) : 0;
+  const playerPct = data.phase === "Running" && data.playersMax > 0 ? Math.min(100, Math.round((data.playersOnline / data.playersMax) * 100)) : 0;
+
+  const cells = [
+    { key: "cpu", label: t("usage_cpu"), value: cpuText, pct: cpuPct, accent: true },
+    { key: "mem", label: t("usage_memory"), value: memText, pct: memPct, accent: false },
+    { key: "disk", label: t("disk_title"), value: diskText, pct: diskPct, accent: false },
+    { key: "players", label: t("tab_players"), value: playersText, pct: playerPct, accent: true },
+  ];
+
+  return (
+    <div className="grid shrink-0 grid-cols-2 divide-y divide-border/60 overflow-hidden rounded-lg border border-border bg-card shadow-[0_1px_2px_rgba(0,0,0,0.03)] sm:grid-cols-4 sm:divide-x sm:divide-y-0 dark:shadow-none">
+      {cells.map(({ key, label, value, pct, accent }) => (
+        <div key={key} className="px-3.5 py-2.5">
+          <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+            <span className="truncate">{label}</span>
+            <span className="shrink-0 font-mono font-medium text-foreground tabular-nums">{value}</span>
+          </div>
+          <div className="h-[2px] w-full overflow-hidden rounded-full bg-secondary">
+            <div
+              className={cn("h-full rounded-full transition-all", accent ? "bg-primary" : "bg-foreground/35")}
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function useNotStreamingCopy(phase: Phase, waitingForContainer: boolean): { icon: LucideIcon; title: string; body: string; spin?: boolean } {
   const { t } = useTranslation("servers");
   if (waitingForContainer) return { icon: HelpCircle, title: t("logs_unavailable_title"), body: t("logs_unavailable_body") };
   switch (phase) {
     case "Starting":
-      // Asked to start with no pod yet: the stream attaches once the pod is up.
       return {
         icon: Loader2,
         title: t("server_waking_title"),
@@ -64,7 +127,6 @@ function NotStreaming({ phase, waitingForContainer = false }: { phase: Phase; wa
   );
 }
 
-// StartupStrip heads the console while a start is in progress, so the reason it waits sits next to where its logs will appear.
 function StartupStrip({ startup, blocked }: { startup: NonNullable<ServerStatus["startup"]>; blocked: boolean }) {
   const { t } = useTranslation("servers");
   const waited = startup.startedAt ? Math.max(0, Math.floor((Date.now() - new Date(startup.startedAt).getTime()) / 1000)) : null;
@@ -81,7 +143,6 @@ function StartupStrip({ startup, blocked }: { startup: NonNullable<ServerStatus[
   );
 }
 
-// HibernationStrip heads the console of a server that is freezing, frozen or waking from a freeze.
 function HibernationStrip({ hibernation, waking }: { hibernation: ServerHibernation; waking: boolean }) {
   const { t } = useTranslation("servers");
   const blocked = !!hibernation.message;
@@ -145,7 +206,6 @@ function persistHistory(name: string, h: string[]): void {
 const MAX_HISTORY = 50;
 const HISTORY_KEY = (name: string) => `felis:cmd:history:${name}`;
 
-// echo writes into the log view and reports false when no log is on screen.
 type Echo = (raw: string, input?: boolean) => boolean;
 
 function CommandInput({ name, echo }: { name: string; echo: Echo }) {
@@ -153,13 +213,11 @@ function CommandInput({ name, echo }: { name: string; echo: Echo }) {
   const [command, setCommand] = useState("");
   const [sending, setSending] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  // note stands in for the log when none is on screen.
   const [note, setNote] = useState<Formatted | null>(null);
   const inFlight = useRef(false);
   const generation = useRef(0);
   const historyRef = useRef<string[]>(loadHistory(name));
   const cursorRef = useRef(-1);
-  // What was typed before stepping up into the history.
   const draftRef = useRef("");
   const inputRef = useRef<HTMLInputElement>(null);
   const composingRef = useRef(false);
@@ -208,7 +266,6 @@ function CommandInput({ name, echo }: { name: string; echo: Echo }) {
       return;
     }
     if (h.length === 0) return;
-    // The cursor is -1 or h.length on the line being typed, else on a history entry.
     const onLine = cursorRef.current === -1 || cursorRef.current >= h.length;
     if (e.key === "ArrowUp") {
       e.preventDefault();
@@ -218,8 +275,6 @@ function CommandInput({ name, echo }: { name: string; echo: Echo }) {
       setCommand(h[idx]);
       setTimeout(() => { inputRef.current?.setSelectionRange(h[idx].length, h[idx].length); }, 0);
     }
-    // Down walks back toward the line being typed, and brings it back as it was;
-    // on that line there is nothing below.
     if (e.key === "ArrowDown" && !onLine) {
       e.preventDefault();
       const idx = cursorRef.current + 1;
@@ -237,7 +292,7 @@ function CommandInput({ name, echo }: { name: string; echo: Echo }) {
           <FormattedText formatted={note} />
         </pre>
       )}
-      <div className="flex items-center gap-2 rounded-md border border-zinc-700 bg-zinc-900 px-3 font-mono text-xs text-zinc-200">
+      <div className="flex items-center gap-2 rounded-md border border-zinc-700/80 bg-[#0d0d10] px-3 py-1 font-mono text-xs text-zinc-200 focus-within:border-primary/70">
         <span className="shrink-0 select-none text-zinc-500">{">"}</span>
         <input
           ref={inputRef}
@@ -252,11 +307,18 @@ function CommandInput({ name, echo }: { name: string; echo: Echo }) {
           autoComplete="off"
           enterKeyHint="send"
           spellCheck={false}
-          className="min-w-0 flex-1 bg-transparent py-2 text-base text-zinc-200 placeholder:text-zinc-500 focus:outline-none sm:text-xs"
+          className="min-w-0 flex-1 bg-transparent py-1.5 text-base text-zinc-100 placeholder:text-zinc-500 focus:outline-none sm:text-xs"
         />
-        <Button type="button" size="icon" variant="ghost" aria-label={t("command_send")} title={t("command_send")}
-          disabled={sending || !command.trim()} onClick={() => void send(command.trim())}
-          className="h-9 w-9 shrink-0 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100">
+        <Button
+          type="button"
+          size="icon"
+          variant="outline"
+          aria-label={t("command_send")}
+          title={t("command_send")}
+          disabled={sending || !command.trim()}
+          onClick={() => void send(command.trim())}
+          className="h-7 w-7 shrink-0 border-zinc-700 bg-zinc-800/80 text-zinc-200 hover:bg-zinc-700 hover:text-white"
+        >
           {sending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <SendHorizontal className="h-3.5 w-3.5" />}
         </Button>
       </div>
@@ -279,21 +341,22 @@ export function ServerConsole() {
   const { t } = useTranslation("servers");
   const savedLogs = owned && !error && data.desiredState === "Stopped" && !data.ready && !["Running", "Starting", "Stopping"].includes(data.phase);
   const commandable = owned && !error && data.desiredState === "Running" && ["Starting", "Running"].includes(data.phase);
-  // A frozen Pod keeps its log, and Starting or Failed Pods stream so startup failures remain diagnosable.
   const streamable = data.phase === "Running" || data.phase === "Hibernating" || data.phase === "Hibernated" ||
     ((data.phase === "Starting" || data.phase === "Failed") && data.startup?.logsAvailable !== false);
   const failure = startFailure(data);
   const startup = data.startup;
   const startupBlocked = startup?.stage === "failed" || startup?.reason === "Unschedulable";
+  const showTelemetry = owned && !error && (data.phase === "Running" || data.cpuMilli != null || data.memoryBytes != null || data.disk != null);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4">
+    <div className="flex min-h-0 flex-1 flex-col gap-3.5">
       {data.retiring && (
         <RetireNotice name={name} retiring={data.retiring} isAdmin={isAdmin} onChanged={reload} />
       )}
       {!error && <RecoveryNotice data={data} />}
-      <Card className="dark flex min-h-96 flex-1 flex-col overflow-hidden border-zinc-800 bg-black text-zinc-50">
-        <CardContent className="flex min-h-0 flex-1 flex-col bg-black p-0">
+      {showTelemetry && <LiveTelemetryStrip data={data} />}
+      <Card className="dark flex min-h-96 flex-1 flex-col overflow-hidden border-zinc-800 bg-[#09090b] text-zinc-50">
+        <CardContent className="flex min-h-0 flex-1 flex-col bg-[#09090b] p-0">
           {!error && data.hibernation && data.hibernation.stage !== "Killing" && <HibernationStrip hibernation={data.hibernation} waking={data.desiredState === "Running"} />}
           {!error && startup && !data.hibernation && <StartupStrip startup={startup} blocked={startupBlocked} />}
           {savedLogs ? (
@@ -307,7 +370,7 @@ export function ServerConsole() {
               )}
             </div>
           ) : cfg ? (
-            <div className="flex min-h-0 flex-1 flex-col bg-black">
+            <div className="flex min-h-0 flex-1 flex-col bg-[#09090b]">
               {failure && <FailedStartNotice failure={failure} autoRestarts={data.autoRestarts ?? 0} />}
               <LogConsole
                 key={name}
@@ -318,16 +381,15 @@ export function ServerConsole() {
               />
             </div>
           ) : (
-            <div className="bg-black p-6"><Loading /></div>
+            <div className="bg-[#09090b] p-6"><Loading /></div>
           )}
           {commandable && (
-            <div className="shrink-0 border-t border-zinc-800 bg-zinc-900/40 p-3">
+            <div className="shrink-0 border-t border-zinc-800/90 bg-[#121215] p-2.5">
               <CommandInput key={name} name={name} echo={echo} />
             </div>
           )}
         </CardContent>
       </Card>
-
     </div>
   );
 }

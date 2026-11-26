@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Loader2, Save, ServerCog } from "lucide-react";
+import { ChevronDown, ChevronUp, Loader2, Save, ServerCog } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,8 +13,6 @@ import { api, humanizeError } from "@/lib/api";
 import { useAsync, useRefreshSignal, useUnsavedGuard } from "@/lib/hooks";
 import type { SelfServiceQuotaSettings } from "@/lib/types";
 
-/** The caps as typed: whole servers, GB of memory and storage, CPU cores. An
- *  empty field is unlimited. */
 interface Draft {
   enabled: boolean;
   servers: string;
@@ -23,7 +21,6 @@ interface Draft {
   storageGB: string;
 }
 
-/** showCap is a cap as the box shows it: empty for unlimited, else in units of per. */
 export const showCap = (v: number | null | undefined, per = 1) => (v == null ? "" : String(v / per));
 
 function draftOf(q: SelfServiceQuotaSettings): Draft {
@@ -36,8 +33,6 @@ function draftOf(q: SelfServiceQuotaSettings): Draft {
   };
 }
 
-/** parseCap reads one cap: empty is unlimited (null); otherwise a non-negative
- *  number, in whole units of the cap's own unit after scaling. */
 export function parseCap(v: string, scale = 1): number | null | undefined {
   const s = v.trim();
   if (s === "") return null;
@@ -47,10 +42,11 @@ export function parseCap(v: string, scale = 1): number | null | undefined {
 }
 
 // Default quota governs users without individual quotas, including create, claim, and resize admission.
-export function SelfServiceQuotaCard() {
+export function SelfServiceQuotaCard({ collapsible = false }: { collapsible?: boolean }) {
   const { t } = useTranslation("admin");
   const query = useAsync(api.getSelfServiceQuota, []);
   const reauth = useReauth();
+  const [expanded, setExpanded] = useState(!collapsible);
   const [saved, setSaved] = useState<SelfServiceQuotaSettings | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [saving, setSaving] = useState(false);
@@ -104,7 +100,7 @@ export function SelfServiceQuotaCard() {
 
   const disabled = !draft || saving;
   const field = (id: string, key: "servers" | "memoryGB" | "cpuCores" | "storageGB", label: string) => (
-    <div className="space-y-2">
+    <div className="space-y-1.5">
       <Label htmlFor={id}>{label}</Label>
       <Input
         id={id}
@@ -116,38 +112,60 @@ export function SelfServiceQuotaCard() {
       />
     </div>
   );
+
   return (
-    <Card>
-      <CardHeader className="flex-row flex-wrap items-center gap-3">
-        <span className="shrink-0 text-primary"><ServerCog className="h-4 w-4" /></span>
-        <CardTitle>{t("self_service_title")}</CardTitle>
-        {saved && <Badge variant={saved.enabled ? "default" : "muted"}>{t(saved.enabled ? "self_service_on" : "self_service_off")}</Badge>}
+    <Card className="overflow-hidden">
+      <CardHeader className="flex-row items-center justify-between gap-3">
+        <div className="flex min-w-0 flex-1 items-center gap-2.5">
+          <span className="shrink-0 text-primary"><ServerCog className="h-3.5 w-3.5" /></span>
+          <CardTitle className="shrink-0">{t("self_service_title")}</CardTitle>
+          {saved && <Badge className="shrink-0" variant={saved.enabled ? "default" : "muted"}>{t(saved.enabled ? "self_service_on" : "self_service_off")}</Badge>}
+          {collapsible && !expanded && (
+            <span className="min-w-0 truncate text-xs text-muted-foreground">{t("self_service_description")}</span>
+          )}
+        </div>
+        {collapsible && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="shrink-0"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((v) => !v)}
+          >
+            {expanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+          </Button>
+        )}
       </CardHeader>
-      <CardContent className="space-y-5">
-        <p className="text-sm leading-relaxed text-muted-foreground">{t("self_service_description")}</p>
-        {query.loading && <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />{t("self_service_loading")}</p>}
-        {query.error != null && <MessageLine kind="error" message={humanizeError(query.error)} />}
-        <label htmlFor="self-service-enabled" className="flex min-h-12 cursor-pointer items-center justify-between gap-4 text-sm">
-          <span className="space-y-1"><span className="block">{t("self_service_enabled")}</span><span className="block text-xs leading-relaxed text-muted-foreground">{t("self_service_enabled_hint")}</span></span>
-          <Switch id="self-service-enabled" checked={draft?.enabled ?? false} disabled={disabled} onCheckedChange={(value) => set("enabled", value)} />
-        </label>
-        <div className="grid gap-5 border-t border-border/60 pt-4 md:grid-cols-2">
-          {field("self-service-servers", "servers", t("self_service_servers"))}
-          {field("self-service-memory", "memoryGB", t("self_service_memory"))}
-          {field("self-service-cpu", "cpuCores", t("self_service_cpu"))}
-          {field("self-service-storage", "storageGB", t("self_service_storage"))}
-        </div>
-        <p className="text-xs leading-relaxed text-muted-foreground">{t("self_service_caps_hint")}</p>
-        {draft && !valid && <MessageLine kind="error" message={t("self_service_invalid")} />}
-        {message && <MessageLine kind={message.kind} message={message.text} />}
-      </CardContent>
-      <CardFooter className="flex-wrap gap-2">
-        <p className="text-xs text-muted-foreground">{t(dirty ? "failover_unsaved" : "failover_live")}</p>
-        <div className="flex flex-wrap gap-2">
-          {dirty && <Button variant="outline" disabled={saving} onClick={() => { if (saved) setDraft(draftOf(saved)); setMessage(null); }}>{t("platform_discard")}</Button>}
-          <Button disabled={disabled || !valid || !dirty} onClick={() => void save()}>{saving ? <Loader2 className="animate-spin" /> : <Save />}{t("self_service_save")}</Button>
-        </div>
-      </CardFooter>
+      {expanded && (
+        <>
+          <CardContent className="space-y-4">
+            <p className="text-xs leading-relaxed text-muted-foreground">{t("self_service_description")}</p>
+            {query.loading && <p role="status" className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" />{t("self_service_loading")}</p>}
+            {query.error != null && <MessageLine kind="error" message={humanizeError(query.error)} />}
+            <label htmlFor="self-service-enabled" className="flex min-h-10 cursor-pointer items-center justify-between gap-4 text-xs">
+              <span className="space-y-0.5"><span className="block font-medium text-foreground">{t("self_service_enabled")}</span><span className="block text-xs leading-relaxed text-muted-foreground">{t("self_service_enabled_hint")}</span></span>
+              <Switch id="self-service-enabled" checked={draft?.enabled ?? false} disabled={disabled} onCheckedChange={(value) => set("enabled", value)} />
+            </label>
+            <div className="grid gap-4 border-t border-border/60 pt-3.5 md:grid-cols-2">
+              {field("self-service-servers", "servers", t("self_service_servers"))}
+              {field("self-service-memory", "memoryGB", t("self_service_memory"))}
+              {field("self-service-cpu", "cpuCores", t("self_service_cpu"))}
+              {field("self-service-storage", "storageGB", t("self_service_storage"))}
+            </div>
+            <p className="text-xs leading-relaxed text-muted-foreground">{t("self_service_caps_hint")}</p>
+            {draft && !valid && <MessageLine kind="error" message={t("self_service_invalid")} />}
+            {message && <MessageLine kind={message.kind} message={message.text} />}
+          </CardContent>
+          <CardFooter className="flex-wrap gap-2">
+            <p className="text-xs text-muted-foreground">{t(dirty ? "failover_unsaved" : "failover_live")}</p>
+            <div className="flex flex-wrap gap-2">
+              {dirty && <Button variant="outline" size="sm" disabled={saving} onClick={() => { if (saved) setDraft(draftOf(saved)); setMessage(null); }}>{t("platform_discard")}</Button>}
+              <Button size="sm" disabled={disabled || !valid || !dirty} onClick={() => void save()}>{saving ? <Loader2 className="animate-spin" /> : <Save />}{t("self_service_save")}</Button>
+            </div>
+          </CardFooter>
+        </>
+      )}
       {reauth.dialog}
     </Card>
   );

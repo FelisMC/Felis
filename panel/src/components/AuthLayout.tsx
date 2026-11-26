@@ -6,7 +6,6 @@ import { PoweredBy } from "@/components/PoweredBy";
 import { useBranding } from "@/lib/branding";
 import { cn } from "@/lib/utils";
 
-// AuthLayout is the chrome for the pre-app auth surfaces (login, forced change). They live outside AppShell, with no nav or tier context yet, so they get their own centered frame.
 export function AuthLayout({
   title,
   subtitle,
@@ -29,23 +28,25 @@ export function AuthLayout({
       <div className="relative flex flex-1 items-center justify-center">
         <div
           className={cn(
-            "w-full max-w-md space-y-8",
-            background && "rounded-xl border border-border/60 bg-background/85 p-6 shadow-lg backdrop-blur-sm sm:p-8",
+            "w-full max-w-[400px] space-y-6",
+            background && "rounded-xl border border-border/75 bg-background/90 p-6 shadow-xl backdrop-blur-md sm:p-7",
           )}
         >
-          <ConfigBanner className="rounded-md border" />
-          <div className="flex flex-col items-center gap-3 text-center">
-            <div className="flex items-center justify-center gap-3">
-              <BrandLogo size={44} />
-              <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">{title}</h1>
+          <ConfigBanner className="rounded-lg border" />
+          <div className="flex flex-col items-center gap-2 text-center">
+            <div className="flex items-center justify-center gap-2.5">
+              <span className="inline-flex items-center justify-center overflow-hidden rounded-lg border border-border/80 bg-white p-0.5 shadow-sm">
+                <BrandLogo size={34} />
+              </span>
+              <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
             </div>
-            {subtitle && <p className="text-sm text-muted-foreground">{subtitle}</p>}
+            {subtitle && <p className="text-xs text-muted-foreground">{subtitle}</p>}
           </div>
-          {notice && <p className="whitespace-pre-wrap break-words rounded-md border border-border bg-muted/40 px-4 py-3 text-sm">{notice}</p>}
+          {notice && <p className="whitespace-pre-wrap break-words rounded-lg border border-border bg-card px-3.5 py-2.5 text-xs leading-relaxed text-muted-foreground">{notice}</p>}
           {children}
         </div>
       </div>
-      <PoweredBy className="relative self-center rounded-full bg-background/70 px-3 py-1 text-xs backdrop-blur-sm" />
+      <PoweredBy className="relative self-center rounded-full bg-background/75 px-3 py-1 text-[11px] backdrop-blur-sm" />
     </div>
   );
 }

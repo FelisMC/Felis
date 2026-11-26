@@ -399,15 +399,15 @@ export function ServersPage() {
   const showInitialError = !!error && !data;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <PageHeader
         icon={Network}
         title={isAdmin ? t("fleet_title") : t("servers:my_servers_title")}
         subtitle={isAdmin ? t("fleet_subtitle") : t("servers:my_servers_subtitle")}
         actions={
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-              <span className="h-1.5 w-1.5 rounded-full bg-[#22c55e] animate-pulse" />
+              <span className="h-[5.5px] w-[5.5px] rounded-full bg-primary animate-pulse" />
               {t("fleet_live")}
             </span>
             <Button
@@ -418,7 +418,7 @@ export function ServersPage() {
               aria-label={t("fleet_refresh")}
               title={t("fleet_refresh")}
             >
-              <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} />
+              <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} />
             </Button>
             {isAdmin && cfg && <CreateServerDialog cfg={cfg} onCreated={reload} />}
             {selfCreate && cfg && (
@@ -426,7 +426,6 @@ export function ServersPage() {
             )}
           </div>
         }
-        className="mb-6"
       />
 
       {isAdmin && cfg?.distributed && <RefreshContext.Provider value={cards.scope}><DistributedNodes /></RefreshContext.Provider>}
@@ -441,8 +440,7 @@ export function ServersPage() {
         <>
           {error && <RefreshError error={error} />}
 
-          {/* Stats Cards in a full grid row */}
-          <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
             <StatCard icon={Server} label={t("fleet_stat_total")} value={stats.total} />
             <StatCard
               icon={Play}
@@ -463,14 +461,43 @@ export function ServersPage() {
             />
           </div>
 
-          {/* Distribution card in a full grid row */}
           {stats.total > 0 && (
             <Card>
-              <CardContent className="space-y-3">
-                <div className="text-xs font-medium text-muted-foreground text-left">
-                  {t("fleet_distribution")}
+              <CardContent className="space-y-2.5 py-3">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <span className="font-medium text-muted-foreground">{t("fleet_distribution")}</span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {PHASES.filter((p) => stats.counts[p] > 0).map((p) => {
+                      const active = phaseFilter === p;
+                      return (
+                        <button
+                          key={p}
+                          type="button"
+                          onClick={() => {
+                            setPhaseFilter(active ? "all" : p);
+                            setPage(1);
+                          }}
+                          className={cn(
+                            "inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
+                            active
+                              ? "border-primary bg-primary/10 text-foreground font-medium"
+                              : "border-border bg-background text-muted-foreground hover:border-muted-foreground/30 hover:text-foreground",
+                          )}
+                        >
+                          <span
+                            className="h-[5.5px] w-[5.5px] rounded-full"
+                            style={{ backgroundColor: PHASE_COLOR[p] }}
+                          />
+                          <span>{t(PHASE_KEY[p])}</span>
+                          <span className="font-mono font-medium text-foreground tabular-nums">
+                            {stats.counts[p]}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
-                <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-secondary">
+                <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-secondary">
                   {PHASES.map((p) =>
                     stats.counts[p] > 0 ? (
                       <div
@@ -484,26 +511,11 @@ export function ServersPage() {
                     ) : null,
                   )}
                 </div>
-                <div className="flex flex-wrap gap-x-4 gap-y-1.5">
-                  {PHASES.filter((p) => stats.counts[p] > 0).map((p) => (
-                    <span key={p} className="inline-flex items-center gap-1.5 text-xs">
-                      <span
-                        className="h-2 w-2 rounded-full"
-                        style={{ backgroundColor: PHASE_COLOR[p] }}
-                      />
-                      <span className="text-muted-foreground">{t(PHASE_KEY[p])}</span>
-                      <span className="font-mono font-semibold text-foreground">
-                        {stats.counts[p]}
-                      </span>
-                    </span>
-                  ))}
-                </div>
               </CardContent>
             </Card>
           )}
 
-          {/* Independent Search & Filter bar */}
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2">
             <SearchInput
               value={query}
               onChange={(v) => {
@@ -519,7 +531,7 @@ export function ServersPage() {
                 setPage(1);
               }}
             >
-              <SelectTrigger className="w-[calc(50%-0.375rem)] sm:w-44" aria-label={t("fleet_filter_phase")}>
+              <SelectTrigger className="w-[calc(50%-0.25rem)] sm:w-36" aria-label={t("fleet_filter_phase")}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -538,7 +550,7 @@ export function ServersPage() {
                 setPage(1);
               }}
             >
-              <SelectTrigger className="w-[calc(50%-0.375rem)] sm:w-44" aria-label={t("fleet_sort")}>
+              <SelectTrigger className="w-[calc(50%-0.25rem)] sm:w-36" aria-label={t("fleet_sort")}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -550,7 +562,7 @@ export function ServersPage() {
               </SelectContent>
             </Select>
             <Select value={String(pageSize)} onValueChange={(v) => changePageSize(Number(v))}>
-              <SelectTrigger className="w-[calc(50%-0.375rem)] sm:w-44" aria-label={t("servers:page_size_label")}>
+              <SelectTrigger className="w-[calc(50%-0.25rem)] sm:w-36" aria-label={t("servers:page_size_label")}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -585,10 +597,10 @@ export function ServersPage() {
                     aria-pressed={on}
                     onClick={() => toggleTag(key)}
                     className={cn(
-                      "rounded-full border px-2.5 py-0.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      "rounded-md border px-2.5 py-0.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
                       on
-                        ? "border-primary bg-primary text-primary-foreground"
-                        : "border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground",
+                        ? "border-primary bg-primary text-primary-foreground font-medium"
+                        : "border-border bg-card text-foreground/80 hover:border-muted-foreground/30 hover:bg-accent/70 hover:text-foreground",
                     )}
                   >
                     {label}
@@ -634,12 +646,7 @@ export function ServersPage() {
             </EmptyState>
           ) : (
             <>
-              {/* Cards until the table fits (two per row from md). The admin
-                  table needs about 1400px of content width for its seven columns,
-                  which the page has from a 1700px window beside the sidebar; the
-                  player's five columns fit from xl. A row of actions wraps only
-                  when its column cannot hold it. */}
-              <div className={cn("space-y-3", isAdmin ? "min-[1700px]:hidden" : "xl:hidden")}>
+              <div className="space-y-3 lg:hidden">
                 {pageRows.length > 0 && (
                   <label className="flex w-fit cursor-pointer items-center gap-2 text-xs text-muted-foreground">
                     <Checkbox
@@ -663,17 +670,12 @@ export function ServersPage() {
                   ))}
                 </ul>
               </div>
-              <Card
-                className={cn(
-                  "hidden overflow-hidden border border-border/80",
-                  isAdmin ? "min-[1700px]:block" : "xl:block",
-                )}
-              >
+              <Card className="hidden overflow-hidden lg:block">
                 <div className="overflow-x-auto">
-                  <table className="w-full border-collapse text-sm">
+                  <table className="w-full border-collapse text-xs">
                     <thead>
-                      <tr className="whitespace-nowrap border-b border-border bg-muted/40 text-left text-[11px] uppercase tracking-wider text-muted-foreground">
-                        <th className="w-10 py-2.5 pl-4 pr-0 font-medium">
+                      <tr className="whitespace-nowrap border-b border-border/60 bg-muted text-left text-[11px] text-muted-foreground">
+                        <th className="w-7 py-2 pl-2.5 pr-0 font-normal">
                           <Checkbox
                             aria-label={t("servers:select_page")}
                             checked={pageAllSelected}
@@ -681,15 +683,15 @@ export function ServersPage() {
                             onChange={(e) => select(pageRows.map((s) => s.name), e.target.checked)}
                           />
                         </th>
-                        <th className="px-4 py-2.5 font-medium">{t("fleet_col_server")}</th>
-                        <th className="px-4 py-2.5 font-medium">{t("fleet_col_status")}</th>
-                        {isAdmin && <th className="px-4 py-2.5 font-medium">{t("fleet_col_owner")}</th>}
-                        <th className="px-4 py-2.5 font-medium">{t("fleet_col_players")}</th>
-                        <th className="px-4 py-2.5 font-medium">{t("servers:usage_cpu")}</th>
-                        <th className="px-4 py-2.5 font-medium">{t("servers:usage_memory")}</th>
-                        <th className="px-4 py-2.5 font-medium">{t("fleet_col_policy")}</th>
-                        {isAdmin && <th className="px-4 py-2.5 font-medium">{t("fleet_col_endpoint")}</th>}
-                        <th className="px-4 py-2.5 text-right font-medium">
+                        <th className="px-2 py-2 font-normal">{t("fleet_col_server")}</th>
+                        <th className="px-2 py-2 font-normal">{t("fleet_col_status")}</th>
+                        {isAdmin && <th className="px-2 py-2 font-normal">{t("fleet_col_owner")}</th>}
+                        <th className="px-2 py-2 font-normal">{t("fleet_col_players")}</th>
+                        <th className="px-2 py-2 font-normal">{t("servers:usage_cpu")}</th>
+                        <th className="px-2 py-2 font-normal">{t("servers:usage_memory")}</th>
+                        <th className="px-2 py-2 font-normal">{t("fleet_col_policy")}</th>
+                        {isAdmin && <th className="px-2 py-2 font-normal">{t("fleet_col_endpoint")}</th>}
+                        <th className="px-2.5 py-2 text-right font-normal">
                           {t("fleet_col_actions")}
                         </th>
                       </tr>
@@ -778,7 +780,7 @@ function ServerActions({
 
   return (
     <div className={cn("flex flex-col items-end gap-1", className)}>
-      <div className="flex flex-wrap items-start justify-end gap-2">
+      <div className="flex flex-wrap items-center justify-end gap-1 [&_button]:h-6 [&_button]:px-2 [&_button]:text-[11px]">
         {isAdmin && cfg?.distributed && <MigrationDialog name={server.name} nodeName={server.nodeName} stopped={server.phase === "Stopped" && !server.ready && server.desiredState === "Stopped" && !server.retiring} onChanged={onChanged} />}
         {claimable && (
           <>
@@ -859,10 +861,10 @@ function OwnerLabel({ server }: { server: UnifiedServer }) {
   }
   if (server.owner) {
     return (
-      <span className="inline-flex min-w-0 max-w-full items-center gap-1.5 md:max-w-[13rem]">
-        <UserRound className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+      <span className="inline-flex min-w-0 max-w-[7rem] items-center gap-1">
+        <UserRound className="h-3 w-3 shrink-0 text-muted-foreground" />
         {server.owned && (
-          <span className="shrink-0 rounded-full border px-1.5 text-[10px] font-medium leading-4 text-foreground">
+          <span className="shrink-0 rounded border border-border px-1 text-[10px] font-medium leading-4 text-foreground">
             {t("fleet_owner_you")}
           </span>
         )}
@@ -904,7 +906,7 @@ function EndpointAddress({ server }: { server: UnifiedServer }) {
     return <span className="text-muted-foreground">{t("fleet_endpoint_idle")}</span>;
   }
   return (
-    <code className="break-all rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground xl:whitespace-nowrap xl:break-normal">
+    <code className="break-all rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground xl:whitespace-nowrap xl:break-normal">
       {endpoint}
     </code>
   );
@@ -958,33 +960,33 @@ function ServerRow({
   const address = server.subdomain ? joinAddress(server.subdomain, cfg) : "";
 
   return (
-    <tr className="border-b border-border/50 transition-colors last:border-0 hover:bg-muted/40">
-      <td className="w-10 py-3 pl-4 pr-0 align-middle">
+    <tr className="group border-b border-border/50 transition-colors last:border-0 hover:bg-accent/40">
+      <td className="w-7 py-2.5 pl-2.5 pr-0 align-middle">
         <RowSelect server={server} select={select} />
       </td>
-      <td className="px-4 py-3 align-middle text-left">
-        <div className="flex min-w-0 items-baseline gap-2">
+      <td className="px-2 py-2.5 text-left align-middle">
+        <div className="flex min-w-0 max-w-[10.5rem] items-baseline gap-1.5">
           <ServerName server={server} />
         </div>
         <TagChips tags={server.tags} />
-        {address && <CopyAddress address={address} className="mt-0.5 flex-nowrap md:max-w-[18rem]" />}
+        {address && <CopyAddress address={address} className="mt-0.5 max-w-[10.5rem] flex-nowrap" />}
       </td>
-      <td className="whitespace-nowrap px-4 py-3 align-middle text-left">
+      <td className="whitespace-nowrap px-2 py-2.5 text-left align-middle">
         <PhaseBadge phase={shownPhase(server)} failure={startFailure(server)} autoRestarts={server.autoRestarts} />
       </td>
       {isAdmin && (
-        <td className="whitespace-nowrap px-4 py-3 align-middle text-left">
+        <td className="whitespace-nowrap px-2 py-2.5 text-left align-middle text-muted-foreground">
           <OwnerLabel server={server} />
         </td>
       )}
-      <td className="whitespace-nowrap px-4 py-3 align-middle text-left">
+      <td className="whitespace-nowrap px-2 py-2.5 text-left align-middle font-mono">
         <PlayersLabel server={server} />
       </td>
-      <td className="whitespace-nowrap px-4 py-3 tabular-nums">{cpuUsage(server.cpuMilli, server.cpu)}</td>
-      <td className="whitespace-nowrap px-4 py-3 tabular-nums">{memoryUsage(server.memoryBytes, server.memory)}</td>
-      <td className="whitespace-nowrap px-4 py-3 align-middle text-left">
+      <td className="whitespace-nowrap px-2 py-2.5 font-mono text-muted-foreground tabular-nums">{cpuUsage(server.cpuMilli, server.cpu)}</td>
+      <td className="whitespace-nowrap px-2 py-2.5 font-mono text-muted-foreground tabular-nums">{memoryUsage(server.memoryBytes, server.memory)}</td>
+      <td className="whitespace-nowrap px-2 py-2.5 text-left align-middle">
         {server.autostartPolicy ? (
-          <span className="text-foreground">
+          <span className="text-muted-foreground">
             {t(POLICY_KEY[server.autostartPolicy])}
           </span>
         ) : (
@@ -992,11 +994,11 @@ function ServerRow({
         )}
       </td>
       {isAdmin && (
-        <td className="whitespace-nowrap px-4 py-3 align-middle text-left">
+        <td className="whitespace-nowrap px-2 py-2.5 text-left align-middle">
           <EndpointLabel server={server} />
         </td>
       )}
-      <td className="whitespace-nowrap px-4 py-3 align-middle">
+      <td className="px-2.5 py-2.5 align-middle">
         <ServerActions server={server} isAdmin={isAdmin} onChanged={onChanged} />
       </td>
     </tr>
@@ -1114,7 +1116,7 @@ function BatchBar({
           <Button size="sm" variant="outline" disabled={busy} onClick={() => setConfirming("restart")}>
             <RotateCcw /> {t("restart")}
           </Button>
-          <Button size="sm" variant="ghost" disabled={busy} onClick={onClear}>
+          <Button size="sm" variant="outline" disabled={busy} onClick={onClear}>
             {t("batch_clear")}
           </Button>
         </div>
@@ -1128,7 +1130,7 @@ function BatchBar({
         <div className="space-y-1.5">
           <div className="flex items-center justify-between gap-2">
             <p className="text-sm font-medium">{t("batch_results")}</p>
-            <Button size="sm" variant="ghost" onClick={onDismiss}>
+            <Button size="sm" variant="outline" onClick={onDismiss}>
               {t("batch_results_dismiss")}
             </Button>
           </div>

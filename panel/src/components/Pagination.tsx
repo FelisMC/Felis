@@ -14,17 +14,17 @@ export function Pagination({ page, pageSize, total, onChange }: Props) {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   return (
-    <div className="flex items-center justify-center gap-2 mt-auto">
+    <div className="mt-auto flex items-center justify-center gap-1.5">
       <Button
         variant="outline"
         size="sm"
         disabled={page <= 1}
         onClick={() => onChange(page - 1)}
       >
-        <ChevronLeft className="h-4 w-4" />
+        <ChevronLeft className="h-3.5 w-3.5" />
         {t("pagination_prev")}
       </Button>
-      <span className="text-xs text-muted-foreground min-w-[6rem] text-center">
+      <span className="min-w-[5.5rem] text-center font-mono text-[11px] text-muted-foreground tabular-nums">
         {t("pagination_of", { current: page, total: totalPages })}
       </span>
       <Button
@@ -34,7 +34,7 @@ export function Pagination({ page, pageSize, total, onChange }: Props) {
         onClick={() => onChange(page + 1)}
       >
         {t("pagination_next")}
-        <ChevronRight className="h-4 w-4" />
+        <ChevronRight className="h-3.5 w-3.5" />
       </Button>
     </div>
   );

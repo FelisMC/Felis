@@ -110,7 +110,13 @@ export function PowerButton({
   const askFirst = players > 0 || playerCountUnknown === true;
   const spinner = <Loader2 className="animate-spin" />;
   const stopButton = (variant: "destructive" | "outline", onClick: () => void) => (
-    <Button size={size} variant={variant} onClick={onClick} disabled={busy !== null}>
+    <Button
+      size={size}
+      variant={variant}
+      onClick={onClick}
+      disabled={busy !== null}
+      className={variant === "outline" ? "hover:border-destructive/40 hover:text-destructive" : undefined}
+    >
       {busy === "stop" ? spinner : <Square />}
       {busy === "stop" ? t("stopping") : t("stop")}
     </Button>
@@ -180,7 +186,7 @@ export function PowerButton({
             ? t(`${confirming}_confirm_players`, { count: players })
             : t(`${confirming}_confirm_unknown`)}
         </span>
-        <Button size={size} variant="ghost" onClick={() => setConfirming(null)} disabled={busy !== null}>
+        <Button size={size} variant="outline" onClick={() => setConfirming(null)} disabled={busy !== null}>
           {t("common:cancel")}
         </Button>
         <Button size={size} variant="destructive" onClick={() => void run(confirming)} disabled={busy !== null || (diskFull && confirming === "restart")}>
@@ -198,7 +204,7 @@ export function PowerButton({
             {busy === "restart" ? t("restarting") : t("restart")}
           </Button>
         )}
-        {stopButton("destructive", () => (askFirst ? setConfirming("stop") : void run("stop")))}
+        {stopButton("outline", () => (askFirst ? setConfirming("stop") : void run("stop")))}
       </div>
     );
   }

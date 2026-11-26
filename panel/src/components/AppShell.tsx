@@ -1,6 +1,16 @@
-import { Suspense, useEffect, useState } from "react";
-import { NavLink, Outlet, useLocation } from "react-router-dom";
-import { Globe, Sun, Moon, Monitor, LogOut, WifiOff, Menu, X } from "lucide-react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
+import {
+  ChevronDown,
+  Globe,
+  LogOut,
+  Menu,
+  Moon,
+  Monitor,
+  Sun,
+  WifiOff,
+  X,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import * as SelectPrimitive from "@radix-ui/react-select";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
@@ -22,6 +32,19 @@ import { BrandLogo } from "@/components/BrandLogo";
 import { PoweredBy } from "@/components/PoweredBy";
 import { PageHeaderHostContext } from "@/components/PageHeader";
 import { MainScrollContext } from "@/components/MainScroll";
+import { phaseColor } from "@/components/PhaseBadge";
+import { ShellContext, type ActiveServerMeta } from "@/components/ShellContext";
+
+const TOP_BTN =
+  "inline-flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2 text-xs font-medium text-foreground transition-colors hover:border-muted-foreground/30 hover:bg-accent/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-45";
+
+function BrandMark({ size = 19 }: { size?: number }) {
+  return (
+    <span className="inline-flex h-[22px] w-[22px] shrink-0 items-center justify-center overflow-hidden rounded-[5px] border border-border bg-white">
+      <BrandLogo size={size} />
+    </span>
+  );
+}
 
 function SectionGroup({
   section,
@@ -35,16 +58,9 @@ function SectionGroup({
   const { t } = useTranslation("navigation");
 
   return (
-    <div
-      className={cn(
-        "flex flex-col gap-0.5",
-        // Sections after the first get a thin divider with breathing room above,
-        // which reads as a structural break without needing a loud heading.
-        !isFirst && "mt-3 border-t border-border/50 pt-3",
-      )}
-    >
+    <div className={cn("flex flex-col", !isFirst && "mt-3.5")}>
       {section.titleKey && (
-        <div className="mb-1 px-3 text-[11px] font-medium text-muted-foreground/70">
+        <div className="px-4 pb-1 text-[10.5px] text-muted-foreground/75">
           {t(section.titleKey)}
         </div>
       )}
@@ -56,33 +72,33 @@ function SectionGroup({
           onClick={onNavigate}
           className={({ isActive }) =>
             cn(
-              "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+              "group relative flex items-center gap-2.5 px-4 py-[6.5px] text-[12.5px] transition-colors",
               isActive
-                ? "bg-primary/15 text-primary"
-                : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                ? "bg-accent font-medium text-foreground before:absolute before:bottom-1 before:left-0 before:top-1 before:w-[2.5px] before:rounded-r-sm before:bg-primary"
+                : "text-muted-foreground hover:bg-accent/55 hover:text-foreground",
             )
           }
         >
-          <item.icon className="h-4 w-4" />
-          {t(item.key)}
+          {({ isActive }) => (
+            <>
+              <item.icon
+                className={cn("h-3.5 w-3.5 shrink-0", isActive ? "text-foreground opacity-95" : "opacity-65 group-hover:opacity-90")}
+                strokeWidth={1.7}
+              />
+              <span className="truncate">{t(item.key)}</span>
+            </>
+          )}
         </NavLink>
       ))}
     </div>
   );
 }
 
-// Shared visual baseline for every clickable icon button in the sidebar foot: a subtle border and background, so they read as widgets rather than floating icons.
-const FOOT_ICON_BTN =
-  "flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border/40 bg-muted/20 text-muted-foreground hover:bg-accent hover:text-foreground focus:outline-none transition-all duration-150 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed";
-
-function UserStrip() {
-  // Do not infer a role while identity is loading or unknown.
+function UserStrip({ compact = false }: { compact?: boolean }) {
   const { identity, refresh } = useTier();
   const { t } = useTranslation("account");
   const [signingOut, setSigningOut] = useState(false);
 
-  // Mirrors Account.tsx#signOut: idempotent on the server; refresh() flips
-  // unauthenticated → RequireAuth bounces to /login. No navigate() needed.
   async function signOut() {
     if (signingOut) return;
     setSigningOut(true);
@@ -93,24 +109,50 @@ function UserStrip() {
     }
   }
 
-  return (
-    <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-muted/30 px-3 py-2 min-w-0 shadow-sm">
-      <div className="min-w-0 flex-1 leading-tight">
-        <div
-          className="truncate text-[13px] font-semibold text-foreground"
+  if (compact) {
+    return (
+      <div className="flex min-w-0 items-center gap-1.5">
+        <Link
+          to="/account"
+          className="inline-flex h-7 min-w-0 items-center gap-2 rounded-md border border-border bg-card px-2.5 text-xs transition-colors hover:border-muted-foreground/30 hover:bg-accent/70"
           title={identity?.email ?? ""}
         >
-          {identity?.email ?? <span className="text-muted-foreground/40">—</span>}
-        </div>
-        <div className="text-[10px] text-muted-foreground/70 font-medium">
-          {identity ? t(`admin:${ROLE_LABEL_KEY[identity.role]}`) : <span className="text-muted-foreground/40">—</span>}
-        </div>
+          <span className="max-w-[160px] truncate font-medium text-foreground">
+            {identity?.email ?? <span className="text-muted-foreground/50">—</span>}
+          </span>
+          <span className="shrink-0 text-[11px] text-muted-foreground">
+            {identity ? t(`admin:${ROLE_LABEL_KEY[identity.role]}`) : <span className="text-muted-foreground/50">—</span>}
+          </span>
+        </Link>
+        <button
+          type="button"
+          onClick={signOut}
+          disabled={signingOut || !identity}
+          className={cn(TOP_BTN, "w-7 px-0 text-muted-foreground hover:border-destructive/40 hover:text-destructive")}
+          aria-label={t("sign_out")}
+          title={t("sign_out")}
+        >
+          <LogOut className="h-3.5 w-3.5" />
+        </button>
       </div>
+    );
+  }
+
+  return (
+    <div className="flex min-w-0 items-center gap-2 px-3 py-1.5">
+      <Link to="/account" className="min-w-0 flex-1 leading-tight">
+        <div className="truncate text-xs font-medium text-foreground" title={identity?.email ?? ""}>
+          {identity?.email ?? <span className="text-muted-foreground/50">—</span>}
+        </div>
+        <div className="mt-0.5 text-[11px] text-muted-foreground">
+          {identity ? t(`admin:${ROLE_LABEL_KEY[identity.role]}`) : <span className="text-muted-foreground/50">—</span>}
+        </div>
+      </Link>
       <button
         type="button"
         onClick={signOut}
         disabled={signingOut || !identity}
-        className="flex h-10 w-10 md:h-7 md:w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-background hover:text-destructive border border-transparent hover:border-border/50 focus:outline-none transition-all active:scale-95 disabled:opacity-50"
+        className={cn(TOP_BTN, "h-8 w-8 px-0 text-muted-foreground hover:border-destructive/40 hover:text-destructive")}
         aria-label={t("sign_out")}
         title={t("sign_out")}
       >
@@ -122,17 +164,20 @@ function UserStrip() {
 
 function LangToggle() {
   const { t, i18n } = useTranslation("common");
+  const shortLabel = i18n.language.startsWith("zh") ? "中文" : "EN";
 
   return (
     <Select value={i18n.language} onValueChange={(v) => void chooseLanguage(i18n, v)}>
       <SelectPrimitive.Trigger
-        className={FOOT_ICON_BTN}
+        className={TOP_BTN}
         aria-label={t("change_language")}
         title={t("change_language")}
       >
-        <Globe className="h-4 w-4" />
+        <Globe className="h-3.5 w-3.5 text-muted-foreground" />
+        <span className="hidden sm:inline">{shortLabel}</span>
+        <ChevronDown className="h-3 w-3 text-muted-foreground/75" />
       </SelectPrimitive.Trigger>
-      <SelectContent align="start" className="min-w-[6rem]">
+      <SelectContent align="end" className="min-w-[6.5rem]">
         <SelectItem value="en-US">English</SelectItem>
         <SelectItem value="zh-CN">中文</SelectItem>
       </SelectContent>
@@ -143,15 +188,18 @@ function LangToggle() {
 function ThemeToggle() {
   const { preference, setTheme } = useTheme();
   const { t } = useTranslation("common");
+  const label = preference === "light" ? t("theme_light") : preference === "dark" ? t("theme_dark") : t("theme_system");
 
   return (
     <Select value={preference} onValueChange={(value) => setTheme(value as ThemePreference)}>
-      <SelectPrimitive.Trigger className={FOOT_ICON_BTN} aria-label={t("toggle_theme")} title={t("toggle_theme")}>
-        {preference === "light" && <Sun className="h-4 w-4" />}
-        {preference === "dark" && <Moon className="h-4 w-4" />}
-        {preference === "system" && <Monitor className="h-4 w-4" />}
+      <SelectPrimitive.Trigger className={TOP_BTN} aria-label={t("toggle_theme")} title={t("toggle_theme")}>
+        {preference === "light" && <Sun className="h-3.5 w-3.5 text-muted-foreground" />}
+        {preference === "dark" && <Moon className="h-3.5 w-3.5 text-muted-foreground" />}
+        {preference === "system" && <Monitor className="h-3.5 w-3.5 text-muted-foreground" />}
+        <span className="hidden lg:inline">{label}</span>
+        <ChevronDown className="h-3 w-3 text-muted-foreground/75" />
       </SelectPrimitive.Trigger>
-      <SelectContent align="start">
+      <SelectContent align="end">
         <SelectItem value="light">{t("theme_light")}</SelectItem>
         <SelectItem value="dark">{t("theme_dark")}</SelectItem>
         <SelectItem value="system">{t("theme_system")}</SelectItem>
@@ -160,7 +208,6 @@ function ThemeToggle() {
   );
 }
 
-// Clear connection warnings on the next response; Access expiration may require a full reload.
 function ConnectionBanner() {
   const { t } = useTranslation("common");
   const [lost, setLost] = useState(isConnectionLost);
@@ -173,10 +220,10 @@ function ConnectionBanner() {
   return (
     <div
       role="alert"
-      className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm text-amber-800 dark:text-amber-200"
+      className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-800 dark:text-amber-200"
     >
       <span className="flex min-w-0 items-center gap-2">
-        <WifiOff className="h-4 w-4 shrink-0" />
+        <WifiOff className="h-3.5 w-3.5 shrink-0" />
         {t("connection_lost")}
       </span>
       <Button size="sm" variant="outline" onClick={() => window.location.reload()}>
@@ -184,6 +231,61 @@ function ConnectionBanner() {
       </Button>
     </div>
   );
+}
+
+function TopbarBreadcrumb({
+  sections,
+  activeServer,
+}: {
+  sections: NavSection[];
+  activeServer: ActiveServerMeta | null;
+}) {
+  const { pathname } = useLocation();
+  const { t } = useTranslation("navigation");
+
+  if (activeServer) {
+    return (
+      <div className="flex min-w-0 items-center gap-1.5 text-xs">
+        <Link
+          to="/servers"
+          className="inline-flex h-6 shrink-0 items-center rounded-md px-1.5 text-muted-foreground transition-colors hover:bg-accent/70 hover:text-foreground"
+        >
+          {t("my_servers")}
+        </Link>
+        <span className="text-muted-foreground/45">/</span>
+        <span className="inline-flex min-w-0 items-center gap-1.5 font-medium text-foreground">
+          {activeServer.phase && (
+            <span
+              className="h-1.5 w-1.5 shrink-0 rounded-full"
+              style={{ backgroundColor: phaseColor(activeServer.phase) }}
+            />
+          )}
+          <span className="truncate">{activeServer.displayName || activeServer.name}</span>
+        </span>
+      </div>
+    );
+  }
+
+  for (const section of sections) {
+    for (const item of section.items) {
+      const matched = item.end ? pathname === item.to : pathname === item.to || pathname.startsWith(`${item.to}/`);
+      if (matched) {
+        return (
+          <div className="flex min-w-0 items-center gap-1.5 text-xs">
+            {section.titleKey && (
+              <>
+                <span className="shrink-0 text-muted-foreground">{t(section.titleKey)}</span>
+                <span className="text-muted-foreground/45">/</span>
+              </>
+            )}
+            <span className="truncate font-medium text-foreground">{t(item.key)}</span>
+          </div>
+        );
+      }
+    }
+  }
+
+  return null;
 }
 
 function MobileNav({ sections }: { sections: NavSection[] }) {
@@ -196,28 +298,28 @@ function MobileNav({ sections }: { sections: NavSection[] }) {
   return (
     <DialogPrimitive.Root open={open} onOpenChange={setOpen}>
       <DialogPrimitive.Trigger
-        className={FOOT_ICON_BTN}
+        className={cn(TOP_BTN, "w-7 px-0")}
         aria-label={t("open_menu")}
         title={t("open_menu")}
       >
         <Menu className="h-4 w-4" />
       </DialogPrimitive.Trigger>
       <DialogPrimitive.Portal>
-        <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 md:hidden" />
+        <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/55 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 md:hidden" />
         <DialogPrimitive.Content
           aria-describedby={undefined}
-          className="fixed inset-y-0 left-0 z-50 flex w-72 max-w-[85vw] flex-col border-r border-border bg-card p-4 shadow-xl duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:slide-out-to-left data-[state=open]:slide-in-from-left md:hidden"
+          className="fixed inset-y-0 left-0 z-50 flex w-60 max-w-[82vw] flex-col border-r border-border bg-sidebar py-3 shadow-2xl duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:slide-out-to-left data-[state=open]:slide-in-from-left md:hidden"
         >
-          <div className="mb-5 flex items-center justify-between px-2">
-            <DialogPrimitive.Title className="flex items-center gap-2 text-lg font-semibold tracking-tight">
-              <BrandLogo />
+          <div className="mb-2 flex h-9 items-center justify-between border-b border-border/60 px-4 pb-2">
+            <DialogPrimitive.Title className="flex items-center gap-2 text-[13.5px] font-semibold tracking-tight">
+              <BrandMark size={18} />
               {name}
             </DialogPrimitive.Title>
-            <DialogPrimitive.Close className={FOOT_ICON_BTN} aria-label={t("close_sr")}>
-              <X className="h-4 w-4" />
+            <DialogPrimitive.Close className={cn(TOP_BTN, "w-7 px-0")} aria-label={t("close_sr")}>
+              <X className="h-3.5 w-3.5" />
             </DialogPrimitive.Close>
           </div>
-          <nav className="flex flex-col overflow-y-auto">
+          <nav className="flex flex-1 flex-col overflow-y-auto py-1">
             {sections.map((section, i) => (
               <SectionGroup
                 key={section.id}
@@ -227,11 +329,12 @@ function MobileNav({ sections }: { sections: NavSection[] }) {
               />
             ))}
           </nav>
-          <div className="mt-auto border-t border-border/50 pt-3">
-            {/* The strip's sign-out button grows to a thumb-sized target below md. */}
+          <div className="mt-auto border-t border-border/60 pt-2">
             <UserStrip />
-            <VersionBadge className="mt-2 flex justify-center" />
-            <PoweredBy className="mt-2 block text-xs" />
+            <div className="mt-1 flex items-center justify-between gap-2 px-4">
+              <VersionBadge />
+              <PoweredBy className="text-[10px]" />
+            </div>
           </div>
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
@@ -241,92 +344,114 @@ function MobileNav({ sections }: { sections: NavSection[] }) {
 
 export function AppShell() {
   const [headerHost, setHeaderHost] = useState<HTMLDivElement | null>(null);
+  const [sidebarSlot, setSidebarSlot] = useState<HTMLDivElement | null>(null);
   const [main, setMain] = useState<HTMLElement | null>(null);
+  const [activeServer, setActiveServerState] = useState<ActiveServerMeta | null>(null);
   const { isAdmin, isOwner } = useTier();
   const { pathname } = useLocation();
   const { t, i18n } = useTranslation("navigation");
   const { name } = useBranding();
-  // A new page starts at its top: the content area is one element for every page, so it
-  // would otherwise keep the scroll position the last page left it at.
+
+  const setActiveServer = useCallback((server: ActiveServerMeta | null) => {
+    setActiveServerState(server);
+  }, []);
+
   useEffect(() => {
     if (main) main.scrollTop = 0;
   }, [main, pathname]);
-  // Missing identity flags grant neither admin nor owner sections.
+
   const config = useConfig();
   const sections = visibleSections(isAdmin, isOwner, { noLobby: config?.noLobby, nano: config?.nano });
 
-  // Sync document metadata with the active language.
   useEffect(() => {
     document.documentElement.lang = i18n.language;
     document.title = t("common:page_title", { brand: name });
   }, [i18n.language, t, name]);
 
+  const shellContext = useMemo(
+    () => ({ sidebarSlot, activeServer, setActiveServer }),
+    [sidebarSlot, activeServer, setActiveServer],
+  );
+
   return (
-    <div className="flex h-screen overflow-hidden">
-      <aside className="hidden w-60 shrink-0 flex-col border-r border-border bg-card/40 p-4 md:flex">
-        <div className="mb-6 flex items-center gap-2 px-2">
-          <BrandLogo />
-          <span className="text-lg font-semibold tracking-tight">{name}</span>
-        </div>
+    <ShellContext.Provider value={shellContext}>
+      <div className="flex h-screen flex-col overflow-hidden bg-background">
+        <ConnectionBanner />
+        <ConfigBanner />
 
-        <nav className="flex flex-col">
-          {sections.map((section, i) => (
-            <SectionGroup key={section.id} section={section} isFirst={i === 0} />
-          ))}
-        </nav>
-
-        <div className="mt-auto flex flex-col gap-2 border-t border-border/50 pt-2.5">
-          {/* 1. Toggles & Meta */}
-          <div className="flex items-center justify-between gap-2 px-1">
-            <div className="flex items-center gap-1.5">
-              <LangToggle />
-              <ThemeToggle />
+        <header className="flex h-11 shrink-0 items-center justify-between gap-3 border-b border-border bg-topbar px-3 md:px-4">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <div className="md:hidden">
+              <MobileNav sections={sections} />
             </div>
-            <VersionBadge />
+            <Link
+              to="/"
+              className="flex shrink-0 items-center gap-2 rounded-md py-0.5 pr-1 transition-opacity hover:opacity-85"
+            >
+              <BrandMark />
+              <span className="text-[13.5px] font-semibold tracking-tight text-foreground">{name}</span>
+            </Link>
+            <span className="hidden h-3.5 w-px shrink-0 bg-border md:inline-block" aria-hidden="true" />
+            <div className="hidden min-w-0 md:block">
+              <TopbarBreadcrumb sections={sections} activeServer={activeServer} />
+            </div>
           </div>
 
-          {/* 2. Profile Card */}
-          <UserStrip />
+          <div className="flex shrink-0 items-center gap-1.5">
+            <LangToggle />
+            <ThemeToggle />
+            <span className="hidden h-3.5 w-px shrink-0 bg-border md:inline-block" aria-hidden="true" />
+            <div className="hidden md:flex">
+              <UserStrip compact />
+            </div>
+          </div>
+        </header>
 
-          {/* 3. Credit, hidden when the Owner switches it off */}
-          <PoweredBy className="px-1 text-[10px] leading-tight" />
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          <aside className="hidden w-48 shrink-0 flex-col border-r border-border bg-sidebar py-3 md:flex">
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+              {/* Contextual slot: ServerLayout portals single-server navigation here. */}
+              <div ref={setSidebarSlot} className="empty:hidden [&:not(:empty)+nav]:hidden" />
+              <nav className="flex flex-col">
+                {sections.map((section, i) => (
+                  <SectionGroup key={section.id} section={section} isFirst={i === 0} />
+                ))}
+              </nav>
+            </div>
+
+            <div className="mt-auto border-t border-border/60 px-4 pt-2.5">
+              <div className="flex flex-col gap-1">
+                <VersionBadge />
+                <PoweredBy className="text-left text-[10.5px] leading-tight" />
+              </div>
+            </div>
+          </aside>
+
+          <MainScrollContext.Provider value={main}>
+            <PageHeaderHostContext.Provider value={headerHost}>
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                <div
+                  ref={setHeaderHost}
+                  className="shrink-0 bg-background px-4 pt-4 empty:hidden md:px-7 md:pt-5"
+                />
+
+                <main
+                  ref={setMain}
+                  className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pt-4 md:px-7"
+                >
+                  <div className="mx-auto flex min-h-0 w-full max-w-[1220px] flex-1 flex-col gap-4 after:-mt-4 after:h-6 after:shrink-0 after:content-['']">
+                    <ErrorBoundary resetKey={pathname}>
+                      <Suspense fallback={<Loading />}>
+                        <Outlet />
+                      </Suspense>
+                    </ErrorBoundary>
+                  </div>
+                </main>
+              </div>
+            </PageHeaderHostContext.Provider>
+          </MainScrollContext.Provider>
         </div>
-      </aside>
-
-      <MainScrollContext.Provider value={main}>
-        <PageHeaderHostContext.Provider value={headerHost}>
-          <div className="flex min-w-0 flex-1 flex-col h-full">
-            <ConnectionBanner />
-            <ConfigBanner />
-            <header className="flex h-14 shrink-0 items-center justify-between border-b border-border px-4 md:hidden">
-              <div className="flex items-center gap-2">
-                <MobileNav sections={sections} />
-                <BrandLogo />
-                <span className="font-semibold">{name}</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <LangToggle />
-                <ThemeToggle />
-              </div>
-            </header>
-            <div ref={setHeaderHost} className="shrink-0 border-b border-border bg-background p-4 empty:hidden md:px-6" />
-            <main ref={setMain} className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pt-4 md:px-6 md:pt-6">
-              {/* The ::after spacer takes back the gap before it, so pages end 24px below their content, as wide as the gutters. */}
-              <div className="mx-auto flex min-h-0 w-full max-w-8xl flex-1 flex-col gap-6 after:-mt-6 after:h-6 after:shrink-0 after:content-['']">
-                {/* A crash on one page leaves the navigation usable; moving to
-                    another route clears it. Pages load as their own chunks, so the
-                    first visit to one shows a spinner here with the shell in place,
-                    and a chunk gone after a deploy lands in the boundary. */}
-                <ErrorBoundary resetKey={pathname}>
-                  <Suspense fallback={<Loading />}>
-                    <Outlet />
-                  </Suspense>
-                </ErrorBoundary>
-              </div>
-            </main>
-          </div>
-        </PageHeaderHostContext.Provider>
-      </MainScrollContext.Provider>
-    </div>
+      </div>
+    </ShellContext.Provider>
   );
 }

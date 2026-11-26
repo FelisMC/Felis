@@ -12,9 +12,15 @@ export default {
         ring: "hsl(var(--ring))",
         background: "hsl(var(--background))",
         foreground: "hsl(var(--foreground))",
+        topbar: "hsl(var(--topbar))",
+        sidebar: "hsl(var(--sidebar))",
         primary: {
           DEFAULT: "hsl(var(--primary))",
           foreground: "hsl(var(--primary-foreground))",
+        },
+        secondary: {
+          DEFAULT: "hsl(var(--secondary))",
+          foreground: "hsl(var(--secondary-foreground))",
         },
         muted: {
           DEFAULT: "hsl(var(--muted))",
@@ -45,7 +51,7 @@ export default {
       keyframes: {
         "fade-in": { from: { opacity: "0" }, to: { opacity: "1" } },
       },
-      animation: { "fade-in": "fade-in 0.2s ease-out" },
+      animation: { "fade-in": "fade-in 0.16s ease-out" },
     },
   },
   plugins: [tailwindcssAnimate],

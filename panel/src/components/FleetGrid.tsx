@@ -48,8 +48,7 @@ export function FleetGrid({
                 )}
                 style={{
                   backgroundColor: color,
-                  backgroundImage: "linear-gradient(145deg, rgb(255 255 255 / 0.28), rgb(0 0 0 / 0.18))",
-                  boxShadow: s.phase === "Running" ? `0 0 14px -2px ${color}` : undefined,
+                  backgroundImage: "linear-gradient(145deg, rgb(255 255 255 / 0.18), rgb(0 0 0 / 0.16))",
                 }}
               />
             );

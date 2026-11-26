@@ -6,40 +6,33 @@ export interface StatCardProps {
   icon: LucideIcon;
   label: string;
   value: React.ReactNode;
-  /** Tailwind classes applied to the icon container (e.g. "text-amber-500 bg-amber-500/10") */
   accentClass?: string;
-  /** A hex colour string; applied as `color` on the icon container. Takes precedence over accentClass for the colour. */
   accentColor?: string;
-  /** Tailwind classes applied to the value text */
   valueClass?: string;
 }
 
-const DEFAULT_ICON_CONTAINER = "shrink-0 rounded-md p-1.5 sm:p-2 bg-muted/30 text-muted-foreground";
-
-export function StatCard({ icon: Icon, label, value, accentClass, accentColor, valueClass }: StatCardProps) {
-  const containerStyle = accentColor ? { backgroundColor: `${accentColor}26`, color: accentColor } : undefined;
+export function StatCard({ icon: Icon, label, value, accentColor, valueClass }: StatCardProps) {
   return (
     <Card>
-      {/* Two cards share a phone's width, so padding, icon and figure step down
-          below sm to keep a value like "50 / 240" whole. */}
-      <CardContent className="flex items-center gap-2.5 p-3 sm:gap-3 sm:p-4">
-        <div
-          className={cn(DEFAULT_ICON_CONTAINER, !accentColor && accentClass)}
-          style={containerStyle}
-        >
-          <Icon className="h-4 w-4 sm:h-5 sm:w-5" />
-        </div>
+      <CardContent className="flex items-center justify-between gap-3 px-3.5 py-3">
         <div className="min-w-0 flex-1">
           <div
             className={cn(
-              "text-lg sm:text-2xl font-bold font-mono leading-none truncate text-foreground",
+              "truncate font-mono text-lg font-semibold leading-tight tracking-tight text-foreground tabular-nums sm:text-xl",
               valueClass,
             )}
             title={typeof value === "string" ? value : undefined}
           >
             {value}
           </div>
-          <div className="mt-1 text-[11px] text-muted-foreground font-medium">{label}</div>
+          <div className="mt-1 truncate text-[11px] font-medium text-muted-foreground">{label}</div>
+        </div>
+        <div
+          className="shrink-0 rounded-md border border-border/70 bg-muted p-1.5 text-muted-foreground"
+          style={accentColor ? { color: accentColor } : undefined}
+          aria-hidden="true"
+        >
+          <Icon className="h-4 w-4" />
         </div>
       </CardContent>
     </Card>

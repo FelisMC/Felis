@@ -61,11 +61,11 @@ export function RconToggle({ shown, hidden, onToggle }: { shown: boolean; hidden
   if (hidden === 0 && !shown) return null;
   return (
     <Button
-      variant="ghost"
+      variant="outline"
       size="sm"
       aria-pressed={shown}
       onClick={onToggle}
-      className="text-zinc-300 hover:bg-zinc-800 hover:text-zinc-50"
+      className="h-6 border-zinc-700/80 bg-zinc-900 px-2 text-[11px] text-zinc-200 hover:bg-zinc-800 hover:text-zinc-50"
     >
       {t(shown ? "log_hide_rcon" : "log_show_rcon")}
       {hidden > 0 && <span className="tabular-nums">({hidden})</span>}
@@ -129,9 +129,9 @@ export function LogConsole({ url, className, starting = false, onWriter }: { url
   const jumpToLatest = useCallback(() => setPinned(true), []);
 
   return (
-    <div className={cn("overflow-hidden rounded-md border border-border bg-black flex-1 flex flex-col min-h-0", className)}>
+    <div className={cn("flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-border bg-[#09090b]", className)}>
       {/* Toolbar */}
-      <div className="flex items-center justify-between gap-2 border-b border-zinc-800 bg-zinc-900/60 px-3 py-2 shrink-0">
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-zinc-800/90 bg-[#121215] px-3 py-1.5">
         <StatusIndicator status={starting && retryable && status === "ended" ? "reconnecting" : status} />
         <div className="flex items-center gap-1.5">
           <RconToggle shown={showRcon} hidden={hiddenCount} onToggle={() => setShowRcon((shown) => !shown)} />
@@ -140,19 +140,19 @@ export function LogConsole({ url, className, starting = false, onWriter }: { url
               variant="outline"
               size="sm"
               onClick={reconnect}
-              className="border-zinc-700 bg-transparent text-zinc-200 hover:bg-zinc-800 hover:text-zinc-50"
+              className="h-6 border-zinc-700/80 bg-zinc-900 px-2 text-[11px] text-zinc-200 hover:bg-zinc-800 hover:text-zinc-50"
             >
-              <RotateCw className="h-3.5 w-3.5" /> {t("log_reconnect_btn")}
+              <RotateCw className="h-3 w-3" /> {t("log_reconnect_btn")}
             </Button>
           )}
           <Button
-            variant="ghost"
+            variant="outline"
             size="sm"
             onClick={clear}
             disabled={lines.length === 0}
-            className="text-zinc-300 hover:bg-zinc-800 hover:text-zinc-50"
+            className="h-6 border-zinc-700/80 bg-zinc-900 px-2 text-[11px] text-zinc-200 hover:bg-zinc-800 hover:text-zinc-50"
           >
-            <Trash2 className="h-3.5 w-3.5" /> {t("log_clear_btn")}
+            <Trash2 className="h-3 w-3" /> {t("log_clear_btn")}
           </Button>
         </div>
       </div>

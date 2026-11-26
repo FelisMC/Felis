@@ -1,4 +1,3 @@
-import { Badge } from "@/components/ui/badge";
 import type { Phase } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
@@ -7,10 +6,10 @@ export type BadgeVariant = "default" | "muted" | "destructive" | "outline";
 
 // Keep phase colors aligned with the voxel palette.
 export const PHASE_COLOR: Record<Phase, string> = {
-  Running: "#22c55e",
+  Running: "#2eb86b",
   Starting: "#eab308",
   Stopping: "#f97316",
-  Stopped: "#64748b",
+  Stopped: "#71717a",
   Failed: "#ef4444",
   Unknown: "#94a3b8",
   Hibernating: "#818cf8",
@@ -39,10 +38,8 @@ const VARIANT: Record<Phase, BadgeVariant> = {
   Hibernated: "muted",
 };
 
-// Phases that should pulse: the in-flight transitions a pod is moving through.
 const TRANSIENT: ReadonlySet<Phase> = new Set<Phase>(["Starting", "Stopping", "Hibernating"]);
 
-// Unvalidated phases fall back to neutral Unknown styling.
 export function phaseColor(phase: Phase): string {
   return PHASE_COLOR[phase] ?? PHASE_COLOR.Unknown;
 }
@@ -51,13 +48,10 @@ export function phaseVariant(phase: Phase): BadgeVariant {
   return VARIANT[phase] ?? VARIANT.Unknown;
 }
 
-/** MAX_AUTO_RESTARTS mirrors the operator's v1alpha1.MaxAutoRestarts: how often it
- *  recreates the pod of a start that timed out before leaving it Failed. */
 export const MAX_AUTO_RESTARTS = 3;
 
 export type StartFailure = "retrying" | "gaveUp";
 
-// Hide start-failure detail for public views and servers requested to stop.
 export function startFailure(s: {
   phase?: Phase;
   desiredState?: string;
@@ -67,11 +61,8 @@ export function startFailure(s: {
   return s.startGaveUp ? "gaveUp" : "retrying";
 }
 
-/** PendingPower is a server asked to move that has not got there yet: asked to
- *  run with no pod up ("start"), or asked to stop while still up ("stop"). */
 export type PendingPower = "start" | "stop";
 
-// Compare phase with desiredState; public views without desiredState show no pending transition.
 export function pendingPower(s: { phase: Phase; desiredState?: string }): PendingPower | null {
   if (s.desiredState === "Running" && (s.phase === "Stopped" || s.phase === "Stopping" || s.phase === "Unknown" || s.phase === "Hibernated")) {
     return "start";
@@ -82,7 +73,6 @@ export function pendingPower(s: { phase: Phase; desiredState?: string }): Pendin
   return null;
 }
 
-// Display accepted start/stop intent before the operator updates phase.
 export function shownPhase(s: { phase: Phase; desiredState?: string }): Phase {
   const pending = pendingPower(s);
   return pending === "start" ? "Starting" : pending === "stop" ? "Stopping" : s.phase;
@@ -94,7 +84,6 @@ export function PhaseBadge({
   autoRestarts = 0,
 }: {
   phase: Phase;
-  /** From startFailure: a Failed start between automatic retries pulses and says so. */
   failure?: StartFailure | null;
   autoRestarts?: number;
 }) {
@@ -107,15 +96,22 @@ export function PhaseBadge({
         ? t("servers:server_failed_retrying_body", { used: autoRestarts, max: MAX_AUTO_RESTARTS })
         : t("servers:server_failed_body");
   return (
-    <Badge variant={phaseVariant(phase)} className="gap-1.5 whitespace-nowrap" title={hint}>
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 whitespace-nowrap text-xs",
+        phase === "Failed" ? "text-destructive" : "text-muted-foreground",
+      )}
+      title={hint}
+    >
       <span
+        aria-hidden="true"
         className={cn(
-          "h-1.5 w-1.5 rounded-full",
+          "h-[5.5px] w-[5.5px] shrink-0 rounded-full",
           (TRANSIENT.has(phase) || retrying) && "animate-pulse",
         )}
         style={{ backgroundColor: phaseColor(phase) }}
       />
       {retrying ? t("servers:phase_failed_retrying") : t(PHASE_KEY[phase] ?? PHASE_KEY.Unknown)}
-    </Badge>
+    </span>
   );
 }
