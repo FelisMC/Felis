@@ -1951,6 +1951,23 @@ ufw_active() {
   [ "$(LC_ALL=C ufw status 2>/dev/null | sed -n 1p)" = "Status: active" ]
 }
 
+# Report whether Cloudflare Tunnel + Access is configured on this host.
+cloudflare_edge_configured() {
+  local cfg="${HOST_CONFIG:-/etc/felis/felis.host.toml}" aud=""
+  [ -r "$cfg" ] || return 1
+  aud="$(awk '/^\[/ { s = ($0 == "[auth]") } s && $1 == "access_jwt_aud" { sub(/^[^=]*=[[:space:]]*/, ""); gsub(/^"|"[[:space:]]*$/, ""); print; exit }' "$cfg" 2>/dev/null)" || aud=""
+  [ -n "$aud" ]
+}
+
+# Reapply the Cloudflare origin fence after firewalld reloads its nftables ruleset.
+reload_firewalld() {
+  firewall-cmd --reload "$@"
+  local unit="${EDGE_FENCE_UNIT:-/etc/systemd/system/felis-edge-fence.service}"
+  if [ -f "$unit" ]; then
+    systemctl restart felis-edge-fence.service
+  fi
+}
+
 # Tag idempotent ufw rules with felis- comments so uninstall can identify them.
 configure_extra_ports_firewall() {
   local protocol
@@ -1964,7 +1981,7 @@ configure_extra_ports_firewall() {
   for protocol in tcp udp; do
     firewall-cmd --permanent --add-port="30000-32767/${protocol}"
   done
-  firewall-cmd --reload
+  reload_firewalld
 }
 
 configure_k3s_firewall() {
@@ -1973,17 +1990,21 @@ configure_k3s_firewall() {
     log "configuring ufw for k3s"
     ufw allow from "$POD_CIDR" comment felis-k3s-pods >/dev/null
     ufw allow from "$SERVICE_CIDR" comment felis-k3s-services >/dev/null
-    ufw allow "${FELIS_PANEL_NODEPORT}/tcp" comment felis-panel >/dev/null
+    if ! cloudflare_edge_configured; then
+      ufw allow "${FELIS_PANEL_NODEPORT}/tcp" comment felis-panel >/dev/null
+    fi
   fi
   command -v firewall-cmd >/dev/null 2>&1 || return 0
   systemctl is-active --quiet firewalld || return 0
 
   log "configuring firewalld for k3s"
   firewall-cmd --permanent --add-port=6443/tcp
-  firewall-cmd --permanent --add-port="${FELIS_PANEL_NODEPORT}/tcp"
+  if ! cloudflare_edge_configured; then
+    firewall-cmd --permanent --add-port="${FELIS_PANEL_NODEPORT}/tcp"
+  fi
   firewall-cmd --permanent --zone=trusted --add-source="$POD_CIDR"
   firewall-cmd --permanent --zone=trusted --add-source="$SERVICE_CIDR"
-  firewall-cmd --reload
+  reload_firewalld
 }
 
 install_k3s() {
@@ -3765,7 +3786,7 @@ configure_velocity_firewall() {
   systemctl is-active --quiet firewalld || return 0
   log "opening firewalld port ${FELIS_GAME_PORT}/tcp for the Minecraft proxy"
   firewall-cmd --permanent --add-port="${FELIS_GAME_PORT}/tcp"
-  firewall-cmd --reload
+  reload_firewalld
 }
 
 # Use loopback PostgreSQL for host tools and retain migrated host data for rollback.
@@ -5972,7 +5993,7 @@ configure_nano_firewall() {
   else
     warn "no FELIS_NANO_PROXY_CIDR, so firewalld keeps ${port}/tcp closed; the summary shows how to admit your proxy"
   fi
-  firewall-cmd --reload
+  reload_firewalld
 }
 
 # A public port other than the panel's means a reverse proxy on this host; the panel port then stays closed, or clients could forge X-Forwarded-For.
@@ -5997,7 +6018,7 @@ open_nano_panel_port() {
     log "opening firewalld port ${port}/tcp for the panel"
     firewall-cmd --permanent --add-port="${port}/tcp" >/dev/null
   fi
-  firewall-cmd --reload >/dev/null
+  reload_firewalld >/dev/null
 }
 
 # nano_setup_link creates the Owner on a first run and keeps the one-time link for the summary.
@@ -6202,7 +6223,7 @@ configure_ha_host_firewall() {
     for peer in ${peers//,/ }; do
       firewall-cmd --permanent --zone=trusted --add-source="$peer" >/dev/null
     done
-    firewall-cmd --reload >/dev/null
+    reload_firewalld >/dev/null
   fi
 }
 

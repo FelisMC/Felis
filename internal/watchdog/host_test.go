@@ -182,3 +182,25 @@ func TestCertFinding(t *testing.T) {
 		t.Fatalf("CA near expiry: got %+v", f)
 	}
 }
+
+func TestEdgeFenceFinding(t *testing.T) {
+	if f := EdgeFenceFinding(false, false, "no table"); f != nil {
+		t.Fatalf("unconfigured access: got %+v", f)
+	}
+	if f := EdgeFenceFinding(true, true, ""); f != nil {
+		t.Fatalf("present fence: got %+v", f)
+	}
+	f := EdgeFenceFinding(true, false, "Error: No such file or directory")
+	if f == nil {
+		t.Fatal("missing fence: no finding")
+	}
+	if f.Key != "edge-fence" || f.Severity != Critical || f.For != 0 {
+		t.Fatalf("missing fence: key=%q severity=%v for=%v", f.Key, f.Severity, f.For)
+	}
+	if !strings.Contains(f.SummaryEN, "inet felis_edge is missing") || !strings.Contains(f.SummaryEN, "No such file or directory") {
+		t.Fatalf("missing fence: summaryEN=%q", f.SummaryEN)
+	}
+	if !strings.Contains(f.Hint, "felis-edge-fence.service") {
+		t.Fatalf("missing fence: hint=%q", f.Hint)
+	}
+}

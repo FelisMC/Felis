@@ -629,9 +629,13 @@ ufw_stub='
     }'
 ublock="$(awk '/^ufw_active\(\) \{/,/^}/' "$BS")"
 [ -n "$ublock" ] || { echo "FAIL: no ufw_active found in $BS"; exit 1; }
+cfblock="$(awk '/^cloudflare_edge_configured\(\) \{/,/^}/' "$BS")"
+[ -n "$cfblock" ] || { echo "FAIL: no cloudflare_edge_configured found in $BS"; exit 1; }
+rfblock="$(awk '/^reload_firewalld\(\) \{/,/^}/' "$BS")"
+[ -n "$rfblock" ] || { echo "FAIL: no reload_firewalld found in $BS"; exit 1; }
 
 run_fw() { # listen proxy-cidr port-already-open(0|1) [ufw-state]
-  FELIS_NANO_LISTEN="$1" FELIS_NANO_PROXY_CIDR="$2" OPEN="$3" UFW="${4:-inactive}" bash -c '
+  FELIS_NANO_LISTEN="$1" FELIS_NANO_PROXY_CIDR="$2" OPEN="$3" UFW="${4:-inactive}" EDGE_FENCE_UNIT=/nonexistent bash -c '
     ok() { printf "OK: %s\n" "$*"; }
     log() { printf "LOG: %s\n" "$*"; }
     warn() { printf "WARN: %s\n" "$*"; }
@@ -642,6 +646,7 @@ run_fw() { # listen proxy-cidr port-already-open(0|1) [ufw-state]
     }
     '"$ufw_stub"'
     '"$ublock"'
+    '"$rfblock"'
     '"$kblock"'
     '"$fblock"'
     configure_nano_firewall' 2>&1
@@ -696,11 +701,12 @@ done
 pblock="$(awk '/^open_nano_panel_port\(\) \{/,/^}/' "$BS")"
 [ -n "$pblock" ] || { echo "FAIL: no open_nano_panel_port found in $BS"; exit 1; }
 run_panel_fw() { # public-port
-  FELIS_NANO_PANEL_PORT=8443 FELIS_NANO_PUBLIC_PORT="$1" UFW=active bash -c '
+  FELIS_NANO_PANEL_PORT=8443 FELIS_NANO_PUBLIC_PORT="$1" UFW=active EDGE_FENCE_UNIT=/nonexistent bash -c '
     log() { :; }
     systemctl() { return 1; }
     '"$ufw_stub"'
     '"$ublock"'
+    '"$rfblock"'
     '"$pblock"'
     open_nano_panel_port' 2>&1
 }
@@ -718,14 +724,20 @@ exfblock="$(awk '/^configure_extra_ports_firewall\(\) \{/,/^}/' "$BS")"
 [ -n "$exfblock" ] || { echo "FAIL: no configure_extra_ports_firewall found in $BS"; exit 1; }
 vfblock="$(awk '/^configure_velocity_firewall\(\) \{/,/^}/' "$BS")"
 [ -n "$vfblock" ] || { echo "FAIL: no configure_velocity_firewall found in $BS"; exit 1; }
-run_host_fw() { # ufw-state firewalld(0|1)
-  UFW="$1" FIREWALLD="$2" POD_CIDR=10.42.0.0/16 SERVICE_CIDR=10.43.0.0/16 FELIS_PANEL_NODEPORT=30443 \
+run_host_fw() { # ufw-state firewalld(0|1) [host-config] [edge-fence-unit]
+  UFW="$1" FIREWALLD="$2" HOST_CONFIG="${3:-/nonexistent}" EDGE_FENCE_UNIT="${4:-/nonexistent}" \
+  POD_CIDR=10.42.0.0/16 SERVICE_CIDR=10.43.0.0/16 FELIS_PANEL_NODEPORT=30443 \
   FELIS_GAME_PORT=25565 bash -c '
     log() { printf "LOG: %s\n" "$*"; }
-    systemctl() { [ "$FIREWALLD" = 1 ]; }
+    systemctl() {
+      if [ "$1" = is-active ]; then [ "$FIREWALLD" = 1 ]; return; fi
+      printf "SC: %s\n" "$*"
+    }
     firewall-cmd() { printf "FW: %s\n" "$*"; }
     '"$ufw_stub"'
     '"$ublock"'
+    '"$cfblock"'
+    '"$rfblock"'
     '"$exfblock"'
     '"$k3fblock"'
     '"$vfblock"'
@@ -753,8 +765,28 @@ case "$out" in
   *) echo "PASS an inactive ufw is left alone" ;;
 esac
 expect "  while firewalld still gets the pods" "FW: --permanent --zone=trusted --add-source=10.42.0.0/16" "$out"
+expect "firewalld opens the panel NodePort without Cloudflare edge" "FW: --permanent --add-port=30443/tcp" "$out"
 expect "firewalld admits additional TCP ports" "FW: --permanent --add-port=30000-32767/tcp" "$out"
 expect "firewalld admits additional UDP ports" "FW: --permanent --add-port=30000-32767/udp" "$out"
+case "$out" in
+  *"SC: restart felis-edge-fence.service"*) echo "FAIL reload_firewalld restarted a missing edge fence unit"; fails=$((fails + 1)) ;;
+  *) echo "PASS reload_firewalld leaves missing edge fence unit alone" ;;
+esac
+
+cf_tmp="$(mktemp -d)"
+printf '[auth]\naccess_jwt_aud = "cf-aud-123"\n' > "$cf_tmp/felis.host.toml"
+touch "$cf_tmp/felis-edge-fence.service"
+out="$(run_host_fw active 1 "$cf_tmp/felis.host.toml" "$cf_tmp/felis-edge-fence.service")"
+case "$out" in
+  *"UFW: allow 30443/tcp"*) echo "FAIL ufw opened panel NodePort when Cloudflare edge is configured:"; echo "$out"; fails=$((fails + 1)) ;;
+  *) echo "PASS ufw keeps panel NodePort closed when Cloudflare edge is configured" ;;
+esac
+case "$out" in
+  *"FW: --permanent --add-port=30443/tcp"*) echo "FAIL firewalld opened panel NodePort when Cloudflare edge is configured:"; echo "$out"; fails=$((fails + 1)) ;;
+  *) echo "PASS firewalld keeps panel NodePort closed when Cloudflare edge is configured" ;;
+esac
+expect "reload_firewalld reapplies felis-edge-fence.service when installed" "SC: restart felis-edge-fence.service" "$out"
+rm -rf "$cf_tmp"
 
 expect "a routable bind with no proxy CIDR is warned about" "WARNING: bound to 10.0.0.5:8081 with no FELIS_NANO_PROXY_CIDR" \
   "$(run_summary 10.0.0.5:8081)"

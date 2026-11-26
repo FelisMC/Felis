@@ -25,7 +25,12 @@ const podSetupConfigPath = "/etc/felis/felis.pod.toml"
 const cloudflaredFelisUnit = "/etc/systemd/system/cloudflared-felis.service"
 
 // Use a dedicated nftables table to replace or remove the fence without touching unrelated rules.
-const felisEdgeTable = "felis_edge"
+const (
+	felisEdgeTable     = "felis_edge"
+	edgeFenceRulesPath = "/etc/felis/edge-fence.nft"
+	edgeFenceUnitName  = "felis-edge-fence.service"
+	edgeFenceUnitPath  = "/etc/systemd/system/" + edgeFenceUnitName
+)
 
 func applyCloudflareEdge(ctx context.Context, result *cfsetup.Result, panelHost, adminHost, cloudflaredBin string) error {
 	if result == nil || result.AccessAud == "" {
@@ -308,34 +313,97 @@ func systemctl(ctx context.Context, args ...string) error {
 }
 
 // Filter the loopback-only NodePort before kube-proxy DNAT at priority -300.
+// Declare then delete the table before recreating it so `nft -f` is idempotent.
 func originFenceRuleset(nodePort int32) string {
-	return fmt.Sprintf(`table inet %s {
+	return fmt.Sprintf(`table inet %s
+delete table inet %s
+table inet %s {
 	chain prerouting {
 		type filter hook prerouting priority -300; policy accept;
 		iif "lo" accept
 		tcp dport %d drop
 	}
 }
-`, felisEdgeTable, nodePort)
+`, felisEdgeTable, felisEdgeTable, felisEdgeTable, nodePort)
 }
 
-// Requires nftables; a firewalld reload can flush the standalone table.
+func edgeFenceUnit(nftBin, rulesPath string) string {
+	return fmt.Sprintf(`[Unit]
+Description=Felis Cloudflare edge origin NodePort fence
+After=network-pre.target firewalld.service nftables.service
+Before=k3s.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=%s -f %s
+
+[Install]
+WantedBy=multi-user.target
+`, nftBin, rulesPath)
+}
+
+func installEdgeFence(ctx context.Context, nodePort int32, nftBin, rulesPath, unitPath string, runSystemctl func(context.Context, ...string) error) error {
+	if nodePort <= 0 {
+		return fmt.Errorf("fence origin: invalid node port %d", nodePort)
+	}
+	if strings.TrimSpace(nftBin) == "" {
+		return fmt.Errorf("fence origin: nft binary path is empty")
+	}
+	if err := os.MkdirAll(filepath.Dir(rulesPath), 0o755); err != nil {
+		return fmt.Errorf("fence origin: create rules directory: %w", err)
+	}
+	if err := os.WriteFile(rulesPath, []byte(originFenceRuleset(nodePort)), 0o600); err != nil {
+		return fmt.Errorf("fence origin: write %s: %w", rulesPath, err)
+	}
+	if err := os.Chmod(rulesPath, 0o600); err != nil {
+		return fmt.Errorf("fence origin: chmod %s: %w", rulesPath, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+		return fmt.Errorf("fence origin: create unit directory: %w", err)
+	}
+	if err := os.WriteFile(unitPath, []byte(edgeFenceUnit(nftBin, rulesPath)), 0o644); err != nil {
+		return fmt.Errorf("fence origin: write %s: %w", unitPath, err)
+	}
+	if err := runSystemctl(ctx, "daemon-reload"); err != nil {
+		return fmt.Errorf("fence origin: %w", err)
+	}
+	if err := runSystemctl(ctx, "enable", edgeFenceUnitName); err != nil {
+		return fmt.Errorf("fence origin: %w", err)
+	}
+	if err := runSystemctl(ctx, "restart", edgeFenceUnitName); err != nil {
+		return fmt.Errorf("fence origin: %w", err)
+	}
+	return nil
+}
+
+func removeEdgeFence(ctx context.Context, rulesPath, unitPath string, runSystemctl func(context.Context, ...string) error) error {
+	if _, err := os.Stat(unitPath); err == nil {
+		if err := runSystemctl(ctx, "disable", "--now", edgeFenceUnitName); err != nil {
+			return err
+		}
+		if err := os.Remove(unitPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err := runSystemctl(ctx, "daemon-reload"); err != nil {
+			return err
+		}
+	}
+	if err := os.Remove(rulesPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 func fenceOriginNodePort(ctx context.Context, nodePort int32) error {
 	if nodePort <= 0 {
 		return fmt.Errorf("fence origin: invalid node port %d", nodePort)
 	}
-	if _, err := exec.LookPath("nft"); err != nil {
+	nftBin, err := exec.LookPath("nft")
+	if err != nil {
 		return fmt.Errorf("fence origin: `nft` not found — cannot close public access to NodePort %d; install nftables or restrict the port manually: %w", nodePort, err)
 	}
-	// Idempotent pre-clean: drop any stale felis_edge table (no-op on first run).
-	_ = unfenceOriginNodePort(ctx)
-	cmd := exec.CommandContext(ctx, "nft", "-f", "-")
-	cmd.Stdin = strings.NewReader(originFenceRuleset(nodePort))
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("fence origin: nft -f -: %w: %s", err, string(out))
-	}
-	return nil
+	return installEdgeFence(ctx, nodePort, nftBin, edgeFenceRulesPath, edgeFenceUnitPath, systemctl)
 }
 
 // unfenceOriginNodePort removes the fence, reopening the NodePort on all interfaces. It is the on-host break-glass if the tunnel dies, and it is idempotent. Integration-only.

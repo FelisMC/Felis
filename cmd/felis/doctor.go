@@ -76,6 +76,7 @@ var doctorAreas = []struct{ key, title string }{
 	{key: "memory", title: "memory"},
 	{key: "k3s-certs", title: "k3s certificates"},
 	{key: "host-address", title: "node address"},
+	{key: "edge-fence", title: "edge origin fence"},
 	{key: "clock", title: "clock"},
 	{key: "systemd", title: "systemd units and timers"},
 	{key: "alerts", title: "alerting"},
@@ -218,6 +219,9 @@ func collectDoctor(ctx context.Context, env doctorEnv) doctorReport {
 		}
 		if w.nodeIP == "" {
 			skip["host-address"] = "no -node-ip"
+		}
+		if strings.TrimSpace(cfg.Auth.AccessJWTAud) == "" {
+			skip["edge-fence"] = "Cloudflare Tunnel is not configured"
 		}
 	}
 	report.Findings = append(report.Findings, unitFindings(ctx, env)...)

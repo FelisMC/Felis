@@ -800,6 +800,7 @@
   "doctor_area_memory": "内存",
   "doctor_area_k3s-certs": "k3s 证书",
   "doctor_area_host-address": "节点地址",
+  "doctor_area_edge-fence": "面板端口防护",
   "doctor_area_clock": "时钟",
   "doctor_area_systemd": "服务与定时任务",
   "doctor_area_alerts": "告警投递",

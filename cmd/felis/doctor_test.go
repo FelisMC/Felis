@@ -105,6 +105,7 @@ func TestFindingArea(t *testing.T) {
 		"memory":                             "memory",
 		"k3s-certs":                          "k3s-certs",
 		"host-address":                       "host-address",
+		"edge-fence":                         "edge-fence",
 		"clock":                              "clock",
 		"config":                             "config",
 		"unit/felis-offsite.service":         "systemd",
@@ -420,7 +421,7 @@ func TestPrintDoctorReport(t *testing.T) {
 		t.Errorf("exit %d with nothing found, want 0", code)
 	}
 	want := "✓  configuration\n✓  Kubernetes cluster\n✓  PostgreSQL\n-  game proxy: not checked, no -proxy-addr\n✓  database backups\n✓  off-site copy\n" +
-		"✓  build scan database\n✓  disk space\n✓  memory\n✓  k3s certificates\n✓  node address\n✓  clock\n✓  systemd units and timers\n✓  alerting\n" +
+		"✓  build scan database\n✓  disk space\n✓  memory\n✓  k3s certificates\n✓  node address\n✓  edge origin fence\n✓  clock\n✓  systemd units and timers\n✓  alerting\n" +
 		"\nno problems found\n"
 	if out.String() != want {
 		t.Errorf("report:\n%s\nwant:\n%s", out.String(), want)
@@ -442,5 +443,44 @@ func TestPrintDoctorReport(t *testing.T) {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("report lacks %q:\n%s", want, out.String())
 		}
+	}
+}
+
+func TestDoctorReportsEdgeFence(t *testing.T) {
+	prev := edgeFenceCheck
+	defer func() { edgeFenceCheck = prev }()
+
+	// Without Cloudflare Access, the area is skipped rather than failing.
+	edgeFenceCheck = func(context.Context) (bool, string) {
+		t.Fatal("edgeFenceCheck must not run when access_jwt_aud is empty")
+		return false, ""
+	}
+	env, _ := doctorHost(t, testWatchdogConfig, "")
+	var out bytes.Buffer
+	runDoctor(context.Background(), env, &out)
+	if !strings.Contains(out.String(), "-  edge origin fence: not checked, Cloudflare Tunnel is not configured\n") {
+		t.Fatalf("expected skipped edge origin fence:\n%s", out.String())
+	}
+
+	// With Cloudflare Access enabled and missing nft table, doctor reports a critical finding.
+	cfgWithAccess := testWatchdogConfig + "[auth]\naccess_jwt_aud = \"aud-123\"\n"
+	edgeFenceCheck = func(context.Context) (bool, string) {
+		return false, "No such file or directory"
+	}
+	env, _ = doctorHost(t, cfgWithAccess, "")
+	out.Reset()
+	runDoctor(context.Background(), env, &out)
+	if !strings.Contains(out.String(), "✗  edge origin fence\n     critical edge-fence: Cloudflare Access is enabled, but nftables table inet felis_edge is missing") {
+		t.Fatalf("expected critical edge-fence finding:\n%s", out.String())
+	}
+
+	// When the table is present, edge origin fence is healthy.
+	edgeFenceCheck = func(context.Context) (bool, string) {
+		return true, ""
+	}
+	out.Reset()
+	runDoctor(context.Background(), env, &out)
+	if !strings.Contains(out.String(), "✓  edge origin fence\n") {
+		t.Fatalf("expected healthy edge origin fence:\n%s", out.String())
 	}
 }

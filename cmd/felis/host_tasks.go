@@ -536,6 +536,9 @@ func takeDownCloudflareEdge(ctx context.Context, out io.Writer) error {
 		}
 		fmt.Fprintln(out, "cloudflared-felis.service stopped and disabled")
 	}
+	if err := removeEdgeFence(ctx, edgeFenceRulesPath, edgeFenceUnitPath, systemctl); err != nil {
+		return err
+	}
 	if _, err := exec.LookPath("nft"); err == nil {
 		if err := unfenceOriginNodePort(ctx); err != nil {
 			return err

@@ -149,3 +149,22 @@ func CertFinding(dirs []string, now time.Time) *Finding {
 	}
 	return f
 }
+
+// EdgeFenceFinding reports when Cloudflare Access is enabled but the nftables fence closing the panel NodePort is absent.
+func EdgeFenceFinding(accessConfigured, present bool, detail string) *Finding {
+	if !accessConfigured || present {
+		return nil
+	}
+	suffix := ""
+	if d := strings.TrimSpace(detail); d != "" {
+		suffix = " (" + d + ")"
+	}
+	return &Finding{
+		Key:       "edge-fence",
+		Severity:  Critical,
+		For:       0,
+		Summary:   "Cloudflare 访问模式已启用，但面板端口封锁表 inet felis_edge 不存在：面板端口可能暴露在公网" + suffix,
+		SummaryEN: "Cloudflare Access is enabled, but nftables table inet felis_edge is missing: the panel port may be directly reachable from the internet" + suffix,
+		Hint:      "sudo systemctl restart felis-edge-fence.service (or reapply Cloudflare Tunnel in Platform settings -> Access)",
+	}
+}

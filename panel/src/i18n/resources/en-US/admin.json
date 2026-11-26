@@ -810,6 +810,7 @@
   "doctor_area_memory": "Memory",
   "doctor_area_k3s-certs": "k3s certificates",
   "doctor_area_host-address": "Node address",
+  "doctor_area_edge-fence": "Edge origin fence",
   "doctor_area_clock": "Clock",
   "doctor_area_systemd": "Services and timers",
   "doctor_area_alerts": "Alert delivery",

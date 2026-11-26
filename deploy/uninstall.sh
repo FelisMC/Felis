@@ -43,7 +43,7 @@ FELIS_UNITS=(
   felis-db-backup.timer felis-watchdog.timer felis-offsite.timer felis-build-tools.timer felis-update-check.timer
   felis-db-backup.service felis-watchdog.service felis-watchdog-failed.service felis-offsite.service felis-build-tools.service felis-update-check.service
   felis-velocity.service felis-nano.service cloudflared-felis.service
-  felis-postgres-firewall.service felis-node-control.service
+  felis-edge-fence.service felis-postgres-firewall.service felis-node-control.service
   felis-control-firewall.timer felis-control-firewall.service felis-node-firewall.service
 )
 

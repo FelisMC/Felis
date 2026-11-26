@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -211,8 +212,26 @@ func watchdogProbes(ctx context.Context, w watchdogFlags, cfg *config.Config, no
 			add(watchdog.AddressFinding(w.nodeIP, held))
 		}
 	}
+	if strings.TrimSpace(cfg.Auth.AccessJWTAud) != "" {
+		present, detail := edgeFenceCheck(ctx)
+		add(watchdog.EdgeFenceFinding(true, present, detail))
+	}
 	add(watchdog.ClockFinding(watchdog.ClockStatus()))
 	return cl, owners, ownersErr
+}
+
+var edgeFenceCheck = defaultEdgeFenceCheck
+
+func defaultEdgeFenceCheck(ctx context.Context) (bool, string) {
+	nftBin, err := exec.LookPath("nft")
+	if err != nil {
+		return false, "nft not found"
+	}
+	out, err := exec.CommandContext(ctx, nftBin, "list", "table", "inet", felisEdgeTable).CombinedOutput()
+	if err != nil {
+		return false, strings.TrimSpace(string(out))
+	}
+	return true, ""
 }
 
 // Heartbeat failure includes undelivered alerts or unsaved state that would repeat notifications.

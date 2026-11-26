@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,9 +15,14 @@ func TestOriginFenceRuleset(t *testing.T) {
 	rs := originFenceRuleset(port)
 
 	// The private table so the fence adds/removes atomically without touching other
-	// host rules.
+	// host rules, and declares then deletes it first so `nft -f` is idempotent.
 	if !strings.Contains(rs, "table inet "+felisEdgeTable) {
 		t.Errorf("ruleset missing dedicated inet table %q:\n%s", felisEdgeTable, rs)
+	}
+	delIdx := strings.Index(rs, "delete table inet "+felisEdgeTable)
+	bodyIdx := strings.Index(rs, "table inet "+felisEdgeTable+" {")
+	if delIdx < 0 || bodyIdx < 0 || delIdx > bodyIdx {
+		t.Errorf("ruleset must delete table inet %s before recreating it for idempotent nft -f:\n%s", felisEdgeTable, rs)
 	}
 	// inet family (not ip) so a public IPv6 NodePort is fenced too.
 	if strings.Contains(rs, "table ip "+felisEdgeTable) {
@@ -49,6 +55,89 @@ func TestOriginFenceRulesetHonorsPort(t *testing.T) {
 	}
 	if strings.Contains(rs, "30443") {
 		t.Errorf("ruleset must not carry the default 30443 when a different port is configured:\n%s", rs)
+	}
+}
+
+func TestEdgeFenceInstallAndRemove(t *testing.T) {
+	dir := t.TempDir()
+	rulesPath := filepath.Join(dir, "etc", "edge-fence.nft")
+	unitPath := filepath.Join(dir, "systemd", edgeFenceUnitName)
+
+	var calls []string
+	fakeSystemctl := func(_ context.Context, args ...string) error {
+		calls = append(calls, strings.Join(args, " "))
+		return nil
+	}
+
+	if err := installEdgeFence(context.Background(), 30443, "/usr/sbin/nft", rulesPath, unitPath, fakeSystemctl); err != nil {
+		t.Fatalf("installEdgeFence: %v", err)
+	}
+
+	info, err := os.Stat(rulesPath)
+	if err != nil {
+		t.Fatalf("stat rulesPath: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("rulesPath mode = %o, want 0600", perm)
+	}
+	rulesRaw, err := os.ReadFile(rulesPath)
+	if err != nil {
+		t.Fatalf("read rulesPath: %v", err)
+	}
+	if string(rulesRaw) != originFenceRuleset(30443) {
+		t.Errorf("rules file mismatch:\n%s", string(rulesRaw))
+	}
+
+	unitRaw, err := os.ReadFile(unitPath)
+	if err != nil {
+		t.Fatalf("read unitPath: %v", err)
+	}
+	unitStr := string(unitRaw)
+	for _, want := range []string{
+		"After=network-pre.target firewalld.service nftables.service",
+		"Before=k3s.service",
+		"ExecStart=/usr/sbin/nft -f " + rulesPath,
+		"WantedBy=multi-user.target",
+	} {
+		if !strings.Contains(unitStr, want) {
+			t.Errorf("unit lacks %q:\n%s", want, unitStr)
+		}
+	}
+
+	wantInstallCalls := []string{
+		"daemon-reload",
+		"enable " + edgeFenceUnitName,
+		"restart " + edgeFenceUnitName,
+	}
+	if strings.Join(calls, "|") != strings.Join(wantInstallCalls, "|") {
+		t.Errorf("install systemctl calls = %v, want %v", calls, wantInstallCalls)
+	}
+
+	calls = nil
+	if err := removeEdgeFence(context.Background(), rulesPath, unitPath, fakeSystemctl); err != nil {
+		t.Fatalf("removeEdgeFence: %v", err)
+	}
+	wantRemoveCalls := []string{
+		"disable --now " + edgeFenceUnitName,
+		"daemon-reload",
+	}
+	if strings.Join(calls, "|") != strings.Join(wantRemoveCalls, "|") {
+		t.Errorf("remove systemctl calls = %v, want %v", calls, wantRemoveCalls)
+	}
+	if _, err := os.Stat(unitPath); !os.IsNotExist(err) {
+		t.Errorf("unitPath still exists after remove: %v", err)
+	}
+	if _, err := os.Stat(rulesPath); !os.IsNotExist(err) {
+		t.Errorf("rulesPath still exists after remove: %v", err)
+	}
+
+	// Idempotent when already removed.
+	calls = nil
+	if err := removeEdgeFence(context.Background(), rulesPath, unitPath, fakeSystemctl); err != nil {
+		t.Fatalf("second removeEdgeFence: %v", err)
+	}
+	if len(calls) != 0 {
+		t.Errorf("second removeEdgeFence invoked systemctl unexpectedly: %v", calls)
 	}
 }
 
