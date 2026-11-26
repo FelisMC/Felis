@@ -662,3 +662,84 @@ func TestStartRejectsExcessAsyncJobsPerServerAndGlobal(t *testing.T) {
 		t.Fatalf("async start after completion on srv-a: %v", err)
 	}
 }
+
+func TestRunCapsOneShotJobsWhenBrowserFullAndDeletesOnCancel(t *testing.T) {
+	cs := fake.NewSimpleClientset()
+	created := make(chan string, 8)
+	cs.PrependReactor("create", "jobs", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		j := a.(k8stesting.CreateAction).GetObject().(*batchv1.Job)
+		created <- j.Name
+		return false, nil, nil
+	})
+	deleted := make(chan string, 8)
+	cs.PrependReactor("delete", "jobs", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		deleted <- a.(k8stesting.DeleteAction).GetName()
+		return false, nil, nil
+	})
+
+	browser := &Browser{sessions: map[string]*browseSession{}}
+	for i := range maxBrowsers {
+		browser.sessions[fmt.Sprintf("busy-%d", i)] = &browseSession{}
+	}
+
+	runner := NewK8sRunner(cs)
+	runner.Browser = browser
+	runner.MaxSyncPerServer = 1
+	runner.MaxSyncGlobal = 2
+
+	makeRead := func(server, opID string) JobParams {
+		p := opParams(OpSearch)
+		p.Server, p.OpID = server, opID
+		return p
+	}
+
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	defer cancel1()
+	done1 := make(chan error, 1)
+	go func() {
+		_, err := runner.Run(ctx1, makeRead("srv-a", "r1"))
+		done1 <- err
+	}()
+	job1 := <-created
+
+	if _, err := runner.Run(context.Background(), makeRead("srv-a", "r2")); !errors.Is(err, ErrTooManyJobs) {
+		t.Fatalf("second concurrent read on srv-a = %v, want ErrTooManyJobs", err)
+	}
+
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	done2 := make(chan error, 1)
+	go func() {
+		_, err := runner.Run(ctx2, makeRead("srv-b", "r3"))
+		done2 <- err
+	}()
+	job2 := <-created
+
+	if _, err := runner.Run(context.Background(), makeRead("srv-c", "r4")); !errors.Is(err, ErrTooManyJobs) {
+		t.Fatalf("third global concurrent read on srv-c = %v, want ErrTooManyJobs", err)
+	}
+
+	cancel1()
+	if err := <-done1; !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled read 1 err = %v, want context.Canceled", err)
+	}
+	select {
+	case name := <-deleted:
+		if name != job1 {
+			t.Fatalf("deleted job = %q, want %q", name, job1)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("canceled one-shot read Job was not deleted")
+	}
+
+	cancel2()
+	<-done2
+	select {
+	case name := <-deleted:
+		if name != job2 {
+			t.Fatalf("deleted job = %q, want %q", name, job2)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("second canceled one-shot read Job was not deleted")
+	}
+}

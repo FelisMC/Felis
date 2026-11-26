@@ -26,6 +26,9 @@ const maxLogBytes = 12 << 20
 const (
 	defaultMaxAsyncPerServer = 1
 	defaultMaxAsyncGlobal    = 4
+	defaultMaxSyncPerServer  = 2
+	defaultMaxSyncGlobal     = 4
+	deleteJobTimeout         = 5 * time.Second
 )
 
 // K8sRunner gives file Jobs no Kubernetes credentials.
@@ -34,11 +37,58 @@ type K8sRunner struct {
 	Browser           *Browser
 	MaxAsyncPerServer int
 	MaxAsyncGlobal    int
+	MaxSyncPerServer  int
+	MaxSyncGlobal     int
 	asyncMu           sync.Mutex
+	syncMu            sync.Mutex
+	syncGlobal        int
+	syncByServer      map[string]int
 }
 
 func NewK8sRunner(cs kubernetes.Interface) *K8sRunner {
 	return &K8sRunner{cs: cs}
+}
+
+func (k *K8sRunner) acquireSync(server string) bool {
+	maxPerServer := k.MaxSyncPerServer
+	if maxPerServer <= 0 {
+		maxPerServer = defaultMaxSyncPerServer
+	}
+	maxGlobal := k.MaxSyncGlobal
+	if maxGlobal <= 0 {
+		maxGlobal = defaultMaxSyncGlobal
+	}
+	k.syncMu.Lock()
+	defer k.syncMu.Unlock()
+	if k.syncGlobal >= maxGlobal || k.syncByServer[server] >= maxPerServer {
+		return false
+	}
+	if k.syncByServer == nil {
+		k.syncByServer = map[string]int{}
+	}
+	k.syncGlobal++
+	k.syncByServer[server]++
+	return true
+}
+
+func (k *K8sRunner) releaseSync(server string) {
+	k.syncMu.Lock()
+	defer k.syncMu.Unlock()
+	if k.syncGlobal > 0 {
+		k.syncGlobal--
+	}
+	if n := k.syncByServer[server]; n <= 1 {
+		delete(k.syncByServer, server)
+	} else {
+		k.syncByServer[server] = n - 1
+	}
+}
+
+func (k *K8sRunner) deleteJob(namespace, name string) {
+	delCtx, cancel := context.WithTimeout(context.Background(), deleteJobTimeout)
+	defer cancel()
+	policy := metav1.DeletePropagationBackground
+	_ = k.cs.BatchV1().Jobs(namespace).Delete(delCtx, name, metav1.DeleteOptions{PropagationPolicy: &policy})
 }
 
 // Run may stream reads early but waits for mutation termination to preserve world-lock ordering; create collisions remain errors.
@@ -50,10 +100,22 @@ func (k *K8sRunner) Run(ctx context.Context, p JobParams) ([]byte, error) {
 			return payload, err
 		}
 	}
+	if p.Op != OpDiskUsage {
+		if !k.acquireSync(p.Server) {
+			return nil, ErrTooManyJobs
+		}
+		defer k.releaseSync(p.Server)
+	}
 	job, err := k.createJob(ctx, p)
 	if err != nil {
 		return nil, err
 	}
+	finished := false
+	defer func() {
+		if !finished && !mutates(p.Op) && p.Op != OpDiskUsage && ctx.Err() != nil {
+			k.deleteJob(p.Namespace, job.Name)
+		}
+	}()
 
 	pod, err := k.awaitPod(ctx, p)
 	if err != nil {
@@ -72,6 +134,7 @@ func (k *K8sRunner) Run(ctx context.Context, p JobParams) ([]byte, error) {
 	var last string
 	for sc.Scan() {
 		if payload, ok := strings.CutPrefix(sc.Text(), ResultPrefix); ok {
+			finished = true
 			return []byte(payload), nil
 		}
 		last = sc.Text()
