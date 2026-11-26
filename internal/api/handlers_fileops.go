@@ -11,6 +11,7 @@ import (
 
 	"felis.lolicon.best/internal/fileedit"
 	"felis.lolicon.best/internal/maintenance"
+	"felis.lolicon.best/internal/naming"
 )
 
 // Upload sessions reserve their full size on staging disk until landing ends.
@@ -378,12 +379,30 @@ func (a *API) authorizeServerFiles(w http.ResponseWriter, r *http.Request) (stri
 		a.writeLookupError(w, r, err)
 		return "", false
 	}
-	if !a.isOwnerOrAdmin(principalFromContext(r.Context()), rec) {
+	p := principalFromContext(r.Context())
+	if !a.isOwnerOrAdmin(p, rec) {
+		writeError(w, r, errForbidden)
+		return "", false
+	}
+	if !loginFileAccessAllowed(r, name, p) {
 		writeError(w, r, errForbidden)
 		return "", false
 	}
 	*r = *r.WithContext(withAuthorizedServer(r.Context(), rec))
 	return name, true
+}
+
+func loginFileAccessAllowed(r *http.Request, name string, p *Principal) bool {
+	if name != naming.SystemLoginServer || p.IsOwner() {
+		return true
+	}
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		return true
+	}
+	if strings.HasSuffix(r.URL.Path, "/files/download") || strings.HasSuffix(r.URL.Path, "/world/export") {
+		return true
+	}
+	return liveExperienceFile(r, name)
 }
 
 // authorizeFileSession requires server access and the same account that began the session.

@@ -816,6 +816,10 @@ func (r patchServerRequest) setsRecovery() bool {
 	return r.ResumeAfterHostRestart != nil || r.RestartOnCrash != nil || r.MaxCrashRestarts != nil || r.Notify != nil
 }
 
+func (r patchServerRequest) setsLoginExecutable() bool {
+	return r.Image != nil || r.Software != nil || r.JavaFlags != nil || r.Args != nil || r.Env != nil || r.StopCommands != nil
+}
+
 const (
 	minIdleStopSeconds = 60
 	maxIdleStopSeconds = 86400
@@ -837,6 +841,10 @@ func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, body patchServerRequest) {
+	if name == naming.SystemLoginServer && body.setsLoginExecutable() && !principalFromContext(r.Context()).IsOwner() {
+		writeError(w, r, errForbidden)
+		return
+	}
 	if naming.IsSystemServer(name) &&
 		((body.AutostartPolicy != nil && *body.AutostartPolicy != string(v1alpha1.AutostartPublic)) ||
 			(body.IdleStopSeconds != nil && *body.IdleStopSeconds != 0) || body.IdleAction != nil) {

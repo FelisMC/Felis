@@ -120,3 +120,63 @@ func TestSystemConsoleStreamRechecksWithoutOwnershipRow(t *testing.T) {
 		t.Fatal("system log stream outlived its lifetime")
 	}
 }
+
+func TestLoginExecutableAndFilesAreOwnerOnly(t *testing.T) {
+	admin := &Principal{UserID: "staff", Role: "admin", ViaAdminAccess: true}
+	owner := &Principal{UserID: "boss", Role: "owner", ViaAdminAccess: true}
+
+	for _, body := range []string{
+		`{"java_flags":["-javaagent:/data/evil.jar"]}`,
+		`{"args":["--extra"]}`,
+		`{"env":[{"name":"X","value":"1"}]}`,
+		`{"stop_commands":["stop"]}`,
+		`{"image":"example.org/custom:latest"}`,
+		`{"software":{"type":"custom","jar":"evil.jar"}}`,
+	} {
+		api, _, cl, _ := newPatchAPI()
+		api.External = staticExternal{p: admin}
+		cl.byName["login"] = &ServerInfo{Name: "login", Phase: "Stopped", DesiredState: "Stopped", ReaperExempt: true}
+		w := do(api.ExternalHandler(), "PATCH", "/api/v1/servers/login", body, jsonHeader)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("admin PATCH login %s = %d (%s), want 403", body, w.Code, w.Body.String())
+		}
+		if _, ok := cl.patched["login"]; ok {
+			t.Fatalf("admin PATCH login %s mutated cluster spec", body)
+		}
+	}
+
+	api, _, cl, files := mkFiles(t)
+	cl.byName["login"] = &ServerInfo{Name: "login", Phase: "Stopped", DesiredState: "Stopped", ReaperExempt: true}
+	api.External = staticExternal{p: admin}
+
+	for _, tc := range []struct {
+		method, path, body string
+	}{
+		{"PUT", "/api/v1/servers/login/file?path=plugins/evil.jar", `{"content":"aGk=","content_sha256":"` + hiSum + `"}`},
+		{"DELETE", "/api/v1/servers/login/file?path=felis-experience.json", ""},
+		{"POST", "/api/v1/servers/login/files/mkdir?path=plugins", ""},
+		{"POST", "/api/v1/servers/login/files/rename", `{"from":"a","to":"b"}`},
+		{"PUT", "/api/v1/servers/login/files/upload?path=plugins/evil.jar", "payload"},
+		{"POST", "/api/v1/servers/login/files/unzip?path=evil.zip", ""},
+		{"POST", "/api/v1/servers/login/restore-backup", `{}`},
+	} {
+		before := files.calls
+		w := do(api.ExternalHandler(), tc.method, tc.path, tc.body, jsonHeader)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("admin %s %s = %d (%s), want 403", tc.method, tc.path, w.Code, w.Body.String())
+		}
+		if files.calls != before {
+			t.Fatalf("admin %s %s reached file executor", tc.method, tc.path)
+		}
+	}
+
+	api.External = staticExternal{p: owner}
+	w := do(api.ExternalHandler(), "PUT", "/api/v1/servers/login/file?path=plugins/ok.txt", `{"content":"aGk=","content_sha256":"`+hiSum+`"}`, jsonHeader)
+	if w.Code != http.StatusOK {
+		t.Fatalf("owner PUT login plugin file = %d (%s), want 200", w.Code, w.Body.String())
+	}
+	w = do(api.ExternalHandler(), "PATCH", "/api/v1/servers/login", `{"java_flags":["-XX:+UseG1GC"]}`, jsonHeader)
+	if w.Code != http.StatusOK {
+		t.Fatalf("owner PATCH login java_flags = %d (%s), want 200", w.Code, w.Body.String())
+	}
+}

@@ -132,6 +132,10 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, errForbidden)
 		return
 	}
+	if name == naming.SystemLoginServer && !p.IsOwner() {
+		writeError(w, r, errForbidden)
+		return
+	}
 	*r = *r.WithContext(withAuthorizedServer(r.Context(), rec))
 
 	var body struct {

@@ -441,3 +441,51 @@ func TestAccountLinkFaceSeparation(t *testing.T) {
 		t.Errorf("start endpoint on internal face: code = %d, want 404", w.Code)
 	}
 }
+
+func TestLimboLinkCodeRequiresRecentHasJoined(t *testing.T) {
+	const targetUUID = "550e8400-e29b-41d4-a716-446655440000"
+	const undashed = "550e8400e29b41d4a716446655440000"
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"` + undashed + `","name":"Steve","properties":[]}`))
+	}))
+	defer upstream.Close()
+
+	now := frozenNow
+	repo := newFakeRepo()
+	api := newTestAPI(repo, newFakeCluster())
+	api.Now = func() time.Time { return now }
+	api.Internal = callerTokensForTest()
+	api.AuthSources = []AuthSource{{Tag: "mojang", URL: upstream.URL + "/hasJoined", Identity: true}}
+	ih := api.InternalHandler()
+
+	w := do(ih, "POST", "/api/v1/internal/account/link/code", `{"mc_uuid":"`+targetUUID+`"}`, bearer("tok-limbo"))
+	if w.Code != http.StatusForbidden || decodeErr(t, w) != "player_not_joined" {
+		t.Fatalf("limbo without hasJoined = %d (%s), want 403 player_not_joined", w.Code, w.Body.String())
+	}
+	if len(repo.linkCodes) != 0 {
+		t.Fatalf("rejected limbo request created %d link codes", len(repo.linkCodes))
+	}
+
+	w = do(ih, "POST", "/api/v1/internal/account/link/code", `{"mc_uuid":"`+targetUUID+`"}`, bearer("tok-velocity"))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("velocity without hasJoined = %d (%s), want 201", w.Code, w.Body.String())
+	}
+
+	w = do(ih, "GET", "/session/minecraft/hasJoined?username=Steve&serverId=srv1", "", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("hasJoined = %d (%s), want 200", w.Code, w.Body.String())
+	}
+
+	w = do(ih, "POST", "/api/v1/internal/account/link/code", `{"mc_uuid":"`+targetUUID+`"}`, bearer("tok-limbo"))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("limbo after hasJoined = %d (%s), want 201", w.Code, w.Body.String())
+	}
+
+	now = now.Add(recentHasJoinedTTL + time.Second)
+	w = do(ih, "POST", "/api/v1/internal/account/link/code", `{"mc_uuid":"`+targetUUID+`"}`, bearer("tok-limbo"))
+	if w.Code != http.StatusForbidden || decodeErr(t, w) != "player_not_joined" {
+		t.Fatalf("limbo after TTL expiry = %d (%s), want 403 player_not_joined", w.Code, w.Body.String())
+	}
+}

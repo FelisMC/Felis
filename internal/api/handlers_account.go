@@ -85,6 +85,11 @@ func (a *API) handleCreateLinkCode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	if callerFromContext(r.Context()) == CallerLimbo && !a.hasRecentJoined(mcUUID) {
+		writeError(w, r, newError(http.StatusForbidden, "player_not_joined",
+			"player must authenticate through the proxy before requesting a login-space bind code"))
+		return
+	}
 	// Infer omitted sources, but reject unrecognized explicit values.
 	authSource := req.AuthSource
 	if authSource == "" {

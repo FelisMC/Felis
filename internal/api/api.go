@@ -154,6 +154,9 @@ type API struct {
 	drainInit  sync.Once
 	drainClose sync.Once
 	drain      chan struct{}
+
+	recentJoinsMu sync.Mutex
+	recentJoins   map[string]time.Time
 }
 
 func (a *API) streamsClosing() <-chan struct{} {

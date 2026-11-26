@@ -3339,6 +3339,11 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: player_not_joined — limbo caller requested a code for a UUID without a recent hasJoined.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /api/v1/internal/account/link/status/{mc_uuid}:
     get:

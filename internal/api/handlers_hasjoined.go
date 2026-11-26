@@ -114,12 +114,54 @@ func (a *API) handleHasJoined(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	a.recordRecentHasJoined(canonical.String())
+
 	// Velocity expects the canonical UUID as 32 undashed hex characters.
 	prof.ID = hex.EncodeToString(canonical[:])
 	if prof.Properties == nil {
 		prof.Properties = []json.RawMessage{} // encode an array instead of null
 	}
 	writeJSON(w, http.StatusOK, prof)
+}
+
+const (
+	recentHasJoinedTTL = 10 * time.Minute
+	recentHasJoinedMax = 4096
+)
+
+func (a *API) recordRecentHasJoined(mcUUID string) {
+	now := a.now()
+	a.recentJoinsMu.Lock()
+	defer a.recentJoinsMu.Unlock()
+	if a.recentJoins == nil {
+		a.recentJoins = make(map[string]time.Time)
+	}
+	if len(a.recentJoins) >= recentHasJoinedMax {
+		for k, at := range a.recentJoins {
+			if now.Sub(at) > recentHasJoinedTTL {
+				delete(a.recentJoins, k)
+			}
+		}
+		if len(a.recentJoins) >= recentHasJoinedMax {
+			clear(a.recentJoins)
+		}
+	}
+	a.recentJoins[mcUUID] = now
+}
+
+func (a *API) hasRecentJoined(mcUUID string) bool {
+	now := a.now()
+	a.recentJoinsMu.Lock()
+	defer a.recentJoinsMu.Unlock()
+	at, ok := a.recentJoins[mcUUID]
+	if !ok {
+		return false
+	}
+	if now.Sub(at) > recentHasJoinedTTL {
+		delete(a.recentJoins, mcUUID)
+		return false
+	}
+	return true
 }
 
 const maxHasJoinedParam = 64
