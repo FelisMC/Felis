@@ -229,22 +229,33 @@ func TestK8sScheduledBackupJobs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	finishedScheduled, err := backupjob.BackupJob(params("backup-survival-done", true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	finishedScheduled.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+	replicaParams := params("backup-other-rr", false)
+	replicaParams.Server = "other"
+	replicaParams.Replica = true
+	replica, err := backupjob.BackupJob(replicaParams)
+	if err != nil {
+		t.Fatal(err)
+	}
 	plain, err := backupjob.BackupJob(params("backup-survival-bb", false))
 	if err != nil {
 		t.Fatal(err)
 	}
-	plain.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
 	restoring := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Namespace: "minecraft", Name: "restore-other-cc",
 		Labels: map[string]string{jobServerLabel: "other", jobManagedByLabel: jobManagedByRestore}}}
 	foreign := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Namespace: "minecraft", Name: "files-survival-dd",
 		Labels: map[string]string{jobServerLabel: "survival", jobManagedByLabel: "felis-files"}}}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(scheduled, plain, restoring, foreign).
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(scheduled, finishedScheduled, replica, plain, restoring, foreign).
 		WithStatusSubresource(&batchv1.Job{}).Build()
 	k := NewK8sJobStatus(c, "minecraft")
 	ctx := context.Background()
 
 	if n, err := k.RunningWorldJobs(ctx); err != nil || n != 2 {
-		t.Fatalf("RunningWorldJobs = %d, %v; want the scheduled backup and the restore", n, err)
+		t.Fatalf("RunningWorldJobs = %d, %v; want scheduled and replica only", n, err)
 	}
 	jobs, err := k.LatestJobs(ctx, "survival")
 	if err != nil {
@@ -254,7 +265,32 @@ func TestK8sScheduledBackupJobs(t *testing.T) {
 	for _, j := range jobs {
 		marks[j.Name] = j.Scheduled
 	}
-	if len(marks) != 2 || !marks["backup-survival-aa"] || marks["backup-survival-bb"] {
-		t.Fatalf("scheduled marks = %v; want only backup-survival-aa", marks)
+	if len(marks) != 3 || !marks["backup-survival-aa"] || !marks["backup-survival-done"] || marks["backup-survival-bb"] {
+		t.Fatalf("scheduled marks = %v; want backup-survival-aa and backup-survival-done", marks)
+	}
+
+	onlyOwner := fake.NewClientBuilder().WithScheme(scheme).WithObjects(plain, restoring).
+		WithStatusSubresource(&batchv1.Job{}).Build()
+	ownerK := NewK8sJobStatus(onlyOwner, "minecraft")
+	if n, err := ownerK.RunningWorldJobs(ctx); err != nil || n != 0 {
+		t.Fatalf("RunningWorldJobs with only owner manual/restore = %d, %v; want 0", n, err)
+	}
+	repo := newFakeRepo()
+	cl := newFakeCluster()
+	cl.byName["alpha"] = &ServerInfo{Name: "alpha", Phase: "Stopped"}
+	a := newTestAPI(repo, cl)
+	b := &fakeScheduledBackuper{}
+	a.Backuper = b
+	s := &BackupScheduler{
+		API:   a,
+		Store: &fakeScheduleStore{due: []ScheduledCandidate{{"alpha", "usr-a"}}},
+		Jobs:  ownerK,
+		Every: 24 * time.Hour,
+	}
+	if err := s.Tick(ctx); err != nil {
+		t.Fatalf("Tick with running owner restore: %v", err)
+	}
+	if len(b.scheduled) != 1 || b.scheduled[0].Name != "alpha" {
+		t.Fatalf("scheduled = %+v; want alpha launched despite running owner restore", b.scheduled)
 	}
 }

@@ -1202,8 +1202,8 @@ func TestK8sExportJobs(t *testing.T) {
 	k := NewK8sJobStatus(c, "minecraft")
 	ctx := context.Background()
 
-	if n, err := k.RunningWorldJobs(ctx); err != nil || n != 1 {
-		t.Fatalf("RunningWorldJobs = %d, %v; want the restore only", n, err)
+	if n, err := k.RunningWorldJobs(ctx); err != nil || n != 0 {
+		t.Fatalf("RunningWorldJobs = %d, %v; want 0 (exports and owner restores excluded)", n, err)
 	}
 	jobs, err := k.LatestJobs(ctx, "survival")
 	if err != nil {

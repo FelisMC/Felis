@@ -27,6 +27,7 @@ const (
 
 	jobBackupReasonLabel     = "felis.lolicon.best/backup-reason"
 	jobBackupReasonScheduled = "scheduled"
+	jobBackupReasonReplica   = "replica"
 )
 
 type K8sJobStatus struct {
@@ -131,7 +132,6 @@ func jobToAsyncJob(j *batchv1.Job) (AsyncJob, bool) {
 	return aj, true
 }
 
-// RunningWorldJobs excludes browser-paced exports so long downloads cannot delay every server's scheduled backup.
 func (k *K8sJobStatus) RunningWorldJobs(ctx context.Context) (int, error) {
 	var list batchv1.JobList
 	if err := k.c.List(ctx, &list, client.InNamespace(k.namespace), client.HasLabels{jobManagedByLabel}); err != nil {
@@ -140,7 +140,11 @@ func (k *K8sJobStatus) RunningWorldJobs(ctx context.Context) (int, error) {
 	n := 0
 	for i := range list.Items {
 		j := &list.Items[i]
-		if _, ok := jobOutcome(j); ok && j.Labels[jobManagedByLabel] != jobManagedByExport && !maintenance.JobFinished(j) {
+		if j.Labels[jobManagedByLabel] != jobManagedByBackup || maintenance.JobFinished(j) {
+			continue
+		}
+		reason := j.Labels[jobBackupReasonLabel]
+		if reason == jobBackupReasonScheduled || reason == jobBackupReasonReplica {
 			n++
 		}
 	}

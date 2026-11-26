@@ -862,7 +862,7 @@ func (p *PGRepo) LastBackupRequest(ctx context.Context, serverName string, since
 	var at sql.NullTime
 	err := p.db.QueryRowContext(ctx,
 		`SELECT max(created_at) FROM audit_logs
-		 WHERE created_at >= $2 AND action = 'backup.create' AND server_name = $1`,
+		 WHERE created_at >= $2 AND action IN ('backup.create', 'backup.restore') AND server_name = $1`,
 		serverName, since).Scan(&at)
 	if err != nil {
 		return time.Time{}, err

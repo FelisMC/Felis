@@ -223,10 +223,16 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 	if body.SafetySnapshot != nil && !*body.SafetySnapshot {
 		snapshot = false
 	}
-	if snapshot && !p.IsAdmin() {
-		if err := a.backupAllowance(r.Context(), name, rec.OwnerID); err != nil {
+	if !p.IsAdmin() {
+		if err := a.backupCooldownAllowance(r.Context(), name); err != nil {
 			writeError(w, r, err)
 			return
+		}
+		if snapshot {
+			if err := a.backupStoreAllowance(r.Context(), rec.OwnerID); err != nil {
+				writeError(w, r, err)
+				return
+			}
 		}
 	}
 

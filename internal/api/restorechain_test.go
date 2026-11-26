@@ -163,6 +163,23 @@ func TestRestoreStartsWithSafetySnapshot(t *testing.T) {
 			t.Fatalf("restore without safety snapshot: code = %d restorer=%d (%s)", w.Code, restorer.calls, w.Body.String())
 		}
 	})
+
+	t.Run("repeat restore within cooldown -> 429 backup_cooldown", func(t *testing.T) {
+		a, _, restorer := mk()
+		a.BackupCooldown = 10 * time.Minute
+		a.Now = time.Now
+		w := do(a.ExternalHandler(), "POST", path, `{"backup_id":"bk1","safety_snapshot":false}`, jsonHeader)
+		if w.Code != http.StatusAccepted || restorer.calls != 1 {
+			t.Fatalf("first restore: code = %d restorer=%d (%s)", w.Code, restorer.calls, w.Body.String())
+		}
+		w = do(a.ExternalHandler(), "POST", path, `{"backup_id":"bk1","safety_snapshot":false}`, jsonHeader)
+		if w.Code != http.StatusTooManyRequests || errCode(w.Body.Bytes()) != "backup_cooldown" {
+			t.Fatalf("second restore in cooldown: code = %d (%s)", w.Code, w.Body.String())
+		}
+		if restorer.calls != 1 {
+			t.Fatalf("restorer called %d times during cooldown, want 1", restorer.calls)
+		}
+	})
 }
 
 func TestSettleRestoreChains(t *testing.T) {

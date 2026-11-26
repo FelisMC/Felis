@@ -81,6 +81,9 @@ func (m *Manager) CreateBackupJob(ctx context.Context, p backupjob.JobParams) er
 	job.Annotations = map[string]string{archivetransfer.Annotation: string(raw)}
 	job.Labels[maintenance.LabelManagedBy] = "felis-backup"
 	job.Labels[archivetransfer.LabelPending] = "true"
+	if reason == backupjob.ReasonScheduled || reason == backupjob.ReasonReplica {
+		job.Labels[backupjob.LabelReason] = reason
+	}
 	if p.RestoreRef != "" {
 		job.Labels[maintenance.LabelThenRestore] = maintenance.ThenRestorePending
 		job.Annotations[maintenance.AnnotationRestoreRef] = p.RestoreRef

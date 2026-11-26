@@ -852,7 +852,7 @@ func (f *fakeRepo) Audit(_ context.Context, e AuditEntry) error {
 		return f.failAudit
 	}
 	f.audits = append(f.audits, e)
-	if e.Action == "backup.create" {
+	if e.Action == "backup.create" || e.Action == "backup.restore" {
 		if f.backupRequested == nil {
 			f.backupRequested = map[string]time.Time{}
 		}

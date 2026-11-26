@@ -186,6 +186,9 @@ func BackupJob(p JobParams) (*batchv1.Job, error) {
 	if p.Scheduled {
 		meta.Labels[LabelReason] = ReasonScheduled
 	}
+	if p.Replica {
+		meta.Labels[LabelReason] = ReasonReplica
+	}
 	podLabels := backupLabels(p)
 	volumes := []corev1.Volume{
 		{
