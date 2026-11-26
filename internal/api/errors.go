@@ -13,6 +13,7 @@ import (
 var (
 	ErrNotFound              = errors.New("not found")
 	ErrConflict              = errors.New("conflict")
+	ErrServerExists          = errors.New("server already exists")
 	ErrQuotaExceeded         = errors.New("server quota exhausted")
 	ErrLinkCodeInvalid       = errors.New("link code invalid or expired")
 	ErrConsoleUnavailable    = errors.New("server console is unavailable")

@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/naming"
@@ -514,7 +515,7 @@ func (a *API) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 	if body.OwnerID != "" {
 		res := ResourceSpec{CPUMilli: cpuMilli, MemoryMB: memMB, StorageMB: storMB}
 		if _, over, err = a.Repo.AssignServer(r.Context(), body.Name, body.OwnerID, res, true, nil); err != nil {
-			if derr := a.Repo.DiscardSeededServer(context.WithoutCancel(r.Context()), body.Name); derr != nil {
+			if derr := a.Repo.DiscardSeededServer(context.WithoutCancel(r.Context()), body.Name, "", time.Time{}); derr != nil {
 				log.Printf("api: server %s could not be given to its owner and its row could not be discarded (request_id=%s): %v",
 					body.Name, requestIDFromContext(r.Context()), derr)
 			}
@@ -536,17 +537,17 @@ func (a *API) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 		Software:        sw,
 	}
 	if err := a.Cluster.CreateServer(r.Context(), in); err != nil {
-		// An owned row with no server behind it would count against the owner's quota.
-		if body.OwnerID != "" {
-			if derr := a.Repo.DiscardSeededServer(context.WithoutCancel(r.Context()), body.Name); derr != nil {
-				log.Printf("api: server %s refused by the cluster and its owned row could not be discarded (request_id=%s): %v",
-					body.Name, requestIDFromContext(r.Context()), derr)
-			}
-		}
 		if errors.Is(err, ErrConflict) {
 			writeError(w, r, newError(http.StatusConflict, "already_exists",
 				"a server named %q already exists", body.Name))
 			return
+		}
+		// An owned row with no server behind it would count against the owner's quota.
+		if body.OwnerID != "" {
+			if derr := a.Repo.DiscardSeededServer(context.WithoutCancel(r.Context()), body.Name, "", time.Time{}); derr != nil {
+				log.Printf("api: server %s refused by the cluster and its owned row could not be discarded (request_id=%s): %v",
+					body.Name, requestIDFromContext(r.Context()), derr)
+			}
 		}
 		writeError(w, r, err)
 		return

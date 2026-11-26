@@ -269,8 +269,8 @@ type Repo interface {
 	// SeedServer resets a same-name row but rolls back on a subdomain conflict.
 	SeedServer(ctx context.Context, name, subdomain string, cpuMilli, memoryMB, storageMB int) error
 	// SeedOwnedServer checks effective quotas and inserts ownership atomically; absent quotas disable self-service creation.
-	SeedOwnedServer(ctx context.Context, name, subdomain, userID string, res ResourceSpec) error
-	DiscardSeededServer(ctx context.Context, name string) error
+	SeedOwnedServer(ctx context.Context, name, subdomain, userID string, res ResourceSpec) (time.Time, error)
+	DiscardSeededServer(ctx context.Context, name, ownerID string, claimedAt time.Time) error
 	SelfServiceState(ctx context.Context, userID string) (QuotaState, error)
 	UpdateServerResources(ctx context.Context, name string, cpuMilli, memoryMB, storageMB int) error
 	UpdateUnownedServerResources(ctx context.Context, name string, cpuMilli, memoryMB, storageMB int) error

@@ -7,13 +7,15 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"felis.lolicon.best/internal/software"
 )
 
 type fakeOwned struct {
-	owner string
-	res   ResourceSpec
+	owner     string
+	res       ResourceSpec
+	claimedAt time.Time
 }
 
 func (f *fakeRepo) fakeCaps(userID string) (*QuotaInput, string) {
@@ -43,27 +45,37 @@ func (f *fakeRepo) usage(userID, exclude string) QuotaUsage {
 
 func capFits(limit *int, used, incoming int) bool { return limit == nil || used+incoming <= *limit }
 
-func (f *fakeRepo) SeedOwnedServer(_ context.Context, name, subdomain, userID string, res ResourceSpec) error {
+func (f *fakeRepo) SeedOwnedServer(_ context.Context, name, subdomain, userID string, res ResourceSpec) (time.Time, error) {
 	caps, source := f.fakeCaps(userID)
 	if source == "" {
-		return ErrSelfServiceDisabled
+		return time.Time{}, ErrSelfServiceDisabled
 	}
 	u := f.usage(userID, name)
 	if !capFits(caps.MaxServers, u.Servers, 1) || !capFits(caps.MaxCPUMilli, u.CPUMilli, res.CPUMilli) ||
 		!capFits(caps.MaxMemoryMB, u.MemoryMB, res.MemoryMB) ||
 		(caps.MaxStorageGB != nil && u.StorageMB+res.StorageMB > *caps.MaxStorageGB*1024) {
-		return ErrQuotaExceeded
+		return time.Time{}, ErrQuotaExceeded
+	}
+	if _, exists := f.byName[name]; exists {
+		return time.Time{}, ErrServerExists
 	}
 	if bound, ok := f.aliases[subdomain]; ok && bound != name {
-		return ErrConflict
+		return time.Time{}, ErrConflict
 	}
-	f.owned[name] = fakeOwned{owner: userID, res: res}
+	now := time.Now().UTC()
+	f.owned[name] = fakeOwned{owner: userID, res: res, claimedAt: now}
 	f.aliases[subdomain] = name
 	f.byName[name] = &ServerRecord{Name: name, OwnerID: userID}
-	return nil
+	return now, nil
 }
 
-func (f *fakeRepo) DiscardSeededServer(_ context.Context, name string) error {
+func (f *fakeRepo) DiscardSeededServer(_ context.Context, name, ownerID string, claimedAt time.Time) error {
+	if ownerID != "" {
+		o, ok := f.owned[name]
+		if !ok || o.owner != ownerID || !o.claimedAt.Equal(claimedAt) {
+			return nil
+		}
+	}
 	delete(f.owned, name)
 	delete(f.byName, name)
 	for sub, bound := range f.aliases {
@@ -303,5 +315,32 @@ func TestMyServerQuotaSaysWhyNot(t *testing.T) {
 	}
 	if v := read(); v.CanCreate || v.Reason != "quota_full" || v.Usage.Servers != 1 || v.Usage.MemoryMB != 2048 {
 		t.Errorf("with the one slot used: %+v, want quota_full and the 2048 MB server counted", v)
+	}
+}
+
+func TestSelfCreateConflictPreservesSeededRow(t *testing.T) {
+	a, repo, cl := newSelfServiceAPI()
+	enableDefaultQuota(repo, 2, 8192)
+	if status, _, body := selfCreate(a, "dup", "2Gi"); status != http.StatusCreated {
+		t.Fatalf("first create = %d (%s)", status, body)
+	}
+	delete(cl.byName, "dup")
+	delete(cl.bySub, "dup")
+	if status, code, body := selfCreate(a, "dup", "2Gi"); status != http.StatusConflict || code != "already_exists" {
+		t.Fatalf("second create with live DB row = %d/%s (%s), want 409/already_exists", status, code, body)
+	}
+	if _, ok := repo.owned["dup"]; !ok {
+		t.Fatal("duplicate create discarded winning row")
+	}
+	if st, err := repo.SelfServiceState(context.Background(), "u1"); err != nil || st.Usage.Servers != 1 || st.Usage.MemoryMB != 2048 {
+		t.Fatalf("quota usage after duplicate create = %+v (%v), want 1 server / 2048 MB", st.Usage, err)
+	}
+
+	cl.createErr = ErrConflict
+	if status, code, body := selfCreate(a, "raced", "2Gi"); status != http.StatusConflict || code != "already_exists" {
+		t.Fatalf("cluster conflict create = %d/%s (%s), want 409/already_exists", status, code, body)
+	}
+	if _, ok := repo.owned["raced"]; !ok {
+		t.Fatal("cluster ErrConflict discarded seeded row")
 	}
 }

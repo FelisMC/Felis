@@ -286,13 +286,17 @@ func (a *API) handleSelfCreateServer(w http.ResponseWriter, r *http.Request) {
 		MemoryMB:  quantityToMB(resources.Limits[corev1.ResourceMemory]),
 		StorageMB: quantityToMB(storQ),
 	}
-	switch err := a.Repo.SeedOwnedServer(ctx, body.Name, body.Subdomain, p.UserID, res); {
+	seededAt, err := a.Repo.SeedOwnedServer(ctx, body.Name, body.Subdomain, p.UserID, res)
+	switch {
 	case errors.Is(err, ErrSelfServiceDisabled):
 		writeError(w, r, newError(http.StatusForbidden, "self_service_disabled",
 			"creating servers is not enabled for your account; ask the platform owner for a quota"))
 		return
 	case errors.Is(err, ErrQuotaExceeded):
 		writeError(w, r, newError(http.StatusForbidden, "quota_exceeded", "this server does not fit in your quota"))
+		return
+	case errors.Is(err, ErrServerExists):
+		writeError(w, r, newError(http.StatusConflict, "already_exists", "a server named %q already exists", body.Name))
 		return
 	case errors.Is(err, ErrConflict):
 		writeError(w, r, newError(http.StatusConflict, "subdomain_taken", "subdomain %q is already in use", body.Subdomain))
@@ -314,13 +318,13 @@ func (a *API) handleSelfCreateServer(w http.ResponseWriter, r *http.Request) {
 		Software:        sw,
 	}
 	if err := a.Cluster.CreateServer(ctx, in); err != nil {
-		if derr := a.Repo.DiscardSeededServer(context.WithoutCancel(ctx), body.Name); derr != nil {
-			log.Printf("api: self-created server %s refused by the cluster and its row could not be discarded (request_id=%s): %v",
-				body.Name, requestIDFromContext(ctx), derr)
-		}
 		if errors.Is(err, ErrConflict) {
 			writeError(w, r, newError(http.StatusConflict, "already_exists", "a server named %q already exists", body.Name))
 			return
+		}
+		if derr := a.Repo.DiscardSeededServer(context.WithoutCancel(ctx), body.Name, p.UserID, seededAt); derr != nil {
+			log.Printf("api: self-created server %s refused by the cluster and its row could not be discarded (request_id=%s): %v",
+				body.Name, requestIDFromContext(ctx), derr)
 		}
 		writeError(w, r, err)
 		return

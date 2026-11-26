@@ -7,6 +7,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"felis.lolicon.best/internal/api"
 )
@@ -36,11 +37,11 @@ func TestSeedOwnedServerUnderTheDefaultQuota(t *testing.T) {
 	u := newUser(t, "user", "self")
 	res := api.ResourceSpec{MemoryMB: 2048, StorageMB: 10240}
 
-	if err := repo.SeedOwnedServer(ctx, "off-"+suffix(t), "off-"+suffix(t), u.ID, res); !errors.Is(err, api.ErrSelfServiceDisabled) {
+	if _, err := repo.SeedOwnedServer(ctx, "off-"+suffix(t), "off-"+suffix(t), u.ID, res); !errors.Is(err, api.ErrSelfServiceDisabled) {
 		t.Fatalf("create with the default quota unset = %v, want ErrSelfServiceDisabled", err)
 	}
 	setDefaultQuota(t, `{"enabled":false,"max_servers":1,"max_cpu_milli":null,"max_memory_mb":4096,"max_storage_gb":null}`)
-	if err := repo.SeedOwnedServer(ctx, "off-"+suffix(t), "off-"+suffix(t), u.ID, res); !errors.Is(err, api.ErrSelfServiceDisabled) {
+	if _, err := repo.SeedOwnedServer(ctx, "off-"+suffix(t), "off-"+suffix(t), u.ID, res); !errors.Is(err, api.ErrSelfServiceDisabled) {
 		t.Fatalf("create with the default quota off = %v, want ErrSelfServiceDisabled", err)
 	}
 	var rows int
@@ -51,20 +52,22 @@ func TestSeedOwnedServerUnderTheDefaultQuota(t *testing.T) {
 	setDefaultQuota(t, `{"enabled":true,"max_servers":1,"max_cpu_milli":null,"max_memory_mb":4096,"max_storage_gb":null}`)
 	names := []string{"race-a-" + suffix(t), "race-b-" + suffix(t)}
 	errs := make([]error, 2)
+	times := make([]time.Time, 2)
 	var wg sync.WaitGroup
 	for i, n := range names {
 		wg.Add(1)
 		go func(i int, n string) {
 			defer wg.Done()
-			errs[i] = repo.SeedOwnedServer(ctx, n, n, u.ID, res)
+			times[i], errs[i] = repo.SeedOwnedServer(ctx, n, n, u.ID, res)
 		}(i, n)
 	}
 	wg.Wait()
 	var won string
+	var wonAt time.Time
 	for i, err := range errs {
 		switch {
 		case err == nil:
-			won = names[i]
+			won, wonAt = names[i], times[i]
 		case !errors.Is(err, api.ErrQuotaExceeded):
 			t.Fatalf("create %s = %v", names[i], err)
 		}
@@ -91,12 +94,42 @@ func TestSeedOwnedServerUnderTheDefaultQuota(t *testing.T) {
 
 	// The cluster refused the server: discarding it gives the slot and the
 	// subdomain back.
-	if err := repo.DiscardSeededServer(ctx, won); err != nil {
+	if err := repo.DiscardSeededServer(ctx, won, u.ID, wonAt); err != nil {
 		t.Fatal(err)
 	}
 	next := "next-" + suffix(t)
-	if err := repo.SeedOwnedServer(ctx, next, won, u.ID, res); err != nil {
+	if _, err := repo.SeedOwnedServer(ctx, next, won, u.ID, res); err != nil {
 		t.Fatalf("create after the discard, on the freed subdomain = %v", err)
+	}
+}
+
+func TestSeedOwnedServerRejectsLiveRowAndScopesDiscard(t *testing.T) {
+	ctx := context.Background()
+	u := newUser(t, "user", "seedrace")
+	other := newUser(t, "user", "seedother")
+	setDefaultQuota(t, `{"enabled":true,"max_servers":2,"max_cpu_milli":null,"max_memory_mb":8192,"max_storage_gb":null}`)
+	name := "dup-" + suffix(t)
+	res := api.ResourceSpec{MemoryMB: 2048, StorageMB: 10240}
+
+	wonAt, err := repo.SeedOwnedServer(ctx, name, name, u.ID, res)
+	if err != nil {
+		t.Fatalf("first SeedOwnedServer: %v", err)
+	}
+	if _, err := repo.SeedOwnedServer(ctx, name, name, u.ID, res); !errors.Is(err, api.ErrServerExists) {
+		t.Fatalf("second SeedOwnedServer = %v, want ErrServerExists", err)
+	}
+	if err := repo.DiscardSeededServer(ctx, name, other.ID, wonAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.DiscardSeededServer(ctx, name, u.ID, wonAt.Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := repo.ServerByName(ctx, name)
+	if err != nil || rec.OwnerID != u.ID {
+		t.Fatalf("mismatched discard removed live row: %+v (%v)", rec, err)
+	}
+	if bySub, err := repo.ServerBySubdomain(ctx, name); err != nil || bySub.Name != name {
+		t.Fatalf("mismatched discard removed subdomain alias: %+v (%v)", bySub, err)
 	}
 }
 
@@ -111,12 +144,12 @@ func TestSeedOwnedServerUnderTheUsersOwnQuota(t *testing.T) {
 	res := api.ResourceSpec{MemoryMB: 1024}
 	for i := 0; i < 2; i++ {
 		n := "own-" + suffix(t)
-		if err := repo.SeedOwnedServer(ctx, n, n, u.ID, res); err != nil {
+		if _, err := repo.SeedOwnedServer(ctx, n, n, u.ID, res); err != nil {
 			t.Fatalf("create %d under the user's own two-server quota = %v", i, err)
 		}
 	}
 	n := "own-" + suffix(t)
-	if err := repo.SeedOwnedServer(ctx, n, n, u.ID, res); !errors.Is(err, api.ErrQuotaExceeded) {
+	if _, err := repo.SeedOwnedServer(ctx, n, n, u.ID, res); !errors.Is(err, api.ErrQuotaExceeded) {
 		t.Fatalf("third create = %v, want ErrQuotaExceeded", err)
 	}
 
@@ -149,7 +182,7 @@ func TestSeedOwnedServerUnderTheUsersOwnQuota(t *testing.T) {
 		t.Fatalf("GetQuotas after clearing = %+v, %v; want no own row", v, err)
 	}
 	n = "own-" + suffix(t)
-	if err := repo.SeedOwnedServer(ctx, n, n, u.ID, res); !errors.Is(err, api.ErrQuotaExceeded) {
+	if _, err := repo.SeedOwnedServer(ctx, n, n, u.ID, res); !errors.Is(err, api.ErrQuotaExceeded) {
 		t.Fatalf("create under the default after clearing = %v, want ErrQuotaExceeded", err)
 	}
 	if _, err := repo.ClearQuotas(ctx, "no-such-user"); !errors.Is(err, api.ErrNotFound) {

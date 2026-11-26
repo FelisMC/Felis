@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 )
 
 var ErrSelfServiceDisabled = errors.New("self-service server creation is not enabled for this user")
@@ -81,44 +82,50 @@ func nullToPtr(v sql.NullInt64) *int {
 	return &n
 }
 
-// SeedOwnedServer locks the user's claim lane and atomically checks quota and inserts ownership.
-func (p *PGRepo) SeedOwnedServer(ctx context.Context, name, subdomain, userID string, res ResourceSpec) error {
+func (p *PGRepo) SeedOwnedServer(ctx context.Context, name, subdomain, userID string, res ResourceSpec) (time.Time, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return time.Time{}, err
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op after commit
 
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, userID); err != nil {
-		return err
+		return time.Time{}, err
 	}
 	caps, err := readQuota(ctx, tx, userID)
 	if err != nil {
-		return err
+		return time.Time{}, err
 	}
 	if caps.Source == "" {
-		return ErrSelfServiceDisabled
+		return time.Time{}, ErrSelfServiceDisabled
 	}
 	var count, cpuSum, memSum, storSum int64
 	if err := tx.QueryRowContext(ctx,
 		`SELECT COUNT(*), COALESCE(SUM(cached_cpu_milli), 0), COALESCE(SUM(cached_memory_mb), 0), COALESCE(SUM(cached_storage_mb), 0)
 		 FROM servers WHERE owner_id = $1 AND deleted_at IS NULL AND name != $2`,
 		userID, name).Scan(&count, &cpuSum, &memSum, &storSum); err != nil {
-		return err
+		return time.Time{}, err
 	}
 	if !quotaAllows(caps.MaxServers, caps.MaxCPU, caps.MaxMem, caps.MaxStor, count, cpuSum, memSum, storSum, 1, res) {
-		return ErrQuotaExceeded
+		return time.Time{}, ErrQuotaExceeded
 	}
-	if _, err := tx.ExecContext(ctx,
+	var claimedAt time.Time
+	err = tx.QueryRowContext(ctx,
 		`INSERT INTO servers (name, owner_id, claimed_at, cached_cpu_milli, cached_memory_mb, cached_storage_mb)
-		 VALUES ($1, $2, now(), $3, $4, $5)
-		 ON CONFLICT (name) DO UPDATE SET owner_id = EXCLUDED.owner_id, claimed_at = now(), last_active_at = now(),
+		 VALUES ($1, $2, clock_timestamp(), $3, $4, $5)
+		 ON CONFLICT (name) DO UPDATE SET owner_id = EXCLUDED.owner_id, claimed_at = EXCLUDED.claimed_at, last_active_at = now(),
 		   warned_3d_at = NULL, warned_1d_at = NULL, cached_phase = NULL, created_at = now(), deleted_at = NULL,
 		   retire_requested_at = NULL, retire_delete = false, tags = '{}',
 		   cached_cpu_milli = EXCLUDED.cached_cpu_milli, cached_memory_mb = EXCLUDED.cached_memory_mb,
-		   cached_storage_mb = EXCLUDED.cached_storage_mb`,
-		name, userID, res.CPUMilli, res.MemoryMB, res.StorageMB); err != nil {
-		return fmt.Errorf("seed server row: %w", err)
+		   cached_storage_mb = EXCLUDED.cached_storage_mb
+		 WHERE servers.deleted_at IS NOT NULL
+		 RETURNING claimed_at`,
+		name, userID, res.CPUMilli, res.MemoryMB, res.StorageMB).Scan(&claimedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, ErrServerExists
+	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("seed server row: %w", err)
 	}
 	for _, q := range []string{
 		`DELETE FROM server_allowlist WHERE server_name = $1`,
@@ -126,37 +133,53 @@ func (p *PGRepo) SeedOwnedServer(ctx context.Context, name, subdomain, userID st
 		`DELETE FROM server_schedules WHERE server_name = $1`,
 	} {
 		if _, err := tx.ExecContext(ctx, q, name); err != nil {
-			return fmt.Errorf("clear an earlier server's rows: %w", err)
+			return time.Time{}, fmt.Errorf("clear an earlier server's rows: %w", err)
 		}
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO server_aliases (subdomain, server_name) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
 		subdomain, name); err != nil {
-		return fmt.Errorf("seed subdomain alias: %w", err)
+		return time.Time{}, fmt.Errorf("seed subdomain alias: %w", err)
 	}
 	var boundTo string
 	if err := tx.QueryRowContext(ctx,
 		`SELECT server_name FROM server_aliases WHERE subdomain = $1`, subdomain).Scan(&boundTo); err != nil {
-		return fmt.Errorf("confirm subdomain alias: %w", err)
+		return time.Time{}, fmt.Errorf("confirm subdomain alias: %w", err)
 	}
 	if boundTo != name {
-		return ErrConflict
+		return time.Time{}, ErrConflict
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return time.Time{}, err
+	}
+	return claimedAt, nil
 }
 
-// DiscardSeededServer marks the row deleted and releases its alias after cluster creation fails.
-func (p *PGRepo) DiscardSeededServer(ctx context.Context, name string) error {
+func (p *PGRepo) DiscardSeededServer(ctx context.Context, name, ownerID string, claimedAt time.Time) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op after commit
-	if _, err := tx.ExecContext(ctx, `UPDATE servers SET deleted_at = now() WHERE name = $1 AND deleted_at IS NULL`, name); err != nil {
+	var res sql.Result
+	if ownerID != "" {
+		res, err = tx.ExecContext(ctx,
+			`UPDATE servers SET deleted_at = now() WHERE name = $1 AND deleted_at IS NULL AND owner_id = $2 AND claimed_at = $3`,
+			name, ownerID, claimedAt)
+	} else {
+		res, err = tx.ExecContext(ctx, `UPDATE servers SET deleted_at = now() WHERE name = $1 AND deleted_at IS NULL`, name)
+	}
+	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM server_aliases WHERE server_name = $1`, name); err != nil {
+	n, err := res.RowsAffected()
+	if err != nil {
 		return err
+	}
+	if n > 0 {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM server_aliases WHERE server_name = $1`, name); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
