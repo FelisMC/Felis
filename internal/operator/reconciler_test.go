@@ -1395,3 +1395,82 @@ func TestIdleAutoStop_WaitsForALiveBackup(t *testing.T) {
 		t.Fatalf("the idle stop did not follow the thaw: %s", got)
 	}
 }
+
+func TestReconcileRefusesForeignService(t *testing.T) {
+	victim := runningServer()
+	victim.Name = "craft-hl"
+	victim.UID = types.UID("uid-victim")
+	victim.Spec.Subdomain = "craft"
+	victim.Spec.Rcon.SecretRef.Name = "craft-hl-rcon"
+	victimSecret := rconSecret()
+	victimSecret.Name = "craft-hl-rcon"
+
+	attacker := runningServer()
+	attacker.Name = "craft"
+	attacker.UID = types.UID("uid-attacker")
+	attacker.Spec.Subdomain = "craftx"
+	attacker.Spec.Rcon.SecretRef.Name = "craft-rcon"
+	attackerSecret := rconSecret()
+	attackerSecret.Name = "craft-rcon"
+
+	t.Run("headless service cannot overwrite another server client service", func(t *testing.T) {
+		r, c := newReconciler(t, fakeProber{}, victim, victimSecret, attacker, attackerSecret)
+		reconcile(t, r, victim.Name)
+
+		var svc corev1.Service
+		key := types.NamespacedName{Namespace: "minecraft", Name: "craft-hl"}
+		if err := c.Get(context.Background(), key, &svc); err != nil {
+			t.Fatalf("victim service missing: %v", err)
+		}
+		svc.Spec.ClusterIP = "10.96.0.10"
+		if err := c.Update(context.Background(), &svc); err != nil {
+			t.Fatalf("set victim ClusterIP: %v", err)
+		}
+
+		_, err := r.Reconcile(context.Background(), ctrl.Request{
+			NamespacedName: types.NamespacedName{Namespace: "minecraft", Name: attacker.Name},
+		})
+		if err == nil {
+			t.Fatal("Reconcile(craft) succeeded, want ownership refusal on craft-hl Service")
+		}
+
+		var after corev1.Service
+		if err := c.Get(context.Background(), key, &after); err != nil {
+			t.Fatalf("get victim service after reconcile: %v", err)
+		}
+		if after.Spec.ClusterIP != "10.96.0.10" {
+			t.Errorf("ClusterIP = %q, want 10.96.0.10", after.Spec.ClusterIP)
+		}
+		if got := after.Spec.Selector[v1alpha1.LabelServer]; got != victim.Name {
+			t.Errorf("selector server = %q, want %q", got, victim.Name)
+		}
+		owner := metav1.GetControllerOf(&after)
+		if owner == nil || owner.UID != victim.UID || owner.Name != victim.Name {
+			t.Errorf("controller owner = %+v, want %s (%s)", owner, victim.Name, victim.UID)
+		}
+	})
+
+	t.Run("client service cannot overwrite another server headless service", func(t *testing.T) {
+		r, c := newReconciler(t, fakeProber{}, victim, victimSecret, attacker, attackerSecret)
+		reconcile(t, r, attacker.Name)
+
+		_, err := r.Reconcile(context.Background(), ctrl.Request{
+			NamespacedName: types.NamespacedName{Namespace: "minecraft", Name: victim.Name},
+		})
+		if err == nil {
+			t.Fatal("Reconcile(craft-hl) succeeded, want ownership refusal on craft-hl headless Service")
+		}
+
+		var after corev1.Service
+		if err := c.Get(context.Background(), types.NamespacedName{Namespace: "minecraft", Name: "craft-hl"}, &after); err != nil {
+			t.Fatalf("get headless service after reconcile: %v", err)
+		}
+		if after.Spec.ClusterIP != corev1.ClusterIPNone {
+			t.Errorf("ClusterIP = %q, want None", after.Spec.ClusterIP)
+		}
+		owner := metav1.GetControllerOf(&after)
+		if owner == nil || owner.UID != attacker.UID || owner.Name != attacker.Name {
+			t.Errorf("controller owner = %+v, want %s (%s)", owner, attacker.Name, attacker.UID)
+		}
+	})
+}

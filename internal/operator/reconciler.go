@@ -665,7 +665,7 @@ func (r *Reconciler) ensureServices(ctx context.Context, server *v1alpha1.Minecr
 		if err := controllerutil.SetControllerReference(server, svc, r.Scheme); err != nil {
 			return "", err
 		}
-		if err := r.applyService(ctx, svc); err != nil {
+		if err := r.applyService(ctx, server, svc); err != nil {
 			return "", err
 		}
 		if svc.Name == server.Name {
@@ -849,7 +849,7 @@ func (r *Reconciler) applyStatefulSet(ctx context.Context, desired *appsv1.State
 	return r.Update(ctx, &existing)
 }
 
-func (r *Reconciler) applyService(ctx context.Context, desired *corev1.Service) error {
+func (r *Reconciler) applyService(ctx context.Context, server *v1alpha1.MinecraftServer, desired *corev1.Service) error {
 	var existing corev1.Service
 	err := r.Get(ctx, client.ObjectKeyFromObject(desired), &existing)
 	if apierrors.IsNotFound(err) {
@@ -857,6 +857,9 @@ func (r *Reconciler) applyService(ctx context.Context, desired *corev1.Service) 
 	}
 	if err != nil {
 		return err
+	}
+	if !controlsExtraResource(server, &existing) {
+		return fmt.Errorf("service %s/%s is not controlled by MinecraftServer %s", existing.Namespace, existing.Name, server.Name)
 	}
 	desired.ResourceVersion = existing.ResourceVersion
 	desired.Spec.ClusterIP = existing.Spec.ClusterIP

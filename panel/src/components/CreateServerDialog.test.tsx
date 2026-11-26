@@ -225,6 +225,7 @@ describe("CreateServerDialog names", () => {
     ["my_world", "Use 3–32 lowercase letters, digits or hyphens, with no hyphen at either end."],
     ["a".repeat(33), "Use 3–32 lowercase letters, digits or hyphens, with no hyphen at either end."],
     ["lobby", "“lobby” is reserved by the platform. Use a different name."],
+    ["craft-hl", "“craft-hl” is reserved by the platform. Use a different name."],
   ])("refuses the name %j before sending, and says why", async (name, why) => {
     const user = await openDialog();
     await fillValid(user);

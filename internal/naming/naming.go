@@ -77,6 +77,9 @@ func ValidateServerName(name string) error {
 	if strings.HasPrefix(name, "-") || strings.HasSuffix(name, "-") {
 		return fmt.Errorf("naming: server name %q must not start or end with '-'", name)
 	}
+	if strings.HasSuffix(name, "-hl") {
+		return fmt.Errorf("naming: server name %q uses reserved suffix '-hl'", name)
+	}
 	if _, ok := reserved[name]; ok {
 		return fmt.Errorf("naming: server name %q is reserved", name)
 	}
@@ -90,6 +93,9 @@ func ValidateSystemServerName(name string) error {
 	}
 	if strings.HasPrefix(name, "-") || strings.HasSuffix(name, "-") {
 		return fmt.Errorf("naming: system server name %q must not start or end with '-'", name)
+	}
+	if strings.HasSuffix(name, "-hl") {
+		return fmt.Errorf("naming: system server name %q uses reserved suffix '-hl'", name)
 	}
 	return nil
 }

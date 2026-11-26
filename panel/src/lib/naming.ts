@@ -27,6 +27,6 @@ export type ServerNameIssue = "shape" | "reserved";
 /** serverNameIssue says why the API would refuse this name, or null if it takes it. */
 export function serverNameIssue(name: string): ServerNameIssue | null {
   if (!SERVER_NAME_RE.test(name) || name.startsWith("-") || name.endsWith("-")) return "shape";
-  if (RESERVED_SERVER_NAMES.includes(name)) return "reserved";
+  if (RESERVED_SERVER_NAMES.includes(name) || name.endsWith("-hl")) return "reserved";
   return null;
 }

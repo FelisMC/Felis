@@ -27,6 +27,10 @@ func TestValidateServerName(t *testing.T) {
 		{"admin", false},                             // reserved
 		{"api", false},                               // reserved
 		{"console", false},                           // reserved web console host
+		{"craft-hl", false},                          // reserved headless service suffix
+		{"a-hl", false},                              // reserved headless service suffix
+		{"hl-craft", true},                           // prefix is allowed
+		{"craft-hl2", true},                          // non-terminal -hl is allowed
 	}
 	for _, c := range cases {
 		err := naming.ValidateServerName(c.name)
@@ -67,6 +71,7 @@ func TestValidateSystemServerName(t *testing.T) {
 		{"Login", false},     // still case-sensitive
 		{"-leading", false},  // still no leading hyphen
 		{"has space", false}, // still no illegal chars
+		{"login-hl", false},  // reserved headless service suffix
 	}
 	for _, c := range cases {
 		err := naming.ValidateSystemServerName(c.name)
