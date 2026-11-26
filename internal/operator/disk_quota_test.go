@@ -185,3 +185,47 @@ func TestDiskQuotaVolumeReadFailureCannotAdvancePendingRestart(t *testing.T) {
 		t.Fatal("a volume lookup failure blocked an explicit stop")
 	}
 }
+
+func TestDiskQuotaStopsServerAfterConsecutiveScanFailures(t *testing.T) {
+	h, claim := newDiskHost(t)
+	writeSample := func(used int64, failed int) {
+		t.Helper()
+		server := getServer(t, h.c, "survival")
+		raw, err := json.Marshal(v1alpha1.DiskUsageSample{
+			ServerUID:   server.UID,
+			PVCName:     claim.Name,
+			PVCUID:      claim.UID,
+			UsedBytes:   used,
+			SampledAt:   h.clock,
+			FailedScans: failed,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if server.Annotations == nil {
+			server.Annotations = map[string]string{}
+		}
+		server.Annotations[v1alpha1.AnnotationDiskUsage] = string(raw)
+		if err := h.c.Update(context.Background(), server); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	writeSample(10, v1alpha1.DiskSampleFailureLimit-1)
+	if server := h.pass(); server.Spec.DesiredState != v1alpha1.DesiredRunning {
+		t.Fatalf("below failure limit stopped server: %s", server.Spec.DesiredState)
+	}
+
+	writeSample(10, v1alpha1.DiskSampleFailureLimit)
+	server := h.pass()
+	if server.Spec.DesiredState != v1alpha1.DesiredStopped || server.Status.AutoStop == nil || server.Status.AutoStop.Reason != v1alpha1.StopDiskFull || !meta.IsStatusConditionFalse(server.Status.Conditions, v1alpha1.ConditionDiskSpaceAvailable) {
+		t.Fatalf("consecutive scan failures did not stop server: desired=%s autoStop=%+v", server.Spec.DesiredState, server.Status.AutoStop)
+	}
+
+	h.clock = h.clock.Add(time.Minute)
+	writeSample(10, 0)
+	server = h.pass()
+	if !meta.IsStatusConditionTrue(server.Status.Conditions, v1alpha1.ConditionDiskSpaceAvailable) {
+		t.Fatal("fresh successful scan did not clear failure latch")
+	}
+}

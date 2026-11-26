@@ -12,9 +12,9 @@ import (
 )
 
 type diskSampleFixture struct {
-	servers          []api.ServerInfo
-	reads, published []string
-	cancel           context.CancelFunc
+	servers                  []api.ServerInfo
+	reads, published, failed []string
+	cancel                   context.CancelFunc
 }
 
 func (f *diskSampleFixture) ListServers(context.Context) ([]api.ServerInfo, error) {
@@ -47,6 +47,14 @@ func (f *diskSampleFixture) PublishDiskUsage(_ context.Context, target api.DiskU
 	return nil
 }
 
+func (f *diskSampleFixture) RecordDiskUsageFailure(_ context.Context, target api.DiskUsageTarget, at time.Time) error {
+	if at.IsZero() {
+		return errors.New("zero failure timestamp")
+	}
+	f.failed = append(f.failed, target.Name)
+	return nil
+}
+
 func TestDiskSamplingKeepsStoppedServersAndRejectsIncompleteScans(t *testing.T) {
 	f := &diskSampleFixture{servers: []api.ServerInfo{
 		{Name: "maintenance", Phase: "Stopped"},
@@ -63,6 +71,9 @@ func TestDiskSamplingKeepsStoppedServersAndRejectsIncompleteScans(t *testing.T) 
 	if !slices.Equal(f.published, []string{"stopped", "running"}) {
 		t.Fatalf("published measurements = %v; incomplete results must not replace the last successful sample", f.published)
 	}
+	if !slices.Equal(f.failed, []string{"incomplete"}) {
+		t.Fatalf("recorded failures = %v, want [incomplete]", f.failed)
+	}
 }
 
 func TestDiskSamplingDoesNotPublishAfterLeadershipCancellation(t *testing.T) {
@@ -72,7 +83,7 @@ func TestDiskSamplingDoesNotPublishAfterLeadershipCancellation(t *testing.T) {
 	if err := collectDiskUsage(ctx, f, f, io.Discard); !errors.Is(err, context.Canceled) {
 		t.Fatalf("result = %v, want context cancellation", err)
 	}
-	if !slices.Equal(f.reads, []string{"first"}) || len(f.published) != 0 {
-		t.Fatalf("reads = %v, published = %v; cancelled leader must stop without publishing", f.reads, f.published)
+	if !slices.Equal(f.reads, []string{"first"}) || len(f.published) != 0 || len(f.failed) != 0 {
+		t.Fatalf("reads = %v, published = %v, failed = %v; cancelled leader must stop without publishing", f.reads, f.published, f.failed)
 	}
 }

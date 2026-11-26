@@ -395,3 +395,40 @@ func TestDiskQuotaStatusAndListsExposeUsageOnlyToManagers(t *testing.T) {
 		}
 	}
 }
+
+func TestRecordDiskUsageFailureIncrementsAndTripsQuota(t *testing.T) {
+	ctx := context.Background()
+	k, c, server, _ := diskQuotaCluster(t)
+	target, err := k.DiskUsageTarget(ctx, server.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := k.PublishDiskUsage(ctx, target, 20, lockNow.Add(-2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= v1alpha1.DiskSampleFailureLimit; i++ {
+		if err := k.RecordDiskUsageFailure(ctx, target, lockNow.Add(-time.Minute)); err != nil {
+			t.Fatalf("failure %d: %v", i, err)
+		}
+	}
+	var got v1alpha1.MinecraftServer
+	if err := c.Get(ctx, client.ObjectKeyFromObject(server), &got); err != nil {
+		t.Fatal(err)
+	}
+	sample, ok := v1alpha1.ServerDiskSample(&got)
+	if !ok || sample.UsedBytes != 20 || sample.FailedScans != v1alpha1.DiskSampleFailureLimit {
+		t.Fatalf("sample = %+v (ok=%v), want usedBytes=20 failedScans=%d", sample, ok, v1alpha1.DiskSampleFailureLimit)
+	}
+	if err := k.checkDiskQuota(ctx, &got); err == nil {
+		t.Fatal("checkDiskQuota allowed start after consecutive scan failures")
+	}
+	if err := k.PublishDiskUsage(ctx, target, 20, lockNow); err != nil {
+		t.Fatalf("recovery publish: %v", err)
+	}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(server), &got); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.checkDiskQuota(ctx, &got); err != nil {
+		t.Fatalf("checkDiskQuota after recovery = %v", err)
+	}
+}

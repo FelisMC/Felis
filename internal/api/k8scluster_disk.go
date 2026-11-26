@@ -38,9 +38,9 @@ func serverDiskUsage(server *v1alpha1.MinecraftServer, now time.Time) (*ServerDi
 	if !ok || limit <= 0 {
 		return nil, latched
 	}
-	fresh := v1alpha1.DiskSampleFresh(sample, now)
+	fresh := sample.FailedScans == 0 && v1alpha1.DiskSampleFresh(sample, now)
 	view := &ServerDiskUsage{UsedBytes: sample.UsedBytes, LimitBytes: limit, SampledAt: sample.SampledAt, Stale: !fresh || (latched && sample.UsedBytes < limit)}
-	return view, latched || (!sample.SampledAt.After(now) && sample.UsedBytes >= limit)
+	return view, latched || (!sample.SampledAt.After(now) && (sample.UsedBytes >= limit || sample.FailedScans >= v1alpha1.DiskSampleFailureLimit))
 }
 
 func (k *K8sCluster) DiskUsageTarget(ctx context.Context, name string) (DiskUsageTarget, error) {
@@ -97,10 +97,57 @@ func (k *K8sCluster) PublishDiskUsage(ctx context.Context, target DiskUsageTarge
 		}
 		if old, ok := v1alpha1.ParseDiskUsage(server.Annotations[v1alpha1.AnnotationDiskUsage]); ok &&
 			old.ServerUID == target.ServerUID && old.PVCName == target.PVCName && old.PVCUID == target.PVCUID &&
-			!old.SampledAt.After(k.clock()) && !sampledAt.After(old.SampledAt) {
+			!old.SampledAt.After(k.clock()) && old.FailedScans == 0 && !sampledAt.After(old.SampledAt) {
 			return ErrConflict
 		}
 		sample := v1alpha1.DiskUsageSample{ServerUID: target.ServerUID, PVCName: target.PVCName, PVCUID: target.PVCUID, UsedBytes: usedBytes, SampledAt: sampledAt.UTC()}
+		raw, err := json.Marshal(sample)
+		if err != nil {
+			return err
+		}
+		patch := client.MergeFromWithOptions(server.DeepCopy(), client.MergeFromWithOptimisticLock{})
+		if server.Annotations == nil {
+			server.Annotations = map[string]string{}
+		}
+		server.Annotations[v1alpha1.AnnotationDiskUsage] = string(raw)
+		return k.c.Patch(ctx, &server, patch)
+	})
+}
+
+func (k *K8sCluster) RecordDiskUsageFailure(ctx context.Context, target DiskUsageTarget, failedAt time.Time) error {
+	if failedAt.IsZero() || failedAt.After(k.clock()) {
+		return errors.New("invalid disk usage failure timestamp")
+	}
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var server v1alpha1.MinecraftServer
+		if err := k.getServer(ctx, target.Name, &server); err != nil {
+			return err
+		}
+		current, err := k.DiskUsageTarget(ctx, target.Name)
+		if err != nil {
+			return err
+		}
+		if current != target {
+			return ErrConflict
+		}
+		if server.UID != target.ServerUID || server.WorldPVC() != target.PVCName {
+			return ErrConflict
+		}
+		sample := v1alpha1.DiskUsageSample{
+			ServerUID:   target.ServerUID,
+			PVCName:     target.PVCName,
+			PVCUID:      target.PVCUID,
+			UsedBytes:   0,
+			SampledAt:   failedAt.UTC(),
+			FailedScans: 1,
+		}
+		if old, ok := v1alpha1.ParseDiskUsage(server.Annotations[v1alpha1.AnnotationDiskUsage]); ok &&
+			old.ServerUID == target.ServerUID && old.PVCName == target.PVCName && old.PVCUID == target.PVCUID &&
+			!old.SampledAt.After(k.clock()) {
+			sample.UsedBytes = old.UsedBytes
+			sample.SampledAt = old.SampledAt
+			sample.FailedScans = old.FailedScans + 1
+		}
 		raw, err := json.Marshal(sample)
 		if err != nil {
 			return err

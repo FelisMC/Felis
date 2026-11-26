@@ -112,3 +112,31 @@ func TestDiskUsageRejectsInvalidSamplesAndLimits(t *testing.T) {
 		}
 	}
 }
+
+func TestDiskQuotaFailsClosedAfterConsecutiveScanFailures(t *testing.T) {
+	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		failed int
+		want   string
+	}{
+		{0, DiskHealthy},
+		{1, ""},
+		{DiskSampleFailureLimit - 1, ""},
+		{DiskSampleFailureLimit, StopDiskFull},
+		{DiskSampleFailureLimit + 1, StopDiskFull},
+	} {
+		server := &MinecraftServer{ObjectMeta: metav1.ObjectMeta{Name: "survival", UID: "server-1"}, Spec: MinecraftServerSpec{Storage: StorageSpec{Size: "100"}}}
+		sample := DiskUsageSample{ServerUID: server.UID, PVCName: server.WorldPVC(), PVCUID: "claim-1", UsedBytes: 10, SampledAt: now, FailedScans: tc.failed}
+		raw, err := json.Marshal(sample)
+		if err != nil {
+			t.Fatal(err)
+		}
+		server.Annotations = map[string]string{AnnotationDiskUsage: string(raw)}
+		if got := DiskQuotaReason(server, "claim-1", now); got != tc.want {
+			t.Errorf("failedScans=%d: reason = %q, want %q", tc.failed, got, tc.want)
+		}
+	}
+	if _, ok := ParseDiskUsage(`{"serverUID":"s","pvcName":"p","pvcUID":"u","usedBytes":0,"sampledAt":"2026-10-24T12:00:00Z","failedScans":-1}`); ok {
+		t.Fatal("negative failedScans was accepted")
+	}
+}

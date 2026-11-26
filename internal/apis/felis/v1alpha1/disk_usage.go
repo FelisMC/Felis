@@ -19,16 +19,18 @@ const (
 	EventDiskWarning            = "DiskWarning"
 	EventDiskFull               = "DiskFull"
 	DiskUsageMaxAge             = 180 * time.Second
+	DiskSampleFailureLimit      = 3
 	DefaultWorldStorageSize     = "8Gi"
 )
 
 // DiskUsageSample records a successful scan tied to the server and claim UIDs.
 type DiskUsageSample struct {
-	ServerUID types.UID `json:"serverUID"`
-	PVCName   string    `json:"pvcName"`
-	PVCUID    types.UID `json:"pvcUID"`
-	UsedBytes int64     `json:"usedBytes"`
-	SampledAt time.Time `json:"sampledAt"`
+	ServerUID   types.UID `json:"serverUID"`
+	PVCName     string    `json:"pvcName"`
+	PVCUID      types.UID `json:"pvcUID"`
+	UsedBytes   int64     `json:"usedBytes"`
+	SampledAt   time.Time `json:"sampledAt"`
+	FailedScans int       `json:"failedScans,omitempty"`
 }
 
 func ParseDiskUsage(raw string) (DiskUsageSample, bool) {
@@ -42,7 +44,7 @@ func ParseDiskUsage(raw string) (DiskUsageSample, bool) {
 	sample := decoded.DiskUsageSample
 	sample.UsedBytes = *decoded.UsedBytes
 	if sample.ServerUID == "" || len(sample.ServerUID) > 128 ||
-		sample.PVCName == "" || len(sample.PVCName) > 253 || sample.PVCUID == "" || len(sample.PVCUID) > 128 || sample.UsedBytes < 0 || sample.SampledAt.IsZero() {
+		sample.PVCName == "" || len(sample.PVCName) > 253 || sample.PVCUID == "" || len(sample.PVCUID) > 128 || sample.UsedBytes < 0 || sample.FailedScans < 0 || sample.SampledAt.IsZero() {
 		return DiskUsageSample{}, false
 	}
 	return sample, true
@@ -74,10 +76,10 @@ func DiskQuotaReason(server *MinecraftServer, pvcUID types.UID, now time.Time) s
 	sample, ok := ServerDiskSample(server)
 	limit := DiskQuotaBytes(server)
 	if ok && pvcUID != "" && sample.PVCUID == pvcUID && limit > 0 && !sample.SampledAt.After(now) {
-		if sample.UsedBytes >= limit {
+		if sample.FailedScans >= DiskSampleFailureLimit || sample.UsedBytes >= limit {
 			return StopDiskFull
 		}
-		if DiskSampleFresh(sample, now) {
+		if sample.FailedScans == 0 && DiskSampleFresh(sample, now) {
 			if sample.UsedBytes >= limit-limit/10 {
 				return DiskLow
 			}

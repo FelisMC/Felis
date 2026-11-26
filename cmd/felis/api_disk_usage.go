@@ -15,6 +15,7 @@ type diskUsageCluster interface {
 	ListServers(context.Context) ([]api.ServerInfo, error)
 	DiskUsageTarget(context.Context, string) (api.DiskUsageTarget, error)
 	PublishDiskUsage(context.Context, api.DiskUsageTarget, int64, time.Time) error
+	RecordDiskUsageFailure(context.Context, api.DiskUsageTarget, time.Time) error
 }
 
 type diskUsageReader interface {
@@ -55,6 +56,12 @@ func collectDiskUsage(ctx context.Context, cluster diskUsageCluster, files diskU
 			used, err = files.DiskUsage(sample, server.Name)
 			if err == nil && sample.Err() == nil {
 				err = cluster.PublishDiskUsage(sample, target, used, time.Now().UTC())
+			} else if ctx.Err() == nil {
+				record, recordCancel := context.WithTimeout(ctx, 10*time.Second)
+				if rerr := cluster.RecordDiskUsageFailure(record, target, time.Now().UTC()); rerr != nil {
+					fmt.Fprintf(stderr, "felis api: record disk sampling failure for %s: %v\n", server.Name, rerr)
+				}
+				recordCancel()
 			}
 		}
 		cancel()
