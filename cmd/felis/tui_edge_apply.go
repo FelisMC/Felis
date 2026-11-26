@@ -312,8 +312,7 @@ func systemctl(ctx context.Context, args ...string) error {
 	return nil
 }
 
-// Filter the loopback-only NodePort before kube-proxy DNAT at priority -300.
-// Declare then delete the table before recreating it so `nft -f` is idempotent.
+// Filter the NodePort before kube-proxy DNAT; declare-then-delete keeps nft -f idempotent.
 func originFenceRuleset(nodePort int32) string {
 	return fmt.Sprintf(`table inet %s
 delete table inet %s

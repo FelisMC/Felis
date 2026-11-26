@@ -1951,7 +1951,6 @@ ufw_active() {
   [ "$(LC_ALL=C ufw status 2>/dev/null | sed -n 1p)" = "Status: active" ]
 }
 
-# Report whether Cloudflare Tunnel + Access is configured on this host.
 cloudflare_edge_configured() {
   local cfg="${HOST_CONFIG:-/etc/felis/felis.host.toml}" aud=""
   [ -r "$cfg" ] || return 1
@@ -1959,9 +1958,8 @@ cloudflare_edge_configured() {
   [ -n "$aud" ]
 }
 
-# Reapply the Cloudflare origin fence after firewalld reloads its nftables ruleset.
 reload_firewalld() {
-  firewall-cmd --reload "$@"
+  firewall-cmd --reload
   local unit="${EDGE_FENCE_UNIT:-/etc/systemd/system/felis-edge-fence.service}"
   if [ -f "$unit" ]; then
     systemctl restart felis-edge-fence.service

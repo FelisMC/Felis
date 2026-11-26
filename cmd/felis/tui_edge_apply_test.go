@@ -15,7 +15,7 @@ func TestOriginFenceRuleset(t *testing.T) {
 	rs := originFenceRuleset(port)
 
 	// The private table so the fence adds/removes atomically without touching other
-	// host rules, and declares then deletes it first so `nft -f` is idempotent.
+	// host rules.
 	if !strings.Contains(rs, "table inet "+felisEdgeTable) {
 		t.Errorf("ruleset missing dedicated inet table %q:\n%s", felisEdgeTable, rs)
 	}
@@ -131,7 +131,6 @@ func TestEdgeFenceInstallAndRemove(t *testing.T) {
 		t.Errorf("rulesPath still exists after remove: %v", err)
 	}
 
-	// Idempotent when already removed.
 	calls = nil
 	if err := removeEdgeFence(context.Background(), rulesPath, unitPath, fakeSystemctl); err != nil {
 		t.Fatalf("second removeEdgeFence: %v", err)

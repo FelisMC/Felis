@@ -450,7 +450,6 @@ func TestDoctorReportsEdgeFence(t *testing.T) {
 	prev := edgeFenceCheck
 	defer func() { edgeFenceCheck = prev }()
 
-	// Without Cloudflare Access, the area is skipped rather than failing.
 	edgeFenceCheck = func(context.Context) (bool, string) {
 		t.Fatal("edgeFenceCheck must not run when access_jwt_aud is empty")
 		return false, ""
@@ -462,7 +461,6 @@ func TestDoctorReportsEdgeFence(t *testing.T) {
 		t.Fatalf("expected skipped edge origin fence:\n%s", out.String())
 	}
 
-	// With Cloudflare Access enabled and missing nft table, doctor reports a critical finding.
 	cfgWithAccess := testWatchdogConfig + "[auth]\naccess_jwt_aud = \"aud-123\"\n"
 	edgeFenceCheck = func(context.Context) (bool, string) {
 		return false, "No such file or directory"
@@ -474,7 +472,6 @@ func TestDoctorReportsEdgeFence(t *testing.T) {
 		t.Fatalf("expected critical edge-fence finding:\n%s", out.String())
 	}
 
-	// When the table is present, edge origin fence is healthy.
 	edgeFenceCheck = func(context.Context) (bool, string) {
 		return true, ""
 	}

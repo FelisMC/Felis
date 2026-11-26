@@ -150,7 +150,6 @@ func CertFinding(dirs []string, now time.Time) *Finding {
 	return f
 }
 
-// EdgeFenceFinding reports when Cloudflare Access is enabled but the nftables fence closing the panel NodePort is absent.
 func EdgeFenceFinding(accessConfigured, present bool, detail string) *Finding {
 	if !accessConfigured || present {
 		return nil
