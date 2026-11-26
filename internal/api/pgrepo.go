@@ -877,6 +877,19 @@ func (p *PGRepo) BackupStoreBytes(ctx context.Context) (int64, error) {
 	return n, err
 }
 
+func (p *PGRepo) OwnerBackupStoreBytes(ctx context.Context, ownerID string) (int64, int, error) {
+	var used int64
+	var owners int
+	err := p.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(size_bytes) FILTER (WHERE owner_id = $1), 0), COUNT(DISTINCT owner_id)
+		 FROM (
+		   SELECT former_owner AS owner_id, size_bytes FROM world_backups WHERE status = 'present' AND former_owner IS NOT NULL AND former_owner <> ''
+		   UNION ALL
+		   SELECT owner_id, 0::bigint FROM servers WHERE deleted_at IS NULL AND owner_id IS NOT NULL AND owner_id <> ''
+		 ) t`, ownerID).Scan(&used, &owners)
+	return used, owners, err
+}
+
 func (p *PGRepo) ScheduledBackupCandidates(ctx context.Context, before time.Time) ([]ScheduledCandidate, error) {
 	rows, err := p.db.QueryContext(ctx,
 		`SELECT s.name, s.owner_id FROM servers s

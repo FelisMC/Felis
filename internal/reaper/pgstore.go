@@ -153,9 +153,17 @@ func (s *PGStore) PresentBackupBytes(ctx context.Context) (int64, error) {
 }
 
 func (s *PGStore) EvictableBackups(ctx context.Context) ([]StoredBackup, error) {
-	const q = `SELECT id, server_name, backup_ref, size_bytes, reason, COALESCE(sha256, '') FROM world_backups
-		WHERE status = 'present' AND (reason NOT IN ('inactive_15d', 'released') OR offsite_at IS NOT NULL)
-		ORDER BY reason IN ('inactive_15d', 'released'), created_at ASC`
+	const q = `WITH owner_bytes AS (
+		SELECT COALESCE(former_owner, '') AS owner, COALESCE(SUM(size_bytes), 0) AS total_bytes
+		FROM world_backups
+		WHERE status = 'present'
+		GROUP BY COALESCE(former_owner, '')
+	)
+	SELECT b.id, b.server_name, b.backup_ref, b.size_bytes, b.reason, COALESCE(b.sha256, '')
+	FROM world_backups b
+	JOIN owner_bytes o ON o.owner = COALESCE(b.former_owner, '')
+	WHERE b.status = 'present' AND (b.reason NOT IN ('inactive_15d', 'released') OR b.offsite_at IS NOT NULL)
+	ORDER BY b.reason IN ('inactive_15d', 'released'), o.total_bytes DESC, b.created_at ASC`
 	return s.queryBackups(ctx, q)
 }
 

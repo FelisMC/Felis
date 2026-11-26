@@ -266,6 +266,7 @@ type Repo interface {
 	// LastBackupRequest returns zero when no manual backup was accepted at or after since.
 	LastBackupRequest(ctx context.Context, serverName string, since time.Time) (time.Time, error)
 	BackupStoreBytes(ctx context.Context) (int64, error)
+	OwnerBackupStoreBytes(ctx context.Context, ownerID string) (used int64, owners int, err error)
 	// SeedServer resets a same-name row but rolls back on a subdomain conflict.
 	SeedServer(ctx context.Context, name, subdomain string, cpuMilli, memoryMB, storageMB int) error
 	// SeedOwnedServer checks effective quotas and inserts ownership atomically; absent quotas disable self-service creation.

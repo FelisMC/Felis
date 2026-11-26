@@ -903,6 +903,25 @@ func (f *fakeRepo) BackupStoreBytes(context.Context) (int64, error) {
 	return n, nil
 }
 
+func (f *fakeRepo) OwnerBackupStoreBytes(_ context.Context, ownerID string) (int64, int, error) {
+	var used int64
+	seen := map[string]struct{}{}
+	for _, b := range f.backups {
+		if b.view.Status == "present" && b.view.FormerOwner != "" {
+			seen[b.view.FormerOwner] = struct{}{}
+			if b.view.FormerOwner == ownerID {
+				used += b.view.SizeBytes
+			}
+		}
+	}
+	for _, s := range f.byName {
+		if s.OwnerID != "" {
+			seen[s.OwnerID] = struct{}{}
+		}
+	}
+	return used, len(seen), nil
+}
+
 func (f *fakeRepo) AllBackups(_ context.Context, opts BackupListOpts) ([]BackupView, int, error) {
 	return f.pageBackups("", opts)
 }

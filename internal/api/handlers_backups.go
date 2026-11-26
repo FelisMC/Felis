@@ -219,6 +219,17 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	snapshotter, snapshot := a.snapshotFirst()
+	if body.SafetySnapshot != nil && !*body.SafetySnapshot {
+		snapshot = false
+	}
+	if snapshot && !p.IsAdmin() {
+		if err := a.backupAllowance(r.Context(), name, rec.OwnerID); err != nil {
+			writeError(w, r, err)
+			return
+		}
+	}
+
 	// Hold the world-volume lock until restoration finishes to prevent startup on a partially extracted world.
 	release, ok := a.acquireWorld(w, r, name, maintenance.KindRestore, "stop the server before restoring a backup")
 	if !ok {
@@ -231,10 +242,6 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 
-	snapshotter, snapshot := a.snapshotFirst()
-	if body.SafetySnapshot != nil && !*body.SafetySnapshot {
-		snapshot = false
-	}
 	if snapshot {
 		err = snapshotter.BackupThenRestore(r.Context(), name, cur.OwnerID, backup.ID, backup.BackupRef)
 	} else {
@@ -277,7 +284,7 @@ func (a *API) handleBackupNow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !p.IsAdmin() {
-		if err := a.backupAllowance(r.Context(), name); err != nil {
+		if err := a.backupAllowance(r.Context(), name, rec.OwnerID); err != nil {
 			writeError(w, r, err)
 			return
 		}
@@ -287,7 +294,14 @@ func (a *API) handleBackupNow(w http.ResponseWriter, r *http.Request) {
 }
 
 // backupAllowance bounds manual backups by per-server cooldown and the owner's total stored backup size.
-func (a *API) backupAllowance(ctx context.Context, name string) error {
+func (a *API) backupAllowance(ctx context.Context, name, ownerID string) error {
+	if err := a.backupCooldownAllowance(ctx, name); err != nil {
+		return err
+	}
+	return a.backupStoreAllowance(ctx, ownerID)
+}
+
+func (a *API) backupCooldownAllowance(ctx context.Context, name string) error {
 	if cooldown := a.backupCooldown(ctx); cooldown > 0 {
 		now := a.now()
 		last, err := a.Repo.LastBackupRequest(ctx, name, now.Add(-cooldown))
@@ -303,15 +317,32 @@ func (a *API) backupAllowance(ctx context.Context, name string) error {
 			}
 		}
 	}
-	if limit := a.backupStoreCap(ctx); limit > 0 {
-		used, err := a.Repo.BackupStoreBytes(ctx)
+	return nil
+}
+
+func (a *API) backupStoreAllowance(ctx context.Context, ownerID string) error {
+	limit := a.backupStoreCap(ctx)
+	if limit <= 0 {
+		return nil
+	}
+	if ownerID != "" {
+		ownerUsed, owners, err := a.Repo.OwnerBackupStoreBytes(ctx, ownerID)
 		if err != nil {
 			return err
 		}
-		if used >= limit {
+		share := max(limit/int64(max(owners, 1)), 1)
+		if ownerUsed >= share {
 			return newError(http.StatusInsufficientStorage, "backup_store_full",
-				"the backup store is full; ask an administrator to free space")
+				"your share of the backup store is full; delete an old backup or ask an administrator to free space")
 		}
+	}
+	used, err := a.Repo.BackupStoreBytes(ctx)
+	if err != nil {
+		return err
+	}
+	if used >= limit {
+		return newError(http.StatusInsufficientStorage, "backup_store_full",
+			"the backup store is full; ask an administrator to free space")
 	}
 	return nil
 }

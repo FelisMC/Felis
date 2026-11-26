@@ -555,3 +555,92 @@ func TestInternalRestoreScopesBackupsToCurrentOwner(t *testing.T) {
 		t.Fatalf("unclaimed server with unclaimed backup = %d %s, refs=%v; want 202 and %s", w.Code, w.Body.String(), restorer.refs, refUnclaimed)
 	}
 }
+
+func TestBackupEvictionPrefersHeaviestOwner(t *testing.T) {
+	ctx := context.Background()
+	st := reaper.NewPGStore(db)
+	sfx := suffix(t)
+	heavy := newUser(t, "user", "evict-heavy")
+	light := newUser(t, "user", "evict-light")
+	srvHeavy := "evict-h-" + sfx
+	srvLight := "evict-l-" + sfx
+	seedOwnedServer(t, srvHeavy, heavy.ID, false)
+	seedOwnedServer(t, srvLight, light.ID, false)
+
+	baseBytes, err := st.PresentBackupBytes(ctx)
+	if err != nil {
+		t.Fatalf("PresentBackupBytes: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	seed := func(id, srv, owner string, size int64, created time.Time) {
+		t.Helper()
+		if _, err := db.ExecContext(ctx,
+			`INSERT INTO world_backups (id, server_name, former_owner, backup_ref, size_bytes, reason, status, created_at, expires_at)
+			 VALUES ($1, $2, $3, $4, $5, 'manual', 'present', $6, $7)`,
+			id, srv, owner, "/archives/"+id+".tar.gz", size, created, created.Add(30*reaper.Day)); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	victimID := "bk-light-" + sfx
+	heavyOldID := "bk-heavy1-" + sfx
+	heavyNewID := "bk-heavy2-" + sfx
+	heavySize := baseBytes + 4000
+	seed(victimID, srvLight, light.ID, 100, now.Add(-10*time.Hour))
+	seed(heavyOldID, srvHeavy, heavy.ID, heavySize, now.Add(-2*time.Hour))
+	seed(heavyNewID, srvHeavy, heavy.ID, heavySize, now.Add(-time.Hour))
+	t.Cleanup(func() {
+		_, _ = db.ExecContext(context.Background(), `DELETE FROM world_backups WHERE id IN ($1, $2, $3)`, victimID, heavyOldID, heavyNewID)
+	})
+
+	heavyUsed, owners, err := repo.OwnerBackupStoreBytes(ctx, heavy.ID)
+	if err != nil || heavyUsed != 2*heavySize || owners < 2 {
+		t.Fatalf("OwnerBackupStoreBytes(heavy) = (%d, %d, %v); want (%d, >=2, nil)", heavyUsed, owners, err, 2*heavySize)
+	}
+	lightUsed, _, err := repo.OwnerBackupStoreBytes(ctx, light.ID)
+	if err != nil || lightUsed != 100 {
+		t.Fatalf("OwnerBackupStoreBytes(light) = (%d, %v); want (100, nil)", lightUsed, err)
+	}
+
+	evictable, err := st.EvictableBackups(ctx)
+	if err != nil {
+		t.Fatalf("EvictableBackups: %v", err)
+	}
+	var order []string
+	for _, b := range evictable {
+		if b.ServerName == srvHeavy || b.ServerName == srvLight {
+			order = append(order, b.ID)
+		}
+	}
+	want := []string{heavyOldID, heavyNewID, victimID}
+	if strings.Join(order, ",") != strings.Join(want, ",") {
+		t.Fatalf("eviction order = %v, want %v", order, want)
+	}
+
+	if _, err := db.ExecContext(ctx, `UPDATE servers SET last_active_at = $2 WHERE name = $1`,
+		srvHeavy, now.Add(-20*reaper.Day)); err != nil {
+		t.Fatalf("age %s: %v", srvHeavy, err)
+	}
+	cfg := reaper.DefaultConfig()
+	cfg.MaxLocalBytes = baseBytes + heavySize + 500
+	cl := &reclaimCluster{name: srvHeavy}
+	ar := &reclaimArchiver{}
+	r := &reaper.Reaper{Cfg: cfg, Store: st, Cluster: cl, Archiver: ar, Now: func() time.Time { return now }}
+	if _, err := r.RunOnce(ctx); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+
+	statusOf := func(id string) string {
+		t.Helper()
+		var s string
+		if err := db.QueryRowContext(ctx, `SELECT status FROM world_backups WHERE id = $1`, id).Scan(&s); err != nil {
+			t.Fatalf("status %s: %v", id, err)
+		}
+		return s
+	}
+	if got := statusOf(heavyOldID); got != "deleted" {
+		t.Fatalf("%s status = %q, want deleted", heavyOldID, got)
+	}
+	if got := statusOf(victimID); got != "present" {
+		t.Fatalf("%s status = %q, want present", victimID, got)
+	}
+}

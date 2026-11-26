@@ -254,6 +254,32 @@ func TestBackupNow(t *testing.T) {
 			t.Fatalf("below the cap: code = %d (%s)", w.Code, w.Body.String())
 		}
 	})
+
+	t.Run("owner at per-owner share -> 507 while another owner still fits", func(t *testing.T) {
+		api, repo, cl, backuper := mk()
+		api.BackupStoreCap = 1000
+		repo.byName["creative"] = &ServerRecord{Name: "creative", OwnerID: "owner2"}
+		cl.byName["creative"] = &ServerInfo{Name: "creative", Phase: "Stopped",
+			Ready: false, DesiredState: string(v1alpha1.DesiredStopped)}
+		repo.backups = []fakeBackup{
+			{view: BackupView{ID: "b1", ServerName: "survival", FormerOwner: "owner1", Status: "present", SizeBytes: 500}},
+		}
+		api.External = staticExternal{p: owner}
+		w := do(api.ExternalHandler(), "POST", path, "", nil)
+		if w.Code != http.StatusInsufficientStorage || decodeErr(t, w) != "backup_store_full" {
+			t.Fatalf("owner1 over share: code = %d body %s", w.Code, w.Body.String())
+		}
+		if backuper.calls != 0 {
+			t.Fatal("over-share owner started a backup")
+		}
+		api.External = staticExternal{p: &Principal{UserID: "owner2", Email: "owner2@example.net", Role: "user"}}
+		if w := do(api.ExternalHandler(), "POST", "/api/v1/servers/creative/backup", "", nil); w.Code != http.StatusAccepted {
+			t.Fatalf("owner2 within share: code = %d (%s)", w.Code, w.Body.String())
+		}
+		if backuper.calls != 1 {
+			t.Fatalf("owner2 backuper calls = %d, want 1", backuper.calls)
+		}
+	})
 }
 
 func TestInternalBackup(t *testing.T) {

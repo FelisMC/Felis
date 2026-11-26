@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"net/http"
 	"strings"
 	"time"
 
@@ -201,13 +202,16 @@ func (a *API) beginStep(ctx context.Context, s *Schedule) error {
 		if _, ok := a.Backuper.(ScheduledBackuper); !ok {
 			return a.failRun(ctx, s, pos, "backups are not configured")
 		}
-		if limit := a.backupStoreCap(ctx); limit > 0 {
-			used, err := a.Repo.BackupStoreBytes(ctx)
-			if err != nil {
-				return a.failRun(ctx, s, pos, "could not read the backup store size: "+err.Error())
+		if a.backupStoreCap(ctx) > 0 {
+			owner := ""
+			if rec, err := a.Repo.ServerByName(ctx, s.Server); err == nil {
+				owner = rec.OwnerID
 			}
-			if used >= limit {
-				return a.failRun(ctx, s, pos, "the backup store is full; ask an administrator to free space")
+			if err := a.backupStoreAllowance(ctx, owner); err != nil {
+				if he, ok := err.(*apiError); ok && he.status == http.StatusInsufficientStorage {
+					return a.failRun(ctx, s, pos, he.msg)
+				}
+				return a.failRun(ctx, s, pos, "could not read the backup store size: "+err.Error())
 			}
 		}
 		exists, err := a.Cluster.WorldVolumeExists(ctx, s.Server)

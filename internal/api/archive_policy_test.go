@@ -125,7 +125,7 @@ func TestArchivePolicyAsksForAFreshProof(t *testing.T) {
 func TestBackupLimitsFollowThePolicy(t *testing.T) {
 	a, repo := archiveAPI()
 	repo.backupRequested = map[string]time.Time{"survival": a.now().Add(-time.Minute)}
-	if err := a.backupAllowance(context.Background(), "survival"); err == nil {
+	if err := a.backupAllowance(context.Background(), "survival", "owner"); err == nil {
 		t.Fatal("felis.toml's hour-long cooldown let a backup through")
 	}
 	p := archivepolicy.FromConfig(a.ArchivePolicy.Host, a.ArchivePolicy.HostAudit)
@@ -133,7 +133,7 @@ func TestBackupLimitsFollowThePolicy(t *testing.T) {
 	raw, _ := json.Marshal(p)
 	repo.settings[archivepolicy.Key] = raw
 	a.ArchivePolicy.invalidate()
-	if err := a.backupAllowance(context.Background(), "survival"); err != nil {
+	if err := a.backupAllowance(context.Background(), "survival", "owner"); err != nil {
 		t.Fatalf("the panel's zero cooldown still refused: %v", err)
 	}
 }

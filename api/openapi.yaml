@@ -7699,8 +7699,15 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: Another backup or restore of this server started within the cooldown (backup_cooldown).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+        '507':
+          $ref: '#/components/responses/InsufficientStorage'
 
   /api/v1/servers/{name}/backup:
     post:

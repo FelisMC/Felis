@@ -144,6 +144,25 @@ func TestRestoreStartsWithSafetySnapshot(t *testing.T) {
 			t.Fatalf("code = %d (%s)", w.Code, w.Body.String())
 		}
 	})
+
+	t.Run("safety snapshot obeys per-owner backup store share", func(t *testing.T) {
+		a, snap, restorer := mk()
+		repo := a.Repo.(*fakeRepo)
+		repo.byName["creative"] = &ServerRecord{Name: "creative", OwnerID: "owner2"}
+		repo.backups[0].view.SizeBytes = 500
+		a.BackupStoreCap = 1000
+		w := do(a.ExternalHandler(), "POST", path, `{"backup_id":"bk1"}`, jsonHeader)
+		if w.Code != http.StatusInsufficientStorage || errCode(w.Body.Bytes()) != "backup_store_full" {
+			t.Fatalf("safety snapshot over share: code = %d (%s)", w.Code, w.Body.String())
+		}
+		if len(snap.chained) != 0 || restorer.calls != 0 {
+			t.Fatalf("over-share safety snapshot started: chained=%d restorer=%d", len(snap.chained), restorer.calls)
+		}
+		w = do(a.ExternalHandler(), "POST", path, `{"backup_id":"bk1","safety_snapshot":false}`, jsonHeader)
+		if w.Code != http.StatusAccepted || restorer.calls != 1 {
+			t.Fatalf("restore without safety snapshot: code = %d restorer=%d (%s)", w.Code, restorer.calls, w.Body.String())
+		}
+	})
 }
 
 func TestSettleRestoreChains(t *testing.T) {
