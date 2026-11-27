@@ -753,10 +753,6 @@ func alterRoleSQL(role, verifier string) string {
 	return "ALTER ROLE \"" + strings.ReplaceAll(role, `"`, `""`) + "\" WITH PASSWORD '" + verifier + "';\n"
 }
 
-func setKeyValueLine(path, key, sep, value string) error {
-	return setKeyValueLines(path, sep, [][2]string{{key, value}})
-}
-
 func setKeyValueLines(path, sep string, kv [][2]string) error {
 	return rewriteKeyValueLines(path, sep, kv, false)
 }
