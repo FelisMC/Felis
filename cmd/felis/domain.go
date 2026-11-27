@@ -948,10 +948,8 @@ func linkPropsDomain(n domainNames) [][2]string {
 	return [][2]string{{"root-domain", n.root}, {"panel-hostname", n.panel}, {"admin-hostname", n.admin}}
 }
 
-// readKeyValues reads the named keys of a key=value file, and only those: the
-// proxy's file also holds its service token.
 func readKeyValues(path string, keys ...string) (map[string]string, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := readRegularFileSafe(path)
 	if err != nil {
 		return nil, err
 	}

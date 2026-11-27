@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -848,4 +849,118 @@ func TestInstallerSecretsAreAllRotatable(t *testing.T) {
 			t.Errorf("bootstrap.sh does not generate %s when secrets.env lacks it", key)
 		}
 	}
+}
+
+func TestSetKeyValueLinesRejectsSymlinkParentAndFIFO(t *testing.T) {
+	t.Run("symlink plugins/felis-link directory", func(t *testing.T) {
+		root := t.TempDir()
+		outside := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(root, "plugins"), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(root, "plugins", "felis-link")); err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(outside, "felis-link.properties")
+		writeTestFile(t, target, "service-token=old\n", 0o755)
+		props := filepath.Join(root, "plugins", "felis-link", "felis-link.properties")
+
+		if err := setKeyValueLines(props, "=", [][2]string{{"service-token", "new"}}); err == nil {
+			t.Fatal("setKeyValueLines accepted symlink plugins/felis-link")
+		}
+		if _, err := readKeyValues(props, "service-token"); err == nil {
+			t.Fatal("readKeyValues accepted symlink plugins/felis-link")
+		}
+		if err := setProxyToken(props, "new"); err == nil {
+			t.Fatal("setProxyToken accepted symlink plugins/felis-link")
+		}
+		if got := readTestFile(t, target); got != "service-token=old\n" {
+			t.Fatalf("outside target modified: %q", got)
+		}
+		entries, err := os.ReadDir(outside)
+		if err != nil || len(entries) != 1 || entries[0].Name() != "felis-link.properties" {
+			t.Fatalf("unexpected files in symlink target dir: %v (%v)", entries, err)
+		}
+	})
+
+	t.Run("symlink target file", func(t *testing.T) {
+		root := t.TempDir()
+		outside := t.TempDir()
+		dir := filepath.Join(root, "plugins", "felis-link")
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		secret := filepath.Join(outside, "secret")
+		writeTestFile(t, secret, "service-token=secret\n", 0o600)
+		props := filepath.Join(dir, "felis-link.properties")
+		if err := os.Symlink(secret, props); err != nil {
+			t.Fatal(err)
+		}
+		if err := setKeyValueLines(props, "=", [][2]string{{"service-token", "new"}}); err == nil {
+			t.Fatal("setKeyValueLines followed symlink file")
+		}
+		if _, err := readKeyValues(props, "service-token"); err == nil {
+			t.Fatal("readKeyValues followed symlink file")
+		}
+		if got := readTestFile(t, secret); got != "service-token=secret\n" {
+			t.Fatalf("symlink target modified: %q", got)
+		}
+	})
+
+	t.Run("fifo path rejected without blocking", func(t *testing.T) {
+		root := t.TempDir()
+		dir := filepath.Join(root, "plugins", "felis-link")
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		props := filepath.Join(dir, "felis-link.properties")
+		if err := syscall.Mkfifo(props, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() {
+			done <- setKeyValueLines(props, "=", [][2]string{{"service-token", "new"}})
+		}()
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatal("setKeyValueLines accepted FIFO")
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("setKeyValueLines blocked on FIFO")
+		}
+		if _, err := readKeyValues(props, "service-token"); err == nil {
+			t.Fatal("readKeyValues accepted FIFO")
+		}
+	})
+
+	t.Run("explicit mode enforced and mtime preserved", func(t *testing.T) {
+		root := t.TempDir()
+		dir := filepath.Join(root, "plugins", "felis-link")
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		props := filepath.Join(dir, "felis-link.properties")
+		writeTestFile(t, props, "service-token=old\nroot-domain=example.com\n", 0o755)
+		written := time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC)
+		if err := os.Chtimes(props, written, written); err != nil {
+			t.Fatal(err)
+		}
+		if err := setProxyToken(props, "updated"); err != nil {
+			t.Fatalf("setProxyToken: %v", err)
+		}
+		if got := readTestFile(t, props); got != "service-token=updated\nroot-domain=example.com\n" {
+			t.Fatalf("props = %q", got)
+		}
+		info, err := os.Lstat(props)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o640 {
+			t.Fatalf("mode = %o, want 0640", info.Mode().Perm())
+		}
+		if !info.ModTime().Equal(written) {
+			t.Fatalf("mtime = %v, want %v", info.ModTime(), written)
+		}
+	})
 }

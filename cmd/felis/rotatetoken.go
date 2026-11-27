@@ -16,6 +16,7 @@ import (
 	neturl "net/url"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -32,6 +33,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/jackc/pgx/v5"
+	"golang.org/x/sys/unix"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -452,16 +454,8 @@ func journalSince(ctx context.Context, since time.Time) string {
 	return string(out)
 }
 
-// Preserve mtime because domain checks treat a newer file as unapplied proxy configuration.
 func setProxyToken(path, token string) error {
-	info, err := os.Stat(path)
-	if err != nil {
-		return err
-	}
-	if err := setKeyValueLine(path, "service-token", "=", token); err != nil {
-		return err
-	}
-	return os.Chtimes(path, time.Time{}, info.ModTime())
+	return rewriteKeyValueLines(path, "=", [][2]string{{"service-token", token}}, true)
 }
 
 func (r tokenRotator) rotateRegistry(ctx context.Context, apply bool) error {
@@ -759,20 +753,122 @@ func alterRoleSQL(role, verifier string) string {
 	return "ALTER ROLE \"" + strings.ReplaceAll(role, `"`, `""`) + "\" WITH PASSWORD '" + verifier + "';\n"
 }
 
-// Atomically replace key-value files while preserving mode and ownership.
 func setKeyValueLine(path, key, sep, value string) error {
 	return setKeyValueLines(path, sep, [][2]string{{key, value}})
 }
 
-// setKeyValueLines is setKeyValueLine for several keys in one rewrite.
 func setKeyValueLines(path, sep string, kv [][2]string) error {
-	info, err := os.Stat(path)
+	return rewriteKeyValueLines(path, sep, kv, false)
+}
+
+func splitSafeRoot(path string) (string, []string, string) {
+	clean := filepath.Clean(path)
+	dir, base := filepath.Dir(clean), filepath.Base(clean)
+	if filepath.Base(dir) == "felis-link" {
+		pluginsDir := filepath.Dir(dir)
+		if filepath.Base(pluginsDir) == "plugins" {
+			return filepath.Dir(pluginsDir), []string{"plugins", "felis-link"}, base
+		}
+	}
+	return dir, nil, base
+}
+
+func openSafeParentRoot(path string) (*os.Root, string, error) {
+	anchor, relDirs, base := splitSafeRoot(path)
+	cur, err := os.OpenRoot(anchor)
+	if err != nil {
+		return nil, "", err
+	}
+	for _, seg := range relDirs {
+		fi, err := cur.Lstat(seg)
+		if err != nil {
+			cur.Close()
+			return nil, "", err
+		}
+		if fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
+			cur.Close()
+			return nil, "", fmt.Errorf("%s: refusing non-directory or symlink component %q", path, seg)
+		}
+		next, err := cur.OpenRoot(seg)
+		cur.Close()
+		if err != nil {
+			return nil, "", err
+		}
+		cur = next
+	}
+	return cur, base, nil
+}
+
+func openRegularInRoot(root *os.Root, name string) (*os.File, os.FileInfo, error) {
+	f, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		f.Close()
+		return nil, nil, fmt.Errorf("%s: not a regular file", name)
+	}
+	return f, fi, nil
+}
+
+func readRegularFileSafe(path string) ([]byte, error) {
+	root, base, err := openSafeParentRoot(path)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	f, _, err := openRegularInRoot(root, base)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(io.LimitReader(f, 1<<20))
+}
+
+func keyValueFilePolicy(path, base string) (os.FileMode, int, int, error) {
+	if base == "felis-link.properties" {
+		if os.Geteuid() != 0 {
+			return 0o640, -1, -1, nil
+		}
+		grp, err := user.LookupGroup(velocityUnit)
+		if err != nil {
+			var unknown user.UnknownGroupError
+			if errors.As(err, &unknown) && filepath.Clean(path) != defaultLinkPropsPath {
+				return 0o640, 0, 0, nil
+			}
+			return 0, 0, 0, err
+		}
+		gid, err := strconv.Atoi(grp.Gid)
+		if err != nil {
+			return 0, 0, 0, err
+		}
+		return 0o640, 0, gid, nil
+	}
+	if os.Geteuid() == 0 {
+		return 0o600, 0, 0, nil
+	}
+	return 0o600, -1, -1, nil
+}
+
+func rewriteKeyValueLines(path, sep string, kv [][2]string, keepModTime bool) error {
+	root, base, err := openSafeParentRoot(path)
 	if err != nil {
 		return err
 	}
-	raw, err := os.ReadFile(path)
+	defer root.Close()
+	f, info, err := openRegularInRoot(root, base)
 	if err != nil {
 		return err
+	}
+	raw, readErr := io.ReadAll(io.LimitReader(f, 1<<20))
+	f.Close()
+	if readErr != nil {
+		return readErr
 	}
 	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
 	for _, p := range kv {
@@ -789,7 +885,49 @@ func setKeyValueLines(path, sep string, kv [][2]string) error {
 			lines = append(lines, key+sep+value)
 		}
 	}
-	return replaceFileKeepingMode(path, info, []byte(strings.Join(lines, "\n")+"\n"))
+	mode, uid, gid, err := keyValueFilePolicy(path, base)
+	if err != nil {
+		return err
+	}
+	var rnd [8]byte
+	if _, err := rand.Read(rnd[:]); err != nil {
+		return err
+	}
+	tmpName := "." + base + "." + hex.EncodeToString(rnd[:])
+	tmp, err := root.OpenFile(tmpName, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, mode)
+	if err != nil {
+		return err
+	}
+	defer root.Remove(tmpName)
+	if err := tmp.Chmod(mode); err != nil {
+		tmp.Close()
+		return err
+	}
+	if uid >= 0 && gid >= 0 {
+		if err := tmp.Chown(uid, gid); err != nil {
+			tmp.Close()
+			return err
+		}
+	}
+	if _, err := tmp.Write([]byte(strings.Join(lines, "\n") + "\n")); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if keepModTime {
+		tv := unix.NsecToTimeval(info.ModTime().UnixNano())
+		if err := unix.Futimes(int(tmp.Fd()), []unix.Timeval{tv, tv}); err != nil {
+			tmp.Close()
+			return err
+		}
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return root.Rename(tmpName, base)
 }
 
 // Atomic credential replacement preserves mode and owner to retain existing access boundaries.
