@@ -247,4 +247,10 @@ func TestSyncRecordsTheKey(t *testing.T) {
 	if len(b.started) != 2 || b.started[0] != keyMark {
 		t.Errorf("puts began in the order %v, want the marker, then the bundle", b.started)
 	}
+
+	delete(b.objs, keyMark)
+	fit, err := CheckKey(context.Background(), b, s.Key)
+	if err != nil || fit != KeyOpens {
+		t.Fatalf("CheckKey on unmarked v2 bucket = %v, %v; want KeyOpens", fit, err)
+	}
 }

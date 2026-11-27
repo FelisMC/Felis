@@ -178,11 +178,12 @@ func (k *K8sJobStatus) PendingRestoreChains(ctx context.Context) ([]RestoreChain
 			snapshot = ChainSnapshotRunning
 		}
 		out = append(out, RestoreChain{
-			Job:       j.Name,
-			Server:    j.Labels[jobServerLabel],
-			BackupID:  j.Annotations[maintenance.AnnotationRestoreBackupID],
-			BackupRef: j.Annotations[maintenance.AnnotationRestoreRef],
-			Snapshot:  snapshot,
+			Job:          j.Name,
+			Server:       j.Labels[jobServerLabel],
+			BackupID:     j.Annotations[maintenance.AnnotationRestoreBackupID],
+			BackupRef:    j.Annotations[maintenance.AnnotationRestoreRef],
+			BackupSHA256: j.Annotations[maintenance.AnnotationRestoreSHA256],
+			Snapshot:     snapshot,
 		})
 	}
 	return out, nil

@@ -18,15 +18,18 @@ import (
 
 var dbT0 = time.Date(2026, 9, 20, 3, 30, 0, 0, time.UTC)
 
-// dbBundle is a bundle as dbbackup.Backup lays it out: MANIFEST.json, then a
-// dump of dumpSize random bytes.
 func dbBundle(t *testing.T, created time.Time, counts *dbbackup.Counts, dumpSize int) []byte {
+	t.Helper()
+	return dbBundleLabeled(t, created, dbbackup.LabelDaily, counts, dumpSize)
+}
+
+func dbBundleLabeled(t *testing.T, created time.Time, label string, counts *dbbackup.Counts, dumpSize int) []byte {
 	t.Helper()
 	dump := make([]byte, dumpSize)
 	rand.Read(dump)
 	sum := sha256.Sum256(dump)
 	m := dbbackup.Manifest{
-		Format: 1, CreatedAt: created, Label: dbbackup.LabelDaily, FelisVersion: "v1.2.3", SchemaVersion: 21, Counts: counts,
+		Format: 1, CreatedAt: created, Label: label, FelisVersion: "v1.2.3", SchemaVersion: 21, Counts: counts,
 		Files: []dbbackup.ManifestEntry{{Name: "db.dump", Size: int64(dumpSize), SHA256: hex.EncodeToString(sum[:]), Mode: 0o600}},
 	}
 	raw, err := json.Marshal(m)
@@ -200,4 +203,42 @@ func TestChooseDB(t *testing.T) {
 	if _, _, err := ChooseDB(context.Background(), b, testKey(t)); !errors.Is(err, ErrAuth) || !strings.Contains(err.Error(), newest) {
 		t.Errorf("the wrong key: err = %v, want ErrAuth naming %s", err, newest)
 	}
+}
+
+func TestChooseDBRejectsRenamedBundle(t *testing.T) {
+	key := testKey(t)
+	oldTime := dbT0.AddDate(0, 0, -5)
+	fakeFuture := dbbackup.BundleName(time.Date(2099, 12, 31, 23, 59, 59, 0, time.UTC), dbbackup.LabelDaily)
+	oldPlain := dbBundle(t, oldTime, &dbbackup.Counts{Users: 5, Servers: 3}, 100)
+
+	t.Run("legacy v1 bundle renamed to future timestamp", func(t *testing.T) {
+		b := newMemBucket()
+		putDB(t, b, key, 0, &dbbackup.Counts{Users: 10, Servers: 5})
+		b.objs[DBKey(fakeFuture)] = seal(t, oldPlain, key)
+		if name, _, err := ChooseDB(context.Background(), b, key); err == nil || !strings.Contains(err.Error(), "does not match its object name") {
+			t.Fatalf("ChooseDB = %q, %v; want manifest mismatch error", name, err)
+		}
+	})
+
+	t.Run("legacy v1 bundle renamed to another label", func(t *testing.T) {
+		b := newMemBucket()
+		wrongLabel := dbbackup.BundleName(oldTime, dbbackup.LabelManual)
+		b.objs[DBKey(wrongLabel)] = seal(t, oldPlain, key)
+		if name, _, err := ChooseDB(context.Background(), b, key); err == nil || !strings.Contains(err.Error(), "does not match its object name") {
+			t.Fatalf("ChooseDB = %q, %v; want label mismatch error", name, err)
+		}
+	})
+
+	t.Run("v2 object copied to future name", func(t *testing.T) {
+		b := newMemBucket()
+		oldName := dbbackup.BundleName(oldTime, dbbackup.LabelDaily)
+		var sealed bytes.Buffer
+		if err := EncryptObject(&sealed, bytes.NewReader(oldPlain), key, DBKey(oldName)); err != nil {
+			t.Fatal(err)
+		}
+		b.objs[DBKey(fakeFuture)] = sealed.Bytes()
+		if name, _, err := ChooseDB(context.Background(), b, key); !errors.Is(err, ErrAuth) {
+			t.Fatalf("ChooseDB = %q, %v; want ErrAuth", name, err)
+		}
+	})
 }

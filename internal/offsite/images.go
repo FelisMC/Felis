@@ -480,7 +480,7 @@ func (s *Syncer) putImageBlob(ctx context.Context, repo string, b ImageBlob) err
 
 func (s *Syncer) putBytes(ctx context.Context, key string, plain []byte) error {
 	var sealed bytes.Buffer
-	if err := Encrypt(&sealed, bytes.NewReader(plain), s.Key); err != nil {
+	if err := EncryptObject(&sealed, bytes.NewReader(plain), s.Key, key); err != nil {
 		return err
 	}
 	putCtx, cancel := context.WithTimeout(ctx, s.uploadBudget(int64(len(plain))))
@@ -636,7 +636,7 @@ func getSealed(ctx context.Context, b Bucket, key []byte, objKey string, limit i
 	}
 	defer rc.Close()
 	var out bytes.Buffer
-	if err := Decrypt(&limitWriter{w: &out, left: limit}, rc, key); err != nil {
+	if err := DecryptObject(&limitWriter{w: &out, left: limit}, rc, key, objKey); err != nil {
 		return nil, fmt.Errorf("%s: %w", objKey, err)
 	}
 	return out.Bytes(), nil
@@ -772,7 +772,7 @@ func openSealed(ctx context.Context, b Bucket, key []byte, objKey string) (io.Re
 	}
 	pr, pw := io.Pipe()
 	go func() {
-		err := Decrypt(pw, rc, key)
+		err := DecryptObject(pw, rc, key, objKey)
 		rc.Close()
 		pw.CloseWithError(err)
 	}()

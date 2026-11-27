@@ -889,7 +889,13 @@ func fetchDB(ctx context.Context, b offsite.Bucket, key []byte, arg, dir string,
 	}
 	m, err := dbbackup.Verify(dst)
 	if err != nil {
+		_ = os.Remove(dst)
 		fmt.Fprintf(stderr, "felis offsite fetch-db: fetched %s but it does not verify: %v\n", dst, err)
+		return 1
+	}
+	if err := offsite.CheckDBManifest(name, m); err != nil {
+		_ = os.Remove(dst)
+		fmt.Fprintf(stderr, "felis offsite fetch-db: %v\n", err)
 		return 1
 	}
 	fmt.Fprintf(stdout, "felis offsite fetch-db: wrote %s (verified)\n", dst)

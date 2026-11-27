@@ -1883,15 +1883,16 @@ func (f *fakeRepo) usernameFor(userID string) string {
 }
 
 type fakeRestorer struct {
-	err     error
-	calls   int
-	gotName string
-	gotRef  string
+	err       error
+	calls     int
+	gotName   string
+	gotRef    string
+	gotSHA256 string
 }
 
-func (f *fakeRestorer) Restore(_ context.Context, name, ref string) error {
+func (f *fakeRestorer) Restore(_ context.Context, name, ref, sha256 string) error {
 	f.calls++
-	f.gotName, f.gotRef = name, ref
+	f.gotName, f.gotRef, f.gotSHA256 = name, ref, sha256
 	return f.err
 }
 

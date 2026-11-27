@@ -249,9 +249,9 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 	defer release()
 
 	if snapshot {
-		err = snapshotter.BackupThenRestore(r.Context(), name, cur.OwnerID, backup.ID, backup.BackupRef)
+		err = snapshotter.BackupThenRestore(r.Context(), name, cur.OwnerID, backup.ID, backup.BackupRef, backup.SHA256)
 	} else {
-		err = a.Restorer.Restore(r.Context(), name, backup.BackupRef)
+		err = a.Restorer.Restore(r.Context(), name, backup.BackupRef, backup.SHA256)
 	}
 	if err != nil {
 		if isRestoreInProgress(err) {
@@ -499,7 +499,7 @@ func (a *API) handleInternalRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
-	if err := a.Restorer.Restore(r.Context(), name, backup.BackupRef); err != nil {
+	if err := a.Restorer.Restore(r.Context(), name, backup.BackupRef, backup.SHA256); err != nil {
 		if isRestoreInProgress(err) {
 			writeError(w, r, newError(http.StatusConflict, "restore_in_progress",
 				"a restore is still running on this server's world; retry once it finishes"))

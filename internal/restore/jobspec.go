@@ -174,6 +174,9 @@ func RestoreJob(p JobParams) (*batchv1.Job, error) {
 		}}
 		c.VolumeMounts[1] = corev1.VolumeMount{Name: "tmp", MountPath: "/tmp"}
 		job.Spec.Template.Spec.Volumes[1] = corev1.Volume{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}
+	} else if p.SHA256 != "" {
+		c := &job.Spec.Template.Spec.Containers[0]
+		c.Args = append(c.Args, "--sha256", p.SHA256)
 	}
 	return job, nil
 }

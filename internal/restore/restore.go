@@ -101,9 +101,8 @@ type Restorer struct {
 	Config Config
 }
 
-// Restore coalesces the same running archive and rejects a different one; finished Jobs are replaced so retries enqueue actual work.
-func (r *Restorer) Restore(ctx context.Context, serverName, backupRef string) error {
-	p := r.jobParams(serverName, backupRef)
+func (r *Restorer) Restore(ctx context.Context, serverName, backupRef, sha256 string) error {
+	p := r.jobParams(serverName, backupRef, sha256)
 	if r.Config.ResolveWorld != nil {
 		w, err := r.Config.ResolveWorld(ctx, serverName)
 		if err != nil {
@@ -120,13 +119,14 @@ func (r *Restorer) Restore(ctx context.Context, serverName, backupRef string) er
 	return nil
 }
 
-func (r *Restorer) jobParams(serverName, backupRef string) JobParams {
+func (r *Restorer) jobParams(serverName, backupRef, sha256 string) JobParams {
 	cfg := r.Config.withDefaults()
 	return JobParams{
 		Server:           serverName,
 		WorldPVC:         naming.WorldPVCName(serverName),
 		BackupPVC:        cfg.BackupPVC,
 		BackupRef:        backupRef,
+		SHA256:           sha256,
 		ArchiveStore:     cfg.ArchiveStore,
 		Namespace:        cfg.Namespace,
 		ServiceAccount:   cfg.ServiceAccount,

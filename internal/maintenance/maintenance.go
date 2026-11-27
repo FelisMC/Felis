@@ -26,6 +26,7 @@ const (
 	LabelThenRestore            = "felis.lolicon.best/then-restore"
 	AnnotationRestoreRef        = "felis.lolicon.best/restore-ref"
 	AnnotationRestoreBackupID   = "felis.lolicon.best/restore-backup-id"
+	AnnotationRestoreSHA256     = "felis.lolicon.best/restore-sha256"
 	AnnotationThenRestoreReason = "felis.lolicon.best/then-restore-reason"
 )
 

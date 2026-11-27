@@ -103,7 +103,7 @@ func CheckKey(ctx context.Context, b Bucket, key []byte) (KeyFit, error) {
 		if err != nil {
 			return 0, fmt.Errorf("%s: %w", o.Key, err)
 		}
-		err = Decrypt(firstSegment{}, rc, key)
+		err = DecryptObject(firstSegment{}, rc, key, o.Key)
 		rc.Close()
 		switch {
 		case err == nil || errors.Is(err, errOpened):

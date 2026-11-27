@@ -126,3 +126,50 @@ func TestRestoreSubcommandRequiresRef(t *testing.T) {
 		t.Fatalf("exit = %d, want 2 for a missing --ref", code)
 	}
 }
+
+func TestRestoreSubcommandVerifiesRecordedSHA256(t *testing.T) {
+	ref, backupRoot := archiveTempWorld(t, map[string]string{"level.dat": "world-a"})
+	targetDir := t.TempDir()
+	keep := filepath.Join(targetDir, "level.dat")
+	if err := os.WriteFile(keep, []byte("original-world"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	var out, errBuf bytes.Buffer
+	code := run([]string{
+		"restore",
+		"--server", "survival",
+		"--ref", ref,
+		"--sha256", strings.Repeat("0", 64),
+		"--archive-store", "tarLocal",
+		"--backup-root", backupRoot,
+		"--worlds-root", targetDir,
+	}, &out, &errBuf)
+	if code != 1 || !strings.Contains(errBuf.String(), "sha256") {
+		t.Fatalf("mismatched sha256: exit=%d stderr=%q", code, errBuf.String())
+	}
+	if got, err := os.ReadFile(keep); err != nil || string(got) != "original-world" {
+		t.Fatalf("target modified after digest refusal: %q (%v)", got, err)
+	}
+	ar := &backup.TarLocal{BackupRoot: backupRoot}
+	sum, err := ar.Verify(context.Background(), backup.ArchiveRef(ref), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	errBuf.Reset()
+	code = run([]string{
+		"restore",
+		"--server", "survival",
+		"--ref", ref,
+		"--sha256", sum,
+		"--archive-store", "tarLocal",
+		"--backup-root", backupRoot,
+		"--worlds-root", targetDir,
+	}, &out, &errBuf)
+	if code != 0 {
+		t.Fatalf("matching sha256: exit=%d stderr=%q", code, errBuf.String())
+	}
+	if got, err := os.ReadFile(keep); err != nil || string(got) != "world-a" {
+		t.Fatalf("restored level.dat = %q (%v), want world-a", got, err)
+	}
+}

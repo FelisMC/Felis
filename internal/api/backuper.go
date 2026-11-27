@@ -9,5 +9,5 @@ type Backuper interface {
 
 // RestoreSnapshotter holds the world until a successful safety snapshot starts its restore or the chain is abandoned.
 type RestoreSnapshotter interface {
-	BackupThenRestore(ctx context.Context, serverName, formerOwner, backupID, backupRef string) error
+	BackupThenRestore(ctx context.Context, serverName, formerOwner, backupID, backupRef, backupSHA256 string) error
 }

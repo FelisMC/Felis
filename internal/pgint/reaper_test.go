@@ -497,7 +497,7 @@ func (c *stubRestoreCluster) ReleaseMaintenance(context.Context, string) error  
 
 type stubRestorer struct{ refs []string }
 
-func (r *stubRestorer) Restore(_ context.Context, _, ref string) error {
+func (r *stubRestorer) Restore(_ context.Context, _, ref, _ string) error {
 	r.refs = append(r.refs, ref)
 	return nil
 }

@@ -3,6 +3,8 @@ package offsite
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -43,6 +45,7 @@ type WorldBackup struct {
 	ID      string
 	Server  string
 	Ref     string
+	SHA256  string
 	Created time.Time
 }
 
@@ -449,7 +452,7 @@ func (s *Syncer) putStream(ctx context.Context, key string, src io.Reader, size 
 	defer cancel()
 	pr, pw := io.Pipe()
 	go func() {
-		pw.CloseWithError(Encrypt(pw, src, s.Key))
+		pw.CloseWithError(EncryptObject(pw, src, s.Key, key))
 	}()
 	err := s.Bucket.Put(putCtx, key, pr, SealedSize(size))
 	pr.CloseWithError(errors.New("upload finished"))
@@ -484,7 +487,7 @@ func FetchWorlds(ctx context.Context, b Bucket, cat Catalog, key []byte, archive
 		if _, err := os.Stat(dst); err == nil {
 			continue
 		}
-		switch err := FetchObject(ctx, b, key, objKey, dst, 0o644); {
+		switch err := fetchObjectVerified(ctx, b, key, objKey, dst, 0o644, w.SHA256); {
 		case errors.Is(err, ErrNotFound):
 			res.Missing = append(res.Missing, fmt.Sprintf("%s (%s)", path.Base(w.Ref), w.Server))
 		case err != nil:
@@ -517,8 +520,11 @@ func alignOwner(file, dir string) {
 	}
 }
 
-// FetchObject verifies and decrypts into a hidden temporary sibling before publishing the final name.
 func FetchObject(ctx context.Context, b Bucket, key []byte, objKey, dst string, mode os.FileMode) error {
+	return fetchObjectVerified(ctx, b, key, objKey, dst, mode, "")
+}
+
+func fetchObjectVerified(ctx context.Context, b Bucket, key []byte, objKey, dst string, mode os.FileMode, wantSHA256 string) error {
 	rc, err := b.Get(ctx, objKey)
 	if err != nil {
 		return err
@@ -534,10 +540,22 @@ func FetchObject(ctx context.Context, b Bucket, key []byte, objKey, dst string, 
 		os.Remove(tmp)
 		return err
 	}
-	if err := Decrypt(f, rc, key); err != nil {
+	var out io.Writer = f
+	h := sha256.New()
+	if wantSHA256 != "" {
+		out = io.MultiWriter(f, h)
+	}
+	if err := DecryptObject(out, rc, key, objKey); err != nil {
 		f.Close()
 		os.Remove(tmp)
 		return err
+	}
+	if wantSHA256 != "" {
+		if got := hex.EncodeToString(h.Sum(nil)); got != strings.ToLower(strings.TrimSpace(wantSHA256)) {
+			f.Close()
+			os.Remove(tmp)
+			return fmt.Errorf("offsite: %s hashes to %s, catalog records %s", objKey, got, wantSHA256)
+		}
 	}
 	if err := f.Sync(); err != nil {
 		f.Close()
@@ -549,6 +567,18 @@ func FetchObject(ctx context.Context, b Bucket, key []byte, objKey, dst string, 
 		return err
 	}
 	return os.Rename(tmp, dst)
+}
+
+func CheckDBManifest(name string, m dbbackup.Manifest) error {
+	t, label, ok := dbbackup.ParseBundleName(name)
+	if !ok {
+		return fmt.Errorf("offsite: %q is not a valid database bundle name", name)
+	}
+	if m.Label != label || !m.CreatedAt.UTC().Truncate(time.Second).Equal(t.UTC()) {
+		return fmt.Errorf("offsite: database bundle %s manifest records %s (%s), which does not match its object name",
+			name, m.CreatedAt.UTC().Format(time.RFC3339), m.Label)
+	}
+	return nil
 }
 
 func ListDB(ctx context.Context, b Bucket) ([]Object, error) {
@@ -569,9 +599,9 @@ func ListDB(ctx context.Context, b Bucket) ([]Object, error) {
 	return out, nil
 }
 
-// PeekDB authenticates segments while reading only enough of the encrypted bundle to obtain its manifest.
 func PeekDB(ctx context.Context, b Bucket, key []byte, name string) (dbbackup.Manifest, error) {
-	rc, err := b.Get(ctx, DBKey(name))
+	objKey := DBKey(name)
+	rc, err := b.Get(ctx, objKey)
 	if err != nil {
 		return dbbackup.Manifest{}, err
 	}
@@ -580,12 +610,18 @@ func PeekDB(ctx context.Context, b Bucket, key []byte, name string) (dbbackup.Ma
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		pw.CloseWithError(Decrypt(pw, rc, key))
+		pw.CloseWithError(DecryptObject(pw, rc, key, objKey))
 	}()
 	m, err := dbbackup.ReadManifest(pr)
 	pr.Close()
 	<-done
-	return m, err
+	if err != nil {
+		return dbbackup.Manifest{}, err
+	}
+	if err := CheckDBManifest(name, m); err != nil {
+		return dbbackup.Manifest{}, err
+	}
+	return m, nil
 }
 
 const dbChoices = 3

@@ -237,6 +237,19 @@ func TestRestoreJobRejectsBadResourceLimit(t *testing.T) {
 	}
 }
 
+func TestRestoreJobPassesLocalSHA256Flag(t *testing.T) {
+	p := sampleJobParams()
+	p.SHA256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	job, err := RestoreJob(p)
+	if err != nil {
+		t.Fatalf("RestoreJob: %v", err)
+	}
+	c := singleContainer(t, job)
+	if !argPairPresent(c.Args, "--sha256", p.SHA256) {
+		t.Fatalf("args = %v, want --sha256 %s", c.Args, p.SHA256)
+	}
+}
+
 func TestRestoreServiceAccountIsBare(t *testing.T) {
 	sa := RestoreServiceAccount(defaultNamespace, defaultServiceAccount)
 	if sa.AutomountServiceAccountToken == nil || *sa.AutomountServiceAccountToken {

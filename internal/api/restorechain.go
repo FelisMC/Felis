@@ -19,11 +19,12 @@ const (
 )
 
 type RestoreChain struct {
-	Job       string // snapshot backup Job name
-	Server    string
-	BackupID  string // backup to restore
-	BackupRef string
-	Snapshot  string
+	Job          string // snapshot backup Job name
+	Server       string
+	BackupID     string // backup to restore
+	BackupRef    string
+	BackupSHA256 string
+	Snapshot     string
 }
 
 const (
@@ -118,7 +119,7 @@ func (a *API) settleRestoreChain(ctx context.Context, c RestoreChain) (string, s
 	if info.Ready || info.DesiredState != string(v1alpha1.DesiredStopped) {
 		return maintenance.ThenRestoreAbandoned, ChainAbandonServerStarted, nil
 	}
-	if err := a.Restorer.Restore(ctx, c.Server, c.BackupRef); err != nil {
+	if err := a.Restorer.Restore(ctx, c.Server, c.BackupRef, c.BackupSHA256); err != nil {
 		if isRestoreInProgress(err) {
 			return maintenance.ThenRestoreAbandoned, ChainAbandonRestoreBusy, nil
 		}

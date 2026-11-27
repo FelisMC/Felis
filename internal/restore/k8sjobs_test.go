@@ -130,7 +130,7 @@ func TestCreateRestoreJobRefusesAnotherArchiveInFlight(t *testing.T) {
 		t.Fatalf("CreateRestoreJob = %v, want ErrOtherRestoreRunning", err)
 	}
 	if err := (&Restorer{Jobs: NewK8sJobs(c), Config: Config{Image: "felis:test", BackupPVC: "felis-backups"}}).
-		Restore(context.Background(), "survival", "/backups/x.tar.gz"); !errors.Is(err, ErrOtherRestoreRunning) {
+		Restore(context.Background(), "survival", "/backups/x.tar.gz", ""); !errors.Is(err, ErrOtherRestoreRunning) {
 		t.Fatalf("Restore = %v, want ErrOtherRestoreRunning", err)
 	}
 

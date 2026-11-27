@@ -14,7 +14,7 @@ func TestInternalRestoreRebuildsAWorld(t *testing.T) {
 		repo := newFakeRepo()
 		repo.byName["survival"] = &ServerRecord{Name: "survival", OwnerID: "owner1"}
 		repo.backups = []fakeBackup{
-			{view: BackupView{ID: "bk-1", ServerName: "survival", FormerOwner: "owner1", Status: "present", CreatedAt: time.Unix(1_700_000_000, 0)}, ref: "/backups/1.tar.gz"},
+			{view: BackupView{ID: "bk-1", ServerName: "survival", FormerOwner: "owner1", Status: "present", CreatedAt: time.Unix(1_700_000_000, 0)}, ref: "/backups/1.tar.gz", sha256: "fedcba98"},
 		}
 		cl := newFakeCluster()
 		cl.byName["survival"] = &ServerInfo{Name: "survival", Phase: "Stopped", DesiredState: string(v1alpha1.DesiredStopped)}
@@ -31,8 +31,8 @@ func TestInternalRestoreRebuildsAWorld(t *testing.T) {
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("restore = %d %s", w.Code, w.Body.String())
 	}
-	if restorer.calls != 1 {
-		t.Fatalf("restorer saw %d calls, want 1", restorer.calls)
+	if restorer.calls != 1 || restorer.gotSHA256 != "fedcba98" {
+		t.Fatalf("restorer calls=%d sha256=%q, want 1 and fedcba98", restorer.calls, restorer.gotSHA256)
 	}
 	if len(cl.ensured) != 1 || cl.ensured[0] != "survival" {
 		t.Errorf("world volume ensured for %v", cl.ensured)

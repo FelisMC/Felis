@@ -22,6 +22,7 @@ const (
 	thenRestorePending        = "pending"
 	annotationRestoreRef      = "felis.lolicon.best/restore-ref"
 	annotationRestoreBackupID = "felis.lolicon.best/restore-backup-id"
+	annotationRestoreSHA256   = "felis.lolicon.best/restore-sha256"
 
 	ReasonPreRestore = "pre_restore"
 	ReasonScheduled  = "scheduled"
@@ -64,6 +65,7 @@ type JobParams struct {
 	// RestoreRef and RestoreBackupID mark a pending safety-snapshot chain and protect the archive needed by its follow-up restore.
 	RestoreRef      string
 	RestoreBackupID string
+	RestoreSHA256   string
 	// Live copies a read-only world to scratch before archival; StageLimit empty leaves scratch capacity uncapped.
 	Live       bool
 	StageLimit string
@@ -181,6 +183,9 @@ func BackupJob(p JobParams) (*batchv1.Job, error) {
 		meta.Annotations = map[string]string{
 			annotationRestoreRef:      p.RestoreRef,
 			annotationRestoreBackupID: p.RestoreBackupID,
+		}
+		if p.RestoreSHA256 != "" {
+			meta.Annotations[annotationRestoreSHA256] = p.RestoreSHA256
 		}
 	}
 	if p.Scheduled {

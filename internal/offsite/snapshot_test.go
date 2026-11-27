@@ -30,7 +30,7 @@ func (sn *snapshotter) take(context.Context) error {
 		return sn.err
 	}
 	name := dbbackup.BundleName(sn.s.now(), dbbackup.LabelOffsite)
-	data := dbBundle(sn.t, sn.s.now(), &dbbackup.Counts{Users: 3, Servers: 2}, 64)
+	data := dbBundleLabeled(sn.t, sn.s.now(), dbbackup.LabelOffsite, &dbbackup.Counts{Users: 3, Servers: 2}, 64)
 	return os.WriteFile(filepath.Join(sn.s.DBDir, name), data, 0o600)
 }
 

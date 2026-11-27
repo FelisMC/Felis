@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -304,7 +306,7 @@ func TestSyncCopiesWorldsAndRecordsThem(t *testing.T) {
 		}
 	}
 	var out bytes.Buffer
-	if err := Decrypt(&out, bytes.NewReader(b.objs["worlds/alpha-1.tar.gz.fenc"]), s.Key); err != nil || !bytes.Equal(out.Bytes(), alpha) {
+	if err := DecryptObject(&out, bytes.NewReader(b.objs["worlds/alpha-1.tar.gz.fenc"]), s.Key, "worlds/alpha-1.tar.gz.fenc"); err != nil || !bytes.Equal(out.Bytes(), alpha) {
 		t.Fatalf("stored alpha does not decrypt to the archive (err %v)", err)
 	}
 
@@ -547,5 +549,84 @@ func TestUploadBudgetFitsTheUplink(t *testing.T) {
 	}
 	if got := s.uploadBudget(0); got < defaultUploadGrace {
 		t.Errorf("budget for an empty object = %s, want at least %s", got, defaultUploadGrace)
+	}
+}
+
+func TestEncryptObjectBindsObjectKey(t *testing.T) {
+	key := testKey(t)
+	var bufA, bufB bytes.Buffer
+	if err := EncryptObject(&bufA, bytes.NewReader([]byte("world-alpha")), key, "worlds/alpha-1.tar.gz.fenc"); err != nil {
+		t.Fatal(err)
+	}
+	if err := EncryptObject(&bufB, bytes.NewReader([]byte("world-beta")), key, "worlds/beta-2.tar.gz.fenc"); err != nil {
+		t.Fatal(err)
+	}
+	if int64(bufA.Len()) != SealedSize(int64(len("world-alpha"))) {
+		t.Fatalf("v2 sealed size = %d, want %d", bufA.Len(), SealedSize(int64(len("world-alpha"))))
+	}
+	var out bytes.Buffer
+	if err := DecryptObject(&out, bytes.NewReader(bufA.Bytes()), key, "worlds/alpha-1.tar.gz.fenc"); err != nil || out.String() != "world-alpha" {
+		t.Fatalf("matching key decrypt = %q, %v", out.String(), err)
+	}
+	if err := DecryptObject(io.Discard, bytes.NewReader(bufA.Bytes()), key, "worlds/beta-2.tar.gz.fenc"); !errors.Is(err, ErrAuth) {
+		t.Fatalf("swapped key decrypt = %v, want ErrAuth", err)
+	}
+	if err := Decrypt(io.Discard, bytes.NewReader(bufA.Bytes()), key); !errors.Is(err, ErrAuth) {
+		t.Fatalf("unbound Decrypt on v2 = %v, want ErrAuth", err)
+	}
+
+	b := newMemBucket()
+	b.objs["worlds/alpha-1.tar.gz.fenc"] = bufB.Bytes()
+	b.objs["worlds/beta-2.tar.gz.fenc"] = bufA.Bytes()
+	dir := t.TempDir()
+	if err := FetchObject(context.Background(), b, key, "worlds/alpha-1.tar.gz.fenc", filepath.Join(dir, "alpha-1.tar.gz"), 0o600); !errors.Is(err, ErrAuth) {
+		t.Fatalf("FetchObject on swapped v2 object = %v, want ErrAuth", err)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Fatalf("swapped fetch left files: %v", entries)
+	}
+}
+
+func TestFetchWorldsRejectsSwappedOrTamperedDigest(t *testing.T) {
+	sumHex := func(b []byte) string {
+		s := sha256.Sum256(b)
+		return hex.EncodeToString(s[:])
+	}
+	alpha := []byte("alpha-world-bytes")
+	beta := []byte("beta-world-bytes")
+	cat := &fakeCatalog{rows: []*row{
+		{WorldBackup: WorldBackup{ID: "b1", Server: "alpha", Ref: "/a/alpha-1.tar.gz", SHA256: sumHex(alpha)}, status: "present"},
+		{WorldBackup: WorldBackup{ID: "b2", Server: "beta", Ref: "/a/beta-2.tar.gz", SHA256: sumHex(beta)}, status: "present"},
+	}}
+	s, b := newSyncer(t, cat)
+	os.WriteFile(filepath.Join(s.ArchiveDir, "alpha-1.tar.gz"), alpha, 0o644)
+	os.WriteFile(filepath.Join(s.ArchiveDir, "beta-2.tar.gz"), beta, 0o644)
+	if _, err := s.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	b.objs["worlds/beta-2.tar.gz.fenc"] = b.objs["worlds/alpha-1.tar.gz.fenc"]
+	fresh := t.TempDir()
+	res, err := FetchWorlds(context.Background(), b, cat, s.Key, fresh, nil)
+	if err == nil || len(res.Failures) != 1 || !strings.Contains(res.Failures[0], "beta-2.tar.gz") {
+		t.Fatalf("swapped v2 fetch = %+v, %v; want failure on beta", res, err)
+	}
+	if _, err := os.Stat(filepath.Join(fresh, "beta-2.tar.gz")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("swapped v2 world written to disk: %v", err)
+	}
+
+	legacyBucket := newMemBucket()
+	legacyBucket.objs["worlds/alpha-1.tar.gz.fenc"] = seal(t, alpha, s.Key)
+	legacyBucket.objs["worlds/beta-2.tar.gz.fenc"] = seal(t, alpha, s.Key)
+	legacyDir := t.TempDir()
+	res, err = FetchWorlds(context.Background(), legacyBucket, cat, s.Key, legacyDir, nil)
+	if err == nil || len(res.Failures) != 1 || !strings.Contains(res.Failures[0], "catalog records") {
+		t.Fatalf("swapped v1 fetch = %+v, %v; want digest mismatch failure", res, err)
+	}
+	if _, err := os.Stat(filepath.Join(legacyDir, "beta-2.tar.gz")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("swapped v1 world written to disk: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(legacyDir, "alpha-1.tar.gz")); err != nil || !bytes.Equal(got, alpha) {
+		t.Fatalf("valid v1 world = %q, %v", got, err)
 	}
 }

@@ -69,7 +69,7 @@ func cmdRestore(args []string, stdout, stderr io.Writer) int {
 		},
 	}
 
-	if err := archiver.Restore(ctx, backup.ArchiveRef(*ref), *server); err != nil {
+	if err := archiver.RestoreVerified(ctx, backup.ArchiveRef(*ref), *server, *sum); err != nil {
 		fmt.Fprintf(stderr, "felis restore: %v\n", err)
 		return 1
 	}

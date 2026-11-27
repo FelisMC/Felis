@@ -7,7 +7,7 @@ import (
 
 // Restorer returns after enqueueing; ErrNotFound means the server is absent and RestoreInProgress marks an existing restore.
 type Restorer interface {
-	Restore(ctx context.Context, serverName, backupRef string) error
+	Restore(ctx context.Context, serverName, backupRef, sha256 string) error
 }
 
 // isRestoreInProgress matches by method so executors do not need to import api.

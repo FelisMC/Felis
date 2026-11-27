@@ -220,8 +220,11 @@ func syncDir(dir string) error {
 	return nil
 }
 
-// Restore verifies first, extracts, then prunes stale files only after success; failures retain the archive and may leave a retryable partial overlay.
 func (t *TarLocal) Restore(ctx context.Context, ref ArchiveRef, targetPVC string) error {
+	return t.RestoreVerified(ctx, ref, targetPVC, "")
+}
+
+func (t *TarLocal) RestoreVerified(ctx context.Context, ref ArchiveRef, targetPVC, wantSHA256 string) error {
 	dstDir, err := t.Resolve(targetPVC)
 	if err != nil {
 		return err
@@ -229,7 +232,7 @@ func (t *TarLocal) Restore(ctx context.Context, ref ArchiveRef, targetPVC string
 	if err := os.MkdirAll(dstDir, 0o750); err != nil {
 		return fmt.Errorf("backup: mkdir restore target: %w", err)
 	}
-	if _, _, err := verifyArchive(ctx, string(ref), ""); err != nil {
+	if _, _, err := verifyArchive(ctx, string(ref), wantSHA256); err != nil {
 		return err
 	}
 	f, err := os.Open(string(ref))

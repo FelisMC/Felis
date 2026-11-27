@@ -306,6 +306,22 @@ func TestOffsiteFetchDB(t *testing.T) {
 			t.Errorf("exit %d, stdout %q, stderr %q", code, out, errb)
 		}
 	})
+
+	t.Run("a renamed bundle is refused by latest and explicit name", func(t *testing.T) {
+		b := mapBucket{}
+		old := putBundle(t, b, key, 5, &dbbackup.Counts{Users: 5, Servers: 3})
+		forged := dbbackup.BundleName(time.Date(2099, 12, 31, 23, 59, 59, 0, time.UTC), dbbackup.LabelDaily)
+		b[offsite.DBKey(forged)] = b[offsite.DBKey(old)]
+		for _, arg := range []string{"latest", forged} {
+			dir, code, _, errb := fetch(b, arg)
+			if code != 1 || !strings.Contains(errb, "does not match its object name") {
+				t.Fatalf("fetch %s: exit %d, stderr %q", arg, code, errb)
+			}
+			if got := fetched(t, dir); len(got) != 0 {
+				t.Fatalf("fetch %s left files behind: %v", arg, got)
+			}
+		}
+	})
 }
 
 func TestOffsiteCheckKey(t *testing.T) {

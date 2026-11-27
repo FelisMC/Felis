@@ -9,12 +9,12 @@ import (
 type PGCatalog struct{ DB *sql.DB }
 
 func (c PGCatalog) PendingWorlds(ctx context.Context) ([]WorldBackup, error) {
-	return c.query(ctx, `SELECT id, server_name, backup_ref, created_at FROM world_backups
+	return c.query(ctx, `SELECT id, server_name, backup_ref, COALESCE(sha256, ''), created_at FROM world_backups
 		WHERE status = 'present' AND offsite_at IS NULL ORDER BY created_at`)
 }
 
 func (c PGCatalog) PresentWorlds(ctx context.Context) ([]WorldBackup, error) {
-	return c.query(ctx, `SELECT id, server_name, backup_ref, created_at FROM world_backups
+	return c.query(ctx, `SELECT id, server_name, backup_ref, COALESCE(sha256, ''), created_at FROM world_backups
 		WHERE status = 'present' ORDER BY created_at`)
 }
 
@@ -27,7 +27,7 @@ func (c PGCatalog) query(ctx context.Context, q string, args ...any) ([]WorldBac
 	var out []WorldBackup
 	for rows.Next() {
 		var w WorldBackup
-		if err := rows.Scan(&w.ID, &w.Server, &w.Ref, &w.Created); err != nil {
+		if err := rows.Scan(&w.ID, &w.Server, &w.Ref, &w.SHA256, &w.Created); err != nil {
 			return nil, err
 		}
 		out = append(out, w)

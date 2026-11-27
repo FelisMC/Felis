@@ -18,6 +18,7 @@ import (
 // Wire format: FELISOS1, 7-byte nonce prefix, then AES-256-GCM segments using prefix||uint32(index)||last to detect reordering and truncation.
 const (
 	magic       = "FELISOS1"
+	magicV2     = "FELISOS2"
 	prefixSize  = 7
 	segmentSize = 64 << 10
 	headerSize  = len(magic) + prefixSize
@@ -81,7 +82,24 @@ func segmentNonce(prefix []byte, i uint32, last bool) []byte {
 	return n
 }
 
+func objectAAD(hdrMagic, objKey string) []byte {
+	aad := make([]byte, 0, len(hdrMagic)+len(objKey))
+	aad = append(aad, hdrMagic...)
+	return append(aad, objKey...)
+}
+
 func Encrypt(dst io.Writer, src io.Reader, key []byte) error {
+	return encrypt(dst, src, key, magic, []byte(magic))
+}
+
+func EncryptObject(dst io.Writer, src io.Reader, key []byte, objKey string) error {
+	if objKey == "" {
+		return errors.New("offsite: empty object key")
+	}
+	return encrypt(dst, src, key, magicV2, objectAAD(magicV2, objKey))
+}
+
+func encrypt(dst io.Writer, src io.Reader, key []byte, hdrMagic string, aad []byte) error {
 	aead, err := newAEAD(key)
 	if err != nil {
 		return err
@@ -90,7 +108,7 @@ func Encrypt(dst io.Writer, src io.Reader, key []byte) error {
 	if _, err := rand.Read(prefix); err != nil {
 		return err
 	}
-	if _, err := io.WriteString(dst, magic); err != nil {
+	if _, err := io.WriteString(dst, hdrMagic); err != nil {
 		return err
 	}
 	if _, err := dst.Write(prefix); err != nil {
@@ -115,7 +133,7 @@ func Encrypt(dst io.Writer, src io.Reader, key []byte) error {
 				return perr
 			}
 		}
-		out = aead.Seal(out[:0], segmentNonce(prefix, i, last), buf[:n], []byte(magic))
+		out = aead.Seal(out[:0], segmentNonce(prefix, i, last), buf[:n], aad)
 		if _, err := dst.Write(out); err != nil {
 			return err
 		}
@@ -128,8 +146,11 @@ func Encrypt(dst io.Writer, src io.Reader, key []byte) error {
 	}
 }
 
-// Decrypt authenticates before each segment write; callers must discard partial output on any later segment failure.
 func Decrypt(dst io.Writer, src io.Reader, key []byte) error {
+	return DecryptObject(dst, src, key, "")
+}
+
+func DecryptObject(dst io.Writer, src io.Reader, key []byte, objKey string) error {
 	aead, err := newAEAD(key)
 	if err != nil {
 		return err
@@ -138,7 +159,16 @@ func Decrypt(dst io.Writer, src io.Reader, key []byte) error {
 	if _, err := io.ReadFull(src, hdr); err != nil {
 		return fmt.Errorf("offsite: object too short for its header: %w", err)
 	}
-	if string(hdr[:len(magic)]) != magic {
+	var aad []byte
+	switch string(hdr[:len(magic)]) {
+	case magic:
+		aad = []byte(magic)
+	case magicV2:
+		if objKey == "" {
+			return ErrAuth
+		}
+		aad = objectAAD(magicV2, objKey)
+	default:
 		return errors.New("offsite: not a Felis off-site object (bad magic)")
 	}
 	prefix := hdr[len(magic):]
@@ -164,7 +194,7 @@ func Decrypt(dst io.Writer, src io.Reader, key []byte) error {
 				return perr
 			}
 		}
-		plain, err = aead.Open(plain[:0], segmentNonce(prefix, i, last), buf[:n], []byte(magic))
+		plain, err = aead.Open(plain[:0], segmentNonce(prefix, i, last), buf[:n], aad)
 		if err != nil {
 			return ErrAuth
 		}

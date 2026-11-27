@@ -117,8 +117,7 @@ func (b *Backuper) Backup(ctx context.Context, serverName, formerOwner string) e
 	return nil
 }
 
-// BackupThenRestore holds the world through a safety snapshot; the API starts restoration only after that snapshot succeeds.
-func (b *Backuper) BackupThenRestore(ctx context.Context, serverName, formerOwner, backupID, backupRef string) error {
+func (b *Backuper) BackupThenRestore(ctx context.Context, serverName, formerOwner, backupID, backupRef, backupSHA256 string) error {
 	p := b.jobParams(serverName, formerOwner)
 	if b.Config.ResolveWorld != nil {
 		w, err := b.Config.ResolveWorld(ctx, serverName)
@@ -127,7 +126,7 @@ func (b *Backuper) BackupThenRestore(ctx context.Context, serverName, formerOwne
 		}
 		p.WorldPVC = w.Claim
 	}
-	p.RestoreRef, p.RestoreBackupID = backupRef, backupID
+	p.RestoreRef, p.RestoreBackupID, p.RestoreSHA256 = backupRef, backupID, backupSHA256
 	if err := b.Jobs.CreateBackupJob(ctx, p); err != nil {
 		if errors.Is(err, ErrAlreadyExists) {
 			return nil

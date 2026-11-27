@@ -31,7 +31,8 @@ func TestRestoreEnqueuesJobWithDerivedParams(t *testing.T) {
 		},
 	}
 
-	if err := r.Restore(context.Background(), "survival", "/backups/survival/2026.tar.gz"); err != nil {
+	digest := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	if err := r.Restore(context.Background(), "survival", "/backups/survival/2026.tar.gz", digest); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
 	if len(jobs.calls) != 1 {
@@ -48,6 +49,9 @@ func TestRestoreEnqueuesJobWithDerivedParams(t *testing.T) {
 	}
 	if got.BackupRef != "/backups/survival/2026.tar.gz" {
 		t.Errorf("BackupRef = %q, want the passed ref", got.BackupRef)
+	}
+	if got.SHA256 != digest {
+		t.Errorf("SHA256 = %q, want %q", got.SHA256, digest)
 	}
 	if got.BackupPVC != "felis-backups" {
 		t.Errorf("BackupPVC = %q, want felis-backups", got.BackupPVC)
@@ -67,7 +71,7 @@ func TestRestoreIsIdempotentOnAlreadyExists(t *testing.T) {
 
 	// A restore already in flight is success, not an error: the handler must be
 	// able to answer 202 for a coalesced duplicate request.
-	if err := r.Restore(context.Background(), "survival", "ref"); err != nil {
+	if err := r.Restore(context.Background(), "survival", "ref", ""); err != nil {
 		t.Fatalf("Restore on AlreadyExists = %v, want nil (idempotent)", err)
 	}
 }
@@ -77,7 +81,7 @@ func TestRestorePropagatesGenericError(t *testing.T) {
 	jobs := &fakeJobs{err: sentinel}
 	r := &restore.Restorer{Jobs: jobs, Config: restore.Config{Image: "img", BackupPVC: "pvc"}}
 
-	err := r.Restore(context.Background(), "survival", "ref")
+	err := r.Restore(context.Background(), "survival", "ref", "")
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("Restore error = %v, want the underlying error propagated", err)
 	}

@@ -26,9 +26,9 @@ type fakeSnapshotter struct {
 	chained []RestoreChain
 }
 
-func (f *fakeSnapshotter) BackupThenRestore(_ context.Context, name, formerOwner, backupID, backupRef string) error {
+func (f *fakeSnapshotter) BackupThenRestore(_ context.Context, name, formerOwner, backupID, backupRef, backupSHA256 string) error {
 	f.gotFormerOwn = formerOwner
-	f.chained = append(f.chained, RestoreChain{Server: name, BackupID: backupID, BackupRef: backupRef})
+	f.chained = append(f.chained, RestoreChain{Server: name, BackupID: backupID, BackupRef: backupRef, BackupSHA256: backupSHA256})
 	return f.err
 }
 
@@ -271,7 +271,7 @@ func TestK8sRestoreChains(t *testing.T) {
 	chain, err := backupjob.BackupJob(backupjob.JobParams{
 		Server: "survival", JobName: "backup-survival-aa", WorldPVC: "world-survival-0", BackupPVC: "felis-backups",
 		Namespace: "minecraft", Image: "felis:1", ConfigSecret: "felis-config", ConfigMount: "/etc/felis",
-		RestoreRef: "/backups/survival/a.tar.gz", RestoreBackupID: "bk-1",
+		RestoreRef: "/backups/survival/a.tar.gz", RestoreBackupID: "bk-1", RestoreSHA256: "abc123",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -294,7 +294,7 @@ func TestK8sRestoreChains(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := RestoreChain{Job: "backup-survival-aa", Server: "survival", BackupID: "bk-1",
-		BackupRef: "/backups/survival/a.tar.gz", Snapshot: ChainSnapshotSucceeded}
+		BackupRef: "/backups/survival/a.tar.gz", BackupSHA256: "abc123", Snapshot: ChainSnapshotSucceeded}
 	if len(got) != 1 || got[0] != want {
 		t.Fatalf("pending = %+v, want [%+v]", got, want)
 	}
