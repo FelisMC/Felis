@@ -6182,6 +6182,28 @@ expect "the small profile refuses FELIS_WITH_LOBBY=1" "DIE the small profile has
 expect "the small profile records 0 under auto" "wl[0] saved[0]" "$(with_lobby_run small auto "" 0 none)"
 rm -rf "$wldir"
 
+fbfns="$(grep '^FELIS_BASE_IMAGE=' "$BS"; bsfn build_image_from_binary)"
+fbdir="$(mktemp -d)"
+printf '#!/bin/sh\n' > "$fbdir/felis"
+chmod 0755 "$fbdir/felis"
+repo_base="$(awk '$1 == "FROM" && $2 ~ /^gcr\.io\/distroless\// { print $2 }' "$(dirname "$BS")/../Dockerfile")"
+out="$(HOST_BIN="$fbdir/felis" FELIS_IMAGE="registry.felis.svc:5000/felis/felis:test" bash -c '
+set -Eeuo pipefail
+'"$fbfns"'
+remember_temp() { :; }
+log() { :; }
+docker() { cat "${@: -1}/Dockerfile"; }
+build_image_from_binary' 2>&1)"
+from_line="$(printf '%s\n' "$out" | awk '$1 == "FROM" { print $2; exit }')"
+expect "inline fallback build pins the distroless base image by sha256" "@sha256:" "$from_line"
+if [ "$from_line" = "$repo_base" ] && [ -n "$repo_base" ]; then
+  echo "PASS inline fallback base image matches repo Dockerfile"
+else
+  echo "FAIL inline fallback base image (${from_line}) != repo Dockerfile (${repo_base})"
+  fails=$((fails + 1))
+fi
+rm -rf "$fbdir"
+
 if [ "$fails" -eq 0 ]; then
   echo "ALL PASS"
 else

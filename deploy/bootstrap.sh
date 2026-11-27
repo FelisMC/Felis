@@ -339,6 +339,7 @@ PG_FIREWALL_SERVICE="/etc/systemd/system/felis-postgres-firewall.service"
 JRE_DIR="/opt/felis/jre"
 # Digest-pinned gradle image shared by the lobby and limbo Dockerfiles and build_velocity_plugin.
 PLUGIN_BUILD_IMAGE="gradle:9.8.1-jdk25@sha256:e4f9e3d037cc0c7d8fc42cd97edb976dfd19a5b7314212b88b6de3807d13cd47"
+FELIS_BASE_IMAGE="gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab"
 K3S_BIN_DIR="${K3S_BIN_DIR:-/usr/local/bin}"
 K3S_BIN="${K3S_BIN_DIR}/k3s"
 # k3s containerd mirror config (configure_registry_mirror); these paths are variables so bootstrap_test.sh can use scratch files.
@@ -2869,8 +2870,8 @@ build_image_from_binary() {
   remember_temp "$tmp"
   cp "$HOST_BIN" "${tmp}/felis"
   # Wrap the same static binary as CI, including downloaded releases.
-  cat > "${tmp}/Dockerfile" <<'EOF'
-FROM gcr.io/distroless/static-debian12:nonroot
+  cat > "${tmp}/Dockerfile" <<EOF
+FROM ${FELIS_BASE_IMAGE}
 ENV PATH=/usr/local/bin:/usr/bin:/bin
 COPY felis /usr/local/bin/felis
 USER 65532:65532

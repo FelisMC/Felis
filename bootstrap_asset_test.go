@@ -435,6 +435,29 @@ func readRepoFile(t *testing.T, name string) string {
 	return string(b)
 }
 
+func TestBootstrapFallbackBaseImageMatchesDockerfile(t *testing.T) {
+	df := readRepoFile(t, "Dockerfile")
+	m := regexp.MustCompile(`(?m)^FROM\s+(gcr\.io/distroless/\S+)$`).FindStringSubmatch(df)
+	if m == nil {
+		t.Fatal("Dockerfile has no distroless FROM line")
+	}
+	want := m[1]
+	if !regexp.MustCompile(`@sha256:[0-9a-f]{64}$`).MatchString(want) {
+		t.Fatalf("Dockerfile base image %q is not pinned by sha256", want)
+	}
+	script := BootstrapScript()
+	bm := regexp.MustCompile(`(?m)^FELIS_BASE_IMAGE="([^"]+)"$`).FindStringSubmatch(script)
+	if bm == nil {
+		t.Fatal("bootstrap.sh does not define FELIS_BASE_IMAGE")
+	}
+	if bm[1] != want {
+		t.Fatalf("bootstrap.sh FELIS_BASE_IMAGE = %q, want Dockerfile %q", bm[1], want)
+	}
+	if !strings.Contains(script, "FROM ${FELIS_BASE_IMAGE}\n") {
+		t.Fatal("build_image_from_binary does not use FELIS_BASE_IMAGE")
+	}
+}
+
 func readGameStackFile(t *testing.T, name string) string {
 	t.Helper()
 	b, err := gameStackAssets.ReadFile(name)
