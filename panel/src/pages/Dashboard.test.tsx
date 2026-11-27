@@ -162,7 +162,7 @@ describe("Dashboard", () => {
   it("does not list images for a user", async () => {
     renderDashboard();
 
-    await screen.findByText(t("welcome_title"));
+    await screen.findByText(t("stat_servers"));
     expect(calls.listImages).not.toHaveBeenCalled();
   });
 });
@@ -273,7 +273,7 @@ describe("Dashboard platform data", () => {
   it("neither shows nor asks for platform data on a user's dashboard", async () => {
     renderDashboard();
 
-    await screen.findByText(t("welcome_title"));
+    await screen.findByText(t("stat_servers"));
     expect(screen.queryByText(t("platform_title"))).toBeNull();
     expect(calls.fleetUsage).not.toHaveBeenCalled();
   });

@@ -5,8 +5,6 @@ import { PHASE_KEY, phaseColor } from "@/components/PhaseBadge";
 import { cn } from "@/lib/utils";
 import type { Phase, MyServerView } from "@/lib/types";
 
-// Keep the flat fallback outside the three.js chunk so it survives WebGL or chunk-load failure.
-
 const TRANSIENT: ReadonlySet<Phase> = new Set<Phase>(["Starting", "Stopping", "Hibernating"]);
 
 export type FleetGridReason = "webgl" | "error";
@@ -16,22 +14,16 @@ export function FleetGrid({
   reason,
 }: {
   servers: Pick<MyServerView, "name" | "displayName" | "phase">[];
-  reason: FleetGridReason;
+  reason?: FleetGridReason;
 }) {
   const { t } = useTranslation(["dashboard", "servers"]);
-  const cols = Math.max(1, Math.ceil(Math.sqrt(servers.length)));
-  const n = servers.length;
-  const tile = n <= 9 ? "3rem" : n <= 36 ? "1.75rem" : n <= 100 ? "1.25rem" : "0.875rem";
 
   return (
-    <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 overflow-auto p-4">
+    <div className="flex flex-col gap-3 p-3.5">
       {servers.length === 0 ? (
-        <p className="text-xs text-muted-foreground">{t("dashboard:fleet_flat_empty")}</p>
+        <p className="py-4 text-center text-xs text-muted-foreground">{t("dashboard:fleet_flat_empty")}</p>
       ) : (
-        <div
-          className="grid gap-2"
-          style={{ gridTemplateColumns: `repeat(${cols}, ${tile})`, gridAutoRows: tile }}
-        >
+        <div className="flex flex-wrap gap-1.5">
           {servers.map((s) => {
             const phase = s.phase ?? "Unknown";
             const color = phaseColor(phase);
@@ -43,22 +35,21 @@ export function FleetGrid({
                 title={label}
                 aria-label={label}
                 className={cn(
-                  "rounded-md ring-1 ring-inset ring-white/10 transition-transform hover:scale-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  "h-5 w-5 rounded-[4px] transition-transform hover:scale-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                   TRANSIENT.has(phase) && "animate-pulse",
                 )}
-                style={{
-                  backgroundColor: color,
-                  backgroundImage: "linear-gradient(145deg, rgb(255 255 255 / 0.18), rgb(0 0 0 / 0.16))",
-                }}
+                style={{ backgroundColor: color }}
               />
             );
           })}
         </div>
       )}
-      <p className="flex max-w-xs items-center gap-1.5 text-center text-[11px] leading-snug text-muted-foreground">
-        <Info className="h-3.5 w-3.5 shrink-0" />
-        {reason === "webgl" ? t("dashboard:fleet_flat_webgl") : t("dashboard:fleet_flat_error")}
-      </p>
+      {reason && (
+        <p className="flex items-center gap-1.5 text-[11px] leading-snug text-muted-foreground">
+          <Info className="h-3.5 w-3.5 shrink-0" />
+          {reason === "webgl" ? t("dashboard:fleet_flat_webgl") : t("dashboard:fleet_flat_error")}
+        </p>
+      )}
     </div>
   );
 }

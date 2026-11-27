@@ -55,12 +55,12 @@ function ServerSidebarRail({
     <div className="flex flex-col">
       <Link
         to="/servers"
-        className="mx-3 mb-2 inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-foreground transition-colors hover:border-muted-foreground/30 hover:bg-accent/70"
+        className="-mt-1 mb-1.5 flex items-center gap-1.5 border-b border-border/60 px-4 py-2 text-xs text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground"
       >
         <ArrowLeft className="h-3.5 w-3.5 shrink-0" />
         <span className="truncate">{backLabel}</span>
       </Link>
-      <div className="border-b border-border/60 px-4 pb-2.5 pt-1">
+      <div className="px-4 py-2">
         <div className="flex items-center gap-1.5 text-[12.5px] font-semibold text-foreground">
           <span
             aria-hidden="true"
@@ -76,7 +76,7 @@ function ServerSidebarRail({
             : ""}
         </div>
       </div>
-      <nav aria-label={navLabel} className="mt-2 flex flex-col">
+      <nav aria-label={navLabel} className="mt-1 flex flex-col">
         {tabs.map(({ to, label, icon: Icon, end }) => (
           <NavLink
             key={to}

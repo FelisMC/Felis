@@ -439,7 +439,7 @@ export function AppShell() {
                   ref={setMain}
                   className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pt-4 md:px-7"
                 >
-                  <div className="mx-auto flex min-h-0 w-full max-w-[1220px] flex-1 flex-col gap-4 after:-mt-4 after:h-6 after:shrink-0 after:content-['']">
+                  <div className="mx-auto flex min-h-0 w-full max-w-[1060px] flex-1 flex-col gap-4 after:-mt-4 after:h-6 after:shrink-0 after:content-['']">
                     <ErrorBoundary resetKey={pathname}>
                       <Suspense fallback={<Loading />}>
                         <Outlet />

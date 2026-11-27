@@ -35,6 +35,7 @@ interface Props {
    *  a Stop too. */
   stopOnly?: boolean;
   allowRestart?: boolean;
+  quiet?: boolean;
   /** Called after the wake or stop was accepted, so the parent refetches. */
   onChanged: () => void;
   size?: "sm" | "default";
@@ -58,6 +59,7 @@ export function PowerButton({
   diskFull = false,
   stopOnly = false,
   allowRestart = false,
+  quiet = false,
   onChanged,
   size = "sm",
   className,
@@ -129,6 +131,9 @@ export function PowerButton({
     </Button>
   );
 
+  const wakeVariant = quiet ? "outline" : "default";
+  const wakeClass = quiet ? "border-primary/40 text-primary hover:border-primary/60 hover:bg-primary/10 hover:text-primary" : undefined;
+
   let control;
   if (retiring) {
     control = <RetiringBadge retiring={retiring} />;
@@ -139,8 +144,8 @@ export function PowerButton({
   } else if (failed) {
     // Retry and stop stay side by side: a row of actions that wraps moves them as one.
     control = (
-      <div className="flex items-center justify-end gap-2">
-        <Button size={size} onClick={() => void run("wake")} disabled={busy !== null || diskFull}>
+      <div className="flex items-center justify-end gap-1.5">
+        <Button size={size} variant={wakeVariant} className={wakeClass} onClick={() => void run("wake")} disabled={busy !== null || diskFull}>
           {busy === "wake" ? spinner : <RotateCcw />}
           {busy === "wake" ? t("retrying_start") : t("retry_start")}
         </Button>
@@ -156,9 +161,9 @@ export function PowerButton({
     );
   } else if (desiredState === "Hibernated") {
     control = (
-      <div className="flex items-center justify-end gap-2">
+      <div className="flex items-center justify-end gap-1.5">
         {!stopOnly && (
-          <Button size={size} onClick={() => void run("wake")} disabled={busy !== null || diskFull}>
+          <Button size={size} variant={wakeVariant} className={wakeClass} onClick={() => void run("wake")} disabled={busy !== null || diskFull}>
             {busy === "wake" ? spinner : <Play />}
             {busy === "wake" ? t("resuming") : t("resume")}
           </Button>
@@ -173,7 +178,7 @@ export function PowerButton({
     control = inProgress("wake");
   } else if (!stopOnly && !on) {
     control = (
-      <Button size={size} onClick={() => void run("wake")} disabled={busy !== null || diskFull}>
+      <Button size={size} variant={wakeVariant} className={wakeClass} onClick={() => void run("wake")} disabled={busy !== null || diskFull}>
         {busy === "wake" ? spinner : <Play />}
         {busy === "wake" ? t("waking") : t("wake")}
       </Button>

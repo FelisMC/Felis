@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowRight, CheckCircle2, CloudUpload, Database, HardDrive } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { api } from "@/lib/api";
@@ -8,7 +8,7 @@ import type { OffsiteStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 // Hide host-health summaries when host state cannot be read.
-export function PlatformHealthBanner() {
+export function PlatformHealthBanner({ inline = false }: { inline?: boolean }) {
   const { t, i18n } = useTranslation("admin");
   const overview = useAsync(api.hostOverview, []);
   usePolling(overview.reload, 60_000);
@@ -22,26 +22,58 @@ export function PlatformHealthBanner() {
   const offsiteOk = data.offsite.configured && !!status?.last_success && !status.key_mismatch && !status.standby && !status.displaced;
   const open = data.alerts.filter((a) => !a.ignored).length;
   const items = [
-    { key: "alerts", icon: open ? AlertTriangle : CheckCircle2, bad: open > 0, text: open ? t("host_alerts_open", { count: open }) : t("host_alerts_none"), tab: "status" },
-    { key: "db", icon: Database, bad: !newest, text: newest ? t("health_db_newest", { time: formatRelative(newest.created, now, i18n.language) }) : t("db_bundles_none"), tab: "backups" },
-    { key: "offsite", icon: CloudUpload, bad: !offsiteOk, text: t("health_offsite", { state: t(!data.offsite.configured ? "offsite_state_off" : offsiteOk ? "offsite_state_ok" : "offsite_state_attention") }), tab: "offsite" },
-    ...(disk ? [{ key: "disk", icon: HardDrive, bad: diskFree < 0.1, text: t("health_disk_free", { free: formatBytes(disk.available), path: disk.path }), tab: "status" }] : []),
+    { key: "alerts", dot: true, bad: open > 0, text: open ? t("host_alerts_open", { count: open }) : t("host_alerts_none"), tab: "status" },
+    { key: "db", dot: !newest, bad: !newest, text: newest ? t("health_db_newest", { time: formatRelative(newest.created, now, i18n.language) }) : t("db_bundles_none"), tab: "backups" },
+    { key: "offsite", dot: !offsiteOk, bad: !offsiteOk, text: t("health_offsite", { state: t(!data.offsite.configured ? "offsite_state_off" : offsiteOk ? "offsite_state_ok" : "offsite_state_attention") }), tab: "offsite" },
+    ...(disk ? [{ key: "disk", dot: diskFree < 0.1, bad: diskFree < 0.1, text: t("health_disk_free", { free: formatBytes(disk.available), path: disk.path }), tab: "status" }] : []),
   ];
+
+  if (inline) {
+    return (
+      <section aria-label={t("health_title")} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+        {items.map(({ key, dot, bad, text, tab }) => (
+          <Link
+            key={key}
+            to={`/admin/updates?tab=${tab}`}
+            className={cn(
+              "inline-flex items-center gap-1.5 transition-colors hover:underline",
+              bad ? "text-destructive" : "text-muted-foreground hover:text-foreground",
+              key === "disk" && "font-mono",
+            )}
+          >
+            {dot && (
+              <span
+                aria-hidden="true"
+                className={cn("h-[5.5px] w-[5.5px] shrink-0 rounded-full", bad ? "bg-destructive" : "bg-primary")}
+              />
+            )}
+            <span>{text}</span>
+          </Link>
+        ))}
+      </section>
+    );
+  }
+
   return (
     <section
       aria-label={t("health_title")}
-      className="flex flex-wrap items-center gap-x-2 gap-y-1.5 rounded-lg border border-border bg-card px-3 py-2 text-xs shadow-[0_1px_2px_rgba(0,0,0,0.03)] dark:shadow-none"
+      className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border border-border bg-card px-3.5 py-2 text-xs"
     >
-      {items.map(({ key, icon: Icon, bad, text, tab }) => (
+      {items.map(({ key, dot, bad, text, tab }) => (
         <Link
           key={key}
           to={`/admin/updates?tab=${tab}`}
           className={cn(
-            "inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 transition-colors hover:bg-accent/70",
+            "inline-flex items-center gap-1.5 transition-colors hover:underline",
             bad ? "font-medium text-destructive" : "text-muted-foreground hover:text-foreground",
           )}
         >
-          <Icon className={cn("h-3.5 w-3.5 shrink-0", bad ? "text-destructive" : key === "alerts" ? "text-primary" : "text-muted-foreground/75")} aria-hidden="true" />
+          {dot && (
+            <span
+              aria-hidden="true"
+              className={cn("h-[5.5px] w-[5.5px] shrink-0 rounded-full", bad ? "bg-destructive" : "bg-primary")}
+            />
+          )}
           <span>{text}</span>
         </Link>
       ))}

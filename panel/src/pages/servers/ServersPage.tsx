@@ -8,10 +8,8 @@ import {
   Terminal,
   RefreshCw,
   RotateCcw,
-  Server,
   Square,
   Users,
-  AlertTriangle,
   UserRound,
   Hand,
 } from "lucide-react";
@@ -42,7 +40,6 @@ import { Pagination } from "@/components/Pagination";
 import { useToast } from "@/components/Toaster";
 import { DistributedNodes, MigrationDialog } from "@/components/DistributedNodes";
 import { CreateServerDialog } from "@/components/CreateServerDialog";
-import { StatCard } from "@/components/StatCard";
 import { CopyAddress } from "@/components/CopyAddress";
 import { PageHeader } from "@/components/PageHeader";
 import { api, humanizeError } from "@/lib/api";
@@ -440,81 +437,6 @@ export function ServersPage() {
         <>
           {error && <RefreshError error={error} />}
 
-          <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-            <StatCard icon={Server} label={t("fleet_stat_total")} value={stats.total} />
-            <StatCard
-              icon={Play}
-              label={t("fleet_stat_running")}
-              value={stats.counts.Running}
-              accentColor={PHASE_COLOR.Running}
-            />
-            <StatCard
-              icon={Users}
-              label={t("fleet_stat_players")}
-              value={`${stats.playersOnline} / ${stats.playersMax}`}
-            />
-            <StatCard
-              icon={AlertTriangle}
-              label={t("fleet_stat_failed")}
-              value={stats.counts.Failed}
-              accentColor={stats.counts.Failed > 0 ? PHASE_COLOR.Failed : undefined}
-            />
-          </div>
-
-          {stats.total > 0 && (
-            <Card>
-              <CardContent className="space-y-2.5 py-3">
-                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                  <span className="font-medium text-muted-foreground">{t("fleet_distribution")}</span>
-                  <div className="flex flex-wrap gap-1.5">
-                    {PHASES.filter((p) => stats.counts[p] > 0).map((p) => {
-                      const active = phaseFilter === p;
-                      return (
-                        <button
-                          key={p}
-                          type="button"
-                          onClick={() => {
-                            setPhaseFilter(active ? "all" : p);
-                            setPage(1);
-                          }}
-                          className={cn(
-                            "inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
-                            active
-                              ? "border-primary bg-primary/10 text-foreground font-medium"
-                              : "border-border bg-background text-muted-foreground hover:border-muted-foreground/30 hover:text-foreground",
-                          )}
-                        >
-                          <span
-                            className="h-[5.5px] w-[5.5px] rounded-full"
-                            style={{ backgroundColor: PHASE_COLOR[p] }}
-                          />
-                          <span>{t(PHASE_KEY[p])}</span>
-                          <span className="font-mono font-medium text-foreground tabular-nums">
-                            {stats.counts[p]}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-                <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-secondary">
-                  {PHASES.map((p) =>
-                    stats.counts[p] > 0 ? (
-                      <div
-                        key={p}
-                        className="h-full transition-all"
-                        style={{
-                          width: `${(stats.counts[p] / stats.total) * 100}%`,
-                          backgroundColor: PHASE_COLOR[p],
-                        }}
-                      />
-                    ) : null,
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-          )}
-
           <div className="flex flex-wrap items-center gap-2">
             <SearchInput
               value={query}
@@ -573,42 +495,7 @@ export function ServersPage() {
                 ))}
               </SelectContent>
             </Select>
-            <span className="shrink-0 text-xs text-muted-foreground">
-              {visible.length === servers.length
-                ? t("fleet_count", { count: servers.length })
-                : t("fleet_count_filtered", {
-                    shown: visible.length,
-                    total: servers.length,
-                  })}
-            </span>
           </div>
-
-          {availableTags.length > 0 && (
-            <div role="group" aria-labelledby={tagsId} className="flex flex-wrap items-center gap-1.5">
-              <span id={tagsId} className="mr-1 text-xs text-muted-foreground">
-                {t("servers:tags_label")}
-              </span>
-              {availableTags.map(({ key, label }) => {
-                const on = activeTags.includes(key);
-                return (
-                  <button
-                    key={key}
-                    type="button"
-                    aria-pressed={on}
-                    onClick={() => toggleTag(key)}
-                    className={cn(
-                      "rounded-md border px-2.5 py-0.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
-                      on
-                        ? "border-primary bg-primary text-primary-foreground font-medium"
-                        : "border-border bg-card text-foreground/80 hover:border-muted-foreground/30 hover:bg-accent/70 hover:text-foreground",
-                    )}
-                  >
-                    {label}
-                  </button>
-                );
-              })}
-            </div>
-          )}
 
           {(picked.length > 0 || progress !== null || outcomes !== null) && (
             <BatchBar
@@ -626,90 +513,166 @@ export function ServersPage() {
               title={isAdmin ? t("fleet_empty_title") : t("servers:no_servers_linked")}
               hint={isAdmin ? t("fleet_empty_hint") : t("servers:no_servers_hint")}
             />
-          ) : visible.length === 0 ? (
-            <EmptyState
-              title={isAdmin ? t("fleet_no_match_title") : t("servers:search_no_match")}
-              hint={t("fleet_no_match_hint")}
-            >
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setQuery("");
-                  setPhaseFilter("all");
-                  setTagFilter([]);
-                  setPage(1);
-                }}
-              >
-                {t("servers:search_clear_btn")}
-              </Button>
-            </EmptyState>
           ) : (
             <>
-              <div className="space-y-3 lg:hidden">
-                {pageRows.length > 0 && (
-                  <label className="flex w-fit cursor-pointer items-center gap-2 text-xs text-muted-foreground">
-                    <Checkbox
-                      checked={pageAllSelected}
-                      disabled={progress !== null}
-                      onChange={(e) => select(pageRows.map((s) => s.name), e.target.checked)}
-                    />
-                    {t("servers:select_page")}
-                  </label>
-                )}
-                <ul className="grid gap-3 md:grid-cols-2">
-                  {paged.map((s) => (
-                    <ServerMobileCard
-                      key={s.name}
-                      server={s}
-                      cfg={cfg}
-                      isAdmin={isAdmin}
-                      select={rowSelection(s)}
-                      onChanged={reload}
-                    />
-                  ))}
-                </ul>
-              </div>
-              <Card className="hidden overflow-hidden lg:block">
-                <div className="overflow-x-auto">
-                  <table className="w-full border-collapse text-xs">
-                    <thead>
-                      <tr className="whitespace-nowrap border-b border-border/60 bg-muted text-left text-[11px] text-muted-foreground">
-                        <th className="w-7 py-2 pl-2.5 pr-0 font-normal">
+              <Card className="overflow-hidden">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 px-3.5 py-2 text-xs text-muted-foreground">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <span className="font-mono font-medium text-foreground tabular-nums">
+                      {visible.length === servers.length
+                        ? t("fleet_count", { count: servers.length })
+                        : t("fleet_count_filtered", { shown: visible.length, total: servers.length })}
+                    </span>
+                    <span className="text-border">·</span>
+                    <button
+                      type="button"
+                      onClick={() => { setPhaseFilter(phaseFilter === "Running" ? "all" : "Running"); setPage(1); }}
+                      className={cn(
+                        "inline-flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors hover:bg-accent",
+                        phaseFilter === "Running" && "bg-accent font-medium text-foreground",
+                      )}
+                    >
+                      <span className="h-[5.5px] w-[5.5px] rounded-full" style={{ backgroundColor: PHASE_COLOR.Running }} />
+                      <span className="inline-flex flex-row-reverse items-center gap-1">
+                        <span className="font-mono font-medium text-foreground tabular-nums">{stats.counts.Running}</span>
+                        <div className="mt-1 inline" style={{ marginTop: 0 }}>{t("fleet_stat_running")}</div>
+                      </span>
+                    </button>
+                    {PHASES.filter((p) => p !== "Running" && stats.counts[p] > 0).map((p) => (
+                      <button
+                        key={p}
+                        type="button"
+                        onClick={() => { setPhaseFilter(phaseFilter === p ? "all" : p); setPage(1); }}
+                        className={cn(
+                          "inline-flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors hover:bg-accent",
+                          phaseFilter === p && "bg-accent font-medium text-foreground",
+                        )}
+                      >
+                        <span className="h-[5.5px] w-[5.5px] rounded-full" style={{ backgroundColor: PHASE_COLOR[p] }} />
+                        <span>{t(PHASE_KEY[p])}</span>
+                        <span className="font-mono font-medium text-foreground tabular-nums">{stats.counts[p]}</span>
+                      </button>
+                    ))}
+                    {stats.playersMax > 0 && (
+                      <>
+                        <span className="text-border">·</span>
+                        <span className="font-mono tabular-nums">{stats.playersOnline} / {stats.playersMax}</span>
+                      </>
+                    )}
+                  </div>
+                  {availableTags.length > 0 && (
+                    <div role="group" aria-labelledby={tagsId} className="flex flex-wrap items-center gap-1">
+                      <span id={tagsId} className="mr-0.5 text-[11px] text-muted-foreground">
+                        {t("servers:tags_label")}
+                      </span>
+                      {availableTags.map(({ key, label }) => {
+                        const on = activeTags.includes(key);
+                        return (
+                          <button
+                            key={key}
+                            type="button"
+                            aria-pressed={on}
+                            onClick={() => toggleTag(key)}
+                            className={cn(
+                              "rounded border px-1.5 py-0.5 text-[11px] leading-none transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
+                              on
+                                ? "border-primary bg-primary text-primary-foreground font-medium"
+                                : "border-border bg-background text-muted-foreground hover:border-muted-foreground/35 hover:text-foreground",
+                            )}
+                          >
+                            {label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {visible.length === 0 ? (
+                  <div className="p-4">
+                    <EmptyState
+                      title={isAdmin ? t("fleet_no_match_title") : t("servers:search_no_match")}
+                      hint={t("fleet_no_match_hint")}
+                    >
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setQuery("");
+                          setPhaseFilter("all");
+                          setTagFilter([]);
+                          setPage(1);
+                        }}
+                      >
+                        {t("servers:search_clear_btn")}
+                      </Button>
+                    </EmptyState>
+                  </div>
+                ) : (
+                  <>
+                    <div className="space-y-3 p-3 lg:hidden">
+                      {pageRows.length > 0 && (
+                        <label className="flex w-fit cursor-pointer items-center gap-2 text-xs text-muted-foreground">
                           <Checkbox
-                            aria-label={t("servers:select_page")}
                             checked={pageAllSelected}
-                            disabled={pageRows.length === 0 || progress !== null}
+                            disabled={progress !== null}
                             onChange={(e) => select(pageRows.map((s) => s.name), e.target.checked)}
                           />
-                        </th>
-                        <th className="px-2 py-2 font-normal">{t("fleet_col_server")}</th>
-                        <th className="px-2 py-2 font-normal">{t("fleet_col_status")}</th>
-                        {isAdmin && <th className="px-2 py-2 font-normal">{t("fleet_col_owner")}</th>}
-                        <th className="px-2 py-2 font-normal">{t("fleet_col_players")}</th>
-                        <th className="px-2 py-2 font-normal">{t("servers:usage_cpu")}</th>
-                        <th className="px-2 py-2 font-normal">{t("servers:usage_memory")}</th>
-                        <th className="px-2 py-2 font-normal">{t("fleet_col_policy")}</th>
-                        {isAdmin && <th className="px-2 py-2 font-normal">{t("fleet_col_endpoint")}</th>}
-                        <th className="px-2.5 py-2 text-right font-normal">
-                          {t("fleet_col_actions")}
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {paged.map((s) => (
-                        <ServerRow
-                          key={s.name}
-                          server={s}
-                          cfg={cfg}
-                          isAdmin={isAdmin}
-                          select={rowSelection(s)}
-                          onChanged={reload}
-                        />
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                          {t("servers:select_page")}
+                        </label>
+                      )}
+                      <ul className="grid gap-3 md:grid-cols-2">
+                        {paged.map((s) => (
+                          <ServerMobileCard
+                            key={s.name}
+                            server={s}
+                            cfg={cfg}
+                            isAdmin={isAdmin}
+                            select={rowSelection(s)}
+                            onChanged={reload}
+                          />
+                        ))}
+                      </ul>
+                    </div>
+                    <div className="hidden overflow-x-auto lg:block">
+                      <table className="w-full border-collapse text-xs">
+                        <thead>
+                          <tr className="whitespace-nowrap border-b border-border/60 bg-muted text-left text-[11px] text-muted-foreground">
+                            <th className="w-7 py-2 pl-3 pr-0 font-normal">
+                              <Checkbox
+                                aria-label={t("servers:select_page")}
+                                checked={pageAllSelected}
+                                disabled={pageRows.length === 0 || progress !== null}
+                                onChange={(e) => select(pageRows.map((s) => s.name), e.target.checked)}
+                              />
+                            </th>
+                            <th className="px-2.5 py-2 font-normal">{t("fleet_col_server")}</th>
+                            <th className="w-[1%] px-2.5 py-2 font-normal">{t("fleet_col_status")}</th>
+                            {isAdmin && <th className="w-[1%] px-2.5 py-2 font-normal">{t("fleet_col_owner")}</th>}
+                            <th className="w-[1%] px-2.5 py-2 font-normal">{t("fleet_col_players")}</th>
+                            <th className="w-[1%] px-2.5 py-2 font-normal">{t("servers:usage_cpu")} / {t("servers:usage_memory")}</th>
+                            {isAdmin && <th className="w-[1%] px-2.5 py-2 font-normal">{t("fleet_col_endpoint")}</th>}
+                            <th className="w-[1%] px-3 py-2 text-right font-normal">
+                              {t("fleet_col_actions")}
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {paged.map((s) => (
+                            <ServerRow
+                              key={s.name}
+                              server={s}
+                              cfg={cfg}
+                              isAdmin={isAdmin}
+                              select={rowSelection(s)}
+                              onChanged={reload}
+                            />
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
               </Card>
 
               {totalPages > 1 && (
@@ -828,6 +791,7 @@ function ServerActions({
             playerCountUnknown={server.playerCountUnknown}
             retiring={server.retiring}
             diskFull={server.diskFull}
+            quiet
             onChanged={onChanged}
           />
         )}
@@ -925,16 +889,16 @@ function RowSelect({ server, select }: { server: UnifiedServer; select?: RowSele
   );
 }
 
-function TagChips({ tags }: { tags?: string[] }) {
+function TagChips({ tags, inline = false }: { tags?: string[]; inline?: boolean }) {
   const { t } = useTranslation("servers");
   if (!tags?.length) return null;
   return (
-    <ul aria-label={t("tags_label")} className="mt-1 flex flex-wrap gap-1">
+    <ul aria-label={t("tags_label")} className={cn("flex flex-wrap gap-1", !inline && "mt-1")}>
       {tags.map((tag) => (
         <li
           key={tag}
           title={tag}
-          className="max-w-full truncate rounded-full border border-border bg-muted/50 px-2 text-[11px] leading-5 text-muted-foreground"
+          className="max-w-full truncate rounded border border-border bg-muted px-1.5 text-[10.5px] leading-4 text-muted-foreground"
         >
           {tag}
         </li>
@@ -959,47 +923,59 @@ function ServerRow({
   const { t } = useTranslation("ops");
   const address = server.subdomain ? joinAddress(server.subdomain, cfg) : "";
 
+  const cpu = cpuUsage(server.cpuMilli, server.cpu);
+  const mem = memoryUsage(server.memoryBytes, server.memory);
+
   return (
     <tr className="group border-b border-border/50 transition-colors last:border-0 hover:bg-accent/40">
-      <td className="w-7 py-2.5 pl-2.5 pr-0 align-middle">
+      <td className="w-7 py-2.5 pl-3 pr-0 align-middle">
         <RowSelect server={server} select={select} />
       </td>
-      <td className="px-2 py-2.5 text-left align-middle">
-        <div className="flex min-w-0 max-w-[10.5rem] items-baseline gap-1.5">
+      <td className="px-2.5 py-2.5 text-left align-middle">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
           <ServerName server={server} />
+          <TagChips tags={server.tags} inline />
         </div>
-        <TagChips tags={server.tags} />
-        {address && <CopyAddress address={address} className="mt-0.5 max-w-[10.5rem] flex-nowrap" />}
+        {address && (
+          <CopyAddress
+            address={address}
+            className={cn("mt-0.5 flex-nowrap", isAdmin ? "max-w-[13.5rem]" : "max-w-[22rem]")}
+          />
+        )}
       </td>
-      <td className="whitespace-nowrap px-2 py-2.5 text-left align-middle">
+      <td className="whitespace-nowrap px-2.5 py-2.5 text-left align-middle">
         <PhaseBadge phase={shownPhase(server)} failure={startFailure(server)} autoRestarts={server.autoRestarts} />
-      </td>
-      {isAdmin && (
-        <td className="whitespace-nowrap px-2 py-2.5 text-left align-middle text-muted-foreground">
-          <OwnerLabel server={server} />
-        </td>
-      )}
-      <td className="whitespace-nowrap px-2 py-2.5 text-left align-middle font-mono">
-        <PlayersLabel server={server} />
-      </td>
-      <td className="whitespace-nowrap px-2 py-2.5 font-mono text-muted-foreground tabular-nums">{cpuUsage(server.cpuMilli, server.cpu)}</td>
-      <td className="whitespace-nowrap px-2 py-2.5 font-mono text-muted-foreground tabular-nums">{memoryUsage(server.memoryBytes, server.memory)}</td>
-      <td className="whitespace-nowrap px-2 py-2.5 text-left align-middle">
-        {server.autostartPolicy ? (
-          <span className="text-muted-foreground">
+        {server.autostartPolicy && (
+          <div className="mt-0.5 text-[10.5px] text-muted-foreground/80">
             {t(POLICY_KEY[server.autostartPolicy])}
-          </span>
-        ) : (
-          <span className="text-muted-foreground">—</span>
+          </div>
         )}
       </td>
       {isAdmin && (
-        <td className="whitespace-nowrap px-2 py-2.5 text-left align-middle">
+        <td className="whitespace-nowrap px-2.5 py-2.5 text-left align-middle text-muted-foreground">
+          <OwnerLabel server={server} />
+        </td>
+      )}
+      <td className="whitespace-nowrap px-2.5 py-2.5 text-left align-middle font-mono">
+        <PlayersLabel server={server} />
+      </td>
+      <td className="whitespace-nowrap px-2.5 py-2.5 font-mono text-muted-foreground tabular-nums">
+        {cpu === "—" && mem === "—" ? (
+          "—"
+        ) : (
+          <div className="flex flex-col leading-snug">
+            <span>{cpu}</span>
+            <span className="text-[11px]">{mem}</span>
+          </div>
+        )}
+      </td>
+      {isAdmin && (
+        <td className="whitespace-nowrap px-2.5 py-2.5 text-left align-middle">
           <EndpointLabel server={server} />
         </td>
       )}
-      <td className="px-2.5 py-2.5 align-middle">
-        <ServerActions server={server} isAdmin={isAdmin} onChanged={onChanged} />
+      <td className="px-3 py-2.5 align-middle">
+        <ServerActions server={server} isAdmin={isAdmin} onChanged={onChanged} className="min-w-[9.5rem]" />
       </td>
     </tr>
   );

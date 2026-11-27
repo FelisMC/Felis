@@ -292,7 +292,7 @@ function CommandInput({ name, echo }: { name: string; echo: Echo }) {
           <FormattedText formatted={note} />
         </pre>
       )}
-      <div className="flex items-center gap-2 rounded-md border border-zinc-700/80 bg-[#0d0d10] px-3 py-1 font-mono text-xs text-zinc-200 focus-within:border-primary/70">
+      <div className="flex items-center gap-2 font-mono text-xs text-zinc-200">
         <span className="shrink-0 select-none text-zinc-500">{">"}</span>
         <input
           ref={inputRef}
@@ -307,7 +307,7 @@ function CommandInput({ name, echo }: { name: string; echo: Echo }) {
           autoComplete="off"
           enterKeyHint="send"
           spellCheck={false}
-          className="min-w-0 flex-1 bg-transparent py-1.5 text-base text-zinc-100 placeholder:text-zinc-500 focus:outline-none sm:text-xs"
+          className="min-w-0 flex-1 bg-transparent py-1 text-base text-zinc-100 placeholder:text-zinc-500 focus:outline-none sm:text-xs"
         />
         <Button
           type="button"
@@ -317,9 +317,9 @@ function CommandInput({ name, echo }: { name: string; echo: Echo }) {
           title={t("command_send")}
           disabled={sending || !command.trim()}
           onClick={() => void send(command.trim())}
-          className="h-7 w-7 shrink-0 border-zinc-700 bg-zinc-800/80 text-zinc-200 hover:bg-zinc-700 hover:text-white"
+          className="h-6 w-6 shrink-0 border-zinc-700 bg-zinc-800/80 text-zinc-200 hover:bg-zinc-700 hover:text-white"
         >
-          {sending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <SendHorizontal className="h-3.5 w-3.5" />}
+          {sending ? <Loader2 className="h-3 w-3 animate-spin" /> : <SendHorizontal className="h-3 w-3" />}
         </Button>
       </div>
       <InlineError message={err} className="text-xs" />
