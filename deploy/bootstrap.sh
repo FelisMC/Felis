@@ -3362,16 +3362,21 @@ ensure_velocity_directory() {
 prepare_velocity_layout() {
   id -u "$VELOCITY_USER" >/dev/null 2>&1 \
     || useradd --system --home-dir "$VELOCITY_DIR" --shell /usr/sbin/nologin "$VELOCITY_USER"
-  ensure_velocity_directory "$VELOCITY_DIR" 0750 "$VELOCITY_USER" "$VELOCITY_USER"
-  ensure_velocity_directory "${VELOCITY_DIR}/plugins" 0750 "$VELOCITY_USER" "$VELOCITY_USER"
+  ensure_velocity_directory "$VELOCITY_DIR" 0750 root "$VELOCITY_USER"
+  ensure_velocity_directory "${VELOCITY_DIR}/plugins" 0750 root "$VELOCITY_USER"
   ensure_velocity_directory "${VELOCITY_DIR}/plugins/felis-link" 0750 "$VELOCITY_USER" "$VELOCITY_USER"
+  ensure_velocity_directory "${VELOCITY_DIR}/plugins/viaversion" 0750 "$VELOCITY_USER" "$VELOCITY_USER"
+  ensure_velocity_directory "${VELOCITY_DIR}/plugins/viabackwards" 0750 "$VELOCITY_USER" "$VELOCITY_USER"
+  ensure_velocity_directory "${VELOCITY_DIR}/plugins/viarewind" 0750 "$VELOCITY_USER" "$VELOCITY_USER"
+  ensure_velocity_directory "${VELOCITY_DIR}/plugins/bStats" 0750 "$VELOCITY_USER" "$VELOCITY_USER"
+  ensure_velocity_directory "${VELOCITY_DIR}/lang" 0750 "$VELOCITY_USER" "$VELOCITY_USER"
   ensure_velocity_directory "${VELOCITY_DIR}/logs" 0750 "$VELOCITY_USER" "$VELOCITY_USER"
   ensure_velocity_directory "${VELOCITY_DIR}/crash-reports" 0750 "$VELOCITY_USER" "$VELOCITY_USER"
 }
 
 atomic_install_file() {
   local source="$1" target="$2" mode="$3" owner="$4" group="$5"
-  local parent base staged
+  local parent base stage_parent stage_dir staged my_uid parent_dev cur up
   parent="$(dirname "$target")"
   base="$(basename "$target")"
   [ -d "$parent" ] && [ ! -L "$parent" ] \
@@ -3379,10 +3384,25 @@ atomic_install_file() {
   if [ -d "$target" ] && [ ! -L "$target" ]; then
     die "refusing to replace directory with file: ${target}"
   fi
-  staged="$(mktemp "${parent}/.${base}.XXXXXX")"
-  remember_temp "$staged"
+  my_uid="$(id -u)"
+  parent_dev="$(stat -c '%d' "$parent")"
+  stage_parent="$parent"
+  cur="$parent"
+  while [ "$(stat -c '%u' "$cur")" != "$my_uid" ]; do
+    up="$(dirname "$cur")"
+    [ "$up" != "$cur" ] || die "refusing to stage inside untrusted directory: ${parent}"
+    [ ! -L "$up" ] && [ "$(stat -c '%d' "$up")" = "$parent_dev" ] \
+      || die "refusing to stage across filesystem or symlink above: ${parent}"
+    cur="$up"
+    stage_parent="$cur"
+  done
+  stage_dir="$(mktemp -d "${stage_parent}/.${base}.XXXXXX")"
+  remember_temp "$stage_dir"
+  chmod 0700 "$stage_dir"
+  staged="${stage_dir}/file"
   install -o "$owner" -g "$group" -m "$mode" "$source" "$staged"
   mv -fT "$staged" "$target"
+  rmdir "$stage_dir" 2>/dev/null || true
 }
 
 # Preserve mtime for identical content because domain checks use it to detect unapplied changes.
@@ -3415,7 +3435,9 @@ build_velocity_plugin() {
 # Pin Via plugins as a compatible set supporting the locked game protocol.
 install_via_plugins() {
   prepare_velocity_layout
-  local name version want target url tmp have
+  local name version want target url tmpdir tmp have
+  tmpdir="$(mktemp -d)"
+  remember_temp "$tmpdir"
   while read -r name version want; do
     [ -n "$name" ] || continue
     target="${VELOCITY_DIR}/plugins/${name}.jar"
@@ -3423,15 +3445,14 @@ install_via_plugins() {
     # carries a backslash or a newline, and a leading "\" on the digest silently fails
     # every comparison below.
     have=""
-    [ -f "$target" ] && have="$(sha256sum <"$target" | cut -d' ' -f1)"
+    [ ! -L "$target" ] && [ -f "$target" ] && have="$(sha256sum <"$target" | cut -d' ' -f1)"
     if [ "$have" = "$want" ]; then
       ok "${name} ${version} already staged"
       continue
     fi
     url="https://github.com/ViaVersion/${name}/releases/download/${version}/${name}-${version}.jar"
     log "downloading ${name} ${version}"
-    tmp="$(mktemp "${VELOCITY_DIR}/.${name}.jar.XXXXXX")"
-    remember_temp "$tmp"
+    tmp="${tmpdir}/${name}.jar"
     curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors "$url" -o "$tmp" || die "failed to download ${name} ${version}: ${url}"
     have="$(sha256sum <"$tmp" | cut -d' ' -f1)"
     [ "$have" = "$want" ] \
@@ -3448,17 +3469,19 @@ EOF
 
 # Disable Via block tracking to avoid missing-provider failures; old-client block connections may be cosmetic approximations.
 pin_via_block_connections() {
-  local dir="${VELOCITY_DIR}/plugins/viaversion" config tmp
+  local dir="${VELOCITY_DIR}/plugins/viaversion" config tmpdir orig tmp
   config="${dir}/config.yml"
   ensure_velocity_directory "$dir" 0750 "$VELOCITY_USER" "$VELOCITY_USER"
-  tmp="$(mktemp "${VELOCITY_DIR}/.viaversion-config.XXXXXX")"
-  remember_temp "$tmp"
-  if [ ! -f "$config" ]; then
+  tmpdir="$(mktemp -d)"
+  remember_temp "$tmpdir"
+  orig="${tmpdir}/orig.yml"
+  tmp="${tmpdir}/config.yml"
+  if [ -L "$config" ] || [ ! -f "$config" ] || ! dd if="$config" of="$orig" iflag=nofollow,nonblock status=none 2>/dev/null; then
     printf 'serverside-blockconnections: false\n' > "$tmp"
-  elif grep -qE '^serverside-blockconnections:' "$config"; then
-    sed -E 's/^serverside-blockconnections:.*/serverside-blockconnections: false/' "$config" > "$tmp"
+  elif grep -qE '^serverside-blockconnections:' "$orig"; then
+    sed -E 's/^serverside-blockconnections:.*/serverside-blockconnections: false/' "$orig" > "$tmp"
   else
-    { cat "$config"; printf 'serverside-blockconnections: false\n'; } > "$tmp"
+    { cat "$orig"; printf 'serverside-blockconnections: false\n'; } > "$tmp"
   fi
   # Via rewrites this file itself on every load, so the proxy user has to own it.
   atomic_install_file "$tmp" "$config" 0640 "$VELOCITY_USER" "$VELOCITY_USER"
@@ -3589,15 +3612,16 @@ install_velocity() {
 # stage_velocity_jar installs the stock proxy from $1 unless velocity.jar already hashes to
 # $2, so a rerun of the same build neither downloads nor touches the file the proxy runs.
 stage_velocity_jar() {
-  local url="$1" want="$2" version="$3" have="" tmp
-  [ -f "${VELOCITY_DIR}/velocity.jar" ] && have="$(sha256sum <"${VELOCITY_DIR}/velocity.jar" | cut -d' ' -f1)"
+  local url="$1" want="$2" version="$3" have="" tmpdir tmp
+  [ ! -L "${VELOCITY_DIR}/velocity.jar" ] && [ -f "${VELOCITY_DIR}/velocity.jar" ] && have="$(sha256sum <"${VELOCITY_DIR}/velocity.jar" | cut -d' ' -f1)"
   if [ "$have" = "$want" ]; then
     ok "Velocity ${version} already staged"
     return 0
   fi
   log "downloading Velocity ${version}"
-  tmp="$(mktemp "${VELOCITY_DIR}/.velocity.jar.XXXXXX")"
-  remember_temp "$tmp"
+  tmpdir="$(mktemp -d)"
+  remember_temp "$tmpdir"
+  tmp="${tmpdir}/velocity.jar"
   curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors "$url" -o "$tmp" || die "failed to download Velocity: ${url}"
   # Verify proxy downloads against the lock or content-addressed digest before installation.
   have="$(sha256sum <"$tmp" | cut -d' ' -f1)"
@@ -3767,7 +3791,7 @@ velocity_fingerprint() {
   for f in "$VELOCITY_SERVICE" "${JRE_DIR}/release" "${VELOCITY_DIR}/velocity.jar" \
       "${VELOCITY_DIR}/velocity.toml" "${VELOCITY_DIR}/forwarding.secret" \
       "${VELOCITY_DIR}/plugins/felis-link/felis-link.properties" "${VELOCITY_DIR}"/plugins/*.jar; do
-    [ -f "$f" ] || continue
+    [ ! -L "$f" ] && [ -f "$f" ] || continue
     case "$f" in
       */felis-link.properties) sum="$({ grep -v -e '^service-token=' -e '^panel-port=' "$f" || true; } | sha256sum | cut -d' ' -f1)" ;;
       *) sum="$(sha256sum <"$f" | cut -d' ' -f1)" ;;

@@ -6204,6 +6204,81 @@ else
 fi
 rm -rf "$fbdir"
 
+pvfns="$(bsfn ensure_velocity_directory; bsfn atomic_install_file; bsfn pin_via_block_connections)"
+pvdir="$(mktemp -d)"
+mkdir -p "$pvdir/v/plugins/viaversion"
+printf 'SECRET_KUBECONFIG_TOKEN_DO_NOT_LEAK\n' > "$pvdir/secret"
+ln -s "$pvdir/secret" "$pvdir/v/plugins/viaversion/config.yml"
+me_user="$(id -un)"
+me_group="$(id -gn)"
+VELOCITY_DIR="$pvdir/v" VELOCITY_USER="$me_user" ME_GROUP="$me_group" bash -c '
+set -Eeuo pipefail
+'"$pvfns"'
+die() { printf "DIE: %s\n" "$*" >&2; exit 1; }
+remember_temp() { :; }
+install() {
+  local args=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -o|-g) args+=("$1" "$( [ "$1" = -o ] && printf %s "$VELOCITY_USER" || printf %s "$ME_GROUP" )"); shift 2 ;;
+      *) args+=("$1"); shift ;;
+    esac
+  done
+  command install "${args[@]}"
+}
+pin_via_block_connections'
+vcfg="$pvdir/v/plugins/viaversion/config.yml"
+if [ -L "$vcfg" ] || [ ! -f "$vcfg" ]; then
+  echo "FAIL pin_via_block_connections left a symlink or non-file"
+  fails=$((fails + 1))
+else
+  echo "PASS pin_via_block_connections replaced symlink with a regular file"
+fi
+vbody="$(cat "$vcfg")"
+case "$vbody" in
+  *SECRET_KUBECONFIG_TOKEN_DO_NOT_LEAK*) echo "FAIL pin_via_block_connections copied symlink target secret"; fails=$((fails + 1)) ;;
+  *) echo "PASS pin_via_block_connections did not copy symlink target secret" ;;
+esac
+expect "pin_via_block_connections writes serverside-blockconnections: false" "serverside-blockconnections: false" "$vbody"
+expect "symlink target secret remains untouched" "SECRET_KUBECONFIG_TOKEN_DO_NOT_LEAK" "$(cat "$pvdir/secret")"
+printf 'other-key: 1\nserverside-blockconnections: true\n' > "$vcfg"
+VELOCITY_DIR="$pvdir/v" VELOCITY_USER="$me_user" ME_GROUP="$me_group" bash -c '
+set -Eeuo pipefail
+'"$pvfns"'
+die() { printf "DIE: %s\n" "$*" >&2; exit 1; }
+remember_temp() { :; }
+install() {
+  local args=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -o|-g) args+=("$1" "$( [ "$1" = -o ] && printf %s "$VELOCITY_USER" || printf %s "$ME_GROUP" )"); shift 2 ;;
+      *) args+=("$1"); shift ;;
+    esac
+  done
+  command install "${args[@]}"
+}
+pin_via_block_connections'
+expect "pin_via_block_connections keeps existing keys on regular file" "other-key: 1" "$(cat "$vcfg")"
+expect "pin_via_block_connections flips true to false on regular file" "serverside-blockconnections: false" "$(cat "$vcfg")"
+rm -rf "$pvdir"
+
+plfns="$(bsfn prepare_velocity_layout)"
+plout="$(VELOCITY_DIR=/opt/felis/velocity VELOCITY_USER=felis-velocity bash -c '
+set -Eeuo pipefail
+'"$plfns"'
+id() { return 0; }
+ensure_velocity_directory() { printf "%s %s %s %s\n" "$1" "$2" "$3" "$4"; }
+prepare_velocity_layout')"
+expect "VELOCITY_DIR is owned by root:felis-velocity" "/opt/felis/velocity 0750 root felis-velocity" "$plout"
+expect "VELOCITY_DIR/plugins is owned by root:felis-velocity" "/opt/felis/velocity/plugins 0750 root felis-velocity" "$plout"
+expect "VELOCITY_DIR/plugins/viaversion is owned by felis-velocity" "/opt/felis/velocity/plugins/viaversion 0750 felis-velocity felis-velocity" "$plout"
+if grep -qE 'mktemp.*VELOCITY_DIR' "$BS"; then
+  echo "FAIL bootstrap.sh still creates temp files directly inside VELOCITY_DIR"
+  fails=$((fails + 1))
+else
+  echo "PASS bootstrap.sh creates no temp files inside VELOCITY_DIR"
+fi
+
 if [ "$fails" -eq 0 ]; then
   echo "ALL PASS"
 else
