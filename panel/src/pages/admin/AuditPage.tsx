@@ -81,11 +81,11 @@ export function AuditPage() {
     setDraft((d) => ({ ...d, [key]: e.target.value }));
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <PageHeader icon={ScrollText} title={t("audit_title")} subtitle={t("audit_subtitle")} />
 
       <Card>
-        <CardContent className="space-y-3 p-4">
+        <CardContent className="space-y-3 p-3.5">
           <form onSubmit={submit} className="space-y-3">
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {FIELDS.map(({ key, type }) => (
@@ -153,7 +153,7 @@ function AuditResults({ filters, onOpen }: { filters: Filters; onOpen: (entry: A
 
   return (
     <>
-      <Card>
+      <Card className="overflow-hidden">
         <CardContent className="p-0">
           <div className="overflow-x-auto">
             <AuditTable entries={entries} onOpen={onOpen} />

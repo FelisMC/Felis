@@ -21,7 +21,7 @@ export function DiskUsage({ disk, diskFull = false }: { disk?: ServerDiskUsage; 
         <div className="space-y-2">
           {disk ? (
             <>
-              <div role="meter" aria-label={t("disk_title")} aria-valuemin={0} aria-valuemax={disk.limitBytes} aria-valuenow={Math.min(disk.usedBytes, disk.limitBytes)} aria-valuetext={value} className="h-2 overflow-hidden rounded-full bg-muted">
+              <div role="meter" aria-label={t("disk_title")} aria-valuemin={0} aria-valuemax={disk.limitBytes} aria-valuenow={Math.min(disk.usedBytes, disk.limitBytes)} aria-valuetext={value} className="h-1.5 overflow-hidden rounded-full bg-secondary">
                 <div className={cn("h-full rounded-full", diskFull ? "bg-destructive" : fraction >= 0.9 ? "bg-amber-500" : "bg-primary")} style={{ width: `${Math.min(100, fraction * 100)}%` }} />
               </div>
               <p className="text-[11px] text-muted-foreground">{t(disk.stale ? "disk_stale" : "disk_sampled")} <time dateTime={disk.sampledAt}>{formatAbsolute(disk.sampledAt, i18n.language)}</time></p>
@@ -47,13 +47,13 @@ export function ResourceUsage({ name, running, cpu, memory, disk, diskFull }: { 
   const cpuValue = cpuUsage(current?.cpuMilli, cpu);
   const memoryValue = memoryUsage(current?.memoryBytes, memory);
   return (
-    <Card role="region" aria-label={t("usage_title")} className="shrink-0">
+    <Card role="region" aria-label={t("usage_title")} className="shrink-0 overflow-hidden">
       <CardHeader className="flex-row flex-wrap items-center justify-between gap-2">
         <CardTitle>{t("usage_title")}</CardTitle>
-        <p className="text-xs text-muted-foreground">{t("usage_window")}</p>
+        <p className="text-[11px] text-muted-foreground">{t("usage_window")}</p>
       </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+      <CardContent className="p-0">
+        <div className="grid grid-cols-1 divide-y divide-border/60 md:grid-cols-3 md:divide-x md:divide-y-0">
           <MetricTile icon={Cpu} label={t("usage_cpu")} value={cpuValue} muted={!current}>
             <AreaChart points={history.map((p) => ({ at: p.at, value: p.cpuMilli }))} label={t("usage_cpu_curve")} max={cpuLimit || 1000} idle={!running} />
           </MetricTile>
@@ -62,7 +62,7 @@ export function ResourceUsage({ name, running, cpu, memory, disk, diskFull }: { 
           </MetricTile>
           <DiskUsage disk={disk} diskFull={diskFull} />
         </div>
-        <p aria-live="polite" className="text-xs text-muted-foreground">{t(!running ? "usage_stopped" : !current ? "usage_unavailable" : "usage_cpu_basis")}</p>
+        <p aria-live="polite" className="border-t border-border/60 px-3.5 py-2 text-[11px] text-muted-foreground">{t(!running ? "usage_stopped" : !current ? "usage_unavailable" : "usage_cpu_basis")}</p>
       </CardContent>
     </Card>
   );

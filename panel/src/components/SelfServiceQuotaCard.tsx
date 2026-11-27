@@ -115,28 +115,34 @@ export function SelfServiceQuotaCard({ collapsible = false }: { collapsible?: bo
 
   return (
     <Card className="overflow-hidden">
-      <CardHeader className="flex-row items-center justify-between gap-3">
-        <div className="flex min-w-0 flex-1 items-center gap-2.5">
-          <span className="shrink-0 text-primary"><ServerCog className="h-3.5 w-3.5" /></span>
-          <CardTitle className="shrink-0">{t("self_service_title")}</CardTitle>
-          {saved && <Badge className="shrink-0" variant={saved.enabled ? "default" : "muted"}>{t(saved.enabled ? "self_service_on" : "self_service_off")}</Badge>}
-          {collapsible && !expanded && (
-            <span className="min-w-0 truncate text-xs text-muted-foreground">{t("self_service_description")}</span>
-          )}
-        </div>
-        {collapsible && (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="shrink-0"
-            aria-expanded={expanded}
-            onClick={() => setExpanded((v) => !v)}
-          >
+      {collapsible ? (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((v) => !v)}
+          className="flex w-full items-center justify-between gap-3 border-b border-border/60 px-3.5 py-2.5 text-left transition-colors last:border-b-0 hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/40"
+        >
+          <span className="flex min-w-0 flex-1 items-center gap-2.5">
+            <span className="shrink-0 text-primary"><ServerCog className="h-3.5 w-3.5" /></span>
+            <span className="shrink-0 text-xs font-medium leading-5 tracking-tight text-foreground">{t("self_service_title")}</span>
+            {saved && <Badge className="shrink-0" variant={saved.enabled ? "default" : "muted"}>{t(saved.enabled ? "self_service_on" : "self_service_off")}</Badge>}
+            {!expanded && (
+              <span className="min-w-0 truncate text-xs text-muted-foreground">{t("self_service_description")}</span>
+            )}
+          </span>
+          <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-border bg-card text-muted-foreground">
             {expanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-          </Button>
-        )}
-      </CardHeader>
+          </span>
+        </button>
+      ) : (
+        <CardHeader className="flex-row items-center justify-between gap-3">
+          <div className="flex min-w-0 flex-1 items-center gap-2.5">
+            <span className="shrink-0 text-primary"><ServerCog className="h-3.5 w-3.5" /></span>
+            <CardTitle className="shrink-0">{t("self_service_title")}</CardTitle>
+            {saved && <Badge className="shrink-0" variant={saved.enabled ? "default" : "muted"}>{t(saved.enabled ? "self_service_on" : "self_service_off")}</Badge>}
+          </div>
+        </CardHeader>
+      )}
       {expanded && (
         <>
           <CardContent className="space-y-4">

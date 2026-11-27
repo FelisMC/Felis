@@ -764,7 +764,7 @@ function ScheduleDialog({
                     key={key}
                     type="button"
                     size="sm"
-                    variant={form.weekdays === mask ? "default" : "ghost"}
+                    variant={form.weekdays === mask ? "default" : "outline"}
                     className="h-7"
                     aria-pressed={form.weekdays === mask}
                     onClick={() => set("weekdays", mask)}
@@ -1063,7 +1063,7 @@ function ScheduleRow({
             </Button>
           </Why>
           <Why why={why}>
-            <Button size="sm" variant="ghost" onClick={onEdit} disabled={busy}>
+            <Button size="sm" variant="outline" onClick={onEdit} disabled={busy}>
               <Pencil className="h-3.5 w-3.5" />
               {t("edit")}
             </Button>
@@ -1071,8 +1071,8 @@ function ScheduleRow({
           <Why why={why}>
             <Button
               size="sm"
-              variant="ghost"
-              className="text-destructive hover:text-destructive"
+              variant="outline"
+              className="text-destructive hover:border-destructive/40 hover:bg-destructive/10 hover:text-destructive"
               onClick={onDelete}
               disabled={busy}
             >

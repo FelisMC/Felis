@@ -1,5 +1,5 @@
 import { useId, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
   BookOpen,
   DoorOpen,
@@ -516,8 +516,8 @@ export function ServersPage() {
           ) : (
             <>
               <Card className="overflow-hidden">
-                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 px-3.5 py-2 text-xs text-muted-foreground">
-                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-border/60 px-3.5 py-2 text-xs text-muted-foreground">
+                  <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
                     <span className="font-mono font-medium text-foreground tabular-nums">
                       {visible.length === servers.length
                         ? t("fleet_count", { count: servers.length })
@@ -528,8 +528,8 @@ export function ServersPage() {
                       type="button"
                       onClick={() => { setPhaseFilter(phaseFilter === "Running" ? "all" : "Running"); setPage(1); }}
                       className={cn(
-                        "inline-flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors hover:bg-accent",
-                        phaseFilter === "Running" && "bg-accent font-medium text-foreground",
+                        "inline-flex items-center gap-1 rounded border border-transparent px-1.5 py-0.5 transition-colors hover:bg-accent",
+                        phaseFilter === "Running" && "border-border bg-accent font-medium text-foreground",
                       )}
                     >
                       <span className="h-[5.5px] w-[5.5px] rounded-full" style={{ backgroundColor: PHASE_COLOR.Running }} />
@@ -544,8 +544,8 @@ export function ServersPage() {
                         type="button"
                         onClick={() => { setPhaseFilter(phaseFilter === p ? "all" : p); setPage(1); }}
                         className={cn(
-                          "inline-flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors hover:bg-accent",
-                          phaseFilter === p && "bg-accent font-medium text-foreground",
+                          "inline-flex items-center gap-1 rounded border border-transparent px-1.5 py-0.5 transition-colors hover:bg-accent",
+                          phaseFilter === p && "border-border bg-accent font-medium text-foreground",
                         )}
                       >
                         <span className="h-[5.5px] w-[5.5px] rounded-full" style={{ backgroundColor: PHASE_COLOR[p] }} />
@@ -556,7 +556,10 @@ export function ServersPage() {
                     {stats.playersMax > 0 && (
                       <>
                         <span className="text-border">·</span>
-                        <span className="font-mono tabular-nums">{stats.playersOnline} / {stats.playersMax}</span>
+                        <span className="inline-flex items-center gap-1 font-mono tabular-nums">
+                          <Users className="h-3 w-3 opacity-75" />
+                          {stats.playersOnline} / {stats.playersMax}
+                        </span>
                       </>
                     )}
                   </div>
@@ -646,12 +649,12 @@ export function ServersPage() {
                                 onChange={(e) => select(pageRows.map((s) => s.name), e.target.checked)}
                               />
                             </th>
-                            <th className="px-2.5 py-2 font-normal">{t("fleet_col_server")}</th>
-                            <th className="w-[1%] px-2.5 py-2 font-normal">{t("fleet_col_status")}</th>
-                            {isAdmin && <th className="w-[1%] px-2.5 py-2 font-normal">{t("fleet_col_owner")}</th>}
-                            <th className="w-[1%] px-2.5 py-2 font-normal">{t("fleet_col_players")}</th>
-                            <th className="w-[1%] px-2.5 py-2 font-normal">{t("servers:usage_cpu")} / {t("servers:usage_memory")}</th>
-                            {isAdmin && <th className="w-[1%] px-2.5 py-2 font-normal">{t("fleet_col_endpoint")}</th>}
+                            <th className="px-2 py-2 font-normal">{t("fleet_col_server")}</th>
+                            <th className="w-[1%] px-2 py-2 font-normal">{t("fleet_col_status")}</th>
+                            {isAdmin && <th className="w-[1%] px-2 py-2 font-normal">{t("fleet_col_owner")}</th>}
+                            <th className="w-[1%] px-2 py-2 font-normal">{t("fleet_col_players")}</th>
+                            <th className={cn("w-[1%] px-2 py-2 font-normal", isAdmin && "hidden xl:table-cell")}>{t("servers:usage_cpu")} / {t("servers:usage_memory")}</th>
+                            {isAdmin && <th className="hidden w-[1%] px-2 py-2 font-normal xl:table-cell">{t("fleet_col_endpoint")}</th>}
                             <th className="w-[1%] px-3 py-2 text-right font-normal">
                               {t("fleet_col_actions")}
                             </th>
@@ -740,10 +743,16 @@ function ServerActions({
 
   // Unclaimed servers expose claim only, except administrators retain wake and console access.
   const claimable = server.claimable && !server.owned;
+  const manyActions = claimable && isAdmin && startFailure(server) !== null;
 
   return (
     <div className={cn("flex flex-col items-end gap-1", className)}>
-      <div className="flex flex-wrap items-center justify-end gap-1 [&_button]:h-6 [&_button]:px-2 [&_button]:text-[11px]">
+      <div
+        className={cn(
+          "flex items-center justify-end gap-1 [&_button]:h-6 [&_button]:px-2 [&_button]:text-[11px]",
+          manyActions ? "max-w-[14rem] flex-wrap" : "flex-nowrap",
+        )}
+      >
         {isAdmin && cfg?.distributed && <MigrationDialog name={server.name} nodeName={server.nodeName} stopped={server.phase === "Stopped" && !server.ready && server.desiredState === "Stopped" && !server.retiring} onChanged={onChanged} />}
         {claimable && (
           <>
@@ -825,7 +834,7 @@ function OwnerLabel({ server }: { server: UnifiedServer }) {
   }
   if (server.owner) {
     return (
-      <span className="inline-flex min-w-0 max-w-[7rem] items-center gap-1">
+      <span className="inline-flex min-w-0 max-w-[5.75rem] xl:max-w-[6.75rem] items-center gap-1">
         <UserRound className="h-3 w-3 shrink-0 text-muted-foreground" />
         {server.owned && (
           <span className="shrink-0 rounded border border-border px-1 text-[10px] font-medium leading-4 text-foreground">
@@ -893,7 +902,7 @@ function TagChips({ tags, inline = false }: { tags?: string[]; inline?: boolean 
   const { t } = useTranslation("servers");
   if (!tags?.length) return null;
   return (
-    <ul aria-label={t("tags_label")} className={cn("flex flex-wrap gap-1", !inline && "mt-1")}>
+    <ul aria-label={t("tags_label")} className={cn("flex shrink-0 flex-wrap gap-1", !inline && "mt-1")}>
       {tags.map((tag) => (
         <li
           key={tag}
@@ -931,19 +940,19 @@ function ServerRow({
       <td className="w-7 py-2.5 pl-3 pr-0 align-middle">
         <RowSelect server={server} select={select} />
       </td>
-      <td className="px-2.5 py-2.5 text-left align-middle">
-        <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
-          <ServerName server={server} />
+      <td className="px-2 py-2.5 text-left align-middle">
+        <div className="flex min-w-0 max-w-[12.5rem] items-center gap-x-1.5 gap-y-0.5 xl:max-w-[17rem]">
+          <ServerName server={server} isAdmin={isAdmin} compactSlug={isAdmin} />
           <TagChips tags={server.tags} inline />
         </div>
         {address && (
           <CopyAddress
             address={address}
-            className={cn("mt-0.5 flex-nowrap", isAdmin ? "max-w-[13.5rem]" : "max-w-[22rem]")}
+            className={cn("mt-0.5 flex-nowrap", isAdmin ? "max-w-[10.5rem] xl:max-w-[13rem]" : "max-w-[20rem]")}
           />
         )}
       </td>
-      <td className="whitespace-nowrap px-2.5 py-2.5 text-left align-middle">
+      <td className="whitespace-nowrap px-2 py-2.5 text-left align-middle">
         <PhaseBadge phase={shownPhase(server)} failure={startFailure(server)} autoRestarts={server.autoRestarts} />
         {server.autostartPolicy && (
           <div className="mt-0.5 text-[10.5px] text-muted-foreground/80">
@@ -952,14 +961,14 @@ function ServerRow({
         )}
       </td>
       {isAdmin && (
-        <td className="whitespace-nowrap px-2.5 py-2.5 text-left align-middle text-muted-foreground">
+        <td className="whitespace-nowrap px-2 py-2.5 text-left align-middle text-muted-foreground">
           <OwnerLabel server={server} />
         </td>
       )}
-      <td className="whitespace-nowrap px-2.5 py-2.5 text-left align-middle font-mono">
+      <td className="whitespace-nowrap px-2 py-2.5 text-left align-middle font-mono">
         <PlayersLabel server={server} />
       </td>
-      <td className="whitespace-nowrap px-2.5 py-2.5 font-mono text-muted-foreground tabular-nums">
+      <td className={cn("whitespace-nowrap px-2 py-2.5 font-mono text-muted-foreground tabular-nums", isAdmin && "hidden xl:table-cell")}>
         {cpu === "—" && mem === "—" ? (
           "—"
         ) : (
@@ -970,12 +979,12 @@ function ServerRow({
         )}
       </td>
       {isAdmin && (
-        <td className="whitespace-nowrap px-2.5 py-2.5 text-left align-middle">
+        <td className="hidden whitespace-nowrap px-2 py-2.5 text-left align-middle xl:table-cell">
           <EndpointLabel server={server} />
         </td>
       )}
-      <td className="px-3 py-2.5 align-middle">
-        <ServerActions server={server} isAdmin={isAdmin} onChanged={onChanged} className="min-w-[9.5rem]" />
+      <td className="whitespace-nowrap px-3 py-2.5 align-middle">
+        <ServerActions server={server} isAdmin={isAdmin} onChanged={onChanged} />
       </td>
     </tr>
   );
@@ -1009,7 +1018,7 @@ function ServerMobileCard({
               <div className="flex min-w-0 items-center gap-2">
                 <RowSelect server={server} select={select} />
                 <div className="flex min-w-0 items-baseline gap-2">
-                  <ServerName server={server} />
+                  <ServerName server={server} isAdmin={isAdmin} />
                 </div>
               </div>
               <PhaseBadge phase={shownPhase(server)} failure={startFailure(server)} autoRestarts={server.autoRestarts} />
@@ -1160,13 +1169,34 @@ export default ServersPage;
 
 /** ServerName leads with the display name and keeps the server name beside it,
  *  since the name is what the URL, the console and the subdomain use. */
-function ServerName({ server }: { server: UnifiedServer }) {
+function ServerName({
+  server,
+  isAdmin,
+  compactSlug = false,
+}: {
+  server: UnifiedServer;
+  isAdmin: boolean;
+  compactSlug?: boolean;
+}) {
+  const navigate = useNavigate();
   const label = server.displayName || server.name;
+  const clickable = !server.system && (server.owned || isAdmin);
   return (
     <>
-      <span className="truncate font-medium text-foreground">{label}</span>
+      {clickable ? (
+        <span
+          onClick={() => navigate(`/servers/${server.name}`)}
+          className="cursor-pointer truncate font-medium text-foreground transition-colors hover:text-primary hover:underline"
+        >
+          {label}
+        </span>
+      ) : (
+        <span className="truncate font-medium text-foreground">{label}</span>
+      )}
       {label !== server.name && (
-        <span className="truncate font-mono text-xs text-muted-foreground">{server.name}</span>
+        <span className={cn("truncate font-mono text-xs text-muted-foreground", compactSlug && "hidden xl:inline")}>
+          {server.name}
+        </span>
       )}
     </>
   );

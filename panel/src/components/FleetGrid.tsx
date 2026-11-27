@@ -35,7 +35,7 @@ export function FleetGrid({
                 title={label}
                 aria-label={label}
                 className={cn(
-                  "h-5 w-5 rounded-[4px] transition-transform hover:scale-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  "h-4 w-4 rounded-[3.5px] ring-1 ring-inset ring-black/10 transition-transform hover:scale-110 hover:ring-foreground/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:ring-white/10",
                   TRANSIENT.has(phase) && "animate-pulse",
                 )}
                 style={{ backgroundColor: color }}

@@ -78,7 +78,7 @@ export function WorldBackupCard() {
                   onClick={() => setChosen((list) => [...new Set([...list, ...shown.map((s) => s.name)])])}>
                   {t("world_backup_select_shown")}
                 </Button>
-                <Button type="button" variant="ghost" size="sm" disabled={host.busy || chosen.length === 0} onClick={() => setChosen([])}>
+                <Button type="button" variant="outline" size="sm" disabled={host.busy || chosen.length === 0} onClick={() => setChosen([])}>
                   {t("world_backup_clear")}
                 </Button>
                 <span role="status" className="ml-auto text-xs text-muted-foreground">{t("world_backup_selected", { count: chosen.length, total: servers.length })}</span>

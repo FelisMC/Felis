@@ -128,13 +128,13 @@ export function AccountAPITokensCard() {
                 </div>
                 <Button
                   size="sm"
-                  variant="ghost"
+                  variant="outline"
                   onClick={() => {
                     setMessage(null);
                     setRevokeTarget(token);
                   }}
                   aria-label={t("api_token_revoke_aria", { name: token.name })}
-                  className="shrink-0 text-muted-foreground hover:text-destructive"
+                  className="shrink-0 text-muted-foreground hover:border-destructive/40 hover:bg-destructive/10 hover:text-destructive"
                 >
                   <Trash2 className="h-4 w-4" />
                   <span className="hidden sm:inline">{t("api_token_revoke")}</span>

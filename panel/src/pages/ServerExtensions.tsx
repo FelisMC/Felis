@@ -141,25 +141,25 @@ function InstalledExtensions({ name }: { name: string }) {
       <NotYours title={t("extensions_not_yours_title")} body={t("extensions_not_yours_body")} /> :
       <div className="space-y-4">
         {status.error != null && <RefreshError error={status.error} />}
-        {live && <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Info className="h-4 w-4 shrink-0" aria-hidden="true" />{t("extensions_restart_hint")}
+        {live && <p role="status" className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Info className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />{t("extensions_restart_hint")}
         </p>}
         {message && <MessageLine kind={message.kind} message={message.text} />}
         {!accessible ? <EmptyState title={t("files:stopped_required_title")} hint={t("files:stopped_required_body")} /> :
-          <Card><CardContent className="p-0">
-            <div className="flex flex-wrap items-center gap-2 border-b border-border p-4">
+          <Card className="overflow-hidden"><CardContent className="p-0">
+            <div className="flex flex-wrap items-center gap-2 border-b border-border/60 px-3.5 py-2.5">
               <Select value={target} onValueChange={(value) => setTarget(value as "plugins" | "mods")} disabled={busy}>
                 <SelectTrigger aria-label={t("extensions_upload_target")} className="w-40"><SelectValue /></SelectTrigger>
                 <SelectContent><SelectItem value="plugins">{t("extensions_plugins")}</SelectItem><SelectItem value="mods">{t("extensions_mods")}</SelectItem></SelectContent>
               </Select>
               <Button variant="outline" disabled={busy} onClick={pickFiles}>
-                <Upload className="h-4 w-4" />{t("extensions_upload")}
+                <Upload className="h-3.5 w-3.5" />{t("extensions_upload")}
               </Button>
               <input ref={input} data-testid="extension-upload-input" type="file" accept=".jar" multiple hidden
                 onChange={(event) => { add(Array.from(event.target.files ?? [])); event.target.value = ""; }} />
-              <Button variant="ghost" className="ml-auto" disabled={busy || listing.loading} onClick={() => { listing.reload(); world.reload(); jobs.refresh(); fileOps.refresh(); }}
+              <Button variant="outline" size="icon" className="ml-auto" disabled={busy || listing.loading} onClick={() => { listing.reload(); world.reload(); jobs.refresh(); fileOps.refresh(); }}
                 aria-label={t("extensions_refresh")}>
-                {listing.loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                {listing.loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
               </Button>
             </div>
             {jobs.holder && <p role="status" className="border-b border-border px-4 py-3 text-sm text-muted-foreground">{t(`files:${holderText(jobs.holder)}`)}</p>}
@@ -170,34 +170,34 @@ function InstalledExtensions({ name }: { name: string }) {
               <ErrorState error={listing.error} onRetry={listing.reload} /> : <>
                 {listing.error != null && <div className="p-4"><RefreshError error={listing.error} /></div>}
                 {entries.length === 0 ? <div className="p-4"><EmptyState title={t("extensions_empty_title")} hint={t("extensions_empty_hint")} /></div> :
-                  <div className="divide-y divide-border">{entries.map((entry) => <article key={entry.path} aria-label={entry.filename} className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_auto]">
-                    <div className="min-w-0 space-y-3">
-                      <div className="flex flex-wrap items-center gap-2">
+                  <div className="divide-y divide-border/50">{entries.map((entry) => <article key={entry.path} aria-label={entry.filename} className="grid gap-3 px-3.5 py-3 lg:grid-cols-[minmax(0,1fr)_auto]">
+                    <div className="min-w-0 space-y-2">
+                      <div className="flex flex-wrap items-center gap-1.5">
                         <Badge variant="outline">{t(entry.kind === "plugin" ? "extensions_plugin" : "extensions_mod")}</Badge>
                         <Badge variant={entry.enabled ? "default" : "outline"}>{t(entry.enabled ? "extensions_enabled" : "extensions_disabled")}</Badge>
                         <span className="break-all font-mono text-xs text-muted-foreground">{entry.filename}</span>
-                        <span className="text-xs tabular-nums text-muted-foreground">{formatBytes(entry.size)}</span>
+                        <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{formatBytes(entry.size)}</span>
                       </div>
-                      {entry.metadata_status === "unavailable" ? <p className="text-sm text-amber-700 dark:text-amber-300">{t("extensions_metadata_unavailable")}</p> :
-                        <ul className="grid gap-3">{entry.metadata.map((item, index) => <li key={`${item.id}:${index}`} className="min-w-0">
-                          <p className="flex flex-wrap items-baseline gap-x-2"><span className="break-all text-sm font-medium">{item.name}</span>
+                      {entry.metadata_status === "unavailable" ? <p className="text-xs text-amber-700 dark:text-amber-300">{t("extensions_metadata_unavailable")}</p> :
+                        <ul className="grid gap-2">{entry.metadata.map((item, index) => <li key={`${item.id}:${index}`} className="min-w-0">
+                          <p className="flex flex-wrap items-baseline gap-x-2"><span className="break-all text-[13px] font-medium text-foreground">{item.name}</span>
                             {item.id !== item.name && <span className="break-all font-mono text-xs text-muted-foreground">{item.id}</span>}
                             <span className="break-all text-xs text-muted-foreground">{t("extensions_version", { version: item.version || t("extensions_unknown") })}</span>
                           </p>
-                          <dl className="mt-1 grid gap-1 text-xs text-muted-foreground sm:grid-cols-2">
+                          <dl className="mt-1 flex flex-wrap gap-x-5 gap-y-0.5 text-xs text-muted-foreground">
                             <div className="flex min-w-0 gap-1"><dt>{t("extensions_authors")}</dt><dd className="min-w-0 break-all">{[...new Set(item.authors)].join(", ") || t("extensions_unknown")}</dd></div>
                             <div className="flex min-w-0 gap-1"><dt>{t("extensions_loaders")}</dt><dd className="min-w-0 break-all">{[...new Set(item.loaders.map((loader) => LOADER_LABELS[loader] ?? loader))].join(", ") || t("extensions_unknown")}</dd></div>
                           </dl>
                         </li>)}</ul>}
                     </div>
-                    <div className="flex flex-wrap items-start gap-2">
+                    <div className="flex flex-wrap items-start gap-1.5">
                       {entry.config_path && <Button asChild variant="outline" size="sm"><Link to={`/servers/${name}/files?path=${encodeURIComponent(entry.config_path)}`}>
                         <FolderOpen className="h-3.5 w-3.5" />{t("extensions_config")}</Link></Button>}
                       <Button variant="outline" size="sm" disabled={busy} onClick={() => void toggle(entry)}>
                         {changing === entry.path && <Loader2 className="h-3.5 w-3.5 animate-spin" />}{t(entry.enabled ? "extensions_disable" : "extensions_enable")}
                       </Button>
-                      <Button variant="ghost" size="sm" disabled={busy} onClick={() => { setMessage(null); setDeleting(entry); }} aria-label={t("extensions_delete_item", { filename: entry.filename })}>
-                        <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:border-destructive/30 hover:bg-destructive/10 hover:text-destructive" disabled={busy} onClick={() => { setMessage(null); setDeleting(entry); }} aria-label={t("extensions_delete_item", { filename: entry.filename })}>
+                        <Trash2 className="h-3.5 w-3.5" />
                       </Button>
                     </div>
                   </article>)}</div>}

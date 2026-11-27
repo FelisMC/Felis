@@ -144,7 +144,7 @@ export function PowerButton({
   } else if (failed) {
     // Retry and stop stay side by side: a row of actions that wraps moves them as one.
     control = (
-      <div className="flex items-center justify-end gap-1.5">
+      <div className={cn("flex items-center justify-end", quiet ? "gap-1" : "gap-1.5")}>
         <Button size={size} variant={wakeVariant} className={wakeClass} onClick={() => void run("wake")} disabled={busy !== null || diskFull}>
           {busy === "wake" ? spinner : <RotateCcw />}
           {busy === "wake" ? t("retrying_start") : t("retry_start")}
@@ -161,7 +161,7 @@ export function PowerButton({
     );
   } else if (desiredState === "Hibernated") {
     control = (
-      <div className="flex items-center justify-end gap-1.5">
+      <div className={cn("flex items-center justify-end", quiet ? "gap-1" : "gap-1.5")}>
         {!stopOnly && (
           <Button size={size} variant={wakeVariant} className={wakeClass} onClick={() => void run("wake")} disabled={busy !== null || diskFull}>
             {busy === "wake" ? spinner : <Play />}

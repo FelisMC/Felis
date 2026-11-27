@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ConfirmFooter } from "@/components/ConfirmFooter";
 import { MessageLine, InlineError } from "@/components/MessageLine";
@@ -45,7 +45,7 @@ import type { BackupView, ServerJob } from "@/lib/types";
 
 const BACKUP_PAGE_SIZE = 20;
 
-const CELL = "whitespace-nowrap md:px-4 md:py-3.5";
+const CELL = "whitespace-nowrap md:px-3.5 md:py-2.5";
 
 /** `isLatest` marks the backup a restore with no pick recovers: the newest non-corrupt one. */
 function BackupRow({
@@ -91,18 +91,18 @@ function BackupRow({
       : t("reason_label", { reason: b.reason });
 
   return (
-    <tr className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 transition-colors hover:bg-muted/30 md:table-row md:p-0">
-      <td className="w-full md:w-auto md:px-4 md:py-3 md:whitespace-nowrap">
+    <tr className="flex flex-wrap items-center gap-x-4 gap-y-2 px-3.5 py-2.5 transition-colors hover:bg-accent/40 md:table-row md:p-0">
+      <td className="w-full md:w-auto md:px-3.5 md:py-2.5 md:whitespace-nowrap">
         <div className="flex flex-col gap-0.5">
           <div className="flex items-center gap-2">
             <span
-              className="font-medium text-foreground text-sm"
+              className="text-xs font-medium text-foreground"
               title={formatAbsolute(b.created_at, locale)}
             >
               {formatRelative(b.created_at, now, locale)}
             </span>
             {isLatest && (
-              <span className="inline-flex items-center rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-500 ring-1 ring-inset ring-emerald-500/20">
+              <span className="inline-flex items-center rounded border border-primary/25 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-primary">
                 {t("latest_title")}
               </span>
             )}
@@ -151,7 +151,7 @@ function BackupRow({
                 now={now}
                 locale={locale}
                 onReloadStatus={onReloadStatus}
-                buttonVariant={isLatest ? "destructive" : "outline"}
+                buttonVariant="outline"
               />
               <DownloadBackupButton id={b.id} exporting={exporting} onExport={onExport} />
             </>
@@ -203,7 +203,7 @@ function DownloadBackupButton({
       <Button
         variant="ghost"
         size="icon"
-        className="h-8 w-8 text-muted-foreground hover:bg-primary/10 hover:text-primary"
+        className="h-7 w-7 text-muted-foreground hover:border-primary/30 hover:bg-primary/10 hover:text-primary"
         onClick={() => onExport({ kind: "backup", id })}
         disabled={exporting !== null}
         aria-label={t("download_btn")}
@@ -256,7 +256,7 @@ function DeleteBackupButton({
         <Button
           variant="ghost"
           size="icon"
-          className="h-8 w-8 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+          className="h-7 w-7 text-muted-foreground hover:border-destructive/30 hover:bg-destructive/10 hover:text-destructive"
           onClick={() => setOpen(true)}
           disabled={busy}
           aria-label={t("delete_btn")}
@@ -476,8 +476,12 @@ function RestoreControls({
 
   const trigger = (
     <DialogTrigger asChild>
-      <Button variant={buttonVariant} size="sm">
-        <RotateCcw className="h-4 w-4" /> {t("restore_btn_short")}
+      <Button
+        variant={buttonVariant}
+        size="sm"
+        className={buttonVariant === "outline" ? "hover:border-destructive/40 hover:text-destructive" : undefined}
+      >
+        <RotateCcw className="h-3.5 w-3.5" /> {t("restore_btn_short")}
       </Button>
     </DialogTrigger>
   );
@@ -800,7 +804,7 @@ export function ServerBackups() {
             </div>
           )}
           {backupMsg && <MessageLine kind={backupMsg.kind} message={backupMsg.text} />}
-          <p className="text-sm text-muted-foreground">{t("subtitle")}</p>
+          <p className="text-xs text-muted-foreground">{t("subtitle")}</p>
           {backupsQ.loading && !backupsQ.data ? (
             <Loading />
           ) : backupsQ.error ? (
@@ -811,17 +815,17 @@ export function ServerBackups() {
             <>
               <Card className="overflow-hidden">
                 <div className="overflow-x-auto">
-                  <table className="block w-full border-collapse text-sm md:table">
+                  <table className="block w-full border-collapse text-xs md:table">
                     <thead className="hidden md:table-header-group">
-                      <tr className="border-b border-border bg-muted/40 text-left text-[11px] uppercase tracking-wider text-muted-foreground">
-                        <th className="px-4 py-2.5 font-medium">{t("col_created")}</th>
-                        <th className="px-4 py-2.5 font-medium">{t("col_size")}</th>
-                        <th className="px-4 py-2.5 font-medium">{t("col_expires")}</th>
-                        {isAdmin && <th className="px-4 py-2.5 font-medium">{t("col_owner")}</th>}
-                        <th className="px-4 py-2.5 text-right font-medium">{t("col_actions")}</th>
+                      <tr className="border-b border-border/60 bg-muted text-left text-[11px] text-muted-foreground">
+                        <th className="px-3.5 py-2 font-normal">{t("col_created")}</th>
+                        <th className="px-3.5 py-2 font-normal">{t("col_size")}</th>
+                        <th className="px-3.5 py-2 font-normal">{t("col_expires")}</th>
+                        {isAdmin && <th className="px-3.5 py-2 font-normal">{t("col_owner")}</th>}
+                        <th className="px-3.5 py-2 text-right font-normal">{t("col_actions")}</th>
                       </tr>
                     </thead>
-                    <tbody className="block divide-y divide-border md:table-row-group">
+                    <tbody className="block divide-y divide-border/50 md:table-row-group">
                       {all.map((b) => (
                         <BackupRow
                           key={b.id}
@@ -864,15 +868,15 @@ export function ServerBackups() {
             <ErrorState error={jobsQ.error} onRetry={jobsQ.reload} />
           ) : (
             <Card className="overflow-hidden">
-              <CardContent>
-                <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                  <Clock className="h-3.5 w-3.5" />
-                  {t("jobs_title")}
-                </div>
+              <CardHeader className="flex-row items-center gap-2">
+                <Clock className="h-3.5 w-3.5 text-muted-foreground" />
+                <CardTitle>{t("jobs_title")}</CardTitle>
+              </CardHeader>
+              <CardContent className="py-2.5">
                 {(jobsQ.data ?? []).length === 0 ? (
-                  <p className="mt-2 text-xs text-muted-foreground">{t("jobs_empty")}</p>
+                  <p className="py-1 text-xs text-muted-foreground">{t("jobs_empty")}</p>
                 ) : (
-                  <ul className="mt-2 divide-y divide-border">
+                  <ul className="divide-y divide-border/50">
                     {(jobsQ.data ?? []).map((j) => {
                       const at = j.started_at || j.finished_at;
                       return (

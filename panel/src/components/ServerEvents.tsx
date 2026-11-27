@@ -69,21 +69,21 @@ export function RecoveryNotice({ data }: { data: ServerStatus }) {
       : t("autostop_host_body", { when: when(stop.at) });
     return (
       <div role="status" aria-labelledby={titleId}
-        className="flex shrink-0 items-start gap-3 rounded-lg border border-red-500/40 bg-red-500/10 p-4 text-sm">
-        <PowerOff className="mt-0.5 h-5 w-5 shrink-0 text-red-600 dark:text-red-400" />
-        <div className="min-w-0 space-y-1">
+        className="flex shrink-0 items-start gap-2.5 rounded-lg border border-destructive/35 bg-destructive/10 px-3.5 py-2.5 text-xs">
+        <PowerOff className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+        <div className="min-w-0 space-y-0.5">
           <p id={titleId} className="font-medium text-foreground">{title}</p>
           <p className="text-muted-foreground" title={formatAbsolute(at, i18n.language)}>{body}</p>
-          <p className="text-xs text-muted-foreground">{t(disk ? (data.diskFull ? "disk_full_blocked" : "autostop_disk_next") : crashed ? "autostop_crash_next" : "autostop_host_next")}</p>
+          <p className="text-[11px] text-muted-foreground">{t(disk ? (data.diskFull ? "disk_full_blocked" : "autostop_disk_next") : crashed ? "autostop_crash_next" : "autostop_host_next")}</p>
         </div>
       </div>
     );
   }
   if (data.phase === "Running" && data.recentCrashes && crash) {
     return (
-      <div role="status" className="flex shrink-0 items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm">
-        <RotateCcw className="mt-0.5 h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
-        <p className="text-muted-foreground" title={formatAbsolute(crash.at, i18n.language)}>
+      <div role="status" className="flex shrink-0 items-center gap-2.5 rounded-lg border border-amber-500/35 bg-amber-500/10 px-3.5 py-2 text-xs">
+        <RotateCcw className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+        <p className="text-foreground/85" title={formatAbsolute(crash.at, i18n.language)}>
           {t(data.restartOnCrash ? "recent_crashes" : "recent_crashes_any", {
             n: data.recentCrashes,
             max: data.maxCrashRestarts,

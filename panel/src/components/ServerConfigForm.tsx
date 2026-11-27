@@ -767,7 +767,7 @@ export function ServerConfigForm({
                   {!currentSoftware && <EulaCheckbox checked={eula} onChange={setEula} />}
                   {(currentSoftware || !admin) && (
                     <Button
-                      variant="ghost"
+                      variant="outline"
                       size="sm"
                       className="justify-self-start"
                       onClick={() => { setChangingSoftware(false); setSoftware(choiceOf(currentSoftware)); if (!currentSoftware) setSource("image"); }}
@@ -1130,7 +1130,7 @@ export function ServerConfigForm({
               {error ? <InlineError message={error} /> : <span className="text-muted-foreground">{t("settings_unsaved")}</span>}
             </div>
             <div className="flex gap-2">
-              <Button type="button" variant="ghost" disabled={submitting} onClick={discard}>{t("settings_discard")}</Button>
+              <Button type="button" variant="outline" disabled={submitting} onClick={discard}>{t("settings_discard")}</Button>
               <Button type="button" disabled={!canSubmit} onClick={() => void submit()}>
                 {submitting && <Loader2 className="h-4 w-4 animate-spin" />}{t("edit_server_submit")}
               </Button>

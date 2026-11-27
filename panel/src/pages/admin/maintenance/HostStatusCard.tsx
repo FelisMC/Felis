@@ -24,7 +24,7 @@ function UsageBar({ used, total, label, icon: Icon, mono = false }: { used: numb
         <span className="flex min-w-0 items-center gap-2"><Icon className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" /><span className={cn("truncate text-xs", mono && "font-mono")}>{label}</span></span>
         <span className="shrink-0 text-xs text-muted-foreground">{t("host_usage", { free: formatBytes(total - used), total: formatBytes(total) })}</span>
       </div>
-      <div className="h-2 overflow-hidden rounded-full bg-muted" role="meter" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(share * 100)}>
+      <div className="h-1.5 overflow-hidden rounded-full bg-secondary" role="meter" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(share * 100)}>
         <div className={cn("h-full rounded-full", tone)} style={{ width: `${Math.round(share * 100)}%` }} />
       </div>
     </div>
@@ -122,7 +122,7 @@ export function HostStatusCard({ overview }: { overview: AsyncState<HostOverview
                     {a.hint && <p className="text-xs leading-relaxed text-muted-foreground">{a.hint}</p>}
                   </div>
                   {data.ignored && (
-                    <Button variant="ghost" size="sm" className="shrink-0" disabled={ignoring !== null} aria-label={t("host_alert_ignore_label", { key: a.key })} onClick={() => void setIgnored(a.key, true)}>
+                    <Button variant="outline" size="sm" className="shrink-0" disabled={ignoring !== null} aria-label={t("host_alert_ignore_label", { key: a.key })} onClick={() => void setIgnored(a.key, true)}>
                       {ignoring === a.key ? <Loader2 className="animate-spin" /> : <EyeOff />}{t("host_alert_ignore")}
                     </Button>
                   )}

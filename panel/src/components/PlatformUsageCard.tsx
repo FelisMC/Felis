@@ -71,12 +71,12 @@ export function PlatformUsageCard({ distributed }: { distributed: boolean }) {
                 tone={data.loginFailures24h > 0 ? "warn" : undefined}
                 className="sm:border-l sm:border-t sm:border-border/60 xl:border-l-0 xl:border-t-0"
               >
-                <div className="flex flex-col gap-2 text-[11px] text-muted-foreground">
-                  <p>{t("platform_login_failures_hint")}</p>
+                <div className="flex flex-col gap-1.5 text-[11px] text-muted-foreground">
+                  <p className="leading-snug">{t("platform_login_failures_hint")}</p>
                   {isOwner && (
                     <Link
                       to="/admin/audit"
-                      className="inline-flex h-6 w-fit items-center gap-1 rounded-md border border-border bg-background px-2 font-medium text-foreground transition-colors hover:border-muted-foreground/30 hover:bg-accent/70"
+                      className="inline-flex h-6 w-fit items-center gap-1 rounded-md border border-border bg-card px-2 font-medium text-foreground transition-colors hover:border-muted-foreground/30 hover:bg-accent/70"
                     >
                       {t("platform_view_audit")}
                       <ArrowRight className="h-3 w-3" aria-hidden="true" />

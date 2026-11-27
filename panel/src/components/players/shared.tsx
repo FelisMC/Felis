@@ -103,8 +103,8 @@ export function CollapsibleSection({
   const [open, setOpen] = useState(defaultOpen);
   const contentId = useId();
   return (
-    <Card>
-      <div className="flex items-center gap-2 p-5">
+    <Card className="overflow-hidden">
+      <div className="flex items-center gap-2 px-3.5 py-2.5 transition-colors hover:bg-accent/30">
         <button
           type="button"
           onClick={() => setOpen((o) => !o)}
@@ -114,19 +114,19 @@ export function CollapsibleSection({
         >
           <ChevronRight
             className={cn(
-              "h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200 ease-out group-hover:text-foreground motion-reduce:transition-none",
+              "h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-200 ease-out group-hover:text-foreground motion-reduce:transition-none",
               open && "rotate-90",
             )}
           />
-          {icon}
-          <span className="truncate text-base font-semibold tracking-tight">{title}</span>
+          <span className="shrink-0 text-muted-foreground group-hover:text-foreground">{icon}</span>
+          <span className="truncate text-[13px] font-semibold tracking-tight">{title}</span>
           {count != null && (
-            <Badge variant="muted" className="font-normal tabular-nums">
+            <Badge variant="muted" className="font-mono font-normal tabular-nums">
               {count}
             </Badge>
           )}
         </button>
-        {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
+        {actions && <div className="flex shrink-0 items-center gap-1.5">{actions}</div>}
       </div>
       {/* Expand / collapse animates the body's real height. The trick is the
           grid-rows 0fr↔1fr transition: it is the one pure-CSS way to ease to an
@@ -156,7 +156,7 @@ export function CollapsibleSection({
           <div
             id={contentId}
             className={cn(
-              "p-5 pt-0 transition-opacity duration-200 ease-out motion-reduce:transition-none",
+              "border-t border-border/50 px-3.5 py-3.5 transition-opacity duration-200 ease-out motion-reduce:transition-none",
               open ? "opacity-100" : "opacity-0",
             )}
           >
@@ -226,7 +226,7 @@ export function SearchBox({
         placeholder={t("access_search_placeholder")}
         autoComplete="off"
         spellCheck={false}
-        className="pl-8 text-sm"
+        className="pl-8"
       />
     </div>
   );
@@ -258,21 +258,21 @@ export function PagerFooter({
       {pageCount > 1 && (
         <div className="flex items-center gap-1">
           <Button
-            variant="ghost"
+            variant="outline"
             size="sm"
             className="h-7 px-2"
             onClick={() => onPage(clampedPage - 1)}
             disabled={clampedPage === 0}
             aria-label={t("access_page_prev")}
           >
-            <ChevronLeft className="h-4 w-4" />
+            <ChevronLeft className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">{t("access_page_prev")}</span>
           </Button>
-          <span className="min-w-[4.5rem] text-center tabular-nums">
+          <span className="min-w-[4.5rem] text-center font-mono text-[11px] tabular-nums">
             {t("access_page_indicator", { page: clampedPage + 1, pages: pageCount })}
           </span>
           <Button
-            variant="ghost"
+            variant="outline"
             size="sm"
             className="h-7 px-2"
             onClick={() => onPage(clampedPage + 1)}
@@ -280,7 +280,7 @@ export function PagerFooter({
             aria-label={t("access_page_next")}
           >
             <span className="hidden sm:inline">{t("access_page_next")}</span>
-            <ChevronRight className="h-4 w-4" />
+            <ChevronRight className="h-3.5 w-3.5" />
           </Button>
         </div>
       )}

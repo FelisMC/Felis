@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 export function TabHeader({ description, actions }: { description?: ReactNode; actions?: ReactNode }) {
   return (
     <div className={cn("flex-wrap items-center justify-between gap-3", actions ? "flex" : "hidden sm:flex")}>
-      <p className="hidden min-w-0 text-sm text-muted-foreground sm:block">{description}</p>
+      <p className="hidden min-w-0 text-xs text-muted-foreground sm:block">{description}</p>
       {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
     </div>
   );

@@ -95,24 +95,24 @@ export function WhitelistSection({ name, defaultOpen = false }: { name: string; 
       defaultOpen={defaultOpen}
       actions={
         <Button
-          variant="ghost"
+          variant="outline"
           size="icon"
-          className="h-8 w-8 shrink-0 text-muted-foreground"
+          className="h-7 w-7 shrink-0 text-muted-foreground"
           onClick={reload}
           disabled={loading}
           title={t("access_refresh")}
           aria-label={t("access_refresh")}
         >
-          <RotateCw className={loading ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+          <RotateCw className={loading ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
         </Button>
       }
     >
-      <div className="space-y-4">
-        <p className="text-sm text-muted-foreground">{t("access_whitelist_desc")}</p>
+      <div className="space-y-3">
+        <p className="text-xs text-muted-foreground">{t("access_whitelist_desc")}</p>
 
         {/* Add row — the primary action, kept at the top so it is always in reach. */}
         <div className="space-y-2">
-          <div className="flex items-start gap-2">
+          <div className="flex items-center gap-2">
             <div className="flex-1">
               <PlayerField
                 value={value}
@@ -122,11 +122,11 @@ export function WhitelistSection({ name, defaultOpen = false }: { name: string; 
                 disabled={adding}
               />
             </div>
-            <Button size="sm" className="h-9" onClick={add} disabled={!valid || adding}>
+            <Button size="default" onClick={add} disabled={!valid || adding}>
               {adding ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ) : (
-                <Plus className="h-4 w-4" />
+                <Plus className="h-3.5 w-3.5" />
               )}
               {t("access_whitelist_add")}
             </Button>
@@ -151,7 +151,7 @@ export function WhitelistSection({ name, defaultOpen = false }: { name: string; 
           <div className={cn("space-y-2 transition-opacity", loading && "opacity-60 pointer-events-none")}>
             {showSearch && <SearchBox value={query} onChange={onQuery} />}
 
-            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
               {shown.length === 0 ? (
                 <div className="col-span-full py-6 text-center text-xs text-muted-foreground">
                   {t("access_search_no_match", { query: query.trim() })}
@@ -160,9 +160,9 @@ export function WhitelistSection({ name, defaultOpen = false }: { name: string; 
                 pageItems.map((p) => (
                   <div
                     key={p}
-                    className="flex items-center justify-between gap-3 rounded-lg border border-border bg-card/25 p-2.5 transition-all hover:border-primary/20 hover:bg-accent/40"
+                    className="flex items-center justify-between gap-3 rounded-md border border-border/80 bg-card px-3 py-2 transition-colors hover:border-muted-foreground/30 hover:bg-accent/40"
                   >
-                    <span className="truncate font-mono text-sm font-medium">{p}</span>
+                    <span className="truncate font-mono text-[13px] font-medium" title={p}>{p}</span>
                     {/* Removal asks once before it fires: one click arms the row (X →
                         取消 / 移除), a second confirms. Recoverable, but a name gone on
                         a single stray tap is exactly the surprise to avoid. */}

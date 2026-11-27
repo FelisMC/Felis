@@ -20,7 +20,7 @@ export interface PageHeaderProps {
 export function PageHeader({ title, subtitle, actions, tabs, back, className }: PageHeaderProps) {
   const host = React.useContext(PageHeaderHostContext);
   const row = (
-    <div className={cn("flex w-full flex-wrap items-end justify-between gap-3", className, host && "my-0")}>
+    <div className={cn("flex w-full flex-wrap items-center justify-between gap-3", className, host && "my-0")}>
       <div className="min-w-0 text-left">
         <h1 className="text-[17px] font-semibold tracking-tight text-foreground">{title}</h1>
         {subtitle && <div className="mt-1 text-xs text-muted-foreground">{subtitle}</div>}

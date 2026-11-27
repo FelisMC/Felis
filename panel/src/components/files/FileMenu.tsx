@@ -31,9 +31,9 @@ export function FileMenu({ name, open, onOpenChange, actions }: {
   return <div className="relative" onBlur={(e) => {
     if (!e.currentTarget.contains(e.relatedTarget) && !menu.current?.contains(e.relatedTarget)) onOpenChange(false);
   }}>
-    <Button ref={trigger} size="sm" variant="ghost" className="h-8 w-8 p-0" aria-label={t("more_item", { name })}
+    <Button ref={trigger} size="sm" variant="ghost" className="h-7 w-7 p-0" aria-label={t("more_item", { name })}
       aria-haspopup="menu" aria-expanded={open} onClick={() => onOpenChange(!open)}>
-      <MoreHorizontal className="h-4 w-4" />
+      <MoreHorizontal className="h-3.5 w-3.5" />
     </Button>
     {open && createPortal(<div ref={menu} role="menu" aria-label={t("more_item", { name })}
       style={{ right: Math.max(8, window.innerWidth - (anchor?.right ?? window.innerWidth - 8)), top, maxHeight: window.innerHeight - top - 8 }}

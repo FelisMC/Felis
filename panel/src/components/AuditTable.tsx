@@ -11,12 +11,12 @@ interface Props {
 // Below md each row is a card: the table elements turn into blocks and the header row is hidden.
 export function AuditTable({ entries, onOpen }: Props) {
   const { t, i18n } = useTranslation("admin");
-  const head = "px-4 py-2 text-[11px] font-medium text-muted-foreground";
-  const cell = "block md:table-cell md:px-4 md:py-2.5";
+  const head = "px-3.5 py-2 text-[11px] font-normal text-muted-foreground";
+  const cell = "block md:table-cell md:px-3.5 md:py-2";
   return (
-    <table className="block w-full text-[13px] md:table">
+    <table className="block w-full text-xs md:table">
       <thead className="hidden md:table-header-group">
-        <tr className="border-b border-border/75 bg-muted/30 text-left">
+        <tr className="border-b border-border/60 bg-muted text-left">
           <th scope="col" className={head}>{t("audit_col_time")}</th>
           <th scope="col" className={head}>{t("audit_col_actor")}</th>
           <th scope="col" className={head}>{t("audit_col_action")}</th>

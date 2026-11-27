@@ -96,26 +96,26 @@ export function BansSection({ name }: { name: string }) {
       count={!loading && !error ? players.length : undefined}
       actions={
         <Button
-          variant="ghost"
+          variant="outline"
           size="icon"
-          className="h-8 w-8 shrink-0 text-muted-foreground"
+          className="h-7 w-7 shrink-0 text-muted-foreground"
           onClick={reload}
           disabled={loading}
           title={t("access_refresh")}
           aria-label={t("access_refresh")}
         >
-          <RotateCw className={loading ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+          <RotateCw className={loading ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
         </Button>
       }
     >
-      <div className="space-y-4">
-        <p className="text-sm text-muted-foreground">{t("access_ban_desc")}</p>
+      <div className="space-y-3">
+        <p className="text-xs text-muted-foreground">{t("access_ban_desc")}</p>
 
         {/* Ban-by-name — the one action whose target isn't already on screen, so it
             is the most guarded: the button arms a full-sentence confirm rather than
             firing, and Enter arms it too (PlayerField.onEnter={arm}). */}
         <div className="space-y-2">
-          <div className="flex items-start gap-2">
+          <div className="flex items-center gap-2">
             <div className="flex-1">
               <PlayerField
                 value={value}
@@ -129,13 +129,12 @@ export function BansSection({ name }: { name: string }) {
               />
             </div>
             <Button
-              size="sm"
+              size="default"
               variant="destructive"
-              className="h-9"
               onClick={arm}
               disabled={!valid || armed || banning}
             >
-              <Ban className="h-4 w-4" />
+              <Ban className="h-3.5 w-3.5" />
               {t("access_ban_btn")}
             </Button>
           </div>
@@ -174,7 +173,7 @@ export function BansSection({ name }: { name: string }) {
           <div className={cn("space-y-2 transition-opacity", loading && "opacity-60 pointer-events-none")}>
             {showSearch && <SearchBox value={query} onChange={onQuery} />}
 
-            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
               {shown.length === 0 ? (
                 <div className="col-span-full py-6 text-center text-xs text-muted-foreground">
                   {t("access_search_no_match", { query: query.trim() })}
@@ -183,11 +182,11 @@ export function BansSection({ name }: { name: string }) {
                 pageItems.map((p) => (
                   <div
                     key={p}
-                    className="flex items-center justify-between gap-3 rounded-lg border border-border bg-card/25 p-2.5 transition-all hover:border-primary/20 hover:bg-accent/40"
+                    className="flex items-center justify-between gap-3 rounded-md border border-border/80 bg-card px-3 py-2 transition-colors hover:border-muted-foreground/30 hover:bg-accent/40"
                   >
                     <span className="flex min-w-0 items-center gap-2">
                       <Ban className="h-3.5 w-3.5 shrink-0 text-destructive/70" />
-                      <span className="truncate font-mono text-sm font-medium text-muted-foreground line-through decoration-destructive/30">{p}</span>
+                      <span className="truncate font-mono text-[13px] font-medium text-muted-foreground line-through decoration-destructive/30" title={p}>{p}</span>
                     </span>
                     {/* Pardon lets a player back in, so it asks once: one tap arms the
                         row (取消 / 解封), a second confirms. Lighter than the ban-by-name

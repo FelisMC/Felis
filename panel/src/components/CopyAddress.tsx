@@ -65,12 +65,12 @@ export function CopyAddress({ address, className }: { address: string; className
         onClick={() => void copy()}
         aria-label={t("copy_address", { address })}
         title={t("copy_address", { address })}
-        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded border border-border/80 bg-card text-foreground/75 transition-colors hover:border-muted-foreground/35 hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded border border-border/80 bg-card text-muted-foreground transition-colors hover:border-muted-foreground/35 hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {state === "copied" ? (
-          <Check className="h-3.5 w-3.5 text-emerald-500" />
+          <Check className="h-3 w-3 text-emerald-500" />
         ) : (
-          <Copy className="h-3.5 w-3.5" />
+          <Copy className="h-3 w-3" />
         )}
       </button>
       <span

@@ -281,12 +281,6 @@ function FleetFocusCard({
             );
           })}
         </div>
-        <Button variant="outline" size="sm" asChild className="h-6 px-2 text-[11px]">
-          <Link to="/servers">
-            {t("dashboard:go_to_servers_btn")}
-            <ArrowRight className="h-3 w-3" />
-          </Link>
-        </Button>
       </CardHeader>
       <CardContent className="p-0">
         {rows.length === 0 ? (
@@ -295,11 +289,11 @@ function FleetFocusCard({
           </p>
         ) : (
           <>
-            <div className="hidden grid-cols-[minmax(0,1fr)_8.5rem_5rem_8.5rem_auto] items-center gap-3 border-b border-border/60 bg-muted px-3.5 py-2 text-[11px] text-muted-foreground sm:grid">
+            <div className="hidden grid-cols-[minmax(0,1fr)_8.25rem_4.25rem_4.75rem] items-center gap-3 border-b border-border/60 bg-muted px-3.5 py-2 text-[11px] text-muted-foreground sm:grid xl:grid-cols-[minmax(0,1fr)_8.25rem_4.25rem_7.5rem_4.75rem]">
               <span>{t("ops:fleet_col_server")}</span>
               <span>{t("ops:fleet_col_status")}</span>
               <span>{t("ops:fleet_col_players")}</span>
-              <span>{t("servers:usage_cpu")} / {t("servers:usage_memory")}</span>
+              <span className="hidden xl:block">{t("servers:usage_cpu")} / {t("servers:usage_memory")}</span>
               <span className="text-right">{t("ops:fleet_col_actions")}</span>
             </div>
             <ul className="divide-y divide-border/50 text-xs">
@@ -311,13 +305,16 @@ function FleetFocusCard({
                 const cpu = cpuUsage(s.cpuMilli, s.cpu);
                 const mem = memoryUsage(s.memoryBytes, s.memory);
                 const resource = cpu !== "—" || mem !== "—" ? `${cpu} · ${mem}` : "—";
+                const target = s.owned || isAdmin ? `/servers/${s.name}` : "/servers";
                 return (
                   <li
                     key={s.name}
-                    className="grid grid-cols-1 items-center gap-2 px-3.5 py-2.5 transition-colors hover:bg-accent/40 sm:grid-cols-[minmax(0,1fr)_8.5rem_5rem_8.5rem_auto] sm:gap-3"
+                    className="grid grid-cols-1 items-center gap-2 px-3.5 py-2.5 transition-colors hover:bg-accent/40 sm:grid-cols-[minmax(0,1fr)_8.25rem_4.25rem_4.75rem] sm:gap-3 xl:grid-cols-[minmax(0,1fr)_8.25rem_4.25rem_7.5rem_4.75rem]"
                   >
                     <div className="min-w-0">
-                      <div className="truncate font-medium text-foreground">{s.displayName || s.name}</div>
+                      <Link to={target} className="block truncate font-medium text-foreground transition-colors hover:text-primary hover:underline">
+                        {s.displayName || s.name}
+                      </Link>
                       <div className="truncate font-mono text-[10.5px] text-muted-foreground">{address}</div>
                     </div>
                     <div>
@@ -326,7 +323,7 @@ function FleetFocusCard({
                     <div className="font-mono text-muted-foreground tabular-nums">
                       {live ? `${s.playersOnline} / ${s.playersMax}` : "—"}
                     </div>
-                    <div className="truncate font-mono text-[11px] text-muted-foreground tabular-nums" title={resource}>
+                    <div className="hidden truncate font-mono text-[11px] text-muted-foreground tabular-nums xl:block" title={resource}>
                       {resource}
                     </div>
                     <div className="flex justify-end">
@@ -465,7 +462,7 @@ function FleetView({
   ];
 
   return (
-    <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_272px]">
+    <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_264px] xl:grid-cols-[minmax(0,1fr)_284px]">
       <div className="min-w-0 space-y-4">
         <div className="grid grid-cols-1 gap-4 py-0.5 sm:grid-cols-3">
           <SummaryMetric label={t("stat_servers")} value={counts.total} pct={counts.total > 0 ? 100 : 0} />

@@ -134,7 +134,7 @@ export function ImageAdmin() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <PageHeader icon={Boxes} title={t("images_title")} subtitle={t("images_subtitle")} actions={
         <Dialog open={dialogOpen} onOpenChange={(o) => {
           setDialogOpen(o);
@@ -202,10 +202,10 @@ export function ImageAdmin() {
       </div>
 
       {/* Whitelist Table Card */}
-      <Card className="w-full">
+      <Card className="w-full overflow-hidden">
         <CardContent className="p-0">
           {/* Filters Bar */}
-          <div className="flex flex-col sm:flex-row gap-3 p-4 border-b">
+          <div className="flex flex-col gap-2.5 border-b border-border/60 px-3.5 py-2.5 sm:flex-row">
             <SearchInput value={search} onChange={setSearch} placeholder={t("images_search_placeholder")} />
             <SegmentedControl label={t("table_status")} value={statusFilter} onChange={(key) => { setStatusFilter(key); setPage(1); }}
               segments={[{ key: "all", label: t("filter_all"), count: stats.total }, { key: "enabled", label: t("filter_enabled"), count: stats.enabled }, { key: "disabled", label: t("filter_disabled"), count: stats.disabled }]} />
@@ -226,7 +226,7 @@ export function ImageAdmin() {
           ) : (
             <div className="w-full">
               {/* Table Header */}
-              <div className="hidden md:grid grid-cols-12 gap-3 px-4 py-2.5 text-[11px] font-semibold text-muted-foreground border-b select-none">
+              <div className="hidden select-none grid-cols-12 gap-3 border-b border-border/60 bg-muted px-3.5 py-2 text-[11px] font-normal text-muted-foreground md:grid">
                 <div className="col-span-7">{t("table_ref")}</div>
                 <div className="col-span-2">{t("table_source")}</div>
                 <div className="col-span-2 text-center">{t("table_status")}</div>
@@ -234,7 +234,7 @@ export function ImageAdmin() {
               </div>
 
               {/* Table Body */}
-              <div className="divide-y divide-border select-text">
+              <div className="divide-y divide-border/50 select-text">
                 {paginatedImages.map((img) => (
                   <div
                     key={img.image_ref}

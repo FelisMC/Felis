@@ -69,20 +69,20 @@ export function WakeListSection({
       defaultOpen={defaultOpen}
       actions={
         <Button
-          variant="ghost"
+          variant="outline"
           size="icon"
-          className="h-8 w-8 shrink-0 text-muted-foreground"
+          className="h-7 w-7 shrink-0 text-muted-foreground"
           onClick={reload}
           disabled={loading}
           title={t("access_refresh")}
           aria-label={t("access_refresh")}
         >
-          <RotateCw className={loading ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+          <RotateCw className={loading ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
         </Button>
       }
     >
-      <div className="space-y-4">
-        <p className="text-sm text-muted-foreground">{t("wake_list_desc")}</p>
+      <div className="space-y-3">
+        <p className="text-xs text-muted-foreground">{t("wake_list_desc")}</p>
         {inactive && (
           <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
             {t(policy === "public" ? "wake_list_inactive_public" : "wake_list_inactive_owner")}
@@ -148,9 +148,9 @@ export function WakeListSection({
                         </p>
                       </div>
                       <Button
-                        variant={e.can_wake ? "ghost" : "outline"}
+                        variant="outline"
                         size="sm"
-                        className={cn("h-8 shrink-0", e.can_wake && "text-muted-foreground hover:text-destructive")}
+                        className={cn("h-7 shrink-0", e.can_wake && "text-muted-foreground hover:border-destructive/40 hover:bg-destructive/10 hover:text-destructive")}
                         onClick={() => toggle(e)}
                         disabled={busy !== null}
                         aria-label={t(e.can_wake ? "wake_list_revoke_aria" : "wake_list_restore_aria", { player })}

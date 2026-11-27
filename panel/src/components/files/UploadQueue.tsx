@@ -36,13 +36,13 @@ export function UploadQueue({ items, dir, onReplace, onRetry, onRemove, onReplac
               <Button size="sm" variant="outline" className="h-7 text-xs" onClick={onReplaceAll}>
                 {t("upload_replace_all")}
               </Button>
-              <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={onSkipAll}>
+              <Button size="sm" variant="outline" className="h-7 text-xs" onClick={onSkipAll}>
                 {t("upload_skip_all")}
               </Button>
             </>
           )}
           {done > 0 && (
-            <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={onClearDone}>
+            <Button size="sm" variant="outline" className="h-7 text-xs" onClick={onClearDone}>
               {t("upload_clear_done")}
             </Button>
           )}
@@ -140,7 +140,7 @@ function UploadRow({
               aria-valuemin={0}
               aria-valuemax={100}
               aria-valuenow={percent}
-              className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-muted"
+              className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-secondary"
             >
               <div
                 className={cn(
@@ -158,7 +158,7 @@ function UploadRow({
               <Button size="sm" variant="outline" className="h-7 text-xs" onClick={onReplace}>
                 {t("upload_replace")}
               </Button>
-              <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={onRemove}>
+              <Button size="sm" variant="outline" className="h-7 text-xs" onClick={onRemove}>
                 {t("upload_skip")}
               </Button>
             </>

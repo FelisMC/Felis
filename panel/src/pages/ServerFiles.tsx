@@ -803,8 +803,8 @@ export function ServerFiles() {
       ) : (
         <div className="space-y-4">
           {statusQ.data.diskFull && diskCard}
-          {live && <p role="status" className="flex items-start gap-2 text-sm text-muted-foreground">
-            <Info className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />{t("live_warning")}
+          {live && <p role="status" className="flex items-start gap-2 text-xs text-muted-foreground">
+            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />{t("live_warning")}
           </p>}
           {msg && <MessageLine kind={msg.kind} message={msg.text} />}
           {statusQ.error != null && (
@@ -876,22 +876,22 @@ export function ServerFiles() {
               )}
               <CardContent className="p-0">
                 {/* Location bar: parent button + clickable breadcrumbs + actions */}
-                <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
+                <div className="flex flex-wrap items-center gap-2 border-b border-border/60 px-3.5 py-2.5">
                   <Button
                     size="sm"
                     variant="outline"
                     onClick={() => void load(parentOf(dir), true)}
                     disabled={dir === "" || listLoading}
                   >
-                    <ArrowUp className="h-4 w-4" />
+                    <ArrowUp className="h-3.5 w-3.5" />
                     {t("up")}
                   </Button>
-                  <nav className="flex min-w-0 flex-wrap items-center gap-1 text-sm">
+                  <nav className="flex min-w-0 flex-wrap items-center gap-1 text-xs">
                     <button
                       type="button"
                       onClick={() => void load("", true)}
                       className={cn(
-                        "rounded px-1.5 py-0.5 hover:bg-muted",
+                        "rounded px-1.5 py-0.5 hover:bg-accent",
                         dir === "" ? "font-medium text-foreground" : "text-muted-foreground",
                       )}
                     >
@@ -907,7 +907,7 @@ export function ServerFiles() {
                             type="button"
                             onClick={() => void load(target, true)}
                             className={cn(
-                              "rounded px-1.5 py-0.5 font-mono text-xs hover:bg-muted",
+                              "rounded px-1.5 py-0.5 font-mono text-xs hover:bg-accent",
                               last ? "font-medium text-foreground" : "text-muted-foreground",
                             )}
                           >
@@ -917,7 +917,7 @@ export function ServerFiles() {
                       );
                     })}
                   </nav>
-                  <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-1">
+                  <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-1.5">
                     <Button
                       size="sm"
                       variant="outline"
@@ -925,7 +925,7 @@ export function ServerFiles() {
                       aria-label={t("upload")}
                       title={t("upload_hint")}
                     >
-                      <Upload className="h-4 w-4" />
+                      <Upload className="h-3.5 w-3.5" />
                       <span className="hidden sm:inline">{t("upload")}</span>
                     </Button>
                     <input
@@ -939,44 +939,45 @@ export function ServerFiles() {
                         e.target.value = "";
                       }}
                     />
-                    <Button size="sm" variant="ghost" onClick={() => folderInput.current?.click()} aria-label={t("upload_folder")} title={t("upload_folder")}>
-                      <FolderUp className="h-4 w-4" /><span className="hidden md:inline">{t("upload_folder")}</span>
+                    <Button size="sm" variant="outline" onClick={() => folderInput.current?.click()} aria-label={t("upload_folder")} title={t("upload_folder")}>
+                      <FolderUp className="h-3.5 w-3.5" /><span className="hidden md:inline">{t("upload_folder")}</span>
                     </Button>
                     <input ref={folderInput} type="file" multiple hidden data-testid="folder-upload-input"
                       {...{ webkitdirectory: "", directory: "" }}
                       onChange={(e) => { addFiles(Array.from(e.target.files ?? [])); e.target.value = ""; }} />
-                    <Button size="sm" variant="ghost" disabled={changing} aria-label={t("from_url")} title={changing ? waitTitle : t("from_url")} onClick={() => {
+                    <Button size="sm" variant="outline" disabled={changing} aria-label={t("from_url")} title={changing ? waitTitle : t("from_url")} onClick={() => {
                       setTaskPath(joinPath(dir, "")); setSourceURL(""); setTaskDialog("url");
                     }}>
-                      <CloudDownload className="h-4 w-4" /><span className="hidden md:inline">{t("from_url")}</span>
+                      <CloudDownload className="h-3.5 w-3.5" /><span className="hidden md:inline">{t("from_url")}</span>
                     </Button>
-                    <span aria-hidden="true" className="mx-1 h-5 w-px bg-border" />
+                    <span aria-hidden="true" className="mx-0.5 h-4 w-px bg-border" />
                     <Button
                       size="sm"
-                      variant="ghost"
+                      variant="outline"
                       onClick={() => ask({ kind: "file", dir })}
                       disabled={changing}
                       aria-label={t("new_file")}
                       title={changing ? waitTitle : t("new_file")}
                     >
-                      <FilePlus className="h-4 w-4" />
+                      <FilePlus className="h-3.5 w-3.5" />
                       <span className="hidden md:inline">{t("new_file")}</span>
                     </Button>
                     <Button
                       size="sm"
-                      variant="ghost"
+                      variant="outline"
                       onClick={() => ask({ kind: "folder", dir })}
                       disabled={changing}
                       aria-label={t("new_folder")}
                       title={changing ? waitTitle : t("new_folder")}
                     >
-                      <FolderPlus className="h-4 w-4" />
+                      <FolderPlus className="h-3.5 w-3.5" />
                       <span className="hidden md:inline">{t("new_folder")}</span>
                     </Button>
-                    <span aria-hidden="true" className="mx-1 h-5 w-px bg-border" />
+                    <span aria-hidden="true" className="mx-0.5 h-4 w-px bg-border" />
                     <Button
                       size="sm"
-                      variant="ghost"
+                      variant="outline"
+                      className="px-2"
                       onClick={() => {
                         void load(dir);
                         fileOps.refresh();
@@ -986,34 +987,34 @@ export function ServerFiles() {
                       aria-label={t("refresh")}
                       title={t("refresh")}
                     >
-                      <RefreshCw className={cn("h-4 w-4", listLoading && "animate-spin")} />
+                      <RefreshCw className={cn("h-3.5 w-3.5", listLoading && "animate-spin")} />
                     </Button>
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
+                <div className="flex flex-wrap items-center gap-2 border-b border-border/60 px-3.5 py-2">
                   <form className="flex min-w-0 flex-1 gap-2" onSubmit={(e) => { e.preventDefault(); void searchFiles(); }}>
                     <Input aria-label={t("search_label")} placeholder={t("search_label")} value={query} maxLength={256}
                       onChange={(e) => setQuery(e.target.value)} className="h-8 min-w-24" />
-                    <Button size="sm" variant="outline" disabled={!query.trim() || searching || listLoading} type="submit">
-                      {searching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}{t("search")}
+                    <Button size="sm" variant="outline" className="h-8" disabled={!query.trim() || searching || listLoading} type="submit">
+                      {searching ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}{t("search")}
                     </Button>
                   </form>
-                  {searchActive && <Button size="sm" variant="ghost" onClick={() => void load(dir)}>{t("clear_search")}</Button>}
+                  {searchActive && <Button size="sm" variant="outline" onClick={() => void load(dir)}>{t("clear_search")}</Button>}
                   {clipboard?.server === name && <Button size="sm" variant="outline" disabled={changing || listLoading}
                     onClick={() => beginTask({ kind: "transfer", op: clipboard.op, paths: clipboard.paths, to: dir })}>
                     {t("paste_count", { count: clipboard.paths.length })}
                   </Button>}
                 </div>
-                {checked.size > 0 && <div className="flex flex-wrap items-center gap-2 border-b border-border bg-primary/5 px-4 py-2">
-                  <span className="mr-auto text-xs">{t("selected_count", { count: checked.size })}</span>
-                  <Button size="sm" variant="ghost" disabled={changing || [...checked].some(isManaged)} onClick={() => copyPaths("copy", [...checked])}>{t("copy")}</Button>
-                  <Button size="sm" variant="ghost" disabled={changing || [...checked].some(isManaged)} onClick={() => copyPaths("move", [...checked])}>{t("cut")}</Button>
+                {checked.size > 0 && <div className="flex flex-wrap items-center gap-1.5 border-b border-border/60 bg-primary/5 px-3.5 py-2">
+                  <span className="mr-auto text-xs font-medium">{t("selected_count", { count: checked.size })}</span>
+                  <Button size="sm" variant="outline" disabled={changing || [...checked].some(isManaged)} onClick={() => copyPaths("copy", [...checked])}>{t("copy")}</Button>
+                  <Button size="sm" variant="outline" disabled={changing || [...checked].some(isManaged)} onClick={() => copyPaths("move", [...checked])}>{t("cut")}</Button>
                   <Button size="sm" variant="outline" disabled={changing || checked.has(SECRET_CONFIG_PATH)} onClick={() => void download()}>{t("download_selected")}</Button>
                   <Button size="sm" variant="outline" disabled={changing || checked.has(SECRET_CONFIG_PATH)} onClick={() => {
                     setTaskPath(joinPath(dir, "archive.zip")); setTaskDialog("zip");
                   }}>{t("zip_selected")}</Button>
-                  <Button size="sm" variant="ghost" disabled={changing} onClick={() => setBatchDeleteOpen(true)} className="text-destructive">{t("delete_selected")}</Button>
+                  <Button size="sm" variant="outline" disabled={changing} onClick={() => setBatchDeleteOpen(true)} className="text-destructive hover:border-destructive/40 hover:bg-destructive/10 hover:text-destructive">{t("delete_selected")}</Button>
                 </div>}
 
                 {listLoading && (
@@ -1056,21 +1057,21 @@ export function ServerFiles() {
                   </div>
                 ) : (
                   <div className="overflow-x-auto">
-                    <table className="w-full border-collapse text-sm">
+                    <table className="w-full border-collapse text-xs">
                       <thead>
-                        <tr className="border-b border-border bg-muted/40 text-left text-[11px] uppercase tracking-wider text-muted-foreground">
-                          <th className="w-10 px-3 py-2.5"><Checkbox aria-label={t("select_all")}
+                        <tr className="border-b border-border/60 bg-muted text-left text-[11px] text-muted-foreground">
+                          <th className="w-9 px-3 py-2 font-normal"><Checkbox aria-label={t("select_all")}
                             checked={!!entries?.length && entries.every((entry) => checked.has(joinPath(dir, entry.name)))}
                             onChange={(e) => selectAll(e.target.checked)} /></th>
-                          <th className="px-4 py-2.5 font-medium">{t("col_name")}</th>
-                          <th className="px-4 py-2.5 font-medium">{t("col_size")}</th>
-                          <th className="hidden px-4 py-2.5 font-medium sm:table-cell">{t("col_modified")}</th>
-                          <th className="w-px px-2 py-2.5">
+                          <th className="px-3.5 py-2 font-normal">{t("col_name")}</th>
+                          <th className="px-3.5 py-2 font-normal">{t("col_size")}</th>
+                          <th className="hidden px-3.5 py-2 font-normal sm:table-cell">{t("col_modified")}</th>
+                          <th className="w-px px-2 py-2 font-normal">
                             <span className="sr-only">{t("col_actions")}</span>
                           </th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-border">
+                      <tbody className="divide-y divide-border/50">
                         {(entries ?? []).map((e) => {
                           const p = joinPath(dir, e.name);
                           const managed = isManaged(p);
@@ -1090,15 +1091,15 @@ export function ServerFiles() {
                               }}
                               onTouchMove={cancelLongPress} onTouchEnd={cancelLongPress} onTouchCancel={cancelLongPress}
                               aria-selected={selected === p}
-                              className={cn("cursor-pointer transition-colors hover:bg-muted/30", selected === p && "bg-primary/10 ring-1 ring-inset ring-primary/30")}
+                              className={cn("cursor-pointer transition-colors hover:bg-accent/40", selected === p && "bg-primary/10 ring-1 ring-inset ring-primary/30")}
                             >
-                              <td className="px-3 py-3" onClick={(ev) => ev.stopPropagation()}>
+                              <td className="px-3 py-2" onClick={(ev) => ev.stopPropagation()}>
                                 <Checkbox aria-label={t("select_item", { name: e.name })} checked={checked.has(p)} onChange={(ev) => {
                                   if (ev.target.checked && checked.size >= 500) { setMsg({ kind: "error", text: t("selection_limit") }); return; }
                                   setChecked((all) => { const next = new Set(all); if (ev.target.checked) next.add(p); else next.delete(p); return next; });
                                 }} />
                               </td>
-                              <td className="px-4 py-3">
+                              <td className="px-3.5 py-2">
                                 {/* The name is a button so the keyboard and a screen
                                     reader reach every row; its click bubbles to the
                                     row, which opens it from anywhere on the row. */}
@@ -1108,26 +1109,26 @@ export function ServerFiles() {
                                   className="flex min-w-0 max-w-full items-center gap-2 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                                 >
                                   {e.is_dir ? (
-                                    <Folder className="h-4 w-4 shrink-0 text-primary" />
+                                    <Folder className="h-3.5 w-3.5 shrink-0 text-primary" />
                                   ) : (
-                                    <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
+                                    <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                                   )}
-                                  <span className="truncate font-mono text-xs">{e.name}</span>
+                                  <span className="truncate font-mono text-xs text-foreground">{e.name}</span>
                                   {(opening === p || (listLoading && listTarget === p)) && (
                                     <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
                                   )}
                                 </button>
                               </td>
-                              <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
+                              <td className="whitespace-nowrap px-3.5 py-2 font-mono text-muted-foreground tabular-nums">
                                 {e.is_dir ? "—" : formatBytes(e.size)}
                               </td>
                               <td
-                                className="hidden px-4 py-3 whitespace-nowrap text-xs text-muted-foreground sm:table-cell"
+                                className="hidden whitespace-nowrap px-3.5 py-2 text-xs text-muted-foreground sm:table-cell"
                                 title={e.mod_time}
                               >
                                 {e.mod_time ? formatRelative(e.mod_time, now, locale) : "—"}
                               </td>
-                              <td className="px-2 py-1.5">
+                              <td className="px-2 py-1">
                                 {/* The actions stop at their own buttons: a click
                                     here must not also open the row. */}
                                 <div className="flex items-center justify-end gap-0.5" onClick={(ev) => ev.stopPropagation()}>
@@ -1135,7 +1136,7 @@ export function ServerFiles() {
                                     <Button
                                       size="sm"
                                       variant="ghost"
-                                      className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
+                                      className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
                                       onClick={() => void startUnzip(e)}
                                       disabled={changing}
                                       aria-label={t("unzip_item", { name: e.name })}
@@ -1151,7 +1152,7 @@ export function ServerFiles() {
                                   <Button
                                     size="sm"
                                     variant="ghost"
-                                    className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
+                                    className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
                                     onClick={() => void download(e)}
                                     disabled={p === SECRET_CONFIG_PATH || changing}
                                     aria-label={t(e.is_dir ? "download_folder_item" : "download_item", { name: e.name })}
@@ -1174,7 +1175,7 @@ export function ServerFiles() {
                                   <Button
                                     size="sm"
                                     variant="ghost"
-                                    className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
+                                    className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
                                     onClick={() => ask({ kind: "rename", dir: parentOf(p), entry: { ...e, name: p.split("/").pop()! } })}
                                     disabled={managed || changing}
                                     aria-label={t("rename_item", { name: e.name })}
@@ -1191,7 +1192,7 @@ export function ServerFiles() {
                                   <Button
                                     size="sm"
                                     variant="ghost"
-                                    className="h-8 w-8 p-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                                    className="h-7 w-7 p-0 text-muted-foreground hover:border-destructive/30 hover:bg-destructive/10 hover:text-destructive"
                                     onClick={() => {
                                       setMsg(null);
                                       setDeleting(e);
