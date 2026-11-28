@@ -35,7 +35,7 @@ export function AreaChart({ points, label, max, idle = false }: { points: { at: 
   return (
     <div>
       <div className="relative">
-        <svg role="img" aria-label={label} viewBox="0 0 300 60" preserveAspectRatio="none" className="h-16 w-full text-primary">
+        <svg role="img" aria-label={label} viewBox="0 0 300 60" preserveAspectRatio="none" className="h-16 w-full animate-chart-draw text-primary">
           <defs>
             <linearGradient id={gradient} x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor="currentColor" stopOpacity="0.28" />

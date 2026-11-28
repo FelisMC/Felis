@@ -1,4 +1,4 @@
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import {
   ChevronDown,
@@ -34,9 +34,15 @@ import { PageHeaderHostContext } from "@/components/PageHeader";
 import { MainScrollContext } from "@/components/MainScroll";
 import { phaseColor } from "@/components/PhaseBadge";
 import { ShellContext, type ActiveServerMeta } from "@/components/ShellContext";
+import { useEnterAnimation, useSlidingIndicator } from "@/lib/motion";
 
 const TOP_BTN =
-  "inline-flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2 text-xs font-medium text-foreground transition-colors hover:border-muted-foreground/30 hover:bg-accent/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-45";
+  "inline-flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2 text-xs font-medium text-foreground transition-[color,background-color,border-color,transform] duration-150 ease-out hover:border-muted-foreground/30 hover:bg-accent/70 active:scale-[0.97] active:duration-75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-45";
+
+function routeMotionKey(pathname: string): string {
+  const serverMatch = pathname.match(/^\/servers\/[^/]+/);
+  return serverMatch ? serverMatch[0] : pathname;
+}
 
 function BrandMark({ size = 19 }: { size?: number }) {
   return (
@@ -50,10 +56,12 @@ function SectionGroup({
   section,
   isFirst,
   onNavigate,
+  sliding = false,
 }: {
   section: NavSection;
   isFirst: boolean;
   onNavigate?: () => void;
+  sliding?: boolean;
 }) {
   const { t } = useTranslation("navigation");
 
@@ -72,9 +80,12 @@ function SectionGroup({
           onClick={onNavigate}
           className={({ isActive }) =>
             cn(
-              "group relative flex items-center gap-2.5 px-4 py-[6.5px] text-[12.5px] transition-colors",
+              "group relative z-10 flex items-center gap-2.5 px-4 py-[6.5px] text-[12.5px] transition-[color,background-color,transform] duration-150 ease-out active:scale-[0.98]",
               isActive
-                ? "bg-accent font-medium text-foreground before:absolute before:bottom-1 before:left-0 before:top-1 before:w-[2.5px] before:rounded-r-sm before:bg-primary"
+                ? cn(
+                    "font-medium text-foreground",
+                    !sliding && "bg-accent before:absolute before:bottom-1 before:left-0 before:top-1 before:w-[2.5px] before:rounded-r-sm before:bg-primary",
+                  )
                 : "text-muted-foreground hover:bg-accent/55 hover:text-foreground",
             )
           }
@@ -82,7 +93,10 @@ function SectionGroup({
           {({ isActive }) => (
             <>
               <item.icon
-                className={cn("h-3.5 w-3.5 shrink-0", isActive ? "text-foreground opacity-95" : "opacity-65 group-hover:opacity-90")}
+                className={cn(
+                  "h-3.5 w-3.5 shrink-0 transition-[color,opacity,transform] duration-150",
+                  isActive ? "text-foreground opacity-95" : "opacity-65 group-hover:opacity-90",
+                )}
                 strokeWidth={1.7}
               />
               <span className="truncate">{t(item.key)}</span>
@@ -114,7 +128,7 @@ function UserStrip({ compact = false }: { compact?: boolean }) {
       <div className="flex min-w-0 items-center gap-1.5">
         <Link
           to="/account"
-          className="inline-flex h-7 min-w-0 items-center gap-2 rounded-md border border-border bg-card px-2.5 text-xs transition-colors hover:border-muted-foreground/30 hover:bg-accent/70"
+          className="inline-flex h-7 min-w-0 items-center gap-2 rounded-md border border-border bg-card px-2.5 text-xs transition-[color,background-color,border-color,transform] duration-150 ease-out hover:border-muted-foreground/30 hover:bg-accent/70 active:scale-[0.98]"
           title={identity?.email ?? ""}
         >
           <span className="max-w-[160px] truncate font-medium text-foreground">
@@ -169,13 +183,13 @@ function LangToggle() {
   return (
     <Select value={i18n.language} onValueChange={(v) => void chooseLanguage(i18n, v)}>
       <SelectPrimitive.Trigger
-        className={TOP_BTN}
+        className={cn(TOP_BTN, "group")}
         aria-label={t("change_language")}
         title={t("change_language")}
       >
         <Globe className="h-3.5 w-3.5 text-muted-foreground" />
         <span className="hidden sm:inline">{shortLabel}</span>
-        <ChevronDown className="h-3 w-3 text-muted-foreground/75" />
+        <ChevronDown className="h-3 w-3 text-muted-foreground/75 transition-transform duration-150 ease-out group-data-[state=open]:rotate-180" />
       </SelectPrimitive.Trigger>
       <SelectContent align="end" className="min-w-[6.5rem]">
         <SelectItem value="en-US">English</SelectItem>
@@ -192,12 +206,12 @@ function ThemeToggle() {
 
   return (
     <Select value={preference} onValueChange={(value) => setTheme(value as ThemePreference)}>
-      <SelectPrimitive.Trigger className={TOP_BTN} aria-label={t("toggle_theme")} title={t("toggle_theme")}>
+      <SelectPrimitive.Trigger className={cn(TOP_BTN, "group")} aria-label={t("toggle_theme")} title={t("toggle_theme")}>
         {preference === "light" && <Sun className="h-3.5 w-3.5 text-muted-foreground" />}
         {preference === "dark" && <Moon className="h-3.5 w-3.5 text-muted-foreground" />}
         {preference === "system" && <Monitor className="h-3.5 w-3.5 text-muted-foreground" />}
         <span className="hidden lg:inline">{label}</span>
-        <ChevronDown className="h-3 w-3 text-muted-foreground/75" />
+        <ChevronDown className="h-3 w-3 text-muted-foreground/75 transition-transform duration-150 ease-out group-data-[state=open]:rotate-180" />
       </SelectPrimitive.Trigger>
       <SelectContent align="end">
         <SelectItem value="light">{t("theme_light")}</SelectItem>
@@ -220,7 +234,7 @@ function ConnectionBanner() {
   return (
     <div
       role="alert"
-      className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-800 dark:text-amber-200"
+      className="flex animate-slide-down flex-wrap items-center justify-between gap-2 border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-800 dark:text-amber-200"
     >
       <span className="flex min-w-0 items-center gap-2">
         <WifiOff className="h-3.5 w-3.5 shrink-0" />
@@ -245,10 +259,10 @@ function TopbarBreadcrumb({
 
   if (activeServer) {
     return (
-      <div className="flex min-w-0 items-center gap-1.5 text-xs">
+      <div key={`server:${activeServer.name}`} className="flex min-w-0 animate-fade-in items-center gap-1.5 text-xs">
         <Link
           to="/servers"
-          className="inline-flex h-6 shrink-0 items-center rounded-md px-1.5 text-muted-foreground transition-colors hover:bg-accent/70 hover:text-foreground"
+          className="inline-flex h-6 shrink-0 items-center rounded-md px-1.5 text-muted-foreground transition-colors duration-150 hover:bg-accent/70 hover:text-foreground"
         >
           {t("my_servers")}
         </Link>
@@ -256,7 +270,7 @@ function TopbarBreadcrumb({
         <span className="inline-flex min-w-0 items-center gap-1.5 font-medium text-foreground">
           {activeServer.phase && (
             <span
-              className="h-1.5 w-1.5 shrink-0 rounded-full"
+              className="h-1.5 w-1.5 shrink-0 rounded-full transition-colors duration-200"
               style={{ backgroundColor: phaseColor(activeServer.phase) }}
             />
           )}
@@ -271,7 +285,7 @@ function TopbarBreadcrumb({
       const matched = item.end ? pathname === item.to : pathname === item.to || pathname.startsWith(`${item.to}/`);
       if (matched) {
         return (
-          <div className="flex min-w-0 items-center gap-1.5 text-xs">
+          <div key={item.to} className="flex min-w-0 animate-fade-in items-center gap-1.5 text-xs">
             {section.titleKey && (
               <>
                 <span className="shrink-0 text-muted-foreground">{t(section.titleKey)}</span>
@@ -305,10 +319,10 @@ function MobileNav({ sections }: { sections: NavSection[] }) {
         <Menu className="h-4 w-4" />
       </DialogPrimitive.Trigger>
       <DialogPrimitive.Portal>
-        <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/55 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 md:hidden" />
+        <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/55 backdrop-blur-sm duration-200 ease-out data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:duration-150 data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 md:hidden" />
         <DialogPrimitive.Content
           aria-describedby={undefined}
-          className="fixed inset-y-0 left-0 z-50 flex w-60 max-w-[82vw] flex-col border-r border-border bg-sidebar py-3 shadow-2xl duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:slide-out-to-left data-[state=open]:slide-in-from-left md:hidden"
+          className="fixed inset-y-0 left-0 z-50 flex w-60 max-w-[82vw] flex-col border-r border-border bg-sidebar py-3 shadow-2xl duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:duration-200 data-[state=closed]:slide-out-to-left data-[state=open]:slide-in-from-left md:hidden"
         >
           <div className="mb-2 flex h-9 items-center justify-between border-b border-border/60 px-4 pb-2">
             <DialogPrimitive.Title className="flex items-center gap-2 text-[13.5px] font-semibold tracking-tight">
@@ -344,6 +358,8 @@ function MobileNav({ sections }: { sections: NavSection[] }) {
 
 export function AppShell() {
   const [headerHost, setHeaderHost] = useState<HTMLDivElement | null>(null);
+  const navRef = useRef<HTMLElement>(null);
+  const routeContentRef = useRef<HTMLDivElement>(null);
   const [sidebarSlot, setSidebarSlot] = useState<HTMLDivElement | null>(null);
   const [main, setMain] = useState<HTMLElement | null>(null);
   const [activeServer, setActiveServerState] = useState<ActiveServerMeta | null>(null);
@@ -356,12 +372,16 @@ export function AppShell() {
     setActiveServerState(server);
   }, []);
 
+  const motionKey = routeMotionKey(pathname);
+  useEnterAnimation(routeContentRef, motionKey, -6, 200, 0.4);
+
   useEffect(() => {
     if (main) main.scrollTop = 0;
   }, [main, pathname]);
 
   const config = useConfig();
   const sections = visibleSections(isAdmin, isOwner, { noLobby: config?.noLobby, nano: config?.nano });
+  const navIndicator = useSlidingIndicator(navRef, '[aria-current="page"]', `${pathname}:${sections.length}:${Boolean(activeServer)}`, "y");
 
   useEffect(() => {
     document.documentElement.lang = i18n.language;
@@ -412,9 +432,22 @@ export function AppShell() {
             <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
               {/* Contextual slot: ServerLayout portals single-server navigation here. */}
               <div ref={setSidebarSlot} className="empty:hidden [&:not(:empty)+nav]:hidden" />
-              <nav className="flex flex-col">
+              <nav ref={navRef} className="relative flex flex-col">
+                {navIndicator.ready && (
+                  <span
+                    aria-hidden="true"
+                    className={cn(
+                      "pointer-events-none absolute inset-x-0 top-0 z-0 bg-accent before:absolute before:inset-y-1 before:left-0 before:w-[2.5px] before:rounded-r-sm before:bg-primary motion-reduce:transition-none",
+                      navIndicator.animate && "transition-glide-y",
+                    )}
+                    style={{
+                      transform: `translateY(${navIndicator.start}px)`,
+                      height: `${navIndicator.size}px`,
+                    }}
+                  />
+                )}
                 {sections.map((section, i) => (
-                  <SectionGroup key={section.id} section={section} isFirst={i === 0} />
+                  <SectionGroup key={section.id} section={section} isFirst={i === 0} sliding={navIndicator.ready} />
                 ))}
               </nav>
             </div>
@@ -432,14 +465,17 @@ export function AppShell() {
               <div className="flex min-h-0 min-w-0 flex-1 flex-col">
                 <div
                   ref={setHeaderHost}
-                  className="shrink-0 bg-background px-4 pt-4 empty:hidden md:px-7 md:pt-5"
+                  className="shrink-0 bg-background px-4 pt-4 empty:hidden md:px-6 md:pt-5"
                 />
 
                 <main
                   ref={setMain}
-                  className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pt-4 md:px-7"
+                  className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pt-4 md:px-6"
                 >
-                  <div className="mx-auto flex min-h-0 w-full max-w-[1060px] flex-1 flex-col gap-4 after:-mt-4 after:h-6 after:shrink-0 after:content-['']">
+                  <div
+                    ref={routeContentRef}
+                    className="flex min-h-0 w-full flex-1 flex-col gap-4 after:-mt-4 after:h-6 after:shrink-0 after:content-['']"
+                  >
                     <ErrorBoundary resetKey={pathname}>
                       <Suspense fallback={<Loading />}>
                         <Outlet />

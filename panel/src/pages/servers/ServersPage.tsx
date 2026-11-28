@@ -10,7 +10,6 @@ import {
   RotateCcw,
   Square,
   Users,
-  UserRound,
   Hand,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -404,7 +403,7 @@ export function ServersPage() {
         actions={
           <div className="flex items-center gap-2">
             <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-              <span className="h-[5.5px] w-[5.5px] rounded-full bg-primary animate-pulse" />
+              <span className="h-[5.5px] w-[5.5px] rounded-full bg-primary animate-status-breathe" />
               {t("fleet_live")}
             </span>
             <Button
@@ -498,14 +497,16 @@ export function ServersPage() {
           </div>
 
           {(picked.length > 0 || progress !== null || outcomes !== null) && (
-            <BatchBar
-              picked={picked}
-              progress={progress}
-              outcomes={outcomes}
-              onRun={(kind) => void runBatch(kind, picked)}
-              onClear={() => setSelected(new Set())}
-              onDismiss={() => setOutcomes(null)}
-            />
+            <div className="animate-slide-down">
+              <BatchBar
+                picked={picked}
+                progress={progress}
+                outcomes={outcomes}
+                onRun={(kind) => void runBatch(kind, picked)}
+                onClear={() => setSelected(new Set())}
+                onDismiss={() => setOutcomes(null)}
+              />
+            </div>
           )}
 
           {servers.length === 0 ? (
@@ -528,7 +529,7 @@ export function ServersPage() {
                       type="button"
                       onClick={() => { setPhaseFilter(phaseFilter === "Running" ? "all" : "Running"); setPage(1); }}
                       className={cn(
-                        "inline-flex items-center gap-1 rounded border border-transparent px-1.5 py-0.5 transition-colors hover:bg-accent",
+                        "inline-flex items-center gap-1 rounded border border-transparent px-1.5 py-0.5 transition-[color,background-color,border-color,transform] duration-150 ease-out hover:bg-accent active:scale-[0.97]",
                         phaseFilter === "Running" && "border-border bg-accent font-medium text-foreground",
                       )}
                     >
@@ -544,7 +545,7 @@ export function ServersPage() {
                         type="button"
                         onClick={() => { setPhaseFilter(phaseFilter === p ? "all" : p); setPage(1); }}
                         className={cn(
-                          "inline-flex items-center gap-1 rounded border border-transparent px-1.5 py-0.5 transition-colors hover:bg-accent",
+                          "inline-flex items-center gap-1 rounded border border-transparent px-1.5 py-0.5 transition-[color,background-color,border-color,transform] duration-150 ease-out hover:bg-accent active:scale-[0.97]",
                           phaseFilter === p && "border-border bg-accent font-medium text-foreground",
                         )}
                       >
@@ -577,10 +578,10 @@ export function ServersPage() {
                             aria-pressed={on}
                             onClick={() => toggleTag(key)}
                             className={cn(
-                              "rounded border px-1.5 py-0.5 text-[11px] leading-none transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
+                              "rounded border px-1.5 py-0.5 text-[11px] leading-none transition-[color,background-color,border-color,transform] duration-150 ease-out active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
                               on
-                                ? "border-primary bg-primary text-primary-foreground font-medium"
-                                : "border-border bg-background text-muted-foreground hover:border-muted-foreground/35 hover:text-foreground",
+                                ? "border-primary/35 bg-primary/15 font-medium text-primary"
+                                : "border-transparent bg-secondary/50 text-muted-foreground hover:bg-secondary hover:text-foreground",
                             )}
                           >
                             {label}
@@ -649,13 +650,13 @@ export function ServersPage() {
                                 onChange={(e) => select(pageRows.map((s) => s.name), e.target.checked)}
                               />
                             </th>
-                            <th className="px-2 py-2 font-normal">{t("fleet_col_server")}</th>
-                            <th className="w-[1%] px-2 py-2 font-normal">{t("fleet_col_status")}</th>
-                            {isAdmin && <th className="w-[1%] px-2 py-2 font-normal">{t("fleet_col_owner")}</th>}
-                            <th className="w-[1%] px-2 py-2 font-normal">{t("fleet_col_players")}</th>
-                            <th className={cn("w-[1%] px-2 py-2 font-normal", isAdmin && "hidden xl:table-cell")}>{t("servers:usage_cpu")} / {t("servers:usage_memory")}</th>
-                            {isAdmin && <th className="hidden w-[1%] px-2 py-2 font-normal xl:table-cell">{t("fleet_col_endpoint")}</th>}
-                            <th className="w-[1%] px-3 py-2 text-right font-normal">
+                            <th className="px-2.5 py-2 font-normal 2xl:px-3">{t("fleet_col_server")}</th>
+                            <th className="px-2.5 py-2 font-normal 2xl:px-3">{t("fleet_col_status")}</th>
+                            {isAdmin && <th className="px-2.5 py-2 font-normal 2xl:px-3">{t("fleet_col_owner")}</th>}
+                            <th className="w-[1%] px-2.5 py-2 font-normal 2xl:px-3">{t("fleet_col_players")}</th>
+                            <th className={cn("w-[1%] px-2.5 py-2 font-normal 2xl:px-3", isAdmin && "hidden xl:table-cell")}>{t("servers:usage_cpu")} / {t("servers:usage_memory")}</th>
+                            {isAdmin && <th className="hidden w-[1%] px-2.5 py-2 font-normal min-[1400px]:table-cell 2xl:px-3">{t("fleet_col_endpoint")}</th>}
+                            <th className="w-[1%] px-3 py-2 text-right font-normal 2xl:px-3.5">
                               {t("fleet_col_actions")}
                             </th>
                           </tr>
@@ -694,37 +695,102 @@ export function ServersPage() {
   );
 }
 
+function ClaimAction({
+  server,
+  onChanged,
+  inline = false,
+}: {
+  server: UnifiedServer;
+  onChanged: () => void;
+  inline?: boolean;
+}) {
+  const { t: ts } = useTranslation("servers");
+  const [busy, setBusy] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function confirmClaim() {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.claim(server.name);
+      onChanged();
+      setConfirmOpen(false);
+    } catch (e) {
+      setError(humanizeError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      {inline ? (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => setConfirmOpen(true)}
+          className="rounded px-1.5 py-0.5 text-[11px] font-medium text-primary/90 transition-[color,background-color,transform] duration-150 hover:bg-primary/12 hover:text-primary active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 disabled:opacity-45"
+        >
+          {ts("claim")}
+        </button>
+      ) : (
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={busy}
+          onClick={() => setConfirmOpen(true)}
+          className="border-primary/35 text-primary hover:bg-primary/10 hover:text-primary"
+        >
+          <Hand /> {ts("claim")}
+        </Button>
+      )}
+
+      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{ts("claim_server_title")}</DialogTitle>
+            <DialogDescription>
+              {ts("claim_server_desc", { name: server.displayName || server.name })}
+            </DialogDescription>
+          </DialogHeader>
+          {error && (
+            <p role="alert" className="text-xs text-destructive">
+              {error}
+            </p>
+          )}
+          <ConfirmFooter
+            onCancel={() => setConfirmOpen(false)}
+            onConfirm={confirmClaim}
+            disabled={busy}
+            loading={busy}
+            cancelLabel={ts("access_cancel")}
+            confirmLabel={ts("claim")}
+            confirmVariant="default"
+          />
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
 // ServerActions is the action cluster of one server — claim, start/stop, console —
 // shared by the desktop table row and the phone card so both offer the same things.
 function ServerActions({
   server,
   isAdmin,
   onChanged,
+  compact = false,
   className,
 }: {
   server: UnifiedServer;
   isAdmin: boolean;
   onChanged: () => void;
+  compact?: boolean;
   className?: string;
 }) {
   const { t: ts } = useTranslation("servers");
   const cfg = useConfig();
-  const [busy, setBusy] = useState<null | "claim">(null);
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function act(kind: "claim", fn: () => Promise<unknown>) {
-    setBusy(kind);
-    setError(null);
-    try {
-      await fn();
-      onChanged();
-    } catch (e) {
-      setError(humanizeError(e));
-    } finally {
-      setBusy(null);
-    }
-  }
 
   if (server.system) {
     // Staff customize system services in the dedicated lobby view.
@@ -743,54 +809,24 @@ function ServerActions({
 
   // Unclaimed servers expose claim only, except administrators retain wake and console access.
   const claimable = server.claimable && !server.owned;
-  const manyActions = claimable && isAdmin && startFailure(server) !== null;
+  // In compact admin rows, Claim lives inline beside "Unclaimed" in the Owner column.
+  const showClaimHere = claimable && !(compact && isAdmin);
+  const showMigrate = isAdmin && cfg?.distributed;
+  const showPower = !claimable || isAdmin;
+  const showConsole = server.owned || isAdmin;
+  const hasLeadingActions = Boolean(showMigrate || showClaimHere || showPower);
 
   return (
     <div className={cn("flex flex-col items-end gap-1", className)}>
       <div
         className={cn(
-          "flex items-center justify-end gap-1 [&_button]:h-6 [&_button]:px-2 [&_button]:text-[11px]",
-          manyActions ? "max-w-[14rem] flex-wrap" : "flex-nowrap",
+          "flex items-center justify-end",
+          compact ? "flex-nowrap gap-1.5" : "flex-wrap gap-1.5",
         )}
       >
-        {isAdmin && cfg?.distributed && <MigrationDialog name={server.name} nodeName={server.nodeName} stopped={server.phase === "Stopped" && !server.ready && server.desiredState === "Stopped" && !server.retiring} onChanged={onChanged} />}
-        {claimable && (
-          <>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={busy !== null}
-              onClick={() => setConfirmOpen(true)}
-              className="text-primary hover:text-primary hover:bg-primary/5 border-primary/20"
-            >
-              <Hand /> {ts("claim")}
-            </Button>
-
-            <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-              <DialogContent className="sm:max-w-md">
-                <DialogHeader>
-                  <DialogTitle>{ts("claim_server_title")}</DialogTitle>
-                  <DialogDescription>
-                    {ts("claim_server_desc", { name: server.displayName || server.name })}
-                  </DialogDescription>
-                </DialogHeader>
-                <ConfirmFooter
-                  onCancel={() => setConfirmOpen(false)}
-                  onConfirm={async () => {
-                    await act("claim", () => api.claim(server.name));
-                    setConfirmOpen(false);
-                  }}
-                  disabled={busy !== null}
-                  loading={busy === "claim"}
-                  cancelLabel={ts("access_cancel")}
-                  confirmLabel={ts("claim")}
-                  confirmVariant="default"
-                />
-              </DialogContent>
-            </Dialog>
-          </>
-        )}
-        {(!claimable || isAdmin) && (
+        {showMigrate && <MigrationDialog name={server.name} nodeName={server.nodeName} stopped={server.phase === "Stopped" && !server.ready && server.desiredState === "Stopped" && !server.retiring} onChanged={onChanged} />}
+        {showClaimHere && <ClaimAction server={server} onChanged={onChanged} />}
+        {showPower && (
           <PowerButton
             name={server.name}
             phase={server.phase}
@@ -800,48 +836,53 @@ function ServerActions({
             playerCountUnknown={server.playerCountUnknown}
             retiring={server.retiring}
             diskFull={server.diskFull}
-            quiet
+            quiet={compact}
             onChanged={onChanged}
           />
         )}
-        {(server.owned || isAdmin) && (
+        {compact && hasLeadingActions && showConsole && (
+          <span aria-hidden="true" className="h-3.5 w-px shrink-0 bg-border/70" />
+        )}
+        {showConsole && (
           <Link to={`/servers/${server.name}`}>
-            <Button size="sm" variant="outline">
+            <Button size="sm" variant="outline" className={compact ? "h-7 px-2.5 text-xs" : undefined}>
               <Terminal /> {ts("console")}
             </Button>
           </Link>
         )}
       </div>
-      {error && (
-        <p role="alert" className="max-w-xs text-right text-xs text-destructive">
-          {error}
-        </p>
-      )}
     </div>
   );
 }
 
-function OwnerLabel({ server }: { server: UnifiedServer }) {
+function OwnerLabel({
+  server,
+  onChanged,
+  inlineClaim = false,
+}: {
+  server: UnifiedServer;
+  onChanged?: () => void;
+  inlineClaim?: boolean;
+}) {
   const { t } = useTranslation("ops");
   const { t: ts } = useTranslation("servers");
   const noLobby = useConfig()?.noLobby === true;
   if (server.system) {
     return (
-      <span className="text-muted-foreground" title={ts(noLobby ? "system_service_hint_no_lobby" : "system_service_hint")}>
+      <span className="text-muted-foreground/70" title={ts(noLobby ? "system_service_hint_no_lobby" : "system_service_hint")}>
         {ts("system_service")}
       </span>
     );
   }
   if (server.owner) {
     return (
-      <span className="inline-flex min-w-0 max-w-[5.75rem] xl:max-w-[6.75rem] items-center gap-1">
-        <UserRound className="h-3 w-3 shrink-0 text-muted-foreground" />
+      <span className="inline-flex min-w-0 max-w-[8rem] items-center gap-1.5 xl:max-w-[11rem] min-[1400px]:max-w-[13rem] 2xl:max-w-[16rem]">
         {server.owned && (
-          <span className="shrink-0 rounded border border-border px-1 text-[10px] font-medium leading-4 text-foreground">
+          <span className="shrink-0 rounded bg-primary/12 px-1 text-[10px] font-medium leading-4 text-primary">
             {t("fleet_owner_you")}
           </span>
         )}
-        <span className="truncate" title={server.owner}>
+        <span className="truncate text-foreground/85" title={server.owner}>
           {server.owner}
         </span>
       </span>
@@ -849,37 +890,43 @@ function OwnerLabel({ server }: { server: UnifiedServer }) {
   }
   if (server.ownerUnknown) {
     return (
-      <span className="text-muted-foreground" title={t("fleet_owner_unknown_hint")}>
+      <span className="text-muted-foreground/65" title={t("fleet_owner_unknown_hint")}>
         {t("fleet_owner_unknown")}
       </span>
     );
   }
-  return <span className="text-muted-foreground">{t("fleet_unclaimed")}</span>;
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span className="text-muted-foreground/55">{t("fleet_unclaimed")}</span>
+      {inlineClaim && server.claimable && !server.owned && onChanged && (
+        <ClaimAction server={server} onChanged={onChanged} inline />
+      )}
+    </span>
+  );
 }
 
 function PlayersLabel({ server }: { server: UnifiedServer }) {
-  if (!isLive(server.phase)) return <span className="text-muted-foreground">—</span>;
+  if (!isLive(server.phase)) return <span className="text-muted-foreground/35">—</span>;
   return (
-    <span className="inline-flex items-center gap-1.5 whitespace-nowrap tabular-nums">
-      <Users className="h-3.5 w-3.5 text-muted-foreground" />
-      {server.playersOnline}
-      <span className="text-muted-foreground">/ {server.playersMax}</span>
+    <span className="inline-flex items-baseline gap-1 whitespace-nowrap tabular-nums">
+      <span className="font-medium text-foreground">{server.playersOnline}</span>
+      <span className="text-[11px] text-muted-foreground/65">/ {server.playersMax}</span>
     </span>
   );
 }
 
 function EndpointLabel({ server }: { server: UnifiedServer }) {
-  return <div className="space-y-1">{server.nodeName && <code className="text-xs">{server.nodeName}</code>}<EndpointAddress server={server} /></div>;
+  return <div className="space-y-0.5">{server.nodeName && <code className="block text-[11px] text-muted-foreground">{server.nodeName}</code>}<EndpointAddress server={server} /></div>;
 }
 
 function EndpointAddress({ server }: { server: UnifiedServer }) {
   const { t } = useTranslation("ops");
   const endpoint = server.ready && server.endpointAddress ? server.endpointAddress : null;
   if (!endpoint) {
-    return <span className="text-muted-foreground">{t("fleet_endpoint_idle")}</span>;
+    return <span className="text-muted-foreground/40">{t("fleet_endpoint_idle")}</span>;
   }
   return (
-    <code className="break-all rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground xl:whitespace-nowrap xl:break-normal">
+    <code className="break-all font-mono text-[11.5px] text-foreground/80 xl:whitespace-nowrap xl:break-normal">
       {endpoint}
     </code>
   );
@@ -907,7 +954,7 @@ function TagChips({ tags, inline = false }: { tags?: string[]; inline?: boolean 
         <li
           key={tag}
           title={tag}
-          className="max-w-full truncate rounded border border-border bg-muted px-1.5 text-[10.5px] leading-4 text-muted-foreground"
+          className="max-w-full truncate rounded bg-secondary/70 px-1.5 text-[10.5px] leading-4 text-muted-foreground"
         >
           {tag}
         </li>
@@ -940,51 +987,51 @@ function ServerRow({
       <td className="w-7 py-2.5 pl-3 pr-0 align-middle">
         <RowSelect server={server} select={select} />
       </td>
-      <td className="px-2 py-2.5 text-left align-middle">
-        <div className="flex min-w-0 max-w-[12.5rem] items-center gap-x-1.5 gap-y-0.5 xl:max-w-[17rem]">
+      <td className="px-2.5 py-2.5 text-left align-middle 2xl:px-3">
+        <div className="flex min-w-0 max-w-[14rem] items-center gap-x-1.5 gap-y-0.5 xl:max-w-[18rem] 2xl:max-w-[26rem]">
           <ServerName server={server} isAdmin={isAdmin} compactSlug={isAdmin} />
           <TagChips tags={server.tags} inline />
         </div>
         {address && (
           <CopyAddress
             address={address}
-            className={cn("mt-0.5 flex-nowrap", isAdmin ? "max-w-[10.5rem] xl:max-w-[13rem]" : "max-w-[20rem]")}
+            className={cn("mt-0.5 flex-nowrap", isAdmin ? "max-w-[13rem] xl:max-w-[17rem] 2xl:max-w-[24rem]" : "max-w-[24rem]")}
           />
         )}
       </td>
-      <td className="whitespace-nowrap px-2 py-2.5 text-left align-middle">
+      <td className="whitespace-nowrap px-2.5 py-2.5 text-left align-middle 2xl:px-3">
         <PhaseBadge phase={shownPhase(server)} failure={startFailure(server)} autoRestarts={server.autoRestarts} />
         {server.autostartPolicy && (
-          <div className="mt-0.5 text-[10.5px] text-muted-foreground/80">
+          <div className="mt-0.5 text-[10.5px] text-muted-foreground/55">
             {t(POLICY_KEY[server.autostartPolicy])}
           </div>
         )}
       </td>
       {isAdmin && (
-        <td className="whitespace-nowrap px-2 py-2.5 text-left align-middle text-muted-foreground">
-          <OwnerLabel server={server} />
+        <td className="whitespace-nowrap px-2.5 py-2.5 text-left align-middle text-muted-foreground 2xl:px-3">
+          <OwnerLabel server={server} onChanged={onChanged} inlineClaim />
         </td>
       )}
-      <td className="whitespace-nowrap px-2 py-2.5 text-left align-middle font-mono">
+      <td className="whitespace-nowrap px-2.5 py-2.5 text-left align-middle font-mono 2xl:px-3">
         <PlayersLabel server={server} />
       </td>
-      <td className={cn("whitespace-nowrap px-2 py-2.5 font-mono text-muted-foreground tabular-nums", isAdmin && "hidden xl:table-cell")}>
+      <td className={cn("whitespace-nowrap px-2.5 py-2.5 font-mono text-muted-foreground tabular-nums 2xl:px-3", isAdmin && "hidden xl:table-cell")}>
         {cpu === "—" && mem === "—" ? (
-          "—"
+          <span className="text-muted-foreground/35">—</span>
         ) : (
           <div className="flex flex-col leading-snug">
-            <span>{cpu}</span>
-            <span className="text-[11px]">{mem}</span>
+            <span className="text-foreground/90">{cpu}</span>
+            <span className="text-[11px] text-muted-foreground/65">{mem}</span>
           </div>
         )}
       </td>
       {isAdmin && (
-        <td className="hidden whitespace-nowrap px-2 py-2.5 text-left align-middle xl:table-cell">
+        <td className="hidden whitespace-nowrap px-2.5 py-2.5 text-left align-middle min-[1400px]:table-cell 2xl:px-3">
           <EndpointLabel server={server} />
         </td>
       )}
-      <td className="whitespace-nowrap px-3 py-2.5 align-middle">
-        <ServerActions server={server} isAdmin={isAdmin} onChanged={onChanged} />
+      <td className="whitespace-nowrap px-3 py-2.5 align-middle 2xl:px-3.5">
+        <ServerActions server={server} isAdmin={isAdmin} onChanged={onChanged} compact />
       </td>
     </tr>
   );
@@ -1194,7 +1241,7 @@ function ServerName({
         <span className="truncate font-medium text-foreground">{label}</span>
       )}
       {label !== server.name && (
-        <span className={cn("truncate font-mono text-xs text-muted-foreground", compactSlug && "hidden xl:inline")}>
+        <span className={cn("truncate font-mono text-[11px] text-muted-foreground/55", compactSlug && "hidden 2xl:inline")}>
           {server.name}
         </span>
       )}

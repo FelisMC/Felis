@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   AlertTriangle,
@@ -11,23 +11,23 @@ import { useTranslation } from "react-i18next";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Loading, ErrorState, RefreshError } from "@/components/States";
-import { AuditTable } from "@/components/AuditTable";
 import { PHASE_COLOR, PhaseBadge, shownPhase, startFailure } from "@/components/PhaseBadge";
 import { PlatformUsageCard } from "@/components/PlatformUsageCard";
 import { PageHeader } from "@/components/PageHeader";
 import { FleetGrid } from "@/components/FleetGrid";
 import { api, humanizeError } from "@/lib/api";
 import type { RuntimeConfig } from "@/lib/config";
+import { formatAbsolute } from "@/lib/format";
 import { useAsync, useConfig, usePolling, type AsyncState } from "@/lib/hooks";
 import { cpuUsage, memoryUsage } from "@/lib/resourceUsage";
 import { useTier } from "@/lib/tier";
 import { PlatformHealthBanner } from "@/components/PlatformHealthBanner";
+import { useEnterAnimation, useSlidingIndicator } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import type { Phase, MyServerView, WhitelistImage } from "@/lib/types";
 
 const SERVERS_POLL_MS = 10_000;
 const RECENT_AUDIT_COUNT = 10;
-const FOCUS_LIMIT = 6;
 
 export function Dashboard() {
   const cfg = useConfig();
@@ -58,7 +58,7 @@ export function Dashboard() {
   }, [list]);
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col gap-4 lg:min-h-0 lg:flex-1">
       <PageHeader
         title={t("title")}
         subtitle={isOwner ? <PlatformHealthBanner inline /> : t("subtitle")}
@@ -101,25 +101,69 @@ export function Dashboard() {
   );
 }
 
-function RecentAudit() {
-  const { t } = useTranslation("dashboard");
+function formatAuditClock(iso: string, now: number, locale: string): string {
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return "";
+  const ref = new Date(now);
+  const sameDay =
+    d.getFullYear() === ref.getFullYear() &&
+    d.getMonth() === ref.getMonth() &&
+    d.getDate() === ref.getDate();
+  return sameDay
+    ? d.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit", hour12: false })
+    : d.toLocaleString(locale, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+function RecentAudit({ className }: { className?: string }) {
+  const { t, i18n } = useTranslation("dashboard");
   const audit = useAsync(() => api.listAudit({ limit: RECENT_AUDIT_COUNT }), []);
+  const now = Date.now();
 
   return (
-    <Card className="overflow-hidden">
-      <CardHeader className="flex-row items-center justify-between gap-3">
+    <Card className={cn("flex h-full min-h-0 flex-col overflow-hidden", className)}>
+      <CardHeader className="min-h-10 shrink-0 flex-row items-center justify-between gap-3 py-2">
         <CardTitle>{t("audit_title")}</CardTitle>
-        <Button variant="outline" size="sm" asChild>
+        <Button variant="outline" size="sm" asChild className="group h-6 px-2 text-[11px]">
           <Link to="/admin/audit">
             {t("audit_view_all")}
-            <ArrowRight className="h-3 w-3" />
+            <ArrowRight className="h-3 w-3 transition-transform duration-150 ease-out group-hover:translate-x-0.5" />
           </Link>
         </Button>
       </CardHeader>
-      <CardContent className="p-0">
+      <CardContent className="min-h-0 flex-1 overflow-y-auto p-0 max-h-[282px] min-[1400px]:max-h-none">
         {audit.data ? (
           audit.data.entries.length > 0 ? (
-            <AuditTable entries={audit.data.entries} />
+            <ul className="divide-y divide-border/50 text-xs">
+              {audit.data.entries.map((entry) => (
+                <li
+                  key={entry.id}
+                  className="flex min-h-[56px] items-center justify-between gap-3 px-3.5 py-2.5 transition-colors hover:bg-accent/40"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <span className="truncate font-mono font-medium leading-4 text-foreground" title={entry.action}>
+                        {entry.action}
+                      </span>
+                      {entry.server_name && (
+                        <span className="shrink-0 rounded border border-border bg-muted px-1.5 font-mono text-[10.5px] leading-4 text-muted-foreground">
+                          {entry.server_name}
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-1 truncate text-[11px] leading-4 text-muted-foreground" title={entry.actor}>
+                      {entry.actor}
+                    </div>
+                  </div>
+                  <time
+                    dateTime={entry.created_at}
+                    title={formatAbsolute(entry.created_at, i18n.language)}
+                    className="shrink-0 whitespace-nowrap font-mono text-[11px] text-muted-foreground tabular-nums"
+                  >
+                    {formatAuditClock(entry.created_at, now, i18n.language)}
+                  </time>
+                </li>
+              ))}
+            </ul>
           ) : (
             <p className="p-4 text-xs text-muted-foreground">{t("audit_empty")}</p>
           )
@@ -202,24 +246,27 @@ function SummaryMetric({
   value,
   suffix,
   pct,
-  accent = false,
+  tone = "default",
 }: {
   label: string;
   value: React.ReactNode;
   suffix?: React.ReactNode;
   pct: number;
-  accent?: boolean;
+  tone?: "default" | "accent" | "danger";
 }) {
   return (
     <div className="flex flex-col gap-1">
       <span className="text-[11px] text-muted-foreground">{label}</span>
       <div className="flex items-baseline gap-1 font-mono text-[19px] font-semibold leading-tight tracking-tight text-foreground tabular-nums">
-        <span>{value}</span>
+        <span className={tone === "danger" ? "text-destructive" : undefined}>{value}</span>
         {suffix && <span className="text-xs font-normal text-muted-foreground">{suffix}</span>}
       </div>
       <div className="mt-1 h-[2px] w-full overflow-hidden rounded-full bg-secondary">
         <div
-          className={accent ? "h-full rounded-full bg-primary transition-all" : "h-full rounded-full bg-foreground/35 transition-all"}
+          className={cn(
+            "h-full origin-left animate-bar-grow rounded-full transition-[width,background-color] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
+            tone === "accent" ? "bg-primary" : tone === "danger" ? "bg-destructive" : "bg-foreground/35",
+          )}
           style={{ width: `${Math.min(100, Math.max(0, pct))}%` }}
         />
       </div>
@@ -237,17 +284,23 @@ function FleetFocusCard({
   servers,
   cfg,
   isAdmin,
+  compact = false,
 }: {
   servers: MyServerView[];
   cfg: RuntimeConfig;
   isAdmin: boolean;
+  compact?: boolean;
 }) {
   const { t } = useTranslation(["dashboard", "ops", "servers"]);
   const attention = useMemo(() => servers.filter(isAttention), [servers]);
   const running = useMemo(() => servers.filter((s) => s.phase === "Running"), [servers]);
   const [picked, setPicked] = useState<FocusTab | null>(null);
   const tab: FocusTab = picked ?? (attention.length > 0 ? "attention" : running.length > 0 ? "running" : "all");
-  const rows = (tab === "attention" ? attention : tab === "running" ? running : servers).slice(0, FOCUS_LIMIT);
+  const rows = tab === "attention" ? attention : tab === "running" ? running : servers;
+  const tabRowRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
+  const tabIndicator = useSlidingIndicator(tabRowRef, '[aria-pressed="true"]', `${tab}:${servers.length}`, "x");
+  useEnterAnimation(listRef, tab, -4, 180, 0.5);
 
   const tabs: { key: FocusTab; label: string; count: number }[] = [
     { key: "attention", label: t("ops:fleet_stat_failed"), count: attention.length },
@@ -255,48 +308,75 @@ function FleetFocusCard({
     { key: "all", label: t("ops:fleet_filter_all"), count: servers.length },
   ];
 
+  const colsClass = compact
+    ? "sm:grid-cols-[minmax(0,1fr)_8.25rem_4.25rem_4.75rem] min-[1720px]:grid-cols-[minmax(0,1fr)_8.25rem_4.25rem_7.5rem_4.75rem]"
+    : "sm:grid-cols-[minmax(0,1fr)_8.25rem_4.25rem_4.75rem] xl:grid-cols-[minmax(0,1fr)_8.25rem_4.25rem_7.5rem_4.75rem]";
+  const resourceColClass = compact ? "hidden min-[1720px]:block" : "hidden xl:block";
+
   return (
-    <Card className="overflow-hidden">
-      <CardHeader className="flex-row flex-wrap items-center justify-between gap-2 py-2">
-        <div className="flex items-center gap-4">
+    <Card className="flex h-full min-h-0 flex-col overflow-hidden">
+      <CardHeader className="min-h-10 shrink-0 flex-row flex-wrap items-center justify-between gap-2 py-2">
+        <div ref={tabRowRef} className="relative flex items-center gap-4">
+          {tabIndicator.ready && (
+            <span
+              aria-hidden="true"
+              className={cn(
+                "pointer-events-none absolute -bottom-2 left-0 h-[1.5px] rounded-full bg-primary motion-reduce:transition-none",
+                tabIndicator.animate && "transition-glide-x",
+              )}
+              style={{
+                transform: `translateX(${tabIndicator.start}px)`,
+                width: `${tabIndicator.size}px`,
+              }}
+            />
+          )}
           {tabs.map((item) => {
             const active = tab === item.key;
             return (
               <button
                 key={item.key}
                 type="button"
+                aria-pressed={active}
                 onClick={() => setPicked(item.key)}
                 className={cn(
-                  "relative inline-flex items-center gap-1.5 pb-1 pt-0.5 text-xs transition-colors",
+                  "relative inline-flex items-center gap-1.5 pb-1 pt-0.5 text-xs transition-[color,transform] duration-150 ease-out active:scale-[0.97]",
                   active ? "font-medium text-foreground" : "text-muted-foreground hover:text-foreground",
                 )}
               >
                 <span>{item.label}</span>
                 <span className="font-mono text-[11px] text-muted-foreground tabular-nums">{item.count}</span>
-                <span
-                  aria-hidden="true"
-                  className={cn("absolute inset-x-0 -bottom-2 h-[1.5px]", active ? "bg-primary" : "bg-transparent")}
-                />
+                {!tabIndicator.ready && (
+                  <span
+                    aria-hidden="true"
+                    className={cn("absolute inset-x-0 -bottom-2 h-[1.5px]", active ? "bg-primary" : "bg-transparent")}
+                  />
+                )}
               </button>
             );
           })}
         </div>
       </CardHeader>
-      <CardContent className="p-0">
+      <CardContent className="flex min-h-0 flex-1 flex-col p-0">
         {rows.length === 0 ? (
           <p className="px-3.5 py-6 text-center text-xs text-muted-foreground">
             {servers.length === 0 ? t("dashboard:no_servers_hint") : t("ops:fleet_no_match_title")}
           </p>
         ) : (
           <>
-            <div className="hidden grid-cols-[minmax(0,1fr)_8.25rem_4.25rem_4.75rem] items-center gap-3 border-b border-border/60 bg-muted px-3.5 py-2 text-[11px] text-muted-foreground sm:grid xl:grid-cols-[minmax(0,1fr)_8.25rem_4.25rem_7.5rem_4.75rem]">
+            <div className={cn("hidden shrink-0 items-center gap-3 border-b border-border/60 bg-muted px-3.5 py-2 text-[11px] text-muted-foreground sm:grid", colsClass)}>
               <span>{t("ops:fleet_col_server")}</span>
               <span>{t("ops:fleet_col_status")}</span>
               <span>{t("ops:fleet_col_players")}</span>
-              <span className="hidden xl:block">{t("servers:usage_cpu")} / {t("servers:usage_memory")}</span>
+              <span className={resourceColClass}>{t("servers:usage_cpu")} / {t("servers:usage_memory")}</span>
               <span className="text-right">{t("ops:fleet_col_actions")}</span>
             </div>
-            <ul className="divide-y divide-border/50 text-xs">
+            <ul
+              ref={listRef}
+              className={cn(
+                "max-h-[248px] min-h-0 flex-1 divide-y divide-border/50 overflow-y-auto text-xs",
+                compact ? "min-[1400px]:max-h-none" : "lg:max-h-none",
+              )}
+            >
               {rows.map((s) => {
                 const phase = s.phase ?? "Unknown";
                 const host = s.subdomain && cfg.rootDomain ? `${s.subdomain}.${cfg.rootDomain}` : s.name;
@@ -309,7 +389,7 @@ function FleetFocusCard({
                 return (
                   <li
                     key={s.name}
-                    className="grid grid-cols-1 items-center gap-2 px-3.5 py-2.5 transition-colors hover:bg-accent/40 sm:grid-cols-[minmax(0,1fr)_8.25rem_4.25rem_4.75rem] sm:gap-3 xl:grid-cols-[minmax(0,1fr)_8.25rem_4.25rem_7.5rem_4.75rem]"
+                    className={cn("grid grid-cols-1 items-center gap-2 px-3.5 py-2 transition-colors hover:bg-accent/40 sm:gap-3", colsClass)}
                   >
                     <div className="min-w-0">
                       <Link to={target} className="block truncate font-medium text-foreground transition-colors hover:text-primary hover:underline">
@@ -323,7 +403,7 @@ function FleetFocusCard({
                     <div className="font-mono text-muted-foreground tabular-nums">
                       {live ? `${s.playersOnline} / ${s.playersMax}` : "—"}
                     </div>
-                    <div className="hidden truncate font-mono text-[11px] text-muted-foreground tabular-nums xl:block" title={resource}>
+                    <div className={cn("truncate font-mono text-[11px] text-muted-foreground tabular-nums", resourceColClass)} title={resource}>
                       {resource}
                     </div>
                     <div className="flex justify-end">
@@ -461,86 +541,135 @@ function FleetView({
     { label: t("spec_failed_ratio"), value: `${failedRatio}%`, tone: statusStats.failed > 0 ? "text-destructive" : "text-muted-foreground" },
   ];
 
-  return (
-    <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_264px] xl:grid-cols-[minmax(0,1fr)_284px]">
-      <div className="min-w-0 space-y-4">
-        <div className="grid grid-cols-1 gap-4 py-0.5 sm:grid-cols-3">
-          <SummaryMetric label={t("stat_servers")} value={counts.total} pct={counts.total > 0 ? 100 : 0} />
-          <SummaryMetric
-            label={t("stat_running")}
-            value={counts.running}
-            suffix={`/ ${counts.total}`}
-            pct={runningRatio}
-            accent
-          />
-          <SummaryMetric
-            label={t("stat_players_online")}
-            value={counts.players}
-            suffix={statusStats.maxPlayers > 0 ? `/ ${statusStats.maxPlayers}` : undefined}
-            pct={loadPercentage}
-            accent
-          />
+  const fleetOverviewCard = (
+    <Card className="flex h-full flex-col overflow-hidden">
+      <CardHeader className="min-h-10 flex-row items-center justify-between gap-2 py-2">
+        <CardTitle>{t("fleet")}</CardTitle>
+        <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
+          {t("instances_count", { count: servers.length })}
+        </span>
+      </CardHeader>
+      <CardContent className="flex flex-1 flex-col p-0">
+        <div className="flex-1 border-b border-border/60 bg-muted/50">
+          <FleetGrid servers={servers} />
         </div>
-
-        <FleetFocusCard servers={servers} cfg={cfg} isAdmin={isAdmin} />
-
-        {isAdmin && <PlatformUsageCard distributed={distributed} />}
-        {isOwner && <RecentAudit />}
-      </div>
-
-      <div className="space-y-4">
-        <Card className="overflow-hidden">
-          <CardHeader className="flex-row items-center justify-between gap-2">
-            <CardTitle>{t("fleet")}</CardTitle>
-            <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
-              {t("instances_count", { count: servers.length })}
-            </span>
-          </CardHeader>
-          <CardContent className="p-0">
-            <div className="border-b border-border/60 bg-muted/50">
-              <FleetGrid servers={servers} />
+        <div className="divide-y divide-border/50 text-xs">
+          {legendItems.map(({ key, count, ratio, color, pulse }) => (
+            <div key={key} className="flex items-center justify-between px-3.5 py-2">
+              <span className="inline-flex items-center gap-2 text-muted-foreground">
+                <span
+                  className={`h-[5.5px] w-[5.5px] rounded-full ${pulse && count > 0 ? "animate-status-breathe" : ""}`}
+                  style={{ backgroundColor: color }}
+                />
+                {t(key)}
+              </span>
+              <span className="font-mono text-foreground tabular-nums">
+                {count}
+                {ratio !== null && servers.length > 0 && (
+                  <span className="ml-1.5 text-[10.5px] text-muted-foreground">{ratio}%</span>
+                )}
+              </span>
             </div>
-            <div className="divide-y divide-border/50 text-xs">
-              {legendItems.map(({ key, count, ratio, color, pulse }) => (
-                <div key={key} className="flex items-center justify-between px-3.5 py-2">
-                  <span className="inline-flex items-center gap-2 text-muted-foreground">
-                    <span
-                      className={`h-[5.5px] w-[5.5px] rounded-full ${pulse && count > 0 ? "animate-pulse" : ""}`}
-                      style={{ backgroundColor: color }}
-                    />
-                    {t(key)}
-                  </span>
-                  <span className="font-mono text-foreground tabular-nums">
-                    {count}
-                    {ratio !== null && servers.length > 0 && (
-                      <span className="ml-1.5 text-[10.5px] text-muted-foreground">{ratio}%</span>
-                    )}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
 
-        <Card className="overflow-hidden">
-          <CardHeader>
-            <CardTitle>{t("system_specs")}</CardTitle>
-          </CardHeader>
-          <CardContent className="divide-y divide-border/50 p-0">
-            <LinkRow link={link} staff={isAdmin} />
-            {isAdmin &&
-              specs.map((item) => (
+  const systemSpecsCard = (
+    <Card className="flex h-full flex-col overflow-hidden">
+      <CardHeader>
+        <CardTitle>{t("system_specs")}</CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-1 flex-col divide-y divide-border/50 p-0">
+        <LinkRow link={link} staff={isAdmin} />
+        {isAdmin && (
+          <div className="grid flex-1 grid-cols-2 text-xs">
+            {specs.map((item, idx) => {
+              const spanFull = idx === specs.length - 1 && specs.length % 2 === 1;
+              return (
                 <div
                   key={item.label}
-                  className="flex items-center justify-between gap-2 space-y-1 px-3.5 py-2 text-xs [&>*]:!mt-0"
+                  className={cn(
+                    "flex items-center justify-between gap-2 space-y-1 border-t border-border/50 px-3 py-2 [&>*]:!mt-0",
+                    idx < 2 && "border-t-0",
+                    !spanFull && idx % 2 === 1 && "border-l border-border/50",
+                    spanFull && "col-span-2",
+                  )}
                 >
-                  <span className="text-muted-foreground">{item.label}</span>
-                  <span className={`font-mono font-medium tabular-nums ${item.tone}`}>{item.value}</span>
+                  <span className="truncate text-muted-foreground">{item.label}</span>
+                  <span className={`shrink-0 font-mono font-medium tabular-nums ${item.tone}`}>{item.value}</span>
                 </div>
-              ))}
-          </CardContent>
-        </Card>
+              );
+            })}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+
+  return (
+    <div className="flex flex-col gap-4 lg:min-h-0 lg:flex-1">
+      <div className="grid shrink-0 grid-cols-2 gap-4 py-0.5 sm:grid-cols-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_320px]">
+        <SummaryMetric
+          label={t("stat_servers")}
+          value={counts.total}
+          pct={counts.total > 0 ? 100 : 0}
+        />
+        <SummaryMetric
+          label={t("stat_running")}
+          value={counts.running}
+          suffix={`/ ${counts.total}`}
+          pct={runningRatio}
+          tone="accent"
+        />
+        <SummaryMetric
+          label={t("legend_failed")}
+          value={statusStats.failed}
+          suffix={counts.total > 0 ? `/ ${counts.total}` : undefined}
+          pct={failedRatio}
+          tone={statusStats.failed > 0 ? "danger" : "default"}
+        />
+        <SummaryMetric
+          label={t("stat_players_online")}
+          value={counts.players}
+          suffix={statusStats.maxPlayers > 0 ? `/ ${statusStats.maxPlayers}` : undefined}
+          pct={loadPercentage}
+          tone="accent"
+        />
       </div>
+
+      <div className="grid grid-cols-1 items-stretch gap-4 lg:min-h-[324px] lg:flex-1 lg:grid-cols-[minmax(0,1fr)_320px] lg:grid-rows-[minmax(0,1fr)]">
+        <div
+          className={cn(
+            "grid min-h-0 min-w-0 grid-cols-1 items-stretch gap-4",
+            isOwner
+              ? "min-[1400px]:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)] min-[1400px]:grid-rows-[minmax(0,1fr)]"
+              : "lg:grid-rows-[minmax(0,1fr)]",
+          )}
+        >
+          <div className="min-h-0 min-w-0">
+            <FleetFocusCard servers={servers} cfg={cfg} isAdmin={isAdmin} compact={isOwner} />
+          </div>
+          {isOwner && (
+            <div className="min-h-0 min-w-0">
+              <RecentAudit />
+            </div>
+          )}
+        </div>
+        <div className="min-h-0 min-w-0">{fleetOverviewCard}</div>
+      </div>
+
+      {isAdmin ? (
+        <div className="grid shrink-0 grid-cols-1 items-stretch gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+          <div className="min-w-0">
+            <PlatformUsageCard distributed={distributed} className="h-full" />
+          </div>
+          <div className="min-w-0">{systemSpecsCard}</div>
+        </div>
+      ) : (
+        <div className="shrink-0">{systemSpecsCard}</div>
+      )}
     </div>
   );
 }

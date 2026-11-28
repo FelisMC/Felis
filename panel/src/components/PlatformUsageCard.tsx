@@ -19,7 +19,7 @@ type Metric = "cpuMilli" | "memoryBytes" | "running";
 const cores = (milli: number) => (milli / 1000).toFixed(2);
 
 /** distributed shows the per-node table; on a single node it would repeat the totals. */
-export function PlatformUsageCard({ distributed }: { distributed: boolean }) {
+export function PlatformUsageCard({ distributed, className }: { distributed: boolean; className?: string }) {
   const { t } = useTranslation("dashboard");
   const { isOwner } = useTier();
   const usage = useAsync(() => api.fleetUsage(), [], { coalesce: true });
@@ -35,12 +35,12 @@ export function PlatformUsageCard({ distributed }: { distributed: boolean }) {
   ];
 
   return (
-    <Card className="overflow-hidden">
+    <Card className={cn("flex flex-col overflow-hidden", className)}>
       <CardHeader className="flex-row flex-wrap items-center justify-between gap-2">
         <CardTitle>{t("platform_title")}</CardTitle>
         <p className="text-[11px] text-muted-foreground">{t("platform_window")}</p>
       </CardHeader>
-      <CardContent className="p-0">
+      <CardContent className="flex flex-1 flex-col p-0">
         {!data ? (
           <div className="p-4">
             {usage.error ? <ErrorState error={usage.error} onRetry={usage.reload} /> : <Loading />}
@@ -48,7 +48,7 @@ export function PlatformUsageCard({ distributed }: { distributed: boolean }) {
         ) : (
           <>
             {usage.error != null && <RefreshError error={usage.error} className="m-3.5 mb-0" />}
-            <div className="grid grid-cols-1 divide-y divide-border/60 sm:grid-cols-2 sm:divide-y-0 xl:grid-cols-4 xl:divide-x">
+            <div className="grid flex-1 grid-cols-1 divide-y divide-border/60 sm:grid-cols-2 sm:divide-y-0 xl:grid-cols-4 xl:divide-x">
               {metrics.map(({ metric, icon, label, curve, value }, idx) => (
                 <MetricTile
                   key={metric}
@@ -76,10 +76,10 @@ export function PlatformUsageCard({ distributed }: { distributed: boolean }) {
                   {isOwner && (
                     <Link
                       to="/admin/audit"
-                      className="inline-flex h-6 w-fit items-center gap-1 rounded-md border border-border bg-card px-2 font-medium text-foreground transition-colors hover:border-muted-foreground/30 hover:bg-accent/70"
+                      className="group inline-flex h-6 w-fit items-center gap-1 rounded-md border border-border bg-card px-2 font-medium text-foreground transition-[color,background-color,border-color,transform] duration-150 ease-out hover:border-muted-foreground/30 hover:bg-accent/70 active:scale-[0.98]"
                     >
                       {t("platform_view_audit")}
-                      <ArrowRight className="h-3 w-3" aria-hidden="true" />
+                      <ArrowRight className="h-3 w-3 transition-transform duration-150 ease-out group-hover:translate-x-0.5" aria-hidden="true" />
                     </Link>
                   )}
                 </div>

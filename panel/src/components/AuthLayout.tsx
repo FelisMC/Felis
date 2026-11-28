@@ -28,7 +28,7 @@ export function AuthLayout({
       <div className="relative flex flex-1 items-center justify-center">
         <div
           className={cn(
-            "w-full max-w-[400px] space-y-6",
+            "w-full max-w-[400px] animate-fade-up space-y-6",
             background && "rounded-xl border border-border/75 bg-background/90 p-6 shadow-xl backdrop-blur-md sm:p-7",
           )}
         >

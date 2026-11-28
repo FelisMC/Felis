@@ -22,7 +22,7 @@ export function DiskUsage({ disk, diskFull = false }: { disk?: ServerDiskUsage; 
           {disk ? (
             <>
               <div role="meter" aria-label={t("disk_title")} aria-valuemin={0} aria-valuemax={disk.limitBytes} aria-valuenow={Math.min(disk.usedBytes, disk.limitBytes)} aria-valuetext={value} className="h-1.5 overflow-hidden rounded-full bg-secondary">
-                <div className={cn("h-full rounded-full", diskFull ? "bg-destructive" : fraction >= 0.9 ? "bg-amber-500" : "bg-primary")} style={{ width: `${Math.min(100, fraction * 100)}%` }} />
+                <div className={cn("h-full origin-left animate-bar-grow rounded-full transition-[width,background-color] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]", diskFull ? "bg-destructive" : fraction >= 0.9 ? "bg-amber-500" : "bg-primary")} style={{ width: `${Math.min(100, fraction * 100)}%` }} />
               </div>
               <p className="text-[11px] text-muted-foreground">{t(disk.stale ? "disk_stale" : "disk_sampled")} <time dateTime={disk.sampledAt}>{formatAbsolute(disk.sampledAt, i18n.language)}</time></p>
             </>

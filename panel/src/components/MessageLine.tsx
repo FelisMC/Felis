@@ -28,7 +28,7 @@ export function MessageLine({ kind, message, compact, className }: Props) {
       <p
         role={ROLE[kind]}
         className={cn(
-          "text-xs font-medium rounded-md p-2.5",
+          "animate-slide-down rounded-md p-2.5 text-xs font-medium",
           COMPACT_STYLE,
           className,
         )}
@@ -42,7 +42,7 @@ export function MessageLine({ kind, message, compact, className }: Props) {
     <div
       role={ROLE[kind]}
       className={cn(
-        "flex items-center gap-2 rounded-md border p-3 text-sm",
+        "flex animate-slide-down items-center gap-2 rounded-md border p-3 text-sm",
         STYLE[kind],
         className,
       )}
@@ -58,7 +58,7 @@ export function MessageLine({ kind, message, compact, className }: Props) {
 export function InlineError({ message, className }: { message?: string | null; className?: string }) {
   if (!message) return null;
   return (
-    <p role="alert" className={cn("text-sm text-destructive", className)}>
+    <p role="alert" className={cn("animate-slide-down text-sm text-destructive", className)}>
       {message}
     </p>
   );

@@ -76,9 +76,9 @@ export function RconToggle({ shown, hidden, onToggle }: { shown: boolean; hidden
 function StatusIndicator({ status }: { status: StreamStatus }) {
   const { t } = useTranslation("servers");
   const map: Record<StreamStatus, { dot: string; label: string; text: string }> = {
-    connecting: { dot: "bg-amber-400 animate-pulse", label: t("log_connecting"), text: "text-amber-300" },
+    connecting: { dot: "bg-amber-400 animate-status-breathe", label: t("log_connecting"), text: "text-amber-300" },
     open: { dot: "bg-emerald-400", label: t("log_live"), text: "text-emerald-300" },
-    reconnecting: { dot: "bg-amber-400 animate-pulse", label: t("log_reconnecting"), text: "text-amber-300" },
+    reconnecting: { dot: "bg-amber-400 animate-status-breathe", label: t("log_reconnecting"), text: "text-amber-300" },
     ended: { dot: "bg-zinc-500", label: t("log_ended"), text: "text-zinc-400" },
   };
   const s = map[status];

@@ -111,28 +111,94 @@ export function PowerButton({
   const players = playersOnline ?? 0;
   const askFirst = players > 0 || playerCountUnknown === true;
   const spinner = <Loader2 className="animate-spin" />;
-  const stopButton = (variant: "destructive" | "outline", onClick: () => void) => (
-    <Button
-      size={size}
-      variant={variant}
-      onClick={onClick}
-      disabled={busy !== null}
-      className={variant === "outline" ? "hover:border-destructive/40 hover:text-destructive" : undefined}
-    >
-      {busy === "stop" ? spinner : <Square />}
-      {busy === "stop" ? t("stopping") : t("stop")}
-    </Button>
-  );
-  // inProgress is a server on its way somewhere with nothing to press meanwhile.
-  const inProgress = (kind: "wake" | "stop" | "restart") => (
-    <Button size={size} variant={kind === "stop" ? "outline" : "default"} disabled>
-      {spinner}
-      {kind === "wake" ? t("waking") : kind === "restart" ? t("restarting") : t("stopping")}
-    </Button>
-  );
+  const quietSlot = "grid w-[58px] grid-cols-2 items-center gap-0.5";
+  const quietIconBtn = "h-7 w-7 border-transparent p-0";
 
-  const wakeVariant = quiet ? "outline" : "default";
-  const wakeClass = quiet ? "border-primary/40 text-primary hover:border-primary/60 hover:bg-primary/10 hover:text-primary" : undefined;
+  const stopButton = (variant: "destructive" | "outline", onClick: () => void, slotClass?: string) => {
+    const label = busy === "stop" ? t("stopping") : t("stop");
+    if (quiet && variant === "outline") {
+      return (
+        <Button
+          size="icon"
+          variant="ghost"
+          onClick={onClick}
+          disabled={busy !== null}
+          aria-label={label}
+          title={label}
+          className={cn(quietIconBtn, "text-muted-foreground/75 hover:bg-destructive/12 hover:text-destructive", slotClass)}
+        >
+          {busy === "stop" ? spinner : <Square />}
+        </Button>
+      );
+    }
+    return (
+      <Button
+        size={size}
+        variant={variant}
+        onClick={onClick}
+        disabled={busy !== null}
+        className={variant === "outline" ? "hover:border-destructive/40 hover:text-destructive" : undefined}
+      >
+        {busy === "stop" ? spinner : <Square />}
+        {label}
+      </Button>
+    );
+  };
+  const wakeActionButton = (
+    label: string,
+    icon: React.ReactNode,
+    onClick: () => void,
+    disabled: boolean,
+    slotClass?: string,
+  ) => {
+    if (quiet) {
+      return (
+        <Button
+          size="icon"
+          variant="ghost"
+          onClick={onClick}
+          disabled={disabled}
+          aria-label={label}
+          title={label}
+          className={cn(quietIconBtn, "text-primary hover:bg-primary/12 hover:text-primary", slotClass)}
+        >
+          {busy === "wake" ? spinner : icon}
+        </Button>
+      );
+    }
+    return (
+      <Button size={size} variant="default" onClick={onClick} disabled={disabled}>
+        {busy === "wake" ? spinner : icon}
+        {label}
+      </Button>
+    );
+  };
+  // inProgress is a server on its way somewhere with nothing to press meanwhile.
+  const inProgress = (kind: "wake" | "stop" | "restart") => {
+    const label = kind === "wake" ? t("waking") : kind === "restart" ? t("restarting") : t("stopping");
+    if (quiet) {
+      return (
+        <div className={quietSlot}>
+          <Button
+            size="icon"
+            variant="ghost"
+            aria-label={label}
+            title={label}
+            className={cn(quietIconBtn, "col-start-2 text-muted-foreground")}
+            disabled
+          >
+            {spinner}
+          </Button>
+        </div>
+      );
+    }
+    return (
+      <Button size={size} variant={kind === "stop" ? "outline" : "default"} disabled>
+        {spinner}
+        {label}
+      </Button>
+    );
+  };
 
   let control;
   if (retiring) {
@@ -140,20 +206,29 @@ export function PowerButton({
   } else if (submitted !== null) {
     control = inProgress(submitted);
   } else if (failed && stopOnly) {
-    control = stopButton("outline", () => void run("stop"));
+    control = quiet ? <div className={quietSlot}>{stopButton("outline", () => void run("stop"), "col-start-2")}</div> : stopButton("outline", () => void run("stop"));
   } else if (failed) {
     // Retry and stop stay side by side: a row of actions that wraps moves them as one.
     control = (
-      <div className={cn("flex items-center justify-end", quiet ? "gap-1" : "gap-1.5")}>
-        <Button size={size} variant={wakeVariant} className={wakeClass} onClick={() => void run("wake")} disabled={busy !== null || diskFull}>
-          {busy === "wake" ? spinner : <RotateCcw />}
-          {busy === "wake" ? t("retrying_start") : t("retry_start")}
-        </Button>
-        {stopButton("outline", () => void run("stop"))}
+      <div className={quiet ? quietSlot : "flex items-center justify-end gap-1.5"}>
+        {wakeActionButton(
+          busy === "wake" ? t("retrying_start") : t("retry_start"),
+          <RotateCcw />,
+          () => void run("wake"),
+          busy !== null || diskFull,
+          "col-start-1",
+        )}
+        {stopButton("outline", () => void run("stop"), "col-start-2")}
       </div>
     );
   } else if (desiredState === "Hibernated" && phase !== "Hibernated") {
-    control = (
+    control = quiet ? (
+      <div className={quietSlot}>
+        <Button size="icon" variant="ghost" aria-label={t("hibernating")} title={t("hibernating")} className={cn(quietIconBtn, "col-start-2 text-muted-foreground")} disabled>
+          {spinner}
+        </Button>
+      </div>
+    ) : (
       <Button size={size} variant="outline" disabled>
         {spinner}
         {t("hibernating")}
@@ -161,14 +236,16 @@ export function PowerButton({
     );
   } else if (desiredState === "Hibernated") {
     control = (
-      <div className={cn("flex items-center justify-end", quiet ? "gap-1" : "gap-1.5")}>
-        {!stopOnly && (
-          <Button size={size} variant={wakeVariant} className={wakeClass} onClick={() => void run("wake")} disabled={busy !== null || diskFull}>
-            {busy === "wake" ? spinner : <Play />}
-            {busy === "wake" ? t("resuming") : t("resume")}
-          </Button>
-        )}
-        {stopButton("outline", () => void run("stop"))}
+      <div className={quiet ? quietSlot : "flex items-center justify-end gap-1.5"}>
+        {!stopOnly &&
+          wakeActionButton(
+            busy === "wake" ? t("resuming") : t("resume"),
+            <Play />,
+            () => void run("wake"),
+            busy !== null || diskFull,
+            "col-start-1",
+          )}
+        {stopButton("outline", () => void run("stop"), "col-start-2")}
       </div>
     );
   } else if (pending === "stop" || (phase === "Stopping" && pending === null)) {
@@ -177,15 +254,17 @@ export function PowerButton({
     // Woken while stopping: the operator brings it back up once it is down.
     control = inProgress("wake");
   } else if (!stopOnly && !on) {
-    control = (
-      <Button size={size} variant={wakeVariant} className={wakeClass} onClick={() => void run("wake")} disabled={busy !== null || diskFull}>
-        {busy === "wake" ? spinner : <Play />}
-        {busy === "wake" ? t("waking") : t("wake")}
-      </Button>
+    const btn = wakeActionButton(
+      busy === "wake" ? t("waking") : t("wake"),
+      <Play />,
+      () => void run("wake"),
+      busy !== null || diskFull,
+      "col-start-1",
     );
+    control = quiet ? <div className={quietSlot}>{btn}</div> : btn;
   } else if (confirming) {
     control = (
-      <div role="alert" className="flex flex-wrap items-center justify-end gap-2">
+      <div role="alert" className="flex animate-pop-in flex-wrap items-center justify-end gap-2">
         <span className="text-xs font-medium text-foreground">
           {players > 0
             ? t(`${confirming}_confirm_players`, { count: players })
@@ -202,14 +281,14 @@ export function PowerButton({
     );
   } else {
     control = (
-      <div className="flex flex-wrap items-center justify-end gap-2">
+      <div className={quiet ? quietSlot : "flex flex-wrap items-center justify-end gap-2"}>
         {allowRestart && !stopOnly && phase === "Running" && (
           <Button size={size} variant="outline" onClick={() => (askFirst ? setConfirming("restart") : void run("restart"))} disabled={busy !== null || diskFull}>
             {busy === "restart" ? spinner : <RotateCcw />}
             {busy === "restart" ? t("restarting") : t("restart")}
           </Button>
         )}
-        {stopButton("outline", () => (askFirst ? setConfirming("stop") : void run("stop")))}
+        {stopButton("outline", () => (askFirst ? setConfirming("stop") : void run("stop")), "col-start-2")}
       </div>
     );
   }
@@ -219,7 +298,7 @@ export function PowerButton({
       {control}
       {diskFull && !stopOnly && !retiring && <p role="status" className="max-w-xs text-right text-xs text-destructive">{t("disk_full_blocked")}</p>}
       {error && (
-        <p role="alert" className="max-w-xs text-right text-xs text-destructive">
+        <p role="alert" className="max-w-xs animate-slide-down text-right text-xs text-destructive">
           {error}
         </p>
       )}

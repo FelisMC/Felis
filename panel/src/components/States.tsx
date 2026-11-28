@@ -23,7 +23,7 @@ export function Loading({ label }: { label?: string }) {
 export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () => void }) {
   const { t } = useTranslation("common");
   return (
-    <div className="flex flex-col items-center justify-center gap-2.5 py-12 text-center">
+    <div className="flex animate-fade-in flex-col items-center justify-center gap-2.5 py-12 text-center">
       <span className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-destructive/25 bg-destructive/10 text-destructive">
         <AlertTriangle className="h-4 w-4" />
       </span>
@@ -43,7 +43,7 @@ export function RefreshError({ error, className }: { error: unknown; className?:
     <div
       role="alert"
       className={cn(
-        "flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive",
+        "flex animate-slide-down items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive",
         className,
       )}
     >
@@ -65,7 +65,7 @@ export function EmptyState({
   children?: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-2.5 rounded-xl border border-dashed border-border/80 bg-card/40 px-4 py-12 text-center">
+    <div className="flex animate-fade-in flex-col items-center justify-center gap-2.5 rounded-xl border border-dashed border-border/80 bg-card/40 px-4 py-12 text-center">
       <Inbox className="h-5 w-5 text-muted-foreground/75" />
       <div>
         <p className="text-[13px] font-medium text-foreground">{title}</p>
@@ -249,7 +249,7 @@ export function NotRunning({
     <div
       role="status"
       aria-live="polite"
-      className="flex flex-col items-center justify-center gap-3.5 rounded-xl border border-dashed border-border/80 bg-card/50 px-4 py-14 text-center"
+      className="flex animate-fade-in flex-col items-center justify-center gap-3.5 rounded-xl border border-dashed border-border/80 bg-card/50 px-4 py-14 text-center"
     >
       {icon}
       <div>

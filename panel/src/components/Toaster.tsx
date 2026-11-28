@@ -78,7 +78,7 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: number)
   const Icon = ICON[toast.kind];
   // The outer card is opaque, so the tinted row does not let page content show through.
   return (
-    <div className="pointer-events-auto animate-in fade-in-0 slide-in-from-bottom-2 rounded-md bg-card shadow-lg motion-reduce:animate-none">
+    <div className="pointer-events-auto duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] animate-in fade-in-0 slide-in-from-bottom-3 zoom-in-95 rounded-md bg-card shadow-lg motion-reduce:animate-none">
       <div className={cn("flex items-start gap-2 rounded-md border p-3 text-sm", STYLE[toast.kind])}>
         <Icon className="mt-0.5 h-4 w-4 shrink-0" />
         <p className="min-w-0 flex-1 break-words">{toast.message}</p>
@@ -86,7 +86,7 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: number)
           type="button"
           aria-label={t("dismiss_notification")}
           onClick={() => onDismiss(toast.id)}
-          className="shrink-0 rounded-sm opacity-70 transition-opacity hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="shrink-0 rounded-sm opacity-70 transition-[opacity,transform] duration-150 hover:opacity-100 active:scale-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <X className="h-4 w-4" />
         </button>

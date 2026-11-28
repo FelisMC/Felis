@@ -35,7 +35,7 @@ export function ConfigBanner({ className }: { className?: string }) {
     <div
       role="alert"
       className={cn(
-        "flex flex-wrap items-center justify-between gap-2 border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm text-amber-800 dark:text-amber-200",
+        "flex animate-slide-down flex-wrap items-center justify-between gap-2 border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm text-amber-800 dark:text-amber-200",
         className ?? "border-b",
       )}
     >

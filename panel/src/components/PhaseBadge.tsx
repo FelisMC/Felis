@@ -107,7 +107,7 @@ export function PhaseBadge({
         aria-hidden="true"
         className={cn(
           "h-[5.5px] w-[5.5px] shrink-0 rounded-full",
-          (TRANSIENT.has(phase) || retrying) && "animate-pulse",
+          (TRANSIENT.has(phase) || retrying) && "animate-status-breathe",
         )}
         style={{ backgroundColor: phaseColor(phase) }}
       />

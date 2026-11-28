@@ -26,6 +26,9 @@
     --input: 240 6% 87%;
     --ring: 145 68% 37%;
     --radius: 0.5rem;
+    --ease-snappy: cubic-bezier(0.2, 0, 0, 1);
+    --ease-out-expo: cubic-bezier(0.22, 1, 0.36, 1);
+    --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
   }
 
   .dark {
@@ -73,6 +76,29 @@
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    transition: background-color 150ms ease, color 150ms ease;
+  }
+
+  [role="tabpanel"]:not([hidden]) {
+    animation: felis-enter 220ms var(--ease-out-expo);
+  }
+
+  details[open] > :not(summary) {
+    animation: felis-slide-down 200ms var(--ease-out-expo);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      scroll-behavior: auto !important;
+    }
+
+    *:not(.animate-spin) {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
   }
 
   ::selection {
@@ -98,5 +124,147 @@
 
   ::-webkit-scrollbar-thumb:hover {
     background-color: hsl(var(--muted-foreground) / 0.38);
+  }
+}
+
+@keyframes felis-fade-in {
+  from {
+    opacity: 0.35;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes felis-enter {
+  from {
+    opacity: 0.4;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes felis-fade-up {
+  from {
+    opacity: 0.25;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes felis-pop-in {
+  from {
+    opacity: 0.25;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes felis-slide-down {
+  from {
+    opacity: 0.25;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes felis-check-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.55);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes felis-bar-grow {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@keyframes felis-chart-draw {
+  from {
+    clip-path: inset(0 100% 0 0);
+  }
+  to {
+    clip-path: inset(0 0% 0 0);
+  }
+}
+
+@keyframes felis-status-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.8;
+  }
+}
+
+@layer utilities {
+  .animate-fade-in {
+    animation: felis-fade-in 200ms var(--ease-out-expo);
+  }
+
+  .animate-page-enter {
+    animation: felis-enter 220ms var(--ease-out-expo);
+  }
+
+  .animate-fade-up {
+    animation: felis-fade-up 260ms var(--ease-out-expo);
+  }
+
+  .animate-pop-in {
+    animation: felis-pop-in 180ms var(--ease-out-expo);
+  }
+
+  .animate-slide-down {
+    animation: felis-slide-down 220ms var(--ease-out-expo);
+  }
+
+  .animate-check-pop {
+    animation: felis-check-pop 180ms var(--ease-spring);
+  }
+
+  .animate-bar-grow {
+    animation: felis-bar-grow 480ms var(--ease-out-expo);
+  }
+
+  .animate-chart-draw {
+    animation: felis-chart-draw 460ms var(--ease-out-expo);
+  }
+
+  .animate-status-breathe {
+    animation: felis-status-breathe 3.2s ease-in-out infinite;
+  }
+
+  .transition-glide-x {
+    transition:
+      transform 240ms var(--ease-out-expo),
+      width 240ms var(--ease-out-expo);
+  }
+
+  .transition-glide-y {
+    transition:
+      transform 240ms var(--ease-out-expo),
+      height 240ms var(--ease-out-expo);
   }
 }

@@ -50,8 +50,8 @@ const DEFAULT_CONTEXT_LIMIT = 1024 * 1024 * 1024;
 
 // The linked build's outcome as shown in a row's expanded details. Colours mirror the admin build page; the labels are player-facing, so they come from this page's namespace.
 const BUILD_STATUS_STYLE: Record<BuildStatus, string> = {
-  pending: "bg-amber-500/10 text-amber-500 border-amber-500/20 animate-pulse",
-  building: "bg-blue-500/10 text-blue-500 border-blue-500/20 animate-pulse",
+  pending: "bg-amber-500/10 text-amber-500 border-amber-500/20 animate-status-breathe",
+  building: "bg-blue-500/10 text-blue-500 border-blue-500/20 animate-status-breathe",
   succeeded: "bg-emerald-500/10 text-emerald-500 border-emerald-500/20",
   failed: "bg-rose-500/10 text-rose-500 border-rose-500/20",
   cancelled: "bg-zinc-500/10 text-zinc-400 border-zinc-500/20",

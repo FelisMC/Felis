@@ -24,10 +24,11 @@ export function FleetGrid({
         <p className="py-4 text-center text-xs text-muted-foreground">{t("dashboard:fleet_flat_empty")}</p>
       ) : (
         <div className="flex flex-wrap gap-1.5">
-          {servers.map((s) => {
+          {servers.map((s, idx) => {
             const phase = s.phase ?? "Unknown";
             const color = phaseColor(phase);
             const label = `${s.displayName || s.name} · ${t(PHASE_KEY[phase] ?? PHASE_KEY.Unknown)}`;
+            const transient = TRANSIENT.has(phase);
             return (
               <Link
                 key={s.name}
@@ -35,10 +36,13 @@ export function FleetGrid({
                 title={label}
                 aria-label={label}
                 className={cn(
-                  "h-4 w-4 rounded-[3.5px] ring-1 ring-inset ring-black/10 transition-transform hover:scale-110 hover:ring-foreground/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:ring-white/10",
-                  TRANSIENT.has(phase) && "animate-pulse",
+                  "h-4 w-4 rounded-[3.5px] ring-1 ring-inset ring-black/10 transition-[transform,box-shadow,filter] duration-150 ease-out hover:z-10 hover:scale-125 hover:brightness-110 hover:ring-foreground/40 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:ring-white/10",
+                  transient && "animate-status-breathe",
                 )}
-                style={{ backgroundColor: color }}
+                style={{
+                  backgroundColor: color,
+                  animationDelay: transient ? `${(idx % 5) * 320}ms` : undefined,
+                }}
               />
             );
           })}

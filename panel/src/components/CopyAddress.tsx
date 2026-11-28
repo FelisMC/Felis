@@ -65,10 +65,10 @@ export function CopyAddress({ address, className }: { address: string; className
         onClick={() => void copy()}
         aria-label={t("copy_address", { address })}
         title={t("copy_address", { address })}
-        className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded border border-border/80 bg-card text-muted-foreground transition-colors hover:border-muted-foreground/35 hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded border border-transparent text-muted-foreground/55 transition-[color,background-color,transform] duration-150 ease-out hover:bg-accent hover:text-foreground active:scale-90 group-hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {state === "copied" ? (
-          <Check className="h-3 w-3 text-emerald-500" />
+          <Check className="h-3 w-3 animate-check-pop text-emerald-500" />
         ) : (
           <Copy className="h-3 w-3" />
         )}
@@ -77,6 +77,7 @@ export function CopyAddress({ address, className }: { address: string; className
         role="status"
         className={cn(
           "shrink-0",
+          feedback && "animate-fade-in",
           failed ? "basis-full" : "whitespace-nowrap",
           state === "copied" ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground",
         )}

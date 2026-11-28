@@ -31,7 +31,7 @@ export function AuditTable({ entries, onOpen }: Props) {
               key={entry.id}
               onClick={onOpen && (() => onOpen(entry))}
               className={cn(
-                "block space-y-0.5 border-b border-border/50 px-4 py-2.5 transition-colors last:border-b-0 md:table-row md:space-y-0 md:p-0",
+                "block space-y-0.5 border-b border-border/50 px-4 py-2.5 transition-colors duration-100 last:border-b-0 md:table-row md:space-y-0 md:p-0",
                 onOpen && "cursor-pointer hover:bg-accent/50",
               )}
             >

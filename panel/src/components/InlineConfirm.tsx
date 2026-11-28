@@ -1,5 +1,6 @@
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 interface Props {
   open: boolean;
@@ -26,7 +27,7 @@ export function InlineConfirm({
 }: Props) {
   if (!open) return null;
   return (
-    <div className={className}>
+    <div className={cn("animate-pop-in", className)}>
       <Button
         variant="outline"
         size={size}

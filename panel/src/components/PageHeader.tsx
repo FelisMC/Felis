@@ -29,7 +29,7 @@ export function PageHeader({ title, subtitle, actions, tabs, back, className }: 
     </div>
   );
   const header = (
-    <div className={cn("mx-auto w-full max-w-[1060px]", tabs ? "pb-0" : "border-b border-border/60 pb-3.5")}>
+    <div className={cn("w-full", tabs ? "pb-0" : "border-b border-border/60 pb-3.5")}>
       {back && <div className="mb-2">{back}</div>}
       {row}
       {tabs && <div className="mt-3 border-b border-border/70">{tabs}</div>}
