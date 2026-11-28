@@ -19,7 +19,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { api, humanizeError } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
 import { STATUS_POLL_FAST_MS, useAsync, usePolling, useUnsavedGuard } from "@/lib/hooks";
-import { canManage, ownershipPending } from "@/lib/ownership";
+import { canManageRole, ownershipPending, resolveServerAccessRole } from "@/lib/ownership";
 import { useTier } from "@/lib/tier";
 import type { ServerExtension } from "@/lib/types";
 
@@ -36,7 +36,7 @@ function InstalledExtensions({ name }: { name: string }) {
   const status = useAsync(() => api.status(name), [name]);
   const mine = useAsync(() => isAdmin ? Promise.resolve([]) : api.myServers(), [name, isAdmin]);
   const pending = ownershipPending(tierLoading, isAdmin, mine.data, mine.error);
-  const owned = canManage(isAdmin, mine.data, name);
+  const owned = status.data ? canManageRole(resolveServerAccessRole(isAdmin, status.data, mine.data, name)) : false;
   const live = status.data?.phase === "Running" && status.data.desiredState === "Running";
   const accessible = status.data?.phase === "Stopped" || live;
   const enabled = owned && !pending && accessible;

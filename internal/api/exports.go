@@ -354,12 +354,12 @@ func (g *exportRegistry) finish(ticket string, now time.Time) {
 // handleExportBackup requires former-owner or staff access and reads only the backup store, without a world lock.
 func (a *API) handleExportBackup(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
-	name, rec, ok := a.exportGate(w, r)
+	name, rec, collabRole, ok := a.exportGate(w, r)
 	if !ok {
 		return
 	}
 	backup, err := a.Repo.BackupByID(r.Context(), r.PathValue("id"))
-	if err == nil && !p.IsAdmin() && backup.FormerOwner != p.UserID {
+	if err == nil && !backupAccessible(p, rec, collabRole, backup) {
 		err = ErrNotFound
 	}
 	if errors.Is(err, ErrNotFound) {
@@ -401,7 +401,7 @@ func (a *API) handleExportBackup(w http.ResponseWriter, r *http.Request) {
 // handleExportWorld holds the stopped world's volume until download ends to prevent startup during archival.
 func (a *API) handleExportWorld(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
-	name, rec, ok := a.exportGate(w, r)
+	name, rec, _, ok := a.exportGate(w, r)
 	if !ok {
 		return
 	}
@@ -528,24 +528,18 @@ func errExportUnavailable() error {
 	return newError(http.StatusServiceUnavailable, "export_unavailable", "world export and downloads are not configured")
 }
 
-// exportGate binds the ticket to the caller's account after checking server ownership or staff access.
-func (a *API) exportGate(w http.ResponseWriter, r *http.Request) (string, *ServerRecord, bool) {
+// exportGate binds the ticket to the caller's account after checking server management access.
+func (a *API) exportGate(w http.ResponseWriter, r *http.Request) (string, *ServerRecord, string, bool) {
 	p := principalFromContext(r.Context())
-	name := r.PathValue("name")
-	if err := validateManagedServerName(r, name); err != nil {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
-		return "", nil, false
-	}
-	rec, err := a.managedServerRecord(r.Context(), name)
-	if err != nil {
-		a.writeLookupError(w, r, err)
-		return "", nil, false
-	}
-	if p.UserID == "" || !a.isOwnerOrAdmin(p, rec) {
+	if p == nil || p.UserID == "" {
 		writeError(w, r, errForbidden)
-		return "", nil, false
+		return "", nil, "", false
 	}
-	return name, rec, true
+	rec, collabRole, ok := a.authorizeServer(w, r, ActionManage)
+	if !ok {
+		return "", nil, "", false
+	}
+	return rec.Name, rec, collabRole, true
 }
 
 func (a *API) startExport(w http.ResponseWriter, r *http.Request, e *exportEntry, token string, what worldexport.Request) bool {

@@ -23,6 +23,10 @@ import type {
   SelfServiceQuotaSettings,
   ServerNotify,
   ServerAssignment,
+  ServerProtection,
+  ServerCollaboratorsResponse,
+  ServerCollaborator,
+  CollaboratorRole,
   ServerPowerResult,
   ServerTags,
   ServerStartupSettings,
@@ -495,6 +499,18 @@ export const api = rejectingSync({
 
   assignServer: (name: string, body: { user_id: string; allow_over_quota: boolean }) =>
     request<ServerAssignment>("POST", urlPath`/servers/${name}/assignment`, body),
+
+  setServerProtection: (name: string, isProtected: boolean) =>
+    request<ServerProtection>("PUT", urlPath`/servers/${name}/protection`, { protected: isProtected }),
+
+  listServerCollaborators: (name: string) =>
+    request<ServerCollaboratorsResponse>("GET", urlPath`/servers/${name}/collaborators`),
+
+  setServerCollaborator: (name: string, userId: string, role: CollaboratorRole) =>
+    request<ServerCollaborator>("PUT", urlPath`/servers/${name}/collaborators/${userId}`, { role }),
+
+  removeServerCollaborator: (name: string, userId: string) =>
+    request<void>("DELETE", urlPath`/servers/${name}/collaborators/${userId}`),
 
   // The server strips a leading slash and rejects control chars or >1024 bytes; the line is typed into the server console, so its output arrives in the log.
   sendCommand: (name: string, command: string) =>

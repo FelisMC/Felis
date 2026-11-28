@@ -52,24 +52,11 @@ func serverStartupSettings(spec *v1alpha1.MinecraftServerSpec) *ServerStartupSet
 
 func (a *API) handleStartupSettings(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	name := r.PathValue("name")
-	if err := validateManagedServerName(r, name); err != nil {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
+	rec, _, ok := a.authorizeServer(w, r, ActionManage)
+	if !ok {
 		return
 	}
-	p := principalFromContext(r.Context())
-	if !p.IsAdmin() {
-		rec, err := a.Repo.ServerByName(r.Context(), name)
-		if err != nil {
-			a.writeLookupError(w, r, err)
-			return
-		}
-		if !a.isOwnerOrAdmin(p, rec) {
-			writeError(w, r, errForbidden)
-			return
-		}
-	}
-	settings, err := a.Cluster.GetStartupSettings(r.Context(), name)
+	settings, err := a.Cluster.GetStartupSettings(r.Context(), rec.Name)
 	if err != nil {
 		a.writeLookupError(w, r, err)
 		return

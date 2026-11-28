@@ -49,6 +49,15 @@ func (a *API) handleNodes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"nodes": nodes})
 }
 
+func (a *API) authorizeMigrationServer(w http.ResponseWriter, r *http.Request, action ServerAction) (*ServerRecord, bool) {
+	if err := naming.ValidateServerName(r.PathValue("name")); err != nil {
+		writeError(w, r, newError(400, "bad_name", "%v", err))
+		return nil, false
+	}
+	rec, _, ok := a.authorizeServer(w, r, action)
+	return rec, ok
+}
+
 func (a *API) handleMigration(w http.ResponseWriter, r *http.Request) {
 	if a.NodeControl != nil {
 		if err := NodeMaintenanceGuard(a.NodeControl)(r.Context()); err != nil {
@@ -60,16 +69,11 @@ func (a *API) handleMigration(w http.ResponseWriter, r *http.Request) {
 	if !a.distributedReady(w, r) {
 		return
 	}
-	server := r.PathValue("name")
-	if err := naming.ValidateServerName(server); err != nil {
-		writeError(w, r, newError(400, "bad_name", "%v", err))
+	rec, ok := a.authorizeMigrationServer(w, r, ActionAdminDestructive)
+	if !ok {
 		return
 	}
-	rec, err := a.Repo.ServerByName(r.Context(), server)
-	if err != nil {
-		a.writeLookupError(w, r, err)
-		return
-	}
+	server := rec.Name
 	if rec.Retire != nil {
 		writeError(w, r, errServerRetiring)
 		return
@@ -97,6 +101,9 @@ func (a *API) handleMigrationStatus(w http.ResponseWriter, r *http.Request) {
 	if !a.distributedReady(w, r) {
 		return
 	}
+	if _, ok := a.authorizeMigrationServer(w, r, ActionOperate); !ok {
+		return
+	}
 	op, err := a.Distribution.Migration(r.Context(), r.PathValue("name"), r.PathValue("id"))
 	if err != nil {
 		a.writeMigrationError(w, r, err)
@@ -116,16 +123,15 @@ func (a *API) handleMigrationRetry(w http.ResponseWriter, r *http.Request) {
 	if !a.distributedReady(w, r) {
 		return
 	}
-	rec, err := a.Repo.ServerByName(r.Context(), r.PathValue("name"))
-	if err != nil {
-		a.writeLookupError(w, r, err)
+	rec, ok := a.authorizeMigrationServer(w, r, ActionAdminDestructive)
+	if !ok {
 		return
 	}
 	if rec.Retire != nil {
 		writeError(w, r, errServerRetiring)
 		return
 	}
-	op, err := a.Distribution.RetryMigration(r.Context(), r.PathValue("name"), r.PathValue("id"))
+	op, err := a.Distribution.RetryMigration(r.Context(), rec.Name, r.PathValue("id"))
 	if err != nil {
 		a.writeMigrationError(w, r, err)
 		return
@@ -143,11 +149,11 @@ func (a *API) handleMigrationAbort(w http.ResponseWriter, r *http.Request) {
 	if !a.distributedReady(w, r) {
 		return
 	}
-	if _, err := a.Repo.ServerByName(r.Context(), r.PathValue("name")); err != nil {
-		a.writeLookupError(w, r, err)
+	rec, ok := a.authorizeMigrationServer(w, r, ActionAdminDestructive)
+	if !ok {
 		return
 	}
-	op, err := a.Distribution.AbortMigration(r.Context(), r.PathValue("name"), r.PathValue("id"))
+	op, err := a.Distribution.AbortMigration(r.Context(), rec.Name, r.PathValue("id"))
 	if err != nil {
 		a.writeMigrationError(w, r, err)
 		return

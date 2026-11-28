@@ -32,7 +32,7 @@ func TestPortPatchRechecksOwnerAfterWaitingForServerRow(t *testing.T) {
 	go func() {
 		done <- repo.PatchServerPorts(ctx, name, oldOwner.ID, func() error { applied.Add(1); return nil })
 	}()
-	waitForLockWait(t, "SELECT COALESCE(owner_id, '') FROM servers")
+	waitForLockWait(t, "SELECT COALESCE(owner_id, ''), protected, retire_requested_at")
 	if _, err := hold.ExecContext(ctx, `UPDATE servers SET owner_id = $2 WHERE name = $1`, name, newOwner.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestDeleteUserPortCleanupBlocksClaimAndStaleOwnerPatch(t *testing.T) {
 	go func() {
 		patched <- repo.PatchServerPorts(ctx, name, oldOwner.ID, func() error { applied.Add(1); return nil })
 	}()
-	waitForLockWait(t, "SELECT COALESCE(owner_id, '') FROM servers")
+	waitForLockWait(t, "SELECT COALESCE(owner_id, ''), protected, retire_requested_at")
 	claimed := make(chan bool, 1)
 	claimErr := make(chan error, 1)
 	go func() {
@@ -258,7 +258,7 @@ func TestAssignCleanupBlocksStaleOwnerPatch(t *testing.T) {
 	go func() {
 		patched <- repo.PatchServerPorts(ctx, name, oldOwner.ID, func() error { applied.Add(1); return nil })
 	}()
-	waitForLockWait(t, "SELECT COALESCE(owner_id, '') FROM servers")
+	waitForLockWait(t, "SELECT COALESCE(owner_id, ''), protected, retire_requested_at")
 	if applied.Load() != 0 || serverOwner(t, name) != oldOwner.ID {
 		t.Fatal("a waiting owner patch crossed unconfirmed assignment cleanup")
 	}

@@ -3,16 +3,19 @@ import { Link, useNavigate } from "react-router-dom";
 import {
   BookOpen,
   DoorOpen,
+  Eye,
   Network,
   Play,
   Terminal,
   RefreshCw,
   RotateCcw,
+  ShieldCheck,
   Square,
   Users,
   Hand,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -44,10 +47,11 @@ import { PageHeader } from "@/components/PageHeader";
 import { api, humanizeError } from "@/lib/api";
 import { RefreshContext, useAsync, useConfig, usePageRefresh, usePolling } from "@/lib/hooks";
 import { useFeatures } from "@/lib/features";
+import { canOperateRole, isReadonlyRole, type EffectiveAccessRole } from "@/lib/ownership";
 import { useTier } from "@/lib/tier";
 import { joinAddress, type RuntimeConfig } from "@/lib/config";
 import { matchScore } from "@/lib/fuzzy";
-import type { AutostartPolicy, DesiredState, FleetServer, Phase, MyServerView, RetireState } from "@/lib/types";
+import type { AccessRole, AutostartPolicy, DesiredState, FleetServer, Phase, MyServerView, RetireState } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { cpuUsage, memoryUsage } from "@/lib/resourceUsage";
 
@@ -155,11 +159,17 @@ interface UnifiedServer {
   retiring?: RetireState;
   /** Owner and admin views only. */
   tags?: string[];
+  protected?: boolean;
+  accessRole?: AccessRole;
 }
 
-// Platform services have their own controls; everything else is the owner's or an admin's to select.
+function rowAccessRole(s: UnifiedServer, isAdmin: boolean): EffectiveAccessRole {
+  return s.accessRole ?? (isAdmin ? "admin" : s.owned ? "owner" : "none");
+}
+
+// Platform services have their own controls; everything else requires operator or higher access.
 function selectable(s: UnifiedServer, isAdmin: boolean): boolean {
-  return !s.system && (isAdmin || s.owned === true);
+  return !s.system && canOperateRole(rowAccessRole(s, isAdmin));
 }
 
 interface RowSelection {
@@ -184,7 +194,7 @@ interface BatchOutcome {
 
 export function ServersPage() {
   const { t } = useTranslation(["ops", "servers"]);
-  const { isAdmin } = useTier();
+  const { isAdmin, isOwner } = useTier();
   const { features } = useFeatures();
   const teamMode = features.mode === "team";
   const showOwnership = !teamMode;
@@ -277,6 +287,8 @@ export function ServersPage() {
         system: s.system,
         retiring: s.retiring,
         tags: s.tags,
+        protected: s.protected,
+        accessRole: s.accessRole,
       }));
     } else {
       return (data as MyServerView[]).map((s) => ({
@@ -299,6 +311,8 @@ export function ServersPage() {
         owned: s.owned,
         retiring: s.retiring,
         tags: s.tags,
+        protected: s.protected,
+        accessRole: s.accessRole,
       }));
     }
   }, [data, isAdmin, t]);
@@ -639,6 +653,7 @@ export function ServersPage() {
                             server={s}
                             cfg={cfg}
                             isAdmin={isAdmin}
+                            isOwner={isOwner}
                             teamMode={teamMode}
                             select={rowSelection(s)}
                             onChanged={reload}
@@ -676,6 +691,7 @@ export function ServersPage() {
                               server={s}
                               cfg={cfg}
                               isAdmin={isAdmin}
+                              isOwner={isOwner}
                               teamMode={teamMode}
                               select={rowSelection(s)}
                               onChanged={reload}
@@ -788,6 +804,7 @@ function ClaimAction({
 function ServerActions({
   server,
   isAdmin,
+  isOwner = false,
   teamMode,
   onChanged,
   compact = false,
@@ -795,6 +812,7 @@ function ServerActions({
 }: {
   server: UnifiedServer;
   isAdmin: boolean;
+  isOwner?: boolean;
   teamMode: boolean;
   onChanged: () => void;
   compact?: boolean;
@@ -818,13 +836,16 @@ function ServerActions({
     );
   }
 
-  // Unclaimed servers expose claim only, except administrators retain wake and console access.
-  const claimable = !teamMode && server.claimable && !server.owned;
+  const role = rowAccessRole(server, isAdmin);
+  const readonly = isReadonlyRole(role);
+  const canOperate = canOperateRole(role);
+  // Unclaimed unprotected servers expose claim to players, while authorized operators keep power controls.
+  const claimable = !teamMode && server.claimable && !server.owned && !server.protected;
   // In compact admin rows, Claim lives inline beside "Unclaimed" in the Owner column.
   const showClaimHere = claimable && !(compact && isAdmin);
-  const showMigrate = isAdmin && cfg?.distributed;
-  const showPower = !claimable || isAdmin;
-  const showConsole = server.owned || isAdmin;
+  const showMigrate = isAdmin && cfg?.distributed && !readonly && (!server.protected || isOwner);
+  const showPower = canOperate && (!claimable || isAdmin);
+  const showConsole = canOperate || readonly;
   const hasLeadingActions = Boolean(showMigrate || showClaimHere || showPower);
 
   return (
@@ -857,7 +878,7 @@ function ServerActions({
         {showConsole && (
           <Link to={`/servers/${server.name}`}>
             <Button size="sm" variant="outline" className={compact ? "h-7 px-2.5 text-xs" : undefined}>
-              <Terminal /> {ts("console")}
+              {readonly ? <Eye /> : <Terminal />} {ts(readonly ? "view_status" : "console")}
             </Button>
           </Link>
         )}
@@ -909,7 +930,7 @@ function OwnerLabel({
   return (
     <span className="inline-flex items-center gap-1.5">
       <span className="text-muted-foreground/55">{t("fleet_unclaimed")}</span>
-      {inlineClaim && server.claimable && !server.owned && onChanged && (
+      {inlineClaim && server.claimable && !server.owned && !server.protected && onChanged && (
         <ClaimAction server={server} onChanged={onChanged} inline />
       )}
     </span>
@@ -974,10 +995,22 @@ function TagChips({ tags, inline = false }: { tags?: string[]; inline?: boolean 
   );
 }
 
+function ProtectedChip({ active }: { active?: boolean }) {
+  const { t } = useTranslation("servers");
+  if (!active) return null;
+  return (
+    <Badge variant="warning" className="shrink-0 gap-1 px-1.5 py-0 text-[10px] leading-4">
+      <ShieldCheck className="h-2.5 w-2.5" aria-hidden="true" />
+      {t("protected_badge")}
+    </Badge>
+  );
+}
+
 function ServerRow({
   server,
   cfg,
   isAdmin,
+  isOwner = false,
   teamMode,
   select,
   onChanged,
@@ -985,6 +1018,7 @@ function ServerRow({
   server: UnifiedServer;
   cfg: RuntimeConfig;
   isAdmin: boolean;
+  isOwner?: boolean;
   teamMode: boolean;
   select?: RowSelection;
   onChanged: () => void;
@@ -1003,6 +1037,7 @@ function ServerRow({
       <td className="px-2.5 py-2.5 text-left align-middle 2xl:px-3">
         <div className="flex min-w-0 max-w-[14rem] items-center gap-x-1.5 gap-y-0.5 xl:max-w-[18rem] 2xl:max-w-[26rem]">
           <ServerName server={server} isAdmin={isAdmin} compactSlug={isAdmin} />
+          <ProtectedChip active={server.protected} />
           <TagChips tags={server.tags} inline />
         </div>
         {address && (
@@ -1044,7 +1079,7 @@ function ServerRow({
         </td>
       )}
       <td className="whitespace-nowrap px-3 py-2.5 align-middle 2xl:px-3.5">
-        <ServerActions server={server} isAdmin={isAdmin} teamMode={teamMode} onChanged={onChanged} compact />
+        <ServerActions server={server} isAdmin={isAdmin} isOwner={isOwner} teamMode={teamMode} onChanged={onChanged} compact />
       </td>
     </tr>
   );
@@ -1057,6 +1092,7 @@ function ServerMobileCard({
   server,
   cfg,
   isAdmin,
+  isOwner = false,
   teamMode,
   select,
   onChanged,
@@ -1064,6 +1100,7 @@ function ServerMobileCard({
   server: UnifiedServer;
   cfg: RuntimeConfig;
   isAdmin: boolean;
+  isOwner?: boolean;
   teamMode: boolean;
   select?: RowSelection;
   onChanged: () => void;
@@ -1081,6 +1118,7 @@ function ServerMobileCard({
                 <RowSelect server={server} select={select} />
                 <div className="flex min-w-0 items-baseline gap-2">
                   <ServerName server={server} isAdmin={isAdmin} />
+                  <ProtectedChip active={server.protected} />
                 </div>
               </div>
               <PhaseBadge phase={shownPhase(server)} failure={startFailure(server)} autoRestarts={server.autoRestarts} />
@@ -1119,7 +1157,7 @@ function ServerMobileCard({
             )}
           </dl>
           <div className="mt-auto border-t border-border/50 pt-3">
-            <ServerActions server={server} isAdmin={isAdmin} teamMode={teamMode} onChanged={onChanged} />
+            <ServerActions server={server} isAdmin={isAdmin} isOwner={isOwner} teamMode={teamMode} onChanged={onChanged} />
           </div>
         </CardContent>
       </Card>
@@ -1242,7 +1280,8 @@ function ServerName({
 }) {
   const navigate = useNavigate();
   const label = server.displayName || server.name;
-  const clickable = !server.system && (server.owned || isAdmin);
+  const role = rowAccessRole(server, isAdmin);
+  const clickable = !server.system && (canOperateRole(role) || isReadonlyRole(role));
   return (
     <>
       {clickable ? (

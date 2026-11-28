@@ -20,16 +20,11 @@ func (a *API) allowlistServer(w http.ResponseWriter, r *http.Request) (string, b
 		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
 		return "", false
 	}
-	rec, err := a.Repo.ServerByName(r.Context(), name)
-	if err != nil {
-		a.writeLookupError(w, r, err)
+	rec, _, ok := a.authorizeServerName(w, r, name, ActionOperate)
+	if !ok {
 		return "", false
 	}
-	if !a.isOwnerOrAdmin(principalFromContext(r.Context()), rec) {
-		writeError(w, r, errForbidden)
-		return "", false
-	}
-	return name, true
+	return rec.Name, true
 }
 
 func (a *API) handleAllowlistList(w http.ResponseWriter, r *http.Request) {

@@ -32,7 +32,6 @@ type API struct {
 	DefaultMode             string
 	CustomImagesByDefault   bool
 	AllowSubmissionsDefault bool
-	collaboratorCheck       func(ctx context.Context, userID string) (bool, error)
 	// Nano mounts only login control (nanoRoutes): sign-in, accounts, auth sources and the proxy plugin's calls.
 	Nano     bool
 	Repo     Repo
@@ -347,6 +346,10 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/claim", h: a.handleClaim},
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/assignment", Owner: true, Admin: true, h: a.handleAssignPreview},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/assignment", Owner: true, Admin: true, h: a.handleAssignServer},
+		{Method: "PUT", Pattern: "/api/v1/servers/{name}/protection", Owner: true, Admin: true, h: a.handleSetServerProtection},
+		{Method: "GET", Pattern: "/api/v1/servers/{name}/collaborators", Admin: true, h: a.handleListCollaborators},
+		{Method: "PUT", Pattern: "/api/v1/servers/{name}/collaborators/{user_id}", Admin: true, h: a.handleSetCollaborator},
+		{Method: "DELETE", Pattern: "/api/v1/servers/{name}/collaborators/{user_id}", Admin: true, h: a.handleRemoveCollaborator},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/command", h: a.handleCommand},
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/console", h: a.handleServerConsole},
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/console/history", h: a.handleConsoleHistory},

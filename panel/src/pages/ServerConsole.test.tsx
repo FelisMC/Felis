@@ -13,7 +13,7 @@ import { humanizeError } from "@/lib/api";
 import i18next from "i18next";
 import type { ConsoleCommandResult } from "@/lib/types";
 
-const calls = vi.hoisted(() => ({ status: vi.fn(), myServers: vi.fn(), listImages: vi.fn(), sendCommand: vi.fn(), serverUsage: vi.fn(), serverConsoleHistory: vi.fn(), patchServer: vi.fn() }));
+const calls = vi.hoisted(() => ({ status: vi.fn(), myServers: vi.fn(), listImages: vi.fn(), sendCommand: vi.fn(), serverUsage: vi.fn(), serverConsoleHistory: vi.fn(), patchServer: vi.fn(), listServerCollaborators: vi.fn() }));
 const tier = vi.hoisted(() => ({
   loading: false,
   identity: { user_id: "admin-1", email: "admin@example.test", role: "admin" },
@@ -57,6 +57,8 @@ beforeEach(() => {
   calls.listImages.mockResolvedValue([]);
   calls.sendCommand.mockReset();
   calls.patchServer.mockReset();
+  calls.listServerCollaborators.mockReset();
+  calls.listServerCollaborators.mockResolvedValue({ server: "survival", protected: false, collaborators: [], candidates: [] });
   calls.serverUsage.mockReset();
   calls.serverUsage.mockResolvedValue({ current: null, history: [] });
   calls.serverConsoleHistory.mockReset();
@@ -92,10 +94,16 @@ describe("ServerConsole host recovery", () => {
     calls.myServers.mockResolvedValue([{ name: "survival", owned: role === "owner" }]);
     calls.status.mockResolvedValue(status({ phase: "Running", desiredState: "Running" }));
     renderConsole();
-    await screen.findByTestId("log-stream");
     const label = i18next.t("servers:extensions_title");
-    if (role === "viewer") expect(screen.queryByText(label)).toBeNull();
-    else expect((await screen.findByText(label)).closest("a")?.getAttribute("href")).toBe("/servers/survival/extensions");
+    if (role === "viewer") {
+      await screen.findByRole("navigation", { name: "Server sections" });
+      await waitFor(() => expect(calls.myServers).toHaveBeenCalled());
+      expect(screen.queryByTestId("log-stream")).toBeNull();
+      expect(screen.queryByText(label)).toBeNull();
+    } else {
+      await screen.findByTestId("log-stream");
+      expect((await screen.findByText(label)).closest("a")?.getAttribute("href")).toBe("/servers/survival/extensions");
+    }
   });
   it("does not fetch resource usage for a server the caller does not manage", async () => {
     tier.isAdmin = false;
@@ -776,5 +784,21 @@ describe("ServerConsole crashes and host restarts", () => {
       expect.stringContaining("Server started"),
       expect.stringContaining("The host restarted; the server resumed"),
     ]);
+  });
+
+  it("renders status-only view without log stream or command input for readonly access on a protected server", async () => {
+    calls.status.mockResolvedValue(status({
+      phase: "Running",
+      desiredState: "Running",
+      ready: true,
+      protected: true,
+      accessRole: "readonly",
+    }));
+    renderConsole();
+
+    expect(await screen.findByText(i18next.t("servers:protected_readonly_title"))).toBeTruthy();
+    expect(screen.getByText(i18next.t("servers:readonly_console_title"))).toBeTruthy();
+    expect(screen.queryByTestId("log-stream")).toBeNull();
+    expect(screen.queryByRole("textbox", { name: i18next.t("servers:command_label") })).toBeNull();
   });
 });

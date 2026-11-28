@@ -1,18 +1,47 @@
-import type { MyServerView } from "./types";
+import type { AccessRole, MyServerView, ServerStatus } from "./types";
 
-// Read ownership from /me/servers; public status never includes owned.
+export type EffectiveAccessRole = AccessRole | "none";
 
-/** canManage reports whether the caller may use a server's owner-tier tools. */
+/** Resolves the caller's effective role on a server from status first, then /me/servers. */
+export function resolveServerAccessRole(
+  isAdmin: boolean,
+  status: Pick<ServerStatus, "accessRole"> | null | undefined,
+  mine: readonly MyServerView[] | null | undefined,
+  name: string,
+): EffectiveAccessRole {
+  if (status?.accessRole) return status.accessRole;
+  const entry = (mine ?? []).find((s) => s.name === name);
+  if (entry?.accessRole) return entry.accessRole;
+  if (entry?.owned) return "owner";
+  return isAdmin ? "admin" : "none";
+}
+
+export function canOperateRole(role: EffectiveAccessRole): boolean {
+  return role === "owner" || role === "admin" || role === "manager" || role === "operator";
+}
+
+export function canManageRole(role: EffectiveAccessRole): boolean {
+  return role === "owner" || role === "admin" || role === "manager";
+}
+
+export function isReadonlyRole(role: EffectiveAccessRole): boolean {
+  return role === "readonly";
+}
+
+export function canDeleteServer(isOwner: boolean, isAdmin: boolean, isProtected?: boolean): boolean {
+  return isOwner || (isAdmin && !isProtected);
+}
+
 export function canManage(
   isAdmin: boolean,
   mine: readonly MyServerView[] | null | undefined,
   name: string,
 ): boolean {
-  return isAdmin || (mine ?? []).some((s) => s.name === name && s.owned === true);
+  if (isAdmin) return true;
+  return (mine ?? []).some((s) => s.name === name && (s.owned === true || s.accessRole === "owner" || s.accessRole === "manager"));
 }
 
-/** ownershipPending is true while the answer is still unknown: the tier is
- *  loading, or a non-admin's /me/servers read has neither landed nor failed. */
+/** Reports true while tier or non-admin server ownership has not yet resolved. */
 export function ownershipPending(
   tierLoading: boolean,
   isAdmin: boolean,

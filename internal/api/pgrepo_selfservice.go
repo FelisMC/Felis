@@ -115,7 +115,7 @@ func (p *PGRepo) SeedOwnedServer(ctx context.Context, name, subdomain, userID st
 		 VALUES ($1, $2, clock_timestamp(), $3, $4, $5)
 		 ON CONFLICT (name) DO UPDATE SET owner_id = EXCLUDED.owner_id, claimed_at = EXCLUDED.claimed_at, last_active_at = now(),
 		   warned_3d_at = NULL, warned_1d_at = NULL, cached_phase = NULL, created_at = now(), deleted_at = NULL,
-		   retire_requested_at = NULL, retire_delete = false, tags = '{}',
+		   retire_requested_at = NULL, retire_delete = false, protected = false, tags = '{}',
 		   cached_cpu_milli = EXCLUDED.cached_cpu_milli, cached_memory_mb = EXCLUDED.cached_memory_mb,
 		   cached_storage_mb = EXCLUDED.cached_storage_mb
 		 WHERE servers.deleted_at IS NOT NULL
@@ -129,6 +129,7 @@ func (p *PGRepo) SeedOwnedServer(ctx context.Context, name, subdomain, userID st
 	}
 	for _, q := range []string{
 		`DELETE FROM server_allowlist WHERE server_name = $1`,
+		`DELETE FROM server_collaborators WHERE server_name = $1`,
 		`DELETE FROM server_aliases WHERE server_name = $1`,
 		`DELETE FROM server_schedules WHERE server_name = $1`,
 	} {

@@ -19,13 +19,8 @@ func (a *API) scheduleServer(w http.ResponseWriter, r *http.Request) (*ServerRec
 		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
 		return nil, false
 	}
-	rec, err := a.Repo.ServerByName(r.Context(), name)
-	if err != nil {
-		a.writeLookupError(w, r, err)
-		return nil, false
-	}
-	if !a.isOwnerOrAdmin(principalFromContext(r.Context()), rec) {
-		writeError(w, r, errForbidden)
+	rec, _, ok := a.authorizeServerName(w, r, name, ActionManage)
+	if !ok {
 		return nil, false
 	}
 	if a.Schedules == nil {

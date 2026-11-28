@@ -12,6 +12,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -90,6 +91,8 @@ type fakeRepo struct {
 	deletedIDs             map[string]bool // soft-deleted user ids, kept dead for the liveness guards
 	pingErr                error           // returned by Ping
 	migrations             map[string]*fakeMigration
+	collabMu               sync.RWMutex
+	collaborators          map[string]map[string]string // server -> userID -> role
 }
 
 type fakePasskeyChallenge struct {
@@ -234,6 +237,7 @@ func newFakeRepo() *fakeRepo {
 		fakeQuotas:             map[string]*QuotaView{},
 		migrations:             map[string]*fakeMigration{},
 		deletedIDs:             map[string]bool{},
+		collaborators:          map[string]map[string]string{},
 	}
 }
 
@@ -244,8 +248,11 @@ func (f *fakeRepo) ServerBySubdomain(_ context.Context, s string) (*ServerRecord
 	return nil, ErrNotFound
 }
 func (f *fakeRepo) ServerByName(_ context.Context, n string) (*ServerRecord, error) {
+	f.collabMu.RLock()
+	defer f.collabMu.RUnlock()
 	if r, ok := f.byName[n]; ok {
-		return r, nil
+		cp := *r
+		return &cp, nil
 	}
 	return nil, ErrNotFound
 }
@@ -759,6 +766,9 @@ func (f *fakeRepo) IsProtectedAdminLink(_ context.Context, mcUUID string) (bool,
 	return false, nil
 }
 func (f *fakeRepo) ClaimServer(ctx context.Context, n, u string, clearOwner func(context.Context, string) error) (bool, error) {
+	if rec, exists := f.byName[n]; exists && rec.Protected {
+		return false, nil
+	}
 	ok, present := f.claimOK[n]
 	if !present {
 		return false, ErrNotFound
@@ -770,6 +780,9 @@ func (f *fakeRepo) ClaimServer(ctx context.Context, n, u string, clearOwner func
 		if err := clearOwner(ctx, n); err != nil {
 			return false, err
 		}
+	}
+	if ok {
+		delete(f.collaborators, n)
 	}
 	return ok, nil
 }
@@ -792,6 +805,10 @@ func (f *fakeRepo) AssignServer(ctx context.Context, name, userID string, res Re
 	o := f.owners[name]
 	o.OwnerID = userID
 	f.owners[name] = o
+	if rec, exists := f.byName[name]; exists {
+		rec.OwnerID = userID
+	}
+	delete(f.collaborators, name)
 	return previous, over, nil
 }
 func (f *fakeRepo) RecordJoin(_ context.Context, n, uuid string) error {
@@ -844,6 +861,12 @@ func (f *fakeRepo) SeedServer(_ context.Context, name, subdomain string, _, _, _
 	}
 	f.seeded[name] = true
 	f.aliases[subdomain] = name
+	delete(f.collaborators, name)
+	if rec, exists := f.byName[name]; exists {
+		rec.Protected = false
+		rec.OwnerID = ""
+		rec.Subdomain = subdomain
+	}
 	return nil
 }
 func (f *fakeRepo) Ping(_ context.Context) error { return f.pingErr }
@@ -923,21 +946,42 @@ func (f *fakeRepo) OwnerBackupStoreBytes(_ context.Context, ownerID string) (int
 }
 
 func (f *fakeRepo) AllBackups(_ context.Context, opts BackupListOpts) ([]BackupView, int, error) {
-	return f.pageBackups("", opts)
+	return f.pageBackups(opts, func(fakeBackup) bool { return true })
 }
+
+func (f *fakeRepo) BackupsForAdmin(_ context.Context, adminUserID string, opts BackupListOpts) ([]BackupView, int, error) {
+	return f.pageBackups(opts, func(b fakeBackup) bool {
+		rec := f.byName[b.view.ServerName]
+		if rec == nil || !rec.Protected {
+			return true
+		}
+		return f.collaborators[rec.Name][adminUserID] != ""
+	})
+}
+
 func (f *fakeRepo) BackupsForUser(_ context.Context, userID string, opts BackupListOpts) ([]BackupView, int, error) {
-	if userID == "" { // An empty former-owner ID would widen this fixture query to all owners.
+	if userID == "" {
 		return nil, 0, nil
 	}
-	return f.pageBackups(userID, opts)
+	return f.pageBackups(opts, func(b fakeBackup) bool {
+		rec := f.byName[b.view.ServerName]
+		collab := f.collaborators[b.view.ServerName][userID] != ""
+		if collab && rec != nil {
+			return b.view.FormerOwner == "" || b.view.FormerOwner == rec.OwnerID
+		}
+		if b.view.FormerOwner != userID {
+			return false
+		}
+		return rec == nil || !rec.Protected
+	})
 }
 
 // pageBackups returns present backups newest first and records opts.
-func (f *fakeRepo) pageBackups(owner string, opts BackupListOpts) ([]BackupView, int, error) {
+func (f *fakeRepo) pageBackups(opts BackupListOpts, allow func(fakeBackup) bool) ([]BackupView, int, error) {
 	f.backupListOpts = opts
 	var match []BackupView
 	for _, b := range f.backups {
-		if b.view.Status == "present" && (owner == "" || b.view.FormerOwner == owner) &&
+		if b.view.Status == "present" && allow(b) &&
 			(opts.Server == "" || b.view.ServerName == opts.Server) {
 			match = append(match, b.view)
 		}
@@ -946,6 +990,161 @@ func (f *fakeRepo) pageBackups(owner string, opts BackupListOpts) ([]BackupView,
 	lo := min(opts.Offset, len(match))
 	hi := min(lo+opts.Limit, len(match))
 	return match[lo:hi], len(match), nil
+}
+
+func (f *fakeRepo) fakeUserMeta(userID string) (username, email, role string, ok bool) {
+	for _, su := range f.seededUsers {
+		if su.view.ID == userID {
+			return su.view.Username, su.view.Email, su.view.Role, !su.view.Disabled
+		}
+	}
+	for _, u := range f.staff {
+		if u.ID == userID && !f.deletedIDs[userID] {
+			return u.Username, u.Email, u.Role, true
+		}
+	}
+	return "", "", "", false
+}
+
+func (f *fakeRepo) SetServerProtected(_ context.Context, name string, protected bool) error {
+	f.collabMu.Lock()
+	defer f.collabMu.Unlock()
+	rec, ok := f.byName[name]
+	if !ok {
+		return ErrNotFound
+	}
+	rec.Protected = protected
+	if o, ok := f.owners[name]; ok {
+		o.Protected = protected
+		f.owners[name] = o
+	}
+	return nil
+}
+
+func (f *fakeRepo) ServerCollaborators(_ context.Context, name string) ([]CollaboratorRecord, error) {
+	f.collabMu.RLock()
+	defer f.collabMu.RUnlock()
+	out := []CollaboratorRecord{}
+	for uid, role := range f.collaborators[name] {
+		uname, email, urole, ok := f.fakeUserMeta(uid)
+		if !ok {
+			uname, urole = uid, "user"
+		}
+		out = append(out, CollaboratorRecord{
+			ServerName: name,
+			UserID:     uid,
+			Username:   uname,
+			Email:      email,
+			UserRole:   urole,
+			Role:       role,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Username < out[j].Username })
+	return out, nil
+}
+
+func (f *fakeRepo) CollaboratorCandidates(_ context.Context, limit int) ([]CollaboratorCandidate, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	seen := map[string]bool{}
+	var out []CollaboratorCandidate
+	for _, su := range f.seededUsers {
+		if su.view.Disabled || su.view.Role == "owner" || seen[su.view.ID] {
+			continue
+		}
+		seen[su.view.ID] = true
+		out = append(out, CollaboratorCandidate{
+			ID: su.view.ID, Username: su.view.Username, Email: su.view.Email, Role: su.view.Role,
+		})
+	}
+	for _, u := range f.staff {
+		if f.deletedIDs[u.ID] || u.Role == "owner" || seen[u.ID] {
+			continue
+		}
+		seen[u.ID] = true
+		out = append(out, CollaboratorCandidate{
+			ID: u.ID, Username: u.Username, Email: u.Email, Role: u.Role,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Username < out[j].Username })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (f *fakeRepo) UserCollaboratorRole(_ context.Context, name, userID string) (string, error) {
+	f.collabMu.RLock()
+	defer f.collabMu.RUnlock()
+	if _, ok := f.byName[name]; !ok {
+		return "", nil
+	}
+	return f.collaborators[name][userID], nil
+}
+
+func (f *fakeRepo) UserCollaboratorRoles(_ context.Context, userID string) (map[string]string, error) {
+	f.collabMu.RLock()
+	defer f.collabMu.RUnlock()
+	out := map[string]string{}
+	for name, users := range f.collaborators {
+		if _, ok := f.byName[name]; !ok {
+			continue
+		}
+		if role := users[userID]; role != "" {
+			out[name] = role
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeRepo) HasAnyCollaboratorAccess(_ context.Context, userID string) (bool, error) {
+	f.collabMu.RLock()
+	defer f.collabMu.RUnlock()
+	for name, users := range f.collaborators {
+		if _, ok := f.byName[name]; !ok {
+			continue
+		}
+		if users[userID] != "" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (f *fakeRepo) UpsertServerCollaborator(_ context.Context, name, userID, role, grantedBy string) (*CollaboratorRecord, error) {
+	f.collabMu.Lock()
+	defer f.collabMu.Unlock()
+	if _, ok := f.byName[name]; !ok {
+		return nil, ErrNotFound
+	}
+	if f.collaborators[name] == nil {
+		f.collaborators[name] = map[string]string{}
+	}
+	f.collaborators[name][userID] = role
+	uname, email, urole, ok := f.fakeUserMeta(userID)
+	if !ok {
+		uname, urole = userID, "user"
+	}
+	return &CollaboratorRecord{
+		ServerName: name,
+		UserID:     userID,
+		Username:   uname,
+		Email:      email,
+		UserRole:   urole,
+		Role:       role,
+		GrantedBy:  grantedBy,
+	}, nil
+}
+
+func (f *fakeRepo) DeleteServerCollaborator(_ context.Context, name, userID string) error {
+	f.collabMu.Lock()
+	defer f.collabMu.Unlock()
+	if f.collaborators[name][userID] == "" {
+		return ErrNotFound
+	}
+	delete(f.collaborators[name], userID)
+	return nil
 }
 func (f *fakeRepo) LatestBackup(_ context.Context, serverName string) (*BackupRecord, error) {
 	return f.latestBackup(serverName, nil)
@@ -1400,6 +1599,9 @@ func (f *fakeRepo) DeleteUser(ctx context.Context, userID, _ string, clearPorts 
 					delete(f.passkeyCreds, cid)
 				}
 			}
+			for _, users := range f.collaborators {
+				delete(users, userID)
+			}
 			return nil
 		}
 	}
@@ -1412,7 +1614,8 @@ func (f *fakeRepo) PatchServerPorts(_ context.Context, name, ownerID string, app
 		return ErrNotFound
 	}
 	if ownerID != "" {
-		if record.OwnerID != ownerID || f.deletedIDs[ownerID] {
+		isManager := f.collaborators[name][ownerID] == CollabRoleManager
+		if (!isManager && (record.Protected || record.OwnerID != ownerID)) || f.deletedIDs[ownerID] {
 			return errForbidden
 		}
 		if record.Retire != nil {

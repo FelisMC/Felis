@@ -45,9 +45,12 @@ func (a *API) handleListBackups(w http.ResponseWriter, r *http.Request) {
 		total   int
 		err     error
 	)
-	if p.IsAdmin() {
+	switch {
+	case p.IsOwner():
 		backups, total, err = a.Repo.AllBackups(r.Context(), opts)
-	} else {
+	case p.IsAdmin():
+		backups, total, err = a.Repo.BackupsForAdmin(r.Context(), p.UserID, opts)
+	default:
 		backups, total, err = a.Repo.BackupsForUser(r.Context(), p.UserID, opts)
 	}
 	if err != nil {
@@ -60,19 +63,53 @@ func (a *API) handleListBackups(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"backups": backups, "total": total})
 }
 
+func backupAccessible(p *Principal, rec *ServerRecord, collabRole string, backup *BackupRecord) bool {
+	if p.IsAdmin() {
+		return true
+	}
+	if p.UserID != "" && backup.FormerOwner == p.UserID {
+		return true
+	}
+	return collabRole == CollabRoleManager && rec != nil && (backup.FormerOwner == "" || backup.FormerOwner == rec.OwnerID)
+}
+
 // handleDeleteBackup expires the row immediately; running restores block deletion, and retention later removes the archive.
 func (a *API) handleDeleteBackup(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	backup, err := a.Repo.BackupByID(r.Context(), r.PathValue("id"))
-	if err == nil && !p.IsAdmin() && (p.UserID == "" || backup.FormerOwner != p.UserID) {
-		err = ErrNotFound
-	}
 	if errors.Is(err, ErrNotFound) {
 		writeError(w, r, newError(http.StatusNotFound, "no_backup", "no matching backup exists"))
 		return
 	}
 	if err != nil {
 		writeError(w, r, err)
+		return
+	}
+	rec, recErr := a.Repo.ServerByName(r.Context(), backup.ServerName)
+	if recErr != nil && !errors.Is(recErr, ErrNotFound) {
+		writeError(w, r, recErr)
+		return
+	}
+	if recErr == nil {
+		allowed, collabRole, cerr := a.checkServerAccess(r.Context(), p, backup.ServerName, rec, ActionManage)
+		if cerr != nil {
+			writeError(w, r, cerr)
+			return
+		}
+		if !allowed {
+			if p.IsAdmin() {
+				writeError(w, r, errForbidden)
+				return
+			}
+			writeError(w, r, newError(http.StatusNotFound, "no_backup", "no matching backup exists"))
+			return
+		}
+		if !backupAccessible(p, rec, collabRole, backup) {
+			writeError(w, r, newError(http.StatusNotFound, "no_backup", "no matching backup exists"))
+			return
+		}
+	} else if !p.IsAdmin() && (p.UserID == "" || backup.FormerOwner != p.UserID) {
+		writeError(w, r, newError(http.StatusNotFound, "no_backup", "no matching backup exists"))
 		return
 	}
 	if a.JobStatus != nil {
@@ -117,21 +154,11 @@ func restoreMayRead(jobs []AsyncJob, id string) bool {
 // handleRestoreBackup defaults to the latest backup and a safety snapshot; clients never supply storage references.
 func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
-	name := r.PathValue("name")
-	if err := validateManagedServerName(r, name); err != nil {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
+	rec, collabRole, ok := a.authorizeServer(w, r, ActionManage)
+	if !ok {
 		return
 	}
-
-	rec, err := a.managedServerRecord(r.Context(), name)
-	if err != nil {
-		a.writeLookupError(w, r, err)
-		return
-	}
-	if !a.isOwnerOrAdmin(p, rec) {
-		writeError(w, r, errForbidden)
-		return
-	}
+	name := rec.Name
 	if name == naming.SystemLoginServer && !p.IsOwner() {
 		writeError(w, r, errForbidden)
 		return
@@ -149,7 +176,10 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var backup *BackupRecord
+	var (
+		backup *BackupRecord
+		err    error
+	)
 	if body.BackupID != "" {
 		backup, err = a.Repo.BackupByID(r.Context(), body.BackupID)
 		if err != nil {
@@ -185,7 +215,7 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// A new claimant must not gain access to a previous owner's backup.
-	if !p.IsAdmin() && backup.FormerOwner != p.UserID {
+	if !backupAccessible(p, rec, collabRole, backup) {
 		writeError(w, r, errForbidden)
 		return
 	}
@@ -274,21 +304,11 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) handleBackupNow(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
-	name := r.PathValue("name")
-	if err := validateManagedServerName(r, name); err != nil {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
+	rec, _, ok := a.authorizeServer(w, r, ActionOperate)
+	if !ok {
 		return
 	}
-
-	rec, err := a.managedServerRecord(r.Context(), name)
-	if err != nil {
-		a.writeLookupError(w, r, err)
-		return
-	}
-	if !a.isOwnerOrAdmin(p, rec) {
-		writeError(w, r, errForbidden)
-		return
-	}
+	name := rec.Name
 	if !p.IsAdmin() {
 		if err := a.backupAllowance(r.Context(), name, rec.OwnerID); err != nil {
 			writeError(w, r, err)

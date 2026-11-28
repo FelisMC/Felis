@@ -9,21 +9,11 @@ import (
 // handleServerConsole does not require RCON readiness so boot logs remain available before the server is ready.
 func (a *API) handleServerConsole(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
-	name := r.PathValue("name")
-	if err := validateManagedServerName(r, name); err != nil {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
+	rec, _, ok := a.authorizeServer(w, r, ActionOperate)
+	if !ok {
 		return
 	}
-
-	rec, err := a.managedServerRecord(r.Context(), name)
-	if err != nil {
-		a.writeLookupError(w, r, err)
-		return
-	}
-	if !a.isOwnerOrAdmin(p, rec) {
-		writeError(w, r, errForbidden)
-		return
-	}
+	name := rec.Name
 
 	if a.Logs == nil {
 		writeError(w, r, newError(http.StatusServiceUnavailable, "console_unavailable",
@@ -69,7 +59,12 @@ func (a *API) handleServerConsole(w http.ResponseWriter, r *http.Request) {
 			return errForbidden
 		case err != nil:
 			return nil
-		case !a.isOwnerOrAdmin(p, rec):
+		}
+		allowed, _, err := a.checkServerAccess(ctx, p, name, rec, ActionOperate)
+		if err != nil {
+			return nil
+		}
+		if !allowed {
 			return errForbidden
 		}
 		return nil

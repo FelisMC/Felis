@@ -20,7 +20,7 @@ import { TabHeader } from "@/components/TabHeader";
 import { api, humanizeError } from "@/lib/api";
 import { STATUS_POLL_SLOW_MS, STATUS_POLL_FAST_MS, useAsync, usePolling } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
-import { canManage, ownershipPending } from "@/lib/ownership";
+import { canManageRole, ownershipPending, resolveServerAccessRole } from "@/lib/ownership";
 import { cn } from "@/lib/utils";
 
 const MC_NAME = /^[A-Za-z0-9_]{1,16}$/;
@@ -340,7 +340,7 @@ export function ServerLuckPerms() {
   if (!data) return null;
 
   const pending = ownershipPending(tierLoading, isAdmin, mine, mineError);
-  const owned = canManage(isAdmin, mine, name);
+  const owned = canManageRole(resolveServerAccessRole(isAdmin, data, mine, name));
   const phase = shownPhase(data);
   const failure = startFailure(data);
 

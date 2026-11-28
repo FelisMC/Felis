@@ -10,7 +10,7 @@ import { WakeListSection } from "@/components/players/WakeListSection";
 import { api } from "@/lib/api";
 import { STATUS_POLL_SLOW_MS, STATUS_POLL_FAST_MS, useAsync, usePolling } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
-import { canManage, ownershipPending } from "@/lib/ownership";
+import { canOperateRole, ownershipPending, resolveServerAccessRole } from "@/lib/ownership";
 
 // Direct navigation still requires ownership and readiness checks.
 export function ServerPlayers() {
@@ -49,7 +49,7 @@ export function ServerPlayers() {
 
   // Failed ownership reads offer retry rather than claiming the viewer does not own the server.
   const pending = ownershipPending(tierLoading, isAdmin, mine, mineError);
-  const owned = canManage(isAdmin, mine, name);
+  const owned = canOperateRole(resolveServerAccessRole(isAdmin, data, mine, name));
   const phase = shownPhase(data);
   const failure = startFailure(data);
 

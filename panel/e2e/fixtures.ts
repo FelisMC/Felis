@@ -17,7 +17,7 @@ export function t(key: string, vars: Record<string, string | number> = {}): stri
   return text.replace(/\{\{(\w+)\}\}/g, (_, v: string) => String(vars[v]));
 }
 
-type Account = "owner" | "user" | "linked";
+type Account = "owner" | "admin" | "user" | "linked";
 
 export const test = base.extend<{ signIn: (account: Account) => Promise<void> }>({
   page: async ({ page, request }, use) => {

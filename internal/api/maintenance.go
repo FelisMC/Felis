@@ -63,15 +63,26 @@ type authServerKey struct{}
 type authServerSnapshot struct {
 	ownerID   string
 	claimedAt *time.Time
+	protected bool
+	action    ServerAction
 }
 
 func withAuthorizedServer(ctx context.Context, rec *ServerRecord) context.Context {
+	return withAuthorizedServerAction(ctx, rec, ActionManage)
+}
+
+func withAuthorizedServerAction(ctx context.Context, rec *ServerRecord, action ServerAction) context.Context {
 	var claimedAt *time.Time
 	if rec.ClaimedAt != nil {
 		t := *rec.ClaimedAt
 		claimedAt = &t
 	}
-	return context.WithValue(ctx, authServerKey{}, authServerSnapshot{ownerID: rec.OwnerID, claimedAt: claimedAt})
+	return context.WithValue(ctx, authServerKey{}, authServerSnapshot{
+		ownerID:   rec.OwnerID,
+		claimedAt: claimedAt,
+		protected: rec.Protected,
+		action:    action,
+	})
 }
 
 func sameClaimedAt(a, b *time.Time) bool {
@@ -88,11 +99,21 @@ func (a *API) recheckAuthorizedServer(w http.ResponseWriter, r *http.Request, na
 		a.writeLookupError(w, r, err)
 		return nil, false
 	}
-	if !a.isOwnerOrAdmin(p, cur) {
+	action := ActionManage
+	snap, hasSnap := r.Context().Value(authServerKey{}).(authServerSnapshot)
+	if hasSnap {
+		action = snap.action
+	}
+	allowed, collabRole, err := a.checkServerAccess(r.Context(), p, name, cur, action)
+	if err != nil {
+		writeError(w, r, err)
+		return nil, false
+	}
+	if !allowed {
 		writeError(w, r, errForbidden)
 		return nil, false
 	}
-	if snap, ok := r.Context().Value(authServerKey{}).(authServerSnapshot); ok && (p == nil || !p.IsAdmin()) {
+	if hasSnap && (p == nil || (!p.IsAdmin() && collabRole == "")) {
 		if cur.OwnerID != snap.ownerID || !sameClaimedAt(cur.ClaimedAt, snap.claimedAt) {
 			writeError(w, r, errForbidden)
 			return nil, false

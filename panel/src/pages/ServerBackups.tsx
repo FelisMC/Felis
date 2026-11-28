@@ -38,7 +38,7 @@ import { api, humanizeError } from "@/lib/api";
 import { awaitExport, saveDownload } from "@/lib/download";
 import { useAsync, usePolling, STATUS_POLL_FAST_MS, STATUS_POLL_SLOW_MS } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
-import { canManage, ownershipPending } from "@/lib/ownership";
+import { canManageRole, canOperateRole, ownershipPending, resolveServerAccessRole } from "@/lib/ownership";
 import { formatBytes, formatRelative, formatAbsolute, isExpired } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { BackupView, ServerJob } from "@/lib/types";
@@ -54,6 +54,7 @@ function BackupRow({
   now,
   locale,
   showOwner,
+  canManage,
   serverName,
   jobs,
   only,
@@ -67,6 +68,7 @@ function BackupRow({
   now: number;
   locale: string;
   showOwner?: boolean;
+  canManage: boolean;
   serverName: string;
   jobs: ServerJob[];
   only: boolean;
@@ -137,39 +139,41 @@ function BackupRow({
           )}
         </td>
       )}
-      <td className={cn(CELL, "ml-auto text-right")}>
-        <div className="flex items-center justify-end gap-1">
-          {b.corrupt ? (
-            <span className="text-xs text-destructive/70 font-medium px-3 py-1.5">
-              {t("corrupt_short")}
-            </span>
-          ) : !expired ? (
-            <>
-              <RestoreControls
-                serverName={serverName}
-                backup={b}
-                now={now}
-                locale={locale}
-                onReloadStatus={onReloadStatus}
-                buttonVariant="outline"
-              />
-              <DownloadBackupButton id={b.id} exporting={exporting} onExport={onExport} />
-            </>
-          ) : (
-            <span className="text-xs text-muted-foreground/40 font-medium px-3 py-1.5">
-              {t("expired")}
-            </span>
-          )}
-          <DeleteBackupButton
-            backup={b}
-            now={now}
-            locale={locale}
-            only={only}
-            busy={restoreMayRead(jobs, b.id)}
-            onDeleted={onDeleted}
-          />
-        </div>
-      </td>
+      {canManage && (
+        <td className={cn(CELL, "ml-auto text-right")}>
+          <div className="flex items-center justify-end gap-1">
+            {b.corrupt ? (
+              <span className="text-xs text-destructive/70 font-medium px-3 py-1.5">
+                {t("corrupt_short")}
+              </span>
+            ) : !expired ? (
+              <>
+                <RestoreControls
+                  serverName={serverName}
+                  backup={b}
+                  now={now}
+                  locale={locale}
+                  onReloadStatus={onReloadStatus}
+                  buttonVariant="outline"
+                />
+                <DownloadBackupButton id={b.id} exporting={exporting} onExport={onExport} />
+              </>
+            ) : (
+              <span className="text-xs text-muted-foreground/40 font-medium px-3 py-1.5">
+                {t("expired")}
+              </span>
+            )}
+            <DeleteBackupButton
+              backup={b}
+              now={now}
+              locale={locale}
+              only={only}
+              busy={restoreMayRead(jobs, b.id)}
+              onDeleted={onDeleted}
+            />
+          </div>
+        </td>
+      )}
     </tr>
   );
 }
@@ -576,9 +580,14 @@ export function ServerBackups() {
   );
   const [page, setPage] = useState(1);
   useEffect(() => setPage(1), [name]);
+  const pending = ownershipPending(tierLoading, isAdmin, mineQ.data, mineQ.error);
+  const accessRole = statusQ.data ? resolveServerAccessRole(isAdmin, statusQ.data, mineQ.data, name) : "none";
+  const canOperate = canOperateRole(accessRole);
+  const canManage = canManageRole(accessRole);
+
   const backupsQ = useAsync(
-    () => api.listBackups({ server: name, limit: BACKUP_PAGE_SIZE, offset: (page - 1) * BACKUP_PAGE_SIZE }),
-    [name, page],
+    () => (canOperate ? api.listBackups({ server: name, limit: BACKUP_PAGE_SIZE, offset: (page - 1) * BACKUP_PAGE_SIZE }) : Promise.resolve({ backups: [], total: 0 })),
+    [name, page, canOperate],
     { keepPrevious: true },
   );
   // Deleting the last row of a later page steps back to a page that still has backups.
@@ -587,14 +596,10 @@ export function ServerBackups() {
     if (pageEmpty) setPage((p) => Math.max(1, p - 1));
   }, [pageEmpty]);
 
-  // Ownership comes from /me/servers (status carries no `owned`); a failed read shows a retry, not NotYours.
-  const pending = ownershipPending(tierLoading, isAdmin, mineQ.data, mineQ.error);
-  const owned = canManage(isAdmin, mineQ.data, name);
-
-  // Job history is read only for an owner or admin (the route 403s otherwise).
+  // Job history is read only for callers allowed to operate this server.
   const jobsQ = useAsync(
-    () => (owned ? api.serverJobs(name) : Promise.resolve([])),
-    [name, owned],
+    () => (canOperate ? api.serverJobs(name) : Promise.resolve([])),
+    [name, canOperate],
   );
   useEffect(() => {
     if (!(jobsQ.data ?? []).some((j) => j.state === "running" || j.then_restore === "pending")) return;
@@ -725,7 +730,7 @@ export function ServerBackups() {
       description={t("servers:backups_link_desc")}
       actions={
         <div className="flex items-center gap-2">
-          {owned && (
+          {canManage && (
             <Button
               size="sm"
               variant="outline"
@@ -751,7 +756,7 @@ export function ServerBackups() {
               {exporting?.kind === "world" ? t("export_preparing") : t("export_world")}
             </Button>
           )}
-          {owned && (
+          {canOperate && (
             <Button
               size="sm"
               variant="outline"
@@ -790,7 +795,7 @@ export function ServerBackups() {
         <Loading />
       ) : mineQ.error ? (
         <ErrorState error={mineQ.error} onRetry={mineQ.reload} />
-      ) : !owned ? (
+      ) : !canOperate ? (
         <NotYours title={t("not_yours_title")} body={t("not_yours_body")} />
       ) : (
         <div className="space-y-4">
@@ -822,7 +827,7 @@ export function ServerBackups() {
                         <th className="px-3.5 py-2 font-normal">{t("col_size")}</th>
                         <th className="px-3.5 py-2 font-normal">{t("col_expires")}</th>
                         {isAdmin && <th className="px-3.5 py-2 font-normal">{t("col_owner")}</th>}
-                        <th className="px-3.5 py-2 text-right font-normal">{t("col_actions")}</th>
+                        {canManage && <th className="px-3.5 py-2 text-right font-normal">{t("col_actions")}</th>}
                       </tr>
                     </thead>
                     <tbody className="block divide-y divide-border/50 md:table-row-group">
@@ -834,6 +839,7 @@ export function ServerBackups() {
                           now={now}
                           locale={locale}
                           showOwner={isAdmin}
+                          canManage={canManage}
                           serverName={name}
                           jobs={jobsQ.data ?? []}
                           only={total === 1}

@@ -762,6 +762,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/servers/{name}/protection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Toggle protected mode on a server (Owner with reauth). */
+        put: operations["setServerProtection"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/servers/{name}/collaborators": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List collaborators and active candidates for a server. */
+        get: operations["listServerCollaborators"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/servers/{name}/collaborators/{user_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Add or update a server collaborator role. */
+        put: operations["setServerCollaborator"];
+        post?: never;
+        /** Remove a server collaborator. */
+        delete: operations["removeServerCollaborator"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/servers/{name}/command": {
         parameters: {
             query?: never;
@@ -4738,6 +4790,13 @@ export interface components {
             retiring?: components["schemas"]["RetireState"];
             /** @description Owner and staff only. Present when the server carries tags. */
             tags?: string[];
+            /** @description Present and true when the server is protected by owner-only access rules. */
+            protected?: boolean;
+            /**
+             * @description Caller's effective access role for this server.
+             * @enum {string}
+             */
+            accessRole?: "owner" | "admin" | "manager" | "operator" | "readonly";
             /** @description Whether a server that was running starts again after its host restarts, for example after a power loss. System servers always resume. */
             resumeAfterHostRestart: boolean;
             /** @description Whether the server is restarted after its process exits or stops responding. System servers always restart. */
@@ -4954,6 +5013,13 @@ export interface components {
             subdomain: string;
             owned: boolean;
             claimable: boolean;
+            /** @description Present and true when the server is protected by owner-only access rules. */
+            protected?: boolean;
+            /**
+             * @description Caller's effective access role for this server.
+             * @enum {string}
+             */
+            accessRole?: "owner" | "admin" | "manager" | "operator" | "readonly";
             /** @description Present only when known. */
             phase?: components["schemas"]["Phase"];
             /**
@@ -5676,6 +5742,38 @@ export interface components {
             owner_id: string;
             /** @description The caps the new owner passes; empty when the server fits the quota. */
             over: components["schemas"]["QuotaExcess"][];
+        };
+        ServerProtection: {
+            name: string;
+            protected: boolean;
+        };
+        ServerCollaborator: {
+            server_name: string;
+            user_id: string;
+            username: string;
+            email?: string;
+            /** @enum {string} */
+            user_role: "owner" | "admin" | "user";
+            /** @enum {string} */
+            role: "operator" | "manager";
+            granted_by?: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        CollaboratorCandidate: {
+            id: string;
+            username: string;
+            email?: string;
+            /** @enum {string} */
+            role: "admin" | "user";
+        };
+        ServerCollaboratorsResponse: {
+            server: string;
+            protected: boolean;
+            collaborators: components["schemas"]["ServerCollaborator"][];
+            candidates: components["schemas"]["CollaboratorCandidate"][];
         };
         /** @description One live personal API key as its owner sees it. The key itself is returned only once, in the response that creates it. */
         APIToken: {
@@ -7585,6 +7683,123 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+        };
+    };
+    setServerProtection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    protected: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Updated protection state. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServerProtection"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    listServerCollaborators: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current collaborators and candidate users. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServerCollaboratorsResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    setServerCollaborator: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    role: "operator" | "manager";
+                };
+            };
+        };
+        responses: {
+            /** @description Saved collaborator record. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServerCollaborator"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    removeServerCollaborator: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Collaborator removed. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
         };
     };
     command: {

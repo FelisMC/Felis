@@ -106,9 +106,8 @@ func TestTeamModeBlocksPlayerPortalAndAdmitsCollaborator(t *testing.T) {
 		t.Fatalf("session minted for blocked user in team mode: %d", len(repo.sessions))
 	}
 
-	a.collaboratorCheck = func(_ context.Context, userID string) (bool, error) {
-		return userID == "u-player", nil
-	}
+	repo.byName["hub"] = &ServerRecord{Name: "hub", Subdomain: "hub"}
+	repo.collaborators["hub"] = map[string]string{"u-player": CollabRoleOperator}
 	w = do(a.ExternalHandler(), "GET", "/api/v1/me", "", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("collaborator /me in team mode: status=%d body=%s", w.Code, w.Body.String())

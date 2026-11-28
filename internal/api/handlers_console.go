@@ -15,7 +15,6 @@ type commandRequest struct {
 }
 
 func (a *API) handleCommand(w http.ResponseWriter, r *http.Request) {
-	p := principalFromContext(r.Context())
 	name := r.PathValue("name")
 	if err := validateManagedServerName(r, name); err != nil {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
@@ -34,13 +33,7 @@ func (a *API) handleCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rec, err := a.managedServerRecord(r.Context(), name)
-	if err != nil {
-		a.writeLookupError(w, r, err)
-		return
-	}
-	if !a.isOwnerOrAdmin(p, rec) {
-		writeError(w, r, errForbidden)
+	if _, _, ok := a.authorizeServerName(w, r, name, ActionOperate); !ok {
 		return
 	}
 

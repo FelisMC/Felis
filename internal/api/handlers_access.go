@@ -38,7 +38,7 @@ var unknownCommandRe = regexp.MustCompile(`(?i)^\s*unknown (or incomplete )?comm
 
 // issueLuckPermsCommand maps unregistered commands to luckperms_missing instead of reporting a successful no-op.
 func (a *API) issueLuckPermsCommand(w http.ResponseWriter, r *http.Request, name, command string) (string, bool) {
-	out, ok := a.issueAccessCommand(w, r, name, command)
+	out, ok := a.issueAccessCommand(w, r, name, command, ActionManage)
 	if ok && unknownCommandRe.MatchString(lpColorRe.ReplaceAllString(out, "")) {
 		writeError(w, r, errLuckPermsMissing)
 		return "", false
@@ -47,20 +47,8 @@ func (a *API) issueLuckPermsCommand(w http.ResponseWriter, r *http.Request, name
 }
 
 // issueAccessCommand requires charset-validated command fields; it writes errors but leaves auditing to the caller.
-func (a *API) issueAccessCommand(w http.ResponseWriter, r *http.Request, name, command string) (string, bool) {
-	p := principalFromContext(r.Context())
-	if err := validateManagedServerName(r, name); err != nil {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
-		return "", false
-	}
-
-	rec, err := a.managedServerRecord(r.Context(), name)
-	if err != nil {
-		a.writeLookupError(w, r, err)
-		return "", false
-	}
-	if !a.isOwnerOrAdmin(p, rec) {
-		writeError(w, r, errForbidden)
+func (a *API) issueAccessCommand(w http.ResponseWriter, r *http.Request, name, command string, action ServerAction) (string, bool) {
+	if _, _, ok := a.authorizeServerName(w, r, name, action); !ok {
 		return "", false
 	}
 
@@ -118,7 +106,7 @@ func (a *API) handleAccessWhitelist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, ok := a.issueAccessCommand(w, r, name, "whitelist "+body.Action+" "+body.Player)
+	out, ok := a.issueAccessCommand(w, r, name, "whitelist "+body.Action+" "+body.Player, ActionOperate)
 	if !ok {
 		return
 	}
@@ -131,7 +119,7 @@ func (a *API) handleAccessWhitelist(w http.ResponseWriter, r *http.Request) {
 // handleAccessWhitelistList returns raw output alongside the best-effort vanilla parse.
 func (a *API) handleAccessWhitelistList(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	out, ok := a.issueAccessCommand(w, r, name, "whitelist list")
+	out, ok := a.issueAccessCommand(w, r, name, "whitelist list", ActionOperate)
 	if !ok {
 		return
 	}
@@ -143,7 +131,7 @@ func (a *API) handleAccessWhitelistList(w http.ResponseWriter, r *http.Request) 
 // handleAccessPlayers returns raw output alongside best-effort counts and player names.
 func (a *API) handleAccessPlayers(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	out, ok := a.issueAccessCommand(w, r, name, "list")
+	out, ok := a.issueAccessCommand(w, r, name, "list", ActionOperate)
 	if !ok {
 		return
 	}
@@ -156,7 +144,7 @@ func (a *API) handleAccessPlayers(w http.ResponseWriter, r *http.Request) {
 // handleAccessBanList returns raw output because plugins and localized servers may use other formats.
 func (a *API) handleAccessBanList(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	out, ok := a.issueAccessCommand(w, r, name, "banlist")
+	out, ok := a.issueAccessCommand(w, r, name, "banlist", ActionOperate)
 	if !ok {
 		return
 	}
@@ -189,7 +177,7 @@ func (a *API) handleAccessBan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, ok := a.issueAccessCommand(w, r, name, body.Action+" "+body.Player)
+	out, ok := a.issueAccessCommand(w, r, name, body.Action+" "+body.Player, ActionOperate)
 	if !ok {
 		return
 	}
@@ -216,7 +204,7 @@ func (a *API) handleAccessKick(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, ok := a.issueAccessCommand(w, r, name, "kick "+body.Player)
+	out, ok := a.issueAccessCommand(w, r, name, "kick "+body.Player, ActionOperate)
 	if !ok {
 		return
 	}

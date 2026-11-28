@@ -162,12 +162,11 @@ func (a *API) panelPortalAllowed(ctx context.Context, userID, role string) (bool
 	return a.userHasCollaboratorAccess(ctx, userID)
 }
 
-// userHasCollaboratorAccess delegates to collaborator storage once attached.
 func (a *API) userHasCollaboratorAccess(ctx context.Context, userID string) (bool, error) {
-	if a.collaboratorCheck == nil || userID == "" {
+	if userID == "" {
 		return false, nil
 	}
-	return a.collaboratorCheck(ctx, userID)
+	return a.Repo.HasAnyCollaboratorAccess(ctx, userID)
 }
 
 func (a *API) requireCommunityMode(w http.ResponseWriter, r *http.Request) bool {

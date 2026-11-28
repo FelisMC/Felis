@@ -107,4 +107,8 @@ export type WireParity = [
   Holds<Parity<T.EntryPolicySettings, S["EntryPolicySettings"]>>,
   Holds<Parity<T.PlatformFeaturesSettings, S["PlatformFeaturesSettings"]>>,
   Holds<Parity<T.SetPlatformFeaturesRequest, S["SetPlatformFeaturesRequest"]>>,
+  Holds<Parity<T.ServerProtection, S["ServerProtection"]>>,
+  Holds<Parity<T.ServerCollaborator, S["ServerCollaborator"]>>,
+  Holds<Parity<T.CollaboratorCandidate, S["CollaboratorCandidate"]>>,
+  Holds<Parity<T.ServerCollaboratorsResponse, S["ServerCollaboratorsResponse"]>>,
 ];

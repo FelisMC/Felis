@@ -21,14 +21,14 @@ func NewPGRepo(db *sql.DB) *PGRepo { return &PGRepo{db: db} }
 func (p *PGRepo) Ping(ctx context.Context) error { return p.db.PingContext(ctx) }
 
 func (p *PGRepo) ServerBySubdomain(ctx context.Context, subdomain string) (*ServerRecord, error) {
-	const q = `SELECT s.name, sa.subdomain, COALESCE(s.owner_id, ''), COALESCE(s.cached_phase, ''),
+	const q = `SELECT s.name, sa.subdomain, COALESCE(s.owner_id, ''), s.protected, COALESCE(s.cached_phase, ''),
 		s.retire_requested_at, s.retire_delete
 		FROM server_aliases sa JOIN servers s ON s.name = sa.server_name
 		WHERE sa.subdomain = $1 AND s.deleted_at IS NULL`
 	var r ServerRecord
 	var retireAt sql.NullTime
 	var retireDelete bool
-	switch err := p.db.QueryRowContext(ctx, q, subdomain).Scan(&r.Name, &r.Subdomain, &r.OwnerID, &r.CachedPhase, &retireAt, &retireDelete); {
+	switch err := p.db.QueryRowContext(ctx, q, subdomain).Scan(&r.Name, &r.Subdomain, &r.OwnerID, &r.Protected, &r.CachedPhase, &retireAt, &retireDelete); {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil, ErrNotFound
 	case err != nil:
@@ -39,7 +39,7 @@ func (p *PGRepo) ServerBySubdomain(ctx context.Context, subdomain string) (*Serv
 }
 
 func (p *PGRepo) ServerByName(ctx context.Context, name string) (*ServerRecord, error) {
-	const q = `SELECT s.name, COALESCE(sa.subdomain, ''), COALESCE(s.owner_id, ''), s.claimed_at, COALESCE(s.cached_phase, ''),
+	const q = `SELECT s.name, COALESCE(sa.subdomain, ''), COALESCE(s.owner_id, ''), s.protected, s.claimed_at, COALESCE(s.cached_phase, ''),
 		s.retire_requested_at, s.retire_delete, to_jsonb(s.tags)
 		FROM servers s LEFT JOIN server_aliases sa ON sa.server_name = s.name
 		WHERE s.name = $1 AND s.deleted_at IS NULL`
@@ -47,7 +47,7 @@ func (p *PGRepo) ServerByName(ctx context.Context, name string) (*ServerRecord, 
 	var claimedAt, retireAt sql.NullTime
 	var retireDelete bool
 	var rawTags []byte
-	switch err := p.db.QueryRowContext(ctx, q, name).Scan(&r.Name, &r.Subdomain, &r.OwnerID, &claimedAt, &r.CachedPhase, &retireAt, &retireDelete, &rawTags); {
+	switch err := p.db.QueryRowContext(ctx, q, name).Scan(&r.Name, &r.Subdomain, &r.OwnerID, &r.Protected, &claimedAt, &r.CachedPhase, &retireAt, &retireDelete, &rawTags); {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil, ErrNotFound
 	case err != nil:
@@ -395,12 +395,12 @@ func (p *PGRepo) ClaimServer(ctx context.Context, name, userID string, clearOwne
 	}
 
 	var owned sql.NullString
-	var retiring bool
+	var retiring, protected bool
 	var cpu, mem, stor int
 	switch err := tx.QueryRowContext(ctx,
-		`SELECT owner_id, retire_requested_at IS NOT NULL, cached_cpu_milli, cached_memory_mb, cached_storage_mb
+		`SELECT owner_id, retire_requested_at IS NOT NULL, protected, cached_cpu_milli, cached_memory_mb, cached_storage_mb
 		 FROM servers WHERE name = $1 AND deleted_at IS NULL FOR UPDATE`,
-		name).Scan(&owned, &retiring, &cpu, &mem, &stor); {
+		name).Scan(&owned, &retiring, &protected, &cpu, &mem, &stor); {
 	case errors.Is(err, sql.ErrNoRows):
 		return false, ErrNotFound
 	case err != nil:
@@ -409,7 +409,7 @@ func (p *PGRepo) ClaimServer(ctx context.Context, name, userID string, clearOwne
 	if owned.Valid {
 		return false, nil
 	}
-	if retiring {
+	if retiring || protected {
 		return false, nil
 	}
 
@@ -437,7 +437,7 @@ func (p *PGRepo) ClaimServer(ctx context.Context, name, userID string, clearOwne
 
 	res, err := tx.ExecContext(ctx,
 		`UPDATE servers SET owner_id = $2, claimed_at = now(), last_active_at = now(), warned_3d_at = NULL, warned_1d_at = NULL, tags = '{}'
-		 WHERE name = $1 AND owner_id IS NULL AND deleted_at IS NULL AND retire_requested_at IS NULL`,
+		 WHERE name = $1 AND owner_id IS NULL AND protected = false AND deleted_at IS NULL AND retire_requested_at IS NULL`,
 		name, userID)
 	if err != nil {
 		return false, err
@@ -450,6 +450,9 @@ func (p *PGRepo) ClaimServer(ctx context.Context, name, userID string, clearOwne
 		return false, nil
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM server_allowlist WHERE server_name = $1`, name); err != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM server_collaborators WHERE server_name = $1`, name); err != nil {
 		return false, err
 	}
 	if err := disableServerSchedulesTx(ctx, tx, name); err != nil {
@@ -624,10 +627,14 @@ func (p *PGRepo) RecordJoin(ctx context.Context, name, mcUUID string) error {
 
 func (p *PGRepo) MyServers(ctx context.Context, userID string) ([]MyServerView, error) {
 	const q = `SELECT s.name, COALESCE(sa.subdomain, ''),
-		COALESCE(s.owner_id = $1, false) AS owned, (s.owner_id IS NULL AND s.retire_requested_at IS NULL) AS claimable,
+		COALESCE(s.owner_id = $1, false) AS owned,
+		(s.owner_id IS NULL AND s.retire_requested_at IS NULL AND NOT s.protected) AS claimable,
+		s.protected, COALESCE(sc.role, ''),
 		COALESCE(s.cached_phase, ''), s.retire_requested_at, s.retire_delete, to_jsonb(s.tags)
-		FROM servers s LEFT JOIN server_aliases sa ON sa.server_name = s.name
-		WHERE s.deleted_at IS NULL AND (s.owner_id = $1 OR s.owner_id IS NULL)
+		FROM servers s
+		LEFT JOIN server_aliases sa ON sa.server_name = s.name
+		LEFT JOIN server_collaborators sc ON sc.server_name = s.name AND sc.user_id = $1
+		WHERE s.deleted_at IS NULL AND (s.owner_id = $1 OR sc.user_id IS NOT NULL OR (s.owner_id IS NULL AND NOT s.protected))
 		ORDER BY s.name`
 	rows, err := p.db.QueryContext(ctx, q, userID)
 	if err != nil {
@@ -637,13 +644,25 @@ func (p *PGRepo) MyServers(ctx context.Context, userID string) ([]MyServerView, 
 	var out []MyServerView
 	for rows.Next() {
 		var v MyServerView
+		var collabRole string
 		var retireAt sql.NullTime
 		var retireDelete bool
 		var rawTags []byte
-		if err := rows.Scan(&v.Name, &v.Subdomain, &v.Owned, &v.Claimable, &v.Phase, &retireAt, &retireDelete, &rawTags); err != nil {
+		if err := rows.Scan(&v.Name, &v.Subdomain, &v.Owned, &v.Claimable, &v.Protected, &collabRole, &v.Phase, &retireAt, &retireDelete, &rawTags); err != nil {
 			return nil, err
 		}
+		serverOwner := ""
 		if v.Owned {
+			serverOwner = userID
+		}
+		v.AccessRole = effectiveAccessRole(serverAccessInput{
+			UserID:       userID,
+			PlatformRole: "user",
+			ServerOwner:  serverOwner,
+			Protected:    v.Protected,
+			CollabRole:   collabRole,
+		})
+		if v.AccessRole != AccessRoleNone {
 			v.Retiring = retireState(retireAt, retireDelete)
 			if v.Tags, err = decodeServerTags(rawTags); err != nil {
 				return nil, err
@@ -656,7 +675,7 @@ func (p *PGRepo) MyServers(ctx context.Context, userID string) ([]MyServerView, 
 
 func (p *PGRepo) ServerOwners(ctx context.Context) (map[string]ServerOwnership, error) {
 	const q = `SELECT s.name, COALESCE(s.owner_id, ''), COALESCE(NULLIF(u.email, ''), u.username, ''),
-		s.retire_requested_at, s.retire_delete
+		s.protected, s.retire_requested_at, s.retire_delete
 		FROM servers s LEFT JOIN users u ON u.id = s.owner_id
 		WHERE s.deleted_at IS NULL`
 	rows, err := p.db.QueryContext(ctx, q)
@@ -670,7 +689,7 @@ func (p *PGRepo) ServerOwners(ctx context.Context) (map[string]ServerOwnership, 
 		var o ServerOwnership
 		var retireAt sql.NullTime
 		var retireDelete bool
-		if err := rows.Scan(&name, &o.OwnerID, &o.Owner, &retireAt, &retireDelete); err != nil {
+		if err := rows.Scan(&name, &o.OwnerID, &o.Owner, &o.Protected, &retireAt, &retireDelete); err != nil {
 			return nil, err
 		}
 		o.Retire = retireState(retireAt, retireDelete)
@@ -718,7 +737,7 @@ func (p *PGRepo) SeedServer(ctx context.Context, name, subdomain string, cpuMill
 		`INSERT INTO servers (name, cached_cpu_milli, cached_memory_mb, cached_storage_mb) VALUES ($1, $2, $3, $4)
 		 ON CONFLICT (name) DO UPDATE SET owner_id = NULL, claimed_at = NULL, last_active_at = now(),
 		   warned_3d_at = NULL, warned_1d_at = NULL, cached_phase = NULL, created_at = now(), deleted_at = NULL,
-		   retire_requested_at = NULL, retire_delete = false, tags = '{}',
+		   retire_requested_at = NULL, retire_delete = false, protected = false, tags = '{}',
 		   cached_cpu_milli = EXCLUDED.cached_cpu_milli, cached_memory_mb = EXCLUDED.cached_memory_mb,
 		   cached_storage_mb = EXCLUDED.cached_storage_mb`,
 		name, cpuMilli, memoryMB, storageMB); err != nil {
@@ -726,6 +745,9 @@ func (p *PGRepo) SeedServer(ctx context.Context, name, subdomain string, cpuMill
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM server_allowlist WHERE server_name = $1`, name); err != nil {
 		return fmt.Errorf("clear an earlier allowlist: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM server_collaborators WHERE server_name = $1`, name); err != nil {
+		return fmt.Errorf("clear earlier collaborators: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM server_aliases WHERE server_name = $1`, name); err != nil {
 		return fmt.Errorf("clear earlier aliases: %w", err)
@@ -753,8 +775,33 @@ func (p *PGRepo) AllBackups(ctx context.Context, opts BackupListOpts) ([]BackupV
 	return p.pageBackups(ctx, ``, opts)
 }
 
+func (p *PGRepo) BackupsForAdmin(ctx context.Context, adminUserID string, opts BackupListOpts) ([]BackupView, int, error) {
+	return p.pageBackups(ctx, ` AND NOT EXISTS (
+		SELECT 1 FROM servers s
+		WHERE s.name = world_backups.server_name AND s.deleted_at IS NULL AND s.protected = true
+		  AND NOT EXISTS (
+		    SELECT 1 FROM server_collaborators sc WHERE sc.server_name = s.name AND sc.user_id = $2
+		  )
+	)`, opts, adminUserID)
+}
+
 func (p *PGRepo) BackupsForUser(ctx context.Context, userID string, opts BackupListOpts) ([]BackupView, int, error) {
-	return p.pageBackups(ctx, ` AND former_owner = $2`, opts, userID)
+	return p.pageBackups(ctx, ` AND (
+		(
+			former_owner = $2
+			AND NOT EXISTS (
+				SELECT 1 FROM servers s
+				WHERE s.name = world_backups.server_name AND s.deleted_at IS NULL AND s.protected = true
+				  AND NOT EXISTS (SELECT 1 FROM server_collaborators sc WHERE sc.server_name = s.name AND sc.user_id = $2)
+			)
+		)
+		OR EXISTS (
+			SELECT 1 FROM server_collaborators sc
+			JOIN servers s ON s.name = sc.server_name
+			WHERE sc.server_name = world_backups.server_name AND sc.user_id = $2 AND s.deleted_at IS NULL
+			  AND (world_backups.former_owner IS NULL OR world_backups.former_owner = '' OR world_backups.former_owner = s.owner_id)
+		)
+	)`, opts, userID)
 }
 
 // pageBackups pages present backups under scope, whose parameters follow $1; id breaks created_at ties.
@@ -1946,6 +1993,10 @@ func (p *PGRepo) DeleteUser(ctx context.Context, userID, _ string, clearPorts fu
 		`DELETE FROM account_links WHERE user_id = $1`, userID); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM server_collaborators WHERE user_id = $1`, userID); err != nil {
+		return err
+	}
 
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE users SET disabled = true, deleted_at = now() WHERE id = $1`,
@@ -1963,21 +2014,29 @@ func (p *PGRepo) PatchServerPorts(ctx context.Context, name, ownerID string, app
 	}
 	defer tx.Rollback()
 	var owner string
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(owner_id, '') FROM servers WHERE name = $1 AND deleted_at IS NULL FOR UPDATE`, name).Scan(&owner); err != nil {
+	var protected, retiring bool
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(owner_id, ''), protected, retire_requested_at IS NOT NULL FROM servers WHERE name = $1 AND deleted_at IS NULL FOR UPDATE`,
+		name).Scan(&owner, &protected, &retiring); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
 		return err
 	}
 	if ownerID != "" {
-		if owner != ownerID {
+		var isManager bool
+		if err := tx.QueryRowContext(ctx,
+			`SELECT EXISTS(SELECT 1 FROM server_collaborators WHERE server_name = $1 AND user_id = $2 AND role = 'manager')`,
+			name, ownerID).Scan(&isManager); err != nil {
+			return err
+		}
+		if !isManager && (protected || owner != ownerID) {
 			return errForbidden
 		}
-		var live, retiring bool
+		var live bool
 		if err := tx.QueryRowContext(ctx,
-			`SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND NOT disabled AND deleted_at IS NULL),
-			        (SELECT retire_requested_at IS NOT NULL FROM servers WHERE name = $2)`,
-			ownerID, name).Scan(&live, &retiring); err != nil {
+			`SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND NOT disabled AND deleted_at IS NULL)`,
+			ownerID).Scan(&live); err != nil {
 			return err
 		}
 		if !live {

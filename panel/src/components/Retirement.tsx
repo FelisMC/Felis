@@ -44,17 +44,19 @@ export function RetireNotice({
   name,
   retiring,
   isAdmin,
+  canCancel,
   onChanged,
 }: {
   name: string;
   retiring: RetireState;
   isAdmin: boolean;
+  canCancel?: boolean;
   onChanged: () => void;
 }) {
   const { t, i18n } = useTranslation("servers");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const canCancel = isAdmin || !retiring.delete;
+  const allowCancel = canCancel ?? (isAdmin || !retiring.delete);
   const when = formatRelative(retiring.requested_at, Date.now(), i18n.language);
 
   async function cancel() {
@@ -83,10 +85,10 @@ export function RetireNotice({
         <p className="text-muted-foreground" title={formatAbsolute(retiring.requested_at, i18n.language)}>
           {retiring.delete ? t("retiring_body_delete", { when }) : t("retiring_body_release", { when })}
         </p>
-        {!canCancel && <p className="text-xs text-muted-foreground">{t("retiring_cancel_admin_only")}</p>}
+        {!allowCancel && <p className="text-xs text-muted-foreground">{t("retiring_cancel_admin_only")}</p>}
         {error && <MessageLine kind="error" message={error} compact />}
       </div>
-      {canCancel && (
+      {allowCancel && (
         <Button size="sm" variant="outline" className="shrink-0 self-start" onClick={() => void cancel()} disabled={busy}>
           {busy && <Loader2 className="animate-spin" />}
           {t("retiring_cancel")}
@@ -106,6 +108,8 @@ export function DangerZone({
   isAdmin,
   isOwner = false,
   canRetire = true,
+  canRelease,
+  canDelete,
   canKill = false,
   onChanged,
 }: {
@@ -115,16 +119,20 @@ export function DangerZone({
   isAdmin: boolean;
   isOwner?: boolean;
   canRetire?: boolean;
+  canRelease?: boolean;
+  canDelete?: boolean;
   canKill?: boolean;
   onChanged: () => void;
 }) {
   const { t } = useTranslation("servers");
   const [mode, setMode] = useState<Mode | null>(null);
+  const allowRelease = canRelease ?? canRetire;
+  const allowDelete = canDelete ?? (canRetire && isAdmin);
   const rows: { mode: Mode; title: string; body: string; destructive?: boolean }[] = [
     ...(canKill ? [{ mode: "kill" as const, title: t("kill"), body: t("kill_desc"), destructive: true }] : []),
     ...(isOwner ? [{ mode: "stop" as const, title: t("emergency_stop"), body: t("emergency_stop_desc") }] : []),
-    ...(canRetire ? [{ mode: "release" as const, title: t("retire_release"), body: t("retire_card_desc") }] : []),
-    ...(canRetire && isAdmin ? [{ mode: "delete" as const, title: t("retire_delete"), body: t("retire_delete_desc"), destructive: true }] : []),
+    ...(allowRelease ? [{ mode: "release" as const, title: t("retire_release"), body: t("retire_card_desc") }] : []),
+    ...(allowDelete ? [{ mode: "delete" as const, title: t("retire_delete"), body: t("retire_delete_desc"), destructive: true }] : []),
   ];
   if (rows.length === 0) return null;
 

@@ -10,10 +10,30 @@ type ServerRecord struct {
 	Name        string
 	Subdomain   string
 	OwnerID     string // "" when unclaimed
+	Protected   bool
 	ClaimedAt   *time.Time
 	CachedPhase string       // non-authoritative
 	Retire      *RetireState // nil when no retirement is pending
 	Tags        []string     // set by ServerByName only
+}
+
+type CollaboratorRecord struct {
+	ServerName string    `json:"server_name"`
+	UserID     string    `json:"user_id"`
+	Username   string    `json:"username"`
+	Email      string    `json:"email,omitempty"`
+	UserRole   string    `json:"user_role"`
+	Role       string    `json:"role"`
+	GrantedBy  string    `json:"granted_by,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+type CollaboratorCandidate struct {
+	ID       string `json:"id"`
+	Username string `json:"username"`
+	Email    string `json:"email,omitempty"`
+	Role     string `json:"role"`
 }
 
 type RetireState struct {
@@ -27,6 +47,8 @@ type MyServerView struct {
 	Subdomain          string            `json:"subdomain"`
 	Owned              bool              `json:"owned"`
 	Claimable          bool              `json:"claimable"`
+	Protected          bool              `json:"protected,omitempty"`
+	AccessRole         string            `json:"accessRole,omitempty"`
 	Phase              string            `json:"phase,omitempty"`
 	PlayersOnline      int32             `json:"playersOnline"`
 	PlayersMax         int32             `json:"playersMax"`
@@ -50,8 +72,9 @@ type MyServerView struct {
 
 type ServerOwnership struct {
 	// OwnerID is "" while unclaimed; compare it, not Owner, to decide whose server it is.
-	OwnerID string
-	Owner   string // display identity: email, or username without one; "" while unclaimed
+	OwnerID   string
+	Owner     string // display identity: email, or username without one; "" while unclaimed
+	Protected bool
 	// Retire=nil means no request; pending deletion prevents claims.
 	Retire *RetireState
 }
@@ -256,8 +279,18 @@ type Repo interface {
 	// ServerNoticeRecipients is the owner's verified email, or every Owner's if unclaimed.
 	ServerNoticeRecipients(ctx context.Context, server string) ([]string, error)
 	AllBackups(ctx context.Context, opts BackupListOpts) ([]BackupView, int, error)
-	// BackupsForUser scopes to former ownership recorded at archive time.
+	// BackupsForAdmin hides backups belonging to protected servers where adminUserID lacks collaborator access.
+	BackupsForAdmin(ctx context.Context, adminUserID string, opts BackupListOpts) ([]BackupView, int, error)
+	// BackupsForUser scopes to former ownership recorded at archive time and active collaborator assignments.
 	BackupsForUser(ctx context.Context, userID string, opts BackupListOpts) ([]BackupView, int, error)
+	SetServerProtected(ctx context.Context, name string, protected bool) error
+	ServerCollaborators(ctx context.Context, name string) ([]CollaboratorRecord, error)
+	CollaboratorCandidates(ctx context.Context, limit int) ([]CollaboratorCandidate, error)
+	UserCollaboratorRole(ctx context.Context, name, userID string) (string, error)
+	UserCollaboratorRoles(ctx context.Context, userID string) (map[string]string, error)
+	HasAnyCollaboratorAccess(ctx context.Context, userID string) (bool, error)
+	UpsertServerCollaborator(ctx context.Context, name, userID, role, grantedBy string) (*CollaboratorRecord, error)
+	DeleteServerCollaborator(ctx context.Context, name, userID string) error
 	LatestBackup(ctx context.Context, serverName string) (*BackupRecord, error)
 	LatestBackupForOwner(ctx context.Context, serverName, ownerID string) (*BackupRecord, error)
 	BackupByID(ctx context.Context, id string) (*BackupRecord, error)

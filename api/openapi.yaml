@@ -1156,6 +1156,13 @@ components:
           type: array
           items: { type: string }
           description: Owner and staff only. Present when the server carries tags.
+        protected:
+          type: boolean
+          description: Present and true when the server is protected by owner-only access rules.
+        accessRole:
+          type: string
+          enum: [owner, admin, manager, operator, readonly]
+          description: Caller's effective access role for this server.
         resumeAfterHostRestart:
           type: boolean
           description: Whether a server that was running starts again after its host restarts, for example after a power loss. System servers always resume.
@@ -1428,6 +1435,13 @@ components:
         subdomain: { type: string }
         owned: { type: boolean }
         claimable: { type: boolean }
+        protected:
+          type: boolean
+          description: Present and true when the server is protected by owner-only access rules.
+        accessRole:
+          type: string
+          enum: [owner, admin, manager, operator, readonly]
+          description: Caller's effective access role for this server.
         phase:
           allOf: [{ $ref: '#/components/schemas/Phase' }]
           description: Present only when known.
@@ -2329,6 +2343,49 @@ components:
           type: array
           description: The caps the new owner passes; empty when the server fits the quota.
           items: { $ref: '#/components/schemas/QuotaExcess' }
+
+    ServerProtection:
+      type: object
+      required: [name, protected]
+      properties:
+        name: { type: string }
+        protected: { type: boolean }
+
+    ServerCollaborator:
+      type: object
+      required: [server_name, user_id, username, user_role, role, created_at, updated_at]
+      properties:
+        server_name: { type: string }
+        user_id: { type: string }
+        username: { type: string }
+        email: { type: string }
+        user_role: { type: string, enum: [owner, admin, user] }
+        role: { type: string, enum: [operator, manager] }
+        granted_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    CollaboratorCandidate:
+      type: object
+      required: [id, username, role]
+      properties:
+        id: { type: string }
+        username: { type: string }
+        email: { type: string }
+        role: { type: string, enum: [admin, user] }
+
+    ServerCollaboratorsResponse:
+      type: object
+      required: [server, protected, collaborators, candidates]
+      properties:
+        server: { type: string }
+        protected: { type: boolean }
+        collaborators:
+          type: array
+          items: { $ref: '#/components/schemas/ServerCollaborator' }
+        candidates:
+          type: array
+          items: { $ref: '#/components/schemas/CollaboratorCandidate' }
 
     APIToken:
       type: object
@@ -4132,6 +4189,105 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/servers/{name}/protection:
+    put:
+      tags: [admin-servers]
+      operationId: setServerProtection
+      summary: Toggle protected mode on a server (Owner with reauth).
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [protected]
+              properties:
+                protected: { type: boolean }
+      responses:
+        '200':
+          description: Updated protection state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerProtection' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/servers/{name}/collaborators:
+    get:
+      tags: [admin-servers]
+      operationId: listServerCollaborators
+      summary: List collaborators and active candidates for a server.
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Current collaborators and candidate users.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerCollaboratorsResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/servers/{name}/collaborators/{user_id}:
+    put:
+      tags: [admin-servers]
+      operationId: setServerCollaborator
+      summary: Add or update a server collaborator role.
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - { name: user_id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { type: string, enum: [operator, manager] }
+      responses:
+        '200':
+          description: Saved collaborator record.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerCollaborator' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [admin-servers]
+      operationId: removeServerCollaborator
+      summary: Remove a server collaborator.
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - { name: user_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '204':
+          description: Collaborator removed.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /api/v1/servers/{name}/command:
     post:

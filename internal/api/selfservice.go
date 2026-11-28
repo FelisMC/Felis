@@ -374,19 +374,13 @@ type ownerPatchRequest struct {
 }
 
 func (a *API) handleOwnerPatchServer(w http.ResponseWriter, r *http.Request) {
-	p := principalFromContext(r.Context())
 	name := r.PathValue("name")
 	if err := naming.ValidateServerName(name); err != nil {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
 		return
 	}
-	rec, err := a.Repo.ServerByName(r.Context(), name)
-	if err != nil {
-		a.writeLookupError(w, r, err)
-		return
-	}
-	if rec.OwnerID == "" || rec.OwnerID != p.UserID {
-		writeError(w, r, errForbidden)
+	rec, _, ok := a.authorizeServerName(w, r, name, ActionManage)
+	if !ok {
 		return
 	}
 	var body ownerPatchRequest
@@ -418,5 +412,5 @@ func (a *API) handleOwnerPatchServer(w http.ResponseWriter, r *http.Request) {
 	if body.CPU != nil {
 		patch.Resources = &patchResourceRequest{CPU: body.CPU}
 	}
-	a.patchServer(w, r, name, patch)
+	a.patchServer(w, r, rec, patch)
 }

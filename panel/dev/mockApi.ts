@@ -65,6 +65,10 @@ import type {
   ExtensionMetadata,
   Schedule,
   ScheduleInput,
+  AccessRole,
+  CollaboratorRole,
+  CollaboratorCandidate,
+  ServerCollaborator,
 } from "../src/lib/types";
 
 type AccountID = string;
@@ -120,6 +124,7 @@ interface AccessState {
 interface MockState {
   accounts: Record<AccountID, MockAccount>;
   servers: MockServer[];
+  collaborators: Record<string, ServerCollaborator[]>;
   startupSettings: Map<string, ServerStartupSettings>;
   images: WhitelistImage[];
   access: Record<string, AccessState>;
@@ -316,6 +321,7 @@ function initialState(): MockState {
     ]),
     accounts: {
       owner: account("owner", "owner", true, false),
+      admin: account("admin", "admin", true, false),
       user: account("user", "user", false, false),
       linked: account("linked", "user", true, true),
     },
@@ -470,6 +476,7 @@ function initialState(): MockState {
       owner: [
         { id: "pk-1", name: "YubiKey 5C", created_at: new Date(Date.now() - 30 * DAY_MS).toISOString() },
       ],
+      admin: [],
       linked: [],
       user: [],
       setup: [],
@@ -573,6 +580,7 @@ function initialState(): MockState {
       managed: false,
     },
     files: {},
+    collaborators: {},
     fileOps: {},
     fileExports: {},
   };
@@ -860,20 +868,70 @@ function findServer(state: MockState, name: string): MockServer | null {
   return state.servers.find((s) => s.name === name) ?? null;
 }
 
-function canSee(accountInfo: MockAccount, serverInfo: MockServer): boolean {
-  return isAdmin(accountInfo.role) || serverInfo.owner === accountInfo.id || serverInfo.owner === null;
+type MockEffectiveRole = AccessRole | "none";
+
+function userCollabRole(state: MockState, serverName: string, accountId: string): CollaboratorRole | undefined {
+  return (state.collaborators[serverName] ?? []).find(
+    (c) => c.user_id === `mock-${accountId}` || c.username === accountId,
+  )?.role;
 }
 
-function canManage(accountInfo: MockAccount, serverInfo: MockServer): boolean {
-  return isAdmin(accountInfo.role) || serverInfo.owner === accountInfo.id;
+function resolveAccessRole(state: MockState, accountInfo: MockAccount, serverInfo: MockServer): MockEffectiveRole {
+  const role = accountInfo.role;
+  const system = !!serverInfo.reaperExempt;
+  const collab = system ? undefined : userCollabRole(state, serverInfo.name, accountInfo.id);
+  if (role === "owner") return "owner";
+  if (role === "admin") {
+    if (!serverInfo.protected || system) return "admin";
+    return collab ?? "readonly";
+  }
+  if (system) return "none";
+  if (serverInfo.protected) return collab ?? "none";
+  if (serverInfo.owner === accountInfo.id) return "owner";
+  return collab ?? "none";
+}
+
+function hasOperateAccess(state: MockState, accountInfo: MockAccount, serverInfo: MockServer): boolean {
+  const role = resolveAccessRole(state, accountInfo, serverInfo);
+  return role === "owner" || role === "admin" || role === "manager" || role === "operator";
+}
+
+function hasManageAccess(state: MockState, accountInfo: MockAccount, serverInfo: MockServer): boolean {
+  const role = resolveAccessRole(state, accountInfo, serverInfo);
+  return role === "owner" || role === "admin" || role === "manager";
+}
+
+function canManageCollaborators(role: Role, isProtected?: boolean): boolean {
+  return role === "owner" || (role === "admin" && !isProtected);
+}
+
+function canRetireServer(accountInfo: MockAccount, serverInfo: MockServer, del: boolean): boolean {
+  if (isOwner(accountInfo.role)) return true;
+  if (serverInfo.protected) return false;
+  if (isAdmin(accountInfo.role)) return true;
+  return !del && serverInfo.owner === accountInfo.id;
+}
+
+function hasAnyCollaborator(state: MockState, accountId: string): boolean {
+  return Object.entries(state.collaborators).some(
+    ([serverName, entries]) =>
+      findServer(state, serverName) !== null &&
+      entries.some((c) => c.user_id === `mock-${accountId}` || c.username === accountId),
+  );
+}
+
+function canSee(state: MockState, accountInfo: MockAccount, serverInfo: MockServer): boolean {
+  if (resolveAccessRole(state, accountInfo, serverInfo) !== "none") return true;
+  return !serverInfo.protected && !serverInfo.reaperExempt && serverInfo.owner === null;
 }
 
 function visibleServers(state: MockState, accountInfo: MockAccount): MyServerView[] {
   const team = state.features.mode === "team";
   return state.servers
-    .filter((serverInfo) => canSee(accountInfo, serverInfo))
+    .filter((serverInfo) => canSee(state, accountInfo, serverInfo))
+    .filter((serverInfo) => !team || resolveAccessRole(state, accountInfo, serverInfo) !== "none")
     .map((serverInfo) => {
-      const view = myServerView(serverInfo, accountInfo);
+      const view = myServerView(state, serverInfo, accountInfo);
       return team ? { ...view, claimable: false } : view;
     });
 }
@@ -913,6 +971,7 @@ function fleetView(state: MockState, accountInfo: MockAccount): FleetServer[] {
   return state.servers.map((s, i) => {
     const disk = mockDiskUsage(s);
     const { owner, ...wire } = s;
+    const accessRole = resolveAccessRole(state, accountInfo, s);
     return {
       ...wire,
       ...disk,
@@ -922,26 +981,40 @@ function fleetView(state: MockState, accountInfo: MockAccount): FleetServer[] {
       playersOnline: s.ready ? s.playersOnline : 0,
       owner: owner ? (state.accounts[owner]?.email ?? owner) : "",
       owned: owner === accountInfo.id,
-      claimable: state.features.mode !== "team" && owner === null && !s.retiring && !s.reaperExempt,
+      claimable: state.features.mode !== "team" && owner === null && !s.protected && !s.retiring && !s.reaperExempt,
       system: s.reaperExempt,
+      ...(s.protected ? { protected: true } : {}),
+      ...(accessRole !== "none" ? { accessRole } : {}),
     };
   });
 }
 
-function myServerView(serverInfo: MockServer, accountInfo: MockAccount): MyServerView {
-  const owned = canManage(accountInfo, serverInfo);
+function myServerView(state: MockState, serverInfo: MockServer, accountInfo: MockAccount): MyServerView {
+  const accessRole = resolveAccessRole(state, accountInfo, serverInfo);
+  const operational = accessRole === "owner" || accessRole === "admin" || accessRole === "manager" || accessRole === "operator";
+  const actualOwned = serverInfo.owner === accountInfo.id;
   const disk = mockDiskUsage(serverInfo);
   return {
     name: serverInfo.name,
     subdomain: serverInfo.subdomain,
-    owned,
-    claimable: serverInfo.owner === null && !serverInfo.retiring && accountInfo.linked && !owned,
+    owned: actualOwned,
+    claimable:
+      state.features.mode !== "team" &&
+      !serverInfo.protected &&
+      !serverInfo.reaperExempt &&
+      serverInfo.owner === null &&
+      !serverInfo.retiring &&
+      accountInfo.linked &&
+      !actualOwned &&
+      !operational,
+    ...(serverInfo.protected ? { protected: true } : {}),
+    ...(accessRole !== "none" ? { accessRole } : {}),
     phase: serverInfo.phase,
     playersOnline: serverInfo.playersOnline,
     playersMax: serverInfo.playersMax,
     displayName: serverInfo.displayName,
     diskFull: disk.diskFull,
-    ...(owned && {
+    ...(operational && {
       extraPorts: serverInfo.extraPorts,
       extraPortsPending: serverInfo.extraPortsPending,
       disk: disk.disk,
@@ -957,11 +1030,20 @@ function myServerView(serverInfo: MockServer, accountInfo: MockAccount): MyServe
   };
 }
 
-// statusView returns the full projection to an owner or admin, the public subset to anyone else.
-function statusView(serverInfo: MockServer, accountInfo: MockAccount): ServerStatus {
+// statusView returns the full projection when visible via role/collaborator/protection, else the public subset.
+function statusView(state: MockState, serverInfo: MockServer, accountInfo: MockAccount): ServerStatus {
   const disk = mockDiskUsage(serverInfo);
   const { owner: _owner, ...wire } = serverInfo;
-  if (canManage(accountInfo, serverInfo)) return { ...wire, ...disk, ...mockCurrentUsage(serverInfo) };
+  const accessRole = resolveAccessRole(state, accountInfo, serverInfo);
+  if (accessRole !== "none") {
+    return {
+      ...wire,
+      ...disk,
+      ...mockCurrentUsage(serverInfo),
+      ...(serverInfo.protected ? { protected: true } : {}),
+      accessRole,
+    };
+  }
   return {
     name: wire.name,
     subdomain: wire.subdomain,
@@ -1485,8 +1567,8 @@ async function handleMockSoftware(ctx: SessionContext): Promise<boolean> {
   if (own) {
     const serverInfo = findServer(ctx.state, decodeURIComponent(own[1]));
     if (!serverInfo) sendError(ctx.res, 404, "not_found", "server not found");
-    else if (!serverInfo.owner || serverInfo.owner !== ctx.account.id) sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
-    else await patchMockServer(ctx, serverInfo, true);
+    else if (!hasManageAccess(ctx.state, ctx.account, serverInfo)) sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
+    else await patchMockServer(ctx, serverInfo, !isAdmin(ctx.account.role));
     return true;
   }
   if (key === "GET settings/self-service" || key === "PUT settings/self-service") {
@@ -1672,10 +1754,21 @@ async function handlePublic(ctx: RequestContext): Promise<boolean> {
         sendError(ctx.res, 400, "invalid_code", "email code is invalid or expired");
         return true;
       }
-      signInProven(ctx, "owner");
+      const targetEmail = body.email.trim().toLowerCase();
+      const matched = Object.values(ctx.state.accounts).find((a) => a.email.toLowerCase() === targetEmail);
+      const target = matched ?? ctx.state.accounts.owner;
+      if (target.disabled) {
+        sendError(ctx.res, 403, "account_disabled", "this account is disabled");
+        return true;
+      }
+      if (ctx.state.features.mode === "team" && !isAdmin(target.role) && !hasAnyCollaborator(ctx.state, target.id)) {
+        sendError(ctx.res, 403, "team_mode_staff_only", "panel access is restricted to staff and collaborators in team mode");
+        return true;
+      }
+      signInProven(ctx, target.id);
       sendJSON(ctx.res, 200, {
-        user_id: "mock-owner",
-        role: "owner"
+        user_id: `mock-${target.id}`,
+        role: target.role,
       });
       return true;
     }
@@ -2307,7 +2400,19 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
         const offset = Math.max(Number(url.searchParams.get("offset")) || 0, 0);
         const matched = ctx.state.backups
           .filter((b) => b.status === "present")
-          .filter((b) => isAdmin(ctx.account.role) || b.former_owner === ctx.account.id)
+          .filter((b) => {
+            if (isOwner(ctx.account.role)) return true;
+            const srv = findServer(ctx.state, b.server_name);
+            if (srv) {
+              if (hasOperateAccess(ctx.state, ctx.account, srv)) {
+                if (isAdmin(ctx.account.role)) return true;
+                if (srv.owner === ctx.account.id && !srv.protected) return true;
+                return !b.former_owner || b.former_owner === ctx.account.id || b.former_owner === srv.owner;
+              }
+              if (srv.protected) return false;
+            }
+            return isAdmin(ctx.account.role) || b.former_owner === ctx.account.id;
+          })
           .filter((b) => !server || b.server_name === server)
           .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id));
         sendJSON(ctx.res, 200, { backups: matched.slice(offset, offset + limit), total: matched.length });
@@ -2505,7 +2610,10 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
       if (ctx.method === "DELETE" && ctx.parts[2] === "backups" && ctx.parts[3] && ctx.parts.length === 4) {
         // Outside the caller's scope is 404 no_backup; a restore reading it is 409 restore_in_progress.
         const b = ctx.state.backups.find((x) => x.id === ctx.parts[3] && x.status === "present");
-        if (!b || !(isAdmin(ctx.account.role) || b.former_owner === ctx.account.id)) {
+        const srv = b ? findServer(ctx.state, b.server_name) : null;
+        const allowed = b && (isOwner(ctx.account.role) ||
+          (srv ? hasManageAccess(ctx.state, ctx.account, srv) : (isAdmin(ctx.account.role) || b.former_owner === ctx.account.id)));
+        if (!b || !allowed) {
           sendError(ctx.res, 404, "no_backup", "no matching backup exists");
           return true;
         }
@@ -2742,6 +2850,9 @@ async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
       });
 
       delete ctx.state.accounts[accountKey];
+      for (const [srvName, list] of Object.entries(ctx.state.collaborators)) {
+        ctx.state.collaborators[srvName] = list.filter((c) => c.user_id !== `mock-${accountKey}` && c.username !== accountKey);
+      }
       sendJSON(ctx.res, 200, { deleted: true });
       return true;
     }
@@ -3398,6 +3509,88 @@ async function verifyLinkRoute(ctx: SessionContext): Promise<void> {
   sendJSON(ctx.res, 200, { linked: true, mc_uuid: MC_UUID });
 }
 
+async function handleProtectionMock(ctx: SessionContext, serverInfo: MockServer): Promise<true> {
+  if (!isOwner(ctx.account.role)) {
+    sendError(ctx.res, 403, "forbidden", "owner account required");
+    return true;
+  }
+  if (refusedForReauth(ctx)) return true;
+  const body = await readJSON<{ protected?: boolean }>(ctx.req);
+  serverInfo.protected = body.protected === true;
+  sendJSON(ctx.res, 200, { name: serverInfo.name, protected: serverInfo.protected });
+  return true;
+}
+
+async function handleCollaboratorsMock(ctx: SessionContext, serverInfo: MockServer): Promise<true> {
+  if (!canManageCollaborators(ctx.account.role, serverInfo.protected)) {
+    sendError(ctx.res, 403, "forbidden", "insufficient permissions for server collaborators");
+    return true;
+  }
+  const list = ctx.state.collaborators[serverInfo.name] ?? [];
+  if (is("GET", ctx) && !ctx.parts[5]) {
+    const candidates: CollaboratorCandidate[] = Object.values(ctx.state.accounts)
+      .filter((acc) => !acc.disabled && acc.role !== "owner")
+      .sort((a, b) => Number(b.role === "admin") - Number(a.role === "admin") || a.id.localeCompare(b.id))
+      .map((acc) => ({ id: `mock-${acc.id}`, username: acc.id, email: acc.email, role: acc.role as "admin" | "user" }));
+    sendJSON(ctx.res, 200, {
+      server: serverInfo.name,
+      protected: !!serverInfo.protected,
+      collaborators: list,
+      candidates,
+    });
+    return true;
+  }
+  const rawUserId = decodeURIComponent(ctx.parts[5] ?? "");
+  const accountKey = rawUserId.replace(/^mock-/, "");
+  const target = ctx.state.accounts[accountKey];
+  if (is("PUT", ctx) && ctx.parts[5] && ctx.parts.length === 6) {
+    const body = await readJSON<{ role?: string }>(ctx.req);
+    if (body.role !== "operator" && body.role !== "manager") {
+      sendError(ctx.res, 400, "bad_request", "role must be operator or manager");
+      return true;
+    }
+    if (!target || target.disabled) {
+      sendError(ctx.res, 400, "unknown_user", "collaborator must be an active account");
+      return true;
+    }
+    if (target.role === "owner") {
+      sendError(ctx.res, 400, "bad_request", "platform owner already has full access");
+      return true;
+    }
+    const now = new Date().toISOString();
+    const existing = list.find((c) => c.user_id === `mock-${target.id}`);
+    const saved: ServerCollaborator = {
+      server_name: serverInfo.name,
+      user_id: `mock-${target.id}`,
+      username: target.id,
+      email: target.email,
+      user_role: target.role,
+      role: body.role,
+      granted_by: `mock-${ctx.account.id}`,
+      created_at: existing?.created_at ?? now,
+      updated_at: now,
+    };
+    ctx.state.collaborators[serverInfo.name] = existing
+      ? list.map((c) => (c.user_id === saved.user_id ? saved : c))
+      : [...list, saved];
+    sendJSON(ctx.res, 200, saved);
+    return true;
+  }
+  if (is("DELETE", ctx) && ctx.parts[5] && ctx.parts.length === 6) {
+    const next = list.filter((c) => c.user_id !== rawUserId && c.username !== accountKey);
+    if (next.length === list.length) {
+      sendError(ctx.res, 404, "not_found", "collaborator not found");
+      return true;
+    }
+    ctx.state.collaborators[serverInfo.name] = next;
+    ctx.res.statusCode = 204;
+    ctx.res.end();
+    return true;
+  }
+  sendError(ctx.res, 404, "not_found", "route not found");
+  return true;
+}
+
 async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
   if (ctx.parts[2] !== "servers" || !ctx.parts[3]) return false;
 
@@ -3411,21 +3604,27 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
     return true;
   }
   if (is("GET", ctx) && ctx.parts[4] === "status") {
-    sendJSON(ctx.res, 200, statusView(serverInfo, ctx.account));
+    sendJSON(ctx.res, 200, statusView(ctx.state, serverInfo, ctx.account));
     return true;
   }
-  if (!canSee(ctx.account, serverInfo)) {
+  if (is("PUT", ctx) && ctx.parts[4] === "protection" && ctx.parts.length === 5) {
+    return await handleProtectionMock(ctx, serverInfo);
+  }
+  if (ctx.parts[4] === "collaborators") {
+    return await handleCollaboratorsMock(ctx, serverInfo);
+  }
+  if (!canSee(ctx.state, ctx.account, serverInfo)) {
     sendError(ctx.res, 403, "forbidden", "server is not visible to this account");
     return true;
   }
 
   if (is("GET", ctx) && ctx.parts[4] === "usage") {
-    if (!canManage(ctx.account, serverInfo)) sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
+    if (!hasOperateAccess(ctx.state, ctx.account, serverInfo)) sendError(ctx.res, 403, "forbidden", "server is not accessible to this account");
     else sendJSON(ctx.res, 200, mockUsage(serverInfo));
     return true;
   }
   if (is("GET", ctx) && ctx.parts[4] === "startup-settings" && ctx.parts.length === 5) {
-    if (!canManage(ctx.account, serverInfo)) sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
+    if (!hasManageAccess(ctx.state, ctx.account, serverInfo)) sendError(ctx.res, 403, "forbidden", "server is not managed by this account");
     else {
       const settings = mockStartupSettings(ctx.state, serverInfo.name);
       ctx.res.setHeader("Cache-Control", "no-store");
@@ -3434,24 +3633,24 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
     return true;
   }
   if (is("PATCH", ctx) && !ctx.parts[4]) {
-    if (!isAdmin(ctx.account.role)) sendError(ctx.res, 403, "forbidden", "admin account required");
-    else await patchMockServer(ctx, serverInfo, false);
+    if (!hasManageAccess(ctx.state, ctx.account, serverInfo)) sendError(ctx.res, 403, "forbidden", "server is not managed by this account");
+    else await patchMockServer(ctx, serverInfo, !isAdmin(ctx.account.role));
     return true;
   }
   if (is("GET", ctx) && ctx.parts[4] === "console" && ctx.parts[5] === "history" && ctx.parts.length === 6) {
     return handleConsoleHistoryMock(ctx, serverInfo);
   }
   if (is("GET", ctx) && ctx.parts[4] === "console") {
-    if (!canManage(ctx.account, serverInfo)) {
-      sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
+    if (!hasOperateAccess(ctx.state, ctx.account, serverInfo)) {
+      sendError(ctx.res, 403, "forbidden", "server is not accessible to this account");
       return true;
     }
     streamConsole(ctx.req, ctx.res, serverInfo);
     return true;
   }
   if (is("POST", ctx) && (ctx.parts[4] === "wake" || ctx.parts[4] === "restart")) {
-    if (!canManage(ctx.account, serverInfo)) {
-      sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
+    if (!hasOperateAccess(ctx.state, ctx.account, serverInfo)) {
+      sendError(ctx.res, 403, "forbidden", "server is not accessible to this account");
       return true;
     }
     if (serverInfo.retiring) {
@@ -3480,8 +3679,8 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
     return true;
   }
   if (is("POST", ctx) && (ctx.parts[4] === "stop" || ctx.parts[4] === "kill")) {
-    if (!canManage(ctx.account, serverInfo)) {
-      sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
+    if (!hasOperateAccess(ctx.state, ctx.account, serverInfo)) {
+      sendError(ctx.res, 403, "forbidden", "server is not accessible to this account");
       return true;
     }
     setPhase(serverInfo, "Stopped");
@@ -3489,8 +3688,8 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
     return true;
   }
   if (is("POST", ctx) && ctx.parts[4] === "command") {
-    if (!canManage(ctx.account, serverInfo)) {
-      sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
+    if (!hasOperateAccess(ctx.state, ctx.account, serverInfo)) {
+      sendError(ctx.res, 403, "forbidden", "server is not accessible to this account");
       return true;
     }
     await handleCommandMock(ctx, serverInfo);
@@ -3505,8 +3704,8 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
     return true;
   }
   if (is("PUT", ctx) && ctx.parts[4] === "tags") {
-    if (!canManage(ctx.account, serverInfo)) {
-      sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
+    if (!hasManageAccess(ctx.state, ctx.account, serverInfo)) {
+      sendError(ctx.res, 403, "forbidden", "server is not managed by this account");
       return true;
     }
     const { tags } = await readJSON<{ tags: string[] }>(ctx.req);
@@ -3526,8 +3725,8 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
     return true;
   }
   if (is("GET", ctx) && ctx.parts[4] === "jobs") {
-    if (!canManage(ctx.account, serverInfo)) {
-      sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
+    if (!hasOperateAccess(ctx.state, ctx.account, serverInfo)) {
+      sendError(ctx.res, 403, "forbidden", "server is not accessible to this account");
       return true;
     }
     sendJSON(ctx.res, 200, { server: serverInfo.name, jobs: ctx.state.jobs[serverInfo.name] ?? [] });
@@ -3578,7 +3777,7 @@ function mockSchedule(ctx: SessionContext, server: string, id: number, input: Sc
 }
 
 async function handleSchedulesMock(ctx: SessionContext, serverInfo: MockServer): Promise<boolean> {
-  if (!canManage(ctx.account, serverInfo)) {
+  if (!hasManageAccess(ctx.state, ctx.account, serverInfo)) {
     sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
     return true;
   }
@@ -3739,7 +3938,7 @@ async function handlePaperGlobalMock(ctx: SessionContext, server: MockServer): P
   if (!is("GET", ctx) && !is("PATCH", ctx)) return false;
   ctx.res.setHeader("Cache-Control", "no-store");
   const fail = (status: number, code: string): true => { sendError(ctx.res, status, code, "the protected configuration could not be read or saved"); return true; };
-  if (!canManage(ctx.account, server)) return fail(403, "forbidden");
+  if (!hasManageAccess(ctx.state, ctx.account, server)) return fail(403, "forbidden");
   const running = server.phase === "Running" && server.desiredState === "Running";
   if (!running && (server.ready || server.desiredState !== "Stopped" || ["Starting", "Stopping"].includes(server.phase))) return fail(409, "server_transitioning");
   const jobs = ctx.state.jobs[server.name] ?? [];
@@ -3800,7 +3999,7 @@ async function handlePaperGlobalMock(ctx: SessionContext, server: MockServer): P
 function handleConsoleHistoryMock(ctx: SessionContext, server: MockServer): true {
   ctx.res.setHeader("Cache-Control", "no-store");
   const fail = (status: number, code: string, message: string): true => { sendError(ctx.res, status, code, message); return true; };
-  if (!canManage(ctx.account, server)) return fail(403, "forbidden", "server is not owned by this account");
+  if (!hasOperateAccess(ctx.state, ctx.account, server)) return fail(403, "forbidden", "server is not accessible to this account");
   const encoded = new URL(ctx.req.url!, "http://localhost").searchParams.get("cursor") ?? "";
   if (Buffer.byteLength(encoded) > 256) return fail(400, "bad_path", "invalid log cursor");
   if (server.desiredState !== "Stopped" || server.ready || ["Running", "Starting", "Stopping"].includes(server.phase)) {
@@ -4025,7 +4224,7 @@ async function handleFilesMock(ctx: SessionContext, serverInfo: MockServer): Pro
     return true;
   };
   if (!known.includes(key)) return false;
-  if (!canManage(ctx.account, serverInfo)) {
+  if (!hasManageAccess(ctx.state, ctx.account, serverInfo)) {
     sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
     return true;
   }
@@ -4196,7 +4395,7 @@ async function handleFilesMock(ctx: SessionContext, serverInfo: MockServer): Pro
 
 // Match backend authorization order: role, backup lookup, former owner, then stopped-state checks.
 async function handleRestoreBackupMock(ctx: SessionContext, serverInfo: MockServer): Promise<boolean> {
-  if (!canManage(ctx.account, serverInfo)) {
+  if (!hasManageAccess(ctx.state, ctx.account, serverInfo)) {
     sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
     return true;
   }
@@ -4229,7 +4428,7 @@ async function handleRestoreBackupMock(ctx: SessionContext, serverInfo: MockServ
   }
 
   // Non-admins may restore only a world they once owned.
-  if (!isAdmin(ctx.account.role) && backup.former_owner !== ctx.account.id) {
+  if (!isAdmin(ctx.account.role) && !hasManageAccess(ctx.state, ctx.account, serverInfo) && backup.former_owner !== ctx.account.id) {
     sendError(ctx.res, 403, "forbidden", "not the former owner of this world");
     return true;
   }
@@ -4263,8 +4462,8 @@ async function handleRestoreBackupMock(ctx: SessionContext, serverInfo: MockServ
 
 // Match owner/admin and lifecycle admission; mock backup Jobs finish immediately.
 function handleBackupNowMock(ctx: SessionContext, serverInfo: MockServer): void {
-  if (!canManage(ctx.account, serverInfo)) {
-    sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
+  if (!hasOperateAccess(ctx.state, ctx.account, serverInfo)) {
+    sendError(ctx.res, 403, "forbidden", "server is not accessible to this account");
     return;
   }
   if (serverInfo.phase !== "Stopped" && serverInfo.phase !== "Running") {
@@ -4313,8 +4512,13 @@ function banlistOutput(banned: string[]): string {
 
 // Whitelist reads and writes both require owner/admin access and a running server.
 function handleAccessMock(ctx: SessionContext, serverInfo: MockServer): boolean {
-  if (!canManage(ctx.account, serverInfo)) {
-    sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
+  if (!hasOperateAccess(ctx.state, ctx.account, serverInfo)) {
+    sendError(ctx.res, 403, "forbidden", "server is not accessible to this account");
+    return true;
+  }
+  const sub = ctx.parts[5];
+  if ((sub === "luckperms" || sub === "group" || sub === "permission") && !hasManageAccess(ctx.state, ctx.account, serverInfo)) {
+    sendError(ctx.res, 403, "forbidden", "server is not managed by this account");
     return true;
   }
   if (serverInfo.phase !== "Running") {
@@ -4327,7 +4531,6 @@ function handleAccessMock(ctx: SessionContext, serverInfo: MockServer): boolean 
     return true;
   }
 
-  const sub = ctx.parts[5];
   const access = accessFor(ctx.state, serverInfo.name);
 
   if (is("GET", ctx) && sub === "luckperms") {
@@ -4603,14 +4806,9 @@ function mockCommandReply(cmd: string): string {
 
 // Without a reaper, mock retirement remains pending until cancelled.
 async function handleRetirementMock(ctx: SessionContext, serverInfo: MockServer): Promise<void> {
-  if (!canManage(ctx.account, serverInfo)) {
-    sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
-    return;
-  }
-  const admin = isAdmin(ctx.account.role);
   if (is("DELETE", ctx)) {
-    if (serverInfo.retiring?.delete && !admin) {
-      sendError(ctx.res, 403, "forbidden", "only an administrator can cancel the deletion of a server");
+    if (!canRetireServer(ctx.account, serverInfo, serverInfo.retiring?.delete === true)) {
+      sendError(ctx.res, 403, "forbidden", "insufficient permissions to cancel retirement");
       return;
     }
     serverInfo.retiring = undefined;
@@ -4619,8 +4817,9 @@ async function handleRetirementMock(ctx: SessionContext, serverInfo: MockServer)
     return;
   }
   const body = await readJSON<{ confirm?: string; delete?: boolean }>(ctx.req);
-  if (body.delete && !admin) {
-    sendError(ctx.res, 403, "forbidden", "only an administrator can delete a server");
+  const del = body.delete === true;
+  if (!canRetireServer(ctx.account, serverInfo, del)) {
+    sendError(ctx.res, 403, "forbidden", "insufficient permissions to retire this server");
     return;
   }
   if (body.confirm !== serverInfo.name) {
@@ -4634,7 +4833,7 @@ async function handleRetirementMock(ctx: SessionContext, serverInfo: MockServer)
   setPhase(serverInfo, "Stopped");
   serverInfo.retiring = {
     requested_at: serverInfo.retiring?.requested_at ?? new Date().toISOString(),
-    delete: (serverInfo.retiring?.delete ?? false) || body.delete === true,
+    delete: (serverInfo.retiring?.delete ?? false) || del,
   };
   sendJSON(ctx.res, 202, { name: serverInfo.name, retiring: serverInfo.retiring });
 }
@@ -4664,10 +4863,15 @@ async function handleAssignmentMock(ctx: SessionContext, serverInfo: MockServer)
   }
   serverInfo.owner = accountKey;
   serverInfo.tags = undefined;
+  delete ctx.state.collaborators[serverInfo.name];
   sendJSON(ctx.res, 200, { name: serverInfo.name, owner_id: body.user_id, over });
 }
 
 function claimServer(ctx: SessionContext, serverInfo: MockServer): void {
+  if (serverInfo.protected) {
+    sendError(ctx.res, 403, "forbidden", "protected server cannot be claimed");
+    return;
+  }
   if (serverInfo.owner !== null) {
     sendError(ctx.res, 409, "already_claimed", "server is already claimed");
     return;
@@ -4677,6 +4881,7 @@ function claimServer(ctx: SessionContext, serverInfo: MockServer): void {
     return;
   }
   serverInfo.owner = ctx.account.id;
+  delete ctx.state.collaborators[serverInfo.name];
   sendJSON(ctx.res, 200, { name: serverInfo.name, claimed: true });
 }
 
@@ -4761,7 +4966,7 @@ export function mockApiPlugin(): Plugin {
             sendError(res, 401, "unauthenticated", "mock session required");
             return;
           }
-          if (state.features.mode === "team" && !isAdmin(accountInfo.role)) {
+          if (state.features.mode === "team" && !isAdmin(accountInfo.role) && !hasAnyCollaborator(state, accountInfo.id)) {
             sendError(res, 403, "team_mode_staff_only", "panel access is restricted to staff and collaborators in team mode");
             return;
           }

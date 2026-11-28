@@ -54,6 +54,9 @@ type ServerInfo struct {
 	Retiring *RetireState `json:"retiring,omitempty"`
 	// Tags are joined from Postgres for the owner and staff; the cluster does not set them.
 	Tags []string `json:"tags,omitempty"`
+	// Protected and AccessRole are joined from Postgres on external views.
+	Protected  bool   `json:"protected,omitempty"`
+	AccessRole string `json:"accessRole,omitempty"`
 	// Resources stays off the wire and supplies unchanged values when patching the spec.
 	Resources corev1.ResourceRequirements `json:"-"`
 	// Software is nil for a server image.

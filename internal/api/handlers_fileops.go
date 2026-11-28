@@ -369,27 +369,17 @@ func (a *API) requireFileStage(w http.ResponseWriter, r *http.Request) (string, 
 
 // authorizeServerFiles omits the stopped-server and world-volume checks.
 func (a *API) authorizeServerFiles(w http.ResponseWriter, r *http.Request) (string, bool) {
-	name := r.PathValue("name")
-	if err := validateManagedServerName(r, name); err != nil {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
-		return "", false
-	}
-	rec, err := a.managedServerRecord(r.Context(), name)
-	if err != nil {
-		a.writeLookupError(w, r, err)
+	rec, _, ok := a.authorizeServer(w, r, ActionManage)
+	if !ok {
 		return "", false
 	}
 	p := principalFromContext(r.Context())
-	if !a.isOwnerOrAdmin(p, rec) {
-		writeError(w, r, errForbidden)
-		return "", false
-	}
-	if !loginFileAccessAllowed(r, name, p) {
+	if !loginFileAccessAllowed(r, rec.Name, p) {
 		writeError(w, r, errForbidden)
 		return "", false
 	}
 	*r = *r.WithContext(withAuthorizedServer(r.Context(), rec))
-	return name, true
+	return rec.Name, true
 }
 
 func loginFileAccessAllowed(r *http.Request, name string, p *Principal) bool {

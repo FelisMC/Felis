@@ -1,7 +1,7 @@
 import { useContext, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { Link, NavLink, Outlet, useLocation, useMatch, useOutletContext, useParams } from "react-router-dom";
-import { Activity, Archive, ArrowLeft, CalendarClock, FolderOpen, Puzzle, Settings, Shield, Terminal, Users } from "lucide-react";
+import { Activity, Archive, ArrowLeft, CalendarClock, FolderOpen, Lock, Puzzle, Settings, Shield, ShieldCheck, Terminal, Users } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { BackLink } from "@/components/BackLink";
@@ -17,7 +17,7 @@ import { ErrorState, Loading } from "@/components/States";
 import { api, humanizeError } from "@/lib/api";
 import { joinAddress } from "@/lib/config";
 import { STATUS_POLL_FAST_MS, STATUS_POLL_SLOW_MS, useAsync, useConfig, usePolling } from "@/lib/hooks";
-import { canManage } from "@/lib/ownership";
+import { canManageRole, canOperateRole, isReadonlyRole, resolveServerAccessRole, type EffectiveAccessRole } from "@/lib/ownership";
 import { useTier } from "@/lib/tier";
 import type { ServerStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -31,6 +31,10 @@ export interface ServerContext {
   error: unknown;
   reload: () => void;
   owned: boolean;
+  actualOwned: boolean;
+  accessRole: EffectiveAccessRole;
+  canOperate: boolean;
+  canManage: boolean;
 }
 
 export function useServer(): ServerContext {
@@ -149,7 +153,11 @@ export function ServerLayout() {
     (!!data.hibernation && data.hibernation.stage !== "Frozen") || pendingPower(data) !== null || startFailure(data) === "retrying");
   usePolling(reload, moving ? STATUS_POLL_FAST_MS : STATUS_POLL_SLOW_MS);
   const { data: mine } = useAsync(() => (isAdmin ? Promise.resolve([]) : api.myServers()), [isAdmin, name]);
-  const owned = canManage(isAdmin, mine, name);
+  const actualOwned = (mine ?? []).some((s) => s.name === name && s.owned === true);
+  const accessRole = data ? resolveServerAccessRole(isAdmin, data, mine, name) : "none";
+  const canOperate = canOperateRole(accessRole);
+  const canManageAccess = canManageRole(accessRole);
+  const readonly = isReadonlyRole(accessRole);
   const onConsole = useMatch({ path: "/servers/:name", end: true }) !== null;
 
   const currentPhase = data ? shownPhase(data) : undefined;
@@ -176,24 +184,45 @@ export function ServerLayout() {
   const startup = data.startup;
   const startupBlocked = startup?.stage === "failed" || startup?.reason === "Unschedulable";
   const base = `/servers/${name}`;
-  const tabs: LinkTab[] = [
+  const allTabs: LinkTab[] = [
     { to: base, end: true, label: t("tab_console"), icon: Terminal },
     { to: `${base}/monitor`, label: t("tab_monitor"), icon: Activity },
     { to: `${base}/files`, label: t("tab_files"), icon: FolderOpen },
     { to: `${base}/players`, label: t("tab_players"), icon: Users },
     { to: `${base}/backups`, label: t("tab_backups"), icon: Archive },
     { to: `${base}/schedules`, label: t("tab_schedules"), icon: CalendarClock },
-    ...(owned ? [
+    ...(canManageAccess ? [
       { to: `${base}/extensions`, label: t("tab_extensions"), icon: Puzzle },
       { to: `${base}/luckperms`, label: t("tab_luckperms"), icon: Shield },
     ] : []),
-    ...(owned || isAdmin || (isOwner && !isSystem(name)) ? [{ to: `${base}/settings`, label: t("tab_settings"), icon: Settings }] : []),
+    ...(canManageAccess || (isOwner && !isSystem(name)) ? [{ to: `${base}/settings`, label: t("tab_settings"), icon: Settings }] : []),
   ];
+  const operatorTabs: LinkTab[] = [
+    { to: base, end: true, label: t("tab_console"), icon: Terminal },
+    { to: `${base}/monitor`, label: t("tab_monitor"), icon: Activity },
+    { to: `${base}/players`, label: t("tab_players"), icon: Users },
+    { to: `${base}/backups`, label: t("tab_backups"), icon: Archive },
+  ];
+  const tabs: LinkTab[] = readonly
+    ? [{ to: base, end: true, label: t("tab_overview"), icon: Terminal }]
+    : accessRole === "operator"
+      ? operatorTabs
+      : allTabs;
   const facts = [
     data.software && softwareSummary(t, data.software),
     data.phase === "Running" && !data.playerCountUnknown && t("header_players", { online: data.playersOnline, max: data.playersMax }),
   ].filter(Boolean);
-  const context: ServerContext = { name, data, error, reload, owned };
+  const context: ServerContext = {
+    name,
+    data,
+    error,
+    reload,
+    owned: canManageAccess,
+    actualOwned,
+    accessRole,
+    canOperate,
+    canManage: canManageAccess,
+  };
   const inShellRail = Boolean(shell?.sidebarSlot);
 
   // Only the console fills the window; the other tabs grow with their content so the page keeps its bottom spacing.
@@ -215,6 +244,18 @@ export function ServerLayout() {
           {isOwner && <HostRecovery name={name} />}
         </div>
       )}
+      {readonly && (
+        <div
+          role="status"
+          className="flex items-start gap-2.5 rounded-lg border border-amber-500/35 bg-amber-500/10 px-3.5 py-2.5 text-sm"
+        >
+          <Lock className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden="true" />
+          <div className="space-y-0.5">
+            <p className="font-medium text-foreground">{t("protected_readonly_title")}</p>
+            <p className="text-xs text-muted-foreground">{t("protected_readonly_body")}</p>
+          </div>
+        </div>
+      )}
       <PageHeader
         icon={Terminal}
         title={data.displayName || data.name}
@@ -226,6 +267,12 @@ export function ServerLayout() {
         }
         actions={
           <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
+            {data.protected && (
+              <Badge variant="warning" className="gap-1">
+                <ShieldCheck className="h-3 w-3" aria-hidden="true" />
+                {t("protected_badge")}
+              </Badge>
+            )}
             {error != null ? (
               <span role="status" className="text-xs font-medium text-destructive">{t("status_stale")}</span>
             ) : startupBlocked ? (
@@ -235,7 +282,7 @@ export function ServerLayout() {
             ) : (
               <PhaseBadge phase={shownPhase(data)} failure={failure} autoRestarts={data.autoRestarts} />
             )}
-            {error == null && (
+            {error == null && canOperate && (
               <PowerButton
                 name={name}
                 phase={data.phase}
@@ -245,7 +292,7 @@ export function ServerLayout() {
                 playerCountUnknown={data.playerCountUnknown}
                 retiring={data.retiring}
                 diskFull={data.diskFull}
-                allowRestart={owned}
+                allowRestart={canOperate}
                 onChanged={reload}
               />
             )}

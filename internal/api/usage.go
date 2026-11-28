@@ -215,10 +215,11 @@ func (a *API) usageInfo(info ServerInfo) ServerInfo {
 }
 
 func (a *API) handleUsage(w http.ResponseWriter, r *http.Request) {
-	name, ok := a.authorizeServerFiles(w, r)
+	rec, _, ok := a.authorizeServer(w, r, ActionOperate)
 	if !ok {
 		return
 	}
+	name := rec.Name
 	info, err := a.Cluster.GetServer(r.Context(), name)
 	if err != nil {
 		a.writeLookupError(w, r, err)

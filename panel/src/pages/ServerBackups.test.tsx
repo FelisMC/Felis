@@ -642,3 +642,57 @@ describe("ServerBackups export", () => {
     expect(clicked).toEqual([]);
   });
 });
+
+describe("ServerBackups collaborator boundaries", () => {
+  it("allows operator to list backups and run manual backup without restore, download, delete, or world export", async () => {
+    calls.status.mockResolvedValue({
+      name: "survival",
+      subdomain: "survival",
+      phase: "Stopped",
+      ready: false,
+      desiredState: "Stopped",
+      playersOnline: 0,
+      playersMax: 20,
+      idleStopSeconds: 0,
+      resumeAfterHostRestart: true,
+      restartOnCrash: false,
+      maxCrashRestarts: 3,
+      notify: { started: false, stopped: false, problems: false },
+      protected: true,
+      accessRole: "operator",
+    });
+    calls.listBackups.mockResolvedValue({ backups: [backup("bk-op", 3)], total: 1 });
+    renderPage();
+
+    expect(await screen.findByText("3 hours ago")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Back up now" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Export world" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Restore" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete backup" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Download backup" })).toBeNull();
+  });
+
+  it("blocks readonly admin and avoids querying backups or jobs", async () => {
+    calls.status.mockResolvedValue({
+      name: "survival",
+      subdomain: "survival",
+      phase: "Stopped",
+      ready: false,
+      desiredState: "Stopped",
+      playersOnline: 0,
+      playersMax: 20,
+      idleStopSeconds: 0,
+      resumeAfterHostRestart: true,
+      restartOnCrash: false,
+      maxCrashRestarts: 3,
+      notify: { started: false, stopped: false, problems: false },
+      protected: true,
+      accessRole: "readonly",
+    });
+    renderPage();
+
+    expect(await screen.findByText(i18next.t("backups:not_yours_title"))).toBeTruthy();
+    expect(calls.listBackups).not.toHaveBeenCalled();
+    expect(calls.serverJobs).not.toHaveBeenCalled();
+  });
+});

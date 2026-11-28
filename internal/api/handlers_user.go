@@ -38,9 +38,16 @@ func (a *API) handleWake(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	if info.CrashStopped && !p.IsAdmin() && (rec == nil || rec.OwnerID == "" || rec.OwnerID != p.UserID) {
-		writeError(w, r, errCrashStopped)
-		return
+	if info.CrashStopped {
+		canOp, _, err := a.checkServerAccess(r.Context(), p, name, rec, ActionOperate)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		if !canOp {
+			writeError(w, r, errCrashStopped)
+			return
+		}
 	}
 	// A server pending retirement stays stopped until the reaper archives it; a start would change the archived world.
 	if rec != nil && rec.Retire != nil {
@@ -86,13 +93,8 @@ func (a *API) handleWake(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleRestart(w http.ResponseWriter, r *http.Request) {
-	name, ok := a.authorizeServerFiles(w, r)
+	rec, _, ok := a.authorizeServer(w, r, ActionOperate)
 	if !ok {
-		return
-	}
-	rec, err := a.managedServerRecord(r.Context(), name)
-	if err != nil {
-		a.writeLookupError(w, r, err)
 		return
 	}
 	if rec.Retire != nil {
@@ -108,42 +110,30 @@ func (a *API) handleRestart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleKill(w http.ResponseWriter, r *http.Request) {
-	name, ok := a.authorizeServerFiles(w, r)
+	rec, _, ok := a.authorizeServer(w, r, ActionOperate)
 	if !ok {
 		return
 	}
-	if err := a.Cluster.KillServer(r.Context(), name); err != nil {
+	if err := a.Cluster.KillServer(r.Context(), rec.Name); err != nil {
 		a.writeLookupError(w, r, err)
 		return
 	}
-	a.audit(r, "server.kill", name)
-	writeJSON(w, http.StatusAccepted, map[string]string{"name": name, "desiredState": "Stopped"})
+	a.audit(r, "server.kill", rec.Name)
+	writeJSON(w, http.StatusAccepted, map[string]string{"name": rec.Name, "desiredState": "Stopped"})
 }
 
 func (a *API) handleStop(w http.ResponseWriter, r *http.Request) {
-	p := principalFromContext(r.Context())
-	name := r.PathValue("name")
-	if err := validateManagedServerName(r, name); err != nil {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
+	rec, _, ok := a.authorizeServer(w, r, ActionOperate)
+	if !ok {
 		return
 	}
 
-	rec, err := a.managedServerRecord(r.Context(), name)
-	if err != nil {
+	if err := a.Cluster.SetDesiredState(r.Context(), rec.Name, v1alpha1.DesiredStopped); err != nil {
 		a.writeLookupError(w, r, err)
 		return
 	}
-	if !a.isOwnerOrAdmin(p, rec) {
-		writeError(w, r, errForbidden)
-		return
-	}
-
-	if err := a.Cluster.SetDesiredState(r.Context(), name, v1alpha1.DesiredStopped); err != nil {
-		a.writeLookupError(w, r, err)
-		return
-	}
-	a.audit(r, "stop", name)
-	writeJSON(w, http.StatusAccepted, map[string]any{"name": name, "desiredState": "Stopped"})
+	a.audit(r, "stop", rec.Name)
+	writeJSON(w, http.StatusAccepted, map[string]any{"name": rec.Name, "desiredState": "Stopped"})
 }
 
 func (a *API) handleClaim(w http.ResponseWriter, r *http.Request) {
@@ -265,11 +255,20 @@ func (a *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, err)
 			return
 		}
-		if !a.isOwnerOrAdmin(p, rec) {
+		accessRole, _, err := a.resolveServerAccess(r.Context(), p, name, rec)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		if accessRole == AccessRoleNone {
 			info = publicServerInfo(info)
-		} else if rec != nil && (rec.Retire != nil || len(rec.Tags) > 0) {
+		} else {
 			joined := *info
-			joined.Retiring, joined.Tags = rec.Retire, rec.Tags
+			joined.AccessRole = accessRole
+			if rec != nil {
+				joined.Protected = rec.Protected
+				joined.Retiring, joined.Tags = rec.Retire, rec.Tags
+			}
 			info = &joined
 		}
 	}
@@ -314,11 +313,16 @@ func (a *API) handleMyServers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if mode == ModeTeam {
+		filtered := servers[:0]
 		for i := range servers {
 			servers[i].Claimable = false
+			if servers[i].AccessRole != AccessRoleNone {
+				filtered = append(filtered, servers[i])
+			}
 		}
+		servers = filtered
 	}
-	// Live counts fall back to zero and cached phase on cluster failure; ownership details are joined only for owned rows.
+	// Live counts fall back to zero and cached phase on cluster failure; detailed status is joined for owned or collaborated rows.
 	if infos, err := a.Cluster.ListServers(r.Context()); err == nil {
 		byName := make(map[string]ServerInfo, len(infos))
 		for _, s := range infos {
@@ -337,7 +341,7 @@ func (a *API) handleMyServers(w http.ResponseWriter, r *http.Request) {
 			if info.Phase != "" {
 				v.Phase = info.Phase
 			}
-			if v.Owned {
+			if v.Owned || v.AccessRole != AccessRoleNone {
 				info = a.usageInfo(info)
 				v.CPU, v.Memory = info.CPU, info.Memory
 				v.CPUMilli, v.MemoryBytes = info.CPUMilli, info.MemoryBytes
@@ -372,15 +376,30 @@ func (a *API) handleFleet(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("api: fleet tags (request_id=%s): %v", requestIDFromContext(r.Context()), err)
 	}
+	var collabRoles map[string]string
+	if !p.IsOwner() && p.UserID != "" {
+		if roles, cerr := a.Repo.UserCollaboratorRoles(r.Context(), p.UserID); cerr == nil {
+			collabRoles = roles
+		}
+	}
 	views := make([]fleetServerView, len(servers))
 	for i, s := range servers {
 		s = a.usageInfo(s)
 		o, known := owners[s.Name]
 		system := naming.IsSystemServer(s.Name)
 		s.Retiring, s.Tags = o.Retire, tags[s.Name]
+		s.Protected = o.Protected
+		s.AccessRole = effectiveAccessRole(serverAccessInput{
+			UserID:       p.UserID,
+			PlatformRole: principalPlatformRole(p),
+			ServerOwner:  o.OwnerID,
+			Protected:    o.Protected,
+			CollabRole:   collabRoles[s.Name],
+			System:       system,
+		})
 		views[i] = fleetServerView{ServerInfo: s, Owner: o.Owner, System: system,
 			Owned:        o.OwnerID != "" && o.OwnerID == p.UserID,
-			Claimable:    mode == ModeCommunity && known && o.OwnerID == "" && o.Retire == nil && !system,
+			Claimable:    mode == ModeCommunity && known && o.OwnerID == "" && !o.Protected && o.Retire == nil && !system,
 			OwnerUnknown: unknown}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"servers": views})
@@ -857,9 +876,8 @@ const (
 )
 
 func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	if err := validateManagedServerName(r, name); err != nil {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
+	rec, _, ok := a.authorizeServer(w, r, ActionManage)
+	if !ok {
 		return
 	}
 
@@ -868,10 +886,11 @@ func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	a.patchServer(w, r, name, body)
+	a.patchServer(w, r, rec, body)
 }
 
-func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, body patchServerRequest) {
+func (a *API) patchServer(w http.ResponseWriter, r *http.Request, rec *ServerRecord, body patchServerRequest) {
+	name := rec.Name
 	if name == naming.SystemLoginServer && body.setsLoginExecutable() && !principalFromContext(r.Context()).IsOwner() {
 		writeError(w, r, errForbidden)
 		return
@@ -1133,7 +1152,7 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 			return apply()
 		}
 		ownerID := ""
-		if p := principalFromContext(r.Context()); p != nil && !p.IsAdmin() {
+		if p := principalFromContext(r.Context()); p != nil && (!p.IsAdmin() || (!p.IsOwner() && rec.Protected)) {
 			ownerID = p.UserID
 		}
 		if ownerID == "" && patch.ExtraPorts == nil {
@@ -1204,11 +1223,15 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 }
 
 func (a *API) authorizeWake(ctx context.Context, p *Principal, info *ServerInfo, rec *ServerRecord) error {
-	if p.IsAdmin() {
+	allowed, _, err := a.checkServerAccess(ctx, p, info.Name, rec, ActionOperate)
+	if err != nil {
+		return err
+	}
+	if allowed {
 		return nil
 	}
-	if rec != nil && rec.OwnerID != "" && rec.OwnerID == p.UserID {
-		return nil
+	if rec != nil && rec.Protected {
+		return errForbidden
 	}
 	switch info.AutostartPolicy {
 	case string(v1alpha1.AutostartPublic):
@@ -1225,13 +1248,6 @@ func (a *API) authorizeWake(ctx context.Context, p *Principal, info *ServerInfo,
 	default:
 		return errForbidden
 	}
-}
-
-func (a *API) isOwnerOrAdmin(p *Principal, rec *ServerRecord) bool {
-	if p.IsAdmin() {
-		return true
-	}
-	return rec != nil && rec.OwnerID != "" && rec.OwnerID == p.UserID
 }
 
 func quantityToMilli(q resource.Quantity) int {

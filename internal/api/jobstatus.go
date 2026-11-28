@@ -25,21 +25,11 @@ type JobStatusReader interface {
 }
 
 func (a *API) handleServerJobs(w http.ResponseWriter, r *http.Request) {
-	p := principalFromContext(r.Context())
-	name := r.PathValue("name")
-	if err := validateManagedServerName(r, name); err != nil {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
+	rec, _, ok := a.authorizeServer(w, r, ActionOperate)
+	if !ok {
 		return
 	}
-	rec, err := a.managedServerRecord(r.Context(), name)
-	if err != nil {
-		a.writeLookupError(w, r, err)
-		return
-	}
-	if !a.isOwnerOrAdmin(p, rec) {
-		writeError(w, r, errForbidden)
-		return
-	}
+	name := rec.Name
 	if a.JobStatus == nil {
 		writeError(w, r, newError(http.StatusServiceUnavailable, "jobs_unavailable",
 			"job status is not configured"))

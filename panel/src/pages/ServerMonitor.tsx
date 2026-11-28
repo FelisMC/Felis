@@ -7,13 +7,13 @@ import { useServer } from "@/pages/ServerLayout";
 
 /** ServerMonitor shows how hard the server works and what has happened to it lately. */
 export function ServerMonitor() {
-  const { name, data, error, owned } = useServer();
+  const { name, data, error, canOperate } = useServer();
   const { t } = useTranslation("servers");
   const events = data.events ?? [];
   return (
     <div className="flex flex-col gap-4">
       <TabHeader description={t("monitor_link_desc")} />
-      {owned && (
+      {canOperate && (
         <ResourceUsage
           key={name}
           name={name}

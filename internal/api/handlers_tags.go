@@ -53,20 +53,11 @@ func cleanServerTags(in []string) ([]string, error) {
 // handleSetServerTags refuses system services, which have no row to hold tags.
 func (a *API) handleSetServerTags(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
-	name := r.PathValue("name")
-	if err := validateManagedServerName(r, name); err != nil {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
+	rec, _, ok := a.authorizeServer(w, r, ActionManage)
+	if !ok {
 		return
 	}
-	rec, err := a.managedServerRecord(r.Context(), name)
-	if err != nil {
-		a.writeLookupError(w, r, err)
-		return
-	}
-	if !a.isOwnerOrAdmin(p, rec) {
-		writeError(w, r, errForbidden)
-		return
-	}
+	name := rec.Name
 	if naming.IsSystemServer(name) {
 		writeError(w, r, newError(http.StatusConflict, "system_server", "a system server cannot be tagged"))
 		return

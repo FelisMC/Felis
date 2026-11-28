@@ -46,7 +46,7 @@ import { SegmentedControl } from "@/components/SegmentedControl";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync, usePolling, STATUS_POLL_FAST_MS, STATUS_POLL_SLOW_MS } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
-import { canManage, ownershipPending } from "@/lib/ownership";
+import { canManageRole, ownershipPending, resolveServerAccessRole } from "@/lib/ownership";
 import { formatAbsolute, formatRelative } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type {
@@ -1095,7 +1095,7 @@ export function ServerSchedules() {
   // Ownership resolves from /me/servers for a non-admin; the list is read only
   // once the viewer is known to own the server (the route answers 403 otherwise).
   const pending = ownershipPending(tierLoading, isAdmin, mineQ.data, mineQ.error);
-  const owned = canManage(isAdmin, mineQ.data, name);
+  const owned = statusQ.data ? canManageRole(resolveServerAccessRole(isAdmin, statusQ.data, mineQ.data, name)) : false;
   const listQ = useAsync(() => (owned ? api.listSchedules(name) : Promise.resolve(null)), [name, owned]);
   // A run in progress steps on every few seconds (and takes the server with it),
   // so both reads follow it closely; otherwise slowly, for the next runs and the

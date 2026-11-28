@@ -73,7 +73,7 @@ import { TabHeader } from "@/components/TabHeader";
 import { api, humanizeError } from "@/lib/api";
 import { STATUS_POLL_FAST_MS, useAsync, usePolling, useUnsavedGuard } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
-import { canManage, ownershipPending } from "@/lib/ownership";
+import { canManageRole, ownershipPending, resolveServerAccessRole } from "@/lib/ownership";
 import { awaitExport, saveDownload } from "@/lib/download";
 import { formatBytes, formatRelative } from "@/lib/format";
 import type { FileOp, ServerFileEntry } from "@/lib/types";
@@ -145,7 +145,7 @@ export function ServerFiles() {
     [isAdmin, name],
   );
   const pending = ownershipPending(tierLoading, isAdmin, mineQ.data, mineQ.error);
-  const owned = canManage(isAdmin, mineQ.data, name);
+  const owned = statusQ.data ? canManageRole(resolveServerAccessRole(isAdmin, statusQ.data, mineQ.data, name)) : false;
   const stopped = statusQ.data?.phase === "Stopped";
   const live = statusQ.data?.phase === "Running" && statusQ.data.desiredState === "Running";
   const accessible = stopped || live;

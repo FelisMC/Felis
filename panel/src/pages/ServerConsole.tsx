@@ -1,14 +1,15 @@
 import { useState, useRef, useCallback, useEffect, useId, useLayoutEffect, type KeyboardEvent } from "react";
-import { Moon, ShieldAlert, HelpCircle, Loader2, SendHorizontal, Snowflake, type LucideIcon } from "lucide-react";
+import { Lock, Moon, ShieldAlert, HelpCircle, Loader2, SendHorizontal, Snowflake, type LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { MAX_AUTO_RESTARTS, shownPhase, startFailure, type StartFailure } from "@/components/PhaseBadge";
+import { MAX_AUTO_RESTARTS, PhaseBadge, shownPhase, startFailure, type StartFailure } from "@/components/PhaseBadge";
 import { FormattedText, LogConsole } from "@/components/LogConsole";
 import { ConsoleHistory } from "@/components/ConsoleHistory";
 import { Loading } from "@/components/States";
 import { api, consoleStreamURL, humanizeError } from "@/lib/api";
 import { useConfig } from "@/lib/hooks";
+import { canDeleteServer, isReadonlyRole } from "@/lib/ownership";
 import { useTier } from "@/lib/tier";
 import type { Phase, ServerHibernation, ServerStatus } from "@/lib/types";
 import { formatBytes, formatDuration } from "@/lib/format";
@@ -328,7 +329,7 @@ function CommandInput({ name, echo }: { name: string; echo: Echo }) {
 }
 
 export function ServerConsole() {
-  const { name, data, error, owned, reload } = useServer();
+  const { name, data, error, accessRole, canOperate, actualOwned, reload } = useServer();
   const writer = useRef<LogWriter | null>(null);
   const onWriter = useCallback((write: LogWriter | null) => { writer.current = write; }, []);
   const echo = useCallback<Echo>((raw, input) => {
@@ -337,21 +338,48 @@ export function ServerConsole() {
     return true;
   }, []);
   const cfg = useConfig();
-  const { isAdmin } = useTier();
+  const { isAdmin, isOwner } = useTier();
   const { t } = useTranslation("servers");
-  const savedLogs = owned && !error && data.desiredState === "Stopped" && !data.ready && !["Running", "Starting", "Stopping"].includes(data.phase);
-  const commandable = owned && !error && data.desiredState === "Running" && ["Starting", "Running"].includes(data.phase);
-  const streamable = data.phase === "Running" || data.phase === "Hibernating" || data.phase === "Hibernated" ||
-    ((data.phase === "Starting" || data.phase === "Failed") && data.startup?.logsAvailable !== false);
+  const savedLogs = canOperate && !error && data.desiredState === "Stopped" && !data.ready && !["Running", "Starting", "Stopping"].includes(data.phase);
+  const commandable = canOperate && !error && data.desiredState === "Running" && ["Starting", "Running"].includes(data.phase);
+  const streamable = canOperate && (data.phase === "Running" || data.phase === "Hibernating" || data.phase === "Hibernated" ||
+    ((data.phase === "Starting" || data.phase === "Failed") && data.startup?.logsAvailable !== false));
   const failure = startFailure(data);
   const startup = data.startup;
   const startupBlocked = startup?.stage === "failed" || startup?.reason === "Unschedulable";
-  const showTelemetry = owned && !error && (data.phase === "Running" || data.cpuMilli != null || data.memoryBytes != null || data.disk != null);
+  const showTelemetry = canOperate && !error && (data.phase === "Running" || data.cpuMilli != null || data.memoryBytes != null || data.disk != null);
+  const canCancelRetire = data.retiring
+    ? data.retiring.delete
+      ? canDeleteServer(isOwner, isAdmin, data.protected)
+      : !data.protected && (isOwner || isAdmin || actualOwned)
+    : false;
+
+  if (isReadonlyRole(accessRole) || (!!data.protected && !canOperate)) {
+    return (
+      <div className="flex flex-1 flex-col gap-3.5">
+        {data.retiring && (
+          <RetireNotice name={name} retiring={data.retiring} isAdmin={isAdmin} canCancel={canCancelRetire} onChanged={reload} />
+        )}
+        <Card>
+          <CardContent className="flex flex-col items-start gap-3 py-6 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-start gap-3">
+              <Lock className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" aria-hidden="true" />
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-foreground">{t("readonly_console_title")}</p>
+                <p className="text-xs text-muted-foreground">{t("readonly_console_body")}</p>
+              </div>
+            </div>
+            <PhaseBadge phase={error ? "Unknown" : shownPhase(data)} failure={failure} autoRestarts={data.autoRestarts} />
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3.5">
       {data.retiring && (
-        <RetireNotice name={name} retiring={data.retiring} isAdmin={isAdmin} onChanged={reload} />
+        <RetireNotice name={name} retiring={data.retiring} isAdmin={isAdmin} canCancel={canCancelRetire} onChanged={reload} />
       )}
       {!error && <RecoveryNotice data={data} />}
       {showTelemetry && <LiveTelemetryStrip data={data} />}

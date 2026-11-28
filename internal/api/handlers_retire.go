@@ -30,7 +30,7 @@ func (a *API) retireServer(w http.ResponseWriter, r *http.Request) (*ServerRecor
 		a.writeLookupError(w, r, err)
 		return nil, false
 	}
-	if !a.isOwnerOrAdmin(principalFromContext(r.Context()), rec) {
+	if !canRetireServer(principalFromContext(r.Context()), rec, false) {
 		writeError(w, r, errForbidden)
 		return nil, false
 	}
@@ -49,7 +49,7 @@ func (a *API) handleRetire(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	if req.Delete && !p.IsAdmin() {
+	if req.Delete && !canRetireServer(p, rec, true) {
 		writeError(w, r, newError(http.StatusForbidden, "forbidden", "only an administrator can delete a server"))
 		return
 	}
@@ -116,7 +116,7 @@ func (a *API) handleCancelRetire(w http.ResponseWriter, r *http.Request) {
 	}
 	p := principalFromContext(r.Context())
 	pending := rec.Retire != nil
-	if err := a.Repo.CancelRetire(r.Context(), rec.Name, p.IsAdmin()); err != nil {
+	if err := a.Repo.CancelRetire(r.Context(), rec.Name, canRetireServer(p, rec, true)); err != nil {
 		if errors.Is(err, ErrConflict) {
 			writeError(w, r, newError(http.StatusForbidden, "forbidden",
 				"only an administrator can cancel the deletion of a server"))

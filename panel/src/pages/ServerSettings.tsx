@@ -1,23 +1,29 @@
 import { useTranslation } from "react-i18next";
 import { ForwardingDialog } from "@/components/ForwardingDialog";
 import { DangerZone } from "@/components/Retirement";
+import { ServerAccessCard } from "@/components/ServerAccessCard";
 import { ServerConfigForm, SettingRow, SettingsSection } from "@/components/ServerConfigForm";
 import { EmptyState } from "@/components/States";
 import { Button } from "@/components/ui/button";
+import { useFeatures } from "@/lib/features";
+import { canDeleteServer } from "@/lib/ownership";
 import { useTier } from "@/lib/tier";
 import type { AutostartPolicy } from "@/lib/types";
 import { useServer } from "@/pages/ServerLayout";
 
 /** ServerSettings edits a server's parameters in place, with the danger zone below them. */
 export function ServerSettings() {
-  const { name, data, error, reload, owned } = useServer();
+  const { name, data, error, reload, canOperate, canManage, actualOwned } = useServer();
   const { isAdmin, isOwner } = useTier();
+  const { features } = useFeatures();
   const { t } = useTranslation("servers");
   const system = name === "login" || name === "lobby";
-  const editable = isAdmin || owned;
+  const teamMode = features.mode === "team";
+  const editable = canManage;
   const forwarding = isOwner && !system;
+  const showAccessCard = !system && (isOwner || (isAdmin && !data.protected));
 
-  if (!editable && !forwarding) {
+  if (!editable && !forwarding && !showAccessCard) {
     return <EmptyState title={t("settings_none_title")} hint={t("settings_none_hint")} />;
   }
 
@@ -37,7 +43,7 @@ export function ServerSettings() {
         <ServerConfigForm
           serverName={name}
           currentPhase={data.phase}
-          mode={isAdmin ? "admin" : "owner"}
+          mode={isAdmin && canManage ? "admin" : "owner"}
           systemService={system}
           currentDisplayName={data.displayName}
           currentTags={data.tags}
@@ -63,14 +69,24 @@ export function ServerSettings() {
         <SettingsSection title={t("settings_network_title")}>{forwardingRow}</SettingsSection>
       )}
 
-      {owned && (
+      {showAccessCard && (
+        <ServerAccessCard
+          serverName={name}
+          isProtected={!!data.protected}
+          isOwner={isOwner}
+          onProtectionChanged={reload}
+        />
+      )}
+
+      {canManage && (
         <DangerZone
           name={name}
           label={data.displayName || data.name}
           isAdmin={isAdmin}
           isOwner={isOwner}
-          canKill={!error && (data.phase !== "Stopped" || data.desiredState === "Running")}
-          canRetire={!data.reaperExempt && !data.retiring}
+          canKill={canOperate && !error && (data.phase !== "Stopped" || data.desiredState === "Running")}
+          canRelease={!teamMode && !data.reaperExempt && !data.retiring && !data.protected && (isOwner || isAdmin || actualOwned)}
+          canDelete={!data.reaperExempt && !data.retiring && canDeleteServer(isOwner, isAdmin, data.protected)}
           onChanged={reload}
         />
       )}

@@ -11,10 +11,11 @@ import (
 
 func (a *API) handleConsoleHistory(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	name, ok := a.authorizeServerFiles(w, r)
+	rec, _, ok := a.authorizeServer(w, r, ActionOperate)
 	if !ok {
 		return
 	}
+	name := rec.Name
 	cursor := r.URL.Query().Get("cursor")
 	if len(cursor) > fileedit.MaxLogTailCursorBytes {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_path", "the log cursor exceeds 256 bytes"))

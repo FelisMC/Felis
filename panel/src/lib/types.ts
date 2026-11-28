@@ -91,6 +91,8 @@ export interface MyServerView {
   owned: boolean;
   /** Whether the caller may claim this server (unowned + linked + quota). */
   claimable: boolean;
+  protected?: boolean;
+  accessRole?: AccessRole;
   phase?: Phase;
   playersOnline: number;
   playersMax: number;
@@ -162,6 +164,8 @@ export interface ServerStatus {
   retiring?: RetireState;
   /** Owner and admin view only. */
   tags?: string[];
+  protected?: boolean;
+  accessRole?: AccessRole;
   resumeAfterHostRestart: boolean;
   /** Covers exits and hangs of the server process. */
   restartOnCrash: boolean;
@@ -432,6 +436,41 @@ export interface ServerAssignment {
   name: string;
   owner_id: string;
   over: QuotaExcess[];
+}
+
+export type AccessRole = "owner" | "admin" | "manager" | "operator" | "readonly";
+
+export type CollaboratorRole = "operator" | "manager";
+
+export interface ServerProtection {
+  name: string;
+  protected: boolean;
+}
+
+export interface ServerCollaborator {
+  server_name: string;
+  user_id: string;
+  username: string;
+  email?: string;
+  user_role: "owner" | "admin" | "user";
+  role: CollaboratorRole;
+  granted_by?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CollaboratorCandidate {
+  id: string;
+  username: string;
+  email?: string;
+  role: "admin" | "user";
+}
+
+export interface ServerCollaboratorsResponse {
+  server: string;
+  protected: boolean;
+  collaborators: ServerCollaborator[];
+  candidates: CollaboratorCandidate[];
 }
 
 // Restore by eligible backup identity; tolerate unknown reason/status values from unvalidated JSON.
