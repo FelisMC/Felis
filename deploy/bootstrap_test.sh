@@ -2068,7 +2068,7 @@ run_write() { # out-file [state-dir] [database-deployment]; under the installer'
     felis() {
       [ "$*" = "bootstrap-assets config-keys" ] || return 2
       [ "${OLD_CONFIG:-0}" != 1 ] || return 2
-      printf "%s\n" velocity.game_version velocity.login_memory velocity.lobby_enabled
+      printf "%s\n" velocity.game_version velocity.login_memory velocity.lobby_enabled features.mode features.custom_images
     }
     . "$FNFILE"
     FELIS_ROOT_DOMAIN=r.example.com DB_USER=u DB_PASSWORD=p DB_NAME=d MINECRAFT_NS=minecraft \
@@ -2162,6 +2162,20 @@ login_memory = "320Mi"' "$(cat "$rdir/small.toml")"
 case "$(cat "$rdir/small.toml")" in *lobby_enabled*) echo "FAIL a small host has no lobby image and needs no lobby_enabled"; fails=$((fails + 1)) ;; *) echo "PASS a small host omits lobby_enabled" ;; esac
 (HOST_PROFILE=small LOBBY_IMG="" OLD_CONFIG=1 run_write "$rdir/small-old.toml")
 case "$(cat "$rdir/small-old.toml")" in *login_memory*) echo "FAIL an older binary must not receive velocity.login_memory"; fails=$((fails + 1)) ;; *) echo "PASS an older binary receives no login memory key" ;; esac
+expect "default config writes [features] with team mode and custom_images off" '[features]
+mode = "team"
+custom_images = false' "$out"
+(FELIS_MODE=community FELIS_WITH_CUSTOM_IMAGES=1 run_write "$rdir/community.toml")
+expect "community mode and custom_images env overrides are written" '[features]
+mode = "community"
+custom_images = true' "$(cat "$rdir/community.toml")"
+case "$release_config" in
+  *"[features]"*) echo "FAIL an older binary must not receive [features]"; fails=$((fails + 1)) ;;
+  *) echo "PASS an older binary receives no [features] section" ;;
+esac
+grep -F 'mirror-build-tools -config ${STATE_DIR}/felis.host.toml' "$BS" >/dev/null \
+  && echo "PASS build-tools service passes felis.host.toml to mirror-build-tools" \
+  || { echo "FAIL build-tools service does not pass -config to mirror-build-tools"; fails=$((fails + 1)); }
 
 cp "$rdir/out.toml" "$rdir/felis.host.toml"
 run_write "$rdir/out2.toml"

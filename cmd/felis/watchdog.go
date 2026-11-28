@@ -201,7 +201,7 @@ func watchdogProbes(ctx context.Context, w watchdogFlags, cfg *config.Config, no
 	if cfg.Offsite.Enabled() {
 		add(watchdog.OffsiteFinding(w.offsiteStatus, now))
 	}
-	if usesMirroredScanDB(cfg) {
+	if usesMirroredScanDB(cfg, effectiveCustomImages(ctx, cfg, readCustomImages)) {
 		add(watchdog.ScanDBFinding(w.toolsStatus, now))
 	}
 	report.Findings = append(report.Findings, watchdog.DiskFindings(splitList(w.diskPaths))...)
@@ -414,9 +414,9 @@ func mailHold(quietPath string, offsiteOn bool, offsiteStatus string, now time.T
 	return ""
 }
 
-// Recognize default and explicit registry mirror repositories when checking vulnerability-data freshness.
-func usesMirroredScanDB(cfg *config.Config) bool {
-	if cfg.Registry.URL == "" {
+// Recognize default and explicit registry mirror repositories when custom image builds are enabled.
+func usesMirroredScanDB(cfg *config.Config, customImages bool) bool {
+	if !customImages || cfg.Registry.URL == "" {
 		return false
 	}
 	repo := cfg.Registry.TrivyDBRepository

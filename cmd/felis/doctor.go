@@ -211,8 +211,13 @@ func collectDoctor(ctx context.Context, env doctorEnv) doctorReport {
 		if !cfg.Offsite.Enabled() {
 			skip["offsite"] = "not configured"
 		}
-		if !usesMirroredScanDB(cfg) {
-			skip["scan-db"] = "builds do not scan against the registry's copy"
+		customImages := effectiveCustomImages(ctx, cfg, readCustomImages)
+		if !usesMirroredScanDB(cfg, customImages) {
+			if cfg.Registry.URL != "" && !customImages {
+				skip["scan-db"] = "custom images are disabled"
+			} else {
+				skip["scan-db"] = "builds do not scan against the registry's copy"
+			}
 		}
 		if len(splitList(w.certDirs)) == 0 {
 			skip["k3s-certs"] = "no -k3s-cert-dirs"

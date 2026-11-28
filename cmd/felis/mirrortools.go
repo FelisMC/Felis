@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -13,12 +14,16 @@ import (
 	"time"
 
 	"felis.lolicon.best/internal/build"
+	"felis.lolicon.best/internal/config"
 	"felis.lolicon.best/internal/imagepush"
+	"felis.lolicon.best/internal/store"
 )
 
 // defaultBuildToolsStatus is where mirror-build-tools records its last run; the
 // watchdog reads it to tell a vulnerability DB that stopped refreshing.
 const defaultBuildToolsStatus = "/var/lib/felis/build-tools/status.json"
+
+var readCustomImages = readCustomImagesSetting
 
 // Mirror build tools and Java runtimes using platform credentials through the registry loopback port.
 func cmdMirrorBuildTools(args []string, stdout, stderr io.Writer) int {
@@ -29,13 +34,33 @@ func cmdMirrorBuildTools(args []string, stdout, stderr io.Writer) int {
 	status := fs.String("status", defaultBuildToolsStatus, `file to record the run in ("" records nothing)`)
 	secrets := fs.String("secrets-env", "/etc/felis/secrets.env", "installer secrets file holding REGISTRY_PLATFORM_TOKEN, read when FELIS_REGISTRY_PASSWORD is unset")
 	platformFlag := fs.String("platform", "", "os/arch of the images to copy (default: this machine's)")
+	cfgPath := fs.String("config", "", "optional path to felis.toml to read the custom_images feature state")
+	includeBuildTools := fs.String("include-build-tools", "auto", "whether to mirror kaniko/trivy build tools: auto, true, or false")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
 		return 2
 	}
-	tools, err := selectTools(*only)
+	var cfg *config.Config
+	if *cfgPath != "" {
+		loaded, err := config.Load(*cfgPath)
+		if err != nil {
+			fmt.Fprintf(stderr, "felis mirror-build-tools: %v\n", err)
+			return 2
+		}
+		cfg = loaded
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	withBuildTools, err := resolveIncludeBuildTools(ctx, *includeBuildTools, cfg, readCustomImages)
+	if err != nil {
+		fmt.Fprintf(stderr, "felis mirror-build-tools: %v\n", err)
+		return 2
+	}
+	tools, err := selectTools(*only, withBuildTools)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis mirror-build-tools: %v\n", err)
 		return 2
@@ -45,9 +70,6 @@ func cmdMirrorBuildTools(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "felis mirror-build-tools: %v\n", err)
 		return 2
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	p := &imagepush.Pusher{Scheme: "http", Username: user, Password: pass, Log: stdout}
 	src := &imagepush.Source{Platform: *platformFlag}
 	started := time.Now()
@@ -79,6 +101,58 @@ func cmdMirrorBuildTools(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func readCustomImagesSetting(ctx context.Context, dbURL string) (bool, bool) {
+	if dbURL == "" {
+		return false, false
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	drv, err := store.Open(ctx, dbURL)
+	if err != nil {
+		return false, false
+	}
+	defer drv.Close()
+	var raw []byte
+	if err := drv.DB().QueryRowContext(ctx, `SELECT value FROM platform_settings WHERE key = 'platform_features'`).Scan(&raw); err != nil {
+		return false, false
+	}
+	var parsed struct {
+		CustomImages bool `json:"customImages"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return false, false
+	}
+	return parsed.CustomImages, true
+}
+
+func effectiveCustomImages(ctx context.Context, cfg *config.Config, readSetting func(context.Context, string) (bool, bool)) bool {
+	if cfg == nil {
+		return false
+	}
+	if readSetting != nil && cfg.Database.URL != "" {
+		if enabled, found := readSetting(ctx, cfg.Database.URL); found {
+			return enabled
+		}
+	}
+	return cfg.Features.DefaultCustomImages()
+}
+
+func resolveIncludeBuildTools(ctx context.Context, mode string, cfg *config.Config, readSetting func(context.Context, string) (bool, bool)) (bool, error) {
+	switch strings.TrimSpace(mode) {
+	case "", "auto":
+		if cfg == nil {
+			return true, nil
+		}
+		return effectiveCustomImages(ctx, cfg, readSetting), nil
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, fmt.Errorf("invalid -include-build-tools %q (want auto, true, or false)", mode)
+	}
+}
+
 // mirroredTools are the build tools and the servers' runtime images, every
 // image this command copies.
 func mirroredTools() []build.Tool {
@@ -93,8 +167,11 @@ func toolNames() string {
 	return strings.Join(names, ",")
 }
 
-func selectTools(only string) ([]build.Tool, error) {
+func selectTools(only string, includeBuildTools bool) ([]build.Tool, error) {
 	if only == "" {
+		if !includeBuildTools {
+			return append([]build.Tool{}, build.RuntimeImages...), nil
+		}
 		return mirroredTools(), nil
 	}
 	var out []build.Tool

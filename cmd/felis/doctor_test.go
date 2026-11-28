@@ -481,3 +481,23 @@ func TestDoctorReportsEdgeFence(t *testing.T) {
 		t.Fatalf("expected healthy edge origin fence:\n%s", out.String())
 	}
 }
+
+func TestDoctorSkipsScanDBWhenCustomImagesDisabled(t *testing.T) {
+	prev := readCustomImages
+	readCustomImages = func(context.Context, string) (bool, bool) { return false, false }
+	defer func() { readCustomImages = prev }()
+
+	env, _ := doctorHost(t, testWatchdogConfig+"[registry]\nurl = \"registry.felis.svc:5000\"\n", "")
+	var out bytes.Buffer
+	runDoctor(context.Background(), env, &out)
+	if !strings.Contains(out.String(), "-  build scan database: not checked, custom images are disabled\n") {
+		t.Fatalf("expected scan-db skipped when custom_images is off:\n%s", out.String())
+	}
+
+	envOn, _ := doctorHost(t, testWatchdogConfig+"[registry]\nurl = \"registry.felis.svc:5000\"\n[features]\ncustom_images = true\n", "")
+	out.Reset()
+	runDoctor(context.Background(), envOn, &out)
+	if !strings.Contains(out.String(), "warning  scan-db: ") {
+		t.Fatalf("expected scan-db warning when custom_images is on:\n%s", out.String())
+	}
+}

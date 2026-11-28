@@ -19,11 +19,16 @@ func TestBootstrapConfigKeys(t *testing.T) {
 	var cfg config.Config
 	var doc strings.Builder
 	for _, key := range strings.Fields(out.String()) {
-		if key == "velocity.lobby_enabled" {
+		switch key {
+		case "velocity.lobby_enabled":
 			doc.WriteString(key + " = false\n")
-			continue
+		case "features.custom_images":
+			doc.WriteString(key + " = true\n")
+		case "features.mode":
+			doc.WriteString(key + " = \"community\"\n")
+		default:
+			doc.WriteString(key + " = \"26.3\"\n")
 		}
-		doc.WriteString(key + " = \"26.3\"\n")
 	}
 	meta, err := toml.Decode(doc.String(), &cfg)
 	if err != nil || len(meta.Undecoded()) != 0 {
@@ -31,6 +36,9 @@ func TestBootstrapConfigKeys(t *testing.T) {
 	}
 	if cfg.Velocity.GameVersion != "26.3" || cfg.Velocity.LoginMemory != "26.3" || cfg.Velocity.LobbyEnabled == nil || *cfg.Velocity.LobbyEnabled {
 		t.Fatalf("advertised keys did not populate VelocityConfig: %+v", cfg.Velocity)
+	}
+	if cfg.Features.Mode != "community" || !cfg.Features.DefaultCustomImages() {
+		t.Fatalf("advertised keys did not populate FeaturesConfig: %+v", cfg.Features)
 	}
 }
 

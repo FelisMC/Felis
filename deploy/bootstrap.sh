@@ -189,6 +189,9 @@ HOST_PROFILE=""
 # auto: fresh standard installs leave the lobby stopped unless enabled interactively; reruns keep the recorded choice.
 FELIS_WITH_LOBBY="${FELIS_WITH_LOBBY:-auto}"
 WITH_LOBBY=""
+# Fresh-install defaults for platform mode and optional custom container image builds.
+FELIS_MODE="${FELIS_MODE:-team}"
+FELIS_WITH_CUSTOM_IMAGES="${FELIS_WITH_CUSTOM_IMAGES:-false}"
 # Pinned go.dev sha256 per architecture; move the version and both digests together.
 GO_PINNED_VERSION="1.27.4"
 GO_PINNED_SHA256_AMD64="7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840"
@@ -886,6 +889,14 @@ validate_settings() {
   case "$FELIS_WITH_LOBBY" in
     auto|0|1) ;;
     *) die "FELIS_WITH_LOBBY must be auto, 0 or 1 (got '${FELIS_WITH_LOBBY}')" ;;
+  esac
+  case "$FELIS_MODE" in
+    team|community) ;;
+    *) die "FELIS_MODE must be team or community (got '${FELIS_MODE}')" ;;
+  esac
+  case "$FELIS_WITH_CUSTOM_IMAGES" in
+    true|false|1|0) ;;
+    *) die "FELIS_WITH_CUSTOM_IMAGES must be true, false, 1 or 0 (got '${FELIS_WITH_CUSTOM_IMAGES}')" ;;
   esac
   case "$FELIS_UPGRADE_DEPS" in
     0|1) ;;
@@ -4304,7 +4315,7 @@ offsite_enabled() {
 # Only host config names the database Deployment; mode 0600 protects the URL password.
 write_felis_toml() {
   local target="$1" db_addr="$2" deployment="${3:-}" deployment_line="" smtp_block auth_body auth_source_blocks registry_block archive_block offsite_section
-  local config_keys game_version_line="" login_memory_line="" lobby_enabled_line=""
+  local config_keys game_version_line="" login_memory_line="" lobby_enabled_line="" features_block="" custom_images_bool="false"
   # main's installer also installs older releases, whose strict TOML parser rejects
   # newer optional keys. Ask the installed binary rather than guessing from its stamp.
   config_keys="$("$HOST_BIN" bootstrap-assets config-keys 2>/dev/null || true)"
@@ -4316,6 +4327,16 @@ write_felis_toml() {
   fi
   if [ "${WITH_LOBBY:-1}" = 0 ] && [ -n "${FELIS_LOBBY_IMAGE:-}" ] && grep -Fxq 'velocity.lobby_enabled' <<<"$config_keys"; then
     lobby_enabled_line=$'\nlobby_enabled = false'
+  fi
+  case "${FELIS_WITH_CUSTOM_IMAGES:-false}" in
+    true|1) custom_images_bool="true" ;;
+  esac
+  if grep -Fxq 'features.mode' <<<"$config_keys"; then
+    features_block="
+[features]
+mode = \"${FELIS_MODE:-team}\"
+custom_images = ${custom_images_bool}
+"
   fi
   if [ -n "$deployment" ]; then
     # Starts with the newline that ends the url line, so the pod copy has no blank line there.
@@ -4379,7 +4400,7 @@ ${login_memory_line}
 # The public port players connect on; the panel shows it in server addresses.
 game_port = ${FELIS_GAME_PORT}
 ${game_version_line}
-
+${features_block}
 [registry]
 url = "${REGISTRY_URL}"
 build_namespace = "${BUILD_NS}"
@@ -4783,7 +4804,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 $(ha_exec_condition)
-ExecStart=${HOST_BIN} mirror-build-tools -endpoint ${REGISTRY_PUSH_HOST} -status ${BUILD_TOOLS_STATUS} -secrets-env ${SECRETS_ENV}
+ExecStart=${HOST_BIN} mirror-build-tools -config ${STATE_DIR}/felis.host.toml -endpoint ${REGISTRY_PUSH_HOST} -status ${BUILD_TOOLS_STATUS} -secrets-env ${SECRETS_ENV}
 TimeoutStartSec=1h
 Nice=10
 PrivateTmp=yes
@@ -4805,7 +4826,7 @@ EOF
   systemctl daemon-reload
   systemctl enable --now felis-build-tools.timer
   systemctl start --no-block felis-build-tools.service
-  ok "build tools: kaniko, trivy and the Trivy DBs are being copied into the registry (journalctl -u felis-build-tools); refreshed twice a day"
+  ok "runtime mirror: Java runtimes (and build tools when custom images are enabled) are being copied into the registry (journalctl -u felis-build-tools); refreshed twice a day"
 }
 
 # Run the first database backup immediately to expose pipeline failures during installation.

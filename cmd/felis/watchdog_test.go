@@ -243,27 +243,38 @@ func TestWatchdogRunChecksWhatIsConfigured(t *testing.T) {
 	ln.Close()
 	const offsiteTable = "[offsite]\nendpoint = \"https://s3.example.com\"\nbucket = \"felis\"\n"
 	const registry = "[registry]\nurl = \"registry.felis.svc:5000\"\n"
+	const customImagesOn = "[features]\ncustom_images = true\n"
 	optional := []string{"proxy", "db-backup", "offsite", "scan-db"}
 	for _, tc := range []struct {
-		what  string
-		cfg   string
-		flags func(dir string) []string
-		want  string // the one optional check that reports, "" for none
+		what     string
+		cfg      string
+		flags    func(dir string) []string
+		dbImages func(context.Context, string) (bool, bool)
+		want     string // the one optional check that reports, "" for none
 	}{
 		{what: "none of them", cfg: testWatchdogConfig},
 		{what: "a proxy address", cfg: testWatchdogConfig, flags: func(string) []string { return []string{"-proxy-addr", closed} }, want: "proxy"},
 		{what: "a backup directory", cfg: testWatchdogConfig, flags: func(dir string) []string { return []string{"-backup-dir", dir} }, want: "db-backup"},
 		{what: "[offsite]", cfg: testWatchdogConfig + offsiteTable, want: "offsite"},
-		{what: "a registry with the default scan DB", cfg: testWatchdogConfig + registry, want: "scan-db"},
-		{what: "a registry with its scan DB under mirror/", cfg: testWatchdogConfig + registry + "trivy_db_repository = \"registry.felis.svc:5000/mirror/trivy-db\"\n", want: "scan-db"},
-		{what: "a registry with the scan DB elsewhere", cfg: testWatchdogConfig + registry + "trivy_db_repository = \"ghcr.io/aquasecurity/trivy-db\"\n"},
+		{what: "a registry with custom_images off skips scan-db", cfg: testWatchdogConfig + registry},
+		{what: "a registry with custom_images on and the default scan DB", cfg: testWatchdogConfig + registry + customImagesOn, want: "scan-db"},
+		{what: "a registry with custom_images on and its scan DB under mirror/", cfg: testWatchdogConfig + registry + "trivy_db_repository = \"registry.felis.svc:5000/mirror/trivy-db\"\n" + customImagesOn, want: "scan-db"},
+		{what: "a registry with custom_images on and the scan DB elsewhere", cfg: testWatchdogConfig + registry + "trivy_db_repository = \"ghcr.io/aquasecurity/trivy-db\"\n" + customImagesOn},
+		{what: "a registry with panel DB enabling custom_images", cfg: testWatchdogConfig + registry, dbImages: func(context.Context, string) (bool, bool) { return true, true }, want: "scan-db"},
 	} {
+		prevRead := readCustomImages
+		if tc.dbImages != nil {
+			readCustomImages = tc.dbImages
+		} else {
+			readCustomImages = func(context.Context, string) (bool, bool) { return false, false }
+		}
 		h := newWatchdogHost(t, tc.cfg, nil)
 		var flags []string
 		if tc.flags != nil {
 			flags = tc.flags(t.TempDir())
 		}
 		code, stdout, stderr := h.run(append(flags, "-dry-run")...)
+		readCustomImages = prevRead
 		var reported []string
 		for _, key := range optional {
 			if strings.Contains(stdout, "] "+key+": ") {
