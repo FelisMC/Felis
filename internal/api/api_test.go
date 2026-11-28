@@ -2262,9 +2262,12 @@ func (o okInternal) Authenticate(*http.Request) (Caller, error) {
 
 func newTestAPI(repo Repo, cl Cluster) *API {
 	return &API{Repo: repo, Cluster: cl, Internal: okInternal{}, RootDomain: testRoot,
-		LobbyImage: "felis/lobby:demo",
-		Now:        func() time.Time { return time.Unix(1_700_000_000, 0) },
-		AccessLog:  discardLog}
+		LobbyImage:              "felis/lobby:demo",
+		DefaultMode:             ModeCommunity,
+		CustomImagesByDefault:   true,
+		AllowSubmissionsDefault: true,
+		Now:                     func() time.Time { return time.Unix(1_700_000_000, 0) },
+		AccessLog:               discardLog}
 }
 
 var discardLog = slog.New(slog.NewTextHandler(io.Discard, nil))

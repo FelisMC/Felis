@@ -29,6 +29,17 @@ func (a *API) handleBindRedeem(w http.ResponseWriter, r *http.Request) {
 			"session login is disabled"))
 		return
 	}
+	if !a.Nano {
+		mode, err := a.effectiveMode(r.Context())
+		if err != nil {
+			writeError(w, r, errAuthUnavailable)
+			return
+		}
+		if mode == ModeTeam {
+			writeError(w, r, errTeamModeOnly)
+			return
+		}
+	}
 	if err := requireJSONContentType(r); err != nil {
 		writeError(w, r, err)
 		return

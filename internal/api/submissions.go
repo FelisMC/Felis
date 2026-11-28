@@ -58,6 +58,9 @@ type approveSubmissionRequest struct {
 const contextDigestHeader = "X-Felis-Context-Sha256"
 
 func (a *API) handleCreateSubmission(w http.ResponseWriter, r *http.Request) {
+	if !a.requireSubmissionsAllowed(w, r) {
+		return
+	}
 	if a.Submissions == nil {
 		writeError(w, r, errSubmissionsUnavailable)
 		return
@@ -97,6 +100,9 @@ func (a *API) handleCreateSubmission(w http.ResponseWriter, r *http.Request) {
 
 // handleUploadSubmissionContext accepts raw gzip tarballs and returns 404 for submissions owned by another user.
 func (a *API) handleUploadSubmissionContext(w http.ResponseWriter, r *http.Request) {
+	if !a.requireSubmissionsAllowed(w, r) {
+		return
+	}
 	if a.Submissions == nil {
 		writeError(w, r, errSubmissionsUnavailable)
 		return
@@ -156,6 +162,9 @@ func (a *API) handleContextUploadStatus(w http.ResponseWriter, r *http.Request) 
 
 // handleContextUploadPart resets at offset 0 or appends at the staged length; failed parts roll back.
 func (a *API) handleContextUploadPart(w http.ResponseWriter, r *http.Request) {
+	if !a.requireSubmissionsAllowed(w, r) {
+		return
+	}
 	if a.Submissions == nil {
 		writeError(w, r, errSubmissionsUnavailable)
 		return
@@ -181,6 +190,9 @@ func (a *API) handleContextUploadPart(w http.ResponseWriter, r *http.Request) {
 
 // handleContextUploadComplete applies the upload cooldown when the staged context is stored.
 func (a *API) handleContextUploadComplete(w http.ResponseWriter, r *http.Request) {
+	if !a.requireSubmissionsAllowed(w, r) {
+		return
+	}
 	if a.Submissions == nil {
 		writeError(w, r, errSubmissionsUnavailable)
 		return
@@ -298,6 +310,9 @@ func (a *API) submissionViews(ctx context.Context, subs []submit.Submission) ([]
 }
 
 func (a *API) handleApproveSubmission(w http.ResponseWriter, r *http.Request) {
+	if !a.requireCustomImages(w, r) {
+		return
+	}
 	if a.Submissions == nil {
 		writeError(w, r, errSubmissionsUnavailable)
 		return

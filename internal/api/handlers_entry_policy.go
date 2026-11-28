@@ -29,9 +29,8 @@ type entryPolicyView struct {
 	Revision string `json:"revision"`
 }
 
-func defaultEntryPolicy(noLobby, lobbyDisabled bool) entryPolicy {
-	// Preserve routing and web association until the owner saves an explicit policy.
-	p := entryPolicy{UseLobby: true, Mode: "domain", RequireAccountLink: true, OfflineAction: "wake", WaitingSpace: "lobby"}
+func defaultEntryPolicy(noLobby, lobbyDisabled, teamMode bool) entryPolicy {
+	p := entryPolicy{UseLobby: true, Mode: "domain", RequireAccountLink: !teamMode, OfflineAction: "wake", WaitingSpace: "lobby"}
 	if noLobby || lobbyDisabled {
 		p.UseLobby = false
 		p.WaitingSpace = "login"
@@ -84,7 +83,15 @@ func (p entryPolicy) valid(noLobby bool) bool {
 }
 
 func (a *API) readEntryPolicy(ctx context.Context) (entryPolicyView, []byte, error) {
-	view := entryPolicyView{entryPolicy: defaultEntryPolicy(a.NoLobby, a.LobbyDisabledByDefault)}
+	mode, err := a.effectiveMode(ctx)
+	if err != nil {
+		return entryPolicyView{}, nil, err
+	}
+	return a.readEntryPolicyForMode(ctx, mode == ModeTeam)
+}
+
+func (a *API) readEntryPolicyForMode(ctx context.Context, teamMode bool) (entryPolicyView, []byte, error) {
+	view := entryPolicyView{entryPolicy: defaultEntryPolicy(a.NoLobby, a.LobbyDisabledByDefault, teamMode)}
 	raw, err := a.Repo.GetSetting(ctx, entryPolicyKey)
 	if errors.Is(err, ErrNotFound) {
 		raw = nil

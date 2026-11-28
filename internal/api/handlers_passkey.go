@@ -509,6 +509,17 @@ func (a *API) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	allowed, err := a.panelPortalAllowed(r.Context(), u.ID, u.Role)
+	if err != nil {
+		writeError(w, r, errAuthUnavailable)
+		return
+	}
+	if !allowed {
+		a.authFailure(r, "passkey", "team_mode_staff_only", u)
+		writeError(w, r, errTeamModeOnly)
+		return
+	}
+
 	if err := a.startSession(w, r, u.ID, provenSignIn); err != nil {
 		writeError(w, r, err)
 		return

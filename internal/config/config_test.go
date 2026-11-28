@@ -776,3 +776,27 @@ url = "postgres://felis@db/felis"
 		}
 	}
 }
+
+func TestFeaturesConfig(t *testing.T) {
+	head := "[database]\nurl = \"postgres://x/y\"\n[server]\nroot_domain = \"example.com\"\n"
+
+	cfg, err := config.Load(writeTOML(t, head))
+	if err != nil {
+		t.Fatalf("Load defaults: %v", err)
+	}
+	if cfg.Features.EffectiveMode() != config.ModeTeam || cfg.Features.DefaultCustomImages() || cfg.Features.DefaultAllowSubmissions() {
+		t.Fatalf("unexpected defaults: %+v", cfg.Features)
+	}
+
+	cfg, err = config.Load(writeTOML(t, head+"[features]\nmode = \"community\"\ncustom_images = true\nallow_submissions = true\n"))
+	if err != nil {
+		t.Fatalf("Load community: %v", err)
+	}
+	if cfg.Features.EffectiveMode() != config.ModeCommunity || !cfg.Features.DefaultCustomImages() || !cfg.Features.DefaultAllowSubmissions() {
+		t.Fatalf("unexpected explicit features: %+v", cfg.Features)
+	}
+
+	if _, err := config.Load(writeTOML(t, head+"[features]\nmode = \"invalid\"\n")); err == nil {
+		t.Fatal("expected error for invalid features mode")
+	}
+}

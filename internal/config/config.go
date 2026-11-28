@@ -22,6 +22,7 @@ type Config struct {
 	Server   ServerConfig   `toml:"server"`
 	Database DatabaseConfig `toml:"database"`
 	Velocity VelocityConfig `toml:"velocity"`
+	Features FeaturesConfig `toml:"features"`
 	Auth     AuthConfig     `toml:"auth"`
 	K8s      K8sConfig      `toml:"k8s"`
 	Registry RegistryConfig `toml:"registry"`
@@ -31,6 +32,47 @@ type Config struct {
 	Audit    AuditConfig    `toml:"audit"`
 	// AuthSources order sets priority; Mojang remains the code-owned identity anchor.
 	AuthSources []AuthSourceConfig `toml:"auth_source"`
+}
+
+const (
+	ModeTeam      = "team"
+	ModeCommunity = "community"
+)
+
+type FeaturesConfig struct {
+	Mode             string `toml:"mode"`
+	CustomImages     *bool  `toml:"custom_images"`
+	AllowSubmissions *bool  `toml:"allow_submissions"`
+}
+
+func EffectiveMode(mode string) string {
+	if mode == "" {
+		return ModeTeam
+	}
+	return mode
+}
+
+func ValidMode(mode string) bool {
+	return mode == "" || mode == ModeTeam || mode == ModeCommunity
+}
+
+func BoolDefault(p *bool, fallback bool) bool {
+	if p == nil {
+		return fallback
+	}
+	return *p
+}
+
+func (f FeaturesConfig) EffectiveMode() string {
+	return EffectiveMode(f.Mode)
+}
+
+func (f FeaturesConfig) DefaultCustomImages() bool {
+	return BoolDefault(f.CustomImages, false)
+}
+
+func (f FeaturesConfig) DefaultAllowSubmissions() bool {
+	return BoolDefault(f.AllowSubmissions, false)
 }
 
 // AuthSourceConfig.Tag is permanent and hashes into player UUIDs; Prefix disambiguates player names.
@@ -443,6 +485,9 @@ func (c *Config) Validate() error {
 	}
 	if p := c.Velocity.GamePort; p < 0 || p > 65535 {
 		return fmt.Errorf("config: [velocity] game_port %d must be 1-65535 (0 keeps 25565)", p)
+	}
+	if !ValidMode(c.Features.Mode) {
+		return fmt.Errorf("config: [features] mode %q must be team or community", c.Features.Mode)
 	}
 	if n := c.Registry.MaxConcurrentBuilds; n < 0 || n > 6 {
 		return fmt.Errorf("config: [registry] max_concurrent_builds %d must be 1-6 (0 keeps 2)", n)

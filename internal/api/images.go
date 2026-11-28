@@ -43,6 +43,9 @@ type addImageRequest struct {
 }
 
 func (a *API) handleBuildImage(w http.ResponseWriter, r *http.Request) {
+	if !a.requireCustomImages(w, r) {
+		return
+	}
 	if a.Builder == nil {
 		writeError(w, r, errBuildUnavailable)
 		return
@@ -259,6 +262,9 @@ func (a *API) handleListImages(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleAddImage(w http.ResponseWriter, r *http.Request) {
+	if !a.requireCustomImages(w, r) {
+		return
+	}
 	if a.Builder == nil {
 		writeError(w, r, errBuildUnavailable)
 		return
@@ -279,6 +285,9 @@ func (a *API) handleAddImage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleRemoveImage(w http.ResponseWriter, r *http.Request) {
+	if !a.requireCustomImages(w, r) {
+		return
+	}
 	if a.Builder == nil {
 		writeError(w, r, errBuildUnavailable)
 		return

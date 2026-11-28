@@ -26,9 +26,13 @@ type API struct {
 	Distribution Distribution
 	NodeControl  NodeControl
 	// NoLobby marks an install without the formal lobby, so players wait in and leave from the login space.
-	NoLobby                bool
-	LobbyImage             string
-	LobbyDisabledByDefault bool
+	NoLobby                 bool
+	LobbyImage              string
+	LobbyDisabledByDefault  bool
+	DefaultMode             string
+	CustomImagesByDefault   bool
+	AllowSubmissionsDefault bool
+	collaboratorCheck       func(ctx context.Context, userID string) (bool, error)
 	// Nano mounts only login control (nanoRoutes): sign-in, accounts, auth sources and the proxy plugin's calls.
 	Nano     bool
 	Repo     Repo
@@ -424,6 +428,8 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "GET", Pattern: "/api/v1/platform/audit", Owner: true, Admin: true, h: a.handleListAudit},
 		{Method: "GET", Pattern: "/api/v1/platform/audit-export", Owner: true, Admin: true, h: a.handleAuditExport},
 		{Method: "POST", Pattern: "/api/v1/platform/offsite/key", Owner: true, Admin: true, h: a.handleOffsiteKey},
+		{Method: "GET", Pattern: "/api/v1/settings/features", SetupAllowed: true, h: a.handleGetFeatures},
+		{Method: "PUT", Pattern: "/api/v1/settings/features", Owner: true, Admin: true, h: a.handleSetFeatures},
 		{Method: "GET", Pattern: "/api/v1/settings/entry-policy", Owner: true, Admin: true, h: a.handleGetEntryPolicy},
 		{Method: "PUT", Pattern: "/api/v1/settings/entry-policy", Owner: true, Admin: true, h: a.handleSetEntryPolicy},
 		{Method: "GET", Pattern: "/api/v1/settings/wake-policy", Owner: true, Admin: true, h: a.handleGetWakePolicy},

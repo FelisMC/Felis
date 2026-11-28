@@ -17,6 +17,10 @@ x-felis-common-responses:
     code: forbidden
     response: { $ref: '#/components/responses/StaffOnlyHost' }
   - status: 403
+    when: session
+    code: team_mode_staff_only
+    response: { $ref: '#/components/responses/Forbidden' }
+  - status: 403
     when: setup-locked
     code: setup_required
     response: { $ref: '#/components/responses/SetupRequired' }
@@ -341,6 +345,29 @@ components:
         waitingSpace: { type: string, enum: [login, lobby], description: "With web sign-in required, players wait in the lobby when useLobby is enabled, or in the login space otherwise." }
         fallbackServer: { type: string, description: Required for fallback action and distinct from the default server. }
         revision: { type: string, description: Opaque revision; stale or concurrent writes return 409. }
+
+    PlatformFeaturesSettings:
+      type: object
+      required: [mode, lobbyAvailable, useLobby, requireAccountLink, customImages, allowSubmissions, revision]
+      properties:
+        mode: { type: string, enum: [team, community] }
+        lobbyAvailable: { type: boolean }
+        useLobby: { type: boolean }
+        requireAccountLink: { type: boolean }
+        customImages: { type: boolean }
+        allowSubmissions: { type: boolean }
+        revision: { type: string }
+
+    SetPlatformFeaturesRequest:
+      type: object
+      required: [mode, customImages, allowSubmissions, revision]
+      properties:
+        mode: { type: string, enum: [team, community] }
+        useLobby: { type: boolean }
+        customImages: { type: boolean }
+        allowSubmissions: { type: boolean }
+        syncRequireAccountLink: { type: boolean }
+        revision: { type: string }
 
     WakePolicySettings:
       type: object
@@ -5785,6 +5812,7 @@ paths:
                 required: [owner_bound]
                 properties:
                   owner_bound: { type: boolean }
+                  mode: { type: string, enum: [team, community] }
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
@@ -6201,6 +6229,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ServerQuota' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/software:
     get:
@@ -6590,6 +6619,47 @@ paths:
                   admin_url: { type: string }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/settings/features:
+    get:
+      tags: [account]
+      operationId: getPlatformFeatures
+      summary: Read effective platform mode and optional component toggles.
+      x-felis-face: [external]
+      x-felis-tier: app
+      x-felis-setup-allowed: true
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: Current mode, component toggles, and revision.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlatformFeaturesSettings' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    put:
+      tags: [account]
+      operationId: setPlatformFeatures
+      summary: Update platform operating mode and optional components (Owner, fresh reauthentication).
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SetPlatformFeaturesRequest' }
+      responses:
+        '200':
+          description: Saved platform features and updated revision.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlatformFeaturesSettings' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: Settings changed concurrently or host cannot start lobby. }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
   /api/v1/settings/entry-policy:
     get:

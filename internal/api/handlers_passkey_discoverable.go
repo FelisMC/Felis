@@ -147,6 +147,17 @@ func (a *API) handlePasskeyLoginDiscoverableFinish(w http.ResponseWriter, r *htt
 		return
 	}
 
+	allowed, err := a.panelPortalAllowed(r.Context(), resolved.ID, resolved.Role)
+	if err != nil {
+		writeError(w, r, errAuthUnavailable)
+		return
+	}
+	if !allowed {
+		a.authFailure(r, "passkey_discoverable", "team_mode_staff_only", resolved)
+		writeError(w, r, errTeamModeOnly)
+		return
+	}
+
 	if err := a.startSession(w, r, resolved.ID, provenSignIn); err != nil {
 		writeError(w, r, err)
 		return

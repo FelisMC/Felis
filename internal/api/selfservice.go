@@ -21,6 +21,13 @@ var errEULARequired = newError(http.StatusBadRequest, "eula_required",
 	"a server built from server software runs under the Minecraft EULA; accept it to continue (https://aka.ms/MinecraftEULA)")
 
 func (a *API) admitImage(ctx context.Context, ref string) (string, error) {
+	f, _, err := a.readStoredFeatures(ctx)
+	if err != nil {
+		return "", err
+	}
+	if !f.CustomImages {
+		return "", errFeatureDisabled
+	}
 	if a.Builder == nil {
 		return "", errBuildUnavailable
 	}
@@ -165,6 +172,9 @@ type serverQuotaView struct {
 }
 
 func (a *API) handleMyServerQuota(w http.ResponseWriter, r *http.Request) {
+	if !a.requireCommunityMode(w, r) {
+		return
+	}
 	p := principalFromContext(r.Context())
 	st, err := a.Repo.SelfServiceState(r.Context(), p.UserID)
 	if err != nil {
@@ -206,6 +216,9 @@ type selfCreateRequest struct {
 
 // handleSelfCreateServer checks quota and inserts ownership in one transaction to prevent concurrent quota overshoot.
 func (a *API) handleSelfCreateServer(w http.ResponseWriter, r *http.Request) {
+	if !a.requireCommunityMode(w, r) {
+		return
+	}
 	p := principalFromContext(r.Context())
 	ctx := r.Context()
 	var body selfCreateRequest

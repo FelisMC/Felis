@@ -58,6 +58,9 @@ func (a *API) writeAssignError(w http.ResponseWriter, r *http.Request, err error
 }
 
 func (a *API) handleAssignPreview(w http.ResponseWriter, r *http.Request) {
+	if !a.requireCommunityMode(w, r) {
+		return
+	}
 	name, ok := assignTarget(w, r)
 	if !ok {
 		return
@@ -81,6 +84,9 @@ func (a *API) handleAssignPreview(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleAssignServer(w http.ResponseWriter, r *http.Request) {
+	if !a.requireCommunityMode(w, r) {
+		return
+	}
 	name, ok := assignTarget(w, r)
 	if !ok {
 		return

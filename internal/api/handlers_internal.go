@@ -202,6 +202,9 @@ type internalClaimRequest struct {
 
 // handleInternalClaim resolves the linked game UUID and claims atomically; waking remains a separate policy-gated call.
 func (a *API) handleInternalClaim(w http.ResponseWriter, r *http.Request) {
+	if !a.requireCommunityMode(w, r) {
+		return
+	}
 	name := r.PathValue("name")
 	if err := naming.ValidateServerName(name); err != nil {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))

@@ -147,6 +147,9 @@ func (a *API) handleStop(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleClaim(w http.ResponseWriter, r *http.Request) {
+	if !a.requireCommunityMode(w, r) {
+		return
+	}
 	p := principalFromContext(r.Context())
 	name := r.PathValue("name")
 	if err := naming.ValidateServerName(name); err != nil {
@@ -304,10 +307,16 @@ func (a *API) handleMe(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) handleMyServers(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
+	mode, _ := a.effectiveMode(r.Context())
 	servers, err := a.Repo.MyServers(r.Context(), p.UserID)
 	if err != nil {
 		writeError(w, r, err)
 		return
+	}
+	if mode == ModeTeam {
+		for i := range servers {
+			servers[i].Claimable = false
+		}
 	}
 	// Live counts fall back to zero and cached phase on cluster failure; ownership details are joined only for owned rows.
 	if infos, err := a.Cluster.ListServers(r.Context()); err == nil {
@@ -356,6 +365,7 @@ func (a *API) handleFleet(w http.ResponseWriter, r *http.Request) {
 	}
 	// Ownership is best-effort: on a Postgres failure the rows say the owner is unknown and offer no claim.
 	p := principalFromContext(r.Context())
+	mode, _ := a.effectiveMode(r.Context())
 	owners, err := a.Repo.ServerOwners(r.Context())
 	unknown := err != nil
 	tags, err := a.Repo.ServerTags(r.Context())
@@ -370,7 +380,7 @@ func (a *API) handleFleet(w http.ResponseWriter, r *http.Request) {
 		s.Retiring, s.Tags = o.Retire, tags[s.Name]
 		views[i] = fleetServerView{ServerInfo: s, Owner: o.Owner, System: system,
 			Owned:        o.OwnerID != "" && o.OwnerID == p.UserID,
-			Claimable:    known && o.OwnerID == "" && o.Retire == nil && !system,
+			Claimable:    mode == ModeCommunity && known && o.OwnerID == "" && o.Retire == nil && !system,
 			OwnerUnknown: unknown}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"servers": views})
@@ -419,6 +429,15 @@ func (a *API) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	mode, err := a.effectiveMode(r.Context())
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if mode == ModeTeam && body.OwnerID != "" {
+		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "server ownership assignment is only available in community mode"))
+		return
+	}
 	// Giving a server to someone else is an assignment, which only the Owner may make.
 	if p := principalFromContext(r.Context()); body.OwnerID != "" && body.OwnerID != p.UserID && !p.IsOwner() {
 		writeError(w, r, newError(http.StatusForbidden, "forbidden", "only the platform owner can create a server for another account"))
@@ -448,7 +467,11 @@ func (a *API) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	policy, err := parseAutostartPolicy(body.AutostartPolicy)
+	rawPolicy := body.AutostartPolicy
+	if rawPolicy == "" && mode == ModeTeam {
+		rawPolicy = string(v1alpha1.AutostartPublic)
+	}
+	policy, err := parseAutostartPolicy(rawPolicy)
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -973,6 +996,9 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, name string, b
 	}
 
 	if body.Image != nil {
+		if !a.requireCustomImages(w, r) {
+			return
+		}
 		if a.Builder == nil {
 			writeError(w, r, errBuildUnavailable)
 			return

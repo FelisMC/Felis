@@ -211,6 +211,15 @@ func (a *API) requireExternal(next http.Handler) http.Handler {
 			writeError(w, r, errForbidden)
 			return
 		}
+		allowed, err := a.panelPortalAllowed(r.Context(), p.UserID, p.Role)
+		if err != nil {
+			writeError(w, r, errAuthUnavailable)
+			return
+		}
+		if !allowed {
+			writeError(w, r, errTeamModeOnly)
+			return
+		}
 		ctx := context.WithValue(r.Context(), ctxKeyPrincipal, p)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
