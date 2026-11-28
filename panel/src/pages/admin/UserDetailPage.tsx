@@ -49,6 +49,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { UserQuotaCard } from "@/components/UserQuotaCard";
 import { AssignServerDialog, userIdentity } from "@/components/AssignServerDialog";
 import { api, humanizeError } from "@/lib/api";
+import { useFeatures } from "@/lib/features";
 import { useAsync, useConfig } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
 import { deviceLabel } from "@/lib/device";
@@ -69,7 +70,9 @@ export function UserDetailPage() {
   );
   const [assigning, setAssigning] = useState(false);
   const config = useConfig();
+  const { features } = useFeatures();
   const hasServers = config !== null && !config.nano;
+  const showOwnership = hasServers && features.mode === "community";
 
   if (loading && !user) return <Loading />;
   if (error && (error as Partial<ApiError>).status === 404) {
@@ -111,7 +114,7 @@ export function UserDetailPage() {
         actions={(
           <div className="flex flex-wrap items-center gap-2">
             {/* A disabled button gets no hover events, so the tooltip sits on a wrapper. */}
-            {hasServers && (
+            {showOwnership && (
               <span title={user.disabled ? t("assign_disabled_user") : undefined}>
                 <Button variant="outline" size="sm" className="gap-1.5" disabled={user.disabled} onClick={() => setAssigning(true)}>
                   <Server className="h-3.5 w-3.5" />
@@ -130,7 +133,7 @@ export function UserDetailPage() {
         <EditProfileCard user={user} onSaved={reload} isSelf={identity?.user_id === id} />
         {/* Linked accounts */}
         <LinkedAccountsCard user={user} onChanged={reload} />
-        {hasServers && <UserQuotaCard userId={user.id} />}
+        {showOwnership && <UserQuotaCard userId={user.id} />}
         {/* Sessions */}
         <SessionsCard userId={user.id} onChanged={reload} />
       </div>
@@ -138,7 +141,7 @@ export function UserDetailPage() {
       {/* Danger zone */}
       <DangerZone user={user} isSelf={identity?.user_id === id} onChanged={reload} navigate={navigate} />
 
-      {hasServers && (
+      {showOwnership && (
         <AssignServerDialog
           open={assigning}
           onOpenChange={setAssigning}

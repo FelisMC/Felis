@@ -5,6 +5,7 @@ import { PageTabs } from "@/components/PageTabs";
 import { AccessCard, ConvergeCard, CredentialsCard, ProxyCard, StorageCard, useOverviewError } from "./platform/HostConfigCards";
 import { useTranslation } from "react-i18next";
 import { PlayerEntrySettings } from "@/components/PlayerEntrySettings";
+import { PlatformModeCard } from "@/components/PlatformModeCard";
 import { NodeControlPanel } from "@/components/NodeControlPanel";
 import { DistributedNodes } from "@/components/DistributedNodes";
 import { MailSettingsCard } from "@/components/MailSettingsCard";
@@ -80,7 +81,8 @@ export function PlatformSettingsPage() {
       tabs={<PageTabs label={t("platform_tabs")} idPrefix="platform" value={tab} tabs={platformTabs.map(({ key, icon }) => ({ key, icon, label: t(`platform_tab_${key}`) }))}
         onChange={(key) => setParams((p) => { p.set("tab", key); return p; }, { replace: true })} />} />
     <div role="tabpanel" id="platform-panel-entry" aria-labelledby="platform-tab-entry" hidden={tab !== "entry"} className="space-y-6">
-    <PlayerEntrySettings />
+    <PlatformModeCard onApplied={cards.refresh} />
+    <PlayerEntrySettings onSaved={cards.refresh} />
     <Card><CardHeader><CardTitle>{t("platform_wake_title")}</CardTitle></CardHeader><CardContent className="space-y-6">
       {query.loading && <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />{t("platform_loading")}</p>}
       <div className="grid gap-6 md:grid-cols-2">

@@ -32,6 +32,7 @@
   "fleet_owner_unknown_hint": "Server ownership could not be read. It will be queried again on the next refresh.",
   "fleet_endpoint_idle": "Not running",
   "policy_owneronly": "Owner only",
+  "policy_manual": "Manual start only",
   "policy_public": "Public",
   "policy_allowlist": "Wake list",
   "fleet_empty_title": "No servers",

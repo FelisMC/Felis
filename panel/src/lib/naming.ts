@@ -24,9 +24,19 @@ export const DISPLAY_NAME_MAX = 64;
 
 export type ServerNameIssue = "shape" | "reserved";
 
-/** serverNameIssue says why the API would refuse this name, or null if it takes it. */
 export function serverNameIssue(name: string): ServerNameIssue | null {
   if (!SERVER_NAME_RE.test(name) || name.startsWith("-") || name.endsWith("-")) return "shape";
   if (RESERVED_SERVER_NAMES.includes(name) || name.endsWith("-hl")) return "reserved";
   return null;
+}
+
+export function deriveServerSlug(displayName: string): string {
+  return displayName
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32)
+    .replace(/-+$/g, "");
 }

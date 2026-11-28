@@ -105,4 +105,6 @@ export type WireParity = [
   Holds<Parity<T.UpdateReport, S["UpdateReport"]>>,
   Holds<Parity<T.UpdateComponent, S["UpdateComponent"]>>,
   Holds<Parity<T.EntryPolicySettings, S["EntryPolicySettings"]>>,
+  Holds<Parity<T.PlatformFeaturesSettings, S["PlatformFeaturesSettings"]>>,
+  Holds<Parity<T.SetPlatformFeaturesRequest, S["SetPlatformFeaturesRequest"]>>,
 ];

@@ -24,6 +24,8 @@ import type {
   HeartbeatSettings,
   FailoverPolicySettings,
   EntryPolicySettings,
+  PlatformFeaturesSettings,
+  SetPlatformFeaturesRequest,
   AutostartPolicy,
   BackupView,
   Build,
@@ -141,6 +143,7 @@ interface MockState {
   heartbeat: HeartbeatSettings;
   failoverPolicy: FailoverPolicySettings;
   entryPolicy: EntryPolicySettings;
+  features: PlatformFeaturesSettings;
   selfService: SelfServiceQuotaSettings;
   host: MockHost;
   files: Record<string, MockTree>; // per-server world volume, seeded on first visit
@@ -542,6 +545,7 @@ function initialState(): MockState {
     ],
     updateWindow: { start: null, end: null },
     entryPolicy: { useLobby: true, mode: "domain", defaultServer: "", requireAccountLink: true, offlineAction: "wake", waitingSpace: "lobby", fallbackServer: "", revision: "initial" },
+    features: { mode: "community", useLobby: true, lobbyAvailable: true, customImages: true, allowSubmissions: true, requireAccountLink: true, revision: "initial" },
     wakePolicy: { maxRunningServers: 0, wakeCooldownSeconds: 30, revision: "initial", managed: false },
     defaultLanguage: { language: "", revision: "initial" },
     branding: { name: "", notice: "", show_powered_by: true, has_logo: false, has_background: false, revision: "initial" },
@@ -865,9 +869,13 @@ function canManage(accountInfo: MockAccount, serverInfo: MockServer): boolean {
 }
 
 function visibleServers(state: MockState, accountInfo: MockAccount): MyServerView[] {
+  const team = state.features.mode === "team";
   return state.servers
     .filter((serverInfo) => canSee(accountInfo, serverInfo))
-    .map((serverInfo) => myServerView(serverInfo, accountInfo));
+    .map((serverInfo) => {
+      const view = myServerView(serverInfo, accountInfo);
+      return team ? { ...view, claimable: false } : view;
+    });
 }
 
 function mockUsage(server: MockServer) {
@@ -914,7 +922,7 @@ function fleetView(state: MockState, accountInfo: MockAccount): FleetServer[] {
       playersOnline: s.ready ? s.playersOnline : 0,
       owner: owner ? (state.accounts[owner]?.email ?? owner) : "",
       owned: owner === accountInfo.id,
-      claimable: owner === null && !s.retiring && !s.reaperExempt,
+      claimable: state.features.mode !== "team" && owner === null && !s.retiring && !s.reaperExempt,
       system: s.reaperExempt,
     };
   });
@@ -1004,11 +1012,14 @@ function createServer(
     return "image_not_whitelisted";
   }
 
-  const created = server(name, req.displayName?.trim() || name, "Stopped", owner, {
+  const teamMode = state.features.mode === "team";
+  if (teamMode && req.ownerId) return "bad_request";
+  if (req.image && !state.features.customImages) return "bad_request";
+  const created = server(name, req.displayName?.trim() || name, "Stopped", teamMode ? null : owner, {
     subdomain,
     playersOnline: 0,
     playersMax: 20,
-    autostartPolicy: policy(req.autostartPolicy),
+    autostartPolicy: req.autostartPolicy ? policy(req.autostartPolicy) : teamMode ? "public" : "ownerOnly",
     image,
     software,
     memory: req.memory,
@@ -1541,6 +1552,10 @@ async function handlePublic(ctx: RequestContext): Promise<boolean> {
       return true;
     }
     case "POST auth/bind": {
+      if (ctx.state.features.mode === "team") {
+        sendError(ctx.res, 403, "team_mode_staff_only", "panel access is restricted to staff and collaborators in team mode");
+        return true;
+      }
       const body = await readJSON<{ code?: string }>(ctx.req);
       const code = body.code?.trim().toUpperCase();
       if (!code) {
@@ -1618,7 +1633,7 @@ async function handlePublic(ctx: RequestContext): Promise<boolean> {
     }
     // The mock install always has an Owner.
     case "GET auth/owner-status":
-      sendJSON(ctx.res, 200, { owner_bound: true });
+      sendJSON(ctx.res, 200, { owner_bound: true, mode: ctx.state.features.mode });
       return true;
     case "GET panel/language":
       sendJSON(ctx.res, 200, { language: ctx.state.defaultLanguage.language });
@@ -1878,6 +1893,54 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
   if (await handleMockHost(ctx)) return true;
   if (await handleMockSoftware(ctx)) return true;
   switch (route(ctx)) {
+    case "GET settings/features": {
+      sendJSON(ctx.res, 200, ctx.state.features);
+      return true;
+    }
+    case "PUT settings/features": {
+      if (!isOwner(ctx.account.role)) {
+        sendError(ctx.res, 403, "forbidden", "Owner account required");
+      } else if (!refusedForReauth(ctx)) {
+        const body = await readJSON<SetPlatformFeaturesRequest>(ctx.req);
+        if (body.revision !== ctx.state.features.revision) {
+          sendError(ctx.res, 409, "conflict", "features changed; reload before saving");
+        } else if (body.mode !== "team" && body.mode !== "community") {
+          sendError(ctx.res, 400, "bad_request", "invalid mode");
+        } else {
+          const useLobby = ctx.state.features.lobbyAvailable ? (body.useLobby ?? ctx.state.features.useLobby) : false;
+          const allowSubmissions = body.customImages ? body.allowSubmissions : false;
+          const lobby = ctx.state.servers.find((item) => item.name === "lobby");
+          if (lobby) {
+            lobby.desiredState = useLobby ? "Running" : "Stopped";
+            lobby.phase = useLobby ? "Running" : "Stopped";
+            lobby.ready = useLobby;
+            if (!useLobby) lobby.playersOnline = 0;
+          }
+          const nextEntry = { ...ctx.state.entryPolicy, useLobby };
+          if (body.syncRequireAccountLink) nextEntry.requireAccountLink = body.mode === "community";
+          if (!useLobby) {
+            if (nextEntry.mode === "lobby") nextEntry.mode = "domain";
+            nextEntry.waitingSpace = "login";
+          } else if (nextEntry.requireAccountLink) {
+            nextEntry.waitingSpace = "lobby";
+          }
+          nextEntry.revision = createHash("sha256").update(JSON.stringify(nextEntry)).digest("hex");
+          ctx.state.entryPolicy = nextEntry;
+          const nextFeatures: PlatformFeaturesSettings = {
+            mode: body.mode,
+            useLobby,
+            lobbyAvailable: ctx.state.features.lobbyAvailable,
+            customImages: body.customImages,
+            allowSubmissions,
+            requireAccountLink: nextEntry.requireAccountLink,
+            revision: createHash("sha256").update(JSON.stringify({ mode: body.mode, useLobby, customImages: body.customImages, allowSubmissions, requireAccountLink: nextEntry.requireAccountLink })).digest("hex"),
+          };
+          ctx.state.features = nextFeatures;
+          sendJSON(ctx.res, 200, nextFeatures);
+        }
+      }
+      return true;
+    }
     case "GET settings/entry-policy":
     case "PUT settings/entry-policy": {
       if (!isOwner(ctx.account.role)) sendError(ctx.res, 403, "forbidden", "Owner account required");
@@ -1896,6 +1959,12 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
             if (!body.useLobby) lobby.playersOnline = 0;
           }
           ctx.state.entryPolicy = { ...body, revision: createHash("sha256").update(JSON.stringify(body)).digest("hex") };
+          ctx.state.features = {
+            ...ctx.state.features,
+            useLobby: body.useLobby,
+            requireAccountLink: body.requireAccountLink,
+            revision: createHash("sha256").update(JSON.stringify({ ...ctx.state.features, useLobby: body.useLobby, requireAccountLink: body.requireAccountLink })).digest("hex"),
+          };
           sendJSON(ctx.res, 200, ctx.state.entryPolicy);
         }
       }
@@ -4690,6 +4759,10 @@ export function mockApiPlugin(): Plugin {
           const accountInfo = readAccount(req, state);
           if (!accountInfo) {
             sendError(res, 401, "unauthenticated", "mock session required");
+            return;
+          }
+          if (state.features.mode === "team" && !isAdmin(accountInfo.role)) {
+            sendError(res, 403, "team_mode_staff_only", "panel access is restricted to staff and collaborators in team mode");
             return;
           }
           if (await handleSession({ ...ctx, account: accountInfo })) return;

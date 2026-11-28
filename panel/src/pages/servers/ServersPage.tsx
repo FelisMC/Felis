@@ -43,6 +43,7 @@ import { CopyAddress } from "@/components/CopyAddress";
 import { PageHeader } from "@/components/PageHeader";
 import { api, humanizeError } from "@/lib/api";
 import { RefreshContext, useAsync, useConfig, usePageRefresh, usePolling } from "@/lib/hooks";
+import { useFeatures } from "@/lib/features";
 import { useTier } from "@/lib/tier";
 import { joinAddress, type RuntimeConfig } from "@/lib/config";
 import { matchScore } from "@/lib/fuzzy";
@@ -71,6 +72,11 @@ const POLICY_KEY: Record<AutostartPolicy, string> = {
 
 function isLive(phase: Phase): boolean {
   return phase === "Running" || phase === "Starting" || phase === "Stopping";
+}
+
+function policyLabelKey(policy: AutostartPolicy, teamMode: boolean): string {
+  if (policy === "ownerOnly" && teamMode) return "policy_manual";
+  return POLICY_KEY[policy];
 }
 
 // Twenty stays the default: an even count fills the two-column cards, and a
@@ -179,6 +185,9 @@ interface BatchOutcome {
 export function ServersPage() {
   const { t } = useTranslation(["ops", "servers"]);
   const { isAdmin } = useTier();
+  const { features } = useFeatures();
+  const teamMode = features.mode === "team";
+  const showOwnership = !teamMode;
   const cfg = useConfig();
   const toast = useToast();
   const tagsId = useId();
@@ -188,9 +197,7 @@ export function ServersPage() {
     [isAdmin],
   );
   const { data, error, loading, reload } = useAsync(fetchFn, [fetchFn]);
-  // A player with a quota (their own, or the Owner's default) creates servers of
-  // their own here; the read also says why not when they cannot.
-  const quota = useAsync(() => (isAdmin ? Promise.resolve(null) : api.myServerQuota()), [isAdmin]);
+  const quota = useAsync(() => (isAdmin || teamMode ? Promise.resolve(null) : api.myServerQuota()), [isAdmin, teamMode]);
   const selfCreate =
     !isAdmin && quota.data && (quota.data.canCreate || quota.data.reason === "quota_full") ? quota.data : null;
 
@@ -632,6 +639,7 @@ export function ServersPage() {
                             server={s}
                             cfg={cfg}
                             isAdmin={isAdmin}
+                            teamMode={teamMode}
                             select={rowSelection(s)}
                             onChanged={reload}
                           />
@@ -652,7 +660,7 @@ export function ServersPage() {
                             </th>
                             <th className="px-2.5 py-2 font-normal 2xl:px-3">{t("fleet_col_server")}</th>
                             <th className="px-2.5 py-2 font-normal 2xl:px-3">{t("fleet_col_status")}</th>
-                            {isAdmin && <th className="px-2.5 py-2 font-normal 2xl:px-3">{t("fleet_col_owner")}</th>}
+                            {isAdmin && showOwnership && <th className="px-2.5 py-2 font-normal 2xl:px-3">{t("fleet_col_owner")}</th>}
                             <th className="w-[1%] px-2.5 py-2 font-normal 2xl:px-3">{t("fleet_col_players")}</th>
                             <th className={cn("w-[1%] px-2.5 py-2 font-normal 2xl:px-3", isAdmin && "hidden xl:table-cell")}>{t("servers:usage_cpu")} / {t("servers:usage_memory")}</th>
                             {isAdmin && <th className="hidden w-[1%] px-2.5 py-2 font-normal min-[1400px]:table-cell 2xl:px-3">{t("fleet_col_endpoint")}</th>}
@@ -668,6 +676,7 @@ export function ServersPage() {
                               server={s}
                               cfg={cfg}
                               isAdmin={isAdmin}
+                              teamMode={teamMode}
                               select={rowSelection(s)}
                               onChanged={reload}
                             />
@@ -779,12 +788,14 @@ function ClaimAction({
 function ServerActions({
   server,
   isAdmin,
+  teamMode,
   onChanged,
   compact = false,
   className,
 }: {
   server: UnifiedServer;
   isAdmin: boolean;
+  teamMode: boolean;
   onChanged: () => void;
   compact?: boolean;
   className?: string;
@@ -808,7 +819,7 @@ function ServerActions({
   }
 
   // Unclaimed servers expose claim only, except administrators retain wake and console access.
-  const claimable = server.claimable && !server.owned;
+  const claimable = !teamMode && server.claimable && !server.owned;
   // In compact admin rows, Claim lives inline beside "Unclaimed" in the Owner column.
   const showClaimHere = claimable && !(compact && isAdmin);
   const showMigrate = isAdmin && cfg?.distributed;
@@ -967,12 +978,14 @@ function ServerRow({
   server,
   cfg,
   isAdmin,
+  teamMode,
   select,
   onChanged,
 }: {
   server: UnifiedServer;
   cfg: RuntimeConfig;
   isAdmin: boolean;
+  teamMode: boolean;
   select?: RowSelection;
   onChanged: () => void;
 }) {
@@ -1003,11 +1016,11 @@ function ServerRow({
         <PhaseBadge phase={shownPhase(server)} failure={startFailure(server)} autoRestarts={server.autoRestarts} />
         {server.autostartPolicy && (
           <div className="mt-0.5 text-[10.5px] text-muted-foreground/55">
-            {t(POLICY_KEY[server.autostartPolicy])}
+            {t(policyLabelKey(server.autostartPolicy, teamMode))}
           </div>
         )}
       </td>
-      {isAdmin && (
+      {isAdmin && !teamMode && (
         <td className="whitespace-nowrap px-2.5 py-2.5 text-left align-middle text-muted-foreground 2xl:px-3">
           <OwnerLabel server={server} onChanged={onChanged} inlineClaim />
         </td>
@@ -1031,7 +1044,7 @@ function ServerRow({
         </td>
       )}
       <td className="whitespace-nowrap px-3 py-2.5 align-middle 2xl:px-3.5">
-        <ServerActions server={server} isAdmin={isAdmin} onChanged={onChanged} compact />
+        <ServerActions server={server} isAdmin={isAdmin} teamMode={teamMode} onChanged={onChanged} compact />
       </td>
     </tr>
   );
@@ -1044,12 +1057,14 @@ function ServerMobileCard({
   server,
   cfg,
   isAdmin,
+  teamMode,
   select,
   onChanged,
 }: {
   server: UnifiedServer;
   cfg: RuntimeConfig;
   isAdmin: boolean;
+  teamMode: boolean;
   select?: RowSelection;
   onChanged: () => void;
 }) {
@@ -1076,7 +1091,7 @@ function ServerMobileCard({
             {address && <CopyAddress address={address} />}
           </div>
           <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
-            {isAdmin && (
+            {isAdmin && !teamMode && (
               <>
                 <dt className="text-xs text-muted-foreground">{t("fleet_col_owner")}</dt>
                 <dd className="min-w-0">
@@ -1091,7 +1106,7 @@ function ServerMobileCard({
             {server.autostartPolicy && (
               <>
                 <dt className="text-xs text-muted-foreground">{t("fleet_col_policy")}</dt>
-                <dd className="text-xs">{t(POLICY_KEY[server.autostartPolicy])}</dd>
+                <dd className="text-xs">{t(policyLabelKey(server.autostartPolicy, teamMode))}</dd>
               </>
             )}
             {isAdmin && (
@@ -1104,7 +1119,7 @@ function ServerMobileCard({
             )}
           </dl>
           <div className="mt-auto border-t border-border/50 pt-3">
-            <ServerActions server={server} isAdmin={isAdmin} onChanged={onChanged} />
+            <ServerActions server={server} isAdmin={isAdmin} teamMode={teamMode} onChanged={onChanged} />
           </div>
         </CardContent>
       </Card>

@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { NAV_SECTIONS, visibleSections } from "./nav";
 
-
 describe("visibleSections", () => {
   it("shows only the User-Side section to a non-admin", () => {
     const ids = visibleSections(false, false).map((s) => s.id);
@@ -9,7 +8,6 @@ describe("visibleSections", () => {
   });
 
   it("treats the fail-closed default (false) exactly like a non-admin", () => {
-    // TierProvider passes false while /me is loading or after it rejects; that path must collapse to User-Side only, never leak Admin or Ops nav.
     expect(visibleSections(false, false)).toHaveLength(1);
     expect(visibleSections(false, false)[0].id).toBe("user");
   });
@@ -17,6 +15,19 @@ describe("visibleSections", () => {
   it("shows User-Side and Admin-Side to an admin", () => {
     const ids = visibleSections(true, false).map((s) => s.id);
     expect(ids).toEqual(["user", "admin"]);
+  });
+
+  it("hides images hub and submissions unless the corresponding feature switches are enabled", () => {
+    const links = (install: Parameters<typeof visibleSections>[2]) =>
+      visibleSections(true, true, install).flatMap((s) => s.items.map((item) => item.to));
+
+    expect(links({})).not.toContain("/admin/images");
+    expect(links({})).not.toContain("/submissions");
+    expect(links({ customImages: true, allowSubmissions: false })).toContain("/admin/images");
+    expect(links({ customImages: true, allowSubmissions: false })).not.toContain("/submissions");
+    expect(links({ customImages: true, allowSubmissions: true })).toContain("/admin/images");
+    expect(links({ customImages: true, allowSubmissions: true })).toContain("/submissions");
+    expect(links({ customImages: false, allowSubmissions: true })).not.toContain("/submissions");
   });
 
   it("places platform maintenance exclusively in Owner navigation, before platform settings", () => {
@@ -44,13 +55,6 @@ describe("visibleSections", () => {
     const links = visibleSections(true, true, { nano: true }).flatMap((section) => section.items.map((item) => item.to));
     expect(links).toEqual(["/account", "/admin/users", "/admin/auth-sources", "/admin/audit", "/admin/platform"]);
     expect(visibleSections(false, false, { nano: true }).flatMap((section) => section.items.map((item) => item.to))).toEqual(["/account"]);
-  });
-
-  it("keeps the User-Side section ungated so it survives both branches", () => {
-    const user = NAV_SECTIONS.find((s) => s.id === "user");
-    expect(user?.adminOnly).toBe(false);
-    expect(visibleSections(true, false)).toContainEqual(user);
-    expect(visibleSections(false, false)).toContainEqual(user);
   });
 
   it("gates every non-user section behind admin or owner", () => {

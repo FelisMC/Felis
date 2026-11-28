@@ -7,6 +7,7 @@
   "owner_section": "平台",
   "admin_users": "用户管理",
   "admin_images": "镜像",
+  "admin_images_hub": "镜像与构建",
   "admin_builds": "构建流水线",
   "admin_submissions": "审核提交",
   "admin_updates": "维护与备份",

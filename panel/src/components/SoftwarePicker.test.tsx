@@ -197,8 +197,7 @@ describe("choosing server software", () => {
 
   it("creates the server with what was picked, once the EULA is accepted", async () => {
     const { user, onCreated } = await openStaff();
-    await user.type(screen.getByLabelText("Name"), "smp");
-    await user.type(screen.getByLabelText("Subdomain"), "smp");
+    await user.type(screen.getByLabelText("Server name"), "smp");
     await user.click(screen.getByRole("radio", { name: "Paper" }));
     await choose(user, "Game version", "1.21.4");
     await waitFor(() => expect(screen.getByRole("combobox", { name: "Build" }).textContent).toBe("232 (recommended)"));
@@ -214,8 +213,7 @@ describe("choosing server software", () => {
 
   it("takes a custom jar by a path inside the server directory only", async () => {
     const { user } = await openStaff();
-    await user.type(screen.getByLabelText("Name"), "mine");
-    await user.type(screen.getByLabelText("Subdomain"), "mine");
+    await user.type(screen.getByLabelText("Server name"), "mine");
     await user.click(screen.getByRole("radio", { name: "Custom jar" }));
     await user.click(eula());
     await user.click(screen.getByRole("radio", { name: "Enter a path" }));
@@ -237,8 +235,7 @@ describe("choosing server software", () => {
 
   it("uploads a chosen jar into the new server under the path it names", async () => {
     const { user, onCreated } = await openStaff();
-    await user.type(screen.getByLabelText("Name"), "mine");
-    await user.type(screen.getByLabelText("Subdomain"), "mine");
+    await user.type(screen.getByLabelText("Server name"), "mine");
     await user.click(screen.getByRole("radio", { name: "Custom jar" }));
     await user.upload(screen.getByLabelText("Jar file"), jar("mohist-1.20.1.jar"));
     // The jar lands in the server's root under its own name.
@@ -255,8 +252,7 @@ describe("choosing server software", () => {
 
   it("makes the folders a typed path names before the upload", async () => {
     const { user } = await openStaff();
-    await user.type(screen.getByLabelText("Name"), "mine");
-    await user.type(screen.getByLabelText("Subdomain"), "mine");
+    await user.type(screen.getByLabelText("Server name"), "mine");
     await user.click(screen.getByRole("radio", { name: "Custom jar" }));
     await user.upload(screen.getByLabelText("Jar file"), jar("server.jar"));
     await user.click(screen.getByRole("button", { name: "Put it elsewhere" }));
@@ -272,15 +268,14 @@ describe("choosing server software", () => {
     backend.state.failUploads = 1;
     const creates = backend.api.createServer.mock.calls.length;
     const { user, onCreated } = await openStaff();
-    await user.type(screen.getByLabelText("Name"), "mine");
-    await user.type(screen.getByLabelText("Subdomain"), "mine");
+    await user.type(screen.getByLabelText("Server name"), "mine");
     await user.click(screen.getByRole("radio", { name: "Custom jar" }));
     await user.upload(screen.getByLabelText("Jar file"), jar("server.jar"));
     await user.click(eula());
     await user.click(create());
     expect(await screen.findByText(/The server has been created, but the jar could not be uploaded/)).toBeTruthy();
     expect(onCreated).toHaveBeenCalledTimes(1);
-    expect(screen.getByLabelText("Name").matches(":disabled")).toBe(true);
+    expect(screen.getByLabelText("Server name").matches(":disabled")).toBe(true);
     await user.click(screen.getByRole("button", { name: "Retry upload" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(backend.api.createServer.mock.calls.length - creates).toBe(1);
@@ -317,8 +312,7 @@ describe("a player creating their own server", () => {
     const onCreated = vi.fn();
     render(<CreateServerDialog cfg={cfg} self={{ quota: backend.state.quota }} onCreated={onCreated} />);
     await user.click(screen.getByRole("button", { name: "New server" }));
-    await user.type(await screen.findByLabelText("Name"), "mine");
-    await user.type(screen.getByLabelText("Subdomain"), "mine");
+    await user.type(await screen.findByLabelText("Server name"), "mine");
     await user.click(screen.getByRole("radio", { name: "Fabric" }));
     await choose(user, "Game version", "1.21.4");
     await waitFor(() => expect(screen.getByRole("combobox", { name: "Loader version" }).textContent).toContain("0.19.5"));

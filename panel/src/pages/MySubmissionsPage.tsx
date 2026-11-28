@@ -39,6 +39,7 @@ import { StatCard } from "@/components/StatCard";
 import { PageHeader } from "@/components/PageHeader";
 import { SubmissionStatusBadge } from "@/components/SubmissionStatusBadge";
 import { api, humanizeError } from "@/lib/api";
+import { useFeatures } from "@/lib/features";
 import { uploadContext } from "@/lib/contextUpload";
 import { STATUS_POLL_FAST_MS, STATUS_POLL_SLOW_MS, useAsync, usePolling } from "@/lib/hooks";
 import { formatRelative, formatAbsolute } from "@/lib/format";
@@ -76,6 +77,8 @@ function formatBytes(bytes: number, decimals = 2) {
 
 export function MySubmissionsPage() {
   const { t, i18n } = useTranslation("submissions");
+  const { features, loaded: featuresLoaded } = useFeatures();
+  const submissionsEnabled = !featuresLoaded || (features.customImages && features.allowSubmissions);
   const locale = i18n.language;
   const now = Date.now();
 
@@ -124,13 +127,15 @@ export function MySubmissionsPage() {
 
   const listMine = useCallback(
     () =>
-      api.listMySubmissions({
-        status: statusFilter === "all" ? undefined : statusFilter,
-        query: query || undefined,
-        limit: PAGE_SIZE,
-        offset: (page - 1) * PAGE_SIZE,
-      }),
-    [statusFilter, query, page],
+      submissionsEnabled
+        ? api.listMySubmissions({
+            status: statusFilter === "all" ? undefined : statusFilter,
+            query: query || undefined,
+            limit: PAGE_SIZE,
+            offset: (page - 1) * PAGE_SIZE,
+          })
+        : Promise.resolve(null),
+    [submissionsEnabled, statusFilter, query, page],
   );
   const { data, error: fetchError, loading, reload } = useAsync(listMine, [listMine], { keepPrevious: true });
   const submissions = useMemo<Submission[]>(() => data?.submissions ?? [], [data]);
@@ -182,9 +187,9 @@ export function MySubmissionsPage() {
 
   const [contextLimit, setContextLimit] = useState<number | null>(null);
   useEffect(() => {
-    // A failed read keeps the 1 GiB default; the server still refuses past its cap.
+    if (!submissionsEnabled) return;
     api.submissionLimits().then((l) => setContextLimit(l.max_context_bytes), () => undefined);
-  }, []);
+  }, [submissionsEnabled]);
 
   const validateAndSetFile = (selectedFile: File | null) => {
     setError(null);
@@ -288,6 +293,20 @@ export function MySubmissionsPage() {
     } finally {
       setWithdrawing(null);
     }
+  }
+
+  if (!submissionsEnabled) {
+    return (
+      <div className="space-y-4">
+        <PageHeader icon={Upload} title={t("title")} subtitle={t("subtitle")} />
+        <Card>
+          <CardContent className="space-y-2 p-6 text-sm">
+            <p className="font-medium text-foreground">{t("disabled_title")}</p>
+            <p className="text-muted-foreground">{t("disabled_desc")}</p>
+          </CardContent>
+        </Card>
+      </div>
+    );
   }
 
   return (

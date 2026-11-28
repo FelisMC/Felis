@@ -15,6 +15,7 @@ import { entryAddress, loadConfig } from "@/lib/config";
 import { CopyAddress } from "@/components/CopyAddress";
 import { requestAssertion } from "@/lib/passkey";
 import { InlineError } from "@/components/MessageLine";
+import type { PlatformMode } from "@/lib/types";
 import { formatCountdown, opLoginDeadline, useOpLoginPoll } from "@/lib/opLoginPoll";
 
 export function Login() {
@@ -24,7 +25,9 @@ export function Login() {
   const { name } = useBranding();
   const [searchParams] = useSearchParams();
   const next = loginReturnPath(searchParams.get("next"));
-  const sessionEnded = (useLocation().state as { sessionEnded?: boolean } | null)?.sessionEnded === true;
+  const locationState = useLocation().state as { sessionEnded?: boolean; teamModeBlocked?: boolean } | null;
+  const sessionEnded = locationState?.sessionEnded === true;
+  const teamModeBlocked = locationState?.teamModeBlocked === true;
 
   const [activeTab, setActiveTab] = useState<"main" | "bind" | "op">("main");
   const [email, setEmail] = useState("");
@@ -44,8 +47,8 @@ export function Login() {
   // Where Minecraft players join for a code; empty until config.json is read, or
   // when it cannot be.
   const [joinAddr, setJoinAddr] = useState("");
-  // Owner detection distinguishes loading, unavailable, and confirmed-unclaimed installations.
   const [ownerBound, setOwnerBound] = useState<boolean | null | undefined>(undefined);
+  const [platformMode, setPlatformMode] = useState<PlatformMode>("community");
 
   // Countdown timer for OTP resend
   useEffect(() => {
@@ -70,7 +73,11 @@ export function Login() {
   useEffect(() => {
     let alive = true;
     api.authOwnerStatus().then(
-      (res) => alive && setOwnerBound(res.owner_bound),
+      (res) => {
+        if (!alive) return;
+        setOwnerBound(res.owner_bound);
+        if (res.mode) setPlatformMode(res.mode);
+      },
       () => alive && setOwnerBound(null),
     );
     return () => {
@@ -212,12 +219,23 @@ export function Login() {
     setActiveTab(tab);
   }
 
+  const teamMode = platformMode === "team";
+  const subtitleKey = isOpHost ? "login_subtitle_op" : teamMode ? "login_subtitle_team" : "login_subtitle";
+
   return (
     <AuthLayout
       title={name}
-      subtitle={t(isOpHost ? "login_subtitle_op" : "login_subtitle")}
+      subtitle={t(subtitleKey)}
     >
-      {sessionEnded && (
+      {teamModeBlocked && (
+        <p
+          role="alert"
+          className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-200"
+        >
+          {t("team_mode_blocked_notice")}
+        </p>
+      )}
+      {sessionEnded && !teamModeBlocked && (
         <p
           role="status"
           className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-200"
@@ -364,16 +382,18 @@ export function Login() {
                       <Fingerprint className="h-4 w-4 text-primary" />
                       {t("passkey_btn")}
                     </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="w-full justify-center gap-2 font-medium"
-                      onClick={() => switchTab("bind")}
-                      disabled={submitting}
-                    >
-                      <KeyRound className="h-4 w-4 text-muted-foreground" />
-                      {t("tab_bind_btn")}
-                    </Button>
+                    {!teamMode && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full justify-center gap-2 font-medium"
+                        onClick={() => switchTab("bind")}
+                        disabled={submitting}
+                      >
+                        <KeyRound className="h-4 w-4 text-muted-foreground" />
+                        {t("tab_bind_btn")}
+                      </Button>
+                    )}
                   </>
                 )}
                 <Button

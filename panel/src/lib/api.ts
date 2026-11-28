@@ -66,6 +66,9 @@ import type {
   FailoverPlan,
   FailoverResult,
   EntryPolicySettings,
+  PlatformFeaturesSettings,
+  PlatformMode,
+  SetPlatformFeaturesRequest,
   MinecraftProfile,
   LinkStatus,
   BindResult,
@@ -139,7 +142,7 @@ function announceSessionExpired(err: ApiError, path: string): void {
 
 // Recheck identity after role-gate 403s to remove access after demotion.
 export const ACCESS_REFUSED_EVENT = "felis:access-refused";
-const ROLE_REFUSALS = new Set(["forbidden", "not_admin"]);
+const ROLE_REFUSALS = new Set(["forbidden", "not_admin", "team_mode_staff_only"]);
 
 function announceAccessRefused(err: ApiError): void {
   if (err.status !== 403 || !ROLE_REFUSALS.has(err.code) || typeof window === "undefined") return;
@@ -403,7 +406,7 @@ export const api = rejectingSync({
   // Whether `felis setup` has bound an Owner yet. Until it has, every door above
   // answers 403 local_auth_disabled, so the sign-in page explains that instead.
   authOwnerStatus: () =>
-    request<{ owner_bound: boolean }>("GET", "/auth/owner-status"),
+    request<{ owner_bound: boolean; mode?: PlatformMode }>("GET", "/auth/owner-status"),
 
   authEmailStart: (email: string) =>
     request<{ sent: boolean; expires_at: string }>("POST", "/auth/email/start", { email }),
@@ -1020,6 +1023,8 @@ export const api = rejectingSync({
 
   getEntryPolicy: () => request<EntryPolicySettings>("GET", "/settings/entry-policy"),
   setEntryPolicy: (policy: EntryPolicySettings) => request<EntryPolicySettings>("PUT", "/settings/entry-policy", policy),
+  getFeatures: () => request<PlatformFeaturesSettings>("GET", "/settings/features"),
+  setFeatures: (body: SetPlatformFeaturesRequest) => request<PlatformFeaturesSettings>("PUT", "/settings/features", body),
 
   getWakePolicy: () => request<WakePolicySettings>("GET", "/settings/wake-policy"),
   setWakePolicy: (policy: Omit<WakePolicySettings, "managed">) => request<WakePolicySettings>("PUT", "/settings/wake-policy", policy),
@@ -1414,6 +1419,8 @@ export function humanizeError(e: unknown): string {
     case "bad_api_token":
     case "api_tokens_disabled":
     case "api_token_limit":
+    case "feature_disabled":
+    case "team_mode_staff_only":
       return t(err.code);
     case "subdomain_taken":
       return t("subdomain_taken");

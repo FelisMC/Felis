@@ -75,7 +75,7 @@ function formatDuration(
   return t("build_duration_minutes", { m: Math.floor(diffSec / 60), s: diffSec % 60 });
 }
 
-export function ImageBuildPage() {
+export function ImageBuildPage({ embedded = false }: { embedded?: boolean } = {}) {
   const { t, i18n } = useTranslation("admin");
   const locale = i18n.language;
   const now = Date.now();
@@ -228,195 +228,201 @@ export function ImageBuildPage() {
     return <Loading label={t("common:loading_config")} />;
   }
 
-  return (
-    <div className="space-y-6">
-      <PageHeader icon={Cpu} title={t("builds_title")} subtitle={t("builds_subtitle")} actions={
-        <Dialog open={dialogOpen} onOpenChange={(o) => {
-          setDialogOpen(o);
-          if (!o) {
-            setTriggerError(null);
-            setSelectedSub(null);
-            setSubSearch("");
-            setSubQuery("");
-          }
-        }}>
-          <DialogTrigger asChild>
-            <Button size="sm" className="gap-1.5 shrink-0">
-              <Plus className="h-4 w-4" /> {t("trigger_build_title")}
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="max-w-2xl">
-            <DialogHeader>
-              <DialogTitle>{t("trigger_build_title")}</DialogTitle>
-              <DialogDescription>
-                {t("trigger_build_desc")}
-              </DialogDescription>
-            </DialogHeader>
-            <form onSubmit={handleTrigger} className="space-y-4">
-              <div className="space-y-1.5 p-3 rounded-lg border border-border bg-muted/20">
-                <Label htmlFor="build-import-submission">
-                  {t("build_import_submission_label")}
-                </Label>
-                <SearchInput
-                  value={subSearch}
-                  onChange={setSubSearch}
-                  placeholder={t("build_import_search_placeholder")}
-                  className="min-w-0"
-                />
-                <Select onValueChange={handleSelectSubmission} disabled={triggering}>
-                  <SelectTrigger id="build-import-submission" className="w-full [&>span]:flex [&>span]:w-full [&>span]:items-center [&>span]:justify-between [&>span]:gap-2 pr-2">
-                    <SelectValue placeholder={t("build_import_submission_placeholder")} />
-                  </SelectTrigger>
-                  <SelectContent className="max-h-60 overflow-y-auto">
-                    {subsQ.loading && !subsQ.data ? (
-                      <SelectItem value="_loading" disabled>
-                        {t("common:loading_config")}...
-                      </SelectItem>
-                    ) : subsQ.error && !subsQ.data ? (
-                      <SelectItem value="_failed" disabled>
-                        {t("build_import_submission_unavailable")}
-                      </SelectItem>
-                    ) : visibleSubmissions.length === 0 ? (
-                      <SelectItem value="_none" disabled>
-                        {subQuery
-                          ? t("build_import_submission_no_match", { query: subQuery })
-                          : t("build_import_submission_none")}
-                      </SelectItem>
-                    ) : (
-                      visibleSubmissions.map((sub) => (
-                        <SelectItem
-                          key={sub.id}
-                          value={sub.id}
-                          className="w-full pr-4 [&>span:not(.absolute)]:flex-1 [&>span:not(.absolute)]:flex [&>span:not(.absolute)]:items-center [&>span:not(.absolute)]:justify-between"
-                        >
-                          <div className="flex items-center gap-2 min-w-0">
-                            <span className="font-semibold truncate">{sub.display_name}</span>
-                            <span className="text-[10px] text-muted-foreground font-mono bg-muted/40 px-1.5 py-0.2 rounded shrink-0">
-                              {sub.id}
-                            </span>
-                          </div>
-                          <span className={cn(
-                            "text-[10px] font-semibold px-1.5 py-0.5 rounded border shrink-0",
-                            sub.status === "pending_review" && "bg-amber-500/10 text-amber-500 border-amber-500/20",
-                            sub.status === "approved" && "bg-emerald-500/10 text-emerald-500 border-emerald-500/20",
-                            sub.status === "rejected" && "bg-rose-500/10 text-rose-500 border-rose-500/20"
-                          )}>
-                            {sub.status === "pending_review" ? t("status_pending_review") : sub.status === "approved" ? t("status_approved") : t("status_rejected")}
-                          </span>
-                        </SelectItem>
-                      ))
-                    )}
-                  </SelectContent>
-                </Select>
-                {!!subsQ.error && (
-                  <div role="alert" className="flex flex-wrap items-center justify-between gap-2 text-xs text-destructive">
-                    <span>{t("build_import_submission_failed", { reason: humanizeError(subsQ.error) })}</span>
-                    <Button type="button" size="sm" variant="outline" className="h-7" onClick={subsQ.reload}>
-                      {t("common:try_again")}
-                    </Button>
-                  </div>
+  const triggerDialog = (
+    <Dialog open={dialogOpen} onOpenChange={(o) => {
+      setDialogOpen(o);
+      if (!o) {
+        setTriggerError(null);
+        setSelectedSub(null);
+        setSubSearch("");
+        setSubQuery("");
+      }
+    }}>
+      <DialogTrigger asChild>
+        <Button size="sm" className="gap-1.5 shrink-0">
+          <Plus className="h-4 w-4" /> {t("trigger_build_title")}
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>{t("trigger_build_title")}</DialogTitle>
+          <DialogDescription>
+            {t("trigger_build_desc")}
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={handleTrigger} className="space-y-4">
+          <div className="space-y-1.5 p-3 rounded-lg border border-border bg-muted/20">
+            <Label htmlFor="build-import-submission">
+              {t("build_import_submission_label")}
+            </Label>
+            <SearchInput
+              value={subSearch}
+              onChange={setSubSearch}
+              placeholder={t("build_import_search_placeholder")}
+              className="min-w-0"
+            />
+            <Select onValueChange={handleSelectSubmission} disabled={triggering}>
+              <SelectTrigger id="build-import-submission" className="w-full [&>span]:flex [&>span]:w-full [&>span]:items-center [&>span]:justify-between [&>span]:gap-2 pr-2">
+                <SelectValue placeholder={t("build_import_submission_placeholder")} />
+              </SelectTrigger>
+              <SelectContent className="max-h-60 overflow-y-auto">
+                {subsQ.loading && !subsQ.data ? (
+                  <SelectItem value="_loading" disabled>
+                    {t("common:loading_config")}...
+                  </SelectItem>
+                ) : subsQ.error && !subsQ.data ? (
+                  <SelectItem value="_failed" disabled>
+                    {t("build_import_submission_unavailable")}
+                  </SelectItem>
+                ) : visibleSubmissions.length === 0 ? (
+                  <SelectItem value="_none" disabled>
+                    {subQuery
+                      ? t("build_import_submission_no_match", { query: subQuery })
+                      : t("build_import_submission_none")}
+                  </SelectItem>
+                ) : (
+                  visibleSubmissions.map((sub) => (
+                    <SelectItem
+                      key={sub.id}
+                      value={sub.id}
+                      className="w-full pr-4 [&>span:not(.absolute)]:flex-1 [&>span:not(.absolute)]:flex [&>span:not(.absolute)]:items-center [&>span:not(.absolute)]:justify-between"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="font-semibold truncate">{sub.display_name}</span>
+                        <span className="text-[10px] text-muted-foreground font-mono bg-muted/40 px-1.5 py-0.2 rounded shrink-0">
+                          {sub.id}
+                        </span>
+                      </div>
+                      <span className={cn(
+                        "text-[10px] font-semibold px-1.5 py-0.5 rounded border shrink-0",
+                        sub.status === "pending_review" && "bg-amber-500/10 text-amber-500 border-amber-500/20",
+                        sub.status === "approved" && "bg-emerald-500/10 text-emerald-500 border-emerald-500/20",
+                        sub.status === "rejected" && "bg-rose-500/10 text-rose-500 border-rose-500/20"
+                      )}>
+                        {sub.status === "pending_review" ? t("status_pending_review") : sub.status === "approved" ? t("status_approved") : t("status_rejected")}
+                      </span>
+                    </SelectItem>
+                  ))
                 )}
-                {!!subsQ.data && subsQ.data.total > subsQ.data.submissions.length && (
-                  <p className="text-xs text-muted-foreground leading-normal">
-                    {t("build_import_submission_more", {
-                      shown: subsQ.data.submissions.length,
-                      total: subsQ.data.total,
-                    })}
-                  </p>
-                )}
+              </SelectContent>
+            </Select>
+            {!!subsQ.error && (
+              <div role="alert" className="flex flex-wrap items-center justify-between gap-2 text-xs text-destructive">
+                <span>{t("build_import_submission_failed", { reason: humanizeError(subsQ.error) })}</span>
+                <Button type="button" size="sm" variant="outline" className="h-7" onClick={subsQ.reload}>
+                  {t("common:try_again")}
+                </Button>
+              </div>
+            )}
+            {!!subsQ.data && subsQ.data.total > subsQ.data.submissions.length && (
+              <p className="text-xs text-muted-foreground leading-normal">
+                {t("build_import_submission_more", {
+                  shown: subsQ.data.submissions.length,
+                  total: subsQ.data.total,
+                })}
+              </p>
+            )}
+            <p className="text-xs text-muted-foreground leading-normal">
+              {t("build_import_submission_hint")}
+            </p>
+          </div>
+
+          {selectedSub && selectedSub.status !== "approved" && (
+            <div className="flex items-start gap-2.5 text-xs text-amber-500 bg-amber-500/10 border border-amber-500/30 p-3 rounded-md font-medium">
+              <AlertCircle className="h-4 w-4 shrink-0 mt-0.5 animate-bounce" />
+              <div className="space-y-1">
+                <p className="font-bold text-amber-400">
+                  {t("build_import_submission_warning_title", { status: selectedSub.status === "pending_review" ? t("status_pending_review") : t("status_rejected") })}
+                </p>
                 <p className="text-xs text-muted-foreground leading-normal">
-                  {t("build_import_submission_hint")}
+                  {t("build_import_submission_warning_desc")}
                 </p>
               </div>
+            </div>
+          )}
 
-              {selectedSub && selectedSub.status !== "approved" && (
-                <div className="flex items-start gap-2.5 text-xs text-amber-500 bg-amber-500/10 border border-amber-500/30 p-3 rounded-md font-medium">
-                  <AlertCircle className="h-4 w-4 shrink-0 mt-0.5 animate-bounce" />
-                  <div className="space-y-1">
-                    <p className="font-bold text-amber-400">
-                      {t("build_import_submission_warning_title", { status: selectedSub.status === "pending_review" ? t("status_pending_review") : t("status_rejected") })}
-                    </p>
-                    <p className="text-xs text-muted-foreground leading-normal">
-                      {t("build_import_submission_warning_desc")}
-                    </p>
-                  </div>
-                </div>
-              )}
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="imageRef">
-                    {t("image_ref_label")} *
-                  </Label>
-                  <Input
-                    id="imageRef"
-                    placeholder="registry.felis.svc:5000/my-modpack:1.0"
-                    value={imageRef}
-                    onChange={(e) => setImageRef(e.target.value)}
-                    disabled={triggering}
-                    required
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="contextRef">
-                    {t("context_ref_label")} *
-                  </Label>
-                  <Input
-                    id="contextRef"
-                    placeholder={t("context_ref_placeholder")}
-                    value={contextRef}
-                    onChange={(e) => setContextRef(e.target.value)}
-                    disabled={triggering}
-                    required
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="baseImage">
-                  {t("base_image_label")}
-                </Label>
-                <Input
-                  id="baseImage"
-                  placeholder={t("base_image_placeholder")}
-                  value={baseImage}
-                  onChange={(e) => setBaseImage(e.target.value)}
-                  disabled={triggering}
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="dockerfile">
-                  {t("dockerfile_label")} *
-                </Label>
-                <Textarea
-                  id="dockerfile"
-                  placeholder={t("dockerfile_placeholder")}
-                  value={dockerfile}
-                  onChange={(e) => setDockerfile(e.target.value)}
-                  disabled={triggering}
-                  required
-                  rows={8}
-                  className="font-mono"
-                />
-                <p className="text-xs text-muted-foreground leading-relaxed">{t("dockerfile_audit_hint")}</p>
-              </div>
-
-              {triggerError && <MessageLine kind="error" message={triggerError} compact />}
-
-              <ConfirmFooter
-                onCancel={() => setDialogOpen(false)}
-                onConfirm={() => handleTrigger()}
-                disabled={triggering || !imageRef.trim() || !contextRef.trim() || !dockerfile.trim()}
-                loading={triggering}
-                cancelLabel={t("common:cancel")}
-                confirmLabel={t("trigger_build_btn")}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="imageRef">
+                {t("image_ref_label")} *
+              </Label>
+              <Input
+                id="imageRef"
+                placeholder="registry.felis.svc:5000/my-modpack:1.0"
+                value={imageRef}
+                onChange={(e) => setImageRef(e.target.value)}
+                disabled={triggering}
+                required
               />
-            </form>
-          </DialogContent>
-        </Dialog>
-      } className="mb-6" />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="contextRef">
+                {t("context_ref_label")} *
+              </Label>
+              <Input
+                id="contextRef"
+                placeholder={t("context_ref_placeholder")}
+                value={contextRef}
+                onChange={(e) => setContextRef(e.target.value)}
+                disabled={triggering}
+                required
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="baseImage">
+              {t("base_image_label")}
+            </Label>
+            <Input
+              id="baseImage"
+              placeholder={t("base_image_placeholder")}
+              value={baseImage}
+              onChange={(e) => setBaseImage(e.target.value)}
+              disabled={triggering}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="dockerfile">
+              {t("dockerfile_label")} *
+            </Label>
+            <Textarea
+              id="dockerfile"
+              placeholder={t("dockerfile_placeholder")}
+              value={dockerfile}
+              onChange={(e) => setDockerfile(e.target.value)}
+              disabled={triggering}
+              required
+              rows={8}
+              className="font-mono"
+            />
+            <p className="text-xs text-muted-foreground leading-relaxed">{t("dockerfile_audit_hint")}</p>
+          </div>
+
+          {triggerError && <MessageLine kind="error" message={triggerError} compact />}
+
+          <ConfirmFooter
+            onCancel={() => setDialogOpen(false)}
+            onConfirm={() => handleTrigger()}
+            disabled={triggering || !imageRef.trim() || !contextRef.trim() || !dockerfile.trim()}
+            loading={triggering}
+            cancelLabel={t("common:cancel")}
+            confirmLabel={t("trigger_build_btn")}
+          />
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+
+  return (
+    <div className="space-y-4">
+      {embedded ? (
+        <div className="flex items-center justify-end">{triggerDialog}</div>
+      ) : (
+        <PageHeader icon={Cpu} title={t("builds_title")} subtitle={t("builds_subtitle")} actions={triggerDialog} className="mb-6" />
+      )}
 
       {/* Build History Table Card */}
       <Card className="w-full">

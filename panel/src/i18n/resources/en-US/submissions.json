@@ -50,5 +50,7 @@
   "pause_btn": "Pause",
   "resume_btn": "Continue upload",
   "resume_hint": "“{{name}}” is saved and the server has received {{sent}} of its build context. Resubmission resumes from the confirmed offset.",
-  "restart_hint": "“{{name}}” is saved. A newly selected file is uploaded from the beginning."
+  "restart_hint": "“{{name}}” is saved. A newly selected file is uploaded from the beginning.",
+  "disabled_title": "Image submissions are disabled",
+  "disabled_desc": "Custom container images or member submissions are currently disabled on this platform."
 }

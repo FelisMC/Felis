@@ -9,7 +9,7 @@ import {
 } from "react";
 import type { Identity } from "./types";
 import { ACCESS_REFUSED_EVENT, api, SESSION_EXPIRED_EVENT } from "./api";
-import { deriveAuth, isUnauthorized, type AuthState } from "./auth";
+import { deriveAuth, isTeamModeBlocked, isUnauthorized, type AuthState } from "./auth";
 
 // Only 401 signs out; missing or malformed identity flags grant no elevated role.
 // Revalidate on protected-route errors, focus, and visibility changes without unmounting the app.
@@ -41,6 +41,7 @@ const TierContext = createContext<TierState>({
   isAdmin: false,
   isOwner: false,
   unauthenticated: false,
+  teamModeBlocked: false,
   identityError: null,
   refresh: async () => {},
   revalidate: async () => {},
@@ -108,8 +109,8 @@ export function TierProvider({ children }: { children: ReactNode }) {
         setError(null);
       }
     } catch (e) {
-      if (ticket === seq.current && isUnauthorized(e)) {
-        if (identityRef.current !== null) setSessionEnded(true);
+      if (ticket === seq.current && (isUnauthorized(e) || isTeamModeBlocked(e))) {
+        if (isUnauthorized(e) && identityRef.current !== null) setSessionEnded(true);
         identityRef.current = null;
         setIdentity(null);
         setError(e);

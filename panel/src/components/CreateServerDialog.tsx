@@ -30,40 +30,41 @@ import {
   type SoftwareChoice,
 } from "@/components/SoftwarePicker";
 import { uploadFile } from "@/components/files/uploadFile";
-import { GiBInput, gibQuantity, parseGiB } from "@/components/GiBInput";
+import { GiBInput, gibQuantity, isWholeGiB, parseGiB } from "@/components/GiBInput";
 import { api, humanizeError } from "@/lib/api";
+import { useFeatures } from "@/lib/features";
 import { formatBytes } from "@/lib/format";
 import { useAsync } from "@/lib/hooks";
 import { hostFor, type RuntimeConfig } from "@/lib/config";
-import { DISPLAY_NAME_MAX, serverNameIssue, type ServerNameIssue } from "@/lib/naming";
+import { DISPLAY_NAME_MAX, deriveServerSlug, serverNameIssue, type ServerNameIssue } from "@/lib/naming";
 import { useTier } from "@/lib/tier";
 import type { AutostartPolicy, ServerQuota } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { InlineError } from "@/components/MessageLine";
 import { UserPicker, type AssignUser } from "@/components/AssignServerDialog";
 
-// Expose structured fields only; the backend validates resource limits and image eligibility.
-
 const MEMORY_DEFAULT_GIB = 4;
 const MEMORY_STEP_GIB = 0.5;
-// A single host below this, a "2 GB" one, runs only the platform and the API refuses new servers on it.
 const MIN_GAME_HOST_BYTES = 3584 * 2 ** 20;
 
 type OwnerChoice = "me" | "other" | "none";
 
-function policyOptions(t: (key: string) => string): { value: AutostartPolicy; label: string }[] {
+function policyOptions(t: (key: string) => string, teamMode: boolean): { value: AutostartPolicy; label: string }[] {
   return [
-    { value: "ownerOnly", label: t("create_server_policy_owner") },
+    { value: "ownerOnly", label: t(teamMode ? "create_server_policy_manual" : "create_server_policy_owner") },
     { value: "public", label: t("create_server_policy_public") },
     { value: "allowlist", label: t("create_server_policy_allowlist") },
   ];
 }
 
+function defaultPolicy(self: boolean, teamMode: boolean): AutostartPolicy {
+  if (self) return "ownerOnly";
+  return teamMode ? "public" : "allowlist";
+}
+
 interface Props {
   cfg: RuntimeConfig;
   onCreated: () => void;
-  /** self creates a server of the caller's own within their quota (POST
-   *  /me/servers); staff otherwise (POST /servers). */
   self?: { quota: ServerQuota };
 }
 
@@ -80,13 +81,15 @@ interface Form {
 
 export function CreateServerDialog({ cfg, onCreated, self }: Props) {
   const { t } = useTranslation("servers");
-  const [open, setOpen] = useState(false);
+  const { features } = useFeatures();
+  const teamMode = features.mode === "team";
   const staff = !self;
-  const [source, setSource] = useState<"software" | "image">("software");
-  // The whitelist is read each time the dialog opens, so an image added, enabled
-  // or retired since the page loaded shows up or drops out without a reload.
-  const images = useAsync(() => (open && staff ? api.listImages() : Promise.resolve(null)), [open, staff]);
+  const canUseImages = staff && features.customImages;
+  const showOwner = staff && !teamMode;
 
+  const [open, setOpen] = useState(false);
+  const [source, setSource] = useState<"software" | "image">("software");
+  const images = useAsync(() => (open && canUseImages ? api.listImages() : Promise.resolve(null)), [open, canUseImages]);
   const nodes = useAsync(() => (open && staff && cfg.distributed ? api.nodes() : Promise.resolve(null)), [open, staff, cfg.distributed]);
   const workers = (nodes.data ?? []).filter((n) => n.role === "worker" && n.ready && n.approved);
   const fleetUsage = useAsync(() => (open && staff ? api.fleetUsage({ freeMemory: true }) : Promise.resolve(null)), [open, staff]);
@@ -100,9 +103,12 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
     image: "",
     memory: String(MEMORY_DEFAULT_GIB),
     storage: "10",
-    autostartPolicy: self ? "ownerOnly" : "allowlist",
+    autostartPolicy: defaultPolicy(!staff, teamMode),
   });
-  // Memory follows the derived default until the user types one.
+  const [slugTouched, setSlugTouched] = useState(false);
+  const [subTouched, setSubTouched] = useState(false);
+  const [showSlugFields, setShowSlugFields] = useState(false);
+  const [policyTouched, setPolicyTouched] = useState(false);
   const [memoryTouched, setMemoryTouched] = useState(false);
   const [owner, setOwner] = useState<OwnerChoice>("me");
   const [ownerUser, setOwnerUser] = useState<AssignUser | null>(null);
@@ -110,25 +116,46 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
   const [eula, setEula] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  // Retry a failed custom-JAR upload against the created server instead of creating another.
   const [jarFile, setJarFile] = useState<File | null>(null);
   const [created, setCreated] = useState<string | null>(null);
   const [uploaded, setUploaded] = useState<number | null>(null);
 
-  // A refusal answers the form as it was sent; any edit, or opening the dialog
-  // again, starts past it.
   function set<K extends keyof Form>(k: K, v: Form[K]) {
     setForm((f) => ({ ...f, [k]: v }));
     setError(null);
   }
+
+  function changeTitle(value: string) {
+    const derived = deriveServerSlug(value);
+    if (value.trim() !== "" && !slugTouched && (derived === "" || serverNameIssue(derived) === "reserved")) {
+      setShowSlugFields(true);
+    }
+    setForm((f) => ({
+      ...f,
+      displayName: value,
+      name: slugTouched ? f.name : derived,
+      subdomain: subTouched ? f.subdomain : derived,
+    }));
+    setError(null);
+  }
+
   function changeSoftware(next: SoftwareChoice) {
     setSoftware(next);
     setError(null);
   }
 
-  // reset empties the form for the next server.
   function reset() {
-    setForm((f) => ({ ...f, name: "", subdomain: "", displayName: "" }));
+    setForm((f) => ({
+      ...f,
+      name: "",
+      subdomain: "",
+      displayName: "",
+      autostartPolicy: defaultPolicy(!staff, teamMode),
+    }));
+    setSlugTouched(false);
+    setSubTouched(false);
+    setShowSlugFields(false);
+    setPolicyTouched(false);
     setSoftware(EMPTY_SOFTWARE);
     setEula(false);
     setJarFile(null);
@@ -136,28 +163,30 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
   }
 
   function openChange(next: boolean) {
-    // An upload in flight finishes before the dialog goes.
     if (!next && submitting) return;
     setOpen(next);
-    if (next) setError(null);
-    // Closed with the jar still to upload: the server stays, the form starts over.
-    else if (created) reset();
+    if (next) {
+      setError(null);
+      if (!policyTouched) {
+        setForm((f) => ({ ...f, autostartPolicy: defaultPolicy(!staff, teamMode) }));
+      }
+      if (!canUseImages && source !== "software") setSource("software");
+    } else if (created) {
+      reset();
+    }
   }
 
-  const useSoftware = !staff || source === "software";
+  const useSoftware = !canUseImages || source === "software";
   const enabledImages = (images.data ?? []).filter((i) => i.enabled);
-  // An image chosen before it was disabled or removed stops counting as chosen.
   const image = enabledImages.some((i) => i.image_ref === form.image) ? form.image : "";
   const nameIssue = serverNameIssue(form.name);
   const subdomainIssue = serverNameIssue(form.subdomain);
+  const slugEditorOpen = showSlugFields;
 
-  // What the caller's quota leaves for memory and storage; an option past it is
-  // offered disabled, with the reason beside it.
   const limits = self?.quota.limits ?? null;
   const quotaUsage = self?.quota.usage;
   const memoryLeft = limits?.max_memory_mb != null && quotaUsage ? limits.max_memory_mb - quotaUsage.memory_mb : Infinity;
   const storageLeft = limits?.max_storage_gb != null && quotaUsage ? limits.max_storage_gb * 1024 - quotaUsage.storage_mb : Infinity;
-  // What the chosen node, or the roomiest one the server could go to, can still promise a new server.
   const free = (fleetUsage.data?.freeMemory ?? []).filter((n) =>
     !cfg.distributed || (form.nodeName ? n.node === form.nodeName : workers.some((w) => w.name === n.node)));
   const freeBytes = free.length === 0 ? null : Math.max(...free.map((n) => n.bytes));
@@ -165,26 +194,25 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
   const roomGiB = Math.min(freeMB, memoryLeft) / 1024;
   const defaultMemory = Math.max(1, Math.min(MEMORY_DEFAULT_GIB, Math.floor(roomGiB / MEMORY_STEP_GIB) * MEMORY_STEP_GIB));
   const memory = memoryTouched ? form.memory : String(defaultMemory);
-  // Memory and storage are typed in GiB: memory from 1, in steps as fine as the
-  // user likes; storage in whole GiB, as a volume is sized.
+
   const memoryGiB = parseGiB(memory);
   const storageGiB = parseGiB(form.storage);
   const memoryIssue =
     memoryGiB === null || memoryGiB < 1 ? "invalid" : memoryGiB * 1024 > memoryLeft ? "quota" : null;
   const storageIssue =
-    storageGiB === null || storageGiB < 1 || !Number.isInteger(storageGiB) ? "invalid" : storageGiB * 1024 > storageLeft ? "quota" : null;
+    storageGiB === null || storageGiB < 1 || !isWholeGiB(storageGiB) ? "invalid" : storageGiB * 1024 > storageLeft ? "quota" : null;
   const left = (mb: number) => String(Math.max(0, Math.floor((mb / 1024) * 10) / 10));
   const overFree = memoryIssue === null && memoryGiB !== null && memoryGiB * 1024 > freeMB;
   const hosts = fleetUsage.data?.freeMemory ?? [];
   const hostTooSmall = !cfg.distributed && hosts.length > 0 && hosts.every((n) => !!n.capacity && n.capacity < MIN_GAME_HOST_BYTES);
-  const ownerId = !staff || owner === "none" ? undefined : owner === "me" ? identity?.user_id : ownerUser?.id;
+  const ownerId = !showOwner || owner === "none" ? undefined : owner === "me" ? identity?.user_id : ownerUser?.id;
 
   const uploadJar = useSoftware && software.type === "custom" && !!jarFile;
   const canSubmit = created ? !submitting : nameIssue === null &&
     subdomainIssue === null &&
     (useSoftware ? softwareReady(software) && eula : !!image) &&
     (!staff || !cfg.distributed || workers.some((n) => n.name === form.nodeName)) &&
-    (!staff || owner !== "other" || !!ownerUser) &&
+    (!showOwner || owner !== "other" || !!ownerUser) &&
     memoryIssue === null &&
     storageIssue === null &&
     !hostTooSmall &&
@@ -215,9 +243,9 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
     }
   }
 
-  // createServer sends the form to the API: the caller's own server, or staff's.
   async function createServer() {
-    const displayName = form.displayName.trim() || undefined;
+    const trimmed = form.displayName.trim();
+    const displayName = trimmed && trimmed !== form.name ? trimmed : undefined;
     if (self) {
       await api.createMyServer({
         name: form.name,
@@ -244,9 +272,7 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
     }
   }
 
-  const policies = policyOptions(t);
-
-  // A field's hint turns into the reason it would be refused once something is typed.
+  const policies = policyOptions(t, teamMode);
   const issueText = (issue: ServerNameIssue, value: string) =>
     issue === "reserved" ? t("create_server_name_reserved", { name: value }) : t("create_server_name_invalid");
   const hintClass = (value: string, issue: ServerNameIssue | null) =>
@@ -264,10 +290,9 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{t(self ? "self_create_title" : "create_server_title")}</DialogTitle>
-          <DialogDescription>{t(self ? "self_create_desc" : "create_server_desc")}</DialogDescription>
+          <DialogDescription>{t(self ? "self_create_desc" : canUseImages ? "create_server_desc" : "create_server_desc_software_only")}</DialogDescription>
         </DialogHeader>
 
-        {/* Once the server exists only its jar upload is left, so the form is held. */}
         <fieldset disabled={!!created} className="grid min-w-0 gap-4">
           {hostTooSmall && (
             <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-2.5 text-xs text-destructive">
@@ -283,7 +308,83 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
             </p>
           )}
 
-          {staff && (
+          <div className="grid gap-2">
+            <Label htmlFor="cs-title">{t("create_server_title_name")}</Label>
+            <Input
+              id="cs-title"
+              placeholder={t("create_server_display_name_placeholder")}
+              maxLength={DISPLAY_NAME_MAX}
+              value={form.displayName}
+              onChange={(e) => changeTitle(e.target.value)}
+              onBlur={() => {
+                if (form.displayName.trim() !== "" && (nameIssue !== null || subdomainIssue !== null)) {
+                  setShowSlugFields(true);
+                }
+              }}
+            />
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+              <span className="truncate font-mono">
+                {t("create_server_address_preview", {
+                  name: form.name || "name",
+                  host: hostFor(form.subdomain || "name", cfg),
+                })}
+              </span>
+              <button
+                type="button"
+                aria-expanded={slugEditorOpen}
+                onClick={() => setShowSlugFields((v) => !v)}
+                className="shrink-0 font-medium text-primary hover:underline"
+              >
+                {t(slugEditorOpen ? "create_server_hide_identity" : "create_server_edit_identity")}
+              </button>
+            </div>
+          </div>
+
+          {slugEditorOpen && (
+            <div className="grid gap-4 rounded-lg border border-border bg-muted/20 p-3 sm:grid-cols-2">
+              <div className="grid gap-2">
+                <Label htmlFor="cs-name">{t("create_server_name")}</Label>
+                <Input
+                  id="cs-name"
+                  placeholder={t("create_server_name_placeholder")}
+                  value={form.name}
+                  onChange={(e) => {
+                    const v = e.target.value.toLowerCase();
+                    setSlugTouched(true);
+                    setForm((f) => ({ ...f, name: v, subdomain: subTouched ? f.subdomain : v }));
+                    setError(null);
+                  }}
+                  aria-invalid={!!form.name && nameIssue !== null}
+                  aria-describedby="cs-name-hint"
+                />
+                <p id="cs-name-hint" className={hintClass(form.name, nameIssue)}>
+                  {form.name && nameIssue ? issueText(nameIssue, form.name) : t("create_server_name_hint")}
+                </p>
+              </div>
+
+              <div className="grid gap-2">
+                <Label htmlFor="cs-sub">{t("create_server_subdomain")}</Label>
+                <Input
+                  id="cs-sub"
+                  placeholder={t("create_server_subdomain_placeholder")}
+                  value={form.subdomain}
+                  onChange={(e) => {
+                    setSubTouched(true);
+                    set("subdomain", e.target.value.toLowerCase());
+                  }}
+                  aria-invalid={!!form.subdomain && subdomainIssue !== null}
+                  aria-describedby="cs-sub-hint"
+                />
+                <p id="cs-sub-hint" className={hintClass(form.subdomain, subdomainIssue)}>
+                  {form.subdomain && subdomainIssue
+                    ? issueText(subdomainIssue, form.subdomain)
+                    : t("create_server_subdomain_hint", { host: hostFor(form.subdomain || "name", cfg) })}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {canUseImages && (
             <SegmentedControl
               label={t("create_server_source")}
               value={source}
@@ -340,52 +441,7 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
             </div>
           )}
 
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="grid gap-2">
-              <Label htmlFor="cs-name">{t("create_server_name")}</Label>
-              <Input
-                id="cs-name"
-                placeholder={t("create_server_name_placeholder")}
-                value={form.name}
-                onChange={(e) => set("name", e.target.value.toLowerCase())}
-                aria-invalid={!!form.name && nameIssue !== null}
-                aria-describedby="cs-name-hint"
-              />
-              <p id="cs-name-hint" className={hintClass(form.name, nameIssue)}>
-                {form.name && nameIssue ? issueText(nameIssue, form.name) : t("create_server_name_hint")}
-              </p>
-            </div>
-
-            <div className="grid gap-2">
-              <Label htmlFor="cs-sub">{t("create_server_subdomain")}</Label>
-              <Input
-                id="cs-sub"
-                placeholder={t("create_server_subdomain_placeholder")}
-                value={form.subdomain}
-                onChange={(e) => set("subdomain", e.target.value.toLowerCase())}
-                aria-invalid={!!form.subdomain && subdomainIssue !== null}
-                aria-describedby="cs-sub-hint"
-              />
-              <p id="cs-sub-hint" className={hintClass(form.subdomain, subdomainIssue)}>
-                {form.subdomain && subdomainIssue
-                  ? issueText(subdomainIssue, form.subdomain)
-                  : t("create_server_subdomain_hint", { host: hostFor(form.subdomain || "name", cfg) })}
-              </p>
-            </div>
-          </div>
-
-          <div className="grid gap-2">
-            <Label htmlFor="cs-display">{t("create_server_display_name")}</Label>
-            <Input
-              id="cs-display"
-              placeholder={t("create_server_display_name_placeholder")}
-              maxLength={DISPLAY_NAME_MAX}
-              value={form.displayName}
-              onChange={(e) => set("displayName", e.target.value)}
-            />
-          </div>
-
-          {staff && (
+          {showOwner && (
             <div className="grid gap-2">
               <Label htmlFor="cs-owner">{t("create_server_owner")}</Label>
               <Select value={owner} onValueChange={(v) => { setOwner(v as OwnerChoice); setError(null); }}>
@@ -467,7 +523,10 @@ export function CreateServerDialog({ cfg, onCreated, self }: Props) {
             <Label htmlFor="create-server-policy">{t("create_server_policy")}</Label>
             <Select
               value={form.autostartPolicy}
-              onValueChange={(v) => set("autostartPolicy", v as AutostartPolicy)}
+              onValueChange={(v) => {
+                setPolicyTouched(true);
+                set("autostartPolicy", v as AutostartPolicy);
+              }}
             >
               <SelectTrigger id="create-server-policy">
                 <SelectValue />

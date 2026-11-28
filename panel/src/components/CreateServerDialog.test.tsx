@@ -4,7 +4,8 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { CreateServerDialog } from "./CreateServerDialog";
 import { humanizeError } from "@/lib/api";
-import type { CreateServerRequest, PlatformUsage, WhitelistImage } from "@/lib/types";
+import { FeaturesContext } from "@/lib/features";
+import type { CreateServerRequest, PlatformFeaturesSettings, PlatformUsage, WhitelistImage } from "@/lib/types";
 
 const tier = vi.hoisted(() => ({ identity: { user_id: "u-admin", email: "admin@example.test", role: "admin", is_admin: true, is_owner: false }, isOwner: false }));
 const calls = vi.hoisted(() => ({ listImages: vi.fn(), createServer: vi.fn(), nodes: vi.fn(), fleetUsage: vi.fn() }));
@@ -14,8 +15,6 @@ vi.mock("@/lib/api", async (importActual) => {
   return { ...actual, api: { ...actual.api, ...calls } };
 });
 
-// Radix Select opens with pointer capture and scrolls the picked item into view,
-// neither of which jsdom implements.
 beforeAll(() => {
   Element.prototype.hasPointerCapture ??= () => false;
   Element.prototype.releasePointerCapture ??= () => {};
@@ -43,30 +42,45 @@ beforeEach(() => {
   calls.fleetUsage.mockResolvedValue(usageWithout);
 });
 
-async function openDialog() {
+async function openDialog(features?: PlatformFeaturesSettings) {
   const user = userEvent.setup();
-  render(<CreateServerDialog cfg={cfg} onCreated={onCreated} />);
+  const node = <CreateServerDialog cfg={cfg} onCreated={onCreated} />;
+  render(
+    features ? (
+      <FeaturesContext.Provider value={{ features, loaded: true, apply: vi.fn(), reload: vi.fn() }}>
+        {node}
+      </FeaturesContext.Provider>
+    ) : (
+      node
+    ),
+  );
   await user.click(screen.getByRole("button", { name: "New server" }));
   await screen.findByRole("dialog");
-  // These cases cover a server built from a whitelisted image (softwareCreate.test.tsx
-  // covers server software).
-  await user.click(screen.getByRole("radio", { name: "Whitelisted image" }));
+  if (!features || features.customImages) {
+    await user.click(screen.getByRole("radio", { name: "Whitelisted image" }));
+  }
   return user;
 }
 
+const titleBox = () => screen.getByLabelText("Server name") as HTMLInputElement;
+const editIdentityBtn = () => screen.getByRole("button", { name: /Edit ID & address|Hide ID & address/ });
 const nameBox = () => screen.getByLabelText("Name") as HTMLInputElement;
 const subdomainBox = () => screen.getByLabelText("Subdomain") as HTMLInputElement;
 const create = () => screen.getByRole("button", { name: "Create" }) as HTMLButtonElement;
+
+async function openIdentity(user: ReturnType<typeof userEvent.setup>) {
+  if (!screen.queryByLabelText("Name")) {
+    await user.click(editIdentityBtn());
+  }
+}
 
 async function pick(user: ReturnType<typeof userEvent.setup>, field: string, option: string) {
   await user.click(screen.getByRole("combobox", { name: field }));
   await user.click(await screen.findByRole("option", { name: option }));
 }
 
-/** fillValid fills every required field with what the API takes. */
 async function fillValid(user: ReturnType<typeof userEvent.setup>) {
-  await user.type(nameBox(), "survival");
-  await user.type(subdomainBox(), "survival");
+  await user.type(titleBox(), "survival");
   await pick(user, "Image", PAPER);
 }
 
@@ -76,17 +90,26 @@ function sent(): CreateServerRequest {
 }
 
 describe("CreateServerDialog request body", () => {
-  it("sends every field as chosen, lowercased and trimmed", async () => {
+  it("auto-derives slug and subdomain from Server name and lets users override them inline", async () => {
     const user = await openDialog();
 
+    await user.type(titleBox(), "  Survival World  ");
+    expect(screen.getByText(/ID survival-world · Address survival-world\.example\.test/)).toBeTruthy();
+    expect(screen.queryByLabelText("Name")).toBeNull();
+
+    await openIdentity(user);
+    expect(nameBox().value).toBe("survival-world");
+    expect(subdomainBox().value).toBe("survival-world");
+
+    await user.clear(nameBox());
     await user.type(nameBox(), "Survival-2");
+    await user.clear(subdomainBox());
     await user.type(subdomainBox(), "SMP");
-    await user.type(screen.getByLabelText("Display name (optional)"), "  Survival World  ");
     await pick(user, "Image", PAPER);
     await user.clear(screen.getByLabelText("Memory"));
-    await user.type(screen.getByLabelText("Memory"), "8");
+    await user.type(screen.getByLabelText("Memory"), "8GB");
     await user.clear(screen.getByLabelText("Storage"));
-    await user.type(screen.getByLabelText("Storage"), "120");
+    await user.type(screen.getByLabelText("Storage"), "120GB");
     await pick(user, "Autostart policy", "Public — any player join wakes it");
     await user.click(create());
 
@@ -104,18 +127,40 @@ describe("CreateServerDialog request body", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  // A server below 1 GiB cannot start Minecraft, and a volume is sized in whole GiB.
+  it("auto-opens ID fields for non-ASCII display names and accepts MiB/MB/GiB/GB unit input without preset buttons", async () => {
+    const user = await openDialog();
+    await user.type(titleBox(), "生存一服");
+    expect(nameBox().value).toBe("");
+    await user.type(nameBox(), "survival");
+    expect(subdomainBox().value).toBe("survival");
+    await pick(user, "Image", PAPER);
+
+    await user.clear(screen.getByLabelText("Memory"));
+    await user.type(screen.getByLabelText("Memory"), "2048MB");
+    await user.clear(screen.getByLabelText("Storage"));
+    await user.type(screen.getByLabelText("Storage"), "10240MiB");
+    await user.click(create());
+
+    expect(sent()).toMatchObject({
+      name: "survival",
+      subdomain: "survival",
+      displayName: "生存一服",
+      memory: "2Gi",
+      storage: "10Gi",
+    });
+  });
+
   it("refuses a memory below 1 GiB and a storage that is not whole GiB", async () => {
     const user = await openDialog();
     await fillValid(user);
     await user.clear(screen.getByLabelText("Memory"));
-    await user.type(screen.getByLabelText("Memory"), "0.5");
+    await user.type(screen.getByLabelText("Memory"), "512MB");
     expect(screen.getByText("Enter a number of at least 1, in GiB.")).toBeTruthy();
     expect(create().disabled).toBe(true);
     await user.clear(screen.getByLabelText("Memory"));
-    await user.type(screen.getByLabelText("Memory"), "1.5");
+    await user.type(screen.getByLabelText("Memory"), "1536MiB");
     await user.clear(screen.getByLabelText("Storage"));
-    await user.type(screen.getByLabelText("Storage"), "7.5");
+    await user.type(screen.getByLabelText("Storage"), "7.5GB");
     expect(screen.getByText("Enter a whole number of at least 1, in GiB.")).toBeTruthy();
     expect(create().disabled).toBe(true);
     await user.clear(screen.getByLabelText("Storage"));
@@ -127,18 +172,22 @@ describe("CreateServerDialog request body", () => {
   it("stops the display name at the length the API takes", async () => {
     const user = await openDialog();
 
-    await fillValid(user);
-    await user.type(screen.getByLabelText("Display name (optional)"), "x".repeat(70));
+    await user.type(titleBox(), "x".repeat(70));
+    await openIdentity(user);
+    await user.clear(nameBox());
+    await user.type(nameBox(), "survival");
+    await user.clear(subdomainBox());
+    await user.type(subdomainBox(), "survival");
+    await pick(user, "Image", PAPER);
     await user.click(create());
 
     expect(sent().displayName).toBe("x".repeat(64));
   });
 
-  it("leaves a blank display name out, and gives the server to its creator on the wake-list policy", async () => {
+  it("omits redundant displayName when Server name equals the slug, and gives the server to its creator on the wake-list policy", async () => {
     const user = await openDialog();
 
     await fillValid(user);
-    await user.type(screen.getByLabelText("Display name (optional)"), "   ");
     await user.click(create());
 
     expect(sent()).toStrictEqual({
@@ -164,7 +213,28 @@ describe("CreateServerDialog request body", () => {
     expect(sent()).not.toHaveProperty("ownerId");
   });
 
-  // A 4 GiB server on a host with less room left would never be scheduled.
+  it("in team mode hides Owner and image source when customImages is off, defaults autostart to public, and uses manual-start copy", async () => {
+    const user = await openDialog({
+      mode: "team",
+      useLobby: false,
+      lobbyAvailable: false,
+      customImages: false,
+      allowSubmissions: false,
+      requireAccountLink: false,
+      revision: "r1",
+    });
+
+    expect(screen.queryByRole("radio", { name: "Whitelisted image" })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "Server owner" })).toBeNull();
+    expect(calls.listImages).not.toHaveBeenCalled();
+
+    const policyTrigger = screen.getByRole("combobox", { name: "Autostart policy" });
+    expect(policyTrigger.textContent).toContain("Public");
+    await user.click(policyTrigger);
+    expect(await screen.findByRole("option", { name: "Manual start only — do not wake on join" })).toBeTruthy();
+    expect(screen.queryByRole("option", { name: /Owner only/ })).toBeNull();
+  });
+
   it("starts the memory at what the host can still allocate, and warns past it without refusing", async () => {
     calls.fleetUsage.mockResolvedValue({ ...usageWithout, freeMemory: [{ node: "host", bytes: 1920 * 2 ** 20 }] });
     const user = await openDialog();
@@ -208,7 +278,7 @@ describe("CreateServerDialog request body", () => {
 
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).getByText(humanizeError(refusal))).toBeTruthy();
-    expect(nameBox().value).toBe("survival");
+    expect(titleBox().value).toBe("survival");
     expect(onCreated).not.toHaveBeenCalled();
 
     await user.click(create());
@@ -231,18 +301,22 @@ describe("CreateServerDialog names", () => {
     await fillValid(user);
     expect(create().disabled).toBe(false);
 
+    await openIdentity(user);
     await user.clear(nameBox());
     await user.type(nameBox(), name);
 
     expect(create().disabled).toBe(true);
     expect(nameBox().getAttribute("aria-invalid")).toBe("true");
-    expect(screen.getByText(why)).toBeTruthy();
+    const hintId = nameBox().getAttribute("aria-describedby");
+    expect(hintId).toBeTruthy();
+    expect(document.getElementById(hintId!)?.textContent).toBe(why);
   });
 
   it("holds the subdomain to the same rule", async () => {
     const user = await openDialog();
     await fillValid(user);
 
+    await openIdentity(user);
     await user.clear(subdomainBox());
     await user.type(subdomainBox(), "api");
 
@@ -254,6 +328,7 @@ describe("CreateServerDialog names", () => {
   it("shows where a good subdomain will be reachable", async () => {
     const user = await openDialog();
 
+    await openIdentity(user);
     await user.type(subdomainBox(), "smp");
 
     expect(screen.getByText(/Will be reachable at smp\.example\.test/)).toBeTruthy();
@@ -291,7 +366,7 @@ describe("CreateServerDialog on reopening", () => {
     calls.listImages.mockResolvedValue([image(PAPER, false)]);
     await reopen(user);
     expect(await screen.findByText("No whitelisted images")).toBeTruthy();
-    expect(nameBox().value).toBe("survival");
+    expect(titleBox().value).toBe("survival");
     expect(create().disabled).toBe(true);
   });
 
@@ -303,7 +378,7 @@ describe("CreateServerDialog on reopening", () => {
 
     await user.click(create());
     expect(screen.getByText(humanizeError(refusal))).toBeTruthy();
-    await user.type(nameBox(), "-2");
+    await user.type(titleBox(), "-2");
     expect(screen.queryByText(humanizeError(refusal))).toBeNull();
 
     await user.click(create());
@@ -330,24 +405,23 @@ describe("CreateServerDialog on reopening", () => {
   });
 });
 
-
 describe("distributed placement", () => {
   it("requires an online approved worker and sends its name", async () => {
     calls.nodes.mockResolvedValue([
-      {name:"b",role:"worker",ready:true,approved:true},
-      {name:"c",role:"worker",ready:false,approved:true},
-      {name:"a",role:"controller",ready:true,approved:true},
+      { name: "b", role: "worker", ready: true, approved: true },
+      { name: "c", role: "worker", ready: false, approved: true },
+      { name: "a", role: "controller", ready: true, approved: true },
     ]);
     const user = userEvent.setup();
-    render(<CreateServerDialog cfg={{...cfg,distributed:true}} onCreated={onCreated} />);
-    await user.click(screen.getByRole("button",{name:"New server"}));
+    render(<CreateServerDialog cfg={{ ...cfg, distributed: true }} onCreated={onCreated} />);
+    await user.click(screen.getByRole("button", { name: "New server" }));
     await user.click(screen.getByRole("radio", { name: "Whitelisted image" }));
     await fillValid(user);
     expect(create().disabled).toBe(true);
-    await user.click(screen.getByRole("combobox",{name:"Execution node"}));
-    expect(screen.queryByRole("option",{name:"c"})).toBeNull();
-    expect(screen.queryByRole("option",{name:"a"})).toBeNull();
-    await user.click(await screen.findByRole("option",{name:"b"}));
+    await user.click(screen.getByRole("combobox", { name: "Execution node" }));
+    expect(screen.queryByRole("option", { name: "c" })).toBeNull();
+    expect(screen.queryByRole("option", { name: "a" })).toBeNull();
+    await user.click(await screen.findByRole("option", { name: "b" }));
     await user.click(create());
     expect(sent().nodeName).toBe("b");
   });

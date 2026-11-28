@@ -1394,3 +1394,24 @@ export interface EntryPolicySettings {
   fallbackServer: string;
   revision: string;
 }
+
+export type PlatformMode = "team" | "community";
+
+export interface PlatformFeaturesSettings {
+  mode: PlatformMode;
+  useLobby: boolean;
+  lobbyAvailable: boolean;
+  customImages: boolean;
+  allowSubmissions: boolean;
+  requireAccountLink: boolean;
+  revision: string;
+}
+
+export interface SetPlatformFeaturesRequest {
+  mode: PlatformMode;
+  useLobby?: boolean;
+  customImages: boolean;
+  allowSubmissions: boolean;
+  syncRequireAccountLink?: boolean;
+  revision: string;
+}

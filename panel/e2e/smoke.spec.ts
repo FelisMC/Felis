@@ -5,7 +5,7 @@ test("admin headings share their size and gutters and stay pinned while content 
   await page.setViewportSize({ width: 1440, height: 600 });
   const metrics = [];
   for (const [path, title] of [
-    ["/admin/submissions", "admin:submissions_title"],
+    ["/admin/submissions", "admin:images_hub_title"],
     ["/admin/lobby", "lobby:title"],
     ["/admin/auth-sources", "authSources:title"],
   ]) {
@@ -116,7 +116,7 @@ test("an unlinked Owner can manage the panel, then preview and confirm a game ro
 });
 
 // Assert administrator page chunks are never fetched by player navigation.
-const ADMIN_PAGE = /\/(UsersPage|UserDetailPage|LobbyPage|ImageAdmin|ImageBuildPage|SubmissionsPage|UpdatesPage)[.-]/;
+const ADMIN_PAGE = /\/(UsersPage|UserDetailPage|LobbyPage|ImagesHubPage|ImageAdmin|ImageBuildPage|SubmissionsPage|UpdatesPage)[.-]/;
 const ACCOUNT_PAGE = /\/Account[.-]/;
 
 test("a player's pages load on demand and never pull in the admin pages", async ({ page, signIn }) => {

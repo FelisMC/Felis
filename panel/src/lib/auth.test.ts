@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { deriveAuth, isUnauthorized, loginReturnPath } from "./auth";
+import { deriveAuth, isTeamModeBlocked, isUnauthorized, loginReturnPath } from "./auth";
 import type { Identity } from "./types";
 
 
@@ -67,6 +67,16 @@ describe("deriveAuth", () => {
     expect(deriveAuth(null, err500, false).identityError).toBe(err500);
     const offline = new TypeError("Failed to fetch");
     expect(deriveAuth(null, offline, false).identityError).toBe(offline);
+  });
+
+  it("treats 403 team_mode_staff_only as unauthenticated and teamModeBlocked without identityError", () => {
+    const blocked = { status: 403, code: "team_mode_staff_only", message: "staff only" };
+    expect(isTeamModeBlocked(blocked)).toBe(true);
+    expect(isTeamModeBlocked(err500)).toBe(false);
+    const s = deriveAuth(null, blocked, false);
+    expect(s.unauthenticated).toBe(true);
+    expect(s.teamModeBlocked).toBe(true);
+    expect(s.identityError).toBeNull();
   });
 
   it("has no identityError for a 401, while loading, or once an identity is known", () => {

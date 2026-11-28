@@ -6,7 +6,7 @@ import { useTier } from "@/lib/tier";
 // Only 401 redirects to login; preserve the return page.
 // Transient identity failures retain user-side access while backend role checks remain authoritative.
 export function RequireAuth() {
-  const { loading, unauthenticated, sessionEnded } = useTier();
+  const { loading, unauthenticated, sessionEnded, teamModeBlocked } = useTier();
   const { t } = useTranslation("common");
   const location = useLocation();
 
@@ -21,7 +21,12 @@ export function RequireAuth() {
   if (unauthenticated) {
     const back = location.pathname + location.search;
     const to = back === "/" ? "/login" : `/login?next=${encodeURIComponent(back)}`;
-    return <Navigate to={to} replace state={sessionEnded ? { sessionEnded: true } : undefined} />;
+    const state = teamModeBlocked
+      ? { teamModeBlocked: true }
+      : sessionEnded
+        ? { sessionEnded: true }
+        : undefined;
+    return <Navigate to={to} replace state={state} />;
   }
   return <Outlet />;
 }

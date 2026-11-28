@@ -22,6 +22,7 @@ import { formatBytes, splitImageRef } from "@/lib/format";
 import { DISPLAY_NAME_MAX } from "@/lib/naming";
 import { MAX_SERVER_TAGS, MAX_SERVER_TAG_LENGTH, mergeTags, tagIssue } from "@/lib/tags";
 import { useAsync, useUnsavedGuard } from "@/lib/hooks";
+import { useFeatures } from "@/lib/features";
 import { useTier } from "@/lib/tier";
 import { AssignServerDialog } from "@/components/AssignServerDialog";
 import type { AutostartPolicy, IdleAction, Phase, ServerExtraPort, ServerNotify, ServerSoftware, ServerStartupSettings } from "@/lib/types";
@@ -29,7 +30,7 @@ import { InlineError } from "@/components/MessageLine";
 import { cn } from "@/lib/utils";
 import { uploadFile } from "@/components/files/uploadFile";
 import { SegmentedControl } from "@/components/SegmentedControl";
-import { GiBInput, gibQuantity, parseGiB, quantityGiB } from "@/components/GiBInput";
+import { GiBInput, gibQuantity, isWholeGiB, parseGiB, quantityGiB } from "@/components/GiBInput";
 import {
   EMPTY_SOFTWARE,
   EulaCheckbox,
@@ -75,9 +76,9 @@ function ImageLabel({ imageRef, t }: { imageRef: string; t: (key: string, opts?:
   );
 }
 
-export function policyOptions(t: (key: string) => string): { value: AutostartPolicy; label: string }[] {
+export function policyOptions(t: (key: string) => string, teamMode = false): { value: AutostartPolicy; label: string }[] {
   return [
-    { value: "ownerOnly", label: t("create_server_policy_owner") },
+    { value: "ownerOnly", label: t(teamMode ? "create_server_policy_manual" : "create_server_policy_owner") },
     { value: "public", label: t("create_server_policy_public") },
     { value: "allowlist", label: t("create_server_policy_allowlist") },
   ];
@@ -266,10 +267,13 @@ export function ServerConfigForm({
   // The status poll hands a new object each time, so the form follows the values.
   const { started: notifyStarted, stopped: notifyStopped, problems: notifyProblems } = currentNotify;
   const { t } = useTranslation("servers");
+  const { features } = useFeatures();
+  const teamMode = features.mode === "team";
+  const canEditImage = mode === "admin" && features.customImages;
   const admin = mode === "admin";
-  const images = useAsync(() => (admin ? api.listImages() : Promise.resolve([])), [admin]);
+  const images = useAsync(() => (canEditImage ? api.listImages() : Promise.resolve([])), [canEditImage]);
   const { isOwner } = useTier();
-  const showOwner = isOwner && !systemService;
+  const showOwner = isOwner && !systemService && !teamMode;
   const [assignOpen, setAssignOpen] = useState(false);
   // The fleet is the only read that names a server's owner.
   const fleet = useAsync(() => (showOwner ? api.fleet() : Promise.resolve(null)), [showOwner]);
@@ -485,13 +489,13 @@ export function ServerConfigForm({
       software.java !== cur.java || software.jar.trim() !== cur.jar);
   const softwareMoves =
     softwareChanged && (!currentSoftware || software.type !== cur.type || software.minecraftVersion !== cur.minecraftVersion);
-  const imageChanged = admin && source === "image" && form.image !== currentImage;
+  const imageChanged = canEditImage && source === "image" && form.image !== currentImage;
 
   const memoryGiB = parseGiB(form.memory);
   const memoryOk = memoryGiB !== null && memoryGiB >= 1;
   const memoryChanged = memoryGiB === null ? form.memory.trim() !== currentMemoryGiB : memoryGiB !== parseGiB(currentMemoryGiB);
   const storageGiB = parseGiB(form.storage);
-  const storageOk = storageGiB !== null && storageGiB >= 1 && Number.isInteger(storageGiB);
+  const storageOk = storageGiB !== null && storageGiB >= 1 && isWholeGiB(storageGiB);
   const storageChanged = storageGiB === null ? form.storage.trim() !== currentStorageGiB : storageGiB !== parseGiB(currentStorageGiB);
 
   const maxCrash = crashLimit(form.maxCrash);
@@ -617,7 +621,7 @@ export function ServerConfigForm({
     }
   }
 
-  const policies = policyOptions(t);
+  const policies = policyOptions(t, teamMode);
   const idleOn = form.idleStop !== "0";
   const allocated = (protocol: string, port: string) => currentExtraPorts?.find((entry) => entry.protocol === protocol && String(entry.port) === port);
 
@@ -711,7 +715,7 @@ export function ServerConfigForm({
         </SettingsSection>
 
         <SettingsSection title={t("settings_section_software")}>
-          {admin && !systemService && (
+          {canEditImage && !systemService && (
             <SettingRow label={t("create_server_source")} hint={t("settings_source_hint")}>
               <div className="flex lg:justify-end">
                 <SegmentedControl
@@ -727,7 +731,7 @@ export function ServerConfigForm({
             </SettingRow>
           )}
 
-          {source === "software" || !admin ? (
+          {source === "software" || !canEditImage ? (
             <SettingRow label={t("edit_server_software")} hint={t("settings_software_hint")} block={pickingSoftware}>
               {!pickingSoftware ? (
                 <div className="flex items-center justify-between gap-3 lg:justify-end">

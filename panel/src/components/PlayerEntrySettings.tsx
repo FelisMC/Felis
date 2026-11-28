@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { MessageLine } from "@/components/MessageLine";
 import { isReauthCancelled, useReauth } from "@/components/ReauthDialog";
 import { api, humanizeError } from "@/lib/api";
+import { useFeatures } from "@/lib/features";
 import { useAsync, useConfig, useRefreshSignal, useUnsavedGuard } from "@/lib/hooks";
 import type { EntryPolicySettings } from "@/lib/types";
 
@@ -22,8 +23,9 @@ const calloutEdge = "border-[color:color-mix(in_srgb,hsl(var(--primary))_40%,hsl
 
 const initial: EntryPolicySettings = { useLobby: true, mode: "domain", defaultServer: "", requireAccountLink: true, offlineAction: "wake", waitingSpace: "lobby", fallbackServer: "", revision: "" };
 
-export function PlayerEntrySettings() {
+export function PlayerEntrySettings({ onSaved }: { onSaved?: () => void } = {}) {
   const { t } = useTranslation("admin");
+  const { reload: reloadFeatures } = useFeatures();
   const query = useAsync(api.getEntryPolicy, []);
   const fleet = useAsync(api.fleet, []);
   const reauth = useReauth();
@@ -68,6 +70,8 @@ export function PlayerEntrySettings() {
     try {
       const policy = await reauth.guard(() => api.setEntryPolicy(draft));
       setSaved(policy); setDraft(policy);
+      void reloadFeatures();
+      onSaved?.();
       setMessage({ kind: "success", text: t("entry_saved") });
     } catch (error) {
       if (!isReauthCancelled(error)) setMessage({ kind: "error", text: humanizeError(error) });

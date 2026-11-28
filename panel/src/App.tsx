@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ThemeProvider } from "@/lib/theme";
 import { BrandingProvider } from "@/lib/branding";
+import { FeaturesProvider } from "@/lib/features";
 import { TierProvider } from "@/lib/tier";
 import { AppShell } from "@/components/AppShell";
 import { RequireAdmin } from "@/components/RequireAdmin";
@@ -56,14 +57,8 @@ const Account = lazyWithReload(() => import("@/pages/Account").then((m) => ({ de
 const MySubmissionsPage = lazyWithReload(() =>
   import("@/pages/MySubmissionsPage").then((m) => ({ default: m.MySubmissionsPage })),
 );
-const ImageAdmin = lazyWithReload(() =>
-  import("@/pages/admin/ImageAdmin").then((m) => ({ default: m.ImageAdmin })),
-);
-const ImageBuildPage = lazyWithReload(() =>
-  import("@/pages/admin/ImageBuildPage").then((m) => ({ default: m.ImageBuildPage })),
-);
-const SubmissionsPage = lazyWithReload(() =>
-  import("@/pages/admin/SubmissionsPage").then((m) => ({ default: m.SubmissionsPage })),
+const ImagesHubPage = lazyWithReload(() =>
+  import("@/pages/admin/ImagesHubPage").then((m) => ({ default: m.ImagesHubPage })),
 );
 const UsersPage = lazyWithReload(() =>
   import("@/pages/admin/UsersPage").then((m) => ({ default: m.UsersPage })),
@@ -89,6 +84,7 @@ export default function App() {
       <BrandingProvider>
       <ToastProvider>
       <TierProvider>
+        <FeaturesProvider>
         <BrowserRouter>
         <SetupRequiredRedirect />
         <Routes>
@@ -143,12 +139,12 @@ export default function App() {
                   /admin has no landing page; redirect to the first concrete view
                   so the section root and any stale bookmarks land somewhere useful. */}
               <Route path="admin" element={<RequireAdmin />}>
-                <Route index element={<NanoSwitch nano={<Navigate to="/admin/auth-sources" replace />} full={<Navigate to="/admin/images" replace />} />} />
+                <Route index element={<NanoSwitch nano={<Navigate to="/admin/auth-sources" replace />} full={<Navigate to="/admin/lobby" replace />} />} />
                 <Route element={<FullFelisOnly />}>
                   <Route path="lobby" element={<LobbyPage />} />
-                  <Route path="images" element={<ImageAdmin />} />
-                  <Route path="builds" element={<ImageBuildPage />} />
-                  <Route path="submissions" element={<SubmissionsPage />} />
+                  <Route path="images" element={<ImagesHubPage />} />
+                  <Route path="builds" element={<Navigate to="/admin/images?tab=builds" replace />} />
+                  <Route path="submissions" element={<Navigate to="/admin/images?tab=submissions" replace />} />
                 </Route>
                 {/* Owner-gated platform settings and user management. */}
                 <Route element={<RequireOwner />}>
@@ -169,8 +165,9 @@ export default function App() {
             </Route>
           </Route>
         </Routes>
-      </BrowserRouter>
-    </TierProvider>
+        </BrowserRouter>
+        </FeaturesProvider>
+      </TierProvider>
       </ToastProvider>
       </BrandingProvider>
   </ThemeProvider>

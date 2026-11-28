@@ -184,5 +184,7 @@
   "bad_api_token": "The API key name or expiry is invalid. The name must be 1 to 64 characters on one line, and the expiry must be within the permitted range.",
   "api_tokens_disabled": "API keys are not enabled on this platform. The platform owner can enable them in Platform settings.",
   "api_token_limit": "The account has reached its API key limit. Revoke a key that is no longer needed, then create the new key.",
-  "storage_below_usage": "Storage must be larger than the space the world already uses."
+  "storage_below_usage": "Storage must be larger than the space the world already uses.",
+  "feature_disabled": "This feature is unavailable in the current platform mode or component configuration.",
+  "team_mode_staff_only": "The platform is running in team operations mode. Only administrators and assigned server collaborators may access the panel."
 }

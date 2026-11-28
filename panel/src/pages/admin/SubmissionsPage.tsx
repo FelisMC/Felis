@@ -31,7 +31,7 @@ import type { ApiError, Submission, SubmissionStatus } from "@/lib/types";
 const PAGE_SIZE = 10;
 const SEARCH_DEBOUNCE_MS = 300;
 
-export function SubmissionsPage() {
+export function SubmissionsPage({ embedded = false }: { embedded?: boolean } = {}) {
   const { t, i18n } = useTranslation("admin");
   const locale = i18n.language;
   const now = Date.now();
@@ -186,8 +186,8 @@ export function SubmissionsPage() {
   };
 
   return (
-    <div className="space-y-6">
-      <PageHeader icon={ClipboardCheck} title={t("submissions_title")} subtitle={t("submissions_subtitle")} />
+    <div className="space-y-4">
+      {!embedded && <PageHeader icon={ClipboardCheck} title={t("submissions_title")} subtitle={t("submissions_subtitle")} />}
 
       {/* Action Error Alert */}
       {actionError && <MessageLine kind="error" message={actionError} compact />}

@@ -32,6 +32,7 @@
   "fleet_owner_unknown_hint": "服务器所有者读取失败，将在下次刷新时重新查询。",
   "fleet_endpoint_idle": "未运行",
   "policy_owneronly": "仅所有者",
+  "policy_manual": "仅后台手动启动",
   "policy_public": "公开",
   "policy_allowlist": "唤醒名单",
   "fleet_empty_title": "暂无服务器",

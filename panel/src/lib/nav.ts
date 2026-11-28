@@ -5,8 +5,6 @@ import {
   UserRound,
   Users,
   Boxes,
-  Cpu,
-  ClipboardCheck,
   Upload,
   Clock,
   ShieldCheck,
@@ -17,32 +15,29 @@ import {
 
 // Navigation visibility is presentation only; every privileged API route independently enforces access.
 
+export type NavFeatureGate = "customImages" | "submissions";
+
 export interface NavItem {
   to: string;
   key: string;
   icon: LucideIcon;
-  /** react-router NavLink `end` — exact-match active styling for index routes. */
   end?: boolean;
-  /** The label key on an install without a lobby. */
   noLobbyKey?: string;
-  /** Shown on Felis-nano, which has sign-in, accounts and auth sources only. */
   nano?: boolean;
+  requires?: NavFeatureGate;
 }
 
-/** What kind of install the panel fronts, from /config.json. */
 export interface InstallKind {
   noLobby?: boolean;
   nano?: boolean;
+  customImages?: boolean;
+  allowSubmissions?: boolean;
 }
 
 export interface NavSection {
   id: "user" | "admin" | "owner";
-  /** Section heading key; null renders no heading (User-Side flat list). */
   titleKey: string | null;
-  /** When true the section is shown only to admins (is_admin === true). */
   adminOnly: boolean;
-  /** When true the section is shown only to the owner (is_owner === true).
-   *  An owner-visible section is implicitly invisible to a plain admin. */
   ownerOnly: boolean;
   items: NavItem[];
 }
@@ -56,7 +51,7 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { to: "/", key: "dashboard", icon: LayoutDashboard, end: true },
       { to: "/servers", key: "my_servers", icon: Server },
-      { to: "/submissions", key: "my_submissions", icon: Upload },
+      { to: "/submissions", key: "my_submissions", icon: Upload, requires: "submissions" },
       { to: "/account", key: "account", icon: UserRound, nano: true },
     ],
   },
@@ -67,9 +62,7 @@ export const NAV_SECTIONS: NavSection[] = [
     ownerOnly: false,
     items: [
       { to: "/admin/lobby", key: "admin_lobby", noLobbyKey: "admin_login_space", icon: DoorOpen },
-      { to: "/admin/images", key: "admin_images", icon: Boxes },
-      { to: "/admin/builds", key: "admin_builds", icon: Cpu },
-      { to: "/admin/submissions", key: "admin_submissions", icon: ClipboardCheck },
+      { to: "/admin/images", key: "admin_images_hub", icon: Boxes, requires: "customImages" },
     ],
   },
   {
@@ -87,6 +80,13 @@ export const NAV_SECTIONS: NavSection[] = [
   },
 ];
 
+function navItemVisible(item: NavItem, install: InstallKind): boolean {
+  if (install.nano && !item.nano) return false;
+  if (item.requires === "customImages") return install.customImages === true;
+  if (item.requires === "submissions") return install.customImages === true && install.allowSubmissions === true;
+  return true;
+}
+
 // Unknown or loading identity gets user sections only.
 export function visibleSections(isAdmin: boolean, isOwner: boolean, install: InstallKind = {}): NavSection[] {
   return NAV_SECTIONS.filter((s) => {
@@ -97,7 +97,7 @@ export function visibleSections(isAdmin: boolean, isOwner: boolean, install: Ins
     .map((s) => ({
       ...s,
       items: s.items
-        .filter((item) => !install.nano || item.nano)
+        .filter((item) => navItemVisible(item, install))
         .map((item) => (install.noLobby && item.noLobbyKey ? { ...item, key: item.noLobbyKey } : item)),
     }))
     .filter((s) => s.items.length > 0);

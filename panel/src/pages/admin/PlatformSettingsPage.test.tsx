@@ -6,7 +6,7 @@ import i18next from "i18next";
 import { MemoryRouter } from "react-router-dom";
 import { PlatformSettingsPage } from "./PlatformSettingsPage";
 import type { WakePolicySettings } from "@/lib/types";
-const calls = vi.hoisted(() => ({ getEntryPolicy: vi.fn(), setEntryPolicy: vi.fn(), fleet: vi.fn(), getWakePolicy: vi.fn(), setWakePolicy: vi.fn(), getDefaultLanguage: vi.fn(), setDefaultLanguage: vi.fn(), getBrandingSettings: vi.fn(), getAPITokenSettings: vi.fn(), nodes: vi.fn(), nodeTasks: vi.fn(), nodeTask: vi.fn(), startNodeTask: vi.fn(), retryNodeTask: vi.fn(), getMailSettings: vi.fn(), getArchivePolicy: vi.fn(), getFailoverPolicy: vi.fn(), getHeartbeat: vi.fn(), hostOverview: vi.fn(), getSelfServiceQuota: vi.fn(), setSelfServiceQuota: vi.fn() }));
+const calls = vi.hoisted(() => ({ getFeatures: vi.fn(), setFeatures: vi.fn(), getEntryPolicy: vi.fn(), setEntryPolicy: vi.fn(), fleet: vi.fn(), getWakePolicy: vi.fn(), setWakePolicy: vi.fn(), getDefaultLanguage: vi.fn(), setDefaultLanguage: vi.fn(), getBrandingSettings: vi.fn(), getAPITokenSettings: vi.fn(), nodes: vi.fn(), nodeTasks: vi.fn(), nodeTask: vi.fn(), startNodeTask: vi.fn(), retryNodeTask: vi.fn(), getMailSettings: vi.fn(), getArchivePolicy: vi.fn(), getFailoverPolicy: vi.fn(), getHeartbeat: vi.fn(), hostOverview: vi.fn(), getSelfServiceQuota: vi.fn(), setSelfServiceQuota: vi.fn() }));
 vi.mock("@/lib/api", async (original) => ({ ...await original<typeof import("@/lib/api")>(), api: calls }));
 const runtime = vi.hoisted(() => ({ distributed: false, fallback: false, noLobby: false, apiBase: "/api/v1", rootDomain: "example.test" }));
 vi.mock("@/lib/hooks", async (original) => ({ ...await original<typeof import("@/lib/hooks")>(), useConfig: () => runtime }));
@@ -26,6 +26,8 @@ beforeEach(() => {
   runtime.distributed = false;
   runtime.fallback = false;
   runtime.noLobby = false;
+  calls.getFeatures.mockResolvedValue({ mode: "community", useLobby: true, lobbyAvailable: true, customImages: true, allowSubmissions: true, requireAccountLink: true, revision: "features-initial" });
+  calls.setFeatures.mockImplementation(async (body) => ({ ...body, lobbyAvailable: !runtime.noLobby, requireAccountLink: true, revision: "features-saved" }));
   calls.getEntryPolicy.mockResolvedValue({ useLobby: true, mode: "domain", defaultServer: "", requireAccountLink: true, offlineAction: "wake", waitingSpace: "lobby", fallbackServer: "", revision: "initial" });
   calls.fleet.mockResolvedValue([]);
   calls.nodes.mockResolvedValue([]);
@@ -102,7 +104,7 @@ describe("page reload", () => {
     const lobby = screen.getByRole("radio", { name: /^Lobby/ });
     await waitFor(() => expect(lobby).toHaveProperty("disabled", false));
     const reload = screen.getByRole("button", { name: "Reload" });
-    const reads = [calls.getWakePolicy, calls.getDefaultLanguage, calls.getBrandingSettings, calls.getAPITokenSettings, calls.getEntryPolicy, calls.fleet, calls.getMailSettings, calls.getArchivePolicy, calls.getHeartbeat, calls.getFailoverPolicy, calls.nodes, calls.nodeTasks, calls.hostOverview];
+    const reads = [calls.getFeatures, calls.getWakePolicy, calls.getDefaultLanguage, calls.getBrandingSettings, calls.getAPITokenSettings, calls.getEntryPolicy, calls.fleet, calls.getMailSettings, calls.getArchivePolicy, calls.getHeartbeat, calls.getFailoverPolicy, calls.nodes, calls.nodeTasks, calls.hostOverview];
     await waitFor(() => { for (const read of reads) expect(read).toHaveBeenCalled(); });
     const before = reads.map((read) => read.mock.calls.length);
     await userEvent.click(reload);

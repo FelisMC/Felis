@@ -50,5 +50,7 @@
   "pause_btn": "暂停",
   "resume_btn": "继续上传",
   "resume_hint": "「{{name}}」已保存，服务器已接收 {{sent}} 构建上下文。再次提交将从已确认的位置继续上传。",
-  "restart_hint": "「{{name}}」已保存。重新选择文件后将从起始位置上传。"
+  "restart_hint": "「{{name}}」已保存。重新选择文件后将从起始位置上传。",
+  "disabled_title": "镜像投稿未开启",
+  "disabled_desc": "当前平台未开启自定义容器镜像或成员投稿功能。"
 }

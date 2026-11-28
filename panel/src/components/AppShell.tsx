@@ -16,6 +16,7 @@ import * as SelectPrimitive from "@radix-ui/react-select";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { cn } from "@/lib/utils";
 import { useTier } from "@/lib/tier";
+import { useFeatures } from "@/lib/features";
 import { useConfig } from "@/lib/hooks";
 import { visibleSections, type NavSection } from "@/lib/nav";
 import { Select, SelectContent, SelectItem } from "@/components/ui/select";
@@ -380,7 +381,13 @@ export function AppShell() {
   }, [main, pathname]);
 
   const config = useConfig();
-  const sections = visibleSections(isAdmin, isOwner, { noLobby: config?.noLobby, nano: config?.nano });
+  const { features } = useFeatures();
+  const sections = visibleSections(isAdmin, isOwner, {
+    noLobby: config?.noLobby || !features.useLobby,
+    nano: config?.nano,
+    customImages: features.customImages,
+    allowSubmissions: features.allowSubmissions,
+  });
   const navIndicator = useSlidingIndicator(navRef, '[aria-current="page"]', `${pathname}:${sections.length}:${Boolean(activeServer)}`, "y");
 
   useEffect(() => {

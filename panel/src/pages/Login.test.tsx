@@ -300,4 +300,23 @@ describe("the bind-code door", () => {
     expect(screen.getByText(t("auth:bind_hint_no_address"))).toBeTruthy();
     expect(screen.queryByText("localhost")).toBeNull();
   });
+
+  it("hides the player bind-code option in team mode", async () => {
+    calls.authOwnerStatus.mockResolvedValue({ owner_bound: true, mode: "team" });
+    await renderLogin();
+
+    expect(screen.queryByRole("button", { name: t("auth:tab_bind_btn") })).toBeNull();
+    expect(screen.getByText(t("auth:login_subtitle_team"))).toBeTruthy();
+  });
+
+  it("shows the team-mode notice when redirected from a blocked non-staff session", async () => {
+    calls.authOwnerStatus.mockResolvedValue({ owner_bound: true, mode: "team" });
+    render(
+      <MemoryRouter initialEntries={[{ pathname: "/login", state: { teamModeBlocked: true } }]}>
+        <Login />
+      </MemoryRouter>,
+    );
+    await screen.findByRole("heading", { name: t("common:brand_name") });
+    expect(screen.getByRole("alert").textContent).toBe(t("auth:team_mode_blocked_notice"));
+  });
 });

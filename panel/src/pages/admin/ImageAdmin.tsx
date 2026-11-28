@@ -43,7 +43,7 @@ function sourceLabel(source: string, t: TFunction): string {
   return key ? t(key) : source;
 }
 
-export function ImageAdmin() {
+export function ImageAdmin({ embedded = false }: { embedded?: boolean } = {}) {
   const { t } = useTranslation("admin");
   const { data, error, loading, reload } = useAsync(() => api.listImages(), []);
   const images = useMemo(() => data ?? [], [data]);
@@ -133,55 +133,61 @@ export function ImageAdmin() {
     reload();
   }
 
+  const addDialog = (
+    <Dialog open={dialogOpen} onOpenChange={(o) => {
+      setDialogOpen(o);
+      if (!o) {
+        setNewImageRef("");
+        setSubmitError(null);
+      }
+    }}>
+      <DialogTrigger asChild>
+        <Button size="sm" className="gap-1.5 shrink-0">
+          <Plus className="h-4 w-4" /> {t("add_image_btn")}
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{t("add_image_title")}</DialogTitle>
+          <DialogDescription>
+            {t("add_image_desc")}
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={handleAdd} className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="imageRefInput">
+              {t("image_ref_label")} *
+            </Label>
+            <Input
+              id="imageRefInput"
+              placeholder={t("image_ref_placeholder")}
+              value={newImageRef}
+              onChange={(e) => setNewImageRef(e.target.value)}
+              disabled={submitting}
+              required
+            />
+          </div>
+          {submitError && <MessageLine kind="error" message={submitError} compact />}
+          <ConfirmFooter
+            onCancel={() => setDialogOpen(false)}
+            onConfirm={() => handleAdd()}
+            disabled={submitting || !newImageRef.trim()}
+            loading={submitting}
+            cancelLabel={t("common:cancel")}
+            confirmLabel={t("add_image_btn")}
+          />
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+
   return (
     <div className="space-y-4">
-      <PageHeader icon={Boxes} title={t("images_title")} subtitle={t("images_subtitle")} actions={
-        <Dialog open={dialogOpen} onOpenChange={(o) => {
-          setDialogOpen(o);
-          if (!o) {
-            setNewImageRef("");
-            setSubmitError(null);
-          }
-        }}>
-          <DialogTrigger asChild>
-            <Button size="sm" className="gap-1.5 shrink-0">
-              <Plus className="h-4 w-4" /> {t("add_image_btn")}
-            </Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>{t("add_image_title")}</DialogTitle>
-              <DialogDescription>
-                {t("add_image_desc")}
-              </DialogDescription>
-            </DialogHeader>
-            <form onSubmit={handleAdd} className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="imageRefInput">
-                  {t("image_ref_label")} *
-                </Label>
-                <Input
-                  id="imageRefInput"
-                  placeholder={t("image_ref_placeholder")}
-                  value={newImageRef}
-                  onChange={(e) => setNewImageRef(e.target.value)}
-                  disabled={submitting}
-                  required
-                />
-              </div>
-              {submitError && <MessageLine kind="error" message={submitError} compact />}
-              <ConfirmFooter
-                onCancel={() => setDialogOpen(false)}
-                onConfirm={() => handleAdd()}
-                disabled={submitting || !newImageRef.trim()}
-                loading={submitting}
-                cancelLabel={t("common:cancel")}
-                confirmLabel={t("add_image_btn")}
-              />
-            </form>
-          </DialogContent>
-        </Dialog>
-      } className="mb-6" />
+      {embedded ? (
+        <div className="flex items-center justify-end">{addDialog}</div>
+      ) : (
+        <PageHeader icon={Boxes} title={t("images_title")} subtitle={t("images_subtitle")} actions={addDialog} className="mb-6" />
+      )}
 
       {/* Stats Cards Row */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
@@ -189,7 +195,7 @@ export function ImageAdmin() {
         <StatCard icon={CheckCircle2} label={t("enabled")} value={enabled} accentClass="text-emerald-500 bg-emerald-500/10" />
         <StatCard icon={CircleSlash} label={t("disabled")} value={disabled} accentClass="text-zinc-500 bg-zinc-500/10" />
         <Link
-          to="/admin/builds"
+          to={embedded ? "/admin/images?tab=builds" : "/admin/builds"}
           className="block rounded-lg transition-shadow hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <StatCard

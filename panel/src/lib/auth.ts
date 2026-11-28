@@ -2,17 +2,12 @@ import type { ApiError, Identity } from "./types";
 
 // Only /me 401 signs out; transient failures retain user-side access without elevated roles.
 
-/** AuthState is the routing-relevant projection of a single /me outcome. */
 export interface AuthState {
-  /** The resolved identity, or null while loading / on any /me failure. */
   identity: Identity | null;
-  /** True only while the initial /me request is in flight. */
   loading: boolean;
-  /** Server-computed admin flag; false unless a loaded identity says is_admin. */
   isAdmin: boolean;
-  /** True only when /me returned 401 (no or expired session, route to /login). A transient or 5xx failure leaves this false so the app keeps rendering. */
   unauthenticated: boolean;
-  // Unknown identity retains the retryable error instead of treating the user as unauthorized.
+  teamModeBlocked: boolean;
   identityError: unknown;
 }
 
@@ -24,18 +19,27 @@ export function isUnauthorized(error: unknown): boolean {
   );
 }
 
+export function isTeamModeBlocked(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const err = error as Partial<ApiError>;
+  return err.status === 403 && err.code === "team_mode_staff_only";
+}
+
 // Malformed identity fields cannot grant administrator access.
 export function deriveAuth(
   identity: Identity | null,
   error: unknown,
   loading: boolean,
 ): AuthState {
+  const blocked = !loading && identity === null && isTeamModeBlocked(error);
+  const unauthenticated = !loading && identity === null && (isUnauthorized(error) || blocked);
   return {
     identity,
     loading,
     isAdmin: identity?.is_admin === true,
-    unauthenticated: !loading && identity === null && isUnauthorized(error),
-    identityError: !loading && identity === null && error != null && !isUnauthorized(error) ? error : null,
+    unauthenticated,
+    teamModeBlocked: blocked,
+    identityError: !loading && identity === null && error != null && !unauthenticated ? error : null,
   };
 }
 

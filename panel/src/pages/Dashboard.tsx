@@ -19,6 +19,7 @@ import { api, humanizeError } from "@/lib/api";
 import type { RuntimeConfig } from "@/lib/config";
 import { formatAbsolute } from "@/lib/format";
 import { useAsync, useConfig, usePolling, type AsyncState } from "@/lib/hooks";
+import { useFeatures } from "@/lib/features";
 import { cpuUsage, memoryUsage } from "@/lib/resourceUsage";
 import { useTier } from "@/lib/tier";
 import { PlatformHealthBanner } from "@/components/PlatformHealthBanner";
@@ -32,10 +33,11 @@ const RECENT_AUDIT_COUNT = 10;
 export function Dashboard() {
   const cfg = useConfig();
   const { isAdmin, isOwner } = useTier();
+  const { features } = useFeatures();
   const servers = useAsync(() => api.myServers(), []);
   usePolling(servers.reload, SERVERS_POLL_MS);
   const link = useAsync(() => api.linkStatus(), []);
-  const images = useAsync(() => (isAdmin ? api.listImages() : Promise.resolve([])), [isAdmin]);
+  const images = useAsync(() => (isAdmin && features.customImages ? api.listImages() : Promise.resolve([])), [isAdmin, features.customImages]);
 
   const { t } = useTranslation(["dashboard", "admin"]);
 
@@ -91,6 +93,8 @@ export function Dashboard() {
             counts={counts}
             link={link}
             images={images.error ? null : images.data}
+            customImages={features.customImages}
+            teamMode={features.mode === "team"}
             isAdmin={isAdmin}
             isOwner={isOwner}
             distributed={cfg.distributed === true}
@@ -437,6 +441,8 @@ function FleetView({
   counts,
   link,
   images,
+  customImages,
+  teamMode,
   isAdmin,
   isOwner,
   distributed,
@@ -446,6 +452,8 @@ function FleetView({
   counts: { total: number; running: number; players: number };
   link: AsyncState<{ linked: boolean }>;
   images: WhitelistImage[] | null;
+  customImages: boolean;
+  teamMode: boolean;
   isAdmin: boolean;
   isOwner: boolean;
   distributed: boolean;
@@ -528,14 +536,21 @@ function FleetView({
     { key: "legend_unknown", count: statusStats.unknown, ratio: null, color: PHASE_COLOR.Unknown, pulse: false, always: false },
   ].filter((item) => item.always || item.count > 0);
 
-  // Keep space-y-1 with numeric value as lastElementChild for Dashboard.test.tsx specValue().
   const specs = [
-    { label: t("spec_images_total"), value: totalImagesCount, tone: "text-foreground" },
-    { label: t("spec_images_built"), value: builtImagesCount, tone: "text-foreground" },
-    { label: t("spec_images_external"), value: externalImagesCount, tone: "text-foreground" },
+    ...(customImages
+      ? [
+          { label: t("spec_images_total"), value: totalImagesCount, tone: "text-foreground" },
+          { label: t("spec_images_built"), value: builtImagesCount, tone: "text-foreground" },
+          { label: t("spec_images_external"), value: externalImagesCount, tone: "text-foreground" },
+        ]
+      : []),
     { label: t("spec_servers_total"), value: counts.total, tone: "text-foreground" },
-    { label: t("spec_servers_owned"), value: ownedServersCount, tone: "text-foreground" },
-    { label: t("spec_servers_claimable"), value: claimableServersCount, tone: "text-foreground" },
+    ...(!teamMode
+      ? [
+          { label: t("spec_servers_owned"), value: ownedServersCount, tone: "text-foreground" },
+          { label: t("spec_servers_claimable"), value: claimableServersCount, tone: "text-foreground" },
+        ]
+      : []),
     { label: t("spec_running_ratio"), value: `${runningRatio}%`, tone: "text-primary" },
     { label: t("spec_stopped_ratio"), value: `${stoppedRatio}%`, tone: "text-muted-foreground" },
     { label: t("spec_failed_ratio"), value: `${failedRatio}%`, tone: statusStats.failed > 0 ? "text-destructive" : "text-muted-foreground" },

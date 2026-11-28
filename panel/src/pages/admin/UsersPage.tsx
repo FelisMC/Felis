@@ -26,6 +26,7 @@ import { Pagination } from "@/components/Pagination";
 import { CreateUserDialog } from "@/components/CreateUserDialog";
 import { SelfServiceQuotaCard } from "@/components/SelfServiceQuotaCard";
 import { api } from "@/lib/api";
+import { useFeatures } from "@/lib/features";
 import { useAsync, useConfig } from "@/lib/hooks";
 import { formatAbsolute } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -38,7 +39,9 @@ export function UsersPage() {
   const locale = i18n.language;
   const navigate = useNavigate();
   const config = useConfig();
+  const { features } = useFeatures();
   const hasServers = config !== null && !config.nano;
+  const showOwnership = hasServers && features.mode === "community";
 
   // Debounce server-side search and reset pagination; Enter applies immediately.
   const [query, setQuery] = useState("");
@@ -94,7 +97,7 @@ export function UsersPage() {
         actions={<CreateUserDialog onCreated={(id) => { reload(); navigate(`/admin/users/${id}`); }} />}
       />
 
-      {hasServers && <SelfServiceQuotaCard collapsible />}
+      {showOwnership && <SelfServiceQuotaCard collapsible />}
 
       <form onSubmit={handleSearch} className="flex flex-wrap items-center gap-2">
         <div className="relative min-w-[200px] flex-1">
@@ -158,7 +161,7 @@ export function UsersPage() {
                     <tr className="border-b border-border/60 bg-muted text-left text-[11px] text-muted-foreground">
                       <th className="px-3.5 py-2 font-normal">{t("users_col_user")}</th>
                       <th className="hidden px-3.5 py-2 font-normal sm:table-cell">{t("users_col_role")}</th>
-                      {hasServers && <th className="hidden px-3.5 py-2 font-normal md:table-cell">{t("users_col_servers")}</th>}
+                      {showOwnership && <th className="hidden px-3.5 py-2 font-normal md:table-cell">{t("users_col_servers")}</th>}
                       <th className="hidden px-3.5 py-2 font-normal lg:table-cell">{t("users_col_status")}</th>
                       <th className="hidden px-3.5 py-2 font-normal lg:table-cell">{t("users_col_created")}</th>
                       <th className="w-0 px-3.5 py-2 font-normal" />
@@ -166,7 +169,7 @@ export function UsersPage() {
                   </thead>
                   <tbody>
                     {data.users.map((u: UserView) => (
-                      <UserRow key={u.id} user={u} locale={locale} showServers={hasServers} />
+                      <UserRow key={u.id} user={u} locale={locale} showServers={showOwnership} />
                     ))}
                   </tbody>
                 </table>

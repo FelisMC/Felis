@@ -7,6 +7,7 @@
   "owner_section": "Platform",
   "admin_users": "Users",
   "admin_images": "Images",
+  "admin_images_hub": "Images & builds",
   "admin_builds": "Build Pipeline",
   "admin_submissions": "Submissions",
   "admin_updates": "Maintenance & Backups",
